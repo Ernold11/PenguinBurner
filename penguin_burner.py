@@ -2,8 +2,10 @@
 
 import argparse
 import atexit
+import hashlib
 import ctypes
 import os
+import platform
 from pathlib import Path
 import pwd
 import signal
@@ -12,20 +14,26 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 import tomllib
 
 from afterburner_fan_curve import (
     format_curve_points as format_afterburner_curve_points,
     load_afterburner_fan_settings,
+    parse_sw_auto_fan_curve,
     resolve_afterburner_fan_profile,
 )
 from afterburner_vfcurve import (
+    discover_afterburner_vf_sections,
     derive_afterburner_dynamic_lock,
     describe_afterburner_dynamic_lock,
     describe_afterburner_flatten_validation,
     describe_afterburner_profile_settings,
     describe_afterburner_vfcurve_analysis,
+    hash_afterburner_vfcurve_hex,
     load_afterburner_profile_settings,
+    load_afterburner_profile_section,
+    parse_vfcurve_blob,
     resolve_afterburner_vf_source,
 )
 from hidden_nvapi_vf import create_hidden_vf_curve_reader
@@ -44,7 +52,14 @@ from nvml_gpu_policy import (
     describe_translated_gpu_policy,
     translate_afterburner_gpu_policy,
 )
-from penguin_burner_paths import default_runtime_config_path, resolve_afterburner_root
+from penguin_burner_paths import (
+    afterburner_global_profile,
+    afterburner_profiles_dir,
+    default_runtime_config_path,
+    discover_afterburner_device_profiles,
+    resolve_afterburner_root,
+    validate_afterburner_export_root,
+)
 
 
 NVML_SUCCESS = 0
@@ -58,6 +73,12 @@ BASH = shutil.which("bash") or "/usr/bin/bash"
 PENGUIN_BURNER_UNIT_NAME = "PenguinBurner"
 PENGUIN_BURNER_FOREGROUND_ENV = "PENGUIN_BURNER_FOREGROUND"
 DEFAULT_JOURNAL_HOURS = 4
+DEBUG_LOG_ENABLED = False
+DEBUG_LOG_PATH = None
+DEBUG_LOG_FILE = None
+DEBUG_LOG_MAX_BYTES = 700 * 1024
+DEBUG_LOG_BYTES_WRITTEN = 0
+DEBUG_LOG_TRUNCATED = False
 
 
 class NvmlError(RuntimeError):
@@ -65,13 +86,497 @@ class NvmlError(RuntimeError):
 
 
 def log(message):
-    print(message, flush=True)
+    text = str(message)
+    print(text, flush=True)
+    _write_debug_log_line(text)
+
+
+def debug_log(message):
+    if not DEBUG_LOG_ENABLED:
+        return
+    text = f"[debug] {message}"
+    _write_debug_log_line(text)
+
+
+def debug_log_enabled():
+    return bool(DEBUG_LOG_ENABLED)
+
+
+def current_debug_log_path():
+    return DEBUG_LOG_PATH
+
+
+def close_debug_log():
+    global DEBUG_LOG_FILE
+    if DEBUG_LOG_FILE is None:
+        return
+    DEBUG_LOG_FILE.close()
+    DEBUG_LOG_FILE = None
+
+
+def _write_debug_log_line(text):
+    global DEBUG_LOG_BYTES_WRITTEN, DEBUG_LOG_TRUNCATED
+    if DEBUG_LOG_FILE is None or DEBUG_LOG_TRUNCATED:
+        return
+
+    line = str(text) + "\n"
+    encoded = line.encode("utf-8", errors="replace")
+    if DEBUG_LOG_BYTES_WRITTEN + len(encoded) <= DEBUG_LOG_MAX_BYTES:
+        DEBUG_LOG_FILE.write(line)
+        DEBUG_LOG_FILE.flush()
+        DEBUG_LOG_BYTES_WRITTEN += len(encoded)
+        return
+
+    remaining = max(0, DEBUG_LOG_MAX_BYTES - DEBUG_LOG_BYTES_WRITTEN)
+    truncation_notice = (
+        "[debug] debug log truncated after reaching the 700KB safety limit; "
+        "foreground and daemon logging continue normally\n"
+    )
+    encoded_notice = truncation_notice.encode("utf-8", errors="replace")
+    if remaining >= len(encoded_notice):
+        DEBUG_LOG_FILE.write(truncation_notice)
+        DEBUG_LOG_FILE.flush()
+        DEBUG_LOG_BYTES_WRITTEN += len(encoded_notice)
+    DEBUG_LOG_TRUNCATED = True
+
+
+def enable_debug_logging(config_path, *, argv=None):
+    global DEBUG_LOG_ENABLED, DEBUG_LOG_PATH, DEBUG_LOG_FILE, DEBUG_LOG_BYTES_WRITTEN, DEBUG_LOG_TRUNCATED
+    if DEBUG_LOG_ENABLED:
+        return DEBUG_LOG_PATH
+
+    DEBUG_LOG_ENABLED = True
+    config_path = Path(config_path).expanduser().resolve()
+    debug_dir = config_path.parent / "debug-logs"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    DEBUG_LOG_PATH = debug_dir / f"penguin_burner-debug-{timestamp}.log"
+    try:
+        DEBUG_LOG_FILE = DEBUG_LOG_PATH.open("a", encoding="utf-8", buffering=1)
+    except Exception as exc:
+        DEBUG_LOG_FILE = None
+        print(
+            f"warning: failed to open debug log file under {debug_dir}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+    DEBUG_LOG_BYTES_WRITTEN = 0
+    DEBUG_LOG_TRUNCATED = False
+    debug_log("debug log enabled")
+    if DEBUG_LOG_PATH is not None:
+        debug_log(f"debug-log-path={DEBUG_LOG_PATH}")
+    debug_log(f"argv={shlex.join([Path(sys.argv[0]).name, *(argv or [])])}")
+    debug_log(f"cwd={Path.cwd()}")
+    debug_log(f"config-path={config_path}")
+    _debug_log_runtime_environment()
+    return DEBUG_LOG_PATH
+
+
+def debug_exception(context, exc):
+    if not DEBUG_LOG_ENABLED:
+        return
+    debug_log(f"{context}: {exc.__class__.__name__}: {exc}")
+    for line in traceback.format_exception(type(exc), exc, exc.__traceback__):
+        for fragment in line.rstrip().splitlines():
+            debug_log(f"traceback: {fragment}")
+
+
+def _normalized_afterburner_section_name(name):
+    return str(name).strip().lower()
+
+
+def _debug_render_text_preview(value, *, limit=96):
+    text = str(value).strip()
+    if not text:
+        return "<empty>"
+    if len(text) <= int(limit):
+        return text
+    half = max(16, int(limit) // 2 - 3)
+    return f"{text[:half]}...{text[-half:]}"
+
+
+def _debug_render_text_or_full(value, *, full_limit=12288, preview_limit=120):
+    text = str(value).strip()
+    if len(text) <= int(full_limit):
+        return text or "<empty>"
+    return _debug_render_text_preview(text, limit=preview_limit)
+
+
+def _debug_hash_text(value):
+    return hashlib.sha256(str(value).encode()).hexdigest()[:16]
+
+
+def _debug_vfcurve_blob_summary(hex_blob):
+    text = str(hex_blob).strip()
+    if not text:
+        return "vfcurve=<empty>"
+
+    parts = [
+        f"chars={len(text)}",
+        f"sha256={hash_afterburner_vfcurve_hex(text)[:16]}",
+    ]
+    if len(text) % 2 != 0:
+        parts.append("hex-odd-length")
+    try:
+        header, points, tail = parse_vfcurve_blob(text)
+    except Exception as exc:
+        parts.append(f"parse-error={exc}")
+    else:
+        parts.append(
+            "header="
+            f"{int(header['magic_u32'])}/{int(header['point_count_hint'])}/{int(header['flags_u32'])}"
+        )
+        parts.append(f"points={len(points)}")
+        parts.append(f"tail-nonzero={len(tail)}")
+    parts.append(f"preview={_debug_render_text_preview(text, limit=72)}")
+    return "vfcurve-blob " + " ".join(parts)
+
+
+def _debug_fan_curve_blob_summary(hex_blob):
+    text = str(hex_blob).strip()
+    if not text:
+        return "fan-curve=<empty>"
+
+    parts = [
+        f"chars={len(text)}",
+        f"sha256={_debug_hash_text(text)}",
+    ]
+    if len(text) % 2 != 0:
+        parts.append("hex-odd-length")
+    try:
+        parsed = parse_sw_auto_fan_curve(text)
+    except Exception as exc:
+        parts.append(f"parse-error={exc}")
+    else:
+        parts.append(
+            "header="
+            f"{int(parsed['magic_u32'])}/{int(parsed['point_count'])}/{int(parsed['flags_u32'])}"
+        )
+        parts.append(f"points={len(parsed['points'])}")
+    parts.append(f"preview={_debug_render_text_preview(text, limit=72)}")
+    return "fan-curve-blob " + " ".join(parts)
+
+
+def _debug_selection_reason_summary(
+    section_info,
+    *,
+    requested_section="",
+):
+    reasons = []
+    normalized_requested = _normalized_afterburner_section_name(requested_section)
+    normalized_section = _normalized_afterburner_section_name(section_info.get("section"))
+    if normalized_requested and normalized_requested != normalized_section:
+        reasons.append("requested-section-mismatch")
+    if not section_info.get("is_manual_candidate"):
+        reasons.append("not-manual")
+    if section_info.get("flatten_target") is None:
+        reasons.append("no-flat-tail")
+    validation = section_info.get("flatten_validation")
+    if validation is None:
+        reasons.append("no-undervolt-validation")
+    elif not validation.get("valid"):
+        reasons.append(
+            "invalid-undervolt="
+            + _debug_render_text_preview(validation.get("reason", "invalid"), limit=88)
+        )
+
+    default_eligible = bool(
+        section_info.get("is_manual_candidate")
+        and section_info.get("flatten_target") is not None
+        and validation
+        and validation.get("valid")
+    )
+    dangerous_eligible = bool(section_info.get("is_manual_candidate"))
+    return (
+        f"default-eligible={'yes' if default_eligible else 'no'} "
+        f"dangerous-eligible={'yes' if dangerous_eligible else 'no'} "
+        f"reasons={';'.join(reasons) if reasons else 'selected-candidate'}"
+    )
+
+
+def _debug_log_device_profile_section_dump(profile_path, section_info):
+    try:
+        resolved_section, raw_values = load_afterburner_profile_section(
+            profile_path=profile_path,
+            section=section_info["section"],
+        )
+    except Exception as exc:
+        debug_exception(
+            f"failed to dump raw section values for {Path(profile_path).name}:{section_info['section']}",
+            exc,
+        )
+        return
+
+    debug_log(f"{Path(profile_path).name}:{resolved_section}: raw-key-count={len(raw_values)}")
+    for key, value in raw_values.items():
+        normalized_key = str(key).strip().lower()
+        if normalized_key == "vfcurve":
+            debug_log(
+                f"{Path(profile_path).name}:{resolved_section}: "
+                + _debug_vfcurve_blob_summary(value)
+            )
+            debug_log(
+                f"{Path(profile_path).name}:{resolved_section}: "
+                f"VFCurve-raw={_debug_render_text_or_full(value)}"
+            )
+            continue
+        debug_log(
+            f"{Path(profile_path).name}:{resolved_section}: "
+            f"{key}={_debug_render_text_or_full(value)}"
+        )
+
+
+def _debug_log_fan_profile_dump(profile_path):
+    try:
+        lines = Path(profile_path).read_text(errors="ignore").splitlines()
+    except Exception as exc:
+        debug_exception(f"failed to read the fan profile {profile_path}", exc)
+        return
+
+    fan_lines = [
+        line.strip()
+        for line in lines
+        if "=" in line and line.strip().startswith("SwAutoFanControl")
+    ]
+    debug_log(f"{Path(profile_path).name}: raw-fan-key-count={len(fan_lines)}")
+    for line in fan_lines:
+        key, value = line.split("=", 1)
+        normalized_key = key.strip().lower()
+        if normalized_key in ("swautofancontrolcurve", "swautofancontrolcurve2"):
+            debug_log(
+                f"{Path(profile_path).name}: "
+                + _debug_fan_curve_blob_summary(value)
+            )
+            debug_log(
+                f"{Path(profile_path).name}: "
+                f"{key.strip()}-raw={_debug_render_text_or_full(value)}"
+            )
+            continue
+        debug_log(
+            f"{Path(profile_path).name}: "
+            f"{key.strip()}={_debug_render_text_or_full(value)}"
+        )
+
+
+def _debug_log_runtime_environment():
+    if not DEBUG_LOG_ENABLED:
+        return
+    debug_log(f"python={sys.version.split()[0]} executable={sys.executable}")
+    debug_log(f"platform={platform.platform()}")
+    debug_log(
+        f"user={pwd.getpwuid(os.getuid()).pw_name} uid={os.getuid()} "
+        f"euid={os.geteuid()} sudo-user={os.environ.get('SUDO_USER', '').strip() or '(none)'}"
+    )
+    debug_log(
+        f"path-has-nvidia-smi={'yes' if shutil.which('nvidia-smi') else 'no'} "
+        f"path-has-systemctl={'yes' if shutil.which('systemctl') else 'no'}"
+    )
+
+    try:
+        version_result = subprocess.run(
+            [NVIDIA_SMI, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as exc:
+        debug_exception("failed to run nvidia-smi --version", exc)
+    else:
+        version_text = (version_result.stdout or version_result.stderr).strip().replace("\n", " | ")
+        debug_log(
+            f"nvidia-smi-version rc={version_result.returncode} "
+            f"text={_debug_render_text_preview(version_text, limit=140)}"
+        )
+
+    try:
+        query_result = subprocess.run(
+            [
+                NVIDIA_SMI,
+                "--query-gpu=index,name,driver_version,pci.bus_id",
+                "--format=csv,noheader",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as exc:
+        debug_exception("failed to query nvidia-smi gpu metadata", exc)
+    else:
+        lines = [line.strip() for line in query_result.stdout.splitlines() if line.strip()]
+        debug_log(f"nvidia-smi-gpu-query rc={query_result.returncode} count={len(lines)}")
+        for line in lines:
+            debug_log(f"nvidia-smi-gpu={line}")
+
+
+def _debug_log_effective_runtime_options(*, config_path, gpu_index, afterburner_runtime_options):
+    if not DEBUG_LOG_ENABLED:
+        return
+    debug_log(
+        "effective-runtime="
+        f"config-path={Path(config_path).expanduser().resolve()} "
+        f"gpu-index={gpu_index} "
+        f"afterburner-root={afterburner_runtime_options.get('afterburner_root') or '(none)'} "
+        f"section={afterburner_runtime_options.get('afterburner_profile') or '(auto)'} "
+        f"device-profile={afterburner_runtime_options.get('afterburner_device_profile') or '(auto)'} "
+        f"power-limit-override={afterburner_runtime_options.get('power_limit_override_w')} "
+        f"preserve-vf-below-mv={afterburner_runtime_options.get('preserve_vanilla_below_mv')} "
+        f"dangerously-skip-validation={bool(afterburner_runtime_options.get('dangerously_skip_validation'))}"
+    )
+
+
+def _debug_describe_file(path):
+    try:
+        exists = path.exists()
+    except Exception as exc:
+        return f"path={path} exists=error({exc})"
+
+    details = [f"path={path}", f"exists={'yes' if exists else 'no'}"]
+    if exists:
+        try:
+            details.append(f"is-file={'yes' if path.is_file() else 'no'}")
+            details.append(f"is-dir={'yes' if path.is_dir() else 'no'}")
+            details.append(f"size={path.stat().st_size}")
+        except Exception as exc:
+            details.append(f"stat-error={exc}")
+    return " ".join(details)
+
+
+def _debug_describe_afterburner_section(section_info):
+    flags = []
+    if section_info.get("is_builtin"):
+        flags.append("builtin")
+    if section_info.get("matches_defaults"):
+        flags.append("matches-defaults")
+    if section_info.get("matches_startup"):
+        flags.append("matches-startup")
+    if section_info.get("is_manual_candidate"):
+        flags.append("manual")
+    if section_info.get("is_valid_manual_candidate"):
+        flags.append("valid")
+    flag_text = ",".join(flags) if flags else "none"
+    analysis = section_info.get("analysis")
+    if isinstance(analysis, dict) and "point_count" in analysis:
+        analysis_text = describe_afterburner_vfcurve_analysis(analysis)
+    else:
+        analysis_text = "unknown"
+    return (
+        f"section={section_info.get('section')} "
+        f"flags={flag_text} "
+        f"flatten={describe_afterburner_dynamic_lock(section_info.get('flatten_target'))} "
+        f"validation={describe_afterburner_flatten_validation(section_info.get('flatten_validation'))} "
+        f"analysis={analysis_text}"
+    )
+
+
+def emit_afterburner_debug_snapshot(
+    *,
+    afterburner_root,
+    requested_section,
+    device_profile_hint,
+    dangerously_skip_validation=False,
+):
+    if not DEBUG_LOG_ENABLED:
+        return
+
+    debug_log("Afterburner debug snapshot begin")
+    debug_log(f"requested-root={afterburner_root}")
+    debug_log(f"requested-section={requested_section or '(auto)'}")
+    debug_log(f"device-profile-hint={device_profile_hint or '(auto)'}")
+    debug_log(
+        "selection-mode="
+        + ("dangerously-skip-validation" if dangerously_skip_validation else "default-validation")
+    )
+
+    try:
+        resolved_root = resolve_afterburner_root(afterburner_root)
+    except Exception as exc:
+        debug_exception("failed to resolve the Afterburner root", exc)
+        return
+
+    debug_log(f"resolved-root={resolved_root}")
+    try:
+        problems = validate_afterburner_export_root(resolved_root)
+    except Exception as exc:
+        debug_exception("failed to validate the Afterburner root", exc)
+        problems = []
+    if problems:
+        debug_log("root-validation-problems=" + "; ".join(problems))
+    else:
+        debug_log("root-validation=ok")
+
+    debug_log(_debug_describe_file(afterburner_global_profile(resolved_root)))
+    debug_log(_debug_describe_file(afterburner_profiles_dir(resolved_root)))
+
+    try:
+        fan_profile_path = resolve_afterburner_fan_profile(afterburner_root=resolved_root)
+        debug_log(f"selected-fan-profile={fan_profile_path}")
+        fan_settings = load_afterburner_fan_settings(fan_profile_path)
+        debug_log(
+            "fan-settings="
+            f"sw-auto={fan_settings['sw_auto_enabled']} "
+            f"period-ms={fan_settings['period_ms']} "
+            f"flags=0x{int(fan_settings['flags_u32']):08x} "
+            f"curve-points={len(fan_settings['curve']['points'])} "
+            f"reference-points={len(fan_settings['curve2']['points'])}"
+        )
+        _debug_log_fan_profile_dump(fan_profile_path)
+    except Exception as exc:
+        debug_exception("failed to parse the Afterburner fan profile", exc)
+
+    try:
+        device_profiles = discover_afterburner_device_profiles(resolved_root)
+    except Exception as exc:
+        debug_exception("failed to enumerate Afterburner device profiles", exc)
+        return
+
+    if not device_profiles:
+        debug_log("device-profiles=none")
+        return
+
+    debug_log(f"device-profiles-found={len(device_profiles)}")
+    for candidate in device_profiles:
+        debug_log(_debug_describe_file(candidate))
+        try:
+            sections = discover_afterburner_vf_sections(candidate)
+        except Exception as exc:
+            debug_exception(f"failed to inspect device profile {candidate.name}", exc)
+            continue
+
+        debug_log(f"{candidate.name}: vf-sections={len(sections)}")
+        for section_info in sections:
+            debug_log(
+                f"{candidate.name}: {_debug_describe_afterburner_section(section_info)} "
+                f"{_debug_selection_reason_summary(section_info, requested_section=requested_section)}"
+            )
+            try:
+                settings = load_afterburner_profile_settings(
+                    profile_path=candidate,
+                    section=section_info["section"],
+                )
+            except Exception as exc:
+                debug_exception(
+                    f"failed to parse settings for {candidate.name}:{section_info['section']}",
+                    exc,
+                )
+                continue
+            debug_log(
+                f"{candidate.name}:{section_info['section']}: "
+                f"{describe_afterburner_profile_settings(settings)}"
+            )
+            _debug_log_device_profile_section_dump(candidate, section_info)
+
+    debug_log("Afterburner debug snapshot end")
+
+
+atexit.register(close_debug_log)
 
 
 def prompt_yes_no(prompt, *, default):
     suffix = "[Y/n]" if default else "[y/N]"
     while True:
         entered = input(f"{prompt} {suffix}: ").strip().lower()
+        if DEBUG_LOG_ENABLED:
+            debug_log(f"prompt={prompt} answer={entered or '<enter>'}")
         if not entered:
             return bool(default)
         if entered in ("y", "yes"):
@@ -443,6 +948,15 @@ def parse_main_args(argv):
         help=(
             "Bypass the default flat-tail and undervolt checks when selecting "
             "the saved Afterburner profile; advanced and not recommended"
+        ),
+    )
+    parser.add_argument(
+        "--debug-log",
+        action="store_true",
+        help=(
+            "Write a verbose dry-run and first-import diagnostic log next to "
+            "the selected config file under debug-logs/; with the default "
+            "config this is ~/.config/PenguinBurner/debug-logs"
         ),
     )
     parser.add_argument(
@@ -1195,275 +1709,343 @@ def run_afterburner_dry_run(
         )
 
     afterburner_root = str(resolve_afterburner_root(afterburner_root))
-    source = resolve_afterburner_vf_source(
+    debug_log(
+        f"dry-run-start gpu-index={gpu_index} config-path={config_path} "
+        f"resolved-root={afterburner_root}"
+    )
+    emit_afterburner_debug_snapshot(
         afterburner_root=afterburner_root,
-        section=afterburner_profile or None,
-        device_profile_hint=afterburner_device_profile or None,
+        requested_section=afterburner_profile,
+        device_profile_hint=afterburner_device_profile,
         dangerously_skip_validation=dangerously_skip_validation,
     )
-    section_info = source["section_info"]
-    profile_settings = load_afterburner_profile_settings(
-        profile_path=source["profile_path"],
-        section=source["section"],
-    )
-    flatten_target = section_info.get("flatten_target")
 
-    fan_settings = load_afterburner_fan_settings(
-        resolve_afterburner_fan_profile(afterburner_root=afterburner_root)
-    )
-    fan_settings["afterburner_root"] = Path(afterburner_root).expanduser()
-
-    imported_fan_config = None
-    imported_fan_error = None
-    try:
-        imported_fan_config = build_imported_fan_section(
-            fan_config,
-            fan_settings,
-            gpu_index=gpu_index,
-        )
-    except SystemExit as exc:
-        imported_fan_error = str(exc)
-
-    power_limits = {}
-    clock_offsets = {}
     policy_controller = None
-    policy_error = None
-    translated_gpu_policy = translate_afterburner_gpu_policy(
-        profile_settings,
-        power_limits=power_limits,
-        power_limit_cap_w=power_limit_override_w,
-    )
+    vf_curve_reader = None
     try:
-        policy_controller = NvmlGpuPolicyController(gpu_index=gpu_index)
-    except Exception as exc:
-        policy_error = str(exc)
-    else:
-        power_limits = policy_controller.query_power_limits()
-        clock_offsets = policy_controller.get_clock_offsets()
+        source = resolve_afterburner_vf_source(
+            afterburner_root=afterburner_root,
+            section=afterburner_profile or None,
+            device_profile_hint=afterburner_device_profile or None,
+            dangerously_skip_validation=dangerously_skip_validation,
+        )
+        debug_log(
+            "dry-run-selected-source="
+            f"profile={source['profile_path']} "
+            f"section={source['section']} "
+            f"skip-validation={source.get('dangerously_skip_validation')}"
+        )
+        section_info = source["section_info"]
+        profile_settings = load_afterburner_profile_settings(
+            profile_path=source["profile_path"],
+            section=source["section"],
+        )
+        debug_log(
+            "dry-run-selected-settings="
+            f"{describe_afterburner_profile_settings(profile_settings)}"
+        )
+        flatten_target = section_info.get("flatten_target")
+
+        fan_settings = load_afterburner_fan_settings(
+            resolve_afterburner_fan_profile(afterburner_root=afterburner_root)
+        )
+        fan_settings["afterburner_root"] = Path(afterburner_root).expanduser()
+        debug_log(
+            "dry-run-fan-settings="
+            f"period-ms={fan_settings['period_ms']} "
+            f"flags=0x{int(fan_settings['flags_u32']):08x} "
+            f"curve-points={len(fan_settings['curve']['points'])} "
+            f"reference-points={len(fan_settings['curve2']['points'])}"
+        )
+
+        imported_fan_config = None
+        imported_fan_error = None
+        try:
+            imported_fan_config = build_imported_fan_section(
+                fan_config,
+                fan_settings,
+                gpu_index=gpu_index,
+            )
+        except SystemExit as exc:
+            imported_fan_error = str(exc)
+            debug_exception("failed to translate the imported fan curve", exc)
+
+        power_limits = {}
+        clock_offsets = {}
+        policy_error = None
         translated_gpu_policy = translate_afterburner_gpu_policy(
             profile_settings,
             power_limits=power_limits,
             power_limit_cap_w=power_limit_override_w,
         )
+        try:
+            policy_controller = NvmlGpuPolicyController(gpu_index=gpu_index)
+        except Exception as exc:
+            policy_error = str(exc)
+            debug_exception("failed to create the NVML GPU policy helper", exc)
+        else:
+            power_limits = policy_controller.query_power_limits()
+            clock_offsets = policy_controller.get_clock_offsets()
+            translated_gpu_policy = translate_afterburner_gpu_policy(
+                profile_settings,
+                power_limits=power_limits,
+                power_limit_cap_w=power_limit_override_w,
+            )
+            debug_log(
+                "dry-run-translated-policy="
+                f"{describe_translated_gpu_policy(translated_gpu_policy)}"
+            )
 
-    vf_curve_reader = create_hidden_vf_curve_reader(gpu_index=gpu_index)
-    vf_summary = None
-    vf_plan = []
-    missing_voltage_bins = []
-    if vf_curve_reader is not None:
-        vf_summary = vf_curve_reader.summary()
-        vf_plan, missing_voltage_bins = build_plan(
-            vf_curve_reader,
-            section_info["materialization"]["points"],
-            preserve_vanilla_below_mv=preserve_vanilla_below_mv,
-        )
-    changed_points = [
-        item
-        for item in vf_plan
-        if int(item["current_offset_mhz"]) != int(item["new_offset_mhz"])
-    ]
-
-    flags = fan_settings["flags"]
-    lock_voltage_mv = flatten_target.get("lock_voltage_mv") if flatten_target else None
-    end_voltage_mv = flatten_target.get("end_voltage_mv") if flatten_target else None
-    lock_clock_mhz = flatten_target.get("lock_clock_mhz") if flatten_target else None
-    source_label = f"{source['section']} in {source['profile_path'].name}"
-    log(f"Dry run: {source_label}")
-    log(f"Power and offsets: {format_dry_run_power_summary(translated_gpu_policy)}")
-    if source.get("dangerously_skip_validation"):
-        log(
-            "Validation override: enabled. Skipping the usual flat-tail and "
-            "undervolt checks against Defaults/Startup for profile selection."
-        )
-    if (
-        flatten_target
-        and lock_voltage_mv is not None
-        and end_voltage_mv is not None
-        and lock_clock_mhz is not None
-    ):
-        log(
-            f"VF target: flat at {int(lock_clock_mhz)}MHz from "
-            f"{int(lock_voltage_mv)}mV to {int(end_voltage_mv)}mV"
-        )
-    else:
-        log(
-            "VF target: "
-            f"{describe_afterburner_vfcurve_analysis(section_info['analysis'])}"
-        )
-    if preserve_vanilla_below_mv is not None:
-        log(
-            "VF preserve: "
-            f"keep the stock/base curve at and below {int(preserve_vanilla_below_mv)}mV"
-        )
-
-    validation = section_info.get("flatten_validation")
-    if validation and validation.get("valid"):
-        log(
-            "Undervolt check: "
-            f"{int(validation['selected_clock_mhz'])}MHz at "
-            f"{int(validation['selected_voltage_mv'])}mV is "
-            f"{int(round(float(validation['undervolt_margin_mv'])))}mV below "
-            f"{validation['baseline_section']} at the same clock"
-        )
-    elif validation:
-        if source.get("dangerously_skip_validation"):
-            log(
-                "Undervolt check: skipped by user request; "
-                f"{describe_afterburner_flatten_validation(validation)}"
+        vf_summary = None
+        vf_plan = []
+        missing_voltage_bins = []
+        vf_curve_reader = create_hidden_vf_curve_reader(gpu_index=gpu_index)
+        if vf_curve_reader is not None:
+            vf_summary = vf_curve_reader.summary()
+            debug_log(
+                "linux-vf-summary="
+                f"active-points={vf_summary['active_points']} "
+                f"editable-core-points={vf_summary['editable_core_points']}"
+            )
+            vf_plan, missing_voltage_bins = build_plan(
+                vf_curve_reader,
+                section_info["materialization"]["points"],
+                preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+            )
+            debug_log(
+                f"linux-vf-plan matched={len(vf_plan)} "
+                f"missing-voltage-bins={len(missing_voltage_bins)}"
             )
         else:
-            log(f"Undervolt check: {describe_afterburner_flatten_validation(validation)}")
+            debug_log("linux-vf-summary=unavailable")
 
-    if imported_fan_config is None:
-        log(f"Fan behavior: unavailable ({imported_fan_error})")
-    else:
-        fan_behavior_parts = [
-            f"{float(fan_settings['period_ms']) / 1000.0:.1f}s updates",
-            (
-                f"takeover {float(imported_fan_config['curve_manual_takeover_temp_c']):.0f}C"
-            ),
-            (
-                f"restore {float(imported_fan_config['curve_auto_restore_temp_c']):.0f}C"
-            ),
-            (
-                "emergency "
-                f"{float(imported_fan_config['emergency_auto_override_temp_c']):.0f}C/"
-                f"{float(imported_fan_config['emergency_auto_resume_temp_c']):.0f}C"
-            ),
+        changed_points = [
+            item
+            for item in vf_plan
+            if int(item["current_offset_mhz"]) != int(item["new_offset_mhz"])
         ]
-        if flags["override_zero_with_hardware_curve"]:
-            fan_behavior_parts.append("zero-RPM preserved")
-        log("Fan behavior: " + ", ".join(fan_behavior_parts))
-
-    if policy_controller is None and vf_summary is None:
-        log("Linux readback: unavailable")
-    else:
-        log(
-            "Linux readback: "
-            + format_dry_run_linux_state_summary(
-                vf_changed_points=len(changed_points) if vf_summary is not None else None,
-                power_limits=power_limits,
-                clock_offsets=clock_offsets,
+        if DEBUG_LOG_ENABLED and vf_plan:
+            debug_log(
+                f"linux-vf-point-detail count={len(vf_plan)} changed={len(changed_points)}"
             )
-        )
-        if policy_controller is None and policy_error:
-            log(f"Linux power/memory readback note: {policy_error}")
-        if vf_summary is None:
-            log("Linux VF readback note: hidden NVAPI VF helper is unavailable")
-            if preserve_vanilla_below_mv is not None:
-                log(
-                    "Linux VF preserve note: "
-                    "preserve-below-voltage needs Linux VF point data for an exact target preview"
+            for item in vf_plan:
+                debug_log(
+                    "linux-vf-point "
+                    f"idx={int(item['index'])} "
+                    f"mv={int(item['voltage_mv'])} "
+                    f"base={int(item['base_mhz'])}MHz "
+                    f"target={int(item['target_mhz'])}MHz "
+                    f"current-offset={int(item['current_offset_mhz']):+d}MHz "
+                    f"new-offset={int(item['new_offset_mhz']):+d}MHz "
+                    f"preserve-vanilla={'yes' if item.get('preserve_vanilla') else 'no'}"
                 )
-        elif missing_voltage_bins:
-            preview = ", ".join(str(int(voltage_mv)) + "mV" for voltage_mv in missing_voltage_bins[:8])
-            if len(missing_voltage_bins) > 8:
-                preview += ", ..."
-            log(f"Unmatched voltage bins: {preview}")
 
-    if vf_summary is not None and vf_plan:
-        vf_series = [
+        flags = fan_settings["flags"]
+        lock_voltage_mv = flatten_target.get("lock_voltage_mv") if flatten_target else None
+        end_voltage_mv = flatten_target.get("end_voltage_mv") if flatten_target else None
+        lock_clock_mhz = flatten_target.get("lock_clock_mhz") if flatten_target else None
+        source_label = f"{source['section']} in {source['profile_path'].name}"
+        log(f"Dry run: {source_label}")
+        log(f"Power and offsets: {format_dry_run_power_summary(translated_gpu_policy)}")
+        if source.get("dangerously_skip_validation"):
+            log(
+                "Validation override: enabled. Skipping the usual flat-tail and "
+                "undervolt checks against Defaults/Startup for profile selection."
+            )
+        if (
+            flatten_target
+            and lock_voltage_mv is not None
+            and end_voltage_mv is not None
+            and lock_clock_mhz is not None
+        ):
+            log(
+                f"VF target: flat at {int(lock_clock_mhz)}MHz from "
+                f"{int(lock_voltage_mv)}mV to {int(end_voltage_mv)}mV"
+            )
+        else:
+            log(
+                "VF target: "
+                f"{describe_afterburner_vfcurve_analysis(section_info['analysis'])}"
+            )
+        if preserve_vanilla_below_mv is not None:
+            log(
+                "VF preserve: "
+                f"keep the stock/base curve at and below {int(preserve_vanilla_below_mv)}mV"
+            )
+
+        validation = section_info.get("flatten_validation")
+        if validation and validation.get("valid"):
+            log(
+                "Undervolt check: "
+                f"{int(validation['selected_clock_mhz'])}MHz at "
+                f"{int(validation['selected_voltage_mv'])}mV is "
+                f"{int(round(float(validation['undervolt_margin_mv'])))}mV below "
+                f"{validation['baseline_section']} at the same clock"
+            )
+        elif validation:
+            if source.get("dangerously_skip_validation"):
+                log(
+                    "Undervolt check: skipped by user request; "
+                    f"{describe_afterburner_flatten_validation(validation)}"
+                )
+            else:
+                log(f"Undervolt check: {describe_afterburner_flatten_validation(validation)}")
+
+        if imported_fan_config is None:
+            log(f"Fan behavior: unavailable ({imported_fan_error})")
+        else:
+            fan_behavior_parts = [
+                f"{float(fan_settings['period_ms']) / 1000.0:.1f}s updates",
+                (
+                    f"takeover {float(imported_fan_config['curve_manual_takeover_temp_c']):.0f}C"
+                ),
+                (
+                    f"restore {float(imported_fan_config['curve_auto_restore_temp_c']):.0f}C"
+                ),
+                (
+                    "emergency "
+                    f"{float(imported_fan_config['emergency_auto_override_temp_c']):.0f}C/"
+                    f"{float(imported_fan_config['emergency_auto_resume_temp_c']):.0f}C"
+                ),
+            ]
+            if flags["override_zero_with_hardware_curve"]:
+                fan_behavior_parts.append("zero-RPM preserved")
+            log("Fan behavior: " + ", ".join(fan_behavior_parts))
+
+        if policy_controller is None and vf_summary is None:
+            log("Linux readback: unavailable")
+        else:
+            log(
+                "Linux readback: "
+                + format_dry_run_linux_state_summary(
+                    vf_changed_points=len(changed_points) if vf_summary is not None else None,
+                    power_limits=power_limits,
+                    clock_offsets=clock_offsets,
+                )
+            )
+            if policy_controller is None and policy_error:
+                log(f"Linux power/memory readback note: {policy_error}")
+            if vf_summary is None:
+                log("Linux VF readback note: hidden NVAPI VF helper is unavailable")
+                if preserve_vanilla_below_mv is not None:
+                    log(
+                        "Linux VF preserve note: "
+                        "preserve-below-voltage needs Linux VF point data for an exact target preview"
+                    )
+            elif missing_voltage_bins:
+                preview = ", ".join(
+                    str(int(voltage_mv)) + "mV" for voltage_mv in missing_voltage_bins[:8]
+                )
+                if len(missing_voltage_bins) > 8:
+                    preview += ", ..."
+                log(f"Unmatched voltage bins: {preview}")
+
+        if vf_summary is not None and vf_plan:
+            vf_series = [
+                {
+                    "name": "stock",
+                    "char": ".",
+                    "points": sorted([
+                        (
+                            float(item["voltage_mv"]),
+                            float(item["base_mhz"]),
+                        )
+                        for item in vf_plan
+                    ]),
+                },
+                {
+                    "name": "target",
+                    "char": "#",
+                    "points": sorted([
+                        (float(item["voltage_mv"]), float(item["target_mhz"]))
+                        for item in vf_plan
+                    ]),
+                },
+            ]
+            vf_title = "VF curve (target=# stock=. lock=@, x=mV y=MHz)"
+        else:
+            vf_series = [
+                {
+                    "name": "target",
+                    "char": "#",
+                    "points": sorted([
+                        (
+                            float(point["voltage_mv"]),
+                            float(point["frequency_mhz"]),
+                        )
+                        for point in section_info["materialization"]["points"]
+                    ]),
+                }
+            ]
+            vf_title = "VF curve (target=# lock=@, x=mV y=MHz)"
+
+        print(flush=True)
+        for line in render_line_chart(
+            vf_title,
+            series=vf_series,
+            x_label="mV",
+            y_label="MHz",
+            x_rounding=50,
+            y_rounding=100,
+            highlights=(
+                [
+                    {
+                        "x": float(flatten_target["lock_voltage_mv"]),
+                        "y": float(flatten_target["lock_clock_mhz"]),
+                        "char": "@",
+                    }
+                ]
+                if flatten_target
+                and flatten_target.get("lock_voltage_mv") is not None
+                and flatten_target.get("lock_clock_mhz") is not None
+                else []
+            ),
+        ):
+            log(line)
+
+        fan_series = [
             {
-                "name": "stock",
+                "name": "primary",
+                "char": "#",
+                "points": sorted([
+                    (
+                        float(point["temperature_c"]),
+                        float(point["speed_pct"]),
+                    )
+                    for point in fan_settings["curve"]["points"]
+                ]),
+            },
+            {
+                "name": "reference",
                 "char": ".",
                 "points": sorted([
                     (
-                        float(item["voltage_mv"]),
-                        float(item["base_mhz"]),
+                        float(point["temperature_c"]),
+                        float(point["speed_pct"]),
                     )
-                    for item in vf_plan
-                ]),
-            },
-            {
-                "name": "target",
-                "char": "#",
-                "points": sorted([
-                    (float(item["voltage_mv"]), float(item["target_mhz"]))
-                    for item in vf_plan
+                    for point in fan_settings["curve2"]["points"]
                 ]),
             },
         ]
-        vf_title = "VF curve (target=# stock=. lock=@, x=mV y=MHz)"
-    else:
-        vf_series = [
-            {
-                "name": "target",
-                "char": "#",
-                "points": sorted([
-                    (
-                        float(point["voltage_mv"]),
-                        float(point["frequency_mhz"]),
-                    )
-                    for point in section_info["materialization"]["points"]
-                ]),
-            }
-        ]
-        vf_title = "VF curve (target=# lock=@, x=mV y=MHz)"
-
-    print(flush=True)
-    for line in render_line_chart(
-        vf_title,
-        series=vf_series,
-        x_label="mV",
-        y_label="MHz",
-        x_rounding=50,
-        y_rounding=100,
-        highlights=(
-            [
-                {
-                    "x": float(flatten_target["lock_voltage_mv"]),
-                    "y": float(flatten_target["lock_clock_mhz"]),
-                    "char": "@",
-                }
-            ]
-            if flatten_target
-            and flatten_target.get("lock_voltage_mv") is not None
-            and flatten_target.get("lock_clock_mhz") is not None
-            else []
-        ),
-    ):
-        log(line)
-
-    fan_series = [
-        {
-            "name": "primary",
-            "char": "#",
-            "points": sorted([
-                (
-                    float(point["temperature_c"]),
-                    float(point["speed_pct"]),
-                )
-                for point in fan_settings["curve"]["points"]
-            ]),
-        },
-        {
-            "name": "reference",
-            "char": ".",
-            "points": sorted([
-                (
-                    float(point["temperature_c"]),
-                    float(point["speed_pct"]),
-                )
-                for point in fan_settings["curve2"]["points"]
-            ]),
-        },
-    ]
-    print(flush=True)
-    for line in render_line_chart(
-        "Fan curve (primary=# reference=., x=C y=%)",
-        series=fan_series,
-        x_label="C",
-        y_label="%",
-        x_rounding=10,
-        y_rounding=10,
-        include_zero_y=True,
-    ):
-        log(line)
-
-    if vf_curve_reader is not None:
-        vf_curve_reader.close()
-    if policy_controller is not None:
-        policy_controller.close()
+        print(flush=True)
+        for line in render_line_chart(
+            "Fan curve (primary=# reference=., x=C y=%)",
+            series=fan_series,
+            x_label="C",
+            y_label="%",
+            x_rounding=10,
+            y_rounding=10,
+            include_zero_y=True,
+        ):
+            log(line)
+    except Exception as exc:
+        debug_exception("dry run failed", exc)
+        raise
+    finally:
+        if vf_curve_reader is not None:
+            vf_curve_reader.close()
+        if policy_controller is not None:
+            policy_controller.close()
 
 
 def maybe_handle_first_time_afterburner_setup(
@@ -1536,6 +2118,8 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
         argv = sys.argv[1:]
 
     args = parse_main_args(argv)
+    if args.debug_log:
+        enable_debug_logging(args.config, argv=argv)
     config, config_path = load_config(args.config)
     gpu_config = config["gpu"]
     fan_config = config["fan"]
@@ -1569,6 +2153,11 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
         )
     if args.dangerously_skip_validation:
         afterburner_runtime_options["dangerously_skip_validation"] = True
+    _debug_log_effective_runtime_options(
+        config_path=config_path,
+        gpu_index=gpu_index,
+        afterburner_runtime_options=afterburner_runtime_options,
+    )
 
     if args.dry_run:
         run_afterburner_dry_run(
@@ -2161,5 +2750,6 @@ if __name__ == "__main__":
                 journal_hours=runtime_flags["journal_hours"],
             )
     except Exception as exc:
+        debug_exception("fatal error", exc)
         print(f"error: {exc}", file=sys.stderr, flush=True)
         sys.exit(1)

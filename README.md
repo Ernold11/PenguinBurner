@@ -7,6 +7,14 @@ Requires `nvidia-smi` in `PATH` for the default runtime path, including persiste
 Reverse engineering, profile parsing, and import support were developed against MSI Afterburner `4.6.6.16757`.
 Other MSI Afterburner versions are not guaranteed to work.
 
+## Runtime Requirements
+
+- `python3` must be available in `PATH`
+- Python `3.11+` is required
+- no third-party Python packages are required; PenguinBurner uses only the Python standard library
+- NVIDIA driver libraries such as `libnvidia-ml.so.1` and `libnvidia-api.so.1` are required at runtime, but they come from the NVIDIA driver, not from `pip`
+- `nvidia-smi` must be available in `PATH`
+
 ## Acknowledgements
 
 Special thanks to the LACT project and to Ilya Zlobintsev for pushing Linux NVIDIA tuning forward.
@@ -95,6 +103,7 @@ Other runtime flags:
 - `--config`: read a different runtime config instead of `<homedir>/.config/PenguinBurner/penguin_burner.toml`
 - `--gpu-index`: target a different NVIDIA GPU when more than one is present
 - `--journal-hours N`: change the suggested `journalctl --since` window shown after daemonizing
+- `--debug-log`: write a verbose dry-run, first-import, or foreground-runtime diagnostic log next to the selected config file under `debug-logs/`; with the default config this is `<homedir>/.config/PenguinBurner/debug-logs/`
 
 Low-voltage preserve option:
 
@@ -120,6 +129,8 @@ Default Afterburner profile validation:
 - `--dry-run` is the recommended first step. It parses the selected Afterburner root directory, prints concise summaries, and draws console charts for the V/F curve and fan curve without attempting GPU writes.
 - `--dry-run` does not require `sudo`.
 - `--dangerously-skip-validation` can be combined with `--dry-run` when you want to inspect an unusual saved curve before allowing any GPU writes.
+- `--debug-log` can be combined with `--dry-run`, a first-time import, or foreground runtime testing when you need the full profile-discovery and parsing trail for an incompatible or otherwise unexpected MSI Afterburner export.
+- the extra debug payload is written to the debug log file only; it does not spam stdout in foreground mode and it does not add extra noise to the `systemd` journal
 - Actual runtime control and any real fan, V/F, power-limit, or persistence-mode changes should be treated as privileged operations and run with `sudo`.
 - Use `--daemonize` only when you explicitly want PenguinBurner to launch as a transient `systemd` service.
 - Use `--install-systemd-service` only when you explicitly want a persistent boot-time `systemd` service.
@@ -180,6 +191,26 @@ Suggested workflow:
 2. Try different saved sections, device profiles, or a different preserve threshold if needed.
 3. Only then run the real foreground or `systemd` path with `sudo`.
 
+If parsing fails, import behaves unexpectedly, or the wrong Afterburner profile is being selected, re-run with
+`--debug-log`. That writes a timestamped file under
+`debug-logs/` next to the selected config file; with the default config that is
+`<homedir>/.config/PenguinBurner/debug-logs/`. The log includes the discovered device
+profiles, per-section validation results, raw section key dumps, V/F blob and
+fan-curve blob metadata, per-point Linux V/F translation details, chosen fan
+profile, foreground runtime diagnostics, and traceback details for parsing errors.
+The debug file is capped at roughly `700KB` so it stays shareable.
+
+If something does not work with your MSI Afterburner export, please open an issue at:
+
+- `https://github.com/jpietek/PenguinBurner/issues`
+
+Attach the full debug log file or files, not just a pasted excerpt. That makes it much
+easier to improve PenguinBurner for new profile variants and parsing failures.
+
+If you have a useful bug fix, parser improvement, documentation cleanup, or any
+other improvement that makes PenguinBurner work better, pull requests are
+welcome too.
+
 Examples:
 
 ```bash
@@ -196,6 +227,10 @@ Examples:
 
 ```bash
 ./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner' --section Profile3 --dangerously-skip-validation
+```
+
+```bash
+./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner' --debug-log
 ```
 
 ## Log fields
