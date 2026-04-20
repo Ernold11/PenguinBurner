@@ -567,12 +567,12 @@ def ensure_afterburner_root_configured(config_path, runtime_options, *, gpu_inde
 
     if not interactive or not sys.stdin.isatty():
         raise AfterburnerProfileSelectionError(
-            "No Afterburner directory is configured. Re-run interactively and paste the exported "
-            "MSI Afterburner directory path."
+            "No Afterburner directory is configured. Re-run interactively and paste the MSI "
+            "Afterburner root directory path."
         )
 
     while True:
-        entered = input("Paste the exported MSI Afterburner directory path: ").strip()
+        entered = input("Paste the MSI Afterburner root directory path: ").strip()
         if not entered:
             print("Afterburner directory is required.")
             continue

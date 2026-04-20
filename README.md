@@ -32,7 +32,14 @@ If any part of PenguinBurner's MSI Afterburner profile parsing or import logic i
 
 This repository does not ship MSI Afterburner binaries or copied profile exports.
 
-If you want to import Afterburner data, place your export tree under:
+If you want to import Afterburner data, point PenguinBurner at the real MSI
+Afterburner directory from Windows. By default that directory is:
+
+- `C:\Program Files (x86)\MSI Afterburner`
+
+From Linux, `--afterburner-dir` or `afterburner_root` should point at that same
+directory through a mounted Windows drive or a copied directory tree. PenguinBurner
+expects this layout under that root:
 
 - `<homedir>/.config/PenguinBurner/afterburner-profiles/MSIAfterburner.cfg`
 - `<homedir>/.config/PenguinBurner/afterburner-profiles/Profiles/*.cfg`
@@ -68,7 +75,10 @@ Only needed in specific cases:
 - `afterburner_power_limit_override_w`: manually caps the translated Afterburner power target in watts after the percentage is converted
 - `afterburner_preserve_vanilla_below_mv`: keeps the stock/base Linux V/F curve at and below an inclusive voltage threshold while still importing the tuned part above it
 
-On first interactive run, PenguinBurner prompts for the exported MSI Afterburner directory if it is not already saved in the config.
+On first interactive run, PenguinBurner prompts for the MSI Afterburner root
+directory if it is not already saved in the config. This means the real
+Afterburner install directory from Windows, usually
+`C:\Program Files (x86)\MSI Afterburner`.
 
 CLI equivalents:
 
@@ -95,7 +105,8 @@ Low-voltage preserve option:
 - Use `penguin_burner.sh` as the single user entrypoint. It resolves the repo path itself, so you do not need to `cd` into the repository first.
 - Running `penguin_burner.sh` directly stays in the foreground by default.
 - The checked-in `PenguinBurner.service` file is only an example. The preferred path is `sudo ./penguin_burner.sh --install-systemd-service`, which writes a unit with the real absolute script path for the current checkout.
-- `--dry-run` is the recommended first step. It parses the selected Afterburner export, prints concise summaries, and draws console charts for the V/F curve and fan curve without attempting GPU writes.
+- On the first interactive run with a newly configured Afterburner root, PenguinBurner automatically imports that root into its managed config, runs a dry-run preview, then prompts you to continue in foreground mode or daemonize later.
+- `--dry-run` is the recommended first step. It parses the selected Afterburner root directory, prints concise summaries, and draws console charts for the V/F curve and fan curve without attempting GPU writes.
 - `--dry-run` does not require `sudo`.
 - Actual runtime control and any real fan, V/F, power-limit, or persistence-mode changes should be treated as privileged operations and run with `sudo`.
 - Use `--daemonize` only when you explicitly want PenguinBurner to launch as a transient `systemd` service.
@@ -122,7 +133,7 @@ sudo ./penguin_burner.sh --install-systemd-service
 ```
 
 ```bash
-./penguin_burner.sh --dry-run --afterburner-dir ~/msi-afterburner-export
+./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner'
 ```
 
 ```bash
@@ -131,7 +142,9 @@ sudo journalctl -u PenguinBurner.service --since "-4 hours" -f
 
 ## Dry Run First
 
-`--dry-run` is intended for experimentation. It is the safest way to verify that PenguinBurner is parsing the right Afterburner profile before you let it touch live GPU state.
+`--dry-run` is intended for experimentation. It is the safest way to verify that
+PenguinBurner is parsing the right MSI Afterburner directory before you let it
+touch live GPU state.
 
 What dry-run shows:
 
@@ -158,15 +171,15 @@ Suggested workflow:
 Examples:
 
 ```bash
-./penguin_burner.sh --dry-run --afterburner-dir ~/msi-afterburner-export
+./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner'
 ```
 
 ```bash
-./penguin_burner.sh --dry-run --afterburner-dir ~/msi-afterburner-export --section Profile3
+./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner' --section Profile3
 ```
 
 ```bash
-./penguin_burner.sh --dry-run --afterburner-dir ~/msi-afterburner-export --preserve-vf-below-mv 800
+./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner' --preserve-vf-below-mv 800
 ```
 
 ## Log fields
@@ -212,7 +225,3 @@ Once you leave `--dry-run`, PenguinBurner can perform operations such as:
 Those paths can hang the GPU, crash the driver, or require a reboot. Treat them as experimental tuning operations.
 
 For actual fan or V/F curve changes, use `sudo`. If the preview is not exactly what you want, go back to `--dry-run` and keep iterating there.
-
-## Reverse engineering
-
-Exploratory probes, notes, and one-off analysis code live under `reverse-engineering/`.

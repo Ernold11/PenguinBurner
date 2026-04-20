@@ -68,6 +68,19 @@ def log(message):
     print(message, flush=True)
 
 
+def prompt_yes_no(prompt, *, default):
+    suffix = "[Y/n]" if default else "[y/N]"
+    while True:
+        entered = input(f"{prompt} {suffix}: ").strip().lower()
+        if not entered:
+            return bool(default)
+        if entered in ("y", "yes"):
+            return True
+        if entered in ("n", "no"):
+            return False
+        print("Please answer y or n.", flush=True)
+
+
 def parse_runtime_flags(argv):
     foreground = False
     daemonize = False
@@ -392,7 +405,7 @@ def parse_main_args(argv):
     parser.add_argument(
         "--afterburner-dir",
         default="",
-        help="Path to the exported MSI Afterburner directory",
+        help="Path to the MSI Afterburner root directory",
     )
     parser.add_argument(
         "--profile-section",
@@ -1130,10 +1143,6 @@ def format_dry_run_power_summary(translated_gpu_policy):
     if mem_offset_mhz is not None:
         parts.append(f"memory target {int(mem_offset_mhz):+d}MHz")
 
-    core_boost_khz = translated_gpu_policy.get("core_clk_boost_khz")
-    if core_boost_khz is not None:
-        parts.append(f"core boost {khz_to_mhz(core_boost_khz):+d}MHz (not mapped on Linux)")
-
     return ", ".join(parts) if parts else "none"
 
 
@@ -1434,7 +1443,72 @@ def run_afterburner_dry_run(
         policy_controller.close()
 
 
-def main(argv=None):
+def maybe_handle_first_time_afterburner_setup(
+    *,
+    argv,
+    journal_hours,
+    config_path,
+    fan_config,
+    gpu_index,
+    afterburner_runtime_options,
+):
+    if (
+        not sys.stdin.isatty()
+        or not sys.stdout.isatty()
+        or running_under_systemd_service()
+    ):
+        return False
+
+    print(flush=True)
+    log("First-time Afterburner import detected. Running a dry run before touching GPU state.")
+    print(flush=True)
+    script_path = launcher_script_path()
+    try:
+        run_afterburner_dry_run(
+            config_path=config_path,
+            fan_config=fan_config,
+            gpu_index=gpu_index,
+            afterburner_runtime_options=afterburner_runtime_options,
+        )
+    except Exception as exc:
+        log(f"Dry run failed: {exc}")
+        log("No GPU changes were applied.")
+        log(
+            "If the wrong saved Afterburner preset was auto-selected, re-run the dry run "
+            "with an explicit section, for example:"
+        )
+        log(f"`{script_path} --dry-run --section Profile3`")
+        return True
+    print(flush=True)
+    log("Dry run complete.")
+    log(
+        "Recommended next step: run PenguinBurner in foreground first so you can "
+        "watch stdout logs and stop it with Ctrl-C."
+    )
+    if prompt_yes_no("Start PenguinBurner in foreground now for testing?", default=True):
+        return False
+
+    if systemd_is_available():
+        if prompt_yes_no("Daemonize PenguinBurner under systemd now instead?", default=False):
+            if os.geteuid() != 0:
+                log(
+                    "Daemon mode needs sudo. Re-run with "
+                    f"`sudo {script_path} --daemonize` after you are happy with the dry run."
+                )
+                return True
+            daemonize_with_systemd(argv, journal_hours=journal_hours)
+            return True
+    else:
+        log("systemd background mode is unavailable on this system.")
+
+    log("No GPU changes were applied.")
+    log(f"When you are ready, run `{script_path}` for a foreground test.")
+    if systemd_is_available():
+        log(f"After that, you can daemonize it with `sudo {script_path} --daemonize`.")
+    return True
+
+
+def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
     if argv is None:
         argv = sys.argv[1:]
 
@@ -1445,7 +1519,11 @@ def main(argv=None):
     if args.gpu_index is not None:
         gpu_config["index"] = int(args.gpu_index)
     gpu_index = int(gpu_config["index"])
-    afterburner_runtime_options = load_afterburner_runtime_options(config_path)
+    stored_afterburner_runtime_options = load_afterburner_runtime_options(config_path)
+    had_persisted_afterburner_root = bool(
+        str(stored_afterburner_runtime_options.get("afterburner_root", "")).strip()
+    )
+    afterburner_runtime_options = dict(stored_afterburner_runtime_options)
     if args.afterburner_dir.strip():
         afterburner_runtime_options["afterburner_root"] = str(
             resolve_afterburner_root(args.afterburner_dir)
@@ -1481,7 +1559,28 @@ def main(argv=None):
     afterburner_device_profile = str(
         afterburner_runtime_options.get("afterburner_device_profile", "")
     ).strip()
-    if not afterburner_root:
+    if not had_persisted_afterburner_root:
+        afterburner_runtime_options = ensure_afterburner_root_configured(
+            config_path,
+            afterburner_runtime_options,
+            gpu_index=gpu_index,
+            interactive=sys.stdin.isatty(),
+        )
+        afterburner_root = str(afterburner_runtime_options.get("afterburner_root", "")).strip()
+        afterburner_profile = str(afterburner_runtime_options.get("afterburner_profile", "")).strip()
+        afterburner_device_profile = str(
+            afterburner_runtime_options.get("afterburner_device_profile", "")
+        ).strip()
+        if afterburner_root and maybe_handle_first_time_afterburner_setup(
+            argv=argv,
+            journal_hours=journal_hours,
+            config_path=config_path,
+            fan_config=fan_config,
+            gpu_index=gpu_index,
+            afterburner_runtime_options=afterburner_runtime_options,
+        ):
+            return
+    elif not afterburner_root:
         afterburner_runtime_options = ensure_afterburner_root_configured(
             config_path,
             afterburner_runtime_options,
@@ -2024,7 +2123,10 @@ if __name__ == "__main__":
                 journal_hours=runtime_flags["journal_hours"],
             )
         else:
-            main(runtime_argv)
+            main(
+                runtime_argv,
+                journal_hours=runtime_flags["journal_hours"],
+            )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr, flush=True)
         sys.exit(1)
