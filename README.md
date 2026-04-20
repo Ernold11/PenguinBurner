@@ -4,7 +4,11 @@ PenguinBurner is the missing link for running MSI Afterburner fan control and un
 
 Quick start: preview an MSI Afterburner export with `./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner'`. If the preview looks right, run the real foreground path with `sudo ./penguin_burner.sh`.
 
-Tested only on Blackwell GPUs with NVIDIA 595+ drivers.
+![Dry-run preview](dry_run_curves_terminal.png)
+
+Example dry-run preview: imported V/F target and fan curve rendered directly in the terminal before any GPU changes are applied.
+
+Tested on an RTX 5080 with NVIDIA 595+ drivers. RTX 40-series is likely to work on modern Linux drivers. RTX 30-series is still unconfirmed.
 Requires `nvidia-smi` in `PATH` for the default runtime path, including persistence mode, power-limit setup, and some Afterburner profile auto-selection.
 Reverse engineering, profile parsing, and import support were developed against MSI Afterburner `4.6.6.16757`.
 Other MSI Afterburner versions are not guaranteed to work.
