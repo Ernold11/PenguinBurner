@@ -61,11 +61,26 @@ Mandatory:
 
 Only needed in specific cases:
 
-- `afterburner_profile`: only when multiple saved non-default Afterburner V/F presets exist
-- `afterburner_power_limit_override_w`: only when you want to manually cap the translated Afterburner power target
-- `afterburner_preserve_vanilla_below_mv`: only when you want to keep the stock/base Linux VF curve at and below an inclusive voltage threshold
+- `afterburner_profile`: selects the saved Afterburner section such as `Profile3` when multiple non-default V/F presets exist
+- `afterburner_device_profile`: selects the exact `Profiles/*.cfg` device file when auto-selection is not the one you want
+- `afterburner_power_limit_override_w`: manually caps the translated Afterburner power target in watts after the percentage is converted
+- `afterburner_preserve_vanilla_below_mv`: keeps the stock/base Linux V/F curve at and below an inclusive voltage threshold while still importing the tuned part above it
 
 On first interactive run, PenguinBurner prompts for the exported MSI Afterburner directory if it is not already saved in the config.
+
+CLI equivalents:
+
+- `afterburner_root` -> `--afterburner-dir`
+- `afterburner_profile` -> `--section`
+- `afterburner_device_profile` -> `--afterburner-device-profile`
+- `afterburner_power_limit_override_w` -> `--power-limit-override-w`
+- `afterburner_preserve_vanilla_below_mv` -> `--preserve-vf-below-mv`
+
+Low-voltage preserve option:
+
+- `afterburner_preserve_vanilla_below_mv` and `--preserve-vf-below-mv` are inclusive. For example, `800` means PenguinBurner keeps the stock/base curve at `800mV` and below.
+- This is mainly a low-voltage and idle-behavior safeguard. On this test setup, frequent curve edits in Afterburner eventually disturbed frequency/voltage scaling in idle.
+- Preserving the stock curve below a threshold is the workaround for that case: the low-voltage region stays vanilla, while the imported undervolt or flattened target still applies above the threshold.
 
 ## Runtime launch
 
@@ -113,7 +128,7 @@ What dry-run shows:
 
 - the selected Afterburner root, device profile, and section
 - a compact V/F summary in `MHz` and `mV`
-- an ASCII V/F chart with `mV` on the x-axis and `MHz` on the y-axis
+- an ASCII V/F chart with `mV` on the x-axis and `MHz` on the y-axis, overlaying target `#` against stock/base `.`, with lock point `@`
 - an ASCII fan chart with temperature on the x-axis and fan percent on the y-axis
 - translated power-limit and memory-offset previews
 - optional Linux readback context when available
@@ -128,7 +143,7 @@ What dry-run does not do:
 Suggested workflow:
 
 1. Run `--dry-run` until the preview matches what you expect.
-2. Try different saved sections or a different preserve threshold if needed.
+2. Try different saved sections, device profiles, or a different preserve threshold if needed.
 3. Only then run the real foreground or `systemd` path with `sudo`.
 
 Examples:

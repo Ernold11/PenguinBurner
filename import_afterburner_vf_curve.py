@@ -658,7 +658,11 @@ def main() -> int:
         dest="preserve_vanilla_below_mv",
         type=int,
         default=None,
-        help="Keep the stock/base Linux VF curve at and below this inclusive voltage",
+        help=(
+            "Keep the stock/base Linux VF curve at and below this inclusive "
+            "voltage; useful if repeated Afterburner curve edits disturbed "
+            "idle or low-voltage scaling"
+        ),
     )
     args = parser.parse_args()
 

@@ -418,7 +418,11 @@ def parse_main_args(argv):
         dest="preserve_vanilla_below_mv",
         type=int,
         default=None,
-        help="Keep the stock/base Linux VF curve at and below this inclusive voltage",
+        help=(
+            "Keep the stock/base Linux VF curve at and below this inclusive "
+            "voltage; useful if repeated Afterburner curve edits disturbed "
+            "idle or low-voltage scaling"
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -1328,12 +1332,12 @@ def run_afterburner_dry_run(
     if vf_summary is not None and vf_plan:
         vf_series = [
             {
-                "name": "current",
+                "name": "stock",
                 "char": ".",
                 "points": sorted([
                     (
                         float(item["voltage_mv"]),
-                        float(item["base_mhz"] + item["current_offset_mhz"]),
+                        float(item["base_mhz"]),
                     )
                     for item in vf_plan
                 ]),
@@ -1347,7 +1351,7 @@ def run_afterburner_dry_run(
                 ]),
             },
         ]
-        vf_title = "VF curve (target=# current=. lock=@, x=mV y=MHz)"
+        vf_title = "VF curve (target=# stock=. lock=@, x=mV y=MHz)"
     else:
         vf_series = [
             {
