@@ -2,7 +2,7 @@
 
 PenguinBurner is the missing link for running MSI Afterburner fan control and undervolt setups on Linux.
 
-Quick start: preview an MSI Afterburner export with `./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner'`. If the preview looks right, run the real foreground path with `sudo ./penguin_burner.sh`.
+Quick start: preview an MSI Afterburner export with `./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner'`. If the preview looks right, run the real thing with `sudo ./penguin_burner.sh`.
 
 ![Dry-run preview](dry_run_curves_terminal.png)
 
