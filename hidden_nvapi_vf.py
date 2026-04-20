@@ -104,7 +104,7 @@ class HiddenNvapiVfCurveReader:
 
     def __init__(self, gpu_index=0):
         self._gpu_index = gpu_index
-        self._lib = ctypes.CDLL(os.environ.get("NVTWEAK_NVAPI_SO", "libnvidia-api.so.1"))
+        self._lib = ctypes.CDLL("libnvidia-api.so.1")
         self._initialize = self._query_interface(self._QUERY_INITIALIZE, NvAPI_Status)
         self._unload = self._query_interface(self._QUERY_UNLOAD, NvAPI_Status)
         self._get_error_message = self._query_interface(
