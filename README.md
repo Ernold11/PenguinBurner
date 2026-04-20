@@ -15,10 +15,9 @@ Other MSI Afterburner versions are not guaranteed to work.
 
 ## Runtime Requirements
 
-- `python3` must be available in `PATH`
-- Python `3.11+` is required
+- `python3` must be available in `PATH`, `3.11+` is required
 - no third-party Python packages are required; PenguinBurner uses only the Python standard library
-- NVIDIA driver libraries such as `libnvidia-ml.so.1` and `libnvidia-api.so.1` are required at runtime, but they come from the NVIDIA driver, not from `pip`
+- NVIDIA driver libraries such as `libnvidia-ml.so.1` and `libnvidia-api.so.1` are required at runtime, but they come from the NVIDIA driver
 - `nvidia-smi` must be available in `PATH`
 
 ## Acknowledgements
@@ -29,19 +28,6 @@ While PenguinBurner was still reverse engineering proprietary NVIDIA binaries an
 
 If any part of PenguinBurner's MSI Afterburner profile parsing or import logic is useful to LACT, feel free to borrow it.
 
-## What is in the main path
-
-- `penguin_burner.sh`: main user entrypoint
-- `penguin_burner.py`: runtime daemon
-- `PenguinBurner.service`: example static `systemd` unit; the installer path is still preferred
-- `import_afterburner_fan_curve.py`: fan-curve importer
-- `import_afterburner_vf_curve.py`: V/F and policy importer
-- `afterburner_fan_curve.py`: Afterburner fan parser
-- `afterburner_vfcurve.py`: Afterburner V/F parser and translation logic
-- `hidden_nvapi_vf.py`: hidden Linux NVAPI V/F access
-- `hidden_nvml_voltage.py`: hidden voltage telemetry helper
-- `nvml_gpu_policy.py`: public NVML policy and clock helpers
-
 ## Proprietary inputs are not bundled
 
 This repository does not ship MSI Afterburner binaries or copied profile exports.
@@ -51,7 +37,7 @@ Afterburner directory from Windows. By default that directory is:
 
 - `C:\Program Files (x86)\MSI Afterburner`
 
-From Linux, `--afterburner-dir` or `afterburner_root` should point at that same
+On Linux, `--afterburner-dir` in cmdline should point at that same
 directory through a mounted Windows drive or a copied directory tree. PenguinBurner
 expects this layout under that root:
 
@@ -114,7 +100,7 @@ Other runtime flags:
 Low-voltage preserve option:
 
 - `afterburner_preserve_vanilla_below_mv` and `--preserve-vf-below-mv` are inclusive. For example, `800` means PenguinBurner keeps the stock/base curve at `800mV` and below.
-- This is mainly a low-voltage and idle-behavior safeguard. On this test setup, frequent curve edits in Afterburner eventually disturbed frequency/voltage scaling in idle.
+- This is mainly a low-voltage and idle-behavior safeguard. It often happens users mess up low frequency scaling with Afterburner
 - Preserving the stock curve below a threshold is the workaround for that case: the low-voltage region stays vanilla, while the imported undervolt or flattened target still applies above the threshold.
 
 Default Afterburner profile validation:
@@ -130,10 +116,9 @@ Default Afterburner profile validation:
 
 - Use `penguin_burner.sh` as the single user entrypoint. It resolves the repo path itself, so you do not need to `cd` into the repository first.
 - Running `penguin_burner.sh` directly stays in the foreground by default.
-- The checked-in `PenguinBurner.service` file is only an example. The preferred path is `sudo ./penguin_burner.sh --install-systemd-service`, which writes a unit with the real absolute script path for the current checkout.
+- The checked-in `PenguinBurner.service` file is only an example. The preferred path is `sudo ./penguin_burner.sh --install-systemd-service`, which writes a unit with PenguinBurner
 - On the first interactive run with a newly configured Afterburner root, PenguinBurner automatically imports that root into its managed config, runs a dry-run preview, then prompts you to continue in foreground mode or daemonize later.
-- `--dry-run` is the recommended first step. It parses the selected Afterburner root directory, prints concise summaries, and draws console charts for the V/F curve and fan curve without attempting GPU writes.
-- `--dry-run` does not require `sudo`.
+- `--dry-run` is the recommended first step. It parses the selected Afterburner root directory, prints concise summaries, and draws console charts for the V/F curve and fan curve without attempting GPU writes. It does not require sudo.
 - `--dangerously-skip-validation` can be combined with `--dry-run` when you want to inspect an unusual saved curve before allowing any GPU writes.
 - `--debug-log` can be combined with `--dry-run`, a first-time import, or foreground runtime testing when you need the full profile-discovery and parsing trail for an incompatible or otherwise unexpected MSI Afterburner export.
 - the extra debug payload is written to the debug log file only; it does not spam stdout in foreground mode and it does not add extra noise to the `systemd` journal
@@ -182,7 +167,6 @@ What dry-run shows:
 - an ASCII V/F chart with `mV` on the x-axis and `MHz` on the y-axis, overlaying target `#` against stock/base `.`, with lock point `@`
 - an ASCII fan chart with temperature on the x-axis and fan percent on the y-axis
 - translated power-limit and memory-offset previews
-- optional Linux readback context when available
 
 What dry-run does not do:
 
@@ -204,7 +188,6 @@ If parsing fails, import behaves unexpectedly, or the wrong Afterburner profile 
 profiles, per-section validation results, raw section key dumps, V/F blob and
 fan-curve blob metadata, per-point Linux V/F translation details, chosen fan
 profile, foreground runtime diagnostics, and traceback details for parsing errors.
-The debug file is capped at roughly `700KB` so it stays shareable.
 
 If something does not work with your MSI Afterburner export, please open an issue at:
 
@@ -280,7 +263,3 @@ Once you leave `--dry-run`, PenguinBurner can perform operations such as:
 - taking over fan control
 
 Those paths can hang the GPU, crash the driver, or require a reboot. Treat them as experimental tuning operations.
-
-For actual fan or V/F curve changes, use `sudo`. If the preview is not exactly what you want, go back to `--dry-run` and keep iterating there.
-
-`--dangerously-skip-validation` only removes the saved-profile validation gate. It does not make an unusual or aggressive curve safe to apply.
