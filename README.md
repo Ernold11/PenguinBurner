@@ -2,6 +2,8 @@
 
 PenguinBurner is the missing link for running MSI Afterburner fan control and undervolt setups on Linux.
 
+Quick start: preview an MSI Afterburner export with `./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner'`. If the preview looks right, run the real foreground path with `sudo ./penguin_burner.sh`.
+
 Tested only on Blackwell GPUs with NVIDIA 595+ drivers.
 Requires `nvidia-smi` in `PATH` for the default runtime path, including persistence mode, power-limit setup, and some Afterburner profile auto-selection.
 Reverse engineering, profile parsing, and import support were developed against MSI Afterburner `4.6.6.16757`.
