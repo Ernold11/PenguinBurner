@@ -438,6 +438,14 @@ def parse_main_args(argv):
         ),
     )
     parser.add_argument(
+        "--dangerously-skip-validation",
+        action="store_true",
+        help=(
+            "Bypass the default flat-tail and undervolt checks when selecting "
+            "the saved Afterburner profile; advanced and not recommended"
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help=(
@@ -1177,6 +1185,9 @@ def run_afterburner_dry_run(
     ).strip()
     power_limit_override_w = afterburner_runtime_options.get("power_limit_override_w")
     preserve_vanilla_below_mv = afterburner_runtime_options.get("preserve_vanilla_below_mv")
+    dangerously_skip_validation = bool(
+        afterburner_runtime_options.get("dangerously_skip_validation")
+    )
 
     if not afterburner_root:
         raise NvmlError(
@@ -1188,6 +1199,7 @@ def run_afterburner_dry_run(
         afterburner_root=afterburner_root,
         section=afterburner_profile or None,
         device_profile_hint=afterburner_device_profile or None,
+        dangerously_skip_validation=dangerously_skip_validation,
     )
     section_info = source["section_info"]
     profile_settings = load_afterburner_profile_settings(
@@ -1258,6 +1270,11 @@ def run_afterburner_dry_run(
     source_label = f"{source['section']} in {source['profile_path'].name}"
     log(f"Dry run: {source_label}")
     log(f"Power and offsets: {format_dry_run_power_summary(translated_gpu_policy)}")
+    if source.get("dangerously_skip_validation"):
+        log(
+            "Validation override: enabled. Skipping the usual flat-tail and "
+            "undervolt checks against Defaults/Startup for profile selection."
+        )
     if (
         flatten_target
         and lock_voltage_mv is not None
@@ -1289,7 +1306,13 @@ def run_afterburner_dry_run(
             f"{validation['baseline_section']} at the same clock"
         )
     elif validation:
-        log(f"Undervolt check: {describe_afterburner_flatten_validation(validation)}")
+        if source.get("dangerously_skip_validation"):
+            log(
+                "Undervolt check: skipped by user request; "
+                f"{describe_afterburner_flatten_validation(validation)}"
+            )
+        else:
+            log(f"Undervolt check: {describe_afterburner_flatten_validation(validation)}")
 
     if imported_fan_config is None:
         log(f"Fan behavior: unavailable ({imported_fan_error})")
@@ -1544,6 +1567,8 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
             if int(args.preserve_vanilla_below_mv) > 0
             else None
         )
+    if args.dangerously_skip_validation:
+        afterburner_runtime_options["dangerously_skip_validation"] = True
 
     if args.dry_run:
         run_afterburner_dry_run(
@@ -1679,10 +1704,18 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
                 afterburner_root=afterburner_root,
                 section=afterburner_profile or None,
                 device_profile_hint=afterburner_device_profile or None,
+                dangerously_skip_validation=bool(
+                    afterburner_runtime_options.get("dangerously_skip_validation")
+                ),
             )
         except Exception as exc:
             log(f"Skipping Afterburner source resolve: error={exc}")
         else:
+            if afterburner_source.get("dangerously_skip_validation"):
+                log(
+                    "Afterburner validation override enabled: skipping the default "
+                    "flat-tail and undervolt checks for the saved profile."
+                )
             if gpu_policy_controller is not None:
                 try:
                     afterburner_profile_settings = load_afterburner_profile_settings(

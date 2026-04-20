@@ -38,6 +38,7 @@ SECTION_ORDERS = {
         "afterburner_profile",
         "afterburner_power_limit_override_w",
         "afterburner_preserve_vanilla_below_mv",
+        "afterburner_dangerously_skip_validation",
     ],
     "fan": [
         "poll_interval_s",

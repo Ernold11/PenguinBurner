@@ -62,6 +62,19 @@ def _coerce_optional_positive_int(value):
     return int(coerced)
 
 
+def _coerce_optional_bool(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off", ""):
+        return False
+    return bool(value)
+
+
 def load_afterburner_runtime_options(config_path):
     current = load_config(Path(config_path))
     gpu = dict(current.get("gpu", {}))
@@ -74,6 +87,9 @@ def load_afterburner_runtime_options(config_path):
         ),
         "preserve_vanilla_below_mv": _coerce_optional_positive_int(
             gpu.get("afterburner_preserve_vanilla_below_mv")
+        ),
+        "dangerously_skip_validation": _coerce_optional_bool(
+            gpu.get("afterburner_dangerously_skip_validation")
         ),
     }
 
@@ -533,6 +549,13 @@ def _persist_afterburner_runtime_state(
             gpu["afterburner_preserve_vanilla_below_mv"] = int(preserve_vanilla_below_mv)
         else:
             gpu.pop("afterburner_preserve_vanilla_below_mv", None)
+        dangerously_skip_validation = _coerce_optional_bool(
+            runtime_options.get("dangerously_skip_validation")
+        )
+        if dangerously_skip_validation:
+            gpu["afterburner_dangerously_skip_validation"] = True
+        else:
+            gpu.pop("afterburner_dangerously_skip_validation", None)
 
     write_config(Path(config_path), {"gpu": gpu, "fan": fan})
 
@@ -602,7 +625,7 @@ def main() -> int:
     parser.add_argument(
         "--afterburner-dir",
         default="",
-        help="Path to the exported MSI Afterburner directory",
+        help="Path to the MSI Afterburner root directory",
     )
     parser.add_argument(
         "--profile-section",
@@ -664,6 +687,14 @@ def main() -> int:
             "idle or low-voltage scaling"
         ),
     )
+    parser.add_argument(
+        "--dangerously-skip-validation",
+        action="store_true",
+        help=(
+            "Bypass the default flat-tail and undervolt checks when selecting "
+            "the saved Afterburner profile; advanced and not recommended"
+        ),
+    )
     args = parser.parse_args()
 
     reader = create_hidden_vf_curve_reader(gpu_index=args.gpu_index)
@@ -685,6 +716,8 @@ def main() -> int:
             if int(args.preserve_vanilla_below_mv) > 0
             else None
         )
+    if args.dangerously_skip_validation:
+        runtime_options["dangerously_skip_validation"] = True
 
     try:
         if args.restore_file:
@@ -707,6 +740,9 @@ def main() -> int:
             afterburner_root=runtime_options.get("afterburner_root") or None,
             section=runtime_options.get("afterburner_profile") or None,
             device_profile_hint=runtime_options.get("afterburner_device_profile") or None,
+            dangerously_skip_validation=bool(
+                runtime_options.get("dangerously_skip_validation")
+            ),
         )
         profile_settings = load_afterburner_profile_settings(
             profile_path=source["profile_path"],
@@ -750,6 +786,11 @@ def main() -> int:
             "Flatten validation: "
             f"{describe_afterburner_flatten_validation(source['section_info'].get('flatten_validation'))}"
         )
+        if source.get("dangerously_skip_validation"):
+            print(
+                "Profile validation override: enabled; skipping the default flat-tail "
+                "and undervolt checks against Defaults/Startup."
+            )
         print(f"Curve analysis: {describe_afterburner_vfcurve_analysis(result['analysis'])}")
         if args.allow_unsafe_curve and result["analysis"]["nonzero_third_value_count"]:
             print("Unsafe curve override enabled; proceeding despite nonzero third-field metadata.")

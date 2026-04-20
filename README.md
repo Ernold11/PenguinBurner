@@ -74,6 +74,7 @@ Only needed in specific cases:
 - `afterburner_device_profile`: selects the exact `Profiles/*.cfg` device file when auto-selection is not the one you want
 - `afterburner_power_limit_override_w`: manually caps the translated Afterburner power target in watts after the percentage is converted
 - `afterburner_preserve_vanilla_below_mv`: keeps the stock/base Linux V/F curve at and below an inclusive voltage threshold while still importing the tuned part above it
+- `afterburner_dangerously_skip_validation`: bypasses the normal flat-tail and undervolt checks for profile selection so an unusual saved manual preset can still be imported; advanced and not recommended as a default
 
 On first interactive run, PenguinBurner prompts for the MSI Afterburner root
 directory if it is not already saved in the config. This means the real
@@ -87,6 +88,7 @@ CLI equivalents:
 - `afterburner_device_profile` -> `--afterburner-device-profile`
 - `afterburner_power_limit_override_w` -> `--power-limit-override-w`
 - `afterburner_preserve_vanilla_below_mv` -> `--preserve-vf-below-mv`
+- `afterburner_dangerously_skip_validation` -> `--dangerously-skip-validation`
 
 Other runtime flags:
 
@@ -100,6 +102,15 @@ Low-voltage preserve option:
 - This is mainly a low-voltage and idle-behavior safeguard. On this test setup, frequent curve edits in Afterburner eventually disturbed frequency/voltage scaling in idle.
 - Preserving the stock curve below a threshold is the workaround for that case: the low-voltage region stays vanilla, while the imported undervolt or flattened target still applies above the threshold.
 
+Default Afterburner profile validation:
+
+- PenguinBurner only auto-selects saved non-default manual V/F presets.
+- By default, the selected preset must contain a flattened tail that can be turned into a lock point.
+- That flattened lock point must be a real undervolt versus `Defaults` or `Startup` at the same clock, with at least `5mV` of margin.
+- If no saved preset passes those checks, PenguinBurner stops instead of guessing.
+- `afterburner_dangerously_skip_validation` and `--dangerously-skip-validation` bypass the flat-tail and undervolt-margin checks and widen selection back to any saved manual preset.
+- This override is for advanced cases where you intentionally want a non-undervolt or otherwise unusual curve. It does not make the imported curve safe.
+
 ## Runtime launch
 
 - Use `penguin_burner.sh` as the single user entrypoint. It resolves the repo path itself, so you do not need to `cd` into the repository first.
@@ -108,6 +119,7 @@ Low-voltage preserve option:
 - On the first interactive run with a newly configured Afterburner root, PenguinBurner automatically imports that root into its managed config, runs a dry-run preview, then prompts you to continue in foreground mode or daemonize later.
 - `--dry-run` is the recommended first step. It parses the selected Afterburner root directory, prints concise summaries, and draws console charts for the V/F curve and fan curve without attempting GPU writes.
 - `--dry-run` does not require `sudo`.
+- `--dangerously-skip-validation` can be combined with `--dry-run` when you want to inspect an unusual saved curve before allowing any GPU writes.
 - Actual runtime control and any real fan, V/F, power-limit, or persistence-mode changes should be treated as privileged operations and run with `sudo`.
 - Use `--daemonize` only when you explicitly want PenguinBurner to launch as a transient `systemd` service.
 - Use `--install-systemd-service` only when you explicitly want a persistent boot-time `systemd` service.
@@ -182,6 +194,10 @@ Examples:
 ./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner' --preserve-vf-below-mv 800
 ```
 
+```bash
+./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner' --section Profile3 --dangerously-skip-validation
+```
+
 ## Log fields
 
 Example status line:
@@ -225,3 +241,5 @@ Once you leave `--dry-run`, PenguinBurner can perform operations such as:
 Those paths can hang the GPU, crash the driver, or require a reboot. Treat them as experimental tuning operations.
 
 For actual fan or V/F curve changes, use `sudo`. If the preview is not exactly what you want, go back to `--dry-run` and keep iterating there.
+
+`--dangerously-skip-validation` only removes the saved-profile validation gate. It does not make an unusual or aggressive curve safe to apply.
