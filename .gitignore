@@ -6,6 +6,5 @@ __pycache__/
 .codex/
 .codex*
 *-manual-test.log
-reverse-engineering/rust-hidden-nvml/target/
-reverse-engineering/*.so
-reverse-engineering/*.d
+# Local exploratory notes, scripts, and generated artifacts are kept out of Git.
+reverse-engineering/

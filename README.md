@@ -17,7 +17,9 @@ If any part of PenguinBurner's MSI Afterburner profile parsing or import logic i
 
 ## What is in the main path
 
+- `penguin_burner.sh`: main user entrypoint
 - `penguin_burner.py`: runtime daemon
+- `PenguinBurner.service`: example static `systemd` unit; the installer path is still preferred
 - `import_afterburner_fan_curve.py`: fan-curve importer
 - `import_afterburner_vf_curve.py`: V/F and policy importer
 - `afterburner_fan_curve.py`: Afterburner fan parser
@@ -76,6 +78,12 @@ CLI equivalents:
 - `afterburner_power_limit_override_w` -> `--power-limit-override-w`
 - `afterburner_preserve_vanilla_below_mv` -> `--preserve-vf-below-mv`
 
+Other runtime flags:
+
+- `--config`: read a different runtime config instead of `<homedir>/.config/PenguinBurner/penguin_burner.toml`
+- `--gpu-index`: target a different NVIDIA GPU when more than one is present
+- `--journal-hours N`: change the suggested `journalctl --since` window shown after daemonizing
+
 Low-voltage preserve option:
 
 - `afterburner_preserve_vanilla_below_mv` and `--preserve-vf-below-mv` are inclusive. For example, `800` means PenguinBurner keeps the stock/base curve at `800mV` and below.
@@ -86,6 +94,7 @@ Low-voltage preserve option:
 
 - Use `penguin_burner.sh` as the single user entrypoint. It resolves the repo path itself, so you do not need to `cd` into the repository first.
 - Running `penguin_burner.sh` directly stays in the foreground by default.
+- The checked-in `PenguinBurner.service` file is only an example. The preferred path is `sudo ./penguin_burner.sh --install-systemd-service`, which writes a unit with the real absolute script path for the current checkout.
 - `--dry-run` is the recommended first step. It parses the selected Afterburner export, prints concise summaries, and draws console charts for the V/F curve and fan curve without attempting GPU writes.
 - `--dry-run` does not require `sudo`.
 - Actual runtime control and any real fan, V/F, power-limit, or persistence-mode changes should be treated as privileged operations and run with `sudo`.
