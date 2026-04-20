@@ -1,0 +1,13 @@
+[Unit]
+Description=Apply NVIDIA GPU power limit
+ConditionPathExists=/usr/bin/nvidia-smi
+Wants=nvidia-persistenced.service
+After=nvidia-persistenced.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nvidia-smi -i 0 -pl 300
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

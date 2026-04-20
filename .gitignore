@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.codex
+.codex/
+.codex*
+*-manual-test.log
+reverse-engineering/rust-hidden-nvml/target/
+reverse-engineering/*.so
+reverse-engineering/*.d
