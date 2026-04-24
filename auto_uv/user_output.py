@@ -497,6 +497,19 @@ def log_user_candidate_result(
     def _target_clock(probe: AutoUvProbeSummary | None) -> str:
         return f"{int(probe.lock_clock_mhz)}MHz" if probe is not None else "n/a"
 
+    def _fps_per_w(probe: AutoUvProbeSummary | None) -> str:
+        if probe is None:
+            return "n/a"
+        if probe.efficiency_fps_per_w is not None:
+            return format_user_value(
+                probe.efficiency_fps_per_w,
+                "FPS/W",
+                precision=5,
+            )
+        if probe.avg_power_w is not None and probe.frames_per_run is None:
+            return f"n/a ({probe.result_reason}; no completed timedemo)"
+        return "n/a"
+
     def _signed_int_change(
         reference_value: int | float | None,
         candidate_value: int | float | None,
@@ -707,23 +720,9 @@ def log_user_candidate_result(
             ),
             (
                 "FPS per watt",
-                format_user_value(
-                    initial_probe.efficiency_fps_per_w
-                    if initial_probe is not None
-                    else None,
-                    "FPS/W",
-                    precision=5,
-                ),
-                format_user_value(
-                    previous_probe.efficiency_fps_per_w
-                    if previous_probe is not None
-                    else None,
-                    "FPS/W",
-                    precision=5,
-                ),
-                format_user_value(
-                    candidate_probe.efficiency_fps_per_w, "FPS/W", precision=5
-                ),
+                _fps_per_w(initial_probe),
+                _fps_per_w(previous_probe),
+                _fps_per_w(candidate_probe),
                 format_user_change(
                     previous_probe.efficiency_fps_per_w
                     if previous_probe is not None
