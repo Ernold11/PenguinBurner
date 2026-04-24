@@ -13,6 +13,7 @@ from auto_uv.fan_tuning import build_auto_uv_fan_payload
 from auto_uv.models import AutoUvError, AutoUvProbeSummary
 from auto_uv.probe_metrics import _temperature_normalized_efficiency_delta
 from auto_uv.scan import (
+    _core_clock_below_floor,
     _is_power_up_efficiency_down_regression,
     _probe_failure_should_mark_voltage_unsafe,
     _target_core_clock_floor,
@@ -200,6 +201,11 @@ def test_timedemo_live_stall_does_not_mark_voltage_unsafe() -> None:
         )
         is True
     )
+
+
+def test_core_clock_floor_allows_one_small_clock_tolerance() -> None:
+    assert _core_clock_below_floor(2467.0, 2470.5) is False
+    assert _core_clock_below_floor(2464.0, 2470.5) is True
 
 
 def test_temperature_normalized_efficiency_tracks_ignored_driver_voltage() -> None:

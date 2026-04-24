@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .models import AutoUvProbeSummary
-from .tuning import AUTO_UV_METRIC_TUNING
+from .tuning import AUTO_UV_CURVE_TUNING, AUTO_UV_METRIC_TUNING
 
 
 def _mean(values: Sequence[float | int | None]) -> float | None:
@@ -669,14 +669,18 @@ def _evaluate_probe(
         baseline_avg_core_clock is not None
         and probe.avg_core_clock_mhz is not None
         and probe.avg_core_clock_mhz
-        < baseline_avg_core_clock * _percent(float(min_performance_core_clock_pct))
+        < (
+            baseline_avg_core_clock * _percent(float(min_performance_core_clock_pct))
+            - AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz
+        )
     ):
         floor_core_clock = baseline_avg_core_clock * _percent(
             float(min_performance_core_clock_pct)
         )
         return (
             f"core_clock-regression current={probe.avg_core_clock_mhz:.1f}MHz "
-            f"baseline={baseline_avg_core_clock:.1f}MHz floor={floor_core_clock:.1f}MHz"
+            f"baseline={baseline_avg_core_clock:.1f}MHz floor={floor_core_clock:.1f}MHz "
+            f"tolerance={AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz:.1f}MHz"
         )
 
     return ""

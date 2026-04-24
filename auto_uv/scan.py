@@ -83,6 +83,7 @@ from .probe_config import (
     _stability_probe_config_for_voltage_band,
 )
 from .tuning import (
+    AUTO_UV_CURVE_TUNING,
     AUTO_UV_DEFAULTS,
     AUTO_UV_METRIC_TUNING,
     AUTO_UV_PROBE_TUNING,
@@ -156,6 +157,15 @@ def _telemetry_sample_is_busy(sample, busy_power_floor_w: float | None) -> bool:
         power_w is not None
         and busy_power_floor_w is not None
         and float(power_w) >= float(busy_power_floor_w)
+    )
+
+
+def _core_clock_below_floor(
+    core_clock_mhz: float,
+    floor_mhz: float,
+) -> bool:
+    return float(core_clock_mhz) < (
+        float(floor_mhz) - float(AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz)
     )
 
 
@@ -680,8 +690,9 @@ def _probe_voltage_candidate(
             and len(core_clock_samples)
             >= AUTO_UV_STALL_TUNING.live_core_clock_abort_min_samples
         ):
-            if live_sample_is_busy and live_core_clock_mhz < float(
-                target_core_clock_floor_mhz
+            if live_sample_is_busy and _core_clock_below_floor(
+                live_core_clock_mhz,
+                target_core_clock_floor_mhz,
             ):
                 progress_state["low_core_clock_streak"] = (
                     int(progress_state.get("low_core_clock_streak", 0)) + 1
@@ -694,18 +705,23 @@ def _probe_voltage_candidate(
             ):
                 return (
                     f"telemetry-live-core_clock current={live_core_clock_mhz:.1f}MHz "
-                    f"floor={target_core_clock_floor_mhz:.1f}MHz"
+                    f"floor={target_core_clock_floor_mhz:.1f}MHz "
+                    f"tolerance={AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz:.1f}MHz"
                 )
         if (
             target_core_clock_floor_mhz is not None
             and running_avg_core_clock is not None
             and len(core_clock_samples)
             >= AUTO_UV_STALL_TUNING.avg_core_clock_abort_min_samples
-            and running_avg_core_clock < float(target_core_clock_floor_mhz)
+            and _core_clock_below_floor(
+                running_avg_core_clock,
+                target_core_clock_floor_mhz,
+            )
         ):
             return (
                 f"telemetry-live-core_clock-avg current={running_avg_core_clock:.1f}MHz "
-                f"floor={target_core_clock_floor_mhz:.1f}MHz"
+                f"floor={target_core_clock_floor_mhz:.1f}MHz "
+                f"tolerance={AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz:.1f}MHz"
             )
 
         expected_loop_s = progress_state.get("expected_loop_s")
