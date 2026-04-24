@@ -93,6 +93,7 @@ from runtime_service import (
     launcher_script_path,
     parse_runtime_flags,
     running_under_systemd_service,
+    stop_existing_penguin_burner_runtime,
     systemd_is_available,
     uninstall_systemd_service,
 )
@@ -1619,6 +1620,8 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
             "The scan will still save a suggested fan curve automatically when safe, "
             "but it will not take over fan control during the scan."
         )
+    if args.auto_uv_voltage_scan:
+        stop_existing_penguin_burner_runtime(log=log)
     afterburner_runtime_options = dict(stored_afterburner_runtime_options)
     if args.afterburner_dir.strip():
         afterburner_runtime_options["afterburner_root"] = str(

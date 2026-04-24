@@ -56,6 +56,7 @@ class Q2RTXStabilityConfig:
     progress_callback: Callable[[dict], None] | None = None
     abort_callback: Callable[[dict], str | None] | None = None
     companion_command: tuple[str, ...] | None = None
+    use_headless_gamescope: bool = True
 
 
 @dataclass(slots=True)

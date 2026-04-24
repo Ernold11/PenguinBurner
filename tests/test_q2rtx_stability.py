@@ -4,8 +4,11 @@ from pathlib import Path
 import tarfile
 
 from stability.q2rtx.install import _extract_q2rtx_archive, _require_https_url
-from stability.q2rtx.models import StabilityTestError
-from stability.q2rtx.runtime import build_timedemo_command
+from stability.q2rtx.models import Q2RTXStabilityResult, StabilityTestError
+from stability.q2rtx.runtime import (
+    _result_looks_like_gamescope_startup_crash,
+    build_timedemo_command,
+)
 
 
 def _write_tar(path: Path, members: dict[str, bytes]) -> None:
@@ -80,3 +83,34 @@ def test_timedemo_command_uses_requested_resolution_and_run_count(
     assert geometry.startswith("2560x1440")
     assert command[command.index("timedemo") + 1] == "3"
     assert command[-2:] == ["+demo", "demo1"]
+
+
+def test_gamescope_startup_crash_is_detected_for_fallback(tmp_path: Path) -> None:
+    result = Q2RTXStabilityResult(
+        success=False,
+        reason="timedemo-metrics-missing",
+        workload_kind="timedemo",
+        workload_name="q2demo1",
+        command=["q2rtx"],
+        executable_path=tmp_path / "q2rtx",
+        workdir=tmp_path,
+        duration_requested_s=30,
+        timedemo_loops_requested=3,
+        duration_observed_s=2.0,
+        demo_path=None,
+        log_path=tmp_path / "q2rtx.log",
+        process_exit_code=139,
+        shutdown_mode="completed",
+        fatal_output_matches=[],
+        xid_messages=[],
+        timedemo_runs=[],
+        telemetry_samples=[],
+        companion_telemetry_samples=[],
+        output_tail=[
+            "[Gamescope WSI] Creating swapchain",
+            "Segmentation fault",
+            "[gamescope] [Info]  launch: Primary child shut down!",
+        ],
+    )
+
+    assert _result_looks_like_gamescope_startup_crash(result) is True

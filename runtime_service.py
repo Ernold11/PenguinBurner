@@ -216,6 +216,28 @@ def clear_existing_penguin_burner_unit_for_daemonize(*, log):
     )
 
 
+def stop_existing_penguin_burner_runtime(*, log):
+    if not systemd_is_available():
+        return
+    if os.geteuid() != 0:
+        return
+    unit_name = f"{PENGUIN_BURNER_UNIT_NAME}.service"
+    result = subprocess.run(
+        [SYSTEMCTL, "stop", unit_name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        log(f"Stopped existing {unit_name} before foreground Auto-UV scan.")
+    subprocess.run(
+        [SYSTEMCTL, "reset-failed", unit_name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
     if not systemd_is_available():
         raise RuntimeError(

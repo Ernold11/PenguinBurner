@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 import math
 import os
@@ -59,6 +60,8 @@ def _apply_hidden_window_env(
 def _headless_gamescope_prefix(config: Q2RTXStabilityConfig) -> list[str]:
     if not config.hide_window:
         return []
+    if not config.use_headless_gamescope:
+        return []
     gamescope = shutil.which("gamescope")
     if not gamescope:
         return []
@@ -88,6 +91,27 @@ def _wrap_q2rtx_command(
     if not gamescope_prefix:
         return list(command)
     return [*gamescope_prefix, *command]
+
+
+def _result_looks_like_gamescope_startup_crash(result: Q2RTXStabilityResult) -> bool:
+    if bool(result.success):
+        return False
+    if str(result.reason) not in {
+        "timedemo-metrics-missing",
+        "timedemo-nonzero-exit",
+        "fatal-q2rtx-output",
+    }:
+        return False
+    tail = "\n".join(str(line) for line in result.output_tail)
+    if "gamescope" not in tail.lower() and "Gamescope WSI" not in tail:
+        return False
+    startup_crash_markers = (
+        "Segmentation fault",
+        "Primary child shut down",
+        "failed to read Wayland events",
+        "Broken pipe",
+    )
+    return any(marker in tail for marker in startup_crash_markers)
 
 
 def _common_q2rtx_args(
@@ -840,7 +864,7 @@ def run_q2rtx_stability_test(config: Q2RTXStabilityConfig) -> Q2RTXStabilityResu
     )
     log_path = _prepare_log_path(config.log_dir)
 
-    return _run_timedemo_session(
+    result = _run_timedemo_session(
         config=config,
         executable_path=executable_path,
         workdir=workdir,
@@ -849,3 +873,29 @@ def run_q2rtx_stability_test(config: Q2RTXStabilityConfig) -> Q2RTXStabilityResu
         log_path=log_path,
         runtime_env=runtime_env,
     )
+    if (
+        bool(config.hide_window)
+        and bool(config.use_headless_gamescope)
+        and _result_looks_like_gamescope_startup_crash(result)
+    ):
+        print(
+            "Q2RTX headless gamescope crashed before timedemo metrics; "
+            "retrying with the offscreen X11 fallback.",
+            flush=True,
+        )
+        retry_config = replace(config, use_headless_gamescope=False)
+        retry_log_path = _prepare_log_path(config.log_dir)
+        retry_result = _run_timedemo_session(
+            config=retry_config,
+            executable_path=executable_path,
+            workdir=workdir,
+            workload_name=workload_name,
+            demo_path=demo_path,
+            log_path=retry_log_path,
+            runtime_env=runtime_env,
+        )
+        if retry_result.success:
+            return retry_result
+        if result.duration_observed_s <= 0.0:
+            return retry_result
+    return result
