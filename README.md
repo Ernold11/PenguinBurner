@@ -24,6 +24,10 @@ To clear old Auto-UV results and start fresh:
 sudo ./penguin_burner.sh --fresh-auto-uv-scan
 ```
 
+![Auto-UV result summary](auto_uv_result_summary_terminal.png)
+
+Example Auto-UV result summary: before/after power draw, core clock, and efficiency shown after the final verification.
+
 What Auto-UV does:
 
 1. Reset previous GPU tuning so the scan starts from the driver/default curve.
@@ -144,10 +148,6 @@ The explicit scan command is also available:
 ```bash
 sudo ./penguin_burner.sh --auto-uv-voltage-scan
 ```
-
-![Auto-UV result summary](auto_uv_result_summary_terminal.png)
-
-Example Auto-UV result summary: before/after power draw, core clock, and efficiency shown after the final verification.
 
 ### Auto-UV Options
 
