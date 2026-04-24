@@ -97,6 +97,16 @@ Other MSI Afterburner versions are not guaranteed to work.
 - NVIDIA driver libraries such as `libnvidia-ml.so.1` and `libnvidia-api.so.1` are required at runtime, but they come from the NVIDIA driver
 - `nvidia-smi` must be available in `PATH`
 
+## Quality Checks
+
+Before this Auto-UV merge, the project passed the local release checks:
+
+- `pytest`: 17 mocked tests for Auto-UV logic, Afterburner parsing, and Q2RTX helpers
+- `ruff check .` and `ruff format --check .`
+- `pyright .`
+- Python syntax compile for all project `.py` files
+- `shellcheck` for shell scripts
+
 ## Acknowledgements
 
 Special thanks to the LACT project and to Ilya Zlobintsev for pushing Linux NVIDIA tuning forward.
