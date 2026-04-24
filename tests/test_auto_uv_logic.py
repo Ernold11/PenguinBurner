@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from pathlib import Path
 
 from auto_uv.curve_planning import (
@@ -13,7 +14,9 @@ from auto_uv.models import AutoUvError, AutoUvProbeSummary
 from auto_uv.probe_metrics import _temperature_normalized_efficiency_delta
 from auto_uv.scan import (
     _is_power_up_efficiency_down_regression,
+    _probe_failure_should_mark_voltage_unsafe,
     _target_core_clock_floor,
+    _telemetry_sample_is_busy,
 )
 
 
@@ -170,6 +173,33 @@ def test_target_core_clock_floor_uses_probe_clock_when_it_is_higher() -> None:
 
     assert base_mhz == 2800.0
     assert floor_mhz == 2520.0
+
+
+def test_telemetry_sample_busy_check_ignores_idle_low_power_samples() -> None:
+    idle_sample = SimpleNamespace(power_w=15.0, gpu_util_pct=0.0)
+    busy_power_sample = SimpleNamespace(power_w=260.0, gpu_util_pct=0.0)
+    busy_util_sample = SimpleNamespace(power_w=15.0, gpu_util_pct=80.0)
+
+    assert _telemetry_sample_is_busy(idle_sample, busy_power_floor_w=140.0) is False
+    assert (
+        _telemetry_sample_is_busy(busy_power_sample, busy_power_floor_w=140.0) is True
+    )
+    assert _telemetry_sample_is_busy(busy_util_sample, busy_power_floor_w=140.0) is True
+
+
+def test_timedemo_live_stall_does_not_mark_voltage_unsafe() -> None:
+    assert (
+        _probe_failure_should_mark_voltage_unsafe(
+            "timedemo-live-stall idle=20.0s stall=15.0s completed=1"
+        )
+        is False
+    )
+    assert (
+        _probe_failure_should_mark_voltage_unsafe(
+            "telemetry-live-core_clock current=585.0MHz floor=2476.8MHz"
+        )
+        is True
+    )
 
 
 def test_temperature_normalized_efficiency_tracks_ignored_driver_voltage() -> None:

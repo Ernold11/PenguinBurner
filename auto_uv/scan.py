@@ -141,6 +141,31 @@ def _target_core_clock_floor(
     )
 
 
+def _telemetry_sample_is_busy(sample, busy_power_floor_w: float | None) -> bool:
+    if sample is None:
+        return False
+    gpu_util_pct = getattr(sample, "gpu_util_pct", None)
+    if (
+        gpu_util_pct is not None
+        and float(gpu_util_pct) >= AUTO_UV_STALL_TUNING.busy_gpu_util_pct
+    ):
+        return True
+    power_w = getattr(sample, "power_w", None)
+    return (
+        power_w is not None
+        and busy_power_floor_w is not None
+        and float(power_w) >= float(busy_power_floor_w)
+    )
+
+
+def _probe_failure_should_mark_voltage_unsafe(reason: str) -> bool:
+    # A live timedemo stall with idle telemetry usually means the workload stopped
+    # being GPU-bound. Do not turn that into a permanent unsafe-voltage floor.
+    if str(reason).startswith("timedemo-live-stall"):
+        return False
+    return True
+
+
 class _NvmlDeviceSession:
     def __init__(self, gpu_index: int):
         self._gpu_index = int(gpu_index)
@@ -527,6 +552,12 @@ def _probe_voltage_candidate(
             parts.append(f"live={live_voltage_mv}mV")
         if latest_sample is not None and latest_sample.power_w is not None:
             parts.append(f"power={float(latest_sample.power_w):.1f}W")
+            if busy_power_floor_w is not None:
+                parts.append(
+                    "load=busy"
+                    if _telemetry_sample_is_busy(latest_sample, busy_power_floor_w)
+                    else "load=idle"
+                )
         if latest_sample is not None and latest_sample.core_clock_mhz is not None:
             parts.append(f"core_clock={float(latest_sample.core_clock_mhz):.0f}MHz")
         if latest_sample is not None and latest_sample.temperature_c is not None:
@@ -620,9 +651,15 @@ def _probe_voltage_candidate(
                     f"expected={frame_ref} run={int(run.run_index)}"
                 )
 
+        telemetry_samples = list(state.get("telemetry_samples") or [])
+        busy_telemetry_samples = [
+            sample
+            for sample in telemetry_samples
+            if _telemetry_sample_is_busy(sample, busy_power_floor_w)
+        ]
         core_clock_samples = [
             float(sample.core_clock_mhz)
-            for sample in list(state.get("telemetry_samples") or [])
+            for sample in busy_telemetry_samples
             if sample is not None and sample.core_clock_mhz is not None
         ]
         latest_sample = state.get("latest_sample")
@@ -631,6 +668,10 @@ def _probe_voltage_candidate(
             if latest_sample is not None and latest_sample.core_clock_mhz is not None
             else None
         )
+        live_sample_is_busy = _telemetry_sample_is_busy(
+            latest_sample,
+            busy_power_floor_w,
+        )
         running_avg_core_clock = _mean(core_clock_samples)
         if (
             target_core_clock_floor_mhz is not None
@@ -638,7 +679,9 @@ def _probe_voltage_candidate(
             and len(core_clock_samples)
             >= AUTO_UV_STALL_TUNING.live_core_clock_abort_min_samples
         ):
-            if live_core_clock_mhz < float(target_core_clock_floor_mhz):
+            if live_sample_is_busy and live_core_clock_mhz < float(
+                target_core_clock_floor_mhz
+            ):
                 progress_state["low_core_clock_streak"] = (
                     int(progress_state.get("low_core_clock_streak", 0)) + 1
                 )
@@ -797,22 +840,31 @@ def _probe_voltage_candidate(
         if result.success:
             print_q2rtx_stability_result(result)
         else:
-            _record_probe_unsafe(
-                "stability-probe-failed",
-                details={
-                    "result_reason": str(result.reason),
-                    "workload_kind": str(result.workload_kind),
-                    "workload_name": str(result.workload_name),
-                    "shutdown_mode": str(result.shutdown_mode),
-                    "process_exit_code": (
-                        int(result.process_exit_code)
-                        if result.process_exit_code is not None
-                        else None
-                    ),
-                    "log_path": str(result.log_path),
-                    "used_companion_load": bool(q2rtx_config.companion_command),
-                },
-            )
+            failure_details = {
+                "result_reason": str(result.reason),
+                "workload_kind": str(result.workload_kind),
+                "workload_name": str(result.workload_name),
+                "shutdown_mode": str(result.shutdown_mode),
+                "process_exit_code": (
+                    int(result.process_exit_code)
+                    if result.process_exit_code is not None
+                    else None
+                ),
+                "log_path": str(result.log_path),
+                "used_companion_load": bool(q2rtx_config.companion_command),
+            }
+            if _probe_failure_should_mark_voltage_unsafe(str(result.reason)):
+                _record_probe_unsafe(
+                    "stability-probe-failed",
+                    details=failure_details,
+                )
+            else:
+                _log_phase(
+                    log,
+                    "blacklist",
+                    f"unsafe-voltage-skipped voltage={int(candidate_voltage_mv)}mV "
+                    f"target={int(lock_clock_mhz)}MHz result={result.reason}",
+                )
             controlled_abort_prefixes = (
                 "telemetry-live-core_clock",
                 "telemetry-live-core_clock-avg",
