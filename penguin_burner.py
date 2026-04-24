@@ -2534,7 +2534,7 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
         time.sleep(poll_interval_s)
 
 
-if __name__ == "__main__":
+def cli_main() -> int:
     try:
         runtime_flags = parse_runtime_flags(sys.argv[1:])
         runtime_argv = runtime_flags["passthrough"]
@@ -2576,4 +2576,9 @@ if __name__ == "__main__":
     except Exception as exc:
         debug_exception("fatal error", exc)
         print(f"error: {exc}", file=sys.stderr, flush=True)
-        sys.exit(1)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli_main())

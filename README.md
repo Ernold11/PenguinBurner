@@ -97,6 +97,18 @@ Other MSI Afterburner versions are not guaranteed to work.
 - NVIDIA driver libraries such as `libnvidia-ml.so.1` and `libnvidia-api.so.1` are required at runtime, but they come from the NVIDIA driver
 - `nvidia-smi` must be available in `PATH`
 
+## Python Package
+
+PenguinBurner can also be installed as a Python package once a release is
+published to PyPI:
+
+```bash
+python -m pip install penguin-burner
+```
+
+That installs the `penguin-burner` and `penguin_burner` console commands. The
+PyPI package name uses the correct spelling: `penguin-burner`.
+
 ## Quality Checks
 
 Before this Auto-UV merge, the project passed the local release checks:

@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "penguin-burner"
+version = "0.1.0"
+description = "Linux NVIDIA undervolting tool with Auto-UV and MSI Afterburner import support"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [
+  { name = "PenguinBurner contributors" },
+]
+keywords = [
+  "nvidia",
+  "undervolting",
+  "linux",
+  "gpu",
+  "q2rtx",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Hardware",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/jpietek/PenguinBurner"
+Issues = "https://github.com/jpietek/PenguinBurner/issues"
+Source = "https://github.com/jpietek/PenguinBurner"
+
+[project.scripts]
+penguin-burner = "penguin_burner:cli_main"
+penguin_burner = "penguin_burner:cli_main"
+q2rtx-stability = "stability.q2rtx:main"
+cuda-bruteforce-stability = "stability.cuda_bruteforce:main"
+penguin-burner-import-afterburner-vf = "afterburner.import_vf_curve:main"
+penguin-burner-import-afterburner-fan = "afterburner.import_fan_curve:main"
+
+[tool.setuptools]
+py-modules = [
+  "ascii_chart",
+  "dry_run_preview",
+  "hidden_nvapi_vf",
+  "hidden_nvml_voltage",
+  "nvidia_runtime_defaults",
+  "nvml_gpu_policy",
+  "penguin_burner",
+  "penguin_burner_paths",
+  "runtime_debug",
+  "runtime_service",
+]
+packages = [
+  "afterburner",
+  "auto_uv",
+  "stability",
+  "stability.q2rtx",
+]
