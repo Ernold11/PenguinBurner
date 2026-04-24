@@ -31,7 +31,7 @@ Example Auto-UV result summary: before/after power draw, core clock, and efficie
 What Auto-UV does:
 
 1. Reset previous GPU tuning so the scan starts from the driver/default curve.
-2. Install the managed Q2RTX test workload automatically if it is missing.
+2. Install the managed Q2RTX test workload automatically if it is missing. Q2RTX uses the freely available Quake II shareware timedemo with NVIDIA's Vulkan ray tracing renderer.
 3. Measure the stock loaded behavior: clock, voltage, power, temperature, fan speed, and FPS/W.
 4. Pick a safe target core clock and start lowering voltage one real V/F bin at a time.
 5. Test each candidate with Q2RTX plus CUDA load.
@@ -315,7 +315,7 @@ What it does not do yet:
 - it does not score image quality or compare frame hashes
 - it is currently a practical "did repeated heavy timedemo passes complete with sane FPS behavior and without obvious driver faults" check
 
-If Q2RTX is not installed yet, run `./penguin_burner.sh --install-q2rtx`. That downloads the latest official Linux tar.gz from the NVIDIA GitHub releases into PenguinBurner's managed user cache/data directories, which PenguinBurner auto-detects first. The Auto-UV path also performs this install automatically when the managed Q2RTX install is missing, printing the lookup, download, extraction, and runtime-library progress to stdout. The current official Linux tarball already includes shareware `pak0.pak`, player assets, and the ready-made `q2demo1` timedemo.
+If Q2RTX is not installed yet, run `./penguin_burner.sh --install-q2rtx`. That downloads the latest official Linux tar.gz from the NVIDIA GitHub releases into PenguinBurner's managed user cache/data directories, which PenguinBurner auto-detects first. The Auto-UV path also performs this install automatically when the managed Q2RTX install is missing, printing the lookup, download, extraction, and runtime-library progress to stdout. The current official Linux tarball already includes the freely available Quake II shareware data, NVIDIA's Vulkan ray tracing renderer, and the ready-made `q2demo1` timedemo.
 
 By default PenguinBurner auto-selects a ready-made timedemo, first looking for demos on disk and then inside `pak0.pak`, preferring demos like `q2demo1`.
 

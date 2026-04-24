@@ -37,7 +37,7 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 ## What Happens During The Scan
 
 - PenguinBurner resets GPU clocks, memory offsets, power policy, and V/F offsets before measuring.
-- It runs Q2RTX plus a CUDA companion load to measure real loaded behavior.
+- It runs Q2RTX plus a CUDA companion load to measure real loaded behavior. Q2RTX uses the freely available Quake II shareware timedemo with NVIDIA's Vulkan ray tracing renderer.
 - Q2RTX renders at a real GPU-bound size. PenguinBurner uses `gamescope --backend headless` when available so Q2RTX does not create a visible desktop window. If gamescope is unavailable, it falls back to moving the real Vulkan window off-screen. Use `--show-q2rtx-window` if you want to see it.
 - If Q2RTX is missing, PenguinBurner downloads and installs the managed copy automatically.
 - It walks voltage down step by step, testing each candidate before accepting it.
