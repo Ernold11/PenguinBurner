@@ -120,6 +120,27 @@ def _percent(value: float | int) -> float:
     return max(0.0, float(value) / 100.0)
 
 
+def _target_core_clock_floor(
+    *,
+    lock_clock_mhz: int,
+    initial_probe_clock_mhz: float | None,
+    min_performance_core_clock_pct: float,
+    enforce_target_core_clock_floor: bool,
+) -> tuple[float | None, float | None]:
+    if not enforce_target_core_clock_floor:
+        return None, None
+    floor_base_clock_mhz = float(lock_clock_mhz)
+    if initial_probe_clock_mhz is not None:
+        floor_base_clock_mhz = max(
+            floor_base_clock_mhz,
+            float(initial_probe_clock_mhz),
+        )
+    return (
+        floor_base_clock_mhz * _percent(float(min_performance_core_clock_pct)),
+        floor_base_clock_mhz,
+    )
+
+
 class _NvmlDeviceSession:
     def __init__(self, gpu_index: int):
         self._gpu_index = int(gpu_index)
@@ -459,13 +480,12 @@ def _probe_voltage_candidate(
         min_performance_core_clock_pct = (
             AUTO_UV_METRIC_TUNING.min_performance_core_clock_pct
         )
-    target_core_clock_floor_mhz = (
-        float(initial_probe_clock_mhz) * _percent(float(min_performance_core_clock_pct))
-        if enforce_target_core_clock_floor and initial_probe_clock_mhz is not None
-        else (
-            float(lock_clock_mhz) * _percent(float(min_performance_core_clock_pct))
-            if enforce_target_core_clock_floor
-            else None
+    target_core_clock_floor_mhz, target_core_clock_floor_base_mhz = (
+        _target_core_clock_floor(
+            lock_clock_mhz=int(lock_clock_mhz),
+            initial_probe_clock_mhz=initial_probe_clock_mhz,
+            min_performance_core_clock_pct=float(min_performance_core_clock_pct),
+            enforce_target_core_clock_floor=bool(enforce_target_core_clock_floor),
         )
     )
 
@@ -518,15 +538,11 @@ def _probe_voltage_candidate(
         else:
             parts.append("fan=n/a")
         if target_core_clock_floor_mhz is not None:
-            floor_base_clock_mhz = (
-                float(initial_probe_clock_mhz)
-                if initial_probe_clock_mhz is not None
-                else float(lock_clock_mhz)
-            )
+            assert target_core_clock_floor_base_mhz is not None
             parts.append(
                 f"target-floor={target_core_clock_floor_mhz:.1f}MHz"
                 f"({float(min_performance_core_clock_pct):.1f}%"
-                f" of {floor_base_clock_mhz:.1f}MHz baseline)"
+                f" of {target_core_clock_floor_base_mhz:.1f}MHz baseline)"
             )
         return " ".join(parts)
 

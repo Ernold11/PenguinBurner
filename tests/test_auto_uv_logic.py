@@ -11,7 +11,10 @@ from auto_uv.curve_planning import (
 from auto_uv.fan_tuning import build_auto_uv_fan_payload
 from auto_uv.models import AutoUvError, AutoUvProbeSummary
 from auto_uv.probe_metrics import _temperature_normalized_efficiency_delta
-from auto_uv.scan import _is_power_up_efficiency_down_regression
+from auto_uv.scan import (
+    _is_power_up_efficiency_down_regression,
+    _target_core_clock_floor,
+)
 
 
 def _plan() -> list[dict]:
@@ -143,6 +146,30 @@ def test_invalid_auto_uv_plan_is_rejected_without_gpu_access() -> None:
         assert "invalid editable point" in str(exc)
     else:
         raise AssertionError("expected AutoUvError")
+
+
+def test_target_core_clock_floor_uses_lock_clock_when_probe_clock_is_lower() -> None:
+    floor_mhz, base_mhz = _target_core_clock_floor(
+        lock_clock_mhz=2760,
+        initial_probe_clock_mhz=2606.7,
+        min_performance_core_clock_pct=90.0,
+        enforce_target_core_clock_floor=True,
+    )
+
+    assert base_mhz == 2760.0
+    assert floor_mhz == 2484.0
+
+
+def test_target_core_clock_floor_uses_probe_clock_when_it_is_higher() -> None:
+    floor_mhz, base_mhz = _target_core_clock_floor(
+        lock_clock_mhz=2760,
+        initial_probe_clock_mhz=2800.0,
+        min_performance_core_clock_pct=90.0,
+        enforce_target_core_clock_floor=True,
+    )
+
+    assert base_mhz == 2800.0
+    assert floor_mhz == 2520.0
 
 
 def test_temperature_normalized_efficiency_tracks_ignored_driver_voltage() -> None:
