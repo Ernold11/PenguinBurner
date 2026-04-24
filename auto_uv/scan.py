@@ -23,6 +23,7 @@ from stability.q2rtx import (
     Q2RTXStabilityConfig,
     Q2RTXStabilityResult,
     StabilityTestError,
+    cleanup_managed_q2rtx_processes,
     print_q2rtx_stability_result,
     query_gpu_metrics,
     run_q2rtx_stability_test,
@@ -2010,6 +2011,7 @@ def _run_auto_uv_voltage_scan_impl(
 
         previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, _interrupt_scan)
+        cleanup_managed_q2rtx_processes(q2rtx_config, log=log)
         try:
             policy_controller = NvmlGpuPolicyController(gpu_index=gpu_index)
         except Exception as exc:
@@ -2512,6 +2514,7 @@ def _run_auto_uv_voltage_scan_impl(
                 pass
         raise
     finally:
+        cleanup_managed_q2rtx_processes(q2rtx_config, log=log)
         if clock_ceiling is not None:
             try:
                 clock_ceiling.close()

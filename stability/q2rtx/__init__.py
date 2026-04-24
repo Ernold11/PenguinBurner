@@ -37,7 +37,11 @@ from .models import (
 )
 from .output import attach_stdout_progress
 from .reporting import print_q2rtx_stability_result
-from .runtime import build_timedemo_command, run_q2rtx_stability_test
+from .runtime import (
+    build_timedemo_command,
+    cleanup_managed_q2rtx_processes,
+    run_q2rtx_stability_test,
+)
 from .telemetry import query_gpu_metrics
 
 __all__ = [
@@ -61,6 +65,7 @@ __all__ = [
     "TimedemoRun",
     "attach_stdout_progress",
     "build_timedemo_command",
+    "cleanup_managed_q2rtx_processes",
     "config_from_args",
     "default_q2rtx_compat_dir",
     "default_q2rtx_install_cache_dir",
