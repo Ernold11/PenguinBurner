@@ -218,8 +218,7 @@ Default Afterburner profile validation:
 - On a clean first run, `sudo ./penguin_burner.sh` starts Auto-UV automatically. After a final Auto-UV curve exists, the same command runs normal foreground runtime using that saved curve.
 - The checked-in `PenguinBurner.service` file is only an example. The preferred path is `sudo ./penguin_burner.sh --install-systemd-service`, which writes a unit with the real absolute script path for the current checkout.
 - On the first interactive run with a newly configured Afterburner root, PenguinBurner automatically imports that root into its managed config, runs a dry-run preview, then prompts you to continue in foreground mode or daemonize later.
-- `--dry-run` is the recommended first step. It parses the selected Afterburner root directory, prints concise summaries, and draws console charts for the V/F curve and fan curve without attempting GPU writes.
-- `--dry-run` does not require `sudo`.
+- `--dry-run` is the recommended first step. It parses the selected Afterburner root directory, prints concise summaries, and draws console charts for the V/F curve and fan curve without attempting GPU writes. It does not require sudo.
 - `--dangerously-skip-validation` can be combined with `--dry-run` when you want to inspect an unusual saved curve before allowing any GPU writes.
 - `--debug-log` can be combined with `--dry-run`, a first-time import, or foreground runtime testing when you need the full profile-discovery and parsing trail for an incompatible or otherwise unexpected MSI Afterburner export.
 - the extra debug payload is written to the debug log file only; it does not spam stdout in foreground mode and it does not add extra noise to the `systemd` journal
@@ -366,7 +365,6 @@ What dry-run shows:
 - an ASCII V/F chart with `mV` on the x-axis and `MHz` on the y-axis, overlaying target `#` against stock/base `.`, with lock point `@`
 - an ASCII fan chart with temperature on the x-axis and fan percent on the y-axis
 - translated power-limit and memory-offset previews
-- optional Linux readback context when available
 
 What dry-run does not do:
 
@@ -388,7 +386,6 @@ the selected config file under `debug-logs/`. The log includes the discovered de
 profiles, per-section validation results, raw section key dumps, V/F blob and
 fan-curve blob metadata, per-point Linux V/F translation details, chosen fan
 profile, foreground runtime diagnostics, and traceback details for parsing errors.
-The debug file is capped at roughly `700KB` so it stays shareable.
 
 If something does not work with your MSI Afterburner export, please open an issue at:
 
