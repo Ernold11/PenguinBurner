@@ -57,7 +57,9 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
         passthrough.append(arg)
         index += 1
     if install_systemd_service and uninstall_systemd_service:
-        raise RuntimeError("choose either --install-systemd-service or --uninstall-systemd-service")
+        raise RuntimeError(
+            "choose either --install-systemd-service or --uninstall-systemd-service"
+        )
     return {
         "foreground": foreground,
         "daemonize": daemonize,
@@ -73,11 +75,13 @@ def running_under_systemd_service():
 
 
 def systemd_is_available():
-    return Path("/run/systemd/system").exists() and shutil.which("systemd-run") is not None
+    return (
+        Path("/run/systemd/system").exists() and shutil.which("systemd-run") is not None
+    )
 
 
 def journalctl_follow_command(hours):
-    return f"journalctl -u {PENGUIN_BURNER_UNIT_NAME}.service --since \"-{int(hours)} hours\" -f"
+    return f'journalctl -u {PENGUIN_BURNER_UNIT_NAME}.service --since "-{int(hours)} hours" -f'
 
 
 def systemd_service_unit_path():
@@ -150,7 +154,9 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
     if not systemd_is_available():
         raise RuntimeError("systemd service install is unavailable on this system.")
     if os.geteuid() != 0:
-        raise RuntimeError("systemd service install requires root privileges. Re-run with sudo.")
+        raise RuntimeError(
+            "systemd service install requires root privileges. Re-run with sudo."
+        )
 
     unit_path = systemd_service_unit_path()
     unit_path.write_text(build_systemd_service_unit(program_file, argv))
@@ -170,7 +176,9 @@ def uninstall_systemd_service(*, log):
     if not systemd_is_available():
         raise RuntimeError("systemd service uninstall is unavailable on this system.")
     if os.geteuid() != 0:
-        raise RuntimeError("systemd service uninstall requires root privileges. Re-run with sudo.")
+        raise RuntimeError(
+            "systemd service uninstall requires root privileges. Re-run with sudo."
+        )
 
     unit_path = systemd_service_unit_path()
     subprocess.run([SYSTEMCTL, "disable", "--now", unit_path.name], check=False)
@@ -184,6 +192,28 @@ def uninstall_systemd_service(*, log):
         check=False,
     )
     log(f"Removed {unit_path.name}.")
+
+
+def clear_existing_penguin_burner_unit_for_daemonize(*, log):
+    unit_name = f"{PENGUIN_BURNER_UNIT_NAME}.service"
+    unit_path = systemd_service_unit_path()
+
+    subprocess.run(
+        [SYSTEMCTL, "disable", "--now", unit_name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if unit_path.exists():
+        unit_path.unlink()
+        log(f"Removed existing static {unit_name} before transient daemon start.")
+    run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
+    subprocess.run(
+        [SYSTEMCTL, "reset-failed", unit_name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
@@ -201,12 +231,7 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
     script_path = launcher_script_path(program_file)
     sudo_user = os.environ.get("SUDO_USER", "").strip()
 
-    subprocess.run(
-        [SYSTEMCTL, "stop", f"{PENGUIN_BURNER_UNIT_NAME}.service"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    clear_existing_penguin_burner_unit_for_daemonize(log=log)
 
     result = subprocess.run(
         [

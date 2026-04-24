@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+from .models import Q2RTXStabilityResult
+
+
+def print_q2rtx_stability_result(result: Q2RTXStabilityResult) -> None:
+    status = "PASS" if result.success else "FAIL"
+    if result.timedemo_loops_requested is not None:
+        requested_target = f"{result.timedemo_loops_requested} loops"
+    else:
+        requested_target = f"{result.duration_requested_s}s"
+    print(f"Stability test: {status}", flush=True)
+    print(
+        f"Reason: {result.reason} | workload={result.workload_name} ({result.workload_kind}) | "
+        f"requested={requested_target} | observed={result.duration_observed_s:.1f}s",
+        flush=True,
+    )
+    print(
+        f"Executable: {result.executable_path} | workdir={result.workdir}",
+        flush=True,
+    )
+    print(f"Log: {result.log_path}", flush=True)
+    if result.demo_path is not None:
+        print(f"Demo file: {result.demo_path}", flush=True)
+    elif result.workload_kind == "timedemo":
+        print(f"Demo asset: {result.workload_name} (found in game data)", flush=True)
+    print(
+        f"Shutdown: {result.shutdown_mode} | exit_code={result.process_exit_code}",
+        flush=True,
+    )
+
+    if result.timedemo_runs:
+        fps_values = [run.fps for run in result.timedemo_runs]
+        frame_values = [run.frames for run in result.timedemo_runs]
+        total_frames = sum(frame_values)
+        print(
+            "Timedemo: "
+            f"runs={len(result.timedemo_runs)} | "
+            f"frames/run={min(frame_values)}-{max(frame_values)} | "
+            f"fps={min(fps_values):.1f}/{sum(fps_values) / len(fps_values):.1f}/{max(fps_values):.1f} "
+            "(min/avg/max) | "
+            f"total_frames={total_frames}",
+            flush=True,
+        )
+    else:
+        print("Workload metrics: none", flush=True)
+
+    summary = result.telemetry_summary()
+    if summary.get("sample_count", 0):
+        parts = [f"samples={summary['sample_count']}"]
+        if "gpu_util_avg" in summary:
+            parts.append(
+                "gpu_util="
+                f"{summary['gpu_util_avg']:.1f}% avg/{summary['gpu_util_max']:.1f}% max"
+            )
+        if "power_avg" in summary:
+            parts.append(
+                f"power={summary['power_avg']:.1f}W avg/{summary['power_max']:.1f}W max"
+            )
+        if "core_clock_avg" in summary:
+            parts.append(
+                "core_clock="
+                f"{summary['core_clock_avg']:.0f}MHz avg/"
+                f"{summary['core_clock_max']:.0f}MHz max"
+            )
+        if "voltage_avg" in summary:
+            parts.append(
+                "voltage="
+                f"{summary['voltage_avg']:.0f}mV avg/"
+                f"{summary['voltage_max']:.0f}mV max"
+            )
+        if "fan_avg" in summary:
+            parts.append(
+                f"fan={summary['fan_avg']:.0f}% avg/{summary['fan_max']:.0f}% max"
+            )
+        if "temperature_max" in summary:
+            parts.append(f"temp_max={summary['temperature_max']:.0f}C")
+        print("Telemetry: " + " | ".join(parts), flush=True)
+    else:
+        print("Telemetry: unavailable", flush=True)
+
+    if result.fatal_output_matches:
+        print(
+            "Fatal output matches: " + ", ".join(result.fatal_output_matches),
+            flush=True,
+        )
+    if result.xid_messages:
+        print("Xid messages:", flush=True)
+        for line in result.xid_messages:
+            print(f"  {line}", flush=True)
+    if result.output_tail:
+        print("Output tail:", flush=True)
+        for line in result.output_tail[-10:]:
+            print(f"  {line}", flush=True)

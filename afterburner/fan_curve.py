@@ -58,7 +58,9 @@ def _candidate_fan_profile_paths(afterburner_root=None):
     return [DEFAULT_GLOBAL_PROFILE]
 
 
-def resolve_afterburner_fan_profile(profile_path=DEFAULT_GLOBAL_PROFILE, afterburner_root=None):
+def resolve_afterburner_fan_profile(
+    profile_path=DEFAULT_GLOBAL_PROFILE, afterburner_root=None
+):
     if afterburner_root is not None:
         candidates = _candidate_fan_profile_paths(afterburner_root)
     else:
@@ -128,9 +130,13 @@ def validate_afterburner_fan_settings(
         temp_c = float(point["temperature_c"])
         speed_pct = float(point["speed_pct"])
         if temp_c < 0.0 or temp_c > 120.0:
-            problems.append(f"primary fan point {index} has invalid temperature {temp_c:.1f}C")
+            problems.append(
+                f"primary fan point {index} has invalid temperature {temp_c:.1f}C"
+            )
         if speed_pct < 0.0 or speed_pct > 100.0:
-            problems.append(f"primary fan point {index} has invalid speed {speed_pct:.1f}%")
+            problems.append(
+                f"primary fan point {index} has invalid speed {speed_pct:.1f}%"
+            )
         if last_temp_c is not None and temp_c < last_temp_c:
             problems.append("primary fan curve temperatures must be nondecreasing")
         if last_speed_pct is not None and speed_pct < last_speed_pct:
@@ -178,7 +184,9 @@ def validate_afterburner_fan_settings(
             )
             for sample_temp_c in sample_temps_c:
                 primary_speed_pct = speed_for_temperature(primary_points, sample_temp_c)
-                reference_speed_pct = speed_for_temperature(reference_points, sample_temp_c)
+                reference_speed_pct = speed_for_temperature(
+                    reference_points, sample_temp_c
+                )
                 if (
                     primary_speed_pct is not None
                     and reference_speed_pct is not None
@@ -199,11 +207,14 @@ def validate_afterburner_fan_settings(
 
 def decode_sw_auto_fan_flags(flags_u32):
     return {
-        "force_update_each_period": bool(flags_u32 & SW_AUTO_FAN_CONTROL_FLAG_FORCE_UPDATE),
+        "force_update_each_period": bool(
+            flags_u32 & SW_AUTO_FAN_CONTROL_FLAG_FORCE_UPDATE
+        ),
         "override_zero_with_hardware_curve": bool(
             flags_u32 & SW_AUTO_FAN_CONTROL_FLAG_OVERRIDE_ZERO_WITH_HARDWARE_CURVE
         ),
-        "unknown_bits_u32": flags_u32 & ~(
+        "unknown_bits_u32": flags_u32
+        & ~(
             SW_AUTO_FAN_CONTROL_FLAG_FORCE_UPDATE
             | SW_AUTO_FAN_CONTROL_FLAG_OVERRIDE_ZERO_WITH_HARDWARE_CURVE
         ),
@@ -224,7 +235,10 @@ def temperature_for_speed(points, target_speed_pct):
             if right_speed == left_speed:
                 return float(right["temperature_c"])
             t = (target_speed_pct - left_speed) / (right_speed - left_speed)
-            return float(left["temperature_c"] + (right["temperature_c"] - left["temperature_c"]) * t)
+            return float(
+                left["temperature_c"]
+                + (right["temperature_c"] - left["temperature_c"]) * t
+            )
 
     return float(points[-1]["temperature_c"])
 
@@ -243,7 +257,9 @@ def speed_for_temperature(points, target_temp_c):
             if right_temp == left_temp:
                 return float(right["speed_pct"])
             t = (target_temp_c - left_temp) / (right_temp - left_temp)
-            return float(left["speed_pct"] + (right["speed_pct"] - left["speed_pct"]) * t)
+            return float(
+                left["speed_pct"] + (right["speed_pct"] - left["speed_pct"]) * t
+            )
 
     return float(points[-1]["speed_pct"])
 
@@ -258,12 +274,15 @@ def highest_point_temperature_at_or_below_speed(points, max_speed_pct):
 
 
 def highest_zero_speed_temperature(points):
-    zero_points = [float(point["temperature_c"]) for point in points if float(point["speed_pct"]) <= 0.0]
+    zero_points = [
+        float(point["temperature_c"])
+        for point in points
+        if float(point["speed_pct"]) <= 0.0
+    ]
     return max(zero_points) if zero_points else None
 
 
 def format_curve_points(points):
     return ", ".join(
-        f"{point['temperature_c']:.0f}C->{point['speed_pct']:.0f}%"
-        for point in points
+        f"{point['temperature_c']:.0f}C->{point['speed_pct']:.0f}%" for point in points
     )

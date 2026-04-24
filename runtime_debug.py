@@ -12,12 +12,12 @@ import sys
 import time
 import traceback
 
-from afterburner_fan_curve import (
+from afterburner.fan_curve import (
     load_afterburner_fan_settings,
     parse_sw_auto_fan_curve,
     resolve_afterburner_fan_profile,
 )
-from afterburner_vfcurve import (
+from afterburner.vfcurve import (
     discover_afterburner_vf_sections,
     describe_afterburner_dynamic_lock,
     describe_afterburner_flatten_validation,
@@ -44,6 +44,10 @@ DEBUG_LOG_FILE = None
 DEBUG_LOG_MAX_BYTES = 700 * 1024
 DEBUG_LOG_BYTES_WRITTEN = 0
 DEBUG_LOG_TRUNCATED = False
+STDIO_CAPTURE_PATH = None
+STDIO_CAPTURE_FILE = None
+STDIO_CAPTURE_ORIGINAL_STDOUT = None
+STDIO_CAPTURE_ORIGINAL_STDERR = None
 
 
 def log(message):
@@ -65,6 +69,114 @@ def close_debug_log():
         return
     DEBUG_LOG_FILE.close()
     DEBUG_LOG_FILE = None
+
+
+class _TeeStream:
+    def __init__(self, original, capture_file):
+        self._original = original
+        self._capture_file = capture_file
+
+    def write(self, text):
+        written = self._original.write(text)
+        try:
+            self._capture_file.write(str(text))
+        except Exception:
+            pass
+        return written
+
+    def flush(self):
+        self._original.flush()
+        try:
+            self._capture_file.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        return self._original.isatty()
+
+    @property
+    def encoding(self):
+        return getattr(self._original, "encoding", "utf-8")
+
+    @property
+    def errors(self):
+        return getattr(self._original, "errors", "replace")
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
+def close_stdio_capture():
+    global \
+        STDIO_CAPTURE_FILE, \
+        STDIO_CAPTURE_ORIGINAL_STDOUT, \
+        STDIO_CAPTURE_ORIGINAL_STDERR
+    if STDIO_CAPTURE_FILE is None:
+        return
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    if STDIO_CAPTURE_ORIGINAL_STDOUT is not None:
+        sys.stdout = STDIO_CAPTURE_ORIGINAL_STDOUT
+    if STDIO_CAPTURE_ORIGINAL_STDERR is not None:
+        sys.stderr = STDIO_CAPTURE_ORIGINAL_STDERR
+    try:
+        STDIO_CAPTURE_FILE.close()
+    finally:
+        STDIO_CAPTURE_FILE = None
+
+
+def enable_stdio_capture(config_path, *, argv=None, label="stdout"):
+    global \
+        STDIO_CAPTURE_PATH, \
+        STDIO_CAPTURE_FILE, \
+        STDIO_CAPTURE_ORIGINAL_STDOUT, \
+        STDIO_CAPTURE_ORIGINAL_STDERR
+    if STDIO_CAPTURE_FILE is not None:
+        return STDIO_CAPTURE_PATH
+
+    config_path = Path(config_path).expanduser().resolve()
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    safe_label = (
+        "".join(
+            char if char.isalnum() or char in ("-", "_") else "-"
+            for char in str(label).strip().lower()
+        ).strip("-")
+        or "stdout"
+    )
+    debug_dir = config_path.parent / "debug-logs"
+    STDIO_CAPTURE_PATH = debug_dir / f"penguin_burner-{safe_label}-{timestamp}.log"
+    try:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        STDIO_CAPTURE_FILE = STDIO_CAPTURE_PATH.open(
+            "a",
+            encoding="utf-8",
+            errors="replace",
+            buffering=1,
+        )
+    except Exception as exc:
+        STDIO_CAPTURE_FILE = None
+        print(
+            f"warning: failed to open stdout/stderr capture under {debug_dir}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+    STDIO_CAPTURE_ORIGINAL_STDOUT = sys.stdout
+    STDIO_CAPTURE_ORIGINAL_STDERR = sys.stderr
+    sys.stdout = _TeeStream(STDIO_CAPTURE_ORIGINAL_STDOUT, STDIO_CAPTURE_FILE)
+    sys.stderr = _TeeStream(STDIO_CAPTURE_ORIGINAL_STDERR, STDIO_CAPTURE_FILE)
+    STDIO_CAPTURE_FILE.write("# PenguinBurner captured stdout/stderr log\n")
+    STDIO_CAPTURE_FILE.write(f"# started_at={time.strftime('%Y-%m-%d %H:%M:%S %z')}\n")
+    STDIO_CAPTURE_FILE.write(
+        f"# argv={shlex.join([Path(sys.argv[0]).name, *(argv or [])])}\n"
+    )
+    STDIO_CAPTURE_FILE.write(f"# cwd={Path.cwd()}\n")
+    STDIO_CAPTURE_FILE.write(f"# config-path={config_path}\n")
+    STDIO_CAPTURE_FILE.flush()
+    return STDIO_CAPTURE_PATH
 
 
 def _write_debug_log_line(text):
@@ -93,8 +205,23 @@ def _write_debug_log_line(text):
     DEBUG_LOG_TRUNCATED = True
 
 
+def _write_stdio_capture_line(text):
+    if STDIO_CAPTURE_FILE is None:
+        return
+    try:
+        STDIO_CAPTURE_FILE.write(str(text) + "\n")
+        STDIO_CAPTURE_FILE.flush()
+    except Exception:
+        pass
+
+
 def enable_debug_logging(config_path, *, argv=None):
-    global DEBUG_LOG_ENABLED, DEBUG_LOG_PATH, DEBUG_LOG_FILE, DEBUG_LOG_BYTES_WRITTEN, DEBUG_LOG_TRUNCATED
+    global \
+        DEBUG_LOG_ENABLED, \
+        DEBUG_LOG_PATH, \
+        DEBUG_LOG_FILE, \
+        DEBUG_LOG_BYTES_WRITTEN, \
+        DEBUG_LOG_TRUNCATED
     if DEBUG_LOG_ENABLED:
         return DEBUG_LOG_PATH
 
@@ -126,12 +253,19 @@ def enable_debug_logging(config_path, *, argv=None):
 
 
 def debug_exception(context, exc):
-    if not DEBUG_LOG_ENABLED:
+    if not DEBUG_LOG_ENABLED and STDIO_CAPTURE_FILE is None:
         return
-    debug_log(f"{context}: {exc.__class__.__name__}: {exc}")
+
+    def _emit(message):
+        if DEBUG_LOG_ENABLED:
+            debug_log(message)
+        if STDIO_CAPTURE_FILE is not None:
+            _write_stdio_capture_line(f"[debug] {message}")
+
+    _emit(f"{context}: {exc.__class__.__name__}: {exc}")
     for line in traceback.format_exception(type(exc), exc, exc.__traceback__):
         for fragment in line.rstrip().splitlines():
-            debug_log(f"traceback: {fragment}")
+            _emit(f"traceback: {fragment}")
 
 
 def _normalized_afterburner_section_name(name):
@@ -217,7 +351,9 @@ def _debug_selection_reason_summary(
 ):
     reasons = []
     normalized_requested = _normalized_afterburner_section_name(requested_section)
-    normalized_section = _normalized_afterburner_section_name(section_info.get("section"))
+    normalized_section = _normalized_afterburner_section_name(
+        section_info.get("section")
+    )
     if normalized_requested and normalized_requested != normalized_section:
         reasons.append("requested-section-mismatch")
     if not section_info.get("is_manual_candidate"):
@@ -260,7 +396,9 @@ def _debug_log_device_profile_section_dump(profile_path, section_info):
         )
         return
 
-    debug_log(f"{Path(profile_path).name}:{resolved_section}: raw-key-count={len(raw_values)}")
+    debug_log(
+        f"{Path(profile_path).name}:{resolved_section}: raw-key-count={len(raw_values)}"
+    )
     for key, value in raw_values.items():
         normalized_key = str(key).strip().lower()
         if normalized_key == "vfcurve":
@@ -297,8 +435,7 @@ def _debug_log_fan_profile_dump(profile_path):
         normalized_key = key.strip().lower()
         if normalized_key in ("swautofancontrolcurve", "swautofancontrolcurve2"):
             debug_log(
-                f"{Path(profile_path).name}: "
-                + _debug_fan_curve_blob_summary(value)
+                f"{Path(profile_path).name}: " + _debug_fan_curve_blob_summary(value)
             )
             debug_log(
                 f"{Path(profile_path).name}: "
@@ -335,7 +472,11 @@ def _debug_log_runtime_environment():
     except Exception as exc:
         debug_exception("failed to run nvidia-smi --version", exc)
     else:
-        version_text = (version_result.stdout or version_result.stderr).strip().replace("\n", " | ")
+        version_text = (
+            (version_result.stdout or version_result.stderr)
+            .strip()
+            .replace("\n", " | ")
+        )
         debug_log(
             f"nvidia-smi-version rc={version_result.returncode} "
             f"text={_debug_render_text_preview(version_text, limit=140)}"
@@ -355,13 +496,19 @@ def _debug_log_runtime_environment():
     except Exception as exc:
         debug_exception("failed to query nvidia-smi gpu metadata", exc)
     else:
-        lines = [line.strip() for line in query_result.stdout.splitlines() if line.strip()]
-        debug_log(f"nvidia-smi-gpu-query rc={query_result.returncode} count={len(lines)}")
+        lines = [
+            line.strip() for line in query_result.stdout.splitlines() if line.strip()
+        ]
+        debug_log(
+            f"nvidia-smi-gpu-query rc={query_result.returncode} count={len(lines)}"
+        )
         for line in lines:
             debug_log(f"nvidia-smi-gpu={line}")
 
 
-def debug_effective_runtime_options(*, config_path, gpu_index, afterburner_runtime_options):
+def debug_effective_runtime_options(
+    *, config_path, gpu_index, afterburner_runtime_options
+):
     if not DEBUG_LOG_ENABLED:
         return
     debug_log(
@@ -373,6 +520,7 @@ def debug_effective_runtime_options(*, config_path, gpu_index, afterburner_runti
         f"device-profile={afterburner_runtime_options.get('afterburner_device_profile') or '(auto)'} "
         f"power-limit-override={afterburner_runtime_options.get('power_limit_override_w')} "
         f"preserve-vf-below-mv={afterburner_runtime_options.get('preserve_vanilla_below_mv')} "
+        f"auto-uv-max-drop-pct={afterburner_runtime_options.get('auto_uv_max_drop_pct')} "
         f"dangerously-skip-validation={bool(afterburner_runtime_options.get('dangerously_skip_validation'))}"
     )
 
@@ -437,7 +585,11 @@ def emit_afterburner_debug_snapshot(
     debug_log(f"device-profile-hint={device_profile_hint or '(auto)'}")
     debug_log(
         "selection-mode="
-        + ("dangerously-skip-validation" if dangerously_skip_validation else "default-validation")
+        + (
+            "dangerously-skip-validation"
+            if dangerously_skip_validation
+            else "default-validation"
+        )
     )
 
     try:
@@ -461,7 +613,9 @@ def emit_afterburner_debug_snapshot(
     debug_log(_debug_describe_file(afterburner_profiles_dir(resolved_root)))
 
     try:
-        fan_profile_path = resolve_afterburner_fan_profile(afterburner_root=resolved_root)
+        fan_profile_path = resolve_afterburner_fan_profile(
+            afterburner_root=resolved_root
+        )
         debug_log(f"selected-fan-profile={fan_profile_path}")
         fan_settings = load_afterburner_fan_settings(fan_profile_path)
         debug_log(

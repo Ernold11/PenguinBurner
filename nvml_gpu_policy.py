@@ -18,7 +18,10 @@ def afterburner_offset_khz_to_mhz(offset_khz):
 def clamp_afterburner_mem_offset_mhz(offset_mhz):
     if offset_mhz is None:
         return None
-    return max(-MAX_AFTERBURNER_MEM_OFFSET_MHZ, min(MAX_AFTERBURNER_MEM_OFFSET_MHZ, int(offset_mhz)))
+    return max(
+        -MAX_AFTERBURNER_MEM_OFFSET_MHZ,
+        min(MAX_AFTERBURNER_MEM_OFFSET_MHZ, int(offset_mhz)),
+    )
 
 
 def _resolve_power_limit_cap(power_limit_cap_w, power_limits):
@@ -88,7 +91,9 @@ def translate_afterburner_gpu_policy(
     core_clk_boost_khz = profile_settings.get("core_clk_boost_khz")
     mem_clk_boost_khz = profile_settings.get("mem_clk_boost_khz")
     requested_mem_clk_vf_offset_mhz = afterburner_offset_khz_to_mhz(mem_clk_boost_khz)
-    mem_clk_vf_offset_mhz = clamp_afterburner_mem_offset_mhz(requested_mem_clk_vf_offset_mhz)
+    mem_clk_vf_offset_mhz = clamp_afterburner_mem_offset_mhz(
+        requested_mem_clk_vf_offset_mhz
+    )
     power_limit_translation = translate_afterburner_power_limit_pct(
         power_limit_pct,
         power_limits=power_limits,
@@ -105,7 +110,9 @@ def translate_afterburner_gpu_policy(
         "power_limit_min_w": power_limits.get("power_limit_min_w"),
         "power_limit_max_w": power_limits.get("power_limit_max_w"),
         "core_clk_boost_khz": core_clk_boost_khz,
-        "core_clk_boost_linux_mode": "unmapped" if core_clk_boost_khz is not None else "none",
+        "core_clk_boost_linux_mode": "unmapped"
+        if core_clk_boost_khz is not None
+        else "none",
         "mem_clk_boost_khz": mem_clk_boost_khz,
         "mem_clk_vf_offset_requested_mhz": requested_mem_clk_vf_offset_mhz,
         "mem_clk_vf_offset_mhz": mem_clk_vf_offset_mhz,
@@ -129,7 +136,6 @@ def describe_translated_gpu_policy(gpu_policy):
     power_limit_source_w = gpu_policy.get("power_limit_source_w")
     power_limit_w = gpu_policy.get("power_limit_w")
     power_limit_cap_w = gpu_policy.get("power_limit_cap_w")
-    power_limit_cap_mode = str(gpu_policy.get("power_limit_cap_mode", ""))
     if (
         power_limit_pct is not None
         and power_limit_source_w is not None
@@ -176,7 +182,9 @@ def describe_translated_gpu_policy(gpu_policy):
             )
         )
     elif mem_clk_boost_khz is not None and mem_clk_vf_offset_mhz is not None:
-        parts.append(f"mem-boost={int(mem_clk_boost_khz)}kHz->{int(mem_clk_vf_offset_mhz):+d}MHz")
+        parts.append(
+            f"mem-boost={int(mem_clk_boost_khz)}kHz->{int(mem_clk_vf_offset_mhz):+d}MHz"
+        )
     elif mem_clk_vf_offset_mhz is not None:
         parts.append(f"mem-vf-offset={int(mem_clk_vf_offset_mhz):+d}MHz")
 
@@ -222,7 +230,10 @@ class NvmlGpuPolicyController:
 
         self._nvml.nvmlInit_v2.restype = c_int
         self._nvml.nvmlShutdown.restype = c_int
-        self._nvml.nvmlDeviceGetHandleByIndex_v2.argtypes = [c_uint, ctypes.POINTER(c_void_p)]
+        self._nvml.nvmlDeviceGetHandleByIndex_v2.argtypes = [
+            c_uint,
+            ctypes.POINTER(c_void_p),
+        ]
         self._nvml.nvmlDeviceGetHandleByIndex_v2.restype = c_int
 
         if hasattr(self._nvml, "nvmlErrorString"):
@@ -252,7 +263,11 @@ class NvmlGpuPolicyController:
             self._nvml.nvmlDeviceSetPowerManagementLimit.argtypes = [c_void_p, c_uint]
             self._nvml.nvmlDeviceSetPowerManagementLimit.restype = c_int
         if hasattr(self._nvml, "nvmlDeviceSetGpuLockedClocks"):
-            self._nvml.nvmlDeviceSetGpuLockedClocks.argtypes = [c_void_p, c_uint, c_uint]
+            self._nvml.nvmlDeviceSetGpuLockedClocks.argtypes = [
+                c_void_p,
+                c_uint,
+                c_uint,
+            ]
             self._nvml.nvmlDeviceSetGpuLockedClocks.restype = c_int
         if hasattr(self._nvml, "nvmlDeviceResetGpuLockedClocks"):
             self._nvml.nvmlDeviceResetGpuLockedClocks.argtypes = [c_void_p]
@@ -295,7 +310,9 @@ class NvmlGpuPolicyController:
     def _initialize_session(self):
         rc = int(self._nvml.nvmlInit_v2())
         if rc != NVML_SUCCESS:
-            raise RuntimeError(f"nvmlInit_v2 failed with NVML error {rc}: {self.error_text(rc)}")
+            raise RuntimeError(
+                f"nvmlInit_v2 failed with NVML error {rc}: {self.error_text(rc)}"
+            )
         self._initialized = True
 
         rc = int(
@@ -335,13 +352,19 @@ class NvmlGpuPolicyController:
 
     def query_power_limits(self):
         info = {
-            "power_limit_w": self._read_power_value_w("nvmlDeviceGetPowerManagementLimit"),
-            "power_limit_default_w": self._read_power_value_w("nvmlDeviceGetPowerManagementDefaultLimit"),
+            "power_limit_w": self._read_power_value_w(
+                "nvmlDeviceGetPowerManagementLimit"
+            ),
+            "power_limit_default_w": self._read_power_value_w(
+                "nvmlDeviceGetPowerManagementDefaultLimit"
+            ),
             "power_limit_min_w": None,
             "power_limit_max_w": None,
         }
 
-        getter = getattr(self._nvml, "nvmlDeviceGetPowerManagementLimitConstraints", None)
+        getter = getattr(
+            self._nvml, "nvmlDeviceGetPowerManagementLimitConstraints", None
+        )
         if getter is None:
             return info
 
@@ -362,7 +385,9 @@ class NvmlGpuPolicyController:
     def apply_power_limit_w(self, power_limit_w):
         setter = getattr(self._nvml, "nvmlDeviceSetPowerManagementLimit", None)
         if setter is None:
-            raise RuntimeError("nvmlDeviceSetPowerManagementLimit is not available on this system")
+            raise RuntimeError(
+                "nvmlDeviceSetPowerManagementLimit is not available on this system"
+            )
 
         target_mw = int(round(float(power_limit_w) * 1000.0))
         rc = int(setter(self._device, ctypes.c_uint(target_mw)))
@@ -388,22 +413,22 @@ class NvmlGpuPolicyController:
     def get_supported_memory_clocks_mhz(self):
         return self._read_clock_list("nvmlDeviceGetSupportedMemoryClocks", capacity=64)
 
-    def get_supported_graphics_clocks_mhz(self, memory_clock_mhz):
+    def get_supported_core_clocks_mhz(self, memory_clock_mhz):
         return self._read_clock_list(
             "nvmlDeviceGetSupportedGraphicsClocks",
             ctypes.c_uint(int(memory_clock_mhz)),
             capacity=512,
         )
 
-    def get_supported_graphics_clock_steps_mhz(self):
+    def get_supported_core_clock_steps_mhz(self):
         memory_clocks = self.get_supported_memory_clocks_mhz()
-        graphics_clocks = set()
+        core_clocks = set()
         for memory_clock_mhz in memory_clocks:
-            graphics_clocks.update(self.get_supported_graphics_clocks_mhz(memory_clock_mhz))
-        return sorted(graphics_clocks)
+            core_clocks.update(self.get_supported_core_clocks_mhz(memory_clock_mhz))
+        return sorted(core_clocks)
 
-    def snap_graphics_clock_mhz(self, target_clock_mhz, *, prefer_not_above=True):
-        supported_steps = self.get_supported_graphics_clock_steps_mhz()
+    def snap_core_clock_mhz(self, target_clock_mhz, *, prefer_not_above=True):
+        supported_steps = self.get_supported_core_clock_steps_mhz()
         if not supported_steps:
             return {
                 "requested_clock_mhz": int(target_clock_mhz),
@@ -417,8 +442,16 @@ class NvmlGpuPolicyController:
             applied_clock_mhz = requested_clock_mhz
             mode = "exact"
         else:
-            lower_steps = [clock_mhz for clock_mhz in supported_steps if clock_mhz <= requested_clock_mhz]
-            upper_steps = [clock_mhz for clock_mhz in supported_steps if clock_mhz >= requested_clock_mhz]
+            lower_steps = [
+                clock_mhz
+                for clock_mhz in supported_steps
+                if clock_mhz <= requested_clock_mhz
+            ]
+            upper_steps = [
+                clock_mhz
+                for clock_mhz in supported_steps
+                if clock_mhz >= requested_clock_mhz
+            ]
             if prefer_not_above and lower_steps:
                 applied_clock_mhz = max(lower_steps)
                 mode = "floor"
@@ -429,7 +462,9 @@ class NvmlGpuPolicyController:
                 applied_clock_mhz = max(lower_steps)
                 mode = "floor"
             else:
-                applied_clock_mhz = min(supported_steps, key=lambda value: abs(value - requested_clock_mhz))
+                applied_clock_mhz = min(
+                    supported_steps, key=lambda value: abs(value - requested_clock_mhz)
+                )
                 mode = "nearest"
 
         return {
@@ -439,7 +474,7 @@ class NvmlGpuPolicyController:
             "supported_steps_mhz": supported_steps,
         }
 
-    def apply_locked_graphics_clock_mhz(
+    def apply_locked_core_clock_mhz(
         self,
         clock_mhz,
         *,
@@ -448,7 +483,9 @@ class NvmlGpuPolicyController:
     ):
         setter = getattr(self._nvml, "nvmlDeviceSetGpuLockedClocks", None)
         if setter is None:
-            raise RuntimeError("nvmlDeviceSetGpuLockedClocks is not available on this system")
+            raise RuntimeError(
+                "nvmlDeviceSetGpuLockedClocks is not available on this system"
+            )
 
         snap = {
             "requested_clock_mhz": int(clock_mhz),
@@ -457,7 +494,9 @@ class NvmlGpuPolicyController:
             "supported_steps_mhz": [],
         }
         if snap_to_supported:
-            snap = self.snap_graphics_clock_mhz(clock_mhz, prefer_not_above=prefer_not_above)
+            snap = self.snap_core_clock_mhz(
+                clock_mhz, prefer_not_above=prefer_not_above
+            )
 
         applied_clock_mhz = int(snap["applied_clock_mhz"])
         rc = int(
@@ -474,7 +513,7 @@ class NvmlGpuPolicyController:
             )
         return snap
 
-    def apply_locked_graphics_clock_range_mhz(
+    def apply_locked_core_clock_range_mhz(
         self,
         min_clock_mhz,
         max_clock_mhz,
@@ -484,7 +523,9 @@ class NvmlGpuPolicyController:
     ):
         setter = getattr(self._nvml, "nvmlDeviceSetGpuLockedClocks", None)
         if setter is None:
-            raise RuntimeError("nvmlDeviceSetGpuLockedClocks is not available on this system")
+            raise RuntimeError(
+                "nvmlDeviceSetGpuLockedClocks is not available on this system"
+            )
 
         range_snap = {
             "requested_min_clock_mhz": int(min_clock_mhz),
@@ -496,13 +537,17 @@ class NvmlGpuPolicyController:
             "supported_steps_mhz": [],
         }
         if snap_to_supported:
-            min_snap = self.snap_graphics_clock_mhz(min_clock_mhz, prefer_not_above=False)
-            max_snap = self.snap_graphics_clock_mhz(max_clock_mhz, prefer_not_above=prefer_max_not_above)
+            min_snap = self.snap_core_clock_mhz(min_clock_mhz, prefer_not_above=False)
+            max_snap = self.snap_core_clock_mhz(
+                max_clock_mhz, prefer_not_above=prefer_max_not_above
+            )
             applied_min_clock_mhz = int(min_snap["applied_clock_mhz"])
             applied_max_clock_mhz = int(max_snap["applied_clock_mhz"])
             min_mode = str(min_snap["mode"])
             max_mode = str(max_snap["mode"])
-            supported_steps_mhz = list(max_snap["supported_steps_mhz"] or min_snap["supported_steps_mhz"])
+            supported_steps_mhz = list(
+                max_snap["supported_steps_mhz"] or min_snap["supported_steps_mhz"]
+            )
             if applied_min_clock_mhz > applied_max_clock_mhz:
                 applied_min_clock_mhz = applied_max_clock_mhz
                 min_mode = f"{min_mode}-clamped-to-max"
@@ -530,10 +575,12 @@ class NvmlGpuPolicyController:
             )
         return range_snap
 
-    def reset_locked_graphics_clocks(self):
+    def reset_locked_core_clocks(self):
         setter = getattr(self._nvml, "nvmlDeviceResetGpuLockedClocks", None)
         if setter is None:
-            raise RuntimeError("nvmlDeviceResetGpuLockedClocks is not available on this system")
+            raise RuntimeError(
+                "nvmlDeviceResetGpuLockedClocks is not available on this system"
+            )
 
         rc = int(setter(self._device))
         if rc != NVML_SUCCESS:
@@ -556,16 +603,38 @@ class NvmlGpuPolicyController:
 
     def get_clock_offsets(self):
         return {
-            "mem_clk_vf_offset_mhz": self._read_clock_offset("nvmlDeviceGetMemClkVfOffset"),
+            "gpc_clk_vf_offset_mhz": self._read_clock_offset(
+                "nvmlDeviceGetGpcClkVfOffset"
+            ),
+            "mem_clk_vf_offset_mhz": self._read_clock_offset(
+                "nvmlDeviceGetMemClkVfOffset"
+            ),
         }
 
-    def apply_clock_offsets(self, *, mem_clk_vf_offset_mhz=None):
+    def apply_clock_offsets(
+        self, *, gpc_clk_vf_offset_mhz=None, mem_clk_vf_offset_mhz=None
+    ):
         applied = {}
+
+        if gpc_clk_vf_offset_mhz is not None:
+            setter = getattr(self._nvml, "nvmlDeviceSetGpcClkVfOffset", None)
+            if setter is None:
+                raise RuntimeError(
+                    "nvmlDeviceSetGpcClkVfOffset is not available on this system"
+                )
+            rc = int(setter(self._device, ctypes.c_int(int(gpc_clk_vf_offset_mhz))))
+            if rc != NVML_SUCCESS:
+                raise RuntimeError(
+                    f"nvmlDeviceSetGpcClkVfOffset failed with NVML error {rc}: {self.error_text(rc)}"
+                )
+            applied["gpc_clk_vf_offset_mhz"] = int(gpc_clk_vf_offset_mhz)
 
         if mem_clk_vf_offset_mhz is not None:
             setter = getattr(self._nvml, "nvmlDeviceSetMemClkVfOffset", None)
             if setter is None:
-                raise RuntimeError("nvmlDeviceSetMemClkVfOffset is not available on this system")
+                raise RuntimeError(
+                    "nvmlDeviceSetMemClkVfOffset is not available on this system"
+                )
             rc = int(setter(self._device, ctypes.c_int(int(mem_clk_vf_offset_mhz))))
             if rc != NVML_SUCCESS:
                 raise RuntimeError(

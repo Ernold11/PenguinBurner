@@ -26,6 +26,10 @@ def default_user_config_dir() -> Path:
     return _effective_home() / ".config" / "PenguinBurner"
 
 
+def default_saved_uv_dir() -> Path:
+    return _effective_home() / "saved-uv"
+
+
 def default_runtime_config_path() -> Path:
     return default_user_config_dir() / "penguin_burner.toml"
 

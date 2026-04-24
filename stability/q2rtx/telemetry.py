@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+import ctypes
+from datetime import datetime
+import shutil
+import subprocess
+
+from hidden_nvml_voltage import create_hidden_voltage_reader
+
+from .models import TelemetrySample
+
+
+class _HiddenNvmlVoltageSession:
+    def __init__(self, gpu_index: int):
+        self._gpu_index = int(gpu_index)
+        self._nvml = None
+        self._device = ctypes.c_void_p()
+        self._initialized = False
+        self._voltage_reader = None
+        try:
+            self._nvml = ctypes.CDLL("libnvidia-ml.so.1")
+            self._bind()
+            self._initialize()
+            self._voltage_reader = create_hidden_voltage_reader(self._nvml)
+        except Exception:
+            self.close()
+
+    def _bind(self) -> None:
+        if self._nvml is None:
+            raise RuntimeError("NVML library is not loaded")
+        self._nvml.nvmlInit_v2.restype = ctypes.c_int
+        self._nvml.nvmlShutdown.restype = ctypes.c_int
+        self._nvml.nvmlDeviceGetHandleByIndex_v2.argtypes = [
+            ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self._nvml.nvmlDeviceGetHandleByIndex_v2.restype = ctypes.c_int
+
+    def _initialize(self) -> None:
+        if self._nvml is None:
+            raise RuntimeError("NVML library is not loaded")
+        rc = int(self._nvml.nvmlInit_v2())
+        if rc != 0:
+            raise RuntimeError(f"nvmlInit_v2 failed: {rc}")
+        self._initialized = True
+        rc = int(
+            self._nvml.nvmlDeviceGetHandleByIndex_v2(
+                ctypes.c_uint(self._gpu_index),
+                ctypes.byref(self._device),
+            )
+        )
+        if rc != 0:
+            raise RuntimeError(f"nvmlDeviceGetHandleByIndex_v2 failed: {rc}")
+
+    def read_live_voltage_mv(self) -> float | None:
+        if self._voltage_reader is None:
+            return None
+        try:
+            voltage_uv = self._voltage_reader.read_microvolts(self._device)
+        except Exception:
+            return None
+        if voltage_uv is None:
+            return None
+        return float(int(voltage_uv) / 1000.0)
+
+    def close(self) -> None:
+        if self._nvml is not None and self._initialized:
+            try:
+                self._nvml.nvmlShutdown()
+            except Exception:
+                pass
+        self._initialized = False
+        self._nvml = None
+        self._voltage_reader = None
+
+
+def _parse_metric(value: str) -> float | None:
+    cleaned = value.strip()
+    if not cleaned or cleaned.upper() in {"N/A", "[N/A]", "[NOT SUPPORTED]"}:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def query_gpu_metrics(
+    gpu_index: int,
+    *,
+    voltage_session: _HiddenNvmlVoltageSession | None = None,
+) -> TelemetrySample | None:
+    nvidia_smi = shutil.which("nvidia-smi")
+    voltage_mv = (
+        voltage_session.read_live_voltage_mv() if voltage_session is not None else None
+    )
+    if not nvidia_smi:
+        if voltage_mv is None:
+            return None
+        return TelemetrySample(
+            elapsed_s=0.0,
+            gpu_util_pct=None,
+            power_w=None,
+            core_clock_mhz=None,
+            temperature_c=None,
+            voltage_mv=voltage_mv,
+            fan_speed_pct=None,
+        )
+
+    command = [
+        nvidia_smi,
+        "--query-gpu=utilization.gpu,power.draw,clocks.gr,temperature.gpu,fan.speed",
+        "--format=csv,noheader,nounits",
+        "-i",
+        str(int(gpu_index)),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        if voltage_mv is None:
+            return None
+        return TelemetrySample(
+            elapsed_s=0.0,
+            gpu_util_pct=None,
+            power_w=None,
+            core_clock_mhz=None,
+            temperature_c=None,
+            voltage_mv=voltage_mv,
+            fan_speed_pct=None,
+        )
+
+    line = result.stdout.strip().splitlines()
+    if not line:
+        return None
+    fields = [item.strip() for item in line[0].split(",")]
+    while len(fields) < 5:
+        fields.append("")
+    return TelemetrySample(
+        elapsed_s=0.0,
+        gpu_util_pct=_parse_metric(fields[0]),
+        power_w=_parse_metric(fields[1]),
+        core_clock_mhz=_parse_metric(fields[2]),
+        temperature_c=_parse_metric(fields[3]),
+        voltage_mv=voltage_mv,
+        fan_speed_pct=_parse_metric(fields[4]),
+    )
+
+
+def _query_xid_messages_since(started_at: datetime) -> list[str]:
+    since_value = started_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    commands: list[list[str]] = []
+    journalctl = shutil.which("journalctl")
+    if journalctl:
+        commands.append(
+            [
+                journalctl,
+                "-k",
+                "--since",
+                since_value,
+                "--no-pager",
+                "--output=short-iso",
+            ]
+        )
+    dmesg = shutil.which("dmesg")
+    if dmesg:
+        commands.append([dmesg, "--since", since_value])
+
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+
+        messages = [
+            line.strip() for line in result.stdout.splitlines() if "NVRM: Xid" in line
+        ]
+        if messages:
+            return messages
+
+    return []

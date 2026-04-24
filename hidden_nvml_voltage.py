@@ -30,7 +30,9 @@ class HiddenNvmlVoltageReader:
         dladdr.argtypes = [ctypes.c_void_p, ctypes.POINTER(DlInfo)]
         dladdr.restype = ctypes.c_int
 
-        symbol = ctypes.cast(self._nvml.nvmlInternalGetExportTable, ctypes.c_void_p).value
+        symbol = ctypes.cast(
+            self._nvml.nvmlInternalGetExportTable, ctypes.c_void_p
+        ).value
         info = DlInfo()
         rc = dladdr(ctypes.c_void_p(symbol), ctypes.byref(info))
         if rc == 0 or not info.dli_fbase:
@@ -38,7 +40,10 @@ class HiddenNvmlVoltageReader:
 
         hidden_addr = int(info.dli_fbase) + self._HIDDEN_GET_VOLTAGE_UV_OFFSET
         return ctypes.CFUNCTYPE(
-            ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
         )(hidden_addr)
 
     def read_microvolts(self, device):
@@ -46,7 +51,9 @@ class HiddenNvmlVoltageReader:
             return None
 
         try:
-            obj = ctypes.c_uint64.from_address(device.value + self._DEVICE_OBJECT_OFFSET).value
+            obj = ctypes.c_uint64.from_address(
+                device.value + self._DEVICE_OBJECT_OFFSET
+            ).value
         except (TypeError, ValueError, OSError):
             return None
 
@@ -58,7 +65,10 @@ class HiddenNvmlVoltageReader:
         if rc != 0:
             return None
 
-        return int(out.value)
+        voltage_uv = int(out.value)
+        if voltage_uv < 300_000 or voltage_uv > 1_500_000:
+            return None
+        return voltage_uv
 
 
 def create_hidden_voltage_reader(nvml):

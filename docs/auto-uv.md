@@ -1,0 +1,158 @@
+# Auto-UV Quick Guide
+
+Auto-UV is the normal setup path when you do not already have a trusted MSI
+Afterburner undervolt profile. It runs in the foreground, finds a stable NVIDIA
+voltage/frequency curve on Linux, and saves that curve for later foreground or
+daemon runtime.
+
+Undervolting is experimental hardware tuning. A bad voltage point can hang the
+GPU, crash the driver, freeze the display, or force a reboot. Auto-UV records
+the voltage being tested before each risky probe; after a crash or reboot, the
+next run marks that voltage unsafe and avoids that voltage and lower voltages
+unless you deliberately clear Auto-UV state.
+
+## Start From Scratch
+
+For a clean first run, use:
+
+```bash
+sudo ./penguin_burner.sh
+```
+
+If there is no saved Auto-UV curve and no usable imported Afterburner profile,
+PenguinBurner starts the Auto-UV scan automatically.
+
+To force a fresh scan and forget previous Auto-UV results:
+
+```bash
+sudo ./penguin_burner.sh --fresh-auto-uv-scan
+```
+
+You can also request the scan explicitly:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan
+```
+
+## What Happens During The Scan
+
+- PenguinBurner resets GPU clocks, memory offsets, power policy, and V/F offsets before measuring.
+- It runs Q2RTX plus a CUDA companion load to measure real loaded behavior.
+- Q2RTX renders at a real GPU-bound size. PenguinBurner uses `gamescope --backend headless` when available so Q2RTX does not create a visible desktop window. If gamescope is unavailable, it falls back to moving the real Vulkan window off-screen. Use `--show-q2rtx-window` if you want to see it.
+- If Q2RTX is missing, PenguinBurner downloads and installs the managed copy automatically.
+- It walks voltage down step by step, testing each candidate before accepting it.
+- It stops before unsafe points, severe clock loss, crashes, CUDA failures, Q2RTX failures, or NVIDIA Xid errors.
+- It saves stable checkpoints while scanning, so progress is not lost if something fails.
+- It runs a longer final verification before saving the final curve.
+
+The final verification default is `600s`.
+
+## Headless Q2RTX
+
+Auto-UV tries to keep Q2RTX hidden by default. When `gamescope` is installed,
+PenguinBurner launches Q2RTX inside:
+
+```text
+gamescope --backend headless
+```
+
+Q2RTX still renders a real Vulkan workload at the configured size, normally
+`2560x1440`. The render target is inside gamescope's private headless
+compositor, so KDE, GNOME, X11, or Wayland do not get a visible Q2RTX window.
+
+If gamescope is unavailable, PenguinBurner falls back to a best-effort
+off-screen X11 window. That fallback can still be visible on some Wayland
+desktops.
+
+To show the Q2RTX window for debugging:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan --show-q2rtx-window
+```
+
+## How Auto-UV Decides To Continue Or Stop
+
+PenguinBurner compares each accepted voltage step with the previous stable step.
+The important values are the measured loaded voltage, temperature-normalized
+power, and temperature-normalized FPS per watt.
+
+- If requested voltage went down but measured loaded voltage did not go down, PenguinBurner assumes the NVIDIA driver ignored that step and keeps probing lower.
+- If measured loaded voltage went down, temperature-normalized power went up, and temperature-normalized FPS per watt did not improve by at least `0.5%`, PenguinBurner treats that as a regression/no-gain step.
+- By default, Auto-UV stops after two consecutive regression/no-gain steps and uses the first of those two stable curves as final.
+- Auto-UV will not stop early from FPS/W regression/no-gain until it has scanned at least `10%` below the starting voltage by default. To change that floor, use `--auto-uv-min-efficiency-stop-drop-pct`.
+- If the next probe improves again, the stop streak is cleared and scanning continues.
+
+Measured voltage is read through NVML voltage telemetry automatically. There is
+no opt-in flag. If voltage telemetry is unavailable on a driver or GPU,
+PenguinBurner prints `n/a` and relies on the remaining safety checks.
+
+The default performance guardrail allows up to a `10%` loaded GPU core clock
+drop. If you want to allow a little more drop, for example `12%`, run:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-max-clock-drop-pct 12
+```
+
+## After The Scan
+
+Normal runtime and daemon mode prefer the saved Auto-UV curve automatically:
+
+```bash
+sudo ./penguin_burner.sh --daemonize
+```
+
+The saved V/F curve is stored in PenguinBurner's user config directory.
+
+If you deliberately want to test an imported Afterburner curve instead, use:
+
+```bash
+sudo ./penguin_burner.sh --daemonize --prefer-afterburner-curve
+```
+
+## Fan Curve
+
+Auto-UV may write a suggested quiet fan curve after final verification. It is
+stored in PenguinBurner's user config directory.
+
+PenguinBurner does not apply that fan curve by default. To opt in during normal
+runtime or daemon mode:
+
+```bash
+sudo ./penguin_burner.sh --daemonize --silent-fan-curve
+```
+
+Fan-curve generation is blocked if the final load temperature is already too hot
+for a quiet curve. The safety target is `75C` by default.
+
+## Logs And Saved State
+
+Every Auto-UV scan writes an attachable stdout/stderr log under:
+
+```text
+PenguinBurner user config directory / debug-logs
+```
+
+Auto-UV result and recovery files live under:
+
+```text
+PenguinBurner user config directory / uv-result
+PenguinBurner saved-UV directory
+```
+
+If a voltage fails or the machine crashes during a probe, Auto-UV records that
+voltage as unsafe and avoids that voltage and lower voltages on later scans.
+
+## Troubleshooting
+
+If a scan stops too early, check the latest Auto-UV stdout log first. Common
+reasons are an unsafe-voltage history entry, a clock guardrail failure, a Q2RTX
+failure, a CUDA failure, or an intentionally short `--auto-uv-final-seconds`
+override.
+
+To remove old Auto-UV history and rerun clean:
+
+```bash
+sudo ./penguin_burner.sh --fresh-auto-uv-scan
+```
+
+This cleanup keeps Afterburner imports and Q2RTX downloads intact.

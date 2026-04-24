@@ -84,8 +84,7 @@ def render_line_chart(
     grid = [[" "] * int(width) for _ in range(int(height))]
     for item in series:
         points = [
-            (float(point[0]), float(point[1]))
-            for point in item.get("points", [])
+            (float(point[0]), float(point[1])) for point in item.get("points", [])
         ]
         if not points:
             continue
@@ -119,7 +118,9 @@ def render_line_chart(
     tick_rows = {}
     tick_count = min(max(int(height // 2), 4), int(height))
     for index in range(tick_count):
-        value = y_upper - (y_upper - y_lower) * float(index) / float(max(tick_count - 1, 1))
+        value = y_upper - (y_upper - y_lower) * float(index) / float(
+            max(tick_count - 1, 1)
+        )
         value = round(value / float(y_rounding)) * float(y_rounding)
         row = _map_chart_y(value, y_lower, y_upper, height)
         tick_rows[row] = int(round(value))
@@ -136,7 +137,9 @@ def render_line_chart(
     x_tick_count = 5
     x_tick_line = [" "] * int(width)
     for index in range(x_tick_count):
-        value = x_lower + (x_upper - x_lower) * float(index) / float(max(x_tick_count - 1, 1))
+        value = x_lower + (x_upper - x_lower) * float(index) / float(
+            max(x_tick_count - 1, 1)
+        )
         label = str(int(round(value)))
         col = int(round(index * float(width - 1) / float(max(x_tick_count - 1, 1))))
         start = max(0, min(int(width) - len(label), col - len(label) // 2))

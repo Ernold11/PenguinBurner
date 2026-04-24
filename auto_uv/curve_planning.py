@@ -1,0 +1,318 @@
+from __future__ import annotations
+
+from .models import AutoUvCurveCandidate, AutoUvError, VoltageCurve
+from .tuning import AUTO_UV_CURVE_TUNING, AUTO_UV_VOLTAGE_PHASE_TUNING
+
+
+def _percent(value: float | int) -> float:
+    return max(0.0, float(value) / 100.0)
+
+
+def _nearest_voltage_bin(plan: list[dict], voltage_mv: int) -> int:
+    curve = VoltageCurve.from_plan(plan)
+    available = curve.editable_voltage_bins
+    try:
+        if not available:
+            raise ValueError
+        return int(min(available, key=lambda value: abs(int(value) - int(voltage_mv))))
+    except ValueError:
+        raise AutoUvError(
+            "the translated Linux V/F plan did not contain any voltage bins"
+        )
+
+
+def _lower_voltage_bins(
+    plan: list[dict],
+    start_voltage_mv: int,
+    *,
+    preserve_vanilla_below_mv: int | None,
+    min_search_voltage_mv: int | None = None,
+) -> list[int]:
+    return VoltageCurve.from_plan(plan).lower_voltage_bins(
+        start_voltage_mv,
+        preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+        min_search_voltage_mv=min_search_voltage_mv,
+    )
+
+
+def _next_higher_voltage_bin(plan: list[dict], voltage_mv: int) -> int | None:
+    return VoltageCurve.from_plan(plan).next_higher_voltage_bin(voltage_mv)
+
+
+def _unsafe_min_search_voltage_mv(
+    *,
+    plan: list[dict],
+    start_voltage_mv: int,
+    unsafe_entries: list[dict],
+) -> tuple[int | None, int | None]:
+    unsafe_floor_mv = None
+    for entry in unsafe_entries:
+        try:
+            voltage_mv = int(entry["candidate_voltage_mv"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if int(voltage_mv) >= int(start_voltage_mv):
+            continue
+        if unsafe_floor_mv is None or int(voltage_mv) > int(unsafe_floor_mv):
+            unsafe_floor_mv = int(voltage_mv)
+    if unsafe_floor_mv is None:
+        return None, None
+    return unsafe_floor_mv, _next_higher_voltage_bin(plan, int(unsafe_floor_mv))
+
+
+def _higher_voltage_bins(plan: list[dict], voltage_mv: int) -> list[int]:
+    return VoltageCurve.from_plan(plan).higher_voltage_bins(voltage_mv)
+
+
+def _validate_auto_uv_source_plan(plan: list[dict]) -> None:
+    curve = VoltageCurve.from_plan(plan)
+    editable_points = curve.editable_points
+    editable_voltage_bins = curve.editable_voltage_bins
+    if len(editable_points) < 3:
+        raise AutoUvError(
+            "auto-UV needs at least 3 editable voltage-based core V/F points; "
+            f"driver exposed {len(editable_points)}"
+        )
+    if len(set(editable_voltage_bins)) != len(editable_voltage_bins):
+        raise AutoUvError("auto-UV V/F table contains duplicate editable voltage bins")
+    bad_points = [
+        point
+        for point in editable_points
+        if int(point.voltage_mv) <= 0
+        or int(point.base_mhz) <= 0
+        or int(point.target_mhz) <= 0
+    ]
+    if bad_points:
+        first = bad_points[0]
+        raise AutoUvError(
+            "auto-UV V/F table contains invalid editable point "
+            f"index={int(first.index)} voltage={int(first.voltage_mv)}mV "
+            f"base={int(first.base_mhz)}MHz target={int(first.target_mhz)}MHz"
+        )
+
+
+def _select_aggressive_voltage_bins(
+    bins_descending: list[int],
+    *,
+    start_voltage_mv: int,
+) -> list[int]:
+    selected: list[int] = []
+    cursor = 0
+    while cursor < len(bins_descending):
+        ratio = (
+            float(bins_descending[cursor]) / float(start_voltage_mv)
+            if int(start_voltage_mv) > 0
+            else 1.0
+        )
+        if ratio >= _percent(AUTO_UV_VOLTAGE_PHASE_TUNING.medium_voltage_pct):
+            step_bins = min(
+                AUTO_UV_CURVE_TUNING.aggressive_max_step_bins,
+                max(
+                    AUTO_UV_CURVE_TUNING.aggressive_min_step_bins,
+                    len(bins_descending) - cursor,
+                ),
+            )
+        else:
+            step_bins = AUTO_UV_CURVE_TUNING.fine_step_bins
+        pick_index = min(cursor + step_bins - 1, len(bins_descending) - 1)
+        voltage_mv = int(bins_descending[pick_index])
+        selected.append(int(voltage_mv))
+        cursor = int(pick_index) + 1
+    if bins_descending:
+        final_candidate_mv = int(bins_descending[-1])
+        if final_candidate_mv not in selected:
+            selected.append(final_candidate_mv)
+    return selected
+
+
+def _filter_effective_voltage_candidates(
+    bins_descending: list[int],
+    *,
+    stable_voltage_mv: int,
+    reference_actual_voltage_mv: float | None,
+) -> list[int]:
+    if not bins_descending:
+        return []
+    if reference_actual_voltage_mv is None:
+        return list(bins_descending)
+
+    filtered: list[int] = []
+    reference_mv = float(reference_actual_voltage_mv)
+    last_kept_mv = int(stable_voltage_mv)
+    for voltage_mv in bins_descending:
+        ratio = (
+            float(voltage_mv) / float(stable_voltage_mv)
+            if int(stable_voltage_mv) > 0
+            else 1.0
+        )
+        if ratio >= _percent(AUTO_UV_VOLTAGE_PHASE_TUNING.medium_voltage_pct):
+            min_nominal_drop_mv = AUTO_UV_CURVE_TUNING.upper_voltage_nominal_drop_mv
+            min_effective_gap_mv = AUTO_UV_CURVE_TUNING.upper_voltage_effective_gap_mv
+        else:
+            min_nominal_drop_mv = AUTO_UV_CURVE_TUNING.lower_voltage_nominal_drop_mv
+            min_effective_gap_mv = AUTO_UV_CURVE_TUNING.lower_voltage_effective_gap_mv
+        effective_gap_mv = abs(float(voltage_mv) - float(reference_mv))
+        nominal_drop_mv = int(last_kept_mv) - int(voltage_mv)
+        if (
+            not filtered
+            or nominal_drop_mv >= int(min_nominal_drop_mv)
+            or effective_gap_mv >= float(min_effective_gap_mv)
+        ):
+            filtered.append(int(voltage_mv))
+            last_kept_mv = int(voltage_mv)
+    final_candidate_mv = int(bins_descending[-1])
+    if final_candidate_mv not in filtered:
+        filtered.append(final_candidate_mv)
+    return filtered
+
+
+def _next_search_candidate_voltage_mv(
+    *,
+    plan: list[dict],
+    start_voltage_mv: int,
+    stable_voltage_mv: int,
+    reference_actual_voltage_mv: float | None,
+    preserve_vanilla_below_mv: int | None,
+    min_search_voltage_mv: int | None,
+    failed_floor_voltage_mv: int | None = None,
+) -> int | None:
+    candidate_bins = _lower_voltage_bins(
+        plan,
+        stable_voltage_mv,
+        preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+        min_search_voltage_mv=min_search_voltage_mv,
+    )
+    if failed_floor_voltage_mv is not None:
+        candidate_bins = [
+            int(voltage_mv)
+            for voltage_mv in candidate_bins
+            if int(voltage_mv) > int(failed_floor_voltage_mv)
+        ]
+    if not candidate_bins:
+        return None
+    candidate_voltage_bins = _select_aggressive_voltage_bins(
+        candidate_bins,
+        start_voltage_mv=start_voltage_mv,
+    )
+    candidate_voltage_bins = _filter_effective_voltage_candidates(
+        candidate_voltage_bins,
+        stable_voltage_mv=stable_voltage_mv,
+        reference_actual_voltage_mv=reference_actual_voltage_mv,
+    )
+    if not candidate_voltage_bins:
+        return None
+    for candidate_voltage_mv in candidate_voltage_bins:
+        if int(candidate_voltage_mv) < int(stable_voltage_mv):
+            return int(candidate_voltage_mv)
+    return None
+
+
+def _build_descended_plan(
+    source_plan: list[dict],
+    *,
+    lock_clock_mhz: int,
+    candidate_voltage_mv: int,
+) -> list[dict]:
+    curve = VoltageCurve.from_plan(source_plan)
+    editable_voltages = curve.editable_voltage_bins
+    if int(candidate_voltage_mv) not in editable_voltages:
+        raise AutoUvError(
+            f"candidate voltage {int(candidate_voltage_mv)}mV is not an editable V/F bin"
+        )
+
+    flattened_clock_mhz = int(lock_clock_mhz)
+
+    plan: list[dict] = []
+    for point in curve.points:
+        voltage_mv = int(point.voltage_mv)
+        base_mhz = int(point.base_mhz)
+        original_target_mhz = int(point.target_mhz)
+        if point.preserve_vanilla:
+            target_mhz = int(base_mhz)
+        elif voltage_mv >= int(candidate_voltage_mv):
+            target_mhz = int(flattened_clock_mhz)
+        else:
+            target_mhz = int(original_target_mhz)
+        plan.append(point.with_target_mhz(target_mhz).to_plan_item())
+    return plan
+
+
+def _choose_sustained_clock_target(
+    plan: list[dict],
+    measured_clock_mhz: float,
+) -> int:
+    available = sorted({int(item["target_mhz"]) for item in plan})
+    if not available:
+        raise AutoUvError(
+            "the translated Linux V/F plan did not contain any target clocks"
+        )
+
+    measured = float(measured_clock_mhz)
+    floor_candidates = [
+        value
+        for value in available
+        if value <= measured + AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz
+    ]
+    if floor_candidates:
+        return int(max(floor_candidates))
+    return int(min(available, key=lambda value: abs(float(value) - measured)))
+
+
+def _find_lock_voltage_for_clock(plan: list[dict], lock_clock_mhz: int) -> int:
+    for point in VoltageCurve.from_plan(plan).editable_points:
+        if int(point.target_mhz) >= int(lock_clock_mhz):
+            return int(point.voltage_mv)
+    raise AutoUvError(
+        f"the translated Linux V/F plan never reaches {int(lock_clock_mhz)}MHz"
+    )
+
+
+def _build_flatten_target(
+    plan: list[dict], *, lock_clock_mhz: int, lock_voltage_mv: int
+) -> dict:
+    curve = VoltageCurve.from_plan(plan)
+    available_voltages = curve.voltage_bins
+    end_voltage_mv = (
+        available_voltages[-1] if available_voltages else int(lock_voltage_mv)
+    )
+    tail_point_count = sum(
+        1
+        for point in curve.points
+        if int(point.voltage_mv) >= int(lock_voltage_mv) and not point.preserve_vanilla
+    )
+    return {
+        "source": "measured-sustained-clock",
+        "lock_clock_mhz": int(lock_clock_mhz),
+        "lock_voltage_mv": int(lock_voltage_mv),
+        "end_voltage_mv": int(end_voltage_mv),
+        "tail_point_count": int(tail_point_count),
+    }
+
+
+def _snap_target_clock(requested_clock_mhz: int) -> int:
+    requested = int(requested_clock_mhz)
+    if requested <= 0:
+        raise AutoUvError("requested target clock must be positive")
+    return int(
+        round(float(requested) / float(AUTO_UV_CURVE_TUNING.clock_step_mhz))
+        * AUTO_UV_CURVE_TUNING.clock_step_mhz
+    )
+
+
+def _make_curve_candidate(
+    source_plan: list[dict],
+    *,
+    candidate_voltage_mv: int,
+    target_clock_mhz: int,
+    label: str,
+) -> AutoUvCurveCandidate:
+    return AutoUvCurveCandidate(
+        label=str(label),
+        candidate_voltage_mv=int(candidate_voltage_mv),
+        target_clock_mhz=int(target_clock_mhz),
+        plan=_build_descended_plan(
+            source_plan,
+            lock_clock_mhz=target_clock_mhz,
+            candidate_voltage_mv=candidate_voltage_mv,
+        ),
+    )

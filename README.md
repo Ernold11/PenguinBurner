@@ -1,24 +1,100 @@
 # 🐧 PenguinBurner 🔥
 
-PenguinBurner is the missing link for running MSI Afterburner fan control and undervolt setups on Linux.
+PenguinBurner is a Linux NVIDIA undervolting tool. The main mode is **Auto-UV**:
+PenguinBurner tests your GPU under load, finds a stable undervolt, and saves it
+for normal foreground or daemon runtime. MSI Afterburner import is still
+available as an optional fallback path.
 
-Quick start: preview an MSI Afterburner export with `./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner'`. If the preview looks right, run the real foreground path with `sudo ./penguin_burner.sh`. You can also install it as a `systemd` service later; see [Runtime launch](#runtime-launch).
+## Auto-UV Quick Start
+
+You do not need an MSI Afterburner profile. On a clean first run, start
+PenguinBurner with no arguments:
+
+```bash
+sudo ./penguin_burner.sh
+```
+
+If no saved Auto-UV curve exists, PenguinBurner automatically starts the
+foreground Auto-UV scan. Keep it in the foreground while it searches; this is
+intentional because it is testing voltage stability.
+
+To clear old Auto-UV results and start fresh:
+
+```bash
+sudo ./penguin_burner.sh --fresh-auto-uv-scan
+```
+
+What Auto-UV does:
+
+1. Reset previous GPU tuning so the scan starts from the driver/default curve.
+2. Install the managed Q2RTX test workload automatically if it is missing.
+3. Measure the stock loaded behavior: clock, voltage, power, temperature, fan speed, and FPS/W.
+4. Pick a safe target core clock and start lowering voltage one real V/F bin at a time.
+5. Test each candidate with Q2RTX plus CUDA load.
+6. Accept a candidate only if it stays stable and keeps enough loaded core clock.
+7. Keep scanning lower while power/efficiency still makes sense; stop when lower voltage no longer helps, a guardrail fails, or an unsafe point is reached.
+8. Run a final long verification, `600s` by default, then save the final curve for normal runtime/daemon use.
+9. Return the GPU to the driver/default curve before the foreground scan exits. The saved curve is applied later by runtime or daemon mode.
+
+By default Auto-UV allows up to a `10%` loaded GPU core clock drop while
+searching. To allow up to `12%`:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-max-clock-drop-pct 12
+```
+
+Undervolting can hang the GPU, crash the driver, freeze the display, or force a
+reboot. If the system crashes during an Auto-UV probe, PenguinBurner records the
+in-progress voltage as unsafe on the next run and will not test that voltage or
+lower voltages again unless you deliberately clear Auto-UV state.
+
+After the scan, daemonize normal runtime:
+
+```bash
+sudo ./penguin_burner.sh --daemonize
+```
+
+By default runtime applies the saved V/F curve and leaves fan control to the GPU
+driver. To opt into the saved Auto-UV fan curve too:
+
+```bash
+sudo ./penguin_burner.sh --daemonize --silent-fan-curve
+```
+
+Saved Auto-UV files are written under PenguinBurner's user config directory:
+
+- final V/F curve
+- suggested fan curve
+- debug logs
+
+More details: [Auto-UV quick guide](docs/auto-uv.md).
+
+![Auto-UV result summary](auto_uv_result_summary_terminal.png)
+
+Example Auto-UV result summary: before/after power draw, core clock, and efficiency shown after the final verification.
+
+If you already have a known-good MSI Afterburner profile, you can still
+preview/import it with:
+
+```bash
+./penguin_burner.sh --dry-run --afterburner-dir "$AFTERBURNER_ROOT"
+```
 
 ![Dry-run preview](dry_run_curves_terminal.png)
 
 Example dry-run preview: imported V/F target and fan curve rendered directly in the terminal before any GPU changes are applied.
 
-Tested on an RTX 5080 with NVIDIA 595+ drivers. RTX 40-series is likely to work on modern Linux drivers. RTX 30-series is still unconfirmed.
+PenguinBurner is experimental NVIDIA tuning software. It is intended for modern
+Linux NVIDIA drivers, but GPU generation and driver behavior can differ.
 Requires `nvidia-smi` in `PATH` for the default runtime path, including persistence mode, power-limit setup, and some Afterburner profile auto-selection.
 Reverse engineering, profile parsing, and import support were developed against MSI Afterburner `4.6.6.16757`.
 Other MSI Afterburner versions are not guaranteed to work.
 
 ## Runtime Requirements
 
-- `python3` must be available in `PATH`
-- Python `3.11+` is required
+- `python3` must be available in `PATH`, `3.11+` is required
 - no third-party Python packages are required; PenguinBurner uses only the Python standard library
-- NVIDIA driver libraries such as `libnvidia-ml.so.1` and `libnvidia-api.so.1` are required at runtime, but they come from the NVIDIA driver, not from `pip`
+- NVIDIA driver libraries such as `libnvidia-ml.so.1` and `libnvidia-api.so.1` are required at runtime, but they come from the NVIDIA driver
 - `nvidia-smi` must be available in `PATH`
 
 ## Acknowledgements
@@ -29,19 +105,6 @@ While PenguinBurner was still reverse engineering proprietary NVIDIA binaries an
 
 If any part of PenguinBurner's MSI Afterburner profile parsing or import logic is useful to LACT, feel free to borrow it.
 
-## What is in the main path
-
-- `penguin_burner.sh`: main user entrypoint
-- `penguin_burner.py`: runtime daemon
-- `PenguinBurner.service`: example static `systemd` unit; the installer path is still preferred
-- `import_afterburner_fan_curve.py`: fan-curve importer
-- `import_afterburner_vf_curve.py`: V/F and policy importer
-- `afterburner_fan_curve.py`: Afterburner fan parser
-- `afterburner_vfcurve.py`: Afterburner V/F parser and translation logic
-- `hidden_nvapi_vf.py`: hidden Linux NVAPI V/F access
-- `hidden_nvml_voltage.py`: hidden voltage telemetry helper
-- `nvml_gpu_policy.py`: public NVML policy and clock helpers
-
 ## Proprietary inputs are not bundled
 
 This repository does not ship MSI Afterburner binaries or copied profile exports.
@@ -51,71 +114,83 @@ Afterburner directory from Windows. By default that directory is:
 
 - `C:\Program Files (x86)\MSI Afterburner`
 
-From Linux, `--afterburner-dir` or `afterburner_root` should point at that same
-directory through a mounted Windows drive or a copied directory tree. PenguinBurner
-expects this layout under that root:
+On Linux, `--afterburner-dir` should point at that same directory through a
+mounted Windows drive or a copied directory tree. PenguinBurner expects this
+layout under that root:
 
-- `<homedir>/.config/PenguinBurner/afterburner-profiles/MSIAfterburner.cfg`
-- `<homedir>/.config/PenguinBurner/afterburner-profiles/Profiles/*.cfg`
+- `MSIAfterburner.cfg`
+- `Profiles/*.cfg`
 
 or set `PENGUIN_BURNER_AFTERBURNER_ROOT` to another directory with that layout.
 
-## Generated data
+## CLI Options
 
-Translated Linux V/F profiles are generated under:
+Auto-UV does not require an MSI Afterburner profile. If no final Auto-UV curve
+exists yet and no usable Afterburner import exists, running with no arguments
+starts the foreground scan:
 
-- `<homedir>/.config/PenguinBurner/linux-vf-profiles/`
+```bash
+sudo ./penguin_burner.sh
+```
 
-Runtime config is stored under:
+The explicit scan command is also available:
 
-- `<homedir>/.config/PenguinBurner/penguin_burner.toml`
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan
+```
 
-Afterburner import defaults also live under:
+### Auto-UV Options
 
-- `<homedir>/.config/PenguinBurner/afterburner-profiles/`
+- `--auto-uv-voltage-scan`: start the foreground Auto-UV voltage scan explicitly.
+- `--fresh-auto-uv-scan`: clear previous Auto-UV scan state and immediately start a new foreground scan.
+- `--clear-auto-uv-state`: clear previous Auto-UV scan state and exit.
+- `--install-q2rtx`: download the managed Q2RTX workload without starting a scan.
+- `--auto-uv-final-seconds N`: final verification duration after the best curve is selected; default `600`.
+- `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default `10.0`.
+- `--auto-uv-max-drop-pct N`: maximum voltage drop below the first discovered start voltage; default `18.0`.
+- `--auto-uv-efficiency-stop-streak N`: extra lower-voltage confirmation probes after FPS/W stops improving; default `1`, use `0` to disable.
+- `--auto-uv-min-efficiency-stop-drop-pct N`: minimum voltage drop below scan start before FPS/W no-gain can stop the scan; default `10.0`.
+- `--stability-test`: run the Q2RTX plus CUDA stability workload directly and exit.
+- `--stability-seconds N`: duration for `--stability-test`; default `600`.
+- `--stability-width N` and `--stability-height N`: Q2RTX render size; defaults `2560x1440`.
+- `--show-q2rtx-window`: show the Q2RTX window instead of using hidden/headless mode.
+- `--stability-log-dir PATH`: write `--stability-test` logs to a specific directory.
 
-None of this runtime data is stored in the repository by default.
+Example: allow a `12%` core-clock drop during Auto-UV:
 
-## Config
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan --auto-uv-max-clock-drop-pct 12
+```
 
-Mandatory:
+### Afterburner Import Options
 
-- `afterburner_root`
+- `--dry-run`: preview imported Afterburner V/F and fan curves without applying them.
+- `--afterburner-dir PATH`: path to the MSI Afterburner directory.
+- `--section NAME`: choose a saved Afterburner profile section, such as `Profile1`.
+- `--afterburner-device-profile PATH`: choose the exact Afterburner `Profiles/*.cfg` device file.
+- `--power-limit-override-w N`: cap the translated Afterburner power target in watts.
+- `--preserve-vf-below-mv N`: keep the stock Linux V/F curve at this voltage and below while importing the tuned curve above it.
+- `--dangerously-skip-validation`: bypass normal Afterburner profile validation; advanced use only.
+- `--restore-defaults-from-config`: apply the imported Afterburner `Defaults` V/F curve and GPU policy, then exit.
 
-Only needed in specific cases:
+Example dry run:
 
-- `afterburner_profile`: selects the saved Afterburner section such as `Profile3` when multiple non-default V/F presets exist
-- `afterburner_device_profile`: selects the exact `Profiles/*.cfg` device file when auto-selection is not the one you want
-- `afterburner_power_limit_override_w`: manually caps the translated Afterburner power target in watts after the percentage is converted
-- `afterburner_preserve_vanilla_below_mv`: keeps the stock/base Linux V/F curve at and below an inclusive voltage threshold while still importing the tuned part above it
-- `afterburner_dangerously_skip_validation`: bypasses the normal flat-tail and undervolt checks for profile selection so an unusual saved manual preset can still be imported; advanced and not recommended as a default
+```bash
+./penguin_burner.sh --dry-run --afterburner-dir "$AFTERBURNER_ROOT"
+```
 
-On first interactive run, PenguinBurner prompts for the MSI Afterburner root
-directory if it is not already saved in the config. This means the real
-Afterburner install directory from Windows, usually
-`C:\Program Files (x86)\MSI Afterburner`.
+### Runtime And Daemon Options
 
-CLI equivalents:
-
-- `afterburner_root` -> `--afterburner-dir`
-- `afterburner_profile` -> `--section`
-- `afterburner_device_profile` -> `--afterburner-device-profile`
-- `afterburner_power_limit_override_w` -> `--power-limit-override-w`
-- `afterburner_preserve_vanilla_below_mv` -> `--preserve-vf-below-mv`
-- `afterburner_dangerously_skip_validation` -> `--dangerously-skip-validation`
-
-Other runtime flags:
-
-- `--config`: read a different runtime config instead of `<homedir>/.config/PenguinBurner/penguin_burner.toml`
-- `--gpu-index`: target a different NVIDIA GPU when more than one is present
-- `--journal-hours N`: change the suggested `journalctl --since` window shown after daemonizing
-- `--debug-log`: write a verbose dry-run, first-import, or foreground-runtime diagnostic log next to the selected config file under `debug-logs/`; with the default config this is `<homedir>/.config/PenguinBurner/debug-logs/`
-
-Low-voltage preserve option:
-
-- `afterburner_preserve_vanilla_below_mv` and `--preserve-vf-below-mv` are inclusive. For example, `800` means PenguinBurner keeps the stock/base curve at `800mV` and below.
-- This is mainly a low-voltage and idle-behavior safeguard. On this test setup, frequent curve edits in Afterburner eventually disturbed frequency/voltage scaling in idle.
-- Preserving the stock curve below a threshold is the workaround for that case: the low-voltage region stays vanilla, while the imported undervolt or flattened target still applies above the threshold.
+- `--daemonize`: start PenguinBurner as a transient `systemd` service.
+- `--foreground`: run the normal runtime in the foreground.
+- `--install-systemd-service`: install the boot-time systemd service.
+- `--uninstall-systemd-service`: remove the boot-time systemd service.
+- `--silent-fan-curve`: opt into PenguinBurner manual fan-curve control during runtime/daemon mode.
+- `--prefer-afterburner-curve`: prefer the imported Afterburner V/F curve over the saved Auto-UV curve during runtime/daemon mode.
+- `--config PATH`: use a specific runtime config path.
+- `--gpu-index N`: select a specific NVIDIA GPU.
+- `--debug-log`: write a verbose diagnostic log for the current operation.
+- `--journal-hours N`: change the suggested `journalctl --since` window shown after daemonizing.
 
 Default Afterburner profile validation:
 
@@ -123,13 +198,14 @@ Default Afterburner profile validation:
 - By default, the selected preset must contain a flattened tail that can be turned into a lock point.
 - That flattened lock point must be a real undervolt versus `Defaults` or `Startup` at the same clock, with at least `5mV` of margin.
 - If no saved preset passes those checks, PenguinBurner stops instead of guessing.
-- `afterburner_dangerously_skip_validation` and `--dangerously-skip-validation` bypass the flat-tail and undervolt-margin checks and widen selection back to any saved manual preset.
+- `--dangerously-skip-validation` bypasses the flat-tail and undervolt-margin checks and widens selection back to any saved manual preset.
 - This override is for advanced cases where you intentionally want a non-undervolt or otherwise unusual curve. It does not make the imported curve safe.
 
 ## Runtime launch
 
 - Use `penguin_burner.sh` as the single user entrypoint. It resolves the repo path itself, so you do not need to `cd` into the repository first.
 - Running `penguin_burner.sh` directly stays in the foreground by default.
+- On a clean first run, `sudo ./penguin_burner.sh` starts Auto-UV automatically. After a final Auto-UV curve exists, the same command runs normal foreground runtime using that saved curve.
 - The checked-in `PenguinBurner.service` file is only an example. The preferred path is `sudo ./penguin_burner.sh --install-systemd-service`, which writes a unit with the real absolute script path for the current checkout.
 - On the first interactive run with a newly configured Afterburner root, PenguinBurner automatically imports that root into its managed config, runs a dry-run preview, then prompts you to continue in foreground mode or daemonize later.
 - `--dry-run` is the recommended first step. It parses the selected Afterburner root directory, prints concise summaries, and draws console charts for the V/F curve and fan curve without attempting GPU writes.
@@ -137,7 +213,8 @@ Default Afterburner profile validation:
 - `--dangerously-skip-validation` can be combined with `--dry-run` when you want to inspect an unusual saved curve before allowing any GPU writes.
 - `--debug-log` can be combined with `--dry-run`, a first-time import, or foreground runtime testing when you need the full profile-discovery and parsing trail for an incompatible or otherwise unexpected MSI Afterburner export.
 - the extra debug payload is written to the debug log file only; it does not spam stdout in foreground mode and it does not add extra noise to the `systemd` journal
-- Actual runtime control and any real fan, V/F, power-limit, or persistence-mode changes should be treated as privileged operations and run with `sudo`.
+- Actual runtime control and any real V/F, power-limit, persistence-mode, or optional fan changes should be treated as privileged operations and run with `sudo`.
+- Normal runtime and daemon mode do not control fans unless `--silent-fan-curve` is present.
 - Use `--daemonize` only when you explicitly want PenguinBurner to launch as a transient `systemd` service.
 - Use `--install-systemd-service` only when you explicitly want a persistent boot-time `systemd` service.
 - Use `--uninstall-systemd-service` to remove that persistent service again.
@@ -158,15 +235,112 @@ sudo ./penguin_burner.sh --daemonize
 ```
 
 ```bash
+sudo ./penguin_burner.sh --daemonize --silent-fan-curve
+```
+
+```bash
 sudo ./penguin_burner.sh --install-systemd-service
 ```
 
 ```bash
-./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner'
+./penguin_burner.sh --dry-run --afterburner-dir "$AFTERBURNER_ROOT"
+```
+
+```bash
+./penguin_burner.sh --install-q2rtx
+./penguin_burner.sh --stability-test --stability-seconds 600
 ```
 
 ```bash
 sudo journalctl -u PenguinBurner.service --since "-4 hours" -f
+```
+
+## Q2RTX Stability Test
+
+`--stability-test` runs a non-interactive Q2RTX timedemo workload and then exits.
+It is intentionally isolated from the normal fan-control runtime path.
+
+What it does:
+
+- uses fixed `2560x1440` render settings by default to keep the workload GPU-bound
+- uses `gamescope --backend headless` by default when available, which gives Q2RTX a real nested Vulkan target without a visible desktop window
+- falls back to moving the real Vulkan window off-screen when gamescope is unavailable; pass `--show-q2rtx-window` if you want to see it
+- disables V-Sync and dynamic resolution scaling, leaves the render loop uncapped, and keeps sound off
+- forces heavy real-time RTX features on, including `pt_num_bounce_rays=2`, `pt_reflect_refract=2`, `pt_thick_glass=2`, `pt_caustics=1`, bloom, volumetric lighting, and the particle/beam/sprite paths
+- runs one short timedemo calibration pass, then repeats the built-in timedemo workload for the requested wall-clock duration
+- prefers a ready-made `q2demo1` timedemo from `pak0.pak` when shareware data is installed
+- parses each timedemo pass for exact `frames / seconds / fps` metrics
+- compares frame counts and FPS run-to-run so obvious regressions or unstable performance show up quickly
+- polls lightweight NVIDIA telemetry with `nvidia-smi`
+- records the Q2RTX stdout/stderr log to a file
+- marks the run as failed if a pass exits early, if timedemo metrics are missing, if frame counts drift, if FPS drops too far run-to-run, if fatal output patterns appear, or if NVIDIA Xid messages are detected after launch
+
+### Headless Q2RTX
+
+By default, Auto-UV and `--stability-test` try to run Q2RTX without showing a
+desktop window. PenguinBurner does this by launching Q2RTX inside:
+
+```text
+gamescope --backend headless
+```
+
+This is not a fake low-resolution render. Q2RTX still creates a real Vulkan
+render target at the configured size, so the GPU workload remains useful for
+undervolt testing. The difference is that the window belongs to gamescope's
+private headless compositor, not to KDE, GNOME, X11, or Wayland on your desktop.
+
+If `gamescope` is not installed or cannot start, PenguinBurner falls back to a
+best-effort off-screen X11 window. That fallback may still be visible on some
+Wayland desktops because the compositor can clamp windows to the visible
+desktop.
+
+To force a normal visible Q2RTX window for debugging:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan --show-q2rtx-window
+```
+
+What it does not do yet:
+
+- it does not verify rendered pixels or detect subtle visual corruption
+- it does not score image quality or compare frame hashes
+- it is currently a practical "did repeated heavy timedemo passes complete with sane FPS behavior and without obvious driver faults" check
+
+If Q2RTX is not installed yet, run `./penguin_burner.sh --install-q2rtx`. That downloads the latest official Linux tar.gz from the NVIDIA GitHub releases into PenguinBurner's managed user cache/data directories, which PenguinBurner auto-detects first. The Auto-UV path also performs this install automatically when the managed Q2RTX install is missing, printing the lookup, download, extraction, and runtime-library progress to stdout. The current official Linux tarball already includes shareware `pak0.pak`, player assets, and the ready-made `q2demo1` timedemo.
+
+By default PenguinBurner auto-selects a ready-made timedemo, first looking for demos on disk and then inside `pak0.pak`, preferring demos like `q2demo1`.
+
+## Auto-UV Voltage Scan
+
+Auto-UV is foreground-only while scanning. Start it, let it finish, then
+daemonize normal runtime.
+
+```bash
+sudo ./penguin_burner.sh
+```
+
+The scan resets old clock offsets, measures real loaded behavior, tests lower
+voltages one by one, and writes a final curve only after verification. It also
+remembers unsafe voltages so a later run does not repeat a bad point.
+
+After the scan, run normal runtime:
+
+```bash
+sudo ./penguin_burner.sh --daemonize
+```
+
+If you also want PenguinBurner to apply the saved fan curve during runtime:
+
+```bash
+sudo ./penguin_burner.sh --daemonize --silent-fan-curve
+```
+
+Detailed user guide: [Auto-UV quick guide](docs/auto-uv.md).
+
+To clear previous Auto-UV run history and start from scratch:
+
+```bash
+sudo ./penguin_burner.sh --fresh-auto-uv-scan
 ```
 
 ## Dry Run First
@@ -200,7 +374,7 @@ Suggested workflow:
 If parsing fails, import behaves unexpectedly, or the wrong Afterburner profile is being selected, re-run with
 `--debug-log`. That writes a timestamped file under
 `debug-logs/` next to the selected config file; with the default config that is
-`<homedir>/.config/PenguinBurner/debug-logs/`. The log includes the discovered device
+the selected config file under `debug-logs/`. The log includes the discovered device
 profiles, per-section validation results, raw section key dumps, V/F blob and
 fan-curve blob metadata, per-point Linux V/F translation details, chosen fan
 profile, foreground runtime diagnostics, and traceback details for parsing errors.
@@ -220,23 +394,23 @@ welcome too.
 Examples:
 
 ```bash
-./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner'
+./penguin_burner.sh --dry-run --afterburner-dir "$AFTERBURNER_ROOT"
 ```
 
 ```bash
-./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner' --section Profile3
+./penguin_burner.sh --dry-run --afterburner-dir "$AFTERBURNER_ROOT" --section <saved-section>
 ```
 
 ```bash
-./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner' --preserve-vf-below-mv 800
+./penguin_burner.sh --dry-run --afterburner-dir "$AFTERBURNER_ROOT" --preserve-vf-below-mv 800
 ```
 
 ```bash
-./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner' --section Profile3 --dangerously-skip-validation
+./penguin_burner.sh --dry-run --afterburner-dir "$AFTERBURNER_ROOT" --section <saved-section> --dangerously-skip-validation
 ```
 
 ```bash
-./penguin_burner.sh --dry-run --afterburner-dir '/mnt/windows/Program Files (x86)/MSI Afterburner' --debug-log
+./penguin_burner.sh --dry-run --afterburner-dir "$AFTERBURNER_ROOT" --debug-log
 ```
 
 ## Log fields
@@ -244,10 +418,10 @@ Examples:
 Example status line:
 
 ```text
-temp=40.0C fan=0%/0% power=21.00W gpu_clock=1237MHz mem_clock=15626MHz voltage=800mV clk_ceiling=2710->2707MHz@890mV mem_vf_offset=+1250MHz vf_point=1192MHz@725mV vf_offset=+1466MHz vf_vanilla=1177MHz@770mV uv=-45mV fan_curve_state=hardware-auto next_fan_step=57C->30% fan_mode=auto
+temp=...C fan=...%/...% power=...W gpu_clock=...MHz mem_clock=...MHz voltage=...mV clk_ceiling=...->...MHz@...mV mem_vf_offset=...MHz vf_point=...MHz@...mV vf_offset=...MHz vf_vanilla=...MHz@...mV uv=...mV fan_curve_state=hardware-auto next_fan_step=...C->...% fan_mode=auto
 ```
 
-This example is the hardware-auto case. Once PenguinBurner takes over the fans, steady-state lines switch to `fan_mode=manual` and also include `target`, `curve`, and `hyst`.
+This example is the hardware-auto case. Without `--silent-fan-curve`, normal runtime lines include `fan_control=disabled` and PenguinBurner does not write fan speeds. Once PenguinBurner takes over the fans with `--silent-fan-curve`, steady-state lines switch to `fan_mode=manual` and also include `target`, `curve`, and `hyst`.
 
 Some fields are conditional and only appear when the related policy or telemetry path is active.
 
@@ -265,7 +439,8 @@ Some fields are conditional and only appear when the related policy or telemetry
 - `uv`: voltage delta versus `vf_vanilla`; a negative value means the current matched point is below the stock reference voltage.
 - `fan_curve_state`: current fan-control state. `hardware-auto` means the GPU's own automatic fan control still owns the fans; other lines can show the active manual curve segment or `emergency-auto`.
 - `next_fan_step`: next fan-curve transition PenguinBurner is waiting for, shown as `temp->speed`, or `resume-custom`/`none` when that is the next action.
-- `fan_mode`: overall fan-control mode for the current line. `auto` means the GPU's own automatic fan control still owns the fans. `manual` means PenguinBurner is actively setting fan speed. Transition/event lines such as entering or restoring manual mode may log an `event=` field instead of `fan_mode`.
+- `fan_control`: appears as `disabled` when PenguinBurner is intentionally leaving fans to the hardware/driver.
+- `fan_mode`: overall fan-control mode for the current line when `--silent-fan-curve` is active. `auto` means the GPU's own automatic fan control still owns the fans. `manual` means PenguinBurner is actively setting fan speed. Transition/event lines such as entering or restoring manual mode may log an `event=` field instead of `fan_mode`.
 
 ## Run At Your Own Risk
 
@@ -277,9 +452,16 @@ Once you leave `--dry-run`, PenguinBurner can perform operations such as:
 - setting board power limits
 - writing core V/F offsets
 - writing memory V/F offsets
-- taking over fan control
+- taking over fan control, but only when `--silent-fan-curve` is used
 
-Those paths can hang the GPU, crash the driver, or require a reboot. Treat them as experimental tuning operations.
+Those paths can hang the GPU, crash the driver, freeze the display, or require a
+reboot. Treat them as experimental tuning operations.
+
+Auto-UV intentionally runs in the foreground while scanning because it is testing
+crash-prone voltage points. If the machine hangs or reboots during a probe,
+restart PenguinBurner normally. The interrupted voltage is marked unsafe and
+future scans avoid that voltage and lower voltages unless Auto-UV state is
+cleared.
 
 For actual fan or V/F curve changes, use `sudo`. If the preview is not exactly what you want, go back to `--dry-run` and keep iterating there.
 

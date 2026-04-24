@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ctypes
-import os
 
 
 NvAPI_Status = ctypes.c_int32
@@ -145,7 +144,7 @@ class HiddenNvapiVfCurveReader:
         )
         self._initialized = False
         self._gpu = None
-        self._mask = None
+        self._mask: list[int] = []
         self._initialize_session()
         self._points = self._read_points()
 
@@ -177,17 +176,23 @@ class HiddenNvapiVfCurveReader:
             return
         rc = int(self._initialize())
         if rc != 0:
-            raise RuntimeError(f"NvAPI_Initialize failed with status {rc}: {self.status_text(rc)}")
+            raise RuntimeError(
+                f"NvAPI_Initialize failed with status {rc}: {self.status_text(rc)}"
+            )
         self._initialized = True
 
         handles = (NvPhysicalGpuHandle * NVAPI_MAX_PHYSICAL_GPUS)()
         count = NvU32(0)
         rc = int(self._enum_physical_gpus(handles, ctypes.byref(count)))
         if rc != 0 or count.value == 0:
-            raise RuntimeError(f"NvAPI_EnumPhysicalGPUs failed with status {rc}: {self.status_text(rc)}")
+            raise RuntimeError(
+                f"NvAPI_EnumPhysicalGPUs failed with status {rc}: {self.status_text(rc)}"
+            )
 
         if self._gpu_index >= count.value:
-            raise RuntimeError(f"GPU index {self._gpu_index} is out of range for {count.value} GPU(s)")
+            raise RuntimeError(
+                f"GPU index {self._gpu_index} is out of range for {count.value} GPU(s)"
+            )
 
         self._gpu = handles[self._gpu_index]
 
@@ -233,7 +238,9 @@ class HiddenNvapiVfCurveReader:
         info.version = self._make_version(ClockClientClkVfPointsInfoV1, 1)
         rc = int(self._get_vf_info(self._gpu, ctypes.byref(info)))
         if rc != 0:
-            raise RuntimeError(f"ClockClientClkVfPointsGetInfo failed with status {rc}: {self.status_text(rc)}")
+            raise RuntimeError(
+                f"ClockClientClkVfPointsGetInfo failed with status {rc}: {self.status_text(rc)}"
+            )
         return info
 
     def get_status_struct(self, mask=None):
@@ -245,7 +252,9 @@ class HiddenNvapiVfCurveReader:
             status.vf_points_mask[i] = value
         rc = int(self._get_vf_status(self._gpu, ctypes.byref(status)))
         if rc != 0:
-            raise RuntimeError(f"ClockClientClkVfPointsGetStatus failed with status {rc}: {self.status_text(rc)}")
+            raise RuntimeError(
+                f"ClockClientClkVfPointsGetStatus failed with status {rc}: {self.status_text(rc)}"
+            )
         return status
 
     def get_control_struct(self, mask=None):
@@ -257,13 +266,17 @@ class HiddenNvapiVfCurveReader:
             control.vf_points_mask[i] = value
         rc = int(self._get_vf_control(self._gpu, ctypes.byref(control)))
         if rc != 0:
-            raise RuntimeError(f"ClockClientClkVfPointsGetControl failed with status {rc}: {self.status_text(rc)}")
+            raise RuntimeError(
+                f"ClockClientClkVfPointsGetControl failed with status {rc}: {self.status_text(rc)}"
+            )
         return control
 
     def set_control_struct(self, control):
         rc = int(self._set_vf_control(self._gpu, ctypes.byref(control)))
         if rc != 0:
-            raise RuntimeError(f"ClockClientClkVfPointsSetControl failed with status {rc}: {self.status_text(rc)}")
+            raise RuntimeError(
+                f"ClockClientClkVfPointsSetControl failed with status {rc}: {self.status_text(rc)}"
+            )
         return rc
 
     def editable_core_points(self):
@@ -280,20 +293,22 @@ class HiddenNvapiVfCurveReader:
             "editable_core_points": len(editable),
         }
 
-    def find_nearest_point(self, graphics_clock_mhz, voltage_uv):
-        if graphics_clock_mhz is None or voltage_uv is None:
+    def find_nearest_point(self, core_clock_mhz, voltage_uv):
+        if core_clock_mhz is None or voltage_uv is None:
             return None
 
         points = self.editable_core_points()
         if not points:
             return None
 
-        target_freq_khz = int(graphics_clock_mhz) * 1000
+        target_freq_khz = int(core_clock_mhz) * 1000
         target_voltage_uv = int(voltage_uv)
         return min(
             points,
-            key=lambda point: abs(point["freq_khz"] - target_freq_khz)
-            + abs(point["voltage_uv"] - target_voltage_uv),
+            key=lambda point: (
+                abs(point["freq_khz"] - target_freq_khz)
+                + abs(point["voltage_uv"] - target_voltage_uv)
+            ),
         )
 
     def find_point_by_index(self, index):
@@ -307,7 +322,9 @@ class HiddenNvapiVfCurveReader:
         if not points:
             return None
         target_voltage_uv = int(voltage_mv) * 1000
-        return min(points, key=lambda point: abs(point["voltage_uv"] - target_voltage_uv))
+        return min(
+            points, key=lambda point: abs(point["voltage_uv"] - target_voltage_uv)
+        )
 
     def refresh_points(self):
         self._points = self._read_points()
@@ -319,8 +336,19 @@ class HiddenNvapiVfCurveReader:
             self._initialized = False
 
 
+_LAST_CREATE_ERROR: Exception | None = None
+
+
+def get_hidden_vf_curve_reader_last_error() -> Exception | None:
+    return _LAST_CREATE_ERROR
+
+
 def create_hidden_vf_curve_reader(gpu_index=0):
+    global _LAST_CREATE_ERROR
     try:
-        return HiddenNvapiVfCurveReader(gpu_index=gpu_index)
-    except Exception:
+        reader = HiddenNvapiVfCurveReader(gpu_index=gpu_index)
+        _LAST_CREATE_ERROR = None
+        return reader
+    except Exception as exc:
+        _LAST_CREATE_ERROR = exc
         return None

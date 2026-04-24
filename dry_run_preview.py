@@ -2,8 +2,11 @@
 
 from pathlib import Path
 
-from afterburner_fan_curve import load_afterburner_fan_settings, resolve_afterburner_fan_profile
-from afterburner_vfcurve import (
+from afterburner.fan_curve import (
+    load_afterburner_fan_settings,
+    resolve_afterburner_fan_profile,
+)
+from afterburner.vfcurve import (
     describe_afterburner_flatten_validation,
     describe_afterburner_profile_settings,
     describe_afterburner_vfcurve_analysis,
@@ -12,11 +15,20 @@ from afterburner_vfcurve import (
 )
 from ascii_chart import render_line_chart
 from hidden_nvapi_vf import create_hidden_vf_curve_reader
-from import_afterburner_fan_curve import build_imported_fan_section
-from import_afterburner_vf_curve import build_plan
-from nvml_gpu_policy import NvmlGpuPolicyController, describe_translated_gpu_policy, translate_afterburner_gpu_policy
+from afterburner.import_fan_curve import build_imported_fan_section
+from afterburner.import_vf_curve import build_plan
+from nvml_gpu_policy import (
+    NvmlGpuPolicyController,
+    describe_translated_gpu_policy,
+    translate_afterburner_gpu_policy,
+)
 from penguin_burner_paths import resolve_afterburner_root
-from runtime_debug import debug_exception, debug_log, emit_afterburner_debug_snapshot, log
+from runtime_debug import (
+    debug_exception,
+    debug_log,
+    emit_afterburner_debug_snapshot,
+    log,
+)
 
 
 def format_dry_run_power_summary(translated_gpu_policy):
@@ -28,7 +40,11 @@ def format_dry_run_power_summary(translated_gpu_policy):
     cap_w = translated_gpu_policy.get("power_limit_cap_w")
     if power_limit_pct is not None and target_w is not None:
         power_text = f"AB {int(power_limit_pct)}% -> {int(target_w)}W"
-        if source_w is not None and int(source_w) != int(target_w) and cap_w is not None:
+        if (
+            source_w is not None
+            and int(source_w) != int(target_w)
+            and cap_w is not None
+        ):
             power_text += f" (manual cap, uncapped {int(source_w)}W)"
         parts.append(power_text)
 
@@ -39,7 +55,9 @@ def format_dry_run_power_summary(translated_gpu_policy):
     return ", ".join(parts) if parts else "none"
 
 
-def format_dry_run_linux_state_summary(*, vf_changed_points, power_limits, clock_offsets):
+def format_dry_run_linux_state_summary(
+    *, vf_changed_points, power_limits, clock_offsets
+):
     parts = []
 
     current_limit_w = power_limits.get("power_limit_w")
@@ -63,13 +81,19 @@ def run_afterburner_dry_run(
     gpu_index,
     afterburner_runtime_options,
 ):
-    afterburner_root = str(afterburner_runtime_options.get("afterburner_root", "")).strip()
-    afterburner_profile = str(afterburner_runtime_options.get("afterburner_profile", "")).strip()
+    afterburner_root = str(
+        afterburner_runtime_options.get("afterburner_root", "")
+    ).strip()
+    afterburner_profile = str(
+        afterburner_runtime_options.get("afterburner_profile", "")
+    ).strip()
     afterburner_device_profile = str(
         afterburner_runtime_options.get("afterburner_device_profile", "")
     ).strip()
     power_limit_override_w = afterburner_runtime_options.get("power_limit_override_w")
-    preserve_vanilla_below_mv = afterburner_runtime_options.get("preserve_vanilla_below_mv")
+    preserve_vanilla_below_mv = afterburner_runtime_options.get(
+        "preserve_vanilla_below_mv"
+    )
     dangerously_skip_validation = bool(
         afterburner_runtime_options.get("dangerously_skip_validation")
     )
@@ -212,9 +236,15 @@ def run_afterburner_dry_run(
                 )
 
         flags = fan_settings["flags"]
-        lock_voltage_mv = flatten_target.get("lock_voltage_mv") if flatten_target else None
-        end_voltage_mv = flatten_target.get("end_voltage_mv") if flatten_target else None
-        lock_clock_mhz = flatten_target.get("lock_clock_mhz") if flatten_target else None
+        lock_voltage_mv = (
+            flatten_target.get("lock_voltage_mv") if flatten_target else None
+        )
+        end_voltage_mv = (
+            flatten_target.get("end_voltage_mv") if flatten_target else None
+        )
+        lock_clock_mhz = (
+            flatten_target.get("lock_clock_mhz") if flatten_target else None
+        )
         source_label = f"{source['section']} in {source['profile_path'].name}"
         log(f"Dry run: {source_label}")
         log(f"Power and offsets: {format_dry_run_power_summary(translated_gpu_policy)}")
@@ -260,7 +290,9 @@ def run_afterburner_dry_run(
                     f"{describe_afterburner_flatten_validation(validation)}"
                 )
             else:
-                log(f"Undervolt check: {describe_afterburner_flatten_validation(validation)}")
+                log(
+                    f"Undervolt check: {describe_afterburner_flatten_validation(validation)}"
+                )
 
         if imported_fan_config is None:
             log(f"Fan behavior: unavailable ({imported_fan_error})")
@@ -289,7 +321,9 @@ def run_afterburner_dry_run(
             log(
                 "Linux readback: "
                 + format_dry_run_linux_state_summary(
-                    vf_changed_points=len(changed_points) if vf_summary is not None else None,
+                    vf_changed_points=len(changed_points)
+                    if vf_summary is not None
+                    else None,
                     power_limits=power_limits,
                     clock_offsets=clock_offsets,
                 )
@@ -305,7 +339,8 @@ def run_afterburner_dry_run(
                     )
             elif missing_voltage_bins:
                 preview = ", ".join(
-                    str(int(voltage_mv)) + "mV" for voltage_mv in missing_voltage_bins[:8]
+                    str(int(voltage_mv)) + "mV"
+                    for voltage_mv in missing_voltage_bins[:8]
                 )
                 if len(missing_voltage_bins) > 8:
                     preview += ", ..."
@@ -316,21 +351,25 @@ def run_afterburner_dry_run(
                 {
                     "name": "stock",
                     "char": ".",
-                    "points": sorted([
-                        (
-                            float(item["voltage_mv"]),
-                            float(item["base_mhz"]),
-                        )
-                        for item in vf_plan
-                    ]),
+                    "points": sorted(
+                        [
+                            (
+                                float(item["voltage_mv"]),
+                                float(item["base_mhz"]),
+                            )
+                            for item in vf_plan
+                        ]
+                    ),
                 },
                 {
                     "name": "target",
                     "char": "#",
-                    "points": sorted([
-                        (float(item["voltage_mv"]), float(item["target_mhz"]))
-                        for item in vf_plan
-                    ]),
+                    "points": sorted(
+                        [
+                            (float(item["voltage_mv"]), float(item["target_mhz"]))
+                            for item in vf_plan
+                        ]
+                    ),
                 },
             ]
             vf_title = "VF curve (target=# stock=. lock=@, x=mV y=MHz)"
@@ -339,13 +378,15 @@ def run_afterburner_dry_run(
                 {
                     "name": "target",
                     "char": "#",
-                    "points": sorted([
-                        (
-                            float(point["voltage_mv"]),
-                            float(point["frequency_mhz"]),
-                        )
-                        for point in section_info["materialization"]["points"]
-                    ]),
+                    "points": sorted(
+                        [
+                            (
+                                float(point["voltage_mv"]),
+                                float(point["frequency_mhz"]),
+                            )
+                            for point in section_info["materialization"]["points"]
+                        ]
+                    ),
                 }
             ]
             vf_title = "VF curve (target=# lock=@, x=mV y=MHz)"
@@ -378,24 +419,28 @@ def run_afterburner_dry_run(
             {
                 "name": "primary",
                 "char": "#",
-                "points": sorted([
-                    (
-                        float(point["temperature_c"]),
-                        float(point["speed_pct"]),
-                    )
-                    for point in fan_settings["curve"]["points"]
-                ]),
+                "points": sorted(
+                    [
+                        (
+                            float(point["temperature_c"]),
+                            float(point["speed_pct"]),
+                        )
+                        for point in fan_settings["curve"]["points"]
+                    ]
+                ),
             },
             {
                 "name": "reference",
                 "char": ".",
-                "points": sorted([
-                    (
-                        float(point["temperature_c"]),
-                        float(point["speed_pct"]),
-                    )
-                    for point in fan_settings["curve2"]["points"]
-                ]),
+                "points": sorted(
+                    [
+                        (
+                            float(point["temperature_c"]),
+                            float(point["speed_pct"]),
+                        )
+                        for point in fan_settings["curve2"]["points"]
+                    ]
+                ),
             },
         ]
         print(flush=True)

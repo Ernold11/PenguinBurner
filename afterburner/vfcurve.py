@@ -40,6 +40,11 @@ DEVICE_PROFILE_NAME_RE = re.compile(
 )
 
 
+class CaseSensitiveRawConfigParser(configparser.RawConfigParser):
+    def optionxform(self, optionstr: str) -> str:
+        return optionstr
+
+
 def _parse_afterburner_device_profile_name(path):
     match = DEVICE_PROFILE_NAME_RE.search(Path(path).name)
     if match is None:
@@ -96,7 +101,9 @@ def _detect_active_nvidia_gpus():
 
 def parse_vfcurve_blob(hex_blob: str):
     data = bytes.fromhex(hex_blob.strip())
-    values = [struct.unpack_from("<f", data, offset)[0] for offset in range(0, len(data), 4)]
+    values = [
+        struct.unpack_from("<f", data, offset)[0] for offset in range(0, len(data), 4)
+    ]
 
     header = {
         "magic_u32": struct.unpack_from("<I", data, 0)[0],
@@ -130,10 +137,14 @@ def parse_vfcurve_blob(hex_blob: str):
 
 
 def load_afterburner_vfcurve_hex(profile_path=DEFAULT_PROFILE, section=DEFAULT_SECTION):
-    settings = load_afterburner_profile_settings(profile_path=profile_path, section=section)
+    settings = load_afterburner_profile_settings(
+        profile_path=profile_path, section=section
+    )
     hex_blob = settings["vf_curve_hex"]
     if not hex_blob:
-        raise KeyError(f"Afterburner section {settings['section']} does not contain a VFCurve blob")
+        raise KeyError(
+            f"Afterburner section {settings['section']} does not contain a VFCurve blob"
+        )
     return hex_blob
 
 
@@ -147,9 +158,10 @@ def load_afterburner_vfcurve(profile_path=DEFAULT_PROFILE, section=DEFAULT_SECTI
 
 
 def _load_afterburner_profile_parser(profile_path):
-    parser = configparser.RawConfigParser()
-    parser.optionxform = str
-    with Path(profile_path).open("r", encoding="utf-8", errors="ignore") as profile_file:
+    parser = CaseSensitiveRawConfigParser()
+    with Path(profile_path).open(
+        "r", encoding="utf-8", errors="ignore"
+    ) as profile_file:
         parser.read_file(profile_file)
     return parser
 
@@ -181,14 +193,18 @@ def _parse_optional_int(value):
     return int(text)
 
 
-def load_afterburner_profile_section(profile_path=DEFAULT_PROFILE, section=DEFAULT_SECTION):
+def load_afterburner_profile_section(
+    profile_path=DEFAULT_PROFILE, section=DEFAULT_SECTION
+):
     parser = _load_afterburner_profile_parser(profile_path)
     resolved_section = _resolve_afterburner_section_name(parser, section)
     values = {key: value.strip() for key, value in parser.items(resolved_section)}
     return resolved_section, values
 
 
-def load_afterburner_profile_settings(profile_path=DEFAULT_PROFILE, section=DEFAULT_SECTION):
+def load_afterburner_profile_settings(
+    profile_path=DEFAULT_PROFILE, section=DEFAULT_SECTION
+):
     resolved_section, values = load_afterburner_profile_section(
         profile_path=profile_path,
         section=section,
@@ -196,7 +212,9 @@ def load_afterburner_profile_settings(profile_path=DEFAULT_PROFILE, section=DEFA
     return {
         "section": resolved_section,
         "format": _parse_optional_int(_get_afterburner_section_value(values, "Format")),
-        "power_limit_pct": _parse_optional_int(_get_afterburner_section_value(values, "PowerLimit")),
+        "power_limit_pct": _parse_optional_int(
+            _get_afterburner_section_value(values, "PowerLimit")
+        ),
         "thermal_limit_raw": _get_afterburner_section_value(values, "ThermalLimit"),
         "thermal_prioritize": _parse_optional_int(
             _get_afterburner_section_value(values, "ThermalPrioritize")
@@ -207,10 +225,18 @@ def load_afterburner_profile_settings(profile_path=DEFAULT_PROFILE, section=DEFA
         "mem_clk_boost_khz": _parse_optional_int(
             _get_afterburner_section_value(values, "MemClkBoost")
         ),
-        "fan_mode": _parse_optional_int(_get_afterburner_section_value(values, "FanMode")),
-        "fan_speed_pct": _parse_optional_int(_get_afterburner_section_value(values, "FanSpeed")),
-        "fan_mode2": _parse_optional_int(_get_afterburner_section_value(values, "FanMode2")),
-        "fan_speed2_pct": _parse_optional_int(_get_afterburner_section_value(values, "FanSpeed2")),
+        "fan_mode": _parse_optional_int(
+            _get_afterburner_section_value(values, "FanMode")
+        ),
+        "fan_speed_pct": _parse_optional_int(
+            _get_afterburner_section_value(values, "FanSpeed")
+        ),
+        "fan_mode2": _parse_optional_int(
+            _get_afterburner_section_value(values, "FanMode2")
+        ),
+        "fan_speed2_pct": _parse_optional_int(
+            _get_afterburner_section_value(values, "FanSpeed2")
+        ),
         "vf_curve_hex": _get_afterburner_section_value(values, "VFCurve"),
         "raw_values": values,
     }
@@ -241,7 +267,9 @@ def _describe_afterburner_profile_candidates(sections):
         flatten_validation = section.get("flatten_validation")
         if isinstance(flatten_validation, dict):
             margin_mv = flatten_validation.get("undervolt_margin_mv")
-            baseline_section = str(flatten_validation.get("baseline_section", "")).strip()
+            baseline_section = str(
+                flatten_validation.get("baseline_section", "")
+            ).strip()
             if margin_mv is not None and baseline_section:
                 label += f" uv=+{int(round(float(margin_mv)))}mV-vs-{baseline_section}"
         labels.append(label)
@@ -277,11 +305,15 @@ def _discover_afterburner_vf_sections_for_profile(profile_path):
                 "curve_sha256": curve_sha256,
                 "settings": {
                     "section": section_name,
-                    "format": _parse_optional_int(_get_afterburner_section_value(values, "Format")),
+                    "format": _parse_optional_int(
+                        _get_afterburner_section_value(values, "Format")
+                    ),
                     "power_limit_pct": _parse_optional_int(
                         _get_afterburner_section_value(values, "PowerLimit")
                     ),
-                    "thermal_limit_raw": _get_afterburner_section_value(values, "ThermalLimit"),
+                    "thermal_limit_raw": _get_afterburner_section_value(
+                        values, "ThermalLimit"
+                    ),
                     "thermal_prioritize": _parse_optional_int(
                         _get_afterburner_section_value(values, "ThermalPrioritize")
                     ),
@@ -291,7 +323,9 @@ def _discover_afterburner_vf_sections_for_profile(profile_path):
                     "mem_clk_boost_khz": _parse_optional_int(
                         _get_afterburner_section_value(values, "MemClkBoost")
                     ),
-                    "fan_mode": _parse_optional_int(_get_afterburner_section_value(values, "FanMode")),
+                    "fan_mode": _parse_optional_int(
+                        _get_afterburner_section_value(values, "FanMode")
+                    ),
                     "fan_speed_pct": _parse_optional_int(
                         _get_afterburner_section_value(values, "FanSpeed")
                     ),
@@ -327,14 +361,10 @@ def _discover_afterburner_vf_sections_for_profile(profile_path):
         )
 
     baseline_sections = [
-        section
-        for section in sections
-        if section["normalized_section"] == "defaults"
+        section for section in sections if section["normalized_section"] == "defaults"
     ]
     baseline_sections.extend(
-        section
-        for section in sections
-        if section["normalized_section"] == "startup"
+        section for section in sections if section["normalized_section"] == "startup"
     )
     for section in sections:
         if not section["is_manual_candidate"]:
@@ -379,7 +409,9 @@ def resolve_afterburner_device_profile(
     device_profiles = discover_afterburner_device_profiles(afterburner_root)
     if not device_profiles:
         root = resolve_afterburner_root(afterburner_root)
-        raise FileNotFoundError(f"No Afterburner GPU profile export found under {root / 'Profiles'}")
+        raise FileNotFoundError(
+            f"No Afterburner GPU profile export found under {root / 'Profiles'}"
+        )
 
     if len(device_profiles) == 1:
         return device_profiles[0].resolve()
@@ -457,7 +489,9 @@ def resolve_afterburner_vf_source(
     requested_section = str(section).strip() if section is not None else ""
     requested_section_profile = None
     if profile_path is None and not device_profile_hint and requested_section:
-        section_profile_matches = _find_device_profiles_with_section(root, requested_section)
+        section_profile_matches = _find_device_profiles_with_section(
+            root, requested_section
+        )
         if len(section_profile_matches) == 1:
             requested_section_profile = section_profile_matches[0]["profile_path"]
         elif len(section_profile_matches) > 1:
@@ -476,7 +510,9 @@ def resolve_afterburner_vf_source(
             if len(unique_valid_profiles) == 1:
                 requested_section_profile = next(iter(unique_valid_profiles.values()))
             elif len(unique_valid_profiles) > 1:
-                rendered = ", ".join(path.name for path in unique_valid_profiles.values())
+                rendered = ", ".join(
+                    path.name for path in unique_valid_profiles.values()
+                )
                 raise AfterburnerProfileSelectionError(
                     f"Multiple Afterburner GPU profile exports contain {requested_section}: {rendered}"
                 )
@@ -525,9 +561,7 @@ def resolve_afterburner_vf_source(
         ]
         if not manual_candidates:
             invalid_manual_candidates = [
-                candidate
-                for candidate in sections
-                if candidate["is_manual_candidate"]
+                candidate for candidate in sections if candidate["is_manual_candidate"]
             ]
             if invalid_manual_candidates:
                 invalid_preview = "; ".join(
@@ -608,7 +642,9 @@ def detect_afterburner_adjusted_anchor(points):
     if len(points) < 3:
         return None
 
-    third_histogram = Counter(_round_curve_float(point["third_value"]) for point in points)
+    third_histogram = Counter(
+        _round_curve_float(point["third_value"]) for point in points
+    )
     dominant_third_value, dominant_count = third_histogram.most_common(1)[0]
     if dominant_count < len(points) - 1:
         return None
@@ -638,7 +674,8 @@ def detect_afterburner_adjusted_anchor(points):
         (
             point
             for point in points
-            if float(point["frequency_mhz"]) > anchor_frequency_mhz + THIRD_VALUE_EPSILON
+            if float(point["frequency_mhz"])
+            > anchor_frequency_mhz + THIRD_VALUE_EPSILON
         ),
         None,
     )
@@ -672,7 +709,9 @@ def materialize_afterburner_vfcurve(points):
 
     if adjusted_anchor is None:
         return {
-            "mode": "plain-points" if analysis["nonzero_third_value_count"] == 0 else "raw-points",
+            "mode": "plain-points"
+            if analysis["nonzero_third_value_count"] == 0
+            else "raw-points",
             "points": [dict(point) for point in points],
             "adjusted_anchor": None,
         }
@@ -707,7 +746,10 @@ def detect_afterburner_flat_tail(points):
     plateau_frequency_mhz = float(points[-1]["frequency_mhz"])
     tail_points = []
     for point in reversed(points):
-        if abs(float(point["frequency_mhz"]) - plateau_frequency_mhz) > FLAT_TAIL_FREQ_EPSILON_MHZ:
+        if (
+            abs(float(point["frequency_mhz"]) - plateau_frequency_mhz)
+            > FLAT_TAIL_FREQ_EPSILON_MHZ
+        ):
             break
         tail_points.append(point)
 
@@ -802,7 +844,9 @@ def validate_afterburner_flatten_candidate(section_info, *, baseline_sections):
         undervolt_margin_mv = baseline_required_voltage_mv - float(lock_voltage_mv)
         same_voltage_delta_mhz = None
         if baseline_same_voltage_clock_mhz is not None:
-            same_voltage_delta_mhz = float(lock_clock_mhz) - baseline_same_voltage_clock_mhz
+            same_voltage_delta_mhz = (
+                float(lock_clock_mhz) - baseline_same_voltage_clock_mhz
+            )
 
         valid = undervolt_margin_mv >= MIN_FLATTEN_UNDERVOLT_MARGIN_MV
         reason = ""
@@ -894,11 +938,14 @@ def describe_afterburner_flatten_validation(validation):
     ]
     baseline_same_voltage_clock_mhz = validation.get("baseline_same_voltage_clock_mhz")
     same_voltage_delta_mhz = validation.get("same_voltage_delta_mhz")
-    if baseline_same_voltage_clock_mhz is not None and same_voltage_delta_mhz is not None:
+    if (
+        baseline_same_voltage_clock_mhz is not None
+        and same_voltage_delta_mhz is not None
+    ):
+        parts.append(f"default@same-voltage={int(baseline_same_voltage_clock_mhz)}MHz")
         parts.append(
-            f"default@same-voltage={int(baseline_same_voltage_clock_mhz)}MHz"
+            f"same-voltage-delta={int(round(float(same_voltage_delta_mhz))):+d}MHz"
         )
-        parts.append(f"same-voltage-delta={int(round(float(same_voltage_delta_mhz))):+d}MHz")
     return ", ".join(parts)
 
 
