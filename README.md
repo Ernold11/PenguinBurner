@@ -69,10 +69,6 @@ Saved Auto-UV files are written under PenguinBurner's user config directory:
 
 More details: [Auto-UV quick guide](docs/auto-uv.md).
 
-![Auto-UV result summary](auto_uv_result_summary_terminal.png)
-
-Example Auto-UV result summary: before/after power draw, core clock, and efficiency shown after the final verification.
-
 If you already have a known-good MSI Afterburner profile, you can still
 preview/import it with:
 
@@ -148,6 +144,10 @@ The explicit scan command is also available:
 ```bash
 sudo ./penguin_burner.sh --auto-uv-voltage-scan
 ```
+
+![Auto-UV result summary](auto_uv_result_summary_terminal.png)
+
+Example Auto-UV result summary: before/after power draw, core clock, and efficiency shown after the final verification.
 
 ### Auto-UV Options
 
