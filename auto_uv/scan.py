@@ -518,7 +518,16 @@ def _probe_voltage_candidate(
         else:
             parts.append("fan=n/a")
         if target_core_clock_floor_mhz is not None:
-            parts.append(f"target-floor={target_core_clock_floor_mhz:.1f}MHz")
+            floor_base_clock_mhz = (
+                float(initial_probe_clock_mhz)
+                if initial_probe_clock_mhz is not None
+                else float(lock_clock_mhz)
+            )
+            parts.append(
+                f"target-floor={target_core_clock_floor_mhz:.1f}MHz"
+                f"({float(min_performance_core_clock_pct):.1f}%"
+                f" of {floor_base_clock_mhz:.1f}MHz baseline)"
+            )
         return " ".join(parts)
 
     def _progress_callback(state: dict) -> None:
