@@ -3,6 +3,31 @@ from __future__ import annotations
 from .models import Q2RTXStabilityResult
 
 
+_QUIET_OUTPUT_TAIL_PREFIXES = (
+    "[Gamescope WSI] Destroying swapchain:",
+    "[Gamescope WSI] Destroyed swapchain:",
+    "[gamescope] [Info]  launch: Primary child shut down!",
+    "(EE) failed to read Wayland events: Broken pipe",
+)
+_QUIET_OUTPUT_TAIL_LINES = frozenset(
+    {
+        "Closing console log.",
+    }
+)
+
+
+def _filter_report_output_tail(lines: list[str]) -> list[str]:
+    filtered: list[str] = []
+    for line in lines:
+        stripped = str(line).strip()
+        if stripped in _QUIET_OUTPUT_TAIL_LINES:
+            continue
+        if any(stripped.startswith(prefix) for prefix in _QUIET_OUTPUT_TAIL_PREFIXES):
+            continue
+        filtered.append(line)
+    return filtered
+
+
 def print_q2rtx_stability_result(result: Q2RTXStabilityResult) -> None:
     status = "PASS" if result.success else "FAIL"
     if result.timedemo_loops_requested is not None:
@@ -88,7 +113,8 @@ def print_q2rtx_stability_result(result: Q2RTXStabilityResult) -> None:
         print("Xid messages:", flush=True)
         for line in result.xid_messages:
             print(f"  {line}", flush=True)
-    if result.output_tail:
+    output_tail = _filter_report_output_tail(result.output_tail)
+    if output_tail:
         print("Output tail:", flush=True)
-        for line in result.output_tail[-10:]:
+        for line in output_tail[-10:]:
             print(f"  {line}", flush=True)

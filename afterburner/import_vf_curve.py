@@ -116,6 +116,9 @@ def load_afterburner_runtime_options(config_path):
         "auto_uv_efficiency_stop_streak": _coerce_optional_nonnegative_int(
             gpu.get("auto_uv_efficiency_stop_streak")
         ),
+        "auto_uv_max_clock_bump_recoveries": _coerce_optional_nonnegative_int(
+            gpu.get("auto_uv_max_clock_bump_recoveries")
+        ),
         "dangerously_skip_validation": _coerce_optional_bool(
             gpu.get("afterburner_dangerously_skip_validation")
         ),
@@ -989,9 +992,15 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("Interrupted by user.", file=sys.stderr)
+        raise SystemExit(130)
     except AfterburnerVfCurveSafetyError as exc:
-        print(f"error: {exc}")
+        print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2)
     except AfterburnerProfileSelectionError as exc:
-        print(f"error: {exc}")
+        print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2)
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1)

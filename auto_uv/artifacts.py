@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import os
 from pathlib import Path
+import socket
 
 from penguin_burner_paths import default_saved_uv_dir, default_user_config_dir
 
@@ -225,16 +227,21 @@ def _write_uv_probe_in_progress(
     candidate_voltage_mv: int,
     lock_clock_mhz: int,
     log_context: str | None = None,
+    details: dict | None = None,
 ) -> Path:
     payload = {
         "format_version": 1,
         "state": "probing",
         "started_at": _now_iso(),
+        "pid": int(os.getpid()),
+        "host": socket.gethostname(),
         "phase": str(phase),
         "candidate_voltage_mv": int(candidate_voltage_mv),
         "lock_clock_mhz": int(lock_clock_mhz),
         "log_context": str(log_context).strip() if log_context is not None else None,
     }
+    if details:
+        payload["details"] = details
     return _safe_json_write(_probe_in_progress_path(), payload)
 
 
@@ -330,7 +337,19 @@ def _consume_interrupted_uv_probe_marker() -> tuple[Path, dict] | None:
     return _record_unsafe_uv_voltage(
         candidate_voltage_mv=candidate_voltage_mv,
         lock_clock_mhz=lock_clock_mhz,
-        reason="previous-run-interrupted",
+        reason="previous-run-abruptly-ended",
         phase=str(marker.get("phase") or ""),
         marker_started_at=str(marker.get("started_at") or ""),
+        details={
+            "marker_pid": marker.get("pid"),
+            "marker_host": marker.get("host"),
+            "marker_log_context": marker.get("log_context"),
+            "marker_details": (
+                marker.get("details") if isinstance(marker, dict) else None
+            ),
+            "classification": (
+                "stale probing marker remained on disk; clean Ctrl-C/SIGTERM "
+                "cleanup removes this marker"
+            ),
+        },
     )

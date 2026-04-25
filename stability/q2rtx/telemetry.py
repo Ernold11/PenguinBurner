@@ -1,13 +1,30 @@
 from __future__ import annotations
 
 import ctypes
-from datetime import datetime
+from datetime import datetime, timedelta
 import shutil
 import subprocess
 
 from hidden_nvml_voltage import create_hidden_voltage_reader
 
 from .models import TelemetrySample
+
+
+def _xid_message_is_at_or_after(line: str, started_at: datetime) -> bool:
+    parts = str(line).strip().split(maxsplit=2)
+    if not parts:
+        return True
+
+    timestamp_text = str(parts[0])
+    if "T" not in timestamp_text and len(parts) >= 2:
+        timestamp_text = f"{parts[0]}T{parts[1]}"
+    try:
+        message_time = datetime.fromisoformat(timestamp_text).astimezone()
+    except ValueError:
+        return True
+
+    cutoff = started_at.astimezone() - timedelta(seconds=1)
+    return message_time >= cutoff
 
 
 class _HiddenNvmlVoltageSession:
@@ -180,9 +197,14 @@ def _query_xid_messages_since(started_at: datetime) -> list[str]:
         except (OSError, subprocess.SubprocessError):
             continue
 
-        messages = [
-            line.strip() for line in result.stdout.splitlines() if "NVRM: Xid" in line
-        ]
+        messages = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if "NVRM: Xid" not in line:
+                continue
+            if not _xid_message_is_at_or_after(line, started_at):
+                continue
+            messages.append(line)
         if messages:
             return messages
 

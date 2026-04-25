@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 import tarfile
 
 from stability.q2rtx.install import _extract_q2rtx_archive, _require_https_url
 from stability.q2rtx.models import Q2RTXStabilityResult, StabilityTestError
+from stability.q2rtx.reporting import _filter_report_output_tail
 from stability.q2rtx.runtime import (
     _result_looks_like_gamescope_startup_crash,
     build_timedemo_command,
 )
+from stability.q2rtx.telemetry import _xid_message_is_at_or_after
 
 
 def _write_tar(path: Path, members: dict[str, bytes]) -> None:
@@ -81,6 +84,12 @@ def test_timedemo_command_uses_requested_resolution_and_run_count(
     assert command[0] == str(executable)
     geometry = command[command.index("vid_geometry") + 1]
     assert geometry.startswith("2560x1440")
+    assert command[command.index("drs_enable") + 1] == "0"
+    assert command[command.index("drs_minscale") + 1] == "100"
+    assert command[command.index("drs_maxscale") + 1] == "100"
+    assert command[command.index("flt_fsr_enable") + 1] == "0"
+    assert command[command.index("pt_num_bounce_rays") + 1] == "2"
+    assert command[command.index("pt_reflect_refract") + 1] == "8"
     assert command[command.index("timedemo") + 1] == "3"
     assert command[-2:] == ["+demo", "demo1"]
 
@@ -114,3 +123,32 @@ def test_gamescope_startup_crash_is_detected_for_fallback(tmp_path: Path) -> Non
     )
 
     assert _result_looks_like_gamescope_startup_crash(result) is True
+
+
+def test_report_output_tail_filters_normal_gamescope_shutdown_noise() -> None:
+    assert _filter_report_output_tail(
+        [
+            "631 frames, 3.84 seconds: 164.365707 fps",
+            "[Gamescope WSI] Destroying swapchain: 0x2dbc6790",
+            "[Gamescope WSI] Destroyed swapchain: 0x2dbc6790",
+            "Closing console log.",
+            "[gamescope] [Info]  launch: Primary child shut down!",
+            "(EE) failed to read Wayland events: Broken pipe",
+            "Segmentation fault",
+        ]
+    ) == [
+        "631 frames, 3.84 seconds: 164.365707 fps",
+        "Segmentation fault",
+    ]
+
+
+def test_xid_timestamp_filter_ignores_old_short_iso_journal_lines() -> None:
+    started_at = datetime.fromisoformat("2026-04-25T20:38:28+02:00")
+
+    old_line = "2026-04-25T20:34:24+02:00 home kernel: NVRM: Xid (PCI:0000:2b:00): 109"
+    current_line = (
+        "2026-04-25T20:38:29+02:00 home kernel: NVRM: Xid (PCI:0000:2b:00): 109"
+    )
+
+    assert _xid_message_is_at_or_after(old_line, started_at) is False
+    assert _xid_message_is_at_or_after(current_line, started_at) is True

@@ -660,6 +660,22 @@ def _evaluate_probe(
             f"baseline={baseline_frames}"
         )
 
+    baseline_fps = _baseline_value(stable_history, "avg_fps")
+    if (
+        baseline_fps is not None
+        and probe.avg_fps is not None
+        and probe.avg_fps
+        < baseline_fps * _percent(AUTO_UV_METRIC_TUNING.min_proper_run_fps_pct)
+    ):
+        floor_fps = baseline_fps * _percent(
+            AUTO_UV_METRIC_TUNING.min_proper_run_fps_pct
+        )
+        return (
+            f"fps-regression current={probe.avg_fps:.1f} "
+            f"baseline={baseline_fps:.1f} floor={floor_fps:.1f} "
+            f"margin={AUTO_UV_METRIC_TUNING.min_proper_run_fps_pct:.1f}%"
+        )
+
     baseline_avg_core_clock = _baseline_value(stable_history, "avg_core_clock_mhz")
     if min_performance_core_clock_pct is None:
         min_performance_core_clock_pct = (

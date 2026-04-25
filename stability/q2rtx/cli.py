@@ -143,6 +143,9 @@ def main(argv: list[str] | None = None) -> int:
         config = config_from_args(args)
         attach_stdout_progress(config)
         result = run_q2rtx_stability_test(config)
+    except KeyboardInterrupt:
+        print("Interrupted by user.", file=sys.stderr, flush=True)
+        return 130
     except StabilityTestError as exc:
         print(f"error: {exc}", file=sys.stderr, flush=True)
         return 2

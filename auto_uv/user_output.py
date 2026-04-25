@@ -164,7 +164,7 @@ def log_vf_ascii_chart(
 
     min_voltage_mv = min(point[0] for point in all_points)
     max_voltage_mv = max(point[0] for point in all_points)
-    voltage_cutoff_mv = min_voltage_mv + (max_voltage_mv - min_voltage_mv) * (2.0 / 3.0)
+    voltage_cutoff_mv = min_voltage_mv + (max_voltage_mv - min_voltage_mv) * 0.5
 
     def _filtered_points(key: str) -> list[tuple[float, float]]:
         points = []
@@ -207,7 +207,7 @@ def log_vf_ascii_chart(
         },
     ]
     for line in render_line_chart(
-        ("VF curve zoom (top 33% voltage/clock, target=# stock=. lock=@, x=mV y=MHz)"),
+        ("VF curve zoom (top 50% voltage range, target=# stock=. lock=@, x=mV y=MHz)"),
         series=vf_series,
         x_label="mV",
         y_label="MHz",
@@ -287,6 +287,8 @@ def log_final_summary(
     final_voltage_mv: int,
     final_lock_clock_mhz: int,
     clock_drop_margin_pct: float,
+    final_verification_status: str | None = None,
+    final_curve_overclock: dict | None = None,
 ) -> None:
     if baseline_probe is None or final_probe is None:
         return
@@ -361,6 +363,25 @@ def log_final_summary(
         f"final-eff={_metric(final_eff, suffix='MHz/W', precision=5)} "
         f"eff-gain={_metric(eff_gain_pct, suffix='%', precision=2)}",
     )
+    if final_curve_overclock is not None:
+        lock_offset = final_curve_overclock.get("lock_offset_mhz")
+        lock_vanilla = final_curve_overclock.get("lock_vanilla_mhz")
+        lock_final = final_curve_overclock.get("lock_final_mhz")
+        log_phase(
+            log,
+            "summary",
+            "curve-overclock-vs-vanilla "
+            f"lock={_metric(lock_offset, suffix='MHz', precision=0)} "
+            f"vanilla={_metric(lock_vanilla, suffix='MHz', precision=0)} "
+            f"final={_metric(lock_final, suffix='MHz', precision=0)} "
+            f"voltage={final_curve_overclock.get('lock_voltage_mv')}mV "
+            f"range={_metric(final_curve_overclock.get('min_offset_mhz'), suffix='MHz', precision=0)}.."
+            f"{_metric(final_curve_overclock.get('max_offset_mhz'), suffix='MHz', precision=0)} "
+            f"avg={_metric(final_curve_overclock.get('avg_offset_mhz'), suffix='MHz', precision=1)} "
+            f"points={final_curve_overclock.get('positive_points')}/{final_curve_overclock.get('total_points')}",
+        )
+    if final_verification_status:
+        log_phase(log, "summary", f"final-verification={final_verification_status}")
 
 
 def format_user_value(
@@ -496,6 +517,15 @@ def log_user_candidate_result(
 
     def _target_clock(probe: AutoUvProbeSummary | None) -> str:
         return f"{int(probe.lock_clock_mhz)}MHz" if probe is not None else "n/a"
+
+    def _initial_measured_clock_mhz() -> int | None:
+        if initial_probe is None or initial_probe.avg_core_clock_mhz is None:
+            return None
+        return int(round(float(initial_probe.avg_core_clock_mhz)))
+
+    def _initial_clock() -> str:
+        measured_clock_mhz = _initial_measured_clock_mhz()
+        return f"{measured_clock_mhz}MHz" if measured_clock_mhz is not None else "n/a"
 
     def _fps_per_w(probe: AutoUvProbeSummary | None) -> str:
         if probe is None:
@@ -678,7 +708,7 @@ def log_user_candidate_result(
             ),
             (
                 "Target clock",
-                _target_clock(initial_probe),
+                _initial_clock(),
                 _target_clock(previous_probe),
                 f"{int(candidate_probe.lock_clock_mhz)}MHz",
                 _signed_int_change(
@@ -689,7 +719,7 @@ def log_user_candidate_result(
                     "MHz",
                 ),
                 _signed_int_change(
-                    initial_probe.lock_clock_mhz if initial_probe is not None else None,
+                    _initial_measured_clock_mhz(),
                     candidate_probe.lock_clock_mhz,
                     "MHz",
                 ),
@@ -752,12 +782,16 @@ def log_user_readable_final_summary(
     final_probe: AutoUvProbeSummary | None,
     final_voltage_mv: int,
     final_lock_clock_mhz: int,
-    clock_drop_margin_pct: float,
+    clock_drop_margin_pct: float | None,
     curve_path: Path,
+    result_title: str = "Auto-UV Result Summary",
+    final_curve_label: str = "Final curve",
+    final_verification_status: str | None = None,
+    final_curve_overclock: dict | None = None,
 ) -> None:
     if baseline_probe is None or final_probe is None:
         log("")
-        log("Auto-UV Result Summary")
+        log(result_title)
         log("Result data was incomplete, but the final curve was saved.")
         log(f"Voltage/Frequency curve: {curve_path}")
         return
@@ -786,26 +820,69 @@ def log_user_readable_final_summary(
         if power_saved_w is not None and baseline_power not in (None, 0.0)
         else None
     )
-    within_margin = clock_drop_pct is not None and float(clock_drop_pct) <= float(
-        clock_drop_margin_pct
+    within_margin = (
+        clock_drop_margin_pct is not None
+        and clock_drop_pct is not None
+        and float(clock_drop_pct) <= float(clock_drop_margin_pct)
     )
 
     log("")
-    log("Auto-UV Result Summary")
+    log(result_title)
     if power_saved_w is not None and power_saved_pct is not None:
         log(
             "Plain English: the GPU used "
             f"{power_saved_w:.1f}W less power ({power_saved_pct:.1f}% lower) "
             f"at the final tested curve."
         )
-    if clock_drop_pct is not None:
+    if clock_drop_margin_pct is not None and clock_drop_pct is not None:
         log(
             "Performance guardrail: core clock drop was "
             f"{clock_drop_pct:.2f}% with an allowed limit of "
             f"{float(clock_drop_margin_pct):.1f}%: "
             f"{'PASS' if within_margin else 'CHECK'}."
         )
-    log(f"Final curve: {int(final_lock_clock_mhz)}MHz at {int(final_voltage_mv)}mV")
+    log(
+        f"{final_curve_label}: {int(final_lock_clock_mhz)}MHz at {int(final_voltage_mv)}mV"
+    )
+    if final_verification_status:
+        log(f"Final verification: {final_verification_status}")
+    if final_curve_overclock is not None:
+        lock_offset = final_curve_overclock.get("lock_offset_mhz")
+        lock_vanilla = final_curve_overclock.get("lock_vanilla_mhz")
+        lock_final = final_curve_overclock.get("lock_final_mhz")
+        lock_voltage = final_curve_overclock.get("lock_voltage_mv")
+        min_offset = final_curve_overclock.get("min_offset_mhz")
+        max_offset = final_curve_overclock.get("max_offset_mhz")
+        avg_offset = final_curve_overclock.get("avg_offset_mhz")
+        positive_points = final_curve_overclock.get("positive_points")
+        total_points = final_curve_overclock.get("total_points")
+        if (
+            lock_offset is not None
+            and lock_voltage is not None
+            and lock_vanilla is not None
+            and lock_final is not None
+        ):
+            sign = "+" if float(lock_offset) > 0.0 else ""
+            log(
+                "Curve overclock vs vanilla: "
+                f"{sign}{float(lock_offset):.0f}MHz at {int(lock_voltage)}mV "
+                f"(vanilla {float(lock_vanilla):.0f}MHz -> final {float(lock_final):.0f}MHz)."
+            )
+        if (
+            min_offset is not None
+            and max_offset is not None
+            and avg_offset is not None
+            and positive_points is not None
+            and total_points is not None
+        ):
+            log(
+                "Across editable bins: "
+                f"offset range {float(min_offset):.0f}.."
+                f"{float(max_offset):.0f}MHz, "
+                f"average {float(avg_offset):.1f}MHz; "
+                f"{int(positive_points)}/"
+                f"{int(total_points)} bins are above vanilla."
+            )
 
     log_user_table(
         log,

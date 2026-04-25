@@ -494,7 +494,17 @@ def parse_main_args(argv):
         default=None,
         help=(
             "Maximum loaded GPU core clock drop allowed during Auto-UV; "
-            "default 10.0. Example: 12 allows up to a 12%% clock drop."
+            "default 12.0. Example: 10 allows up to a stricter 10%% clock drop."
+        ),
+    )
+    parser.add_argument(
+        "--auto-uv-max-clock-bump-recoveries",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of Auto-UV low-clock recovery attempts that apply "
+            "a +2%% curve target bump before continuing lower-voltage search; "
+            f"default {AUTO_UV_DEFAULTS.max_clock_bump_recoveries}. Use 0 to disable."
         ),
     )
     parser.add_argument(
@@ -1611,7 +1621,7 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
         )
     if args.auto_uv_voltage_scan and running_under_systemd_service():
         raise NvmlError(
-            "--auto-uv-voltage-scan is foreground-only; run it directly first, "
+            "Auto-UV scans are foreground-only; run the scan directly first, "
             "then daemonize normal runtime after the final curve is saved"
         )
     if args.auto_uv_voltage_scan and args.silent_fan_curve:
@@ -1674,6 +1684,11 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
             0.0,
             float(args.auto_uv_max_clock_drop_pct),
         )
+    if args.auto_uv_max_clock_bump_recoveries is not None:
+        afterburner_runtime_options["auto_uv_max_clock_bump_recoveries"] = max(
+            0,
+            int(args.auto_uv_max_clock_bump_recoveries),
+        )
     if args.dangerously_skip_validation:
         afterburner_runtime_options["dangerously_skip_validation"] = True
     prefer_afterburner_curve = bool(args.prefer_afterburner_curve)
@@ -1697,7 +1712,7 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
                     runtime_options=afterburner_runtime_options,
                     log=log,
                 )
-            else:
+            elif args.auto_uv_voltage_scan:
                 result = run_auto_uv_voltage_scan(
                     gpu_index=gpu_index,
                     runtime_options=afterburner_runtime_options,
@@ -1912,7 +1927,6 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
     except Exception as exc:
         auto_uv_final_curve = None
         log(f"Skipping auto-UV final curve: error={exc}")
-
     if afterburner_root:
         try:
             afterburner_source = resolve_afterburner_vf_source(
@@ -2545,7 +2559,7 @@ def cli_main() -> int:
             or running_under_systemd_service()
         ):
             raise NvmlError(
-                "--auto-uv-voltage-scan is foreground-only; run it directly first, "
+                "Auto-UV scans are foreground-only; run the scan directly first, "
                 "then daemonize normal runtime after the final curve is saved"
             )
         if runtime_flags["install_systemd_service"]:
@@ -2573,6 +2587,9 @@ def cli_main() -> int:
                 runtime_argv,
                 journal_hours=runtime_flags["journal_hours"],
             )
+    except KeyboardInterrupt:
+        print("Interrupted by user.", file=sys.stderr, flush=True)
+        return 130
     except Exception as exc:
         debug_exception("fatal error", exc)
         print(f"error: {exc}", file=sys.stderr, flush=True)

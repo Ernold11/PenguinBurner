@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ctypes
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import signal
 from typing import Callable
 
@@ -16,17 +16,12 @@ from hidden_nvml_voltage import create_hidden_voltage_reader
 from afterburner.import_vf_curve import apply_plan
 from nvml_gpu_policy import NvmlGpuPolicyController
 from nvidia_runtime_defaults import (
-    build_runtime_default_plan,
     reset_nvidia_runtime_defaults,
 )
 from stability.q2rtx import (
     Q2RTXStabilityConfig,
-    Q2RTXStabilityResult,
     StabilityTestError,
     cleanup_managed_q2rtx_processes,
-    print_q2rtx_stability_result,
-    query_gpu_metrics,
-    run_q2rtx_stability_test,
 )
 
 from .constants import NVML_SUCCESS
@@ -37,15 +32,9 @@ from .models import (
     AutoUvVoltageScanResult,
 )
 from .artifacts import (
-    _clear_uv_probe_in_progress,
     _consume_interrupted_uv_probe_marker,
     _load_uv_unsafe_voltage_entries,
-    _record_unsafe_uv_voltage,
-    _write_final_curve_snapshot,
     _write_latest_verified_uv_result,
-    _write_uv_probe_in_progress,
-    _write_saved_uv_state,
-    _write_stable_uv_result,
     _write_uv_result_snapshot,
 )
 from .curve_planning import (
@@ -61,49 +50,61 @@ from .curve_planning import (
     _unsafe_min_search_voltage_mv,
     _validate_auto_uv_source_plan,
 )
-from .fan_tuning import write_auto_uv_fan_payload
+from .candidate_sweep import _run_candidate_sweep
+from .final_verify import _run_final_verification_and_save
 from .probe_metrics import (
     _baseline_value,
     _derive_active_core_clock_mhz,
     _derive_loaded_voltage_band_mv,
     _derive_power_saturated_clock_mhz,
     _evaluate_probe,
-    _history_average,
     _latest_non_companion_probe,
-    _mean,
     _saturated_tail_samples,
-    _summarize_probe,
-    _temperature_normalized_efficiency_delta,
 )
+from .probe_runner import _probe_voltage_candidate
 from .probe_config import (
-    _budget_final_probe_durations,
-    _cuda_bruteforce_companion_command,
     _normalize_probe_config,
     _short_probe_config,
     _stability_probe_config_for_voltage_band,
 )
+from .scan_rules import (
+    _core_clock_below_floor,
+    _final_failure_can_accept_budget_curve,
+    _is_power_up_efficiency_down_regression,
+    _percent,
+    _probe_failure_should_mark_voltage_unsafe,
+    _real_clock_adjusted_stable_curve,
+    _real_probe_lock_clock_mhz,
+    _target_core_clock_floor,
+    _telemetry_sample_is_busy,
+)
 from .tuning import (
-    AUTO_UV_CURVE_TUNING,
     AUTO_UV_DEFAULTS,
     AUTO_UV_METRIC_TUNING,
-    AUTO_UV_PROBE_TUNING,
     AUTO_UV_STALL_TUNING,
-    AUTO_UV_VOLTAGE_PHASE_TUNING,
 )
 from .user_output import (
     format_probe_summary as _format_probe_summary,
     format_user_value as _format_user_value,
     log_benchmark as _log_benchmark,
-    log_fan_curve_ascii_chart as _log_fan_curve_ascii_chart,
-    log_final_summary as _log_final_summary,
     log_phase as _log_phase,
-    log_user_candidate_intro as _log_user_candidate_intro,
-    log_user_candidate_result as _log_user_candidate_result,
-    log_user_readable_final_summary as _log_user_readable_final_summary,
     log_user_stage as _log_user_stage,
     log_vf_ascii_chart as _log_vf_ascii_chart,
     log_vf_point_list as _log_vf_point_list,
 )
+
+__all__ = [
+    "_build_voltage_scan_result",
+    "_clock_bump_recovery_limit_from_unsafe_entries",
+    "_core_clock_below_floor",
+    "_final_failure_can_accept_budget_curve",
+    "_is_power_up_efficiency_down_regression",
+    "_probe_failure_should_mark_voltage_unsafe",
+    "_real_clock_adjusted_stable_curve",
+    "_target_core_clock_floor",
+    "_telemetry_sample_is_busy",
+    "run_auto_uv_voltage_scan",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,65 +117,24 @@ class _AutoUvScanSettings:
     final_verification_duration_s: int
     efficiency_stop_streak: int
     min_efficiency_stop_voltage_drop_pct: float
+    max_clock_bump_recoveries: int
 
 
-def _percent(value: float | int) -> float:
-    return max(0.0, float(value) / 100.0)
-
-
-def _target_core_clock_floor(
-    *,
-    lock_clock_mhz: int,
-    initial_probe_clock_mhz: float | None,
-    min_performance_core_clock_pct: float,
-    enforce_target_core_clock_floor: bool,
-) -> tuple[float | None, float | None]:
-    if not enforce_target_core_clock_floor:
-        return None, None
-    floor_base_clock_mhz = float(lock_clock_mhz)
-    if initial_probe_clock_mhz is not None:
-        floor_base_clock_mhz = max(
-            floor_base_clock_mhz,
-            float(initial_probe_clock_mhz),
+def _assert_zero_runtime_vf_offsets(reader) -> None:
+    reader.refresh_points()
+    stale = []
+    for point in reader.editable_core_points():
+        current_offset_mhz = int(point["current_offset_khz"] // 1000)
+        if current_offset_mhz != 0:
+            stale.append(
+                f"{int(point['voltage_uv'] // 1000)}mV={current_offset_mhz:+d}MHz"
+            )
+    if stale:
+        sample = ", ".join(stale[:12])
+        suffix = f", ... {len(stale) - 12} more" if len(stale) > 12 else ""
+        raise AutoUvError(
+            f"failed to clear per-point V/F offsets before Auto-UV: {sample}{suffix}"
         )
-    return (
-        floor_base_clock_mhz * _percent(float(min_performance_core_clock_pct)),
-        floor_base_clock_mhz,
-    )
-
-
-def _telemetry_sample_is_busy(sample, busy_power_floor_w: float | None) -> bool:
-    if sample is None:
-        return False
-    gpu_util_pct = getattr(sample, "gpu_util_pct", None)
-    if (
-        gpu_util_pct is not None
-        and float(gpu_util_pct) >= AUTO_UV_STALL_TUNING.busy_gpu_util_pct
-    ):
-        return True
-    power_w = getattr(sample, "power_w", None)
-    return (
-        power_w is not None
-        and busy_power_floor_w is not None
-        and float(power_w) >= float(busy_power_floor_w)
-    )
-
-
-def _core_clock_below_floor(
-    core_clock_mhz: float,
-    floor_mhz: float,
-) -> bool:
-    return float(core_clock_mhz) < (
-        float(floor_mhz) - float(AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz)
-    )
-
-
-def _probe_failure_should_mark_voltage_unsafe(reason: str) -> bool:
-    # A live timedemo stall with idle telemetry usually means the workload stopped
-    # being GPU-bound. Do not turn that into a permanent unsafe-voltage floor.
-    if str(reason).startswith("timedemo-live-stall"):
-        return False
-    return True
 
 
 class _NvmlDeviceSession:
@@ -297,36 +257,6 @@ class _ProbeClockCeilingController:
             return
         self._policy_controller.reset_locked_core_clocks()
         self._active = False
-
-
-def _is_power_up_efficiency_down_regression(
-    previous_probe: AutoUvProbeSummary | None,
-    candidate_probe: AutoUvProbeSummary | None,
-    efficiency_delta: dict[str, float | bool | None],
-) -> bool:
-    if previous_probe is None or candidate_probe is None:
-        return False
-    measured_voltage_drop_mv = efficiency_delta.get("measured_voltage_drop_mv")
-    if measured_voltage_drop_mv is None or float(measured_voltage_drop_mv) <= 0.0:
-        return False
-    previous_power_w = efficiency_delta.get("previous_power_w")
-    candidate_power_w = efficiency_delta.get("candidate_power_w")
-    previous_fps_per_w = efficiency_delta.get("previous_fps_per_w")
-    candidate_fps_per_w = efficiency_delta.get("candidate_fps_per_w")
-    if previous_power_w is None or candidate_power_w is None:
-        return False
-    if previous_fps_per_w is None or candidate_fps_per_w is None:
-        return False
-    fps_per_w_delta_pct = (
-        (float(candidate_fps_per_w) - float(previous_fps_per_w))
-        / float(previous_fps_per_w)
-        * 100.0
-        if float(previous_fps_per_w) != 0.0
-        else 0.0
-    )
-    return float(candidate_power_w) > float(previous_power_w) and float(
-        fps_per_w_delta_pct
-    ) <= float(AUTO_UV_METRIC_TUNING.min_temp_normalized_fps_per_w_improvement_pct)
 
 
 def _probe_stabilization_search(
@@ -456,6 +386,8 @@ def _describe_guardrails(
     baseline_frames = stable_history[0].frames_per_run
     baseline_avg_core_clock = _baseline_value(stable_history, "avg_core_clock_mhz")
     baseline_avg_loop_s = _baseline_value(stable_history, "avg_seconds_per_run")
+    baseline_fps = _baseline_value(stable_history, "avg_fps")
+    baseline_power_w = _baseline_value(stable_history, "avg_power_w")
     if min_performance_core_clock_pct is None:
         min_performance_core_clock_pct = (
             AUTO_UV_METRIC_TUNING.min_performance_core_clock_pct
@@ -473,6 +405,16 @@ def _describe_guardrails(
             "core_clock-floor="
             f"{baseline_avg_core_clock * _percent(float(min_performance_core_clock_pct)):.1f}MHz"
         )
+    if baseline_fps is not None:
+        parts.append(
+            "fps-floor="
+            f"{baseline_fps * _percent(AUTO_UV_METRIC_TUNING.min_proper_run_fps_pct):.1f}"
+        )
+    if baseline_power_w is not None:
+        parts.append(
+            "load-power-floor="
+            f"{baseline_power_w * _percent(AUTO_UV_METRIC_TUNING.min_proper_run_power_pct):.1f}W"
+        )
     return " ".join(parts) if parts else "baseline-only"
 
 
@@ -484,456 +426,6 @@ def _latest_reference_voltage_mv(
     if probe is not None and probe.avg_voltage_mv is not None:
         return float(probe.avg_voltage_mv)
     return fallback_voltage_mv
-
-
-def _probe_voltage_candidate(
-    *,
-    reader,
-    candidate_plan: list[dict],
-    candidate_voltage_mv: int,
-    lock_clock_mhz: int,
-    q2rtx_config: Q2RTXStabilityConfig,
-    stable_history: list[AutoUvProbeSummary],
-    initial_probe_clock_mhz: float | None,
-    nvml_session: _NvmlDeviceSession,
-    log: Callable[[str], None],
-    phase_label: str,
-    log_context: str | None = None,
-    power_limit_w: int | None = None,
-    enforce_target_core_clock_floor: bool = True,
-    show_candidate_target: bool = True,
-    summarize_saturated_tail: bool = False,
-    use_power_limit_floor: bool = False,
-    min_performance_core_clock_pct: float | None = None,
-    reset_plan: list[dict] | None = None,
-) -> tuple[AutoUvProbeSummary, Q2RTXStabilityResult]:
-    frame_reference = (
-        int(stable_history[0].frames_per_run)
-        if stable_history and stable_history[0].frames_per_run is not None
-        else None
-    )
-    if min_performance_core_clock_pct is None:
-        min_performance_core_clock_pct = (
-            AUTO_UV_METRIC_TUNING.min_performance_core_clock_pct
-        )
-    target_core_clock_floor_mhz, target_core_clock_floor_base_mhz = (
-        _target_core_clock_floor(
-            lock_clock_mhz=int(lock_clock_mhz),
-            initial_probe_clock_mhz=initial_probe_clock_mhz,
-            min_performance_core_clock_pct=float(min_performance_core_clock_pct),
-            enforce_target_core_clock_floor=bool(enforce_target_core_clock_floor),
-        )
-    )
-
-    latest_non_companion_probe = _latest_non_companion_probe(stable_history)
-    progress_state = {
-        "last_completed_runs": 0,
-        "last_progress_elapsed_s": 0.0,
-        "expected_loop_s": (
-            latest_non_companion_probe.avg_seconds_per_run
-            if latest_non_companion_probe is not None
-            else _history_average(stable_history, "avg_seconds_per_run")
-        ),
-        "low_core_clock_streak": 0,
-    }
-    busy_power_floor_w = None
-    reference_probe = _latest_non_companion_probe(stable_history)
-    if reference_probe is not None and reference_probe.avg_power_w is not None:
-        busy_power_floor_w = float(reference_probe.avg_power_w) * _percent(
-            AUTO_UV_STALL_TUNING.busy_reference_power_pct
-        )
-    elif power_limit_w is not None and int(power_limit_w) > 0:
-        busy_power_floor_w = float(power_limit_w) * _percent(
-            AUTO_UV_STALL_TUNING.busy_power_limit_pct
-        )
-
-    def _format_live_status(state: dict) -> str:
-        elapsed_s = float(state.get("elapsed_s", 0.0))
-        latest_sample = state.get("latest_sample")
-        running = str(state.get("running", "")).strip()
-        live_voltage_mv = nvml_session.read_live_voltage_mv()
-
-        parts = [f"elapsed={elapsed_s:.1f}s"]
-        if show_candidate_target:
-            parts.insert(0, f"target={lock_clock_mhz}MHz")
-            parts.insert(0, f"candidate={candidate_voltage_mv}mV")
-        if running:
-            parts.append(f"running={running}")
-        if live_voltage_mv is not None:
-            parts.append(f"live={live_voltage_mv}mV")
-        if latest_sample is not None and latest_sample.power_w is not None:
-            parts.append(f"power={float(latest_sample.power_w):.1f}W")
-            if busy_power_floor_w is not None:
-                parts.append(
-                    "load=busy"
-                    if _telemetry_sample_is_busy(latest_sample, busy_power_floor_w)
-                    else "load=idle"
-                )
-        if latest_sample is not None and latest_sample.core_clock_mhz is not None:
-            parts.append(f"core_clock={float(latest_sample.core_clock_mhz):.0f}MHz")
-        if latest_sample is not None and latest_sample.temperature_c is not None:
-            parts.append(f"temp={float(latest_sample.temperature_c):.0f}C")
-        else:
-            parts.append("temp=n/a")
-        if latest_sample is not None and latest_sample.fan_speed_pct is not None:
-            parts.append(f"fan={float(latest_sample.fan_speed_pct):.0f}%")
-        else:
-            parts.append("fan=n/a")
-        if target_core_clock_floor_mhz is not None:
-            assert target_core_clock_floor_base_mhz is not None
-            parts.append(
-                f"target-floor={target_core_clock_floor_mhz:.1f}MHz"
-                f"({float(min_performance_core_clock_pct):.1f}%"
-                f" of {target_core_clock_floor_base_mhz:.1f}MHz baseline)"
-            )
-        return " ".join(parts)
-
-    def _progress_callback(state: dict) -> None:
-        completed_runs = int(state.get("completed_runs", 0))
-        elapsed_s = float(state.get("elapsed_s", 0.0))
-        timedemo_runs = list(state.get("timedemo_runs") or [])
-        if completed_runs > int(progress_state["last_completed_runs"]):
-            progress_state["last_completed_runs"] = completed_runs
-            progress_state["last_progress_elapsed_s"] = elapsed_s
-            current_loop_s = _mean([float(run.seconds) for run in timedemo_runs])
-            if current_loop_s is not None:
-                progress_state["expected_loop_s"] = current_loop_s
-            last_run = state.get("last_run")
-            if last_run is not None:
-                latest_sample = state.get("latest_sample")
-                sample_parts = []
-                if latest_sample is not None and latest_sample.power_w is not None:
-                    sample_parts.append(f"power={float(latest_sample.power_w):.1f}W")
-                if (
-                    latest_sample is not None
-                    and latest_sample.temperature_c is not None
-                ):
-                    sample_parts.append(
-                        f"temp={float(latest_sample.temperature_c):.0f}C"
-                    )
-                else:
-                    sample_parts.append("temp=n/a")
-                if (
-                    latest_sample is not None
-                    and latest_sample.fan_speed_pct is not None
-                ):
-                    sample_parts.append(
-                        f"fan={float(latest_sample.fan_speed_pct):.0f}%"
-                    )
-                else:
-                    sample_parts.append("fan=n/a")
-                _log_phase(
-                    log,
-                    f"{phase_label}-pass",
-                    (
-                        f"{str(log_context).strip()} "
-                        if log_context is not None and str(log_context).strip()
-                        else ""
-                    )
-                    + f"run={int(last_run.run_index)} "
-                    f"frames={int(last_run.frames)} "
-                    f"fps={float(last_run.fps):.1f} "
-                    f"seconds={float(last_run.seconds):.2f} " + " ".join(sample_parts),
-                )
-        live_status = _format_live_status(state)
-        if log_context is not None and str(log_context).strip():
-            live_status = f"{str(log_context).strip()} {live_status}"
-        _log_phase(log, f"{phase_label}-live", live_status)
-
-    def _abort_callback(state: dict) -> str | None:
-        fatal_output_matches = list(state.get("fatal_output_matches") or [])
-        if fatal_output_matches:
-            return "fatal-q2rtx-output"
-
-        expected_frames_per_run = state.get("expected_frames_per_run")
-        frame_ref = frame_reference
-        if frame_ref is None and expected_frames_per_run is not None:
-            frame_ref = int(expected_frames_per_run)
-
-        for run in list(state.get("new_timedemo_runs") or []):
-            frames = int(run.frames)
-            seconds = float(run.seconds)
-            fps = float(run.fps)
-            if frames <= 0 or seconds <= 0.0 or fps <= 0.0:
-                return "timedemo-metrics-invalid"
-            if frame_ref is not None and frames != frame_ref:
-                return (
-                    f"timedemo-live-frame-count current={frames} "
-                    f"expected={frame_ref} run={int(run.run_index)}"
-                )
-
-        telemetry_samples = list(state.get("telemetry_samples") or [])
-        busy_telemetry_samples = [
-            sample
-            for sample in telemetry_samples
-            if _telemetry_sample_is_busy(sample, busy_power_floor_w)
-        ]
-        core_clock_samples = [
-            float(sample.core_clock_mhz)
-            for sample in busy_telemetry_samples
-            if sample is not None and sample.core_clock_mhz is not None
-        ]
-        latest_sample = state.get("latest_sample")
-        live_core_clock_mhz = (
-            float(latest_sample.core_clock_mhz)
-            if latest_sample is not None and latest_sample.core_clock_mhz is not None
-            else None
-        )
-        live_sample_is_busy = _telemetry_sample_is_busy(
-            latest_sample,
-            busy_power_floor_w,
-        )
-        running_avg_core_clock = _mean(core_clock_samples)
-        if (
-            target_core_clock_floor_mhz is not None
-            and live_core_clock_mhz is not None
-            and len(core_clock_samples)
-            >= AUTO_UV_STALL_TUNING.live_core_clock_abort_min_samples
-        ):
-            if live_sample_is_busy and _core_clock_below_floor(
-                live_core_clock_mhz,
-                target_core_clock_floor_mhz,
-            ):
-                progress_state["low_core_clock_streak"] = (
-                    int(progress_state.get("low_core_clock_streak", 0)) + 1
-                )
-            else:
-                progress_state["low_core_clock_streak"] = 0
-            if (
-                int(progress_state["low_core_clock_streak"])
-                >= AUTO_UV_METRIC_TUNING.target_core_clock_low_streak_samples
-            ):
-                return (
-                    f"telemetry-live-core_clock current={live_core_clock_mhz:.1f}MHz "
-                    f"floor={target_core_clock_floor_mhz:.1f}MHz "
-                    f"tolerance={AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz:.1f}MHz"
-                )
-        if (
-            target_core_clock_floor_mhz is not None
-            and running_avg_core_clock is not None
-            and len(core_clock_samples)
-            >= AUTO_UV_STALL_TUNING.avg_core_clock_abort_min_samples
-            and _core_clock_below_floor(
-                running_avg_core_clock,
-                target_core_clock_floor_mhz,
-            )
-        ):
-            return (
-                f"telemetry-live-core_clock-avg current={running_avg_core_clock:.1f}MHz "
-                f"floor={target_core_clock_floor_mhz:.1f}MHz "
-                f"tolerance={AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz:.1f}MHz"
-            )
-
-        expected_loop_s = progress_state.get("expected_loop_s")
-        if expected_loop_s is not None:
-            completed_runs = int(state.get("completed_runs", 0))
-            if completed_runs <= 0:
-                return None
-            elapsed_s = float(state.get("elapsed_s", 0.0))
-            last_progress_elapsed_s = float(progress_state["last_progress_elapsed_s"])
-            idle_s = elapsed_s - last_progress_elapsed_s
-            stall_limit_s = max(
-                AUTO_UV_STALL_TUNING.timeout_min_s,
-                float(expected_loop_s) * AUTO_UV_STALL_TUNING.timeout_multiplier,
-            )
-            if idle_s > stall_limit_s:
-                latest_sample = state.get("latest_sample")
-                live_gpu_util = (
-                    getattr(latest_sample, "gpu_util_pct", None)
-                    if latest_sample is not None
-                    else None
-                )
-                live_power_w = (
-                    getattr(latest_sample, "power_w", None)
-                    if latest_sample is not None
-                    else None
-                )
-                gpu_is_busy = (
-                    live_gpu_util is not None
-                    and float(live_gpu_util) >= AUTO_UV_STALL_TUNING.busy_gpu_util_pct
-                ) or (
-                    live_power_w is not None
-                    and busy_power_floor_w is not None
-                    and float(live_power_w) >= float(busy_power_floor_w)
-                )
-                if gpu_is_busy:
-                    return None
-                return (
-                    f"timedemo-live-stall idle={idle_s:.1f}s "
-                    f"stall={stall_limit_s:.1f}s completed={completed_runs}"
-                )
-
-    mark_in_progress = str(phase_label) in {"candidate", "final-verify", "stabilize"}
-
-    def _record_probe_unsafe(reason: str, details: dict | None = None) -> None:
-        if not mark_in_progress:
-            return
-        try:
-            blacklist_path, _unsafe_entry = _record_unsafe_uv_voltage(
-                candidate_voltage_mv=int(candidate_voltage_mv),
-                lock_clock_mhz=int(lock_clock_mhz),
-                reason=str(reason),
-                phase=str(phase_label),
-                details=details,
-            )
-        except Exception as exc:
-            _log_phase(
-                log,
-                "blacklist",
-                f"failed-to-record-unsafe-voltage voltage={int(candidate_voltage_mv)}mV "
-                f"target={int(lock_clock_mhz)}MHz reason={reason} error={exc}",
-            )
-            return
-        detail_text = ""
-        if details and details.get("result_reason"):
-            detail_text = f" result={details['result_reason']}"
-        elif details and details.get("exception"):
-            detail_text = f" exception={details['exception']}"
-        _log_phase(
-            log,
-            "blacklist",
-            f"unsafe-voltage-recorded voltage={int(candidate_voltage_mv)}mV "
-            f"target={int(lock_clock_mhz)}MHz reason={reason}{detail_text} "
-            f"path={blacklist_path}",
-        )
-
-    if mark_in_progress:
-        _write_uv_probe_in_progress(
-            phase=phase_label,
-            candidate_voltage_mv=int(candidate_voltage_mv),
-            lock_clock_mhz=int(lock_clock_mhz),
-            log_context=log_context,
-        )
-    try:
-        live_voltage_before_mv = nvml_session.read_live_voltage_mv()
-        current_sample = query_gpu_metrics(int(q2rtx_config.gpu_index))
-        start_message = f"live-voltage-before={live_voltage_before_mv if live_voltage_before_mv is not None else 'n/a'}"
-        start_message += (
-            f" temp={float(current_sample.temperature_c):.0f}C"
-            if current_sample is not None and current_sample.temperature_c is not None
-            else " temp=n/a"
-        )
-        start_message += (
-            f" fan={float(current_sample.fan_speed_pct):.0f}%"
-            if current_sample is not None and current_sample.fan_speed_pct is not None
-            else " fan=n/a"
-        )
-        if show_candidate_target:
-            start_message = (
-                f"candidate={candidate_voltage_mv}mV "
-                f"target={lock_clock_mhz}MHz " + start_message
-            )
-        if log_context is not None and str(log_context).strip():
-            start_message = f"{str(log_context).strip()} {start_message}"
-        _log_phase(log, phase_label, start_message)
-        if reset_plan is not None:
-            apply_plan(reader, reset_plan)
-            reader.refresh_points()
-            _log_phase(
-                log,
-                phase_label,
-                "reset runtime-default V/F curve before applying probe curve",
-            )
-        apply_plan(reader, candidate_plan)
-        reader.refresh_points()
-        probe_config = replace(
-            q2rtx_config,
-            progress_callback=_progress_callback,
-            abort_callback=_abort_callback,
-        )
-        try:
-            result = run_q2rtx_stability_test(probe_config)
-        except StabilityTestError:
-            raise
-        except Exception as exc:
-            _record_probe_unsafe(
-                "stability-probe-exception",
-                details={
-                    "exception": f"{exc.__class__.__name__}: {exc}",
-                    "used_companion_load": bool(q2rtx_config.companion_command),
-                },
-            )
-            raise
-        if result.success:
-            print_q2rtx_stability_result(result)
-        else:
-            failure_details = {
-                "result_reason": str(result.reason),
-                "workload_kind": str(result.workload_kind),
-                "workload_name": str(result.workload_name),
-                "shutdown_mode": str(result.shutdown_mode),
-                "process_exit_code": (
-                    int(result.process_exit_code)
-                    if result.process_exit_code is not None
-                    else None
-                ),
-                "log_path": str(result.log_path),
-                "used_companion_load": bool(q2rtx_config.companion_command),
-            }
-            if _probe_failure_should_mark_voltage_unsafe(str(result.reason)):
-                _record_probe_unsafe(
-                    "stability-probe-failed",
-                    details=failure_details,
-                )
-            else:
-                _log_phase(
-                    log,
-                    "blacklist",
-                    f"unsafe-voltage-skipped voltage={int(candidate_voltage_mv)}mV "
-                    f"target={int(lock_clock_mhz)}MHz result={result.reason}",
-                )
-            controlled_abort_prefixes = (
-                "telemetry-live-core_clock",
-                "telemetry-live-core_clock-avg",
-                "timedemo-live-frame-count",
-            )
-            if str(result.reason).startswith(controlled_abort_prefixes):
-                requested_target = (
-                    f"{result.timedemo_loops_requested} loops"
-                    if result.timedemo_loops_requested is not None
-                    else f"{result.duration_requested_s}s"
-                )
-                print("Auto-UV probe: ABORTED", flush=True)
-                print(
-                    f"Reason: {result.reason} | workload={result.workload_name} ({result.workload_kind}) | "
-                    f"requested={requested_target} | observed={result.duration_observed_s:.1f}s",
-                    flush=True,
-                )
-                print(
-                    f"Executable: {result.executable_path} | workdir={result.workdir}",
-                    flush=True,
-                )
-                print(f"Log: {result.log_path}", flush=True)
-            else:
-                print_q2rtx_stability_result(result)
-        live_voltage_after_mv = nvml_session.read_live_voltage_mv()
-        summary_samples = (
-            _saturated_tail_samples(result.telemetry_samples)
-            if summarize_saturated_tail
-            else None
-        )
-        if summarize_saturated_tail and summary_samples is not None:
-            _log_phase(
-                log,
-                phase_label,
-                f"using saturated telemetry tail samples={len(summary_samples)}/"
-                f"{len(result.telemetry_samples)} for baseline measurement",
-            )
-        summary = _summarize_probe(
-            candidate_voltage_mv=candidate_voltage_mv,
-            lock_clock_mhz=lock_clock_mhz,
-            live_voltage_before_mv=live_voltage_before_mv,
-            live_voltage_after_mv=live_voltage_after_mv,
-            used_companion_load=bool(q2rtx_config.companion_command),
-            power_limit_w=power_limit_w,
-            result=result,
-            telemetry_samples=summary_samples,
-            use_power_limit_floor=use_power_limit_floor,
-        )
-        return summary, result
-    finally:
-        if mark_in_progress:
-            _clear_uv_probe_in_progress()
 
 
 def _scan_settings(
@@ -990,6 +482,15 @@ def _scan_settings(
             else AUTO_UV_METRIC_TUNING.min_efficiency_stop_voltage_drop_pct
         ),
     )
+    max_clock_bump_recoveries = int(
+        runtime_options.get(
+            "auto_uv_max_clock_bump_recoveries",
+            AUTO_UV_DEFAULTS.max_clock_bump_recoveries,
+        )
+        if runtime_options.get("auto_uv_max_clock_bump_recoveries") is not None
+        else AUTO_UV_DEFAULTS.max_clock_bump_recoveries
+    )
+    max_clock_bump_recoveries = max(0, int(max_clock_bump_recoveries))
     return _AutoUvScanSettings(
         q2rtx_config=normalized_q2rtx_config,
         final_clock_drop_margin_pct=float(final_clock_drop_margin_pct),
@@ -1001,6 +502,7 @@ def _scan_settings(
         min_efficiency_stop_voltage_drop_pct=float(
             min_efficiency_stop_voltage_drop_pct
         ),
+        max_clock_bump_recoveries=int(max_clock_bump_recoveries),
     )
 
 
@@ -1008,11 +510,11 @@ def _build_voltage_scan_result(
     *,
     final_voltage_mv: int,
     final_lock_clock_mhz: int,
+    initial_probe: AutoUvProbeSummary | None,
     probe_history: list[AutoUvProbeSummary],
-    stable_history: list[AutoUvProbeSummary],
     final_probe: AutoUvProbeSummary | None,
 ) -> AutoUvVoltageScanResult:
-    baseline_probe = stable_history[0] if stable_history else None
+    baseline_probe = initial_probe
     return AutoUvVoltageScanResult(
         success=True,
         final_voltage_mv=int(final_voltage_mv),
@@ -1121,828 +623,74 @@ def _build_voltage_scan_result(
     )
 
 
-def _run_candidate_sweep(
+def _curve_overclock_summary(
     *,
-    log,
-    reader,
-    flattened_plan,
-    start_voltage_mv,
-    stable_plan,
-    stable_voltage_mv,
-    stable_lock_clock_mhz,
-    stable_probe,
-    stable_history,
-    probe_history,
-    first_candidate_voltage_mv,
-    discovery_summary,
-    lock_clock_mhz,
-    q2rtx_config,
-    measured_clock_mhz,
-    nvml_session,
-    translated_gpu_policy,
-    runtime_default_plan,
-    clock_ceiling,
-    source_result,
-    min_performance_core_clock_pct,
-    min_search_voltage_mv,
-    preserve_vanilla_below_mv,
-    min_efficiency_stop_voltage_drop_pct,
-    efficiency_stop_streak,
-):
-    candidate_attempt_count = 0
-    failed_candidate_floor_mv = None
-    candidate_voltage_mv = int(first_candidate_voltage_mv)
-    non_improving_efficiency_streak = 0
-    pending_efficiency_stop_curve = None
-    while candidate_voltage_mv is not None:
-        candidate_attempt_count += 1
-        ratio = (
-            float(candidate_voltage_mv) / float(start_voltage_mv)
-            if int(start_voltage_mv) > 0
-            else 1.0
-        )
-        if ratio > _percent(AUTO_UV_VOLTAGE_PHASE_TUNING.coarse_voltage_pct):
-            phase = "coarse"
-        elif ratio > _percent(AUTO_UV_VOLTAGE_PHASE_TUNING.medium_voltage_pct):
-            phase = "medium"
-        else:
-            phase = "fine"
-        reference_actual_voltage_mv = _latest_reference_voltage_mv(
-            stable_history,
-            discovery_summary.avg_voltage_mv,
-        )
-        candidate = _make_curve_candidate(
-            flattened_plan,
-            candidate_voltage_mv=int(candidate_voltage_mv),
-            target_clock_mhz=int(lock_clock_mhz),
-            label=f"voltage={candidate_voltage_mv}mV phase={phase}",
-        )
-        previous_stable_probe_for_iteration = stable_probe
-        _log_user_candidate_intro(
-            log,
-            attempt=candidate_attempt_count,
-            stable_voltage_mv=int(stable_voltage_mv),
-            stable_lock_clock_mhz=int(stable_lock_clock_mhz),
-            candidate_voltage_mv=int(candidate.candidate_voltage_mv),
-            candidate_lock_clock_mhz=int(candidate.target_clock_mhz),
-            start_voltage_mv=int(start_voltage_mv),
-            min_search_voltage_mv=int(min_search_voltage_mv),
-            phase=phase,
-        )
-        _log_phase(
-            log,
-            "candidate",
-            f"{candidate_attempt_count} "
-            f"stable={stable_voltage_mv}mV@{stable_lock_clock_mhz}MHz "
-            f"try={candidate.candidate_voltage_mv}mV@{candidate.target_clock_mhz}MHz "
-            f"step={candidate.candidate_voltage_mv - stable_voltage_mv:+d}mV "
-            f"shape={candidate.label} "
-            + f"{_describe_guardrails(stable_history, min_performance_core_clock_pct=float(min_performance_core_clock_pct))}",
-        )
-        _log_vf_ascii_chart(
-            log,
-            plan=candidate.plan,
-            target_clock_mhz=candidate.target_clock_mhz,
-            candidate_voltage_mv=candidate.candidate_voltage_mv,
-        )
-        _log_vf_point_list(
-            log,
-            plan=candidate.plan,
-            label=(
-                f"candidate target={candidate.target_clock_mhz}MHz "
-                f"voltage={candidate.candidate_voltage_mv}mV"
-            ),
-        )
-        if clock_ceiling is not None:
-            clock_ceiling.retarget(
-                lock_clock_mhz=int(candidate.target_clock_mhz),
-                lock_voltage_mv=int(candidate.candidate_voltage_mv),
-            )
-            _log_phase(log, "ceiling", clock_ceiling.describe())
-        probe_summary, probe_result = _probe_voltage_candidate(
-            reader=reader,
-            candidate_plan=candidate.plan,
-            candidate_voltage_mv=candidate.candidate_voltage_mv,
-            lock_clock_mhz=candidate.target_clock_mhz,
-            q2rtx_config=_stability_probe_config_for_voltage_band(
-                q2rtx_config,
-                initial_target_voltage_mv=int(start_voltage_mv),
-                candidate_voltage_mv=int(candidate.candidate_voltage_mv),
-            ),
-            stable_history=stable_history,
-            initial_probe_clock_mhz=measured_clock_mhz,
-            nvml_session=nvml_session,
-            log=log,
-            phase_label="candidate",
-            power_limit_w=translated_gpu_policy.get("power_limit_w"),
-            use_power_limit_floor=(candidate_attempt_count <= 1),
-            min_performance_core_clock_pct=float(min_performance_core_clock_pct),
-            reset_plan=runtime_default_plan,
-        )
-        probe_history.append(probe_summary)
-        _log_benchmark(
-            log,
-            phase="candidate",
-            probe=probe_summary,
-            reference_probe=discovery_summary,
-            reference_label="initial",
-        )
-
-        if not probe_result.success:
-            failed_voltage_mv = int(candidate.candidate_voltage_mv)
-            low_frequency_failure = str(probe_result.reason).startswith(
-                ("telemetry-live-core_clock", "telemetry-live-core_clock-avg")
-            )
-            if low_frequency_failure:
-                apply_plan(reader, stable_plan)
-                reader.refresh_points()
-                restored_live_mv = nvml_session.read_live_voltage_mv()
-                _log_phase(
-                    log,
-                    "final",
-                    f"low-frequency fail at {candidate.candidate_voltage_mv}mV; "
-                    f"finishing with previous stable {stable_voltage_mv}mV@{stable_lock_clock_mhz}MHz "
-                    f"restored-live-voltage={restored_live_mv if restored_live_mv is not None else 'n/a'}",
-                )
-                _log_user_candidate_result(
-                    log,
-                    attempt=candidate_attempt_count,
-                    decision="STOPPED",
-                    reason="This voltage could not hold the target core clock. The previous stable curve was restored.",
-                    initial_probe=discovery_summary,
-                    previous_probe=previous_stable_probe_for_iteration,
-                    candidate_probe=probe_summary,
-                    restored_voltage_mv=int(stable_voltage_mv),
-                    restored_lock_clock_mhz=int(stable_lock_clock_mhz),
-                )
-                break
-            recovery_candidate, recovery_summary, recovery_result = (
-                _probe_stabilization_search(
-                    reader=reader,
-                    plan_source=source_result["plan"],
-                    failure_voltage_mv=failed_voltage_mv,
-                    failure_live_voltage_mv=probe_summary.live_voltage_after_mv,
-                    minimum_candidate_voltage_mv=_next_higher_voltage_bin(
-                        source_result["plan"], int(failed_voltage_mv)
-                    ),
-                    target_clock_mhz=int(candidate.target_clock_mhz),
-                    q2rtx_config=q2rtx_config,
-                    stable_history=stable_history,
-                    nvml_session=nvml_session,
-                    clock_ceiling=clock_ceiling,
-                    log=log,
-                    probe_history=probe_history,
-                    baseline_probe=discovery_summary,
-                    initial_target_voltage_mv=int(start_voltage_mv),
-                    initial_probe_clock_mhz=measured_clock_mhz,
-                    power_limit_w=translated_gpu_policy.get("power_limit_w"),
-                    min_performance_core_clock_pct=float(
-                        min_performance_core_clock_pct
-                    ),
-                    reset_plan=runtime_default_plan,
-                )
-            )
-            recovery_accepted = False
-            if (
-                recovery_candidate is not None
-                and recovery_summary is not None
-                and recovery_result is not None
-            ):
-                stable_plan = recovery_candidate.plan
-                stable_voltage_mv = int(recovery_candidate.candidate_voltage_mv)
-                stable_lock_clock_mhz = int(recovery_candidate.target_clock_mhz)
-                stable_probe = recovery_summary
-                if not recovery_summary.used_companion_load:
-                    stable_history.append(recovery_summary)
-                    _write_latest_verified_uv_result(
-                        plan=stable_plan,
-                        lock_clock_mhz=int(stable_lock_clock_mhz),
-                        voltage_mv=int(stable_voltage_mv),
-                        probe=stable_probe,
-                    )
-                _log_phase(
-                    log,
-                    "retest",
-                    "accepted " + _format_probe_summary(recovery_summary),
-                )
-                recovery_accepted = True
-
-            apply_plan(reader, stable_plan)
-            reader.refresh_points()
-            restored_live_mv = nvml_session.read_live_voltage_mv()
-            should_stop_descent = not recovery_accepted
-            _log_phase(
-                log,
-                "reject",
-                f"candidate={candidate.candidate_voltage_mv}mV "
-                f"shape={candidate.label} "
-                f"reason={probe_result.reason} "
-                f"probe={_format_probe_summary(probe_summary)} "
-                f"restored={stable_voltage_mv}mV "
-                f"restored-live-voltage={restored_live_mv if restored_live_mv is not None else 'n/a'}",
-            )
-            _log_user_candidate_result(
-                log,
-                attempt=candidate_attempt_count,
-                decision="REJECTED"
-                if should_stop_descent
-                else "REJECTED, THEN RECOVERED",
-                reason=(
-                    f"The probe failed: {probe_result.reason}. "
-                    + (
-                        "No safer replacement was found, so the scan will stop."
-                        if should_stop_descent
-                        else "A safer stable curve was found and will be used for the next step."
-                    )
-                ),
-                initial_probe=discovery_summary,
-                previous_probe=previous_stable_probe_for_iteration,
-                candidate_probe=probe_summary,
-                restored_voltage_mv=int(stable_voltage_mv),
-                restored_lock_clock_mhz=int(stable_lock_clock_mhz),
-            )
-            if should_stop_descent:
-                break
-            failed_candidate_floor_mv = int(candidate.candidate_voltage_mv)
-            candidate_voltage_mv = _next_search_candidate_voltage_mv(
-                plan=flattened_plan,
-                start_voltage_mv=int(start_voltage_mv),
-                stable_voltage_mv=int(stable_voltage_mv),
-                reference_actual_voltage_mv=_latest_reference_voltage_mv(
-                    stable_history,
-                    reference_actual_voltage_mv,
-                ),
-                preserve_vanilla_below_mv=preserve_vanilla_below_mv,
-                min_search_voltage_mv=min_search_voltage_mv,
-                failed_floor_voltage_mv=failed_candidate_floor_mv,
-            )
+    final_plan: list[dict],
+    vanilla_plan: list[dict] | None,
+    final_voltage_mv: int,
+) -> dict | None:
+    if not vanilla_plan:
+        return None
+    final_by_voltage = {int(item["voltage_mv"]): item for item in final_plan}
+    vanilla_by_voltage = {int(item["voltage_mv"]): item for item in vanilla_plan}
+    common_voltages = sorted(set(final_by_voltage) & set(vanilla_by_voltage))
+    offsets = []
+    for voltage_mv in common_voltages:
+        final_item = final_by_voltage[voltage_mv]
+        vanilla_item = vanilla_by_voltage[voltage_mv]
+        if bool(final_item.get("preserve_vanilla")):
             continue
-
-        evaluation_error = _evaluate_probe(
-            probe_summary,
-            stable_history=stable_history,
-            min_performance_core_clock_pct=float(min_performance_core_clock_pct),
-        )
-        if evaluation_error:
-            apply_plan(reader, stable_plan)
-            reader.refresh_points()
-            restored_live_mv = nvml_session.read_live_voltage_mv()
-            _log_phase(
-                log,
-                "reject",
-                f"{evaluation_error} "
-                f"candidate={candidate.candidate_voltage_mv}mV "
-                f"shape={candidate.label} "
-                f"probe={_format_probe_summary(probe_summary)} "
-                f"restored={stable_voltage_mv}mV "
-                f"restored-live-voltage={restored_live_mv if restored_live_mv is not None else 'n/a'}",
-            )
-            _log_user_candidate_result(
-                log,
-                attempt=candidate_attempt_count,
-                decision="REJECTED",
-                reason=f"This candidate passed the timedemo but failed a guardrail: {evaluation_error}. The previous stable curve was restored.",
-                initial_probe=discovery_summary,
-                previous_probe=previous_stable_probe_for_iteration,
-                candidate_probe=probe_summary,
-                restored_voltage_mv=int(stable_voltage_mv),
-                restored_lock_clock_mhz=int(stable_lock_clock_mhz),
-            )
-            failed_candidate_floor_mv = int(candidate.candidate_voltage_mv)
-            candidate_voltage_mv = _next_search_candidate_voltage_mv(
-                plan=flattened_plan,
-                start_voltage_mv=int(start_voltage_mv),
-                stable_voltage_mv=int(stable_voltage_mv),
-                reference_actual_voltage_mv=reference_actual_voltage_mv,
-                preserve_vanilla_below_mv=preserve_vanilla_below_mv,
-                min_search_voltage_mv=min_search_voltage_mv,
-                failed_floor_voltage_mv=failed_candidate_floor_mv,
-            )
-            continue
-
-        previous_stable_probe = stable_probe
-        efficiency_delta = _temperature_normalized_efficiency_delta(
-            previous_stable_probe,
-            probe_summary,
-        )
-        power_up_efficiency_down = _is_power_up_efficiency_down_regression(
-            previous_stable_probe,
-            probe_summary,
-            efficiency_delta,
-        )
-        stable_plan = candidate.plan
-        stable_voltage_mv = int(candidate.candidate_voltage_mv)
-        stable_lock_clock_mhz = int(candidate.target_clock_mhz)
-        stable_probe = probe_summary
-        if not probe_summary.used_companion_load:
-            stable_history.append(probe_summary)
-            _write_latest_verified_uv_result(
-                plan=stable_plan,
-                lock_clock_mhz=int(stable_lock_clock_mhz),
-                voltage_mv=int(stable_voltage_mv),
-                probe=stable_probe,
-            )
-
-        efficiency_improved = efficiency_delta.get("improved")
-        measured_voltage_close_to_requested = bool(
-            efficiency_delta.get("measured_voltage_close_to_requested")
-        )
-        voltage_drop_from_start_pct = (
-            (
-                (float(start_voltage_mv) - float(candidate.candidate_voltage_mv))
-                / float(start_voltage_mv)
-            )
-            * 100.0
-            if int(start_voltage_mv) > 0
-            else 0.0
-        )
-        efficiency_stop_allowed = float(voltage_drop_from_start_pct) >= float(
-            min_efficiency_stop_voltage_drop_pct
-        )
-        efficiency_stop_candidate = (
-            efficiency_stop_streak > 0
-            and (efficiency_improved is False or power_up_efficiency_down)
-            and measured_voltage_close_to_requested
-        )
-        if efficiency_stop_candidate:
-            non_improving_efficiency_streak += 1
-        elif efficiency_improved is True:
-            non_improving_efficiency_streak = 0
-            pending_efficiency_stop_curve = None
-        else:
-            non_improving_efficiency_streak = 0
-
-        if (
-            efficiency_stop_candidate
-            and efficiency_stop_allowed
-            and pending_efficiency_stop_curve is not None
-            and non_improving_efficiency_streak > efficiency_stop_streak
-        ):
-            efficiency_confirmations = max(0, non_improving_efficiency_streak - 1)
-            delta_pct = efficiency_delta.get("delta_pct")
-            use_current_curve = (
-                not power_up_efficiency_down
-                and delta_pct is not None
-                and float(delta_pct) >= 0.0
-            )
-            if use_current_curve:
-                stop_decision = "ACCEPTED, THEN STOPPED"
-                stop_reason = (
-                    "This candidate passed and still slightly improved "
-                    "temperature-normalized FPS per watt, but the gain is now "
-                    "below the scan threshold. PenguinBurner is stopping here "
-                    "and using this lower-voltage curve."
-                )
-                stop_previous_probe = previous_stable_probe
-            else:
-                stable_plan = pending_efficiency_stop_curve["plan"]
-                stable_voltage_mv = int(pending_efficiency_stop_curve["voltage_mv"])
-                stable_lock_clock_mhz = int(
-                    pending_efficiency_stop_curve["lock_clock_mhz"]
-                )
-                stable_probe = pending_efficiency_stop_curve["probe"]
-                stop_decision = "ACCEPTED, THEN STOPPED AT PREVIOUS STEP"
-                stop_reason = (
-                    "This candidate passed, but temperature-normalized FPS per watt "
-                    "failed to improve for a second effective voltage drop. "
-                    "PenguinBurner is using the previous stable curve."
-                )
-                stop_previous_probe = pending_efficiency_stop_curve["probe"]
-            _log_phase(
-                log,
-                "final",
-                "temperature-normalized fps_per_w stopped improving "
-                f"confirmations={efficiency_confirmations}/{efficiency_stop_streak} "
-                f"candidate={candidate.candidate_voltage_mv}mV "
-                f"using-current={str(use_current_curve).lower()} "
-                f"final={stable_voltage_mv}mV@{stable_lock_clock_mhz}MHz "
-                f"delta={efficiency_delta['delta_fps_per_w'] if efficiency_delta['delta_fps_per_w'] is not None else 'n/a'} "
-                f"delta_pct={efficiency_delta['delta_pct'] if efficiency_delta['delta_pct'] is not None else 'n/a'} "
-                f"requested-voltage-drop={efficiency_delta['requested_voltage_drop_mv'] if efficiency_delta['requested_voltage_drop_mv'] is not None else 'n/a'}mV "
-                f"measured-voltage-drop={efficiency_delta['measured_voltage_drop_mv'] if efficiency_delta['measured_voltage_drop_mv'] is not None else 'n/a'}mV "
-                f"temp-normalized-at={efficiency_delta['reference_temperature_c'] if efficiency_delta['reference_temperature_c'] is not None else 'n/a'}C",
-            )
-            _log_user_candidate_result(
-                log,
-                attempt=candidate_attempt_count,
-                decision=stop_decision,
-                reason=stop_reason,
-                initial_probe=discovery_summary,
-                previous_probe=stop_previous_probe,
-                candidate_probe=probe_summary,
-                restored_voltage_mv=int(stable_voltage_mv),
-                restored_lock_clock_mhz=int(stable_lock_clock_mhz),
-            )
-            break
-
-        if efficiency_improved is True:
-            accepted_reason = (
-                "This candidate passed stability, clock guardrails, and "
-                "temperature-normalized FPS per watt still improved. "
-                "PenguinBurner will try the next lower voltage."
-            )
-        elif efficiency_stop_candidate:
-            pending_efficiency_stop_curve = {
-                "plan": stable_plan,
-                "voltage_mv": int(stable_voltage_mv),
-                "lock_clock_mhz": int(stable_lock_clock_mhz),
-                "probe": stable_probe,
-            }
-            stop_floor_text = f"{float(min_efficiency_stop_voltage_drop_pct):.1f}%"
-            if power_up_efficiency_down:
-                accepted_reason = (
-                    "This candidate passed stability and clock guardrails, but "
-                    "measured voltage went lower while temperature-normalized power rose "
-                    "and FPS per watt fell. PenguinBurner will still probe "
-                    f"{efficiency_stop_streak} more lower-voltage step(s) to confirm; "
-                    "if those also fail to improve, this curve will be used as final."
-                )
-            else:
-                accepted_reason = (
-                    "This candidate passed stability and clock guardrails, but "
-                    "temperature-normalized FPS per watt did not improve enough. "
-                    f"PenguinBurner will probe {efficiency_stop_streak} more lower-voltage "
-                    "step(s) to confirm; if those also fail to improve, this curve will be used as final."
-                )
-            if not efficiency_stop_allowed:
-                accepted_reason += (
-                    f" Early FPS/W stopping is disabled until the scan reaches at least "
-                    f"{stop_floor_text} below the starting voltage; this step is only "
-                    f"{float(voltage_drop_from_start_pct):.1f}% below start."
-                )
-        elif efficiency_improved is False and not measured_voltage_close_to_requested:
-            requested_drop = efficiency_delta.get("requested_voltage_drop_mv")
-            measured_drop = efficiency_delta.get("measured_voltage_drop_mv")
-            requested_drop_text = (
-                f"{float(requested_drop):.1f}mV"
-                if requested_drop is not None
-                else "not available"
-            )
-            measured_drop_text = (
-                f"{float(measured_drop):.1f}mV"
-                if measured_drop is not None
-                else "not available"
-            )
-            accepted_reason = (
-                "This candidate passed stability and clock guardrails. "
-                "The requested voltage dropped, but measured loaded voltage did not "
-                f"follow it closely enough (requested {requested_drop_text}, measured {measured_drop_text}), so the FPS/W stop "
-                "rule is ignored for this step and PenguinBurner will try the next lower voltage."
-            )
-        else:
-            accepted_reason = (
-                "This candidate passed stability and clock guardrails. "
-                "PenguinBurner could not compute temperature-normalized FPS per watt "
-                "for this step, so it will try the next lower voltage."
-            )
-        _log_phase(
-            log,
-            "accept",
-            f"shape={candidate.label} "
-            + _format_probe_summary(probe_summary)
-            + " "
-            + _describe_guardrails(
-                stable_history,
-                min_performance_core_clock_pct=float(min_performance_core_clock_pct),
-            ),
-        )
-        _log_user_candidate_result(
-            log,
-            attempt=candidate_attempt_count,
-            decision="ACCEPTED",
-            reason=accepted_reason,
-            initial_probe=discovery_summary,
-            previous_probe=previous_stable_probe,
-            candidate_probe=probe_summary,
-            restored_voltage_mv=int(stable_voltage_mv),
-            restored_lock_clock_mhz=int(stable_lock_clock_mhz),
-        )
-        candidate_voltage_mv = _next_search_candidate_voltage_mv(
-            plan=flattened_plan,
-            start_voltage_mv=int(start_voltage_mv),
-            stable_voltage_mv=int(stable_voltage_mv),
-            reference_actual_voltage_mv=_latest_reference_voltage_mv(
-                stable_history,
-                reference_actual_voltage_mv,
-            ),
-            preserve_vanilla_below_mv=preserve_vanilla_below_mv,
-            min_search_voltage_mv=min_search_voltage_mv,
-            failed_floor_voltage_mv=failed_candidate_floor_mv,
-        )
-        continue
-
+        offsets.append(int(final_item["target_mhz"]) - int(vanilla_item["target_mhz"]))
+    if not offsets:
+        return None
+    lock_voltage_mv = _nearest_voltage_bin(final_plan, int(final_voltage_mv))
+    lock_final = final_by_voltage.get(int(lock_voltage_mv))
+    lock_vanilla = vanilla_by_voltage.get(int(lock_voltage_mv))
+    lock_offset_mhz = None
+    lock_vanilla_mhz = None
+    lock_final_mhz = None
+    if lock_final is not None and lock_vanilla is not None:
+        lock_final_mhz = int(lock_final["target_mhz"])
+        lock_vanilla_mhz = int(lock_vanilla["target_mhz"])
+        lock_offset_mhz = int(lock_final_mhz) - int(lock_vanilla_mhz)
     return {
-        "stable_plan": stable_plan,
-        "stable_voltage_mv": stable_voltage_mv,
-        "stable_lock_clock_mhz": stable_lock_clock_mhz,
-        "stable_probe": stable_probe,
+        "lock_voltage_mv": int(lock_voltage_mv),
+        "lock_final_mhz": lock_final_mhz,
+        "lock_vanilla_mhz": lock_vanilla_mhz,
+        "lock_offset_mhz": lock_offset_mhz,
+        "min_offset_mhz": min(offsets),
+        "max_offset_mhz": max(offsets),
+        "avg_offset_mhz": sum(offsets) / float(len(offsets)),
+        "positive_points": sum(1 for offset in offsets if int(offset) > 0),
+        "total_points": len(offsets),
     }
 
 
-def _run_final_verification_and_save(
-    *,
-    log,
-    reader,
-    stable_plan,
-    stable_voltage_mv,
-    stable_lock_clock_mhz,
-    stable_probe,
-    stable_history,
-    probe_history,
-    q2rtx_config,
-    final_verification_duration_s,
-    source_result,
-    start_voltage_mv,
-    measured_clock_mhz,
-    nvml_session,
-    clock_ceiling,
-    discovery_summary,
-    translated_gpu_policy,
-    min_performance_core_clock_pct,
-    runtime_default_plan,
-    final_clock_drop_margin_pct,
-):
-    _log_phase(
-        log,
-        "final",
-        f"last-stable={stable_voltage_mv}mV@{stable_lock_clock_mhz}MHz",
-    )
-    last_stable_path = _write_uv_result_snapshot(
-        plan=stable_plan,
-        lock_clock_mhz=int(stable_lock_clock_mhz),
-        voltage_mv=int(stable_voltage_mv),
-        probe=stable_probe,
-        reason="last-stable",
-    )
-    _log_phase(log, "final", f"last-stable-saved={last_stable_path}")
-    final_voltage_mv = stable_voltage_mv
-    final_lock_clock_mhz = stable_lock_clock_mhz
-    final_plan = stable_plan
-    final_stable_path = _write_stable_uv_result(
-        plan=final_plan,
-        lock_clock_mhz=int(final_lock_clock_mhz),
-        voltage_mv=int(final_voltage_mv),
-        probe=stable_probe,
-        label="final",
-    )
-    _log_phase(log, "final", f"stable-config-saved={final_stable_path}")
-    final_saved_path = _write_saved_uv_state(
-        plan=final_plan,
-        lock_clock_mhz=int(final_lock_clock_mhz),
-        voltage_mv=int(final_voltage_mv),
-        probe=stable_probe,
-        label="best-undervolt",
-    )
-    _log_phase(log, "final", f"saved={final_saved_path}")
-    if final_plan is not None:
-        apply_plan(reader, final_plan)
-        reader.refresh_points()
-    final_q2rtx_duration_s, final_cuda_duration_s = _budget_final_probe_durations(
-        int(final_verification_duration_s)
-    )
-    final_verify_config = _normalize_probe_config(
-        replace(
-            q2rtx_config,
-            timedemo_loops=None,
-            duration_s=int(final_q2rtx_duration_s),
-            companion_command=_cuda_bruteforce_companion_command(
-                gpu_index=int(q2rtx_config.gpu_index),
-                duration_s=int(final_cuda_duration_s),
-            ),
-            single_pass_timeout_s=max(
-                float(q2rtx_config.single_pass_timeout_s),
-                float(final_verification_duration_s)
-                + AUTO_UV_PROBE_TUNING.long_timeout_buffer_s,
-            ),
-        )
-    )
-    final_probe = None
-    while (
-        final_plan is not None
-        and final_voltage_mv is not None
-        and final_lock_clock_mhz is not None
-    ):
-        _log_phase(
-            log,
-            "final-verify",
-            f"starting total-duration={int(final_verification_duration_s)}s "
-            f"q2rtx-duration={int(final_q2rtx_duration_s)}s "
-            f"cuda-duration={int(final_cuda_duration_s)}s "
-            f"target={final_lock_clock_mhz}MHz voltage={final_voltage_mv}mV",
-        )
-        _log_user_stage(
-            log,
-            "Final long verification",
-            [
-                f"Candidate chosen for final check: {int(final_lock_clock_mhz)}MHz at {int(final_voltage_mv)}mV.",
-                f"Running about {int(final_q2rtx_duration_s)}s of Q2RTX plus {int(final_cuda_duration_s)}s of CUDA load.",
-                "If this fails, PenguinBurner will try to recover to the nearest safer stable curve.",
-            ],
-        )
-        if clock_ceiling is not None:
-            clock_ceiling.retarget(
-                lock_clock_mhz=int(final_lock_clock_mhz),
-                lock_voltage_mv=int(final_voltage_mv),
-            )
-            _log_phase(log, "ceiling", clock_ceiling.describe())
-        final_probe, final_result = _probe_voltage_candidate(
-            reader=reader,
-            candidate_plan=final_plan,
-            candidate_voltage_mv=int(final_voltage_mv),
-            lock_clock_mhz=int(final_lock_clock_mhz),
-            q2rtx_config=final_verify_config,
-            stable_history=stable_history,
-            initial_probe_clock_mhz=measured_clock_mhz,
-            nvml_session=nvml_session,
-            log=log,
-            phase_label="final-verify",
-            power_limit_w=translated_gpu_policy.get("power_limit_w"),
-            min_performance_core_clock_pct=float(min_performance_core_clock_pct),
-            reset_plan=runtime_default_plan,
-        )
-        probe_history.append(final_probe)
-        _log_benchmark(
-            log,
-            phase="final-verify",
-            probe=final_probe,
-            reference_probe=discovery_summary,
-            reference_label="initial",
-        )
-        if final_result.success:
-            final_error = _evaluate_probe(
-                final_probe,
-                stable_history=stable_history,
-                min_performance_core_clock_pct=float(min_performance_core_clock_pct),
-            )
-            if not final_error:
-                _write_latest_verified_uv_result(
-                    plan=final_plan,
-                    lock_clock_mhz=int(final_lock_clock_mhz),
-                    voltage_mv=int(final_voltage_mv),
-                    probe=final_probe,
-                )
-                break
-            _log_phase(log, "final-verify", f"rejected {final_error}")
-        recovery_candidate, recovery_summary, recovery_result = (
-            _probe_stabilization_search(
-                reader=reader,
-                plan_source=source_result["plan"],
-                failure_voltage_mv=int(final_voltage_mv),
-                failure_live_voltage_mv=final_probe.live_voltage_after_mv,
-                minimum_candidate_voltage_mv=_next_higher_voltage_bin(
-                    source_result["plan"], int(final_voltage_mv)
-                ),
-                target_clock_mhz=int(final_lock_clock_mhz),
-                q2rtx_config=q2rtx_config,
-                stable_history=stable_history,
-                nvml_session=nvml_session,
-                clock_ceiling=clock_ceiling,
-                log=log,
-                probe_history=probe_history,
-                baseline_probe=discovery_summary,
-                initial_target_voltage_mv=int(start_voltage_mv),
-                initial_probe_clock_mhz=measured_clock_mhz,
-                power_limit_w=translated_gpu_policy.get("power_limit_w"),
-                min_performance_core_clock_pct=float(min_performance_core_clock_pct),
-                reset_plan=runtime_default_plan,
-            )
-        )
-        if (
-            recovery_candidate is None
-            or recovery_summary is None
-            or recovery_result is None
-        ):
-            raise AutoUvError(
-                "final long verification failed and stabilization recovery could not find a stable point"
-            )
-        final_plan = recovery_candidate.plan
-        final_voltage_mv = int(recovery_candidate.candidate_voltage_mv)
-        final_lock_clock_mhz = int(recovery_candidate.target_clock_mhz)
-        stable_plan = final_plan
-        stable_voltage_mv = final_voltage_mv
-        stable_lock_clock_mhz = final_lock_clock_mhz
-        stable_probe = recovery_summary
-        if not recovery_summary.used_companion_load:
-            stable_history.append(recovery_summary)
-            _write_latest_verified_uv_result(
-                plan=stable_plan,
-                lock_clock_mhz=int(stable_lock_clock_mhz),
-                voltage_mv=int(stable_voltage_mv),
-                probe=stable_probe,
-            )
-    if final_plan is None or final_voltage_mv is None or final_lock_clock_mhz is None:
-        raise AutoUvError("final verification did not produce a final curve")
-    snapshot_path = _write_final_curve_snapshot(
-        plan=final_plan,
-        lock_clock_mhz=int(final_lock_clock_mhz),
-        voltage_mv=int(final_voltage_mv),
-        probe=final_probe,
-    )
-    fan_tuning_result = write_auto_uv_fan_payload(
-        final_probe=final_probe,
-        probes=probe_history,
-    )
-    if fan_tuning_result is not None:
-        if fan_tuning_result.blocked:
-            loaded_temp = fan_tuning_result.payload.get("loaded_temperature_c")
-            limit_temp = fan_tuning_result.payload.get(
-                "max_stock_curve_load_temperature_c"
-            )
-            loaded_text = _format_user_value(loaded_temp, "C")
-            limit_text = _format_user_value(limit_temp, "C")
-            reason = fan_tuning_result.block_reason or "unknown"
-            _log_phase(
-                log,
-                "fan-tune",
-                f"curve-blocked reason={reason} loaded-temp={loaded_text} "
-                f"limit={limit_text} marker={fan_tuning_result.path}",
-            )
-            _log_user_stage(
-                log,
-                "Silent fan curve skipped",
-                [
-                    f"Final long-run load temperature was {loaded_text}.",
-                    f"The safety limit for generating a quieter fan curve is {limit_text}.",
-                    "PenguinBurner will not generate a silent fan curve because reducing fan speed here could overheat the GPU.",
-                ],
-            )
-        else:
-            _log_phase(
-                log,
-                "fan-tune",
-                f"curve-saved={fan_tuning_result.path} "
-                f"points={len(fan_tuning_result.curve)} "
-                f"cooling-headroom={_format_user_value(fan_tuning_result.payload.get('cooling_headroom_c'), 'C')} "
-                f"speed-reduction={_format_user_value(fan_tuning_result.payload.get('cooling_headroom_speed_reduction_pct'), '%')} "
-                f"exponent={_format_user_value(fan_tuning_result.payload.get('effective_exponential_power'), '', precision=2)}",
-            )
-            _log_user_stage(
-                log,
-                "Silent fan curve",
-                [
-                    f"Saved suggested curve with {len(fan_tuning_result.curve)} points.",
-                    (
-                        "Cooling headroom to "
-                        f"{_format_user_value(fan_tuning_result.payload.get('max_stock_curve_load_temperature_c'), 'C')} "
-                        f"safety target: {_format_user_value(fan_tuning_result.payload.get('cooling_headroom_c'), 'C')}."
-                    ),
-                    "This curve is not applied by default; normal runtime uses it only with --silent-fan-curve.",
-                ],
-            )
-            _log_fan_curve_ascii_chart(
-                log,
-                curve=fan_tuning_result.curve,
-                loaded_temperature_c=fan_tuning_result.payload.get(
-                    "load_anchor_temperature_c"
-                ),
-                load_anchor_fan_speed_pct=fan_tuning_result.payload.get(
-                    "load_anchor_fan_speed_pct"
-                ),
-            )
-    _log_user_stage(
-        log,
-        "Final voltage/frequency curve",
-        [
-            "The chart below shows the curve that will be saved.",
-            "'#' is the target curve, '.' is the stock/base curve, and '@' marks the final lock point.",
-        ],
-    )
-    _log_vf_ascii_chart(
-        log,
-        plan=final_plan,
-        target_clock_mhz=int(final_lock_clock_mhz),
-        candidate_voltage_mv=int(final_voltage_mv),
-    )
-    _log_vf_point_list(
-        log,
-        plan=final_plan,
-        label=f"final target={int(final_lock_clock_mhz)}MHz voltage={int(final_voltage_mv)}mV",
-    )
-    _log_final_summary(
-        log,
-        baseline_probe=stable_history[0] if stable_history else None,
-        final_probe=final_probe,
-        final_voltage_mv=int(final_voltage_mv),
-        final_lock_clock_mhz=int(final_lock_clock_mhz),
-        clock_drop_margin_pct=float(final_clock_drop_margin_pct),
-    )
-    _log_user_readable_final_summary(
-        log,
-        baseline_probe=stable_history[0] if stable_history else None,
-        final_probe=final_probe,
-        final_voltage_mv=int(final_voltage_mv),
-        final_lock_clock_mhz=int(final_lock_clock_mhz),
-        clock_drop_margin_pct=float(final_clock_drop_margin_pct),
-        curve_path=snapshot_path,
-    )
-    _log_phase(log, "final", f"curve-saved={snapshot_path}")
-    return _build_voltage_scan_result(
-        final_voltage_mv=int(final_voltage_mv),
-        final_lock_clock_mhz=int(final_lock_clock_mhz),
-        probe_history=probe_history,
-        stable_history=stable_history,
-        final_probe=final_probe,
-    )
+def _clock_bump_recovery_limit_from_unsafe_entries(
+    unsafe_entries: list[dict],
+    configured_limit: int,
+) -> int:
+    effective_limit = max(0, int(configured_limit))
+    for entry in unsafe_entries:
+        if str(entry.get("reason", "")) != "previous-run-abruptly-ended":
+            continue
+        if str(entry.get("phase", "")) not in {
+            "candidate-recovery",
+            "final-recovery",
+        }:
+            continue
+        details = entry.get("details")
+        if not isinstance(details, dict):
+            continue
+        marker_details = details.get("marker_details")
+        if not isinstance(marker_details, dict):
+            continue
+        try:
+            crashed_attempt = int(marker_details["clock_bump_attempt"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        effective_limit = min(effective_limit, max(0, int(crashed_attempt) - 1))
+    return int(effective_limit)
 
 
 def _run_auto_uv_voltage_scan_impl(
@@ -1968,7 +716,7 @@ def _run_auto_uv_voltage_scan_impl(
         _log_phase(
             log,
             "crash-recovery",
-            "previous auto-UV probe did not finish; "
+            "previous auto-UV probe ended abruptly; "
             f"blacklisted={int(unsafe_entry['candidate_voltage_mv'])}mV "
             f"target={int(unsafe_entry['lock_clock_mhz'])}MHz "
             f"phase={unsafe_entry.get('phase') or 'unknown'} "
@@ -1976,11 +724,13 @@ def _run_auto_uv_voltage_scan_impl(
         )
         _log_user_stage(
             log,
-            "Previous Auto-UV run did not finish",
+            "Previous Auto-UV probe ended abruptly",
             [
                 (
-                    "PenguinBurner found an unfinished probe marker from the previous run. "
-                    "That usually means the system rebooted, crashed, or lost power during a voltage test."
+                    "PenguinBurner found a stale active-probe marker from the previous run. "
+                    "Clean Ctrl-C/SIGTERM shutdown removes this marker, so this usually means "
+                    "the system rebooted, crashed, lost power, or the process was forcibly killed "
+                    "during a voltage test."
                 ),
                 (
                     f"Voltage {int(unsafe_entry['candidate_voltage_mv'])}mV is now marked unsafe "
@@ -1990,6 +740,23 @@ def _run_auto_uv_voltage_scan_impl(
             ],
         )
         unsafe_voltage_entries = _load_uv_unsafe_voltage_entries()
+    effective_max_clock_bump_recoveries = (
+        _clock_bump_recovery_limit_from_unsafe_entries(
+            unsafe_voltage_entries,
+            settings.max_clock_bump_recoveries,
+        )
+    )
+    if int(effective_max_clock_bump_recoveries) < int(
+        settings.max_clock_bump_recoveries
+    ):
+        _log_phase(
+            log,
+            "crash-recovery",
+            f"reduced +2.0% recovery bump limit "
+            f"configured={int(settings.max_clock_bump_recoveries)} "
+            f"effective={int(effective_max_clock_bump_recoveries)} "
+            "reason=previous candidate-recovery probe ended abruptly at bump N; retry limit is N-1",
+        )
 
     reader = create_hidden_vf_curve_reader(gpu_index=gpu_index)
     if reader is None:
@@ -2050,16 +817,17 @@ def _run_auto_uv_voltage_scan_impl(
             power_limit_override_w=runtime_options.get("power_limit_override_w"),
             log=log,
         )
-        reader.refresh_points()
+        runtime_default_plan = list(runtime_reset["plan"])
+        apply_plan(reader, runtime_default_plan)
+        _assert_zero_runtime_vf_offsets(reader)
         source_result = {
-            "plan": build_runtime_default_plan(reader),
+            "plan": runtime_default_plan,
             "translation_mode": "runtime-defaults",
             "changed_points": [],
         }
-        runtime_default_plan = source_result["plan"]
         _validate_auto_uv_source_plan(source_result["plan"])
         apply_plan(reader, source_result["plan"])
-        reader.refresh_points()
+        _assert_zero_runtime_vf_offsets(reader)
         translated_gpu_policy = {
             "power_limit_w": runtime_reset.get("power_limit_w"),
         }
@@ -2102,24 +870,19 @@ def _run_auto_uv_voltage_scan_impl(
                 f"base curve stays at and below {preserve_vanilla_below_mv}mV",
             )
 
-        initial_lock_clock_mhz = max(
+        discovery_label_clock_mhz = max(
             int(item["target_mhz"])
             for item in source_result["plan"]
             if not bool(item.get("preserve_vanilla"))
         )
-        initial_lock_voltage_mv = _nearest_voltage_bin(
+        discovery_label_voltage_mv = _nearest_voltage_bin(
             source_result["plan"],
             _find_lock_voltage_for_clock(
                 source_result["plan"],
-                initial_lock_clock_mhz,
+                discovery_label_clock_mhz,
             ),
         )
-        initial_flattened_plan = _build_descended_plan(
-            source_result["plan"],
-            lock_clock_mhz=initial_lock_clock_mhz,
-            candidate_voltage_mv=initial_lock_voltage_mv,
-        )
-        apply_plan(reader, initial_flattened_plan)
+        apply_plan(reader, source_result["plan"])
         reader.refresh_points()
 
         discovery_probe_config = _short_probe_config(
@@ -2130,16 +893,16 @@ def _run_auto_uv_voltage_scan_impl(
             log,
             "Stage 1 - measuring the baseline",
             [
-                "PenguinBurner is applying the default curve and running a short probe.",
-                f"This measures the real sustained clock, voltage, power, temperature, and fan speed for about {AUTO_UV_DEFAULTS.probe_duration_s}s before undervolting.",
+                "PenguinBurner is applying the untouched default curve and running a short probe.",
+                f"This measures the real stock sustained clock, voltage, power, temperature, and fan speed for about {AUTO_UV_DEFAULTS.probe_duration_s}s before undervolting.",
                 "The first warm-up seconds are ignored for decision averages so Q2RTX ramp-up does not skew the baseline.",
             ],
         )
         discovery_summary, discovery_result = _probe_voltage_candidate(
             reader=reader,
-            candidate_plan=initial_flattened_plan,
-            candidate_voltage_mv=initial_lock_voltage_mv,
-            lock_clock_mhz=initial_lock_clock_mhz,
+            candidate_plan=source_result["plan"],
+            candidate_voltage_mv=discovery_label_voltage_mv,
+            lock_clock_mhz=discovery_label_clock_mhz,
             q2rtx_config=discovery_probe_config,
             stable_history=[],
             initial_probe_clock_mhz=None,
@@ -2191,14 +954,18 @@ def _run_auto_uv_voltage_scan_impl(
             power_limit_w=translated_gpu_policy.get("power_limit_w"),
             use_power_limit_floor=True,
         )
-        measured_clock_mhz = (
-            saturated_clock_mhz
-            if saturated_clock_mhz is not None
-            else (
-                active_preferred_clock_mhz
-                if active_preferred_clock_mhz is not None
-                else fallback_clock_mhz
+        measured_clock_candidates = [
+            float(value)
+            for value in (
+                saturated_clock_mhz,
+                active_avg_clock_mhz,
+                active_preferred_clock_mhz,
+                fallback_clock_mhz,
             )
+            if value is not None
+        ]
+        measured_clock_mhz = (
+            min(measured_clock_candidates) if measured_clock_candidates else None
         )
         if measured_clock_mhz is None:
             raise AutoUvError(
@@ -2331,12 +1098,39 @@ def _run_auto_uv_voltage_scan_impl(
             plan=flattened_plan,
             label=f"baseline target={lock_clock_mhz}MHz voltage={start_voltage_mv}mV",
         )
-        baseline_summary = discovery_summary
-        baseline_result = discovery_result
+        baseline_summary, baseline_result = _probe_voltage_candidate(
+            reader=reader,
+            candidate_plan=flattened_plan,
+            candidate_voltage_mv=int(start_voltage_mv),
+            lock_clock_mhz=int(lock_clock_mhz),
+            q2rtx_config=_short_probe_config(
+                q2rtx_config,
+                target_duration_s=AUTO_UV_DEFAULTS.probe_duration_s,
+            ),
+            stable_history=[],
+            initial_probe_clock_mhz=measured_clock_mhz,
+            nvml_session=nvml_session,
+            log=log,
+            phase_label="baseline",
+            power_limit_w=translated_gpu_policy.get("power_limit_w"),
+            enforce_target_core_clock_floor=False,
+            summarize_saturated_tail=True,
+            use_power_limit_floor=True,
+            min_performance_core_clock_pct=float(min_performance_core_clock_pct),
+            reset_plan=runtime_default_plan,
+        )
+        probe_history.append(baseline_summary)
+        _log_benchmark(
+            log,
+            phase="baseline",
+            probe=baseline_summary,
+            reference_probe=discovery_summary,
+            reference_label="stock",
+        )
         _log_phase(
             log,
             "baseline",
-            "reused initial warmed-up discovery probe and started descent without a redundant baseline rerun",
+            "verified first flattened real-clock curve before starting descent",
         )
         if not baseline_result.success:
             (
@@ -2381,8 +1175,32 @@ def _run_auto_uv_voltage_scan_impl(
             flatten_target["lock_voltage_mv"] = int(start_voltage_mv)
         stable_plan = flattened_plan
         stable_voltage_mv = int(start_voltage_mv)
-        stable_lock_clock_mhz = int(lock_clock_mhz)
         stable_probe = baseline_summary
+        stable_lock_clock_mhz = _real_probe_lock_clock_mhz(
+            source_result["plan"],
+            probe=stable_probe,
+            previous_lock_clock_mhz=int(lock_clock_mhz),
+        )
+        if int(stable_lock_clock_mhz) != int(lock_clock_mhz):
+            stable_plan = _build_descended_plan(
+                flattened_plan,
+                lock_clock_mhz=int(stable_lock_clock_mhz),
+                candidate_voltage_mv=int(stable_voltage_mv),
+            )
+            flattened_plan = stable_plan
+            lock_clock_mhz = int(stable_lock_clock_mhz)
+            flatten_target["lock_clock_mhz"] = int(stable_lock_clock_mhz)
+            if clock_ceiling is not None:
+                clock_ceiling.retarget(
+                    lock_clock_mhz=int(stable_lock_clock_mhz),
+                    lock_voltage_mv=int(stable_voltage_mv),
+                )
+            _log_phase(
+                log,
+                "baseline",
+                f"real-clock target adjusted to {int(stable_lock_clock_mhz)}MHz "
+                f"from baseline avg_core_clock={stable_probe.avg_core_clock_mhz:.1f}MHz",
+            )
         stable_history.append(baseline_summary)
         _log_phase(
             log,
@@ -2435,6 +1253,10 @@ def _run_auto_uv_voltage_scan_impl(
             )
 
         sweep_result = _run_candidate_sweep(
+            probe_voltage_candidate=_probe_voltage_candidate,
+            probe_stabilization_search=_probe_stabilization_search,
+            describe_guardrails=_describe_guardrails,
+            latest_reference_voltage_mv=_latest_reference_voltage_mv,
             log=log,
             reader=reader,
             flattened_plan=flattened_plan,
@@ -2460,13 +1282,24 @@ def _run_auto_uv_voltage_scan_impl(
             preserve_vanilla_below_mv=preserve_vanilla_below_mv,
             min_efficiency_stop_voltage_drop_pct=min_efficiency_stop_voltage_drop_pct,
             efficiency_stop_streak=efficiency_stop_streak,
+            max_clock_bump_recoveries=effective_max_clock_bump_recoveries,
         )
         stable_plan = sweep_result["stable_plan"]
         stable_voltage_mv = sweep_result["stable_voltage_mv"]
         stable_lock_clock_mhz = sweep_result["stable_lock_clock_mhz"]
         stable_probe = sweep_result["stable_probe"]
+        clock_bump_recovery_count = int(
+            sweep_result.get("clock_bump_recovery_count", 0)
+        )
+        ended_by_clock_bump_limit = bool(
+            sweep_result.get("ended_by_clock_bump_limit", False)
+        )
 
         return _run_final_verification_and_save(
+            probe_voltage_candidate=_probe_voltage_candidate,
+            probe_stabilization_search=_probe_stabilization_search,
+            build_voltage_scan_result=_build_voltage_scan_result,
+            curve_overclock_summary=_curve_overclock_summary,
             log=log,
             reader=reader,
             stable_plan=stable_plan,
@@ -2487,6 +1320,9 @@ def _run_auto_uv_voltage_scan_impl(
             min_performance_core_clock_pct=min_performance_core_clock_pct,
             runtime_default_plan=runtime_default_plan,
             final_clock_drop_margin_pct=final_clock_drop_margin_pct,
+            max_clock_bump_recoveries=effective_max_clock_bump_recoveries,
+            clock_bump_recovery_count=clock_bump_recovery_count,
+            max_bump_recovery_was_used=ended_by_clock_bump_limit,
         )
     except StabilityTestError as exc:
         if stable_plan is not None:

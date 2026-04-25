@@ -476,6 +476,9 @@ def main(argv: list[str] | None = None) -> int:
             gpu_index=int(args.gpu_index),
             duration_seconds=float(args.duration_seconds),
         )
+    except KeyboardInterrupt:
+        _log("Interrupted by user.")
+        return 130
     except Exception as exc:
         _log(f"FAILED {exc}")
         return 1

@@ -212,6 +212,7 @@ def _build_descended_plan(
     *,
     lock_clock_mhz: int,
     candidate_voltage_mv: int,
+    below_lock_gap_mhz: int | None = None,
 ) -> list[dict]:
     curve = VoltageCurve.from_plan(source_plan)
     editable_voltages = curve.editable_voltage_bins
@@ -221,6 +222,22 @@ def _build_descended_plan(
         )
 
     flattened_clock_mhz = int(lock_clock_mhz)
+    below_lock_gap = (
+        int(below_lock_gap_mhz)
+        if below_lock_gap_mhz is not None
+        else int(AUTO_UV_CURVE_TUNING.clock_step_mhz)
+    )
+    below_plateau_cap_mhz = max(
+        AUTO_UV_CURVE_TUNING.clock_step_mhz,
+        int(flattened_clock_mhz)
+        - max(int(AUTO_UV_CURVE_TUNING.clock_step_mhz), int(below_lock_gap)),
+    )
+    min_voltage_mv = min(int(point.voltage_mv) for point in curve.editable_points)
+    ramp_start_voltage_mv = max(
+        int(min_voltage_mv),
+        int(candidate_voltage_mv) - int(AUTO_UV_CURVE_TUNING.flatten_ramp_window_mv),
+    )
+    ramp_span_mv = max(1, int(candidate_voltage_mv) - int(ramp_start_voltage_mv))
 
     plan: list[dict] = []
     for point in curve.points:
@@ -231,8 +248,29 @@ def _build_descended_plan(
             target_mhz = int(base_mhz)
         elif voltage_mv >= int(candidate_voltage_mv):
             target_mhz = int(flattened_clock_mhz)
-        else:
+        elif voltage_mv <= int(ramp_start_voltage_mv):
             target_mhz = int(original_target_mhz)
+        else:
+            fraction = max(
+                0.0,
+                min(
+                    1.0,
+                    (float(voltage_mv) - float(ramp_start_voltage_mv))
+                    / float(ramp_span_mv),
+                ),
+            )
+            interpolated_mhz = original_target_mhz + (
+                (float(flattened_clock_mhz) - float(original_target_mhz)) * fraction
+            )
+            target_mhz = min(
+                int(flattened_clock_mhz),
+                max(
+                    int(original_target_mhz),
+                    _snap_target_clock(int(round(interpolated_mhz))),
+                ),
+            )
+        if not point.preserve_vanilla and voltage_mv < int(candidate_voltage_mv):
+            target_mhz = min(int(target_mhz), int(below_plateau_cap_mhz))
         plan.append(point.with_target_mhz(target_mhz).to_plan_item())
     return plan
 
@@ -247,15 +285,30 @@ def _choose_sustained_clock_target(
             "the translated Linux V/F plan did not contain any target clocks"
         )
 
-    measured = float(measured_clock_mhz)
-    floor_candidates = [
-        value
-        for value in available
-        if value <= measured + AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz
-    ]
-    if floor_candidates:
-        return int(max(floor_candidates))
-    return int(min(available, key=lambda value: abs(float(value) - measured)))
+    measured = max(1.0, float(measured_clock_mhz))
+    snapped_measured = _snap_target_clock(int(round(measured)))
+    return int(min(max(snapped_measured, min(available)), max(available)))
+
+
+def _choose_strictly_higher_clock_target(
+    plan: list[dict],
+    *,
+    current_clock_mhz: int,
+    desired_clock_mhz: float,
+    cap_clock_mhz: float,
+) -> int | None:
+    current = int(current_clock_mhz)
+    cap = int(_choose_sustained_clock_target(plan, float(cap_clock_mhz)))
+    if int(cap) <= int(current):
+        return None
+    desired = max(
+        float(desired_clock_mhz),
+        float(current) + float(AUTO_UV_CURVE_TUNING.clock_step_mhz),
+    )
+    target = int(_choose_sustained_clock_target(plan, min(float(cap), desired)))
+    if int(target) <= int(current):
+        target = int(current) + int(AUTO_UV_CURVE_TUNING.clock_step_mhz)
+    return int(min(int(target), int(cap))) if int(target) > int(current) else None
 
 
 def _find_lock_voltage_for_clock(plan: list[dict], lock_clock_mhz: int) -> int:
@@ -305,7 +358,13 @@ def _make_curve_candidate(
     candidate_voltage_mv: int,
     target_clock_mhz: int,
     label: str,
+    below_lock_gap_mhz: int | None = None,
 ) -> AutoUvCurveCandidate:
+    effective_below_lock_gap_mhz = (
+        int(below_lock_gap_mhz)
+        if below_lock_gap_mhz is not None
+        else int(AUTO_UV_CURVE_TUNING.clock_step_mhz) * 2
+    )
     return AutoUvCurveCandidate(
         label=str(label),
         candidate_voltage_mv=int(candidate_voltage_mv),
@@ -314,5 +373,6 @@ def _make_curve_candidate(
             source_plan,
             lock_clock_mhz=target_clock_mhz,
             candidate_voltage_mv=candidate_voltage_mv,
+            below_lock_gap_mhz=int(effective_below_lock_gap_mhz),
         ),
     )

@@ -10,6 +10,7 @@ class AutoUvDefaults:
     final_duration_s: int = 600
     max_drop_pct: float = 18.0
     efficiency_stop_streak: int = 1
+    max_clock_bump_recoveries: int = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,7 @@ class AutoUvCurveTuning:
     lower_voltage_effective_gap_mv: float = 5.0
     clock_step_mhz: int = 15
     clock_select_tolerance_mhz: float = 5.0
+    flatten_ramp_window_mv: int = 40
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +37,10 @@ class AutoUvMetricTuning:
     saturated_tail_power_pct: float = 90.0
     saturated_tail_core_clock_pct: float = 98.0
     saturated_tail_min_samples: int = 2
-    min_performance_core_clock_pct: float = 90.0
+    min_performance_core_clock_pct: float = 88.0
+    min_proper_run_fps_pct: float = 90.0
+    min_proper_run_fps_regression_streak: int = 2
+    min_proper_run_power_pct: float = 50.0
     target_core_clock_low_streak_samples: int = 3
     power_saturation_headroom_pct: float = 2.0
     loaded_sample_power_floor_pct: float = 75.0

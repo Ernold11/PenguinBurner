@@ -28,6 +28,10 @@ sudo ./penguin_burner.sh --fresh-auto-uv-scan
 
 Example Auto-UV result summary: before/after power draw, core clock, and efficiency shown after the final verification.
 
+![Auto-UV candidate step](auto_uv_candidate_step_terminal.png)
+
+Example Auto-UV candidate step: current probe compared with the initial baseline and previous stable curve.
+
 What Auto-UV does:
 
 1. Reset previous GPU tuning so the scan starts from the driver/default curve.
@@ -35,17 +39,36 @@ What Auto-UV does:
 3. Measure the stock loaded behavior: clock, voltage, power, temperature, fan speed, and FPS/W.
 4. Pick a safe target core clock and start lowering voltage one real V/F bin at a time.
 5. Test each candidate with Q2RTX plus CUDA load.
-6. Accept a candidate only if it stays stable and keeps enough loaded core clock.
-7. Keep scanning lower while power/efficiency still makes sense; stop when lower voltage no longer helps, a guardrail fails, or an unsafe point is reached.
-8. Run a final long verification, `600s` by default, then save the final curve for normal runtime/daemon use.
-9. Return the GPU to the driver/default curve before the foreground scan exits. The saved curve is applied later by runtime or daemon mode.
+6. If a candidate only misses the loaded-clock floor, retry that same voltage with a bounded `+2%` curve target bump. The bump count is limited by `--auto-uv-max-clock-bump-recoveries N`; the default is `3`, so the default scan can apply at most `3 * +2% = +6%` total curve-target overclock.
+7. Accept a candidate only if it stays stable, keeps enough loaded core clock,
+   keeps FPS within a `10%` floor of the previous stable probe, and does not
+   collapse into idle or low-load telemetry.
+8. Keep scanning lower while power/efficiency still makes sense; stop when lower voltage no longer helps, a guardrail fails, or an unsafe point is reached.
+9. Run a final long verification, `600s` by default. If that long check fails, Auto-UV backs off to a safer voltage/curve and reruns the long verification; the final result is published only after the long verification completes.
+10. Return the GPU to the driver/default curve before the foreground scan exits. The saved curve is applied later by runtime or daemon mode.
 
-By default Auto-UV allows up to a `10%` loaded GPU core clock drop while
-searching. To allow up to `12%`:
+By default Auto-UV allows up to a `12%` loaded GPU core clock drop while
+searching. To use a stricter `10%` floor:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-max-clock-drop-pct 12
+sudo ./penguin_burner.sh --auto-uv-max-clock-drop-pct 10
 ```
+
+Auto-UV lowers voltage first and follows the real loaded clock from each
+accepted probe. If a lower-voltage candidate or final long verification run
+misses the loaded-clock floor, Auto-UV can retry that same voltage with a `+2%`
+curve target bump. The default budget is `3` such bump recoveries per scan
+(`--auto-uv-max-clock-bump-recoveries 3`). The bump budget is not unlimited: if a
+probe crashes during bump `N`, the next scan remembers that and will only try up
+to `N-1` bumps unless you clear Auto-UV state. Use
+`--auto-uv-max-clock-bump-recoveries 0` to disable this recovery path.
+As a practical tuning rule, keeping the maximum bump budget around half of the
+allowed clock-drop budget is reasonable. For example, the default `12%`
+clock-drop allowance pairs with the default `3 * +2% = +6%` maximum curve bump.
+Auto-UV can also spend that same bump budget at an FPS/W wall: when lowering
+voltage no longer improves temperature-normalized FPS/W, it may try a `+2%`
+curve bump at the same voltage and keep it only if the bumped probe passes and
+improves normalized efficiency.
 
 Undervolting can hang the GPU, crash the driver, freeze the display, or force a
 reboot. If the system crashes during an Auto-UV probe, PenguinBurner records the
@@ -111,13 +134,14 @@ PyPI package name uses the correct spelling: `penguin-burner`.
 
 ## Quality Checks
 
-Before this Auto-UV merge, the project passed the local release checks:
+Current local release checks:
 
-- `pytest`: 17 mocked tests for Auto-UV logic, Afterburner parsing, and Q2RTX helpers
+- `pytest`: 38 mocked tests for Auto-UV logic, Afterburner parsing, and Q2RTX helpers
 - `ruff check .` and `ruff format --check .`
 - `pyright .`
 - Python syntax compile for all project `.py` files
 - `shellcheck` for shell scripts
+- local `sdist` and wheel build with `python -m build --no-isolation`
 
 ## Acknowledgements
 
@@ -168,7 +192,8 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--clear-auto-uv-state`: clear previous Auto-UV scan state and exit.
 - `--install-q2rtx`: download the managed Q2RTX workload without starting a scan.
 - `--auto-uv-final-seconds N`: final verification duration after the best curve is selected; default `600`.
-- `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default `10.0`.
+- `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default `12.0`.
+- `--auto-uv-max-clock-bump-recoveries N`: maximum number of low-clock recovery probes that apply a `+2%` curve target bump before continuing the lower-voltage search; default `3`, use `0` to disable.
 - `--auto-uv-max-drop-pct N`: maximum voltage drop below the first discovered start voltage; default `18.0`.
 - `--auto-uv-efficiency-stop-streak N`: extra lower-voltage confirmation probes after FPS/W stops improving; default `1`, use `0` to disable.
 - `--auto-uv-min-efficiency-stop-drop-pct N`: minimum voltage drop below scan start before FPS/W no-gain can stop the scan; default `10.0`.
@@ -178,10 +203,10 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--show-q2rtx-window`: show the Q2RTX window instead of using hidden/headless mode.
 - `--stability-log-dir PATH`: write `--stability-test` logs to a specific directory.
 
-Example: allow a `12%` core-clock drop during Auto-UV:
+Example: use a stricter `10%` core-clock drop during Auto-UV:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan --auto-uv-max-clock-drop-pct 12
+sudo ./penguin_burner.sh --auto-uv-voltage-scan --auto-uv-max-clock-drop-pct 10
 ```
 
 ### Afterburner Import Options
@@ -286,8 +311,8 @@ What it does:
 - uses fixed `2560x1440` render settings by default to keep the workload GPU-bound
 - uses `gamescope --backend headless` by default when available, which gives Q2RTX a real nested Vulkan target without a visible desktop window
 - falls back to moving the real Vulkan window off-screen when gamescope is unavailable; pass `--show-q2rtx-window` if you want to see it
-- disables V-Sync and dynamic resolution scaling, leaves the render loop uncapped, and keeps sound off
-- forces heavy real-time RTX features on, including `pt_num_bounce_rays=2`, `pt_reflect_refract=2`, `pt_thick_glass=2`, `pt_caustics=1`, bloom, volumetric lighting, and the particle/beam/sprite paths
+- disables V-Sync and dynamic resolution scaling, pins the dynamic-resolution min/max scale to `100%`, disables FSR upscaling, leaves the render loop uncapped, and keeps sound off
+- forces heavy real-time RTX features on, including `pt_num_bounce_rays=2`, `pt_reflect_refract=8`, `pt_thick_glass=2`, `pt_caustics=1`, bloom, volumetric lighting, and the particle/beam/sprite paths
 - runs one short timedemo calibration pass, then repeats the built-in timedemo workload for the requested wall-clock duration
 - prefers a ready-made `q2demo1` timedemo from `pak0.pak` when shareware data is installed
 - parses each timedemo pass for exact `frames / seconds / fps` metrics
@@ -477,8 +502,11 @@ Those paths can hang the GPU, crash the driver, freeze the display, or require a
 reboot. Treat them as experimental tuning operations.
 
 Auto-UV intentionally runs in the foreground while scanning because it is testing
-crash-prone voltage points. If the machine hangs or reboots during a probe,
-restart PenguinBurner normally. The interrupted voltage is marked unsafe and
+crash-prone voltage points. During each risky voltage probe it writes an
+active-probe marker and removes it during normal cleanup, including Ctrl-C and
+SIGTERM. If the machine hangs, reboots, loses power, or the process is forcibly
+killed during a probe, restart PenguinBurner normally. The stale marker is
+treated as an abrupt previous probe end, that voltage is marked unsafe, and
 future scans avoid that voltage and lower voltages unless Auto-UV state is
 cleared.
 
