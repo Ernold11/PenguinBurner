@@ -24,9 +24,9 @@ To clear old Auto-UV results and start fresh:
 sudo ./penguin_burner.sh --fresh-auto-uv-scan
 ```
 
-![Auto-UV candidate step](auto_uv_candidate_step_terminal.png)
+![Auto-UV result summary](auto_uv_candidate_step_terminal.png)
 
-Example Auto-UV candidate step: current probe compared with the initial baseline and previous stable curve.
+Example Auto-UV result summary: before/after power draw, core clock, and efficiency shown after the final verification.
 
 What Auto-UV does:
 
