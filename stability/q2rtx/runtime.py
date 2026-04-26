@@ -757,7 +757,7 @@ def _run_timedemo_session(
     )
     run_identity = _resolve_q2rtx_run_identity()
     if run_identity is not None:
-        with log_path.open("a", encoding="utf-8") as log_file:
+        with log_path.open("a", encoding="utf-8", errors="replace") as log_file:
             log_file.write(f"# q2rtx_target_user={run_identity['user_name']}\n")
 
     if requested_loops is not None:

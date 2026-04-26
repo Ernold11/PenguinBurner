@@ -327,5 +327,5 @@ def write_auto_uv_fan_payload(
     output_dir = default_user_config_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "auto-uv-fan-curve.json"
-    output_path.write_text(json.dumps(payload, indent=2) + "\n")
+    output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return AutoUvFanTuningResult(path=output_path, payload=payload)

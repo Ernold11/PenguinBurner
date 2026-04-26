@@ -4,7 +4,12 @@ from datetime import datetime
 from pathlib import Path
 import tarfile
 
-from stability.q2rtx.install import _extract_q2rtx_archive, _require_https_url
+from stability.q2rtx.install import (
+    _copy_system_openssl_111_libs,
+    _extract_compat_openssl_rpm,
+    _extract_q2rtx_archive,
+    _require_https_url,
+)
 from stability.q2rtx.models import Q2RTXStabilityResult, StabilityTestError
 from stability.q2rtx.reporting import _filter_report_output_tail
 from stability.q2rtx.runtime import (
@@ -66,6 +71,60 @@ def test_q2rtx_archive_rejects_path_traversal(tmp_path: Path) -> None:
         raise AssertionError("expected path traversal rejection")
 
     assert not (tmp_path / "escape.txt").exists()
+
+
+def test_compat_openssl_accepts_rpm2cpio_tar_payload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    payload_tar = tmp_path / "payload.tar.gz"
+    _write_tar(
+        payload_tar,
+        {
+            "usr/lib64/libssl.so.1.1": b"ssl",
+            "usr/lib64/libcrypto.so.1.1": b"crypto",
+        },
+    )
+    fake_rpm2cpio = tmp_path / "rpm2cpio"
+    fake_rpm2cpio.write_text(
+        "#!/bin/sh\n/bin/cat \"$PAYLOAD_TAR\"\n",
+        encoding="utf-8",
+    )
+    fake_rpm2cpio.chmod(0o755)
+    fake_cpio = tmp_path / "cpio"
+    fake_cpio.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+    fake_cpio.chmod(0o755)
+    fake_rpm = tmp_path / "compat-openssl11.rpm"
+    fake_rpm.write_bytes(b"not used by fake rpm2cpio")
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("PAYLOAD_TAR", str(payload_tar))
+
+    lib_dir = _extract_compat_openssl_rpm(fake_rpm, tmp_path / "compat")
+
+    assert (lib_dir / "libssl.so.1.1").read_bytes() == b"ssl"
+    assert (lib_dir / "libcrypto.so.1.1").read_bytes() == b"crypto"
+
+
+def test_system_openssl_111_libs_can_seed_compat_dir(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    system_lib = tmp_path / "usr" / "lib"
+    system_lib.mkdir(parents=True)
+    (system_lib / "libssl.so.1.1").write_bytes(b"ssl")
+    (system_lib / "libcrypto.so.1.1").write_bytes(b"crypto")
+
+    monkeypatch.setattr(
+        "stability.q2rtx.install.Path",
+        lambda value="": system_lib if str(value) == "/usr/lib" else Path(value),
+    )
+
+    lib_dir = _copy_system_openssl_111_libs(tmp_path / "compat")
+
+    assert lib_dir is not None
+    assert (lib_dir / "libssl.so.1.1").read_bytes() == b"ssl"
+    assert (lib_dir / "libcrypto.so.1.1").read_bytes() == b"crypto"
 
 
 def test_timedemo_command_uses_requested_resolution_and_run_count(

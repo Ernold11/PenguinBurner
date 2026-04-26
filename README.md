@@ -184,6 +184,8 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--stability-width N` and `--stability-height N`: Q2RTX render size; defaults `2560x1440`.
 - `--show-q2rtx-window`: show the Q2RTX window instead of using hidden/headless mode.
 - `--stability-log-dir PATH`: write `--stability-test` logs to a specific directory.
+- `--stability-q2rtx-dir PATH`: use an existing Q2RTX install/source directory instead of the managed install.
+- `--stability-q2rtx-binary PATH`: use an explicit Q2RTX executable path instead of the managed install.
 
 #### Auto-UV Aggressiveness Tuning
 
@@ -393,6 +395,18 @@ What it does not do yet:
 - it is currently a practical "did repeated heavy timedemo passes complete with sane FPS behavior and without obvious driver faults" check
 
 If Q2RTX is not installed yet, run `./penguin_burner.sh --install-q2rtx`. That downloads the latest official Linux tar.gz from the NVIDIA GitHub releases into PenguinBurner's managed user cache/data directories, which PenguinBurner auto-detects first. The Auto-UV path also performs this install automatically when the managed Q2RTX install is missing, printing the lookup, download, extraction, and runtime-library progress to stdout. The current official Linux tarball already includes the freely available Quake II shareware data, NVIDIA's Vulkan ray tracing renderer, and the ready-made `q2demo1` timedemo.
+
+To use your own Q2RTX install instead:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan --stability-q2rtx-dir /path/to/q2rtx
+```
+
+or point directly at the executable:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan --stability-q2rtx-binary /path/to/q2rtx
+```
 
 By default PenguinBurner auto-selects a ready-made timedemo, first looking for demos on disk and then inside `pak0.pak`, preferring demos like `q2demo1`.
 

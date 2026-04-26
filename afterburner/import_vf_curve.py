@@ -162,7 +162,7 @@ def translated_linux_profile_path(section, curve_sha256):
 
 
 def load_offsets_payload(payload_path):
-    return json.loads(Path(payload_path).read_text())
+    return json.loads(Path(payload_path).read_text(encoding="utf-8", errors="replace"))
 
 
 def translated_linux_profile_is_current(
@@ -299,7 +299,7 @@ def write_translated_linux_profile(
             )
     if gpu_policy is not None:
         payload["gpu_policy"] = dict(gpu_policy)
-    output_path.write_text(json.dumps(payload, indent=2) + "\n")
+    output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return output_path
 
 
@@ -532,7 +532,7 @@ def backup_current_offsets(reader, backup_path, policy_controller=None):
             "power_limit_max_w": power_limits.get("power_limit_max_w"),
             "mem_clk_vf_offset_mhz": clock_offsets.get("mem_clk_vf_offset_mhz"),
         }
-    backup_path.write_text(json.dumps(payload, indent=2) + "\n")
+    backup_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return backup_path
 
 

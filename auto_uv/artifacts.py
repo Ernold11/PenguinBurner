@@ -18,7 +18,7 @@ def _now_iso() -> str:
 def _safe_json_write(path: Path, payload: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(path.name + ".tmp")
-    temp_path.write_text(json.dumps(payload, indent=2) + "\n")
+    temp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     temp_path.replace(path)
     return path
 
@@ -258,7 +258,7 @@ def _load_uv_unsafe_voltage_entries() -> list[dict]:
     if not path.is_file():
         return []
     try:
-        payload = json.loads(path.read_text())
+        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except (json.JSONDecodeError, OSError):
         return []
     entries = payload.get("entries") if isinstance(payload, dict) else None
@@ -320,7 +320,7 @@ def _consume_interrupted_uv_probe_marker() -> tuple[Path, dict] | None:
     if not path.is_file():
         return None
     try:
-        marker = json.loads(path.read_text())
+        marker = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except (json.JSONDecodeError, OSError):
         marker = {}
     finally:

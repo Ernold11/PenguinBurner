@@ -440,6 +440,16 @@ def parse_main_args(argv):
         ),
     )
     parser.add_argument(
+        "--stability-q2rtx-dir",
+        default="",
+        help="Q2RTX install/source root containing q2rtx and baseq2/",
+    )
+    parser.add_argument(
+        "--stability-q2rtx-binary",
+        default="",
+        help="Explicit q2rtx executable path",
+    )
+    parser.add_argument(
         "--auto-uv-voltage-scan",
         action="store_true",
         help=(
@@ -646,7 +656,7 @@ def load_auto_uv_final_curve():
     if not path.is_file():
         return None
 
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     raw_points = payload.get("points")
     if not isinstance(raw_points, list) or not raw_points:
         raise NvmlError(f"auto-UV final curve has no V/F points: {path}")
@@ -699,7 +709,7 @@ def load_auto_uv_fan_curve(current_fan_config):
     if not path.is_file():
         return None
 
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     if not isinstance(payload, dict):
         raise NvmlError(f"auto-UV fan curve payload is invalid: {path}")
     max_stock_load_temp_c = float(AUTO_UV_FAN_TUNING.max_stock_curve_load_temp_c)
@@ -898,8 +908,13 @@ def build_stability_config(
     stability_config = dict(config.get("stability", {}))
     q2rtx_dir = str(stability_config.get("q2rtx_dir", "")).strip()
     q2rtx_binary = str(stability_config.get("q2rtx_binary", "")).strip()
+    cli_q2rtx_dir = str(getattr(args, "stability_q2rtx_dir", "") or "").strip()
+    cli_q2rtx_binary = str(getattr(args, "stability_q2rtx_binary", "") or "").strip()
+    if cli_q2rtx_dir or cli_q2rtx_binary:
+        q2rtx_dir = cli_q2rtx_dir
+        q2rtx_binary = cli_q2rtx_binary
     q2rtx_source_from_config = bool(q2rtx_dir or q2rtx_binary)
-    should_persist_q2rtx_source = False
+    should_persist_q2rtx_source = bool(cli_q2rtx_dir or cli_q2rtx_binary)
 
     if q2rtx_dir or q2rtx_binary:
         configured_dir = Path(q2rtx_dir).expanduser() if q2rtx_dir else None

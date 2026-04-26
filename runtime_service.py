@@ -161,7 +161,7 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
         )
 
     unit_path = systemd_service_unit_path()
-    unit_path.write_text(build_systemd_service_unit(program_file, argv))
+    unit_path.write_text(build_systemd_service_unit(program_file, argv), encoding="utf-8")
     run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
     subprocess.run(
         [SYSTEMCTL, "reset-failed", unit_path.name],

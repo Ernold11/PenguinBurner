@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
@@ -327,62 +328,154 @@ def _copy_preserving_link(src: Path, dst: Path) -> None:
     shutil.copy2(src, dst)
 
 
+def _safe_extract_tar_payload(payload: bytes, destination: Path, *, label: str) -> None:
+    try:
+        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as archive:
+            for member in archive.getmembers():
+                member_path = (destination / member.name).resolve()
+                if (
+                    destination.resolve() not in member_path.parents
+                    and member_path != destination.resolve()
+                ):
+                    raise StabilityTestError(
+                        f"refusing to extract suspicious {label} member: {member.name}"
+                    )
+                if member.isdir():
+                    member_path.mkdir(parents=True, exist_ok=True)
+                    continue
+                if member.issym():
+                    link_target = member.linkname
+                    if os.path.isabs(link_target) or ".." in Path(link_target).parts:
+                        raise StabilityTestError(
+                            f"refusing to extract suspicious {label} symlink: {member.name}"
+                        )
+                    member_path.parent.mkdir(parents=True, exist_ok=True)
+                    if member_path.exists() or member_path.is_symlink():
+                        member_path.unlink()
+                    member_path.symlink_to(link_target)
+                    continue
+                if not member.isfile():
+                    raise StabilityTestError(
+                        f"refusing to extract unsupported {label} member: {member.name}"
+                    )
+                source = archive.extractfile(member)
+                if source is None:
+                    raise StabilityTestError(
+                        f"failed to read {label} member: {member.name}"
+                    )
+                member_path.parent.mkdir(parents=True, exist_ok=True)
+                with source, member_path.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+                member_path.chmod(member.mode & 0o777)
+    except tarfile.TarError as exc:
+        raise StabilityTestError(f"failed to extract {label} tar payload: {exc}") from exc
+
+
+def _copy_system_openssl_111_libs(compat_root: Path) -> Path | None:
+    candidate_dirs = [
+        Path("/usr/lib"),
+        Path("/usr/lib64"),
+        Path("/lib"),
+        Path("/lib64"),
+        Path("/usr/local/lib"),
+        Path("/usr/local/lib64"),
+    ]
+    source_dir = next(
+        (
+            directory
+            for directory in candidate_dirs
+            if all((directory / name).exists() for name in OPENSSL_111_REQUIRED_LIBS)
+        ),
+        None,
+    )
+    if source_dir is None:
+        return None
+
+    lib_dir = compat_root / "lib"
+    lib_dir.mkdir(parents=True, exist_ok=True)
+    for required_name in OPENSSL_111_REQUIRED_LIBS:
+        for entry in sorted(source_dir.glob(required_name + "*")):
+            _copy_preserving_link(entry, lib_dir / entry.name)
+    return lib_dir
+
+
+def _extract_compat_openssl_with_bsdtar(rpm_path: Path, temp_dir: Path) -> bool:
+    bsdtar_path = shutil.which("bsdtar")
+    if not bsdtar_path:
+        return False
+    result = subprocess.run(
+        [bsdtar_path, "-xf", str(rpm_path), "-C", str(temp_dir)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode == 0:
+        return True
+    detail = (result.stderr or result.stdout or "").strip()
+    raise StabilityTestError(
+        f"bsdtar failed while extracting {rpm_path.name}: "
+        f"{detail or result.returncode}"
+    )
+
+
 def _extract_compat_openssl_rpm(rpm_path: Path, compat_root: Path) -> Path:
     rpm2cpio_path = shutil.which("rpm2cpio")
-    cpio_path = shutil.which("cpio")
-    if not rpm2cpio_path or not cpio_path:
-        raise StabilityTestError(
-            "extracting the compat-openssl11 RPM requires both rpm2cpio and cpio"
-        )
 
     with tempfile.TemporaryDirectory(
         prefix="compat-openssl11-",
         dir=str(rpm_path.parent),
     ) as temp_dir_str:
         temp_dir = Path(temp_dir_str)
-        try:
-            rpm2cpio_proc = subprocess.Popen(
-                [rpm2cpio_path, str(rpm_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=False,
-            )
-        except OSError as exc:
-            raise StabilityTestError(f"failed to start rpm2cpio: {exc}") from exc
+        if rpm2cpio_path:
+            try:
+                rpm2cpio_result = subprocess.run(
+                    [rpm2cpio_path, str(rpm_path)],
+                    capture_output=True,
+                    text=False,
+                    check=False,
+                )
+            except OSError as exc:
+                raise StabilityTestError(f"failed to start rpm2cpio: {exc}") from exc
 
-        try:
-            if rpm2cpio_proc.stdout is None:
-                raise StabilityTestError("rpm2cpio did not provide stdout")
-            cpio_result = subprocess.run(
-                [cpio_path, "-idm", "--quiet"],
-                cwd=temp_dir,
-                stdin=rpm2cpio_proc.stdout,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-            )
-        finally:
-            if rpm2cpio_proc.stdout is not None:
-                rpm2cpio_proc.stdout.close()
-
-        rpm2cpio_stderr = ""
-        if rpm2cpio_proc.stderr is not None:
-            rpm2cpio_stderr = rpm2cpio_proc.stderr.read().decode(
-                "utf-8", errors="replace"
-            )
-            rpm2cpio_proc.stderr.close()
-        rpm2cpio_returncode = rpm2cpio_proc.wait()
-        if rpm2cpio_returncode != 0:
-            detail = rpm2cpio_stderr.strip() or f"exit code {rpm2cpio_returncode}"
+            rpm2cpio_stderr = rpm2cpio_result.stderr.decode("utf-8", errors="replace")
+            if rpm2cpio_result.returncode != 0:
+                detail = (
+                    rpm2cpio_stderr.strip()
+                    or f"exit code {rpm2cpio_result.returncode}"
+                )
+                raise StabilityTestError(
+                    f"rpm2cpio failed while extracting {rpm_path.name}: {detail}"
+                )
+            payload = bytes(rpm2cpio_result.stdout or b"")
+            if payload.startswith(b"\x1f\x8b"):
+                _safe_extract_tar_payload(payload, temp_dir, label=rpm_path.name)
+            else:
+                cpio_path = shutil.which("cpio")
+                if not cpio_path:
+                    raise StabilityTestError(
+                        "rpm2cpio produced a cpio payload, but cpio is not installed"
+                    )
+                cpio_result = subprocess.run(
+                    [cpio_path, "-idm", "--quiet"],
+                    cwd=temp_dir,
+                    input=payload,
+                    capture_output=True,
+                    check=False,
+                )
+                if cpio_result.returncode != 0:
+                    detail = (
+                        cpio_result.stderr.decode("utf-8", errors="replace").strip()
+                        or f"exit code {cpio_result.returncode}"
+                    )
+                    raise StabilityTestError(
+                        f"cpio failed while extracting {rpm_path.name}: {detail}"
+                    )
+        elif not _extract_compat_openssl_with_bsdtar(rpm_path, temp_dir):
             raise StabilityTestError(
-                f"rpm2cpio failed while extracting {rpm_path.name}: {detail}"
-            )
-        if cpio_result.returncode != 0:
-            detail = cpio_result.stderr.strip() or f"exit code {cpio_result.returncode}"
-            raise StabilityTestError(
-                f"cpio failed while extracting {rpm_path.name}: {detail}"
+                "extracting the compat-openssl11 RPM requires rpm2cpio, bsdtar, "
+                "or a system OpenSSL 1.1 package that provides libssl.so.1.1"
             )
 
         lib_source_dir = temp_dir / "usr" / "lib64"
@@ -437,8 +530,17 @@ def _ensure_openssl_111_compat_libs(*, show_progress: bool) -> Path:
             print(
                 f"Using cached OpenSSL {OPENSSL_111_VERSION} compatibility libs from {lib_dir}",
                 flush=True,
-            )
+        )
         return lib_dir
+
+    system_lib_dir = _copy_system_openssl_111_libs(compat_root)
+    if system_lib_dir is not None:
+        if show_progress:
+            print(
+                f"Using system OpenSSL {OPENSSL_111_VERSION} compatibility libs from {system_lib_dir}",
+                flush=True,
+            )
+        return system_lib_dir
 
     cache_dir = default_q2rtx_install_cache_dir() / "compat-rpms"
     rpm_name, rpm_url = _fetch_latest_openssl_compat_rpm_metadata()

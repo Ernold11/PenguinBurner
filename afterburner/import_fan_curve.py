@@ -185,7 +185,7 @@ def write_config(config_path: Path, config: dict):
         lines.append("")
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text("\n".join(lines).rstrip() + "\n")
+    config_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def build_imported_fan_section(current_fan: dict, settings: dict, gpu_index: int):
