@@ -205,32 +205,6 @@ loaded-clock drop allowance, and overclock budget.
   overclock budget. With the default 10% clock-drop allowance, this gives a 4%
   overclock budget. `0` disables overclock recovery; values above `1.0` are clamped.
 
-Practical examples:
-
-```bash
-# Preserve more clock, stop voltage search earlier, use little overclock recovery.
-sudo ./penguin_burner.sh --auto-uv-voltage-scan \
-  --auto-uv-max-drop-pct 14 \
-  --auto-uv-max-clock-drop-pct 8 \
-  --auto-uv-overclock-budget-ratio 0.25
-```
-
-```bash
-# Current balanced default behavior, written explicitly.
-sudo ./penguin_burner.sh --auto-uv-voltage-scan \
-  --auto-uv-max-drop-pct 16 \
-  --auto-uv-max-clock-drop-pct 10 \
-  --auto-uv-overclock-budget-ratio 0.4
-```
-
-```bash
-# Search deeper and allow more clock loss/recovery.
-sudo ./penguin_burner.sh --auto-uv-voltage-scan \
-  --auto-uv-max-drop-pct 22 \
-  --auto-uv-max-clock-drop-pct 12 \
-  --auto-uv-overclock-budget-ratio 0.5
-```
-
 Other useful knobs:
 
 - `--auto-uv-efficiency-stop-streak N` controls how many extra lower-voltage
@@ -272,8 +246,8 @@ Aggressive profile:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-voltage-scan \
-  --auto-uv-max-drop-pct 22 \
-  --auto-uv-max-clock-drop-pct 14 \
+  --auto-uv-max-drop-pct 18 \
+  --auto-uv-max-clock-drop-pct 10 \
   --auto-uv-overclock-budget-ratio 0.75
 ```
 

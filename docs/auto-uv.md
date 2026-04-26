@@ -121,13 +121,13 @@ The three main aggressiveness options are:
   can be spent recovering clock with overclocks; default `0.4`, which is a `4%`
   budget with the default `10%` clock-drop allowance.
 
-Example deeper scan:
+Aggressive example:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-voltage-scan \
-  --auto-uv-max-drop-pct 22 \
-  --auto-uv-max-clock-drop-pct 12 \
-  --auto-uv-overclock-budget-ratio 0.5
+  --auto-uv-max-drop-pct 18 \
+  --auto-uv-max-clock-drop-pct 10 \
+  --auto-uv-overclock-budget-ratio 0.75
 ```
 
 ## After The Scan
