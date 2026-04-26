@@ -50,39 +50,6 @@ searching. To use a looser `12%` clock-drop allowance:
 sudo ./penguin_burner.sh --auto-uv-max-clock-drop-pct 12
 ```
 
-Auto-UV lowers voltage first and follows the real loaded clock from each
-accepted probe. If a lower-voltage candidate or final long verification run
-misses the loaded-clock floor, Auto-UV can retry that same voltage with a
-budgeted curve target bump. The total bump budget is derived from the allowed
-clock-drop budget: `--auto-uv-max-clock-drop-pct * --auto-uv-clock-bump-budget-ratio`.
-The ratio defaults to `0.5` and is clamped to `0.0..1.0`, so Auto-UV cannot budget
-more bump than the user allowed as clock drop. With the default `10%` clock-drop
-allowance and `0.5` ratio, the scan can spend up to `+5%` total. A ratio of
-`0.75` gives a larger `+7.5%` total budget; `0.25` gives a smaller `+2.5%` total
-budget. Individual retry sizes are not fixed: Auto-UV parses the failed probe's
-measured clock shortfall, adds one clock-step of overhead, snaps to the V/F
-clock grid, and charges the actual target increase against the remaining budget.
-Before probing the next lower voltage, Auto-UV also looks at the recent accepted
-voltage/clock slope; if that predicts the next step will fall below the loaded
-clock floor, it can spend bump budget preemptively instead of waiting for a
-known-bad low-clock probe.
-If a probe crashes during a bump, the next scan remembers the budget used before
-that failed bump and caps future bumping there unless you clear Auto-UV state.
-Use `--auto-uv-clock-bump-budget-ratio 0` to disable this recovery path.
-Auto-UV can also spend that same bump budget at an FPS/W wall: when lowering
-voltage no longer improves temperature-normalized FPS/W, it may try a small
-curve bump at the same voltage and keep it only if the bumped probe passes and
-improves normalized efficiency.
-The scan only ends on an FPS/W wall after the no-gain streak is confirmed, the
-minimum voltage-drop stop floor is reached, and the bump budget is spent or
-disabled. The loaded-clock floor remains a safety guardrail; Auto-UV does not
-force the scan down to that floor just to stop on marginal FPS/W gains.
-Auto-UV log lines report this as `overclocking-budget=used/limit%`.
-
-As the scan walks into lower voltage bins, candidate clock targets are capped to
-the source V/F curve at that bin, so the scan descends with the card's real
-curve instead of holding the initial target across the whole run.
-
 Undervolting can hang the GPU, crash the driver, freeze the display, or force a
 reboot. If the system crashes during an Auto-UV probe, PenguinBurner records the
 in-progress voltage as unsafe on the next run and will not test that voltage or
