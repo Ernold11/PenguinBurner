@@ -28,10 +28,6 @@ sudo ./penguin_burner.sh --fresh-auto-uv-scan
 
 Example Auto-UV result summary: before/after power draw, core clock, and efficiency shown after the final verification.
 
-![Auto-UV candidate step](auto_uv_candidate_step_terminal.png)
-
-Example Auto-UV candidate step: current probe compared with the initial baseline and previous stable curve.
-
 What Auto-UV does:
 
 1. Reset previous GPU tuning so the scan starts from the driver/default curve.
