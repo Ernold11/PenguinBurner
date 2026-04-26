@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "penguin-burner"
-version = "0.1.1"
+version = "0.1.2"
 description = "Linux NVIDIA undervolting tool with Auto-UV and MSI Afterburner import support"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -39,6 +39,7 @@ Issues = "https://github.com/jpietek/PenguinBurner/issues"
 Source = "https://github.com/jpietek/PenguinBurner"
 
 [project.scripts]
+pburn = "penguin_burner:cli_main"
 penguin-burner = "penguin_burner:cli_main"
 penguin_burner = "penguin_burner:cli_main"
 q2rtx-stability = "stability.q2rtx:main"

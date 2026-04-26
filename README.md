@@ -17,19 +17,25 @@ Start PenguinBurner. On a clean first run, it automatically starts the
 foreground Auto-UV scan:
 
 ```bash
-sudo ~/.local/bin/penguin-burner
+sudo penguin-burner
 ```
 
 After Auto-UV finishes and saves a final curve, start normal daemon runtime:
 
 ```bash
-sudo ~/.local/bin/penguin-burner --daemonize
+sudo penguin-burner --daemonize
 ```
 
 To include PenguinBurner's saved fan curve in daemon mode:
 
 ```bash
-sudo ~/.local/bin/penguin-burner --daemonize --silent-fan-curve
+sudo penguin-burner --daemonize --silent-fan-curve
+```
+
+The package also installs `pburn` as a short alias:
+
+```bash
+sudo pburn --daemonize --silent-fan-curve
 ```
 
 ## Auto-UV Quick Start
