@@ -34,12 +34,7 @@ You can also request the scan explicitly:
 sudo ./penguin_burner.sh --auto-uv-voltage-scan
 ```
 
-To try the readable experimental candidate-sweep engine while keeping the stable
-baseline discovery and final verification path:
-
-```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan --experimental-auto-uv2
-```
+Auto-UV uses the readable candidate-sweep engine by default.
 
 ## What Happens During The Scan
 
@@ -96,9 +91,9 @@ Auto-UV may retry the same voltage with a small overclock. The same
 budget can also be used at an FPS/W wall if an overclock improves
 temperature-normalized efficiency. The total overclock budget is
 `--auto-uv-max-clock-drop-pct * --auto-uv-overclock-budget-ratio`. The ratio
-defaults to `0.5` and is clamped to `0.0..1.0`, so the overclock budget cannot exceed
-the configured loaded-clock drop allowance. With the defaults, `10% * 0.5`
-allows up to `+5%` total budget. Use a ratio like `0.75` for a more aggressive
+defaults to `0.4` and is clamped to `0.0..1.0`, so the overclock budget cannot exceed
+the configured loaded-clock drop allowance. With the defaults, `10% * 0.4`
+allows up to `+4%` total budget. Use a ratio like `0.75` for a more aggressive
 budget or `0.25` for a gentler one. Individual retries are sized from the failed
 probe: Auto-UV reads the measured clock shortfall, adds one clock-step of
 overhead, snaps to the V/F clock grid, and charges the actual target increase
@@ -115,6 +110,24 @@ drop. If you want a looser clock-drop allowance, for example `12%`, run:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-max-clock-drop-pct 12
+```
+
+The three main aggressiveness options are:
+
+- `--auto-uv-max-drop-pct N`: voltage search depth below the starting voltage;
+  default `16.0`.
+- `--auto-uv-max-clock-drop-pct N`: allowed loaded-clock loss; default `10.0`.
+- `--auto-uv-overclock-budget-ratio N`: fraction of the clock-drop allowance that
+  can be spent recovering clock with overclocks; default `0.4`, which is a `4%`
+  budget with the default `10%` clock-drop allowance.
+
+Example deeper scan:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+  --auto-uv-max-drop-pct 22 \
+  --auto-uv-max-clock-drop-pct 12 \
+  --auto-uv-overclock-budget-ratio 0.5
 ```
 
 ## After The Scan

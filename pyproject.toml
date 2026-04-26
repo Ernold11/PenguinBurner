@@ -62,7 +62,6 @@ py-modules = [
 packages = [
   "afterburner",
   "auto_uv",
-  "auto_uv2",
   "stability",
   "stability.q2rtx",
 ]

@@ -518,6 +518,11 @@ def log_user_candidate_result(
     def _target_clock(probe: AutoUvProbeSummary | None) -> str:
         return f"{int(probe.lock_clock_mhz)}MHz" if probe is not None else "n/a"
 
+    def _measured_core_clock(probe: AutoUvProbeSummary | None) -> str:
+        if probe is None:
+            return "n/a"
+        return format_user_value(probe.avg_core_clock_mhz, "MHz")
+
     def _initial_measured_clock_mhz() -> int | None:
         if initial_probe is None or initial_probe.avg_core_clock_mhz is None:
             return None
@@ -713,7 +718,7 @@ def log_user_candidate_result(
             ),
             (
                 "Target clock",
-                _initial_clock(),
+                _target_clock(initial_probe),
                 _target_clock(previous_probe),
                 f"{int(candidate_probe.lock_clock_mhz)}MHz",
                 _signed_int_change(
@@ -726,6 +731,26 @@ def log_user_candidate_result(
                 _signed_int_change(
                     _initial_measured_clock_mhz(),
                     candidate_probe.lock_clock_mhz,
+                    "MHz",
+                ),
+            ),
+            (
+                "Measured core clock",
+                _measured_core_clock(initial_probe),
+                _measured_core_clock(previous_probe),
+                _measured_core_clock(candidate_probe),
+                format_user_change(
+                    previous_probe.avg_core_clock_mhz
+                    if previous_probe is not None
+                    else None,
+                    candidate_probe.avg_core_clock_mhz,
+                    "MHz",
+                ),
+                _change_vs_initial(
+                    initial_probe.avg_core_clock_mhz
+                    if initial_probe is not None
+                    else None,
+                    candidate_probe.avg_core_clock_mhz,
                     "MHz",
                 ),
             ),
@@ -750,6 +775,38 @@ def log_user_candidate_result(
                     initial_probe.avg_power_w if initial_probe is not None else None,
                     candidate_probe.avg_power_w,
                     "W",
+                    lower_is_better=True,
+                ),
+            ),
+            (
+                "Temperature",
+                format_user_value(
+                    initial_probe.avg_temperature_c
+                    if initial_probe is not None
+                    else None,
+                    "C",
+                ),
+                format_user_value(
+                    previous_probe.avg_temperature_c
+                    if previous_probe is not None
+                    else None,
+                    "C",
+                ),
+                format_user_value(candidate_probe.avg_temperature_c, "C"),
+                format_user_change(
+                    previous_probe.avg_temperature_c
+                    if previous_probe is not None
+                    else None,
+                    candidate_probe.avg_temperature_c,
+                    "C",
+                    lower_is_better=True,
+                ),
+                _change_vs_initial(
+                    initial_probe.avg_temperature_c
+                    if initial_probe is not None
+                    else None,
+                    candidate_probe.avg_temperature_c,
+                    "C",
                     lower_is_better=True,
                 ),
             ),
@@ -819,10 +876,14 @@ def log_user_readable_final_summary(
 
     baseline_clock = baseline_probe.avg_core_clock_mhz
     final_clock = final_probe.avg_core_clock_mhz
+    baseline_target_clock = baseline_probe.lock_clock_mhz
+    final_target_clock = final_lock_clock_mhz
     baseline_power = baseline_probe.avg_power_w
     final_power = final_probe.avg_power_w
     baseline_fps = baseline_probe.avg_fps
     final_fps = final_probe.avg_fps
+    baseline_temp = baseline_probe.avg_temperature_c
+    final_temp = final_probe.avg_temperature_c
     baseline_fps_w = baseline_probe.efficiency_fps_per_w
     final_fps_w = final_probe.efficiency_fps_per_w
     baseline_mhz_w = baseline_probe.efficiency_mhz_per_w
@@ -921,7 +982,17 @@ def log_user_readable_final_summary(
                 ),
             ),
             (
-                "Core clock",
+                "Target clock",
+                format_user_value(baseline_target_clock, "MHz"),
+                format_user_value(final_target_clock, "MHz"),
+                format_user_change(
+                    baseline_target_clock,
+                    final_target_clock,
+                    "MHz",
+                ),
+            ),
+            (
+                "Measured core clock",
                 format_user_value(baseline_clock, "MHz"),
                 format_user_value(final_clock, "MHz"),
                 format_user_change(baseline_clock, final_clock, "MHz"),
@@ -931,6 +1002,17 @@ def log_user_readable_final_summary(
                 format_user_value(baseline_fps, "FPS"),
                 format_user_value(final_fps, "FPS"),
                 format_user_change(baseline_fps, final_fps, "FPS"),
+            ),
+            (
+                "Temperature",
+                format_user_value(baseline_temp, "C"),
+                format_user_value(final_temp, "C"),
+                format_user_change(
+                    baseline_temp,
+                    final_temp,
+                    "C",
+                    lower_is_better=True,
+                ),
             ),
             (
                 "FPS per watt",

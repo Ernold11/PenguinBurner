@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from auto_uv.models import AutoUvProbeSummary
-from auto_uv2 import (
+from auto_uv import (
     AutoUv2OverclockBudget,
     AutoUv2SweepState,
     apply_probe_decision,

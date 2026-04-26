@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from auto_uv.artifacts import _write_latest_verified_uv_result
 from auto_uv.models import AutoUvCurveCandidate, AutoUvProbeSummary
 from auto_uv.probe_config import _stability_probe_config_for_voltage_band
@@ -15,12 +17,23 @@ from auto_uv.scan_rules import _real_clock_adjusted_stable_curve
 from auto_uv.user_output import (
     log_benchmark as _log_benchmark,
     log_phase as _log_phase,
+    log_user_candidate_result as _log_user_candidate_result,
     log_vf_ascii_chart as _log_vf_ascii_chart,
     log_vf_point_list as _log_vf_point_list,
 )
 
 from .candidate_decision import AutoUv2OverclockBudget, AutoUv2SweepState
 from .sweep import AutoUv2SweepHooks, run_sweep
+
+
+_OVERCLOCK_BUDGET_RE = re.compile(r"\boverclocking-budget=[^\s]+")
+
+
+def _candidate_log_context(candidate: AutoUvCurveCandidate) -> str:
+    match = _OVERCLOCK_BUDGET_RE.search(str(candidate.label))
+    if match is not None:
+        return match.group(0)
+    return str(candidate.label).strip()
 
 
 def _latest_reference_voltage_mv(
@@ -33,7 +46,7 @@ def _latest_reference_voltage_mv(
     return fallback_voltage_mv
 
 
-def run_auto_uv2_candidate_sweep(
+def run_auto_uv_candidate_sweep(
     *,
     probe_stabilization_search=_probe_stabilization_search,
     log,
@@ -61,7 +74,7 @@ def run_auto_uv2_candidate_sweep(
     efficiency_stop_streak: int = 0,
     min_efficiency_stop_voltage_drop_pct: float = 0.0,
 ) -> dict:
-    # This adapter is the only v2 layer that talks to live probe helpers.
+    # This adapter is the only sweep layer that talks to live probe helpers.
     stable_candidate = AutoUvCurveCandidate(
         label="stable-start",
         candidate_voltage_mv=int(stable_voltage_mv),
@@ -72,7 +85,7 @@ def run_auto_uv2_candidate_sweep(
     def _probe_candidate(candidate: AutoUvCurveCandidate):
         _log_phase(
             log,
-            "candidate-v2",
+            "candidate",
             f"try={candidate.candidate_voltage_mv}mV@{candidate.target_clock_mhz}MHz "
             f"shape={candidate.label}",
         )
@@ -86,7 +99,7 @@ def run_auto_uv2_candidate_sweep(
             log,
             plan=candidate.plan,
             label=(
-                f"candidate-v2 target={candidate.target_clock_mhz}MHz "
+                f"candidate target={candidate.target_clock_mhz}MHz "
                 f"voltage={candidate.candidate_voltage_mv}mV"
             ),
         )
@@ -110,15 +123,15 @@ def run_auto_uv2_candidate_sweep(
             initial_probe_clock_mhz=measured_clock_mhz,
             nvml_session=nvml_session,
             log=log,
-            phase_label="candidate-v2",
-            log_context=state.budget.describe(),
+            phase_label="candidate",
+            log_context=_candidate_log_context(candidate),
             power_limit_w=translated_gpu_policy.get("power_limit_w"),
             min_performance_core_clock_pct=float(min_performance_core_clock_pct),
             reset_plan=runtime_default_plan,
         )
         _log_benchmark(
             log,
-            phase="candidate-v2",
+            phase="candidate",
             probe=summary,
             reference_probe=discovery_summary,
             reference_label="initial",
@@ -190,6 +203,23 @@ def run_auto_uv2_candidate_sweep(
             plan=adjusted_plan,
         )
 
+    def _log_probe_result(
+        attempt: int,
+        decision: str,
+        reason: str,
+        probe: AutoUvProbeSummary,
+        previous_probe: AutoUvProbeSummary | None,
+    ) -> None:
+        _log_user_candidate_result(
+            log,
+            attempt=int(attempt),
+            decision=str(decision),
+            reason=str(reason),
+            initial_probe=discovery_summary,
+            previous_probe=previous_probe,
+            candidate_probe=probe,
+        )
+
     state = AutoUv2SweepState(
         stable_voltage_mv=int(stable_voltage_mv),
         stable_target_mhz=int(stable_lock_clock_mhz),
@@ -224,6 +254,7 @@ def run_auto_uv2_candidate_sweep(
             normalize_accepted_candidate=_normalize_accepted,
             efficiency_delta=_temperature_normalized_efficiency_delta,
             power_up_efficiency_down=_is_power_up_efficiency_down_regression,
+            log_probe_result=_log_probe_result,
         ),
         efficiency_stop_streak=int(efficiency_stop_streak),
         min_efficiency_stop_voltage_drop_pct=float(
@@ -231,7 +262,7 @@ def run_auto_uv2_candidate_sweep(
         ),
     )
     for event in result.events:
-        _log_phase(log, "auto-uv2", f"{event.name}: {event.message}")
+        _log_phase(log, "auto-uv", f"{event.name}: {event.message}")
     return {
         "stable_plan": result.stable_candidate.plan,
         "stable_voltage_mv": int(result.state.stable_voltage_mv),

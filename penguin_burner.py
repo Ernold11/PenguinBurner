@@ -141,7 +141,7 @@ def default_config():
         "gpu": {
             "index": 0,
             "enable_persistence_mode": True,
-            "afterburner_auto_uv_max_drop_pct": 18.0,
+            "afterburner_auto_uv_max_drop_pct": 16.0,
             "auto_uv_final_seconds": DEFAULT_AUTO_UV_FINAL_DURATION_S,
             "auto_uv_efficiency_stop_streak": AUTO_UV_DEFAULTS.efficiency_stop_streak,
             "auto_uv_min_efficiency_stop_drop_pct": (
@@ -465,7 +465,7 @@ def parse_main_args(argv):
         help=(
             "Maximum percentage drop below the first discovered auto-UV start "
             "voltage allowed during candidate search; defaults to the config "
-            "value, which is 18.0"
+            "value, which is 16.0"
         ),
     )
     parser.add_argument(
@@ -519,14 +519,6 @@ def parse_main_args(argv):
             "shortfall plus a small safety step. "
             f"default {AUTO_UV_DEFAULTS.clock_bump_budget_ratio:.2f}. "
             "Clamped to 0.0..1.0."
-        ),
-    )
-    parser.add_argument(
-        "--experimental-auto-uv2",
-        action="store_true",
-        help=(
-            "Use the experimental readable Auto-UV v2 candidate sweep. "
-            "Baseline discovery and final verification still use the stable scanner."
         ),
     )
     parser.add_argument(
@@ -1718,8 +1710,6 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
             0.0,
             min(1.0, float(args.auto_uv_clock_bump_budget_ratio)),
         )
-    if args.experimental_auto_uv2:
-        afterburner_runtime_options["experimental_auto_uv2"] = True
     if args.dangerously_skip_validation:
         afterburner_runtime_options["dangerously_skip_validation"] = True
     prefer_afterburner_curve = bool(args.prefer_afterburner_curve)

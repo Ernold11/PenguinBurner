@@ -48,6 +48,9 @@ class AutoUv2SweepHooks:
     power_up_efficiency_down: Callable[
         [AutoUvProbeSummary, AutoUvProbeSummary, dict], bool
     ] | None = None
+    log_probe_result: Callable[
+        [int, str, str, AutoUvProbeSummary, AutoUvProbeSummary | None], None
+    ] | None = None
 
 
 def _probe_success(result: object) -> bool:
@@ -57,6 +60,16 @@ def _probe_success(result: object) -> bool:
 def _probe_reason(result: object) -> str | None:
     value = getattr(result, "reason", None)
     return str(value) if value is not None else None
+
+
+def _candidate_uses_overclock(
+    state: AutoUv2SweepState,
+    candidate: AutoUvCurveCandidate,
+) -> bool:
+    return (
+        state.last_overclock_target_mhz is not None
+        and int(candidate.target_clock_mhz) >= int(state.last_overclock_target_mhz)
+    )
 
 
 def _recover_and_update(
@@ -149,6 +162,7 @@ def _overclock_and_update(
     measured_clock_cap_mhz: float | None,
     stable_history: list[AutoUvProbeSummary],
     probe_history: list[AutoUvProbeSummary],
+    attempt_index: int,
 ) -> tuple[
     AutoUv2SweepState,
     AutoUvCurveCandidate | None,
@@ -182,6 +196,7 @@ def _overclock_and_update(
             )
         )
 
+        previous_probe = stable_history[-1] if stable_history else None
         probe, probe_result = hooks.probe_candidate(attempt.candidate)
         probe_history.append(probe)
         evaluation_error = (
@@ -197,17 +212,20 @@ def _overclock_and_update(
             candidate_used_overclock=True,
         )
         events.append(AutoUv2SweepEvent("decision", decision.action))
+        if hooks.log_probe_result is not None:
+            hooks.log_probe_result(
+                int(attempt_index),
+                decision.action,
+                decision.reason,
+                probe,
+                previous_probe,
+            )
 
         if decision.action == "try-overclock":
             reason = evaluation_error or _probe_reason(probe_result) or reason
             continue
         if decision.action == "accept":
             accepted_candidate = attempt.candidate
-            if hooks.normalize_accepted_candidate is not None:
-                accepted_candidate = hooks.normalize_accepted_candidate(
-                    accepted_candidate,
-                    probe,
-                )
             update = apply_probe_decision(
                 source_plan,
                 state=current_state,
@@ -259,6 +277,7 @@ def _efficiency_overclock(
     measured_clock_cap_mhz: float | None,
     stable_history: list[AutoUvProbeSummary],
     probe_history: list[AutoUvProbeSummary],
+    attempt_index: int,
 ) -> tuple[AutoUv2SweepState, AutoUvCurveCandidate | None, AutoUvProbeSummary | None, list[AutoUv2SweepEvent]]:
     events: list[AutoUv2SweepEvent] = []
     # FPS/W walls get one overclock chance before stopping.
@@ -279,6 +298,7 @@ def _efficiency_overclock(
             f"{attempt.old_target_mhz}->{attempt.candidate.target_clock_mhz}MHz",
         )
     )
+    previous_probe = stable_history[-1] if stable_history else stable_probe
     probe, probe_result = hooks.probe_candidate(attempt.candidate)
     probe_history.append(probe)
     evaluation_error = (
@@ -293,6 +313,14 @@ def _efficiency_overclock(
         budget=attempt.state.budget,
         candidate_used_overclock=True,
     )
+    if hooks.log_probe_result is not None:
+        hooks.log_probe_result(
+            int(attempt_index),
+            decision.action,
+            decision.reason,
+            probe,
+            previous_probe,
+        )
     if decision.action != "accept" or hooks.efficiency_delta is None:
         events.append(AutoUv2SweepEvent("efficiency-overclock", "rejected"))
         return attempt.state, None, None, events
@@ -303,8 +331,6 @@ def _efficiency_overclock(
         return attempt.state, None, None, events
 
     accepted_candidate = attempt.candidate
-    if hooks.normalize_accepted_candidate is not None:
-        accepted_candidate = hooks.normalize_accepted_candidate(accepted_candidate, probe)
     update = apply_probe_decision(
         source_plan,
         state=attempt.state,
@@ -380,6 +406,7 @@ def run_sweep(
             )
         )
 
+        previous_probe_for_table = stable_history[-1] if stable_history else stable_probe
         probe, probe_result = hooks.probe_candidate(choice.candidate)
         probe_history.append(probe)
         evaluation_error = (
@@ -395,6 +422,14 @@ def run_sweep(
             candidate_used_overclock=state.last_overclock_target_mhz is not None,
         )
         events.append(AutoUv2SweepEvent("decision", decision.action))
+        if hooks.log_probe_result is not None:
+            hooks.log_probe_result(
+                int(attempt),
+                decision.action,
+                decision.reason,
+                probe,
+                previous_probe_for_table,
+            )
 
         if decision.action == "try-overclock":
             (
@@ -416,6 +451,7 @@ def run_sweep(
                 measured_clock_cap_mhz=measured_clock_cap_mhz,
                 stable_history=stable_history,
                 probe_history=probe_history,
+                attempt_index=int(attempt),
             )
             events.extend(overclock_events)
             if overclock_candidate is not None and overclock_probe is not None:
@@ -454,16 +490,21 @@ def run_sweep(
                 break
             continue
 
+        candidate_for_update = choice.candidate
+        if (
+            hooks.normalize_accepted_candidate is not None
+            and decision.action in {"accept", "accept-lowest-floor-miss"}
+            and not _candidate_uses_overclock(state, choice.candidate)
+        ):
+            candidate_for_update = hooks.normalize_accepted_candidate(
+                choice.candidate,
+                probe,
+            )
         update = apply_probe_decision(
             source_plan,
             state=state,
             decision=decision,
-            candidate=(
-                hooks.normalize_accepted_candidate(choice.candidate, probe)
-                if hooks.normalize_accepted_candidate is not None
-                and decision.action in {"accept", "accept-lowest-floor-miss"}
-                else choice.candidate
-            ),
+            candidate=candidate_for_update,
             probe=probe,
             start_voltage_mv=int(start_voltage_mv),
             reference_actual_voltage_mv=reference_actual_voltage_mv,
@@ -473,16 +514,12 @@ def run_sweep(
         state = update.state
         events.append(AutoUv2SweepEvent("state", update.reason))
         if update.write_latest_verified:
-            hooks.write_latest_verified(choice.candidate, probe)
+            hooks.write_latest_verified(candidate_for_update, probe)
         if decision.action in {"accept", "accept-lowest-floor-miss"}:
             previous_stable_candidate = stable_candidate
             previous_stable_probe = stable_probe
             stable_probe = probe
-            stable_candidate = (
-                hooks.normalize_accepted_candidate(choice.candidate, probe)
-                if hooks.normalize_accepted_candidate is not None
-                else choice.candidate
-            )
+            stable_candidate = candidate_for_update
             stable_history.append(probe)
             if hooks.efficiency_delta is not None and int(efficiency_stop_streak) > 0:
                 # Efficiency stop is evaluated only after a stable candidate.
@@ -538,6 +575,7 @@ def run_sweep(
                         measured_clock_cap_mhz=measured_clock_cap_mhz,
                         stable_history=stable_history,
                         probe_history=probe_history,
+                        attempt_index=int(attempt),
                     )
                     events.extend(efficiency_events)
                     if efficiency_candidate is not None and efficiency_probe is not None:

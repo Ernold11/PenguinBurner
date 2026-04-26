@@ -50,7 +50,6 @@ from .curve_planning import (
     _unsafe_min_search_voltage_mv,
     _validate_auto_uv_source_plan,
 )
-from .candidate_sweep import _run_candidate_sweep
 from .final_verify import _run_final_verification_and_save
 from .probe_metrics import (
     _baseline_value,
@@ -1293,74 +1292,36 @@ def _run_auto_uv_voltage_scan_impl(
                 probes=probe_history,
             )
 
-        if bool(runtime_options.get("experimental_auto_uv2")):
-            from auto_uv2.live_sweep import run_auto_uv2_candidate_sweep
+        from .live_sweep import run_auto_uv_candidate_sweep
 
-            _log_phase(log, "auto-uv2", "experimental candidate sweep enabled")
-            sweep_result = run_auto_uv2_candidate_sweep(
-                probe_stabilization_search=_probe_stabilization_search,
-                log=log,
-                reader=reader,
-                source_plan=source_result["plan"],
-                stable_plan=stable_plan,
-                stable_voltage_mv=stable_voltage_mv,
-                stable_lock_clock_mhz=stable_lock_clock_mhz,
-                stable_probe=stable_probe,
-                stable_history=stable_history,
-                probe_history=probe_history,
-                first_candidate_voltage_mv=first_candidate_voltage_mv,
-                discovery_summary=discovery_summary,
-                q2rtx_config=q2rtx_config,
-                measured_clock_mhz=measured_clock_mhz,
-                nvml_session=nvml_session,
-                translated_gpu_policy=translated_gpu_policy,
-                runtime_default_plan=runtime_default_plan,
-                clock_ceiling=clock_ceiling,
-                min_performance_core_clock_pct=min_performance_core_clock_pct,
-                min_search_voltage_mv=min_search_voltage_mv,
-                preserve_vanilla_below_mv=preserve_vanilla_below_mv,
-                start_voltage_mv=start_voltage_mv,
-                clock_bump_budget_limit_pct=float(effective_clock_bump_budget_limit_pct),
-                efficiency_stop_streak=efficiency_stop_streak,
-                min_efficiency_stop_voltage_drop_pct=(
-                    min_efficiency_stop_voltage_drop_pct
-                ),
-            )
-        else:
-            sweep_result = _run_candidate_sweep(
-                probe_voltage_candidate=_probe_voltage_candidate,
-                probe_stabilization_search=_probe_stabilization_search,
-                describe_guardrails=_describe_guardrails,
-                latest_reference_voltage_mv=_latest_reference_voltage_mv,
-                log=log,
-                reader=reader,
-                flattened_plan=flattened_plan,
-                start_voltage_mv=start_voltage_mv,
-                stable_plan=stable_plan,
-                stable_voltage_mv=stable_voltage_mv,
-                stable_lock_clock_mhz=stable_lock_clock_mhz,
-                stable_probe=stable_probe,
-                stable_history=stable_history,
-                probe_history=probe_history,
-                first_candidate_voltage_mv=first_candidate_voltage_mv,
-                discovery_summary=discovery_summary,
-                lock_clock_mhz=lock_clock_mhz,
-                q2rtx_config=q2rtx_config,
-                measured_clock_mhz=measured_clock_mhz,
-                nvml_session=nvml_session,
-                translated_gpu_policy=translated_gpu_policy,
-                runtime_default_plan=runtime_default_plan,
-                clock_ceiling=clock_ceiling,
-                source_result=source_result,
-                min_performance_core_clock_pct=min_performance_core_clock_pct,
-                min_search_voltage_mv=min_search_voltage_mv,
-                preserve_vanilla_below_mv=preserve_vanilla_below_mv,
-                min_efficiency_stop_voltage_drop_pct=min_efficiency_stop_voltage_drop_pct,
-                efficiency_stop_streak=efficiency_stop_streak,
-                clock_bump_budget_limit_pct=float(
-                    effective_clock_bump_budget_limit_pct
-                ),
-            )
+        _log_phase(log, "auto-uv", "candidate sweep enabled")
+        sweep_result = run_auto_uv_candidate_sweep(
+            probe_stabilization_search=_probe_stabilization_search,
+            log=log,
+            reader=reader,
+            source_plan=source_result["plan"],
+            stable_plan=stable_plan,
+            stable_voltage_mv=stable_voltage_mv,
+            stable_lock_clock_mhz=stable_lock_clock_mhz,
+            stable_probe=stable_probe,
+            stable_history=stable_history,
+            probe_history=probe_history,
+            first_candidate_voltage_mv=first_candidate_voltage_mv,
+            discovery_summary=discovery_summary,
+            q2rtx_config=q2rtx_config,
+            measured_clock_mhz=measured_clock_mhz,
+            nvml_session=nvml_session,
+            translated_gpu_policy=translated_gpu_policy,
+            runtime_default_plan=runtime_default_plan,
+            clock_ceiling=clock_ceiling,
+            min_performance_core_clock_pct=min_performance_core_clock_pct,
+            min_search_voltage_mv=min_search_voltage_mv,
+            preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+            start_voltage_mv=start_voltage_mv,
+            clock_bump_budget_limit_pct=float(effective_clock_bump_budget_limit_pct),
+            efficiency_stop_streak=efficiency_stop_streak,
+            min_efficiency_stop_voltage_drop_pct=min_efficiency_stop_voltage_drop_pct,
+        )
         stable_plan = sweep_result["stable_plan"]
         stable_voltage_mv = sweep_result["stable_voltage_mv"]
         stable_lock_clock_mhz = sweep_result["stable_lock_clock_mhz"]

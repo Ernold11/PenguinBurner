@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from auto_uv.models import AutoUvCurveCandidate, AutoUvProbeSummary
-from auto_uv2 import AutoUv2OverclockBudget, AutoUv2SweepHooks, AutoUv2SweepState, run_sweep
-from auto_uv2.sweep import static_probe_result
+from auto_uv import AutoUv2OverclockBudget, AutoUv2SweepHooks, AutoUv2SweepState, run_sweep
+from auto_uv.live_sweep import _candidate_log_context
+from auto_uv.sweep import static_probe_result
 
 
 def _plan() -> list[dict]:
@@ -55,6 +56,17 @@ def _candidate(voltage_mv: int = 1000, target_mhz: int = 2120) -> AutoUvCurveCan
         target_clock_mhz=int(target_mhz),
         plan=_plan(),
     )
+
+
+def test_auto_uv2_live_log_context_uses_candidate_budget() -> None:
+    candidate = AutoUvCurveCandidate(
+        label="voltage=950mV low-clock-recovery overclocking-budget=2.25/6.00%",
+        candidate_voltage_mv=950,
+        target_clock_mhz=2100,
+        plan=_plan(),
+    )
+
+    assert _candidate_log_context(candidate) == "overclocking-budget=2.25/6.00%"
 
 
 def test_auto_uv2_sweep_accepts_until_no_lower_voltage() -> None:
@@ -148,11 +160,12 @@ def test_auto_uv2_sweep_recovers_upward_after_probe_failure() -> None:
 
 def test_auto_uv2_sweep_uses_overclock_after_low_clock_failure() -> None:
     writes: list[int] = []
+    table_calls: list[tuple[str, int, int | None]] = []
 
     def _probe_candidate(candidate):
         if "low-clock-recovery" in candidate.label:
             return (
-                _probe(candidate.candidate_voltage_mv, candidate.target_clock_mhz),
+                _probe(candidate.candidate_voltage_mv, 2000.0),
                 static_probe_result(True),
             )
         return (
@@ -169,6 +182,13 @@ def test_auto_uv2_sweep_uses_overclock_after_low_clock_failure() -> None:
         recover_upward=lambda _candidate, _failed_probe, _reason: (None, None, None),
         write_latest_verified=lambda candidate, _probe: writes.append(
             int(candidate.target_clock_mhz)
+        ),
+        log_probe_result=lambda _attempt, decision, _reason, probe, previous: table_calls.append(
+            (
+                str(decision),
+                int(probe.candidate_voltage_mv),
+                int(previous.candidate_voltage_mv) if previous is not None else None,
+            )
         ),
     )
 
@@ -190,13 +210,17 @@ def test_auto_uv2_sweep_uses_overclock_after_low_clock_failure() -> None:
         measured_clock_cap_mhz=2120.0,
         reference_actual_voltage_mv=1000.0,
         preserve_vanilla_below_mv=None,
-        min_search_voltage_mv=950,
+        min_search_voltage_mv=975,
         hooks=hooks,
     )
 
     assert any(event.name == "overclock" for event in result.events)
     assert result.state.overclock_count == 1
     assert writes
+    assert result.state.stable_target_mhz == writes[0]
+    assert result.state.stable_target_mhz > int(result.stable_probe.avg_core_clock_mhz or 0)
+    assert [call[0] for call in table_calls] == ["try-overclock", "accept"]
+    assert all(call[2] == 1000 for call in table_calls)
 
 
 def test_auto_uv2_sweep_normalizes_accepted_candidate() -> None:

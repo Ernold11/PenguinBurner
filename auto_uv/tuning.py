@@ -8,9 +8,9 @@ class AutoUvDefaults:
     probe_duration_s: int = 30
     shape_probe_duration_s: int = 10
     final_duration_s: int = 600
-    max_drop_pct: float = 18.0
+    max_drop_pct: float = 16.0
     efficiency_stop_streak: int = 1
-    clock_bump_budget_ratio: float = 0.5
+    clock_bump_budget_ratio: float = 0.4
 
 
 @dataclass(frozen=True, slots=True)
