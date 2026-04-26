@@ -298,15 +298,19 @@ def _record_unsafe_uv_voltage(
     if details:
         entry["details"] = details
     entries = _load_uv_unsafe_voltage_entries()
-    deduped = [
-        item
-        for item in entries
-        if not (
-            int(item.get("candidate_voltage_mv", -1)) == int(candidate_voltage_mv)
-            and int(item.get("lock_clock_mhz", -1)) == int(lock_clock_mhz)
-            and str(item.get("reason", "")) == str(reason)
-        )
-    ]
+    deduped = []
+    for item in entries:
+        try:
+            is_duplicate = (
+                int(item.get("candidate_voltage_mv", -1))
+                == int(candidate_voltage_mv)
+                and int(item.get("lock_clock_mhz", -1)) == int(lock_clock_mhz)
+                and str(item.get("reason", "")) == str(reason)
+            )
+        except (TypeError, ValueError):
+            is_duplicate = False
+        if not is_duplicate:
+            deduped.append(item)
     deduped.append(entry)
     return _write_uv_unsafe_voltage_entries(deduped), entry
 

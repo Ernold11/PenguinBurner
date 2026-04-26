@@ -79,6 +79,18 @@ def _coerce_optional_positive_float(value):
     return float(coerced)
 
 
+def _coerce_optional_nonnegative_float(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    coerced = float(text)
+    if float(coerced) < 0.0:
+        return None
+    return float(coerced)
+
+
 def _coerce_optional_bool(value):
     if value is None:
         return None
@@ -116,8 +128,8 @@ def load_afterburner_runtime_options(config_path):
         "auto_uv_efficiency_stop_streak": _coerce_optional_nonnegative_int(
             gpu.get("auto_uv_efficiency_stop_streak")
         ),
-        "auto_uv_max_clock_bump_recoveries": _coerce_optional_nonnegative_int(
-            gpu.get("auto_uv_max_clock_bump_recoveries")
+        "auto_uv_clock_bump_budget_ratio": _coerce_optional_nonnegative_float(
+            gpu.get("auto_uv_clock_bump_budget_ratio")
         ),
         "dangerously_skip_validation": _coerce_optional_bool(
             gpu.get("afterburner_dangerously_skip_validation")
@@ -633,6 +645,17 @@ def _persist_afterburner_runtime_state(
             gpu["auto_uv_efficiency_stop_streak"] = int(auto_uv_efficiency_stop_streak)
         else:
             gpu.pop("auto_uv_efficiency_stop_streak", None)
+        gpu.pop("auto_uv_max_clock_bump_recoveries", None)
+        auto_uv_clock_bump_budget_ratio = _coerce_optional_nonnegative_float(
+            runtime_options.get("auto_uv_clock_bump_budget_ratio")
+        )
+        if auto_uv_clock_bump_budget_ratio is not None:
+            gpu["auto_uv_clock_bump_budget_ratio"] = min(
+                1.0,
+                float(auto_uv_clock_bump_budget_ratio),
+            )
+        else:
+            gpu.pop("auto_uv_clock_bump_budget_ratio", None)
         dangerously_skip_validation = _coerce_optional_bool(
             runtime_options.get("dangerously_skip_validation")
         )

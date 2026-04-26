@@ -5,9 +5,25 @@ from types import SimpleNamespace
 from pathlib import Path
 
 import auto_uv.artifacts as auto_uv_artifacts
+import auto_uv.candidate_sweep as candidate_sweep_module
+from auto_uv.candidate_sweep import (
+    _candidate_voltage_repeated,
+    _current_candidate_target_mhz,
+    _efficiency_stop_can_finish,
+    _predicted_clock_floor_miss_reason,
+    _run_candidate_sweep,
+    _step_back_clock_bump_target,
+)
+from auto_uv.clock_bump import (
+    _clock_bump_budget_pct,
+    _format_clock_bump_budget,
+    _clock_bump_needed_pct,
+    _next_clock_bump_target_mhz,
+)
 from auto_uv.curve_planning import (
     _build_descended_plan,
     _choose_strictly_higher_clock_target,
+    _choose_sustained_clock_target,
     _make_curve_candidate,
     _next_search_candidate_voltage_mv,
     _unsafe_min_search_voltage_mv,
@@ -16,8 +32,10 @@ from auto_uv.curve_planning import (
 from auto_uv.fan_tuning import build_auto_uv_fan_payload
 from auto_uv.models import AutoUvError, AutoUvProbeSummary
 from auto_uv.probe_metrics import _temperature_normalized_efficiency_delta
+from auto_uv.probe_runner import _probe_phase_writes_crash_marker
 from auto_uv.scan import (
     _build_voltage_scan_result,
+    _clock_bump_budget_limit_from_unsafe_entries,
     _clock_bump_recovery_limit_from_unsafe_entries,
     _core_clock_below_floor,
     _final_failure_can_accept_budget_curve,
@@ -27,10 +45,12 @@ from auto_uv.scan import (
     _target_core_clock_floor,
     _telemetry_sample_is_busy,
 )
+from auto_uv.tuning import AUTO_UV_METRIC_TUNING
 from auto_uv.user_output import (
     log_user_candidate_result,
     log_user_readable_final_summary,
 )
+from stability.q2rtx.models import Q2RTXStabilityConfig
 
 
 def _plan() -> list[dict]:
@@ -44,6 +64,11 @@ def _plan() -> list[dict]:
         }
         for index, voltage_mv in enumerate(range(800, 1025, 25))
     ]
+
+
+def test_default_auto_uv_clock_drop_is_ten_percent() -> None:
+    assert AUTO_UV_METRIC_TUNING.max_core_clock_drop_pct == 10.0
+    assert AUTO_UV_METRIC_TUNING.min_performance_core_clock_pct == 90.0
 
 
 def _probe(
@@ -155,6 +180,11 @@ def test_user_final_summary_reports_completed_long_verification() -> None:
     )
 
     assert "Final verification: completed 600s long check" in lines
+    assert any("| Metric" in line and "| Stock" in line for line in lines)
+    assert any("Change vs stock" in line for line in lines)
+    fps_row = next(line for line in lines if "| FPS" in line and "FPS/W" not in line)
+    assert "161.0FPS" in fps_row
+    assert "153.3FPS" in fps_row
 
 
 def test_candidate_result_reports_initial_measured_clock_not_curve_target() -> None:
@@ -197,10 +227,17 @@ def test_candidate_result_reports_initial_measured_clock_not_curve_target() -> N
         candidate_probe=candidate,
     )
 
+    assert "This Step Compared With Stock And Previous Stable" in lines
+    assert any("| Metric" in line and "| Stock" in line for line in lines)
+    assert any("Change vs stock" in line for line in lines)
     target_clock_row = next(line for line in lines if "| Target clock" in line)
     assert "2730MHz" in target_clock_row
     assert "3180MHz" not in target_clock_row
     assert "-165MHz" in target_clock_row
+    fps_row = next(line for line in lines if "| FPS" in line and "FPS/W" not in line)
+    assert "161.0FPS" in fps_row
+    assert "157.0FPS" in fps_row
+    assert "156.0FPS" in fps_row
 
 
 def test_descended_plan_smooths_bins_below_candidate_voltage() -> None:
@@ -323,6 +360,100 @@ def test_curve_candidate_keeps_lower_bins_two_clock_steps_below_plateau() -> Non
     assert by_voltage[970]["target_mhz"] == 2415
 
 
+def test_candidate_target_follows_source_vf_curve_downward() -> None:
+    source_plan = [
+        {
+            "index": index,
+            "voltage_mv": voltage_mv,
+            "base_mhz": target_mhz,
+            "target_mhz": target_mhz,
+            "new_offset_mhz": 0,
+        }
+        for index, (voltage_mv, target_mhz) in enumerate(
+            [
+                (900, 2520),
+                (925, 2580),
+                (950, 2640),
+                (975, 2640),
+            ]
+        )
+    ]
+
+    assert (
+        _current_candidate_target_mhz(
+            source_plan,
+            stable_lock_clock_mhz=2640,
+            candidate_voltage_mv=925,
+            clock_bump_last_target_mhz=None,
+        )
+        == 2580
+    )
+
+
+def test_candidate_clock_predictor_flags_next_step_below_floor() -> None:
+    history = [
+        _probe(
+            requested_mv=950,
+            measured_mv=940.0,
+            fps=160.0,
+            power_w=270.0,
+            temp_c=62.0,
+            core_clock_mhz=2640.0,
+        ),
+        _probe(
+            requested_mv=925,
+            measured_mv=915.0,
+            fps=158.0,
+            power_w=255.0,
+            temp_c=61.0,
+            core_clock_mhz=2580.0,
+        ),
+    ]
+
+    reason = _predicted_clock_floor_miss_reason(
+        history,
+        candidate_voltage_mv=900,
+        floor_mhz=2535.0,
+    )
+
+    assert reason is not None
+    assert "predicted-core_clock" in reason
+    assert "current=2520.0MHz" in reason
+    assert "floor=2535.0MHz" in reason
+
+
+def test_candidate_clock_predictor_does_not_flag_when_prediction_stays_above_floor() -> (
+    None
+):
+    history = [
+        _probe(
+            requested_mv=950,
+            measured_mv=940.0,
+            fps=160.0,
+            power_w=270.0,
+            temp_c=62.0,
+            core_clock_mhz=2640.0,
+        ),
+        _probe(
+            requested_mv=925,
+            measured_mv=915.0,
+            fps=158.0,
+            power_w=255.0,
+            temp_c=61.0,
+            core_clock_mhz=2610.0,
+        ),
+    ]
+
+    assert (
+        _predicted_clock_floor_miss_reason(
+            history,
+            candidate_voltage_mv=900,
+            floor_mhz=2535.0,
+        )
+        is None
+    )
+
+
 def test_strict_clock_bump_target_never_reuses_current_clock() -> None:
     source_plan = [
         {
@@ -359,6 +490,318 @@ def test_strict_clock_bump_target_never_reuses_current_clock() -> None:
     assert bumped is not None
     assert bumped > 2415
     assert capped is None
+
+
+def test_strict_clock_bump_target_never_exceeds_initial_probe_clock_cap() -> None:
+    source_plan = [
+        {
+            "index": index,
+            "voltage_mv": voltage_mv,
+            "base_mhz": target_mhz,
+            "target_mhz": target_mhz,
+            "new_offset_mhz": 0,
+        }
+        for index, (voltage_mv, target_mhz) in enumerate(
+            [
+                (900, 2700),
+                (925, 2715),
+                (950, 2730),
+                (975, 2745),
+                (1000, 2760),
+            ]
+        )
+    ]
+
+    bumped = _choose_strictly_higher_clock_target(
+        source_plan,
+        current_clock_mhz=2700,
+        desired_clock_mhz=2700 * 1.02,
+        cap_clock_mhz=2744.2,
+    )
+
+    assert bumped == 2730
+    assert bumped <= 2744.2
+
+
+def test_clock_bump_budget_is_derived_from_clock_drop_ratio() -> None:
+    assert (
+        _clock_bump_budget_pct(max_clock_drop_pct=12.0, bump_budget_ratio=0.5)
+        == 6.0
+    )
+    assert (
+        _clock_bump_budget_pct(max_clock_drop_pct=12.0, bump_budget_ratio=0.75)
+        == 9.0
+    )
+    assert (
+        _clock_bump_budget_pct(max_clock_drop_pct=12.0, bump_budget_ratio=0.25)
+        == 3.0
+    )
+
+
+def test_clock_bump_budget_ratio_is_clamped_to_drop_budget() -> None:
+    assert (
+        _clock_bump_budget_pct(
+            max_clock_drop_pct=12.0,
+            bump_budget_ratio=1.5,
+        )
+        == 12.0
+    )
+    assert (
+        _clock_bump_budget_pct(
+            max_clock_drop_pct=12.0,
+            bump_budget_ratio=-1.0,
+        )
+        == 0.0
+    )
+
+
+def test_clock_bump_budget_format_reports_remaining_budget() -> None:
+    assert (
+        _format_clock_bump_budget(used_pct=2.25, limit_pct=6.0)
+        == "overclocking-budget=2.25/6.00%"
+    )
+    assert (
+        _format_clock_bump_budget(used_pct=7.0, limit_pct=6.0)
+        == "overclocking-budget=7.00/6.00%"
+    )
+
+
+def test_efficiency_stop_finishes_when_bump_budget_is_exhausted() -> None:
+    assert _efficiency_stop_can_finish(
+        efficiency_stop_candidate=True,
+        efficiency_stop_allowed=True,
+        pending_efficiency_stop_curve={"voltage_mv": 925},
+        non_improving_efficiency_streak=2,
+        efficiency_stop_streak=1,
+        clock_bump_budget_used_pct=6.0,
+        clock_bump_budget_limit_pct=6.0,
+    )
+
+
+def test_efficiency_stop_waits_when_bump_budget_remains() -> None:
+    assert not _efficiency_stop_can_finish(
+        efficiency_stop_candidate=True,
+        efficiency_stop_allowed=True,
+        pending_efficiency_stop_curve={"voltage_mv": 925},
+        non_improving_efficiency_streak=2,
+        efficiency_stop_streak=1,
+        clock_bump_budget_used_pct=3.0,
+        clock_bump_budget_limit_pct=6.0,
+    )
+
+
+def test_efficiency_stop_does_not_require_reaching_clock_drop_floor() -> None:
+    assert _efficiency_stop_can_finish(
+        efficiency_stop_candidate=True,
+        efficiency_stop_allowed=True,
+        pending_efficiency_stop_curve={"voltage_mv": 925},
+        non_improving_efficiency_streak=2,
+        efficiency_stop_streak=1,
+        clock_bump_budget_used_pct=6.0,
+        clock_bump_budget_limit_pct=6.0,
+    )
+
+
+def test_candidate_voltage_repeat_guard_detects_duplicate_outer_step() -> None:
+    seen: set[int] = set()
+
+    assert not _candidate_voltage_repeated(seen, 950)
+    assert not _candidate_voltage_repeated(seen, 925)
+    assert _candidate_voltage_repeated(seen, 950)
+
+
+def test_clock_bump_target_steps_back_one_grid_point_after_hard_failure() -> None:
+    source_plan = [
+        {
+            "index": index,
+            "voltage_mv": voltage_mv,
+            "base_mhz": target_mhz,
+            "target_mhz": target_mhz,
+            "new_offset_mhz": 0,
+        }
+        for index, (voltage_mv, target_mhz) in enumerate(
+            [
+                (875, 2520),
+                (900, 2535),
+                (925, 2550),
+            ]
+        )
+    ]
+
+    assert (
+        _step_back_clock_bump_target(
+            source_plan,
+            current_target_mhz=2550,
+            clock_bump_last_target_mhz=2550,
+        )
+        == 2535
+    )
+
+
+def test_clock_bump_target_is_not_backed_off_without_active_bump() -> None:
+    assert (
+        _step_back_clock_bump_target(
+            _plan(),
+            current_target_mhz=2550,
+            clock_bump_last_target_mhz=None,
+        )
+        == 2550
+    )
+
+
+def test_candidate_sweep_stops_if_candidate_selector_repeats_voltage(
+    monkeypatch,
+) -> None:
+    source_plan = _plan()
+    discovery = _probe(
+        requested_mv=1000,
+        measured_mv=1000.0,
+        fps=100.0,
+        power_w=200.0,
+        temp_c=60.0,
+        core_clock_mhz=2700.0,
+    )
+    probe_history: list[AutoUvProbeSummary] = []
+    logs: list[str] = []
+    probe_calls: list[int] = []
+
+    class _Reader:
+        def refresh_points(self) -> None:
+            return None
+
+    class _NvmlSession:
+        def read_live_voltage_mv(self) -> int:
+            return 975
+
+    def _probe_voltage_candidate(**kwargs):
+        candidate_voltage_mv = int(kwargs["candidate_voltage_mv"])
+        probe_calls.append(candidate_voltage_mv)
+        return (
+            _probe(
+                requested_mv=candidate_voltage_mv,
+                measured_mv=float(candidate_voltage_mv),
+                fps=100.0,
+                power_w=200.0,
+                temp_c=60.0,
+                core_clock_mhz=2650.0,
+            ),
+            SimpleNamespace(success=True, reason="passed"),
+        )
+
+    monkeypatch.setattr(candidate_sweep_module, "apply_plan", lambda *_, **__: None)
+    monkeypatch.setattr(
+        candidate_sweep_module,
+        "_write_latest_verified_uv_result",
+        lambda *_, **__: None,
+    )
+    monkeypatch.setattr(
+        candidate_sweep_module,
+        "_next_search_candidate_voltage_mv",
+        lambda **_: 975,
+    )
+
+    result = _run_candidate_sweep(
+        probe_voltage_candidate=_probe_voltage_candidate,
+        probe_stabilization_search=lambda **_: (None, None, None),
+        describe_guardrails=lambda *_args, **_kwargs: "guardrails",
+        latest_reference_voltage_mv=lambda stable, fallback: (
+            stable[-1].avg_voltage_mv if stable else fallback
+        ),
+        log=logs.append,
+        reader=_Reader(),
+        flattened_plan=source_plan,
+        start_voltage_mv=1000,
+        stable_plan=source_plan,
+        stable_voltage_mv=1000,
+        stable_lock_clock_mhz=2700,
+        stable_probe=discovery,
+        stable_history=[discovery],
+        probe_history=probe_history,
+        first_candidate_voltage_mv=975,
+        discovery_summary=discovery,
+        lock_clock_mhz=2700,
+        q2rtx_config=Q2RTXStabilityConfig(duration_s=1),
+        measured_clock_mhz=2700.0,
+        nvml_session=_NvmlSession(),
+        translated_gpu_policy={},
+        runtime_default_plan=source_plan,
+        clock_ceiling=None,
+        source_result={"plan": source_plan},
+        min_performance_core_clock_pct=80.0,
+        min_search_voltage_mv=800,
+        preserve_vanilla_below_mv=None,
+        min_efficiency_stop_voltage_drop_pct=10.0,
+        efficiency_stop_streak=0,
+        clock_bump_budget_limit_pct=0.0,
+    )
+
+    assert probe_calls == [975]
+    assert result["stable_voltage_mv"] == 975
+    assert any("selected twice" in line for line in logs)
+
+
+def test_clock_bump_need_uses_measured_shortfall_plus_one_step() -> None:
+    needed_pct = _clock_bump_needed_pct(
+        current_target_clock_mhz=2700,
+        reason="telemetry-live-core_clock-avg current=2670.0MHz floor=2685.0MHz",
+    )
+
+    assert round(needed_pct, 3) == round((30.0 / 2700.0) * 100.0, 3)
+
+
+def test_zero_clock_bump_budget_disables_next_bump_target() -> None:
+    source_plan = [
+        {
+            "index": index,
+            "voltage_mv": voltage_mv,
+            "base_mhz": target_mhz,
+            "target_mhz": target_mhz,
+            "new_offset_mhz": 0,
+        }
+        for index, (voltage_mv, target_mhz) in enumerate(
+            [
+                (900, 2700),
+                (925, 2715),
+                (950, 2730),
+            ]
+        )
+    ]
+
+    assert (
+        _next_clock_bump_target_mhz(
+            source_plan,
+            current_clock_mhz=2700,
+            cap_clock_mhz=2730.0,
+            remaining_budget_pct=0.0,
+        )
+        is None
+    )
+
+
+def test_sustained_clock_target_never_rounds_above_measured_clock() -> None:
+    source_plan = [
+        {
+            "index": index,
+            "voltage_mv": voltage_mv,
+            "base_mhz": target_mhz,
+            "target_mhz": target_mhz,
+            "new_offset_mhz": 0,
+        }
+        for index, (voltage_mv, target_mhz) in enumerate(
+            [
+                (900, 2700),
+                (925, 2715),
+                (950, 2730),
+                (975, 2745),
+                (1000, 2760),
+            ]
+        )
+    ]
+
+    target = _choose_sustained_clock_target(source_plan, 2744.2)
+
+    assert target == 2730
+    assert target <= 2744.2
 
 
 def test_descended_plan_rejects_nonexistent_voltage_bin() -> None:
@@ -486,9 +929,9 @@ def test_accepted_stable_curve_follows_real_measured_clock() -> None:
         probe=probe,
     )
 
-    assert adjusted_lock_mhz == 2490
+    assert adjusted_lock_mhz == 2475
     assert all(
-        int(item["target_mhz"]) == 2490
+        int(item["target_mhz"]) == 2475
         for item in adjusted_plan
         if int(item["voltage_mv"]) >= 900
     )
@@ -641,6 +1084,32 @@ def test_abrupt_candidate_recovery_marker_caps_future_bumps_to_n_minus_one() -> 
     assert _clock_bump_recovery_limit_from_unsafe_entries(unsafe_entries, 5) == 2
 
 
+def test_abrupt_budgeted_recovery_marker_caps_future_budget_to_before_failed_bump() -> (
+    None
+):
+    unsafe_entries = [
+        {
+            "reason": "previous-run-abruptly-ended",
+            "phase": "candidate-recovery",
+            "candidate_voltage_mv": 920,
+            "lock_clock_mhz": 2500,
+            "details": {
+                "marker_details": {
+                    "clock_bump_budget_used_before_pct": 2.5,
+                    "clock_bump_budget_used_after_pct": 4.0,
+                    "clock_bump_budget_limit_pct": 6.0,
+                }
+            },
+        }
+    ]
+
+    assert _clock_bump_budget_limit_from_unsafe_entries(unsafe_entries, 6.0) == 2.5
+
+
+def test_final_recovery_probe_phase_writes_crash_marker() -> None:
+    assert _probe_phase_writes_crash_marker("final-recovery") is True
+
+
 def test_abrupt_first_candidate_recovery_marker_disables_future_bumps() -> None:
     unsafe_entries = [
         {
@@ -672,6 +1141,38 @@ def test_non_probing_auto_uv_marker_is_not_blacklisted(
 
     assert auto_uv_artifacts._consume_interrupted_uv_probe_marker() is None
     assert not (tmp_path / "uv-result" / "auto-uv-unsafe-voltages.json").exists()
+
+
+def test_malformed_unsafe_entries_do_not_block_new_unsafe_record(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(auto_uv_artifacts, "default_user_config_dir", lambda: tmp_path)
+    blacklist_path = tmp_path / "uv-result" / "auto-uv-unsafe-voltages.json"
+    blacklist_path.parent.mkdir(parents=True)
+    blacklist_path.write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "entries": [
+                    {
+                        "candidate_voltage_mv": "not-a-number",
+                        "lock_clock_mhz": "also-bad",
+                        "reason": "previous-run-abruptly-ended",
+                    }
+                ],
+            }
+        )
+    )
+
+    path, entry = auto_uv_artifacts._record_unsafe_uv_voltage(
+        candidate_voltage_mv=940,
+        lock_clock_mhz=2430,
+        reason="stability-probe-failed",
+    )
+
+    payload = json.loads(path.read_text())
+    assert entry["candidate_voltage_mv"] == 940
+    assert payload["entries"][-1]["lock_clock_mhz"] == 2430
 
 
 def test_auto_uv_fan_curve_blocks_if_final_load_is_too_hot() -> None:

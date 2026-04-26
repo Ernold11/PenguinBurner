@@ -10,7 +10,7 @@ class AutoUvDefaults:
     final_duration_s: int = 600
     max_drop_pct: float = 18.0
     efficiency_stop_streak: int = 1
-    max_clock_bump_recoveries: int = 3
+    clock_bump_budget_ratio: float = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +37,7 @@ class AutoUvMetricTuning:
     saturated_tail_power_pct: float = 90.0
     saturated_tail_core_clock_pct: float = 98.0
     saturated_tail_min_samples: int = 2
-    min_performance_core_clock_pct: float = 88.0
+    min_performance_core_clock_pct: float = 90.0
     min_proper_run_fps_pct: float = 90.0
     min_proper_run_fps_regression_streak: int = 2
     min_proper_run_power_pct: float = 50.0

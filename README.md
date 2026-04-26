@@ -24,9 +24,13 @@ To clear old Auto-UV results and start fresh:
 sudo ./penguin_burner.sh --fresh-auto-uv-scan
 ```
 
-![Auto-UV result summary](auto_uv_candidate_step_terminal.png)
+![Auto-UV result summary](auto_uv_result_summary_terminal.png)
 
 Example Auto-UV result summary: before/after power draw, core clock, and efficiency shown after the final verification.
+
+![Auto-UV candidate step](auto_uv_candidate_step_terminal.png)
+
+Example Auto-UV candidate step: current probe compared with the initial baseline and previous stable curve.
 
 What Auto-UV does:
 
@@ -35,20 +39,53 @@ What Auto-UV does:
 3. Measure the stock loaded behavior: clock, voltage, power, temperature, fan speed, and FPS/W.
 4. Pick a safe target core clock and start lowering voltage one real V/F bin at a time.
 5. Test each candidate with Q2RTX plus CUDA load.
-6. If a candidate only misses the loaded-clock floor, retry that same voltage with a bounded `+2%` curve target bump. The bump count is limited by `--auto-uv-max-clock-bump-recoveries N`; the default is `3`, so the default scan can apply at most `3 * +2% = +6%` total curve-target overclock.
-7. Accept a candidate only if it stays stable, stays within the loaded
-   core-clock drop allowance, keeps FPS within `10%` of the previous stable
-   probe, and does not collapse into idle or low-load telemetry.
+6. If a candidate only misses the loaded-clock floor, retry that same voltage with a bounded curve target bump. The total bump budget defaults to half of `--auto-uv-max-clock-drop-pct`; each retry spends only the measured clock shortfall plus one small clock step.
+7. Accept a candidate only if it stays stable, keeps enough loaded core clock,
+   keeps FPS within a `10%` floor of the previous stable probe, and does not
+   collapse into idle or low-load telemetry.
 8. Keep scanning lower while power/efficiency still makes sense; stop when lower voltage no longer helps, a guardrail fails, or an unsafe point is reached.
 9. Run a final long verification, `600s` by default. If that long check fails, Auto-UV backs off to a safer voltage/curve and reruns the long verification; the final result is published only after the long verification completes.
 10. Return the GPU to the driver/default curve before the foreground scan exits. The saved curve is applied later by runtime or daemon mode.
 
-By default Auto-UV allows up to a `12%` loaded GPU core clock drop while
-searching. To use a stricter `10%` floor:
+By default Auto-UV allows up to a `10%` loaded GPU core clock drop while
+searching. To use a looser `12%` clock-drop allowance:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-max-clock-drop-pct 10
+sudo ./penguin_burner.sh --auto-uv-max-clock-drop-pct 12
 ```
+
+Auto-UV lowers voltage first and follows the real loaded clock from each
+accepted probe. If a lower-voltage candidate or final long verification run
+misses the loaded-clock floor, Auto-UV can retry that same voltage with a
+budgeted curve target bump. The total bump budget is derived from the allowed
+clock-drop budget: `--auto-uv-max-clock-drop-pct * --auto-uv-clock-bump-budget-ratio`.
+The ratio defaults to `0.5` and is clamped to `0.0..1.0`, so Auto-UV cannot budget
+more bump than the user allowed as clock drop. With the default `10%` clock-drop
+allowance and `0.5` ratio, the scan can spend up to `+5%` total. A ratio of
+`0.75` gives a larger `+7.5%` total budget; `0.25` gives a smaller `+2.5%` total
+budget. Individual retry sizes are not fixed: Auto-UV parses the failed probe's
+measured clock shortfall, adds one clock-step of overhead, snaps to the V/F
+clock grid, and charges the actual target increase against the remaining budget.
+Before probing the next lower voltage, Auto-UV also looks at the recent accepted
+voltage/clock slope; if that predicts the next step will fall below the loaded
+clock floor, it can spend bump budget preemptively instead of waiting for a
+known-bad low-clock probe.
+If a probe crashes during a bump, the next scan remembers the budget used before
+that failed bump and caps future bumping there unless you clear Auto-UV state.
+Use `--auto-uv-clock-bump-budget-ratio 0` to disable this recovery path.
+Auto-UV can also spend that same bump budget at an FPS/W wall: when lowering
+voltage no longer improves temperature-normalized FPS/W, it may try a small
+curve bump at the same voltage and keep it only if the bumped probe passes and
+improves normalized efficiency.
+The scan only ends on an FPS/W wall after the no-gain streak is confirmed, the
+minimum voltage-drop stop floor is reached, and the bump budget is spent or
+disabled. The loaded-clock floor remains a safety guardrail; Auto-UV does not
+force the scan down to that floor just to stop on marginal FPS/W gains.
+Auto-UV log lines report this as `overclocking-budget=used/limit%`.
+
+As the scan walks into lower voltage bins, candidate clock targets are capped to
+the source V/F curve at that bin, so the scan descends with the card's real
+curve instead of holding the initial target across the whole run.
 
 Undervolting can hang the GPU, crash the driver, freeze the display, or force a
 reboot. If the system crashes during an Auto-UV probe, PenguinBurner records the
@@ -172,8 +209,8 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--clear-auto-uv-state`: clear previous Auto-UV scan state and exit.
 - `--install-q2rtx`: download the managed Q2RTX workload without starting a scan.
 - `--auto-uv-final-seconds N`: final verification duration after the best curve is selected; default `600`.
-- `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default `12.0`.
-- `--auto-uv-max-clock-bump-recoveries N`: maximum number of low-clock recovery probes that apply a `+2%` curve target bump before continuing the lower-voltage search; default `3`, use `0` to disable.
+- `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default `10.0`.
+- `--auto-uv-clock-bump-budget-ratio N`: fraction of `--auto-uv-max-clock-drop-pct` available as total clock-bump budget; default `0.5`, clamped to `0.0..1.0`.
 - `--auto-uv-max-drop-pct N`: maximum voltage drop below the first discovered start voltage; default `18.0`.
 - `--auto-uv-efficiency-stop-streak N`: extra lower-voltage confirmation probes after FPS/W stops improving; default `1`, use `0` to disable.
 - `--auto-uv-min-efficiency-stop-drop-pct N`: minimum voltage drop below scan start before FPS/W no-gain can stop the scan; default `10.0`.
@@ -183,10 +220,68 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--show-q2rtx-window`: show the Q2RTX window instead of using hidden/headless mode.
 - `--stability-log-dir PATH`: write `--stability-test` logs to a specific directory.
 
-Example: use a stricter `10%` core-clock drop during Auto-UV:
+#### Auto-UV Aggressiveness Tuning
+
+The most important Auto-UV tuning knobs are the loaded-clock drop allowance and
+the clock-bump budget ratio.
+
+- `--auto-uv-max-clock-drop-pct N` controls how much loaded core clock Auto-UV
+  may sacrifice while lowering voltage. The default `10.0` means the scan may
+  accept loaded clocks down to about `90%` of the initial measured loaded clock.
+  Lower values preserve more performance; higher values search deeper.
+- `--auto-uv-clock-bump-budget-ratio N` controls how much of that clock-drop
+  allowance Auto-UV may spend trying to recover clock with curve-target bumps.
+  The default `0.5` means half of the clock-drop allowance is available as total
+  bump budget. `0` disables bump recovery; values above `1.0` are clamped.
+- `--auto-uv-max-drop-pct N` caps the voltage search depth below the first
+  discovered start voltage. Lower values stop voltage search earlier; higher
+  values allow deeper undervolting.
+- `--auto-uv-efficiency-stop-streak N` controls how many extra lower-voltage
+  no-gain confirmations are required after temperature-normalized FPS/W stops
+  improving. Higher values probe longer before accepting the FPS/W wall.
+- `--auto-uv-min-efficiency-stop-drop-pct N` prevents FPS/W no-gain from ending
+  the scan until the requested voltage has dropped far enough from the start
+  voltage.
+- `--auto-uv-final-seconds N` controls final verification confidence. Shorter
+  runs finish faster; longer runs are more trustworthy.
+
+With the default `10%` clock-drop allowance:
+
+- `--auto-uv-clock-bump-budget-ratio 0.25` gives up to `+2.5%` total bump budget.
+- `--auto-uv-clock-bump-budget-ratio 0.5` gives up to `+5%` total bump budget.
+- `--auto-uv-clock-bump-budget-ratio 0.75` gives up to `+7.5%` total bump budget.
+- `--auto-uv-clock-bump-budget-ratio 1.0` gives up to `+10%` total bump budget.
+
+Conservative profile:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan --auto-uv-max-clock-drop-pct 10
+sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+  --auto-uv-max-clock-drop-pct 8 \
+  --auto-uv-clock-bump-budget-ratio 0.25 \
+  --auto-uv-max-drop-pct 14
+```
+
+Balanced profile:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+  --auto-uv-max-clock-drop-pct 10 \
+  --auto-uv-clock-bump-budget-ratio 0.5
+```
+
+Aggressive profile:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+  --auto-uv-max-clock-drop-pct 14 \
+  --auto-uv-clock-bump-budget-ratio 0.75 \
+  --auto-uv-max-drop-pct 20
+```
+
+Example: use a looser `12%` core-clock drop allowance during Auto-UV:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan --auto-uv-max-clock-drop-pct 12
 ```
 
 ### Afterburner Import Options

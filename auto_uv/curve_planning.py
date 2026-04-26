@@ -286,7 +286,7 @@ def _choose_sustained_clock_target(
         )
 
     measured = max(1.0, float(measured_clock_mhz))
-    snapped_measured = _snap_target_clock(int(round(measured)))
+    snapped_measured = _snap_target_clock_at_or_below(measured)
     return int(min(max(snapped_measured, min(available)), max(available)))
 
 
@@ -308,6 +308,8 @@ def _choose_strictly_higher_clock_target(
     target = int(_choose_sustained_clock_target(plan, min(float(cap), desired)))
     if int(target) <= int(current):
         target = int(current) + int(AUTO_UV_CURVE_TUNING.clock_step_mhz)
+    while float(target) > float(cap_clock_mhz):
+        target -= int(AUTO_UV_CURVE_TUNING.clock_step_mhz)
     return int(min(int(target), int(cap))) if int(target) > int(current) else None
 
 
@@ -350,6 +352,15 @@ def _snap_target_clock(requested_clock_mhz: int) -> int:
         round(float(requested) / float(AUTO_UV_CURVE_TUNING.clock_step_mhz))
         * AUTO_UV_CURVE_TUNING.clock_step_mhz
     )
+
+
+def _snap_target_clock_at_or_below(requested_clock_mhz: float) -> int:
+    requested = float(requested_clock_mhz)
+    if requested <= 0.0:
+        raise AutoUvError("requested target clock must be positive")
+    step = int(AUTO_UV_CURVE_TUNING.clock_step_mhz)
+    snapped = int(requested // float(step)) * step
+    return max(step, int(snapped))
 
 
 def _make_curve_candidate(

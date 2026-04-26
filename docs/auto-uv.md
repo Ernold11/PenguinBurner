@@ -41,7 +41,7 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - Q2RTX renders at a real GPU-bound size. PenguinBurner uses `gamescope --backend headless` when available so Q2RTX does not create a visible desktop window. If gamescope is unavailable, it falls back to moving the real Vulkan window off-screen. Use `--show-q2rtx-window` if you want to see it.
 - If Q2RTX is missing, PenguinBurner downloads and installs the managed copy automatically.
 - It walks voltage down step by step, testing each candidate before accepting it.
-- It can spend a bounded `+2%` curve-target bump budget when a lower-voltage candidate only misses the loaded-clock floor, or when an FPS/W wall may be improved by a small clock bump.
+- It can spend a bounded curve-target bump budget when a lower-voltage candidate only misses the loaded-clock floor, or when an FPS/W wall may be improved by a small clock bump.
 - It stops before unsafe points, severe clock loss, crashes, CUDA failures, Q2RTX failures, or NVIDIA Xid errors.
 - It saves stable checkpoints while scanning, so progress is not lost if something fails.
 - It runs a longer final verification before publishing the final curve.
@@ -79,32 +79,35 @@ power, and temperature-normalized FPS per watt.
 
 - If requested voltage went down but measured loaded voltage did not go down, PenguinBurner assumes the NVIDIA driver ignored that step and keeps probing lower.
 - If measured loaded voltage went down, temperature-normalized power went up, and temperature-normalized FPS per watt did not improve by at least `0.5%`, PenguinBurner treats that as a regression/no-gain step.
-- By default, Auto-UV stops after one confirmed regression/no-gain step and uses the previous useful stable curve as final. To require extra confirmation probes, use `--auto-uv-efficiency-stop-streak`.
+- By default, Auto-UV requires one confirmed regression/no-gain step before FPS/W can stop the scan. To require extra confirmation probes, use `--auto-uv-efficiency-stop-streak`.
 - Auto-UV will not stop early from FPS/W regression/no-gain until it has scanned at least `10%` below the starting voltage by default. To change that floor, use `--auto-uv-min-efficiency-stop-drop-pct`.
+- FPS/W stopping also waits until the curve-target bump budget is spent or disabled. The loaded core-clock floor remains a safety guardrail; Auto-UV does not force the scan down to that floor just to stop on marginal FPS/W gains.
 - If the next probe improves again, the stop streak is cleared and scanning continues.
 
 If a candidate misses the loaded-clock floor but otherwise looks viable,
-Auto-UV may retry the same voltage with a `+2%` curve-target bump. The same
-budget can also be used at an FPS/W wall if a small clock bump improves
-temperature-normalized efficiency. The default bump budget is `3`, configured
-with `--auto-uv-max-clock-bump-recoveries`; that means at most `3 * +2% = +6%`
-of curve-target bumping in one scan by default. If the machine crashes during
-bump `N`, the next scan remembers that and only tries up to `N-1` bumps unless
-you clear Auto-UV state.
-
-A reasonable manual tuning guideline is to keep the maximum bump budget around
-half of the allowed clock-drop budget. For example, a `12%` allowed loaded-clock
-drop pairs naturally with the default maximum `+6%` curve bump.
+Auto-UV may retry the same voltage with a small curve-target bump. The same
+budget can also be used at an FPS/W wall if a clock bump improves
+temperature-normalized efficiency. The total bump budget is
+`--auto-uv-max-clock-drop-pct * --auto-uv-clock-bump-budget-ratio`. The ratio
+defaults to `0.5` and is clamped to `0.0..1.0`, so the bump budget cannot exceed
+the configured loaded-clock drop allowance. With the defaults, `10% * 0.5`
+allows up to `+5%` total budget. Use a ratio like `0.75` for a more aggressive
+budget or `0.25` for a gentler one. Individual retries are sized from the failed
+probe: Auto-UV reads the measured clock shortfall, adds one clock-step of
+overhead, snaps to the V/F clock grid, and charges the actual target increase
+against the remaining budget. If the machine crashes during a bump, the next
+scan remembers the budget used before that failed bump and caps future bumping
+there unless you clear Auto-UV state.
 
 Measured voltage is read through NVML voltage telemetry automatically. There is
 no opt-in flag. If voltage telemetry is unavailable on a driver or GPU,
 PenguinBurner prints `n/a` and relies on the remaining safety checks.
 
-The default performance guardrail allows up to a `12%` loaded GPU core clock
-drop. If you want a stricter floor, for example `10%`, run:
+The default performance guardrail allows up to a `10%` loaded GPU core clock
+drop. If you want a looser clock-drop allowance, for example `12%`, run:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-max-clock-drop-pct 10
+sudo ./penguin_burner.sh --auto-uv-max-clock-drop-pct 12
 ```
 
 ## After The Scan

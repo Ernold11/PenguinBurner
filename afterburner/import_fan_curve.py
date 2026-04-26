@@ -42,6 +42,7 @@ SECTION_ORDERS = {
         "afterburner_auto_uv_max_drop_pct",
         "auto_uv_final_seconds",
         "auto_uv_efficiency_stop_streak",
+        "auto_uv_clock_bump_budget_ratio",
     ],
     "fan": [
         "poll_interval_s",

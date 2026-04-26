@@ -12,6 +12,8 @@ from .artifacts import (
     _write_uv_result_snapshot,
 )
 from .clock_bump import (
+    _clock_bump_consumed_pct,
+    _format_clock_bump_budget,
     _clock_bump_marker_details,
     _make_clock_bump_candidate,
     _next_clock_bump_target_mhz,
@@ -66,8 +68,9 @@ def _run_final_verification_and_save(
     min_performance_core_clock_pct,
     runtime_default_plan,
     final_clock_drop_margin_pct,
-    max_clock_bump_recoveries,
+    clock_bump_budget_limit_pct,
     clock_bump_recovery_count=0,
+    clock_bump_budget_used_pct=0.0,
     max_bump_recovery_was_used=False,
 ):
     _log_phase(
@@ -111,6 +114,7 @@ def _run_final_verification_and_save(
     final_probe = None
     final_verification_status = "not-run"
     final_clock_bump_recovery_count = max(0, int(clock_bump_recovery_count))
+    final_clock_bump_budget_used_pct = max(0.0, float(clock_bump_budget_used_pct))
     final_recovery_marker_details = None
     while (
         final_plan is not None
@@ -156,13 +160,18 @@ def _run_final_verification_and_save(
                 if final_recovery_marker_details is not None
                 else "final-verify"
             ),
+            log_context=_format_clock_bump_budget(
+                used_pct=float(final_clock_bump_budget_used_pct),
+                limit_pct=float(clock_bump_budget_limit_pct),
+            ),
             power_limit_w=translated_gpu_policy.get("power_limit_w"),
             min_performance_core_clock_pct=float(min_performance_core_clock_pct),
             enforce_target_core_clock_floor=False,
             reset_plan=runtime_default_plan,
             suppress_unsafe_for_controlled_clock_abort=(
                 bool(max_bump_recovery_was_used)
-                or int(final_clock_bump_recovery_count) < int(max_clock_bump_recoveries)
+                or float(final_clock_bump_budget_used_pct)
+                < float(clock_bump_budget_limit_pct)
             ),
             marker_details=final_recovery_marker_details,
         )
@@ -197,9 +206,9 @@ def _run_final_verification_and_save(
             if final_result.success
             else str(getattr(final_result, "reason", "unknown"))
         )
-        if _final_failure_can_accept_budget_curve(str(reason)) and int(
-            final_clock_bump_recovery_count
-        ) < int(max_clock_bump_recoveries):
+        if _final_failure_can_accept_budget_curve(str(reason)) and float(
+            final_clock_bump_budget_used_pct
+        ) < float(clock_bump_budget_limit_pct):
             bump_limit_mhz = (
                 float(measured_clock_mhz)
                 if measured_clock_mhz is not None
@@ -209,20 +218,34 @@ def _run_final_verification_and_save(
                 source_result["plan"],
                 current_clock_mhz=int(final_lock_clock_mhz),
                 cap_clock_mhz=float(bump_limit_mhz),
+                remaining_budget_pct=max(
+                    0.0,
+                    float(clock_bump_budget_limit_pct)
+                    - float(final_clock_bump_budget_used_pct),
+                ),
+                reason=str(reason),
             )
             if bumped_clock_mhz is not None:
+                budget_used_before_pct = float(final_clock_bump_budget_used_pct)
                 final_clock_bump_recovery_count += 1
+                final_clock_bump_budget_used_pct += _clock_bump_consumed_pct(
+                    previous_target_clock_mhz=int(final_lock_clock_mhz),
+                    bumped_target_clock_mhz=int(bumped_clock_mhz),
+                )
                 bumped_candidate = _make_clock_bump_candidate(
                     source_result["plan"],
                     candidate_voltage_mv=int(final_voltage_mv),
                     target_clock_mhz=int(bumped_clock_mhz),
                     reason_label="final-low-clock-recovery",
+                    budget_used_pct=float(final_clock_bump_budget_used_pct),
+                    budget_limit_pct=float(clock_bump_budget_limit_pct),
                 )
                 _log_phase(
                     log,
                     "final-verify",
-                    f"applying +2.0% curve overclock "
-                    f"bump={int(final_clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                    f"applying budgeted curve overclock "
+                    f"attempt={int(final_clock_bump_recovery_count)} "
+                    f"{_format_clock_bump_budget(used_pct=final_clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                     f"voltage={int(final_voltage_mv)}mV "
                     f"target={int(final_lock_clock_mhz)}->{int(bumped_candidate.target_clock_mhz)}MHz "
                     f"cap={int(round(float(bump_limit_mhz)))}MHz "
@@ -233,7 +256,7 @@ def _run_final_verification_and_save(
                     "Final long verification",
                     [
                         "The long check missed the loaded-clock floor.",
-                        f"Retrying the final verification with a +2% curve bump ({int(final_clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)}).",
+                        f"Retrying the final verification with a budgeted curve bump ({_format_clock_bump_budget(used_pct=final_clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)}).",
                         f"New final-check target: {int(bumped_candidate.target_clock_mhz)}MHz at {int(final_voltage_mv)}mV.",
                     ],
                 )
@@ -255,29 +278,31 @@ def _run_final_verification_and_save(
                 final_plan = bumped_candidate.plan
                 final_lock_clock_mhz = int(bumped_candidate.target_clock_mhz)
                 final_recovery_marker_details = _clock_bump_marker_details(
-                    attempt=int(final_clock_bump_recovery_count),
-                    limit=int(max_clock_bump_recoveries),
                     previous_target_clock_mhz=int(previous_final_lock_clock_mhz),
                     bumped_target_clock_mhz=int(bumped_candidate.target_clock_mhz),
+                    budget_used_before_pct=float(budget_used_before_pct),
+                    budget_used_after_pct=float(final_clock_bump_budget_used_pct),
+                    budget_limit_pct=float(clock_bump_budget_limit_pct),
                     reason="final-low-clock-recovery",
                 )
                 _log_phase(
                     log,
                     "final-verify",
                     f"clock-bump retry armed "
-                    f"bump={int(final_clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                    f"attempt={int(final_clock_bump_recovery_count)} "
+                    f"{_format_clock_bump_budget(used_pct=final_clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                     f"target={int(previous_final_lock_clock_mhz)}->{int(final_lock_clock_mhz)}MHz "
                     f"voltage={int(final_voltage_mv)}mV",
                 )
-                max_bump_recovery_was_used = int(
-                    final_clock_bump_recovery_count
-                ) >= int(max_clock_bump_recoveries)
+                max_bump_recovery_was_used = float(
+                    final_clock_bump_budget_used_pct
+                ) >= float(clock_bump_budget_limit_pct)
                 continue
             _log_phase(
                 log,
                 "final-verify",
-                f"cannot apply +2.0% curve overclock "
-                f"bump={int(final_clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                f"cannot apply budgeted curve overclock "
+                f"{_format_clock_bump_budget(used_pct=final_clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                 f"target={int(final_lock_clock_mhz)}MHz "
                 f"cap={int(round(float(bump_limit_mhz)))}MHz "
                 f"reason={reason}",
@@ -286,7 +311,7 @@ def _run_final_verification_and_save(
             _log_phase(
                 log,
                 "final-verify",
-                "max clock-bump recovery was already used, but final long "
+                "clock-bump budget was already used, but final long "
                 "verification hit only the clock-floor guardrail; accepting "
                 "the lowest curve instead of walking voltage upward "
                 f"reason={reason}",

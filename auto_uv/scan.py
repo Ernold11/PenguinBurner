@@ -83,6 +83,7 @@ from .tuning import (
     AUTO_UV_METRIC_TUNING,
     AUTO_UV_STALL_TUNING,
 )
+from .clock_bump import _clock_bump_budget_pct
 from .user_output import (
     format_probe_summary as _format_probe_summary,
     format_user_value as _format_user_value,
@@ -117,7 +118,8 @@ class _AutoUvScanSettings:
     final_verification_duration_s: int
     efficiency_stop_streak: int
     min_efficiency_stop_voltage_drop_pct: float
-    max_clock_bump_recoveries: int
+    clock_bump_budget_ratio: float
+    clock_bump_budget_limit_pct: float
 
 
 def _assert_zero_runtime_vf_offsets(reader) -> None:
@@ -482,15 +484,14 @@ def _scan_settings(
             else AUTO_UV_METRIC_TUNING.min_efficiency_stop_voltage_drop_pct
         ),
     )
-    max_clock_bump_recoveries = int(
-        runtime_options.get(
-            "auto_uv_max_clock_bump_recoveries",
-            AUTO_UV_DEFAULTS.max_clock_bump_recoveries,
-        )
-        if runtime_options.get("auto_uv_max_clock_bump_recoveries") is not None
-        else AUTO_UV_DEFAULTS.max_clock_bump_recoveries
+    clock_bump_budget_ratio = runtime_options.get("auto_uv_clock_bump_budget_ratio")
+    if clock_bump_budget_ratio is None:
+        clock_bump_budget_ratio = AUTO_UV_DEFAULTS.clock_bump_budget_ratio
+    clock_bump_budget_ratio = max(0.0, min(1.0, float(clock_bump_budget_ratio)))
+    clock_bump_budget_limit_pct = _clock_bump_budget_pct(
+        max_clock_drop_pct=float(final_clock_drop_margin_pct),
+        bump_budget_ratio=float(clock_bump_budget_ratio),
     )
-    max_clock_bump_recoveries = max(0, int(max_clock_bump_recoveries))
     return _AutoUvScanSettings(
         q2rtx_config=normalized_q2rtx_config,
         final_clock_drop_margin_pct=float(final_clock_drop_margin_pct),
@@ -502,7 +503,8 @@ def _scan_settings(
         min_efficiency_stop_voltage_drop_pct=float(
             min_efficiency_stop_voltage_drop_pct
         ),
-        max_clock_bump_recoveries=int(max_clock_bump_recoveries),
+        clock_bump_budget_ratio=float(clock_bump_budget_ratio),
+        clock_bump_budget_limit_pct=float(clock_bump_budget_limit_pct),
     )
 
 
@@ -693,6 +695,45 @@ def _clock_bump_recovery_limit_from_unsafe_entries(
     return int(effective_limit)
 
 
+def _clock_bump_budget_limit_from_unsafe_entries(
+    unsafe_entries: list[dict],
+    configured_budget_pct: float,
+) -> float:
+    effective_budget_pct = max(0.0, float(configured_budget_pct))
+    for entry in unsafe_entries:
+        if str(entry.get("reason", "")) != "previous-run-abruptly-ended":
+            continue
+        if str(entry.get("phase", "")) not in {
+            "candidate-recovery",
+            "final-recovery",
+        }:
+            continue
+        details = entry.get("details")
+        if not isinstance(details, dict):
+            continue
+        marker_details = details.get("marker_details")
+        if not isinstance(marker_details, dict):
+            continue
+        try:
+            used_before_pct = float(
+                marker_details["clock_bump_budget_used_before_pct"]
+            )
+        except (KeyError, TypeError, ValueError):
+            try:
+                crashed_attempt = int(marker_details["clock_bump_attempt"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if crashed_attempt <= 1:
+                used_before_pct = 0.0
+            else:
+                continue
+        effective_budget_pct = min(
+            effective_budget_pct,
+            max(0.0, float(used_before_pct)),
+        )
+    return float(effective_budget_pct)
+
+
 def _run_auto_uv_voltage_scan_impl(
     *,
     gpu_index,
@@ -709,6 +750,7 @@ def _run_auto_uv_voltage_scan_impl(
     final_verification_duration_s = settings.final_verification_duration_s
     efficiency_stop_streak = settings.efficiency_stop_streak
     min_efficiency_stop_voltage_drop_pct = settings.min_efficiency_stop_voltage_drop_pct
+    clock_bump_budget_limit_pct = settings.clock_bump_budget_limit_pct
     interrupted_probe = _consume_interrupted_uv_probe_marker()
     unsafe_voltage_entries = _load_uv_unsafe_voltage_entries()
     if interrupted_probe is not None:
@@ -740,22 +782,22 @@ def _run_auto_uv_voltage_scan_impl(
             ],
         )
         unsafe_voltage_entries = _load_uv_unsafe_voltage_entries()
-    effective_max_clock_bump_recoveries = (
-        _clock_bump_recovery_limit_from_unsafe_entries(
+    effective_clock_bump_budget_limit_pct = (
+        _clock_bump_budget_limit_from_unsafe_entries(
             unsafe_voltage_entries,
-            settings.max_clock_bump_recoveries,
+            float(settings.clock_bump_budget_limit_pct),
         )
     )
-    if int(effective_max_clock_bump_recoveries) < int(
-        settings.max_clock_bump_recoveries
+    if float(effective_clock_bump_budget_limit_pct) < float(
+        settings.clock_bump_budget_limit_pct
     ):
         _log_phase(
             log,
             "crash-recovery",
-            f"reduced +2.0% recovery bump limit "
-            f"configured={int(settings.max_clock_bump_recoveries)} "
-            f"effective={int(effective_max_clock_bump_recoveries)} "
-            "reason=previous candidate-recovery probe ended abruptly at bump N; retry limit is N-1",
+            f"reduced clock-bump budget "
+            f"configured={float(settings.clock_bump_budget_limit_pct):.2f}% "
+            f"effective={float(effective_clock_bump_budget_limit_pct):.2f}% "
+            "reason=previous recovery probe ended abruptly; retry budget is capped before the failed bump",
         )
 
     reader = create_hidden_vf_curve_reader(gpu_index=gpu_index)
@@ -1282,7 +1324,7 @@ def _run_auto_uv_voltage_scan_impl(
             preserve_vanilla_below_mv=preserve_vanilla_below_mv,
             min_efficiency_stop_voltage_drop_pct=min_efficiency_stop_voltage_drop_pct,
             efficiency_stop_streak=efficiency_stop_streak,
-            max_clock_bump_recoveries=effective_max_clock_bump_recoveries,
+            clock_bump_budget_limit_pct=float(effective_clock_bump_budget_limit_pct),
         )
         stable_plan = sweep_result["stable_plan"]
         stable_voltage_mv = sweep_result["stable_voltage_mv"]
@@ -1290,6 +1332,9 @@ def _run_auto_uv_voltage_scan_impl(
         stable_probe = sweep_result["stable_probe"]
         clock_bump_recovery_count = int(
             sweep_result.get("clock_bump_recovery_count", 0)
+        )
+        clock_bump_budget_used_pct = float(
+            sweep_result.get("clock_bump_budget_used_pct", 0.0)
         )
         ended_by_clock_bump_limit = bool(
             sweep_result.get("ended_by_clock_bump_limit", False)
@@ -1320,8 +1365,9 @@ def _run_auto_uv_voltage_scan_impl(
             min_performance_core_clock_pct=min_performance_core_clock_pct,
             runtime_default_plan=runtime_default_plan,
             final_clock_drop_margin_pct=final_clock_drop_margin_pct,
-            max_clock_bump_recoveries=effective_max_clock_bump_recoveries,
+            clock_bump_budget_limit_pct=float(effective_clock_bump_budget_limit_pct),
             clock_bump_recovery_count=clock_bump_recovery_count,
+            clock_bump_budget_used_pct=float(clock_bump_budget_used_pct),
             max_bump_recovery_was_used=ended_by_clock_bump_limit,
         )
     except StabilityTestError as exc:

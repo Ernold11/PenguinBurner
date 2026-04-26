@@ -6,6 +6,8 @@ from afterburner.import_vf_curve import apply_plan
 
 from .artifacts import _write_latest_verified_uv_result
 from .clock_bump import (
+    _clock_bump_consumed_pct,
+    _format_clock_bump_budget,
     _clock_bump_marker_details,
     _make_clock_bump_candidate,
     _next_clock_bump_target_mhz,
@@ -24,7 +26,7 @@ from .scan_rules import (
     _percent,
     _real_clock_adjusted_stable_curve,
 )
-from .tuning import AUTO_UV_VOLTAGE_PHASE_TUNING
+from .tuning import AUTO_UV_CURVE_TUNING, AUTO_UV_VOLTAGE_PHASE_TUNING
 from .user_output import (
     format_probe_summary as _format_probe_summary,
     log_benchmark as _log_benchmark,
@@ -44,6 +46,7 @@ class _CandidateSweepState:
     stable_probe: AutoUvProbeSummary
     candidate_voltage_mv: int | None
     clock_bump_recovery_count: int = 0
+    clock_bump_budget_used_pct: float = 0.0
     clock_bump_last_target_mhz: int | None = None
 
 
@@ -55,16 +58,139 @@ def _candidate_sweep_result_from_state(state: _CandidateSweepState) -> dict:
         "stable_probe": state.stable_probe,
         "ended_by_clock_bump_limit": False,
         "clock_bump_recovery_count": int(state.clock_bump_recovery_count),
+        "clock_bump_budget_used_pct": float(state.clock_bump_budget_used_pct),
     }
 
 
 def _current_candidate_target_mhz(
+    source_plan: list[dict],
+    *,
     stable_lock_clock_mhz: int,
+    candidate_voltage_mv: int,
     clock_bump_last_target_mhz: int | None,
 ) -> int:
+    source_target_mhz = int(stable_lock_clock_mhz)
+    for item in source_plan:
+        if int(item["voltage_mv"]) == int(candidate_voltage_mv):
+            source_target_mhz = int(item["target_mhz"])
+            break
+    descent_target_mhz = min(int(stable_lock_clock_mhz), int(source_target_mhz))
     if clock_bump_last_target_mhz is None:
-        return int(stable_lock_clock_mhz)
-    return max(int(stable_lock_clock_mhz), int(clock_bump_last_target_mhz))
+        return int(descent_target_mhz)
+    return max(int(descent_target_mhz), int(clock_bump_last_target_mhz))
+
+
+def _predict_candidate_core_clock_mhz(
+    stable_history: list[AutoUvProbeSummary],
+    *,
+    candidate_voltage_mv: int,
+) -> float | None:
+    points = [
+        (float(probe.candidate_voltage_mv), float(probe.avg_core_clock_mhz))
+        for probe in stable_history
+        if probe is not None
+        and probe.avg_core_clock_mhz is not None
+        and probe.candidate_voltage_mv is not None
+    ]
+    if len(points) < 2:
+        return None
+    recent = points[-4:]
+    first_voltage_mv, first_clock_mhz = recent[0]
+    last_voltage_mv, last_clock_mhz = recent[-1]
+    voltage_delta_mv = float(last_voltage_mv) - float(first_voltage_mv)
+    if abs(voltage_delta_mv) <= 0.0:
+        return None
+    clock_per_mv = (float(last_clock_mhz) - float(first_clock_mhz)) / voltage_delta_mv
+    predicted = float(last_clock_mhz) + (
+        float(candidate_voltage_mv) - float(last_voltage_mv)
+    ) * float(clock_per_mv)
+    return float(predicted)
+
+
+def _predicted_clock_floor_miss_reason(
+    stable_history: list[AutoUvProbeSummary],
+    *,
+    candidate_voltage_mv: int,
+    floor_mhz: float,
+) -> str | None:
+    predicted_clock_mhz = _predict_candidate_core_clock_mhz(
+        stable_history,
+        candidate_voltage_mv=int(candidate_voltage_mv),
+    )
+    if predicted_clock_mhz is None:
+        return None
+    if float(predicted_clock_mhz) >= float(floor_mhz):
+        return None
+    return (
+        f"predicted-core_clock current={float(predicted_clock_mhz):.1f}MHz "
+        f"floor={float(floor_mhz):.1f}MHz"
+    )
+
+
+def _clock_bump_budget_exhausted(*, used_pct: float, limit_pct: float) -> bool:
+    limit = max(0.0, float(limit_pct))
+    if limit <= 0.0:
+        return True
+    return float(used_pct) >= float(limit)
+
+
+def _efficiency_stop_can_finish(
+    *,
+    efficiency_stop_candidate: bool,
+    efficiency_stop_allowed: bool,
+    pending_efficiency_stop_curve: dict | None,
+    non_improving_efficiency_streak: int,
+    efficiency_stop_streak: int,
+    clock_bump_budget_used_pct: float,
+    clock_bump_budget_limit_pct: float,
+) -> bool:
+    return (
+        bool(efficiency_stop_candidate)
+        and bool(efficiency_stop_allowed)
+        and pending_efficiency_stop_curve is not None
+        and int(non_improving_efficiency_streak) > int(efficiency_stop_streak)
+        and _clock_bump_budget_exhausted(
+            used_pct=float(clock_bump_budget_used_pct),
+            limit_pct=float(clock_bump_budget_limit_pct),
+        )
+    )
+
+
+def _candidate_voltage_repeated(
+    seen_candidate_voltages_mv: set[int],
+    candidate_voltage_mv: int,
+) -> bool:
+    candidate_voltage = int(candidate_voltage_mv)
+    if candidate_voltage in seen_candidate_voltages_mv:
+        return True
+    seen_candidate_voltages_mv.add(candidate_voltage)
+    return False
+
+
+def _step_back_clock_bump_target(
+    source_plan: list[dict],
+    *,
+    current_target_mhz: int,
+    clock_bump_last_target_mhz: int | None,
+) -> int:
+    current_target = int(current_target_mhz)
+    if clock_bump_last_target_mhz is None:
+        return current_target
+    if current_target <= 0:
+        return current_target
+    lower_targets = sorted(
+        {
+            int(item["target_mhz"])
+            for item in source_plan
+            if int(item.get("target_mhz", 0)) < int(current_target)
+        }
+    )
+    if lower_targets:
+        return int(lower_targets[-1])
+    return max(
+        0,
+        int(current_target) - int(AUTO_UV_CURVE_TUNING.clock_step_mhz),
+    )
 
 
 def _keep_bumped_target_floor(
@@ -113,7 +239,7 @@ def _accept_lowest_clock_floor_miss(
     discovery_summary: AutoUvProbeSummary,
     previous_stable_probe_for_iteration: AutoUvProbeSummary,
     candidate_attempt_count: int,
-    max_clock_bump_recoveries: int,
+    clock_bump_budget_limit_pct: float,
 ) -> dict:
     state.stable_voltage_mv = int(candidate.candidate_voltage_mv)
     state.stable_probe = probe
@@ -158,9 +284,9 @@ def _accept_lowest_clock_floor_miss(
         restored_lock_clock_mhz=int(state.stable_lock_clock_mhz),
     )
     result = _candidate_sweep_result_from_state(state)
-    result["ended_by_clock_bump_limit"] = int(state.clock_bump_recovery_count) >= int(
-        max_clock_bump_recoveries
-    )
+    result["ended_by_clock_bump_limit"] = float(
+        state.clock_bump_budget_used_pct
+    ) >= float(clock_bump_budget_limit_pct)
     return result
 
 
@@ -195,7 +321,7 @@ def _run_candidate_sweep(
     preserve_vanilla_below_mv,
     min_efficiency_stop_voltage_drop_pct,
     efficiency_stop_streak,
-    max_clock_bump_recoveries,
+    clock_bump_budget_limit_pct,
 ):
     candidate_attempt_count = 0
     failed_candidate_floor_mv = None
@@ -203,8 +329,20 @@ def _run_candidate_sweep(
     non_improving_efficiency_streak = 0
     pending_efficiency_stop_curve = None
     clock_bump_recovery_count = 0
+    clock_bump_budget_used_pct = 0.0
     clock_bump_last_target_mhz = None
+    seen_candidate_voltages_mv: set[int] = set()
     while candidate_voltage_mv is not None:
+        if _candidate_voltage_repeated(
+            seen_candidate_voltages_mv, int(candidate_voltage_mv)
+        ):
+            _log_phase(
+                log,
+                "candidate",
+                f"stopping candidate sweep because voltage {int(candidate_voltage_mv)}mV "
+                "was selected twice; this prevents an endless Auto-UV probe loop.",
+            )
+            break
         candidate_attempt_count += 1
         ratio = (
             float(candidate_voltage_mv) / float(start_voltage_mv)
@@ -222,9 +360,63 @@ def _run_candidate_sweep(
             discovery_summary.avg_voltage_mv,
         )
         candidate_target_mhz = _current_candidate_target_mhz(
-            int(stable_lock_clock_mhz),
-            clock_bump_last_target_mhz,
+            source_result["plan"],
+            stable_lock_clock_mhz=int(stable_lock_clock_mhz),
+            candidate_voltage_mv=int(candidate_voltage_mv),
+            clock_bump_last_target_mhz=clock_bump_last_target_mhz,
         )
+        predicted_floor_mhz = None
+        predicted_bump_reason = None
+        if discovery_summary.avg_core_clock_mhz is not None:
+            predicted_floor_mhz = float(discovery_summary.avg_core_clock_mhz) * _percent(
+                float(min_performance_core_clock_pct)
+            )
+            predicted_bump_reason = _predicted_clock_floor_miss_reason(
+                stable_history,
+                candidate_voltage_mv=int(candidate_voltage_mv),
+                floor_mhz=float(predicted_floor_mhz),
+            )
+        if (
+            predicted_bump_reason is not None
+            and float(clock_bump_budget_used_pct) < float(clock_bump_budget_limit_pct)
+        ):
+            bump_source_clock_mhz = max(
+                int(candidate_target_mhz),
+                int(clock_bump_last_target_mhz or 0),
+            )
+            budget_used_before_pct = float(clock_bump_budget_used_pct)
+            bumped_clock_mhz = _next_clock_bump_target_mhz(
+                source_result["plan"],
+                current_clock_mhz=int(bump_source_clock_mhz),
+                cap_clock_mhz=(
+                    float(measured_clock_mhz)
+                    if measured_clock_mhz is not None
+                    else float(stable_lock_clock_mhz)
+                ),
+                remaining_budget_pct=max(
+                    0.0,
+                    float(clock_bump_budget_limit_pct)
+                    - float(clock_bump_budget_used_pct),
+                ),
+                reason=predicted_bump_reason,
+            )
+            if bumped_clock_mhz is not None:
+                clock_bump_recovery_count += 1
+                clock_bump_budget_used_pct += _clock_bump_consumed_pct(
+                    previous_target_clock_mhz=int(bump_source_clock_mhz),
+                    bumped_target_clock_mhz=int(bumped_clock_mhz),
+                )
+                clock_bump_last_target_mhz = int(bumped_clock_mhz)
+                candidate_target_mhz = int(bumped_clock_mhz)
+                _log_phase(
+                    log,
+                    "candidate",
+                    f"preemptive clock bump predicted-floor-miss "
+                    f"attempt={int(clock_bump_recovery_count)} "
+                    f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
+                    f"target={int(bump_source_clock_mhz)}->{int(candidate_target_mhz)}MHz "
+                    f"reason={predicted_bump_reason}",
+                )
         candidate = _make_curve_candidate(
             source_result["plan"],
             candidate_voltage_mv=int(candidate_voltage_mv),
@@ -237,6 +429,10 @@ def _run_candidate_sweep(
                     else "target=last-probe-real-clock"
                 )
             ),
+        )
+        clock_bump_budget_context = _format_clock_bump_budget(
+            used_pct=float(clock_bump_budget_used_pct),
+            limit_pct=float(clock_bump_budget_limit_pct),
         )
         previous_stable_probe_for_iteration = stable_probe
         _log_user_candidate_intro(
@@ -257,6 +453,7 @@ def _run_candidate_sweep(
             f"stable={stable_voltage_mv}mV@{stable_lock_clock_mhz}MHz "
             f"try={candidate.candidate_voltage_mv}mV@{candidate.target_clock_mhz}MHz "
             f"step={candidate.candidate_voltage_mv - stable_voltage_mv:+d}mV "
+            f"{clock_bump_budget_context} "
             f"shape={candidate.label} "
             + f"{describe_guardrails(stable_history, min_performance_core_clock_pct=float(min_performance_core_clock_pct))}",
         )
@@ -295,6 +492,7 @@ def _run_candidate_sweep(
             nvml_session=nvml_session,
             log=log,
             phase_label="candidate",
+            log_context=clock_bump_budget_context,
             power_limit_w=translated_gpu_policy.get("power_limit_w"),
             use_power_limit_floor=(candidate_attempt_count <= 1),
             min_performance_core_clock_pct=float(min_performance_core_clock_pct),
@@ -325,31 +523,48 @@ def _run_candidate_sweep(
                 )
                 recovery_source_target_mhz = int(candidate.target_clock_mhz)
                 recovery_reason = str(probe_result.reason)
-                while int(clock_bump_recovery_count) < int(max_clock_bump_recoveries):
+                while float(clock_bump_budget_used_pct) < float(
+                    clock_bump_budget_limit_pct
+                ):
                     bump_source_clock_mhz = max(
                         int(recovery_source_target_mhz),
                         int(clock_bump_last_target_mhz or 0),
+                    )
+                    budget_used_before_pct = float(clock_bump_budget_used_pct)
+                    remaining_budget_pct = max(
+                        0.0,
+                        float(clock_bump_budget_limit_pct)
+                        - float(clock_bump_budget_used_pct),
                     )
                     bumped_clock_mhz = _next_clock_bump_target_mhz(
                         source_result["plan"],
                         current_clock_mhz=int(bump_source_clock_mhz),
                         cap_clock_mhz=float(bump_limit_mhz),
+                        remaining_budget_pct=float(remaining_budget_pct),
+                        reason=recovery_reason,
                     )
                     if bumped_clock_mhz is None:
                         break
                     clock_bump_recovery_count += 1
+                    clock_bump_budget_used_pct += _clock_bump_consumed_pct(
+                        previous_target_clock_mhz=int(bump_source_clock_mhz),
+                        bumped_target_clock_mhz=int(bumped_clock_mhz),
+                    )
                     clock_bump_last_target_mhz = int(bumped_clock_mhz)
                     bumped_candidate = _make_clock_bump_candidate(
                         source_result["plan"],
                         candidate_voltage_mv=int(candidate.candidate_voltage_mv),
                         target_clock_mhz=int(bumped_clock_mhz),
                         reason_label="low-clock-recovery",
+                        budget_used_pct=float(clock_bump_budget_used_pct),
+                        budget_limit_pct=float(clock_bump_budget_limit_pct),
                     )
                     _log_phase(
                         log,
                         "candidate",
-                        f"low-clock-recovery applying +2.0% curve overclock "
-                        f"bump={int(clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                        f"low-clock-recovery applying budgeted curve overclock "
+                        f"attempt={int(clock_bump_recovery_count)} "
+                        f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                         f"voltage={candidate.candidate_voltage_mv}mV "
                         f"target={int(bump_source_clock_mhz)}->{bumped_candidate.target_clock_mhz}MHz "
                         f"cap={int(round(float(bump_limit_mhz)))}MHz "
@@ -392,18 +607,23 @@ def _run_candidate_sweep(
                         nvml_session=nvml_session,
                         log=log,
                         phase_label="candidate-recovery",
+                        log_context=_format_clock_bump_budget(
+                            used_pct=float(clock_bump_budget_used_pct),
+                            limit_pct=float(clock_bump_budget_limit_pct),
+                        ),
                         power_limit_w=translated_gpu_policy.get("power_limit_w"),
                         min_performance_core_clock_pct=float(
                             min_performance_core_clock_pct
                         ),
                         reset_plan=runtime_default_plan,
                         marker_details=_clock_bump_marker_details(
-                            attempt=int(clock_bump_recovery_count),
-                            limit=int(max_clock_bump_recoveries),
                             previous_target_clock_mhz=int(recovery_source_target_mhz),
                             bumped_target_clock_mhz=int(
                                 bumped_candidate.target_clock_mhz
                             ),
+                            budget_used_before_pct=float(budget_used_before_pct),
+                            budget_used_after_pct=float(clock_bump_budget_used_pct),
+                            budget_limit_pct=float(clock_bump_budget_limit_pct),
                         ),
                     )
                     probe_history.append(bumped_summary)
@@ -443,17 +663,18 @@ def _run_candidate_sweep(
                                 log,
                                 "candidate",
                                 f"accepted low-clock recovery keeping bumped target={int(stable_lock_clock_mhz)}MHz "
-                                f"bump={int(clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                                f"attempt={int(clock_bump_recovery_count)} "
+                                f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                                 + _format_probe_summary(bumped_summary),
                             )
-                            if int(clock_bump_recovery_count) >= int(
-                                max_clock_bump_recoveries
+                            if float(clock_bump_budget_used_pct) >= float(
+                                clock_bump_budget_limit_pct
                             ):
                                 _log_phase(
                                     log,
                                     "candidate",
-                                    f"low-clock-recovery bump limit reached "
-                                    f"bump={int(clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)}; "
+                                    f"low-clock-recovery bump budget reached "
+                                    f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)}; "
                                     f"continuing voltage descent with accepted curve "
                                     f"{int(stable_voltage_mv)}mV@{int(stable_lock_clock_mhz)}MHz",
                                 )
@@ -472,8 +693,8 @@ def _run_candidate_sweep(
                             break
                         if _final_failure_can_accept_budget_curve(
                             str(bumped_error)
-                        ) and int(clock_bump_recovery_count) < int(
-                            max_clock_bump_recoveries
+                        ) and float(clock_bump_budget_used_pct) < float(
+                            clock_bump_budget_limit_pct
                         ):
                             recovery_source_target_mhz = int(
                                 bumped_candidate.target_clock_mhz
@@ -483,8 +704,9 @@ def _run_candidate_sweep(
                                 log,
                                 "candidate",
                                 f"low-clock-recovery still below floor; "
-                                f"trying next +2.0% bump "
-                                f"bump={int(clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                                f"trying next budgeted bump "
+                                f"attempt={int(clock_bump_recovery_count)} "
+                                f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                                 f"voltage={candidate.candidate_voltage_mv}mV "
                                 f"target={int(recovery_source_target_mhz)}MHz "
                                 f"reason={bumped_error}",
@@ -494,7 +716,8 @@ def _run_candidate_sweep(
                             log,
                             "candidate",
                             f"low-clock-recovery rejected {bumped_error} "
-                            f"bump={int(clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                            f"attempt={int(clock_bump_recovery_count)} "
+                            f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                             f"probe={_format_probe_summary(bumped_summary)}",
                         )
                         bumped_failure_reason = str(bumped_error)
@@ -505,7 +728,7 @@ def _run_candidate_sweep(
                         _log_phase(
                             log,
                             "candidate",
-                            f"low-clock-recovery +2.0% probe failed "
+                            f"low-clock-recovery budgeted probe failed "
                             f"voltage={bumped_candidate.candidate_voltage_mv}mV "
                             f"target={bumped_candidate.target_clock_mhz}MHz "
                             f"reason={bumped_result.reason} "
@@ -516,8 +739,8 @@ def _run_candidate_sweep(
                                 "telemetry-live-core_clock",
                                 "telemetry-live-core_clock-avg",
                             )
-                        ) and int(clock_bump_recovery_count) < int(
-                            max_clock_bump_recoveries
+                        ) and float(clock_bump_budget_used_pct) < float(
+                            clock_bump_budget_limit_pct
                         ):
                             recovery_source_target_mhz = int(
                                 bumped_candidate.target_clock_mhz
@@ -527,8 +750,9 @@ def _run_candidate_sweep(
                                 log,
                                 "candidate",
                                 f"low-clock-recovery still below floor; "
-                                f"trying next +2.0% bump "
-                                f"bump={int(clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                                f"trying next budgeted bump "
+                                f"attempt={int(clock_bump_recovery_count)} "
+                                f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                                 f"voltage={candidate.candidate_voltage_mv}mV "
                                 f"target={int(recovery_source_target_mhz)}MHz "
                                 f"reason={bumped_result.reason}",
@@ -538,14 +762,15 @@ def _run_candidate_sweep(
                 if accepted_low_clock_recovery:
                     continue
                 if (
-                    int(clock_bump_recovery_count) >= int(max_clock_bump_recoveries)
+                    float(clock_bump_budget_used_pct)
+                    >= float(clock_bump_budget_limit_pct)
                     and bumped_failure_reason is not None
                 ):
                     _log_phase(
                         log,
                         "candidate",
-                        f"low-clock-recovery bump limit reached after failed probe "
-                        f"limit={int(clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                        f"low-clock-recovery bump budget reached after failed probe "
+                        f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                         f"voltage={candidate.candidate_voltage_mv}mV "
                         f"target={int(recovery_source_target_mhz)}MHz "
                         f"reason={bumped_failure_reason}",
@@ -559,13 +784,19 @@ def _run_candidate_sweep(
                         source_result["plan"],
                         current_clock_mhz=int(bump_source_clock_mhz),
                         cap_clock_mhz=float(bump_limit_mhz),
+                        remaining_budget_pct=max(
+                            0.0,
+                            float(clock_bump_budget_limit_pct)
+                            - float(clock_bump_budget_used_pct),
+                        ),
+                        reason=recovery_reason,
                     )
                     if bumped_clock_mhz is not None:
                         _log_phase(
                             log,
                             "candidate",
-                            f"low-clock-recovery skipped +2.0% curve overclock "
-                            f"limit={int(clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                            f"low-clock-recovery skipped budgeted curve overclock "
+                            f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                             f"voltage={candidate.candidate_voltage_mv}mV "
                             f"target={int(bump_source_clock_mhz)}->{int(bumped_clock_mhz)}MHz "
                             f"reason={recovery_reason}",
@@ -611,6 +842,9 @@ def _run_candidate_sweep(
                             stable_probe=stable_probe,
                             candidate_voltage_mv=int(candidate.candidate_voltage_mv),
                             clock_bump_recovery_count=int(clock_bump_recovery_count),
+                            clock_bump_budget_used_pct=float(
+                                clock_bump_budget_used_pct
+                            ),
                             clock_bump_last_target_mhz=clock_bump_last_target_mhz,
                         ),
                         source_plan=source_result["plan"],
@@ -622,7 +856,7 @@ def _run_candidate_sweep(
                         discovery_summary=discovery_summary,
                         previous_stable_probe_for_iteration=previous_stable_probe_for_iteration,
                         candidate_attempt_count=int(candidate_attempt_count),
-                        max_clock_bump_recoveries=int(max_clock_bump_recoveries),
+                        clock_bump_budget_limit_pct=float(clock_bump_budget_limit_pct),
                     )
 
                 apply_plan(reader, stable_plan)
@@ -630,12 +864,12 @@ def _run_candidate_sweep(
                 restored_live_mv = nvml_session.read_live_voltage_mv()
                 if bumped_failure_reason is not None:
                     final_reason = (
-                        f"+2.0% recovery at {candidate.candidate_voltage_mv}mV "
+                        f"budgeted clock recovery at {candidate.candidate_voltage_mv}mV "
                         f"failed: {bumped_failure_reason}"
                     )
                     user_reason = (
                         "The candidate first missed the loaded-clock floor, then the "
-                        f"+2.0% recovery probe failed: {bumped_failure_reason}. "
+                        f"budgeted clock recovery probe failed: {bumped_failure_reason}. "
                         "The previous stable curve was restored."
                     )
                     candidate_result_probe = (
@@ -669,6 +903,20 @@ def _run_candidate_sweep(
                     restored_lock_clock_mhz=int(stable_lock_clock_mhz),
                 )
                 break
+            recovery_target_clock_mhz = _step_back_clock_bump_target(
+                source_result["plan"],
+                current_target_mhz=int(candidate.target_clock_mhz),
+                clock_bump_last_target_mhz=clock_bump_last_target_mhz,
+            )
+            if int(recovery_target_clock_mhz) != int(candidate.target_clock_mhz):
+                _log_phase(
+                    log,
+                    "reject",
+                    f"backing off overclock target after probe failure "
+                    f"target={int(candidate.target_clock_mhz)}->{int(recovery_target_clock_mhz)}MHz "
+                    f"reason={probe_result.reason}",
+                )
+                clock_bump_last_target_mhz = int(recovery_target_clock_mhz)
             recovery_candidate, recovery_summary, recovery_result = (
                 probe_stabilization_search(
                     reader=reader,
@@ -678,7 +926,7 @@ def _run_candidate_sweep(
                     minimum_candidate_voltage_mv=_next_higher_voltage_bin(
                         source_result["plan"], int(failed_voltage_mv)
                     ),
-                    target_clock_mhz=int(candidate.target_clock_mhz),
+                    target_clock_mhz=int(recovery_target_clock_mhz),
                     q2rtx_config=q2rtx_config,
                     stable_history=stable_history,
                     nvml_session=nvml_session,
@@ -856,6 +1104,20 @@ def _run_candidate_sweep(
             apply_plan(reader, stable_plan)
             reader.refresh_points()
             restored_live_mv = nvml_session.read_live_voltage_mv()
+            backed_off_target_mhz = _step_back_clock_bump_target(
+                source_result["plan"],
+                current_target_mhz=int(candidate.target_clock_mhz),
+                clock_bump_last_target_mhz=clock_bump_last_target_mhz,
+            )
+            if int(backed_off_target_mhz) != int(candidate.target_clock_mhz):
+                _log_phase(
+                    log,
+                    "reject",
+                    f"backing off overclock target after guardrail failure "
+                    f"target={int(candidate.target_clock_mhz)}->{int(backed_off_target_mhz)}MHz "
+                    f"reason={evaluation_error}",
+                )
+                clock_bump_last_target_mhz = int(backed_off_target_mhz)
             _log_phase(
                 log,
                 "reject",
@@ -955,8 +1217,8 @@ def _run_candidate_sweep(
             and (efficiency_improved is False or power_up_efficiency_down)
             and measured_voltage_close_to_requested
         )
-        if efficiency_stop_candidate and int(clock_bump_recovery_count) < int(
-            max_clock_bump_recoveries
+        if efficiency_stop_candidate and float(clock_bump_budget_used_pct) < float(
+            clock_bump_budget_limit_pct
         ):
             bump_limit_mhz = (
                 float(measured_clock_mhz)
@@ -972,21 +1234,34 @@ def _run_candidate_sweep(
                 source_result["plan"],
                 current_clock_mhz=int(bump_source_clock_mhz),
                 cap_clock_mhz=float(bump_limit_mhz),
+                remaining_budget_pct=max(
+                    0.0,
+                    float(clock_bump_budget_limit_pct)
+                    - float(clock_bump_budget_used_pct),
+                ),
             )
             if bumped_clock_mhz is not None:
+                budget_used_before_pct = float(clock_bump_budget_used_pct)
                 clock_bump_recovery_count += 1
+                clock_bump_budget_used_pct += _clock_bump_consumed_pct(
+                    previous_target_clock_mhz=int(bump_source_clock_mhz),
+                    bumped_target_clock_mhz=int(bumped_clock_mhz),
+                )
                 clock_bump_last_target_mhz = int(bumped_clock_mhz)
                 bumped_candidate = _make_clock_bump_candidate(
                     source_result["plan"],
                     candidate_voltage_mv=int(stable_voltage_mv),
                     target_clock_mhz=int(bumped_clock_mhz),
                     reason_label="efficiency-wall",
+                    budget_used_pct=float(clock_bump_budget_used_pct),
+                    budget_limit_pct=float(clock_bump_budget_limit_pct),
                 )
                 _log_phase(
                     log,
                     "candidate",
-                    f"efficiency-wall applying +2.0% curve overclock "
-                    f"bump={int(clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                    f"efficiency-wall applying budgeted curve overclock "
+                    f"attempt={int(clock_bump_recovery_count)} "
+                    f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                     f"voltage={int(stable_voltage_mv)}mV "
                     f"target={int(bump_source_clock_mhz)}->{int(bumped_candidate.target_clock_mhz)}MHz "
                     f"cap={int(round(float(bump_limit_mhz)))}MHz",
@@ -1020,17 +1295,22 @@ def _run_candidate_sweep(
                     nvml_session=nvml_session,
                     log=log,
                     phase_label="candidate-efficiency-bump",
+                    log_context=_format_clock_bump_budget(
+                        used_pct=float(clock_bump_budget_used_pct),
+                        limit_pct=float(clock_bump_budget_limit_pct),
+                    ),
                     power_limit_w=translated_gpu_policy.get("power_limit_w"),
                     min_performance_core_clock_pct=float(
                         min_performance_core_clock_pct
                     ),
                     reset_plan=runtime_default_plan,
                     marker_details=_clock_bump_marker_details(
-                        attempt=int(clock_bump_recovery_count),
-                        limit=int(max_clock_bump_recoveries),
                         previous_target_clock_mhz=int(stable_lock_clock_mhz),
                         bumped_target_clock_mhz=int(bumped_candidate.target_clock_mhz),
                         reason="efficiency-wall",
+                        budget_used_before_pct=float(budget_used_before_pct),
+                        budget_used_after_pct=float(clock_bump_budget_used_pct),
+                        budget_limit_pct=float(clock_bump_budget_limit_pct),
                     ),
                     suppress_unsafe_recording=True,
                 )
@@ -1093,27 +1373,45 @@ def _run_candidate_sweep(
                     _log_phase(
                         log,
                         "candidate",
-                        f"efficiency-wall accepted +2.0% bump keeping target={int(stable_lock_clock_mhz)}MHz "
-                        f"bump={int(clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                        f"efficiency-wall accepted budgeted bump keeping target={int(stable_lock_clock_mhz)}MHz "
+                        f"attempt={int(clock_bump_recovery_count)} "
+                        f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                         + _format_probe_summary(bumped_summary),
                     )
                 else:
                     _log_phase(
                         log,
                         "candidate",
-                        f"efficiency-wall rejected +2.0% bump "
-                        f"bump={int(clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                        f"efficiency-wall rejected budgeted bump "
+                        f"attempt={int(clock_bump_recovery_count)} "
+                        f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                         f"reason={bumped_error or 'no-efficiency-gain'} "
                         f"probe={_format_probe_summary(bumped_summary)}",
                     )
+                    backed_off_target_mhz = _step_back_clock_bump_target(
+                        source_result["plan"],
+                        current_target_mhz=int(bumped_candidate.target_clock_mhz),
+                        clock_bump_last_target_mhz=clock_bump_last_target_mhz,
+                    )
+                    if int(backed_off_target_mhz) != int(
+                        bumped_candidate.target_clock_mhz
+                    ):
+                        _log_phase(
+                            log,
+                            "candidate",
+                            f"backing off overclock target after rejected efficiency-wall bump "
+                            f"target={int(bumped_candidate.target_clock_mhz)}->{int(backed_off_target_mhz)}MHz "
+                            f"reason={bumped_error or 'no-efficiency-gain'}",
+                        )
+                        clock_bump_last_target_mhz = int(backed_off_target_mhz)
                     apply_plan(reader, stable_plan)
                     reader.refresh_points()
             else:
                 _log_phase(
                     log,
                     "candidate",
-                    f"efficiency-wall cannot apply +2.0% curve overclock "
-                    f"bump={int(clock_bump_recovery_count)}/{int(max_clock_bump_recoveries)} "
+                    f"efficiency-wall cannot apply budgeted curve overclock "
+                    f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                     f"target={int(stable_lock_clock_mhz)}MHz "
                     f"cap={int(round(float(bump_limit_mhz)))}MHz",
                 )
@@ -1125,11 +1423,14 @@ def _run_candidate_sweep(
         else:
             non_improving_efficiency_streak = 0
 
-        if (
-            efficiency_stop_candidate
-            and efficiency_stop_allowed
-            and pending_efficiency_stop_curve is not None
-            and non_improving_efficiency_streak > efficiency_stop_streak
+        if _efficiency_stop_can_finish(
+            efficiency_stop_candidate=bool(efficiency_stop_candidate),
+            efficiency_stop_allowed=bool(efficiency_stop_allowed),
+            pending_efficiency_stop_curve=pending_efficiency_stop_curve,
+            non_improving_efficiency_streak=int(non_improving_efficiency_streak),
+            efficiency_stop_streak=int(efficiency_stop_streak),
+            clock_bump_budget_used_pct=float(clock_bump_budget_used_pct),
+            clock_bump_budget_limit_pct=float(clock_bump_budget_limit_pct),
         ):
             efficiency_confirmations = max(0, non_improving_efficiency_streak - 1)
             delta_pct = efficiency_delta.get("delta_pct")
@@ -1169,6 +1470,9 @@ def _run_candidate_sweep(
                 f"candidate={candidate.candidate_voltage_mv}mV "
                 f"using-current={str(use_current_curve).lower()} "
                 f"final={stable_voltage_mv}mV@{stable_lock_clock_mhz}MHz "
+                f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
+                f"core-clock={float(probe_summary.avg_core_clock_mhz):.1f}MHz "
+                f"clock-floor={float(discovery_summary.avg_core_clock_mhz) * _percent(float(min_performance_core_clock_pct)):.1f}MHz "
                 f"delta={efficiency_delta['delta_fps_per_w'] if efficiency_delta['delta_fps_per_w'] is not None else 'n/a'} "
                 f"delta_pct={efficiency_delta['delta_pct'] if efficiency_delta['delta_pct'] is not None else 'n/a'} "
                 f"requested-voltage-drop={efficiency_delta['requested_voltage_drop_mv'] if efficiency_delta['requested_voltage_drop_mv'] is not None else 'n/a'}mV "
@@ -1208,14 +1512,16 @@ def _run_candidate_sweep(
                     "measured voltage went lower while temperature-normalized power rose "
                     "and FPS per watt fell. PenguinBurner will still probe "
                     f"{efficiency_stop_streak} more lower-voltage step(s) to confirm; "
-                    "if those also fail to improve, this curve will be used as final."
+                    "final FPS/W stopping also waits until the overclocking budget is "
+                    "spent or disabled."
                 )
             else:
                 accepted_reason = (
                     "This candidate passed stability and clock guardrails, but "
                     "temperature-normalized FPS per watt did not improve enough. "
                     f"PenguinBurner will probe {efficiency_stop_streak} more lower-voltage "
-                    "step(s) to confirm; if those also fail to improve, this curve will be used as final."
+                    "step(s) to confirm; final FPS/W stopping also waits until the "
+                    "overclocking budget is spent or disabled."
                 )
             if not efficiency_stop_allowed:
                 accepted_reason += (
@@ -1289,7 +1595,8 @@ def _run_candidate_sweep(
         "stable_voltage_mv": stable_voltage_mv,
         "stable_lock_clock_mhz": stable_lock_clock_mhz,
         "stable_probe": stable_probe,
-        "ended_by_clock_bump_limit": int(clock_bump_recovery_count)
-        >= int(max_clock_bump_recoveries),
+        "ended_by_clock_bump_limit": float(clock_bump_budget_used_pct)
+        >= float(clock_bump_budget_limit_pct),
         "clock_bump_recovery_count": int(clock_bump_recovery_count),
+        "clock_bump_budget_used_pct": float(clock_bump_budget_used_pct),
     }

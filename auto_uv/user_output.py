@@ -540,6 +540,11 @@ def log_user_candidate_result(
             return f"n/a ({probe.result_reason}; no completed timedemo)"
         return "n/a"
 
+    def _fps(probe: AutoUvProbeSummary | None) -> str:
+        if probe is None:
+            return "n/a"
+        return format_user_value(probe.avg_fps, "FPS")
+
     def _signed_int_change(
         reference_value: int | float | None,
         candidate_value: int | float | None,
@@ -628,14 +633,14 @@ def log_user_candidate_result(
             ]
     log_user_table(
         log,
-        title="This Step Compared With Initial And Previous Stable",
+        title="This Step Compared With Stock And Previous Stable",
         headers=(
             "Metric",
-            "Initial",
+            "Stock",
             "Previous stable",
             "This step",
             "Change vs previous",
-            "Change vs initial",
+            "Change vs stock",
         ),
         rows=[
             (
@@ -749,6 +754,22 @@ def log_user_candidate_result(
                 ),
             ),
             (
+                "FPS",
+                _fps(initial_probe),
+                _fps(previous_probe),
+                _fps(candidate_probe),
+                format_user_change(
+                    previous_probe.avg_fps if previous_probe is not None else None,
+                    candidate_probe.avg_fps,
+                    "FPS",
+                ),
+                _change_vs_initial(
+                    initial_probe.avg_fps if initial_probe is not None else None,
+                    candidate_probe.avg_fps,
+                    "FPS",
+                ),
+            ),
+            (
                 "FPS per watt",
                 _fps_per_w(initial_probe),
                 _fps_per_w(previous_probe),
@@ -800,6 +821,8 @@ def log_user_readable_final_summary(
     final_clock = final_probe.avg_core_clock_mhz
     baseline_power = baseline_probe.avg_power_w
     final_power = final_probe.avg_power_w
+    baseline_fps = baseline_probe.avg_fps
+    final_fps = final_probe.avg_fps
     baseline_fps_w = baseline_probe.efficiency_fps_per_w
     final_fps_w = final_probe.efficiency_fps_per_w
     baseline_mhz_w = baseline_probe.efficiency_mhz_per_w
@@ -887,7 +910,7 @@ def log_user_readable_final_summary(
     log_user_table(
         log,
         title="Before vs After",
-        headers=("Metric", "Before", "After", "Change"),
+        headers=("Metric", "Stock", "After", "Change vs stock"),
         rows=[
             (
                 "Power draw",
@@ -902,6 +925,12 @@ def log_user_readable_final_summary(
                 format_user_value(baseline_clock, "MHz"),
                 format_user_value(final_clock, "MHz"),
                 format_user_change(baseline_clock, final_clock, "MHz"),
+            ),
+            (
+                "FPS",
+                format_user_value(baseline_fps, "FPS"),
+                format_user_value(final_fps, "FPS"),
+                format_user_change(baseline_fps, final_fps, "FPS"),
             ),
             (
                 "FPS per watt",

@@ -41,6 +41,16 @@ from .tuning import (
 from .user_output import log_phase as _log_phase
 
 
+def _probe_phase_writes_crash_marker(phase_label: str) -> bool:
+    return str(phase_label) in {
+        "candidate",
+        "candidate-recovery",
+        "final-recovery",
+        "final-verify",
+        "stabilize",
+    }
+
+
 def _probe_voltage_candidate(
     *,
     reader,
@@ -386,12 +396,7 @@ def _probe_voltage_candidate(
                     f"stall={stall_limit_s:.1f}s completed={completed_runs}"
                 )
 
-    mark_in_progress = str(phase_label) in {
-        "candidate",
-        "candidate-recovery",
-        "final-verify",
-        "stabilize",
-    }
+    mark_in_progress = _probe_phase_writes_crash_marker(str(phase_label))
 
     def _record_probe_unsafe(reason: str, details: dict | None = None) -> None:
         if not mark_in_progress:

@@ -494,17 +494,19 @@ def parse_main_args(argv):
         default=None,
         help=(
             "Maximum loaded GPU core clock drop allowed during Auto-UV; "
-            "default 12.0. Example: 10 allows up to a stricter 10%% clock drop."
+            "default 10.0. Example: 12 allows up to a looser 12%% clock drop."
         ),
     )
     parser.add_argument(
-        "--auto-uv-max-clock-bump-recoveries",
-        type=int,
+        "--auto-uv-clock-bump-budget-ratio",
+        type=float,
         default=None,
         help=(
-            "Maximum number of Auto-UV low-clock recovery attempts that apply "
-            "a +2%% curve target bump before continuing lower-voltage search; "
-            f"default {AUTO_UV_DEFAULTS.max_clock_bump_recoveries}. Use 0 to disable."
+            "Fraction of --auto-uv-max-clock-drop-pct available as total Auto-UV "
+            "clock-bump budget; each recovery spends only the measured clock "
+            "shortfall plus a small safety step. "
+            f"default {AUTO_UV_DEFAULTS.clock_bump_budget_ratio:.2f}. "
+            "Clamped to 0.0..1.0."
         ),
     )
     parser.add_argument(
@@ -1684,10 +1686,10 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
             0.0,
             float(args.auto_uv_max_clock_drop_pct),
         )
-    if args.auto_uv_max_clock_bump_recoveries is not None:
-        afterburner_runtime_options["auto_uv_max_clock_bump_recoveries"] = max(
-            0,
-            int(args.auto_uv_max_clock_bump_recoveries),
+    if args.auto_uv_clock_bump_budget_ratio is not None:
+        afterburner_runtime_options["auto_uv_clock_bump_budget_ratio"] = max(
+            0.0,
+            min(1.0, float(args.auto_uv_clock_bump_budget_ratio)),
         )
     if args.dangerously_skip_validation:
         afterburner_runtime_options["dangerously_skip_validation"] = True
