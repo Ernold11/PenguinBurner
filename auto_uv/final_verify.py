@@ -42,6 +42,22 @@ from .user_output import (
 )
 
 
+def _choose_final_comparison_probe(
+    *,
+    stable_probe,
+    final_probe,
+    final_voltage_mv: int,
+    final_lock_clock_mhz: int,
+):
+    if (
+        stable_probe is not None
+        and int(stable_probe.candidate_voltage_mv) == int(final_voltage_mv)
+        and int(stable_probe.lock_clock_mhz) == int(final_lock_clock_mhz)
+    ):
+        return stable_probe
+    return final_probe or stable_probe
+
+
 def _run_final_verification_and_save(
     *,
     probe_voltage_candidate,
@@ -503,10 +519,16 @@ def _run_final_verification_and_save(
         vanilla_plan=runtime_default_plan,
         final_voltage_mv=int(final_voltage_mv),
     )
+    final_comparison_probe = _choose_final_comparison_probe(
+        stable_probe=stable_probe,
+        final_probe=final_probe,
+        final_voltage_mv=int(final_voltage_mv),
+        final_lock_clock_mhz=int(final_lock_clock_mhz),
+    )
     _log_final_summary(
         log,
         baseline_probe=discovery_summary,
-        final_probe=final_probe,
+        final_probe=final_comparison_probe,
         final_voltage_mv=int(final_voltage_mv),
         final_lock_clock_mhz=int(final_lock_clock_mhz),
         clock_drop_margin_pct=float(final_clock_drop_margin_pct),
@@ -516,7 +538,7 @@ def _run_final_verification_and_save(
     _log_user_readable_final_summary(
         log,
         baseline_probe=discovery_summary,
-        final_probe=final_probe,
+        final_probe=final_comparison_probe,
         final_voltage_mv=int(final_voltage_mv),
         final_lock_clock_mhz=int(final_lock_clock_mhz),
         clock_drop_margin_pct=float(final_clock_drop_margin_pct),
@@ -530,5 +552,5 @@ def _run_final_verification_and_save(
         final_lock_clock_mhz=int(final_lock_clock_mhz),
         initial_probe=discovery_summary,
         probe_history=probe_history,
-        final_probe=final_probe,
+        final_probe=final_comparison_probe,
     )

@@ -30,6 +30,7 @@ from auto_uv.curve_planning import (
     _validate_auto_uv_source_plan,
 )
 from auto_uv.fan_tuning import build_auto_uv_fan_payload
+from auto_uv.final_verify import _choose_final_comparison_probe
 from auto_uv.models import AutoUvError, AutoUvProbeSummary
 from auto_uv.probe_metrics import _temperature_normalized_efficiency_delta
 from auto_uv.probe_runner import _probe_phase_writes_crash_marker
@@ -185,6 +186,63 @@ def test_user_final_summary_reports_completed_long_verification() -> None:
     fps_row = next(line for line in lines if "| FPS" in line and "FPS/W" not in line)
     assert "161.0FPS" in fps_row
     assert "153.3FPS" in fps_row
+
+
+def test_final_comparison_prefers_matching_short_scan_probe() -> None:
+    stable = _probe(
+        requested_mv=840,
+        measured_mv=840.0,
+        fps=145.4,
+        power_w=225.5,
+        temp_c=62.0,
+        core_clock_mhz=2444.1,
+    )
+    final_long = _probe(
+        requested_mv=840,
+        measured_mv=840.0,
+        fps=153.6,
+        power_w=232.4,
+        temp_c=63.0,
+        core_clock_mhz=2445.5,
+    )
+
+    chosen = _choose_final_comparison_probe(
+        stable_probe=stable,
+        final_probe=final_long,
+        final_voltage_mv=840,
+        final_lock_clock_mhz=2700,
+    )
+
+    assert chosen is stable
+    assert chosen.avg_fps == 145.4
+
+
+def test_final_comparison_uses_long_probe_when_final_curve_changed() -> None:
+    stable = _probe(
+        requested_mv=840,
+        measured_mv=840.0,
+        fps=145.4,
+        power_w=225.5,
+        temp_c=62.0,
+        core_clock_mhz=2444.1,
+    )
+    final_long = _probe(
+        requested_mv=840,
+        measured_mv=840.0,
+        fps=148.0,
+        power_w=232.4,
+        temp_c=63.0,
+        core_clock_mhz=2460.0,
+    )
+
+    chosen = _choose_final_comparison_probe(
+        stable_probe=stable,
+        final_probe=final_long,
+        final_voltage_mv=840,
+        final_lock_clock_mhz=2715,
+    )
+
+    assert chosen is final_long
 
 
 def test_candidate_result_reports_initial_measured_clock_not_curve_target() -> None:
