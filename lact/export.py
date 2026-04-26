@@ -4,6 +4,14 @@ from datetime import datetime
 import json
 from pathlib import Path
 
+from afterburner.fan_curve import (
+    load_afterburner_fan_settings,
+    resolve_afterburner_fan_profile,
+)
+from afterburner.import_fan_curve import build_imported_fan_section
+from afterburner.import_vf_curve import build_plan
+from afterburner.vfcurve import resolve_afterburner_vf_source
+from hidden_nvapi_vf import create_hidden_vf_curve_reader
 from penguin_burner_paths import default_user_config_dir
 
 
@@ -37,31 +45,26 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(float(lower), min(float(value), float(upper)))
 
 
-def _fan_curve_yaml(fan_payload: dict | None) -> tuple[list[str], list[str]]:
-    if fan_payload is None or fan_payload.get("fan_curve_blocked"):
+def _fan_config_yaml(fan: dict | None) -> tuple[list[str], list[str]]:
+    if fan is None:
         return ["    fan_control_enabled: false"], []
 
-    fan = fan_payload.get("fan")
-    if not isinstance(fan, dict):
-        raise LactExportError("Auto-UV fan curve is missing the fan section")
     raw_curve = fan.get("curve")
     if not isinstance(raw_curve, list) or not raw_curve:
-        raise LactExportError("Auto-UV fan curve has no curve points")
+        raise LactExportError("fan curve has no curve points")
 
     curve: dict[int, float] = {}
     for point in raw_curve:
         if not isinstance(point, (list, tuple)) or len(point) != 2:
-            raise LactExportError(f"invalid Auto-UV fan curve point: {point!r}")
+            raise LactExportError(f"invalid fan curve point: {point!r}")
         try:
             temp_c = int(round(float(point[0])))
             speed_fraction = _clamp(float(point[1]) / 100.0, 0.0, 1.0)
         except (TypeError, ValueError) as exc:
-            raise LactExportError(f"invalid Auto-UV fan curve point: {point!r}") from exc
+            raise LactExportError(f"invalid fan curve point: {point!r}") from exc
         curve[temp_c] = round(speed_fraction, 4)
 
-    auto_threshold = fan_payload.get("zero_rpm_until_temperature_c")
-    if auto_threshold is None:
-        auto_threshold = fan.get("auto_restore_temp_c")
+    auto_threshold = fan.get("auto_restore_temp_c")
     try:
         auto_threshold_c = int(round(float(auto_threshold or 0)))
     except (TypeError, ValueError):
@@ -91,21 +94,32 @@ def _fan_curve_yaml(fan_payload: dict | None) -> tuple[list[str], list[str]]:
     return lines, warnings
 
 
-def _vf_curve_yaml(final_curve_payload: dict) -> list[str]:
-    raw_points = final_curve_payload.get("points")
+def _auto_uv_fan_config(fan_payload: dict | None) -> dict | None:
+    if fan_payload is None or fan_payload.get("fan_curve_blocked"):
+        return None
+    fan = fan_payload.get("fan")
+    if not isinstance(fan, dict):
+        raise LactExportError("Auto-UV fan curve is missing the fan section")
+    if fan_payload.get("zero_rpm_until_temperature_c") is not None:
+        fan = dict(fan)
+        fan["auto_restore_temp_c"] = fan_payload.get("zero_rpm_until_temperature_c")
+    return fan
+
+
+def _vf_curve_yaml_from_points(raw_points: list[dict]) -> list[str]:
     if not isinstance(raw_points, list) or not raw_points:
-        raise LactExportError("Auto-UV final curve has no V/F points")
+        raise LactExportError("V/F curve has no points")
 
     points: list[tuple[int, int, int]] = []
     for raw in raw_points:
         if not isinstance(raw, dict):
-            raise LactExportError(f"invalid Auto-UV V/F point: {raw!r}")
+            raise LactExportError(f"invalid V/F point: {raw!r}")
         try:
             index = int(raw["index"])
             voltage_mv = int(raw["voltage_mv"])
             target_mhz = int(raw["target_mhz"])
         except (KeyError, TypeError, ValueError) as exc:
-            raise LactExportError(f"invalid Auto-UV V/F point: {raw!r}") from exc
+            raise LactExportError(f"invalid V/F point: {raw!r}") from exc
         if not 0 <= index <= 255:
             raise LactExportError(f"V/F point index is outside LACT range: {index}")
         points.append((index, voltage_mv, target_mhz))
@@ -122,33 +136,31 @@ def _vf_curve_yaml(final_curve_payload: dict) -> list[str]:
     return lines
 
 
-def build_lact_nvidia_config(
+def build_lact_nvidia_config_from_plan(
     *,
     gpu_id: str,
-    final_curve_path: Path | None = None,
-    fan_curve_path: Path | None = None,
+    vf_plan: list[dict] | None,
+    fan_config: dict | None = None,
+    source_label: str,
+    source_vf: str,
+    source_fan: str | None = None,
+    include_vf_curve: bool = True,
+    include_fan_curve: bool = False,
 ) -> tuple[str, list[str]]:
     gpu_id = str(gpu_id).strip()
     if not gpu_id:
         raise LactExportError("LACT GPU id is required; use `lact cli list-gpus`")
 
-    config_dir = default_user_config_dir()
-    final_curve_path = final_curve_path or config_dir / "auto-uv-final-curve.json"
-    fan_curve_path = fan_curve_path or config_dir / "auto-uv-fan-curve.json"
-    final_curve_payload = _read_json(Path(final_curve_path))
-    fan_curve_payload = (
-        _read_json(Path(fan_curve_path)) if Path(fan_curve_path).is_file() else None
-    )
-
-    fan_lines, warnings = _fan_curve_yaml(fan_curve_payload)
-    vf_lines = _vf_curve_yaml(final_curve_payload)
+    fan_lines, warnings = _fan_config_yaml(fan_config if include_fan_curve else None)
+    vf_lines = _vf_curve_yaml_from_points(vf_plan or []) if include_vf_curve else []
     generated_at = datetime.now().astimezone().isoformat()
 
     lines = [
         "# Generated by PenguinBurner for LACT Nvidia control.",
         f"# Generated at: {generated_at}",
-        f"# Source V/F curve: {final_curve_path}",
-        f"# Source fan curve: {fan_curve_path}",
+        f"# Source: {source_label}",
+        f"# Source V/F curve: {source_vf}",
+        f"# Source fan curve: {source_fan or 'none'}",
         "# Apply deliberately, for example: sudo install -m 0644 lact-config.yaml /etc/lact/config.yaml",
         "daemon:",
         "  log_level: info",
@@ -163,8 +175,175 @@ def build_lact_nvidia_config(
     return "\n".join(lines) + "\n", warnings
 
 
-def write_lact_nvidia_config(*, output_path: Path, gpu_id: str) -> tuple[Path, list[str]]:
-    rendered, warnings = build_lact_nvidia_config(gpu_id=gpu_id)
+def build_lact_nvidia_config(
+    *,
+    gpu_id: str,
+    final_curve_path: Path | None = None,
+    fan_curve_path: Path | None = None,
+    include_vf_curve: bool = True,
+    include_fan_curve: bool = False,
+) -> tuple[str, list[str]]:
+    config_dir = default_user_config_dir()
+    final_curve_path = final_curve_path or config_dir / "auto-uv-final-curve.json"
+    fan_curve_path = fan_curve_path or config_dir / "auto-uv-fan-curve.json"
+    final_curve_payload = _read_json(Path(final_curve_path)) if include_vf_curve else {}
+    fan_curve_payload = None
+    if include_fan_curve and Path(fan_curve_path).is_file():
+        fan_curve_payload = _read_json(Path(fan_curve_path))
+    raw_points = final_curve_payload.get("points")
+    return build_lact_nvidia_config_from_plan(
+        gpu_id=gpu_id,
+        vf_plan=raw_points,
+        fan_config=_auto_uv_fan_config(fan_curve_payload),
+        source_label="auto-uv",
+        source_vf=str(final_curve_path) if include_vf_curve else "omitted",
+        source_fan=str(fan_curve_path),
+        include_vf_curve=include_vf_curve,
+        include_fan_curve=include_fan_curve,
+    )
+
+
+def write_lact_nvidia_config(
+    *,
+    output_path: Path,
+    gpu_id: str,
+    include_vf_curve: bool = True,
+    include_fan_curve: bool = False,
+) -> tuple[Path, list[str]]:
+    rendered, warnings = build_lact_nvidia_config(
+        gpu_id=gpu_id,
+        include_vf_curve=include_vf_curve,
+        include_fan_curve=include_fan_curve,
+    )
+    output_path = Path(output_path).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(rendered, encoding="utf-8")
+    return output_path, warnings
+
+
+def _afterburner_fan_config(
+    *,
+    current_fan_config: dict,
+    afterburner_root: str,
+    gpu_index: int,
+) -> tuple[dict | None, str, list[str]]:
+    fan_profile = resolve_afterburner_fan_profile(afterburner_root=afterburner_root)
+    warnings: list[str] = []
+    try:
+        settings = load_afterburner_fan_settings(fan_profile)
+        settings["afterburner_root"] = Path(afterburner_root).expanduser()
+        if not settings["sw_auto_enabled"]:
+            raise LactExportError(
+                "Afterburner software auto fan control is disabled in the imported profile"
+            )
+        fan_config = build_imported_fan_section(
+            current_fan_config,
+            settings,
+            gpu_index=gpu_index,
+        )
+    except (Exception, SystemExit) as exc:
+        fan_config = None
+        warnings.append(f"Afterburner fan curve was not exported: {exc}")
+    return fan_config, str(fan_profile), warnings
+
+
+def build_lact_nvidia_config_from_afterburner(
+    *,
+    gpu_id: str,
+    current_fan_config: dict,
+    gpu_index: int,
+    afterburner_root: str,
+    section: str | None = None,
+    device_profile_hint: str | None = None,
+    dangerously_skip_validation: bool = False,
+    preserve_vanilla_below_mv: int | None = None,
+    include_vf_curve: bool = True,
+    include_fan_curve: bool = False,
+) -> tuple[str, list[str]]:
+    afterburner_root = str(afterburner_root).strip()
+    if not afterburner_root:
+        raise LactExportError(
+            "--lact-source afterburner requires --afterburner-dir or a configured Afterburner root"
+        )
+
+    warnings: list[str] = []
+    fan_config = None
+    source_fan = None
+    if include_fan_curve:
+        fan_config, source_fan, warnings = _afterburner_fan_config(
+            current_fan_config=current_fan_config,
+            afterburner_root=afterburner_root,
+            gpu_index=gpu_index,
+        )
+
+    vf_plan = None
+    source_vf = "omitted"
+    if include_vf_curve:
+        source = resolve_afterburner_vf_source(
+            afterburner_root=afterburner_root,
+            section=section or None,
+            device_profile_hint=device_profile_hint or None,
+            dangerously_skip_validation=bool(dangerously_skip_validation),
+        )
+        reader = create_hidden_vf_curve_reader(gpu_index=gpu_index)
+        if reader is None:
+            raise LactExportError("could not open the live Nvidia V/F curve reader")
+        try:
+            vf_plan, missing_voltage_bins = build_plan(
+                reader,
+                source["section_info"]["materialization"]["points"],
+                preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+            )
+        finally:
+            reader.close()
+        if missing_voltage_bins:
+            raise LactExportError(
+                "Afterburner profile did not cover Linux voltage bins: "
+                + ", ".join(str(item) for item in missing_voltage_bins[:16])
+                + (" ..." if len(missing_voltage_bins) > 16 else "")
+            )
+        source_vf = f"{source['profile_path']} [{source['section']}]"
+
+    rendered, render_warnings = build_lact_nvidia_config_from_plan(
+        gpu_id=gpu_id,
+        vf_plan=vf_plan,
+        fan_config=fan_config,
+        source_label="afterburner",
+        source_vf=source_vf,
+        source_fan=source_fan,
+        include_vf_curve=include_vf_curve,
+        include_fan_curve=include_fan_curve,
+    )
+    warnings.extend(render_warnings)
+    return rendered, warnings
+
+
+def write_lact_nvidia_config_from_afterburner(
+    *,
+    output_path: Path,
+    gpu_id: str,
+    current_fan_config: dict,
+    gpu_index: int,
+    afterburner_root: str,
+    section: str | None = None,
+    device_profile_hint: str | None = None,
+    dangerously_skip_validation: bool = False,
+    preserve_vanilla_below_mv: int | None = None,
+    include_vf_curve: bool = True,
+    include_fan_curve: bool = False,
+) -> tuple[Path, list[str]]:
+    rendered, warnings = build_lact_nvidia_config_from_afterburner(
+        gpu_id=gpu_id,
+        current_fan_config=current_fan_config,
+        gpu_index=gpu_index,
+        afterburner_root=afterburner_root,
+        section=section,
+        device_profile_hint=device_profile_hint,
+        dangerously_skip_validation=dangerously_skip_validation,
+        preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+        include_vf_curve=include_vf_curve,
+        include_fan_curve=include_fan_curve,
+    )
     output_path = Path(output_path).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(rendered, encoding="utf-8")

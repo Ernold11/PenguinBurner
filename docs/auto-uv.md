@@ -148,6 +148,20 @@ sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
   --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
 ```
 
+To export a validated Afterburner profile instead:
+
+```bash
+sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
+  --lact-source afterburner \
+  --afterburner-dir "$AFTERBURNER_ROOT" \
+  --section Profile1 \
+  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
+```
+
+The default LACT export writes only the V/F curve. Add `--silent-fan-curve` to
+include fan settings too. Add `--fan-curve-export` only when you want fan
+settings without replacing LACT's V/F curve.
+
 Review the generated file before replacing LACT's config:
 
 ```bash

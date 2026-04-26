@@ -40,7 +40,11 @@ from afterburner.vfcurve import (
 from dry_run_preview import run_afterburner_dry_run
 from hidden_nvapi_vf import create_hidden_vf_curve_reader
 from hidden_nvml_voltage import create_hidden_voltage_reader
-from lact import LactExportError, write_lact_nvidia_config
+from lact import (
+    LactExportError,
+    write_lact_nvidia_config,
+    write_lact_nvidia_config_from_afterburner,
+)
 from afterburner.import_fan_curve import (
     build_imported_fan_section,
     write_config as write_runtime_config,
@@ -407,8 +411,22 @@ def parse_main_args(argv):
         default="",
         help=(
             "Write a complete Nvidia-only LACT config.yaml from the saved "
-            "Auto-UV V/F and fan curves. Use --lact-gpu-id with the id from "
-            "`lact cli list-gpus`."
+            "Auto-UV or Afterburner V/F curve. Add --silent-fan-curve to "
+            "include fan settings. Use --lact-gpu-id with the id from `lact cli list-gpus`."
+        ),
+    )
+    parser.add_argument(
+        "--lact-source",
+        choices=("auto-uv", "afterburner"),
+        default="auto-uv",
+        help="Source for --export-lact-config; default auto-uv.",
+    )
+    parser.add_argument(
+        "--fan-curve-export",
+        action="store_true",
+        help=(
+            "With --export-lact-config, export only the fan curve to LACT and "
+            "omit gpu_vf_curve."
         ),
     )
     parser.add_argument(
@@ -1447,6 +1465,60 @@ def load_runtime_afterburner_fan_config(
         raise NvmlError(str(exc)) from None
 
 
+def export_lact_config(
+    *,
+    args,
+    fan_config,
+    gpu_index,
+    afterburner_runtime_options,
+) -> None:
+    output_path = Path(args.export_lact_config)
+    include_vf_curve = not bool(args.fan_curve_export)
+    include_fan_curve = bool(args.fan_curve_export or args.silent_fan_curve)
+    try:
+        if args.lact_source == "auto-uv":
+            written_path, warnings = write_lact_nvidia_config(
+                output_path=output_path,
+                gpu_id=str(args.lact_gpu_id),
+                include_vf_curve=include_vf_curve,
+                include_fan_curve=include_fan_curve,
+            )
+        else:
+            afterburner_root = str(
+                afterburner_runtime_options.get("afterburner_root", "")
+            ).strip()
+            written_path, warnings = write_lact_nvidia_config_from_afterburner(
+                output_path=output_path,
+                gpu_id=str(args.lact_gpu_id),
+                current_fan_config=fan_config,
+                gpu_index=gpu_index,
+                afterburner_root=afterburner_root,
+                section=afterburner_runtime_options.get("afterburner_profile") or None,
+                device_profile_hint=afterburner_runtime_options.get(
+                    "afterburner_device_profile"
+                )
+                or None,
+                dangerously_skip_validation=bool(
+                    afterburner_runtime_options.get("dangerously_skip_validation")
+                ),
+                preserve_vanilla_below_mv=afterburner_runtime_options.get(
+                    "preserve_vanilla_below_mv"
+                ),
+                include_vf_curve=include_vf_curve,
+                include_fan_curve=include_fan_curve,
+            )
+    except LactExportError as exc:
+        raise NvmlError(str(exc)) from exc
+
+    log(f"LACT Nvidia config written: {written_path}")
+    for warning in warnings:
+        log(f"LACT export warning: {warning}")
+    log(
+        "Apply deliberately, for example: "
+        f"sudo install -m 0644 {written_path} /etc/lact/config.yaml"
+    )
+
+
 def describe_current_gpu_policy_state(power_limits, clock_offsets):
     parts = []
 
@@ -1604,22 +1676,6 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
     if args.install_q2rtx:
         run_q2rtx_install()
         return
-    if str(args.export_lact_config).strip():
-        try:
-            output_path, warnings = write_lact_nvidia_config(
-                output_path=Path(args.export_lact_config),
-                gpu_id=str(args.lact_gpu_id),
-            )
-        except LactExportError as exc:
-            raise NvmlError(str(exc)) from exc
-        log(f"LACT Nvidia config written: {output_path}")
-        for warning in warnings:
-            log(f"LACT export warning: {warning}")
-        log(
-            "Apply deliberately, for example: "
-            f"sudo install -m 0644 {output_path} /etc/lact/config.yaml"
-        )
-        return
     config, config_path = load_config(args.config)
     gpu_config = config["gpu"]
     fan_config = config["fan"]
@@ -1749,6 +1805,14 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
         gpu_index=gpu_index,
         afterburner_runtime_options=afterburner_runtime_options,
     )
+    if str(args.export_lact_config).strip():
+        export_lact_config(
+            args=args,
+            fan_config=fan_config,
+            gpu_index=gpu_index,
+            afterburner_runtime_options=afterburner_runtime_options,
+        )
+        return
     if args.restore_defaults_from_config or args.auto_uv_voltage_scan:
         if args.restore_defaults_from_config:
             afterburner_runtime_options = ensure_afterburner_root_configured(
