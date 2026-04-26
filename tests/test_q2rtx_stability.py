@@ -87,7 +87,7 @@ def test_compat_openssl_accepts_rpm2cpio_tar_payload(
     )
     fake_rpm2cpio = tmp_path / "rpm2cpio"
     fake_rpm2cpio.write_text(
-        "#!/bin/sh\n/bin/cat \"$PAYLOAD_TAR\"\n",
+        '#!/bin/sh\n/bin/cat "$PAYLOAD_TAR"\n',
         encoding="utf-8",
     )
     fake_rpm2cpio.chmod(0o755)
@@ -102,6 +102,128 @@ def test_compat_openssl_accepts_rpm2cpio_tar_payload(
 
     lib_dir = _extract_compat_openssl_rpm(fake_rpm, tmp_path / "compat")
 
+    assert (lib_dir / "libssl.so.1.1").read_bytes() == b"ssl"
+    assert (lib_dir / "libcrypto.so.1.1").read_bytes() == b"crypto"
+
+
+def test_compat_openssl_does_not_feed_compressed_payload_to_cpio(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_rpm2cpio = tmp_path / "rpm2cpio"
+    fake_rpm2cpio.write_text(
+        "#!/bin/sh\nprintf '\\050\\265\\057\\375not-a-raw-cpio'\n",
+        encoding="utf-8",
+    )
+    fake_rpm2cpio.chmod(0o755)
+    fake_cpio = tmp_path / "cpio"
+    cpio_marker = tmp_path / "cpio-was-called"
+    fake_cpio.write_text(
+        f"#!/bin/sh\ntouch {cpio_marker}\nexit 0\n",
+        encoding="utf-8",
+    )
+    fake_cpio.chmod(0o755)
+    fake_rpm = tmp_path / "compat-openssl11.rpm"
+    fake_rpm.write_bytes(b"not used by fake rpm2cpio")
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    try:
+        _extract_compat_openssl_rpm(fake_rpm, tmp_path / "compat")
+    except StabilityTestError as exc:
+        assert "zstd-compressed payload" in str(exc)
+    else:
+        raise AssertionError("expected compressed non-cpio payload rejection")
+
+    assert not cpio_marker.exists()
+
+
+def test_compat_openssl_accepts_zstd_compressed_rpm2cpio_payload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    payload_tar = tmp_path / "payload.tar.gz"
+    _write_tar(
+        payload_tar,
+        {
+            "usr/lib64/libssl.so.1.1": b"ssl",
+            "usr/lib64/libcrypto.so.1.1": b"crypto",
+        },
+    )
+    fake_rpm2cpio = tmp_path / "rpm2cpio"
+    fake_rpm2cpio.write_text(
+        "#!/bin/sh\nprintf '\\050\\265\\057\\375compressed-cpio-placeholder'\n",
+        encoding="utf-8",
+    )
+    fake_rpm2cpio.chmod(0o755)
+    fake_zstd = tmp_path / "zstd"
+    fake_zstd.write_text(
+        '#!/bin/sh\n/bin/cat "$PAYLOAD_TAR"\n',
+        encoding="utf-8",
+    )
+    fake_zstd.chmod(0o755)
+    fake_rpm = tmp_path / "compat-openssl11.rpm"
+    fake_rpm.write_bytes(b"not used by fake rpm2cpio")
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("PAYLOAD_TAR", str(payload_tar))
+
+    lib_dir = _extract_compat_openssl_rpm(fake_rpm, tmp_path / "compat")
+
+    assert (lib_dir / "libssl.so.1.1").read_bytes() == b"ssl"
+    assert (lib_dir / "libcrypto.so.1.1").read_bytes() == b"crypto"
+
+
+def test_compat_openssl_tools_run_with_c_locale(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    env_marker = tmp_path / "locale-env"
+    fake_rpm2cpio = tmp_path / "rpm2cpio"
+    fake_rpm2cpio.write_text(
+        f"#!/bin/sh\nprintf '%s/%s' \"$LC_ALL\" \"$LANG\" > {env_marker}\nprintf '\\050\\265\\057\\375'\n",
+        encoding="utf-8",
+    )
+    fake_rpm2cpio.chmod(0o755)
+    fake_rpm = tmp_path / "compat-openssl11.rpm"
+    fake_rpm.write_bytes(b"not used by fake rpm2cpio")
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+    monkeypatch.setenv("LANG", "de_DE.UTF-8")
+
+    try:
+        _extract_compat_openssl_rpm(fake_rpm, tmp_path / "compat")
+    except StabilityTestError:
+        pass
+    else:
+        raise AssertionError("expected compressed non-cpio payload rejection")
+
+    assert env_marker.read_text(encoding="utf-8") == "C/C"
+
+
+def test_system_openssl_111_libs_can_be_found_with_ldconfig(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    system_lib = tmp_path / "multiarch"
+    system_lib.mkdir()
+    (system_lib / "libssl.so.1.1").write_bytes(b"ssl")
+    (system_lib / "libcrypto.so.1.1").write_bytes(b"crypto")
+    fake_ldconfig = tmp_path / "ldconfig"
+    fake_ldconfig.write_text(
+        "#!/bin/sh\n"
+        f"printf 'libssl.so.1.1 (libc6,x86-64) => {system_lib / 'libssl.so.1.1'}\\n'\n"
+        f"printf 'libcrypto.so.1.1 (libc6,x86-64) => {system_lib / 'libcrypto.so.1.1'}\\n'\n",
+        encoding="utf-8",
+    )
+    fake_ldconfig.chmod(0o755)
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    lib_dir = _copy_system_openssl_111_libs(tmp_path / "compat")
+
+    assert lib_dir is not None
     assert (lib_dir / "libssl.so.1.1").read_bytes() == b"ssl"
     assert (lib_dir / "libcrypto.so.1.1").read_bytes() == b"crypto"
 
