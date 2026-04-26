@@ -5,9 +5,36 @@ PenguinBurner tests your GPU under load, finds a stable undervolt, and saves it
 for normal foreground or daemon runtime. MSI Afterburner import is still
 available as an optional fallback path.
 
+## Quick Start From PyPI
+
+Install the published package:
+
+```bash
+python -m pip install --user --upgrade penguin-burner
+```
+
+Start PenguinBurner. On a clean first run, it automatically starts the
+foreground Auto-UV scan:
+
+```bash
+sudo ~/.local/bin/penguin-burner
+```
+
+After Auto-UV finishes and saves a final curve, start normal daemon runtime:
+
+```bash
+sudo ~/.local/bin/penguin-burner --daemonize
+```
+
+To include PenguinBurner's saved fan curve in daemon mode:
+
+```bash
+sudo ~/.local/bin/penguin-burner --daemonize --silent-fan-curve
+```
+
 ## Auto-UV Quick Start
 
-You do not need an MSI Afterburner profile. On a clean first run, start
+You do not need an MSI Afterburner profile. From a local checkout, start
 PenguinBurner with no arguments:
 
 ```bash

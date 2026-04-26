@@ -40,7 +40,7 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
             install_systemd_service = True
             index += 1
             continue
-        if arg == "--uninstall-systemd-service":
+        if arg in ("--uninstall-systemd-service", "--deinstall-systemd-service"):
             uninstall_systemd_service = True
             index += 1
             continue

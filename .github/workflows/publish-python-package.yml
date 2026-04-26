@@ -22,10 +22,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install build tools
-        run: python -m pip install --upgrade build
+        run: python -m pip install --upgrade build twine
 
       - name: Build package
         run: python -m build
+
+      - name: Check package metadata
+        run: python -m twine check dist/*
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
