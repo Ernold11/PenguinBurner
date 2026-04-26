@@ -12,6 +12,8 @@ import sys
 import time
 import traceback
 
+from subprocess_locale import stable_subprocess_env
+
 from afterburner.fan_curve import (
     load_afterburner_fan_settings,
     parse_sw_auto_fan_curve,
@@ -469,6 +471,7 @@ def _debug_log_runtime_environment():
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=stable_subprocess_env(),
             check=False,
         )
     except Exception as exc:
@@ -495,6 +498,7 @@ def _debug_log_runtime_environment():
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=stable_subprocess_env(),
             check=False,
         )
     except Exception as exc:

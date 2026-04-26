@@ -16,6 +16,7 @@ from penguin_burner_paths import (
     discover_afterburner_device_profiles,
     resolve_afterburner_root,
 )
+from subprocess_locale import stable_subprocess_env
 
 DEFAULT_PROFILE = default_afterburner_device_profile()
 DEFAULT_SECTION = "startup"
@@ -67,6 +68,7 @@ def _detect_active_nvidia_gpus():
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=stable_subprocess_env(),
             stderr=subprocess.DEVNULL,
         )
     except Exception:

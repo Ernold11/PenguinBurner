@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import time
 
+from subprocess_locale import stable_subprocess_env
+
 from .assets import _validate_demo_name, resolve_q2rtx_executable, resolve_workload
 from .constants import HIDDEN_WINDOW_POSITION
 from .identity import _prepare_q2rtx_subprocess_env, _resolve_q2rtx_run_identity
@@ -337,6 +339,7 @@ def _managed_q2rtx_process_groups(config: Q2RTXStabilityConfig) -> set[int]:
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=stable_subprocess_env(),
         check=False,
     )
     if result.returncode != 0:

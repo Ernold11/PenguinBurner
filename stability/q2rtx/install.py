@@ -17,6 +17,8 @@ from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
+from subprocess_locale import stable_subprocess_env
+
 from .assets import _effective_q2rtx_xdg_dir, resolve_q2rtx_executable
 from .constants import (
     DEFAULT_INSTALL_CACHE_DIR,
@@ -332,10 +334,7 @@ def _copy_preserving_link(src: Path, dst: Path) -> None:
 
 
 def _subprocess_c_locale_env() -> dict[str, str]:
-    env = dict(os.environ)
-    env["LC_ALL"] = "C"
-    env["LANG"] = "C"
-    return env
+    return stable_subprocess_env()
 
 
 def _payload_starts_with_cpio_header(payload: bytes) -> bool:
@@ -711,7 +710,7 @@ def _detect_missing_shared_libraries(
             text=True,
             encoding="utf-8",
             errors="replace",
-            env=env,
+            env=stable_subprocess_env(env),
         )
     except OSError:
         return []

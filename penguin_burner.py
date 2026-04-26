@@ -91,6 +91,7 @@ from runtime_debug import (
     enable_stdio_capture,
     log,
 )
+from subprocess_locale import stable_subprocess_env
 from runtime_service import (
     DEFAULT_JOURNAL_HOURS,
     daemonize_with_systemd,
@@ -1317,6 +1318,7 @@ def run_nvidia_smi(args):
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=stable_subprocess_env(),
             check=False,
         )
     except FileNotFoundError as exc:

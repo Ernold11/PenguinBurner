@@ -7,6 +7,8 @@ import shlex
 import shutil
 import subprocess
 
+from subprocess_locale import stable_subprocess_env
+
 
 SYSTEMD_RUN = shutil.which("systemd-run") or "systemd-run"
 SYSTEMCTL = shutil.which("systemctl") or "systemctl"
@@ -117,6 +119,7 @@ def run_checked_subprocess(args):
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=stable_subprocess_env(),
         check=False,
     )
     if result.returncode != 0:
@@ -161,7 +164,9 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
         )
 
     unit_path = systemd_service_unit_path()
-    unit_path.write_text(build_systemd_service_unit(program_file, argv), encoding="utf-8")
+    unit_path.write_text(
+        build_systemd_service_unit(program_file, argv), encoding="utf-8"
+    )
     run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
     subprocess.run(
         [SYSTEMCTL, "reset-failed", unit_path.name],
@@ -169,6 +174,7 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=stable_subprocess_env(),
         check=False,
     )
     run_checked_subprocess([SYSTEMCTL, "enable", "--now", unit_path.name])
@@ -185,7 +191,11 @@ def uninstall_systemd_service(*, log):
         )
 
     unit_path = systemd_service_unit_path()
-    subprocess.run([SYSTEMCTL, "disable", "--now", unit_path.name], check=False)
+    subprocess.run(
+        [SYSTEMCTL, "disable", "--now", unit_path.name],
+        env=stable_subprocess_env(),
+        check=False,
+    )
     if unit_path.exists():
         unit_path.unlink()
     run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
@@ -195,6 +205,7 @@ def uninstall_systemd_service(*, log):
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=stable_subprocess_env(),
         check=False,
     )
     log(f"Removed {unit_path.name}.")
@@ -210,6 +221,7 @@ def clear_existing_penguin_burner_unit_for_daemonize(*, log):
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=stable_subprocess_env(),
         check=False,
     )
     if unit_path.exists():
@@ -222,6 +234,7 @@ def clear_existing_penguin_burner_unit_for_daemonize(*, log):
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=stable_subprocess_env(),
         check=False,
     )
 
@@ -238,6 +251,7 @@ def stop_existing_penguin_burner_runtime(*, log):
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=stable_subprocess_env(),
         check=False,
     )
     if result.returncode == 0:
@@ -248,6 +262,7 @@ def stop_existing_penguin_burner_runtime(*, log):
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=stable_subprocess_env(),
         check=False,
     )
 
@@ -297,6 +312,7 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=stable_subprocess_env(),
         check=False,
     )
     output = (result.stdout.strip() or result.stderr.strip()).strip()

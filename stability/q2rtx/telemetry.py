@@ -6,6 +6,7 @@ import shutil
 import subprocess
 
 from hidden_nvml_voltage import create_hidden_voltage_reader
+from subprocess_locale import stable_subprocess_env
 
 from .models import TelemetrySample
 
@@ -138,6 +139,7 @@ def query_gpu_metrics(
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=stable_subprocess_env(),
         )
     except (OSError, subprocess.SubprocessError):
         if voltage_mv is None:
@@ -197,6 +199,7 @@ def _query_xid_messages_since(started_at: datetime) -> list[str]:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                env=stable_subprocess_env(),
             )
         except (OSError, subprocess.SubprocessError):
             continue
