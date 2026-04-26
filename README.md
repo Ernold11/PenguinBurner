@@ -24,7 +24,7 @@ To clear old Auto-UV results and start fresh:
 sudo ./penguin_burner.sh --fresh-auto-uv-scan
 ```
 
-![Auto-UV result summary](auto_uv_result_summary_terminal.png)
+![Auto-UV result summary](auto_uv_result_summary_terminal_2026.png)
 
 Example Auto-UV result summary: before/after power draw, core clock, and efficiency shown after the final verification.
 
