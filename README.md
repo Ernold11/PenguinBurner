@@ -20,23 +20,27 @@ foreground Auto-UV scan:
 sudo penguin-burner
 ```
 
-After Auto-UV finishes and saves a final curve, start normal daemon runtime:
+After Auto-UV finishes and saves a final curve, install the persistent systemd
+runtime service:
 
 ```bash
-sudo penguin-burner --daemonize
+sudo penguin-burner --install-systemd-service
 ```
 
-To include PenguinBurner's saved fan curve in daemon mode:
+To include PenguinBurner's saved fan curve in the systemd service:
 
 ```bash
-sudo penguin-burner --daemonize --silent-fan-curve
+sudo penguin-burner --install-systemd-service --silent-fan-curve
 ```
 
 The package also installs `pburn` as a short alias:
 
 ```bash
-sudo pburn --daemonize --silent-fan-curve
+sudo pburn --install-systemd-service --silent-fan-curve
 ```
+
+For one-off daemon runtime without installing a boot-time service, use
+`sudo penguin-burner --daemonize`.
 
 ## Auto-UV Quick Start
 
