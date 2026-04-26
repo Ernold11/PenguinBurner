@@ -140,6 +140,21 @@ sudo ./penguin_burner.sh --daemonize
 
 The saved V/F curve is stored in PenguinBurner's user config directory.
 
+To export the saved V/F and fan curves as a complete Nvidia-only LACT config:
+
+```bash
+lact cli list-gpus
+sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
+  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
+```
+
+Review the generated file before replacing LACT's config:
+
+```bash
+sudo install -m 0644 lact-config.yaml /etc/lact/config.yaml
+sudo systemctl restart lactd
+```
+
 If you deliberately want to test an imported Afterburner curve instead, use:
 
 ```bash

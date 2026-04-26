@@ -40,6 +40,7 @@ from afterburner.vfcurve import (
 from dry_run_preview import run_afterburner_dry_run
 from hidden_nvapi_vf import create_hidden_vf_curve_reader
 from hidden_nvml_voltage import create_hidden_voltage_reader
+from lact import LactExportError, write_lact_nvidia_config
 from afterburner.import_fan_curve import (
     build_imported_fan_section,
     write_config as write_runtime_config,
@@ -400,6 +401,20 @@ def parse_main_args(argv):
             "Clear previous Auto-UV state and immediately start a foreground "
             "Auto-UV scan. Afterburner imports and Q2RTX downloads are not removed."
         ),
+    )
+    parser.add_argument(
+        "--export-lact-config",
+        default="",
+        help=(
+            "Write a complete Nvidia-only LACT config.yaml from the saved "
+            "Auto-UV V/F and fan curves. Use --lact-gpu-id with the id from "
+            "`lact cli list-gpus`."
+        ),
+    )
+    parser.add_argument(
+        "--lact-gpu-id",
+        default="",
+        help="LACT GPU id to use in --export-lact-config output.",
     )
     parser.add_argument(
         "--stability-seconds",
@@ -1588,6 +1603,22 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
         return
     if args.install_q2rtx:
         run_q2rtx_install()
+        return
+    if str(args.export_lact_config).strip():
+        try:
+            output_path, warnings = write_lact_nvidia_config(
+                output_path=Path(args.export_lact_config),
+                gpu_id=str(args.lact_gpu_id),
+            )
+        except LactExportError as exc:
+            raise NvmlError(str(exc)) from exc
+        log(f"LACT Nvidia config written: {output_path}")
+        for warning in warnings:
+            log(f"LACT export warning: {warning}")
+        log(
+            "Apply deliberately, for example: "
+            f"sudo install -m 0644 {output_path} /etc/lact/config.yaml"
+        )
         return
     config, config_path = load_config(args.config)
     gpu_config = config["gpu"]

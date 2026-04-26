@@ -76,6 +76,39 @@ Saved Auto-UV files are written under PenguinBurner's user config directory:
 
 More details: [Auto-UV quick guide](docs/auto-uv.md).
 
+To export the saved Auto-UV V/F and fan curves as a complete Nvidia-only LACT
+config:
+
+```bash
+lact cli list-gpus
+sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
+  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
+```
+
+To export a validated Afterburner profile instead:
+
+```bash
+sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
+  --lact-source afterburner \
+  --afterburner-dir "$AFTERBURNER_ROOT" \
+  --section Profile1 \
+  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
+```
+
+Review the file, then install it deliberately if it matches your LACT GPU id:
+
+```bash
+sudo install -m 0644 lact-config.yaml /etc/lact/config.yaml
+sudo systemctl restart lactd
+```
+
+![LACT imported Auto-UV curve](lact_auto_uv_import.png)
+
+Example LACT result after importing PenguinBurner's saved Auto-UV curve. The
+active curve is the exported undervolt: lower voltage bins ramp normally, then
+the tuned load range flattens at the verified target clock while LACT keeps the
+driver's original base curve visible underneath for comparison.
+
 If you already have a known-good MSI Afterburner profile, you can still
 preview/import it with:
 
@@ -171,6 +204,9 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--fresh-auto-uv-scan`: clear previous Auto-UV scan state and immediately start a new foreground scan.
 - `--clear-auto-uv-state`: clear previous Auto-UV scan state and exit.
 - `--install-q2rtx`: download the managed Q2RTX workload without starting a scan.
+- `--export-lact-config PATH`: write a complete Nvidia-only LACT `config.yaml` from the saved Auto-UV V/F and fan curves.
+- `--lact-source auto-uv|afterburner`: choose the LACT export source; default `auto-uv`. The `afterburner` source uses the same Afterburner selection flags as `--dry-run`.
+- `--lact-gpu-id ID`: LACT GPU id for `--export-lact-config`; get it from `lact cli list-gpus`.
 - `--auto-uv-final-seconds N`: final verification duration after the best curve is selected; default `600`.
 - `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default `10.0`.
 - `--auto-uv-overclock-budget-ratio N`: fraction of `--auto-uv-max-clock-drop-pct` available as total overclock budget; default `0.4`, clamped to `0.0..1.0`.
