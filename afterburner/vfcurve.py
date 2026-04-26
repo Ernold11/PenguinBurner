@@ -65,6 +65,8 @@ def _detect_active_nvidia_gpus():
                 "--format=csv,noheader",
             ],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stderr=subprocess.DEVNULL,
         )
     except Exception:

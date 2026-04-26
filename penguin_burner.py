@@ -498,15 +498,25 @@ def parse_main_args(argv):
         ),
     )
     parser.add_argument(
+        "--auto-uv-overclock-budget-ratio",
         "--auto-uv-clock-bump-budget-ratio",
+        dest="auto_uv_clock_bump_budget_ratio",
         type=float,
         default=None,
         help=(
             "Fraction of --auto-uv-max-clock-drop-pct available as total Auto-UV "
-            "clock-bump budget; each recovery spends only the measured clock "
+            "overclock budget; each recovery spends only the measured clock "
             "shortfall plus a small safety step. "
             f"default {AUTO_UV_DEFAULTS.clock_bump_budget_ratio:.2f}. "
             "Clamped to 0.0..1.0."
+        ),
+    )
+    parser.add_argument(
+        "--experimental-auto-uv2",
+        action="store_true",
+        help=(
+            "Use the experimental readable Auto-UV v2 candidate sweep. "
+            "Baseline discovery and final verification still use the stable scanner."
         ),
     )
     parser.add_argument(
@@ -1265,6 +1275,8 @@ def run_nvidia_smi(args):
             [NVIDIA_SMI, *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
     except FileNotFoundError as exc:
@@ -1691,6 +1703,8 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
             0.0,
             min(1.0, float(args.auto_uv_clock_bump_budget_ratio)),
         )
+    if args.experimental_auto_uv2:
+        afterburner_runtime_options["experimental_auto_uv2"] = True
     if args.dangerously_skip_validation:
         afterburner_runtime_options["dangerously_skip_validation"] = True
     prefer_afterburner_curve = bool(args.prefer_afterburner_curve)

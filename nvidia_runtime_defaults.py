@@ -45,6 +45,8 @@ def _run_nvidia_smi_reset(args: list[str]) -> tuple[bool, str]:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except Exception as exc:
         return False, str(exc)

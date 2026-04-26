@@ -467,6 +467,8 @@ def _debug_log_runtime_environment():
             [NVIDIA_SMI, "--version"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
     except Exception as exc:
@@ -491,6 +493,8 @@ def _debug_log_runtime_environment():
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
     except Exception as exc:

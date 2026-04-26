@@ -115,6 +115,8 @@ def run_checked_subprocess(args):
         args,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if result.returncode != 0:
@@ -165,6 +167,8 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
         [SYSTEMCTL, "reset-failed", unit_path.name],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     run_checked_subprocess([SYSTEMCTL, "enable", "--now", unit_path.name])
@@ -189,6 +193,8 @@ def uninstall_systemd_service(*, log):
         [SYSTEMCTL, "reset-failed", unit_path.name],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     log(f"Removed {unit_path.name}.")
@@ -202,6 +208,8 @@ def clear_existing_penguin_burner_unit_for_daemonize(*, log):
         [SYSTEMCTL, "disable", "--now", unit_name],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if unit_path.exists():
@@ -212,6 +220,8 @@ def clear_existing_penguin_burner_unit_for_daemonize(*, log):
         [SYSTEMCTL, "reset-failed", unit_name],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
 
@@ -226,6 +236,8 @@ def stop_existing_penguin_burner_runtime(*, log):
         [SYSTEMCTL, "stop", unit_name],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if result.returncode == 0:
@@ -234,6 +246,8 @@ def stop_existing_penguin_burner_runtime(*, log):
         [SYSTEMCTL, "reset-failed", unit_name],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
 
@@ -281,6 +295,8 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     output = (result.stdout.strip() or result.stderr.strip()).strip()

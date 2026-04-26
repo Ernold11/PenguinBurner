@@ -359,6 +359,8 @@ def _extract_compat_openssl_rpm(rpm_path: Path, compat_root: Path) -> Path:
                 stdin=rpm2cpio_proc.stdout,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
             )
         finally:
@@ -480,6 +482,8 @@ def _detect_missing_shared_libraries(
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env=env,
         )
     except OSError:

@@ -335,6 +335,8 @@ def _managed_q2rtx_process_groups(config: Q2RTXStabilityConfig) -> set[int]:
         ["ps", "-eo", "pid=,pgid=,args="],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if result.returncode != 0:

@@ -272,7 +272,7 @@ def _run_final_verification_and_save(
                     "Final long verification",
                     [
                         "The long check missed the loaded-clock floor.",
-                        f"Retrying the final verification with a budgeted curve bump ({_format_clock_bump_budget(used_pct=final_clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)}).",
+                        f"Retrying the final verification with a budgeted overclock ({_format_clock_bump_budget(used_pct=final_clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)}).",
                         f"New final-check target: {int(bumped_candidate.target_clock_mhz)}MHz at {int(final_voltage_mv)}mV.",
                     ],
                 )
@@ -304,7 +304,7 @@ def _run_final_verification_and_save(
                 _log_phase(
                     log,
                     "final-verify",
-                    f"clock-bump retry armed "
+                    f"overclock retry armed "
                     f"attempt={int(final_clock_bump_recovery_count)} "
                     f"{_format_clock_bump_budget(used_pct=final_clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                     f"target={int(previous_final_lock_clock_mhz)}->{int(final_lock_clock_mhz)}MHz "
@@ -327,7 +327,7 @@ def _run_final_verification_and_save(
             _log_phase(
                 log,
                 "final-verify",
-                "clock-bump budget was already used, but final long "
+                "overclock budget was already used, but final long "
                 "verification hit only the clock-floor guardrail; accepting "
                 "the lowest curve instead of walking voltage upward "
                 f"reason={reason}",

@@ -213,7 +213,7 @@ def _keep_bumped_target_floor(
         source_plan,
         candidate_voltage_mv=int(candidate_voltage_mv),
         target_clock_mhz=bumped_floor_mhz,
-        label=f"{context} keep-accepted-clock-bump",
+        label=f"{context} keep-accepted-overclock",
     )
     _log_phase(
         log,
@@ -411,7 +411,7 @@ def _run_candidate_sweep(
                 _log_phase(
                     log,
                     "candidate",
-                    f"preemptive clock bump predicted-floor-miss "
+                    f"preemptive overclock predicted-floor-miss "
                     f"attempt={int(clock_bump_recovery_count)} "
                     f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                     f"target={int(bump_source_clock_mhz)}->{int(candidate_target_mhz)}MHz "
@@ -424,7 +424,7 @@ def _run_candidate_sweep(
             label=(
                 f"voltage={candidate_voltage_mv}mV phase={phase} "
                 + (
-                    "target=accepted-clock-bump"
+                    "target=accepted-overclock"
                     if clock_bump_last_target_mhz is not None
                     else "target=last-probe-real-clock"
                 )
@@ -673,7 +673,7 @@ def _run_candidate_sweep(
                                 _log_phase(
                                     log,
                                     "candidate",
-                                    f"low-clock-recovery bump budget reached "
+                                    f"low-clock-recovery overclock budget reached "
                                     f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)}; "
                                     f"continuing voltage descent with accepted curve "
                                     f"{int(stable_voltage_mv)}mV@{int(stable_lock_clock_mhz)}MHz",
@@ -769,7 +769,7 @@ def _run_candidate_sweep(
                     _log_phase(
                         log,
                         "candidate",
-                        f"low-clock-recovery bump budget reached after failed probe "
+                        f"low-clock-recovery overclock budget reached after failed probe "
                         f"{_format_clock_bump_budget(used_pct=clock_bump_budget_used_pct, limit_pct=clock_bump_budget_limit_pct)} "
                         f"voltage={candidate.candidate_voltage_mv}mV "
                         f"target={int(recovery_source_target_mhz)}MHz "
