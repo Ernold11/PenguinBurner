@@ -145,8 +145,12 @@ To export the saved V/F and fan curves as a complete Nvidia-only LACT config:
 ```bash
 lact cli list-gpus
 sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
-  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
+  --lact-gpu-id "YOUR-LACT-GPU-ID"
 ```
+
+Use the exact GPU id printed by `lact cli list-gpus` for your machine.
+PenguinBurner writes that value as the key under `gpus:` in LACT's config; the
+id is machine-specific and should not be copied from someone else's example.
 
 To export a validated Afterburner profile instead:
 
@@ -155,7 +159,7 @@ sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
   --lact-source afterburner \
   --afterburner-dir "$AFTERBURNER_ROOT" \
   --section Profile1 \
-  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
+  --lact-gpu-id "YOUR-LACT-GPU-ID"
 ```
 
 The default LACT export writes only the V/F curve. Add `--silent-fan-curve` to

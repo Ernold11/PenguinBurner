@@ -82,8 +82,12 @@ config:
 ```bash
 lact cli list-gpus
 sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
-  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
+  --lact-gpu-id "YOUR-LACT-GPU-ID"
 ```
+
+`--lact-gpu-id` must be the exact GPU id shown by `lact cli list-gpus` on your
+machine. It is the key LACT uses under `gpus:` in `/etc/lact/config.yaml`, and it
+is not a reusable example value.
 
 To export a validated Afterburner profile instead:
 
@@ -92,7 +96,7 @@ sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
   --lact-source afterburner \
   --afterburner-dir "$AFTERBURNER_ROOT" \
   --section Profile1 \
-  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
+  --lact-gpu-id "YOUR-LACT-GPU-ID"
 ```
 
 By default the LACT export writes only the V/F curve. Add `--silent-fan-curve`
@@ -102,7 +106,7 @@ fan settings and leave LACT's V/F curve untouched:
 ```bash
 sudo ./penguin_burner.sh --export-lact-config lact-fan-config.yaml \
   --fan-curve-export \
-  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
+  --lact-gpu-id "YOUR-LACT-GPU-ID"
 ```
 
 Review the file, then install it deliberately if it matches your LACT GPU id:
