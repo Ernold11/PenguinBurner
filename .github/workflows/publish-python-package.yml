@@ -54,7 +54,36 @@ jobs:
           name: python-package-distributions
           path: dist/
 
+      - name: Check whether version already exists on PyPI
+        id: pypi-version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(
+            python - <<'PY'
+          from pathlib import Path
+          import re
+
+          for path in Path("dist").glob("penguin_burner-*.tar.gz"):
+              match = re.fullmatch(r"penguin_burner-(.+)\.tar\.gz", path.name)
+              if match:
+                  print(match.group(1))
+                  break
+          else:
+              raise SystemExit("could not infer package version from dist/")
+          PY
+          )"
+          status="$(curl -fsS -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/penguin-burner/${version}/json" || true)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [ "$status" = "200" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "penguin-burner ${version} already exists on PyPI; skipping publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish package to PyPI
+        if: steps.pypi-version.outputs.exists != 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
