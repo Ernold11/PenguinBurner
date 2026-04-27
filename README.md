@@ -2,15 +2,13 @@
   <img src="docs/assets/penguin-burner-logo.png" alt="PenguinBurner logo" width="180">
 </p>
 
-# Nvidia GPU Undervolting Tool
+# Penguin Burner - Nvidia GPU Undervolting Tool
 
-PenguinBurner is the Nvidia GPU Undervolting Tool. It is the ultimate NVIDIA undervolting companion on Linux. Its main feature is automatic GPU undervolting: PenguinBurner tests your GPU under gaming and compute load, finds the most efficient stable undervolt, and can save it as a systemd daemon when you decide to apply it.
+**PenguinBurner** is the **Nvidia GPU Undervolting** Tool. It is the ultimate NVIDIA undervolting companion on Linux. Its main feature is **automatic** GPU undervolting: PenguinBurner tests your GPU under gaming and compute load, finds the most efficient stable undervolt, and can save it as a systemd daemon when you decide to apply it.
 
-It also supports importing Windows MSI Afterburner V/F curves and exporting fine-tuned V/F curves to the LACT Linux GPU control tool.
+PenguinBurner is proven to work on modern Linux systems with the **NVIDIA proprietary** graphics driver. For best results, use a up to date driver. Supported GPUs are NVIDIA GeForce RTX 50 series Blackwell cards and, potentially, RTX 40 series Ada Lovelace cards. Older GPUs may miss required driver-level voltage/frequency control functionality.
 
-PenguinBurner is proven to work on modern Linux systems with the NVIDIA proprietary graphics driver. For best results, use a current driver, preferably the latest 595 series. Supported GPUs are NVIDIA GeForce RTX 50 series Blackwell cards and, potentially, RTX 40 series Ada Lovelace cards. Older GPUs may miss required driver-level voltage/frequency control functionality.
-
-GPU undervolting is meant to make your graphics card consume significantly less power while giving up as little performance as possible. The practical result can be dead-silent fan operation, lower temperatures, and lower electricity bills. PenguinBurner automatically searches for the operating sweet spot of your NVIDIA GPU, so you do not have to resort to trial and error or risk introducing avoidable system instability.
+GPU undervolting is meant to make your graphics card consume significantly less power while giving up as little performance as possible. The practical result can be **dead-silent fan** operation, **lower temperatures**, and lower electricity bills. PenguinBurner automatically searches for the operating sweet spot of your NVIDIA GPU, so you do not have to resort to trial and error or risk introducing avoidable system instability.
 
 ## Install
 
@@ -31,7 +29,7 @@ If your shell cannot find the commands after installation, make sure `~/.local/b
 
 ## Automatic Undervolting
 
-Core PenguinBurner component in action: algorithmic Auto Undervolting with built-in performance and stability checks based on a path-tracing gaming scenario, Q2RTX, and a custom CUDA compute test.
+Core PenguinBurner component in action: algorithmic Auto Undervolting with built-in performance and stability checks based on a path-tracing gaming scenario, **Q2RTX**, and a custom **CUDA** compute test.
 
 ![PenguinBurner Auto Undervolting V/F curve](1-uv-curve.png)
 
