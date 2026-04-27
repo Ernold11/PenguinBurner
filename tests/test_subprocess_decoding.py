@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import auto_uv.artifacts as auto_uv_artifacts
 import penguin_burner
@@ -39,18 +40,38 @@ def test_invalid_utf8_in_unsafe_voltage_state_does_not_crash(
     assert entries[0]["reason"].startswith("bad ")
 
 
-def test_invalid_utf8_in_final_curve_state_reports_json_error(
+def test_invalid_utf8_in_profile_path_does_not_report_codec_error(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    config_dir = tmp_path
-    (config_dir / "auto-uv-final-curve.json").write_bytes(b"\x9b")
+    profile_path = tmp_path / "bad-profile.json"
+    profile_path.write_bytes(b"\x9b")
 
-    monkeypatch.setattr(penguin_burner, "default_user_config_dir", lambda: config_dir)
+    monkeypatch.setattr(penguin_burner, "default_user_config_dir", lambda: tmp_path)
 
     try:
-        penguin_burner.load_auto_uv_final_curve()
+        penguin_burner.load_auto_uv_final_curve(str(profile_path))
     except Exception as exc:
         assert "codec" not in str(exc).lower()
     else:
         raise AssertionError("expected invalid JSON to fail")
+
+
+def test_json_events_omit_none_values(capsys) -> None:
+    penguin_burner.emit_json_event(
+        True,
+        "load_telemetry",
+        target_duration_s=None,
+        elapsed_s=1.25,
+        nested={"known": 1, "unknown": None},
+        values=[1, None, {"kept": True, "dropped": None}],
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload == {
+        "event": "load_telemetry",
+        "elapsed_s": 1.25,
+        "nested": {"known": 1},
+        "values": [1, {"kept": True}],
+    }

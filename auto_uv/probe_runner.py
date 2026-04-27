@@ -5,6 +5,8 @@ from typing import Callable
 
 from afterburner.import_vf_curve import apply_plan
 from stability.q2rtx import (
+    DEFAULT_DEMO_NAME,
+    KNOWN_TIMEDEMO_RUN_SECONDS_HINTS,
     Q2RTXStabilityConfig,
     Q2RTXStabilityResult,
     StabilityTestError,
@@ -18,6 +20,8 @@ from .artifacts import (
     _record_unsafe_uv_voltage,
     _write_uv_probe_in_progress,
 )
+from .artifact_paths import auto_uv_stop_requested
+from .events import AutoUvEventCallback, emit_event
 from .models import AutoUvProbeSummary
 from .probe_metrics import (
     _history_average,
@@ -39,6 +43,75 @@ from .tuning import (
     AUTO_UV_STALL_TUNING,
 )
 from .user_output import log_phase as _log_phase
+
+
+def _round_or_none(value: float | int | None) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), 2)
+
+
+def _companion_duration_s(command: tuple[str, ...] | None) -> float:
+    if not command:
+        return 0.0
+    parts = [str(part) for part in command]
+    for index, part in enumerate(parts[:-1]):
+        if part == "--duration-seconds":
+            try:
+                return max(0.0, float(parts[index + 1]))
+            except ValueError:
+                return 0.0
+    return 0.0
+
+
+def _expected_timedemo_loop_hint_s(config: Q2RTXStabilityConfig) -> float | None:
+    demo_name = str(config.demo_name).strip().lower()
+    hinted_demo_name = (
+        "q2demo1" if demo_name == str(DEFAULT_DEMO_NAME).lower() else demo_name
+    )
+    hinted_seconds = KNOWN_TIMEDEMO_RUN_SECONDS_HINTS.get(hinted_demo_name)
+    if hinted_seconds is None or float(hinted_seconds) <= 0.0:
+        return None
+    return float(hinted_seconds)
+
+
+def _progress_target_duration_s(
+    *,
+    q2rtx_config: Q2RTXStabilityConfig,
+    companion_duration_s: float,
+    expected_loop_s: float | None,
+    state: dict,
+    expected_total_duration_s: int | float | None = None,
+) -> float | None:
+    if expected_total_duration_s not in (None, ""):
+        try:
+            return max(1.0, float(expected_total_duration_s))
+        except (TypeError, ValueError):
+            pass
+
+    expected_runs = state.get("expected_runs")
+    if expected_runs is None and q2rtx_config.timedemo_loops is not None:
+        expected_runs = int(q2rtx_config.timedemo_loops)
+    q2rtx_duration_s = (
+        float(q2rtx_config.duration_s) if int(q2rtx_config.duration_s) > 0 else None
+    )
+    if expected_runs is not None and expected_loop_s is not None:
+        q2rtx_duration_s = float(expected_runs) * float(expected_loop_s)
+    if q2rtx_duration_s is None:
+        return None
+    return max(1.0, float(q2rtx_duration_s) + float(companion_duration_s))
+
+
+def _progress_elapsed_s_for_ui(state: dict) -> float:
+    for key in ("progress_elapsed_s", "elapsed_s", "net_elapsed_s"):
+        value = state.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            continue
+    return 0.0
 
 
 def _probe_phase_writes_crash_marker(phase_label: str) -> bool:
@@ -74,6 +147,8 @@ def _probe_voltage_candidate(
     marker_details: dict | None = None,
     suppress_unsafe_for_controlled_clock_abort: bool = False,
     suppress_unsafe_recording: bool = False,
+    expected_total_duration_s: int | None = None,
+    event_callback: AutoUvEventCallback | None = None,
 ) -> tuple[AutoUvProbeSummary, Q2RTXStabilityResult]:
     frame_reference = (
         int(stable_history[0].frames_per_run)
@@ -101,7 +176,8 @@ def _probe_voltage_candidate(
             latest_stable_probe.avg_seconds_per_run
             if latest_stable_probe is not None
             else _history_average(stable_history, "avg_seconds_per_run")
-        ),
+        )
+        or _expected_timedemo_loop_hint_s(q2rtx_config),
         "low_fps_streak": 0,
         "low_core_clock_streak": 0,
         "low_power_streak": 0,
@@ -126,9 +202,19 @@ def _probe_voltage_candidate(
         busy_power_floor_w = float(power_limit_w) * _percent(
             AUTO_UV_STALL_TUNING.busy_power_limit_pct
         )
+    companion_duration_s = _companion_duration_s(q2rtx_config.companion_command)
+
+    def _target_duration_s(state: dict) -> float | None:
+        return _progress_target_duration_s(
+            q2rtx_config=q2rtx_config,
+            companion_duration_s=float(companion_duration_s),
+            expected_loop_s=progress_state.get("expected_loop_s"),
+            state=state,
+            expected_total_duration_s=expected_total_duration_s,
+        )
 
     def _format_live_status(state: dict) -> str:
-        elapsed_s = float(state.get("elapsed_s", 0.0))
+        elapsed_s = _progress_elapsed_s_for_ui(state)
         latest_sample = state.get("latest_sample")
         running = str(state.get("running", "")).strip()
         live_voltage_mv = nvml_session.read_live_voltage_mv()
@@ -170,11 +256,12 @@ def _probe_voltage_candidate(
 
     def _progress_callback(state: dict) -> None:
         completed_runs = int(state.get("completed_runs", 0))
-        elapsed_s = float(state.get("elapsed_s", 0.0))
+        wall_elapsed_s = float(state.get("elapsed_s", 0.0))
+        progress_elapsed_s = _progress_elapsed_s_for_ui(state)
         timedemo_runs = list(state.get("timedemo_runs") or [])
         if completed_runs > int(progress_state["last_completed_runs"]):
             progress_state["last_completed_runs"] = completed_runs
-            progress_state["last_progress_elapsed_s"] = elapsed_s
+            progress_state["last_progress_elapsed_s"] = wall_elapsed_s
             current_loop_s = _mean([float(run.seconds) for run in timedemo_runs])
             if current_loop_s is not None:
                 progress_state["expected_loop_s"] = current_loop_s
@@ -219,8 +306,36 @@ def _probe_voltage_candidate(
         if log_context is not None and str(log_context).strip():
             live_status = f"{str(log_context).strip()} {live_status}"
         _log_phase(log, f"{phase_label}-live", live_status)
+        latest_sample = state.get("latest_sample")
+        if latest_sample is not None:
+            emit_event(
+                event_callback,
+                "load_telemetry",
+                stage=str(phase_label),
+                workload=str(state.get("running", "") or "q2rtx"),
+                voltage_mv=int(candidate_voltage_mv),
+                clock_mhz=int(lock_clock_mhz),
+                elapsed_s=round(float(progress_elapsed_s), 2),
+                target_duration_s=_round_or_none(_target_duration_s(state)),
+                measured_clock_mhz=_round_or_none(
+                    getattr(latest_sample, "core_clock_mhz", None)
+                ),
+                measured_voltage_mv=_round_or_none(
+                    getattr(latest_sample, "voltage_mv", None)
+                ),
+                power_w=_round_or_none(getattr(latest_sample, "power_w", None)),
+                temp_c=_round_or_none(
+                    getattr(latest_sample, "temperature_c", None)
+                ),
+                fan_pct=_round_or_none(
+                    getattr(latest_sample, "fan_speed_pct", None)
+                ),
+            )
 
     def _abort_callback(state: dict) -> str | None:
+        if auto_uv_stop_requested():
+            return "user-stop-requested"
+
         fatal_output_matches = list(state.get("fatal_output_matches") or [])
         if fatal_output_matches:
             return "fatal-q2rtx-output"
@@ -488,6 +603,8 @@ def _probe_voltage_candidate(
                 },
             )
             raise
+        if str(result.reason) == "user-stop-requested":
+            raise KeyboardInterrupt()
         if result.success:
             print_q2rtx_stability_result(result)
         else:

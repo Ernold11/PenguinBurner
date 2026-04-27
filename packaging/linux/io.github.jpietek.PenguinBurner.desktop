@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Nvidia GPU Undervolting Tool
+GenericName=Nvidia GPU Undervolting Tool
+Comment=Run PenguinBurner Auto-UV for Nvidia GPU undervolting and profile management
+Exec=penguin-burner
+Icon=penguin-burner
+Terminal=false
+Categories=Settings;HardwareSettings;Qt;
+Keywords=Penguin;Burner;Penguin Burner;PenguinBurner;penguin-burner;pburn;Nvidia;NVIDIA;GPU;Undervolt;Undervolting;Auto-UV;Q2RTX;CUDA;
+StartupNotify=true
+StartupWMClass=io.github.jpietek.PenguinBurner

@@ -62,13 +62,80 @@ def _probe_reason(result: object) -> str | None:
     return str(value) if value is not None else None
 
 
-def _candidate_uses_overclock(
-    state: AutoUv2SweepState,
-    candidate: AutoUvCurveCandidate,
-) -> bool:
+def _metric_regression_on_failed_probe(
+    hooks: AutoUv2SweepHooks,
+    probe: AutoUvProbeSummary,
+    stable_history: list[AutoUvProbeSummary],
+) -> str:
+    try:
+        evaluation_error = str(hooks.evaluate_probe(probe, stable_history) or "")
+    except Exception:
+        return ""
+    if evaluation_error.startswith(("fps-regression", "frame-count-regression")):
+        return evaluation_error
+    return ""
+
+
+def _probe_evaluation_error(
+    hooks: AutoUv2SweepHooks,
+    *,
+    probe: AutoUvProbeSummary,
+    probe_result: object,
+    stable_history: list[AutoUvProbeSummary],
+) -> str:
+    if _probe_success(probe_result):
+        return hooks.evaluate_probe(probe, stable_history)
+    return _metric_regression_on_failed_probe(hooks, probe, stable_history)
+
+
+def _state_uses_overclock(state: AutoUv2SweepState) -> bool:
     return (
         state.last_overclock_target_mhz is not None
-        and int(candidate.target_clock_mhz) >= int(state.last_overclock_target_mhz)
+        or float(state.persistent_overclock_pct) > 0.0
+    )
+
+
+def _accepted_candidate_pair(
+    hooks: AutoUv2SweepHooks,
+    *,
+    probed_candidate: AutoUvCurveCandidate,
+    probe: AutoUvProbeSummary,
+    uses_overclock: bool,
+) -> tuple[AutoUvCurveCandidate, AutoUvCurveCandidate]:
+    measured_candidate = probed_candidate
+    if hooks.normalize_accepted_candidate is not None:
+        measured_candidate = hooks.normalize_accepted_candidate(
+            probed_candidate,
+            probe,
+        )
+    active_candidate = probed_candidate if bool(uses_overclock) else measured_candidate
+    return active_candidate, measured_candidate
+
+
+def _roll_back_full_budget_target_after_hard_failure(
+    source_plan: list[dict],
+    *,
+    state: AutoUv2SweepState,
+    failed_target_mhz: int,
+) -> tuple[AutoUv2SweepState, int | None]:
+    if state.full_budget_target_mhz is None:
+        return state, None
+    if int(failed_target_mhz) != int(state.full_budget_target_mhz):
+        return state, None
+    backed_off = step_back_overclock_target(
+        source_plan,
+        current_target_mhz=int(failed_target_mhz),
+        last_overclock_target_mhz=int(state.full_budget_target_mhz),
+    )
+    if backed_off is None:
+        return state, None
+    return (
+        replace(
+            state,
+            full_budget_target_mhz=int(backed_off),
+            last_overclock_target_mhz=int(backed_off),
+        ),
+        int(backed_off),
     )
 
 
@@ -82,7 +149,7 @@ def _recover_and_update(
     reason: str,
     start_voltage_mv: int,
     reference_actual_voltage_mv: float | None,
-    preserve_vanilla_below_mv: int | None,
+    preserve_base_below_mv: int | None,
     min_search_voltage_mv: int,
 ) -> tuple[
     AutoUv2SweepState,
@@ -112,11 +179,12 @@ def _recover_and_update(
             True,
         )
 
-    if hooks.normalize_accepted_candidate is not None:
-        recovery_candidate = hooks.normalize_accepted_candidate(
-            recovery_candidate,
-            recovery_probe,
-        )
+    active_recovery_candidate, measured_recovery_candidate = _accepted_candidate_pair(
+        hooks,
+        probed_candidate=recovery_candidate,
+        probe=recovery_probe,
+        uses_overclock=float(state.persistent_overclock_pct) > 0.0,
+    )
 
     update = apply_probe_decision(
         source_plan,
@@ -126,22 +194,23 @@ def _recover_and_update(
             probe_failure_reason=None,
             evaluation_error=None,
             budget=state.budget,
-            candidate_used_overclock=state.last_overclock_target_mhz is not None,
+            candidate_used_overclock=_state_uses_overclock(state),
         ),
-        candidate=recovery_candidate,
+        candidate=active_recovery_candidate,
         probe=recovery_probe,
         start_voltage_mv=int(start_voltage_mv),
         reference_actual_voltage_mv=reference_actual_voltage_mv,
-        preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+        preserve_base_below_mv=preserve_base_below_mv,
         min_search_voltage_mv=int(min_search_voltage_mv),
-        recovered_voltage_mv=int(recovery_candidate.candidate_voltage_mv),
-        recovered_target_mhz=int(recovery_candidate.target_clock_mhz),
+        recovered_voltage_mv=int(active_recovery_candidate.candidate_voltage_mv),
+        recovered_target_mhz=int(active_recovery_candidate.target_clock_mhz),
+        measured_target_mhz=int(measured_recovery_candidate.target_clock_mhz),
     )
     if update.write_latest_verified:
-        hooks.write_latest_verified(recovery_candidate, recovery_probe)
+        hooks.write_latest_verified(active_recovery_candidate, recovery_probe)
     return (
         update.state,
-        recovery_candidate,
+        active_recovery_candidate,
         recovery_probe,
         AutoUv2SweepEvent("recover", update.reason),
         bool(update.stop),
@@ -157,9 +226,11 @@ def _overclock_and_update(
     reason: str,
     start_voltage_mv: int,
     reference_actual_voltage_mv: float | None,
-    preserve_vanilla_below_mv: int | None,
+    preserve_base_below_mv: int | None,
     min_search_voltage_mv: int,
     measured_clock_cap_mhz: float | None,
+    initial_core_clock_mhz: float | None,
+    min_core_clock_pct: float,
     stable_history: list[AutoUvProbeSummary],
     probe_history: list[AutoUvProbeSummary],
     attempt_index: int,
@@ -182,6 +253,8 @@ def _overclock_and_update(
             failed_candidate=current_candidate,
             reason=reason,
             cap_clock_mhz=measured_clock_cap_mhz or current_state.stable_target_mhz,
+            baseline_clock_mhz=initial_core_clock_mhz,
+            max_clock_drop_pct=max(0.0, 100.0 - float(min_core_clock_pct)),
         )
         if attempt is None:
             events.append(AutoUv2SweepEvent("stop", "overclock budget exhausted"))
@@ -199,8 +272,11 @@ def _overclock_and_update(
         previous_probe = stable_history[-1] if stable_history else None
         probe, probe_result = hooks.probe_candidate(attempt.candidate)
         probe_history.append(probe)
-        evaluation_error = (
-            "" if not _probe_success(probe_result) else hooks.evaluate_probe(probe, stable_history)
+        evaluation_error = _probe_evaluation_error(
+            hooks,
+            probe=probe,
+            probe_result=probe_result,
+            stable_history=stable_history,
         )
         decision = classify_probe_result(
             probe_success=_probe_success(probe_result),
@@ -225,7 +301,12 @@ def _overclock_and_update(
             reason = evaluation_error or _probe_reason(probe_result) or reason
             continue
         if decision.action == "accept":
-            accepted_candidate = attempt.candidate
+            accepted_candidate, measured_candidate = _accepted_candidate_pair(
+                hooks,
+                probed_candidate=attempt.candidate,
+                probe=probe,
+                uses_overclock=True,
+            )
             update = apply_probe_decision(
                 source_plan,
                 state=current_state,
@@ -234,8 +315,11 @@ def _overclock_and_update(
                 probe=probe,
                 start_voltage_mv=int(start_voltage_mv),
                 reference_actual_voltage_mv=reference_actual_voltage_mv,
-                preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+                preserve_base_below_mv=preserve_base_below_mv,
                 min_search_voltage_mv=int(min_search_voltage_mv),
+                probed_candidate=attempt.candidate,
+                candidate_used_new_overclock=True,
+                measured_target_mhz=int(measured_candidate.target_clock_mhz),
             )
             if update.write_latest_verified:
                 hooks.write_latest_verified(accepted_candidate, probe)
@@ -249,9 +333,18 @@ def _overclock_and_update(
                 last_overclock_target_mhz=current_state.last_overclock_target_mhz,
             )
             if backed_off is not None:
+                next_full_budget_target_mhz = current_state.full_budget_target_mhz
+                if (
+                    decision.action == "recover-upward"
+                    and next_full_budget_target_mhz is not None
+                    and int(current_candidate.target_clock_mhz)
+                    == int(next_full_budget_target_mhz)
+                ):
+                    next_full_budget_target_mhz = int(backed_off)
                 current_state = replace(
                     current_state,
                     last_overclock_target_mhz=int(backed_off),
+                    full_budget_target_mhz=next_full_budget_target_mhz,
                 )
                 events.append(
                     AutoUv2SweepEvent(
@@ -272,9 +365,11 @@ def _efficiency_overclock(
     stable_probe: AutoUvProbeSummary,
     start_voltage_mv: int,
     reference_actual_voltage_mv: float | None,
-    preserve_vanilla_below_mv: int | None,
+    preserve_base_below_mv: int | None,
     min_search_voltage_mv: int,
     measured_clock_cap_mhz: float | None,
+    initial_core_clock_mhz: float | None,
+    min_core_clock_pct: float,
     stable_history: list[AutoUvProbeSummary],
     probe_history: list[AutoUvProbeSummary],
     attempt_index: int,
@@ -287,6 +382,8 @@ def _efficiency_overclock(
         failed_candidate=stable_candidate,
         reason="efficiency-wall",
         cap_clock_mhz=measured_clock_cap_mhz or state.stable_target_mhz,
+        baseline_clock_mhz=initial_core_clock_mhz,
+        max_clock_drop_pct=max(0.0, 100.0 - float(min_core_clock_pct)),
     )
     if attempt is None:
         events.append(AutoUv2SweepEvent("efficiency-overclock", "no budget"))
@@ -301,8 +398,11 @@ def _efficiency_overclock(
     previous_probe = stable_history[-1] if stable_history else stable_probe
     probe, probe_result = hooks.probe_candidate(attempt.candidate)
     probe_history.append(probe)
-    evaluation_error = (
-        "" if not _probe_success(probe_result) else hooks.evaluate_probe(probe, stable_history)
+    evaluation_error = _probe_evaluation_error(
+        hooks,
+        probe=probe,
+        probe_result=probe_result,
+        stable_history=stable_history,
     )
     decision = classify_probe_result(
         probe_success=_probe_success(probe_result),
@@ -330,7 +430,12 @@ def _efficiency_overclock(
         events.append(AutoUv2SweepEvent("efficiency-overclock", "no-efficiency-gain"))
         return attempt.state, None, None, events
 
-    accepted_candidate = attempt.candidate
+    accepted_candidate, measured_candidate = _accepted_candidate_pair(
+        hooks,
+        probed_candidate=attempt.candidate,
+        probe=probe,
+        uses_overclock=True,
+    )
     update = apply_probe_decision(
         source_plan,
         state=attempt.state,
@@ -339,8 +444,11 @@ def _efficiency_overclock(
         probe=probe,
         start_voltage_mv=int(start_voltage_mv),
         reference_actual_voltage_mv=reference_actual_voltage_mv,
-        preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+        preserve_base_below_mv=preserve_base_below_mv,
         min_search_voltage_mv=int(min_search_voltage_mv),
+        probed_candidate=attempt.candidate,
+        candidate_used_new_overclock=True,
+        measured_target_mhz=int(measured_candidate.target_clock_mhz),
     )
     if update.write_latest_verified:
         hooks.write_latest_verified(accepted_candidate, probe)
@@ -361,7 +469,7 @@ def run_sweep(
     min_core_clock_pct: float,
     measured_clock_cap_mhz: float | None,
     reference_actual_voltage_mv: float | None,
-    preserve_vanilla_below_mv: int | None,
+    preserve_base_below_mv: int | None,
     min_search_voltage_mv: int,
     hooks: AutoUv2SweepHooks,
     efficiency_stop_streak: int = 0,
@@ -409,8 +517,11 @@ def run_sweep(
         previous_probe_for_table = stable_history[-1] if stable_history else stable_probe
         probe, probe_result = hooks.probe_candidate(choice.candidate)
         probe_history.append(probe)
-        evaluation_error = (
-            "" if not _probe_success(probe_result) else hooks.evaluate_probe(probe, stable_history)
+        evaluation_error = _probe_evaluation_error(
+            hooks,
+            probe=probe,
+            probe_result=probe_result,
+            stable_history=stable_history,
         )
         decision = classify_probe_result(
             probe_success=_probe_success(probe_result),
@@ -419,7 +530,7 @@ def run_sweep(
             ),
             evaluation_error=evaluation_error,
             budget=state.budget,
-            candidate_used_overclock=state.last_overclock_target_mhz is not None,
+            candidate_used_overclock=_state_uses_overclock(state),
         )
         events.append(AutoUv2SweepEvent("decision", decision.action))
         if hooks.log_probe_result is not None:
@@ -446,9 +557,11 @@ def run_sweep(
                 reason=_probe_reason(probe_result) or decision.reason,
                 start_voltage_mv=int(start_voltage_mv),
                 reference_actual_voltage_mv=reference_actual_voltage_mv,
-                preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+                preserve_base_below_mv=preserve_base_below_mv,
                 min_search_voltage_mv=int(min_search_voltage_mv),
                 measured_clock_cap_mhz=measured_clock_cap_mhz,
+                initial_core_clock_mhz=initial_core_clock_mhz,
+                min_core_clock_pct=float(min_core_clock_pct),
                 stable_history=stable_history,
                 probe_history=probe_history,
                 attempt_index=int(attempt),
@@ -463,6 +576,19 @@ def run_sweep(
             break
 
         if decision.action == "recover-upward":
+            if decision.should_back_off_overclock:
+                state, backed_off = _roll_back_full_budget_target_after_hard_failure(
+                    source_plan,
+                    state=state,
+                    failed_target_mhz=int(choice.candidate.target_clock_mhz),
+                )
+                if backed_off is not None:
+                    events.append(
+                        AutoUv2SweepEvent(
+                            "overclock-backoff",
+                            f"{choice.candidate.target_clock_mhz}->{int(backed_off)}MHz",
+                        )
+                    )
             (
                 state,
                 recovered_candidate,
@@ -478,7 +604,7 @@ def run_sweep(
                 reason=decision.reason,
                 start_voltage_mv=int(start_voltage_mv),
                 reference_actual_voltage_mv=reference_actual_voltage_mv,
-                preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+                preserve_base_below_mv=preserve_base_below_mv,
                 min_search_voltage_mv=int(min_search_voltage_mv),
             )
             events.append(event)
@@ -491,14 +617,16 @@ def run_sweep(
             continue
 
         candidate_for_update = choice.candidate
-        if (
-            hooks.normalize_accepted_candidate is not None
-            and decision.action in {"accept", "accept-lowest-floor-miss"}
-            and not _candidate_uses_overclock(state, choice.candidate)
-        ):
-            candidate_for_update = hooks.normalize_accepted_candidate(
-                choice.candidate,
-                probe,
+        measured_candidate_for_update = choice.candidate
+        choice_uses_overclock = _state_uses_overclock(state)
+        if decision.action in {"accept", "accept-lowest-floor-miss"}:
+            candidate_for_update, measured_candidate_for_update = (
+                _accepted_candidate_pair(
+                    hooks,
+                    probed_candidate=choice.candidate,
+                    probe=probe,
+                    uses_overclock=choice_uses_overclock,
+                )
             )
         update = apply_probe_decision(
             source_plan,
@@ -508,8 +636,11 @@ def run_sweep(
             probe=probe,
             start_voltage_mv=int(start_voltage_mv),
             reference_actual_voltage_mv=reference_actual_voltage_mv,
-            preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+            preserve_base_below_mv=preserve_base_below_mv,
             min_search_voltage_mv=int(min_search_voltage_mv),
+            probed_candidate=choice.candidate,
+            candidate_used_new_overclock=state.last_overclock_target_mhz is not None,
+            measured_target_mhz=int(measured_candidate_for_update.target_clock_mhz),
         )
         state = update.state
         events.append(AutoUv2SweepEvent("state", update.reason))
@@ -547,6 +678,9 @@ def run_sweep(
                 stop_candidate = (
                     (improved is False or bool(power_regression)) and measured_close
                 )
+                past_efficiency_stop_floor = float(voltage_drop_pct) >= float(
+                    min_efficiency_stop_voltage_drop_pct
+                )
                 if stop_candidate:
                     no_gain_streak += 1
                     if pending_stop_candidate is None:
@@ -556,7 +690,11 @@ def run_sweep(
                     no_gain_streak = 0
                     pending_stop_candidate = None
                     pending_stop_probe = None
-                if stop_candidate and not state.budget.spent_or_disabled:
+                if (
+                    stop_candidate
+                    and past_efficiency_stop_floor
+                    and not state.budget.spent_or_disabled
+                ):
                     (
                         state,
                         efficiency_candidate,
@@ -570,9 +708,11 @@ def run_sweep(
                         stable_probe=stable_probe,
                         start_voltage_mv=int(start_voltage_mv),
                         reference_actual_voltage_mv=reference_actual_voltage_mv,
-                        preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+                        preserve_base_below_mv=preserve_base_below_mv,
                         min_search_voltage_mv=int(min_search_voltage_mv),
                         measured_clock_cap_mhz=measured_clock_cap_mhz,
+                        initial_core_clock_mhz=initial_core_clock_mhz,
+                        min_core_clock_pct=float(min_core_clock_pct),
                         stable_history=stable_history,
                         probe_history=probe_history,
                         attempt_index=int(attempt),

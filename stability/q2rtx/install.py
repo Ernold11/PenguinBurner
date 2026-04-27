@@ -13,10 +13,12 @@ import subprocess
 import tarfile
 import tempfile
 import time
+from typing import Callable
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
+from penguin_burner_paths import claim_desktop_user_ownership
 from subprocess_locale import stable_subprocess_env
 
 from .assets import _effective_q2rtx_xdg_dir, resolve_q2rtx_executable
@@ -30,6 +32,9 @@ from .constants import (
     Q2RTX_RELEASES_API_URL,
 )
 from .models import Q2RTXInstallResult, StabilityTestError
+
+
+DependencyProgressCallback = Callable[[dict], None]
 
 
 def default_q2rtx_install_data_dir() -> Path:
@@ -70,6 +75,38 @@ def _require_https_url(url: str) -> str:
     if parsed.scheme != "https" or not parsed.netloc:
         raise StabilityTestError(f"refusing non-HTTPS download URL: {url}")
     return url
+
+
+def _emit_dependency_progress(
+    callback: DependencyProgressCallback | None,
+    percent: float,
+    detail: str,
+    **payload,
+) -> None:
+    if callback is None:
+        return
+    try:
+        percent_value = max(0.0, min(100.0, float(percent)))
+    except (TypeError, ValueError):
+        percent_value = 0.0
+    data = {
+        "label": "Downloading dependencies",
+        "percent": round(percent_value, 1),
+        "detail": str(detail),
+    }
+    data.update(payload)
+    callback(data)
+
+
+def _progress_range_value(
+    start_pct: float,
+    end_pct: float,
+    local_percent: float,
+) -> float:
+    start = max(0.0, min(100.0, float(start_pct)))
+    end = max(0.0, min(100.0, float(end_pct)))
+    local = max(0.0, min(100.0, float(local_percent)))
+    return start + ((end - start) * (local / 100.0))
 
 
 def _download_text(url: str) -> str:
@@ -159,9 +196,13 @@ def _download_file(
     *,
     label: str,
     show_progress: bool,
+    progress_callback: DependencyProgressCallback | None = None,
+    progress_start_pct: float = 0.0,
+    progress_end_pct: float = 100.0,
 ) -> None:
     url = _require_https_url(url)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    claim_desktop_user_ownership(destination.parent, include_parents=True)
     request = urllib_request.Request(
         url,
         headers={
@@ -183,6 +224,13 @@ def _download_file(
                     f"Downloading {label} to {destination}...",
                     flush=True,
                 )
+            _emit_dependency_progress(
+                progress_callback,
+                progress_start_pct,
+                f"Downloading {label}",
+                label=label,
+                destination=str(destination),
+            )
             with tmp_path.open("wb") as handle:
                 while True:
                     chunk = response.read(chunk_size)
@@ -190,26 +238,41 @@ def _download_file(
                         break
                     handle.write(chunk)
                     downloaded_bytes += len(chunk)
-                    if show_progress:
-                        now_monotonic = time.monotonic()
-                        if now_monotonic - last_update_monotonic >= 0.25:
-                            elapsed_s = max(now_monotonic - started_monotonic, 0.001)
-                            speed_bps = downloaded_bytes / elapsed_s
-                            if total_bytes > 0:
-                                percent = (downloaded_bytes / total_bytes) * 100.0
-                                status = (
-                                    f"\r  {percent:5.1f}%  "
-                                    f"{_format_size(downloaded_bytes)}/"
-                                    f"{_format_size(total_bytes)}  "
-                                    f"{_format_size(speed_bps)}/s"
-                                )
-                            else:
-                                status = (
-                                    f"\r  {_format_size(downloaded_bytes)}  "
-                                    f"{_format_size(speed_bps)}/s"
-                                )
+                    now_monotonic = time.monotonic()
+                    if now_monotonic - last_update_monotonic >= 0.25:
+                        elapsed_s = max(now_monotonic - started_monotonic, 0.001)
+                        speed_bps = downloaded_bytes / elapsed_s
+                        if total_bytes > 0:
+                            percent = (downloaded_bytes / total_bytes) * 100.0
+                            overall_percent = _progress_range_value(
+                                progress_start_pct,
+                                progress_end_pct,
+                                percent,
+                            )
+                            status = (
+                                f"\r  {percent:5.1f}%  "
+                                f"{_format_size(downloaded_bytes)}/"
+                                f"{_format_size(total_bytes)}  "
+                                f"{_format_size(speed_bps)}/s"
+                            )
+                        else:
+                            overall_percent = progress_start_pct
+                            status = (
+                                f"\r  {_format_size(downloaded_bytes)}  "
+                                f"{_format_size(speed_bps)}/s"
+                            )
+                        _emit_dependency_progress(
+                            progress_callback,
+                            overall_percent,
+                            f"Downloading {label}",
+                            label=label,
+                            downloaded_bytes=downloaded_bytes,
+                            total_bytes=total_bytes,
+                            destination=str(destination),
+                        )
+                        if show_progress:
                             print(status, end="", flush=True)
-                            last_update_monotonic = now_monotonic
+                        last_update_monotonic = now_monotonic
             if show_progress:
                 elapsed_s = max(time.monotonic() - started_monotonic, 0.001)
                 speed_bps = downloaded_bytes / elapsed_s
@@ -221,6 +284,15 @@ def _download_file(
                 else:
                     status = f"\r  {_format_size(downloaded_bytes)}  {_format_size(speed_bps)}/s"
                 print(status, flush=True)
+            _emit_dependency_progress(
+                progress_callback,
+                progress_end_pct,
+                f"Downloaded {label}",
+                label=label,
+                downloaded_bytes=downloaded_bytes,
+                total_bytes=total_bytes,
+                destination=str(destination),
+            )
     except urllib_error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace").strip()
         if detail:
@@ -239,10 +311,12 @@ def _download_file(
         raise StabilityTestError(
             f"failed to finalize download at {destination}: {exc}"
         ) from exc
+    claim_desktop_user_ownership(destination)
 
 
 def _extract_q2rtx_archive(archive_path: Path, install_dir: Path) -> None:
     install_dir.parent.mkdir(parents=True, exist_ok=True)
+    claim_desktop_user_ownership(install_dir.parent, include_parents=True)
     with tempfile.TemporaryDirectory(
         prefix="q2rtx-extract-",
         dir=str(install_dir.parent),
@@ -297,6 +371,7 @@ def _extract_q2rtx_archive(archive_path: Path, install_dir: Path) -> None:
                 else:
                     destination.unlink()
             shutil.move(str(item), str(destination))
+    claim_desktop_user_ownership(install_dir, recursive=True)
 
 
 def _openssl_compat_rpm_archive_path(cache_dir: Path, rpm_name: str) -> Path:
@@ -324,13 +399,17 @@ def _copy_preserving_link(src: Path, dst: Path) -> None:
         else:
             dst.unlink()
     dst.parent.mkdir(parents=True, exist_ok=True)
+    claim_desktop_user_ownership(dst.parent, include_parents=True)
     if src.is_symlink():
         dst.symlink_to(os.readlink(src))
+        claim_desktop_user_ownership(dst)
         return
     if src.is_dir():
         shutil.copytree(src, dst, symlinks=True)
+        claim_desktop_user_ownership(dst, recursive=True)
         return
     shutil.copy2(src, dst)
+    claim_desktop_user_ownership(dst)
 
 
 def _subprocess_c_locale_env() -> dict[str, str]:
@@ -531,6 +610,7 @@ def _copy_system_openssl_111_libs(compat_root: Path) -> Path | None:
 
     lib_dir = compat_root / "lib"
     lib_dir.mkdir(parents=True, exist_ok=True)
+    claim_desktop_user_ownership(lib_dir, include_parents=True)
     for required_name in OPENSSL_111_REQUIRED_LIBS:
         for entry in sorted(source_dir.glob(required_name + "*")):
             _copy_preserving_link(entry, lib_dir / entry.name)
@@ -609,8 +689,10 @@ def _extract_compat_openssl_rpm(rpm_path: Path, compat_root: Path) -> Path:
             )
 
         compat_root.mkdir(parents=True, exist_ok=True)
+        claim_desktop_user_ownership(compat_root, include_parents=True)
         lib_dir = compat_root / "lib"
         lib_dir.mkdir(parents=True, exist_ok=True)
+        claim_desktop_user_ownership(lib_dir, include_parents=True)
 
         lib_entries: list[Path] = []
         for prefix in OPENSSL_111_REQUIRED_LIBS:
@@ -643,10 +725,17 @@ def _extract_compat_openssl_rpm(rpm_path: Path, compat_root: Path) -> Path:
         raise StabilityTestError(
             f"compat-openssl11 extraction completed but required libs were not found under {lib_dir}"
         )
+    claim_desktop_user_ownership(compat_root, recursive=True)
     return lib_dir
 
 
-def _ensure_openssl_111_compat_libs(*, show_progress: bool) -> Path:
+def _ensure_openssl_111_compat_libs(
+    *,
+    show_progress: bool,
+    progress_callback: DependencyProgressCallback | None = None,
+    progress_start_pct: float = 85.0,
+    progress_end_pct: float = 98.0,
+) -> Path:
     compat_root = default_q2rtx_compat_dir()
     lib_dir = compat_root / "lib"
     if all((lib_dir / name).is_file() for name in OPENSSL_111_REQUIRED_LIBS):
@@ -655,6 +744,12 @@ def _ensure_openssl_111_compat_libs(*, show_progress: bool) -> Path:
                 f"Using cached OpenSSL {OPENSSL_111_VERSION} compatibility libs from {lib_dir}",
                 flush=True,
             )
+        _emit_dependency_progress(
+            progress_callback,
+            progress_end_pct,
+            "OpenSSL compatibility libraries are already available",
+            path=str(lib_dir),
+        )
         return lib_dir
 
     system_lib_dir = _copy_system_openssl_111_libs(compat_root)
@@ -664,8 +759,19 @@ def _ensure_openssl_111_compat_libs(*, show_progress: bool) -> Path:
                 f"Using system OpenSSL {OPENSSL_111_VERSION} compatibility libs from {system_lib_dir}",
                 flush=True,
             )
+        _emit_dependency_progress(
+            progress_callback,
+            progress_end_pct,
+            "Using system OpenSSL compatibility libraries",
+            path=str(system_lib_dir),
+        )
         return system_lib_dir
 
+    _emit_dependency_progress(
+        progress_callback,
+        progress_start_pct,
+        "Checking OpenSSL compatibility libraries",
+    )
     cache_dir = default_q2rtx_install_cache_dir() / "compat-rpms"
     rpm_name, rpm_url = _fetch_latest_openssl_compat_rpm_metadata()
     rpm_path = _openssl_compat_rpm_archive_path(cache_dir, rpm_name)
@@ -675,15 +781,31 @@ def _ensure_openssl_111_compat_libs(*, show_progress: bool) -> Path:
             rpm_path,
             label=f"compat-openssl11 RPM ({rpm_name})",
             show_progress=show_progress,
+            progress_callback=progress_callback,
+            progress_start_pct=progress_start_pct,
+            progress_end_pct=progress_start_pct
+            + ((progress_end_pct - progress_start_pct) * 0.70),
         )
     elif show_progress:
         print(f"Using cached compat-openssl11 RPM {rpm_path}", flush=True)
+    if rpm_path.is_file():
+        _emit_dependency_progress(
+            progress_callback,
+            progress_start_pct + ((progress_end_pct - progress_start_pct) * 0.70),
+            "OpenSSL compatibility RPM is available",
+            path=str(rpm_path),
+        )
 
     if show_progress:
         print(
             f"Extracting sandboxed OpenSSL 1.1 compatibility libs from {rpm_name}...",
             flush=True,
         )
+    _emit_dependency_progress(
+        progress_callback,
+        progress_start_pct + ((progress_end_pct - progress_start_pct) * 0.80),
+        "Extracting OpenSSL compatibility libraries",
+    )
     lib_dir = _extract_compat_openssl_rpm(rpm_path, compat_root)
 
     if show_progress:
@@ -691,6 +813,12 @@ def _ensure_openssl_111_compat_libs(*, show_progress: bool) -> Path:
             f"Installed OpenSSL {OPENSSL_111_VERSION} compatibility libs to {lib_dir}",
             flush=True,
         )
+    _emit_dependency_progress(
+        progress_callback,
+        progress_end_pct,
+        "Installed OpenSSL compatibility libraries",
+        path=str(lib_dir),
+    )
     return lib_dir
 
 
@@ -739,12 +867,21 @@ def _prepare_q2rtx_runtime_env(
     executable_path: Path,
     *,
     show_progress: bool,
+    progress_callback: DependencyProgressCallback | None = None,
+    progress_start_pct: float = 85.0,
+    progress_end_pct: float = 98.0,
 ) -> tuple[dict[str, str], Path | None]:
     env = dict(os.environ)
     env.setdefault("SDL_VIDEO_ALLOW_SCREENSAVER", "1")
 
     missing = _detect_missing_shared_libraries(executable_path, env=env)
     if not missing:
+        _emit_dependency_progress(
+            progress_callback,
+            progress_end_pct,
+            "Q2RTX runtime libraries are available",
+            executable=str(executable_path),
+        )
         return env, None
 
     missing_set = set(missing)
@@ -761,7 +898,12 @@ def _prepare_q2rtx_runtime_env(
             + ", ".join(sorted(missing_set))
         )
 
-    compat_lib_dir = _ensure_openssl_111_compat_libs(show_progress=show_progress)
+    compat_lib_dir = _ensure_openssl_111_compat_libs(
+        show_progress=show_progress,
+        progress_callback=progress_callback,
+        progress_start_pct=progress_start_pct,
+        progress_end_pct=progress_end_pct,
+    )
     env = _prepend_library_path(env, compat_lib_dir)
     compat_root = compat_lib_dir.parent
     compat_conf = compat_root / "ssl" / "openssl11.cnf"
@@ -784,9 +926,15 @@ def install_latest_q2rtx(
     data_dir: Path | None = None,
     cache_dir: Path | None = None,
     show_progress: bool = True,
+    progress_callback: DependencyProgressCallback | None = None,
 ) -> Q2RTXInstallResult:
     if show_progress:
         print("Q2RTX install: fetching latest release metadata...", flush=True)
+    _emit_dependency_progress(
+        progress_callback,
+        2.0,
+        "Fetching Q2RTX release metadata",
+    )
     tag_name, asset_name, asset_url = fetch_latest_q2rtx_release_metadata()
     version = tag_name[1:] if tag_name.startswith("v") else tag_name
 
@@ -800,6 +948,10 @@ def install_latest_q2rtx(
         if cache_dir is not None
         else default_q2rtx_install_cache_dir()
     )
+    resolved_data_dir.mkdir(parents=True, exist_ok=True)
+    resolved_cache_dir.mkdir(parents=True, exist_ok=True)
+    claim_desktop_user_ownership(resolved_data_dir, include_parents=True)
+    claim_desktop_user_ownership(resolved_cache_dir, include_parents=True)
     archive_path = resolved_cache_dir / asset_name
     install_dir = resolved_data_dir / version
     if show_progress:
@@ -807,6 +959,13 @@ def install_latest_q2rtx(
             f"Q2RTX install: latest={version} asset={asset_name}",
             flush=True,
         )
+    _emit_dependency_progress(
+        progress_callback,
+        8.0,
+        f"Found Q2RTX {version}",
+        version=version,
+        asset=asset_name,
+    )
 
     if not archive_path.is_file():
         _download_file(
@@ -814,12 +973,34 @@ def install_latest_q2rtx(
             archive_path,
             label=f"Q2RTX {version} Linux build",
             show_progress=show_progress,
+            progress_callback=progress_callback,
+            progress_start_pct=10.0,
+            progress_end_pct=72.0,
         )
     elif show_progress:
         print(f"Using cached Q2RTX archive {archive_path}", flush=True)
+    if archive_path.is_file():
+        _emit_dependency_progress(
+            progress_callback,
+            72.0,
+            "Q2RTX archive is available",
+            path=str(archive_path),
+        )
     if show_progress:
         print(f"Q2RTX install: extracting archive to {install_dir}...", flush=True)
+    _emit_dependency_progress(
+        progress_callback,
+        78.0,
+        "Extracting Q2RTX archive",
+        path=str(install_dir),
+    )
     _extract_q2rtx_archive(archive_path, install_dir)
+    _emit_dependency_progress(
+        progress_callback,
+        84.0,
+        "Q2RTX archive extracted",
+        path=str(install_dir),
+    )
 
     executable_path, workdir = resolve_q2rtx_executable(
         q2rtx_dir=install_dir,
@@ -838,12 +1019,33 @@ def install_latest_q2rtx(
             f"Q2RTX install: preparing runtime libraries for {executable_path}...",
             flush=True,
         )
-    _prepare_q2rtx_runtime_env(executable_path, show_progress=show_progress)
+    _emit_dependency_progress(
+        progress_callback,
+        86.0,
+        "Preparing Q2RTX runtime libraries",
+        executable=str(executable_path),
+    )
+    _prepare_q2rtx_runtime_env(
+        executable_path,
+        show_progress=show_progress,
+        progress_callback=progress_callback,
+        progress_start_pct=86.0,
+        progress_end_pct=98.0,
+    )
+    claim_desktop_user_ownership(resolved_data_dir, recursive=True)
+    claim_desktop_user_ownership(resolved_cache_dir, recursive=True)
     if show_progress:
         print(
             f"Q2RTX install: ready install_dir={install_dir} executable={executable_path}",
             flush=True,
         )
+    _emit_dependency_progress(
+        progress_callback,
+        100.0,
+        "Q2RTX dependencies are ready",
+        install_dir=str(install_dir),
+        executable=str(executable_path),
+    )
 
     return Q2RTXInstallResult(
         version=version,

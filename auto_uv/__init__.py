@@ -1,6 +1,7 @@
 from .models import (
     AutoUvCurveCandidate,
     AutoUvError,
+    AutoUvFinalChoiceDiscarded,
     AutoUvProbeSummary,
     AutoUvVoltageScanResult,
     VoltageCurve,
@@ -29,6 +30,7 @@ DEFAULT_AUTO_UV_FINAL_DURATION_S = AUTO_UV_DEFAULTS.final_duration_s
 __all__ = [
     "AutoUvCurveCandidate",
     "AutoUvError",
+    "AutoUvFinalChoiceDiscarded",
     "AutoUv2CandidateChoice",
     "AutoUv2EfficiencyStop",
     "AutoUv2OverclockAttempt",

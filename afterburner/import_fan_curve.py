@@ -10,6 +10,7 @@ import sys
 import tomllib
 
 from penguin_burner_paths import (
+    claim_desktop_user_ownership,
     default_runtime_config_path,
     managed_afterburner_root,
     resolve_afterburner_root,
@@ -37,7 +38,7 @@ SECTION_ORDERS = {
         "afterburner_device_profile",
         "afterburner_profile",
         "afterburner_power_limit_override_w",
-        "afterburner_preserve_vanilla_below_mv",
+        "afterburner_preserve_base_below_mv",
         "afterburner_dangerously_skip_validation",
         "afterburner_auto_uv_max_drop_pct",
         "auto_uv_final_seconds",
@@ -185,7 +186,9 @@ def write_config(config_path: Path, config: dict):
         lines.append("")
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    claim_desktop_user_ownership(config_path.parent, include_parents=True)
     config_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    claim_desktop_user_ownership(config_path)
 
 
 def build_imported_fan_section(current_fan: dict, settings: dict, gpu_index: int):

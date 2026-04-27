@@ -10,7 +10,7 @@ class AutoUvDefaults:
     final_duration_s: int = 600
     max_drop_pct: float = 16.0
     efficiency_stop_streak: int = 1
-    clock_bump_budget_ratio: float = 0.4
+    clock_bump_budget_ratio: float = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,16 +55,12 @@ class AutoUvMetricTuning:
 
 @dataclass(frozen=True, slots=True)
 class AutoUvProbeTuning:
-    max_tiered_probe_total_s: int = 60
     tiered_cuda_duration_s: int = 15
     timeout_multiplier: float = 2.0
     short_timeout_buffer_s: float = 15.0
     long_timeout_buffer_s: float = 60.0
     high_voltage_pct: float = 95.0
     medium_voltage_pct: float = 90.0
-    high_voltage_duration_s: int = 30
-    medium_voltage_duration_s: int = 60
-    low_voltage_duration_s: int = 90
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +82,7 @@ class AutoUvVoltagePhaseTuning:
 
 @dataclass(frozen=True, slots=True)
 class AutoUvFanTuning:
-    max_stock_curve_load_temp_c: float = 75.0
+    max_base_curve_load_temp_c: float = 75.0
     cooling_headroom_speed_reduction_pct_per_c: float = 1.5
     cooling_headroom_max_speed_reduction_pct: float = 15.0
     cooling_headroom_exponential_power_per_c: float = 0.15

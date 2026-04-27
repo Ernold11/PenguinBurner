@@ -2,36 +2,52 @@ from __future__ import annotations
 
 import json
 
+import auto_uv.profiles as profile_store
 import lact.export as lact_export
-from lact import build_lact_nvidia_config, build_lact_nvidia_config_from_plan
+from auto_uv.profiles import archive_auto_uv_profile
+from lact import (
+    build_lact_nvidia_config,
+    build_lact_nvidia_config_from_plan,
+    write_lact_nvidia_config,
+)
+
+
+def _use_auto_uv_config_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(lact_export, "default_user_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+
+
+def _write_final_profile(payload: dict):
+    stored = dict(payload)
+    stored.setdefault("candidate_voltage_mv", 900)
+    stored.setdefault("lock_clock_mhz", 2100)
+    stored["final_verified"] = True
+    return archive_auto_uv_profile(stored)
 
 
 def test_lact_nvidia_export_writes_full_config(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(lact_export, "default_user_config_dir", lambda: tmp_path)
-    (tmp_path / "auto-uv-final-curve.json").write_text(
-        json.dumps(
-            {
-                "lock_clock_mhz": 2445,
-                "candidate_voltage_mv": 900,
-                "points": [
-                    {
-                        "index": 42,
-                        "voltage_mv": 900,
-                        "base_mhz": 2350,
-                        "target_mhz": 2445,
-                        "new_offset_mhz": 95,
-                    },
-                    {
-                        "index": 43,
-                        "voltage_mv": 925,
-                        "base_mhz": 2380,
-                        "target_mhz": 2445,
-                        "new_offset_mhz": 65,
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
+    _use_auto_uv_config_dir(tmp_path, monkeypatch)
+    _write_final_profile(
+        {
+            "lock_clock_mhz": 2445,
+            "candidate_voltage_mv": 900,
+            "points": [
+                {
+                    "index": 42,
+                    "voltage_mv": 900,
+                    "base_mhz": 2350,
+                    "target_mhz": 2445,
+                    "new_offset_mhz": 95,
+                },
+                {
+                    "index": 43,
+                    "voltage_mv": 925,
+                    "base_mhz": 2380,
+                    "target_mhz": 2445,
+                    "new_offset_mhz": 65,
+                },
+            ],
+        }
     )
     (tmp_path / "auto-uv-fan-curve.json").write_text(
         json.dumps(
@@ -67,22 +83,19 @@ def test_lact_nvidia_export_writes_full_config(tmp_path, monkeypatch) -> None:
 
 
 def test_lact_nvidia_export_defaults_to_vf_only(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(lact_export, "default_user_config_dir", lambda: tmp_path)
-    (tmp_path / "auto-uv-final-curve.json").write_text(
-        json.dumps(
-            {
-                "points": [
-                    {
-                        "index": 1,
-                        "voltage_mv": 900,
-                        "base_mhz": 2000,
-                        "target_mhz": 2100,
-                        "new_offset_mhz": 100,
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
+    _use_auto_uv_config_dir(tmp_path, monkeypatch)
+    _write_final_profile(
+        {
+            "points": [
+                {
+                    "index": 1,
+                    "voltage_mv": 900,
+                    "base_mhz": 2000,
+                    "target_mhz": 2100,
+                    "new_offset_mhz": 100,
+                }
+            ]
+        }
     )
     (tmp_path / "auto-uv-fan-curve.json").write_text(
         json.dumps(
@@ -106,25 +119,73 @@ def test_lact_nvidia_export_defaults_to_vf_only(tmp_path, monkeypatch) -> None:
     assert "65: 0.55" not in rendered
 
 
+def test_lact_nvidia_writer_can_export_selected_auto_uv_profile(
+    tmp_path, monkeypatch
+) -> None:
+    _use_auto_uv_config_dir(tmp_path, monkeypatch)
+    selected_path = _write_final_profile(
+        {
+            "profile_id": "selected",
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2100,
+            "points": [
+                {
+                    "index": 1,
+                    "voltage_mv": 900,
+                    "base_mhz": 2000,
+                    "target_mhz": 2100,
+                    "new_offset_mhz": 100,
+                }
+            ],
+        }
+    )
+    _write_final_profile(
+        {
+            "profile_id": "newer",
+            "candidate_voltage_mv": 925,
+            "lock_clock_mhz": 2200,
+            "points": [
+                {
+                    "index": 1,
+                    "voltage_mv": 925,
+                    "base_mhz": 2050,
+                    "target_mhz": 2200,
+                    "new_offset_mhz": 150,
+                }
+            ],
+        }
+    )
+
+    output_path = tmp_path / "lact" / "config.yaml"
+    written_path, warnings = write_lact_nvidia_config(
+        output_path=output_path,
+        gpu_id="gpu0",
+        final_curve_path=selected_path,
+    )
+
+    assert written_path == output_path
+    assert warnings == []
+    rendered = output_path.read_text(encoding="utf-8")
+    assert "clockspeed: 2100" in rendered
+    assert "clockspeed: 2200" not in rendered
+
+
 def test_lact_nvidia_export_disables_fan_when_no_fan_artifact(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(lact_export, "default_user_config_dir", lambda: tmp_path)
-    (tmp_path / "auto-uv-final-curve.json").write_text(
-        json.dumps(
-            {
-                "points": [
-                    {
-                        "index": 1,
-                        "voltage_mv": 900,
-                        "base_mhz": 2000,
-                        "target_mhz": 2100,
-                        "new_offset_mhz": 100,
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
+    _use_auto_uv_config_dir(tmp_path, monkeypatch)
+    _write_final_profile(
+        {
+            "points": [
+                {
+                    "index": 1,
+                    "voltage_mv": 900,
+                    "base_mhz": 2000,
+                    "target_mhz": 2100,
+                    "new_offset_mhz": 100,
+                }
+            ]
+        }
     )
 
     rendered, warnings = build_lact_nvidia_config(gpu_id="gpu0")
@@ -137,7 +198,7 @@ def test_lact_nvidia_export_disables_fan_when_no_fan_artifact(
 def test_lact_nvidia_export_can_emit_fan_only_auto_uv_config(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(lact_export, "default_user_config_dir", lambda: tmp_path)
+    _use_auto_uv_config_dir(tmp_path, monkeypatch)
     (tmp_path / "auto-uv-fan-curve.json").write_text(
         json.dumps(
             {

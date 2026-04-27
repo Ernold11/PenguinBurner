@@ -2,15 +2,23 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import sys
 import tarfile
 
+import stability.q2rtx.runtime as q2rtx_runtime
 from stability.q2rtx.install import (
     _copy_system_openssl_111_libs,
+    _emit_dependency_progress,
     _extract_compat_openssl_rpm,
     _extract_q2rtx_archive,
+    _progress_range_value,
     _require_https_url,
 )
-from stability.q2rtx.models import Q2RTXStabilityResult, StabilityTestError
+from stability.q2rtx.models import (
+    Q2RTXStabilityConfig,
+    Q2RTXStabilityResult,
+    StabilityTestError,
+)
 from stability.q2rtx.reporting import _filter_report_output_tail
 from stability.q2rtx.runtime import (
     _result_looks_like_gamescope_startup_crash,
@@ -39,6 +47,27 @@ def test_q2rtx_download_urls_must_be_https() -> None:
             assert "non-HTTPS" in str(exc)
         else:
             raise AssertionError(f"expected rejection for {url}")
+
+
+def test_dependency_progress_payload_is_clamped_and_labeled() -> None:
+    events = []
+
+    _emit_dependency_progress(events.append, 123.4, "Ready", path="/tmp/q2rtx")
+
+    assert events == [
+        {
+            "label": "Downloading dependencies",
+            "percent": 100.0,
+            "detail": "Ready",
+            "path": "/tmp/q2rtx",
+        }
+    ]
+
+
+def test_dependency_download_progress_maps_to_overall_range() -> None:
+    assert _progress_range_value(10.0, 70.0, 0.0) == 10.0
+    assert _progress_range_value(10.0, 70.0, 50.0) == 40.0
+    assert _progress_range_value(10.0, 70.0, 100.0) == 70.0
 
 
 def test_q2rtx_archive_extracts_regular_payload(tmp_path: Path) -> None:
@@ -304,6 +333,66 @@ def test_gamescope_startup_crash_is_detected_for_fallback(tmp_path: Path) -> Non
     )
 
     assert _result_looks_like_gamescope_startup_crash(result) is True
+
+
+def test_cuda_companion_abort_preserves_abort_reason(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class DummyVoltageSession:
+        def __init__(self, gpu_index: int) -> None:
+            self.gpu_index = int(gpu_index)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        q2rtx_runtime,
+        "_HiddenNvmlVoltageSession",
+        DummyVoltageSession,
+    )
+    monkeypatch.setattr(q2rtx_runtime, "query_gpu_metrics", lambda *args, **kwargs: None)
+    monkeypatch.setattr(q2rtx_runtime, "_query_xid_messages_since", lambda _start: [])
+
+    result = q2rtx_runtime.run_cuda_stability_test(
+        Q2RTXStabilityConfig(
+            duration_s=1,
+            log_dir=tmp_path,
+            poll_interval_s=0.01,
+            companion_command=(
+                sys.executable,
+                "-c",
+                "import time; time.sleep(30)",
+            ),
+            abort_callback=lambda _state: "user-stop-requested",
+        )
+    )
+
+    assert result.success is False
+    assert result.reason == "user-stop-requested"
+    assert result.shutdown_mode == "user-stop-requested"
+    assert result.process_exit_code == -15
+
+
+def test_timedemo_abort_policy_only_kills_immediate_failures() -> None:
+    assert q2rtx_runtime._timedemo_abort_is_immediate("user-stop-requested") is True
+    assert q2rtx_runtime._timedemo_abort_is_immediate("fatal-q2rtx-output") is True
+    assert (
+        q2rtx_runtime._timedemo_abort_is_immediate("timedemo-live-stall idle=20.0s")
+        is True
+    )
+    assert (
+        q2rtx_runtime._timedemo_abort_is_immediate(
+            "telemetry-live-core_clock current=2400.0MHz"
+        )
+        is False
+    )
+    assert (
+        q2rtx_runtime._timedemo_abort_is_immediate(
+            "timedemo-live-fps-regression current=75.0"
+        )
+        is False
+    )
 
 
 def test_report_output_tail_filters_normal_gamescope_shutdown_noise() -> None:

@@ -10,16 +10,26 @@ import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 
 from auto_uv import (
     DEFAULT_AUTO_UV_FINAL_DURATION_S,
     AutoUvError,
+    AutoUvFinalChoiceDiscarded,
     build_long_stability_test_config,
     restore_afterburner_defaults_from_config,
     run_auto_uv_voltage_scan,
 )
+from auto_uv.profiles import (
+    auto_uv_profiles_dir,
+    delete_auto_uv_profiles,
+    format_profile_table,
+    read_auto_uv_profile_summaries,
+    resolve_auto_uv_profile,
+)
+from auto_uv.preflight import require_auto_uv_preflight
 from auto_uv.tuning import (
     AUTO_UV_DEFAULTS,
     AUTO_UV_FAN_TUNING,
@@ -52,17 +62,21 @@ from afterburner.import_fan_curve import (
 from afterburner.import_vf_curve import (
     apply_plan,
     apply_afterburner_curve_to_reader,
+    backup_current_offsets,
     ensure_afterburner_root_configured,
     load_afterburner_runtime_options,
     persist_afterburner_import,
+    restore_offsets,
 )
 from nvml_gpu_policy import (
+    MAX_AFTERBURNER_MEM_OFFSET_MHZ,
     NvmlGpuPolicyController,
     apply_translated_gpu_policy,
     describe_translated_gpu_policy,
     translate_afterburner_gpu_policy,
 )
 from penguin_burner_paths import (
+    claim_desktop_user_ownership,
     default_runtime_config_path,
     default_saved_uv_dir,
     default_user_config_dir,
@@ -78,6 +92,7 @@ from stability.q2rtx import (
     default_q2rtx_install_data_dir,
     install_latest_q2rtx,
     print_q2rtx_stability_result,
+    run_cuda_stability_test,
     run_q2rtx_stability_test,
     resolve_q2rtx_executable,
 )
@@ -247,6 +262,7 @@ def clear_auto_uv_state(*, log=print) -> None:
     config_dir = default_user_config_dir()
     paths = [
         config_dir / "uv-result",
+        auto_uv_profiles_dir(),
         config_dir / "auto-uv-final-curve.json",
         config_dir / "auto-uv-fan-curve.json",
         config_dir / "debug-logs",
@@ -271,6 +287,30 @@ def clear_auto_uv_state(*, log=print) -> None:
     log(
         "Auto-UV clear: complete. Afterburner imports and Q2RTX downloads were left untouched."
     )
+
+
+def emit_json_event(enabled: bool, event: str, **payload) -> None:
+    if not enabled:
+        return
+    data = {"event": str(event)}
+    data.update(_json_event_without_none_values(payload))
+    print(json.dumps(data, sort_keys=True), flush=True)
+
+
+def _json_event_without_none_values(value):
+    if isinstance(value, dict):
+        return {
+            key: _json_event_without_none_values(inner)
+            for key, inner in value.items()
+            if inner is not None
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _json_event_without_none_values(inner)
+            for inner in value
+            if inner is not None
+        ]
+    return value
 
 
 def parse_main_args(argv):
@@ -301,26 +341,42 @@ def parse_main_args(argv):
         ),
     )
     auto_uv_group.add_argument(
+        "--json-events",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-require-final-choice",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    auto_uv_group.add_argument(
+        "--list-auto-uv-profiles",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    auto_uv_group.add_argument(
+        "--delete-auto-uv-profiles",
+        nargs="+",
+        default=[],
+        metavar="PROFILE",
+        help=argparse.SUPPRESS,
+    )
+    auto_uv_group.add_argument(
         "--fresh-auto-uv-scan",
         action="store_true",
-        help=(
-            "Clear previous Auto-UV state and immediately start a foreground "
-            "Auto-UV scan. Afterburner imports and Q2RTX downloads are not removed."
-        ),
+        help=argparse.SUPPRESS,
     )
     auto_uv_group.add_argument(
         "--clear-auto-uv-state",
         action="store_true",
-        help=(
-            "Remove Auto-UV curves, unsafe-voltage history, checkpoints, saved "
-            "UV copies, and Auto-UV logs from the user profile, then exit. "
-            "Afterburner imports and Q2RTX downloads are not removed."
-        ),
+        help=argparse.SUPPRESS,
     )
     auto_uv_group.add_argument(
         "--auto-uv-max-clock-drop-pct",
         type=float,
         default=None,
+        metavar="N",
         help=(
             "Maximum loaded GPU core clock drop allowed during Auto-UV; "
             "default 10.0. Example: 12 allows up to a looser 12%% clock drop."
@@ -328,10 +384,10 @@ def parse_main_args(argv):
     )
     auto_uv_group.add_argument(
         "--auto-uv-overclock-budget-ratio",
-        "--auto-uv-clock-bump-budget-ratio",
         dest="auto_uv_clock_bump_budget_ratio",
         type=float,
         default=None,
+        metavar="N",
         help=(
             "Fraction of --auto-uv-max-clock-drop-pct available as total Auto-UV "
             "overclock budget; each recovery spends only the measured clock "
@@ -341,44 +397,66 @@ def parse_main_args(argv):
         ),
     )
     auto_uv_group.add_argument(
+        "--auto-uv-clock-bump-budget-ratio",
+        dest="auto_uv_clock_bump_budget_ratio",
+        type=float,
+        metavar="N",
+        help=argparse.SUPPRESS,
+    )
+    auto_uv_group.add_argument(
         "--auto-uv-max-drop-pct",
         type=float,
         default=None,
+        metavar="N",
         help=(
             "Maximum percentage drop below the first discovered auto-UV start "
-            "voltage allowed during candidate search; defaults to the config "
-            "value, which is 16.0"
+            "voltage allowed during candidate search; default 16.0."
         ),
     )
     auto_uv_group.add_argument(
         "--auto-uv-final-seconds",
         type=int,
         default=None,
+        metavar="SECONDS",
         help=(
             "Final Auto-UV verification duration in seconds after the best curve "
             "is selected; default 600. Candidate probes remain tiered short tests."
         ),
     )
     auto_uv_group.add_argument(
+        "--auto-uv-short-seconds",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Base Auto-UV verification length in seconds; default "
+            f"{AUTO_UV_DEFAULTS.probe_duration_s}. Allowed range 10..60. "
+            "Deeper voltage tiers use 2x and 3x this value."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-memory-offset-mhz",
+        type=int,
+        default=None,
+        metavar="MHz",
+        help=(
+            "Memory clock V/F offset in MHz to apply during Auto-UV and save "
+            f"with the final profile; range 0..{MAX_AFTERBURNER_MEM_OFFSET_MHZ}."
+        ),
+    )
+    auto_uv_group.add_argument(
         "--auto-uv-efficiency-stop-streak",
         type=int,
         default=None,
-        help=(
-            "After the first effective voltage drop that fails to improve "
-            "temperature-normalized FPS/W, probe this many more lower-voltage "
-            f"steps to confirm; default {AUTO_UV_DEFAULTS.efficiency_stop_streak}. "
-            "Use 0 to disable the efficiency stop."
-        ),
+        metavar="N",
+        help=argparse.SUPPRESS,
     )
     auto_uv_group.add_argument(
         "--auto-uv-min-efficiency-stop-drop-pct",
         type=float,
         default=None,
-        help=(
-            "Minimum voltage drop below the Auto-UV starting voltage before "
-            "temperature-normalized FPS/W regression/no-gain is allowed to stop "
-            "the scan; default 10.0. Example: 12 requires scanning 12%% below start."
-        ),
+        metavar="N",
+        help=argparse.SUPPRESS,
     )
     daemon_group.add_argument(
         "--silent-fan-curve",
@@ -418,6 +496,14 @@ def parse_main_args(argv):
         help=(
             "Force normal runtime to stay in the current foreground process; "
             "this is the default when not daemonizing."
+        ),
+    )
+    daemon_group.add_argument(
+        "--auto-uv-profile",
+        default="",
+        help=(
+            "Runtime/daemon only: use an Auto-UV profile by profile id, candidate "
+            "id, JSON path, 'active', or 'latest'."
         ),
     )
     daemon_group.add_argument(
@@ -500,6 +586,16 @@ def parse_main_args(argv):
         ),
     )
     stability_group.add_argument(
+        "--stability-workload",
+        choices=("q2rtx-cuda", "q2rtx", "cuda"),
+        default="q2rtx-cuda",
+        help=(
+            "Workload selection for --stability-test; q2rtx-cuda keeps the "
+            "standard Q2RTX timedemo plus CUDA compute split, q2rtx or cuda "
+            "runs only that workload for the full duration."
+        ),
+    )
+    stability_group.add_argument(
         "--stability-width",
         type=int,
         default=DEFAULT_WIDTH,
@@ -526,6 +622,11 @@ def parse_main_args(argv):
             "Optional log directory for --stability-test; defaults to "
             "~/.config/PenguinBurner/stability-logs"
         ),
+    )
+    stability_group.add_argument(
+        "--stability-stop-request-file",
+        default="",
+        help=argparse.SUPPRESS,
     )
     stability_group.add_argument(
         "--stability-q2rtx-dir",
@@ -583,15 +684,21 @@ def parse_main_args(argv):
     )
     advanced_group.add_argument(
         "--preserve-vf-below-mv",
-        "--preserve-vanilla-vf-below-mv",
-        dest="preserve_vanilla_below_mv",
+        "--preserve-base-vf-below-mv",
+        dest="preserve_base_below_mv",
         type=int,
         default=None,
         help=(
-            "Keep the stock/base Linux VF curve at and below this inclusive "
+            "Keep the base Linux VF curve at and below this inclusive "
             "voltage; useful if repeated Afterburner curve edits disturbed "
             "idle or low-voltage scaling"
         ),
+    )
+    advanced_group.add_argument(
+        "--preserve-vanilla-vf-below-mv",
+        dest="preserve_base_below_mv",
+        type=int,
+        help=argparse.SUPPRESS,
     )
     advanced_group.add_argument(
         "--dangerously-skip-validation",
@@ -659,7 +766,7 @@ def validate_auto_uv_fan_curve_safety(curve, path):
     zero_temp_c = float(AUTO_UV_FAN_TUNING.zero_rpm_until_temp_c)
     active_temp_c = float(AUTO_UV_FAN_TUNING.minimum_active_temp_c)
     active_speed_pct = float(AUTO_UV_FAN_TUNING.minimum_active_speed_pct)
-    safe_temp_c = float(AUTO_UV_FAN_TUNING.max_stock_curve_load_temp_c)
+    safe_temp_c = float(AUTO_UV_FAN_TUNING.max_base_curve_load_temp_c)
     emergency_temp_c = float(AUTO_UV_FAN_TUNING.emergency_temp_c)
     emergency_speed_pct = float(AUTO_UV_FAN_TUNING.emergency_min_speed_pct)
     full_speed_temp_c = float(AUTO_UV_FAN_TUNING.full_speed_temp_c)
@@ -722,13 +829,21 @@ def detect_vf_curve_reset(vf_curve_reader, expected_samples, *, tolerance_mhz=1)
     return mismatches
 
 
-def load_auto_uv_final_curve():
-    path = default_user_config_dir() / "auto-uv-final-curve.json"
+def load_auto_uv_final_curve(profile_selector=""):
+    selector = str(profile_selector or "").strip()
+    resolved_profile = resolve_auto_uv_profile(selector or "latest")
+    if resolved_profile is None:
+        if selector:
+            raise NvmlError(f"Auto-UV profile not found: {selector}")
+        return None
+    path, _profile_payload = resolved_profile
     if not path.is_file():
         return None
 
     payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     raw_points = payload.get("points")
+    if not isinstance(raw_points, list) or not raw_points:
+        raw_points = payload.get("plan")
     if not isinstance(raw_points, list) or not raw_points:
         raise NvmlError(f"auto-UV final curve has no V/F points: {path}")
 
@@ -754,6 +869,7 @@ def load_auto_uv_final_curve():
     candidate_voltage_mv = int(payload.get("candidate_voltage_mv", 0) or 0)
     if lock_clock_mhz <= 0 or candidate_voltage_mv <= 0:
         raise NvmlError(f"auto-UV final curve is missing lock clock or voltage: {path}")
+    memory_offset_mhz = _profile_memory_offset_mhz(payload)
 
     voltage_bins = sorted({int(item["voltage_mv"]) for item in plan})
     tail_point_count = sum(
@@ -771,8 +887,53 @@ def load_auto_uv_final_curve():
         "plan": plan,
         "lock_clock_mhz": int(lock_clock_mhz),
         "candidate_voltage_mv": int(candidate_voltage_mv),
+        "memory_offset_mhz": memory_offset_mhz,
         "flatten_target": flatten_target,
     }
+
+
+def _profile_memory_offset_mhz(payload):
+    for key in ("memory_offset_mhz", "mem_clk_vf_offset_mhz"):
+        value = payload.get(key) if isinstance(payload, dict) else None
+        if value in (None, ""):
+            continue
+        try:
+            return max(0, min(MAX_AFTERBURNER_MEM_OFFSET_MHZ, int(round(float(value)))))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _apply_auto_uv_profile_memory_offset(
+    *,
+    profile_label: str,
+    memory_offset_mhz,
+    gpu_policy_controller,
+) -> dict:
+    memory_offset = _profile_memory_offset_mhz(
+        {"memory_offset_mhz": memory_offset_mhz}
+    )
+    if memory_offset is None:
+        return {}
+    if gpu_policy_controller is None:
+        if int(memory_offset) == 0:
+            return {"mem_clk_vf_offset_mhz": int(memory_offset)}
+        raise NvmlError(
+            "failed to apply saved profile memory offset "
+            f"{int(memory_offset):+d} MHz for {profile_label}: "
+            "Linux GPU policy helper is unavailable"
+        )
+    try:
+        gpu_policy_controller.apply_clock_offsets(
+            mem_clk_vf_offset_mhz=int(memory_offset)
+        )
+    except Exception as exc:
+        raise NvmlError(
+            "failed to apply saved profile memory offset "
+            f"{int(memory_offset):+d} MHz for {profile_label}: "
+            f"driver rejected nvmlDeviceSetMemClkVfOffset: {exc}"
+        ) from exc
+    return {"mem_clk_vf_offset_mhz": int(memory_offset)}
 
 
 def load_auto_uv_fan_curve(current_fan_config):
@@ -783,7 +944,7 @@ def load_auto_uv_fan_curve(current_fan_config):
     payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     if not isinstance(payload, dict):
         raise NvmlError(f"auto-UV fan curve payload is invalid: {path}")
-    max_stock_load_temp_c = float(AUTO_UV_FAN_TUNING.max_stock_curve_load_temp_c)
+    max_base_load_temp_c = float(AUTO_UV_FAN_TUNING.max_base_curve_load_temp_c)
     loaded_temp_c = payload.get("loaded_temperature_c")
     if payload.get("fan_curve_blocked"):
         reason = str(payload.get("block_reason") or "unknown")
@@ -796,7 +957,7 @@ def load_auto_uv_fan_curve(current_fan_config):
         raise FanCurveBlockedError(
             "auto-UV fan curve is blocked: "
             f"reason={reason} loaded-temp={temp_text} "
-            f"limit={max_stock_load_temp_c:.1f}C"
+            f"limit={max_base_load_temp_c:.1f}C"
         )
     if loaded_temp_c is not None:
         try:
@@ -805,11 +966,11 @@ def load_auto_uv_fan_curve(current_fan_config):
             raise NvmlError(
                 f"auto-UV fan curve loaded temperature is invalid: {path}"
             ) from exc
-        if loaded_temp > max_stock_load_temp_c:
+        if loaded_temp > max_base_load_temp_c:
             raise FanCurveBlockedError(
                 "auto-UV fan curve rejected: "
                 f"saved final load temperature {loaded_temp:.1f}C is above "
-                f"the {max_stock_load_temp_c:.1f}C safety limit"
+                f"the {max_base_load_temp_c:.1f}C safety limit"
             )
     else:
         raise FanCurveBlockedError(
@@ -972,7 +1133,20 @@ def build_stability_config(
     duration_override=None,
     auto_install_q2rtx=True,
     progress_context="Q2RTX stability",
+    dependency_progress_callback=None,
+    dependency_text_progress=True,
 ):
+    def _emit_dependency_progress(percent, detail, **payload) -> None:
+        if dependency_progress_callback is None:
+            return
+        data = {
+            "label": "Downloading dependencies",
+            "percent": round(max(0.0, min(100.0, float(percent))), 1),
+            "detail": str(detail),
+        }
+        data.update(payload)
+        dependency_progress_callback(data)
+
     config, _resolved_config_path = load_config(config_path)
     config_dir = Path(config_path).expanduser().parent
     default_log_dir = config_dir / "stability-logs"
@@ -986,6 +1160,7 @@ def build_stability_config(
         q2rtx_binary = cli_q2rtx_binary
     q2rtx_source_from_config = bool(q2rtx_dir or q2rtx_binary)
     should_persist_q2rtx_source = bool(cli_q2rtx_dir or cli_q2rtx_binary)
+    _emit_dependency_progress(0.0, "Checking Q2RTX dependency setup")
 
     if q2rtx_dir or q2rtx_binary:
         configured_dir = Path(q2rtx_dir).expanduser() if q2rtx_dir else None
@@ -1021,6 +1196,11 @@ def build_stability_config(
         print(
             f"{progress_context}: checking managed Q2RTX install under {managed_root}",
             flush=True,
+        )
+        _emit_dependency_progress(
+            2.0,
+            "Checking managed Q2RTX install",
+            path=str(managed_root),
         )
         if managed_root.exists():
             version_dirs = sorted(
@@ -1060,7 +1240,14 @@ def build_stability_config(
                 f"{progress_context}: no managed Q2RTX install found; installing now",
                 flush=True,
             )
-            install_result = install_latest_q2rtx(show_progress=True)
+            _emit_dependency_progress(
+                4.0,
+                "No managed Q2RTX install found; downloading dependencies",
+            )
+            install_result = install_latest_q2rtx(
+                show_progress=bool(dependency_text_progress),
+                progress_callback=dependency_progress_callback,
+            )
             q2rtx_dir = str(install_result.install_dir)
             print(
                 f"{progress_context}: using installed Q2RTX {install_result.version} at {q2rtx_dir}",
@@ -1087,6 +1274,12 @@ def build_stability_config(
     timedemo_loops = (
         int(timedemo_loops_override) if timedemo_loops_override is not None else None
     )
+    if q2rtx_dir or q2rtx_binary:
+        _emit_dependency_progress(
+            100.0,
+            "Dependencies are ready",
+            source=str(q2rtx_binary or q2rtx_dir),
+        )
     return Q2RTXStabilityConfig(
         duration_s=(
             int(duration_override)
@@ -1107,19 +1300,77 @@ def build_stability_config(
     )
 
 
+def build_cuda_stability_config(
+    args,
+    *,
+    gpu_index,
+    config_path,
+):
+    config_dir = Path(config_path).expanduser().parent
+    default_log_dir = config_dir / "stability-logs"
+    return Q2RTXStabilityConfig(
+        duration_s=int(args.stability_seconds),
+        width=int(args.stability_width),
+        height=int(args.stability_height),
+        hide_window=not bool(args.show_q2rtx_window),
+        demo_name=str(DEFAULT_DEMO_NAME).strip(),
+        timedemo_loops=None,
+        gpu_index=int(gpu_index),
+        q2rtx_dir=None,
+        q2rtx_binary=None,
+        log_dir=Path(args.stability_log_dir).expanduser()
+        if str(args.stability_log_dir).strip()
+        else default_log_dir,
+    )
+
+
+def _stability_workload_selection(args) -> tuple[bool, bool]:
+    workload = str(getattr(args, "stability_workload", "q2rtx-cuda") or "").strip()
+    if workload == "q2rtx":
+        return True, False
+    if workload == "cuda":
+        return False, True
+    return True, True
+
+
+def _stability_workload_label(*, include_q2rtx: bool, include_cuda: bool) -> str:
+    if include_q2rtx and include_cuda:
+        return "Q2RTX timedemo + CUDA compute"
+    if include_q2rtx:
+        return "Q2RTX timedemo"
+    if include_cuda:
+        return "CUDA compute"
+    return "none"
+
+
 def run_stability_test(args, *, gpu_index, config_path):
-    stability_config = build_stability_config(
-        args,
-        gpu_index=gpu_index,
-        config_path=config_path,
+    include_q2rtx, include_cuda = _stability_workload_selection(args)
+    stability_config = (
+        build_stability_config(
+            args,
+            gpu_index=gpu_index,
+            config_path=config_path,
+        )
+        if include_q2rtx
+        else build_cuda_stability_config(
+            args,
+            gpu_index=gpu_index,
+            config_path=config_path,
+        )
     )
     stability_config = build_long_stability_test_config(
         stability_config,
         total_duration_s=int(args.stability_seconds),
+        include_q2rtx=include_q2rtx,
+        include_cuda=include_cuda,
     )
     attach_stdout_progress(stability_config)
     try:
-        result = run_q2rtx_stability_test(stability_config)
+        result = (
+            run_q2rtx_stability_test(stability_config)
+            if include_q2rtx
+            else run_cuda_stability_test(stability_config)
+        )
     except StabilityTestError as exc:
         raise NvmlError(f"stability test configuration error: {exc}") from exc
 
@@ -1128,6 +1379,269 @@ def run_stability_test(args, *, gpu_index, config_path):
         raise NvmlError(
             f"stability test failed: {result.reason}; log={result.log_path}"
         )
+
+
+def run_profile_reverification(
+    args,
+    *,
+    gpu_index,
+    config_path,
+    afterburner_runtime_options,
+):
+    selector = str(args.auto_uv_profile or "").strip()
+    prefer_afterburner_curve = bool(args.prefer_afterburner_curve)
+    if not selector and not prefer_afterburner_curve:
+        run_stability_test(args, gpu_index=gpu_index, config_path=config_path)
+        return
+
+    stop_existing_penguin_burner_runtime(log=log)
+    vf_curve_reader = create_hidden_vf_curve_reader(gpu_index=gpu_index)
+    if vf_curve_reader is None:
+        raise NvmlError("could not open the live Nvidia V/F curve reader")
+
+    gpu_policy_controller = None
+    clock_ceiling_controller = None
+    backup_path = None
+    try:
+        try:
+            gpu_policy_controller = NvmlGpuPolicyController(gpu_index=gpu_index)
+        except Exception as exc:
+            log(f"Linux GPU policy helper unavailable: {exc}")
+        backup_file = tempfile.NamedTemporaryFile(
+            prefix="penguin-burner-reverify-", suffix=".json", delete=False
+        )
+        backup_file.close()
+        backup_path = Path(backup_file.name)
+        backup_current_offsets(
+            vf_curve_reader,
+            backup_path,
+            policy_controller=gpu_policy_controller,
+        )
+
+        if prefer_afterburner_curve:
+            label, flatten_target = _apply_reverify_afterburner_profile(
+                vf_curve_reader,
+                gpu_policy_controller,
+                afterburner_runtime_options,
+                gpu_index=gpu_index,
+            )
+        else:
+            label, flatten_target = _apply_reverify_auto_uv_profile(
+                vf_curve_reader,
+                selector,
+                gpu_policy_controller,
+            )
+
+        if flatten_target is not None and gpu_policy_controller is not None:
+            try:
+                clock_ceiling_controller = FlattenedClockCeilingController(
+                    flatten_target=flatten_target,
+                    policy_controller=gpu_policy_controller,
+                )
+                clock_ceiling_controller.apply()
+            except Exception as exc:
+                clock_ceiling_controller = None
+                log(f"Skipping re-verification clock ceiling: {exc}")
+            else:
+                log(
+                    "Configured re-verification clock ceiling: "
+                    f"{clock_ceiling_controller.describe()}."
+                )
+
+        duration_s = int(args.stability_seconds)
+        include_q2rtx, include_cuda = _stability_workload_selection(args)
+        workload_label = _stability_workload_label(
+            include_q2rtx=include_q2rtx,
+            include_cuda=include_cuda,
+        )
+        log(
+            "Profile re-verification starting: "
+            f"profile={label} duration={duration_s}s workload={workload_label}."
+        )
+        stability_config = (
+            build_stability_config(
+                args,
+                gpu_index=gpu_index,
+                config_path=config_path,
+                progress_context="Profile re-verification",
+            )
+            if include_q2rtx
+            else build_cuda_stability_config(
+                args,
+                gpu_index=gpu_index,
+                config_path=config_path,
+            )
+        )
+        stability_config = build_long_stability_test_config(
+            stability_config,
+            total_duration_s=duration_s,
+            include_q2rtx=include_q2rtx,
+            include_cuda=include_cuda,
+        )
+        stop_request_path = _stability_stop_request_path(args)
+        if stop_request_path is not None:
+            stability_config.abort_callback = _stability_stop_request_abort_callback(
+                stop_request_path,
+                previous_callback=stability_config.abort_callback,
+            )
+        attach_stdout_progress(stability_config)
+        try:
+            result = (
+                run_q2rtx_stability_test(stability_config)
+                if include_q2rtx
+                else run_cuda_stability_test(stability_config)
+            )
+        except StabilityTestError as exc:
+            raise NvmlError(f"stability test configuration error: {exc}") from exc
+        print_q2rtx_stability_result(result)
+        if not result.success:
+            raise NvmlError(
+                f"profile re-verification failed: {result.reason}; log={result.log_path}"
+            )
+        log(f"Profile re-verification passed: profile={label}.")
+    finally:
+        if clock_ceiling_controller is not None:
+            try:
+                clock_ceiling_controller.close()
+            except Exception as exc:
+                log(f"Warning: failed to reset re-verification clock ceiling: {exc}")
+        if backup_path is not None:
+            try:
+                restore_offsets(
+                    vf_curve_reader,
+                    backup_path,
+                    policy_controller=gpu_policy_controller,
+                )
+                log("Restored V/F offsets after profile re-verification.")
+            except Exception as exc:
+                log(f"Warning: failed to restore V/F offsets after re-verification: {exc}")
+            try:
+                backup_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if gpu_policy_controller is not None:
+            gpu_policy_controller.close()
+        vf_curve_reader.close()
+
+
+def _apply_reverify_auto_uv_profile(vf_curve_reader, selector: str, gpu_policy_controller):
+    auto_uv_final_curve = load_auto_uv_final_curve(selector)
+    if auto_uv_final_curve is None:
+        raise NvmlError("Auto-UV profile not found")
+    apply_plan(vf_curve_reader, auto_uv_final_curve["plan"])
+    vf_curve_reader.refresh_points()
+    label = (
+        f"auto-UV:{auto_uv_final_curve['lock_clock_mhz']}MHz@"
+        f"{auto_uv_final_curve['candidate_voltage_mv']}mV"
+    )
+    log(
+        "Applied profile for re-verification: "
+        f"path={auto_uv_final_curve['path']} "
+        f"target={auto_uv_final_curve['lock_clock_mhz']}MHz@"
+        f"{auto_uv_final_curve['candidate_voltage_mv']}mV "
+        f"points={len(auto_uv_final_curve['plan'])}."
+    )
+    memory_policy = _apply_auto_uv_profile_memory_offset(
+        profile_label=label,
+        memory_offset_mhz=auto_uv_final_curve.get("memory_offset_mhz"),
+        gpu_policy_controller=gpu_policy_controller,
+    )
+    if memory_policy:
+        log(
+            "Applied profile memory offset for re-verification: "
+            f"{int(memory_policy['mem_clk_vf_offset_mhz']):+d}MHz."
+        )
+    return label, auto_uv_final_curve["flatten_target"]
+
+
+def _stability_stop_request_path(args) -> Path | None:
+    text = str(getattr(args, "stability_stop_request_file", "") or "").strip()
+    if not text:
+        return None
+    return Path(text).expanduser()
+
+
+def _stability_stop_request_abort_callback(
+    stop_request_path: Path,
+    *,
+    previous_callback=None,
+):
+    def _abort_callback(state: dict) -> str | None:
+        if previous_callback is not None:
+            reason = previous_callback(state)
+            if reason:
+                return str(reason)
+        try:
+            if Path(stop_request_path).exists():
+                return "profile-reverification-stop-requested"
+        except OSError:
+            return None
+        return None
+
+    return _abort_callback
+
+
+def _apply_reverify_afterburner_profile(
+    vf_curve_reader,
+    gpu_policy_controller,
+    afterburner_runtime_options,
+    *,
+    gpu_index,
+):
+    afterburner_root = str(
+        afterburner_runtime_options.get("afterburner_root", "")
+    ).strip()
+    if not afterburner_root:
+        raise NvmlError("Afterburner profile is not configured")
+    section = str(afterburner_runtime_options.get("afterburner_profile", "")).strip()
+    device_profile = str(
+        afterburner_runtime_options.get("afterburner_device_profile", "")
+    ).strip()
+    source = resolve_afterburner_vf_source(
+        afterburner_root=afterburner_root,
+        section=section or None,
+        device_profile_hint=device_profile or None,
+        dangerously_skip_validation=bool(
+            afterburner_runtime_options.get("dangerously_skip_validation")
+        ),
+    )
+    translated_gpu_policy = None
+    if gpu_policy_controller is not None:
+        try:
+            profile_settings = load_afterburner_profile_settings(
+                profile_path=source["profile_path"],
+                section=source["section"],
+            )
+            translated_gpu_policy = translate_afterburner_gpu_policy(
+                profile_settings,
+                power_limits=gpu_policy_controller.query_power_limits(),
+                power_limit_cap_w=afterburner_runtime_options[
+                    "power_limit_override_w"
+                ],
+            )
+            apply_translated_gpu_policy(gpu_policy_controller, translated_gpu_policy)
+        except Exception as exc:
+            translated_gpu_policy = None
+            log(f"Skipping Afterburner GPU policy during re-verification: {exc}")
+    vf_apply_result = apply_afterburner_curve_to_reader(
+        vf_curve_reader,
+        profile_path=source["profile_path"],
+        section=source["section"],
+        gpu_policy=translated_gpu_policy,
+        preserve_base_below_mv=afterburner_runtime_options["preserve_base_below_mv"],
+    )
+    vf_curve_reader.refresh_points()
+    flatten_target = derive_afterburner_dynamic_lock(
+        vf_apply_result["materialization"]["points"]
+    )
+    label = f"afterburner:{source['section']}"
+    log(
+        "Applied Afterburner profile for re-verification: "
+        f"section={source['section']} matched={len(vf_apply_result['plan'])} "
+        f"changed={len(vf_apply_result['changed_points'])} "
+        f"gpu-index={int(gpu_index)}."
+    )
+    return label, flatten_target
 
 
 def run_q2rtx_install():
@@ -1241,20 +1755,20 @@ def format_vf_curve_comparison(vf_curve_reader, core_clock_mhz, voltage_uv):
     point_voltage_mv = int(point["voltage_uv"] // 1000)
     point_offset_mhz = int(point["current_offset_khz"] // 1000)
 
-    vanilla_point = min(
+    base_point = min(
         vf_curve_reader.editable_core_points(),
         key=lambda candidate: abs(
             int(candidate["base_freq_khz"]) - int(core_clock_mhz) * 1000
         ),
     )
-    vanilla_clock_mhz = int(vanilla_point["base_freq_khz"] // 1000)
-    vanilla_voltage_mv = int(vanilla_point["voltage_uv"] // 1000)
-    uv_delta_mv = int(point_voltage_mv - vanilla_voltage_mv)
+    base_clock_mhz = int(base_point["base_freq_khz"] // 1000)
+    base_voltage_mv = int(base_point["voltage_uv"] // 1000)
+    uv_delta_mv = int(point_voltage_mv - base_voltage_mv)
 
     return (
         f"vf_point={point_freq_mhz}MHz@{point_voltage_mv}mV "
         f"vf_offset={point_offset_mhz:+d}MHz "
-        f"vf_vanilla={vanilla_clock_mhz}MHz@{vanilla_voltage_mv}mV "
+        f"vf_base={base_clock_mhz}MHz@{base_voltage_mv}mV "
         f"uv={uv_delta_mv:+d}mV "
     )
 
@@ -1363,8 +1877,8 @@ def run_nvidia_smi(args):
             text=True,
             encoding="utf-8",
             errors="replace",
-            env=stable_subprocess_env(),
             check=False,
+            env=stable_subprocess_env(),
         )
     except FileNotFoundError as exc:
         raise NvmlError(f"{NVIDIA_SMI} not found") from exc
@@ -1548,8 +2062,8 @@ def export_lact_config(
                 dangerously_skip_validation=bool(
                     afterburner_runtime_options.get("dangerously_skip_validation")
                 ),
-                preserve_vanilla_below_mv=afterburner_runtime_options.get(
-                    "preserve_vanilla_below_mv"
+                preserve_base_below_mv=afterburner_runtime_options.get(
+                    "preserve_base_below_mv"
                 ),
                 include_vf_curve=include_vf_curve,
                 include_fan_curve=include_fan_curve,
@@ -1709,7 +2223,17 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
 
     args = parse_main_args(argv)
     if args.debug_log:
-        enable_debug_logging(args.config, argv=argv)
+        enable_debug_logging(Path(args.config).expanduser(), argv=argv)
+    claim_desktop_user_ownership(
+        default_user_config_dir(),
+        recursive=True,
+        include_parents=True,
+    )
+    claim_desktop_user_ownership(
+        default_saved_uv_dir(),
+        recursive=True,
+        include_parents=True,
+    )
     if args.clear_auto_uv_state and args.fresh_auto_uv_scan:
         raise NvmlError(
             "choose only one of --clear-auto-uv-state or --fresh-auto-uv-scan"
@@ -1720,6 +2244,25 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
     elif args.clear_auto_uv_state:
         clear_auto_uv_state(log=log)
         return
+    if args.list_auto_uv_profiles:
+        profiles = read_auto_uv_profile_summaries()
+        if args.json_events:
+            print(json.dumps({"profiles": profiles}, indent=2), flush=True)
+        else:
+            print(format_profile_table(profiles), flush=True)
+        return
+    if args.delete_auto_uv_profiles:
+        deleted = delete_auto_uv_profiles(args.delete_auto_uv_profiles)
+        payload = {
+            "deleted": [str(path) for path in deleted],
+            "deleted_count": len(deleted),
+        }
+        if args.json_events:
+            print(json.dumps(payload, indent=2), flush=True)
+        else:
+            label = "profile" if len(deleted) == 1 else "profiles"
+            print(f"Deleted {len(deleted)} Auto-UV {label}.", flush=True)
+        return
     if args.install_q2rtx:
         run_q2rtx_install()
         return
@@ -1729,7 +2272,9 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
     if args.gpu_index is not None:
         gpu_config["index"] = int(args.gpu_index)
     gpu_index = int(gpu_config["index"])
-    if args.stability_test:
+    if args.stability_test and not (
+        str(args.auto_uv_profile or "").strip() or bool(args.prefer_afterburner_curve)
+    ):
         run_stability_test(
             args,
             gpu_index=gpu_index,
@@ -1743,9 +2288,12 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
     has_usable_persisted_afterburner_import = afterburner_root_has_imported_profiles(
         stored_afterburner_runtime_options.get("afterburner_root", "")
     )
+    auto_uv_profile_selector = str(args.auto_uv_profile or "").strip()
     auto_uv_final_curve_available = False
     try:
-        auto_uv_final_curve_available = load_auto_uv_final_curve() is not None
+        auto_uv_final_curve_available = (
+            load_auto_uv_final_curve(auto_uv_profile_selector) is not None
+        )
     except Exception:
         auto_uv_final_curve_available = False
     default_auto_uv_started = False
@@ -1757,9 +2305,11 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
     ):
         args.auto_uv_voltage_scan = True
         default_auto_uv_started = True
+    if args.auto_uv_require_final_choice and not args.json_events:
+        raise NvmlError("--auto-uv-require-final-choice requires --json-events")
     if args.auto_uv_voltage_scan:
         capture_path = enable_stdio_capture(
-            args.config,
+            config_path,
             argv=argv or ["--auto-uv-voltage-scan"],
             label="auto-uv-stdout",
         )
@@ -1806,10 +2356,10 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
             if int(args.power_limit_override_w) > 0
             else None
         )
-    if args.preserve_vanilla_below_mv is not None:
-        afterburner_runtime_options["preserve_vanilla_below_mv"] = (
-            int(args.preserve_vanilla_below_mv)
-            if int(args.preserve_vanilla_below_mv) > 0
+    if args.preserve_base_below_mv is not None:
+        afterburner_runtime_options["preserve_base_below_mv"] = (
+            int(args.preserve_base_below_mv)
+            if int(args.preserve_base_below_mv) > 0
             else None
         )
     if args.auto_uv_max_drop_pct is not None:
@@ -1823,6 +2373,17 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
             int(args.auto_uv_final_seconds)
             if int(args.auto_uv_final_seconds) > 0
             else None
+        )
+    if args.auto_uv_short_seconds is not None:
+        afterburner_runtime_options["auto_uv_short_seconds"] = (
+            max(10, min(60, int(args.auto_uv_short_seconds)))
+            if int(args.auto_uv_short_seconds) > 0
+            else None
+        )
+    if args.auto_uv_memory_offset_mhz is not None:
+        afterburner_runtime_options["auto_uv_memory_offset_mhz"] = max(
+            0,
+            min(MAX_AFTERBURNER_MEM_OFFSET_MHZ, int(args.auto_uv_memory_offset_mhz)),
         )
     if args.auto_uv_efficiency_stop_streak is not None:
         afterburner_runtime_options["auto_uv_efficiency_stop_streak"] = max(
@@ -1844,6 +2405,8 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
             0.0,
             min(1.0, float(args.auto_uv_clock_bump_budget_ratio)),
         )
+    if args.auto_uv_require_final_choice:
+        afterburner_runtime_options["auto_uv_require_final_choice"] = True
     if args.dangerously_skip_validation:
         afterburner_runtime_options["dangerously_skip_validation"] = True
     prefer_afterburner_curve = bool(args.prefer_afterburner_curve)
@@ -1857,6 +2420,14 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
             args=args,
             fan_config=fan_config,
             gpu_index=gpu_index,
+            afterburner_runtime_options=afterburner_runtime_options,
+        )
+        return
+    if args.stability_test:
+        run_profile_reverification(
+            args,
+            gpu_index=gpu_index,
+            config_path=config_path,
             afterburner_runtime_options=afterburner_runtime_options,
         )
         return
@@ -1876,6 +2447,27 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
                     log=log,
                 )
             elif args.auto_uv_voltage_scan:
+                emit_json_event(
+                    bool(args.json_events),
+                    "auto_uv_start",
+                    gpu_index=int(gpu_index),
+                )
+
+                def _auto_uv_json_event(event, payload):
+                    emit_json_event(bool(args.json_events), event, **dict(payload))
+
+                def _dependency_json_event(payload):
+                    emit_json_event(
+                        bool(args.json_events),
+                        "dependency_progress",
+                        **dict(payload),
+                    )
+
+                try:
+                    require_auto_uv_preflight(gpu_index=gpu_index, log=log)
+                except RuntimeError as exc:
+                    raise NvmlError(str(exc)) from exc
+
                 result = run_auto_uv_voltage_scan(
                     gpu_index=gpu_index,
                     runtime_options=afterburner_runtime_options,
@@ -1885,8 +2477,28 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
                         config_path=config_path,
                         auto_install_q2rtx=True,
                         progress_context="Auto-UV",
+                        dependency_progress_callback=(
+                            _dependency_json_event
+                            if bool(args.json_events)
+                            else None
+                        ),
+                        dependency_text_progress=not bool(args.json_events),
                     ),
                     log=log,
+                    event_callback=_auto_uv_json_event
+                    if bool(args.json_events)
+                    else None,
+                )
+                emit_json_event(
+                    bool(args.json_events),
+                    "final_result",
+                    voltage_mv=int(result.final_voltage_mv),
+                    clock_mhz=int(result.lock_clock_mhz),
+                    power_w=result.final_power_w,
+                    temperature_c=result.final_temperature_c,
+                    fan_pct=result.final_fan_speed_pct,
+                    stop_reason=result.stop_reason,
+                    failed_candidate_voltage_mv=result.failed_candidate_voltage_mv,
                 )
                 log(
                     "Auto-UV final state: "
@@ -1897,6 +2509,8 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
                     f"stop_reason={result.stop_reason} "
                     f"failed_candidate={result.failed_candidate_voltage_mv if result.failed_candidate_voltage_mv is not None else 'none'}"
                 )
+        except AutoUvFinalChoiceDiscarded as exc:
+            log(str(exc))
         except AutoUvError as exc:
             raise NvmlError(str(exc)) from exc
         return
@@ -2066,6 +2680,7 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
     auto_uv_final_curve = None
     vf_apply_result = None
     active_vf_curve_source = None
+    auto_uv_profile_gpu_policy = None
     clock_ceiling_controller = None
     vf_expected_samples = []
     last_vf_reapply_monotonic = 0.0
@@ -2086,7 +2701,7 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
         log(f"Linux GPU policy helper unavailable: {exc}")
 
     try:
-        auto_uv_final_curve = load_auto_uv_final_curve()
+        auto_uv_final_curve = load_auto_uv_final_curve(auto_uv_profile_selector)
     except Exception as exc:
         auto_uv_final_curve = None
         log(f"Skipping auto-UV final curve: error={exc}")
@@ -2162,6 +2777,7 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
         auto_uv_curve_applied = False
 
         def _apply_auto_uv_final_curve() -> bool:
+            nonlocal auto_uv_profile_gpu_policy
             nonlocal auto_uv_final_curve
             nonlocal vf_apply_result
             nonlocal vf_expected_samples
@@ -2196,6 +2812,16 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
                     f"{auto_uv_final_curve['candidate_voltage_mv']}mV "
                     f"points={len(auto_uv_final_curve['plan'])}."
                 )
+                auto_uv_profile_gpu_policy = _apply_auto_uv_profile_memory_offset(
+                    profile_label="auto-UV final curve",
+                    memory_offset_mhz=auto_uv_final_curve.get("memory_offset_mhz"),
+                    gpu_policy_controller=gpu_policy_controller,
+                )
+                if auto_uv_profile_gpu_policy:
+                    log(
+                        "Applied auto-UV profile memory offset: "
+                        f"{int(auto_uv_profile_gpu_policy['mem_clk_vf_offset_mhz']):+d}MHz."
+                    )
                 try:
                     clock_ceiling_controller = FlattenedClockCeilingController(
                         flatten_target=auto_uv_final_curve["flatten_target"],
@@ -2228,8 +2854,8 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
                     profile_path=afterburner_source["profile_path"],
                     section=afterburner_source["section"],
                     gpu_policy=translated_gpu_policy,
-                    preserve_vanilla_below_mv=afterburner_runtime_options[
-                        "preserve_vanilla_below_mv"
+                    preserve_base_below_mv=afterburner_runtime_options[
+                        "preserve_base_below_mv"
                     ],
                 )
             except Exception as exc:
@@ -2381,7 +3007,7 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
             "Use --silent-fan-curve to let PenguinBurner control fans. Press Ctrl-C to exit.",
             flush=True,
         )
-    startup_gpu_policy = translated_gpu_policy or {
+    startup_gpu_policy = translated_gpu_policy or auto_uv_profile_gpu_policy or {
         "power_limit_w": startup_power_limit_w
     }
     log(
@@ -2711,10 +3337,27 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
         time.sleep(poll_interval_s)
 
 
+def _runtime_profile_selector_from_argv(argv) -> str:
+    index = 0
+    while index < len(argv):
+        arg = str(argv[index])
+        if arg == "--auto-uv-profile" and index + 1 < len(argv):
+            return str(argv[index + 1]).strip()
+        if arg.startswith("--auto-uv-profile="):
+            return arg.split("=", 1)[1].strip()
+        index += 1
+    return ""
+
+
 def cli_main() -> int:
     try:
         runtime_flags = parse_runtime_flags(sys.argv[1:])
         runtime_argv = runtime_flags["passthrough"]
+        runtime_profile_selector = _runtime_profile_selector_from_argv(runtime_argv)
+        if runtime_profile_selector and resolve_auto_uv_profile(
+            runtime_profile_selector
+        ) is None:
+            raise NvmlError(f"Auto-UV profile not found: {runtime_profile_selector}")
         auto_uv_requested = "--auto-uv-voltage-scan" in runtime_argv
         if auto_uv_requested and (
             runtime_flags["daemonize"]

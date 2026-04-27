@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .models import AutoUvCurveCandidate, AutoUvError, VoltageCurve
 from .tuning import AUTO_UV_CURVE_TUNING, AUTO_UV_VOLTAGE_PHASE_TUNING
+from .unsafe_classification import _unsafe_entry_blocks_future_search
 
 
 def _percent(value: float | int) -> float:
@@ -25,12 +26,12 @@ def _lower_voltage_bins(
     plan: list[dict],
     start_voltage_mv: int,
     *,
-    preserve_vanilla_below_mv: int | None,
+    preserve_base_below_mv: int | None,
     min_search_voltage_mv: int | None = None,
 ) -> list[int]:
     return VoltageCurve.from_plan(plan).lower_voltage_bins(
         start_voltage_mv,
-        preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+        preserve_base_below_mv=preserve_base_below_mv,
         min_search_voltage_mv=min_search_voltage_mv,
     )
 
@@ -47,6 +48,8 @@ def _unsafe_min_search_voltage_mv(
 ) -> tuple[int | None, int | None]:
     unsafe_floor_mv = None
     for entry in unsafe_entries:
+        if not _unsafe_entry_blocks_future_search(entry):
+            continue
         try:
             voltage_mv = int(entry["candidate_voltage_mv"])
         except (KeyError, TypeError, ValueError):
@@ -172,14 +175,14 @@ def _next_search_candidate_voltage_mv(
     start_voltage_mv: int,
     stable_voltage_mv: int,
     reference_actual_voltage_mv: float | None,
-    preserve_vanilla_below_mv: int | None,
+    preserve_base_below_mv: int | None,
     min_search_voltage_mv: int | None,
     failed_floor_voltage_mv: int | None = None,
 ) -> int | None:
     candidate_bins = _lower_voltage_bins(
         plan,
         stable_voltage_mv,
-        preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+        preserve_base_below_mv=preserve_base_below_mv,
         min_search_voltage_mv=min_search_voltage_mv,
     )
     if failed_floor_voltage_mv is not None:
@@ -244,7 +247,7 @@ def _build_descended_plan(
         voltage_mv = int(point.voltage_mv)
         base_mhz = int(point.base_mhz)
         original_target_mhz = int(point.target_mhz)
-        if point.preserve_vanilla:
+        if point.preserve_base:
             target_mhz = int(base_mhz)
         elif voltage_mv >= int(candidate_voltage_mv):
             target_mhz = int(flattened_clock_mhz)
@@ -269,7 +272,7 @@ def _build_descended_plan(
                     _snap_target_clock(int(round(interpolated_mhz))),
                 ),
             )
-        if not point.preserve_vanilla and voltage_mv < int(candidate_voltage_mv):
+        if not point.preserve_base and voltage_mv < int(candidate_voltage_mv):
             target_mhz = min(int(target_mhz), int(below_plateau_cap_mhz))
         plan.append(point.with_target_mhz(target_mhz).to_plan_item())
     return plan
@@ -333,7 +336,7 @@ def _build_flatten_target(
     tail_point_count = sum(
         1
         for point in curve.points
-        if int(point.voltage_mv) >= int(lock_voltage_mv) and not point.preserve_vanilla
+        if int(point.voltage_mv) >= int(lock_voltage_mv) and not point.preserve_base
     )
     return {
         "source": "measured-sustained-clock",

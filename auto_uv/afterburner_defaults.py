@@ -111,7 +111,7 @@ def restore_afterburner_defaults_from_config(
             profile_path=device_profile,
             section=AFTERBURNER_DEFAULTS_SECTION,
             gpu_policy=translated_gpu_policy,
-            preserve_vanilla_below_mv=None,
+            preserve_base_below_mv=None,
         )
         apply_plan(reader, result["plan"])
         reader.refresh_points()

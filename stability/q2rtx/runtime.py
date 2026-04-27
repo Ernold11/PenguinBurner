@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import time
 
+from penguin_burner_paths import claim_desktop_user_ownership
 from subprocess_locale import stable_subprocess_env
 
 from .assets import _validate_demo_name, resolve_q2rtx_executable, resolve_workload
@@ -271,6 +272,7 @@ def build_timedemo_command(
 def _prepare_log_path(log_dir: Path) -> Path:
     log_dir = log_dir.expanduser()
     log_dir.mkdir(parents=True, exist_ok=True)
+    claim_desktop_user_ownership(log_dir, include_parents=True)
     timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     return log_dir / f"q2rtx-stability-{timestamp}.log"
 
@@ -322,6 +324,23 @@ def _terminate_process_group(
             process.kill()
         except Exception:
             pass
+
+
+def _timedemo_runs_net_seconds(timedemo_runs: list[TimedemoRun]) -> float:
+    return sum(max(0.0, float(run.seconds)) for run in timedemo_runs)
+
+
+def _timedemo_abort_is_immediate(reason: str) -> bool:
+    reason = str(reason or "").strip()
+    if not reason:
+        return False
+    if reason == "user-stop-requested":
+        return True
+    if reason == "fatal-q2rtx-output":
+        return True
+    if reason.startswith("timedemo-live-stall"):
+        return True
+    return False
 
 
 def _managed_q2rtx_process_groups(config: Q2RTXStabilityConfig) -> set[int]:
@@ -422,10 +441,12 @@ def _run_companion_process(
     log_file,
     run_start_monotonic: float,
     cuda_telemetry_samples: list[TelemetrySample],
+    voltage_session: _HiddenNvmlVoltageSession,
     section_name: str,
     workload_name: str,
     log_path: Path,
-) -> int | None:
+    progress_elapsed_offset_s: float = 0.0,
+) -> tuple[int | None, str | None]:
     companion_env = dict(os.environ)
     companion_env["PYTHONUNBUFFERED"] = "1"
     companion_process = subprocess.Popen(
@@ -437,17 +458,23 @@ def _run_companion_process(
     )
     next_heartbeat_monotonic = time.monotonic()
     next_sample_monotonic = next_heartbeat_monotonic
+    companion_start_monotonic = next_heartbeat_monotonic
     companion_exit_code = None
     try:
         while True:
             now_monotonic = time.monotonic()
-            pass_elapsed_s = now_monotonic - run_start_monotonic
+            wall_elapsed_s = now_monotonic - run_start_monotonic
+            pass_elapsed_s = (
+                float(progress_elapsed_offset_s)
+                + now_monotonic
+                - companion_start_monotonic
+            )
             companion_exit_code = companion_process.poll()
             latest_sample = None
             if now_monotonic >= next_sample_monotonic:
                 latest_sample = query_gpu_metrics(
                     config.gpu_index,
-                    voltage_session=None,
+                    voltage_session=voltage_session,
                 )
                 if latest_sample is not None:
                     latest_sample.elapsed_s = pass_elapsed_s
@@ -462,48 +489,145 @@ def _run_companion_process(
                     )
                 )
                 log_file.write(
-                    f"# heartbeat elapsed={pass_elapsed_s:.1f}s "
+                    f"# heartbeat elapsed={wall_elapsed_s:.1f}s "
+                    f"net_elapsed={pass_elapsed_s:.1f}s "
                     f"running=cuda"
                     + (f" {latest_metrics}" if latest_metrics else "")
                     + "\n"
                 )
                 log_file.flush()
+                progress_state = {
+                    "section_name": section_name,
+                    "workload_name": workload_name,
+                    "elapsed_s": float(wall_elapsed_s),
+                    "net_elapsed_s": float(pass_elapsed_s),
+                    "progress_elapsed_s": float(wall_elapsed_s),
+                    "command": list(command),
+                    "log_path": log_path,
+                    "latest_sample": (
+                        latest_sample
+                        if latest_sample is not None
+                        else (
+                            cuda_telemetry_samples[-1]
+                            if cuda_telemetry_samples
+                            else None
+                        )
+                    ),
+                    "telemetry_samples": [],
+                    "timedemo_runs": [],
+                    "new_timedemo_runs": [],
+                    "completed_runs": 0,
+                    "completed_frames": 0,
+                    "last_run": None,
+                    "running": "cuda",
+                    "fatal_output_matches": [],
+                }
                 if config.progress_callback is not None:
                     try:
-                        config.progress_callback(
-                            {
-                                "section_name": section_name,
-                                "workload_name": workload_name,
-                                "elapsed_s": float(pass_elapsed_s),
-                                "command": list(command),
-                                "log_path": log_path,
-                                "latest_sample": (
-                                    latest_sample
-                                    if latest_sample is not None
-                                    else (
-                                        cuda_telemetry_samples[-1]
-                                        if cuda_telemetry_samples
-                                        else None
-                                    )
-                                ),
-                                "telemetry_samples": [],
-                                "timedemo_runs": [],
-                                "new_timedemo_runs": [],
-                                "completed_runs": 0,
-                                "completed_frames": 0,
-                                "last_run": None,
-                                "running": "cuda",
-                                "fatal_output_matches": [],
-                            }
-                        )
+                        config.progress_callback(progress_state)
                     except Exception:
                         pass
+                if config.abort_callback is not None:
+                    try:
+                        abort_reason = config.abort_callback(progress_state)
+                    except Exception:
+                        abort_reason = None
+                    if abort_reason:
+                        _terminate_process_group(companion_process)
+                        return companion_process.poll() or -15, str(abort_reason)
                 next_heartbeat_monotonic = now_monotonic + 1.0
             if companion_exit_code is not None:
-                return companion_exit_code
+                return companion_exit_code, None
             time.sleep(0.1)
     finally:
         _terminate_process_group(companion_process)
+
+
+def run_cuda_stability_test(config: Q2RTXStabilityConfig) -> Q2RTXStabilityResult:
+    command = tuple(config.companion_command or ())
+    if not command:
+        raise StabilityTestError("CUDA stability command is not configured")
+    if int(config.duration_s) <= 0:
+        raise StabilityTestError("CUDA stability duration must be greater than zero")
+    if float(config.poll_interval_s) <= 0:
+        raise StabilityTestError("stability poll interval must be greater than zero")
+
+    started_at = datetime.now().astimezone()
+    log_path = _prepare_log_path(config.log_dir)
+    command_text = " ".join(str(part) for part in command)
+    log_path.write_text(
+        (
+            "# PenguinBurner CUDA stability log\n"
+            f"# started_at={started_at.isoformat()}\n"
+            "# workload=CUDA compute\n"
+            f"# command={command_text}\n"
+            f"# workdir={Path.cwd()}\n"
+        ),
+        encoding="utf-8",
+    )
+    claim_desktop_user_ownership(log_path)
+
+    cuda_telemetry_samples: list[TelemetrySample] = []
+    voltage_session = _HiddenNvmlVoltageSession(config.gpu_index)
+    run_start_monotonic = time.monotonic()
+    exit_code = None
+    abort_reason = None
+    try:
+        with log_path.open("a", encoding="utf-8", errors="replace") as log_file:
+            exit_code, abort_reason = _run_companion_process(
+                config=config,
+                command=command,
+                log_file=log_file,
+                run_start_monotonic=run_start_monotonic,
+                cuda_telemetry_samples=cuda_telemetry_samples,
+                voltage_session=voltage_session,
+                section_name="cuda-compute",
+                workload_name="CUDA compute",
+                log_path=log_path,
+            )
+    finally:
+        voltage_session.close()
+    observed_duration_s = time.monotonic() - run_start_monotonic
+    fatal_output_matches = _scan_output_for_fatal_patterns(log_path)
+    xid_messages = _query_xid_messages_since(started_at)
+    output_tail = _read_recent_output(log_path)
+    if abort_reason:
+        reason = str(abort_reason)
+        success = False
+    elif exit_code not in (None, 0):
+        reason = f"cuda-bruteforce-failed exit={int(exit_code)}"
+        success = False
+    elif fatal_output_matches:
+        reason = "fatal-cuda-output"
+        success = False
+    elif xid_messages:
+        reason = "nvidia-xid-detected"
+        success = False
+    else:
+        reason = "ok"
+        success = True
+    return Q2RTXStabilityResult(
+        success=success,
+        reason=reason,
+        workload_kind="cuda",
+        workload_name="CUDA compute",
+        command=list(command),
+        executable_path=Path(str(command[0])),
+        workdir=Path.cwd(),
+        duration_requested_s=int(config.duration_s),
+        timedemo_loops_requested=None,
+        duration_observed_s=float(observed_duration_s),
+        demo_path=None,
+        log_path=log_path,
+        process_exit_code=exit_code,
+        shutdown_mode="cuda-complete" if success else reason,
+        fatal_output_matches=fatal_output_matches,
+        xid_messages=xid_messages,
+        timedemo_runs=[],
+        telemetry_samples=list(cuda_telemetry_samples),
+        companion_telemetry_samples=list(cuda_telemetry_samples),
+        output_tail=output_tail,
+    )
 
 
 def _run_timedemo_process(
@@ -538,6 +662,7 @@ def _run_timedemo_process(
     observed_duration_s = 0.0
     last_timedemo_run_count = max(0, int(initial_run_count))
     companion_exit_code = None
+    companion_abort_reason = None
     cuda_telemetry_samples: list[TelemetrySample] = []
     process = None
 
@@ -624,11 +749,14 @@ def _run_timedemo_process(
                     last_timedemo_run_count = len(all_timedemo_runs)
                     fatal_output_matches = _scan_output_for_fatal_patterns(log_path)
                     completed_frames = sum(int(run.frames) for run in timedemo_runs)
+                    net_elapsed_s = _timedemo_runs_net_seconds(timedemo_runs)
                     progress_state = {
                         "section_name": section_name,
                         "workload_name": workload_name,
                         "started_at": section_started_dt,
                         "elapsed_s": float(pass_elapsed_s),
+                        "net_elapsed_s": float(net_elapsed_s),
+                        "progress_elapsed_s": float(pass_elapsed_s),
                         "command": list(command),
                         "workdir": workdir,
                         "log_path": log_path,
@@ -663,7 +791,9 @@ def _run_timedemo_process(
                             abort_reason = config.abort_callback(progress_state)
                         except Exception:
                             abort_reason = None
-                        if abort_reason:
+                        if abort_reason and _timedemo_abort_is_immediate(
+                            str(abort_reason)
+                        ):
                             _terminate_process_group(process)
                             process_exit_code = process.returncode
                             observed_duration_s = time.monotonic() - run_start_monotonic
@@ -680,17 +810,24 @@ def _run_timedemo_process(
                 and exit_reason == "completed"
                 and config.companion_command is not None
             ):
-                companion_exit_code = _run_companion_process(
+                q2rtx_net_duration_s = _timedemo_runs_net_seconds(
+                    _extract_timedemo_runs(log_path)[max(0, int(initial_run_count)) :]
+                )
+                companion_exit_code, companion_abort_reason = _run_companion_process(
                     config=config,
                     command=config.companion_command,
                     log_file=log_file,
                     run_start_monotonic=run_start_monotonic,
                     cuda_telemetry_samples=cuda_telemetry_samples,
+                    voltage_session=voltage_session,
                     section_name=section_name,
                     workload_name=workload_name,
                     log_path=log_path,
+                    progress_elapsed_offset_s=float(q2rtx_net_duration_s),
                 )
-                if companion_exit_code not in (None, 0):
+                if companion_abort_reason:
+                    exit_reason = str(companion_abort_reason)
+                elif companion_exit_code not in (None, 0):
                     exit_reason = (
                         f"cuda-bruteforce-failed exit={int(companion_exit_code)}"
                     )
@@ -698,7 +835,9 @@ def _run_timedemo_process(
         _terminate_process_group(process)
         voltage_session.close()
 
-    if companion_exit_code not in (None, 0) and exit_reason == "completed":
+    if companion_abort_reason and exit_reason == "completed":
+        exit_reason = str(companion_abort_reason)
+    elif companion_exit_code not in (None, 0) and exit_reason == "completed":
         exit_reason = f"cuda-bruteforce-failed exit={int(companion_exit_code)}"
 
     return (
@@ -758,6 +897,7 @@ def _run_timedemo_session(
         ),
         encoding="utf-8",
     )
+    claim_desktop_user_ownership(log_path)
     run_identity = _resolve_q2rtx_run_identity()
     if run_identity is not None:
         with log_path.open("a", encoding="utf-8", errors="replace") as log_file:

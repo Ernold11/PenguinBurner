@@ -29,7 +29,7 @@
     Decision context: this step is useful because it preserves the previous stable clock target and improves FPS/W.
   </text>
   <text x="70" y="985" font-family="Noto Sans Mono, DejaVu Sans Mono, monospace" font-size="33" fill="#94a3b8">
-    Temperature-normalized efficiency is now slightly above the previous stable probe but still far ahead of stock.
+    Temperature-normalized efficiency is now slightly above the previous stable probe but still far ahead of base.
   </text>
   <text x="70" y="1040" font-family="Noto Sans Mono, DejaVu Sans Mono, monospace" font-size="33" fill="#94a3b8">
     Auto-UV keeps probing lower until efficiency stops making sense, guardrails fail, or final verification starts.

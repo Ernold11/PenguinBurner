@@ -8,6 +8,10 @@ class AutoUvError(RuntimeError):
     pass
 
 
+class AutoUvFinalChoiceDiscarded(RuntimeError):
+    pass
+
+
 @dataclass(slots=True)
 class AutoUvProbeSummary:
     candidate_voltage_mv: int
@@ -33,6 +37,10 @@ class AutoUvProbeSummary:
     used_companion_load: bool
     result_reason: str
     log_path: Path
+    q2rtx_avg_voltage_mv: float | None = None
+    q2rtx_avg_core_clock_mhz: float | None = None
+    cuda_avg_voltage_mv: float | None = None
+    cuda_avg_core_clock_mhz: float | None = None
 
 
 @dataclass(slots=True)
@@ -73,7 +81,7 @@ class VoltagePoint:
     voltage_mv: int
     base_mhz: int
     target_mhz: int
-    preserve_vanilla: bool = False
+    preserve_base: bool = False
     source: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -83,7 +91,9 @@ class VoltagePoint:
             voltage_mv=int(item["voltage_mv"]),
             base_mhz=int(item["base_mhz"]),
             target_mhz=int(item["target_mhz"]),
-            preserve_vanilla=bool(item.get("preserve_vanilla")),
+            preserve_base=bool(
+                item.get("preserve_base", item.get("preserve_vanilla"))
+            ),
             source=dict(item),
         )
 
@@ -97,19 +107,20 @@ class VoltagePoint:
             voltage_mv=int(self.voltage_mv),
             base_mhz=int(self.base_mhz),
             target_mhz=int(target_mhz),
-            preserve_vanilla=bool(self.preserve_vanilla),
+            preserve_base=bool(self.preserve_base),
             source=dict(self.source),
         )
 
     def to_plan_item(self) -> dict:
         item = dict(self.source)
+        item.pop("preserve_vanilla", None)
         item["index"] = int(self.index)
         item["voltage_mv"] = int(self.voltage_mv)
         item["base_mhz"] = int(self.base_mhz)
         item["target_mhz"] = int(self.target_mhz)
         item["new_offset_mhz"] = int(self.new_offset_mhz)
-        if self.preserve_vanilla or "preserve_vanilla" in item:
-            item["preserve_vanilla"] = bool(self.preserve_vanilla)
+        if self.preserve_base or "preserve_base" in item:
+            item["preserve_base"] = bool(self.preserve_base)
         return item
 
     def to_artifact_point(self) -> dict:
@@ -139,7 +150,7 @@ class VoltageCurve:
         return [
             point
             for point in sorted(self.points, key=lambda item: int(item.voltage_mv))
-            if not point.preserve_vanilla
+            if not point.preserve_base
         ]
 
     @property
@@ -156,15 +167,15 @@ class VoltageCurve:
         self,
         start_voltage_mv: int,
         *,
-        preserve_vanilla_below_mv: int | None,
+        preserve_base_below_mv: int | None,
         min_search_voltage_mv: int | None = None,
     ) -> list[int]:
         bins: list[int] = []
         for voltage_mv in self.editable_voltage_bins:
             if voltage_mv >= int(start_voltage_mv):
                 continue
-            if preserve_vanilla_below_mv is not None and int(voltage_mv) <= int(
-                preserve_vanilla_below_mv
+            if preserve_base_below_mv is not None and int(voltage_mv) <= int(
+                preserve_base_below_mv
             ):
                 continue
             if min_search_voltage_mv is not None and int(voltage_mv) < int(

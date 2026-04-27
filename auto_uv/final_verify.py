@@ -7,7 +7,6 @@ from afterburner.import_vf_curve import apply_plan
 from .artifacts import (
     _write_final_curve_snapshot,
     _write_latest_verified_uv_result,
-    _write_saved_uv_state,
     _write_stable_uv_result,
     _write_uv_result_snapshot,
 )
@@ -19,6 +18,13 @@ from .clock_bump import (
     _next_clock_bump_target_mhz,
 )
 from .curve_planning import _next_higher_voltage_bin
+from .events import (
+    AutoUvEventCallback,
+    emit_event,
+    overclock_budget_event_payload,
+    plan_event_points,
+    probe_event_payload,
+)
 from .fan_tuning import write_auto_uv_fan_payload
 from .models import AutoUvError
 from .probe_config import (
@@ -30,6 +36,7 @@ from .probe_metrics import _evaluate_probe
 from .scan_rules import _final_failure_can_accept_budget_curve
 from .tuning import AUTO_UV_PROBE_TUNING
 from .user_output import (
+    format_user_duration as _format_user_duration,
     format_user_value as _format_user_value,
     log_benchmark as _log_benchmark,
     log_fan_curve_ascii_chart as _log_fan_curve_ascii_chart,
@@ -56,6 +63,18 @@ def _choose_final_comparison_probe(
     ):
         return stable_probe
     return final_probe or stable_probe
+
+
+def _memory_offset_from_policy(translated_gpu_policy: dict | None) -> int | None:
+    if not isinstance(translated_gpu_policy, dict):
+        return None
+    value = translated_gpu_policy.get("mem_clk_vf_offset_mhz")
+    if value in (None, ""):
+        return None
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
 
 
 def _run_final_verification_and_save(
@@ -88,6 +107,8 @@ def _run_final_verification_and_save(
     clock_bump_recovery_count=0,
     clock_bump_budget_used_pct=0.0,
     max_bump_recovery_was_used=False,
+    short_probe_base_duration_s: int | None = None,
+    event_callback: AutoUvEventCallback | None = None,
 ):
     _log_phase(
         log,
@@ -111,6 +132,9 @@ def _run_final_verification_and_save(
     final_q2rtx_duration_s, final_cuda_duration_s = _budget_final_probe_durations(
         int(final_verification_duration_s)
     )
+    final_duration_label = _format_user_duration(final_verification_duration_s)
+    final_q2rtx_duration_label = _format_user_duration(final_q2rtx_duration_s)
+    final_cuda_duration_label = _format_user_duration(final_cuda_duration_s)
     final_verify_config = _normalize_probe_config(
         replace(
             q2rtx_config,
@@ -138,6 +162,28 @@ def _run_final_verification_and_save(
         and final_lock_clock_mhz is not None
     ):
         final_error = ""
+        final_budget_payload = overclock_budget_event_payload(
+            used_pct=float(final_clock_bump_budget_used_pct),
+            limit_pct=float(clock_bump_budget_limit_pct),
+            max_clock_drop_pct=float(final_clock_drop_margin_pct),
+        )
+        emit_event(
+            event_callback,
+            "candidate_curve",
+            stage="final-verify",
+            voltage_mv=int(final_voltage_mv),
+            clock_mhz=int(final_lock_clock_mhz),
+            points=plan_event_points(final_plan),
+            **final_budget_payload,
+        )
+        emit_event(
+            event_callback,
+            "probe_start",
+            stage="final-verify",
+            voltage_mv=int(final_voltage_mv),
+            clock_mhz=int(final_lock_clock_mhz),
+            **final_budget_payload,
+        )
         _log_phase(
             log,
             "final-verify",
@@ -151,7 +197,7 @@ def _run_final_verification_and_save(
             "Final long verification",
             [
                 f"Candidate chosen for final check: {int(final_lock_clock_mhz)}MHz at {int(final_voltage_mv)}mV.",
-                f"Running about {int(final_q2rtx_duration_s)}s of Q2RTX plus {int(final_cuda_duration_s)}s of CUDA load.",
+                f"Running about {final_q2rtx_duration_label} of Q2RTX plus {final_cuda_duration_label} of CUDA load.",
                 "If this fails, PenguinBurner will try to recover to the nearest safer stable curve.",
             ],
         )
@@ -190,8 +236,21 @@ def _run_final_verification_and_save(
                 < float(clock_bump_budget_limit_pct)
             ),
             marker_details=final_recovery_marker_details,
+            expected_total_duration_s=int(final_verification_duration_s),
+            event_callback=event_callback,
         )
         probe_history.append(final_probe)
+        emit_event(
+            event_callback,
+            "probe_result",
+            **probe_event_payload(
+                final_probe,
+                stage="final-verify",
+                decision="pass" if final_result.success else "fail",
+                reason=str(getattr(final_result, "reason", "")),
+            ),
+            **final_budget_payload,
+        )
         _log_benchmark(
             log,
             phase="final-verify",
@@ -211,9 +270,10 @@ def _run_final_verification_and_save(
                     lock_clock_mhz=int(final_lock_clock_mhz),
                     voltage_mv=int(final_voltage_mv),
                     probe=final_probe,
+                    base_probe=discovery_summary,
                 )
                 final_verification_status = (
-                    f"completed {int(final_verification_duration_s)}s long check"
+                    f"completed {final_duration_label} long check"
                 )
                 break
             _log_phase(log, "final-verify", f"rejected {final_error}")
@@ -288,6 +348,19 @@ def _run_final_verification_and_save(
                     label=(
                         f"final recovery target={int(bumped_candidate.target_clock_mhz)}MHz "
                         f"voltage={int(bumped_candidate.candidate_voltage_mv)}mV"
+                    ),
+                )
+                emit_event(
+                    event_callback,
+                    "candidate_curve",
+                    stage="final-recovery",
+                    voltage_mv=int(bumped_candidate.candidate_voltage_mv),
+                    clock_mhz=int(bumped_candidate.target_clock_mhz),
+                    points=plan_event_points(bumped_candidate.plan),
+                    **overclock_budget_event_payload(
+                        used_pct=float(final_clock_bump_budget_used_pct),
+                        limit_pct=float(clock_bump_budget_limit_pct),
+                        max_clock_drop_pct=float(final_clock_drop_margin_pct),
                     ),
                 )
                 previous_final_lock_clock_mhz = int(final_lock_clock_mhz)
@@ -384,7 +457,9 @@ def _run_final_verification_and_save(
                 initial_probe_clock_mhz=measured_clock_mhz,
                 power_limit_w=translated_gpu_policy.get("power_limit_w"),
                 min_performance_core_clock_pct=float(min_performance_core_clock_pct),
+                short_probe_base_duration_s=short_probe_base_duration_s,
                 reset_plan=runtime_default_plan,
+                event_callback=event_callback,
             )
         )
         if (
@@ -409,6 +484,7 @@ def _run_final_verification_and_save(
                 lock_clock_mhz=int(stable_lock_clock_mhz),
                 voltage_mv=int(stable_voltage_mv),
                 probe=stable_probe,
+                base_probe=discovery_summary,
             )
     if final_plan is None or final_voltage_mv is None or final_lock_clock_mhz is None:
         raise AutoUvError("final verification did not produce a final curve")
@@ -420,29 +496,26 @@ def _run_final_verification_and_save(
         label="final",
     )
     _log_phase(log, "final", f"stable-config-saved={final_stable_path}")
-    final_saved_path = _write_saved_uv_state(
-        plan=final_plan,
-        lock_clock_mhz=int(final_lock_clock_mhz),
-        voltage_mv=int(final_voltage_mv),
-        probe=final_probe or stable_probe,
-        label="best-undervolt",
+    fan_tuning_result = write_auto_uv_fan_payload(
+        final_probe=final_probe,
+        probes=probe_history,
     )
-    _log_phase(log, "final", f"saved={final_saved_path}")
     snapshot_path = _write_final_curve_snapshot(
         plan=final_plan,
         lock_clock_mhz=int(final_lock_clock_mhz),
         voltage_mv=int(final_voltage_mv),
         probe=final_probe,
-    )
-    fan_tuning_result = write_auto_uv_fan_payload(
-        final_probe=final_probe,
-        probes=probe_history,
+        base_probe=discovery_summary,
+        fan_curve_payload=(
+            fan_tuning_result.payload if fan_tuning_result is not None else None
+        ),
+        memory_offset_mhz=_memory_offset_from_policy(translated_gpu_policy),
     )
     if fan_tuning_result is not None:
         if fan_tuning_result.blocked:
             loaded_temp = fan_tuning_result.payload.get("loaded_temperature_c")
             limit_temp = fan_tuning_result.payload.get(
-                "max_stock_curve_load_temperature_c"
+                "max_base_curve_load_temperature_c"
             )
             loaded_text = _format_user_value(loaded_temp, "C")
             limit_text = _format_user_value(limit_temp, "C")
@@ -479,7 +552,7 @@ def _run_final_verification_and_save(
                     f"Saved suggested curve with {len(fan_tuning_result.curve)} points.",
                     (
                         "Cooling headroom to "
-                        f"{_format_user_value(fan_tuning_result.payload.get('max_stock_curve_load_temperature_c'), 'C')} "
+                        f"{_format_user_value(fan_tuning_result.payload.get('max_base_curve_load_temperature_c'), 'C')} "
                         f"safety target: {_format_user_value(fan_tuning_result.payload.get('cooling_headroom_c'), 'C')}."
                     ),
                     "This curve is not applied by default; normal runtime uses it only with --silent-fan-curve.",
@@ -495,12 +568,27 @@ def _run_final_verification_and_save(
                     "load_anchor_fan_speed_pct"
                 ),
             )
+            emit_event(
+                event_callback,
+                "fan_curve_suggested",
+                curve=fan_tuning_result.curve,
+                measured_points=fan_tuning_result.payload.get("telemetry", {}).get(
+                    "measured_fan_points",
+                    [],
+                ),
+                loaded_temperature_c=fan_tuning_result.payload.get(
+                    "load_anchor_temperature_c"
+                ),
+                load_anchor_fan_speed_pct=fan_tuning_result.payload.get(
+                    "load_anchor_fan_speed_pct"
+                ),
+            )
     _log_user_stage(
         log,
         "Final voltage/frequency curve",
         [
             "The chart below shows the curve that will be saved.",
-            "'#' is the target curve, '.' is the stock/base curve, and '@' marks the final lock point.",
+            "'#' is the target curve, '.' is the base curve, and '@' marks the final lock point.",
         ],
     )
     _log_vf_ascii_chart(
@@ -516,7 +604,7 @@ def _run_final_verification_and_save(
     )
     final_curve_overclock = curve_overclock_summary(
         final_plan=final_plan,
-        vanilla_plan=runtime_default_plan,
+        base_plan=runtime_default_plan,
         final_voltage_mv=int(final_voltage_mv),
     )
     final_comparison_probe = _choose_final_comparison_probe(
@@ -547,6 +635,19 @@ def _run_final_verification_and_save(
         final_curve_overclock=final_curve_overclock,
     )
     _log_phase(log, "final", f"curve-saved={snapshot_path}")
+    emit_event(
+        event_callback,
+        "candidate_curve",
+        stage="final",
+        voltage_mv=int(final_voltage_mv),
+        clock_mhz=int(final_lock_clock_mhz),
+        points=plan_event_points(final_plan),
+        **overclock_budget_event_payload(
+            used_pct=float(final_clock_bump_budget_used_pct),
+            limit_pct=float(clock_bump_budget_limit_pct),
+            max_clock_drop_pct=float(final_clock_drop_margin_pct),
+        ),
+    )
     return build_voltage_scan_result(
         final_voltage_mv=int(final_voltage_mv),
         final_lock_clock_mhz=int(final_lock_clock_mhz),

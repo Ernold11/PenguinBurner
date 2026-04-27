@@ -176,10 +176,10 @@ def log_vf_ascii_chart(
             points.append((voltage_mv, clock_mhz))
         return sorted(points)
 
-    stock_points = _filtered_points("base_mhz")
+    base_points = _filtered_points("base_mhz")
     target_points = _filtered_points("target_mhz")
-    if not stock_points and not target_points:
-        stock_points = sorted(
+    if not base_points and not target_points:
+        base_points = sorted(
             [
                 (float(item["voltage_mv"]), float(item["base_mhz"]))
                 for item in plan
@@ -196,9 +196,9 @@ def log_vf_ascii_chart(
 
     vf_series = [
         {
-            "name": "stock",
+            "name": "base",
             "char": ".",
-            "points": stock_points,
+            "points": base_points,
         },
         {
             "name": "target",
@@ -207,7 +207,7 @@ def log_vf_ascii_chart(
         },
     ]
     for line in render_line_chart(
-        ("VF curve zoom (top 50% voltage range, target=# stock=. lock=@, x=mV y=MHz)"),
+        ("VF curve zoom (top 50% voltage range, target=# base=. lock=@, x=mV y=MHz)"),
         series=vf_series,
         x_label="mV",
         y_label="MHz",
@@ -365,14 +365,14 @@ def log_final_summary(
     )
     if final_curve_overclock is not None:
         lock_offset = final_curve_overclock.get("lock_offset_mhz")
-        lock_vanilla = final_curve_overclock.get("lock_vanilla_mhz")
+        lock_base = final_curve_overclock.get("lock_base_mhz")
         lock_final = final_curve_overclock.get("lock_final_mhz")
         log_phase(
             log,
             "summary",
-            "curve-overclock-vs-vanilla "
+            "curve-overclock-vs-base "
             f"lock={_metric(lock_offset, suffix='MHz', precision=0)} "
-            f"vanilla={_metric(lock_vanilla, suffix='MHz', precision=0)} "
+            f"base={_metric(lock_base, suffix='MHz', precision=0)} "
             f"final={_metric(lock_final, suffix='MHz', precision=0)} "
             f"voltage={final_curve_overclock.get('lock_voltage_mv')}mV "
             f"range={_metric(final_curve_overclock.get('min_offset_mhz'), suffix='MHz', precision=0)}.."
@@ -390,6 +390,36 @@ def format_user_value(
     if value is None:
         return "n/a"
     return f"{float(value):.{int(precision)}f}{suffix}"
+
+
+def format_user_duration(seconds: float | int | None) -> str:
+    if seconds is None:
+        return "n/a"
+    try:
+        total_seconds = max(0, int(round(float(seconds))))
+    except (TypeError, ValueError):
+        return "n/a"
+
+    def unit(value: int, name: str) -> str:
+        return f"{value} {name}"
+
+    if total_seconds < 60:
+        return unit(total_seconds, "sec")
+
+    if total_seconds < 3600:
+        minutes, remainder_seconds = divmod(total_seconds, 60)
+        if remainder_seconds:
+            return f"{unit(minutes, 'min')} {unit(remainder_seconds, 'sec')}"
+        return unit(minutes, "min")
+
+    hours, remainder_seconds = divmod(total_seconds, 3600)
+    minutes = int(round(remainder_seconds / 60.0))
+    if minutes >= 60:
+        hours += 1
+        minutes = 0
+    if minutes:
+        return f"{unit(hours, 'h')} {unit(minutes, 'min')}"
+    return unit(hours, "h")
 
 
 def format_user_change(
@@ -638,14 +668,14 @@ def log_user_candidate_result(
             ]
     log_user_table(
         log,
-        title="This Step Compared With Stock And Previous Stable",
+        title="This Step Compared With Base And Previous Stable",
         headers=(
             "Metric",
-            "Stock",
+            "Base",
             "Previous stable",
             "This step",
             "Change vs previous",
-            "Change vs stock",
+            "Change vs base",
         ),
         rows=[
             (
@@ -932,7 +962,7 @@ def log_user_readable_final_summary(
         log(f"Final verification: {final_verification_status}")
     if final_curve_overclock is not None:
         lock_offset = final_curve_overclock.get("lock_offset_mhz")
-        lock_vanilla = final_curve_overclock.get("lock_vanilla_mhz")
+        lock_base = final_curve_overclock.get("lock_base_mhz")
         lock_final = final_curve_overclock.get("lock_final_mhz")
         lock_voltage = final_curve_overclock.get("lock_voltage_mv")
         min_offset = final_curve_overclock.get("min_offset_mhz")
@@ -943,14 +973,14 @@ def log_user_readable_final_summary(
         if (
             lock_offset is not None
             and lock_voltage is not None
-            and lock_vanilla is not None
+            and lock_base is not None
             and lock_final is not None
         ):
             sign = "+" if float(lock_offset) > 0.0 else ""
             log(
-                "Curve overclock vs vanilla: "
+                "Curve overclock vs base: "
                 f"{sign}{float(lock_offset):.0f}MHz at {int(lock_voltage)}mV "
-                f"(vanilla {float(lock_vanilla):.0f}MHz -> final {float(lock_final):.0f}MHz)."
+                f"(base {float(lock_base):.0f}MHz -> final {float(lock_final):.0f}MHz)."
             )
         if (
             min_offset is not None
@@ -965,13 +995,13 @@ def log_user_readable_final_summary(
                 f"{float(max_offset):.0f}MHz, "
                 f"average {float(avg_offset):.1f}MHz; "
                 f"{int(positive_points)}/"
-                f"{int(total_points)} bins are above vanilla."
+                f"{int(total_points)} bins are above base."
             )
 
     log_user_table(
         log,
         title="Before vs After",
-        headers=("Metric", "Stock", "After", "Change vs stock"),
+        headers=("Metric", "Base", "After", "Change vs base"),
         rows=[
             (
                 "Power draw",

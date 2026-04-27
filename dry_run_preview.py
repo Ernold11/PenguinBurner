@@ -91,8 +91,9 @@ def run_afterburner_dry_run(
         afterburner_runtime_options.get("afterburner_device_profile", "")
     ).strip()
     power_limit_override_w = afterburner_runtime_options.get("power_limit_override_w")
-    preserve_vanilla_below_mv = afterburner_runtime_options.get(
-        "preserve_vanilla_below_mv"
+    preserve_base_below_mv = afterburner_runtime_options.get(
+        "preserve_base_below_mv",
+        afterburner_runtime_options.get("preserve_vanilla_below_mv"),
     )
     dangerously_skip_validation = bool(
         afterburner_runtime_options.get("dangerously_skip_validation")
@@ -205,7 +206,7 @@ def run_afterburner_dry_run(
             vf_plan, missing_voltage_bins = build_plan(
                 vf_curve_reader,
                 section_info["materialization"]["points"],
-                preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+                preserve_base_below_mv=preserve_base_below_mv,
             )
             debug_log(
                 f"linux-vf-plan matched={len(vf_plan)} "
@@ -232,7 +233,7 @@ def run_afterburner_dry_run(
                     f"target={int(item['target_mhz'])}MHz "
                     f"current-offset={int(item['current_offset_mhz']):+d}MHz "
                     f"new-offset={int(item['new_offset_mhz']):+d}MHz "
-                    f"preserve-vanilla={'yes' if item.get('preserve_vanilla') else 'no'}"
+                    f"preserve-base={'yes' if item.get('preserve_base') else 'no'}"
                 )
 
         flags = fan_settings["flags"]
@@ -268,10 +269,10 @@ def run_afterburner_dry_run(
                 "VF target: "
                 f"{describe_afterburner_vfcurve_analysis(section_info['analysis'])}"
             )
-        if preserve_vanilla_below_mv is not None:
+        if preserve_base_below_mv is not None:
             log(
                 "VF preserve: "
-                f"keep the stock/base curve at and below {int(preserve_vanilla_below_mv)}mV"
+                f"keep the base curve at and below {int(preserve_base_below_mv)}mV"
             )
 
         validation = section_info.get("flatten_validation")
@@ -332,7 +333,7 @@ def run_afterburner_dry_run(
                 log(f"Linux power/memory readback note: {policy_error}")
             if vf_summary is None:
                 log("Linux VF readback note: hidden NVAPI VF helper is unavailable")
-                if preserve_vanilla_below_mv is not None:
+                if preserve_base_below_mv is not None:
                     log(
                         "Linux VF preserve note: "
                         "preserve-below-voltage needs Linux VF point data for an exact target preview"
@@ -349,7 +350,7 @@ def run_afterburner_dry_run(
         if vf_summary is not None and vf_plan:
             vf_series = [
                 {
-                    "name": "stock",
+                    "name": "base",
                     "char": ".",
                     "points": sorted(
                         [
@@ -372,7 +373,7 @@ def run_afterburner_dry_run(
                     ),
                 },
             ]
-            vf_title = "VF curve (target=# stock=. lock=@, x=mV y=MHz)"
+            vf_title = "VF curve (target=# base=. lock=@, x=mV y=MHz)"
         else:
             vf_series = [
                 {

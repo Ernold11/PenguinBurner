@@ -24,6 +24,31 @@ jobs:
       - name: Install build tools
         run: python -m pip install --upgrade build twine
 
+      - name: Check release tag matches package version
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          release_tag = os.environ["RELEASE_TAG"]
+          normalized_tag = release_tag.removeprefix("v")
+          pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          package_version = pyproject["project"]["version"]
+
+          if normalized_tag != package_version:
+              print(
+                  "Release tag does not match package version: "
+                  f"tag={release_tag!r}, pyproject={package_version!r}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          PY
+
       - name: Build package
         run: python -m build
 
@@ -54,36 +79,7 @@ jobs:
           name: python-package-distributions
           path: dist/
 
-      - name: Check whether version already exists on PyPI
-        id: pypi-version
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="$(
-            python - <<'PY'
-          from pathlib import Path
-          import re
-
-          for path in Path("dist").glob("penguin_burner-*.tar.gz"):
-              match = re.fullmatch(r"penguin_burner-(.+)\.tar\.gz", path.name)
-              if match:
-                  print(match.group(1))
-                  break
-          else:
-              raise SystemExit("could not infer package version from dist/")
-          PY
-          )"
-          status="$(curl -fsS -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/penguin-burner/${version}/json" || true)"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          if [ "$status" = "200" ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "penguin-burner ${version} already exists on PyPI; skipping publish."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Publish package to PyPI
-        if: steps.pypi-version.outputs.exists != 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true

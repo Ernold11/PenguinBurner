@@ -40,6 +40,7 @@ from .reporting import print_q2rtx_stability_result
 from .runtime import (
     build_timedemo_command,
     cleanup_managed_q2rtx_processes,
+    run_cuda_stability_test,
     run_q2rtx_stability_test,
 )
 from .telemetry import query_gpu_metrics
@@ -79,5 +80,6 @@ __all__ = [
     "resolve_q2rtx_executable",
     "resolve_q2rtx_workdir",
     "resolve_workload",
+    "run_cuda_stability_test",
     "run_q2rtx_stability_test",
 ]

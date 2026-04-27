@@ -6,9 +6,12 @@ import os
 from pathlib import Path
 import socket
 
-from penguin_burner_paths import default_saved_uv_dir, default_user_config_dir
+from penguin_burner_paths import claim_desktop_user_ownership
 
+from .artifact_paths import auto_uv_saved_uv_dir, auto_uv_user_config_dir
 from .models import AutoUvProbeSummary, VoltageCurve
+from .profiles import archive_auto_uv_profile
+from .unsafe_classification import _unsafe_entry_blocks_future_search
 
 
 def _now_iso() -> str:
@@ -17,23 +20,38 @@ def _now_iso() -> str:
 
 def _safe_json_write(path: Path, payload: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
+    claim_desktop_user_ownership(path.parent, include_parents=True)
     temp_path = path.with_name(path.name + ".tmp")
     temp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     temp_path.replace(path)
+    claim_desktop_user_ownership(path)
     return path
 
 
 def _probe_in_progress_path() -> Path:
-    return default_user_config_dir() / "uv-result" / "auto-uv-probe-in-progress.json"
+    return auto_uv_user_config_dir() / "uv-result" / "auto-uv-probe-in-progress.json"
 
 
 def _unsafe_voltage_blacklist_path() -> Path:
-    return default_user_config_dir() / "uv-result" / "auto-uv-unsafe-voltages.json"
+    return auto_uv_user_config_dir() / "uv-result" / "auto-uv-unsafe-voltages.json"
+
+
+def _verified_candidates_path() -> Path:
+    return auto_uv_user_config_dir() / "uv-result" / "auto-uv-verified-candidates.json"
+
+
+def _final_choice_request_path() -> Path:
+    return auto_uv_user_config_dir() / "auto-uv-final-choice-request.json"
+
+
+def _final_choice_response_path() -> Path:
+    return auto_uv_user_config_dir() / "auto-uv-final-choice.json"
 
 
 def _probe_artifact_metrics(probe: AutoUvProbeSummary | None) -> dict:
     if probe is None:
         return {
+            "avg_fps": None,
             "avg_core_clock_mhz": None,
             "avg_power_w": None,
             "max_power_w": None,
@@ -46,6 +64,7 @@ def _probe_artifact_metrics(probe: AutoUvProbeSummary | None) -> dict:
             "watts_per_mhz": None,
         }
     return {
+        "avg_fps": float(probe.avg_fps) if probe.avg_fps is not None else None,
         "avg_core_clock_mhz": (
             float(probe.avg_core_clock_mhz)
             if probe.avg_core_clock_mhz is not None
@@ -93,23 +112,120 @@ def _probe_artifact_metrics(probe: AutoUvProbeSummary | None) -> dict:
     }
 
 
+def _base_probe_artifact_metrics(probe: AutoUvProbeSummary | None) -> dict:
+    if probe is None:
+        return {}
+    payload = {
+        f"base_{key}": value
+        for key, value in _probe_artifact_metrics(probe).items()
+    }
+    payload.update(
+        {
+            "base_candidate_voltage_mv": int(probe.candidate_voltage_mv),
+            "base_lock_clock_mhz": int(probe.lock_clock_mhz),
+            "base_avg_voltage_mv": (
+                float(probe.avg_voltage_mv)
+                if probe.avg_voltage_mv is not None
+                else None
+            ),
+        }
+    )
+    return payload
+
+
+def _candidate_id(*, voltage_mv: int, lock_clock_mhz: int) -> str:
+    return f"{int(voltage_mv)}mv-{int(lock_clock_mhz)}mhz"
+
+
+def _uv_candidate_payload(
+    *,
+    plan: list[dict],
+    lock_clock_mhz: int,
+    voltage_mv: int,
+    probe: AutoUvProbeSummary | None,
+    reason: str,
+    label: str | None = None,
+    final_verified: bool = False,
+    base_probe: AutoUvProbeSummary | None = None,
+) -> dict:
+    payload = {
+        "candidate_id": _candidate_id(
+            voltage_mv=int(voltage_mv),
+            lock_clock_mhz=int(lock_clock_mhz),
+        ),
+        "reason": str(reason),
+        "label": str(label) if label is not None else str(reason),
+        "verified_at": _now_iso(),
+        "final_verified": bool(final_verified),
+        "lock_clock_mhz": int(lock_clock_mhz),
+        "candidate_voltage_mv": int(voltage_mv),
+        **_probe_artifact_metrics(probe),
+        **_base_probe_artifact_metrics(base_probe),
+        "points": VoltageCurve.from_plan(plan).artifact_points(),
+        "plan": list(plan),
+    }
+    return payload
+
+
+def _read_verified_uv_candidates() -> list[dict]:
+    path = _verified_candidates_path()
+    if not path.is_file():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    candidates = payload.get("candidates", [])
+    if not isinstance(candidates, list):
+        return []
+    return [dict(item) for item in candidates if isinstance(item, dict)]
+
+
+def _append_verified_uv_candidate(candidate: dict) -> Path:
+    candidates = _read_verified_uv_candidates()
+    candidate_id = str(candidate.get("candidate_id", ""))
+    final_verified = bool(candidate.get("final_verified"))
+    candidates = [
+        item
+        for item in candidates
+        if not (
+            str(item.get("candidate_id", "")) == candidate_id
+            and bool(item.get("final_verified")) == final_verified
+        )
+    ]
+    candidates.append(dict(candidate))
+    return _safe_json_write(
+        _verified_candidates_path(),
+        {"format_version": 1, "candidates": candidates},
+    )
+
+
 def _write_final_curve_snapshot(
     *,
     plan: list[dict],
     lock_clock_mhz: int,
     voltage_mv: int,
     probe: AutoUvProbeSummary | None,
+    base_probe: AutoUvProbeSummary | None = None,
+    fan_curve_payload: dict | None = None,
+    memory_offset_mhz: int | None = None,
 ) -> Path:
-    payload = {
-        "lock_clock_mhz": int(lock_clock_mhz),
-        "candidate_voltage_mv": int(voltage_mv),
-        **_probe_artifact_metrics(probe),
-        "points": VoltageCurve.from_plan(plan).artifact_points(),
-    }
-    output_dir = default_user_config_dir()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "auto-uv-final-curve.json"
-    return _safe_json_write(output_path, payload)
+    payload = _uv_candidate_payload(
+        plan=plan,
+        lock_clock_mhz=int(lock_clock_mhz),
+        voltage_mv=int(voltage_mv),
+        probe=probe,
+        base_probe=base_probe,
+        reason="final-verified",
+        label="final-verified",
+        final_verified=True,
+    )
+    if isinstance(fan_curve_payload, dict):
+        payload["fan_curve_payload"] = dict(fan_curve_payload)
+    if memory_offset_mhz is not None:
+        payload["memory_offset_mhz"] = int(memory_offset_mhz)
+    _append_verified_uv_candidate(payload)
+    return archive_auto_uv_profile(payload)
 
 
 def _write_uv_result_snapshot(
@@ -120,17 +236,18 @@ def _write_uv_result_snapshot(
     probe: AutoUvProbeSummary | None,
     reason: str,
 ) -> Path:
-    output_dir = default_user_config_dir() / "uv-result"
+    output_dir = auto_uv_user_config_dir() / "uv-result"
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     output_path = output_dir / f"auto-uv-{reason}-{timestamp}.json"
-    payload = {
-        "reason": str(reason),
-        "lock_clock_mhz": int(lock_clock_mhz),
-        "candidate_voltage_mv": int(voltage_mv),
-        **_probe_artifact_metrics(probe),
-        "points": VoltageCurve.from_plan(plan).artifact_points(),
-    }
+    payload = _uv_candidate_payload(
+        plan=plan,
+        lock_clock_mhz=int(lock_clock_mhz),
+        voltage_mv=int(voltage_mv),
+        probe=probe,
+        reason=str(reason),
+        label=str(reason),
+    )
     return _safe_json_write(output_path, payload)
 
 
@@ -143,7 +260,7 @@ def _write_saved_uv_state(
     label: str,
     verification_duration_s: int | None = None,
 ) -> Path:
-    output_dir = default_saved_uv_dir()
+    output_dir = auto_uv_saved_uv_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     safe_label = "".join(
@@ -173,18 +290,23 @@ def _write_latest_verified_uv_result(
     lock_clock_mhz: int,
     voltage_mv: int,
     probe: AutoUvProbeSummary | None,
+    base_probe: AutoUvProbeSummary | None = None,
 ) -> Path:
-    output_dir = default_user_config_dir() / "uv-result"
+    output_dir = auto_uv_user_config_dir() / "uv-result"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "auto-uv-latest-verified.json"
-    payload = {
-        "reason": "latest-verified",
-        "lock_clock_mhz": int(lock_clock_mhz),
-        "candidate_voltage_mv": int(voltage_mv),
-        **_probe_artifact_metrics(probe),
-        "points": VoltageCurve.from_plan(plan).artifact_points(),
-    }
-    return _safe_json_write(output_path, payload)
+    payload = _uv_candidate_payload(
+        plan=plan,
+        lock_clock_mhz=int(lock_clock_mhz),
+        voltage_mv=int(voltage_mv),
+        probe=probe,
+        base_probe=base_probe,
+        reason="latest-verified",
+        label="passed-short-probe",
+    )
+    path = _safe_json_write(output_path, payload)
+    _append_verified_uv_candidate(payload)
+    return path
 
 
 def _write_stable_uv_result(
@@ -196,7 +318,7 @@ def _write_stable_uv_result(
     label: str,
     verification_duration_s: int | None = None,
 ) -> Path:
-    output_dir = default_user_config_dir() / "uv-result"
+    output_dir = auto_uv_user_config_dir() / "uv-result"
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_label = "".join(
         char if char.isalnum() or char in ("-", "_") else "-" for char in str(label)
@@ -264,7 +386,11 @@ def _load_uv_unsafe_voltage_entries() -> list[dict]:
     entries = payload.get("entries") if isinstance(payload, dict) else None
     if not isinstance(entries, list):
         return []
-    return [dict(entry) for entry in entries if isinstance(entry, dict)]
+    return [
+        dict(entry)
+        for entry in entries
+        if isinstance(entry, dict) and _unsafe_entry_blocks_future_search(entry)
+    ]
 
 
 def _write_uv_unsafe_voltage_entries(entries: list[dict]) -> Path:

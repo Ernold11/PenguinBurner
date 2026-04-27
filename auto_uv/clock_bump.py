@@ -81,13 +81,22 @@ def _next_clock_bump_target_mhz(
     )
     if float(bump_pct) <= 0.0:
         return None
-    return _choose_strictly_higher_clock_target(
+    target = _choose_strictly_higher_clock_target(
         plan,
         current_clock_mhz=int(current_clock_mhz),
         desired_clock_mhz=float(current_clock_mhz)
         * (1.0 + max(0.0, float(bump_pct)) / 100.0),
         cap_clock_mhz=float(cap_clock_mhz),
     )
+    if target is None:
+        return None
+    consumed_pct = _clock_bump_consumed_pct(
+        previous_target_clock_mhz=int(current_clock_mhz),
+        bumped_target_clock_mhz=int(target),
+    )
+    if float(consumed_pct) > float(remaining_budget_pct) + 1e-9:
+        return None
+    return int(target)
 
 
 def _make_clock_bump_candidate(

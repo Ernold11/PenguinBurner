@@ -16,6 +16,14 @@ from afterburner.vfcurve import (
     parse_vfcurve_blob,
     point_map_by_voltage,
 )
+import penguin_burner_ui.app as ui_app
+from penguin_burner_ui.app import (
+    AFTERBURNER_PROFILE_ID,
+    _afterburner_import_profile_summary,
+    _afterburner_profile_entries,
+    _delete_afterburner_import_config,
+    _persist_afterburner_import_selection,
+)
 
 
 def _fan_curve_hex(points: list[tuple[float, float]], *, flags: int = 0) -> str:
@@ -31,6 +39,53 @@ def _vf_curve_hex(points: list[tuple[float, float, float]]) -> str:
         values.extend([float(voltage_mv), float(frequency_mhz), float(third_value)])
     values.extend([0.0, 0.0, 0.0])
     return b"".join(struct.pack("<f", value) for value in values).hex()
+
+
+def _write_afterburner_export(root: Path) -> Path:
+    root.mkdir(exist_ok=True)
+    (root / "MSIAfterburner.cfg").write_text("[Settings]\n", encoding="utf-8")
+    profiles_dir = root / "Profiles"
+    profiles_dir.mkdir()
+    device_profile = (
+        profiles_dir / "VEN_10DE&DEV_2684&SUBSYS_00000000&REV_A1&BUS_1&DEV_0&FN_0.cfg"
+    )
+    defaults = _vf_curve_hex(
+        [
+            (800.0, 1800.0, 0.0),
+            (850.0, 1900.0, 0.0),
+            (900.0, 2000.0, 0.0),
+            (950.0, 2100.0, 0.0),
+            (1000.0, 2200.0, 0.0),
+            (1050.0, 2300.0, 0.0),
+        ]
+    )
+    undervolt = _vf_curve_hex(
+        [
+            (800.0, 1800.0, 0.0),
+            (850.0, 1900.0, 0.0),
+            (900.0, 2100.0, 0.0),
+            (950.0, 2100.0, 0.0),
+            (1000.0, 2100.0, 0.0),
+            (1050.0, 2100.0, 0.0),
+        ]
+    )
+    device_profile.write_text(
+        "\n".join(
+            [
+                "[Defaults]",
+                f"VFCurve={defaults}",
+                "[Startup]",
+                f"VFCurve={defaults}",
+                "[Profile1]",
+                f"VFCurve={undervolt}",
+                "[Profile2]",
+                f"VFCurve={defaults}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return device_profile
 
 
 def test_parse_afterburner_fan_curve_blob_and_interpolate() -> None:
@@ -136,3 +191,102 @@ def test_load_afterburner_profile_settings_preserves_mixed_case_keys(
     assert settings["core_clk_boost_khz"] == 15000
     assert settings["mem_clk_boost_khz"] == -5000
     assert settings["vf_curve_hex"] == vf_hex
+
+
+def test_gui_afterburner_import_entries_list_profiles_with_status(
+    tmp_path: Path,
+) -> None:
+    _write_afterburner_export(tmp_path)
+
+    entries = _afterburner_profile_entries(tmp_path)
+
+    assert [(entry["section"], entry["importable"]) for entry in entries] == [
+        ("Profile1", True),
+        ("Profile2", False),
+    ]
+    assert entries[0]["target"] == "2100 MHz 900 mV"
+    assert entries[0]["target_voltage_mv"] == 900
+    assert entries[0]["target_clock_mhz"] == 2100
+    assert (900.0, 2100.0) in entries[0]["curve_points"]
+    assert entries[0]["status"] == "Ready"
+    assert "same as Defaults or Startup" in entries[1]["status"]
+
+
+def test_gui_afterburner_import_persists_selected_profile(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "afterburner"
+    _write_afterburner_export(source_root)
+    config_path = tmp_path / "config" / "penguin_burner.toml"
+    managed_root = tmp_path / "managed-afterburner"
+    monkeypatch.setattr(ui_app, "default_runtime_config_path", lambda: config_path)
+    monkeypatch.setattr(ui_app, "managed_afterburner_root", lambda: managed_root)
+    entry = next(
+        entry
+        for entry in _afterburner_profile_entries(source_root)
+        if entry["importable"]
+    )
+
+    result = _persist_afterburner_import_selection(entry)
+
+    assert result["afterburner_root"] == str(managed_root)
+    assert result["section"] == "Profile1"
+    assert (managed_root / result["device_profile_relative_path"]).is_file()
+    rendered = config_path.read_text(encoding="utf-8")
+    assert 'afterburner_profile = "Profile1"' in rendered
+    assert f'afterburner_root = "{managed_root}"' in rendered
+
+
+def test_gui_afterburner_import_summary_adds_profile_list_row(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "afterburner"
+    _write_afterburner_export(source_root)
+    config_path = tmp_path / "config" / "penguin_burner.toml"
+    managed_root = tmp_path / "managed-afterburner"
+    monkeypatch.setattr(ui_app, "default_runtime_config_path", lambda: config_path)
+    monkeypatch.setattr(ui_app, "managed_afterburner_root", lambda: managed_root)
+    entry = next(
+        entry
+        for entry in _afterburner_profile_entries(source_root)
+        if entry["importable"]
+    )
+    _persist_afterburner_import_selection(entry)
+
+    summary = _afterburner_import_profile_summary()
+
+    assert summary is not None
+    assert summary["profile_id"] == AFTERBURNER_PROFILE_ID
+    assert summary["profile_source"] == "MSI Afterburner"
+    assert summary["runtime_source"] == "afterburner"
+    assert summary["display_name"] == "MSI Afterburner Profile1 2100 MHz 900 mV"
+    assert (900.0, 2100.0) in summary["curve_points"]
+
+
+def test_gui_afterburner_import_delete_clears_profile_entry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "afterburner"
+    _write_afterburner_export(source_root)
+    config_path = tmp_path / "config" / "penguin_burner.toml"
+    managed_root = tmp_path / "managed-afterburner"
+    monkeypatch.setattr(ui_app, "default_runtime_config_path", lambda: config_path)
+    monkeypatch.setattr(ui_app, "managed_afterburner_root", lambda: managed_root)
+    entry = next(
+        entry
+        for entry in _afterburner_profile_entries(source_root)
+        if entry["importable"]
+    )
+    _persist_afterburner_import_selection(entry)
+
+    assert _afterburner_import_profile_summary() is not None
+    assert _delete_afterburner_import_config()
+
+    assert _afterburner_import_profile_summary() is None
+    rendered = config_path.read_text(encoding="utf-8")
+    assert "afterburner_profile" not in rendered
+    assert "afterburner_device_profile" not in rendered
+    assert f'afterburner_root = "{managed_root}"' in rendered

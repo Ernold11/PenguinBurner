@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 
 from auto_uv.clock_bump import (
-    _clock_bump_consumed_pct as _overclock_consumed_pct,
     _format_clock_bump_budget as _format_overclock_budget,
-    _next_clock_bump_target_mhz as _next_overclock_target_mhz,
 )
+from auto_uv.tuning import AUTO_UV_CURVE_TUNING
 from auto_uv.models import AutoUvCurveCandidate, AutoUvProbeSummary
 from auto_uv.scan_rules import _percent
-from auto_uv.curve_planning import _make_curve_candidate
+from auto_uv.curve_planning import _choose_sustained_clock_target, _make_curve_candidate
+
+
+_CLOCK_GUARDRAIL_RE = re.compile(
+    r"(?:current|predicted)=(?P<current>-?\d+(?:\.\d+)?)MHz.*?floor=(?P<floor>-?\d+(?:\.\d+)?)MHz"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,15 +38,8 @@ class AutoUv2OverclockBudget:
             limit_pct=float(self.limit_pct),
         )
 
-    def spend(self, *, old_target_mhz: int, new_target_mhz: int) -> "AutoUv2OverclockBudget":
-        return replace(
-            self,
-            used_pct=float(self.used_pct)
-            + _overclock_consumed_pct(
-                previous_target_clock_mhz=int(old_target_mhz),
-                bumped_target_clock_mhz=int(new_target_mhz),
-            ),
-        )
+    def with_measured_used_pct(self, used_pct: float) -> "AutoUv2OverclockBudget":
+        return replace(self, used_pct=max(0.0, float(used_pct)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +52,10 @@ class AutoUv2SweepState:
     budget: AutoUv2OverclockBudget
     last_overclock_target_mhz: int | None = None
     overclock_count: int = 0
+    persistent_overclock_pct: float = 0.0
+    stable_measured_target_mhz: int | None = None
+    pending_measured_target_mhz: int | None = None
+    full_budget_target_mhz: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,17 +95,241 @@ def _base_target_for_voltage(
     state: AutoUv2SweepState,
 ) -> int:
     assert state.candidate_voltage_mv is not None
+    stable_measured_target_mhz = (
+        int(state.stable_measured_target_mhz)
+        if state.stable_measured_target_mhz is not None
+        else int(state.stable_target_mhz)
+    )
+    if state.stable_measured_target_mhz is not None:
+        return int(stable_measured_target_mhz)
     source_target_mhz = _source_clock_at_voltage(
         source_plan,
         voltage_mv=int(state.candidate_voltage_mv),
-        fallback_mhz=int(state.stable_target_mhz),
+        fallback_mhz=int(stable_measured_target_mhz),
     )
-    # Lower voltage should follow the stock V/F curve downward by default.
-    descended_target_mhz = min(int(state.stable_target_mhz), int(source_target_mhz))
-    if state.last_overclock_target_mhz is None:
-        return int(descended_target_mhz)
-    # Accepted overclocking becomes the new minimum target for later probes.
-    return max(int(descended_target_mhz), int(state.last_overclock_target_mhz))
+    # Lower voltage should follow the base V/F curve downward by default.
+    descended_target_mhz = min(int(stable_measured_target_mhz), int(source_target_mhz))
+    return int(descended_target_mhz)
+
+
+def _clock_step_mhz() -> int:
+    return max(1, int(AUTO_UV_CURVE_TUNING.clock_step_mhz))
+
+
+def max_clock_drop_pct_for_min_core_clock(min_core_clock_pct: float) -> float:
+    return max(0.0, 100.0 - float(min_core_clock_pct))
+
+
+def _recovery_fraction(
+    *,
+    budget_used_pct: float,
+    max_clock_drop_pct: float,
+) -> float:
+    max_drop = max(0.0, float(max_clock_drop_pct))
+    if max_drop <= 0.0:
+        return 0.0
+    return max(0.0, min(1.0, float(budget_used_pct) / max_drop))
+
+
+def overclock_budget_pct_for_target(
+    *,
+    measured_target_mhz: int,
+    overclock_target_mhz: int,
+    baseline_clock_mhz: float | None,
+    max_clock_drop_pct: float,
+) -> float:
+    measured = float(measured_target_mhz)
+    baseline = float(baseline_clock_mhz or measured)
+    target = float(overclock_target_mhz)
+    delta_to_base_mhz = max(0.0, baseline - measured)
+    if delta_to_base_mhz <= 0.0 or target <= measured:
+        return 0.0
+    recovered_fraction = max(0.0, (target - measured) / delta_to_base_mhz)
+    return recovered_fraction * max(0.0, float(max_clock_drop_pct))
+
+
+def overclock_budget_snap_tolerance_pct(
+    *,
+    measured_target_mhz: int,
+    baseline_clock_mhz: float | None,
+    max_clock_drop_pct: float,
+) -> float:
+    delta_to_base_mhz = max(
+        0.0,
+        float(baseline_clock_mhz or measured_target_mhz) - float(measured_target_mhz),
+    )
+    if delta_to_base_mhz <= 0.0:
+        return 0.0
+    return (
+        float(_clock_step_mhz())
+        / float(delta_to_base_mhz)
+        * max(0.0, float(max_clock_drop_pct))
+    )
+
+
+def charged_overclock_budget_pct(
+    *,
+    consumed_pct: float,
+    requested_used_pct: float,
+    limit_pct: float,
+    measured_target_mhz: int,
+    baseline_clock_mhz: float | None,
+    max_clock_drop_pct: float,
+) -> float | None:
+    limit = max(0.0, float(limit_pct))
+    tolerance = overclock_budget_snap_tolerance_pct(
+        measured_target_mhz=int(measured_target_mhz),
+        baseline_clock_mhz=baseline_clock_mhz,
+        max_clock_drop_pct=float(max_clock_drop_pct),
+    )
+    if float(consumed_pct) > float(limit) + float(tolerance) + 1e-9:
+        return None
+    return min(float(limit), max(float(requested_used_pct), float(consumed_pct)))
+
+
+def _choose_clock_target_at_or_above(
+    source_plan: list[dict],
+    *,
+    desired_clock_mhz: float,
+    cap_clock_mhz: float,
+) -> int:
+    step_mhz = _clock_step_mhz()
+    cap_target_mhz = int(_choose_sustained_clock_target(source_plan, cap_clock_mhz))
+    target_mhz = int(_choose_sustained_clock_target(source_plan, desired_clock_mhz))
+    if float(target_mhz) < float(desired_clock_mhz):
+        target_mhz += int(step_mhz)
+    while int(target_mhz) > int(cap_target_mhz) or float(target_mhz) > float(cap_clock_mhz):
+        target_mhz -= int(step_mhz)
+    return max(int(step_mhz), int(target_mhz))
+
+
+def overclock_recovery_target_mhz(
+    source_plan: list[dict],
+    *,
+    measured_target_mhz: int,
+    baseline_clock_mhz: float | None,
+    max_clock_drop_pct: float,
+    budget_used_pct: float,
+    cap_clock_mhz: float | None = None,
+    minimum_target_mhz: int | None = None,
+) -> int:
+    measured_target = int(measured_target_mhz)
+    baseline_clock = float(baseline_clock_mhz or measured_target)
+    if baseline_clock <= float(measured_target):
+        return int(measured_target)
+    cap_clock = min(
+        float(baseline_clock),
+        float(cap_clock_mhz) if cap_clock_mhz is not None else float(baseline_clock),
+    )
+    if cap_clock <= float(measured_target):
+        return int(measured_target)
+    fraction = _recovery_fraction(
+        budget_used_pct=float(budget_used_pct),
+        max_clock_drop_pct=float(max_clock_drop_pct),
+    )
+    if fraction <= 0.0:
+        return int(measured_target)
+    desired_clock_mhz = float(measured_target) + (
+        (float(baseline_clock) - float(measured_target)) * float(fraction)
+    )
+    target_mhz = _choose_clock_target_at_or_above(
+        source_plan,
+        desired_clock_mhz=min(float(desired_clock_mhz), float(cap_clock)),
+        cap_clock_mhz=float(cap_clock),
+    )
+    if minimum_target_mhz is not None and int(minimum_target_mhz) > int(target_mhz):
+        target_mhz = int(minimum_target_mhz)
+        while float(target_mhz) > float(cap_clock):
+            target_mhz -= _clock_step_mhz()
+    return max(int(measured_target), int(target_mhz))
+
+
+def _requested_recovery_mhz(
+    *,
+    reason: str | None,
+    measured_target_mhz: int,
+    baseline_clock_mhz: float | None,
+) -> float:
+    delta_to_base_mhz = max(
+        0.0,
+        float(baseline_clock_mhz or measured_target_mhz) - float(measured_target_mhz),
+    )
+    fallback_mhz = max(float(_clock_step_mhz()), float(delta_to_base_mhz) * 0.10)
+    match = _CLOCK_GUARDRAIL_RE.search(str(reason or ""))
+    if match is None:
+        return float(fallback_mhz)
+    observed_clock_mhz = float(match.group("current"))
+    floor_clock_mhz = float(match.group("floor"))
+    shortfall_mhz = max(0.0, float(floor_clock_mhz) - float(observed_clock_mhz))
+    return max(float(fallback_mhz), float(shortfall_mhz) + float(_clock_step_mhz()))
+
+
+def next_overclock_budget_used_pct(
+    *,
+    current_used_pct: float,
+    limit_pct: float,
+    reason: str | None,
+    measured_target_mhz: int,
+    baseline_clock_mhz: float | None,
+    max_clock_drop_pct: float,
+) -> float | None:
+    current_used = max(0.0, float(current_used_pct))
+    limit = max(0.0, float(limit_pct))
+    if current_used >= limit:
+        return None
+    measured_target = int(measured_target_mhz)
+    baseline_clock = float(baseline_clock_mhz or measured_target)
+    delta_to_base_mhz = max(0.0, float(baseline_clock) - float(measured_target))
+    max_drop = max(0.0, float(max_clock_drop_pct))
+    if delta_to_base_mhz <= 0.0 or max_drop <= 0.0:
+        return None
+    requested_mhz = _requested_recovery_mhz(
+        reason=reason,
+        measured_target_mhz=int(measured_target),
+        baseline_clock_mhz=float(baseline_clock),
+    )
+    requested_pct = float(requested_mhz) / float(delta_to_base_mhz) * float(max_drop)
+    # Advance by at least 10% of the original allowed drop, so recovery does not
+    # stall in tiny one-bin percentage steps when the low-voltage clock sags.
+    minimum_step_pct = float(max_drop) * 0.10
+    next_used = float(current_used) + max(float(requested_pct), float(minimum_step_pct))
+    return min(float(limit), float(next_used))
+
+
+def _apply_persistent_overclock(
+    source_plan: list[dict],
+    *,
+    measured_target_mhz: int,
+    baseline_clock_mhz: float | None,
+    cap_clock_mhz: float | None,
+    max_clock_drop_pct: float,
+    budget_used_pct: float,
+    minimum_target_mhz: int | None = None,
+) -> int:
+    budget_used = max(0.0, float(budget_used_pct))
+    if budget_used <= 0.0:
+        return int(measured_target_mhz)
+    overclock_target_mhz = overclock_recovery_target_mhz(
+        source_plan,
+        measured_target_mhz=int(measured_target_mhz),
+        baseline_clock_mhz=baseline_clock_mhz,
+        max_clock_drop_pct=float(max_clock_drop_pct),
+        budget_used_pct=float(budget_used),
+        cap_clock_mhz=cap_clock_mhz,
+        minimum_target_mhz=minimum_target_mhz,
+    )
+    return max(int(measured_target_mhz), int(overclock_target_mhz))
+
+
+def _fix_full_budget_target(
+    state: AutoUv2SweepState,
+    target_mhz: int,
+) -> tuple[int, AutoUv2SweepState]:
+    if float(state.budget.limit_pct) <= 0.0 or not state.budget.spent_or_disabled:
+        return int(target_mhz), state
+    if state.full_budget_target_mhz is not None:
+        return int(state.full_budget_target_mhz), state
+    return int(target_mhz), replace(state, full_budget_target_mhz=int(target_mhz))
 
 
 def predict_clock_at_voltage(
@@ -160,25 +386,52 @@ def _apply_preemptive_overclock(
     *,
     state: AutoUv2SweepState,
     target_mhz: int,
-    cap_clock_mhz: float,
+    measured_target_mhz: int,
+    baseline_clock_mhz: float | None,
+    cap_clock_mhz: float | None,
+    max_clock_drop_pct: float,
     reason: str | None,
 ) -> tuple[int, AutoUv2SweepState]:
     if reason is None or state.budget.spent_or_disabled:
         return int(target_mhz), state
-    overclock_target_mhz = _next_overclock_target_mhz(
-        source_plan,
-        current_clock_mhz=int(target_mhz),
-        cap_clock_mhz=float(cap_clock_mhz),
-        remaining_budget_pct=state.budget.remaining_pct,
+    next_used_pct = next_overclock_budget_used_pct(
+        current_used_pct=float(state.budget.used_pct),
+        limit_pct=float(state.budget.limit_pct),
         reason=reason,
+        measured_target_mhz=int(measured_target_mhz),
+        baseline_clock_mhz=baseline_clock_mhz,
+        max_clock_drop_pct=float(max_clock_drop_pct),
     )
-    if overclock_target_mhz is None:
+    if next_used_pct is None:
         return int(target_mhz), state
-    # Charge exactly what the snapped V/F grid target consumed.
-    next_budget = state.budget.spend(
-        old_target_mhz=int(target_mhz),
-        new_target_mhz=int(overclock_target_mhz),
+    overclock_target_mhz = overclock_recovery_target_mhz(
+        source_plan,
+        measured_target_mhz=int(measured_target_mhz),
+        baseline_clock_mhz=baseline_clock_mhz,
+        max_clock_drop_pct=float(max_clock_drop_pct),
+        budget_used_pct=float(next_used_pct),
+        cap_clock_mhz=cap_clock_mhz,
+        minimum_target_mhz=int(target_mhz) + _clock_step_mhz(),
     )
+    consumed_pct = overclock_budget_pct_for_target(
+        measured_target_mhz=int(measured_target_mhz),
+        overclock_target_mhz=int(overclock_target_mhz),
+        baseline_clock_mhz=baseline_clock_mhz,
+        max_clock_drop_pct=float(max_clock_drop_pct),
+    )
+    charged_pct = charged_overclock_budget_pct(
+        consumed_pct=float(consumed_pct),
+        requested_used_pct=float(next_used_pct),
+        limit_pct=float(state.budget.limit_pct),
+        measured_target_mhz=int(measured_target_mhz),
+        baseline_clock_mhz=baseline_clock_mhz,
+        max_clock_drop_pct=float(max_clock_drop_pct),
+    )
+    if charged_pct is None:
+        return int(target_mhz), state
+    if int(overclock_target_mhz) <= int(target_mhz):
+        return int(target_mhz), state
+    next_budget = state.budget.with_measured_used_pct(float(charged_pct))
     return int(overclock_target_mhz), replace(
         state,
         budget=next_budget,
@@ -210,18 +463,53 @@ def choose_next_candidate(
         initial_core_clock_mhz=initial_core_clock_mhz,
         min_core_clock_pct=float(min_core_clock_pct),
     )
-    target_mhz = _base_target_for_voltage(source_plan, state=state)
-    target_mhz, next_state = _apply_preemptive_overclock(
+    measured_target_mhz = _base_target_for_voltage(source_plan, state=state)
+    next_state = replace(state, pending_measured_target_mhz=int(measured_target_mhz))
+    max_clock_drop_pct = max_clock_drop_pct_for_min_core_clock(
+        float(min_core_clock_pct)
+    )
+    persistent_budget_used_pct = min(
+        float(next_state.persistent_overclock_pct),
+        float(next_state.budget.limit_pct),
+    )
+    minimum_persistent_target_mhz = None
+    if persistent_budget_used_pct > 0.0:
+        minimum_candidate_pct = overclock_budget_pct_for_target(
+            measured_target_mhz=int(measured_target_mhz),
+            overclock_target_mhz=int(next_state.stable_target_mhz),
+            baseline_clock_mhz=initial_core_clock_mhz,
+            max_clock_drop_pct=float(max_clock_drop_pct),
+        )
+        if float(minimum_candidate_pct) <= float(next_state.budget.limit_pct) + 1e-9:
+            minimum_persistent_target_mhz = int(next_state.stable_target_mhz)
+    target_mhz = _apply_persistent_overclock(
         source_plan,
-        state=state,
-        target_mhz=int(target_mhz),
+        measured_target_mhz=int(measured_target_mhz),
+        baseline_clock_mhz=initial_core_clock_mhz,
         cap_clock_mhz=(
             float(measured_clock_cap_mhz)
             if measured_clock_cap_mhz is not None
-            else float(state.stable_target_mhz)
+            else initial_core_clock_mhz
         ),
+        max_clock_drop_pct=float(max_clock_drop_pct),
+        budget_used_pct=float(persistent_budget_used_pct),
+        minimum_target_mhz=minimum_persistent_target_mhz,
+    )
+    target_mhz, next_state = _apply_preemptive_overclock(
+        source_plan,
+        state=next_state,
+        target_mhz=int(target_mhz),
+        measured_target_mhz=int(measured_target_mhz),
+        baseline_clock_mhz=initial_core_clock_mhz,
+        cap_clock_mhz=(
+            float(measured_clock_cap_mhz)
+            if measured_clock_cap_mhz is not None
+            else initial_core_clock_mhz
+        ),
+        max_clock_drop_pct=float(max_clock_drop_pct),
         reason=predicted_floor_miss,
     )
+    target_mhz, next_state = _fix_full_budget_target(next_state, int(target_mhz))
     label = (
         f"voltage={int(state.candidate_voltage_mv)}mV phase={phase} "
         f"{next_state.budget.describe()}"

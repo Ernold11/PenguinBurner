@@ -68,8 +68,8 @@ def _detect_active_nvidia_gpus():
             text=True,
             encoding="utf-8",
             errors="replace",
-            env=stable_subprocess_env(),
             stderr=subprocess.DEVNULL,
+            env=stable_subprocess_env(),
         )
     except Exception:
         return []

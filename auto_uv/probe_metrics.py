@@ -31,6 +31,16 @@ def _sample_max(samples: list, attr: str) -> float | None:
     )
 
 
+def _sample_mean(samples: list, attr: str) -> float | None:
+    return _mean(
+        [
+            getattr(sample, attr)
+            for sample in _decision_samples(samples)
+            if sample is not None and getattr(sample, attr, None) is not None
+        ]
+    )
+
+
 def _percent(value: float | int) -> float:
     return max(0.0, float(value) / 100.0)
 
@@ -553,6 +563,39 @@ def _summarize_probe(
         power_limit_w=power_limit_w,
         use_power_limit_floor=use_power_limit_floor,
     )
+    (
+        _cuda_loaded_power_w,
+        cuda_loaded_clock_mhz,
+        cuda_loaded_voltage_mv,
+        _cuda_loaded_temperature_c,
+        _cuda_loaded_fan_speed_pct,
+        _,
+        _,
+    ) = _derive_loaded_telemetry_means(
+        companion_samples,
+        power_limit_w=power_limit_w,
+        use_power_limit_floor=use_power_limit_floor,
+    )
+    q2rtx_summary_clock_mhz = (
+        float(loaded_clock_mhz)
+        if loaded_clock_mhz is not None
+        else _sample_mean(q2rtx_samples, "core_clock_mhz")
+    )
+    q2rtx_summary_voltage_mv = (
+        float(loaded_voltage_mv)
+        if loaded_voltage_mv is not None
+        else _sample_mean(q2rtx_samples, "voltage_mv")
+    )
+    cuda_summary_clock_mhz = (
+        float(cuda_loaded_clock_mhz)
+        if cuda_loaded_clock_mhz is not None
+        else _sample_mean(companion_samples, "core_clock_mhz")
+    )
+    cuda_summary_voltage_mv = (
+        float(cuda_loaded_voltage_mv)
+        if cuda_loaded_voltage_mv is not None
+        else _sample_mean(companion_samples, "voltage_mv")
+    )
     summary_voltage_mv = (
         float(loaded_voltage_mv)
         if loaded_voltage_mv is not None
@@ -641,6 +684,10 @@ def _summarize_probe(
         used_companion_load=bool(used_companion_load),
         result_reason=str(result.reason),
         log_path=Path(result.log_path),
+        q2rtx_avg_voltage_mv=q2rtx_summary_voltage_mv,
+        q2rtx_avg_core_clock_mhz=q2rtx_summary_clock_mhz,
+        cuda_avg_voltage_mv=cuda_summary_voltage_mv,
+        cuda_avg_core_clock_mhz=cuda_summary_clock_mhz,
     )
 
 

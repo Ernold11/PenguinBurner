@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from .curve_planning import _build_descended_plan, _choose_sustained_clock_target
+from .curve_planning import (
+    _build_descended_plan,
+    _choose_sustained_clock_target,
+    _nearest_voltage_bin,
+)
 from .models import AutoUvProbeSummary
 from .tuning import (
     AUTO_UV_CURVE_TUNING,
     AUTO_UV_METRIC_TUNING,
     AUTO_UV_STALL_TUNING,
 )
+from .unsafe_classification import _is_non_hard_probe_failure
 
 
 def _percent(value: float | int) -> float:
@@ -49,6 +54,34 @@ def _real_probe_lock_clock_mhz(
     return min(int(previous_lock_clock_mhz), int(measured_lock_clock_mhz))
 
 
+def _source_target_clock_at_voltage(
+    plan: list[dict],
+    *,
+    voltage_mv: int,
+    fallback_mhz: int,
+) -> int:
+    for point in plan:
+        if int(point["voltage_mv"]) == int(voltage_mv):
+            return int(point.get("target_mhz", point.get("base_mhz", fallback_mhz)))
+    return int(fallback_mhz)
+
+
+def _loaded_clock_cap_mhz(
+    plan: list[dict],
+    *,
+    probe: AutoUvProbeSummary,
+) -> int | None:
+    if probe.avg_core_clock_mhz is None:
+        return None
+    # Loaded telemetry is noisy over short probes. Allow a small headroom, but
+    # do not let the next curve target run far above what the GPU sustained.
+    headroom_mhz = int(AUTO_UV_CURVE_TUNING.clock_step_mhz) * 2
+    return _choose_sustained_clock_target(
+        plan,
+        float(probe.avg_core_clock_mhz) + float(headroom_mhz),
+    )
+
+
 def _real_clock_adjusted_stable_curve(
     source_plan: list[dict],
     *,
@@ -56,11 +89,32 @@ def _real_clock_adjusted_stable_curve(
     previous_lock_clock_mhz: int,
     probe: AutoUvProbeSummary,
 ) -> tuple[list[dict], int]:
-    adjusted_lock_clock_mhz = _real_probe_lock_clock_mhz(
-        source_plan,
-        probe=probe,
-        previous_lock_clock_mhz=int(previous_lock_clock_mhz),
-    )
+    adjusted_lock_clock_mhz = int(previous_lock_clock_mhz)
+    if probe.avg_voltage_mv is not None:
+        loaded_voltage_mv = _nearest_voltage_bin(
+            source_plan,
+            int(round(float(probe.avg_voltage_mv))),
+        )
+        adjusted_lock_clock_mhz = min(
+            int(adjusted_lock_clock_mhz),
+            _source_target_clock_at_voltage(
+                source_plan,
+                voltage_mv=int(loaded_voltage_mv),
+                fallback_mhz=int(previous_lock_clock_mhz),
+            ),
+        )
+        loaded_clock_cap_mhz = _loaded_clock_cap_mhz(source_plan, probe=probe)
+        if loaded_clock_cap_mhz is not None:
+            adjusted_lock_clock_mhz = min(
+                int(adjusted_lock_clock_mhz),
+                int(loaded_clock_cap_mhz),
+            )
+    else:
+        adjusted_lock_clock_mhz = _real_probe_lock_clock_mhz(
+            source_plan,
+            probe=probe,
+            previous_lock_clock_mhz=int(previous_lock_clock_mhz),
+        )
     if int(adjusted_lock_clock_mhz) == int(previous_lock_clock_mhz):
         return (
             _build_descended_plan(
@@ -107,7 +161,11 @@ def _core_clock_below_floor(
 
 
 def _probe_failure_should_mark_voltage_unsafe(reason: str) -> bool:
-    if str(reason).startswith(("timedemo-live-stall", "telemetry-live-load-lost")):
+    if _is_non_hard_probe_failure(reason):
+        return False
+    if str(reason).startswith(
+        ("timedemo-live-stall", "telemetry-live-load-lost", "user-stop-requested")
+    ):
         return False
     return True
 

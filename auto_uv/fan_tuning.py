@@ -6,8 +6,9 @@ import json
 import math
 from pathlib import Path
 
-from penguin_burner_paths import default_user_config_dir
+from penguin_burner_paths import claim_desktop_user_ownership
 
+from .artifact_paths import auto_uv_user_config_dir
 from .models import AutoUvProbeSummary
 from .tuning import AUTO_UV_FAN_TUNING
 
@@ -102,7 +103,7 @@ def _blocked_payload(
         "generated_at": generated_at,
         "fan_curve_blocked": True,
         "block_reason": reason,
-        "max_stock_curve_load_temperature_c": float(limit_temp_c),
+        "max_base_curve_load_temperature_c": float(limit_temp_c),
         "telemetry": telemetry,
     }
     if loaded_temp_c is not None:
@@ -119,6 +120,7 @@ def _probe_telemetry_payload(
     if final_probe is not None and final_probe not in all_probes:
         all_probes.append(final_probe)
     return {
+        "measured_fan_points": _probe_fan_points(all_probes),
         "final": {
             "avg_power_w": _finite(final_probe.avg_power_w if final_probe else None),
             "max_power_w": _finite(final_probe.max_power_w if final_probe else None),
@@ -155,6 +157,33 @@ def _probe_telemetry_payload(
     }
 
 
+def _probe_fan_points(probes: list[AutoUvProbeSummary]) -> list[dict]:
+    points = []
+    seen: set[tuple[float, float, int, int]] = set()
+    for probe in probes:
+        temperature_c = _finite(probe.avg_temperature_c)
+        fan_speed_pct = _finite(probe.avg_fan_speed_pct)
+        if temperature_c is None or fan_speed_pct is None:
+            continue
+        point = {
+            "temperature_c": round(float(temperature_c), 2),
+            "fan_speed_pct": round(float(fan_speed_pct), 2),
+            "voltage_mv": int(probe.candidate_voltage_mv),
+            "clock_mhz": int(probe.lock_clock_mhz),
+        }
+        key = (
+            float(point["temperature_c"]),
+            float(point["fan_speed_pct"]),
+            int(point["voltage_mv"]),
+            int(point["clock_mhz"]),
+        )
+        if key in seen:
+            continue
+        points.append(point)
+        seen.add(key)
+    return points
+
+
 def build_auto_uv_fan_payload(
     *,
     final_probe: AutoUvProbeSummary | None,
@@ -169,20 +198,20 @@ def build_auto_uv_fan_payload(
         or _finite(scan_telemetry["max_temperature_c"])
         or _finite(scan_telemetry["avg_temperature_c"])
     )
-    max_stock_load_temp_c = float(AUTO_UV_FAN_TUNING.max_stock_curve_load_temp_c)
+    max_base_load_temp_c = float(AUTO_UV_FAN_TUNING.max_base_curve_load_temp_c)
     if loaded_temp_c is None:
         return _blocked_payload(
             telemetry=telemetry,
             reason="missing-final-load-temperature",
             loaded_temp_c=None,
-            limit_temp_c=max_stock_load_temp_c,
+            limit_temp_c=max_base_load_temp_c,
         )
-    if loaded_temp_c > max_stock_load_temp_c:
+    if loaded_temp_c > max_base_load_temp_c:
         return _blocked_payload(
             telemetry=telemetry,
-            reason="stock-load-temperature-too-high",
+            reason="base-load-temperature-too-high",
             loaded_temp_c=float(loaded_temp_c),
-            limit_temp_c=max_stock_load_temp_c,
+            limit_temp_c=max_base_load_temp_c,
         )
 
     observed_fan_pct = (
@@ -204,7 +233,7 @@ def build_auto_uv_fan_payload(
     max_curve_points = max(5, int(AUTO_UV_FAN_TUNING.max_curve_points))
 
     safe_curve_temp_c = _clamp(
-        max_stock_load_temp_c,
+        max_base_load_temp_c,
         active_temp_c + 1.0,
         emergency_temp_c - 1.0,
     )
@@ -214,7 +243,7 @@ def build_auto_uv_fan_payload(
         0.0,
         1.0,
     )
-    cooling_headroom_c = max(0.0, max_stock_load_temp_c - float(loaded_temp_c))
+    cooling_headroom_c = max(0.0, max_base_load_temp_c - float(loaded_temp_c))
     headroom_speed_reduction_pct = min(
         float(AUTO_UV_FAN_TUNING.cooling_headroom_max_speed_reduction_pct),
         cooling_headroom_c
@@ -295,7 +324,7 @@ def build_auto_uv_fan_payload(
         "zero_rpm_until_temperature_c": float(zero_rpm_temp_c),
         "minimum_active_temperature_c": float(active_temp_c),
         "minimum_active_fan_speed_pct": float(min_active_speed_pct),
-        "max_stock_curve_load_temperature_c": float(max_stock_load_temp_c),
+        "max_base_curve_load_temperature_c": float(max_base_load_temp_c),
         "cooling_headroom_c": float(cooling_headroom_c),
         "cooling_headroom_speed_reduction_pct": float(headroom_speed_reduction_pct),
         "cooling_headroom_exponential_power_bonus": float(exponential_power_bonus),
@@ -324,8 +353,10 @@ def write_auto_uv_fan_payload(
     if payload is None:
         return None
 
-    output_dir = default_user_config_dir()
+    output_dir = auto_uv_user_config_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
+    claim_desktop_user_ownership(output_dir, include_parents=True)
     output_path = output_dir / "auto-uv-fan-curve.json"
     output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    claim_desktop_user_ownership(output_path)
     return AutoUvFanTuningResult(path=output_path, payload=payload)

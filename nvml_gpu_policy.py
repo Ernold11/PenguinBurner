@@ -287,6 +287,13 @@ class NvmlGpuPolicyController:
                 ctypes.POINTER(c_uint),
             ]
             self._nvml.nvmlDeviceGetSupportedGraphicsClocks.restype = c_int
+        if hasattr(self._nvml, "nvmlDeviceGetMemClkMinMaxVfOffset"):
+            self._nvml.nvmlDeviceGetMemClkMinMaxVfOffset.argtypes = [
+                c_void_p,
+                ctypes.POINTER(c_int),
+                ctypes.POINTER(c_int),
+            ]
+            self._nvml.nvmlDeviceGetMemClkMinMaxVfOffset.restype = c_int
 
         if hasattr(self._nvml, "nvmlDeviceGetGpcClkVfOffset"):
             self._nvml.nvmlDeviceGetGpcClkVfOffset.argtypes = [
@@ -610,6 +617,17 @@ class NvmlGpuPolicyController:
                 "nvmlDeviceGetMemClkVfOffset"
             ),
         }
+
+    def get_memory_clock_offset_range_mhz(self):
+        getter = getattr(self._nvml, "nvmlDeviceGetMemClkMinMaxVfOffset", None)
+        if getter is None:
+            return None
+        min_value = ctypes.c_int()
+        max_value = ctypes.c_int()
+        rc = int(getter(self._device, ctypes.byref(min_value), ctypes.byref(max_value)))
+        if rc != NVML_SUCCESS:
+            return None
+        return int(min_value.value), int(max_value.value)
 
     def apply_clock_offsets(
         self, *, gpc_clk_vf_offset_mhz=None, mem_clk_vf_offset_mhz=None

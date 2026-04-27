@@ -1,8 +1,16 @@
 include LICENSE
 include README.md
+include readme-cli.md
 include PenguinBurner.service
 include penguin_burner.sh
-include auto_uv_result_summary_terminal_2026.png
+include 1-uv-curve.png
+include 2-afterburner-import.png
+include 3-fan-curve.png
+include auto_uv_result_summary_terminal.png
 include dry_run_curves_terminal.png
-recursive-include docs *.md
+include lact_auto_uv_import.png
+include packaging/linux/*.desktop
+recursive-include docs *.md *.png
+recursive-include packaging/icons *.png *.svg
+recursive-include penguin_burner_ui/assets *.png
 recursive-include tests *.py
