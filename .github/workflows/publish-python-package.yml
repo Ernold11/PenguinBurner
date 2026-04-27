@@ -60,26 +60,3 @@ jobs:
         with:
           name: python-package-distributions
           path: dist/
-
-  publish-to-pypi:
-    name: Publish to PyPI
-    if: github.event_name == 'release'
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/penguin-burner
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Download package artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: python-package-distributions
-          path: dist/
-
-      - name: Publish package to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          skip-existing: true
