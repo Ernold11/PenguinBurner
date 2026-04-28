@@ -82,7 +82,13 @@ def test_desktop_icons_are_transparent_and_large_enough() -> None:
 def test_package_installs_shared_subprocess_locale_helper() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "subprocess_locale" in metadata["tool"]["setuptools"]["py-modules"]
+    py_modules = set(metadata["tool"]["setuptools"]["py-modules"])
+
+    assert "subprocess_locale" in py_modules
+    assert "cuda_bruteforce_stability" in py_modules
+    assert "import_afterburner_fan_curve" in py_modules
+    assert "import_afterburner_vf_curve" in py_modules
+    assert "q2rtx_stability" in py_modules
 
 
 def test_desktop_launcher_is_english_only_nvidia_gpu_tool() -> None:

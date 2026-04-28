@@ -53,8 +53,6 @@ Feel at home and import your MSI Afterburner profile from Windows.
 
 Performance profile for the undervolt, especially for those with older GPU where every FPS matters. Hidden --yolo mode.
 
-![PenguinBurner performance Auto-UV tuning](2a-performance-tune-autouv.png)
-
 ## Silent Fan Curve
 
 Apply a silent fan curve after PenguinBurner finds a stable undervolt.

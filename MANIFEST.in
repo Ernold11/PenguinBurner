@@ -6,7 +6,6 @@ include penguin_burner.sh
 include 1-uv-curve.png
 include 1a-vf-curve-editor.png
 include 2-afterburner-import.png
-include 2a-performance-tune-autouv.png
 include 3-fan-curve.png
 include 3a-fan-curve-editor.png
 include auto_uv_result_summary_terminal.png
