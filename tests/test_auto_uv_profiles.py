@@ -2,28 +2,37 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
 import auto_uv.profiles as profile_store
+import penguin_burner
 import penguin_burner_ui.app as ui_app
 from auto_uv.profiles import (
     archive_auto_uv_profile,
     delete_auto_uv_profile_paths,
     delete_auto_uv_profiles,
     format_profile_table,
+    mark_auto_uv_profile_verified,
     profile_display_name,
     profile_summary,
     read_auto_uv_profile_summaries,
+    resolve_auto_uv_profile,
 )
 from penguin_burner_ui.app import (
     AFTERBURNER_PROFILE_ID,
     _candidate_id_from_result,
     _candidate_number,
     _candidate_status_text,
+    _curve_editor_shortcut_legend_rows,
     _duration_minutes_for_control,
     _error_dialog_copy_text,
     _event_base_points,
+    _fan_curve_editor_shortcut_legend_rows,
+    _fan_curve_target_point_from_payload,
+    _fan_payload_has_silent_runtime_fields,
+    _final_choice_sort_values,
     _format_duration_for_user,
     _final_profile_notice_text,
     _lact_export_output_path,
@@ -39,6 +48,8 @@ from penguin_burner_ui.app import (
     _profile_fan_measurement_points,
     _profile_info_from_command_text,
     _profile_is_deletable,
+    _profile_id_from_archive_path,
+    _profile_verify_selector,
     _process_failure_details,
     _reverify_elapsed_from_line,
     _reverify_progress_percent,
@@ -99,6 +110,30 @@ def test_profile_table_keeps_date_separate_from_profile_name() -> None:
     assert "2610 MHz 875 mV" in rendered
     assert "+500" in rendered
     assert "20260427-120000-000000-875mv-2610mhz" not in rendered
+
+
+def test_curve_editor_shortcut_legend_mentions_core_actions() -> None:
+    rows = dict(_curve_editor_shortcut_legend_rows())
+
+    assert rows["Click"] == "select dot"
+    assert rows["Ctrl+Click"] == "new point"
+    assert rows["Shift+Right"] == "range right"
+    assert rows["Ctrl+L"] == "lock here"
+    assert rows["Ctrl+Z / Ctrl+Y"] == "undo / redo"
+
+
+def test_fan_curve_editor_shortcut_legend_excludes_vf_only_actions() -> None:
+    rows = dict(_fan_curve_editor_shortcut_legend_rows())
+
+    assert rows["Click"] == "select dot"
+    assert rows["Ctrl+Click"] == "new point"
+    assert rows["Drag"] == "move dot"
+    assert rows["Up/Down"] == "fan speed"
+    assert rows["Left/Right"] == "temperature"
+    assert rows["Tab / Shift+Tab"] == "next / previous"
+    assert rows["Ctrl+Z / Ctrl+Y"] == "undo / redo"
+    assert "Ctrl+L" not in rows
+    assert "Shift+Right" not in rows
 
 
 def test_profile_summary_keeps_base_metrics_for_profile_table_delta() -> None:
@@ -164,15 +199,17 @@ def test_profile_metric_delta_text_and_color_vs_base() -> None:
 
 
 def test_profile_table_headers_and_sorting_scope() -> None:
-    assert ProfileList.COLUMNS[2] == "Voltage mV"
-    assert ProfileList.COLUMNS[3] == "Voltage vs base"
-    assert ProfileList.COLUMNS[5] == "Memory Offset MHz"
-    assert ProfileList.COLUMNS[9] == "FPS/W vs base"
-    assert ProfileList.COLUMNS[13] == "Power vs base"
-    assert ProfileList.COLUMNS[15] == "Autostart"
-    assert PROFILE_SORTABLE_COLUMNS == frozenset(
-        {0, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13}
-    )
+    assert ProfileList.COLUMNS[2] == "mV"
+    assert ProfileList.COLUMNS[3] == "Target MHz"
+    assert ProfileList.COLUMNS[4] == "Effective MHz"
+    assert ProfileList.COLUMNS[5] == "FPS/W"
+    assert ProfileList.COLUMNS[7] == "Power W"
+    assert ProfileList.COLUMNS[8] == "Mem"
+    assert ProfileList.COLUMNS[10] == "Autostart"
+    assert "Voltage vs base" not in ProfileList.COLUMNS
+    assert "FPS/W vs base" not in ProfileList.COLUMNS
+    assert "Power vs base" not in ProfileList.COLUMNS
+    assert PROFILE_SORTABLE_COLUMNS == frozenset({0, 2, 3, 4, 5, 6, 7})
 
 
 def test_profile_non_sort_columns_have_no_sort_keys() -> None:
@@ -194,12 +231,13 @@ def test_profile_non_sort_columns_have_no_sort_keys() -> None:
     )
 
     assert sort_values[1] == ""
-    assert sort_values[5] == ""
-    assert sort_values[9] == pytest.approx(60.0)
-    assert sort_values[11] == pytest.approx(6.6666666667)
-    assert sort_values[13] == -20.0
-    assert sort_values[14] == ""
-    assert sort_values[15] == ""
+    assert sort_values[4] == pytest.approx(2605.25)
+    assert sort_values[5] == pytest.approx(0.80)
+    assert sort_values[6] == pytest.approx(160.0)
+    assert sort_values[7] == pytest.approx(200.0)
+    assert sort_values[8] == ""
+    assert sort_values[9] == ""
+    assert sort_values[10] == ""
 
 
 def test_profile_metric_delta_text_is_separate_from_absolute_value() -> None:
@@ -241,12 +279,33 @@ def test_profile_table_keeps_regular_font_for_highlight_and_deltas() -> None:
                 "base_avg_fps": 150.0,
                 "avg_power_w": 200.0,
                 "base_avg_power_w": 250.0,
+                "memory_offset_mhz": 1000,
             }
         ],
         preferred_candidate_id="875mv-2610mhz",
         select_preferred=True,
     )
 
+    assert (
+        profile_list.table.item(0, profile_list.VOLTAGE_COLUMN).text()
+        == "875 (-12.50%)"
+    )
+    assert (
+        profile_list.table.item(0, profile_list.EFFECTIVE_MHZ_COLUMN).text()
+        == "2605.25 (-1.69%)"
+    )
+    assert profile_list.table.item(0, profile_list.FPSW_COLUMN).text() == (
+        "0.80 (+60.00%)"
+    )
+    assert profile_list.table.item(0, profile_list.FPS_COLUMN).text() == (
+        "160.00 (+6.67%)"
+    )
+    assert profile_list.table.item(0, profile_list.POWER_COLUMN).text() == (
+        "200.00 (-20.00%)"
+    )
+    assert profile_list.table.item(0, profile_list.MEMORY_OFFSET_COLUMN).text() == (
+        "+1000"
+    )
     for column in range(profile_list.table.columnCount()):
         item = profile_list.table.item(0, column)
         assert item is not None
@@ -327,6 +386,7 @@ def test_runtime_action_error_labels_use_autostart_language() -> None:
 
 def test_profile_source_label_uses_user_facing_auto_uv_name() -> None:
     assert _profile_source_label({"profile_source": "auto-uv-final"}) == "Auto UV"
+    assert _profile_source_label({"profile_source": "user-edited"}) == "User edited"
     assert _profile_source_label({"profile_source": "afterburner"}) == "afterburner"
 
 
@@ -404,6 +464,663 @@ def test_profile_store_ignores_short_verified_candidates(tmp_path, monkeypatch) 
     )
 
     assert read_auto_uv_profile_summaries() == []
+
+
+def test_profile_store_lists_user_edited_drafts_but_resolver_blocks_apply(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+
+    stored_path = archive_auto_uv_profile(
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "profile_source": "user-edited",
+            "final_verified": False,
+            "requires_verification": True,
+            "points": [
+                {
+                    "index": 0,
+                    "voltage_mv": 900,
+                    "base_mhz": 2500,
+                    "target_mhz": 2600,
+                    "new_offset_mhz": 100,
+                }
+            ],
+        }
+    )
+
+    summaries = read_auto_uv_profile_summaries()
+
+    assert len(summaries) == 1
+    assert summaries[0]["profile_source"] == "user-edited"
+    assert summaries[0]["final_verified"] is False
+    assert summaries[0]["requires_verification"] is True
+    assert resolve_auto_uv_profile(str(stored_path)) is None
+    assert resolve_auto_uv_profile(str(stored_path), allow_unverified=True) is not None
+
+
+def test_mark_auto_uv_profile_verified_promotes_user_edited_draft(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+
+    stored_path = archive_auto_uv_profile(
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "profile_source": "user-edited",
+            "final_verified": False,
+            "requires_verification": True,
+            "verification_status": "unverified",
+            "base_avg_fps": 100.0,
+            "points": [
+                {
+                    "index": 0,
+                    "voltage_mv": 900,
+                    "base_mhz": 2500,
+                    "target_mhz": 2600,
+                    "new_offset_mhz": 100,
+                }
+            ],
+        }
+    )
+
+    assert resolve_auto_uv_profile(str(stored_path)) is None
+
+    marked_path = mark_auto_uv_profile_verified(
+        str(stored_path),
+        verification={"workload": "Q2RTX timedemo", "result_reason": "ok"},
+        metrics={
+            "avg_core_clock_mhz": 2580.0,
+            "avg_fps": 121.5,
+            "avg_power_w": 240.0,
+            "efficiency_fps_per_w": 0.50625,
+        },
+    )
+
+    assert marked_path == stored_path
+    resolved = resolve_auto_uv_profile(str(stored_path))
+    assert resolved is not None
+    payload = json.loads(stored_path.read_text(encoding="utf-8"))
+    assert payload["profile_source"] == "user-edited"
+    assert payload["final_verified"] is True
+    assert payload["requires_verification"] is False
+    assert payload["verification_status"] == "verified"
+    assert payload["verification"]["workload"] == "Q2RTX timedemo"
+    assert payload["verification"]["result_reason"] == "ok"
+    assert payload["avg_core_clock_mhz"] == 2580.0
+    assert payload["avg_fps"] == 121.5
+    assert payload["avg_power_w"] == 240.0
+    assert payload["efficiency_fps_per_w"] == 0.50625
+    assert payload["base_avg_fps"] == 100.0
+
+
+def test_mark_auto_uv_profile_verified_preserves_existing_metrics(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+
+    stored_path = archive_auto_uv_profile(
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "profile_source": "user-edited",
+            "final_verified": False,
+            "requires_verification": True,
+            "avg_fps": 119.0,
+            "points": [
+                {
+                    "index": 0,
+                    "voltage_mv": 900,
+                    "base_mhz": 2500,
+                    "target_mhz": 2600,
+                    "new_offset_mhz": 100,
+                }
+            ],
+        }
+    )
+
+    mark_auto_uv_profile_verified(
+        str(stored_path),
+        metrics={"avg_fps": 121.5, "avg_power_w": 240.0},
+        base_metrics={
+            "avg_fps": 150.0,
+            "avg_power_w": 300.0,
+            "efficiency_fps_per_w": 0.5,
+        },
+    )
+
+    payload = json.loads(stored_path.read_text(encoding="utf-8"))
+    assert payload["avg_fps"] == 119.0
+    assert payload["avg_power_w"] == 240.0
+    assert payload["base_avg_fps"] == 150.0
+    assert payload["base_avg_power_w"] == 300.0
+    assert payload["base_efficiency_fps_per_w"] == 0.5
+
+
+def test_runtime_profile_precheck_allows_user_edited_drafts_for_verification(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+
+    stored_path = archive_auto_uv_profile(
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "profile_source": "user-edited",
+            "final_verified": False,
+            "requires_verification": True,
+            "points": [
+                {
+                    "index": 0,
+                    "voltage_mv": 900,
+                    "base_mhz": 2500,
+                    "target_mhz": 2600,
+                    "new_offset_mhz": 100,
+                }
+            ],
+        }
+    )
+
+    assert resolve_auto_uv_profile(str(stored_path)) is None
+    assert not penguin_burner._runtime_profile_selector_allows_unverified_from_argv(
+        ["--auto-uv-profile", str(stored_path)]
+    )
+    assert penguin_burner._runtime_profile_selector_allows_unverified_from_argv(
+        ["--stability-test", "--auto-uv-profile", str(stored_path)]
+    )
+    assert (
+        resolve_auto_uv_profile(
+            str(stored_path),
+            allow_unverified=penguin_burner._runtime_profile_selector_allows_unverified_from_argv(
+                ["--stability-test", "--auto-uv-profile", str(stored_path)]
+            ),
+        )
+        is not None
+    )
+
+
+def test_profile_verification_stop_request_uses_immediate_user_stop_reason(
+    tmp_path,
+) -> None:
+    stop_path = tmp_path / "verify.stop"
+    callback = penguin_burner._stability_stop_request_abort_callback(stop_path)
+
+    assert callback({}) is None
+    stop_path.write_text("stop\n", encoding="utf-8")
+    assert callback({}) == "user-stop-requested"
+
+
+def test_profile_verify_selector_uses_exact_json_path() -> None:
+    assert _profile_verify_selector(
+        {
+            "profile_id": "draft-profile",
+            "profile_source": "user-edited",
+            "requires_verification": True,
+            "path": "/tmp/draft.json",
+        }
+    ) == "/tmp/draft.json"
+    assert _profile_verify_selector(
+        {
+            "profile_id": "verified-profile",
+            "profile_source": "auto-uv-final",
+            "path": "/tmp/verified.json",
+        }
+    ) == "/tmp/verified.json"
+
+
+def test_profile_id_from_archive_path_strips_store_filename() -> None:
+    assert (
+        _profile_id_from_archive_path(
+            "/tmp/auto-uv-profile-20260428-user-edited-870mv-2865mhz.json"
+        )
+        == "20260428-user-edited-870mv-2865mhz"
+    )
+
+
+def test_profile_verification_rejects_vf_curve_apply_mismatch(monkeypatch) -> None:
+    plan = [
+        {
+            "index": 4,
+            "voltage_mv": 870,
+            "base_mhz": 2242,
+            "target_mhz": 2865,
+            "new_offset_mhz": 623,
+        }
+    ]
+
+    class FakeReader:
+        def refresh_points(self) -> None:
+            pass
+
+        def editable_core_points(self) -> list[dict]:
+            return [{"index": 4, "current_offset_khz": 0}]
+
+    monkeypatch.setattr(
+        penguin_burner,
+        "load_auto_uv_final_curve",
+        lambda _selector, *, allow_unverified=False: {
+            "path": "/tmp/draft.json",
+            "plan": plan,
+            "lock_clock_mhz": 2865,
+            "candidate_voltage_mv": 870,
+            "memory_offset_mhz": None,
+            "flatten_target": {},
+        },
+    )
+    monkeypatch.setattr(penguin_burner, "apply_plan", lambda _reader, _plan: None)
+
+    with pytest.raises(penguin_burner.NvmlError, match="did not match"):
+        penguin_burner._apply_reverify_auto_uv_profile(
+            FakeReader(),
+            "/tmp/draft.json",
+            None,
+        )
+
+
+def test_profile_verification_can_reapply_curve_after_clock_lock(monkeypatch) -> None:
+    plan = [
+        {
+            "index": 4,
+            "voltage_mv": 870,
+            "base_mhz": 2242,
+            "target_mhz": 2865,
+            "new_offset_mhz": 623,
+        }
+    ]
+
+    class FakeReader:
+        offset_mhz = 0
+
+        def refresh_points(self) -> None:
+            pass
+
+        def editable_core_points(self) -> list[dict]:
+            return [{"index": 4, "current_offset_khz": int(self.offset_mhz) * 1000}]
+
+    class ResettingPolicy:
+        def __init__(self, reader: FakeReader) -> None:
+            self.reader = reader
+            self.exact_calls = []
+
+        def apply_locked_core_clock_mhz(self, clock_mhz, **kwargs) -> dict:
+            self.exact_calls.append((int(clock_mhz), dict(kwargs)))
+            self.reader.offset_mhz = 0
+            return {
+                "requested_clock_mhz": int(clock_mhz),
+                "applied_clock_mhz": int(clock_mhz),
+                "mode": "exact",
+                "supported_steps_mhz": [180, int(clock_mhz)],
+            }
+
+        def reset_locked_core_clocks(self) -> None:
+            pass
+
+    def fake_apply_plan(reader: FakeReader, applied_plan: list[dict]) -> None:
+        reader.offset_mhz = int(applied_plan[0]["new_offset_mhz"])
+
+    monkeypatch.setattr(penguin_burner, "apply_plan", fake_apply_plan)
+    reader = FakeReader()
+    policy = ResettingPolicy(reader)
+
+    penguin_burner._apply_and_verify_reverify_vf_plan(
+        reader,
+        plan,
+        context="selected profile",
+    )
+    assert reader.offset_mhz == 623
+
+    controller = penguin_burner.FlattenedClockCeilingController(
+        {
+            "source": "auto-uv-final",
+            "lock_clock_mhz": 2865,
+            "lock_voltage_mv": 870,
+        },
+        policy,
+        exact_lock=True,
+    )
+    controller.apply()
+    assert policy.exact_calls[0][0] == 2865
+    assert controller.telemetry_text().startswith("clk_lock=")
+    assert reader.offset_mhz == 0
+
+    penguin_burner._apply_and_verify_reverify_vf_plan(
+        reader,
+        plan,
+        context="selected profile after clock lock",
+    )
+    assert reader.offset_mhz == 623
+
+
+def test_profile_verification_metrics_from_q2rtx_result() -> None:
+    result = SimpleNamespace(
+        timedemo_runs=[
+            SimpleNamespace(fps=120.0),
+            SimpleNamespace(fps=126.0),
+        ],
+        telemetry_summary=lambda: {
+            "core_clock_avg": 2580.0,
+            "power_avg": 240.0,
+            "power_max": 260.0,
+            "voltage_avg": 890.0,
+            "voltage_max": 895.0,
+            "temperature_avg": 60.0,
+            "temperature_max": 66.0,
+            "fan_avg": 32.0,
+            "fan_max": 45.0,
+        },
+    )
+
+    metrics = penguin_burner._profile_verification_metrics_from_result(result)
+
+    assert metrics["avg_fps"] == 123.0
+    assert metrics["avg_core_clock_mhz"] == 2580.0
+    assert metrics["avg_power_w"] == 240.0
+    assert metrics["max_power_w"] == 260.0
+    assert metrics["avg_voltage_mv"] == 890.0
+    assert metrics["max_voltage_mv"] == 895.0
+    assert metrics["avg_temperature_c"] == 60.0
+    assert metrics["max_temperature_c"] == 66.0
+    assert metrics["avg_fan_speed_pct"] == 32.0
+    assert metrics["max_fan_speed_pct"] == 45.0
+    assert metrics["efficiency_fps_per_w"] == pytest.approx(123.0 / 240.0)
+    assert metrics["efficiency_mhz_per_w"] == pytest.approx(2580.0 / 240.0)
+    assert metrics["watts_per_mhz"] == pytest.approx(240.0 / 2580.0)
+
+
+def test_profile_baseline_plan_restores_base_offsets() -> None:
+    plan = [
+        {
+            "index": 4,
+            "voltage_mv": 870,
+            "base_mhz": 2242,
+            "target_mhz": 2865,
+            "new_offset_mhz": 623,
+        }
+    ]
+
+    base_plan = penguin_burner._base_vf_plan_from_profile_plan(plan)
+
+    assert base_plan == [
+        {
+            "index": 4,
+            "voltage_mv": 870,
+            "base_mhz": 2242,
+            "target_mhz": 2242,
+            "new_offset_mhz": 0,
+        }
+    ]
+
+
+def test_user_edited_profile_with_missing_base_metrics_needs_baseline(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    stored_path = archive_auto_uv_profile(
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "profile_source": "user-edited",
+            "final_verified": False,
+            "requires_verification": True,
+            "points": [
+                {
+                    "index": 0,
+                    "voltage_mv": 900,
+                    "base_mhz": 2500,
+                    "target_mhz": 2600,
+                    "new_offset_mhz": 100,
+                }
+            ],
+        }
+    )
+
+    assert penguin_burner._profile_needs_reverify_baseline(str(stored_path)) is True
+
+    mark_auto_uv_profile_verified(
+        str(stored_path),
+        base_metrics={
+            "avg_core_clock_mhz": 2500.0,
+            "avg_fps": 100.0,
+            "avg_power_w": 250.0,
+            "efficiency_fps_per_w": 0.4,
+        },
+    )
+
+    assert penguin_burner._profile_needs_reverify_baseline(str(stored_path)) is False
+
+
+def test_mark_auto_uv_profile_verification_failed_blocks_user_edited_apply(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    stored_path = archive_auto_uv_profile(
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "profile_source": "user-edited",
+            "final_verified": True,
+            "requires_verification": False,
+            "verification_status": "verified",
+            "points": [
+                {
+                    "index": 0,
+                    "voltage_mv": 900,
+                    "base_mhz": 2500,
+                    "target_mhz": 2600,
+                    "new_offset_mhz": 100,
+                }
+            ],
+        }
+    )
+
+    marked_path = profile_store.mark_auto_uv_profile_verification_failed(
+        str(stored_path),
+        failure={"reason": "fatal-q2rtx-output", "fatal_output_matches": ["device lost"]},
+    )
+
+    assert marked_path == stored_path
+    assert resolve_auto_uv_profile(str(stored_path)) is None
+    assert resolve_auto_uv_profile(str(stored_path), allow_unverified=True) is not None
+    payload = json.loads(stored_path.read_text(encoding="utf-8"))
+    assert payload["final_verified"] is False
+    assert payload["requires_verification"] is True
+    assert payload["verification_status"] == "failed"
+    assert payload["verification"]["failure"]["reason"] == "fatal-q2rtx-output"
+
+
+def test_profile_reverification_promotes_verified_profile(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    stored_path = archive_auto_uv_profile(
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "profile_source": "user-edited",
+            "final_verified": False,
+            "requires_verification": True,
+            "points": [
+                {
+                    "index": 0,
+                    "voltage_mv": 900,
+                    "base_mhz": 2500,
+                    "target_mhz": 2600,
+                    "new_offset_mhz": 100,
+                }
+            ],
+        }
+    )
+
+    class FakeReader:
+        def close(self) -> None:
+            pass
+
+    class FakePolicy:
+        def close(self) -> None:
+            pass
+
+    config = SimpleNamespace(abort_callback=None)
+    result = SimpleNamespace(
+        success=True,
+        reason="ok",
+        log_path=tmp_path / "verify.log",
+        timedemo_runs=[SimpleNamespace(fps=120.0)],
+        telemetry_summary=lambda: {
+            "core_clock_avg": 2580.0,
+            "power_avg": 240.0,
+        },
+    )
+    plan = [
+        {
+            "index": 0,
+            "voltage_mv": 900,
+            "base_mhz": 2500,
+            "target_mhz": 2600,
+            "new_offset_mhz": 100,
+        }
+    ]
+    baseline_calls = []
+    monkeypatch.setattr(
+        penguin_burner,
+        "stop_existing_penguin_burner_runtime",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        penguin_burner,
+        "create_hidden_vf_curve_reader",
+        lambda **_kwargs: FakeReader(),
+    )
+    monkeypatch.setattr(
+        penguin_burner,
+        "NvmlGpuPolicyController",
+        lambda **_kwargs: FakePolicy(),
+    )
+    monkeypatch.setattr(
+        penguin_burner,
+        "backup_current_offsets",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        penguin_burner,
+        "restore_offsets",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        penguin_burner,
+        "_apply_reverify_auto_uv_profile",
+        lambda *_args, **_kwargs: ("auto-UV:2600MHz@900mV", None, plan),
+    )
+
+    def fake_baseline_probe(*_args, **kwargs):
+        baseline_calls.append(kwargs)
+        return {
+            "avg_core_clock_mhz": 2500.0,
+            "avg_fps": 100.0,
+            "avg_power_w": 250.0,
+            "efficiency_fps_per_w": 0.4,
+        }
+
+    monkeypatch.setattr(
+        penguin_burner,
+        "_run_profile_reverification_baseline_probe",
+        fake_baseline_probe,
+    )
+    monkeypatch.setattr(
+        penguin_burner,
+        "build_stability_config",
+        lambda *_args, **_kwargs: config,
+    )
+    monkeypatch.setattr(
+        penguin_burner,
+        "build_long_stability_test_config",
+        lambda stability_config, **_kwargs: stability_config,
+    )
+    monkeypatch.setattr(
+        penguin_burner,
+        "attach_stdout_progress",
+        lambda _config: None,
+    )
+    monkeypatch.setattr(
+        penguin_burner,
+        "run_q2rtx_stability_test",
+        lambda _config: result,
+    )
+    monkeypatch.setattr(
+        penguin_burner,
+        "print_q2rtx_stability_result",
+        lambda _result: None,
+    )
+
+    penguin_burner.run_profile_reverification(
+        SimpleNamespace(
+            auto_uv_profile=str(stored_path),
+            prefer_afterburner_curve=False,
+            stability_seconds=600,
+            stability_stop_request_file="",
+        ),
+        gpu_index=0,
+        config_path=tmp_path / "runtime.ini",
+        afterburner_runtime_options={},
+    )
+
+    payload = json.loads(stored_path.read_text(encoding="utf-8"))
+    assert payload["final_verified"] is True
+    assert payload["requires_verification"] is False
+    assert payload["avg_fps"] == 120.0
+    assert payload["avg_core_clock_mhz"] == 2580.0
+    assert payload["avg_power_w"] == 240.0
+    assert payload["efficiency_fps_per_w"] == 0.5
+    assert payload["base_avg_core_clock_mhz"] == 2500.0
+    assert payload["base_avg_fps"] == 100.0
+    assert payload["base_avg_power_w"] == 250.0
+    assert payload["base_efficiency_fps_per_w"] == 0.4
+    assert baseline_calls
+    assert baseline_calls[0]["base_plan"][0]["target_mhz"] == 2500
+    assert baseline_calls[0]["base_plan"][0]["new_offset_mhz"] == 0
+    assert resolve_auto_uv_profile(str(stored_path)) is not None
+
+
+def test_profile_verification_voltage_abort_requires_sustained_busy_mismatch() -> None:
+    callback = penguin_burner._profile_verification_voltage_abort_callback(
+        {"lock_voltage_mv": 870}
+    )
+    high_voltage_sample = SimpleNamespace(voltage_mv=1025, gpu_util_pct=99)
+
+    assert (
+        callback({"progress_elapsed_s": 2.0, "latest_sample": high_voltage_sample})
+        is None
+    )
+    assert (
+        callback(
+            {
+                "progress_elapsed_s": 10.0,
+                "latest_sample": SimpleNamespace(voltage_mv=1025, gpu_util_pct=10),
+            }
+        )
+        is None
+    )
+    for _ in range(penguin_burner.PROFILE_VERIFY_VOLTAGE_MISMATCH_STREAK - 1):
+        assert (
+            callback({"progress_elapsed_s": 10.0, "latest_sample": high_voltage_sample})
+            is None
+        )
+
+    reason = callback(
+        {"progress_elapsed_s": 10.0, "latest_sample": high_voltage_sample}
+    )
+
+    assert reason is not None
+    assert reason.startswith("profile-verification-voltage-mismatch")
+    assert "target=870mV" in reason
 
 
 def test_profile_summary_uses_real_file_path_not_payload_path(
@@ -787,6 +1504,20 @@ def test_profile_fan_curve_points_use_embedded_auto_uv_payload() -> None:
     assert _profile_fan_curve_tab_label(profile) == "2715 MHz 850 mV Fan Curve"
 
 
+def test_saved_fan_curve_payload_helpers_detect_runtime_ready_payload() -> None:
+    payload = {
+        "loaded_temperature_c": 75.0,
+        "observed_fan_speed_pct": 42.7,
+        "fan": {"curve": [[45.0, 0.0], [60.0, 30.0], [75.0, 42.7]]},
+    }
+
+    assert _fan_payload_has_silent_runtime_fields(payload)
+    assert _fan_curve_target_point_from_payload(payload) == (75.0, 42.7)
+    assert not _fan_payload_has_silent_runtime_fields(
+        {"fan": {"curve": [[45.0, 0.0], [60.0, 30.0]]}}
+    )
+
+
 def test_profile_fan_curve_points_fall_back_to_matching_current_artifact(
     tmp_path,
     monkeypatch,
@@ -889,6 +1620,32 @@ def test_final_choice_candidate_table_helpers_show_metrics_and_default() -> None
     assert _candidate_number(candidate["efficiency_fps_per_w"], precision=4) == "0.73"
     assert _format_number(candidate["efficiency_fps_per_w"], precision=4) == "0.73"
     assert _candidate_status_text(candidate, True) == "Best FPS/W | Passed short probe"
+    assert (
+        _candidate_status_text(candidate, True, auto_uv_mode="performance")
+        == "Best FPS | Passed short probe"
+    )
+
+
+def test_final_choice_candidate_sort_values_use_numeric_metrics() -> None:
+    candidate = {
+        "candidate_voltage_mv": "850",
+        "lock_clock_mhz": "2805",
+        "avg_core_clock_mhz": "2647.67",
+        "efficiency_fps_per_w": "0.6427",
+        "avg_fps": "158.21",
+        "avg_power_w": "246.16",
+        "short_verification_duration_s": "45",
+    }
+
+    assert _final_choice_sort_values(candidate)[:7] == [
+        850.0,
+        2805.0,
+        2647.67,
+        0.6427,
+        158.21,
+        246.16,
+        45.0,
+    ]
 
 
 def test_top_status_text_rounds_gui_decimals_to_two_places() -> None:

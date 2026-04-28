@@ -7,6 +7,7 @@ from auto_uv.probe_config import (
     _budget_tiered_probe_durations,
     _stability_probe_config_for_voltage_band,
     build_long_stability_test_config,
+    long_stability_workload_durations,
 )
 from auto_uv.probe_runner import (
     _expected_timedemo_loop_hint_s,
@@ -97,6 +98,25 @@ def test_voltage_band_probe_config_clamps_short_base_to_10s_and_full_loops() -> 
 
 def test_final_verification_cuda_split_stays_at_existing_ratio() -> None:
     assert _budget_final_probe_durations(600) == (450, 150)
+    assert long_stability_workload_durations(
+        600,
+        include_q2rtx=True,
+        include_cuda=True,
+    ) == (450, 150)
+
+
+def test_long_stability_both_workloads_use_auto_uv_split() -> None:
+    config = Q2RTXStabilityConfig(duration_s=0, demo_name="unknown-demo", gpu_index=0)
+
+    configured = build_long_stability_test_config(
+        config,
+        total_duration_s=600,
+        include_q2rtx=True,
+        include_cuda=True,
+    )
+
+    assert configured.duration_s == 450
+    assert _companion_duration_s(configured) == 150
 
 
 def test_long_stability_q2rtx_only_uses_full_duration() -> None:

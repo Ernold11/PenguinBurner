@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 from types import SimpleNamespace
 from pathlib import Path
@@ -22,14 +24,19 @@ from auto_uv.curve_planning import (
     _choose_sustained_clock_target,
     _make_curve_candidate,
     _next_search_candidate_voltage_mv,
+    _unsafe_candidate_block_reason,
     _unsafe_min_search_voltage_mv,
     _validate_auto_uv_source_plan,
 )
 from auto_uv.fan_tuning import build_auto_uv_fan_payload, write_auto_uv_fan_payload
 from auto_uv.final_verify import _choose_final_comparison_probe
 from auto_uv.models import AutoUvError, AutoUvFinalChoiceDiscarded, AutoUvProbeSummary
+from auto_uv.performance import performance_score_from_values
 from auto_uv.probe_metrics import _temperature_normalized_efficiency_delta
-from auto_uv.probe_runner import _probe_phase_writes_crash_marker
+from auto_uv.probe_runner import (
+    _probe_phase_writes_crash_marker,
+    _unsafe_clock_bindings_from_plan,
+)
 from auto_uv.scan import (
     _build_voltage_scan_result,
     _clock_bump_budget_limit_from_unsafe_entries,
@@ -41,16 +48,23 @@ from auto_uv.scan import (
     _is_power_up_efficiency_down_regression,
     _probe_failure_should_mark_voltage_unsafe,
     _real_clock_adjusted_stable_curve,
+    _scan_settings,
     _short_verification_duration_s,
     _target_core_clock_floor,
     _telemetry_sample_is_busy,
 )
-from auto_uv.tuning import AUTO_UV_DEFAULTS, AUTO_UV_METRIC_TUNING
+from auto_uv.tuning import (
+    AUTO_UV_DEFAULTS,
+    AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO,
+    AUTO_UV_METRIC_TUNING,
+    AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO,
+)
 from auto_uv.user_output import (
     format_user_duration,
     log_user_candidate_result,
     log_user_readable_final_summary,
 )
+from stability.q2rtx import Q2RTXStabilityConfig
 
 
 def _plan() -> list[dict]:
@@ -68,16 +82,61 @@ def _plan() -> list[dict]:
 
 def test_default_auto_uv_clock_drop_is_ten_percent() -> None:
     assert AUTO_UV_DEFAULTS.max_drop_pct == 16.0
+    assert AUTO_UV_DEFAULTS.performance_max_drop_pct == 14.0
     assert AUTO_UV_METRIC_TUNING.max_core_clock_drop_pct == 10.0
     assert AUTO_UV_METRIC_TUNING.min_performance_core_clock_pct == 90.0
-    assert AUTO_UV_DEFAULTS.clock_bump_budget_ratio == 0.5
+    assert AUTO_UV_DEFAULTS.clock_bump_budget_ratio == 0.75
+    assert AUTO_UV_DEFAULTS.performance_clock_bump_budget_ratio == 1.10
     assert (
         _clock_bump_budget_pct(
             max_clock_drop_pct=AUTO_UV_METRIC_TUNING.max_core_clock_drop_pct,
             bump_budget_ratio=AUTO_UV_DEFAULTS.clock_bump_budget_ratio,
         )
-        == 5.0
+        == 7.5
     )
+
+
+def test_performance_mode_uses_performance_defaults_for_cli_fallbacks() -> None:
+    settings = _scan_settings(
+        {"auto_uv_mode": "performance"},
+        Q2RTXStabilityConfig(duration_s=0, timedemo_loops=1),
+    )
+
+    assert settings.configured_max_drop_pct == pytest.approx(14.0)
+    assert settings.clock_bump_budget_ratio == pytest.approx(1.10)
+    assert settings.clock_bump_budget_limit_pct == pytest.approx(11.0)
+
+
+def test_efficiency_mode_keeps_efficiency_defaults_for_cli_fallbacks() -> None:
+    settings = _scan_settings(
+        {"auto_uv_mode": "efficiency"},
+        Q2RTXStabilityConfig(duration_s=0, timedemo_loops=1),
+    )
+
+    assert settings.configured_max_drop_pct == pytest.approx(16.0)
+    assert settings.clock_bump_budget_ratio == pytest.approx(0.75)
+    assert settings.clock_bump_budget_limit_pct == pytest.approx(7.5)
+
+
+def test_scan_probe_voltage_candidate_calls_match_signature() -> None:
+    scan_path = Path(auto_uv_scan.__file__)
+    tree = ast.parse(scan_path.read_text(encoding="utf-8"))
+    accepted_keywords = set(
+        inspect.signature(auto_uv_scan._probe_voltage_candidate).parameters
+    )
+    unexpected_keywords = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id != "_probe_voltage_candidate":
+            continue
+        for keyword in node.keywords:
+            if keyword.arg is not None and keyword.arg not in accepted_keywords:
+                unexpected_keywords.append((keyword.arg, node.lineno))
+
+    assert unexpected_keywords == []
 
 
 def _probe(
@@ -113,6 +172,114 @@ def _probe(
         used_companion_load=False,
         result_reason="passed",
         log_path=Path("synthetic.log"),
+    )
+
+
+def test_performance_score_prioritizes_fps_over_fps_per_w() -> None:
+    high_fps_score = performance_score_from_values(
+        fps=156.0,
+        base_fps=164.0,
+        fps_per_w=0.57,
+        base_fps_per_w=0.49,
+        core_clock_mhz=None,
+        base_core_clock_mhz=None,
+    )
+    high_efficiency_score = performance_score_from_values(
+        fps=153.0,
+        base_fps=164.0,
+        fps_per_w=0.64,
+        base_fps_per_w=0.49,
+        core_clock_mhz=None,
+        base_core_clock_mhz=None,
+    )
+
+    assert high_fps_score is not None
+    assert high_efficiency_score is not None
+    assert high_fps_score > high_efficiency_score
+
+
+def test_performance_final_choice_default_uses_performance_score(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source_plan = _plan()
+    high_fps_plan = _build_descended_plan(
+        source_plan,
+        lock_clock_mhz=2700,
+        candidate_voltage_mv=950,
+    )
+    deep_plan = _build_descended_plan(
+        source_plan,
+        lock_clock_mhz=2700,
+        candidate_voltage_mv=850,
+    )
+    base_probe = _probe(
+        requested_mv=1240,
+        measured_mv=1020.0,
+        fps=164.0,
+        power_w=332.0,
+        core_clock_mhz=2745.0,
+        temp_c=62.0,
+    )
+    high_fps_probe = _probe(
+        requested_mv=950,
+        measured_mv=940.0,
+        fps=156.0,
+        power_w=274.0,
+        core_clock_mhz=2505.0,
+        temp_c=60.0,
+    )
+    deep_probe = _probe(
+        requested_mv=850,
+        measured_mv=850.0,
+        fps=153.0,
+        power_w=240.0,
+        core_clock_mhz=2490.0,
+        temp_c=60.0,
+    )
+    request_path = tmp_path / "auto-uv-final-choice-request.json"
+    response_path = tmp_path / "auto-uv-final-choice.json"
+    captured_request = {}
+
+    monkeypatch.setattr(auto_uv_scan, "_final_choice_request_path", lambda: request_path)
+    monkeypatch.setattr(auto_uv_scan, "_final_choice_response_path", lambda: response_path)
+
+    def fake_safe_json_write(path, payload):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        if Path(path) == request_path:
+            captured_request.update(payload)
+            response_path.write_text("{}", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(auto_uv_scan, "_safe_json_write", fake_safe_json_write)
+
+    _selected_plan, selected_voltage_mv, _selected_clock_mhz, selected_probe, _duration = (
+        _choose_final_verification_candidate(
+            log=lambda _message: None,
+            event_callback=None,
+            auto_uv_mode="performance",
+            base_probe=base_probe,
+            stable_plan=deep_plan,
+            stable_voltage_mv=850,
+            stable_lock_clock_mhz=2700,
+            stable_probe=deep_probe,
+            stable_history=[high_fps_probe, deep_probe],
+            source_plan=source_plan,
+            final_verification_duration_s=600,
+            initial_target_voltage_mv=1020,
+            short_probe_base_duration_s=30,
+        )
+    )
+
+    assert captured_request["default_candidate_id"] == "950mv-2700mhz"
+    assert captured_request["auto_uv_mode"] == "performance"
+    assert captured_request["default_sort_metric"] == "performance-score"
+    assert selected_voltage_mv == 950
+    assert selected_probe is high_fps_probe
+    assert any(
+        candidate.get("performance_score") is not None
+        for candidate in captured_request["candidates"]
     )
 
 
@@ -733,13 +900,29 @@ def test_clock_bump_budget_is_derived_from_clock_drop_ratio() -> None:
     )
 
 
-def test_clock_bump_budget_ratio_is_clamped_to_drop_budget() -> None:
+def test_clock_bump_budget_ratio_is_clamped_to_150_percent_by_default() -> None:
+    assert AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO == 1.5
+    assert AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO == 1.75
+    assert (
+        _clock_bump_budget_pct(
+            max_clock_drop_pct=12.0,
+            bump_budget_ratio=1.25,
+        )
+        == 15.0
+    )
     assert (
         _clock_bump_budget_pct(
             max_clock_drop_pct=12.0,
             bump_budget_ratio=1.5,
         )
-        == 12.0
+        == 18.0
+    )
+    assert (
+        _clock_bump_budget_pct(
+            max_clock_drop_pct=12.0,
+            bump_budget_ratio=1.75,
+        )
+        == 18.0
     )
     assert (
         _clock_bump_budget_pct(
@@ -748,6 +931,29 @@ def test_clock_bump_budget_ratio_is_clamped_to_drop_budget() -> None:
         )
         == 0.0
     )
+
+
+def test_yolo_clock_bump_budget_ratio_allows_175_percent() -> None:
+    assert (
+        _clock_bump_budget_pct(
+            max_clock_drop_pct=12.0,
+            bump_budget_ratio=2.0,
+            max_budget_ratio=AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO,
+        )
+        == 21.0
+    )
+    settings = _scan_settings(
+        {
+            "auto_uv_mode": "performance",
+            "auto_uv_max_clock_drop_pct": 10.0,
+            "auto_uv_clock_bump_budget_ratio": 2.0,
+            "auto_uv_yolo": True,
+        },
+        Q2RTXStabilityConfig(duration_s=0, timedemo_loops=1),
+    )
+
+    assert settings.clock_bump_budget_ratio == pytest.approx(1.75)
+    assert settings.clock_bump_budget_limit_pct == pytest.approx(17.5)
 
 
 def test_clock_bump_budget_format_reports_remaining_budget() -> None:
@@ -897,6 +1103,82 @@ def test_candidate_search_respects_failed_floor_and_unsafe_voltage() -> None:
     assert next_safe == 900
     assert candidate == 900
     assert candidate > unsafe_floor
+
+
+def test_unsafe_cache_blocks_same_or_higher_lock_clock_not_lower() -> None:
+    unsafe_entries = [
+        {
+            "reason": "stability-probe-failed",
+            "candidate_voltage_mv": 890,
+            "lock_clock_mhz": 2970,
+            "details": {"result_reason": "fatal-q2rtx-output"},
+        }
+    ]
+
+    assert _unsafe_candidate_block_reason(
+        unsafe_entries,
+        candidate_voltage_mv=890,
+        lock_clock_mhz=2970,
+    )
+    assert _unsafe_candidate_block_reason(
+        unsafe_entries,
+        candidate_voltage_mv=885,
+        lock_clock_mhz=3000,
+    )
+    assert not _unsafe_candidate_block_reason(
+        unsafe_entries,
+        candidate_voltage_mv=890,
+        lock_clock_mhz=2400,
+    )
+    assert not _unsafe_candidate_block_reason(
+        unsafe_entries,
+        candidate_voltage_mv=885,
+        lock_clock_mhz=2400,
+    )
+
+
+def test_unsafe_cache_blocks_failed_clock_band_without_global_voltage_ban() -> None:
+    unsafe_entries = [
+        {
+            "reason": "stability-probe-failed",
+            "candidate_voltage_mv": 875,
+            "lock_clock_mhz": 2955,
+            "blocked_lock_clock_mhz": [2955, 2947, 2940],
+            "details": {"result_reason": "fatal-q2rtx-output"},
+        }
+    ]
+
+    assert _unsafe_candidate_block_reason(
+        unsafe_entries,
+        candidate_voltage_mv=875,
+        lock_clock_mhz=2955,
+    )
+    assert _unsafe_candidate_block_reason(
+        unsafe_entries,
+        candidate_voltage_mv=875,
+        lock_clock_mhz=2940,
+    )
+    assert _unsafe_candidate_block_reason(
+        unsafe_entries,
+        candidate_voltage_mv=865,
+        lock_clock_mhz=2940,
+    )
+    assert not _unsafe_candidate_block_reason(
+        unsafe_entries,
+        candidate_voltage_mv=875,
+        lock_clock_mhz=2400,
+    )
+
+
+def test_unsafe_clock_bindings_use_failed_target_and_two_lower_bins() -> None:
+    plan = [
+        {"base_mhz": value, "target_mhz": 2955, "voltage_mv": index}
+        for index, value in enumerate([2925, 2940, 2947, 2962, 2977])
+    ]
+
+    bindings = _unsafe_clock_bindings_from_plan(plan, lock_clock_mhz=2955)
+
+    assert bindings == [2955, 2947, 2940]
 
 
 def test_candidate_search_does_not_jump_from_900_to_far_lower_bin() -> None:
@@ -1057,6 +1339,12 @@ def test_timedemo_live_stall_does_not_mark_voltage_unsafe() -> None:
         is False
     )
     assert (
+        _probe_failure_should_mark_voltage_unsafe(
+            "telemetry-live-load-lost current=45.0W floor=180.0W"
+        )
+        is True
+    )
+    assert (
         _probe_failure_should_mark_voltage_unsafe("cuda-bruteforce-failed exit=-15")
         is False
     )
@@ -1152,7 +1440,13 @@ def test_stale_auto_uv_probe_marker_records_abrupt_previous_end(
         candidate_voltage_mv=940,
         lock_clock_mhz=2430,
         log_context="candidate=940mV target=2430MHz",
-        details={"clock_bump_attempt": 3, "clock_bump_limit": 3},
+        details={
+            "start_voltage_mv": 1025,
+            "voltage_drop_from_start_pct": 8.2927,
+            "clock_recovery_pct": 125.0,
+            "clock_bump_attempt": 3,
+            "clock_bump_limit": 3,
+        },
     )
 
     consumed = auto_uv_artifacts._consume_interrupted_uv_probe_marker()
@@ -1167,7 +1461,63 @@ def test_stale_auto_uv_probe_marker_records_abrupt_previous_end(
     assert entry["phase"] == "candidate"
     assert entry["details"]["marker_pid"] is not None
     assert entry["details"]["marker_details"]["clock_bump_attempt"] == 3
+    assert entry["details"]["crash_cache_validation"]["accepted"] is True
     assert "clean Ctrl-C/SIGTERM" in entry["details"]["classification"]
+
+
+def test_stale_auto_uv_probe_marker_ignores_mild_previous_end(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        auto_uv_artifact_paths,
+        "default_user_config_dir",
+        lambda: tmp_path,
+    )
+    marker_path = auto_uv_artifacts._write_uv_probe_in_progress(
+        phase="candidate",
+        candidate_voltage_mv=990,
+        lock_clock_mhz=2700,
+        log_context="candidate=990mV target=2700MHz",
+        details={
+            "start_voltage_mv": 1025,
+            "voltage_drop_from_start_pct": 3.4146,
+            "clock_recovery_pct": 125.0,
+        },
+    )
+
+    consumed = auto_uv_artifacts._consume_interrupted_uv_probe_marker()
+
+    assert consumed is None
+    assert not marker_path.exists()
+    assert not (tmp_path / "uv-result" / "auto-uv-unsafe-voltages.json").exists()
+
+
+def test_stale_auto_uv_probe_marker_requires_aggressive_clock_recovery(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        auto_uv_artifact_paths,
+        "default_user_config_dir",
+        lambda: tmp_path,
+    )
+    auto_uv_artifacts._write_uv_probe_in_progress(
+        phase="candidate",
+        candidate_voltage_mv=940,
+        lock_clock_mhz=2430,
+        log_context="candidate=940mV target=2430MHz",
+        details={
+            "start_voltage_mv": 1025,
+            "voltage_drop_from_start_pct": 8.2927,
+            "clock_recovery_pct": 100.0,
+        },
+    )
+
+    consumed = auto_uv_artifacts._consume_interrupted_uv_probe_marker()
+
+    assert consumed is None
+    assert not (tmp_path / "uv-result" / "auto-uv-unsafe-voltages.json").exists()
 
 
 def test_abrupt_candidate_recovery_marker_caps_future_bumps_to_n_minus_one() -> None:

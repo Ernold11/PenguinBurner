@@ -26,10 +26,31 @@ from afterburner.vfcurve import (
     discover_afterburner_vf_sections,
     resolve_afterburner_vf_source,
 )
+from auto_uv.manual_curve_editor import (
+    ManualCurveEdit,
+    editable_anchor_from_profile,
+    manual_drag_anchor_edit,
+    manual_flatten_from_existing_point,
+    manual_nudge_selected_voltage,
+    manual_nudge_selected_frequency,
+    manual_offset_selected_range,
+    manual_select_adjacent_point,
+    manual_select_curve_point,
+    manual_select_range_to_right,
+    manual_tune_single_point_edit,
+    user_edited_profile_payload,
+)
+from auto_uv.manual_fan_curve_editor import user_edited_fan_curve_profile_payload
 from auto_uv.profiles import (
+    archive_auto_uv_profile,
     delete_auto_uv_profile_paths,
     profile_display_name,
     read_auto_uv_profile_summaries,
+)
+from auto_uv.sweep_modes import AUTO_UV_MODE_EFFICIENCY, AUTO_UV_MODE_PERFORMANCE
+from auto_uv.tuning import (
+    AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO,
+    AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO,
 )
 from auto_uv.user_output import format_user_duration as _format_duration_for_user
 from lact import (
@@ -38,6 +59,7 @@ from lact import (
     write_lact_nvidia_config_from_afterburner,
 )
 from penguin_burner_paths import (
+    claim_desktop_user_ownership,
     default_runtime_config_path,
     default_user_config_dir,
     discover_afterburner_device_profiles,
@@ -65,30 +87,30 @@ from .components import (
     ScanControls,
     StatusHeader,
 )
+from .components.fan_curve_editor import (
+    fan_curve_editor_shortcut_legend_rows,
+    open_fan_curve_editor_dialog,
+)
 from .components.table_sizing import set_header_fit_column_widths
 
 
 DEFAULT_FINAL_VERIFICATION_DURATION_S = 600
 MAX_FINAL_VERIFICATION_DURATION_S = 3600
 DEFAULT_SHORT_VERIFICATION_BASE_S = 30
+PERFORMANCE_BIAS_WARNING_PCT = 110.0
+PERFORMANCE_BIAS_DANGER_PCT = 130.0
+MAX_OVERCLOCK_BUDGET_PCT = AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO * 100.0
+YOLO_MAX_OVERCLOCK_BUDGET_PCT = AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO * 100.0
+DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT = 100.0
+DEFAULT_AUTO_UV_MAX_DROP_PCT = 15.0
+DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT = 10.0
+FINAL_CHOICE_SORT_ROLE = 261
+FINAL_CHOICE_FPSW_SORT_COLUMN = 3
+FINAL_CHOICE_FPS_SORT_COLUMN = 4
+FINAL_CHOICE_DEFAULT_SORT_COLUMN = FINAL_CHOICE_FPSW_SORT_COLUMN
+FINAL_CHOICE_SORTABLE_COLUMNS = frozenset({2, 3, 4, 5})
+FINAL_CHOICE_HIGHER_FIRST_COLUMNS = frozenset({2, 3, 4})
 LACT_CONFIG_FILENAME = "config.yaml"
-AUTO_UV_TUNING_PRESETS = {
-    "Conservative": {
-        "max_drop_pct": 14.0,
-        "max_clock_drop_pct": 8.0,
-        "overclock_budget_pct": 25.0,
-    },
-    "Balanced": {
-        "max_drop_pct": 16.0,
-        "max_clock_drop_pct": 10.0,
-        "overclock_budget_pct": 50.0,
-    },
-    "Aggressive": {
-        "max_drop_pct": 18.0,
-        "max_clock_drop_pct": 10.0,
-        "overclock_budget_pct": 75.0,
-    },
-}
 AFTERBURNER_PROFILE_ID = "afterburner-import"
 APP_DESKTOP_ID = "io.github.jpietek.PenguinBurner"
 APP_DISPLAY_NAME = "Nvidia GPU Undervolting Tool"
@@ -101,6 +123,122 @@ GPU_UNDERVOLTING_PURPOSE_TEXT = (
     "sweet spot of your Nvidia GPU, so you do not have to resort to trial and "
     "error or risk introducing avoidable system instability."
 )
+PERFORMANCE_BIAS_TOOLTIP_TEXT = (
+    "Controls how strongly Auto-UV favors recovering clocks after lowering "
+    "voltage. Moving toward Performance allows more aggressive clock recovery. "
+    "The far Performance side can push the curve above the measured baseline "
+    "clock and might hang your system. Changing this can result in instability; "
+    "modify with care."
+)
+
+
+def _curve_editor_shortcut_legend_rows() -> tuple[tuple[str, str], ...]:
+    return (
+        ("Click", "select dot"),
+        ("Ctrl+Click", "new point"),
+        ("Drag", "move selection"),
+        ("Up/Down", "clock"),
+        ("Left/Right", "voltage"),
+        ("Tab / Shift+Tab", "next / previous"),
+        ("Shift+Right", "range right"),
+        ("Ctrl+L", "lock here"),
+        ("Ctrl+Z / Ctrl+Y", "undo / redo"),
+    )
+
+
+def _fan_curve_editor_shortcut_legend_rows() -> tuple[tuple[str, str], ...]:
+    return fan_curve_editor_shortcut_legend_rows()
+
+
+def _auto_uv_mode_for_performance_bias(value_pct: float | int) -> str:
+    if float(value_pct) >= 100.0:
+        return AUTO_UV_MODE_PERFORMANCE
+    return AUTO_UV_MODE_EFFICIENCY
+
+
+def _performance_bias_clock_recovery_pct(
+    slider_position: float | int,
+    *,
+    max_pct: float | int = MAX_OVERCLOCK_BUDGET_PCT,
+) -> float:
+    clamped = max(0.0, min(100.0, float(slider_position)))
+    if clamped <= 50.0:
+        return clamped * 2.0
+    right_span = max(0.0, float(max_pct) - 100.0)
+    return 100.0 + ((clamped - 50.0) / 50.0 * right_span)
+
+
+def _performance_bias_slider_position(
+    value_pct: float | int,
+    *,
+    max_pct: float | int = MAX_OVERCLOCK_BUDGET_PCT,
+) -> int:
+    clamped = max(0.0, min(float(max_pct), float(value_pct)))
+    if clamped <= 100.0:
+        return int(round(clamped / 2.0))
+    right_span = max(1.0, float(max_pct) - 100.0)
+    return int(round(50.0 + ((clamped - 100.0) / right_span * 50.0)))
+
+
+def _slider_value_from_click_position(
+    *,
+    position_px: float | int,
+    width_px: float | int,
+    minimum: int,
+    maximum: int,
+    inverted: bool = False,
+) -> int:
+    span = max(1.0, float(width_px) - 1.0)
+    ratio = max(0.0, min(1.0, float(position_px) / span))
+    if bool(inverted):
+        ratio = 1.0 - ratio
+    return int(round(float(minimum) + ratio * float(int(maximum) - int(minimum))))
+
+
+def _click_jump_slider_class(QtCore, QtWidgets):
+    class ClickJumpSlider(QtWidgets.QSlider):
+        def _event_x(self, event) -> float:
+            position = event.position() if hasattr(event, "position") else event.pos()
+            return float(position.x())
+
+        def _set_value_from_event(self, event) -> None:
+            self.setValue(
+                _slider_value_from_click_position(
+                    position_px=self._event_x(event),
+                    width_px=self.width(),
+                    minimum=self.minimum(),
+                    maximum=self.maximum(),
+                    inverted=self.invertedAppearance(),
+                )
+            )
+
+        def mousePressEvent(self, event) -> None:
+            left_button = getattr(QtCore.Qt.MouseButton, "LeftButton", QtCore.Qt.LeftButton)
+            if event.button() == left_button:
+                self.setSliderDown(True)
+                self._set_value_from_event(event)
+                event.accept()
+                return
+            super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event) -> None:
+            left_button = getattr(QtCore.Qt.MouseButton, "LeftButton", QtCore.Qt.LeftButton)
+            if event.buttons() & left_button:
+                self._set_value_from_event(event)
+                event.accept()
+                return
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event) -> None:
+            left_button = getattr(QtCore.Qt.MouseButton, "LeftButton", QtCore.Qt.LeftButton)
+            if event.button() == left_button:
+                self._set_value_from_event(event)
+                self.setSliderDown(False)
+                event.accept()
+                return
+            super().mouseReleaseEvent(event)
+
+    return ClickJumpSlider
 
 
 def _import_qt():
@@ -119,8 +257,9 @@ def _import_qt():
 
 
 class AutoUvWindow:
-    def __init__(self, qt_modules):
+    def __init__(self, qt_modules, *, yolo: bool = False):
         self.QtCore, self.QtGui, self.QtWidgets, self.pg = qt_modules
+        self.auto_uv_yolo = bool(yolo)
         self.process = None
         self.runtime_process = None
         self.runtime_process_kind = ""
@@ -187,6 +326,9 @@ class AutoUvWindow:
             QtCore=self.QtCore,
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
+        )
+        self.runs_table.on_candidate_selection_changed = (
+            self._handle_runs_table_candidate_selection
         )
         self.profile_list = ProfileList(
             QtCore=self.QtCore,
@@ -259,6 +401,7 @@ class AutoUvWindow:
         self.profile_refresh_timer.timeout.connect(self._refresh_profiles_if_visible)
         self.profile_refresh_timer.start()
         self._load_profiles()
+        self._refresh_saved_fan_curve_plot()
 
     def show(self) -> None:
         self.window.show()
@@ -652,20 +795,120 @@ class AutoUvWindow:
             _qt_flags(self.QtCore.Qt, "AlignmentFlag", "AlignLeft", "AlignVCenter")
         )
 
-        preset_group = self.QtWidgets.QGroupBox("Preset")
-        preset_layout = self.QtWidgets.QHBoxLayout(preset_group)
-        preset_buttons = self.QtWidgets.QButtonGroup(dialog)
-        preset_buttons.setExclusive(True)
-        for index, preset_name in enumerate(AUTO_UV_TUNING_PRESETS):
-            button = self.QtWidgets.QRadioButton(preset_name)
-            preset_buttons.addButton(button, index)
-            preset_layout.addWidget(button)
-            if preset_name == "Balanced":
-                button.setChecked(True)
-        preset_layout.addStretch(1)
+        def wrapped_tooltip(text: str) -> str:
+            normalized = " ".join(str(text).split())
+            escaped = html.escape(normalized)
+            return f"<qt><table width='680'><tr><td>{escaped}</td></tr></table></qt>"
 
-        behavior_group = self.QtWidgets.QGroupBox("Undervolt behavior")
-        form = self.QtWidgets.QFormLayout(behavior_group)
+        bias_group = self.QtWidgets.QGroupBox("Performance bias")
+        bias_layout = self.QtWidgets.QVBoxLayout(bias_group)
+        performance_bias_slider = _click_jump_slider_class(
+            self.QtCore,
+            self.QtWidgets,
+        )(self.QtCore.Qt.Horizontal)
+        performance_bias_slider.setRange(0, 100)
+        performance_bias_slider.setSingleStep(1)
+        performance_bias_slider.setPageStep(5)
+        performance_bias_slider.setToolTip(wrapped_tooltip(PERFORMANCE_BIAS_TOOLTIP_TEXT))
+        performance_bias_slider.setToolTipDuration(20000)
+
+        def performance_bias_max_pct() -> float:
+            return (
+                float(YOLO_MAX_OVERCLOCK_BUDGET_PCT)
+                if bool(self.auto_uv_yolo)
+                else float(MAX_OVERCLOCK_BUDGET_PCT)
+            )
+
+        def performance_bias_slider_style(max_pct: float) -> str:
+            warning_stop = (
+                _performance_bias_slider_position(
+                    PERFORMANCE_BIAS_WARNING_PCT,
+                    max_pct=float(max_pct),
+                )
+                / 100.0
+            )
+            danger_stop = (
+                _performance_bias_slider_position(
+                    PERFORMANCE_BIAS_DANGER_PCT,
+                    max_pct=float(max_pct),
+                )
+                / 100.0
+            )
+            return f"""
+            QSlider::groove:horizontal {{
+                height: 7px;
+                border-radius: 3px;
+                background: qlineargradient(
+                    x1: 0, y1: 0, x2: 1, y2: 0,
+                    stop: 0 #55d27a,
+                    stop: {warning_stop:.2f} #55d27a,
+                    stop: {warning_stop:.2f} #f0b84c,
+                    stop: {danger_stop:.2f} #f0b84c,
+                    stop: {danger_stop:.2f} #ff6b6b,
+                    stop: 1.00 #ff6b6b
+                );
+            }}
+            QSlider::handle:horizontal {{
+                background: #f2f5f2;
+                border: 1px solid #10140f;
+                width: 18px;
+                margin: -7px 0;
+                border-radius: 9px;
+            }}
+            """
+        performance_bias_slider.setStyleSheet(
+            performance_bias_slider_style(performance_bias_max_pct())
+        )
+
+        def bias_icon(filename: str, tooltip: str):
+            label = self.QtWidgets.QLabel()
+            label.setFixedSize(56, 56)
+            label.setAlignment(self.QtCore.Qt.AlignCenter)
+            label.setToolTip(tooltip)
+            path = _asset_image_path(filename)
+            if path is not None:
+                pixmap = self.QtGui.QPixmap(str(path))
+                if not pixmap.isNull():
+                    aspect_mode = getattr(
+                        getattr(self.QtCore.Qt, "AspectRatioMode", self.QtCore.Qt),
+                        "KeepAspectRatio",
+                    )
+                    transform_mode = getattr(
+                        getattr(self.QtCore.Qt, "TransformationMode", self.QtCore.Qt),
+                        "SmoothTransformation",
+                    )
+                    label.setPixmap(
+                        pixmap.scaled(54, 54, aspect_mode, transform_mode)
+                    )
+            return label
+
+        slider_column = self.QtWidgets.QVBoxLayout()
+        slider_column.setContentsMargins(0, 0, 0, 0)
+        slider_column.setSpacing(5)
+        bias_labels = self.QtWidgets.QHBoxLayout()
+        efficiency_label = self.QtWidgets.QLabel("Efficiency")
+        performance_label = self.QtWidgets.QLabel("Performance")
+        performance_label.setAlignment(
+            _qt_flags(self.QtCore.Qt, "AlignmentFlag", "AlignRight", "AlignVCenter")
+        )
+        bias_labels.addWidget(efficiency_label)
+        bias_labels.addStretch(1)
+        bias_labels.addWidget(performance_label)
+        slider_column.addWidget(performance_bias_slider)
+        slider_column.addLayout(bias_labels)
+
+        bias_control_layout = self.QtWidgets.QHBoxLayout()
+        bias_control_layout.setContentsMargins(0, 0, 0, 0)
+        bias_control_layout.setSpacing(12)
+        bias_control_layout.addWidget(
+            bias_icon("penguin-burner-green.png", "Efficiency")
+        )
+        bias_control_layout.addLayout(slider_column, 1)
+        bias_control_layout.addWidget(bias_icon("penguin-burner.png", "Performance"))
+        bias_layout.addLayout(bias_control_layout)
+
+        advanced_group = self.QtWidgets.QGroupBox("Advanced")
+        form = self.QtWidgets.QFormLayout(advanced_group)
         form.setFieldGrowthPolicy(self.QtWidgets.QFormLayout.FieldsStayAtSizeHint)
         max_drop_spin = self.QtWidgets.QDoubleSpinBox()
         max_drop_spin.setRange(1.0, 30.0)
@@ -677,21 +920,11 @@ class AutoUvWindow:
         max_clock_drop_spin.setDecimals(1)
         max_clock_drop_spin.setSuffix("%")
         max_clock_drop_spin.setFixedWidth(96)
-        overclock_budget_spin = self.QtWidgets.QDoubleSpinBox()
-        overclock_budget_spin.setRange(0.0, 100.0)
-        overclock_budget_spin.setDecimals(1)
-        overclock_budget_spin.setSuffix("%")
-        overclock_budget_spin.setSingleStep(5.0)
-        overclock_budget_spin.setFixedWidth(96)
         short_seconds_spin = self.QtWidgets.QSpinBox()
         short_seconds_spin.setRange(10, 60)
         short_seconds_spin.setSuffix(" sec")
         short_seconds_spin.setSingleStep(5)
         short_seconds_spin.setFixedWidth(110)
-
-        memory_group = self.QtWidgets.QGroupBox("Memory")
-        memory_form = self.QtWidgets.QFormLayout(memory_group)
-        memory_form.setFieldGrowthPolicy(self.QtWidgets.QFormLayout.FieldsStayAtSizeHint)
         memory_offset_spin = self.QtWidgets.QSpinBox()
         memory_offset_min_mhz, memory_offset_max_mhz = _memory_offset_mhz_range()
         memory_offset_spin.setRange(
@@ -702,11 +935,6 @@ class AutoUvWindow:
         memory_offset_spin.setSingleStep(50)
         memory_offset_spin.setFixedWidth(118)
 
-        def wrapped_tooltip(text: str) -> str:
-            normalized = " ".join(str(text).split())
-            escaped = html.escape(normalized)
-            return f"<qt><table width='680'><tr><td>{escaped}</td></tr></table></qt>"
-
         voltage_tooltip = wrapped_tooltip(
             "How deep Auto-UV may go below the starting voltage. Higher values "
             "search for lower power, but may spend more time near unstable "
@@ -716,12 +944,6 @@ class AutoUvWindow:
             "How much loaded frequency degradation Auto-UV may accept while "
             "lowering voltage. Higher values allow deeper undervolts with more "
             "performance loss. Changing this can result in instability; modify with care."
-        )
-        overclock_tooltip = wrapped_tooltip(
-            "How much of the allowed frequency drop can be used as overclocking "
-            "budget to recover lost clock. Higher values can keep clocks higher, "
-            "but may make recovery attempts less stable. Changing this can result "
-            "in instability; modify with care."
         )
         memory_offset_tooltip = wrapped_tooltip(
             "Optional global memory clock V/F offset in MHz applied during the "
@@ -770,35 +992,17 @@ class AutoUvWindow:
         add_form_row(form, "Max clock drop", max_clock_drop_spin, clock_drop_tooltip)
         add_form_row(
             form,
-            "Overclocking budget",
-            overclock_budget_spin,
-            overclock_tooltip,
-        )
-        add_form_row(
-            memory_form,
             "Memory Offset MHz",
             memory_offset_spin,
             memory_offset_tooltip,
         )
         add_form_row(form, "Base verification length", short_seconds_spin)
 
-        def apply_preset(preset_name: str) -> None:
-            preset = AUTO_UV_TUNING_PRESETS[preset_name]
-            max_drop_spin.setValue(float(preset["max_drop_pct"]))
-            max_clock_drop_spin.setValue(float(preset["max_clock_drop_pct"]))
-            overclock_budget_spin.setValue(float(preset["overclock_budget_pct"]))
-
-        def selected_preset_name(button_id: int) -> str:
-            names = list(AUTO_UV_TUNING_PRESETS)
-            if 0 <= int(button_id) < len(names):
-                return names[int(button_id)]
-            return "Balanced"
-
-        preset_buttons.idClicked.connect(
-            lambda button_id: apply_preset(selected_preset_name(button_id))
+        performance_bias_slider.setValue(
+            _performance_bias_slider_position(DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT)
         )
-
-        apply_preset("Balanced")
+        max_drop_spin.setValue(DEFAULT_AUTO_UV_MAX_DROP_PCT)
+        max_clock_drop_spin.setValue(DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT)
         memory_offset_spin.setValue(0)
         short_seconds_spin.setValue(DEFAULT_SHORT_VERIFICATION_BASE_S)
 
@@ -813,19 +1017,23 @@ class AutoUvWindow:
         start_button.setDefault(True)
 
         layout.addWidget(purpose)
-        layout.addWidget(preset_group)
-        layout.addWidget(behavior_group)
-        layout.addWidget(memory_group)
+        layout.addWidget(bias_group)
+        layout.addWidget(advanced_group)
         layout.addWidget(buttons)
         dialog.setMinimumWidth(520)
 
         if dialog.exec() != self.QtWidgets.QDialog.Accepted:
             return None
+        performance_bias_pct = _performance_bias_clock_recovery_pct(
+            performance_bias_slider.value(),
+            max_pct=performance_bias_max_pct(),
+        )
         return {
+            "auto_uv_mode": _auto_uv_mode_for_performance_bias(performance_bias_pct),
             "auto_uv_max_drop_pct": float(max_drop_spin.value()),
             "auto_uv_max_clock_drop_pct": float(max_clock_drop_spin.value()),
-            "auto_uv_clock_bump_budget_ratio": float(overclock_budget_spin.value())
-            / 100.0,
+            "auto_uv_clock_bump_budget_ratio": performance_bias_pct / 100.0,
+            "auto_uv_yolo": bool(self.auto_uv_yolo),
             "auto_uv_memory_offset_mhz": int(memory_offset_spin.value()),
             "auto_uv_short_seconds": int(short_seconds_spin.value()),
         }
@@ -837,7 +1045,7 @@ class AutoUvWindow:
                 and self.runtime_process_kind == "reverify"
             ):
                 self.reverify_stop_requested = True
-                self.controls.set_status_text("Stopping profile re-verification.")
+                self.controls.set_status_text("Stopping profile verification.")
                 stop_path = self.active_reverify_stop_request_path
                 if stop_path is not None:
                     stop_path.parent.mkdir(parents=True, exist_ok=True)
@@ -846,7 +1054,7 @@ class AutoUvWindow:
                         encoding="utf-8",
                     )
                     self.log_view.append(
-                        f"\nRequested cooperative profile re-verification stop: {stop_path}\n"
+                        f"\nRequested cooperative profile verification stop: {stop_path}\n"
                     )
                 target = max(1, int(self.reverify_target_duration_s or 1))
                 elapsed = max(0.0, float(self.reverify_last_elapsed_s))
@@ -854,14 +1062,14 @@ class AutoUvWindow:
                     _reverify_progress_percent(elapsed, target),
                     elapsed_s=elapsed,
                     target_s=target,
-                    detail="Stopping profile re-verification.",
+                    detail="Stopping profile verification.",
                 )
                 pid = int(self.runtime_process.processId())
                 if pid > 0:
                     try:
                         os.kill(pid, signal.SIGINT)
                         self.log_view.append(
-                            "Sent SIGINT to profile re-verification launcher.\n"
+                            "Sent SIGINT to profile verification launcher.\n"
                         )
                     except OSError:
                         self.runtime_process.terminate()
@@ -896,7 +1104,7 @@ class AutoUvWindow:
             and self.runtime_process.state() != self.QtCore.QProcess.NotRunning
         ):
             self.log_view.append(
-                "\nProfile re-verification did not stop after request; "
+                "\nProfile verification did not stop after request; "
                 "terminating process.\n"
             )
             self.runtime_process.kill()
@@ -972,7 +1180,10 @@ class AutoUvWindow:
             self.base_curve_points = points
             _save_cached_base_curve_points(points)
         elif event == "candidate_curve":
-            self.vf_plot.set_candidate_points(_event_points(payload))
+            self.vf_plot.set_candidate_points(
+                _event_points(payload),
+                curve_id=_candidate_id_from_result(payload),
+            )
         elif event == "fan_curve_suggested":
             self._record_fan_measurements(payload.get("measured_points", []))
             self.fan_plot.set_candidate_points(_fan_points(payload))
@@ -989,6 +1200,12 @@ class AutoUvWindow:
                 self.last_auto_uv_candidate_id = result_candidate_id
             self.pending_final_result_payload = dict(payload)
             self._load_profiles(prefer_last_auto_uv=True)
+
+    def _handle_runs_table_candidate_selection(
+        self,
+        candidate_id: str | None,
+    ) -> None:
+        self.vf_plot.set_highlighted_curve(candidate_id)
 
     def _handle_human_line(self, line: str) -> None:
         if not line:
@@ -1114,30 +1331,39 @@ class AutoUvWindow:
             return
         table.selectRow(int(index.row()))
         menu = self.QtWidgets.QMenu(table)
-        view_vf_action = menu.addAction("View VF Curve")
-        view_vf_action.setEnabled(bool(_profile_curve_points(profile)))
-        view_fan_action = menu.addAction("View Fan Curve")
+
+        def add_menu_action_once(text: str):
+            for action in menu.actions():
+                if action.text() == text:
+                    return action
+            return menu.addAction(text)
+
+        edit_vf_action = add_menu_action_once("Edit VF Curve")
+        edit_vf_action.setEnabled(bool(_profile_curve_plan(profile)))
+        view_fan_action = add_menu_action_once("Edit Fan Curve")
         view_fan_action.setEnabled(bool(_profile_fan_curve_points(profile)))
-        apply_action = menu.addAction("Apply")
-        apply_action.setEnabled(self._profile_actions_available())
-        reverify_action = menu.addAction("Re-verify")
+        apply_action = add_menu_action_once("Apply")
+        apply_action.setEnabled(
+            self._profile_actions_available() and _profile_can_apply(profile)
+        )
+        reverify_action = add_menu_action_once("Verify")
         reverify_action.setEnabled(
             self._profile_actions_available() and _profile_can_reverify(profile)
         )
-        export_lact_action = menu.addAction("Export LACT")
+        export_lact_action = add_menu_action_once("Export LACT")
         export_lact_action.setEnabled(
             self._profile_actions_available() and _profile_can_export_lact(profile)
         )
         menu.addSeparator()
-        delete_action = menu.addAction("Delete")
+        delete_action = add_menu_action_once("Delete")
         delete_action.setEnabled(
             self._profile_actions_available() and _profile_is_deletable(profile)
         )
         chosen = menu.exec(table.viewport().mapToGlobal(position))
-        if chosen == view_vf_action:
-            self._open_profile_curve_tab(profile)
+        if chosen == edit_vf_action:
+            self._open_profile_curve_editor(profile)
         elif chosen == view_fan_action:
-            self._open_profile_fan_curve_tab(profile)
+            self._open_profile_fan_curve_editor(profile)
         elif chosen == apply_action:
             self._apply_profile(profile)
         elif chosen == reverify_action:
@@ -1208,54 +1434,1130 @@ class AutoUvWindow:
         self._sync_tab_close_buttons()
         self.tabs.setCurrentIndex(tab_index)
 
+    def _open_profile_curve_editor(self, profile: dict) -> None:
+        if self.pg is None:
+            self.QtWidgets.QMessageBox.information(
+                self.window,
+                "Edit VF Curve",
+                "pyqtgraph is not installed, so the curve editor is unavailable.",
+            )
+            return
+        plan = _profile_curve_plan(profile)
+        anchor = editable_anchor_from_profile(profile)
+        if not plan or anchor is None:
+            self.controls.set_status_text("No editable V/F curve is available.")
+            self.QtWidgets.QMessageBox.information(
+                self.window,
+                "Edit VF Curve",
+                "No editable V/F curve is available for this profile.",
+            )
+            return
+        original_anchor_voltage_mv, original_anchor_clock_mhz = anchor
+        parent_payload = _profile_payload_from_path(profile) or dict(profile)
+        base_points = _profile_base_curve_points(profile) or self.base_curve_points
+        initial_curve_points = _curve_points_from_values(plan)
+
+        def initial_manual_edit() -> ManualCurveEdit:
+            return ManualCurveEdit(
+                plan=[dict(item) for item in plan],
+                anchor_voltage_mv=int(original_anchor_voltage_mv),
+                anchor_clock_mhz=int(original_anchor_clock_mhz),
+                edit_kind="unchanged",
+            )
+
+        current_edit = {"value": initial_manual_edit()}
+        undo_stack: list[ManualCurveEdit] = []
+        redo_stack: list[ManualCurveEdit] = []
+        active_undo_actions: dict[str, ManualCurveEdit] = {}
+        syncing_target = {"active": False}
+        syncing_left_points = {"active": False}
+        left_point_items = {}
+
+        dialog = self.QtWidgets.QDialog(self.window)
+        dialog.setWindowTitle("Edit VF Curve")
+        dialog.resize(900, 640)
+        layout = self.QtWidgets.QVBoxLayout(dialog)
+
+        plot = CurvePlot(
+            QtWidgets=self.QtWidgets,
+            pg=self.pg,
+            x_label="Voltage",
+            x_units="mV",
+            y_label="Clock",
+            y_units="MHz",
+            x_range=(700, 1250),
+            y_range=(1000, 3200),
+            source_name="Reference",
+            candidate_name="Edited draft",
+            show_source=bool(base_points),
+            source_color="#9aa1aa",
+            source_alpha=204,
+            candidate_color="#5ef38c",
+        )
+        if base_points:
+            plot.set_source_points(base_points)
+        plot.add_comparison_points(
+            initial_curve_points,
+            name="Before edit",
+            color="#dfe4ea",
+            alpha=145,
+            width=1,
+        )
+        plot.set_candidate_points(initial_curve_points, remember_previous=False)
+        plot.set_selected_point(original_anchor_voltage_mv, original_anchor_clock_mhz)
+        layout.addWidget(plot.widget, 1)
+
+        target_item = self.pg.TargetItem(
+            pos=(float(original_anchor_voltage_mv), float(original_anchor_clock_mhz)),
+            size=14,
+            symbol="o",
+            pen=self.pg.mkPen(self.pg.mkColor(255, 229, 177, 240), width=1),
+            brush=self.pg.mkBrush(self.pg.mkColor(240, 184, 76, 235)),
+            movable=True,
+        )
+        plot.plot.addItem(target_item)
+        selected_range_overlay = plot.plot.plot(
+            [],
+            [],
+            pen=None,
+            symbol="o",
+            symbolPen=self.pg.mkPen(self.pg.mkColor(255, 229, 177, 245), width=1),
+            symbolBrush=self.pg.mkBrush(self.pg.mkColor(240, 184, 76, 225)),
+            symbolSize=8,
+        )
+        if hasattr(selected_range_overlay, "setZValue"):
+            selected_range_overlay.setZValue(8)
+
+        legend_overlay = self.QtWidgets.QFrame(plot.widget)
+        legend_overlay.setObjectName("curveEditorShortcutLegend")
+        styled_background = getattr(
+            getattr(self.QtCore.Qt, "WidgetAttribute", self.QtCore.Qt),
+            "WA_StyledBackground",
+            None,
+        )
+        if styled_background is not None:
+            legend_overlay.setAttribute(styled_background, True)
+        legend_overlay.setStyleSheet(
+            """
+            QFrame#curveEditorShortcutLegend {
+                background: rgba(12, 17, 23, 184);
+                border: 1px solid rgba(140, 156, 172, 92);
+                border-radius: 7px;
+            }
+            QLabel#curveEditorShortcutTitle {
+                color: #e7edf4;
+                font-size: 10px;
+                font-weight: 700;
+            }
+            QLabel#curveEditorShortcutKey {
+                color: #dff6e8;
+                background: rgba(94, 243, 140, 36);
+                border: 1px solid rgba(94, 243, 140, 72);
+                border-radius: 4px;
+                padding: 1px 4px;
+                font-size: 9px;
+                font-weight: 700;
+            }
+            QLabel#curveEditorShortcutText {
+                color: #bdc7d3;
+                font-size: 9px;
+            }
+            QToolButton#curveEditorShortcutToggle {
+                color: #e7edf4;
+                background: rgba(255, 255, 255, 18);
+                border: 1px solid rgba(255, 255, 255, 34);
+                border-radius: 4px;
+                padding: 0px 4px;
+                font-size: 10px;
+                font-weight: 700;
+            }
+            QToolButton#curveEditorShortcutToggle:hover {
+                background: rgba(94, 243, 140, 38);
+            }
+            """
+        )
+        legend_layout = self.QtWidgets.QVBoxLayout(legend_overlay)
+        legend_layout.setContentsMargins(7, 5, 7, 6)
+        legend_layout.setSpacing(4)
+        legend_header = self.QtWidgets.QHBoxLayout()
+        legend_header.setContentsMargins(0, 0, 0, 0)
+        legend_header.setSpacing(5)
+        legend_title = self.QtWidgets.QLabel("Editor keys")
+        legend_title.setObjectName("curveEditorShortcutTitle")
+        legend_toggle = self.QtWidgets.QToolButton()
+        legend_toggle.setObjectName("curveEditorShortcutToggle")
+        legend_toggle.setAutoRaise(True)
+        legend_header.addWidget(legend_title)
+        legend_header.addStretch(1)
+        legend_header.addWidget(legend_toggle)
+        legend_layout.addLayout(legend_header)
+        legend_body = self.QtWidgets.QWidget()
+        legend_grid = self.QtWidgets.QGridLayout(legend_body)
+        legend_grid.setContentsMargins(0, 0, 0, 0)
+        legend_grid.setHorizontalSpacing(7)
+        legend_grid.setVerticalSpacing(3)
+        shortcut_rows = _curve_editor_shortcut_legend_rows()
+        split_at = (len(shortcut_rows) + 1) // 2
+        for index, (keys, text) in enumerate(shortcut_rows):
+            grid_row = index % split_at
+            grid_col = 0 if index < split_at else 2
+            key_label = self.QtWidgets.QLabel(keys)
+            key_label.setObjectName("curveEditorShortcutKey")
+            text_label = self.QtWidgets.QLabel(text)
+            text_label.setObjectName("curveEditorShortcutText")
+            legend_grid.addWidget(key_label, grid_row, grid_col)
+            legend_grid.addWidget(text_label, grid_row, grid_col + 1)
+        legend_layout.addWidget(legend_body)
+        legend_state = {"collapsed": False}
+
+        def position_shortcut_legend() -> None:
+            legend_overlay.adjustSize()
+            size = legend_overlay.sizeHint()
+            legend_overlay.resize(size)
+            margin = 12
+            x_pos = int(margin)
+            y_pos = max(
+                int(margin),
+                int(plot.widget.height()) - int(size.height()) - int(margin),
+            )
+            legend_overlay.move(x_pos, y_pos)
+            legend_overlay.raise_()
+
+        def sync_shortcut_legend() -> None:
+            collapsed = bool(legend_state["collapsed"])
+            legend_body.setVisible(not collapsed)
+            legend_title.setText("Keys" if collapsed else "Editor keys")
+            legend_toggle.setText("+" if collapsed else "-")
+            legend_toggle.setToolTip(
+                "Show curve editor shortcuts"
+                if collapsed
+                else "Hide curve editor shortcuts"
+            )
+            position_shortcut_legend()
+
+        def toggle_shortcut_legend() -> None:
+            legend_state["collapsed"] = not bool(legend_state["collapsed"])
+            sync_shortcut_legend()
+
+        legend_toggle.clicked.connect(toggle_shortcut_legend)
+        resize_event_type = getattr(
+            getattr(self.QtCore.QEvent, "Type", self.QtCore.QEvent),
+            "Resize",
+            None,
+        )
+
+        class CurveEditorLegendFilter(self.QtCore.QObject):
+            def eventFilter(filter_self, _watched, event) -> bool:
+                if resize_event_type is not None and event.type() == resize_event_type:
+                    position_shortcut_legend()
+                return False
+
+        legend_filter = CurveEditorLegendFilter(dialog)
+        plot.widget.installEventFilter(legend_filter)
+        sync_shortcut_legend()
+        self.QtCore.QTimer.singleShot(0, position_shortcut_legend)
+        dialog._curve_editor_shortcut_legend = legend_overlay
+        dialog._curve_editor_shortcut_legend_filter = legend_filter
+
+        status_label = self.QtWidgets.QLabel()
+        status_label.setTextInteractionFlags(self.QtCore.Qt.TextSelectableByMouse)
+        layout.addWidget(status_label)
+
+        button_row = self.QtWidgets.QHBoxLayout()
+        revert_button = self.QtWidgets.QPushButton("Revert")
+        button_row.addWidget(revert_button)
+        undo_button = self.QtWidgets.QPushButton("Undo")
+        undo_button.setToolTip("Undo last edit (Ctrl+Z)")
+        button_row.addWidget(undo_button)
+        redo_button = self.QtWidgets.QPushButton("Redo")
+        redo_button.setToolTip("Redo last undone edit (Ctrl+Y)")
+        button_row.addWidget(redo_button)
+        button_row.addStretch(1)
+        save_button = self.QtWidgets.QPushButton("Save")
+        standard_pixmap = getattr(
+            self.QtWidgets.QStyle,
+            "StandardPixmap",
+            self.QtWidgets.QStyle,
+        )
+
+        def clone_edit(edit: ManualCurveEdit) -> ManualCurveEdit:
+            return ManualCurveEdit(
+                plan=[dict(item) for item in edit.plan],
+                anchor_voltage_mv=int(edit.anchor_voltage_mv),
+                anchor_clock_mhz=int(edit.anchor_clock_mhz),
+                edit_kind=str(edit.edit_kind),
+                selected_voltage_mv=edit.selected_voltage_mv,
+                selected_clock_mhz=edit.selected_clock_mhz,
+                selected_range_start_voltage_mv=edit.selected_range_start_voltage_mv,
+            )
+
+        def edit_signature(edit: ManualCurveEdit):
+            return (
+                int(edit.anchor_voltage_mv),
+                int(edit.anchor_clock_mhz),
+                str(edit.edit_kind),
+                edit.selected_voltage_mv,
+                edit.selected_clock_mhz,
+                edit.selected_range_start_voltage_mv,
+                tuple(
+                    (
+                        int(point.get("index", 0)),
+                        int(point.get("voltage_mv", 0)),
+                        int(point.get("base_mhz", 0)),
+                        int(point.get("target_mhz", 0)),
+                        int(point.get("new_offset_mhz", 0)),
+                    )
+                    for point in edit.plan
+                ),
+            )
+
+        def edits_equal(left: ManualCurveEdit, right: ManualCurveEdit) -> bool:
+            return edit_signature(left) == edit_signature(right)
+
+        def update_history_buttons() -> None:
+            undo_button.setEnabled(bool(undo_stack))
+            redo_button.setEnabled(bool(redo_stack))
+
+        def push_undo(edit: ManualCurveEdit, *, clear_redo: bool = True) -> None:
+            if undo_stack and edits_equal(undo_stack[-1], edit):
+                return
+            undo_stack.append(clone_edit(edit))
+            del undo_stack[:-64]
+            if clear_redo:
+                redo_stack.clear()
+            update_history_buttons()
+
+        def begin_undo_action(action_key: str, edit: ManualCurveEdit) -> None:
+            if action_key in active_undo_actions:
+                return
+            snapshot = clone_edit(edit)
+            active_undo_actions[action_key] = snapshot
+            push_undo(snapshot)
+
+        def finish_undo_action(action_key: str) -> None:
+            snapshot = active_undo_actions.pop(action_key, None)
+            if snapshot is None:
+                return
+            if edits_equal(current_edit["value"], snapshot) and undo_stack:
+                undo_stack.pop()
+            update_history_buttons()
+
+        def undo_edit() -> None:
+            if not undo_stack:
+                return
+            active_undo_actions.clear()
+            previous = undo_stack.pop()
+            redo_stack.append(clone_edit(current_edit["value"]))
+            del redo_stack[:-64]
+            set_preview(previous, move_target=True, record_undo=False)
+            update_history_buttons()
+
+        def redo_edit() -> None:
+            if not redo_stack:
+                return
+            active_undo_actions.clear()
+            next_edit = redo_stack.pop()
+            undo_stack.append(clone_edit(current_edit["value"]))
+            del undo_stack[:-64]
+            set_preview(next_edit, move_target=True, record_undo=False)
+            update_history_buttons()
+
+        def nudge_selected_frequency(direction: int) -> None:
+            active_undo_actions.clear()
+            edit = manual_nudge_selected_frequency(
+                current_edit["value"],
+                direction=int(direction),
+            )
+            set_preview(edit, move_target=True, record_undo=True)
+
+        def nudge_selected_voltage(direction: int) -> None:
+            active_undo_actions.clear()
+            edit = manual_nudge_selected_voltage(
+                current_edit["value"],
+                direction=int(direction),
+            )
+            set_preview(edit, move_target=True, record_undo=True)
+
+        def select_adjacent_curve_point(direction: int) -> None:
+            active_undo_actions.clear()
+            edit = manual_select_adjacent_point(
+                current_edit["value"],
+                direction=int(direction),
+            )
+            set_preview(edit, move_target=True, record_undo=False)
+
+        def select_range_to_right() -> None:
+            active_undo_actions.clear()
+            edit = manual_select_range_to_right(current_edit["value"])
+            set_preview(edit, move_target=True, record_undo=False)
+
+        def lock_selected_curve_point() -> None:
+            active_undo_actions.clear()
+            selected_voltage_mv = (
+                current_edit["value"].selected_voltage_mv
+                if current_edit["value"].selected_voltage_mv is not None
+                else current_edit["value"].anchor_voltage_mv
+            )
+            edit = manual_flatten_from_existing_point(
+                current_edit["value"].plan,
+                anchor_voltage_mv=int(current_edit["value"].anchor_voltage_mv),
+                clicked_voltage_mv=float(selected_voltage_mv),
+            )
+            set_preview(edit, record_undo=True)
+
+        save_icon_id = getattr(standard_pixmap, "SP_DialogSaveButton", None)
+        if save_icon_id is not None:
+            save_button.setIcon(dialog.style().standardIcon(save_icon_id))
+        cancel_button = self.QtWidgets.QPushButton("Cancel")
+        button_row.addWidget(save_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+
+        def update_status(edit: ManualCurveEdit) -> None:
+            selected_voltage_mv = (
+                edit.selected_voltage_mv
+                if edit.selected_voltage_mv is not None
+                else edit.anchor_voltage_mv
+            )
+            selected_clock_mhz = (
+                edit.selected_clock_mhz
+                if edit.selected_clock_mhz is not None
+                else edit.anchor_clock_mhz
+            )
+            if edit.selected_range_start_voltage_mv is not None:
+                status_label.setText(
+                    "Selected range: "
+                    f"{int(edit.selected_range_start_voltage_mv)} mV -> flat tail. "
+                    f"Start bin: {int(selected_voltage_mv)} mV / "
+                    f"{int(selected_clock_mhz)} MHz. "
+                    f"Flat max: {int(edit.anchor_clock_mhz)} MHz. "
+                    "Up/Down or drag offsets the selected range."
+                )
+                return
+            prefix = "Edited bin" if edit.edit_kind == "single-point" else "Selected bin"
+            status_label.setText(
+                f"{prefix}: "
+                f"{int(selected_voltage_mv)} mV / "
+                f"{int(selected_clock_mhz)} MHz. "
+                f"Flat max: {int(edit.anchor_clock_mhz)} MHz. "
+                "Saved edits require Verify before Apply."
+            )
+
+        def selected_range_points(edit: ManualCurveEdit) -> list[tuple[float, float]]:
+            if edit.selected_range_start_voltage_mv is None:
+                return []
+            range_start_voltage_mv = int(edit.selected_range_start_voltage_mv)
+            points = []
+            for raw in edit.plan:
+                try:
+                    voltage_mv = int(raw["voltage_mv"])
+                    clock_mhz = int(raw["target_mhz"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if voltage_mv < range_start_voltage_mv:
+                    continue
+                if voltage_mv >= int(edit.anchor_voltage_mv):
+                    clock_mhz = int(edit.anchor_clock_mhz)
+                points.append((float(voltage_mv), float(clock_mhz)))
+            return sorted(points)
+
+        def update_selected_range_overlay(edit: ManualCurveEdit) -> None:
+            points = selected_range_points(edit)
+            selected_range_overlay.setData(
+                [point[0] for point in points],
+                [point[1] for point in points],
+            )
+
+        def snap_target(edit: ManualCurveEdit) -> None:
+            syncing_target["active"] = True
+            try:
+                target_item.setPos(
+                    float(edit.anchor_voltage_mv),
+                    float(edit.anchor_clock_mhz),
+                )
+            finally:
+                syncing_target["active"] = False
+
+        def set_preview(
+            edit: ManualCurveEdit,
+            *,
+            move_target: bool = True,
+            record_undo: bool = False,
+        ) -> None:
+            if record_undo and not edits_equal(current_edit["value"], edit):
+                push_undo(current_edit["value"])
+            current_edit["value"] = edit
+            plot.set_candidate_points(
+                _curve_points_from_values(edit.plan),
+                remember_previous=False,
+            )
+            update_selected_range_overlay(edit)
+            selected_voltage_mv = (
+                edit.selected_voltage_mv
+                if edit.selected_voltage_mv is not None
+                else edit.anchor_voltage_mv
+            )
+            selected_clock_mhz = (
+                edit.selected_clock_mhz
+                if edit.selected_clock_mhz is not None
+                else edit.anchor_clock_mhz
+            )
+            plot.set_selected_point(selected_voltage_mv, selected_clock_mhz)
+            update_status(edit)
+            if move_target:
+                snap_target(edit)
+            refresh_left_point_handles(edit)
+
+        def target_position() -> tuple[float, float]:
+            pos = target_item.pos()
+            return float(pos.x()), float(pos.y())
+
+        def on_target_position_changed(*_args) -> None:
+            if syncing_target["active"]:
+                return
+            requested_voltage_mv, requested_clock_mhz = target_position()
+            current_anchor = current_edit["value"]
+            if current_anchor.selected_range_start_voltage_mv is not None:
+                edit = manual_offset_selected_range(
+                    current_anchor,
+                    reference_voltage_mv=float(current_anchor.anchor_voltage_mv),
+                    requested_clock_mhz=requested_clock_mhz,
+                )
+            else:
+                edit = manual_drag_anchor_edit(
+                    current_anchor.plan,
+                    anchor_voltage_mv=int(current_anchor.anchor_voltage_mv),
+                    anchor_clock_mhz=int(current_anchor.anchor_clock_mhz),
+                    requested_voltage_mv=requested_voltage_mv,
+                    requested_clock_mhz=requested_clock_mhz,
+                )
+            if not edits_equal(edit, current_anchor):
+                begin_undo_action("target", current_anchor)
+            set_preview(edit, move_target=True)
+
+        def on_target_position_finished(*_args) -> None:
+            finish_undo_action("target")
+            snap_target(current_edit["value"])
+
+        def revert_edit() -> None:
+            active_undo_actions.clear()
+            undo_stack.clear()
+            redo_stack.clear()
+            set_preview(initial_manual_edit())
+            update_history_buttons()
+
+        def left_point_values(edit: ManualCurveEdit) -> dict[int, int]:
+            values = {}
+            anchor_voltage_mv = int(edit.anchor_voltage_mv)
+            for raw in edit.plan:
+                try:
+                    voltage_mv = int(raw["voltage_mv"])
+                    clock_mhz = int(raw["target_mhz"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if voltage_mv < anchor_voltage_mv:
+                    values[voltage_mv] = clock_mhz
+            return dict(sorted(values.items()))
+
+        def selectable_curve_points(edit: ManualCurveEdit) -> list[tuple[float, float]]:
+            points = []
+            anchor_voltage_mv = int(edit.anchor_voltage_mv)
+            for raw in edit.plan:
+                try:
+                    voltage_mv = int(raw["voltage_mv"])
+                    clock_mhz = int(raw["target_mhz"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if voltage_mv > anchor_voltage_mv:
+                    continue
+                if voltage_mv == anchor_voltage_mv:
+                    clock_mhz = int(edit.anchor_clock_mhz)
+                points.append((float(voltage_mv), float(clock_mhz)))
+            return sorted(points)
+
+        def select_curve_point(voltage_mv: float) -> None:
+            active_undo_actions.clear()
+            edit = manual_select_curve_point(
+                current_edit["value"],
+                voltage_mv=float(voltage_mv),
+            )
+            set_preview(edit, move_target=True, record_undo=False)
+
+        def create_curve_point_at_scene_pos(scene_pos) -> bool:
+            if not plot.plot.sceneBoundingRect().contains(scene_pos):
+                return False
+            view_pos = plot.plot.plotItem.vb.mapSceneToView(scene_pos)
+            active_undo_actions.clear()
+            edit = manual_tune_single_point_edit(
+                current_edit["value"].plan,
+                anchor_voltage_mv=int(current_edit["value"].anchor_voltage_mv),
+                anchor_clock_mhz=int(current_edit["value"].anchor_clock_mhz),
+                point_voltage_mv=float(view_pos.x()),
+                requested_clock_mhz=float(view_pos.y()),
+            )
+            set_preview(edit, move_target=True, record_undo=True)
+            return True
+
+        target_mouse_click_event = target_item.mouseClickEvent
+
+        def on_target_mouse_click_event(event) -> None:
+            select_curve_point(float(current_edit["value"].anchor_voltage_mv))
+            target_mouse_click_event(event)
+
+        target_item.mouseClickEvent = on_target_mouse_click_event
+
+        def left_point_item(entry):
+            if isinstance(entry, dict):
+                return entry.get("item")
+            return entry
+
+        def style_left_point_handle(item, *, selected: bool) -> None:
+            if item is None:
+                return
+            if selected:
+                item.setPen(self.pg.mkPen(self.pg.mkColor(255, 229, 177, 230), width=1))
+                item.setBrush(self.pg.mkBrush(self.pg.mkColor(240, 184, 76, 225)))
+            else:
+                item.setPen(self.pg.mkPen(self.pg.mkColor(210, 226, 235, 190), width=1))
+                item.setBrush(self.pg.mkBrush(self.pg.mkColor(94, 243, 140, 110)))
+
+        def left_point_is_range_selected(edit: ManualCurveEdit, voltage_mv: int) -> bool:
+            return bool(
+                edit.selected_range_start_voltage_mv is not None
+                and int(voltage_mv) >= int(edit.selected_range_start_voltage_mv)
+            )
+
+        def add_left_point_handle(voltage_mv: int, clock_mhz: int) -> None:
+            item = self.pg.TargetItem(
+                pos=(float(voltage_mv), float(clock_mhz)),
+                size=8,
+                symbol="o",
+                pen=self.pg.mkPen(self.pg.mkColor(210, 226, 235, 190), width=1),
+                brush=self.pg.mkBrush(self.pg.mkColor(94, 243, 140, 110)),
+                movable=True,
+            )
+            if hasattr(item, "setZValue"):
+                item.setZValue(6)
+
+            item_mouse_click_event = item.mouseClickEvent
+
+            def on_item_mouse_click_event(
+                event,
+                point_voltage_mv=int(voltage_mv),
+                original_mouse_click=item_mouse_click_event,
+            ) -> None:
+                select_curve_point(float(point_voltage_mv))
+                original_mouse_click(event)
+
+            item.mouseClickEvent = on_item_mouse_click_event
+
+            def on_changed(*_args, point_voltage_mv=int(voltage_mv)) -> None:
+                on_left_point_position_changed(point_voltage_mv)
+
+            def on_finished(*_args, point_voltage_mv=int(voltage_mv)) -> None:
+                finish_undo_action(f"left-point:{int(point_voltage_mv)}")
+                snap_left_point_handle(point_voltage_mv)
+
+            item.sigPositionChanged.connect(on_changed)
+            item.sigPositionChangeFinished.connect(on_finished)
+            plot.plot.addItem(item)
+            left_point_items[int(voltage_mv)] = {
+                "item": item,
+                "on_changed": on_changed,
+                "on_finished": on_finished,
+            }
+
+        def refresh_left_point_handles(edit: ManualCurveEdit) -> None:
+            values = left_point_values(edit)
+            for voltage_mv in list(left_point_items):
+                if voltage_mv not in values:
+                    item = left_point_item(left_point_items.pop(voltage_mv))
+                    if item is not None:
+                        plot.plot.removeItem(item)
+            for voltage_mv, clock_mhz in values.items():
+                if voltage_mv not in left_point_items:
+                    add_left_point_handle(voltage_mv, clock_mhz)
+            syncing_left_points["active"] = True
+            try:
+                for voltage_mv, clock_mhz in values.items():
+                    item = left_point_item(left_point_items.get(voltage_mv))
+                    if item is not None:
+                        item.setPos(float(voltage_mv), float(clock_mhz))
+                        style_left_point_handle(
+                            item,
+                            selected=left_point_is_range_selected(edit, voltage_mv),
+                        )
+            finally:
+                syncing_left_points["active"] = False
+
+        def snap_left_point_handle(voltage_mv: int) -> None:
+            values = left_point_values(current_edit["value"])
+            item = left_point_item(left_point_items.get(int(voltage_mv)))
+            clock_mhz = values.get(int(voltage_mv))
+            if item is None or clock_mhz is None:
+                return
+            syncing_left_points["active"] = True
+            try:
+                item.setPos(float(voltage_mv), float(clock_mhz))
+            finally:
+                syncing_left_points["active"] = False
+
+        def on_left_point_position_changed(voltage_mv: int) -> None:
+            if syncing_left_points["active"]:
+                return
+            item = left_point_item(left_point_items.get(int(voltage_mv)))
+            if item is None:
+                return
+            pos = item.pos()
+            current_value = current_edit["value"]
+            range_start_voltage_mv = current_value.selected_range_start_voltage_mv
+            if (
+                range_start_voltage_mv is not None
+                and int(voltage_mv) >= int(range_start_voltage_mv)
+            ):
+                edit = manual_offset_selected_range(
+                    current_value,
+                    reference_voltage_mv=int(voltage_mv),
+                    requested_clock_mhz=float(pos.y()),
+                )
+            else:
+                edit = manual_tune_single_point_edit(
+                    current_value.plan,
+                    anchor_voltage_mv=int(current_value.anchor_voltage_mv),
+                    anchor_clock_mhz=int(current_value.anchor_clock_mhz),
+                    point_voltage_mv=int(voltage_mv),
+                    requested_voltage_mv=float(pos.x()),
+                    requested_clock_mhz=float(pos.y()),
+                )
+            if not edits_equal(edit, current_edit["value"]):
+                begin_undo_action(
+                    f"left-point:{int(voltage_mv)}",
+                    current_edit["value"],
+                )
+            set_preview(edit, move_target=False)
+
+        def nearest_left_point_at_scene_pos(scene_pos):
+            if not plot.plot.sceneBoundingRect().contains(scene_pos):
+                return None
+            view_pos = plot.plot.plotItem.vb.mapSceneToView(scene_pos)
+            left_points = [
+                (float(voltage_mv), float(clock_mhz))
+                for voltage_mv, clock_mhz in left_point_values(
+                    current_edit["value"]
+                ).items()
+            ]
+            return _nearest_profile_curve_point(
+                float(view_pos.x()),
+                float(view_pos.y()),
+                left_points,
+                plot.plot.viewRange(),
+                max_normalized_distance=0.08,
+            )
+
+        def select_nearest_curve_point_at_scene_pos(scene_pos) -> bool:
+            if not plot.plot.sceneBoundingRect().contains(scene_pos):
+                return False
+            view_pos = plot.plot.plotItem.vb.mapSceneToView(scene_pos)
+            point = _nearest_profile_curve_point(
+                float(view_pos.x()),
+                float(view_pos.y()),
+                selectable_curve_points(current_edit["value"]),
+                plot.plot.viewRange(),
+                max_normalized_distance=0.08,
+            )
+            if point is None:
+                return False
+            select_curve_point(point[0])
+            return True
+
+        def event_global_pos(event, scene_pos):
+            screen_pos_attr = getattr(event, "screenPos", None)
+            if callable(screen_pos_attr):
+                screen_pos = screen_pos_attr()
+                try:
+                    return self.QtCore.QPoint(
+                        int(round(float(screen_pos.x()))),
+                        int(round(float(screen_pos.y()))),
+                    )
+                except (TypeError, ValueError, AttributeError):
+                    pass
+            try:
+                widget_pos = plot.plot.mapFromScene(scene_pos)
+                return plot.plot.mapToGlobal(widget_pos)
+            except (TypeError, AttributeError):
+                return self.QtGui.QCursor.pos()
+
+        def show_left_point_context_menu(event, scene_pos) -> bool:
+            point = nearest_left_point_at_scene_pos(scene_pos)
+            if point is None:
+                return False
+            menu = self.QtWidgets.QMenu(dialog)
+            flatten_action = menu.addAction("Flatten at This Point")
+            chosen = menu.exec(event_global_pos(event, scene_pos))
+            if chosen == flatten_action:
+                edit = manual_flatten_from_existing_point(
+                    current_edit["value"].plan,
+                    anchor_voltage_mv=int(current_edit["value"].anchor_voltage_mv),
+                    clicked_voltage_mv=float(point[0]),
+                )
+                set_preview(edit, record_undo=True)
+            return True
+
+        def event_is_right_click(event) -> bool:
+            button_attr = getattr(event, "button", None)
+            button = button_attr() if callable(button_attr) else button_attr
+            right_button = getattr(self.QtCore.Qt, "RightButton", None)
+            mouse_button = getattr(self.QtCore.Qt, "MouseButton", None)
+            if mouse_button is not None:
+                right_button = getattr(mouse_button, "RightButton", right_button)
+            return bool(right_button is not None and button == right_button)
+
+        def event_has_keyboard_modifier(event, modifier_name: str) -> bool:
+            modifier_enum = getattr(
+                self.QtCore.Qt,
+                "KeyboardModifier",
+                self.QtCore.Qt,
+            )
+            modifier = getattr(modifier_enum, str(modifier_name), None)
+            modifiers_attr = getattr(event, "modifiers", None)
+            if modifier is None or not callable(modifiers_attr):
+                return False
+            return bool(modifiers_attr() & modifier)
+
+        def on_plot_clicked(event) -> None:
+            if event_is_right_click(event):
+                if show_left_point_context_menu(event, event.scenePos()):
+                    if hasattr(event, "accept"):
+                        event.accept()
+                return
+            if event_has_keyboard_modifier(event, "ControlModifier"):
+                if not create_curve_point_at_scene_pos(event.scenePos()):
+                    return
+                if hasattr(event, "accept"):
+                    event.accept()
+                return
+            if not select_nearest_curve_point_at_scene_pos(event.scenePos()):
+                return
+            if hasattr(event, "accept"):
+                event.accept()
+
+        context_menu_event_types = {
+            value
+            for value in (
+                getattr(
+                    getattr(self.QtCore.QEvent, "Type", self.QtCore.QEvent),
+                    "GraphicsSceneContextMenu",
+                    None,
+                ),
+                getattr(
+                    getattr(self.QtCore.QEvent, "Type", self.QtCore.QEvent),
+                    "ContextMenu",
+                    None,
+                ),
+            )
+            if value is not None
+        }
+
+        class CurveEditorContextMenuFilter(self.QtCore.QObject):
+            def eventFilter(filter_self, _watched, event) -> bool:
+                if event.type() in context_menu_event_types:
+                    scene_pos = (
+                        event.scenePos()
+                        if hasattr(event, "scenePos")
+                        else plot.plot.mapToScene(event.pos())
+                    )
+                    if not show_left_point_context_menu(event, scene_pos):
+                        return False
+                    if hasattr(event, "accept"):
+                        event.accept()
+                    return True
+                return False
+
+        key_press_event_type = getattr(
+            getattr(self.QtCore.QEvent, "Type", self.QtCore.QEvent),
+            "KeyPress",
+            None,
+        )
+        key_enum = getattr(self.QtCore.Qt, "Key", self.QtCore.Qt)
+        modifier_enum = getattr(
+            self.QtCore.Qt,
+            "KeyboardModifier",
+            self.QtCore.Qt,
+        )
+        key_left = getattr(key_enum, "Key_Left", None)
+        key_right = getattr(key_enum, "Key_Right", None)
+        key_up = getattr(key_enum, "Key_Up", None)
+        key_down = getattr(key_enum, "Key_Down", None)
+        key_tab = getattr(key_enum, "Key_Tab", None)
+        key_backtab = getattr(key_enum, "Key_Backtab", None)
+        key_l = getattr(key_enum, "Key_L", None)
+        key_z = getattr(key_enum, "Key_Z", None)
+        key_y = getattr(key_enum, "Key_Y", None)
+        control_modifier = getattr(modifier_enum, "ControlModifier", None)
+        shift_modifier = getattr(modifier_enum, "ShiftModifier", None)
+        alt_modifier = getattr(modifier_enum, "AltModifier", None)
+
+        def event_has_modifier(event, modifier) -> bool:
+            if modifier is None:
+                return False
+            return bool(event.modifiers() & modifier)
+
+        def key_event_belongs_to_dialog() -> bool:
+            focus_widget = self.QtWidgets.QApplication.focusWidget()
+            if focus_widget is None:
+                return bool(dialog.isActiveWindow())
+            return bool(focus_widget is dialog or dialog.isAncestorOf(focus_widget))
+
+        class CurveEditorKeyFilter(self.QtCore.QObject):
+            def eventFilter(filter_self, _watched, event) -> bool:
+                if key_press_event_type is None or event.type() != key_press_event_type:
+                    return False
+                if not dialog.isVisible() or not key_event_belongs_to_dialog():
+                    return False
+                key = event.key()
+                has_ctrl = event_has_modifier(event, control_modifier)
+                has_shift = event_has_modifier(event, shift_modifier)
+                has_alt = event_has_modifier(event, alt_modifier)
+                if has_ctrl and not has_alt and key == key_l:
+                    lock_selected_curve_point()
+                elif has_ctrl and not has_alt and key == key_z:
+                    undo_edit()
+                elif has_ctrl and not has_alt and key == key_y:
+                    redo_edit()
+                elif not has_ctrl and has_shift and not has_alt and key == key_right:
+                    select_range_to_right()
+                elif not has_ctrl and not has_shift and not has_alt and key == key_up:
+                    nudge_selected_frequency(1)
+                elif not has_ctrl and not has_shift and not has_alt and key == key_down:
+                    nudge_selected_frequency(-1)
+                elif not has_ctrl and not has_shift and not has_alt and key == key_left:
+                    nudge_selected_voltage(-1)
+                elif not has_ctrl and not has_shift and not has_alt and key == key_right:
+                    nudge_selected_voltage(1)
+                elif not has_ctrl and not has_alt and key == key_tab:
+                    select_adjacent_curve_point(-1 if has_shift else 1)
+                elif not has_ctrl and not has_alt and key == key_backtab:
+                    select_adjacent_curve_point(-1)
+                else:
+                    return False
+                if hasattr(event, "accept"):
+                    event.accept()
+                return True
+
+        def save_edit() -> None:
+            edit = current_edit["value"]
+            payload = user_edited_profile_payload(
+                parent_payload,
+                edit,
+                original_anchor_voltage_mv=int(original_anchor_voltage_mv),
+                original_anchor_clock_mhz=int(original_anchor_clock_mhz),
+            )
+            try:
+                path = archive_auto_uv_profile(payload)
+            except Exception as exc:
+                self.QtWidgets.QMessageBox.critical(
+                    dialog,
+                    "Edit VF Curve",
+                    f"Failed to save edited curve: {exc}",
+                )
+                return
+            saved_profile_id = _profile_id_from_archive_path(path)
+            if saved_profile_id:
+                self.last_auto_uv_profile_id = saved_profile_id
+            self.last_auto_uv_candidate_id = str(payload.get("candidate_id", "")).strip()
+            self.controls.set_status_text(
+                f"Saved edited curve draft: {path.name}. Verify it before Apply."
+            )
+            self._load_profiles(prefer_last_auto_uv=True, select_last_auto_uv=True)
+            if saved_profile_id:
+                self.profile_list.select_profile(saved_profile_id)
+                self._update_runner_status()
+            dialog.accept()
+
+        target_item.sigPositionChanged.connect(on_target_position_changed)
+        target_item.sigPositionChangeFinished.connect(on_target_position_finished)
+        plot.plot.scene().sigMouseClicked.connect(on_plot_clicked)
+        context_menu_filter = CurveEditorContextMenuFilter(dialog)
+        plot.plot.scene().installEventFilter(context_menu_filter)
+        dialog._curve_editor_context_menu_filter = context_menu_filter
+        refresh_left_point_handles(current_edit["value"])
+        revert_button.clicked.connect(revert_edit)
+        undo_button.clicked.connect(undo_edit)
+        redo_button.clicked.connect(redo_edit)
+        undo_shortcut = self.QtGui.QShortcut(
+            self.QtGui.QKeySequence("Ctrl+Z"),
+            dialog,
+        )
+        shortcut_context = getattr(
+            getattr(self.QtCore.Qt, "ShortcutContext", self.QtCore.Qt),
+            "WidgetWithChildrenShortcut",
+            None,
+        )
+        if shortcut_context is not None:
+            undo_shortcut.setContext(shortcut_context)
+        undo_shortcut.activated.connect(undo_edit)
+        dialog._curve_editor_undo_shortcut = undo_shortcut
+        redo_shortcut = self.QtGui.QShortcut(
+            self.QtGui.QKeySequence("Ctrl+Y"),
+            dialog,
+        )
+        nudge_up_shortcut = self.QtGui.QShortcut(
+            self.QtGui.QKeySequence("Up"),
+            dialog,
+        )
+        nudge_down_shortcut = self.QtGui.QShortcut(
+            self.QtGui.QKeySequence("Down"),
+            dialog,
+        )
+        nudge_left_shortcut = self.QtGui.QShortcut(
+            self.QtGui.QKeySequence("Left"),
+            dialog,
+        )
+        nudge_right_shortcut = self.QtGui.QShortcut(
+            self.QtGui.QKeySequence("Right"),
+            dialog,
+        )
+        select_next_shortcut = self.QtGui.QShortcut(
+            self.QtGui.QKeySequence("Tab"),
+            dialog,
+        )
+        select_previous_shortcut = self.QtGui.QShortcut(
+            self.QtGui.QKeySequence("Shift+Tab"),
+            dialog,
+        )
+        lock_selected_shortcut = self.QtGui.QShortcut(
+            self.QtGui.QKeySequence("Ctrl+L"),
+            dialog,
+        )
+        select_range_shortcut = self.QtGui.QShortcut(
+            self.QtGui.QKeySequence("Shift+Right"),
+            dialog,
+        )
+        if shortcut_context is not None:
+            redo_shortcut.setContext(shortcut_context)
+            nudge_up_shortcut.setContext(shortcut_context)
+            nudge_down_shortcut.setContext(shortcut_context)
+            nudge_left_shortcut.setContext(shortcut_context)
+            nudge_right_shortcut.setContext(shortcut_context)
+            select_next_shortcut.setContext(shortcut_context)
+            select_previous_shortcut.setContext(shortcut_context)
+            lock_selected_shortcut.setContext(shortcut_context)
+            select_range_shortcut.setContext(shortcut_context)
+        redo_shortcut.activated.connect(redo_edit)
+        nudge_up_shortcut.activated.connect(lambda: nudge_selected_frequency(1))
+        nudge_down_shortcut.activated.connect(lambda: nudge_selected_frequency(-1))
+        nudge_left_shortcut.activated.connect(lambda: nudge_selected_voltage(-1))
+        nudge_right_shortcut.activated.connect(lambda: nudge_selected_voltage(1))
+        select_next_shortcut.activated.connect(lambda: select_adjacent_curve_point(1))
+        select_previous_shortcut.activated.connect(
+            lambda: select_adjacent_curve_point(-1)
+        )
+        lock_selected_shortcut.activated.connect(lock_selected_curve_point)
+        select_range_shortcut.activated.connect(select_range_to_right)
+        dialog._curve_editor_redo_shortcut = redo_shortcut
+        dialog._curve_editor_nudge_up_shortcut = nudge_up_shortcut
+        dialog._curve_editor_nudge_down_shortcut = nudge_down_shortcut
+        dialog._curve_editor_nudge_left_shortcut = nudge_left_shortcut
+        dialog._curve_editor_nudge_right_shortcut = nudge_right_shortcut
+        dialog._curve_editor_select_next_shortcut = select_next_shortcut
+        dialog._curve_editor_select_previous_shortcut = select_previous_shortcut
+        dialog._curve_editor_lock_selected_shortcut = lock_selected_shortcut
+        dialog._curve_editor_select_range_shortcut = select_range_shortcut
+        save_button.clicked.connect(save_edit)
+        cancel_button.clicked.connect(dialog.reject)
+        update_status(current_edit["value"])
+        update_history_buttons()
+        app_instance = self.QtWidgets.QApplication.instance()
+        key_filter = CurveEditorKeyFilter(dialog)
+        if app_instance is not None:
+            app_instance.installEventFilter(key_filter)
+        dialog._curve_editor_key_filter = key_filter
+        try:
+            dialog.exec()
+        finally:
+            if app_instance is not None:
+                app_instance.removeEventFilter(key_filter)
+
     def _open_profile_fan_curve_tab(self, profile: dict) -> None:
+        self._open_profile_fan_curve_editor(profile)
+
+    def _open_profile_fan_curve_editor(self, profile: dict) -> None:
+        if self.pg is None:
+            self.controls.set_status_text("pyqtgraph is required to edit fan curves.")
+            self.QtWidgets.QMessageBox.information(
+                self.window,
+                "Edit Fan Curve",
+                "pyqtgraph is not installed, so the fan curve editor is unavailable.",
+            )
+            return
         curve_points = _profile_fan_curve_points(profile)
         if not curve_points:
             self.controls.set_status_text("No fan curve is available for this profile.")
             self.QtWidgets.QMessageBox.information(
                 self.window,
-                "View Fan Curve",
+                "Edit Fan Curve",
                 "No fan curve is available for this profile.",
             )
             return
-        key = _profile_fan_curve_tab_key(profile)
-        widget = self.profile_curve_widgets.get(key)
-        if widget is not None:
-            index = self.tabs.indexOf(widget)
-            if index >= 0:
-                self.tabs.setCurrentIndex(index)
-                return
+        fan_payload = _profile_fan_payload(profile) or {}
+        parent_payload = _profile_payload_from_path(profile) or dict(profile)
         measured_points = _profile_fan_measurement_points(profile)
-        plot = CurvePlot(
+        target = _profile_fan_curve_target_point(profile)
+
+        def save_edit(edit) -> str:
+            if not _profile_payload_has_saved_vf_curve(parent_payload):
+                raise ValueError(
+                    "selected profile does not contain a saved Auto-UV V/F curve"
+                )
+            payload = user_edited_fan_curve_profile_payload(
+                parent_payload,
+                fan_payload,
+                edit,
+                original_points=curve_points,
+            )
+            fan_curve_payload = payload.get("fan_curve_payload")
+            path = archive_auto_uv_profile(payload)
+            if isinstance(fan_curve_payload, dict):
+                _write_auto_uv_fan_curve_payload(fan_curve_payload)
+            saved_profile_id = _profile_id_from_archive_path(path)
+            if saved_profile_id:
+                self.last_auto_uv_profile_id = saved_profile_id
+            self.last_auto_uv_candidate_id = str(payload.get("candidate_id", "")).strip()
+            self.controls.set_status_text(
+                f"Saved edited fan curve: {path.name}."
+            )
+            if isinstance(fan_curve_payload, dict):
+                self._populate_fan_plot_from_payload(fan_curve_payload)
+            self._load_profiles(prefer_last_auto_uv=True, select_last_auto_uv=True)
+            if saved_profile_id:
+                self.profile_list.select_profile(saved_profile_id)
+                self._update_runner_status()
+            return f"Saved edited fan curve: {path.name}."
+
+        open_fan_curve_editor_dialog(
+            QtCore=self.QtCore,
+            QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
             pg=self.pg,
-            x_label="Temperature",
-            x_units="C",
-            y_label="Fan",
-            y_units="%",
-            x_range=(30, 95),
-            y_range=(0, 100),
-            source_name="Measured",
-            candidate_name=_profile_fan_curve_legend_label(profile),
-            show_source=bool(measured_points),
-            source_color="#9aa0a8",
-            candidate_color="#5ef38c",
+            parent=self.window,
+            curve_points=curve_points,
+            measured_points=measured_points,
+            target_point=target,
+            save_callback=save_edit,
         )
-        plot.enable_point_selection(True)
-        if measured_points:
-            plot.set_source_points(measured_points)
-        plot.set_candidate_points(curve_points, remember_previous=False)
-        target = _profile_fan_curve_target_point(profile)
-        if target is not None:
-            plot.set_selected_point(target[0], target[1])
-        label = _profile_fan_curve_tab_label(profile)
-        tab_index = self.tabs.addTab(plot.widget, label)
-        self.profile_curve_widgets[key] = plot.widget
-        self._sync_tab_close_buttons()
-        self.tabs.setCurrentIndex(tab_index)
 
     def _apply_profile(self, profile: dict) -> None:
         if not self._profile_actions_available():
+            return
+        if not _profile_can_apply(profile):
+            self.controls.set_status_text(
+                "This edited profile must be re-verified before it can be applied."
+            )
+            self.QtWidgets.QMessageBox.information(
+                self.window,
+                "Apply Profile",
+                "This edited profile must be re-verified before it can be applied.",
+            )
             return
         profile_id = str(profile.get("profile_id", "")).strip()
         if not profile_id:
@@ -1274,6 +2576,7 @@ class AutoUvWindow:
         q2rtx_enabled = bool(reverify_options["q2rtx_enabled"])
         cuda_enabled = bool(reverify_options["cuda_enabled"])
         profile_id = str(profile.get("profile_id", "")).strip()
+        profile_selector = _profile_verify_selector(profile)
         prefer_afterburner_curve = _profile_is_afterburner(profile)
         if profile_id:
             self.profile_list.select_profile(profile_id)
@@ -1281,7 +2584,7 @@ class AutoUvWindow:
         stop_request_path.parent.mkdir(parents=True, exist_ok=True)
         stop_request_path.unlink(missing_ok=True)
         command = profile_reverify_command(
-            profile_selector="" if prefer_afterburner_curve else profile_id,
+            profile_selector="" if prefer_afterburner_curve else profile_selector,
             duration_s=int(duration_s),
             prefer_afterburner_curve=prefer_afterburner_curve,
             stop_request_path=stop_request_path,
@@ -1294,10 +2597,10 @@ class AutoUvWindow:
             q2rtx_enabled=q2rtx_enabled,
             cuda_enabled=cuda_enabled,
         )
-        self.header.set_stage("Profile re-verification")
+        self.header.set_stage("Profile verification")
         self.header.set_candidate(label)
         self.controls.set_status_text(
-            f"Re-verifying {label} with {workload_label} for {duration_label}."
+            f"Verifying {label} with {workload_label} for {duration_label}."
         )
         self.tabs.setCurrentIndex(self.auto_uv_tab_index)
         self.log_view.text_edit.setFocus()
@@ -1308,7 +2611,7 @@ class AutoUvWindow:
             0,
             elapsed_s=0,
             target_s=int(duration_s),
-            detail=f"Re-verifying {label} with {workload_label} for {duration_label}.",
+            detail=f"Verifying {label} with {workload_label} for {duration_label}.",
         )
         self.log_view.append(
             "\n$ " + " ".join(shlex.quote(part) for part in command) + "\n"
@@ -1324,19 +2627,19 @@ class AutoUvWindow:
         self.controls.set_running(True)
         process.start(command[0], command[1:])
         if not process.waitForStarted(3000):
-            self.log_view.append("Failed to start profile re-verification.\n")
+            self.log_view.append("Failed to start profile verification.\n")
             self._runtime_process_finished(-1, self.QtCore.QProcess.CrashExit)
 
     def _select_reverify_duration_dialog(self, profile: dict) -> dict | None:
         dialog = self.QtWidgets.QDialog(self.window)
-        dialog.setWindowTitle("Re-verify Profile")
+        dialog.setWindowTitle("Verify Profile")
         layout = self.QtWidgets.QVBoxLayout(dialog)
         label = _profile_status_label(
             [profile],
             str(profile.get("profile_id", "")).strip(),
         )
         intro = self.QtWidgets.QLabel(
-            f"Re-verify {label or 'the selected profile'} with the selected workload."
+            f"Verify {label or 'the selected profile'} with the selected workload."
         )
         intro.setWordWrap(True)
         q2rtx_checkbox = self.QtWidgets.QCheckBox("Q2RTX timedemo")
@@ -1370,24 +2673,9 @@ class AutoUvWindow:
         duration_spin.setValue(
             _duration_minutes_for_control(DEFAULT_FINAL_VERIFICATION_DURATION_S)
         )
-        duration_value_label = self.QtWidgets.QLabel(
-            _format_duration_for_user(
-                _duration_seconds_from_minutes(duration_spin.value())
-            )
-        )
-
-        def sync_duration_text() -> None:
-            duration_value_label.setText(
-                _format_duration_for_user(
-                    _duration_seconds_from_minutes(duration_spin.value())
-                )
-            )
-
-        duration_spin.valueChanged.connect(lambda _value: sync_duration_text())
         duration_layout = self.QtWidgets.QHBoxLayout()
         duration_layout.addWidget(self.QtWidgets.QLabel("Verification duration"))
         duration_layout.addWidget(duration_spin)
-        duration_layout.addWidget(duration_value_label)
         duration_layout.addStretch(1)
         workload_layout = self.QtWidgets.QHBoxLayout()
         workload_layout.addWidget(self.QtWidgets.QLabel("Workloads"))
@@ -1396,7 +2684,7 @@ class AutoUvWindow:
         workload_layout.addStretch(1)
         buttons = self.QtWidgets.QDialogButtonBox()
         start_button = buttons.addButton(
-            "Start Re-verification",
+            "Start Verification",
             self.QtWidgets.QDialogButtonBox.AcceptRole,
         )
         buttons.addButton(self.QtWidgets.QDialogButtonBox.Cancel)
@@ -1493,10 +2781,31 @@ class AutoUvWindow:
             self.log_view.append("\nNo profile selected.\n")
             return
         selected_profile = _profile_for_selector(self.profile_summaries, profile_id)
+        if action != "uninstall-systemd" and not _profile_can_apply(
+            selected_profile or {}
+        ):
+            self.log_view.append(
+                "\nThis edited profile must be re-verified before it can be applied.\n"
+            )
+            self.controls.set_status_text(
+                "This edited profile must be re-verified before it can be applied."
+            )
+            return
         prefer_afterburner_curve = bool(
             selected_profile
             and str(selected_profile.get("runtime_source", "")) == "afterburner"
         )
+        if (
+            action != "uninstall-systemd"
+            and selected_profile
+            and self.profile_list.silent_fan_enabled()
+        ):
+            try:
+                self._sync_selected_profile_fan_curve_payload(selected_profile)
+            except Exception as exc:
+                self.log_view.append(f"\nFailed to prepare selected fan curve: {exc}\n")
+                self.controls.set_status_text("Failed to prepare selected fan curve.")
+                return
         self.controls.set_status_text(self._runtime_action_start_text(action))
         command = runtime_profile_command(
             action,
@@ -1555,7 +2864,7 @@ class AutoUvWindow:
     def _runtime_process_finished(self, exit_code, exit_status) -> None:
         process_kind = self.runtime_process_kind
         label = (
-            "Profile re-verification"
+            "Profile verification"
             if process_kind == "reverify"
             else _runtime_action_dialog_label(process_kind)
         )
@@ -1575,7 +2884,7 @@ class AutoUvWindow:
                     100,
                     elapsed_s=target,
                     target_s=target,
-                    detail="Profile re-verification complete.",
+                    detail="Profile verification complete.",
                 )
                 self.QtCore.QTimer.singleShot(
                     2500,
@@ -1594,17 +2903,17 @@ class AutoUvWindow:
                 "Idle" if int(exit_code) == 0 or stopped_by_user else "Error"
             )
             self.controls.set_status_text(
-                "Profile re-verification complete."
+                "Profile verification complete."
                 if int(exit_code) == 0
                 else (
-                    "Profile re-verification stopped."
+                    "Profile verification stopped."
                     if stopped_by_user
-                    else "Profile re-verification failed."
+                    else "Profile verification failed."
                 )
             )
             if int(exit_code) != 0 and not stopped_by_user:
                 self._show_process_error_dialog(
-                    title="Profile re-verification failed",
+                    title="Profile verification failed",
                     action_label=label,
                     exit_code=exit_code,
                     exit_status=exit_status,
@@ -1992,6 +3301,32 @@ class AutoUvWindow:
             _sorted_unique_fan_points(self.fan_measured_points)
         )
 
+    def _refresh_saved_fan_curve_plot(self) -> None:
+        payload = _saved_auto_uv_fan_curve_payload()
+        if payload is None:
+            return
+        self._populate_fan_plot_from_payload(payload)
+
+    def _populate_fan_plot_from_payload(self, payload: dict) -> None:
+        points = _fan_curve_points_from_payload(payload)
+        if not points:
+            return
+        measured_points = _fan_measurement_points_from_payload(payload)
+        if measured_points:
+            self.fan_measured_points = list(measured_points)
+            self.fan_plot.set_source_points(measured_points)
+        self.fan_plot.set_candidate_points(points, remember_previous=False)
+        target = _fan_curve_target_point_from_payload(payload)
+        if target is not None:
+            self.fan_plot.set_selected_point(target[0], target[1])
+
+    def _sync_selected_profile_fan_curve_payload(self, profile: dict) -> None:
+        payload = _profile_fan_payload(profile)
+        if payload is None or not _fan_payload_has_silent_runtime_fields(payload):
+            return
+        _write_auto_uv_fan_curve_payload(payload)
+        self._populate_fan_plot_from_payload(payload)
+
     def _show_final_verification_complete(self, payload: dict) -> None:
         self._load_profiles(prefer_last_auto_uv=True, select_last_auto_uv=True)
         self.tabs.setCurrentIndex(self.profiles_tab_index)
@@ -2015,10 +3350,24 @@ class AutoUvWindow:
             for candidate in payload.get("candidates", [])
             if isinstance(candidate, dict)
         ]
-        candidates = _sort_candidates_by_fpsw(candidates)
-        default_id = _best_fpsw_candidate_id(candidates) or str(
+        auto_uv_mode = str(payload.get("auto_uv_mode", ""))
+        candidates = _sort_candidates_for_final_choice(candidates, auto_uv_mode)
+        default_id = _best_final_choice_candidate_id(candidates, auto_uv_mode) or str(
             payload.get("default_candidate_id", "")
         )
+        default_sort_column = _final_choice_sort_column_for_mode(auto_uv_mode)
+        if _is_performance_mode(auto_uv_mode):
+            selection_text = (
+                "The short candidate sweep is complete. The highest-FPS passed "
+                "candidate is selected for the long Final verification. Pick the "
+                "profile and final check duration before starting the final run."
+            )
+        else:
+            selection_text = (
+                "The short candidate sweep is complete. The best FPS/W passed "
+                "candidate is selected for the long Final verification. Pick the "
+                "profile and final check duration before starting the final run."
+            )
         default_duration_s = _duration_seconds_from_value(
             payload.get("final_verification_duration_s"),
             default_s=DEFAULT_FINAL_VERIFICATION_DURATION_S,
@@ -2029,15 +3378,13 @@ class AutoUvWindow:
         )
         selected, final_duration_s, discarded = self._select_candidate_dialog(
             title="Choose Final verification candidate",
-            text=(
-                "The short candidate sweep is complete. The best FPS/W passed "
-                "candidate is selected for the long Final verification. Pick the "
-                "profile and final check duration before starting the final run."
-            ),
+            text=selection_text,
             candidates=candidates,
             default_candidate_id=default_id,
             default_final_duration_s=default_duration_s,
             max_final_duration_s=max_duration_s,
+            default_sort_column=default_sort_column,
+            auto_uv_mode=auto_uv_mode,
         )
         response_path = Path(str(payload.get("response_path", ""))).expanduser()
         if not str(response_path).strip():
@@ -2091,6 +3438,8 @@ class AutoUvWindow:
         default_candidate_id: str,
         default_final_duration_s: int,
         max_final_duration_s: int,
+        default_sort_column: int = FINAL_CHOICE_DEFAULT_SORT_COLUMN,
+        auto_uv_mode: object = "",
     ) -> tuple[dict | None, int, bool]:
         if not candidates:
             return None, int(default_final_duration_s), True
@@ -2103,6 +3452,10 @@ class AutoUvWindow:
         layout = self.QtWidgets.QVBoxLayout(dialog)
         label = self.QtWidgets.QLabel(text)
         label.setWordWrap(True)
+        item_class = _sortable_table_item_class(
+            self.QtWidgets,
+            FINAL_CHOICE_SORT_ROLE,
+        )
         table = self.QtWidgets.QTableWidget(len(candidates), 8)
         table.setHorizontalHeaderLabels(
             [
@@ -2120,6 +3473,9 @@ class AutoUvWindow:
         table.setSelectionBehavior(self.QtWidgets.QAbstractItemView.SelectRows)
         table.setEditTriggers(self.QtWidgets.QAbstractItemView.NoEditTriggers)
         table.setSortingEnabled(False)
+        header = table.horizontalHeader()
+        header.setHighlightSections(False)
+        header.setSectionsClickable(True)
         set_header_fit_column_widths(
             table,
             {
@@ -2146,11 +3502,17 @@ class AutoUvWindow:
                 _candidate_number(candidate.get("avg_fps"), precision=2),
                 _candidate_number(candidate.get("avg_power_w"), precision=2),
                 _format_duration_for_user(_candidate_short_duration_s(candidate)),
-                _candidate_status_text(candidate, candidate_id == default_candidate_id),
+                _candidate_status_text(
+                    candidate,
+                    candidate_id == default_candidate_id,
+                    auto_uv_mode=auto_uv_mode,
+                ),
             ]
+            sort_values = _final_choice_sort_values(candidate)
             for column, value in enumerate(values):
-                item = self.QtWidgets.QTableWidgetItem(str(value))
+                item = item_class(str(value))
                 item.setData(self.QtCore.Qt.UserRole, candidate_id)
+                item.setData(FINAL_CHOICE_SORT_ROLE, sort_values[column])
                 if column < 6:
                     item.setTextAlignment(
                         self.QtCore.Qt.AlignRight | self.QtCore.Qt.AlignVCenter
@@ -2162,15 +3524,56 @@ class AutoUvWindow:
                     item.setFont(font)
                 table.setItem(row, column, item)
         table.doubleClicked.connect(dialog.accept)
+        sort_column = int(default_sort_column)
+        sort_order = self.QtCore.Qt.DescendingOrder
+
+        def apply_sort_indicator(column: int, order) -> None:
+            signals_blocked = header.blockSignals(True)
+            try:
+                header.setSortIndicatorShown(True)
+                header.setSortIndicator(int(column), order)
+            finally:
+                header.blockSignals(signals_blocked)
+
+        def sort_table(column: int, order) -> None:
+            nonlocal sort_column, sort_order
+            if int(column) not in FINAL_CHOICE_SORTABLE_COLUMNS:
+                apply_sort_indicator(sort_column, sort_order)
+                return
+            sort_column = int(column)
+            sort_order = order
+            apply_sort_indicator(sort_column, sort_order)
+            item_class.sort_descending = order == self.QtCore.Qt.DescendingOrder
+            table.sortItems(sort_column, sort_order)
+
+        def sort_by_header_column(column: int) -> None:
+            nonlocal sort_column, sort_order
+            column = int(column)
+            if column not in FINAL_CHOICE_SORTABLE_COLUMNS:
+                apply_sort_indicator(sort_column, sort_order)
+                return
+            if sort_column == column:
+                order = (
+                    self.QtCore.Qt.AscendingOrder
+                    if sort_order == self.QtCore.Qt.DescendingOrder
+                    else self.QtCore.Qt.DescendingOrder
+                )
+            else:
+                order = (
+                    self.QtCore.Qt.DescendingOrder
+                    if column in FINAL_CHOICE_HIGHER_FIRST_COLUMNS
+                    else self.QtCore.Qt.AscendingOrder
+                )
+            sort_table(column, order)
+
+        header.sectionClicked.connect(sort_by_header_column)
+        sort_table(sort_column, sort_order)
         max_minutes = _duration_minutes_for_control(max_final_duration_s)
         duration_spin = self.QtWidgets.QSpinBox()
         duration_spin.setRange(1, max_minutes)
         duration_spin.setSuffix(" min")
         duration_spin.setSingleStep(1)
         duration_spin.setValue(_duration_minutes_for_control(default_final_duration_s))
-        duration_value_label = self.QtWidgets.QLabel(
-            _format_duration_for_user(_duration_seconds_from_minutes(duration_spin.value()))
-        )
         duration_hint = self.QtWidgets.QLabel("")
         duration_hint.setObjectName("durationHint")
 
@@ -2186,10 +3589,6 @@ class AutoUvWindow:
                 else default_candidate_id
             )
             return by_id.get(selected_id)
-
-        def sync_duration_text() -> None:
-            duration_s = _duration_seconds_from_minutes(duration_spin.value())
-            duration_value_label.setText(_format_duration_for_user(duration_s))
 
         def sync_duration_constraints() -> None:
             candidate = selected_candidate() or {}
@@ -2207,10 +3606,8 @@ class AutoUvWindow:
                 "from the selected short check; maximum "
                 f"{_format_duration_for_user(max_final_duration_s)}."
             )
-            sync_duration_text()
 
         table.itemSelectionChanged.connect(sync_duration_constraints)
-        duration_spin.valueChanged.connect(lambda _value: sync_duration_text())
 
         if default_candidate_id in by_id:
             for row in range(table.rowCount()):
@@ -2228,7 +3625,6 @@ class AutoUvWindow:
         duration_layout = self.QtWidgets.QHBoxLayout()
         duration_layout.addWidget(self.QtWidgets.QLabel("Final verification duration"))
         duration_layout.addWidget(duration_spin)
-        duration_layout.addWidget(duration_value_label)
         duration_layout.addStretch(1)
         layout.addWidget(label)
         layout.addWidget(table)
@@ -2313,10 +3709,15 @@ def _candidate_display_text(candidate: dict) -> str:
     return " | ".join(parts)
 
 
-def _candidate_status_text(candidate: dict, is_default: bool) -> str:
+def _candidate_status_text(
+    candidate: dict,
+    is_default: bool,
+    *,
+    auto_uv_mode: object = "",
+) -> str:
     parts = []
     if is_default:
-        parts.append("Best FPS/W")
+        parts.append("Best FPS" if _is_performance_mode(auto_uv_mode) else "Best FPS/W")
     if bool(candidate.get("final_verified")):
         parts.append("Final stability verified")
     else:
@@ -2389,6 +3790,67 @@ def _duration_seconds_from_minutes(minutes) -> int:
 def _candidate_short_duration_s(candidate: dict) -> int:
     value = candidate.get("short_verification_duration_s")
     return _duration_seconds_from_value(value, default_s=30)
+
+
+def _final_choice_sort_values(candidate: dict) -> list[float | str]:
+    return [
+        _numeric_sort_value(candidate.get("candidate_voltage_mv")),
+        _numeric_sort_value(candidate.get("lock_clock_mhz")),
+        _numeric_sort_value(candidate.get("avg_core_clock_mhz")),
+        _numeric_sort_value(candidate.get("efficiency_fps_per_w")),
+        _numeric_sort_value(candidate.get("avg_fps")),
+        _numeric_sort_value(candidate.get("avg_power_w")),
+        float(_candidate_short_duration_s(candidate)),
+        str(_candidate_status_text(candidate, False)).casefold(),
+    ]
+
+
+def _numeric_sort_value(value) -> float | str:
+    if value in (None, ""):
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(number):
+        return ""
+    return float(number)
+
+
+def _sortable_table_item_class(QtWidgets, sort_role: int):
+    class SortableTableWidgetItem(QtWidgets.QTableWidgetItem):
+        sort_descending = False
+
+        def __lt__(self, other):
+            other_value = (
+                other.data(sort_role) if hasattr(other, "data") else str(other.text())
+            )
+            return _sort_value_less(
+                self.data(sort_role),
+                other_value,
+                descending=bool(self.sort_descending),
+            )
+
+    return SortableTableWidgetItem
+
+
+def _sort_value_less(left, right, *, descending: bool = False) -> bool:
+    left_missing = left in (None, "")
+    right_missing = right in (None, "")
+    if left_missing != right_missing:
+        return left_missing if descending else right_missing
+    if left_missing and right_missing:
+        return False
+    left_key = _sort_key(left)
+    right_key = _sort_key(right)
+    return left_key < right_key
+
+
+def _sort_key(value) -> float | str:
+    number = _numeric_sort_value(value)
+    if number != "":
+        return float(number)
+    return str(value).casefold()
 
 
 _REVERIFY_ELAPSED_RE = re.compile(r"\belapsed=([0-9]+(?:\.[0-9]+)?)s\b")
@@ -2465,6 +3927,26 @@ def _candidate_fpsw(candidate: dict) -> float | None:
         return None
 
 
+def _candidate_fps(candidate: dict) -> float | None:
+    value = candidate.get("avg_fps")
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_performance_mode(auto_uv_mode: object) -> bool:
+    return str(auto_uv_mode or "").strip().lower() == AUTO_UV_MODE_PERFORMANCE
+
+
+def _final_choice_sort_column_for_mode(auto_uv_mode: object) -> int:
+    if _is_performance_mode(auto_uv_mode):
+        return FINAL_CHOICE_FPS_SORT_COLUMN
+    return FINAL_CHOICE_FPSW_SORT_COLUMN
+
+
 def _sort_candidates_by_fpsw(candidates: list[dict]) -> list[dict]:
     return sorted(
         candidates,
@@ -2477,11 +3959,48 @@ def _sort_candidates_by_fpsw(candidates: list[dict]) -> list[dict]:
     )
 
 
+def _sort_candidates_by_fps(candidates: list[dict]) -> list[dict]:
+    return sorted(
+        candidates,
+        key=lambda candidate: (
+            _candidate_fps(candidate) is None,
+            -float(_candidate_fps(candidate) or 0.0),
+            int(candidate.get("candidate_voltage_mv") or 99999),
+            -int(candidate.get("lock_clock_mhz") or 0),
+        ),
+    )
+
+
+def _sort_candidates_for_final_choice(
+    candidates: list[dict],
+    auto_uv_mode: object,
+) -> list[dict]:
+    if _is_performance_mode(auto_uv_mode):
+        return _sort_candidates_by_fps(candidates)
+    return _sort_candidates_by_fpsw(candidates)
+
+
 def _best_fpsw_candidate_id(candidates: list[dict]) -> str:
     for candidate in candidates:
         if _candidate_fpsw(candidate) is not None:
             return str(candidate.get("candidate_id", ""))
     return str(candidates[0].get("candidate_id", "")) if candidates else ""
+
+
+def _best_fps_candidate_id(candidates: list[dict]) -> str:
+    for candidate in candidates:
+        if _candidate_fps(candidate) is not None:
+            return str(candidate.get("candidate_id", ""))
+    return str(candidates[0].get("candidate_id", "")) if candidates else ""
+
+
+def _best_final_choice_candidate_id(
+    candidates: list[dict],
+    auto_uv_mode: object,
+) -> str:
+    if _is_performance_mode(auto_uv_mode):
+        return _best_fps_candidate_id(candidates)
+    return _best_fpsw_candidate_id(candidates)
 
 
 def _candidate_id_from_result(payload: dict) -> str:
@@ -2543,6 +4062,14 @@ def _profile_is_afterburner(profile: dict) -> bool:
     return str(profile.get("runtime_source", "")).strip() == "afterburner"
 
 
+def _profile_is_verified(profile: dict) -> bool:
+    return bool(profile.get("final_verified", False))
+
+
+def _profile_can_apply(profile: dict) -> bool:
+    return _profile_is_afterburner(profile) or _profile_is_verified(profile)
+
+
 def _profile_is_deletable(profile: dict) -> bool:
     return bool(str(profile.get("path", "")).strip()) or _profile_is_afterburner(
         profile
@@ -2550,13 +4077,31 @@ def _profile_is_deletable(profile: dict) -> bool:
 
 
 def _profile_can_export_lact(profile: dict) -> bool:
-    return _profile_is_afterburner(profile) or bool(
-        str(profile.get("path", "")).strip()
+    return _profile_can_apply(profile) and bool(
+        _profile_is_afterburner(profile) or str(profile.get("path", "")).strip()
     )
 
 
 def _profile_can_reverify(profile: dict) -> bool:
-    return _profile_can_export_lact(profile)
+    return _profile_is_afterburner(profile) or bool(str(profile.get("path", "")).strip())
+
+
+def _profile_verify_selector(profile: dict) -> str:
+    if _profile_is_afterburner(profile):
+        return ""
+    path = str(profile.get("path", "")).strip()
+    if path:
+        return path
+    return str(profile.get("profile_id", "")).strip() or path
+
+
+def _profile_id_from_archive_path(path: str | Path) -> str:
+    name = Path(path).name
+    prefix = "auto-uv-profile-"
+    suffix = ".json"
+    if name.startswith(prefix) and name.endswith(suffix):
+        return name[len(prefix) : -len(suffix)]
+    return Path(path).stem
 
 
 def _lact_export_output_path(directory: str | Path) -> Path:
@@ -2833,6 +4378,20 @@ def _profile_curve_points(profile: dict) -> list[tuple[float, float]]:
     return _curve_points_from_payload(payload)
 
 
+def _profile_curve_plan(profile: dict) -> list[dict]:
+    plan = _curve_plan_from_payload(profile)
+    if plan:
+        return plan
+    payload = _profile_payload_from_path(profile)
+    if payload is None:
+        return []
+    return _curve_plan_from_payload(payload)
+
+
+def _profile_payload_has_saved_vf_curve(payload: dict) -> bool:
+    return bool(_curve_plan_from_payload(payload) or _curve_points_from_payload(payload))
+
+
 def _profile_base_curve_points(profile: dict) -> list[tuple[float, float]]:
     points = _base_curve_points_from_payload(profile)
     if points:
@@ -2861,23 +4420,7 @@ def _profile_fan_curve_target_point(profile: dict) -> tuple[float, float] | None
     payload = _profile_fan_payload(profile)
     if payload is None:
         return None
-    for temp_key, speed_key in (
-        ("load_anchor_temperature_c", "load_anchor_fan_speed_pct"),
-        ("loaded_temperature_c", "observed_fan_speed_pct"),
-    ):
-        point = _fan_point_from_values(payload.get(temp_key), payload.get(speed_key))
-        if point is not None:
-            return point
-    telemetry = payload.get("telemetry")
-    final = telemetry.get("final") if isinstance(telemetry, dict) else None
-    if isinstance(final, dict):
-        for temp_key in ("max_temperature_c", "avg_temperature_c"):
-            for speed_key in ("max_fan_speed_pct", "avg_fan_speed_pct"):
-                point = _fan_point_from_values(final.get(temp_key), final.get(speed_key))
-                if point is not None:
-                    return point
-    points = _profile_fan_curve_points(profile)
-    return points[-1] if points else None
+    return _fan_curve_target_point_from_payload(payload)
 
 
 def _profile_fan_payload(profile: dict) -> dict | None:
@@ -3008,6 +4551,19 @@ def _curve_points_from_payload(payload: dict) -> list[tuple[float, float]]:
     return []
 
 
+def _curve_plan_from_payload(payload: dict) -> list[dict]:
+    if not isinstance(payload, dict):
+        return []
+    for key in ("plan", "points"):
+        plan = _curve_plan_from_values(payload.get(key))
+        if plan:
+            return plan
+    materialization = payload.get("materialization")
+    if isinstance(materialization, dict):
+        return _curve_plan_from_values(materialization.get("points"))
+    return []
+
+
 def _base_curve_points_from_payload(payload: dict) -> list[tuple[float, float]]:
     if not isinstance(payload, dict):
         return []
@@ -3040,6 +4596,32 @@ def _base_curve_points_from_values(values) -> list[tuple[float, float]]:
     return sorted(points, key=lambda point: (point[0], point[1]))
 
 
+def _curve_plan_from_values(values) -> list[dict]:
+    if not isinstance(values, list):
+        return []
+    plan = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        try:
+            item = {
+                "index": int(value["index"]),
+                "voltage_mv": int(round(float(value["voltage_mv"]))),
+                "base_mhz": int(round(float(value["base_mhz"]))),
+                "target_mhz": int(round(float(value["target_mhz"]))),
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+        try:
+            item["new_offset_mhz"] = int(
+                value.get("new_offset_mhz", item["target_mhz"] - item["base_mhz"])
+            )
+        except (TypeError, ValueError):
+            item["new_offset_mhz"] = item["target_mhz"] - item["base_mhz"]
+        plan.append(item)
+    return sorted(plan, key=lambda item: (item["voltage_mv"], item["index"]))
+
+
 def _curve_point_from_value(value) -> tuple[float, float] | None:
     if isinstance(value, (list, tuple)) and len(value) >= 2:
         voltage = value[0]
@@ -3065,6 +4647,38 @@ def _curve_point_from_value(value) -> tuple[float, float] | None:
     if not math.isfinite(voltage_value) or not math.isfinite(clock_value):
         return None
     return voltage_value, clock_value
+
+
+def _nearest_profile_curve_point(
+    x_value: float,
+    y_value: float,
+    points: list[tuple[float, float]],
+    view_range,
+    *,
+    max_normalized_distance: float = 0.04,
+) -> tuple[float, float] | None:
+    if not points:
+        return None
+    try:
+        (x_min, x_max), (y_min, y_max) = view_range
+        x_span = max(1.0, float(x_max) - float(x_min))
+        y_span = max(1.0, float(y_max) - float(y_min))
+    except (TypeError, ValueError):
+        x_span = 1.0
+        y_span = 1.0
+    best_point = None
+    best_distance = None
+    for point in points:
+        distance = (
+            ((float(point[0]) - float(x_value)) / x_span) ** 2
+            + ((float(point[1]) - float(y_value)) / y_span) ** 2
+        ) ** 0.5
+        if best_distance is None or distance < best_distance:
+            best_point = point
+            best_distance = distance
+    if best_distance is None or best_distance > float(max_normalized_distance):
+        return None
+    return best_point
 
 
 def _base_curve_point_from_value(value) -> tuple[float, float] | None:
@@ -3672,6 +5286,57 @@ def _fan_curve_points_from_payload(payload: dict) -> list[tuple[float, float]]:
     return []
 
 
+def _saved_auto_uv_fan_curve_payload() -> dict | None:
+    return _read_json_file(_auto_uv_fan_curve_payload_path())
+
+
+def _auto_uv_fan_curve_payload_path() -> Path:
+    return default_user_config_dir() / "auto-uv-fan-curve.json"
+
+
+def _write_auto_uv_fan_curve_payload(payload: dict) -> Path:
+    if not isinstance(payload, dict):
+        raise ValueError("fan curve payload must be an object")
+    path = _auto_uv_fan_curve_payload_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    claim_desktop_user_ownership(path.parent, include_parents=True)
+    temp_path = path.with_name(path.name + ".tmp")
+    temp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temp_path.replace(path)
+    claim_desktop_user_ownership(path)
+    return path
+
+
+def _fan_payload_has_silent_runtime_fields(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if not _fan_curve_points_from_payload(payload):
+        return False
+    return payload.get("loaded_temperature_c") not in (None, "")
+
+
+def _fan_curve_target_point_from_payload(payload: dict) -> tuple[float, float] | None:
+    if not isinstance(payload, dict):
+        return None
+    for temp_key, speed_key in (
+        ("load_anchor_temperature_c", "load_anchor_fan_speed_pct"),
+        ("loaded_temperature_c", "observed_fan_speed_pct"),
+    ):
+        point = _fan_point_from_values(payload.get(temp_key), payload.get(speed_key))
+        if point is not None:
+            return point
+    telemetry = payload.get("telemetry")
+    final = telemetry.get("final") if isinstance(telemetry, dict) else None
+    if isinstance(final, dict):
+        for temp_key in ("max_temperature_c", "avg_temperature_c"):
+            for speed_key in ("max_fan_speed_pct", "avg_fan_speed_pct"):
+                point = _fan_point_from_values(final.get(temp_key), final.get(speed_key))
+                if point is not None:
+                    return point
+    points = _fan_curve_points_from_payload(payload)
+    return points[-1] if points else None
+
+
 def _fan_measurement_points_from_payload(payload: dict) -> list[tuple[float, float]]:
     if not isinstance(payload, dict):
         return []
@@ -3796,7 +5461,7 @@ def _runtime_action_dialog_label(action: str) -> str:
         "daemonize": "Apply selected profile",
         "install-systemd": "Apply selected profile with autostart",
         "uninstall-systemd": "Remove autostart entry",
-        "reverify": "Profile re-verification",
+        "reverify": "Profile verification",
     }
     return labels.get(str(action or "").strip(), "Runtime profile action")
 
@@ -3935,12 +5600,16 @@ def _application_icon(QtGui):
 
 
 def _application_icon_path() -> Path | None:
+    return _asset_image_path(f"{APP_ICON_NAME}.png")
+
+
+def _asset_image_path(filename: str) -> Path | None:
     try:
         return Path(
             str(
                 files("penguin_burner_ui").joinpath(
                     "assets",
-                    f"{APP_ICON_NAME}.png",
+                    filename,
                 )
             )
         )
@@ -3962,7 +5631,22 @@ def _application_version() -> str:
     return match.group(1) if match else "development"
 
 
-def main() -> int:
+def _parse_gui_args(argv: list[str] | None = None) -> tuple[list[str], bool]:
+    raw = list(sys.argv if argv is None else argv)
+    if not raw:
+        raw = ["penguin-burner-ui"]
+    qt_argv = [raw[0]]
+    yolo = False
+    for arg in raw[1:]:
+        if arg == "--yolo":
+            yolo = True
+            continue
+        qt_argv.append(arg)
+    return qt_argv, bool(yolo)
+
+
+def _run_gui(argv: list[str] | None = None) -> int:
+    qt_argv, yolo = _parse_gui_args(sys.argv if argv is None else argv)
     try:
         qt_modules = _import_qt()
     except RuntimeError as exc:
@@ -3970,7 +5654,7 @@ def main() -> int:
         return 1
 
     _QtCore, _QtGui, QtWidgets, _pg = qt_modules
-    app = QtWidgets.QApplication(sys.argv)
+    app = QtWidgets.QApplication(qt_argv)
     app.setApplicationName(APP_DISPLAY_NAME)
     if hasattr(app, "setApplicationDisplayName"):
         app.setApplicationDisplayName(APP_DISPLAY_NAME)
@@ -3980,9 +5664,20 @@ def main() -> int:
     if not icon.isNull():
         app.setWindowIcon(icon)
     _apply_dark_palette(app, _QtGui)
-    window = AutoUvWindow(qt_modules)
+    window = AutoUvWindow(qt_modules, yolo=bool(yolo))
     window.show()
     return int(app.exec())
+
+
+def main() -> int:
+    return _run_gui(sys.argv)
+
+
+def main_yolo() -> int:
+    argv = list(sys.argv)
+    if "--yolo" not in argv[1:]:
+        argv.append("--yolo")
+    return _run_gui(argv)
 
 
 STYLESHEET = """

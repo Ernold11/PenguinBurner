@@ -12,6 +12,7 @@ import sys
 import time
 import traceback
 
+from cli_output import enable_cli_output_wrapping
 from afterburner.fan_curve import (
     load_afterburner_fan_settings,
     parse_sw_auto_fan_curve,

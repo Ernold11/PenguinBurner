@@ -10,48 +10,39 @@ from .table_sizing import set_header_fit_column_widths
 GOOD_DELTA_COLOR = "#55d27a"
 BAD_DELTA_COLOR = "#ff6b6b"
 PROFILE_SORT_ROLE = 261
-PROFILE_SORTABLE_COLUMNS = frozenset({0, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13})
+PROFILE_SORTABLE_COLUMNS = frozenset({0, 2, 3, 4, 5, 6, 7})
 
 
 class ProfileList:
     COLUMNS = [
         "Date",
         "Profile",
-        "Voltage mV",
-        "Voltage vs base",
+        "mV",
         "Target MHz",
-        "Memory Offset MHz",
         "Effective MHz",
-        "Effective vs base",
         "FPS/W",
-        "FPS/W vs base",
         "FPS",
-        "FPS vs base",
         "Power W",
-        "Power vs base",
+        "Mem",
         "Source",
         "Autostart",
     ]
     DATE_COLUMN = 0
     PROFILE_COLUMN = 1
     VOLTAGE_COLUMN = 2
-    VOLTAGE_DELTA_COLUMN = 3
-    TARGET_MHZ_COLUMN = 4
-    MEMORY_OFFSET_COLUMN = 5
-    EFFECTIVE_MHZ_COLUMN = 6
-    EFFECTIVE_DELTA_COLUMN = 7
-    FPSW_COLUMN = 8
-    FPSW_DELTA_COLUMN = 9
-    FPS_COLUMN = 10
-    FPS_DELTA_COLUMN = 11
-    POWER_COLUMN = 12
-    POWER_DELTA_COLUMN = 13
-    SOURCE_COLUMN = 14
-    AUTOSTART_COLUMN = 15
+    TARGET_MHZ_COLUMN = 3
+    EFFECTIVE_MHZ_COLUMN = 4
+    FPSW_COLUMN = 5
+    FPS_COLUMN = 6
+    POWER_COLUMN = 7
+    MEMORY_OFFSET_COLUMN = 8
+    SOURCE_COLUMN = 9
+    AUTOSTART_COLUMN = 10
     PROFILE_ID_ROLE = 257
     CANDIDATE_ID_ROLE = 258
     PROFILE_PATH_ROLE = 259
     PROFILE_DELETABLE_ROLE = 260
+    PROFILE_APPLY_ROLE = 262
     SORT_VALUE_ROLE = PROFILE_SORT_ROLE
     SORTABLE_COLUMNS = PROFILE_SORTABLE_COLUMNS
 
@@ -101,18 +92,13 @@ class ProfileList:
             {
                 0: 154,
                 1: 150,
-                self.VOLTAGE_COLUMN: 112,
-                self.VOLTAGE_DELTA_COLUMN: 126,
+                self.VOLTAGE_COLUMN: 124,
                 self.TARGET_MHZ_COLUMN: 108,
-                self.MEMORY_OFFSET_COLUMN: 160,
-                self.EFFECTIVE_MHZ_COLUMN: 118,
-                self.EFFECTIVE_DELTA_COLUMN: 136,
-                self.FPSW_COLUMN: 92,
-                self.FPSW_DELTA_COLUMN: 126,
-                self.FPS_COLUMN: 92,
-                self.FPS_DELTA_COLUMN: 118,
-                self.POWER_COLUMN: 96,
-                self.POWER_DELTA_COLUMN: 126,
+                self.MEMORY_OFFSET_COLUMN: 104,
+                self.EFFECTIVE_MHZ_COLUMN: 158,
+                self.FPSW_COLUMN: 134,
+                self.FPS_COLUMN: 134,
+                self.POWER_COLUMN: 144,
                 self.SOURCE_COLUMN: 170,
                 self.AUTOSTART_COLUMN: 96,
             },
@@ -172,6 +158,9 @@ class ProfileList:
                 is_deletable = bool(profile_path) or str(
                     profile.get("runtime_source", "")
                 ) == "afterburner"
+                is_applicable = bool(profile.get("final_verified", False)) or str(
+                    profile.get("runtime_source", "")
+                ) == "afterburner"
                 is_preferred = row == 0 and _profile_matches_preference(
                     profile,
                     preferred_candidate_id=preferred_candidate_id,
@@ -180,37 +169,37 @@ class ProfileList:
                 values = [
                     _date_text(profile),
                     _profile_name(profile),
-                    _format_number(profile.get("candidate_voltage_mv"), precision=0),
-                    _format_profile_metric_delta(
+                    _format_profile_metric_with_delta(
                         profile.get("candidate_voltage_mv"),
                         _profile_base_metric(profile, "candidate_voltage_mv"),
+                        precision=0,
                         lower_is_better=True,
                     ),
                     _format_number(profile.get("lock_clock_mhz"), precision=0),
+                    _format_profile_metric_with_delta(
+                        profile.get("avg_core_clock_mhz"),
+                        _profile_base_metric(profile, "avg_core_clock_mhz"),
+                        precision=2,
+                    ),
+                    _format_profile_metric_with_delta(
+                        profile.get("efficiency_fps_per_w"),
+                        _profile_base_metric(profile, "efficiency_fps_per_w"),
+                        precision=2,
+                    ),
+                    _format_profile_metric_with_delta(
+                        profile.get("avg_fps"),
+                        _profile_base_metric(profile, "avg_fps"),
+                        precision=2,
+                    ),
+                    _format_profile_metric_with_delta(
+                        profile.get("avg_power_w"),
+                        _profile_base_metric(profile, "avg_power_w"),
+                        precision=2,
+                        lower_is_better=True,
+                    ),
                     _format_signed_number(
                         profile.get("memory_offset_mhz"),
                         precision=0,
-                    ),
-                    _format_number(profile.get("avg_core_clock_mhz"), precision=2),
-                    _format_profile_metric_delta(
-                        profile.get("avg_core_clock_mhz"),
-                        _profile_base_metric(profile, "avg_core_clock_mhz"),
-                    ),
-                    _format_number(profile.get("efficiency_fps_per_w"), precision=2),
-                    _format_profile_metric_delta(
-                        profile.get("efficiency_fps_per_w"),
-                        _profile_base_metric(profile, "efficiency_fps_per_w"),
-                    ),
-                    _format_number(profile.get("avg_fps"), precision=2),
-                    _format_profile_metric_delta(
-                        profile.get("avg_fps"),
-                        _profile_base_metric(profile, "avg_fps"),
-                    ),
-                    _format_number(profile.get("avg_power_w"), precision=2),
-                    _format_profile_metric_delta(
-                        profile.get("avg_power_w"),
-                        _profile_base_metric(profile, "avg_power_w"),
-                        lower_is_better=True,
                     ),
                     _profile_source_label(profile),
                     (
@@ -226,6 +215,7 @@ class ProfileList:
                     item.setData(self.CANDIDATE_ID_ROLE, candidate_id)
                     item.setData(self.PROFILE_PATH_ROLE, profile_path)
                     item.setData(self.PROFILE_DELETABLE_ROLE, bool(is_deletable))
+                    item.setData(self.PROFILE_APPLY_ROLE, bool(is_applicable))
                     item.setData(self.SORT_VALUE_ROLE, sort_values[column])
                     if (
                         column in self.SORTABLE_COLUMNS - {self.DATE_COLUMN}
@@ -234,16 +224,16 @@ class ProfileList:
                         item.setTextAlignment(
                             self.QtCore.Qt.AlignRight | self.QtCore.Qt.AlignVCenter
                         )
-                    if column == self.VOLTAGE_DELTA_COLUMN:
+                    if column == self.VOLTAGE_COLUMN:
                         _paint_profile_delta_item(
                             item,
                             self.QtGui,
                             profile.get("candidate_voltage_mv"),
                             _profile_base_metric(profile, "candidate_voltage_mv"),
-                            label="Voltage mV",
+                            label="mV",
                             lower_is_better=True,
                         )
-                    if column == self.EFFECTIVE_DELTA_COLUMN:
+                    if column == self.EFFECTIVE_MHZ_COLUMN:
                         _paint_profile_delta_item(
                             item,
                             self.QtGui,
@@ -251,7 +241,7 @@ class ProfileList:
                             _profile_base_metric(profile, "avg_core_clock_mhz"),
                             label="Effective MHz",
                         )
-                    if column == self.FPSW_DELTA_COLUMN:
+                    if column == self.FPSW_COLUMN:
                         _paint_profile_delta_item(
                             item,
                             self.QtGui,
@@ -259,7 +249,7 @@ class ProfileList:
                             _profile_base_metric(profile, "efficiency_fps_per_w"),
                             label="FPS/W",
                         )
-                    if column == self.FPS_DELTA_COLUMN:
+                    if column == self.FPS_COLUMN:
                         _paint_profile_delta_item(
                             item,
                             self.QtGui,
@@ -267,7 +257,7 @@ class ProfileList:
                             _profile_base_metric(profile, "avg_fps"),
                             label="FPS",
                         )
-                    if column == self.POWER_DELTA_COLUMN:
+                    if column == self.POWER_COLUMN:
                         _paint_profile_delta_item(
                             item,
                             self.QtGui,
@@ -449,13 +439,18 @@ class ProfileList:
             selected_ids
         ) == 1
         selected_rows = self._selected_rows()
+        has_apply_selection = (
+            has_single_selection
+            and len(selected_rows) == 1
+            and self._row_is_applicable(selected_rows[0])
+        )
         has_delete_selection = (
             self._runtime_actions_available
             and bool(selected_rows)
             and all(self._row_is_deletable(row) for row in selected_rows)
         )
-        self.daemonize_button.setEnabled(has_single_selection)
-        self.install_button.setEnabled(has_single_selection)
+        self.daemonize_button.setEnabled(has_apply_selection)
+        self.install_button.setEnabled(has_apply_selection)
         self.delete_button.setEnabled(has_delete_selection)
         if sync_persist_toggle and not self._syncing_persist_toggle:
             self._set_persist_toggle_checked(
@@ -495,6 +490,10 @@ class ProfileList:
     def _row_is_deletable(self, row: int) -> bool:
         item = self.table.item(int(row), 0)
         return bool(item is not None and item.data(self.PROFILE_DELETABLE_ROLE))
+
+    def _row_is_applicable(self, row: int) -> bool:
+        item = self.table.item(int(row), 0)
+        return bool(item is not None and item.data(self.PROFILE_APPLY_ROLE))
 
 
 def _standard_trash_icon(QtWidgets, widget):
@@ -786,21 +785,12 @@ def _profile_sort_values(profile: dict) -> list[float | str]:
         _date_sort_value(profile),
         "",
         _profile_value_sort_value(profile, "candidate_voltage_mv"),
-        _profile_delta_sort_value(
-            profile,
-            "candidate_voltage_mv",
-            lower_is_better=True,
-        ),
         _profile_value_sort_value(profile, "lock_clock_mhz"),
-        "",
         _profile_value_sort_value(profile, "avg_core_clock_mhz"),
-        _profile_delta_sort_value(profile, "avg_core_clock_mhz"),
         _profile_value_sort_value(profile, "efficiency_fps_per_w"),
-        _profile_delta_sort_value(profile, "efficiency_fps_per_w"),
         _profile_value_sort_value(profile, "avg_fps"),
-        _profile_delta_sort_value(profile, "avg_fps"),
         _profile_value_sort_value(profile, "avg_power_w"),
-        _profile_delta_sort_value(profile, "avg_power_w", lower_is_better=True),
+        "",
         "",
         "",
     ]
@@ -810,6 +800,7 @@ def _profile_source_label(profile: dict) -> str:
     source = str(profile.get("profile_source", "")).strip()
     labels = {
         "auto-uv-final": "Auto UV",
+        "user-edited": "User edited",
     }
     return labels.get(source, source)
 

@@ -72,14 +72,14 @@ class ScanControls:
         if elapsed_s is not None and target_s is not None:
             shown_elapsed_s = _clamped_elapsed_s(elapsed_s, target_s)
             text = (
-                "Re-verifying profile "
+                "Verifying profile "
                 f"{_format_duration_compact(shown_elapsed_s)} / "
                 f"{_format_duration_compact(target_s)}"
             )
         self.set_progress(
-            "Re-verifying profile",
+            "Verifying profile",
             percent,
-            detail=detail or "Re-verifying profile",
+            detail=detail or "Verifying profile",
             text=text,
         )
 

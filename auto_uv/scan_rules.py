@@ -163,9 +163,7 @@ def _core_clock_below_floor(
 def _probe_failure_should_mark_voltage_unsafe(reason: str) -> bool:
     if _is_non_hard_probe_failure(reason):
         return False
-    if str(reason).startswith(
-        ("timedemo-live-stall", "telemetry-live-load-lost", "user-stop-requested")
-    ):
+    if str(reason).startswith(("timedemo-live-stall", "user-stop-requested")):
         return False
     return True
 

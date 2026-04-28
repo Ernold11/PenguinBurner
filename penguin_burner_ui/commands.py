@@ -84,12 +84,19 @@ def scan_command(auto_uv_options: Mapping[str, object] | None = None) -> list[st
         "--auto-uv-require-final-choice",
     ]
     option_flags = {
+        "auto_uv_mode": "--auto-uv-mode",
         "auto_uv_max_drop_pct": "--auto-uv-max-drop-pct",
         "auto_uv_max_clock_drop_pct": "--auto-uv-max-clock-drop-pct",
         "auto_uv_clock_bump_budget_ratio": "--auto-uv-overclock-budget-ratio",
         "auto_uv_short_seconds": "--auto-uv-short-seconds",
         "auto_uv_memory_offset_mhz": "--auto-uv-memory-offset-mhz",
     }
+    boolean_flags = {
+        "auto_uv_yolo": "--yolo",
+    }
+    for key, flag in boolean_flags.items():
+        if bool((auto_uv_options or {}).get(key)):
+            command.append(flag)
     for key, flag in option_flags.items():
         value = (auto_uv_options or {}).get(key)
         if value in (None, ""):

@@ -91,10 +91,10 @@ Auto-UV may retry the same voltage with a small overclock. The same
 budget can also be used at an FPS/W wall if an overclock improves
 temperature-normalized efficiency. The total overclock budget is
 `--auto-uv-max-clock-drop-pct * --auto-uv-overclock-budget-ratio`. The ratio
-defaults to `0.5` and is clamped to `0.0..1.0`, so the overclock budget cannot exceed
-the configured loaded-clock drop allowance. With the defaults, `10% * 0.5`
-allows up to `+5%` total budget. Use a ratio like `0.75` for a more aggressive
-budget or `0.25` for a gentler one. Individual retries are sized from the failed
+defaults to `0.5` and is clamped to `0.0..1.25`. Values above `1.0` can push the
+curve above the measured baseline clock and may hang the system. With the
+defaults, `10% * 0.5` allows up to `+5%` total budget. Use a ratio like `0.75`
+for a more aggressive budget or `0.25` for a gentler one. Individual retries are sized from the failed
 probe: Auto-UV reads the measured clock shortfall, adds one clock-step of
 overhead, snaps to the V/F clock grid, and charges the actual target increase
 against the remaining budget. If the machine crashes during an overclock, the next
@@ -121,13 +121,13 @@ The three main aggressiveness options are:
   can be spent recovering clock with overclocks; default `0.5`, which is a `5%`
   budget with the default `10%` clock-drop allowance.
 
-Aggressive example:
+Performance example:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-max-drop-pct 18 \
   --auto-uv-max-clock-drop-pct 10 \
-  --auto-uv-overclock-budget-ratio 0.75
+  --auto-uv-overclock-budget-ratio 1.0
 ```
 
 ## After The Scan

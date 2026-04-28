@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from cli_output import CLI_OUTPUT_WRAP_COLUMNS, wrap_cli_output_text
+
 
 class LogView:
     def __init__(self, *, QtCore, QtGui, QtWidgets):
@@ -93,8 +95,15 @@ def _timestamp_log_text(
     line_start = bool(at_line_start)
     for segment in normalized.splitlines(keepends=True):
         if line_start and segment != "\n":
-            parts.append(f"[{timestamp}] ")
-        parts.append(segment)
+            segment = f"[{timestamp}] {segment}"
+        parts.append(
+            wrap_cli_output_text(
+                segment,
+                width=CLI_OUTPUT_WRAP_COLUMNS,
+                preserve_json_documents=False,
+                preserve_json_lines=False,
+            )
+        )
         line_start = segment.endswith("\n")
     return "".join(parts), line_start
 

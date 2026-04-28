@@ -49,6 +49,10 @@ Q2RTX_BINARY_CANDIDATES = (
 
 FATAL_OUTPUT_PATTERNS = (
     "ERR_FATAL",
+    "device lost",
+    "VK_ERROR_DEVICE_LOST",
+    "VK_ERROR_OUT_OF_DEVICE_MEMORY",
+    "VK_ERROR_OUT_OF_HOST_MEMORY",
     "No game data files detected",
     "Couldn't read demo",
     "Couldn't load maps/",

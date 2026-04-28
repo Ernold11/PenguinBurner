@@ -147,6 +147,19 @@ def apply_probe_decision(
             reason=decision.reason,
         )
 
+    if decision.action == "stop-critical":
+        return AutoUv2SweepUpdate(
+            state=replace(
+                state,
+                candidate_voltage_mv=None,
+                last_overclock_target_mhz=None,
+                pending_measured_target_mhz=None,
+            ),
+            stop=True,
+            write_latest_verified=False,
+            reason=decision.reason,
+        )
+
     return AutoUv2SweepUpdate(
         state=state,
         stop=True,

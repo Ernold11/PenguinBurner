@@ -19,6 +19,7 @@ from auto_uv import (
     AutoUvError,
     AutoUvFinalChoiceDiscarded,
     build_long_stability_test_config,
+    long_stability_workload_durations,
     restore_afterburner_defaults_from_config,
     run_auto_uv_voltage_scan,
 )
@@ -26,14 +27,19 @@ from auto_uv.profiles import (
     auto_uv_profiles_dir,
     delete_auto_uv_profiles,
     format_profile_table,
+    mark_auto_uv_profile_verification_failed,
+    mark_auto_uv_profile_verified,
     read_auto_uv_profile_summaries,
     resolve_auto_uv_profile,
 )
 from auto_uv.preflight import require_auto_uv_preflight
+from auto_uv.sweep_modes import AUTO_UV_MODES, normalize_auto_uv_mode
 from auto_uv.tuning import (
     AUTO_UV_DEFAULTS,
     AUTO_UV_FAN_TUNING,
+    AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO,
     AUTO_UV_METRIC_TUNING,
+    AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO,
 )
 from afterburner.fan_curve import (
     load_afterburner_fan_settings,
@@ -102,10 +108,12 @@ from runtime_debug import (
     debug_log,
     debug_effective_runtime_options,
     debug_exception,
+    enable_cli_output_wrapping,
     enable_debug_logging,
     enable_stdio_capture,
     log,
 )
+
 from subprocess_locale import stable_subprocess_env
 from runtime_service import (
     DEFAULT_JOURNAL_HOURS,
@@ -119,6 +127,12 @@ from runtime_service import (
     uninstall_systemd_service,
 )
 
+
+PROFILE_VERIFY_VOLTAGE_TOLERANCE_MV = 50
+PROFILE_VERIFY_VOLTAGE_MISMATCH_STREAK = 5
+PROFILE_VERIFY_VOLTAGE_WARMUP_S = 8.0
+PROFILE_VERIFY_BASELINE_DURATION_S = 60
+PROFILE_VERIFY_BASELINE_MIN_DURATION_S = 10
 
 NVML_SUCCESS = 0
 NVML_TEMPERATURE_GPU = 0
@@ -392,9 +406,17 @@ def parse_main_args(argv):
             "Fraction of --auto-uv-max-clock-drop-pct available as total Auto-UV "
             "overclock budget; each recovery spends only the measured clock "
             "shortfall plus a small safety step. "
-            f"default {AUTO_UV_DEFAULTS.clock_bump_budget_ratio:.2f}. "
-            "Clamped to 0.0..1.0."
+            f"default {AUTO_UV_DEFAULTS.clock_bump_budget_ratio:.2f} "
+            "for efficiency, "
+            f"{AUTO_UV_DEFAULTS.performance_clock_bump_budget_ratio:.2f} "
+            "for performance. "
+            f"Clamped to 0.0..{AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO:.2f}."
         ),
+    )
+    auto_uv_group.add_argument(
+        "--yolo",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     auto_uv_group.add_argument(
         "--auto-uv-clock-bump-budget-ratio",
@@ -404,13 +426,25 @@ def parse_main_args(argv):
         help=argparse.SUPPRESS,
     )
     auto_uv_group.add_argument(
+        "--auto-uv-mode",
+        choices=AUTO_UV_MODES,
+        default=None,
+        metavar="MODE",
+        help=(
+            "Auto-UV tuning behavior. efficiency keeps the current FPS/W-first "
+            "search behavior; performance disables efficiency-wall stopping so "
+            "performance-specific behavior can evolve separately."
+        ),
+    )
+    auto_uv_group.add_argument(
         "--auto-uv-max-drop-pct",
         type=float,
         default=None,
         metavar="N",
         help=(
             "Maximum percentage drop below the first discovered auto-UV start "
-            "voltage allowed during candidate search; default 16.0."
+            "voltage allowed during candidate search; default 16.0 for "
+            "efficiency, 14.0 for performance."
         ),
     )
     auto_uv_group.add_argument(
@@ -829,9 +863,26 @@ def detect_vf_curve_reset(vf_curve_reader, expected_samples, *, tolerance_mhz=1)
     return mismatches
 
 
-def load_auto_uv_final_curve(profile_selector=""):
+def format_vf_curve_mismatch_preview(mismatches, *, max_items=4) -> str:
+    preview = ", ".join(
+        (
+            f"{int(item['voltage_mv'])}mV:"
+            f"{int(item['current_offset_mhz']):+d}->"
+            f"{int(item['expected_offset_mhz']):+d}MHz"
+        )
+        for item in list(mismatches)[: int(max_items)]
+    )
+    if len(mismatches) > int(max_items):
+        preview += ", ..."
+    return preview
+
+
+def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = False):
     selector = str(profile_selector or "").strip()
-    resolved_profile = resolve_auto_uv_profile(selector or "latest")
+    resolved_profile = resolve_auto_uv_profile(
+        selector or "latest",
+        allow_unverified=bool(allow_unverified),
+    )
     if resolved_profile is None:
         if selector:
             raise NvmlError(f"Auto-UV profile not found: {selector}")
@@ -1343,8 +1394,37 @@ def _stability_workload_label(*, include_q2rtx: bool, include_cuda: bool) -> str
     return "none"
 
 
+def _stability_workload_split_label(
+    total_duration_s: int,
+    *,
+    include_q2rtx: bool,
+    include_cuda: bool,
+) -> str:
+    q2rtx_duration_s, cuda_duration_s = long_stability_workload_durations(
+        int(total_duration_s),
+        include_q2rtx=bool(include_q2rtx),
+        include_cuda=bool(include_cuda),
+    )
+    parts = []
+    if include_q2rtx:
+        parts.append(f"q2rtx={int(q2rtx_duration_s)}s")
+    if include_cuda:
+        parts.append(f"cuda={int(cuda_duration_s)}s")
+    return " ".join(parts)
+
+
 def run_stability_test(args, *, gpu_index, config_path):
     include_q2rtx, include_cuda = _stability_workload_selection(args)
+    total_duration_s = int(args.stability_seconds)
+    split_label = _stability_workload_split_label(
+        total_duration_s,
+        include_q2rtx=include_q2rtx,
+        include_cuda=include_cuda,
+    )
+    log(
+        "Stability workload split: "
+        f"{split_label}."
+    )
     stability_config = (
         build_stability_config(
             args,
@@ -1360,7 +1440,7 @@ def run_stability_test(args, *, gpu_index, config_path):
     )
     stability_config = build_long_stability_test_config(
         stability_config,
-        total_duration_s=int(args.stability_seconds),
+        total_duration_s=total_duration_s,
         include_q2rtx=include_q2rtx,
         include_cuda=include_cuda,
     )
@@ -1419,14 +1499,14 @@ def run_profile_reverification(
         )
 
         if prefer_afterburner_curve:
-            label, flatten_target = _apply_reverify_afterburner_profile(
+            label, flatten_target, reverify_plan = _apply_reverify_afterburner_profile(
                 vf_curve_reader,
                 gpu_policy_controller,
                 afterburner_runtime_options,
                 gpu_index=gpu_index,
             )
         else:
-            label, flatten_target = _apply_reverify_auto_uv_profile(
+            label, flatten_target, reverify_plan = _apply_reverify_auto_uv_profile(
                 vf_curve_reader,
                 selector,
                 gpu_policy_controller,
@@ -1437,15 +1517,25 @@ def run_profile_reverification(
                 clock_ceiling_controller = FlattenedClockCeilingController(
                     flatten_target=flatten_target,
                     policy_controller=gpu_policy_controller,
+                    exact_lock=True,
                 )
                 clock_ceiling_controller.apply()
             except Exception as exc:
                 clock_ceiling_controller = None
-                log(f"Skipping re-verification clock ceiling: {exc}")
+                log(f"Skipping re-verification clock lock: {exc}")
             else:
                 log(
-                    "Configured re-verification clock ceiling: "
+                    "Configured re-verification clock lock: "
                     f"{clock_ceiling_controller.describe()}."
+                )
+                _apply_and_verify_reverify_vf_plan(
+                    vf_curve_reader,
+                    reverify_plan,
+                    context="selected profile after clock lock",
+                )
+                log(
+                    "Re-applied profile V/F curve after re-verification clock lock: "
+                    f"points={len(reverify_plan)}."
                 )
 
         duration_s = int(args.stability_seconds)
@@ -1453,6 +1543,15 @@ def run_profile_reverification(
         workload_label = _stability_workload_label(
             include_q2rtx=include_q2rtx,
             include_cuda=include_cuda,
+        )
+        split_label = _stability_workload_split_label(
+            duration_s,
+            include_q2rtx=include_q2rtx,
+            include_cuda=include_cuda,
+        )
+        log(
+            "Profile re-verification workload split: "
+            f"{split_label}."
         )
         log(
             "Profile re-verification starting: "
@@ -1478,6 +1577,13 @@ def run_profile_reverification(
             include_q2rtx=include_q2rtx,
             include_cuda=include_cuda,
         )
+        if flatten_target is not None:
+            stability_config.abort_callback = (
+                _profile_verification_voltage_abort_callback(
+                    flatten_target,
+                    previous_callback=stability_config.abort_callback,
+                )
+            )
         stop_request_path = _stability_stop_request_path(args)
         if stop_request_path is not None:
             stability_config.abort_callback = _stability_stop_request_abort_callback(
@@ -1495,16 +1601,88 @@ def run_profile_reverification(
             raise NvmlError(f"stability test configuration error: {exc}") from exc
         print_q2rtx_stability_result(result)
         if not result.success:
+            if (
+                not prefer_afterburner_curve
+                and _profile_verification_failure_blocks_apply(result.reason)
+            ):
+                try:
+                    failed_path = mark_auto_uv_profile_verification_failed(
+                        selector,
+                        failure={
+                            "reason": result.reason,
+                            "log_path": str(result.log_path),
+                            "workload": workload_label,
+                            "fatal_output_matches": list(
+                                getattr(result, "fatal_output_matches", []) or []
+                            ),
+                        },
+                    )
+                    if failed_path is not None:
+                        log(
+                            "Marked profile verification failed: "
+                            f"path={failed_path} reason={result.reason}"
+                        )
+                except Exception as exc:
+                    log(f"Warning: failed to mark profile verification failed: {exc}")
             raise NvmlError(
                 f"profile re-verification failed: {result.reason}; log={result.log_path}"
             )
+        base_metrics = None
+        if not prefer_afterburner_curve and _profile_needs_reverify_baseline(selector):
+            if clock_ceiling_controller is not None:
+                try:
+                    clock_ceiling_controller.close()
+                except Exception as exc:
+                    log(
+                        "Warning: failed to reset re-verification clock lock before "
+                        f"baseline probe: {exc}"
+                    )
+                clock_ceiling_controller = None
+            try:
+                base_plan = _base_vf_plan_from_profile_plan(reverify_plan)
+            except Exception as exc:
+                log(f"Profile re-verification baseline probe skipped: {exc}")
+            else:
+                base_metrics = _run_profile_reverification_baseline_probe(
+                    args,
+                    gpu_index=gpu_index,
+                    config_path=config_path,
+                    base_plan=base_plan,
+                    gpu_policy_controller=gpu_policy_controller,
+                    duration_s=_profile_reverification_baseline_duration_s(duration_s),
+                    include_q2rtx=include_q2rtx,
+                    include_cuda=include_cuda,
+                )
+        if not prefer_afterburner_curve:
+            verified_path = mark_auto_uv_profile_verified(
+                selector,
+                verification={
+                    "workload": workload_label,
+                    "duration_s": duration_s,
+                    "result_reason": result.reason,
+                    "log_path": str(result.log_path),
+                    "target_clock_mhz": (
+                        flatten_target.get("lock_clock_mhz")
+                        if isinstance(flatten_target, dict)
+                        else None
+                    ),
+                    "target_voltage_mv": (
+                        flatten_target.get("lock_voltage_mv")
+                        if isinstance(flatten_target, dict)
+                        else None
+                    ),
+                },
+                metrics=_profile_verification_metrics_from_result(result),
+                base_metrics=base_metrics,
+            )
+            log(f"Marked profile verified: path={verified_path}")
         log(f"Profile re-verification passed: profile={label}.")
     finally:
         if clock_ceiling_controller is not None:
             try:
                 clock_ceiling_controller.close()
             except Exception as exc:
-                log(f"Warning: failed to reset re-verification clock ceiling: {exc}")
+                log(f"Warning: failed to reset re-verification clock lock: {exc}")
         if backup_path is not None:
             try:
                 restore_offsets(
@@ -1525,11 +1703,14 @@ def run_profile_reverification(
 
 
 def _apply_reverify_auto_uv_profile(vf_curve_reader, selector: str, gpu_policy_controller):
-    auto_uv_final_curve = load_auto_uv_final_curve(selector)
+    auto_uv_final_curve = load_auto_uv_final_curve(selector, allow_unverified=True)
     if auto_uv_final_curve is None:
         raise NvmlError("Auto-UV profile not found")
-    apply_plan(vf_curve_reader, auto_uv_final_curve["plan"])
-    vf_curve_reader.refresh_points()
+    _apply_and_verify_reverify_vf_plan(
+        vf_curve_reader,
+        auto_uv_final_curve["plan"],
+        context="selected profile",
+    )
     label = (
         f"auto-UV:{auto_uv_final_curve['lock_clock_mhz']}MHz@"
         f"{auto_uv_final_curve['candidate_voltage_mv']}mV"
@@ -1551,7 +1732,218 @@ def _apply_reverify_auto_uv_profile(vf_curve_reader, selector: str, gpu_policy_c
             "Applied profile memory offset for re-verification: "
             f"{int(memory_policy['mem_clk_vf_offset_mhz']):+d}MHz."
         )
-    return label, auto_uv_final_curve["flatten_target"]
+    return label, auto_uv_final_curve["flatten_target"], auto_uv_final_curve["plan"]
+
+
+def _apply_and_verify_reverify_vf_plan(
+    vf_curve_reader,
+    plan: list[dict],
+    *,
+    context: str,
+) -> None:
+    apply_plan(vf_curve_reader, plan)
+    vf_curve_reader.refresh_points()
+    expected_samples = select_expected_vf_samples(plan)
+    vf_mismatches = detect_vf_curve_reset(vf_curve_reader, expected_samples)
+    if vf_mismatches:
+        mismatch_preview = format_vf_curve_mismatch_preview(vf_mismatches)
+        raise NvmlError(
+            f"Profile verification V/F curve did not match the {context} "
+            f"after apply: mismatches={len(vf_mismatches)} "
+            f"samples={mismatch_preview}"
+        )
+
+
+def _profile_needs_reverify_baseline(selector: str) -> bool:
+    try:
+        resolved = resolve_auto_uv_profile(str(selector), allow_unverified=True)
+    except Exception:
+        return False
+    if resolved is None:
+        return False
+    _path, profile = resolved
+    if str(profile.get("profile_source", "")).strip() != "user-edited":
+        return False
+    return any(
+        profile.get(key) in (None, "")
+        for key in (
+            "base_avg_core_clock_mhz",
+            "base_avg_fps",
+            "base_avg_power_w",
+            "base_efficiency_fps_per_w",
+        )
+    )
+
+
+def _profile_verification_failure_blocks_apply(reason: str) -> bool:
+    text = str(reason or "").strip()
+    if not text:
+        return False
+    if text.startswith("user-stop-requested"):
+        return False
+    return True
+
+
+def _profile_reverification_baseline_duration_s(duration_s: int) -> int:
+    return max(
+        int(PROFILE_VERIFY_BASELINE_MIN_DURATION_S),
+        min(
+            int(PROFILE_VERIFY_BASELINE_DURATION_S),
+            max(1, int(duration_s)) // 10,
+        ),
+    )
+
+
+def _base_vf_plan_from_profile_plan(plan: list[dict]) -> list[dict]:
+    base_plan = []
+    for raw in list(plan or []):
+        item = dict(raw)
+        try:
+            base_mhz = int(round(float(item["base_mhz"])))
+            item["target_mhz"] = int(base_mhz)
+            item["new_offset_mhz"] = 0
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NvmlError(f"profile baseline V/F point is invalid: {raw}") from exc
+        base_plan.append(item)
+    if not base_plan:
+        raise NvmlError("profile baseline V/F plan is empty")
+    return base_plan
+
+
+def _run_profile_reverification_baseline_probe(
+    args,
+    *,
+    gpu_index,
+    config_path,
+    base_plan: list[dict],
+    gpu_policy_controller,
+    duration_s: int,
+    include_q2rtx: bool,
+    include_cuda: bool,
+) -> dict | None:
+    try:
+        log(
+            "Profile re-verification baseline probe starting: "
+            f"duration={int(duration_s)}s "
+            f"{_stability_workload_split_label(duration_s, include_q2rtx=include_q2rtx, include_cuda=include_cuda)}."
+        )
+        baseline_reader = create_hidden_vf_curve_reader(gpu_index=gpu_index)
+        if baseline_reader is None:
+            raise NvmlError("could not open the live Nvidia V/F curve reader")
+        try:
+            _apply_and_verify_reverify_vf_plan(
+                baseline_reader,
+                base_plan,
+                context="baseline profile",
+            )
+        finally:
+            baseline_reader.close()
+        if gpu_policy_controller is not None:
+            try:
+                gpu_policy_controller.apply_clock_offsets(mem_clk_vf_offset_mhz=0)
+            except Exception as exc:
+                log(f"Warning: failed to reset memory offset for baseline probe: {exc}")
+        stability_config = (
+            build_stability_config(
+                args,
+                gpu_index=gpu_index,
+                config_path=config_path,
+                duration_override=int(duration_s),
+                progress_context="Profile baseline",
+            )
+            if include_q2rtx
+            else build_cuda_stability_config(
+                args,
+                gpu_index=gpu_index,
+                config_path=config_path,
+            )
+        )
+        stability_config = build_long_stability_test_config(
+            stability_config,
+            total_duration_s=int(duration_s),
+            include_q2rtx=include_q2rtx,
+            include_cuda=include_cuda,
+        )
+        stop_request_path = _stability_stop_request_path(args)
+        if stop_request_path is not None:
+            stability_config.abort_callback = _stability_stop_request_abort_callback(
+                stop_request_path,
+                previous_callback=stability_config.abort_callback,
+            )
+        attach_stdout_progress(stability_config)
+        result = (
+            run_q2rtx_stability_test(stability_config)
+            if include_q2rtx
+            else run_cuda_stability_test(stability_config)
+        )
+        print_q2rtx_stability_result(result)
+        if not result.success:
+            log(
+                "Profile re-verification baseline probe skipped: "
+                f"{result.reason}; log={result.log_path}"
+            )
+            return None
+        metrics = _profile_verification_metrics_from_result(result)
+        log("Profile re-verification baseline probe complete.")
+        return metrics
+    except Exception as exc:
+        log(f"Profile re-verification baseline probe skipped: {exc}")
+        return None
+
+
+def _profile_verification_metrics_from_result(result) -> dict:
+    metrics = {}
+    timedemo_runs = list(getattr(result, "timedemo_runs", []) or [])
+    fps_values = [
+        fps
+        for fps in (_float_or_none(getattr(run, "fps", None)) for run in timedemo_runs)
+        if fps is not None and fps > 0.0
+    ]
+    if fps_values:
+        metrics["avg_fps"] = sum(fps_values) / len(fps_values)
+
+    summary = {}
+    telemetry_summary = getattr(result, "telemetry_summary", None)
+    if callable(telemetry_summary):
+        try:
+            summary = telemetry_summary()
+        except Exception:
+            summary = {}
+    if isinstance(summary, dict):
+        field_map = {
+            "core_clock_avg": "avg_core_clock_mhz",
+            "power_avg": "avg_power_w",
+            "power_max": "max_power_w",
+            "voltage_avg": "avg_voltage_mv",
+            "voltage_max": "max_voltage_mv",
+            "temperature_avg": "avg_temperature_c",
+            "temperature_max": "max_temperature_c",
+            "fan_avg": "avg_fan_speed_pct",
+            "fan_max": "max_fan_speed_pct",
+        }
+        for source_key, target_key in field_map.items():
+            value = _float_or_none(summary.get(source_key))
+            if value is not None:
+                metrics[target_key] = value
+
+    avg_fps = _float_or_none(metrics.get("avg_fps"))
+    avg_power_w = _float_or_none(metrics.get("avg_power_w"))
+    avg_core_clock_mhz = _float_or_none(metrics.get("avg_core_clock_mhz"))
+    if avg_fps is not None and avg_power_w is not None and avg_power_w > 0.0:
+        metrics["efficiency_fps_per_w"] = avg_fps / avg_power_w
+    if (
+        avg_core_clock_mhz is not None
+        and avg_power_w is not None
+        and avg_power_w > 0.0
+    ):
+        metrics["efficiency_mhz_per_w"] = avg_core_clock_mhz / avg_power_w
+    if (
+        avg_power_w is not None
+        and avg_core_clock_mhz is not None
+        and avg_core_clock_mhz > 0.0
+    ):
+        metrics["watts_per_mhz"] = avg_power_w / avg_core_clock_mhz
+    return metrics
 
 
 def _stability_stop_request_path(args) -> Path | None:
@@ -1573,12 +1965,95 @@ def _stability_stop_request_abort_callback(
                 return str(reason)
         try:
             if Path(stop_request_path).exists():
-                return "profile-reverification-stop-requested"
+                return "user-stop-requested"
         except OSError:
             return None
         return None
 
     return _abort_callback
+
+
+def _profile_verification_voltage_abort_callback(
+    flatten_target: dict,
+    *,
+    previous_callback=None,
+):
+    target_voltage_mv = _coerce_positive_int(
+        dict(flatten_target).get("lock_voltage_mv")
+    )
+    if target_voltage_mv is None:
+        return previous_callback
+    tolerance_mv = int(PROFILE_VERIFY_VOLTAGE_TOLERANCE_MV)
+    state = {"high_voltage_streak": 0}
+
+    def _abort_callback(progress_state: dict) -> str | None:
+        if previous_callback is not None:
+            reason = previous_callback(progress_state)
+            if reason:
+                return str(reason)
+        try:
+            elapsed_s = float(
+                progress_state.get(
+                    "progress_elapsed_s",
+                    progress_state.get("elapsed_s", 0.0),
+                )
+                or 0.0
+            )
+        except (TypeError, ValueError):
+            elapsed_s = 0.0
+        if elapsed_s < float(PROFILE_VERIFY_VOLTAGE_WARMUP_S):
+            state["high_voltage_streak"] = 0
+            return None
+        sample = progress_state.get("latest_sample")
+        if sample is None or getattr(sample, "voltage_mv", None) is None:
+            state["high_voltage_streak"] = 0
+            return None
+        try:
+            voltage_mv = float(sample.voltage_mv)
+        except (TypeError, ValueError):
+            state["high_voltage_streak"] = 0
+            return None
+        gpu_util_pct = getattr(sample, "gpu_util_pct", None)
+        if gpu_util_pct is not None:
+            try:
+                if float(gpu_util_pct) < 50.0:
+                    state["high_voltage_streak"] = 0
+                    return None
+            except (TypeError, ValueError):
+                pass
+        if voltage_mv <= float(target_voltage_mv + tolerance_mv):
+            state["high_voltage_streak"] = 0
+            return None
+        state["high_voltage_streak"] = int(state["high_voltage_streak"]) + 1
+        if state["high_voltage_streak"] < int(
+            PROFILE_VERIFY_VOLTAGE_MISMATCH_STREAK
+        ):
+            return None
+        return (
+            "profile-verification-voltage-mismatch "
+            f"current={voltage_mv:.0f}mV "
+            f"target={int(target_voltage_mv)}mV "
+            f"tolerance={int(tolerance_mv)}mV "
+            f"streak={int(state['high_voltage_streak'])}"
+        )
+
+    return _abort_callback
+
+
+def _coerce_positive_int(value) -> int | None:
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _float_or_none(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number
 
 
 def _apply_reverify_afterburner_profile(
@@ -1641,7 +2116,7 @@ def _apply_reverify_afterburner_profile(
         f"changed={len(vf_apply_result['changed_points'])} "
         f"gpu-index={int(gpu_index)}."
     )
-    return label, flatten_target
+    return label, flatten_target, vf_apply_result["plan"]
 
 
 def run_q2rtx_install():
@@ -1893,7 +2368,7 @@ def run_nvidia_smi(args):
 
 
 class FlattenedClockCeilingController:
-    def __init__(self, flatten_target, policy_controller):
+    def __init__(self, flatten_target, policy_controller, *, exact_lock=False):
         if not flatten_target:
             raise ValueError("flatten_target is required")
         if policy_controller is None:
@@ -1901,6 +2376,7 @@ class FlattenedClockCeilingController:
 
         self._flatten_target = dict(flatten_target)
         self._policy_controller = policy_controller
+        self._exact_lock = bool(exact_lock)
         self._active = False
         self._range_lock = None
 
@@ -1935,15 +2411,16 @@ class FlattenedClockCeilingController:
         if not self._active:
             return ""
 
-        ceiling_text = (
+        clock_text = (
             f"{self.requested_max_clock_mhz}MHz"
             if self.requested_max_clock_mhz == self.applied_max_clock_mhz
             else f"{self.requested_max_clock_mhz}->{self.applied_max_clock_mhz}MHz"
         )
         voltage_mv = self.target_voltage_mv
         if voltage_mv is not None:
-            ceiling_text += f"@{voltage_mv}mV"
-        return f"clk_ceiling={ceiling_text} "
+            clock_text += f"@{voltage_mv}mV"
+        field = "clk_lock" if self._exact_lock else "clk_ceiling"
+        return f"{field}={clock_text} "
 
     def describe(self):
         snap_text = ""
@@ -1952,21 +2429,41 @@ class FlattenedClockCeilingController:
             and self.requested_max_clock_mhz != self.applied_max_clock_mhz
         ):
             snap_text = (
-                f", supported-max={self.applied_max_clock_mhz}MHz"
+                f", supported-clock={self.applied_max_clock_mhz}MHz"
                 f" ({self._range_lock['max_mode']})"
             )
         min_text = (
             f", min-step={self.applied_min_clock_mhz}MHz"
-            if self._range_lock is not None
+            if self._range_lock is not None and not self._exact_lock
             else ""
         )
+        policy_text = "lock" if self._exact_lock else "ceiling"
         return (
             f"{describe_afterburner_dynamic_lock(self._flatten_target)}, "
-            f"ceiling={self.requested_max_clock_mhz}MHz"
+            f"{policy_text}={self.requested_max_clock_mhz}MHz"
             f"{snap_text}{min_text}"
         )
 
     def apply(self):
+        if self._exact_lock:
+            snap = self._policy_controller.apply_locked_core_clock_mhz(
+                self.target_clock_mhz,
+                prefer_not_above=True,
+                snap_to_supported=True,
+            )
+            applied_clock_mhz = int(snap["applied_clock_mhz"])
+            self._range_lock = {
+                "requested_min_clock_mhz": int(self.target_clock_mhz),
+                "requested_max_clock_mhz": int(self.target_clock_mhz),
+                "applied_min_clock_mhz": applied_clock_mhz,
+                "applied_max_clock_mhz": applied_clock_mhz,
+                "min_mode": str(snap["mode"]),
+                "max_mode": str(snap["mode"]),
+                "supported_steps_mhz": list(snap.get("supported_steps_mhz") or []),
+            }
+            self._active = True
+            return dict(self._range_lock)
+
         supported_steps = self._policy_controller.get_supported_core_clock_steps_mhz()
         requested_min_clock_mhz = (
             supported_steps[0] if supported_steps else self.target_clock_mhz
@@ -2401,9 +2898,23 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
             float(args.auto_uv_max_clock_drop_pct),
         )
     if args.auto_uv_clock_bump_budget_ratio is not None:
+        max_clock_bump_budget_ratio = (
+            AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO
+            if bool(args.yolo)
+            else AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO
+        )
         afterburner_runtime_options["auto_uv_clock_bump_budget_ratio"] = max(
             0.0,
-            min(1.0, float(args.auto_uv_clock_bump_budget_ratio)),
+            min(
+                float(max_clock_bump_budget_ratio),
+                float(args.auto_uv_clock_bump_budget_ratio),
+            ),
+        )
+    if args.yolo:
+        afterburner_runtime_options["auto_uv_yolo"] = True
+    if args.auto_uv_mode is not None:
+        afterburner_runtime_options["auto_uv_mode"] = normalize_auto_uv_mode(
+            args.auto_uv_mode
         )
     if args.auto_uv_require_final_choice:
         afterburner_runtime_options["auto_uv_require_final_choice"] = True
@@ -3163,16 +3674,9 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
                     log(f"{timestamp} event=vf-curve-reapply-error error={exc}")
                 else:
                     last_vf_reapply_monotonic = loop_started
-                    mismatch_preview = ", ".join(
-                        (
-                            f"{int(item['voltage_mv'])}mV:"
-                            f"{int(item['current_offset_mhz']):+d}->"
-                            f"{int(item['expected_offset_mhz']):+d}MHz"
-                        )
-                        for item in vf_mismatches[:4]
+                    mismatch_preview = format_vf_curve_mismatch_preview(
+                        vf_mismatches
                     )
-                    if len(vf_mismatches) > 4:
-                        mismatch_preview += ", ..."
                     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
                     log(
                         f"{timestamp} {telemetry_text} "
@@ -3349,13 +3853,21 @@ def _runtime_profile_selector_from_argv(argv) -> str:
     return ""
 
 
+def _runtime_profile_selector_allows_unverified_from_argv(argv) -> bool:
+    return any(str(arg) == "--stability-test" for arg in argv)
+
+
 def cli_main() -> int:
+    enable_cli_output_wrapping()
     try:
         runtime_flags = parse_runtime_flags(sys.argv[1:])
         runtime_argv = runtime_flags["passthrough"]
         runtime_profile_selector = _runtime_profile_selector_from_argv(runtime_argv)
         if runtime_profile_selector and resolve_auto_uv_profile(
-            runtime_profile_selector
+            runtime_profile_selector,
+            allow_unverified=_runtime_profile_selector_allows_unverified_from_argv(
+                runtime_argv
+            ),
         ) is None:
             raise NvmlError(f"Auto-UV profile not found: {runtime_profile_selector}")
         auto_uv_requested = "--auto-uv-voltage-scan" in runtime_argv

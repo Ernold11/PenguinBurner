@@ -17,6 +17,7 @@ class CurvePlot:
         candidate_name: str = "Candidate",
         show_source: bool = True,
         source_color: str = "#c8cdd5",
+        source_alpha: int = 255,
         candidate_color: str = "#5ef38c",
     ):
         self.pg = pg
@@ -25,7 +26,9 @@ class CurvePlot:
         self._y_label = str(y_label)
         self._y_units = str(y_units)
         self._source_color = str(source_color)
+        self._source_alpha = max(0, min(255, int(source_alpha)))
         self._candidate_color = str(candidate_color)
+        self._manual_selection_color = "#2f6f55"
         self.source_curve = None
         self.candidate_curve = None
         self.probe_marker = None
@@ -33,10 +36,16 @@ class CurvePlot:
         self.probe_hline = None
         self.probe_x_axis_badge = None
         self.probe_y_axis_badge = None
+        self.comparison_curves = []
         self.previous_curves = []
+        self._highlight_overlay_curve = None
         self._source_points: list[tuple[float, float]] = []
         self._candidate_points: list[tuple[float, float]] = []
         self._last_candidate_points: list[tuple[float, float]] = []
+        self._curve_points_by_id: dict[str, list[tuple[float, float]]] = {}
+        self._candidate_curve_id = ""
+        self._last_candidate_curve_id = ""
+        self._highlighted_curve_id = ""
         self._last_live_probe_values: tuple[float, float] | None = None
         self._point_selection_enabled = False
         if pg is None:
@@ -47,6 +56,7 @@ class CurvePlot:
             return
 
         plot = pg.PlotWidget()
+        plot.setMenuEnabled(False)
         if hasattr(pg, "setConfigOptions"):
             pg.setConfigOptions(antialias=True)
         plot.setBackground("#111418")
@@ -60,20 +70,21 @@ class CurvePlot:
         if y_range is not None:
             plot.setYRange(float(y_range[0]), float(y_range[1]), padding=0.0)
         plot.addLegend(offset=(-24, -54))
+        source_brush = self._curve_color(self._source_color, self._source_alpha)
         if show_source:
             self.source_curve = plot.plot(
                 [],
                 [],
-                pen=pg.mkPen(self._source_color, width=1),
+                pen=pg.mkPen(source_brush, width=1),
                 symbol="o",
-                symbolBrush=self._source_color,
+                symbolBrush=source_brush,
                 symbolSize=5,
                 name=str(source_name),
             )
         self.candidate_curve = plot.plot(
             [],
             [],
-            pen=pg.mkPen(self._candidate_color, width=2),
+            pen=self._candidate_curve_pen(),
             symbol="o",
             symbolBrush=self._candidate_color,
             symbolSize=6,
@@ -145,19 +156,53 @@ class CurvePlot:
     def set_base_points(self, points: list[tuple[float, float]]) -> None:
         self.set_source_points(points)
 
+    def add_comparison_points(
+        self,
+        points: list[tuple[float, float]],
+        *,
+        name: str = "Comparison",
+        color: str = "#dfe4ea",
+        alpha: int = 135,
+        width: int = 1,
+    ) -> None:
+        if self.pg is None or not hasattr(self, "plot"):
+            return
+        normalized = _normalize_points(points)
+        if not normalized:
+            return
+        comparison_color = self._curve_color(color, alpha)
+        trace = self.plot.plot(
+            [point[0] for point in normalized],
+            [point[1] for point in normalized],
+            pen=self.pg.mkPen(comparison_color, width=max(1, int(width))),
+            symbol=None,
+            name=str(name),
+        )
+        if hasattr(trace, "setZValue"):
+            trace.setZValue(-5)
+        self.comparison_curves.append(trace)
+
     def clear(self) -> None:
         self._source_points = []
         self._candidate_points = []
         self._last_candidate_points = []
+        self._curve_points_by_id = {}
+        self._candidate_curve_id = ""
+        self._last_candidate_curve_id = ""
+        self._highlighted_curve_id = ""
         if self.source_curve is not None:
             self.source_curve.setData([], [])
         if self.candidate_curve is not None:
             self.candidate_curve.setData([], [])
         if self.pg is None or not hasattr(self, "plot"):
             return
-        for trace in self.previous_curves:
+        for trace in self.comparison_curves:
             self.plot.removeItem(trace)
+        self.comparison_curves = []
+        for trace in self.previous_curves:
+            self.plot.removeItem(_previous_trace_item(trace))
         self.previous_curves = []
+        self._remove_highlight_overlay()
         self.clear_load_markers()
 
     def set_candidate_points(
@@ -165,38 +210,150 @@ class CurvePlot:
         points: list[tuple[float, float]],
         *,
         remember_previous: bool = True,
+        curve_id: str | None = None,
     ) -> None:
         if self.candidate_curve is None:
             return
         normalized = _normalize_points(points)
+        normalized_curve_id = _normalize_curve_id(curve_id)
         self._candidate_points = normalized
+        if normalized_curve_id:
+            self._curve_points_by_id[normalized_curve_id] = list(normalized)
         if (
             remember_previous
             and self._last_candidate_points
-            and normalized != self._last_candidate_points
+            and (
+                normalized != self._last_candidate_points
+                or normalized_curve_id != self._last_candidate_curve_id
+            )
         ):
-            self.add_previous_points(self._last_candidate_points)
+            self.add_previous_points(
+                self._last_candidate_points,
+                curve_id=self._last_candidate_curve_id,
+            )
+        self._candidate_curve_id = normalized_curve_id
         self._last_candidate_points = normalized
+        self._last_candidate_curve_id = normalized_curve_id
         self.candidate_curve.setData(
             [point[0] for point in normalized],
             [point[1] for point in normalized],
         )
+        self._apply_curve_highlights()
 
-    def add_previous_points(self, points: list[tuple[float, float]]) -> None:
+    def add_previous_points(
+        self,
+        points: list[tuple[float, float]],
+        *,
+        curve_id: str | None = None,
+    ) -> None:
         if self.pg is None or not hasattr(self, "plot"):
             return
         if not points:
             return
+        normalized_curve_id = _normalize_curve_id(curve_id)
         trace = self.plot.plot(
             [point[0] for point in points],
             [point[1] for point in points],
-            pen=self.pg.mkPen(self.pg.mkColor(94, 243, 140, 72), width=1),
+            pen=self._previous_curve_pen(
+                highlighted=self._curve_is_highlighted(normalized_curve_id)
+            ),
             symbol=None,
         )
-        self.previous_curves.append(trace)
+        self.previous_curves.append(
+            {
+                "curve_id": normalized_curve_id,
+                "item": trace,
+            }
+        )
         while len(self.previous_curves) > 12:
             old_trace = self.previous_curves.pop(0)
-            self.plot.removeItem(old_trace)
+            self.plot.removeItem(_previous_trace_item(old_trace))
+
+    def set_highlighted_curve(self, curve_id: str | None) -> None:
+        self._highlighted_curve_id = _normalize_curve_id(curve_id)
+        self._apply_curve_highlights()
+
+    def _apply_curve_highlights(self) -> None:
+        if self.pg is None:
+            return
+        highlighted_curve_is_visible = False
+        if self.candidate_curve is not None:
+            self.candidate_curve.setPen(self._candidate_curve_pen())
+            # Keep the live candidate curve light green; draw manual selection as
+            # a darker overlay instead.
+        for trace in self.previous_curves:
+            item = _previous_trace_item(trace)
+            if item is None:
+                continue
+            previous_highlighted = self._curve_is_highlighted(
+                _previous_trace_curve_id(trace)
+            )
+            item.setPen(self._previous_curve_pen(highlighted=previous_highlighted))
+            highlighted_curve_is_visible = highlighted_curve_is_visible or (
+                previous_highlighted
+            )
+        self._sync_highlight_overlay(
+            highlighted_curve_is_visible=highlighted_curve_is_visible
+        )
+
+    def _curve_is_highlighted(self, curve_id: str | None) -> bool:
+        normalized_curve_id = _normalize_curve_id(curve_id)
+        return bool(
+            self._highlighted_curve_id
+            and normalized_curve_id
+            and normalized_curve_id == self._highlighted_curve_id
+        )
+
+    def _candidate_curve_pen(self):
+        if self.pg is None:
+            return None
+        return self.pg.mkPen(self._candidate_color, width=2)
+
+    def _curve_color(self, color, alpha: int):
+        value = self.pg.mkColor(color)
+        value.setAlpha(max(0, min(255, int(alpha))))
+        return value
+
+    def _previous_curve_pen(self, *, highlighted: bool):
+        if self.pg is None:
+            return None
+        if highlighted:
+            color = self.pg.mkColor(self._manual_selection_color)
+            color.setAlpha(235)
+            return self.pg.mkPen(color, width=3)
+        color = self.pg.mkColor(self._candidate_color)
+        color.setAlpha(72)
+        return self.pg.mkPen(color, width=1)
+
+    def _manual_selection_curve_pen(self):
+        if self.pg is None:
+            return None
+        color = self.pg.mkColor(self._manual_selection_color)
+        color.setAlpha(235)
+        return self.pg.mkPen(color, width=4)
+
+    def _sync_highlight_overlay(self, *, highlighted_curve_is_visible: bool) -> None:
+        if self.pg is None or not hasattr(self, "plot"):
+            return
+        self._remove_highlight_overlay()
+        if not self._highlighted_curve_id or highlighted_curve_is_visible:
+            return
+        points = self._curve_points_by_id.get(self._highlighted_curve_id)
+        if not points:
+            return
+        self._highlight_overlay_curve = self.plot.plot(
+            [point[0] for point in points],
+            [point[1] for point in points],
+            pen=self._manual_selection_curve_pen(),
+            symbol=None,
+        )
+
+    def _remove_highlight_overlay(self) -> None:
+        if self._highlight_overlay_curve is None:
+            return
+        if hasattr(self, "plot"):
+            self.plot.removeItem(self._highlight_overlay_curve)
+        self._highlight_overlay_curve = None
 
     def clear_load_markers(self) -> None:
         if self.probe_marker is not None:
@@ -349,6 +506,22 @@ def _normalize_points(points: list[tuple[float, float]]) -> list[tuple[float, fl
         except (IndexError, TypeError, ValueError):
             continue
     return normalized
+
+
+def _normalize_curve_id(curve_id: str | None) -> str:
+    return str(curve_id or "").strip()
+
+
+def _previous_trace_item(trace):
+    if isinstance(trace, dict):
+        return trace.get("item")
+    return trace
+
+
+def _previous_trace_curve_id(trace) -> str:
+    if isinstance(trace, dict):
+        return _normalize_curve_id(trace.get("curve_id"))
+    return ""
 
 
 def _nearest_curve_point(

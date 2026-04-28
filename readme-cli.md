@@ -223,12 +223,13 @@ python -m twine check dist/*
 
 Current local release checks:
 
-- `pytest`: 38 mocked tests for Auto-UV logic, Afterburner parsing, and Q2RTX helpers
-- `ruff check .` and `ruff format --check .`
-- `pyright .`
-- Python syntax compile for all project `.py` files
-- `shellcheck` for shell scripts
-- local `sdist` and wheel build with `python -m build --no-isolation`
+- `pytest`: mocked tests for Auto-UV logic, profile management, UI command
+  construction, manual curve editing, packaging metadata, Afterburner parsing,
+  LACT export, and Q2RTX helpers
+- local `sdist` and wheel build with `python -m build`
+- package metadata validation with `python -m twine check dist/*`
+- spot-check that the built source distribution includes README screenshots and
+  that the wheel metadata embeds the current README
 
 ## Acknowledgements
 
@@ -283,7 +284,7 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--auto-uv-final-seconds N`: final verification duration after the best curve is selected; default `600`.
 - `--auto-uv-short-seconds N`: base verification length; default `30` seconds, allowed range `10..60`. Deeper voltage tiers use 2x and 3x this value.
 - `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default `10.0`.
-- `--auto-uv-overclock-budget-ratio N`: fraction of `--auto-uv-max-clock-drop-pct` available as total overclock budget; default `0.5`, clamped to `0.0..1.0`.
+- `--auto-uv-overclock-budget-ratio N`: fraction of `--auto-uv-max-clock-drop-pct` available as total overclock budget; default `0.5`, clamped to `0.0..1.25`.
 - `--auto-uv-max-drop-pct N`: maximum voltage drop below the first discovered start voltage; default `16.0`.
 - `--stability-test`: run the Q2RTX plus CUDA stability workload directly and exit.
 - `--stability-seconds N`: duration for `--stability-test`; default `600`.
@@ -310,7 +311,9 @@ loaded-clock drop allowance, and overclock budget.
   allowance Auto-UV may spend trying to recover clock with overclocks.
   The default `0.5` means 50% of the clock-drop allowance is available as total
   overclock budget. With the default 10% clock-drop allowance, this gives a 5%
-  overclock budget. `0` disables overclock recovery; values above `1.0` are clamped.
+  overclock budget. `0` disables overclock recovery; values above `1.25` are clamped.
+  Values above `1.0` may push the curve above the measured baseline clock and can
+  hang the system.
 
 Verification duration knobs:
 
@@ -327,17 +330,9 @@ With the default `10%` clock-drop allowance:
 - `--auto-uv-overclock-budget-ratio 0.5` gives up to `+5%` total overclock budget.
 - `--auto-uv-overclock-budget-ratio 0.75` gives up to `+7.5%` total overclock budget.
 - `--auto-uv-overclock-budget-ratio 1.0` gives up to `+10%` total overclock budget.
+- `--auto-uv-overclock-budget-ratio 1.25` gives up to `+12.5%` total overclock budget.
 
-Conservative profile:
-
-```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan \
-  --auto-uv-max-drop-pct 14 \
-  --auto-uv-max-clock-drop-pct 8 \
-  --auto-uv-overclock-budget-ratio 0.25
-```
-
-Balanced profile:
+Efficiency profile:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-voltage-scan \
@@ -346,13 +341,13 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-overclock-budget-ratio 0.5
 ```
 
-Aggressive profile:
+Performance profile:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-max-drop-pct 18 \
   --auto-uv-max-clock-drop-pct 10 \
-  --auto-uv-overclock-budget-ratio 0.75
+  --auto-uv-overclock-budget-ratio 1.0
 ```
 
 Example: use a looser `12%` core-clock drop allowance during Auto-UV:

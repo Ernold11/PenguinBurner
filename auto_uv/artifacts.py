@@ -14,6 +14,10 @@ from .profiles import archive_auto_uv_profile
 from .unsafe_classification import _unsafe_entry_blocks_future_search
 
 
+CRASH_CACHE_MIN_CLOCK_RECOVERY_PCT = 110.0
+CRASH_CACHE_MIN_VOLTAGE_DROP_PCT = 5.0
+
+
 def _now_iso() -> str:
     return datetime.now().astimezone().isoformat()
 
@@ -22,8 +26,20 @@ def _safe_json_write(path: Path, payload: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     claim_desktop_user_ownership(path.parent, include_parents=True)
     temp_path = path.with_name(path.name + ".tmp")
-    temp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    with temp_path.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     temp_path.replace(path)
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        directory_fd = None
+    if directory_fd is not None:
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     claim_desktop_user_ownership(path)
     return path
 
@@ -410,7 +426,12 @@ def _record_unsafe_uv_voltage(
     phase: str | None = None,
     marker_started_at: str | None = None,
     details: dict | None = None,
+    blocked_lock_clock_mhz: list[int] | None = None,
 ) -> tuple[Path, dict]:
+    blocked_locks = _normalize_blocked_lock_clocks(
+        int(lock_clock_mhz),
+        blocked_lock_clock_mhz,
+    )
     entry = {
         "recorded_at": _now_iso(),
         "reason": str(reason),
@@ -421,6 +442,8 @@ def _record_unsafe_uv_voltage(
         if marker_started_at
         else None,
     }
+    if blocked_locks != [int(lock_clock_mhz)]:
+        entry["blocked_lock_clock_mhz"] = blocked_locks
     if details:
         entry["details"] = details
     entries = _load_uv_unsafe_voltage_entries()
@@ -432,6 +455,11 @@ def _record_unsafe_uv_voltage(
                 == int(candidate_voltage_mv)
                 and int(item.get("lock_clock_mhz", -1)) == int(lock_clock_mhz)
                 and str(item.get("reason", "")) == str(reason)
+                and _normalize_blocked_lock_clocks(
+                    int(item.get("lock_clock_mhz", -1)),
+                    item.get("blocked_lock_clock_mhz"),
+                )
+                == blocked_locks
             )
         except (TypeError, ValueError):
             is_duplicate = False
@@ -439,6 +467,106 @@ def _record_unsafe_uv_voltage(
             deduped.append(item)
     deduped.append(entry)
     return _write_uv_unsafe_voltage_entries(deduped), entry
+
+
+def _normalize_blocked_lock_clocks(
+    lock_clock_mhz: int,
+    blocked_lock_clock_mhz: object,
+) -> list[int]:
+    values = {int(lock_clock_mhz)} if int(lock_clock_mhz) > 0 else set()
+    if isinstance(blocked_lock_clock_mhz, (list, tuple, set)):
+        for value in blocked_lock_clock_mhz:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                values.add(int(parsed))
+    return sorted(values, reverse=True)
+
+
+def _marker_details(marker: dict) -> dict:
+    details = marker.get("details")
+    return details if isinstance(details, dict) else {}
+
+
+def _marker_float(marker: dict, key: str) -> float | None:
+    for source in (marker, _marker_details(marker)):
+        try:
+            value = source.get(key)
+        except AttributeError:
+            continue
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _interrupted_marker_crash_cache_validation(marker: dict) -> dict:
+    candidate_voltage_mv = _marker_float(marker, "candidate_voltage_mv")
+    start_voltage_mv = _marker_float(marker, "start_voltage_mv")
+    voltage_drop_pct = _marker_float(marker, "voltage_drop_from_start_pct")
+    if (
+        voltage_drop_pct is None
+        and candidate_voltage_mv is not None
+        and start_voltage_mv is not None
+        and float(start_voltage_mv) > 0.0
+    ):
+        voltage_drop_pct = (
+            (float(start_voltage_mv) - float(candidate_voltage_mv))
+            / float(start_voltage_mv)
+            * 100.0
+        )
+
+    clock_recovery_pct = _marker_float(marker, "clock_recovery_pct")
+    if clock_recovery_pct is None:
+        clock_recovery_pct = _marker_float(
+            marker,
+            "overclock_budget_used_of_clock_drop_pct",
+        )
+    if clock_recovery_pct is None:
+        used_pct = _marker_float(marker, "overclock_budget_used_pct")
+        clock_drop_pct = _marker_float(marker, "overclock_budget_clock_drop_pct")
+        if (
+            used_pct is not None
+            and clock_drop_pct is not None
+            and float(clock_drop_pct) > 0.0
+        ):
+            clock_recovery_pct = float(used_pct) / float(clock_drop_pct) * 100.0
+
+    validation = {
+        "voltage_drop_from_start_pct": (
+            round(float(voltage_drop_pct), 4)
+            if voltage_drop_pct is not None
+            else None
+        ),
+        "clock_recovery_pct": (
+            round(float(clock_recovery_pct), 4)
+            if clock_recovery_pct is not None
+            else None
+        ),
+        "min_voltage_drop_pct": float(CRASH_CACHE_MIN_VOLTAGE_DROP_PCT),
+        "min_clock_recovery_pct": float(CRASH_CACHE_MIN_CLOCK_RECOVERY_PCT),
+    }
+    if voltage_drop_pct is None or clock_recovery_pct is None:
+        validation["accepted"] = False
+        validation["reason"] = "missing crash-cache validation metrics"
+        return validation
+    voltage_ok = float(voltage_drop_pct) >= float(CRASH_CACHE_MIN_VOLTAGE_DROP_PCT)
+    recovery_ok = float(clock_recovery_pct) >= float(
+        CRASH_CACHE_MIN_CLOCK_RECOVERY_PCT
+    )
+    validation["accepted"] = bool(voltage_ok and recovery_ok)
+    if not voltage_ok:
+        validation["reason"] = "voltage drop below crash-cache threshold"
+    elif not recovery_ok:
+        validation["reason"] = "clock recovery below crash-cache threshold"
+    else:
+        validation["reason"] = "validated aggressive undervolt crash marker"
+    return validation
 
 
 def _consume_interrupted_uv_probe_marker() -> tuple[Path, dict] | None:
@@ -464,19 +592,23 @@ def _consume_interrupted_uv_probe_marker() -> tuple[Path, dict] | None:
         lock_clock_mhz = int(marker["lock_clock_mhz"])
     except (KeyError, TypeError, ValueError):
         return None
+    validation = _interrupted_marker_crash_cache_validation(marker)
+    if not bool(validation.get("accepted")):
+        return None
+    marker_details = _marker_details(marker)
     return _record_unsafe_uv_voltage(
         candidate_voltage_mv=candidate_voltage_mv,
         lock_clock_mhz=lock_clock_mhz,
         reason="previous-run-abruptly-ended",
         phase=str(marker.get("phase") or ""),
         marker_started_at=str(marker.get("started_at") or ""),
+        blocked_lock_clock_mhz=marker_details.get("blocked_lock_clock_mhz"),
         details={
             "marker_pid": marker.get("pid"),
             "marker_host": marker.get("host"),
             "marker_log_context": marker.get("log_context"),
-            "marker_details": (
-                marker.get("details") if isinstance(marker, dict) else None
-            ),
+            "marker_details": marker_details,
+            "crash_cache_validation": validation,
             "classification": (
                 "stale probing marker remained on disk; clean Ctrl-C/SIGTERM "
                 "cleanup removes this marker"

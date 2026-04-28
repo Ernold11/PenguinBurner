@@ -1,19 +1,40 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from penguin_burner_ui import commands
 from penguin_burner_ui.app import (
+    DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT,
+    DEFAULT_AUTO_UV_MAX_DROP_PCT,
+    DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT,
+    FINAL_CHOICE_FPSW_SORT_COLUMN,
+    FINAL_CHOICE_FPS_SORT_COLUMN,
     GPU_UNDERVOLTING_PURPOSE_TEXT,
+    MAX_OVERCLOCK_BUDGET_PCT,
+    PERFORMANCE_BIAS_TOOLTIP_TEXT,
     STYLESHEET,
+    YOLO_MAX_OVERCLOCK_BUDGET_PCT,
     _application_version,
+    _auto_uv_mode_for_performance_bias,
+    _best_final_choice_candidate_id,
+    _final_choice_sort_column_for_mode,
+    _performance_bias_clock_recovery_pct,
+    _performance_bias_slider_position,
+    _parse_gui_args,
+    _slider_value_from_click_position,
+    _sort_candidates_for_final_choice,
     _top_status_text,
+    main_yolo,
 )
 from penguin_burner_ui.components.runs_table import (
     RunsTable,
     _bounce_position_for_frame,
     _budget_fill_color,
     _budget_display_values,
+    _budget_recovery_display_values,
+    _budget_recovery_text,
     _format_duration_compact,
     _is_active_decision,
     _progress_label,
@@ -71,26 +92,54 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
 
     command = commands.scan_command(
         {
+            "auto_uv_mode": "performance",
             "auto_uv_max_drop_pct": 16.0,
             "auto_uv_max_clock_drop_pct": 10.0,
-            "auto_uv_clock_bump_budget_ratio": 0.5,
+            "auto_uv_clock_bump_budget_ratio": 1.25,
+            "auto_uv_yolo": True,
             "auto_uv_short_seconds": 30,
             "auto_uv_memory_offset_mhz": 500,
         }
     )
 
+    assert "--auto-uv-mode" in command
+    assert command[command.index("--auto-uv-mode") + 1] == "performance"
     assert "--auto-uv-max-drop-pct" in command
     assert command[command.index("--auto-uv-max-drop-pct") + 1] == "16"
     assert "--auto-uv-max-clock-drop-pct" in command
     assert command[command.index("--auto-uv-max-clock-drop-pct") + 1] == "10"
     assert "--auto-uv-overclock-budget-ratio" in command
-    assert command[command.index("--auto-uv-overclock-budget-ratio") + 1] == "0.5"
+    assert command[command.index("--auto-uv-overclock-budget-ratio") + 1] == "1.25"
+    assert "--yolo" in command
     assert "--auto-uv-efficiency-stop-streak" not in command
     assert "--auto-uv-min-efficiency-stop-drop-pct" not in command
     assert "--auto-uv-short-seconds" in command
     assert command[command.index("--auto-uv-short-seconds") + 1] == "30"
     assert "--auto-uv-memory-offset-mhz" in command
     assert command[command.index("--auto-uv-memory-offset-mhz") + 1] == "500"
+
+
+def test_gui_yolo_argument_is_hidden_from_qt_args() -> None:
+    qt_args, yolo = _parse_gui_args(
+        ["penguin-burner-ui", "--style", "Fusion", "--yolo"]
+    )
+
+    assert yolo is True
+    assert qt_args == ["penguin-burner-ui", "--style", "Fusion"]
+
+
+def test_gui_yolo_launcher_injects_hidden_argument(monkeypatch) -> None:
+    captured = {}
+
+    def fake_run_gui(argv):
+        captured["argv"] = list(argv)
+        return 0
+
+    monkeypatch.setattr("penguin_burner_ui.app._run_gui", fake_run_gui)
+    monkeypatch.setattr(sys, "argv", ["penguin-burner-yolo", "--style", "Fusion"])
+
+    assert main_yolo() == 0
+    assert captured["argv"] == ["penguin-burner-yolo", "--style", "Fusion", "--yolo"]
 
 
 def test_runs_table_power_delta_keeps_raw_sign() -> None:
@@ -103,6 +152,56 @@ def test_runs_table_power_delta_keeps_raw_sign() -> None:
 
     assert table._delta_text(225.6, "power_w") == "-24.80%"
     assert table._delta_text(0.75, "efficiency_fps_per_w") == "+50.00%"
+    assert table._metric_text_with_delta(225.6, "power_w") == "225.60 (-24.80%)"
+
+
+def test_runs_table_compacts_metric_delta_columns() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    table = RunsTable(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+
+    assert "FPS vs base" not in RunsTable.COLUMNS
+    assert "Power vs base" not in RunsTable.COLUMNS
+    assert "FPS/W vs base" not in RunsTable.COLUMNS
+
+    table.add_probe_result(
+        {
+            "stage": "base-baseline",
+            "voltage_mv": 1020,
+            "clock_mhz": 2745,
+            "fps": 150.0,
+            "power_w": 300.0,
+            "efficiency_fps_per_w": 0.50,
+            "decision": "pass",
+        }
+    )
+    table.add_probe_result(
+        {
+            "stage": "candidate",
+            "voltage_mv": 900,
+            "clock_mhz": 2600,
+            "fps": 160.0,
+            "power_w": 270.0,
+            "efficiency_fps_per_w": 0.75,
+            "decision": "accept",
+        }
+    )
+
+    assert table.widget.columnCount() == len(RunsTable.COLUMNS)
+    assert table.widget.item(0, table.FPS_COLUMN).text() == "150.00 (ref)"
+    assert table.widget.item(1, table.FPS_COLUMN).text() == "160.00 (+6.67%)"
+    assert table.widget.item(1, table.POWER_COLUMN).text() == "270.00 (-10.00%)"
+    assert table.widget.item(1, table.FPSW_COLUMN).text() == "0.75 (+50.00%)"
+    assert table.widget.item(1, table.POWER_COLUMN).toolTip().startswith(
+        "Power W -10.00% vs base"
+    )
 
 
 def test_ui_profile_delete_command_uses_privileged_launcher(monkeypatch) -> None:
@@ -141,6 +240,68 @@ def test_ui_runtime_command_can_prefer_afterburner_curve(monkeypatch) -> None:
     assert "--auto-uv-profile" not in command
 
 
+def test_final_choice_performance_mode_sorts_by_fps() -> None:
+    candidates = [
+        {
+            "candidate_id": "efficient",
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2700,
+            "avg_fps": 150.0,
+            "efficiency_fps_per_w": 0.75,
+        },
+        {
+            "candidate_id": "fast",
+            "candidate_voltage_mv": 930,
+            "lock_clock_mhz": 2760,
+            "avg_fps": 160.0,
+            "efficiency_fps_per_w": 0.65,
+        },
+    ]
+
+    sorted_candidates = _sort_candidates_for_final_choice(candidates, "performance")
+
+    assert [candidate["candidate_id"] for candidate in sorted_candidates] == [
+        "fast",
+        "efficient",
+    ]
+    assert _best_final_choice_candidate_id(sorted_candidates, "performance") == "fast"
+    assert _final_choice_sort_column_for_mode("performance") == (
+        FINAL_CHOICE_FPS_SORT_COLUMN
+    )
+
+
+def test_final_choice_efficiency_mode_sorts_by_fps_per_w() -> None:
+    candidates = [
+        {
+            "candidate_id": "fast",
+            "candidate_voltage_mv": 930,
+            "lock_clock_mhz": 2760,
+            "avg_fps": 160.0,
+            "efficiency_fps_per_w": 0.65,
+        },
+        {
+            "candidate_id": "efficient",
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2700,
+            "avg_fps": 150.0,
+            "efficiency_fps_per_w": 0.75,
+        },
+    ]
+
+    sorted_candidates = _sort_candidates_for_final_choice(candidates, "efficiency")
+
+    assert [candidate["candidate_id"] for candidate in sorted_candidates] == [
+        "efficient",
+        "fast",
+    ]
+    assert _best_final_choice_candidate_id(sorted_candidates, "efficiency") == (
+        "efficient"
+    )
+    assert _final_choice_sort_column_for_mode("efficiency") == (
+        FINAL_CHOICE_FPSW_SORT_COLUMN
+    )
+
+
 def test_ui_profile_reverify_command_uses_selected_auto_uv_profile(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
 
@@ -157,6 +318,21 @@ def test_ui_profile_reverify_command_uses_selected_auto_uv_profile(monkeypatch) 
         "/tmp/reverify.stop"
     )
     assert "--prefer-afterburner-curve" not in command
+
+
+def test_ui_profile_reverify_command_keeps_q2rtx_cuda_default_when_both_checked(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
+
+    command = commands.profile_reverify_command(
+        profile_selector="profile-a",
+        duration_s=600,
+        q2rtx_enabled=True,
+        cuda_enabled=True,
+    )
+
+    assert "--stability-workload" not in command
 
 
 def test_ui_profile_reverify_command_can_use_afterburner_profile(monkeypatch) -> None:
@@ -218,8 +394,106 @@ def test_oc_budget_display_clamps_used_value_to_limit() -> None:
     assert _budget_display_values(1.0, 0.0) == (1.0, 0.0)
 
 
-def test_oc_budget_is_always_green() -> None:
+def test_clock_recovery_display_uses_drop_gap_percentages() -> None:
+    payload = {
+        "overclock_budget_used_of_clock_drop_pct": 130.0,
+        "overclock_budget_limit_of_clock_drop_pct": 150.0,
+    }
+
+    used, limit = _budget_recovery_display_values(payload, used=13.0, limit=15.0)
+
+    assert (used, limit) == (130.0, 150.0)
+    assert _budget_recovery_text(used, limit) == "130% / 150%"
+
+
+def test_auto_uv_table_clock_recovery_bar_stays_light_green() -> None:
     assert _budget_fill_color() == "#55d27a"
+    assert _budget_fill_color(100.0) == "#55d27a"
+    assert _budget_fill_color(105.0) == "#55d27a"
+    assert _budget_fill_color(110.0) == "#55d27a"
+    assert _budget_fill_color(110.1) == "#55d27a"
+    assert _budget_fill_color(125.0) == "#55d27a"
+
+
+def test_performance_bias_maps_physical_slider_to_clock_recovery() -> None:
+    assert MAX_OVERCLOCK_BUDGET_PCT == 150.0
+    assert YOLO_MAX_OVERCLOCK_BUDGET_PCT == 175.0
+    assert _performance_bias_clock_recovery_pct(0) == 0.0
+    assert _performance_bias_clock_recovery_pct(25) == 50.0
+    assert _performance_bias_clock_recovery_pct(50) == 100.0
+    assert _performance_bias_clock_recovery_pct(75) == 125.0
+    assert _performance_bias_clock_recovery_pct(100) == 150.0
+    assert _performance_bias_slider_position(0.0) == 0
+    assert _performance_bias_slider_position(100.0) == 50
+    assert _performance_bias_slider_position(150.0) == 100
+    assert (
+        _performance_bias_clock_recovery_pct(
+            75,
+            max_pct=YOLO_MAX_OVERCLOCK_BUDGET_PCT,
+        )
+        == 137.5
+    )
+    assert (
+        _performance_bias_clock_recovery_pct(
+            100,
+            max_pct=YOLO_MAX_OVERCLOCK_BUDGET_PCT,
+        )
+        == 175.0
+    )
+    assert _performance_bias_slider_position(
+        175.0,
+        max_pct=YOLO_MAX_OVERCLOCK_BUDGET_PCT,
+    ) == 100
+    assert "might hang your system" in PERFORMANCE_BIAS_TOOLTIP_TEXT
+
+
+def test_click_jump_slider_maps_click_position_to_exact_value() -> None:
+    assert (
+        _slider_value_from_click_position(
+            position_px=0,
+            width_px=101,
+            minimum=0,
+            maximum=100,
+        )
+        == 0
+    )
+    assert (
+        _slider_value_from_click_position(
+            position_px=50,
+            width_px=101,
+            minimum=0,
+            maximum=100,
+        )
+        == 50
+    )
+    assert (
+        _slider_value_from_click_position(
+            position_px=100,
+            width_px=101,
+            minimum=0,
+            maximum=100,
+        )
+        == 100
+    )
+    assert (
+        _slider_value_from_click_position(
+            position_px=25,
+            width_px=101,
+            minimum=0,
+            maximum=100,
+            inverted=True,
+        )
+        == 75
+    )
+
+
+def test_auto_uv_bias_defaults_and_mode_threshold() -> None:
+    assert DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT == 100.0
+    assert DEFAULT_AUTO_UV_MAX_DROP_PCT == 15.0
+    assert DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT == 10.0
+    assert _auto_uv_mode_for_performance_bias(99.9) == "efficiency"
+    assert _auto_uv_mode_for_performance_bias(100.0) == "performance"
+    assert _auto_uv_mode_for_performance_bias(150.0) == "performance"
 
 
 def test_progress_text_stays_light_until_bar_is_full() -> None:
@@ -285,6 +559,54 @@ def test_busy_progress_widget_is_reused_while_scale_is_unknown() -> None:
 
     assert second_widget is first_widget
     assert second_widget._frame == 9
+
+
+def test_runs_table_row_click_toggles_single_candidate_selection() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    table = RunsTable(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    selected: list[str | None] = []
+    table.on_candidate_selection_changed = selected.append
+
+    table.add_probe_result(
+        {
+            "stage": "candidate",
+            "voltage_mv": 900,
+            "clock_mhz": 2600,
+            "decision": "accepted",
+        }
+    )
+    table.add_probe_result(
+        {
+            "stage": "candidate",
+            "voltage_mv": 890,
+            "clock_mhz": 2610,
+            "decision": "accepted",
+        }
+    )
+
+    table._handle_cell_clicked(0, 0)
+    assert selected == ["900mv-2600mhz"]
+    assert table.selected_candidate_id() == "900mv-2600mhz"
+
+    table._handle_cell_clicked(1, 0)
+    assert selected[-1] == "890mv-2610mhz"
+    assert table.selected_candidate_id() == "890mv-2610mhz"
+    assert [
+        index.row() for index in table.widget.selectionModel().selectedRows()
+    ] == [1]
+
+    table._handle_cell_clicked(1, 0)
+    assert selected[-1] is None
+    assert table.selected_candidate_id() is None
+    assert table.widget.selectionModel().selectedRows() == []
 
 
 def test_stopping_rows_remain_active_until_stop_is_finalized() -> None:

@@ -24,6 +24,7 @@ from .artifact_paths import auto_uv_stop_requested
 from .events import AutoUvEventCallback, emit_event
 from .models import AutoUvProbeSummary
 from .probe_metrics import (
+    _decision_timedemo_runs,
     _history_average,
     _mean,
     _saturated_tail_samples,
@@ -43,6 +44,9 @@ from .tuning import (
     AUTO_UV_STALL_TUNING,
 )
 from .user_output import log_phase as _log_phase
+
+
+UNSAFE_CLOCK_BINDING_LOWER_BINS = 2
 
 
 def _round_or_none(value: float | int | None) -> float | None:
@@ -124,6 +128,32 @@ def _probe_phase_writes_crash_marker(phase_label: str) -> bool:
     }
 
 
+def _unsafe_clock_bindings_from_plan(
+    plan: list[dict],
+    *,
+    lock_clock_mhz: int,
+    lower_bins: int = UNSAFE_CLOCK_BINDING_LOWER_BINS,
+) -> list[int]:
+    failed_clock_mhz = int(lock_clock_mhz)
+    if failed_clock_mhz <= 0:
+        return []
+    lower_clocks: set[int] = set()
+    for point in plan:
+        if not isinstance(point, dict):
+            continue
+        for key in ("base_mhz", "target_mhz"):
+            try:
+                clock_mhz = int(point[key])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if 0 < int(clock_mhz) < failed_clock_mhz:
+                lower_clocks.add(int(clock_mhz))
+            if key == "base_mhz":
+                break
+    selected_lower = sorted(lower_clocks, reverse=True)[: max(0, int(lower_bins))]
+    return [failed_clock_mhz, *selected_lower]
+
+
 def _probe_voltage_candidate(
     *,
     reader,
@@ -148,6 +178,7 @@ def _probe_voltage_candidate(
     suppress_unsafe_for_controlled_clock_abort: bool = False,
     suppress_unsafe_recording: bool = False,
     expected_total_duration_s: int | None = None,
+    timedemo_warmup_runs: int = 0,
     event_callback: AutoUvEventCallback | None = None,
 ) -> tuple[AutoUvProbeSummary, Q2RTXStabilityResult]:
     frame_reference = (
@@ -512,6 +543,10 @@ def _probe_voltage_candidate(
                 )
 
     mark_in_progress = _probe_phase_writes_crash_marker(str(phase_label))
+    unsafe_clock_bindings = _unsafe_clock_bindings_from_plan(
+        candidate_plan,
+        lock_clock_mhz=int(lock_clock_mhz),
+    )
 
     def _record_probe_unsafe(reason: str, details: dict | None = None) -> None:
         if not mark_in_progress:
@@ -523,6 +558,7 @@ def _probe_voltage_candidate(
                 reason=str(reason),
                 phase=str(phase_label),
                 details=details,
+                blocked_lock_clock_mhz=unsafe_clock_bindings,
             )
         except Exception as exc:
             _log_phase(
@@ -546,12 +582,17 @@ def _probe_voltage_candidate(
         )
 
     if mark_in_progress:
+        marker_payload_details = dict(marker_details or {})
+        if unsafe_clock_bindings:
+            marker_payload_details["blocked_lock_clock_mhz"] = list(
+                unsafe_clock_bindings
+            )
         _write_uv_probe_in_progress(
             phase=phase_label,
             candidate_voltage_mv=int(candidate_voltage_mv),
             lock_clock_mhz=int(lock_clock_mhz),
             log_context=log_context,
-            details=marker_details,
+            details=marker_payload_details,
         )
     try:
         live_voltage_before_mv = nvml_session.read_live_voltage_mv()
@@ -679,6 +720,18 @@ def _probe_voltage_candidate(
                 f"using saturated telemetry tail samples={len(summary_samples)}/"
                 f"{len(result.telemetry_samples)} for baseline measurement",
             )
+        decision_timedemo_runs = _decision_timedemo_runs(
+            result.timedemo_runs,
+            timedemo_warmup_runs=int(timedemo_warmup_runs),
+        )
+        if len(decision_timedemo_runs) < len(result.timedemo_runs):
+            _log_phase(
+                log,
+                phase_label,
+                f"timedemo-warmup-ignored="
+                f"{len(result.timedemo_runs) - len(decision_timedemo_runs)}/"
+                f"{len(result.timedemo_runs)} runs for decision FPS",
+            )
         summary = _summarize_probe(
             candidate_voltage_mv=candidate_voltage_mv,
             lock_clock_mhz=lock_clock_mhz,
@@ -689,6 +742,7 @@ def _probe_voltage_candidate(
             result=result,
             telemetry_samples=summary_samples,
             use_power_limit_floor=use_power_limit_floor,
+            timedemo_warmup_runs=int(timedemo_warmup_runs),
         )
         return summary, result
     finally:

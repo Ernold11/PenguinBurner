@@ -2,13 +2,13 @@
   <img src="docs/assets/penguin-burner-logo.png" alt="PenguinBurner logo" width="180">
 </p>
 
-# Penguin Burner - Nvidia GPU Undervolting Tool
+# Nvidia GPU Undervolting Tool
 
-**PenguinBurner** is the **Nvidia GPU Undervolting** Tool. It is the ultimate NVIDIA undervolting companion on Linux. Its main feature is **automatic** GPU undervolting: PenguinBurner tests your GPU under gaming and compute load, finds the most efficient stable undervolt, and can save it as a systemd daemon when you decide to apply it.
+PenguinBurner is the Nvidia GPU Undervolting Tool. It is the ultimate NVIDIA undervolting companion on Linux. Its main feature is **automatic** GPU undervolting: PenguinBurner tests your GPU under gaming and compute load, finds the most efficient stable undervolt, and can save it as a systemd daemon when you decide to apply it.
 
 PenguinBurner is proven to work on modern Linux systems with the **NVIDIA proprietary** graphics driver. For best results, use a up to date driver. Supported GPUs are NVIDIA GeForce RTX 50 series Blackwell cards and, potentially, RTX 40 series Ada Lovelace cards. Older GPUs may miss required driver-level voltage/frequency control functionality.
 
-GPU undervolting is meant to make your graphics card consume significantly less power while giving up as little performance as possible. The practical result can be **dead-silent fan** operation, **lower temperatures**, and lower electricity bills. PenguinBurner automatically searches for the operating sweet spot of your NVIDIA GPU, so you do not have to resort to trial and error or risk introducing avoidable system instability.
+GPU undervolting is meant to make your graphics card consume significantly less power while giving up as little performance as possible. The practical result can be **dead-silent fan operation**, **lower temperatures**, and lower electricity bills. PenguinBurner automatically searches for the operating sweet spot of your NVIDIA GPU, so you do not have to resort to trial and error or risk introducing avoidable system instability.
 
 ## Install
 
@@ -21,6 +21,7 @@ python -m pip install --user --upgrade penguin-burner
 Bundled pip entrypoints:
 
 - GUI: `penguin-burner` - alias: `pburn`
+- GUI with hidden yolo mode enabled: `penguin-burner-yolo` - alias: `pburn-yolo`
 - CLI/non-GUI: `penguin-burner-cli` - alias: `pburn-cli`
 
 The pip package also provides a desktop file, so PenguinBurner should appear with its icon in your desktop environment's app launcher.
@@ -33,17 +34,36 @@ Core PenguinBurner component in action: algorithmic Auto Undervolting with built
 
 ![PenguinBurner Auto Undervolting V/F curve](1-uv-curve.png)
 
+Afterburner alike curve editor in Linux, fully manual with all the shortcuts bells and whistles!
+
+![PenguinBurner V/F curve editor](1a-vf-curve-editor.png)
+
+![PenguinBurner Auto Undervolting performance bias slider](docs/assets/auto-uv-performance-bias.png)
+
+Before a scan starts, the Performance bias slider lets you decide what kind of
+undervolt PenguinBurner should search for. Move it toward **Efficiency** for the
+lowest practical power draw, or toward **Performance** when you want the scan to
+recover more clock and prioritize keeping or improving FPS.
+
 ## MSI Afterburner Import
 
 Feel at home and import your MSI Afterburner profile from Windows.
 
 ![PenguinBurner MSI Afterburner import](2-afterburner-import.png)
 
+Performance profile for the undervolt, especially for those with older GPU where every FPS matters. Hidden --yolo mode.
+
+![PenguinBurner performance Auto-UV tuning](2a-performance-tune-autouv.png)
+
 ## Silent Fan Curve
 
 Apply a silent fan curve after PenguinBurner finds a stable undervolt.
 
 ![PenguinBurner silent fan curve](3-fan-curve.png)
+
+Customize your fan curve with manual editor
+
+![PenguinBurner fan curve editor](3a-fan-curve-editor.png)
 
 ## LACT Export
 
@@ -92,3 +112,22 @@ https://github.com/jpietek/PenguinBurner/issues
 The previous CLI-focused README has been archived here:
 
 [readme-cli.md](readme-cli.md)
+
+## Start Clean From Scratch
+
+To reset PenguinBurner user state for a fresh profile-style run, remove the
+config, local data, and cache directories:
+
+```bash
+rm -rf /home/jp/.config/PenguinBurner \
+       /home/jp/.local/share/PenguinBurner \
+       /home/jp/.cache/PenguinBurner
+```
+
+For a local PyPI-style wheel upgrade from this checkout, keep app flags separate
+from pip flags:
+
+```bash
+python -m pip install --user --no-index --no-deps --find-links dist --upgrade penguin-burner
+penguin-burner-yolo
+```

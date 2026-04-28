@@ -54,7 +54,6 @@ from .curve_planning import (
     _nearest_voltage_bin,
     _next_higher_voltage_bin,
     _next_search_candidate_voltage_mv,
-    _unsafe_min_search_voltage_mv,
     _validate_auto_uv_source_plan,
 )
 from .final_verify import _run_final_verification_and_save
@@ -81,6 +80,10 @@ from .probe_config import (
     _stability_probe_config_for_voltage_band,
     _tiered_probe_duration_s,
 )
+from .performance import (
+    annotate_performance_candidate_scores,
+    performance_candidate_sort_key,
+)
 from .scan_rules import (
     _core_clock_below_floor,
     _final_failure_can_accept_budget_curve,
@@ -92,10 +95,13 @@ from .scan_rules import (
     _target_core_clock_floor,
     _telemetry_sample_is_busy,
 )
+from .sweep_modes import AUTO_UV_MODE_PERFORMANCE, normalize_auto_uv_mode
 from .tuning import (
     AUTO_UV_DEFAULTS,
+    AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO,
     AUTO_UV_METRIC_TUNING,
     AUTO_UV_STALL_TUNING,
+    AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO,
 )
 from .clock_bump import _clock_bump_budget_pct
 from .user_output import (
@@ -126,6 +132,7 @@ __all__ = [
 @dataclass(frozen=True, slots=True)
 class _AutoUvScanSettings:
     q2rtx_config: Q2RTXStabilityConfig
+    auto_uv_mode: str
     final_clock_drop_margin_pct: float
     min_performance_core_clock_pct: float
     preserve_base_below_mv: int | None
@@ -298,6 +305,7 @@ def _probe_stabilization_search(
     min_performance_core_clock_pct: float,
     short_probe_base_duration_s: int | None = None,
     reset_plan: list[dict] | None = None,
+    timedemo_warmup_runs: int = 0,
     event_callback: AutoUvEventCallback | None = None,
 ) -> tuple[AutoUvCurveCandidate | None, AutoUvProbeSummary | None, object | None]:
     search_start_mv = (
@@ -371,6 +379,7 @@ def _probe_stabilization_search(
             power_limit_w=power_limit_w,
             min_performance_core_clock_pct=float(min_performance_core_clock_pct),
             reset_plan=reset_plan,
+            timedemo_warmup_runs=int(timedemo_warmup_runs),
             event_callback=event_callback,
         )
         probe_history.append(recovery_summary)
@@ -460,6 +469,7 @@ def _scan_settings(
         )
 
     normalized_q2rtx_config = _normalize_probe_config(q2rtx_config)
+    auto_uv_mode = normalize_auto_uv_mode(runtime_options.get("auto_uv_mode"))
     final_clock_drop_margin_pct = runtime_options.get("auto_uv_max_clock_drop_pct")
     if final_clock_drop_margin_pct is None:
         final_clock_drop_margin_pct = AUTO_UV_METRIC_TUNING.max_core_clock_drop_pct
@@ -476,7 +486,11 @@ def _scan_settings(
         preserve_base_below_mv = int(preserve_base_below_mv)
     configured_max_drop_pct = runtime_options.get("auto_uv_max_drop_pct")
     if configured_max_drop_pct is None:
-        configured_max_drop_pct = AUTO_UV_DEFAULTS.max_drop_pct
+        configured_max_drop_pct = (
+            AUTO_UV_DEFAULTS.performance_max_drop_pct
+            if auto_uv_mode == AUTO_UV_MODE_PERFORMANCE
+            else AUTO_UV_DEFAULTS.max_drop_pct
+        )
     configured_max_drop_pct = max(0.0, float(configured_max_drop_pct))
     final_verification_duration_s = int(
         runtime_options.get(
@@ -516,14 +530,28 @@ def _scan_settings(
     )
     clock_bump_budget_ratio = runtime_options.get("auto_uv_clock_bump_budget_ratio")
     if clock_bump_budget_ratio is None:
-        clock_bump_budget_ratio = AUTO_UV_DEFAULTS.clock_bump_budget_ratio
-    clock_bump_budget_ratio = max(0.0, min(1.0, float(clock_bump_budget_ratio)))
+        clock_bump_budget_ratio = (
+            AUTO_UV_DEFAULTS.performance_clock_bump_budget_ratio
+            if auto_uv_mode == AUTO_UV_MODE_PERFORMANCE
+            else AUTO_UV_DEFAULTS.clock_bump_budget_ratio
+        )
+    max_clock_bump_budget_ratio = (
+        AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO
+        if bool(runtime_options.get("auto_uv_yolo"))
+        else AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO
+    )
+    clock_bump_budget_ratio = max(
+        0.0,
+        min(float(max_clock_bump_budget_ratio), float(clock_bump_budget_ratio)),
+    )
     clock_bump_budget_limit_pct = _clock_bump_budget_pct(
         max_clock_drop_pct=float(final_clock_drop_margin_pct),
         bump_budget_ratio=float(clock_bump_budget_ratio),
+        max_budget_ratio=float(max_clock_bump_budget_ratio),
     )
     return _AutoUvScanSettings(
         q2rtx_config=normalized_q2rtx_config,
+        auto_uv_mode=str(auto_uv_mode),
         final_clock_drop_margin_pct=float(final_clock_drop_margin_pct),
         min_performance_core_clock_pct=float(min_performance_core_clock_pct),
         preserve_base_below_mv=preserve_base_below_mv,
@@ -719,6 +747,8 @@ def _candidate_selection_summary(
         "avg_power_w": candidate.get("avg_power_w"),
         "efficiency_fps_per_w": candidate.get("efficiency_fps_per_w"),
     }
+    if "performance_score" in candidate:
+        summary["performance_score"] = candidate.get("performance_score")
     if short_verification_duration_s is not None:
         summary["short_verification_duration_s"] = int(
             short_verification_duration_s
@@ -849,6 +879,8 @@ def _choose_final_verification_candidate(
     *,
     log: Callable[[str], None],
     event_callback: AutoUvEventCallback | None,
+    auto_uv_mode: str = "efficiency",
+    base_probe: AutoUvProbeSummary | None = None,
     stable_plan: list[dict],
     stable_voltage_mv: int,
     stable_lock_clock_mhz: int,
@@ -915,7 +947,22 @@ def _choose_final_verification_candidate(
     )
     candidates_by_id[current_stable_id] = stable_record
 
-    candidates = sorted(candidates_by_id.values(), key=_candidate_fpsw_sort_key)
+    if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE:
+        annotate_performance_candidate_scores(
+            list(candidates_by_id.values()),
+            base_probe=base_probe,
+        )
+        candidates = sorted(
+            candidates_by_id.values(),
+            key=lambda candidate: performance_candidate_sort_key(
+                candidate,
+                base_probe=base_probe,
+            ),
+        )
+        sort_label = "performance-score"
+    else:
+        candidates = sorted(candidates_by_id.values(), key=_candidate_fpsw_sort_key)
+        sort_label = "fps-per-w"
     default_id = (
         str(candidates[0].get("candidate_id", "")) if candidates else current_stable_id
     )
@@ -927,6 +974,8 @@ def _choose_final_verification_candidate(
         pass
     request_payload = {
         "format_version": 1,
+        "auto_uv_mode": normalize_auto_uv_mode(auto_uv_mode),
+        "default_sort_metric": sort_label,
         "default_candidate_id": default_id,
         "final_verification_duration_s": int(final_verification_duration_s),
         "final_verification_duration_label": _format_user_duration(
@@ -953,7 +1002,7 @@ def _choose_final_verification_candidate(
     _log_phase(
         log,
         "final-choice",
-        f"waiting-for-ui-selection default={default_id} sort=fps-per-w "
+        f"waiting-for-ui-selection default={default_id} sort={sort_label} "
         f"response={response_path}",
     )
     while not response_path.exists():
@@ -1164,6 +1213,12 @@ def _clock_bump_budget_limit_from_unsafe_entries(
     return float(effective_budget_pct)
 
 
+def _timedemo_warmup_runs_for_mode(auto_uv_mode: str) -> int:
+    if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE:
+        return max(0, int(AUTO_UV_METRIC_TUNING.performance_timedemo_warmup_runs))
+    return 0
+
+
 def _run_auto_uv_voltage_scan_impl(
     *,
     gpu_index,
@@ -1174,6 +1229,7 @@ def _run_auto_uv_voltage_scan_impl(
 ):
     settings = _scan_settings(runtime_options, q2rtx_config)
     q2rtx_config = settings.q2rtx_config
+    auto_uv_mode = settings.auto_uv_mode
     final_clock_drop_margin_pct = settings.final_clock_drop_margin_pct
     min_performance_core_clock_pct = settings.min_performance_core_clock_pct
     preserve_base_below_mv = settings.preserve_base_below_mv
@@ -1182,6 +1238,7 @@ def _run_auto_uv_voltage_scan_impl(
     short_probe_base_duration_s = settings.short_probe_base_duration_s
     efficiency_stop_streak = settings.efficiency_stop_streak
     min_efficiency_stop_voltage_drop_pct = settings.min_efficiency_stop_voltage_drop_pct
+    timedemo_warmup_runs = _timedemo_warmup_runs_for_mode(auto_uv_mode)
     interrupted_probe = _consume_interrupted_uv_probe_marker()
     unsafe_voltage_entries = _load_uv_unsafe_voltage_entries()
     if interrupted_probe is not None:
@@ -1206,10 +1263,12 @@ def _run_auto_uv_voltage_scan_impl(
                     "during a voltage test."
                 ),
                 (
-                    f"Voltage {int(unsafe_entry['candidate_voltage_mv'])}mV is now marked unsafe "
-                    "and this run will not test it again."
+                    f"Point {int(unsafe_entry['candidate_voltage_mv'])}mV @ "
+                    f"{int(unsafe_entry['lock_clock_mhz'])}MHz is now marked unsafe "
+                    "and this run will not test that point, or a more aggressive "
+                    "lower-voltage/equal-or-higher-clock point, again."
                 ),
-                "The next search will stop at the next higher voltage bin instead.",
+                "Lower-clock efficiency points at that voltage can still be tested.",
             ],
         )
         unsafe_voltage_entries = _load_uv_unsafe_voltage_entries()
@@ -1345,6 +1404,7 @@ def _run_auto_uv_voltage_scan_impl(
             log,
             "source",
             f"plan-mode={source_result['translation_mode']} "
+            f"auto-uv-mode={auto_uv_mode} "
             + (
                 f"loops={int(q2rtx_config.timedemo_loops)} "
                 if q2rtx_config.timedemo_loops is not None
@@ -1354,6 +1414,13 @@ def _run_auto_uv_voltage_scan_impl(
             f"{float(min_performance_core_clock_pct):.1f}% "
             f"max-clock-drop={final_clock_drop_margin_pct:.1f}%",
         )
+        if timedemo_warmup_runs > 0:
+            _log_phase(
+                log,
+                "source",
+                f"timedemo-warmup-runs={int(timedemo_warmup_runs)} "
+                "ignored-for-decision-fps",
+            )
         _log_user_stage(
             log,
             "Starting voltage scan",
@@ -1438,6 +1505,7 @@ def _run_auto_uv_voltage_scan_impl(
             summarize_saturated_tail=True,
             use_power_limit_floor=True,
             reset_plan=runtime_default_plan,
+            timedemo_warmup_runs=int(timedemo_warmup_runs),
             event_callback=event_callback,
         )
         probe_history.append(discovery_summary)
@@ -1601,27 +1669,12 @@ def _run_auto_uv_voltage_scan_impl(
                 )
             ),
         )
-        unsafe_floor_mv, unsafe_next_higher_mv = _unsafe_min_search_voltage_mv(
-            plan=flattened_plan,
-            start_voltage_mv=int(start_voltage_mv),
-            unsafe_entries=unsafe_voltage_entries,
-        )
-        if unsafe_floor_mv is not None:
-            if unsafe_next_higher_mv is None:
-                min_search_voltage_mv = int(start_voltage_mv)
-                next_text = "none"
-            else:
-                min_search_voltage_mv = max(
-                    int(min_search_voltage_mv),
-                    int(unsafe_next_higher_mv),
-                )
-                next_text = f"{int(unsafe_next_higher_mv)}mV"
+        if unsafe_voltage_entries:
             _log_phase(
                 log,
-                "blacklist",
-                f"unsafe-floor={int(unsafe_floor_mv)}mV "
-                f"next-higher-bin={next_text} "
-                f"effective-min-search-voltage={int(min_search_voltage_mv)}mV",
+                "unsafe-cache",
+                f"entries={len(unsafe_voltage_entries)} mode=clock-band "
+                "rule=block failed voltage/lower voltage only inside the failed-clock band",
             )
         _log_phase(
             log,
@@ -1671,6 +1724,7 @@ def _run_auto_uv_voltage_scan_impl(
             use_power_limit_floor=True,
             min_performance_core_clock_pct=float(min_performance_core_clock_pct),
             reset_plan=runtime_default_plan,
+            timedemo_warmup_runs=int(timedemo_warmup_runs),
             event_callback=event_callback,
         )
         probe_history.append(baseline_summary)
@@ -1849,8 +1903,10 @@ def _run_auto_uv_voltage_scan_impl(
             clock_bump_budget_limit_pct=float(effective_clock_bump_budget_limit_pct),
             max_clock_drop_pct=float(final_clock_drop_margin_pct),
             short_probe_base_duration_s=int(short_probe_base_duration_s),
+            auto_uv_mode=auto_uv_mode,
             efficiency_stop_streak=efficiency_stop_streak,
             min_efficiency_stop_voltage_drop_pct=min_efficiency_stop_voltage_drop_pct,
+            timedemo_warmup_runs=int(timedemo_warmup_runs),
             event_callback=event_callback,
         )
         stable_plan = sweep_result["stable_plan"]
@@ -1876,6 +1932,8 @@ def _run_auto_uv_voltage_scan_impl(
             ) = _choose_final_verification_candidate(
                 log=log,
                 event_callback=event_callback,
+                auto_uv_mode=auto_uv_mode,
+                base_probe=discovery_summary,
                 stable_plan=stable_plan,
                 stable_voltage_mv=int(stable_voltage_mv),
                 stable_lock_clock_mhz=int(stable_lock_clock_mhz),
@@ -1920,6 +1978,7 @@ def _run_auto_uv_voltage_scan_impl(
             clock_bump_budget_used_pct=float(clock_bump_budget_used_pct),
             max_bump_recovery_was_used=ended_by_clock_bump_limit,
             short_probe_base_duration_s=int(short_probe_base_duration_s),
+            timedemo_warmup_runs=int(timedemo_warmup_runs),
             event_callback=event_callback,
         )
     except StabilityTestError as exc:

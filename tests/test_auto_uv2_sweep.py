@@ -160,6 +160,58 @@ def test_auto_uv2_sweep_recovers_upward_after_probe_failure() -> None:
     assert result.state.stable_voltage_mv == 1000
 
 
+def test_auto_uv2_sweep_stops_at_critical_failure_and_keeps_previous_stable() -> None:
+    recovery_calls = 0
+
+    def _recover(_candidate, _failed_probe, _reason):
+        nonlocal recovery_calls
+        recovery_calls += 1
+        return None, None, None
+
+    hooks = AutoUv2SweepHooks(
+        probe_candidate=lambda candidate: (
+            _probe(candidate.candidate_voltage_mv, candidate.target_clock_mhz),
+            static_probe_result(False, "fatal-q2rtx-output"),
+        ),
+        evaluate_probe=lambda _probe, _history: "",
+        recover_upward=_recover,
+        write_latest_verified=lambda _candidate, _probe: None,
+    )
+
+    stable = _candidate(1000, 2120)
+    result = run_sweep(
+        _plan(),
+        initial_state=AutoUv2SweepState(
+            stable_voltage_mv=1000,
+            stable_target_mhz=2120,
+            candidate_voltage_mv=975,
+            budget=AutoUv2OverclockBudget(used_pct=5.0, limit_pct=5.0),
+            persistent_overclock_pct=5.0,
+        ),
+        stable_candidate=stable,
+        stable_probe=_probe(1000, 2120.0),
+        stable_history=[_probe(1000, 2120.0)],
+        probe_history=[],
+        start_voltage_mv=1000,
+        initial_core_clock_mhz=2120.0,
+        min_core_clock_pct=90.0,
+        measured_clock_cap_mhz=2120.0,
+        reference_actual_voltage_mv=1000.0,
+        preserve_base_below_mv=None,
+        min_search_voltage_mv=950,
+        hooks=hooks,
+    )
+
+    assert recovery_calls == 0
+    assert result.stable_candidate is stable
+    assert result.state.stable_voltage_mv == 1000
+    assert result.state.candidate_voltage_mv is None
+    assert any(
+        event.name == "decision" and event.message == "stop-critical"
+        for event in result.events
+    )
+
+
 def test_auto_uv2_sweep_uses_overclock_after_low_clock_failure() -> None:
     writes: list[int] = []
     table_calls: list[tuple[str, int, int | None]] = []
@@ -581,6 +633,51 @@ def test_auto_uv2_sweep_tries_efficiency_wall_overclock_before_stopping() -> Non
     assert any(event.name == "efficiency-overclock" for event in result.events)
     assert any(event.message == "accepted" for event in result.events)
     assert result.state.overclock_count == 1
+
+
+def test_auto_uv2_sweep_performance_mode_does_not_use_efficiency_wall_logic() -> None:
+    def _unexpected_efficiency_delta(_previous, _candidate):
+        raise AssertionError("performance mode must not use efficiency stop logic")
+
+    hooks = AutoUv2SweepHooks(
+        probe_candidate=lambda candidate: (
+            _probe(candidate.candidate_voltage_mv, candidate.target_clock_mhz),
+            static_probe_result(True),
+        ),
+        evaluate_probe=lambda _probe, _history: "",
+        recover_upward=lambda _candidate, _failed_probe, _reason: (None, None, None),
+        write_latest_verified=lambda _candidate, _probe: None,
+        efficiency_delta=_unexpected_efficiency_delta,
+        power_up_efficiency_down=lambda _previous, _candidate, _delta: False,
+    )
+
+    result = run_sweep(
+        _plan(),
+        initial_state=AutoUv2SweepState(
+            stable_voltage_mv=1000,
+            stable_target_mhz=2120,
+            candidate_voltage_mv=975,
+            budget=AutoUv2OverclockBudget(limit_pct=5.0),
+        ),
+        stable_candidate=_candidate(),
+        stable_probe=_probe(1000, 2120.0),
+        stable_history=[_probe(1000, 2120.0)],
+        probe_history=[],
+        start_voltage_mv=1000,
+        initial_core_clock_mhz=2120.0,
+        min_core_clock_pct=90.0,
+        measured_clock_cap_mhz=2120.0,
+        reference_actual_voltage_mv=1000.0,
+        preserve_base_below_mv=None,
+        min_search_voltage_mv=975,
+        hooks=hooks,
+        auto_uv_mode="performance",
+        efficiency_stop_streak=1,
+        min_efficiency_stop_voltage_drop_pct=0.0,
+    )
+
+    assert not any(event.name == "efficiency-overclock" for event in result.events)
+    assert result.state.overclock_count == 0
 
 
 def test_auto_uv2_sweep_waits_for_min_voltage_drop_before_efficiency_overclock() -> None:

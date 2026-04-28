@@ -12,6 +12,7 @@ from auto_uv.probe_metrics import (
 )
 from auto_uv.probe_runner import _probe_voltage_candidate
 from auto_uv.scan import _probe_stabilization_search
+from auto_uv.curve_planning import _unsafe_candidate_block_reason
 from auto_uv.scan_rules import _is_power_up_efficiency_down_regression
 from auto_uv.scan_rules import _real_clock_adjusted_stable_curve
 from auto_uv.tuning import AUTO_UV_DEFAULTS
@@ -32,6 +33,7 @@ from auto_uv.user_output import (
 
 from .candidate_decision import AutoUv2OverclockBudget, AutoUv2SweepState
 from .sweep import AutoUv2SweepHooks, run_sweep
+from .sweep_modes import AUTO_UV_MODE_EFFICIENCY, normalize_auto_uv_mode
 
 
 _OVERCLOCK_BUDGET_RE = re.compile(r"\boverclocking-budget=[^\s]+")
@@ -42,6 +44,36 @@ def _candidate_log_context(candidate: AutoUvCurveCandidate) -> str:
     if match is not None:
         return match.group(0)
     return str(candidate.label).strip()
+
+
+def _probe_crash_cache_marker_details(
+    *,
+    start_voltage_mv: int,
+    candidate_voltage_mv: int,
+    max_clock_drop_pct: float,
+    budget_payload: dict,
+    translated_gpu_policy: dict,
+) -> dict:
+    start_voltage = max(1, int(start_voltage_mv))
+    voltage_drop_pct = (
+        (float(start_voltage) - float(candidate_voltage_mv))
+        / float(start_voltage)
+        * 100.0
+    )
+    details = {
+        "start_voltage_mv": int(start_voltage_mv),
+        "voltage_drop_from_start_pct": round(float(voltage_drop_pct), 4),
+        "max_clock_drop_pct": float(max_clock_drop_pct),
+        "memory_offset_mhz": int(
+            translated_gpu_policy.get("mem_clk_vf_offset_mhz") or 0
+        ),
+        **dict(budget_payload),
+    }
+    if details.get("overclock_budget_used_of_clock_drop_pct") is not None:
+        details["clock_recovery_pct"] = details[
+            "overclock_budget_used_of_clock_drop_pct"
+        ]
+    return details
 
 
 def _latest_reference_voltage_mv(
@@ -81,8 +113,11 @@ def run_auto_uv_candidate_sweep(
     clock_bump_budget_limit_pct: float,
     max_clock_drop_pct: float,
     short_probe_base_duration_s: int = AUTO_UV_DEFAULTS.probe_duration_s,
+    auto_uv_mode: str = AUTO_UV_MODE_EFFICIENCY,
     efficiency_stop_streak: int = 0,
     min_efficiency_stop_voltage_drop_pct: float = 0.0,
+    timedemo_warmup_runs: int = 0,
+    unsafe_voltage_entries: list[dict] | None = None,
     event_callback: AutoUvEventCallback | None = None,
 ) -> dict:
     # This adapter is the only sweep layer that talks to live probe helpers.
@@ -162,9 +197,17 @@ def run_auto_uv_candidate_sweep(
             log=log,
             phase_label="candidate",
             log_context=_candidate_log_context(candidate),
+            marker_details=_probe_crash_cache_marker_details(
+                start_voltage_mv=int(start_voltage_mv),
+                candidate_voltage_mv=int(candidate.candidate_voltage_mv),
+                max_clock_drop_pct=float(max_clock_drop_pct),
+                budget_payload=latest_budget_payload,
+                translated_gpu_policy=translated_gpu_policy,
+            ),
             power_limit_w=translated_gpu_policy.get("power_limit_w"),
             min_performance_core_clock_pct=float(min_performance_core_clock_pct),
             reset_plan=runtime_default_plan,
+            timedemo_warmup_runs=int(timedemo_warmup_runs),
             event_callback=event_callback,
         )
         _log_benchmark(
@@ -211,6 +254,7 @@ def run_auto_uv_candidate_sweep(
             min_performance_core_clock_pct=float(min_performance_core_clock_pct),
             short_probe_base_duration_s=int(short_probe_base_duration_s),
             reset_plan=runtime_default_plan,
+            timedemo_warmup_runs=int(timedemo_warmup_runs),
             event_callback=event_callback,
         )
 
@@ -224,6 +268,13 @@ def run_auto_uv_candidate_sweep(
             voltage_mv=int(candidate.candidate_voltage_mv),
             probe=probe,
             base_probe=discovery_summary,
+        )
+
+    def _candidate_block_reason(candidate: AutoUvCurveCandidate) -> str:
+        return _unsafe_candidate_block_reason(
+            list(unsafe_voltage_entries or []),
+            candidate_voltage_mv=int(candidate.candidate_voltage_mv),
+            lock_clock_mhz=int(candidate.target_clock_mhz),
         )
 
     def _normalize_accepted(
@@ -304,11 +355,14 @@ def run_auto_uv_candidate_sweep(
             evaluate_probe=_evaluate,
             recover_upward=_recover_upward,
             write_latest_verified=_write_latest,
+            candidate_block_reason=_candidate_block_reason,
             normalize_accepted_candidate=_normalize_accepted,
             efficiency_delta=_temperature_normalized_efficiency_delta,
             power_up_efficiency_down=_is_power_up_efficiency_down_regression,
             log_probe_result=_log_probe_result,
+            base_probe=discovery_summary,
         ),
+        auto_uv_mode=normalize_auto_uv_mode(auto_uv_mode),
         efficiency_stop_streak=int(efficiency_stop_streak),
         min_efficiency_stop_voltage_drop_pct=float(
             min_efficiency_stop_voltage_drop_pct

@@ -205,6 +205,22 @@ def _budget_final_probe_durations(target_duration_s: int) -> tuple[int, int]:
     return int(q2rtx_duration_s), int(cuda_duration_s)
 
 
+def long_stability_workload_durations(
+    total_duration_s: int,
+    *,
+    include_q2rtx: bool = True,
+    include_cuda: bool = True,
+) -> tuple[int, int]:
+    if not include_q2rtx and not include_cuda:
+        raise ValueError("at least one stability workload must be enabled")
+    total_duration_s = max(1, int(total_duration_s))
+    if include_q2rtx and include_cuda:
+        return _budget_final_probe_durations(int(total_duration_s))
+    if include_q2rtx:
+        return int(total_duration_s), 0
+    return 0, int(total_duration_s)
+
+
 def build_long_stability_test_config(
     config: Q2RTXStabilityConfig,
     *,
@@ -215,37 +231,47 @@ def build_long_stability_test_config(
     if not include_q2rtx and not include_cuda:
         raise ValueError("at least one stability workload must be enabled")
     if include_q2rtx and not include_cuda:
-        total_duration_s = max(1, int(total_duration_s))
+        q2rtx_duration_s, _cuda_duration_s = long_stability_workload_durations(
+            int(total_duration_s),
+            include_q2rtx=True,
+            include_cuda=False,
+        )
         return _normalize_probe_config(
             replace(
                 config,
                 timedemo_loops=None,
-                duration_s=int(total_duration_s),
+                duration_s=int(q2rtx_duration_s),
                 companion_command=None,
                 single_pass_timeout_s=max(
                     float(config.single_pass_timeout_s),
-                    float(total_duration_s)
+                    float(q2rtx_duration_s)
                     + AUTO_UV_PROBE_TUNING.long_timeout_buffer_s,
                 ),
             )
         )
     if include_cuda and not include_q2rtx:
-        total_duration_s = max(1, int(total_duration_s))
+        _q2rtx_duration_s, cuda_duration_s = long_stability_workload_durations(
+            int(total_duration_s),
+            include_q2rtx=False,
+            include_cuda=True,
+        )
         return replace(
             config,
             timedemo_loops=None,
-            duration_s=int(total_duration_s),
+            duration_s=int(cuda_duration_s),
             companion_command=_cuda_bruteforce_companion_command(
                 gpu_index=int(config.gpu_index),
-                duration_s=int(total_duration_s),
+                duration_s=int(cuda_duration_s),
             ),
             single_pass_timeout_s=max(
                 float(config.single_pass_timeout_s),
-                float(total_duration_s) + AUTO_UV_PROBE_TUNING.long_timeout_buffer_s,
+                float(cuda_duration_s) + AUTO_UV_PROBE_TUNING.long_timeout_buffer_s,
             ),
         )
-    q2rtx_duration_s, cuda_duration_s = _budget_final_probe_durations(
-        int(total_duration_s)
+    q2rtx_duration_s, cuda_duration_s = long_stability_workload_durations(
+        int(total_duration_s),
+        include_q2rtx=True,
+        include_cuda=True,
     )
     return _normalize_probe_config(
         replace(

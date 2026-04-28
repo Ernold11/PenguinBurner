@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .tuning import AUTO_UV_CURVE_TUNING
+from .tuning import AUTO_UV_CURVE_TUNING, AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO
 from .curve_planning import _choose_strictly_higher_clock_target, _make_curve_candidate
 from .models import AutoUvCurveCandidate
 
@@ -16,8 +16,12 @@ def _clock_bump_budget_pct(
     *,
     max_clock_drop_pct: float,
     bump_budget_ratio: float,
+    max_budget_ratio: float = AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO,
 ) -> float:
-    ratio = max(0.0, min(1.0, float(bump_budget_ratio)))
+    ratio = max(
+        0.0,
+        min(float(max_budget_ratio), float(bump_budget_ratio)),
+    )
     return max(0.0, float(max_clock_drop_pct)) * float(ratio)
 
 

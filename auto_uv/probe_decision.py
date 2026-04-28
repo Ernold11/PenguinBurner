@@ -21,6 +21,21 @@ HARD_RECOVERY_FAILURE_PREFIXES = (
     "frame-count-regression",
 )
 
+CRITICAL_FAILURE_PREFIXES = (
+    "cuda-bruteforce-failed",
+    "fatal-cuda-output",
+    "fatal-q2rtx-output",
+    "nvidia-xid-detected",
+    "telemetry-live-load-lost",
+    "timedemo-live-frame-count",
+    "timedemo-metrics-invalid",
+    "timedemo-metrics-missing",
+    "timedemo-nonzero-exit",
+    "timedemo-timeout",
+    "timedemo-unexpected-frame-count",
+    "timedemo-frame-count-drift",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class AutoUv2ProbeDecision:
@@ -35,6 +50,13 @@ def _is_low_clock_failure(reason: str | None) -> bool:
 
 def _is_hard_recovery_failure(reason: str | None) -> bool:
     return str(reason or "").startswith(HARD_RECOVERY_FAILURE_PREFIXES)
+
+
+def _is_critical_probe_failure(reason: str | None) -> bool:
+    text = str(reason or "")
+    if text.startswith(("user-stop-requested", "cuda-bruteforce-failed exit=-15")):
+        return False
+    return text.startswith(CRITICAL_FAILURE_PREFIXES)
 
 
 def classify_probe_result(
@@ -60,6 +82,12 @@ def classify_probe_result(
                 "accept-lowest-floor-miss",
                 False,
                 "clock floor missed after overclock budget was spent",
+            )
+        if _is_critical_probe_failure(reason):
+            return AutoUv2ProbeDecision(
+                "stop-critical",
+                bool(candidate_used_overclock or _is_hard_recovery_failure(reason)),
+                f"critical probe failure; keeping previous stable curve: {reason or 'unknown'}",
             )
         return AutoUv2ProbeDecision(
             "recover-upward",

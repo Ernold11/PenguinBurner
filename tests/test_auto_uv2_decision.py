@@ -8,6 +8,7 @@ import pytest
 from auto_uv.models import AutoUvCurveCandidate, AutoUvProbeSummary
 from auto_uv import (
     AutoUv2OverclockBudget,
+    AutoUv2SweepHooks,
     AutoUv2SweepState,
     apply_probe_decision,
     choose_next_candidate,
@@ -20,6 +21,9 @@ from auto_uv.candidate_decision import (
     next_overclock_budget_used_pct,
     overclock_recovery_target_mhz,
 )
+from auto_uv.performance import AutoUvPerformanceBehavior
+from auto_uv.sweep import static_probe_result
+from auto_uv.sweep_behavior import AutoUvAcceptedCandidateContext
 
 
 def _plan() -> list[dict]:
@@ -73,6 +77,15 @@ def _probe(voltage_mv: int, clock_mhz: float) -> AutoUvProbeSummary:
         used_companion_load=False,
         result_reason="passed",
         log_path=Path("synthetic.log"),
+    )
+
+
+def _candidate(voltage_mv: int, clock_mhz: int) -> AutoUvCurveCandidate:
+    return AutoUvCurveCandidate(
+        label=f"{int(voltage_mv)}mV@{int(clock_mhz)}MHz",
+        candidate_voltage_mv=int(voltage_mv),
+        target_clock_mhz=int(clock_mhz),
+        plan=_wide_plan(),
     )
 
 
@@ -209,6 +222,20 @@ def test_auto_uv2_full_budget_recovers_half_of_lost_clock_to_baseline() -> None:
     assert target_mhz == 2595
 
 
+def test_auto_uv2_125_percent_budget_can_target_above_baseline() -> None:
+    target_mhz = overclock_recovery_target_mhz(
+        _wide_plan(),
+        measured_target_mhz=2450,
+        baseline_clock_mhz=2735.0,
+        max_clock_drop_pct=10.0,
+        budget_used_pct=12.5,
+        cap_clock_mhz=2735.0,
+    )
+
+    assert target_mhz > 2735
+    assert target_mhz <= 2735 + ((2735 - 2450) * 0.25)
+
+
 def test_auto_uv2_recovery_budget_advances_by_recovery_fraction() -> None:
     next_used_pct = next_overclock_budget_used_pct(
         current_used_pct=0.0,
@@ -315,6 +342,195 @@ def test_auto_uv2_overclock_attempt_records_first_full_budget_target() -> None:
     assert attempt.state.full_budget_target_mhz == attempt.candidate.target_clock_mhz
 
 
+def test_performance_overclock_attempt_caps_one_step_budget() -> None:
+    failed_candidate = AutoUvCurveCandidate(
+        label="voltage=1010mV phase=coarse",
+        candidate_voltage_mv=1010,
+        target_clock_mhz=2625,
+        plan=_wide_plan(),
+    )
+
+    attempt = AutoUvPerformanceBehavior(
+        max_overclock_step_pct=2.0
+    )._make_performance_overclock_attempt(
+        _wide_plan(),
+        state=AutoUv2SweepState(
+            stable_voltage_mv=1010,
+            stable_target_mhz=2625,
+            stable_measured_target_mhz=2625,
+            candidate_voltage_mv=990,
+            budget=AutoUv2OverclockBudget(used_pct=0.0, limit_pct=11.5),
+        ),
+        failed_candidate=failed_candidate,
+        reason="performance-fps current=2572.5MHz floor=2693.0MHz",
+        cap_clock_mhz=2748.0,
+        baseline_clock_mhz=2748.0,
+        max_clock_drop_pct=10.0,
+    )
+
+    assert attempt is not None
+    assert attempt.candidate.target_clock_mhz > 2625
+    assert attempt.candidate.target_clock_mhz < 2745
+    assert attempt.state.budget.used_pct < 4.0
+    assert attempt.state.budget.limit_pct == pytest.approx(11.5)
+
+
+def test_performance_default_overclock_attempt_spends_near_half_drop_budget() -> None:
+    failed_candidate = AutoUvCurveCandidate(
+        label="voltage=1010mV phase=coarse",
+        candidate_voltage_mv=1010,
+        target_clock_mhz=2625,
+        plan=_wide_plan(),
+    )
+
+    attempt = AutoUvPerformanceBehavior()._make_performance_overclock_attempt(
+        _wide_plan(),
+        state=AutoUv2SweepState(
+            stable_voltage_mv=1010,
+            stable_target_mhz=2625,
+            stable_measured_target_mhz=2625,
+            candidate_voltage_mv=990,
+            budget=AutoUv2OverclockBudget(used_pct=0.0, limit_pct=11.5),
+        ),
+        failed_candidate=failed_candidate,
+        reason="performance-fps current=2572.5MHz floor=2693.0MHz",
+        cap_clock_mhz=2748.0,
+        baseline_clock_mhz=2748.0,
+        max_clock_drop_pct=10.0,
+    )
+
+    assert attempt is not None
+    assert attempt.candidate.target_clock_mhz == 2685
+    assert attempt.state.budget.used_pct == pytest.approx(4.8780487805)
+    assert attempt.state.budget.limit_pct == pytest.approx(11.5)
+
+
+def test_performance_overclock_hard_failure_stops_before_lower_voltage() -> None:
+    probed_points: list[tuple[int, int]] = []
+
+    def probe_candidate(candidate: AutoUvCurveCandidate):
+        probed_points.append(
+            (int(candidate.candidate_voltage_mv), int(candidate.target_clock_mhz))
+        )
+        return (
+            _probe(candidate.candidate_voltage_mv, candidate.target_clock_mhz),
+            static_probe_result(False, "fatal-q2rtx-output"),
+        )
+
+    hooks = AutoUv2SweepHooks(
+        probe_candidate=probe_candidate,
+        evaluate_probe=lambda _probe, _history: "",
+        recover_upward=lambda _candidate, _failed_probe, _reason: (None, None, None),
+        write_latest_verified=lambda _candidate, _probe: None,
+        base_probe=_probe(1240, 2757.0),
+    )
+    behavior = AutoUvPerformanceBehavior()
+    context = AutoUvAcceptedCandidateContext(
+        source_plan=_wide_plan(),
+        hooks=hooks,
+        state=AutoUv2SweepState(
+            stable_voltage_mv=885,
+            stable_target_mhz=2895,
+            stable_measured_target_mhz=2715,
+            candidate_voltage_mv=875,
+            budget=AutoUv2OverclockBudget(used_pct=12.85, limit_pct=17.5),
+            persistent_overclock_pct=12.85,
+        ),
+        previous_stable_candidate=_candidate(895, 2880),
+        previous_stable_probe=_probe(895, 2709.0),
+        stable_candidate=_candidate(885, 2895),
+        stable_probe=_probe(885, 2715.0),
+        probed_candidate=_candidate(885, 2895),
+        stable_history=[_probe(895, 2709.0), _probe(885, 2715.0)],
+        probe_history=[],
+        start_voltage_mv=1025,
+        reference_actual_voltage_mv=875.0,
+        preserve_base_below_mv=None,
+        min_search_voltage_mv=850,
+        measured_clock_cap_mhz=3180.0,
+        initial_core_clock_mhz=3180.0,
+        min_core_clock_pct=90.0,
+        attempt_index=12,
+    )
+
+    result, score, events = behavior._try_performance_overclock(
+        context,
+        current_score=100.0,
+        base_probe=_probe(1240, 2757.0),
+    )
+
+    assert probed_points
+    assert result is not None
+    assert score is None
+    assert result.should_stop
+    assert result.state.candidate_voltage_mv is None
+    assert result.state.stable_voltage_mv > 885
+    assert any("refusing lower voltage" in event.message for event in events)
+
+
+def test_performance_voltage_recovery_skips_visited_voltage_target_pairs() -> None:
+    probed_points: list[tuple[int, int]] = []
+
+    def probe_candidate(candidate: AutoUvCurveCandidate):
+        probed_points.append(
+            (int(candidate.candidate_voltage_mv), int(candidate.target_clock_mhz))
+        )
+        return (
+            _probe(candidate.candidate_voltage_mv, candidate.target_clock_mhz),
+            static_probe_result(True),
+        )
+
+    hooks = AutoUv2SweepHooks(
+        probe_candidate=probe_candidate,
+        evaluate_probe=lambda _probe, _history: "",
+        recover_upward=lambda _candidate, _failed_probe, _reason: (None, None, None),
+        write_latest_verified=lambda _candidate, _probe: None,
+    )
+    stable_history = [
+        _probe(900, 2865.0),
+        _probe(895, 2865.0),
+        _probe(890, 2865.0),
+        _probe(910, 2835.0),
+        _probe(885, 2865.0),
+    ]
+    context = AutoUvAcceptedCandidateContext(
+        source_plan=_wide_plan(),
+        hooks=hooks,
+        state=AutoUv2SweepState(
+            stable_voltage_mv=885,
+            stable_target_mhz=2865,
+            candidate_voltage_mv=None,
+            budget=AutoUv2OverclockBudget(used_pct=13.0, limit_pct=13.0),
+        ),
+        previous_stable_candidate=_candidate(890, 2865),
+        previous_stable_probe=_probe(890, 2865.0),
+        stable_candidate=_candidate(885, 2865),
+        stable_probe=_probe(885, 2865.0),
+        probed_candidate=_candidate(885, 2865),
+        stable_history=stable_history,
+        probe_history=list(stable_history),
+        start_voltage_mv=1020,
+        reference_actual_voltage_mv=885.0,
+        preserve_base_below_mv=None,
+        min_search_voltage_mv=850,
+        measured_clock_cap_mhz=2865.0,
+        initial_core_clock_mhz=2730.0,
+        min_core_clock_pct=90.0,
+        attempt_index=18,
+    )
+
+    result, events = AutoUvPerformanceBehavior()._sweep_higher_voltage_recovery(
+        context,
+        base_probe=_probe(1240, 2730.0),
+    )
+
+    assert result is not None
+    assert probed_points == [(910, 2865)]
+    assert any(event.message == "skip-visited 890mV@2865MHz" for event in events)
+    assert any(event.message == "skip-visited 895mV@2865MHz" for event in events)
+    assert any(event.message == "skip-visited 900mV@2865MHz" for event in events)
+
+
 def test_auto_uv2_efficiency_stop_waits_for_budget_to_be_spent() -> None:
     decision = decide_efficiency_stop(
         efficiency_stop_candidate=True,
@@ -373,6 +589,19 @@ def test_auto_uv2_probe_decision_recovers_upward_after_hard_failure() -> None:
     )
 
     assert decision.action == "recover-upward"
+    assert decision.should_back_off_overclock
+
+
+def test_auto_uv2_probe_decision_stops_at_critical_failure() -> None:
+    decision = classify_probe_result(
+        probe_success=False,
+        probe_failure_reason="fatal-q2rtx-output",
+        evaluation_error=None,
+        budget=AutoUv2OverclockBudget(used_pct=10.0, limit_pct=15.0),
+        candidate_used_overclock=True,
+    )
+
+    assert decision.action == "stop-critical"
     assert decision.should_back_off_overclock
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "penguin-burner"
-version = "0.1.3"
+version = "0.1.4"
 description = "Nvidia GPU Undervolting Tool with Auto-UV and MSI Afterburner import support"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -54,6 +54,8 @@ penguin-burner = "penguin_burner_ui:main"
 pburn = "penguin_burner_ui:main"
 penguin-burner-ui = "penguin_burner_ui:main"
 pburn-ui = "penguin_burner_ui:main"
+penguin-burner-yolo = "penguin_burner_ui:main_yolo"
+pburn-yolo = "penguin_burner_ui:main_yolo"
 penguin-burner-cli = "penguin_burner:cli_main"
 pburn-cli = "penguin_burner:cli_main"
 q2rtx-stability = "stability.q2rtx:main"
@@ -64,6 +66,7 @@ penguin-burner-import-afterburner-fan = "afterburner.import_fan_curve:main"
 [tool.setuptools]
 py-modules = [
   "ascii_chart",
+  "cli_output",
   "dry_run_preview",
   "hidden_nvapi_vf",
   "hidden_nvml_voltage",

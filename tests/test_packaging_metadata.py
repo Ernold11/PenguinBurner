@@ -30,6 +30,8 @@ def test_console_scripts_use_gui_default_and_explicit_cli_names() -> None:
     assert scripts["pburn"] == "penguin_burner_ui:main"
     assert scripts["penguin-burner-ui"] == "penguin_burner_ui:main"
     assert scripts["pburn-ui"] == "penguin_burner_ui:main"
+    assert scripts["penguin-burner-yolo"] == "penguin_burner_ui:main_yolo"
+    assert scripts["pburn-yolo"] == "penguin_burner_ui:main_yolo"
     assert scripts["penguin-burner-cli"] == "penguin_burner:cli_main"
     assert scripts["pburn-cli"] == "penguin_burner:cli_main"
     assert "penguin_burner" not in scripts

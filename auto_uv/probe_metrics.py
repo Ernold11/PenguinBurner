@@ -59,6 +59,22 @@ def _decision_samples(telemetry_samples: list) -> list:
     return filtered or list(telemetry_samples)
 
 
+def _decision_timedemo_runs(
+    timedemo_runs: Sequence,
+    *,
+    timedemo_warmup_runs: int = 0,
+) -> list:
+    runs = list(timedemo_runs or [])
+    warmup_runs = max(0, int(timedemo_warmup_runs or 0))
+    min_remaining_runs = max(
+        1,
+        int(AUTO_UV_METRIC_TUNING.timedemo_warmup_min_remaining_runs),
+    )
+    if warmup_runs <= 0 or len(runs) < warmup_runs + min_remaining_runs:
+        return runs
+    return runs[warmup_runs:]
+
+
 def _saturated_tail_samples(telemetry_samples: list) -> list:
     samples = _decision_samples(telemetry_samples)
     power_values = [
@@ -515,9 +531,14 @@ def _summarize_probe(
     result,
     telemetry_samples: list | None = None,
     use_power_limit_floor: bool = False,
+    timedemo_warmup_runs: int = 0,
 ) -> AutoUvProbeSummary:
-    fps_values = [float(run.fps) for run in result.timedemo_runs]
-    frame_values = [int(run.frames) for run in result.timedemo_runs]
+    timedemo_runs = _decision_timedemo_runs(
+        result.timedemo_runs,
+        timedemo_warmup_runs=int(timedemo_warmup_runs),
+    )
+    fps_values = [float(run.fps) for run in timedemo_runs]
+    frame_values = [int(run.frames) for run in timedemo_runs]
     q2rtx_samples = (
         list(telemetry_samples)
         if telemetry_samples is not None
@@ -649,7 +670,7 @@ def _summarize_probe(
         live_voltage_after_mv=live_voltage_after_mv,
         avg_voltage_mv=summary_voltage_mv,
         frames_per_run=frame_values[0] if frame_values else None,
-        avg_seconds_per_run=_mean([float(run.seconds) for run in result.timedemo_runs]),
+        avg_seconds_per_run=_mean([float(run.seconds) for run in timedemo_runs]),
         avg_fps=avg_fps,
         min_fps=min(fps_values) if fps_values else None,
         max_fps=max(fps_values) if fps_values else None,

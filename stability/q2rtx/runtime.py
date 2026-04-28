@@ -48,12 +48,12 @@ def _apply_hidden_window_env(
         return env
     if use_headless_gamescope:
         return env
-    if not env.get("DISPLAY"):
-        return env
 
     hidden_env = dict(env)
     # SDL's offscreen backend cannot create a Vulkan surface for Q2RTX. Use a
-    # real X11 Vulkan window, but place it outside the visible desktop.
+    # real X11 Vulkan window, but place it outside the visible desktop. Force
+    # X11 even on Wayland-only sessions so hidden mode fails closed instead of
+    # creating a visible Wayland window.
     hidden_env["SDL_VIDEODRIVER"] = "x11"
     hidden_env["SDL_VIDEO_WINDOW_POS"] = HIDDEN_WINDOW_POSITION
     hidden_env["SDL_VIDEO_X11_FORCE_OVERRIDE_REDIRECT"] = "1"
@@ -334,13 +334,38 @@ def _timedemo_abort_is_immediate(reason: str) -> bool:
     reason = str(reason or "").strip()
     if not reason:
         return False
-    if reason == "user-stop-requested":
+    if reason in {
+        "user-stop-requested",
+        "fatal-q2rtx-output",
+        "fatal-cuda-output",
+        "nvidia-xid-detected",
+        "timedemo-metrics-invalid",
+        "timedemo-unexpected-frame-count",
+        "timedemo-frame-count-drift",
+    }:
         return True
-    if reason == "fatal-q2rtx-output":
-        return True
-    if reason.startswith("timedemo-live-stall"):
+    if reason.startswith(
+        (
+            "profile-verification-voltage-mismatch",
+            "telemetry-live-load-lost",
+            "timedemo-live-frame-count",
+            "timedemo-live-stall",
+        )
+    ):
         return True
     return False
+
+
+def _fatal_output_abort_reason(
+    fatal_output_matches: list[str],
+    *,
+    running: str,
+) -> str | None:
+    if not fatal_output_matches:
+        return None
+    if str(running).strip().lower() == "cuda":
+        return "fatal-cuda-output"
+    return "fatal-q2rtx-output"
 
 
 def _managed_q2rtx_process_groups(config: Q2RTXStabilityConfig) -> set[int]:
@@ -520,13 +545,22 @@ def _run_companion_process(
                     "completed_frames": 0,
                     "last_run": None,
                     "running": "cuda",
-                    "fatal_output_matches": [],
+                    "fatal_output_matches": list(
+                        _scan_output_for_fatal_patterns(log_path)
+                    ),
                 }
                 if config.progress_callback is not None:
                     try:
                         config.progress_callback(progress_state)
                     except Exception:
                         pass
+                fatal_abort_reason = _fatal_output_abort_reason(
+                    list(progress_state["fatal_output_matches"]),
+                    running="cuda",
+                )
+                if fatal_abort_reason is not None:
+                    _terminate_process_group(companion_process)
+                    return companion_process.poll() or -15, str(fatal_abort_reason)
                 if config.abort_callback is not None:
                     try:
                         abort_reason = config.abort_callback(progress_state)
@@ -786,6 +820,16 @@ def _run_timedemo_process(
                             config.progress_callback(progress_state)
                         except Exception:
                             pass
+                    fatal_abort_reason = _fatal_output_abort_reason(
+                        fatal_output_matches,
+                        running="q2rtx",
+                    )
+                    if fatal_abort_reason is not None:
+                        _terminate_process_group(process)
+                        process_exit_code = process.returncode
+                        observed_duration_s = time.monotonic() - run_start_monotonic
+                        exit_reason = str(fatal_abort_reason)
+                        break
                     if config.abort_callback is not None:
                         try:
                             abort_reason = config.abort_callback(progress_state)
@@ -825,6 +869,7 @@ def _run_timedemo_process(
                     log_path=log_path,
                     progress_elapsed_offset_s=float(q2rtx_net_duration_s),
                 )
+                observed_duration_s = time.monotonic() - run_start_monotonic
                 if companion_abort_reason:
                     exit_reason = str(companion_abort_reason)
                 elif companion_exit_code not in (None, 0):

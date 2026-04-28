@@ -77,6 +77,35 @@ def _memory_offset_from_policy(translated_gpu_policy: dict | None) -> int | None
         return None
 
 
+def _probe_crash_cache_marker_details(
+    *,
+    start_voltage_mv: int,
+    candidate_voltage_mv: int,
+    final_budget_payload: dict,
+    translated_gpu_policy: dict | None,
+    extra: dict | None = None,
+) -> dict:
+    start_voltage = max(1, int(start_voltage_mv))
+    voltage_drop_pct = (
+        (float(start_voltage) - float(candidate_voltage_mv))
+        / float(start_voltage)
+        * 100.0
+    )
+    details = {
+        "start_voltage_mv": int(start_voltage_mv),
+        "voltage_drop_from_start_pct": round(float(voltage_drop_pct), 4),
+        "memory_offset_mhz": _memory_offset_from_policy(translated_gpu_policy) or 0,
+        **dict(final_budget_payload),
+    }
+    if details.get("overclock_budget_used_of_clock_drop_pct") is not None:
+        details["clock_recovery_pct"] = details[
+            "overclock_budget_used_of_clock_drop_pct"
+        ]
+    if extra:
+        details.update(extra)
+    return details
+
+
 def _run_final_verification_and_save(
     *,
     probe_voltage_candidate,
@@ -108,6 +137,7 @@ def _run_final_verification_and_save(
     clock_bump_budget_used_pct=0.0,
     max_bump_recovery_was_used=False,
     short_probe_base_duration_s: int | None = None,
+    timedemo_warmup_runs: int = 0,
     event_callback: AutoUvEventCallback | None = None,
 ):
     _log_phase(
@@ -235,8 +265,15 @@ def _run_final_verification_and_save(
                 or float(final_clock_bump_budget_used_pct)
                 < float(clock_bump_budget_limit_pct)
             ),
-            marker_details=final_recovery_marker_details,
+            marker_details=_probe_crash_cache_marker_details(
+                start_voltage_mv=int(start_voltage_mv),
+                candidate_voltage_mv=int(final_voltage_mv),
+                final_budget_payload=final_budget_payload,
+                translated_gpu_policy=translated_gpu_policy,
+                extra=final_recovery_marker_details,
+            ),
             expected_total_duration_s=int(final_verification_duration_s),
+            timedemo_warmup_runs=int(timedemo_warmup_runs),
             event_callback=event_callback,
         )
         probe_history.append(final_probe)
@@ -459,6 +496,7 @@ def _run_final_verification_and_save(
                 min_performance_core_clock_pct=float(min_performance_core_clock_pct),
                 short_probe_base_duration_s=short_probe_base_duration_s,
                 reset_plan=runtime_default_plan,
+                timedemo_warmup_runs=int(timedemo_warmup_runs),
                 event_callback=event_callback,
             )
         )

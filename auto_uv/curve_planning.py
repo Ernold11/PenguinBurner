@@ -54,6 +54,12 @@ def _unsafe_min_search_voltage_mv(
             voltage_mv = int(entry["candidate_voltage_mv"])
         except (KeyError, TypeError, ValueError):
             continue
+        try:
+            lock_clock_mhz = int(entry.get("lock_clock_mhz", 0) or 0)
+        except (TypeError, ValueError):
+            lock_clock_mhz = 0
+        if lock_clock_mhz > 0 or isinstance(entry.get("blocked_lock_clock_mhz"), list):
+            continue
         if int(voltage_mv) >= int(start_voltage_mv):
             continue
         if unsafe_floor_mv is None or int(voltage_mv) > int(unsafe_floor_mv):
@@ -61,6 +67,97 @@ def _unsafe_min_search_voltage_mv(
     if unsafe_floor_mv is None:
         return None, None
     return unsafe_floor_mv, _next_higher_voltage_bin(plan, int(unsafe_floor_mv))
+
+
+def _unsafe_entry_blocks_candidate(
+    entry: dict,
+    *,
+    candidate_voltage_mv: int,
+    lock_clock_mhz: int,
+) -> bool:
+    if not _unsafe_entry_blocks_future_search(entry):
+        return False
+    try:
+        unsafe_voltage_mv = int(entry["candidate_voltage_mv"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    try:
+        unsafe_lock_clock_mhz = int(entry["lock_clock_mhz"])
+    except (KeyError, TypeError, ValueError):
+        unsafe_lock_clock_mhz = 0
+
+    blocked_lock_floor_mhz = _unsafe_entry_clock_floor_mhz(
+        entry,
+        fallback_lock_clock_mhz=int(unsafe_lock_clock_mhz),
+    )
+
+    # Legacy entries without a clock are voltage-only. Clock-aware entries block
+    # the failed voltage and lower voltages only at the recorded failed-clock
+    # band, so a much lower target at the same voltage remains testable.
+    if unsafe_lock_clock_mhz <= 0:
+        return int(candidate_voltage_mv) <= int(unsafe_voltage_mv)
+    return int(candidate_voltage_mv) <= int(unsafe_voltage_mv) and int(
+        lock_clock_mhz
+    ) >= int(blocked_lock_floor_mhz)
+
+
+def _unsafe_entry_clock_floor_mhz(
+    entry: dict,
+    *,
+    fallback_lock_clock_mhz: int,
+) -> int:
+    clocks = []
+    blocked = entry.get("blocked_lock_clock_mhz")
+    if isinstance(blocked, list):
+        for value in blocked:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                clocks.append(int(parsed))
+    if clocks:
+        return min(clocks)
+    return max(0, int(fallback_lock_clock_mhz))
+
+
+def _unsafe_candidate_block_reason(
+    unsafe_entries: list[dict],
+    *,
+    candidate_voltage_mv: int,
+    lock_clock_mhz: int,
+) -> str:
+    for entry in unsafe_entries:
+        if not _unsafe_entry_blocks_candidate(
+            entry,
+            candidate_voltage_mv=int(candidate_voltage_mv),
+            lock_clock_mhz=int(lock_clock_mhz),
+        ):
+            continue
+        try:
+            unsafe_voltage_mv = int(entry["candidate_voltage_mv"])
+        except (KeyError, TypeError, ValueError):
+            unsafe_voltage_mv = int(candidate_voltage_mv)
+        try:
+            unsafe_clock_text = f"{int(entry['lock_clock_mhz'])}MHz"
+            fallback_clock_mhz = int(entry["lock_clock_mhz"])
+        except (KeyError, TypeError, ValueError):
+            unsafe_clock_text = "unknown"
+            fallback_clock_mhz = 0
+        clock_floor_mhz = _unsafe_entry_clock_floor_mhz(
+            entry,
+            fallback_lock_clock_mhz=int(fallback_clock_mhz),
+        )
+        band_text = (
+            f" band>= {int(clock_floor_mhz)}MHz"
+            if int(clock_floor_mhz) > 0 and unsafe_clock_text != "unknown"
+            else ""
+        )
+        return (
+            "cached unsafe point "
+            f"{int(unsafe_voltage_mv)}mV@{unsafe_clock_text}{band_text}"
+        )
+    return ""
 
 
 def _higher_voltage_bins(plan: list[dict], voltage_mv: int) -> list[int]:

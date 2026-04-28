@@ -3,14 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO = 1.5
+AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO = 1.75
+
+
 @dataclass(frozen=True, slots=True)
 class AutoUvDefaults:
     probe_duration_s: int = 30
     shape_probe_duration_s: int = 10
     final_duration_s: int = 600
     max_drop_pct: float = 16.0
+    performance_max_drop_pct: float = 14.0
     efficiency_stop_streak: int = 1
-    clock_bump_budget_ratio: float = 0.5
+    clock_bump_budget_ratio: float = 0.75
+    performance_clock_bump_budget_ratio: float = 1.10
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +40,8 @@ class AutoUvMetricTuning:
     temperature_normalization_power_pct_per_c: float = 0.5
     temperature_normalization_max_delta_c: float = 10.0
     loaded_sample_warmup_s: float = 5.0
+    performance_timedemo_warmup_runs: int = 1
+    timedemo_warmup_min_remaining_runs: int = 3
     saturated_tail_power_pct: float = 90.0
     saturated_tail_core_clock_pct: float = 98.0
     saturated_tail_min_samples: int = 2

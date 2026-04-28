@@ -19,6 +19,10 @@ from stability.q2rtx.models import (
     Q2RTXStabilityResult,
     StabilityTestError,
 )
+from stability.q2rtx.output import (
+    _format_live_progress_state,
+    _scan_output_for_fatal_patterns,
+)
 from stability.q2rtx.reporting import _filter_report_output_tail
 from stability.q2rtx.runtime import (
     _result_looks_like_gamescope_startup_crash,
@@ -304,6 +308,18 @@ def test_timedemo_command_uses_requested_resolution_and_run_count(
     assert command[-2:] == ["+demo", "demo1"]
 
 
+def test_hidden_window_env_forces_offscreen_x11_without_display() -> None:
+    hidden_env = q2rtx_runtime._apply_hidden_window_env(
+        {"WAYLAND_DISPLAY": "wayland-0"},
+        hide_window=True,
+        use_headless_gamescope=False,
+    )
+
+    assert hidden_env["SDL_VIDEODRIVER"] == "x11"
+    assert hidden_env["SDL_VIDEO_WINDOW_POS"] == "32000,32000"
+    assert hidden_env["SDL_VIDEO_X11_FORCE_OVERRIDE_REDIRECT"] == "1"
+
+
 def test_gamescope_startup_crash_is_detected_for_fallback(tmp_path: Path) -> None:
     result = Q2RTXStabilityResult(
         success=False,
@@ -374,9 +390,99 @@ def test_cuda_companion_abort_preserves_abort_reason(
     assert result.process_exit_code == -15
 
 
+def test_cuda_companion_progress_is_labeled_as_cuda() -> None:
+    line = _format_live_progress_state(
+        {
+            "workload_name": "q2demo1",
+            "running": "cuda",
+            "elapsed_s": 512.0,
+        },
+        prefix="Stability live:",
+    )
+
+    assert "workload=cuda-compute" in line
+    assert "running=cuda" in line
+    assert "demo=q2demo1" not in line
+    assert "elapsed=512.0s" in line
+
+
+def test_fatal_output_abort_reason_uses_active_workload() -> None:
+    assert (
+        q2rtx_runtime._fatal_output_abort_reason(["device lost"], running="q2rtx")
+        == "fatal-q2rtx-output"
+    )
+    assert (
+        q2rtx_runtime._fatal_output_abort_reason(["device lost"], running="cuda")
+        == "fatal-cuda-output"
+    )
+    assert q2rtx_runtime._fatal_output_abort_reason([], running="q2rtx") is None
+
+
+def test_cuda_stability_aborts_immediately_on_fatal_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class DummyVoltageSession:
+        def __init__(self, gpu_index: int) -> None:
+            self.gpu_index = int(gpu_index)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        q2rtx_runtime,
+        "_HiddenNvmlVoltageSession",
+        DummyVoltageSession,
+    )
+    monkeypatch.setattr(q2rtx_runtime, "query_gpu_metrics", lambda *args, **kwargs: None)
+    monkeypatch.setattr(q2rtx_runtime, "_query_xid_messages_since", lambda _start: [])
+    monkeypatch.setattr(
+        q2rtx_runtime,
+        "_scan_output_for_fatal_patterns",
+        lambda _path: ["device lost"],
+    )
+
+    result = q2rtx_runtime.run_cuda_stability_test(
+        Q2RTXStabilityConfig(
+            duration_s=30,
+            log_dir=tmp_path,
+            poll_interval_s=0.01,
+            companion_command=(
+                sys.executable,
+                "-c",
+                "import time; time.sleep(30)",
+            ),
+        )
+    )
+
+    assert result.success is False
+    assert result.reason == "fatal-cuda-output"
+    assert result.shutdown_mode == "fatal-cuda-output"
+    assert result.process_exit_code == -15
+    assert result.duration_observed_s < 5.0
+
+
 def test_timedemo_abort_policy_only_kills_immediate_failures() -> None:
     assert q2rtx_runtime._timedemo_abort_is_immediate("user-stop-requested") is True
     assert q2rtx_runtime._timedemo_abort_is_immediate("fatal-q2rtx-output") is True
+    assert (
+        q2rtx_runtime._timedemo_abort_is_immediate(
+            "profile-verification-voltage-mismatch current=1025mV target=870mV"
+        )
+        is True
+    )
+    assert (
+        q2rtx_runtime._timedemo_abort_is_immediate(
+            "telemetry-live-load-lost current=45.0W"
+        )
+        is True
+    )
+    assert (
+        q2rtx_runtime._timedemo_abort_is_immediate(
+            "timedemo-live-frame-count current=0 expected=631"
+        )
+        is True
+    )
     assert (
         q2rtx_runtime._timedemo_abort_is_immediate("timedemo-live-stall idle=20.0s")
         is True
@@ -393,6 +499,15 @@ def test_timedemo_abort_policy_only_kills_immediate_failures() -> None:
         )
         is False
     )
+
+
+def test_device_lost_output_is_fatal_case_insensitive(tmp_path: Path) -> None:
+    log_path = tmp_path / "q2rtx.log"
+    log_path.write_text("vk: Device lost!\n", encoding="utf-8")
+
+    matches = _scan_output_for_fatal_patterns(log_path)
+
+    assert "device lost" in matches
 
 
 def test_report_output_tail_filters_normal_gamescope_shutdown_noise() -> None:

@@ -6,7 +6,9 @@ from dataclasses import dataclass, replace
 from auto_uv.clock_bump import (
     _format_clock_bump_budget as _format_overclock_budget,
 )
-from auto_uv.tuning import AUTO_UV_CURVE_TUNING
+from auto_uv.tuning import (
+    AUTO_UV_CURVE_TUNING,
+)
 from auto_uv.models import AutoUvCurveCandidate, AutoUvProbeSummary
 from auto_uv.scan_rules import _percent
 from auto_uv.curve_planning import _choose_sustained_clock_target, _make_curve_candidate
@@ -128,7 +130,10 @@ def _recovery_fraction(
     max_drop = max(0.0, float(max_clock_drop_pct))
     if max_drop <= 0.0:
         return 0.0
-    return max(0.0, min(1.0, float(budget_used_pct) / max_drop))
+    return max(
+        0.0,
+        float(budget_used_pct) / max_drop,
+    )
 
 
 def overclock_budget_pct_for_target(
@@ -217,12 +222,6 @@ def overclock_recovery_target_mhz(
     baseline_clock = float(baseline_clock_mhz or measured_target)
     if baseline_clock <= float(measured_target):
         return int(measured_target)
-    cap_clock = min(
-        float(baseline_clock),
-        float(cap_clock_mhz) if cap_clock_mhz is not None else float(baseline_clock),
-    )
-    if cap_clock <= float(measured_target):
-        return int(measured_target)
     fraction = _recovery_fraction(
         budget_used_pct=float(budget_used_pct),
         max_clock_drop_pct=float(max_clock_drop_pct),
@@ -232,6 +231,21 @@ def overclock_recovery_target_mhz(
     desired_clock_mhz = float(measured_target) + (
         (float(baseline_clock) - float(measured_target)) * float(fraction)
     )
+    if float(fraction) <= 1.0:
+        cap_clock = min(
+            float(baseline_clock),
+            (
+                float(cap_clock_mhz)
+                if cap_clock_mhz is not None
+                else float(baseline_clock)
+            ),
+        )
+    else:
+        cap_clock = float(desired_clock_mhz)
+        if cap_clock_mhz is not None and float(cap_clock_mhz) > float(baseline_clock):
+            cap_clock = min(float(cap_clock), float(cap_clock_mhz))
+    if cap_clock <= float(measured_target):
+        return int(measured_target)
     target_mhz = _choose_clock_target_at_or_above(
         source_plan,
         desired_clock_mhz=min(float(desired_clock_mhz), float(cap_clock)),
