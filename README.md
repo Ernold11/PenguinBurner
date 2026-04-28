@@ -21,7 +21,6 @@ python -m pip install --user --upgrade penguin-burner
 Bundled pip entrypoints:
 
 - GUI: `penguin-burner` - alias: `pburn`
-- GUI with hidden yolo mode enabled: `penguin-burner-yolo` - alias: `pburn-yolo`
 - CLI/non-GUI: `penguin-burner-cli` - alias: `pburn-cli`
 
 The pip package also provides a desktop file, so PenguinBurner should appear with its icon in your desktop environment's app launcher.
@@ -127,5 +126,5 @@ from pip flags:
 
 ```bash
 python -m pip install --user --no-index --no-deps --find-links dist --upgrade penguin-burner
-penguin-burner-yolo
+penguin-burner --yolo
 ```

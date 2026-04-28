@@ -5673,13 +5673,6 @@ def main() -> int:
     return _run_gui(sys.argv)
 
 
-def main_yolo() -> int:
-    argv = list(sys.argv)
-    if "--yolo" not in argv[1:]:
-        argv.append("--yolo")
-    return _run_gui(argv)
-
-
 STYLESHEET = """
 QMainWindow {
     background: #111418;

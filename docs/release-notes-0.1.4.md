@@ -28,16 +28,14 @@ performance-mode controls, and clearer install/run workflows.
 
 ### Packaging And Local Testing
 
-- Added yolo GUI launchers:
-  - `penguin-burner-yolo`
-  - `pburn-yolo`
+- Kept yolo mode as a hidden `--yolo` command-line option.
 - Documented the clean profile reset command for fresh local testing.
 - Verified local wheel/source builds and metadata checks.
 
 ## PyPI Release Summary
 
-PenguinBurner 0.1.4 improves Auto-UV safety, adds dedicated yolo GUI launchers,
-and documents cleaner local testing workflows.
+PenguinBurner 0.1.4 improves Auto-UV safety and documents cleaner local
+testing workflows.
 
 Highlights:
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import sys
-
 import pytest
 
 from penguin_burner_ui import commands
@@ -26,7 +24,6 @@ from penguin_burner_ui.app import (
     _slider_value_from_click_position,
     _sort_candidates_for_final_choice,
     _top_status_text,
-    main_yolo,
 )
 from penguin_burner_ui.components.runs_table import (
     RunsTable,
@@ -126,20 +123,6 @@ def test_gui_yolo_argument_is_hidden_from_qt_args() -> None:
 
     assert yolo is True
     assert qt_args == ["penguin-burner-ui", "--style", "Fusion"]
-
-
-def test_gui_yolo_launcher_injects_hidden_argument(monkeypatch) -> None:
-    captured = {}
-
-    def fake_run_gui(argv):
-        captured["argv"] = list(argv)
-        return 0
-
-    monkeypatch.setattr("penguin_burner_ui.app._run_gui", fake_run_gui)
-    monkeypatch.setattr(sys, "argv", ["penguin-burner-yolo", "--style", "Fusion"])
-
-    assert main_yolo() == 0
-    assert captured["argv"] == ["penguin-burner-yolo", "--style", "Fusion", "--yolo"]
 
 
 def test_runs_table_power_delta_keeps_raw_sign() -> None:

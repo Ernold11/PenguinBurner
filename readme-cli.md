@@ -202,9 +202,9 @@ python -m pip install penguin-burner
 ```
 
 The PyPI package name uses the correct spelling: `penguin-burner`. The GitHub
-Actions release workflow builds the package, checks the metadata, and publishes
-to PyPI when a GitHub release is published. Configure PyPI trusted publishing
-for this repository and do not commit or paste PyPI API tokens.
+Actions release workflow builds the package and checks the metadata when a
+GitHub release is published. Publish to PyPI deliberately with configured
+twine credentials, and do not commit or paste PyPI API tokens.
 
 The GitHub release tag must match `project.version` in `pyproject.toml`, either
 as `X.Y.Z` or `vX.Y.Z`. The publish workflow rejects mismatches before upload,
