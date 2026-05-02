@@ -1,0 +1,286 @@
+from __future__ import annotations
+
+from datetime import datetime
+import json
+import math
+from pathlib import Path
+
+from manual_uv_curve_editor import user_edited_profile_payload
+from saved_uv_profiles import archive_auto_uv_profile
+from saved_uv_profiles import profile_display_name
+from penguin_burner_paths import default_runtime_config_path
+from penguin_burner_paths import default_user_config_dir
+
+from .afterburner_import import runtime_gpu_index
+from .constants import AFTERBURNER_PROFILE_ID
+from .fan_profiles import profile_payload_from_path
+
+
+def profile_curve_points(profile: dict) -> list[tuple[float, float]]:
+    points = curve_points_from_payload(profile)
+    if points:
+        return points
+    payload = profile_payload_from_path(profile)
+    return [] if payload is None else curve_points_from_payload(payload)
+
+
+def profile_curve_plan(profile: dict) -> list[dict]:
+    plan = curve_plan_from_payload(profile)
+    if plan:
+        return plan
+    payload = profile_payload_from_path(profile)
+    return [] if payload is None else curve_plan_from_payload(payload)
+
+
+def profile_base_curve_points(profile: dict) -> list[tuple[float, float]]:
+    points = base_curve_points_from_payload(profile)
+    if points:
+        return points
+    payload = profile_payload_from_path(profile)
+    return [] if payload is None else base_curve_points_from_payload(payload)
+
+
+def profile_curve_target_point(profile: dict) -> tuple[float, float] | None:
+    voltage = profile.get("candidate_voltage_mv", profile.get("voltage_mv"))
+    clock = profile.get("lock_clock_mhz", profile.get("clock_mhz"))
+    try:
+        voltage_value = float(voltage)
+        clock_value = float(clock)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(voltage_value) or not math.isfinite(clock_value):
+        return None
+    return voltage_value, clock_value
+
+
+def profile_curve_tab_key(profile: dict) -> str:
+    if str(profile.get("runtime_source", "")).strip() == "afterburner":
+        parts = [
+            AFTERBURNER_PROFILE_ID,
+            str(profile.get("afterburner_device_profile", "")).strip(),
+            str(profile.get("afterburner_profile", "")).strip(),
+            str(profile.get("profile_created_at", "")).strip(),
+        ]
+        return ":".join(part for part in parts if part)
+    for key in ("profile_id", "candidate_id", "path", "display_name"):
+        value = str(profile.get(key, "")).strip()
+        if value:
+            return value
+    return "profile-curve"
+
+
+def profile_curve_tab_label(profile: dict) -> str:
+    display_name = str(profile.get("display_name", "")).strip()
+    if display_name:
+        return display_name
+    return profile_display_name(profile) or profile_curve_tab_key(profile)
+
+
+def profile_curve_legend_label(profile: dict) -> str:
+    if str(profile.get("runtime_source", "")).strip() == "afterburner":
+        return "MSI Afterburner"
+    source = str(profile.get("profile_source", "")).strip()
+    if source in {"auto-uv-final", "profile-store"}:
+        return "Auto-UV"
+    return source or "Curve"
+
+
+def curve_points_from_payload(payload: dict) -> list[tuple[float, float]]:
+    if not isinstance(payload, dict):
+        return []
+    for key in ("curve_points", "points", "plan"):
+        points = curve_points_from_values(payload.get(key))
+        if points:
+            return points
+    materialization = payload.get("materialization")
+    if isinstance(materialization, dict):
+        return curve_points_from_values(materialization.get("points"))
+    return []
+
+
+def curve_plan_from_payload(payload: dict) -> list[dict]:
+    if not isinstance(payload, dict):
+        return []
+    for key in ("plan", "points"):
+        plan = curve_plan_from_values(payload.get(key))
+        if plan:
+            return plan
+    materialization = payload.get("materialization")
+    if isinstance(materialization, dict):
+        return curve_plan_from_values(materialization.get("points"))
+    return []
+
+
+def base_curve_points_from_payload(payload: dict) -> list[tuple[float, float]]:
+    if not isinstance(payload, dict):
+        return []
+    for key in ("points", "plan", "curve_points"):
+        points = base_curve_points_from_values(payload.get(key))
+        if points:
+            return points
+    return []
+
+
+def curve_points_from_values(values) -> list[tuple[float, float]]:
+    if not isinstance(values, list):
+        return []
+    points = [
+        point
+        for value in values
+        if (point := curve_point_from_value(value)) is not None
+    ]
+    return sorted(points, key=lambda point: (point[0], point[1]))
+
+
+def base_curve_points_from_values(values) -> list[tuple[float, float]]:
+    if not isinstance(values, list):
+        return []
+    points = [
+        point
+        for value in values
+        if (point := base_curve_point_from_value(value)) is not None
+    ]
+    return sorted(points, key=lambda point: (point[0], point[1]))
+
+
+def curve_plan_from_values(values) -> list[dict]:
+    if not isinstance(values, list):
+        return []
+    plan = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        try:
+            item = {
+                "index": int(value["index"]),
+                "voltage_mv": int(round(float(value["voltage_mv"]))),
+                "base_mhz": int(round(float(value["base_mhz"]))),
+                "target_mhz": int(round(float(value["target_mhz"]))),
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+        try:
+            item["new_offset_mhz"] = int(
+                value.get("new_offset_mhz", item["target_mhz"] - item["base_mhz"])
+            )
+        except (TypeError, ValueError):
+            item["new_offset_mhz"] = item["target_mhz"] - item["base_mhz"]
+        plan.append(item)
+    return sorted(plan, key=lambda item: (item["voltage_mv"], item["index"]))
+
+
+def curve_point_from_value(value) -> tuple[float, float] | None:
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        voltage = value[0]
+        clock = value[1]
+    elif isinstance(value, dict):
+        voltage = curve_point_value(value, "voltage_mv", "voltage", "mv", "x")
+        clock = curve_point_value(
+            value,
+            "clock_mhz",
+            "target_mhz",
+            "frequency_mhz",
+            "base_mhz",
+            "mhz",
+            "y",
+        )
+    else:
+        return None
+    return finite_curve_point(voltage, clock)
+
+
+def base_curve_point_from_value(value) -> tuple[float, float] | None:
+    if not isinstance(value, dict):
+        return None
+    voltage = curve_point_value(value, "voltage_mv", "voltage", "mv", "x")
+    clock = curve_point_value(
+        value,
+        "base_mhz",
+        "base_clock_mhz",
+        "clock_mhz",
+        "target_mhz",
+        "frequency_mhz",
+        "mhz",
+        "y",
+    )
+    return finite_curve_point(voltage, clock)
+
+
+def finite_curve_point(voltage, clock) -> tuple[float, float] | None:
+    try:
+        voltage_value = float(voltage)
+        clock_value = float(clock)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(voltage_value) or not math.isfinite(clock_value):
+        return None
+    return voltage_value, clock_value
+
+
+def curve_point_value(point: dict, *keys: str):
+    for key in keys:
+        value = point.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def load_cached_base_curve_points() -> list[tuple[float, float]]:
+    try:
+        payload = json.loads(
+            base_curve_cache_path().read_text(encoding="utf-8", errors="replace")
+        )
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    gpu_index = payload.get("gpu_index")
+    if gpu_index not in (None, ""):
+        try:
+            if int(gpu_index) != runtime_gpu_index(default_runtime_config_path()):
+                return []
+        except (TypeError, ValueError):
+            return []
+    return curve_points_from_values(payload.get("points"))
+
+
+def save_cached_base_curve_points(points: list[tuple[float, float]]) -> None:
+    normalized = curve_points_from_values(points)
+    if not normalized:
+        return
+    payload = {
+        "format_version": 1,
+        "saved_at": datetime.now().astimezone().isoformat(),
+        "gpu_index": runtime_gpu_index(default_runtime_config_path()),
+        "points": [
+            {"voltage_mv": float(voltage), "clock_mhz": float(clock)}
+            for voltage, clock in normalized
+        ],
+    }
+    path = base_curve_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def base_curve_cache_path() -> Path:
+    return default_user_config_dir() / "base-vf-curve.json"
+
+
+def save_edited_curve_profile(
+    profile: dict,
+    edit,
+    *,
+    original_anchor_voltage_mv: int,
+    original_anchor_clock_mhz: int,
+) -> tuple[Path, dict]:
+    parent_payload = profile_payload_from_path(profile) or dict(profile)
+    payload = user_edited_profile_payload(
+        parent_payload,
+        edit,
+        original_anchor_voltage_mv=int(original_anchor_voltage_mv),
+        original_anchor_clock_mhz=int(original_anchor_clock_mhz),
+    )
+    return archive_auto_uv_profile(payload), payload

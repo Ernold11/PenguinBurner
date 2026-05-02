@@ -30,7 +30,7 @@ def build_runtime_default_plan(reader) -> list[dict]:
                 "target_mhz": base_mhz,
                 "current_offset_mhz": current_offset_mhz,
                 "new_offset_mhz": 0,
-                "preserve_vanilla": False,
+                "preserve_base": False,
             }
         )
     return plan

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .models import Q2RTXStabilityResult
+from .models import Q2RTXStabilityResult, TelemetrySample
 
 
 _QUIET_OUTPUT_TAIL_PREFIXES = (
@@ -26,6 +26,68 @@ def _filter_report_output_tail(lines: list[str]) -> list[str]:
             continue
         filtered.append(line)
     return filtered
+
+
+def _telemetry_summary_for_samples(
+    samples: list[TelemetrySample],
+) -> dict[str, float | int]:
+    summary: dict[str, float | int] = {"sample_count": len(samples)}
+    if not samples:
+        return summary
+
+    def _values(attr: str) -> list[float]:
+        values: list[float] = []
+        for sample in samples:
+            value = getattr(sample, attr)
+            if value is not None:
+                values.append(float(value))
+        return values
+
+    for attr, prefix in (
+        ("gpu_util_pct", "gpu_util"),
+        ("power_w", "power"),
+        ("core_clock_mhz", "core_clock"),
+        ("temperature_c", "temperature"),
+        ("voltage_mv", "voltage"),
+        ("fan_speed_pct", "fan"),
+    ):
+        values = _values(attr)
+        if values:
+            summary[f"{prefix}_avg"] = sum(values) / len(values)
+            summary[f"{prefix}_max"] = max(values)
+    return summary
+
+
+def _telemetry_summary_text(summary: dict[str, float | int]) -> str:
+    parts = [f"samples={summary['sample_count']}"]
+    if "gpu_util_avg" in summary:
+        parts.append(
+            "gpu_util="
+            f"{summary['gpu_util_avg']:.1f}% avg/{summary['gpu_util_max']:.1f}% max"
+        )
+    if "power_avg" in summary:
+        parts.append(
+            f"power={summary['power_avg']:.1f}W avg/{summary['power_max']:.1f}W max"
+        )
+    if "core_clock_avg" in summary:
+        parts.append(
+            "core_clock="
+            f"{summary['core_clock_avg']:.0f}MHz avg/"
+            f"{summary['core_clock_max']:.0f}MHz max"
+        )
+    if "voltage_avg" in summary:
+        parts.append(
+            "voltage="
+            f"{summary['voltage_avg']:.0f}mV avg/"
+            f"{summary['voltage_max']:.0f}mV max"
+        )
+    if "fan_avg" in summary:
+        parts.append(
+            f"fan={summary['fan_avg']:.0f}% avg/{summary['fan_max']:.0f}% max"
+        )
+    if "temperature_max" in summary:
+        parts.append(f"temp_max={summary['temperature_max']:.0f}C")
+    return " | ".join(parts)
 
 
 def print_q2rtx_stability_result(result: Q2RTXStabilityResult) -> None:
@@ -72,37 +134,18 @@ def print_q2rtx_stability_result(result: Q2RTXStabilityResult) -> None:
 
     summary = result.telemetry_summary()
     if summary.get("sample_count", 0):
-        parts = [f"samples={summary['sample_count']}"]
-        if "gpu_util_avg" in summary:
-            parts.append(
-                "gpu_util="
-                f"{summary['gpu_util_avg']:.1f}% avg/{summary['gpu_util_max']:.1f}% max"
-            )
-        if "power_avg" in summary:
-            parts.append(
-                f"power={summary['power_avg']:.1f}W avg/{summary['power_max']:.1f}W max"
-            )
-        if "core_clock_avg" in summary:
-            parts.append(
-                "core_clock="
-                f"{summary['core_clock_avg']:.0f}MHz avg/"
-                f"{summary['core_clock_max']:.0f}MHz max"
-            )
-        if "voltage_avg" in summary:
-            parts.append(
-                "voltage="
-                f"{summary['voltage_avg']:.0f}mV avg/"
-                f"{summary['voltage_max']:.0f}mV max"
-            )
-        if "fan_avg" in summary:
-            parts.append(
-                f"fan={summary['fan_avg']:.0f}% avg/{summary['fan_max']:.0f}% max"
-            )
-        if "temperature_max" in summary:
-            parts.append(f"temp_max={summary['temperature_max']:.0f}C")
-        print("Telemetry: " + " | ".join(parts), flush=True)
+        print("Telemetry: " + _telemetry_summary_text(summary), flush=True)
     else:
         print("Telemetry: unavailable", flush=True)
+    companion_summary = _telemetry_summary_for_samples(
+        list(result.companion_telemetry_samples or [])
+    )
+    if companion_summary.get("sample_count", 0):
+        print(
+            "CUDA companion telemetry: "
+            + _telemetry_summary_text(companion_summary),
+            flush=True,
+        )
 
     if result.fatal_output_matches:
         print(

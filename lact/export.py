@@ -12,7 +12,8 @@ from afterburner.import_fan_curve import build_imported_fan_section
 from afterburner.import_vf_curve import build_plan
 from afterburner.vfcurve import resolve_afterburner_vf_source
 from hidden_nvapi_vf import create_hidden_vf_curve_reader
-from penguin_burner_paths import default_user_config_dir
+from saved_uv_profiles import resolve_auto_uv_profile
+from penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
 
 
 class LactExportError(RuntimeError):
@@ -184,7 +185,13 @@ def build_lact_nvidia_config(
     include_fan_curve: bool = False,
 ) -> tuple[str, list[str]]:
     config_dir = default_user_config_dir()
-    final_curve_path = final_curve_path or config_dir / "auto-uv-final-curve.json"
+    if final_curve_path is None:
+        resolved_profile = resolve_auto_uv_profile("latest")
+        final_curve_path = (
+            resolved_profile[0]
+            if resolved_profile is not None
+            else config_dir / "auto-uv-profiles" / "latest-profile.json"
+        )
     fan_curve_path = fan_curve_path or config_dir / "auto-uv-fan-curve.json"
     final_curve_payload = _read_json(Path(final_curve_path)) if include_vf_curve else {}
     fan_curve_payload = None
@@ -207,17 +214,23 @@ def write_lact_nvidia_config(
     *,
     output_path: Path,
     gpu_id: str,
+    final_curve_path: Path | None = None,
+    fan_curve_path: Path | None = None,
     include_vf_curve: bool = True,
     include_fan_curve: bool = False,
 ) -> tuple[Path, list[str]]:
     rendered, warnings = build_lact_nvidia_config(
         gpu_id=gpu_id,
+        final_curve_path=final_curve_path,
+        fan_curve_path=fan_curve_path,
         include_vf_curve=include_vf_curve,
         include_fan_curve=include_fan_curve,
     )
     output_path = Path(output_path).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    claim_desktop_user_ownership(output_path.parent, include_parents=True)
     output_path.write_text(rendered, encoding="utf-8")
+    claim_desktop_user_ownership(output_path)
     return output_path, warnings
 
 
@@ -256,7 +269,7 @@ def build_lact_nvidia_config_from_afterburner(
     section: str | None = None,
     device_profile_hint: str | None = None,
     dangerously_skip_validation: bool = False,
-    preserve_vanilla_below_mv: int | None = None,
+    preserve_base_below_mv: int | None = None,
     include_vf_curve: bool = True,
     include_fan_curve: bool = False,
 ) -> tuple[str, list[str]]:
@@ -292,7 +305,7 @@ def build_lact_nvidia_config_from_afterburner(
             vf_plan, missing_voltage_bins = build_plan(
                 reader,
                 source["section_info"]["materialization"]["points"],
-                preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+                preserve_base_below_mv=preserve_base_below_mv,
             )
         finally:
             reader.close()
@@ -328,7 +341,7 @@ def write_lact_nvidia_config_from_afterburner(
     section: str | None = None,
     device_profile_hint: str | None = None,
     dangerously_skip_validation: bool = False,
-    preserve_vanilla_below_mv: int | None = None,
+    preserve_base_below_mv: int | None = None,
     include_vf_curve: bool = True,
     include_fan_curve: bool = False,
 ) -> tuple[Path, list[str]]:
@@ -340,11 +353,13 @@ def write_lact_nvidia_config_from_afterburner(
         section=section,
         device_profile_hint=device_profile_hint,
         dangerously_skip_validation=dangerously_skip_validation,
-        preserve_vanilla_below_mv=preserve_vanilla_below_mv,
+        preserve_base_below_mv=preserve_base_below_mv,
         include_vf_curve=include_vf_curve,
         include_fan_curve=include_fan_curve,
     )
     output_path = Path(output_path).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    claim_desktop_user_ownership(output_path.parent, include_parents=True)
     output_path.write_text(rendered, encoding="utf-8")
+    claim_desktop_user_ownership(output_path)
     return output_path, warnings

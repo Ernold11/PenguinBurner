@@ -1,0 +1,63 @@
+digraph auto_uv_performance_mode {
+  graph [
+    rankdir=LR,
+    bgcolor="transparent",
+    label="Auto-UV Performance Mode State Machine",
+    labelloc=t,
+    fontsize=24,
+    fontname="Arial"
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    color="#334155",
+    fillcolor="#f8fafc",
+    fontname="Arial",
+    fontsize=13,
+    margin="0.12,0.08"
+  ];
+  edge [
+    color="#475569",
+    fontname="Arial",
+    fontsize=11,
+    arrowsize=0.8
+  ];
+
+  start [label="stable candidate\naccepted", shape=circle, fillcolor="#dcfce7"];
+  score [label="score candidate\nFPS first, FPS/W second"];
+  best [label="record best\nreset no-gain count", fillcolor="#ecfdf5"];
+  no_gain [label="count no-score-gain"];
+  budget [label="check overclock budget"];
+  try_oc [label="try performance\noverclock recovery", fillcolor="#eff6ff"];
+  oc_probe [label="probe recovered clock"];
+  oc_best [label="accept overclock\nnew best score", fillcolor="#ecfdf5"];
+  oc_no_gain [label="continue descent\nstable but no score gain", fillcolor="#ecfdf5"];
+  voltage_recovery [label="sweep higher voltage\nrecover performance", fillcolor="#eff6ff"];
+  recovered [label="stop at recovered\nhigher voltage improved", fillcolor="#fef9c3"];
+  stop_best [label="stop at best\nno recovery improved", fillcolor="#fef9c3"];
+  explore [label="continue descent\nexploration remains", fillcolor="#ecfdf5"];
+  wall [label="performance wall\nno-gain streak reached"];
+  end [label="return to sweep", shape=doublecircle, fillcolor="#dcfce7"];
+
+  start -> score;
+  score -> best [label="beats best"];
+  score -> no_gain [label="does not beat best"];
+  no_gain -> budget;
+  budget -> try_oc [label="budget remains"];
+  try_oc -> oc_probe;
+  oc_probe -> oc_best [label="score improves"];
+  oc_probe -> oc_no_gain [label="stable no gain"];
+  oc_probe -> voltage_recovery [label="hard fail"];
+  budget -> explore [label="explore more"];
+  budget -> wall [label="budget spent or no need"];
+  wall -> voltage_recovery;
+  voltage_recovery -> recovered [label="higher voltage improves"];
+  voltage_recovery -> stop_best [label="no improvement"];
+  best -> end;
+  oc_best -> end;
+  oc_no_gain -> end;
+  explore -> end;
+  recovered -> end;
+  stop_best -> end;
+}
+

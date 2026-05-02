@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 
+"""Unused hidden NVML voltage reader kept for reverse-engineering reference.
+
+Auto-UV does not use this module because it depends on driver-version-specific
+static text offsets. A stale offset can jump into the wrong code and segfault
+the process before Python can report a normal capability error.
+"""
+
 from __future__ import annotations
 
 import ctypes

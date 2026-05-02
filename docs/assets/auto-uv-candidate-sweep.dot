@@ -1,0 +1,79 @@
+digraph auto_uv_candidate_sweep {
+  graph [
+    rankdir=LR,
+    bgcolor="transparent",
+    label="Auto-UV Candidate Sweep State Machine",
+    labelloc=t,
+    fontsize=24,
+    fontname="Arial"
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    color="#334155",
+    fillcolor="#f8fafc",
+    fontname="Arial",
+    fontsize=13,
+    margin="0.12,0.08"
+  ];
+  edge [
+    color="#475569",
+    fontname="Arial",
+    fontsize=11,
+    arrowsize=0.8
+  ];
+
+  start [label="start sweep", shape=circle, fillcolor="#dcfce7"];
+  pick [label="pick lower voltage\nreal editable V/F bin"];
+  no_voltage [label="stop\nno lower voltage", fillcolor="#fee2e2"];
+  skip [label="skip blocked point\nunsafe voltage/clock band", fillcolor="#fff7ed"];
+  build [label="build candidate\nflatten curve at target clock"];
+  predict [label="preemptive recovery\npredicted clock floor miss", fillcolor="#eff6ff"];
+  probe [label="probe candidate\nQ2RTX + CUDA + telemetry"];
+  accept [label="accept candidate\nwrite latest verified", fillcolor="#ecfdf5"];
+  lowest [label="accept lowest floor miss\nworkload passed, budget spent", fillcolor="#ecfdf5"];
+  overclock [label="try overclock recovery\nspend budget", fillcolor="#eff6ff"];
+  probe_overclock [label="probe overclocked\ncandidate"];
+  backoff [label="back off overclock\nhard failure", fillcolor="#fff7ed"];
+  recover [label="recover upward\nhigher voltage same target", fillcolor="#eff6ff"];
+  recovered [label="accept recovered\nwrite latest verified", fillcolor="#ecfdf5"];
+  mode [label="mode policy\nefficiency or performance", fillcolor="#f5f3ff"];
+  stop_previous [label="stop\nkeep previous stable", fillcolor="#fee2e2"];
+  stop_current [label="stop\nkeep current stable", fillcolor="#ecfdf5"];
+  stop_critical [label="stop critical\nfatal or unsafe failure", fillcolor="#fee2e2"];
+  stop_wall [label="stop\nmode wall reached", fillcolor="#fef9c3"];
+  end [label="end sweep", shape=doublecircle, fillcolor="#dcfce7"];
+
+  start -> pick;
+  pick -> no_voltage [label="none"];
+  pick -> skip [label="blocked"];
+  skip -> pick [label="next bin"];
+  pick -> build [label="candidate voltage"];
+  build -> predict [label="floor miss predicted"];
+  predict -> probe;
+  build -> probe [label="normal"];
+  probe -> accept [label="stable"];
+  probe -> lowest [label="floor miss accepted"];
+  probe -> overclock [label="low loaded clock"];
+  probe -> recover [label="hard fail or guardrail"];
+  probe -> stop_critical [label="critical fail"];
+  overclock -> probe_overclock;
+  probe_overclock -> accept [label="stable"];
+  probe_overclock -> overclock [label="still low clock"];
+  probe_overclock -> backoff [label="hard fail"];
+  probe_overclock -> stop_critical [label="critical fail"];
+  backoff -> recover;
+  recover -> recovered [label="higher voltage passes"];
+  recover -> stop_previous [label="recovery fails"];
+  accept -> mode;
+  recovered -> pick;
+  mode -> pick [label="continue"];
+  mode -> stop_wall [label="stop"];
+  lowest -> stop_current;
+  no_voltage -> end;
+  stop_previous -> end;
+  stop_current -> end;
+  stop_critical -> end;
+  stop_wall -> end;
+}
+

@@ -1,0 +1,121 @@
+"""Load saved Auto-UV profiles for runtime application.
+
+The loader turns archived JSON into a V/F apply plan and optional memory offset policy.
+"""
+
+from __future__ import annotations
+
+import json
+
+from nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
+from penguin_burner_errors import NvmlError
+
+from .profile_store import resolve_auto_uv_profile
+
+
+def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = False):
+    selector = str(profile_selector or "").strip()
+    resolved_profile = resolve_auto_uv_profile(
+        selector or "latest",
+        allow_unverified=bool(allow_unverified),
+    )
+    if resolved_profile is None:
+        if selector:
+            raise NvmlError(f"Auto-UV profile not found: {selector}")
+        return None
+    path, _profile_payload = resolved_profile
+    if not path.is_file():
+        return None
+
+    payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    raw_points = payload.get("points")
+    if not isinstance(raw_points, list) or not raw_points:
+        raw_points = payload.get("plan")
+    if not isinstance(raw_points, list) or not raw_points:
+        raise NvmlError(f"auto-UV final curve has no V/F points: {path}")
+
+    plan = []
+    for raw in raw_points:
+        if not isinstance(raw, dict):
+            raise NvmlError(f"auto-UV final curve contains a non-object point: {path}")
+        try:
+            item = {
+                "index": int(raw["index"]),
+                "voltage_mv": int(raw["voltage_mv"]),
+                "base_mhz": int(raw["base_mhz"]),
+                "target_mhz": int(raw["target_mhz"]),
+                "new_offset_mhz": int(raw["new_offset_mhz"]),
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NvmlError(
+                f"auto-UV final curve point is invalid: {path}: {raw}"
+            ) from exc
+        plan.append(item)
+
+    lock_clock_mhz = int(payload.get("lock_clock_mhz", 0) or 0)
+    candidate_voltage_mv = int(payload.get("candidate_voltage_mv", 0) or 0)
+    if lock_clock_mhz <= 0 or candidate_voltage_mv <= 0:
+        raise NvmlError(f"auto-UV final curve is missing lock clock or voltage: {path}")
+    memory_offset_mhz = profile_memory_offset_mhz(payload)
+
+    voltage_bins = sorted({int(item["voltage_mv"]) for item in plan})
+    tail_point_count = sum(
+        1 for item in plan if int(item["voltage_mv"]) >= int(candidate_voltage_mv)
+    )
+    flatten_target = {
+        "source": "auto-uv-final",
+        "lock_clock_mhz": int(lock_clock_mhz),
+        "lock_voltage_mv": int(candidate_voltage_mv),
+        "end_voltage_mv": int(voltage_bins[-1]),
+        "tail_point_count": int(tail_point_count),
+    }
+    return {
+        "path": path,
+        "plan": plan,
+        "lock_clock_mhz": int(lock_clock_mhz),
+        "candidate_voltage_mv": int(candidate_voltage_mv),
+        "memory_offset_mhz": memory_offset_mhz,
+        "flatten_target": flatten_target,
+    }
+
+
+def profile_memory_offset_mhz(payload):
+    for key in ("memory_offset_mhz", "mem_clk_vf_offset_mhz"):
+        value = payload.get(key) if isinstance(payload, dict) else None
+        if value in (None, ""):
+            continue
+        try:
+            return max(0, min(MAX_AFTERBURNER_MEM_OFFSET_MHZ, int(round(float(value)))))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def apply_auto_uv_profile_memory_offset(
+    *,
+    profile_label: str,
+    memory_offset_mhz,
+    gpu_policy_controller,
+) -> dict:
+    memory_offset = profile_memory_offset_mhz({"memory_offset_mhz": memory_offset_mhz})
+    if memory_offset is None:
+        return {}
+    if gpu_policy_controller is None:
+        if int(memory_offset) == 0:
+            return {"mem_clk_vf_offset_mhz": int(memory_offset)}
+        raise NvmlError(
+            "failed to apply saved profile memory offset "
+            f"{int(memory_offset):+d} MHz for {profile_label}: "
+            "Linux GPU policy helper is unavailable"
+        )
+    try:
+        gpu_policy_controller.apply_clock_offsets(
+            mem_clk_vf_offset_mhz=int(memory_offset)
+        )
+    except Exception as exc:
+        raise NvmlError(
+            "failed to apply saved profile memory offset "
+            f"{int(memory_offset):+d} MHz for {profile_label}: "
+            f"driver rejected nvmlDeviceSetMemClkVfOffset: {exc}"
+        ) from exc
+    return {"mem_clk_vf_offset_mhz": int(memory_offset)}

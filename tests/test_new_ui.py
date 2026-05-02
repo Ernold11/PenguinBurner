@@ -1,0 +1,187 @@
+from __future__ import annotations
+
+import tomllib
+from pathlib import Path
+
+import ui.afterburner_import as afterburner_import
+import ui.fan_profiles as fan_profiles
+import ui.profiles as profiles_module
+from ui.main import parse_gui_args
+from ui.constants import AFTERBURNER_PROFILE_ID
+from ui.fan_profiles import fan_payload_has_silent_runtime_fields
+from ui.fan_profiles import profile_fan_curve_points
+from ui.fan_profiles import profile_fan_measurement_points
+from ui.fan_profiles import profile_fan_curve_target_point
+from ui.lact_export import lact_export_output_path
+from ui.lact_export import lact_gpu_id_from_config
+from ui.controllers.scan import ScanController
+from ui.curve_profiles import curve_plan_from_values
+from ui.curve_profiles import curve_points_from_values
+from ui.models import candidate_id_from_payload
+from ui.models import event_points
+from ui.models import fan_points
+from ui.models import stage_title
+from ui.profiles import load_profile_summaries
+from ui.profiles import profile_can_apply
+from ui.profiles import profile_can_verify
+from ui.profiles import profile_for_selector
+from ui.profiles import profile_info_from_command_text
+from ui.profiles import profile_verify_selector
+from ui.profiles import runner_status_text
+from ui.verify import elapsed_from_line
+from ui.verify import progress_percent
+from ui.verify import workload_label
+from ui.tuning import YOLO_MAX_OVERCLOCK_BUDGET_PCT
+from ui.tuning import auto_uv_mode_for_performance_bias
+from ui.tuning import performance_bias_clock_recovery_pct
+
+
+def test_ui_launcher_ignores_old_new_ui_flag() -> None:
+    argv, yolo, auto_uv3 = parse_gui_args(["pburn-ui", "--new-ui", "--yolo"])
+
+    assert (argv, yolo) == (["pburn-ui"], True)
+    assert auto_uv3 is False
+
+
+def test_ui_launcher_accepts_auto_uv3_flag() -> None:
+    argv, yolo, auto_uv3 = parse_gui_args(["pburn-ui", "--auto-uv3", "--yolo"])
+
+    assert argv == ["pburn-ui"]
+    assert yolo is True
+    assert auto_uv3 is True
+
+
+def test_new_ui_package_is_installed() -> None:
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    packages = set(metadata["tool"]["setuptools"]["packages"])
+    package_data = metadata["tool"]["setuptools"]["package-data"]
+
+    assert {"ui", "ui.components", "ui.controllers", "ui.dialogs"} <= packages
+    assert "*.png" in package_data["ui.assets"]
+
+
+def test_new_ui_vf_plot_does_not_hardcode_gpu_clock_or_voltage_range() -> None:
+    source = Path("ui/window.py").read_text(encoding="utf-8")
+    vf_plot_block = source.split("self.vf_plot = CurvePlot(", 1)[1].split(
+        "self.fan_plot = CurvePlot(",
+        1,
+    )[0]
+
+    assert "x_range=" not in vf_plot_block
+    assert "y_range=" not in vf_plot_block
+    assert "x_range=" not in Path("ui/components/vf_curve_editor.py").read_text(
+        encoding="utf-8"
+    )
+    assert "y_range=" not in Path("ui/components/vf_curve_editor.py").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_new_ui_models_keep_gpu_ranges_data_driven() -> None:
+    assert event_points(
+        {
+            "points": [
+                {"voltage_mv": "1200", "clock_mhz": "3300"},
+            ]
+        }
+    ) == [(1200.0, 3300.0)]
+    assert curve_points_from_values([{"voltage_mv": "1200", "target_mhz": "3300"}]) == [
+        (1200.0, 3300.0)
+    ]
+    assert curve_plan_from_values(
+        [{"index": 1, "voltage_mv": "1200", "base_mhz": "3200", "target_mhz": "3300"}]
+    )[0]["target_mhz"] == 3300
+    assert fan_points({"curve_points": [{"temp_c": "80", "fan_pct": "75"}]}) == [
+        (80.0, 75.0)
+    ]
+    assert candidate_id_from_payload({"voltage_mv": 1200, "clock_mhz": 3300}) == (
+        "1200mv-3300mhz"
+    )
+    assert stage_title("base-baseline") == "Baseline"
+
+
+def test_new_ui_profile_and_tuning_helpers_cover_moved_workflows() -> None:
+    profiles = [{"profile_id": "profile-a", "final_verified": True}]
+
+    assert profile_for_selector(profiles, "profile-a") == profiles[0]
+    assert profile_can_apply(profiles[0])
+    assert not profile_can_verify(profiles[0])
+    assert "Currently running profile" in runner_status_text(
+        profiles,
+        running_selector="profile-a",
+    )
+    assert auto_uv_mode_for_performance_bias(99.9) == "efficiency"
+    assert auto_uv_mode_for_performance_bias(100.0) == "performance"
+    assert performance_bias_clock_recovery_pct(
+        100,
+        max_pct=YOLO_MAX_OVERCLOCK_BUDGET_PCT,
+    ) == 175.0
+    assert profile_verify_selector({"path": "/tmp/profile.json"}) == "/tmp/profile.json"
+    assert workload_label(q2rtx_enabled=True, cuda_enabled=False) == "Q2RTX timedemo"
+    assert elapsed_from_line("Stability progress elapsed=150.0s") == 150.0
+    assert progress_percent(150, 600) == 25
+
+
+def test_new_ui_afterburner_profile_helpers_cover_moved_workflow(monkeypatch) -> None:
+    profile = {
+        "profile_id": AFTERBURNER_PROFILE_ID,
+        "candidate_id": AFTERBURNER_PROFILE_ID,
+        "runtime_source": "afterburner",
+        "profile_source": "MSI Afterburner",
+        "curve_points": [(1200.0, 3300.0)],
+    }
+    monkeypatch.setattr(profiles_module, "read_auto_uv_profile_summaries", lambda: [])
+    monkeypatch.setattr(
+        profiles_module,
+        "afterburner_import_profile_summary",
+        lambda: profile,
+    )
+
+    profiles = load_profile_summaries()
+
+    assert profiles == [profile]
+    assert profile_for_selector(profiles, AFTERBURNER_PROFILE_ID) == profile
+    assert profile_can_apply(profile)
+    assert profile_can_verify(profile)
+    assert profile_verify_selector(profile) == ""
+    assert afterburner_import.entry_curve_points(profile) == [(1200.0, 3300.0)]
+    assert profile_info_from_command_text("--prefer-afterburner-curve") == {
+        "selector": AFTERBURNER_PROFILE_ID,
+        "silent_fan_curve": False,
+    }
+
+
+def test_new_ui_fan_and_lact_helpers_cover_moved_workflows(tmp_path, monkeypatch) -> None:
+    profile = {
+        "fan_curve_payload": {
+            "loaded_temperature_c": 75,
+            "observed_fan_speed_pct": 42,
+            "fan": {"curve": [[45, 0], [75, 42]]},
+            "telemetry": {"measured_fan_points": [{"temperature_c": 66, "fan_speed_pct": 35}]},
+        }
+    }
+    lact_config = tmp_path / "config.yaml"
+    lact_config.write_text("gpus:\n  gpu0:\n    fan_control_enabled: false\n")
+
+    assert profile_fan_curve_points(profile) == [(45.0, 0.0), (75.0, 42.0)]
+    assert profile_fan_measurement_points(profile) == [(66.0, 35.0)]
+    assert profile_fan_curve_target_point(profile) == (75.0, 42.0)
+    assert fan_payload_has_silent_runtime_fields(profile["fan_curve_payload"])
+    assert lact_export_output_path(tmp_path) == lact_config
+    assert lact_gpu_id_from_config(lact_config) == "gpu0"
+    monkeypatch.setattr(fan_profiles, "default_user_config_dir", lambda: tmp_path)
+    assert fan_profiles.write_auto_uv_fan_curve_payload(profile["fan_curve_payload"]).exists()
+
+
+def test_scan_controller_routes_json_events_and_human_lines() -> None:
+    controller = ScanController(QtCore=object())
+    events: list[dict] = []
+    human_lines: list[str] = []
+    controller.on_event = events.append
+    controller.on_human_line = human_lines.append
+
+    controller._handle_line('{"event": "probe_start", "voltage_mv": 1200}')
+    controller._handle_line("candidate=1200mV target=3300MHz")
+
+    assert events == [{"event": "probe_start", "voltage_mv": 1200}]
+    assert human_lines == ["candidate=1200mV target=3300MHz"]

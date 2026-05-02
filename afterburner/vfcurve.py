@@ -68,8 +68,8 @@ def _detect_active_nvidia_gpus():
             text=True,
             encoding="utf-8",
             errors="replace",
-            env=stable_subprocess_env(),
             stderr=subprocess.DEVNULL,
+            env=stable_subprocess_env(),
         )
     except Exception:
         return []
@@ -1056,4 +1056,5 @@ def describe_afterburner_profile_settings(settings):
 def ensure_safe_afterburner_vfcurve(points, *, section="startup", allow_unsafe=False):
     analysis = analyze_afterburner_vfcurve(points)
     analysis["section"] = str(section)
+    analysis["allow_unsafe"] = bool(allow_unsafe)
     return analysis

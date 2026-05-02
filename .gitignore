@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.swp
 build/
 dist/
 *.egg-info/
@@ -11,3 +12,5 @@ dist/
 *-manual-test.log
 # Local exploratory notes, scripts, and generated artifacts are kept out of Git.
 reverse-engineering/
+specs/
+byobu-history.txt

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import ctypes
 from datetime import datetime, timedelta
 import shutil
 import subprocess
 
-from hidden_nvml_voltage import create_hidden_voltage_reader
+from hidden_nvapi_voltage import create_hidden_voltage_reader
 from subprocess_locale import stable_subprocess_env
 
 from .models import TelemetrySample
@@ -31,50 +30,19 @@ def _xid_message_is_at_or_after(line: str, started_at: datetime) -> bool:
 class _HiddenNvmlVoltageSession:
     def __init__(self, gpu_index: int):
         self._gpu_index = int(gpu_index)
-        self._nvml = None
-        self._device = ctypes.c_void_p()
-        self._initialized = False
         self._voltage_reader = None
         try:
-            self._nvml = ctypes.CDLL("libnvidia-ml.so.1")
-            self._bind()
-            self._initialize()
-            self._voltage_reader = create_hidden_voltage_reader(self._nvml)
+            self._voltage_reader = create_hidden_voltage_reader(
+                gpu_index=self._gpu_index
+            )
         except Exception:
             self.close()
-
-    def _bind(self) -> None:
-        if self._nvml is None:
-            raise RuntimeError("NVML library is not loaded")
-        self._nvml.nvmlInit_v2.restype = ctypes.c_int
-        self._nvml.nvmlShutdown.restype = ctypes.c_int
-        self._nvml.nvmlDeviceGetHandleByIndex_v2.argtypes = [
-            ctypes.c_uint,
-            ctypes.POINTER(ctypes.c_void_p),
-        ]
-        self._nvml.nvmlDeviceGetHandleByIndex_v2.restype = ctypes.c_int
-
-    def _initialize(self) -> None:
-        if self._nvml is None:
-            raise RuntimeError("NVML library is not loaded")
-        rc = int(self._nvml.nvmlInit_v2())
-        if rc != 0:
-            raise RuntimeError(f"nvmlInit_v2 failed: {rc}")
-        self._initialized = True
-        rc = int(
-            self._nvml.nvmlDeviceGetHandleByIndex_v2(
-                ctypes.c_uint(self._gpu_index),
-                ctypes.byref(self._device),
-            )
-        )
-        if rc != 0:
-            raise RuntimeError(f"nvmlDeviceGetHandleByIndex_v2 failed: {rc}")
 
     def read_live_voltage_mv(self) -> float | None:
         if self._voltage_reader is None:
             return None
         try:
-            voltage_uv = self._voltage_reader.read_microvolts(self._device)
+            voltage_uv = self._voltage_reader.read_microvolts()
         except Exception:
             return None
         if voltage_uv is None:
@@ -82,13 +50,11 @@ class _HiddenNvmlVoltageSession:
         return float(int(voltage_uv) / 1000.0)
 
     def close(self) -> None:
-        if self._nvml is not None and self._initialized:
+        if self._voltage_reader is not None:
             try:
-                self._nvml.nvmlShutdown()
+                self._voltage_reader.close()
             except Exception:
                 pass
-        self._initialized = False
-        self._nvml = None
         self._voltage_reader = None
 
 

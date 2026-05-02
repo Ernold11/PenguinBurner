@@ -1,8 +1,10 @@
 include LICENSE
 include README.md
+include readme-cli.md
 include PenguinBurner.service
 include penguin_burner.sh
-include auto_uv_result_summary_terminal_2026.png
-include dry_run_curves_terminal.png
-recursive-include docs *.md
+include packaging/linux/*.desktop
+recursive-include docs *.md *.png *.svg
+recursive-include packaging/icons *.png *.svg
+recursive-include ui/assets *.png
 recursive-include tests *.py

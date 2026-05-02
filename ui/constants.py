@@ -1,0 +1,8 @@
+APP_DESKTOP_ID = "io.github.jpietek.PenguinBurner"
+APP_DISPLAY_NAME = "Nvidia GPU Undervolting Tool"
+APP_ICON_NAME = "penguin-burner"
+
+AFTERBURNER_PROFILE_ID = "afterburner-import"
+
+DEFAULT_FINAL_VERIFICATION_DURATION_S = 600
+MAX_FINAL_VERIFICATION_DURATION_S = 3600

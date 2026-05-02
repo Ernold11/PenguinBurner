@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
+from cli_output import enable_cli_output_wrapping
 from .assets import _validate_demo_name
 from .constants import (
     DEFAULT_DEMO_NAME,
@@ -128,6 +129,7 @@ def config_from_args(args: argparse.Namespace) -> Q2RTXStabilityConfig:
 
 
 def main(argv: list[str] | None = None) -> int:
+    enable_cli_output_wrapping()
     args = parse_q2rtx_stability_args(argv)
     try:
         if args.install_q2rtx:

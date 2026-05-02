@@ -91,18 +91,18 @@ Auto-UV may retry the same voltage with a small overclock. The same
 budget can also be used at an FPS/W wall if an overclock improves
 temperature-normalized efficiency. The total overclock budget is
 `--auto-uv-max-clock-drop-pct * --auto-uv-overclock-budget-ratio`. The ratio
-defaults to `0.4` and is clamped to `0.0..1.0`, so the overclock budget cannot exceed
-the configured loaded-clock drop allowance. With the defaults, `10% * 0.4`
-allows up to `+4%` total budget. Use a ratio like `0.75` for a more aggressive
-budget or `0.25` for a gentler one. Individual retries are sized from the failed
+defaults to `0.5` and is clamped to `0.0..1.25`. Values above `1.0` can push the
+curve above the measured baseline clock and may hang the system. With the
+defaults, `10% * 0.5` allows up to `+5%` total budget. Use a ratio like `0.75`
+for a more aggressive budget or `0.25` for a gentler one. Individual retries are sized from the failed
 probe: Auto-UV reads the measured clock shortfall, adds one clock-step of
 overhead, snaps to the V/F clock grid, and charges the actual target increase
 against the remaining budget. If the machine crashes during an overclock, the next
 scan remembers the budget used before that failed overclock and caps future overclocking
 there unless you clear Auto-UV state.
 
-Measured voltage is read through NVML voltage telemetry automatically. There is
-no opt-in flag. If voltage telemetry is unavailable on a driver or GPU,
+Measured voltage is read through the Linux NVAPI voltage query automatically.
+There is no opt-in flag. If voltage telemetry is unavailable on a driver or GPU,
 PenguinBurner prints `n/a` and relies on the remaining safety checks.
 
 The default performance guardrail allows up to a `10%` loaded GPU core clock
@@ -118,16 +118,16 @@ The three main aggressiveness options are:
   default `16.0`.
 - `--auto-uv-max-clock-drop-pct N`: allowed loaded-clock loss; default `10.0`.
 - `--auto-uv-overclock-budget-ratio N`: fraction of the clock-drop allowance that
-  can be spent recovering clock with overclocks; default `0.4`, which is a `4%`
+  can be spent recovering clock with overclocks; default `0.5`, which is a `5%`
   budget with the default `10%` clock-drop allowance.
 
-Aggressive example:
+Performance example:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-max-drop-pct 18 \
   --auto-uv-max-clock-drop-pct 10 \
-  --auto-uv-overclock-budget-ratio 0.75
+  --auto-uv-overclock-budget-ratio 1.0
 ```
 
 ## After The Scan
@@ -145,12 +145,8 @@ To export the saved V/F and fan curves as a complete Nvidia-only LACT config:
 ```bash
 lact cli list-gpus
 sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
-  --lact-gpu-id "YOUR-LACT-GPU-ID"
+  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
 ```
-
-Use the exact GPU id printed by `lact cli list-gpus` for your machine.
-PenguinBurner writes that value as the key under `gpus:` in LACT's config; the
-id is machine-specific and should not be copied from someone else's example.
 
 To export a validated Afterburner profile instead:
 
@@ -159,7 +155,7 @@ sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
   --lact-source afterburner \
   --afterburner-dir "$AFTERBURNER_ROOT" \
   --section Profile1 \
-  --lact-gpu-id "YOUR-LACT-GPU-ID"
+  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
 ```
 
 The default LACT export writes only the V/F curve. Add `--silent-fan-curve` to
@@ -206,7 +202,12 @@ Auto-UV result and recovery files live under:
 
 ```text
 PenguinBurner user config directory / uv-result
-PenguinBurner saved-UV directory
+```
+
+Final profiles shown by the GUI live under:
+
+```text
+PenguinBurner user config directory / auto-uv-profiles
 ```
 
 If a voltage fails or the machine crashes during a probe, Auto-UV records that

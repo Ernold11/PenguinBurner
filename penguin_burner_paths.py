@@ -13,13 +13,116 @@ def repo_root() -> Path:
 
 
 def _effective_home() -> Path:
-    sudo_user = os.environ.get("SUDO_USER", "").strip()
-    if sudo_user:
+    override_home = os.environ.get("PENGUIN_BURNER_HOME", "").strip()
+    if override_home:
+        return Path(override_home).expanduser()
+
+    for user_env in ("SUDO_USER", "PENGUIN_BURNER_Q2RTX_USER"):
+        user = os.environ.get(user_env, "").strip()
+        if not user:
+            continue
         try:
-            return Path(pwd.getpwnam(sudo_user).pw_dir)
+            return Path(pwd.getpwnam(user).pw_dir)
         except KeyError:
             pass
+
+    uid = os.environ.get("PENGUIN_BURNER_Q2RTX_UID", "").strip()
+    if uid:
+        try:
+            return Path(pwd.getpwuid(int(uid)).pw_dir)
+        except (KeyError, ValueError):
+            pass
     return Path.home()
+
+
+def effective_desktop_user_ids() -> tuple[int, int] | None:
+    uid_text = (
+        os.environ.get("PENGUIN_BURNER_Q2RTX_UID", "").strip()
+        or os.environ.get("SUDO_UID", "").strip()
+    )
+    gid_text = (
+        os.environ.get("PENGUIN_BURNER_Q2RTX_GID", "").strip()
+        or os.environ.get("SUDO_GID", "").strip()
+    )
+    uid = _parse_positive_int(uid_text)
+    gid = _parse_positive_int(gid_text)
+    user = (
+        os.environ.get("PENGUIN_BURNER_Q2RTX_USER", "").strip()
+        or os.environ.get("SUDO_USER", "").strip()
+    )
+    if user and (uid is None or gid is None):
+        try:
+            entry = pwd.getpwnam(user)
+        except KeyError:
+            entry = None
+        if entry is not None:
+            uid = entry.pw_uid if uid is None else uid
+            gid = entry.pw_gid if gid is None else gid
+    if uid is None or gid is None:
+        return None
+    return uid, gid
+
+
+def claim_desktop_user_ownership(
+    path: str | Path,
+    *,
+    recursive: bool = False,
+    include_parents: bool = False,
+) -> None:
+    if os.geteuid() != 0:
+        return
+    ids = effective_desktop_user_ids()
+    if ids is None:
+        return
+    path = Path(path).expanduser()
+    if not _is_under_effective_home(path):
+        return
+    paths = _ownership_paths(path, recursive=recursive)
+    if include_parents:
+        paths = [*_ownership_parent_paths(path), *paths]
+    for item in paths:
+        try:
+            os.lchown(item, ids[0], ids[1])
+        except (FileNotFoundError, PermissionError, OSError):
+            continue
+
+
+def _parse_positive_int(value: str) -> int | None:
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _is_under_effective_home(path: Path) -> bool:
+    try:
+        home = _effective_home().expanduser().resolve(strict=False)
+        resolved = path.expanduser().resolve(strict=False)
+        return resolved == home or home in resolved.parents
+    except OSError:
+        return False
+
+
+def _ownership_paths(path: Path, *, recursive: bool) -> list[Path]:
+    if not recursive or not path.exists() or not path.is_dir():
+        return [path]
+    paths = [path]
+    for root, dirs, files in os.walk(path):
+        root_path = Path(root)
+        paths.extend(root_path / name for name in dirs)
+        paths.extend(root_path / name for name in files)
+    return paths
+
+
+def _ownership_parent_paths(path: Path) -> list[Path]:
+    try:
+        home = _effective_home().expanduser().resolve(strict=False)
+        resolved = path.expanduser().resolve(strict=False)
+    except OSError:
+        return []
+    parents = [parent for parent in resolved.parents if parent != home and home in parent.parents]
+    return list(reversed(parents))
 
 
 def default_user_config_dir() -> Path:

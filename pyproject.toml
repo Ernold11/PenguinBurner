@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "penguin-burner"
-version = "0.1.2"
-description = "Linux NVIDIA undervolting tool with Auto-UV and MSI Afterburner import support"
+version = "0.1.5"
+description = "Nvidia GPU Undervolting Tool with Auto-UV and MSI Afterburner import support"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
@@ -31,7 +31,18 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Topic :: System :: Hardware",
 ]
-dependencies = []
+dependencies = [
+  "PySide6>=6.7",
+  "pyqtgraph>=0.13",
+]
+
+[project.optional-dependencies]
+ui = [
+  # Compatibility alias for older docs/users. GUI dependencies are installed by
+  # the base package too, so plain `pip install penguin-burner` is enough.
+  "PySide6>=6.7",
+  "pyqtgraph>=0.13",
+]
 
 [project.urls]
 Homepage = "https://github.com/jpietek/PenguinBurner"
@@ -39,9 +50,12 @@ Issues = "https://github.com/jpietek/PenguinBurner/issues"
 Source = "https://github.com/jpietek/PenguinBurner"
 
 [project.scripts]
-pburn = "penguin_burner:cli_main"
-penguin-burner = "penguin_burner:cli_main"
-penguin_burner = "penguin_burner:cli_main"
+penguin-burner = "ui:main"
+pburn = "ui:main"
+penguin-burner-ui = "ui:main"
+pburn-ui = "ui:main"
+penguin-burner-cli = "penguin_burner:cli_main"
+pburn-cli = "penguin_burner:cli_main"
 q2rtx-stability = "stability.q2rtx:main"
 cuda-bruteforce-stability = "stability.cuda_bruteforce:main"
 penguin-burner-import-afterburner-vf = "afterburner.import_vf_curve:main"
@@ -50,20 +64,71 @@ penguin-burner-import-afterburner-fan = "afterburner.import_fan_curve:main"
 [tool.setuptools]
 py-modules = [
   "ascii_chart",
+  "cli_output",
+  "cuda_bruteforce_stability",
   "dry_run_preview",
+  "hidden_nvapi_voltage",
   "hidden_nvapi_vf",
   "hidden_nvml_voltage",
+  "import_afterburner_fan_curve",
+  "import_afterburner_vf_curve",
   "nvidia_runtime_defaults",
   "nvml_gpu_policy",
   "penguin_burner",
+  "penguin_burner_errors",
   "penguin_burner_paths",
+  "q2rtx_stability",
   "runtime_debug",
   "runtime_service",
+  "subprocess_locale",
 ]
 packages = [
   "afterburner",
-  "auto_uv",
+  "auto_uv3",
+  "auto_uv3.curve",
+  "auto_uv3.final_verification",
+  "auto_uv3.gpu",
+  "auto_uv3.persistence",
+  "auto_uv3.q2rtx",
+  "auto_uv3.recovery",
+  "auto_uv3.scan_mode",
+  "auto_uv3.shared",
+  "auto_uv3.ui",
+  "cli",
+  "initial_check",
   "lact",
+  "manual_fan_curve_editor",
+  "manual_uv_curve_editor",
+  "runtime_fan_control",
+  "runtime_gpu_control",
+  "runtime_stability_test",
+  "saved_profile_verification",
+  "saved_uv_profiles",
+  "ui",
+  "ui.assets",
+  "ui.components",
+  "ui.controllers",
+  "ui.dialogs",
   "stability",
   "stability.q2rtx",
+]
+
+[tool.setuptools.package-data]
+"ui.assets" = [
+  "*.png",
+]
+
+[tool.setuptools.data-files]
+"share/penguin-burner" = [
+  "PenguinBurner.service",
+  "penguin_burner.sh",
+]
+"share/applications" = [
+  "packaging/linux/io.github.jpietek.PenguinBurner.desktop",
+]
+"share/icons/hicolor/256x256/apps" = [
+  "packaging/icons/hicolor/256x256/apps/penguin-burner.png",
+]
+"share/icons/hicolor/512x512/apps" = [
+  "packaging/icons/hicolor/512x512/apps/penguin-burner.png",
 ]

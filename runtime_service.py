@@ -6,6 +6,8 @@ import pwd
 import shlex
 import shutil
 import subprocess
+import sys
+import sysconfig
 
 from subprocess_locale import stable_subprocess_env
 
@@ -91,17 +93,28 @@ def systemd_service_unit_path():
 
 
 def _invoking_user_name():
-    sudo_user = os.environ.get("SUDO_USER", "").strip()
-    if sudo_user:
-        return sudo_user
+    for env_name in ("SUDO_USER", "PENGUIN_BURNER_Q2RTX_USER"):
+        user = os.environ.get(env_name, "").strip()
+        if user:
+            return user
     return pwd.getpwuid(os.getuid()).pw_name
 
 
 def launcher_script_path(program_file):
-    path = Path(program_file).resolve().with_name("penguin_burner.sh")
-    if not path.is_file():
-        raise RuntimeError(f"launcher script not found: {path}")
-    return path
+    candidates = _launcher_script_candidates(program_file)
+    for path in candidates:
+        if path.is_file():
+            return path
+    rendered = ", ".join(str(path) for path in candidates)
+    raise RuntimeError(f"launcher script not found; checked: {rendered}")
+
+
+def _launcher_script_candidates(program_file):
+    candidates = [Path(program_file).resolve().with_name("penguin_burner.sh")]
+    data_root = sysconfig.get_path("data")
+    if data_root:
+        candidates.append(Path(data_root) / "share" / "penguin-burner" / "penguin_burner.sh")
+    return candidates
 
 
 def _format_systemd_exec(args):
@@ -110,6 +123,11 @@ def _format_systemd_exec(args):
         text = str(arg).replace("%", "%%")
         rendered.append(shlex.quote(text))
     return " ".join(rendered)
+
+
+def runtime_foreground_command(program_file, argv):
+    python = sys.executable or shutil.which("python3") or "python3"
+    return [python, str(Path(program_file).resolve()), "--foreground", *argv]
 
 
 def run_checked_subprocess(args):
@@ -130,9 +148,8 @@ def run_checked_subprocess(args):
 
 
 def build_systemd_service_unit(program_file, argv):
-    script_path = launcher_script_path(program_file)
     sudo_user = _invoking_user_name()
-    exec_start = _format_systemd_exec([BASH, str(script_path), "--foreground", *argv])
+    exec_start = _format_systemd_exec(runtime_foreground_command(program_file, argv))
     return (
         "[Unit]\n"
         "Description=PenguinBurner runtime daemon\n"
@@ -163,10 +180,9 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
             "systemd service install requires root privileges. Re-run with sudo."
         )
 
+    clear_existing_penguin_burner_unit_for_install(log=log)
     unit_path = systemd_service_unit_path()
-    unit_path.write_text(
-        build_systemd_service_unit(program_file, argv), encoding="utf-8"
-    )
+    unit_path.write_text(build_systemd_service_unit(program_file, argv), encoding="utf-8")
     run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
     subprocess.run(
         [SYSTEMCTL, "reset-failed", unit_path.name],
@@ -211,7 +227,7 @@ def uninstall_systemd_service(*, log):
     log(f"Removed {unit_path.name}.")
 
 
-def clear_existing_penguin_burner_unit_for_daemonize(*, log):
+def _clear_existing_penguin_burner_unit(*, log, reason):
     unit_name = f"{PENGUIN_BURNER_UNIT_NAME}.service"
     unit_path = systemd_service_unit_path()
 
@@ -226,7 +242,7 @@ def clear_existing_penguin_burner_unit_for_daemonize(*, log):
     )
     if unit_path.exists():
         unit_path.unlink()
-        log(f"Removed existing static {unit_name} before transient daemon start.")
+        log(f"Removed existing static {unit_name} before {reason}.")
     run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
     subprocess.run(
         [SYSTEMCTL, "reset-failed", unit_name],
@@ -239,12 +255,47 @@ def clear_existing_penguin_burner_unit_for_daemonize(*, log):
     )
 
 
+def clear_existing_penguin_burner_unit_for_daemonize(*, log):
+    _clear_existing_penguin_burner_unit(
+        log=log,
+        reason="transient daemon start",
+    )
+
+
+def clear_existing_penguin_burner_unit_for_install(*, log):
+    _clear_existing_penguin_burner_unit(
+        log=log,
+        reason="persistent service install",
+    )
+
+
 def stop_existing_penguin_burner_runtime(*, log):
     if not systemd_is_available():
         return
     if os.geteuid() != 0:
         return
     unit_name = f"{PENGUIN_BURNER_UNIT_NAME}.service"
+    disable_result = subprocess.run(
+        [SYSTEMCTL, "disable", "--now", unit_name],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=stable_subprocess_env(),
+        check=False,
+    )
+    if disable_result.returncode == 0:
+        log("Profile disabled during the auto undervolting sweep")
+        subprocess.run(
+            [SYSTEMCTL, "reset-failed", unit_name],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=stable_subprocess_env(),
+            check=False,
+        )
+        return
     result = subprocess.run(
         [SYSTEMCTL, "stop", unit_name],
         capture_output=True,
@@ -279,7 +330,6 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
             "Re-run PenguinBurner with sudo."
         )
 
-    script_path = launcher_script_path(program_file)
     sudo_user = os.environ.get("SUDO_USER", "").strip()
 
     clear_existing_penguin_burner_unit_for_daemonize(log=log)
@@ -303,10 +353,7 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
             f"{PENGUIN_BURNER_FOREGROUND_ENV}=1",
             "--setenv",
             f"SUDO_USER={sudo_user}",
-            BASH,
-            str(script_path),
-            "--foreground",
-            *argv,
+            *runtime_foreground_command(program_file, argv),
         ],
         capture_output=True,
         text=True,

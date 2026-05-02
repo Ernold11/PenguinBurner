@@ -12,8 +12,6 @@ import sys
 import time
 import traceback
 
-from subprocess_locale import stable_subprocess_env
-
 from afterburner.fan_curve import (
     load_afterburner_fan_settings,
     parse_sw_auto_fan_curve,
@@ -37,6 +35,7 @@ from penguin_burner_paths import (
     resolve_afterburner_root,
     validate_afterburner_export_root,
 )
+from subprocess_locale import stable_subprocess_env
 
 
 NVIDIA_SMI = shutil.which("nvidia-smi") or "nvidia-smi"
@@ -527,7 +526,7 @@ def debug_effective_runtime_options(
         f"section={afterburner_runtime_options.get('afterburner_profile') or '(auto)'} "
         f"device-profile={afterburner_runtime_options.get('afterburner_device_profile') or '(auto)'} "
         f"power-limit-override={afterburner_runtime_options.get('power_limit_override_w')} "
-        f"preserve-vf-below-mv={afterburner_runtime_options.get('preserve_vanilla_below_mv')} "
+        f"preserve-vf-below-mv={afterburner_runtime_options.get('preserve_base_below_mv')} "
         f"auto-uv-max-drop-pct={afterburner_runtime_options.get('auto_uv_max_drop_pct')} "
         f"dangerously-skip-validation={bool(afterburner_runtime_options.get('dangerously_skip_validation'))}"
     )

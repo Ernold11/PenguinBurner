@@ -16,10 +16,16 @@ def _format_live_progress_state(state: dict, *, prefix: str) -> str:
     workload_name = str(state.get("workload_name") or "?")
     last_run = state.get("last_run")
     latest_sample = state.get("latest_sample")
+    running = str(state.get("running") or "q2rtx").strip().lower()
 
     parts = [
         prefix,
-        f"demo={workload_name}",
+        (
+            "workload=cuda-compute"
+            if running == "cuda"
+            else f"demo={workload_name}"
+        ),
+        f"running={running}",
         f"elapsed={elapsed_s:.1f}s",
     ]
     if last_run is not None:
@@ -96,8 +102,9 @@ def _scan_output_for_fatal_patterns(log_path: Path) -> list[str]:
 
     matches: list[str] = []
     text = log_path.read_text(encoding="utf-8", errors="replace")
+    normalized_text = text.casefold()
     for pattern in FATAL_OUTPUT_PATTERNS:
-        if pattern in text:
+        if str(pattern).casefold() in normalized_text:
             matches.append(pattern)
     return matches
 
