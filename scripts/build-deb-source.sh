@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+    echo "usage: $0 SERIES [VERSION]" >&2
+    echo "example: $0 questing 0.1.5" >&2
+}
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    usage
+    exit 2
+fi
+
+series="$1"
+version="${2:-}"
+case "$series" in
+    questing|resolute) ;;
+    *)
+        echo "unsupported Ubuntu series: $series" >&2
+        exit 1
+        ;;
+esac
+
+if [ -z "$version" ]; then
+    version="$(
+        python3 - <<'PY'
+import tomllib
+from pathlib import Path
+
+metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+print(metadata["project"]["version"])
+PY
+    )"
+fi
+
+key_id="${DEBSIGN_KEYID:-B098E377E3C3C124A009E54093CEE10EDB7F01A2}"
+package="penguin-burner"
+debian_version="${version}-1~ppa1~${series}1"
+outdir="${OUTDIR:-dist/deb/${series}}"
+workroot="$(mktemp -d)"
+source_dir="${workroot}/${package}-${version}"
+orig="${workroot}/${package}_${version}.orig.tar.gz"
+
+cleanup() {
+    rm -rf "$workroot"
+}
+trap cleanup EXIT
+
+mkdir -p "$outdir"
+rm -f "$outdir"/*
+
+tar \
+    --exclude=.git \
+    --exclude=.copr \
+    --exclude=dist \
+    --exclude=build \
+    --exclude='*.egg-info' \
+    --transform "s,^.,${package}-${version}," \
+    -czf "$orig" .
+
+tar -xzf "$orig" -C "$workroot"
+rm -rf "${source_dir}/debian"
+cp -a packaging/debian "${source_dir}/debian"
+
+cat > "${source_dir}/debian/changelog" <<EOF
+${package} (${debian_version}) ${series}; urgency=medium
+
+  * PPA release for Ubuntu ${series}.
+
+ -- Jan Pietek <jan.pietek@gmail.com>  $(date -R)
+EOF
+
+(
+    cd "$source_dir"
+    dpkg-buildpackage -S -sa -d -k"${key_id}"
+)
+
+cp "${workroot}"/*.{dsc,tar.xz,tar.gz,buildinfo,changes} "$outdir"/ 2>/dev/null || true
+ls -1 "$outdir"

@@ -48,8 +48,10 @@ gh release create "$tag" \
 
 scripts/publish-copr.sh "$(find dist/rpm -maxdepth 1 -name '*.src.rpm' -print -quit)"
 scripts/publish-aur.sh ../penguin-burner-aur
+scripts/publish-ppa.sh "$version"
 
 echo "Released $version."
 echo "GitHub release: $(gh release view "$tag" --json url --jq .url)"
 echo "COPR project: https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/"
 echo "AUR package: https://aur.archlinux.org/packages/penguin-burner"
+echo "Ubuntu PPA: https://launchpad.net/~jpietek/+archive/ubuntu/penguin-burner"
