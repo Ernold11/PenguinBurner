@@ -117,9 +117,11 @@ def test_desktop_launcher_is_english_only_nvidia_gpu_tool() -> None:
         "packaging/linux/io.github.jpietek.PenguinBurner.desktop"
     ).read_text(encoding="utf-8")
 
-    assert "Name=Nvidia GPU Undervolting Tool" in desktop_text
-    assert "GenericName=Nvidia GPU Undervolting Tool" in desktop_text
-    assert "Nvidia GPU undervolting" in desktop_text
+    assert "Name=NVIDIA GPU Automatic Undervolting Tool" in desktop_text
+    assert "GenericName=NVIDIA GPU Automatic Undervolting Tool" in desktop_text
+    assert "single voltage/frequency bin precision" in desktop_text
+    assert "MSI Afterburner imports" in desktop_text
+    assert "LACT exports" in desktop_text
     assert "Exec=penguin-burner" in desktop_text
     assert "Icon=penguin-burner" in desktop_text
     assert "Penguin Burner" in desktop_text
@@ -134,8 +136,10 @@ def test_readme_uses_logo_image_instead_of_emoji_title() -> None:
     first_lines = "\n".join(readme.splitlines()[:10])
 
     assert "docs/assets/penguin-burner-logo.png" in first_lines
-    assert "# Nvidia GPU Undervolting Tool" in first_lines
-    assert "PenguinBurner is the Nvidia GPU Undervolting Tool." in first_lines
+    assert "# NVIDIA GPU Automatic Undervolting Tool" in first_lines
+    assert "PenguinBurner is an NVIDIA GPU automatic undervolting tool." in first_lines
+    assert "single voltage/frequency bin precision" in readme
+    assert "MSI Afterburner imports and LACT exports are also supported." in readme
     assert "dead-silent fan operation" in readme
     assert "https://github.com/jpietek/PenguinBurner/issues" in readme
     assert "# 🐧 PenguinBurner 🔥" not in readme

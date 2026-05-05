@@ -1,7 +1,7 @@
 Name:           penguin-burner
 Version:        0.1.5
 Release:        1%{?dist}
-Summary:        NVIDIA GPU automatic undervolting tool
+Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
 %global debug_package %{nil}
 
@@ -25,10 +25,15 @@ Requires:       systemd
 Requires:       (xorg-x11-drv-nvidia-cuda >= 3:580 or xorg-x11-drv-nvidia-580xx-cuda >= 3:580)
 
 %description
-PenguinBurner is an NVIDIA GPU undervolting tool for Linux. It provides a Qt
-desktop UI, command-line tools, automatic voltage/frequency scanning, MSI
-Afterburner profile import, Q2RTX/CUDA stability testing, and optional runtime
-profile service installation.
+PenguinBurner is an NVIDIA GPU automatic undervolting tool. It helps you
+visualize and manage your GPU fine tuning setup with single voltage/frequency
+bin precision to maximize FPS per Watt, potentially leading into +33% and higher
+improvements for recent cards. MSI Afterburner imports and LACT exports are
+also supported.
+
+It provides a Qt desktop UI, command-line tools, automatic voltage/frequency
+scanning, Q2RTX/CUDA stability testing, and optional runtime profile service
+installation.
 
 This package is intended for Fedora systems using the proprietary NVIDIA driver
 from RPM Fusion, version 580 or newer.

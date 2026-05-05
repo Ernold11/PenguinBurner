@@ -2,9 +2,11 @@
   <img src="docs/assets/penguin-burner-logo.png" alt="PenguinBurner logo" width="180">
 </p>
 
-# Nvidia GPU Undervolting Tool
+# NVIDIA GPU Automatic Undervolting Tool
 
-PenguinBurner is the Nvidia GPU Undervolting Tool. It is the ultimate NVIDIA undervolting companion on Linux. Its main feature is **automatic** GPU undervolting: PenguinBurner tests your GPU under gaming and compute load, finds the most efficient stable undervolt, and can save it as a systemd daemon when you decide to apply it.
+PenguinBurner is an NVIDIA GPU automatic undervolting tool. It helps you visualize and manage your GPU fine tuning setup with single voltage/frequency bin precision to maximize FPS per Watt, potentially leading into +33% and higher improvements for recent cards. MSI Afterburner imports and LACT exports are also supported.
+
+Its main feature is **automatic** GPU undervolting: PenguinBurner tests your GPU under gaming and compute load, finds the most efficient stable undervolt, and can save it as a systemd daemon when you decide to apply it.
 
 PenguinBurner is proven to work on modern Linux systems with the **NVIDIA proprietary** graphics driver. For best results, use an up-to-date driver. Supported GPUs are NVIDIA GeForce RTX 50 series Blackwell, RTX 40 series Ada Lovelace, and RTX 30 series Ampere cards. Older GPUs may miss required driver-level voltage/frequency control functionality.
 

@@ -19,6 +19,7 @@ from .components import ProfileList
 from .components import RunsTable
 from .components import ScanControls
 from .components import StatusHeader
+from .constants import APP_DISPLAY_NAME
 from .constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
 from .constants import MAX_FINAL_VERIFICATION_DURATION_S
 from .controllers import CommandController
@@ -91,7 +92,7 @@ class MainWindow:
         self._delete_selected_ids: set[str] = set()
 
         self.window = self.QtWidgets.QMainWindow()
-        self.window.setWindowTitle("Nvidia GPU Undervolting Tool")
+        self.window.setWindowTitle(APP_DISPLAY_NAME)
         self.window.resize(1220, 820)
         self._build_ui()
         self.scan_controller = ScanController(

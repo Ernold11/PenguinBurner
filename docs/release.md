@@ -39,6 +39,15 @@ xorg-x11-drv-nvidia-580xx-cuda >= 3:580
 
 Users must enable RPM Fusion nonfree and the COPR repo before installing.
 
+Package description:
+
+```text
+NVIDIA GPU automatic undervolting tool. It helps you visualize and manage your
+GPU fine tuning setup with single voltage/frequency bin precision to maximize
+FPS per Watt, potentially leading into +33% and higher improvements for recent
+cards. MSI Afterburner imports and LACT exports are also supported.
+```
+
 ## Arch And CachyOS Package
 
 The AUR package is published at:

@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=Nvidia GPU Undervolting Tool
-GenericName=Nvidia GPU Undervolting Tool
-Comment=Run PenguinBurner Auto-UV for Nvidia GPU undervolting and profile management
+Name=NVIDIA GPU Automatic Undervolting Tool
+GenericName=NVIDIA GPU Automatic Undervolting Tool
+Comment=Visualize and manage NVIDIA GPU fine tuning with single voltage/frequency bin precision, Auto-UV, MSI Afterburner imports, and LACT exports
 Exec=penguin-burner
 Icon=penguin-burner
 Terminal=false
