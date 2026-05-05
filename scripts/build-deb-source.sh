@@ -56,8 +56,13 @@ tar \
     --exclude=dist \
     --exclude=build \
     --exclude='*.egg-info' \
+    --sort=name \
+    --mtime='@0' \
+    --owner=0 \
+    --group=0 \
+    --numeric-owner \
     --transform "s,^.,${package}-${version}," \
-    -czf "$orig" .
+    -cf - . | gzip -n > "$orig"
 
 tar -xzf "$orig" -C "$workroot"
 rm -rf "${source_dir}/debian"
