@@ -41,9 +41,9 @@ if [ "$ppa" = "ppa:jpietek/penguin-burner" ]; then
 {
   "fqdn": "ppa.launchpad.net",
   "incoming": "~jpietek/penguin-burner/ubuntu/",
-  "login": "anonymous",
+  "login": "jpietek",
   "meta": "boring",
-  "method": "ftp"
+  "method": "sftp"
 }
 JSON
     mkdir -p "$HOME/.dput.d/profiles"

@@ -44,6 +44,14 @@ or:
 yay -S penguin-burner
 ```
 
+Ubuntu 25.10 and 26.04 users can install the PPA package:
+
+```bash
+sudo add-apt-repository ppa:jpietek/penguin-burner
+sudo apt update
+sudo apt install penguin-burner
+```
+
 Bundled pip entrypoints:
 
 - GUI: `penguin-burner` - alias: `pburn`
