@@ -20,6 +20,30 @@ Install the published package:
 python -m pip install --user --upgrade penguin-burner
 ```
 
+Fedora 42/43/44 users can install the COPR package after enabling RPM Fusion
+for the proprietary NVIDIA driver packages:
+
+```bash
+sudo dnf install -y \
+  https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
+  https://download1.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
+sudo dnf install -y dnf-plugins-core
+sudo dnf copr enable -y jpietek/penguin-burner
+sudo dnf install -y penguin-burner
+```
+
+Arch Linux and CachyOS users can install the AUR package:
+
+```bash
+paru -S penguin-burner
+```
+
+or:
+
+```bash
+yay -S penguin-burner
+```
+
 Bundled pip entrypoints:
 
 - GUI: `penguin-burner` - alias: `pburn`
