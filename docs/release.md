@@ -2,7 +2,7 @@
 
 PenguinBurner GitHub/COPR releases are driven by a local shell script. The
 script builds Python distributions, builds a Fedora source RPM, creates the
-GitHub release, and submits the source RPM to COPR.
+GitHub release, submits the source RPM to COPR, and pushes the AUR package.
 
 PyPI publishing stays in the existing `Publish Python package` workflow, which
 is triggered by the published GitHub release.
@@ -11,6 +11,7 @@ is triggered by the published GitHub release.
 
 - `gh`, authenticated with permission to create releases.
 - `copr-cli`, authenticated with `~/.config/copr`.
+- `makepkg`, for AUR metadata generation.
 - `rpmbuild`.
 - Keep the existing PyPI workflow credentials/configuration unchanged.
 
@@ -37,3 +38,24 @@ xorg-x11-drv-nvidia-580xx-cuda >= 3:580
 ```
 
 Users must enable RPM Fusion nonfree and the COPR repo before installing.
+
+## Arch And CachyOS Package
+
+The AUR package is published at:
+
+```text
+https://aur.archlinux.org/packages/penguin-burner
+```
+
+It is x86_64-only and has a hard `nvidia-utils>=580` dependency. Arch and
+CachyOS users can install it with an AUR helper:
+
+```bash
+paru -S penguin-burner
+```
+
+or:
+
+```bash
+yay -S penguin-burner
+```

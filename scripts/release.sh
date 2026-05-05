@@ -21,6 +21,7 @@ require_command gh
 require_command rpmbuild
 require_command copr-cli
 require_command python3
+require_command makepkg
 
 scripts/check-release-version.sh "$version" >/dev/null
 
@@ -46,7 +47,9 @@ gh release create "$tag" \
     --notes-file "docs/release-notes-$version.md"
 
 scripts/publish-copr.sh "$(find dist/rpm -maxdepth 1 -name '*.src.rpm' -print -quit)"
+scripts/publish-aur.sh ../penguin-burner-aur
 
 echo "Released $version."
 echo "GitHub release: $(gh release view "$tag" --json url --jq .url)"
 echo "COPR project: https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/"
+echo "AUR package: https://aur.archlinux.org/packages/penguin-burner"

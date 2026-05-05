@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+aur_repo="${1:-../penguin-burner-aur}"
+
+if ! command -v makepkg >/dev/null 2>&1; then
+    echo "missing required command: makepkg" >&2
+    exit 1
+fi
+
+if [ ! -d "$aur_repo/.git" ]; then
+    git clone ssh://aur@aur.archlinux.org/penguin-burner.git "$aur_repo"
+fi
+
+cp packaging/arch/PKGBUILD "$aur_repo/PKGBUILD"
+
+(
+    cd "$aur_repo"
+    makepkg --ignorearch --printsrcinfo > .SRCINFO
+    git add PKGBUILD .SRCINFO
+    if git diff --cached --quiet; then
+        echo "AUR package is already up to date."
+        exit 0
+    fi
+    pkgver="$(awk -F ' = ' '$1 == "\tpkgver" { print $2; exit }' .SRCINFO)"
+    pkgrel="$(awk -F ' = ' '$1 == "\tpkgrel" { print $2; exit }' .SRCINFO)"
+    git commit -m "Update to ${pkgver}-${pkgrel}"
+    git push
+)
