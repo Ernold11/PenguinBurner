@@ -53,9 +53,13 @@ rm -f "$outdir"/*
 tar \
     --exclude=.git \
     --exclude=.copr \
+    --exclude=.github \
     --exclude=dist \
     --exclude=build \
     --exclude='*.egg-info' \
+    --exclude='./docs' \
+    --exclude='./tests' \
+    --exclude='./readme-cli.md' \
     --sort=name \
     --mtime='@0' \
     --owner=0 \
