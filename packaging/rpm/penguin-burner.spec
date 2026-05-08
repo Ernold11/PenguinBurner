@@ -18,6 +18,7 @@ BuildRequires:  python3-wheel
 BuildRequires:  desktop-file-utils
 
 Requires:       python3-pyside6
+Requires:       python3-colorama
 Requires:       python3-pyqtgraph
 Requires:       hicolor-icon-theme
 Requires:       bash
@@ -104,6 +105,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 
 %changelog
 * Fri May 08 2026 PenguinBurner contributors <noreply@github.com> - 0.1.6-1
+- Add python3-colorama runtime dependency for pyqtgraph.
 - Add borrowed GPU voltage/frequency guardrails for Auto-UV3.
 - Cap performance-mode voltage recovery by the GPU Performance table voltage.
 - Improve final candidate sorting and stopped-scan final candidate selection.
