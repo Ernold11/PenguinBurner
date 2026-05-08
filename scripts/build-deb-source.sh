@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
     echo "usage: $0 SERIES [VERSION]" >&2
-    echo "example: $0 questing 0.1.5" >&2
+    echo "example: $0 questing 0.1.6" >&2
 }
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
