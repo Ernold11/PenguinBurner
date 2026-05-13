@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.1.6
+Version:        0.1.7
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -104,6 +104,12 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Wed May 13 2026 PenguinBurner contributors <noreply@github.com> - 0.1.7-1
+- Honor time-based Q2RTX verification durations instead of precomputed loop counts.
+- Improve PRIME laptop selected-GPU execution and diagnostics.
+- Add safer interrupted-probe crash recovery and crash-adjacent final voltage margin.
+- Use a conservative Auto-UV default for RTX 3080.
+
 * Fri May 08 2026 PenguinBurner contributors <noreply@github.com> - 0.1.6-1
 - Add python3-colorama runtime dependency for pyqtgraph.
 - Add borrowed GPU voltage/frequency guardrails for Auto-UV3.
