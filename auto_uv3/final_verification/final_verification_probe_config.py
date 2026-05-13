@@ -10,10 +10,7 @@ from dataclasses import replace
 from stability.q2rtx import Q2RTXStabilityConfig
 
 from ..auto_uv_user_options import AUTO_UV_PROBE_TUNING
-from ..q2rtx.q2rtx_cuda_probe_config import (
-    cuda_bruteforce_companion_command,
-    normalize_q2rtx_probe_config,
-)
+from ..q2rtx.q2rtx_cuda_probe_config import cuda_bruteforce_companion_command
 
 FINAL_VERIFICATION_CUDA_RATIO_REFERENCE_S = 30
 
@@ -33,18 +30,16 @@ def final_q2rtx_cuda_probe_config(
     total_duration_s: int,
 ) -> Q2RTXStabilityConfig:
     q2rtx_s, cuda_s = final_q2rtx_cuda_duration_s(int(total_duration_s))
-    return normalize_q2rtx_probe_config(
-        replace(
-            config,
-            timedemo_loops=None,
-            duration_s=int(q2rtx_s),
-            companion_command=cuda_bruteforce_companion_command(
-                gpu_index=int(config.gpu_index),
-                duration_s=int(cuda_s),
-            ),
-            single_pass_timeout_s=max(
-                float(config.single_pass_timeout_s),
-                float(total_duration_s) + AUTO_UV_PROBE_TUNING.long_timeout_buffer_s,
-            ),
-        )
+    return replace(
+        config,
+        timedemo_loops=None,
+        duration_s=int(q2rtx_s),
+        companion_command=cuda_bruteforce_companion_command(
+            gpu_index=int(config.gpu_index),
+            duration_s=int(cuda_s),
+        ),
+        single_pass_timeout_s=max(
+            float(config.single_pass_timeout_s),
+            float(total_duration_s) + AUTO_UV_PROBE_TUNING.long_timeout_buffer_s,
+        ),
     )

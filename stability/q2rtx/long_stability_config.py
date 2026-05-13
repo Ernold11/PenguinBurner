@@ -9,10 +9,7 @@ from dataclasses import replace
 
 from .models import Q2RTXStabilityConfig
 from auto_uv3.auto_uv_user_options import AUTO_UV_PROBE_TUNING
-from auto_uv3.q2rtx.q2rtx_cuda_probe_config import (
-    cuda_bruteforce_companion_command,
-    normalize_q2rtx_probe_config,
-)
+from auto_uv3.q2rtx.q2rtx_cuda_probe_config import cuda_bruteforce_companion_command
 
 LONG_STABILITY_CUDA_RATIO_REFERENCE_S = 30
 
@@ -75,4 +72,4 @@ def build_long_stability_test_config(
             + AUTO_UV_PROBE_TUNING.long_timeout_buffer_s,
         ),
     )
-    return normalize_q2rtx_probe_config(configured) if include_q2rtx else configured
+    return configured

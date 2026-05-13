@@ -18,6 +18,7 @@ from stability.q2rtx.models import (
     Q2RTXStabilityConfig,
     Q2RTXStabilityResult,
     StabilityTestError,
+    TimedemoRun,
 )
 from stability.q2rtx.output import (
     _format_live_progress_state,
@@ -318,6 +319,71 @@ def test_hidden_window_env_forces_offscreen_x11_without_display() -> None:
     assert hidden_env["SDL_VIDEODRIVER"] == "x11"
     assert hidden_env["SDL_VIDEO_WINDOW_POS"] == "32000,32000"
     assert hidden_env["SDL_VIDEO_X11_FORCE_OVERRIDE_REDIRECT"] == "1"
+
+
+def test_duration_based_timedemo_uses_calibrated_complete_loop_count(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    process_calls = []
+
+    def fake_run_timedemo_process(**kwargs):
+        process_calls.append(kwargs)
+        requested_runs = int(kwargs["requested_runs"])
+        return 0, float(requested_runs) * 10.0, [], [], "completed"
+
+    def fake_extract_timedemo_runs(_log_path: Path):
+        calibration = [TimedemoRun(run_index=1, frames=631, seconds=10.0, fps=63.1)]
+        if len(process_calls) <= 1:
+            return calibration
+        return calibration + [
+            TimedemoRun(run_index=index + 2, frames=631, seconds=10.0, fps=63.1)
+            for index in range(3)
+        ]
+
+    monkeypatch.setattr(
+        q2rtx_runtime,
+        "_run_timedemo_process",
+        fake_run_timedemo_process,
+    )
+    monkeypatch.setattr(
+        q2rtx_runtime,
+        "_extract_timedemo_runs",
+        fake_extract_timedemo_runs,
+    )
+    monkeypatch.setattr(
+        q2rtx_runtime,
+        "_scan_output_for_fatal_patterns",
+        lambda _path: [],
+    )
+    monkeypatch.setattr(
+        q2rtx_runtime,
+        "_query_xid_messages_since",
+        lambda _start: [],
+    )
+    monkeypatch.setattr(q2rtx_runtime, "_read_recent_output", lambda _path: [])
+
+    result = q2rtx_runtime._run_timedemo_session(
+        config=Q2RTXStabilityConfig(
+            duration_s=25,
+            timedemo_loops=None,
+            log_dir=tmp_path,
+        ),
+        executable_path=tmp_path / "q2rtx",
+        workdir=tmp_path,
+        workload_name="q2demo1",
+        demo_path=None,
+        log_path=tmp_path / "q2rtx.log",
+        runtime_env={},
+    )
+
+    assert [call["requested_runs"] for call in process_calls] == [1, 3]
+    assert process_calls[1]["section_name"] == "timedemo-loop x3"
+    assert result.success is True
+    assert result.reason == "ok"
+    assert result.timedemo_loops_requested is None
+    assert result.duration_requested_s == 25
+    assert len(result.timedemo_runs) == 3
 
 
 def test_gamescope_startup_crash_is_detected_for_fallback(tmp_path: Path) -> None:

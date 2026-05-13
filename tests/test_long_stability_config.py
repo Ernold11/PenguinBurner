@@ -34,6 +34,8 @@ def test_long_stability_config_adds_cuda_companion() -> None:
     assert "1" in config.companion_command
     assert "--duration-seconds" in config.companion_command
     assert "150" in config.companion_command
+    assert config.timedemo_loops is None
+    assert config.duration_s == 450
     assert config.single_pass_timeout_s >= 660.0
 
 
