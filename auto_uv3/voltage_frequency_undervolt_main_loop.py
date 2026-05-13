@@ -45,6 +45,7 @@ from .curve.measured_probe_lock_clock import lock_clock_from_probe_loaded_clock
 from .persistence.previous_crash_recovery_budget_limit import (
     recovery_budget_limit_after_crash_cache,
 )
+from .persistence.unsafe_voltage_cache import unsafe_entry_clock_floor_mhz
 from .ui.probe_summary_ui_payload import probe_summary_ui_payload
 from .q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
 from .q2rtx.q2rtx_cuda_voltage_probe import probe_voltage_candidate
@@ -334,6 +335,18 @@ def run_voltage_frequency_undervolt_main_loop(
                 final_recovery_budget_used_pct,
             )
 
+        final_stable_plan, final_stable_voltage_mv, final_stable_probe = (
+            apply_crash_adjacent_final_voltage_margin(
+                base_curve,
+                stable_plan=final_stable_plan,
+                stable_voltage_mv=int(final_stable_voltage_mv),
+                stable_lock_clock_mhz=int(final_stable_lock_clock_mhz),
+                stable_probe=final_stable_probe,
+                unsafe_entries=unsafe_entries,
+                log=log,
+            )
+        )
+
         return run_final_verification_and_save(
             probe_voltage_candidate=probe_voltage_candidate,
             probe_stabilization_search=find_upward_stable_final_candidate,
@@ -413,6 +426,100 @@ def performance_recovery_voltage_ceiling_mv(
         f"performance voltage recovery ceiling {target.gpu_family}: {voltage_mv}mV",
     )
     return voltage_mv
+
+
+def apply_crash_adjacent_final_voltage_margin(
+    base_curve: list[dict],
+    *,
+    stable_plan: list[dict],
+    stable_voltage_mv: int,
+    stable_lock_clock_mhz: int,
+    stable_probe: AutoUvProbeSummary | None,
+    unsafe_entries: list[dict],
+    log: Callable[[str], None],
+) -> tuple[list[dict], int, AutoUvProbeSummary | None]:
+    margin = crash_adjacent_final_voltage_margin(
+        base_curve,
+        stable_voltage_mv=int(stable_voltage_mv),
+        stable_lock_clock_mhz=int(stable_lock_clock_mhz),
+        unsafe_entries=unsafe_entries,
+    )
+    if margin is None:
+        return stable_plan, int(stable_voltage_mv), stable_probe
+    failed_voltage_mv, bumped_voltage_mv = margin
+    bumped_plan = build_flattened_plan(
+        base_curve,
+        lock_clock_mhz=int(stable_lock_clock_mhz),
+        candidate_voltage_mv=int(bumped_voltage_mv),
+    )
+    log_phase(
+        log,
+        "final",
+        "crash-adjacent voltage margin: "
+        f"{int(stable_voltage_mv)}mV is one editable bin above cached hard-crash "
+        f"{int(failed_voltage_mv)}mV; verifying "
+        f"{int(bumped_voltage_mv)}mV@{int(stable_lock_clock_mhz)}MHz",
+    )
+    return bumped_plan, int(bumped_voltage_mv), None
+
+
+def crash_adjacent_final_voltage_margin(
+    base_curve: list[dict],
+    *,
+    stable_voltage_mv: int,
+    stable_lock_clock_mhz: int,
+    unsafe_entries: list[dict],
+) -> tuple[int, int] | None:
+    for entry in unsafe_entries:
+        if not unsafe_entry_is_previous_run_hard_crash(entry):
+            continue
+        failed_voltage_mv = positive_int(entry.get("candidate_voltage_mv"))
+        if failed_voltage_mv is None:
+            continue
+        if not unsafe_entry_clock_band_matches(
+            entry,
+            lock_clock_mhz=int(stable_lock_clock_mhz),
+        ):
+            continue
+        adjacent_stable_voltage_mv = next_higher_editable_voltage_bin(
+            base_curve,
+            int(failed_voltage_mv),
+        )
+        if int(adjacent_stable_voltage_mv or -1) != int(stable_voltage_mv):
+            continue
+        bumped_voltage_mv = next_higher_editable_voltage_bin(
+            base_curve,
+            int(stable_voltage_mv),
+        )
+        if bumped_voltage_mv is None:
+            return None
+        return int(failed_voltage_mv), int(bumped_voltage_mv)
+    return None
+
+
+def unsafe_entry_is_previous_run_hard_crash(entry: dict) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return str(entry.get("reason") or "") == "previous-run-abruptly-ended"
+
+
+def unsafe_entry_clock_band_matches(entry: dict, *, lock_clock_mhz: int) -> bool:
+    unsafe_lock_clock_mhz = positive_int(entry.get("lock_clock_mhz"))
+    if unsafe_lock_clock_mhz is None:
+        return True
+    clock_floor_mhz = unsafe_entry_clock_floor_mhz(
+        entry,
+        fallback_lock_clock_mhz=int(unsafe_lock_clock_mhz),
+    )
+    return int(lock_clock_mhz) >= int(clock_floor_mhz)
+
+
+def positive_int(value: object) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def run_discovery_probe(

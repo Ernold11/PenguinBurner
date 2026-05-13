@@ -65,6 +65,7 @@ def probe_voltage_candidate(
     nvml_session,
     log: Callable[[str], None],
     phase_label: str,
+    initial_target_voltage_mv: int | None = None,
     log_context: str | None = None,
     power_limit_w: int | None = None,
     enforce_target_core_clock_floor: bool = True,
@@ -235,6 +236,18 @@ def probe_voltage_candidate(
         candidate_plan,
         lock_clock_mhz=int(lock_clock_mhz),
     )
+    crash_marker_details = probe_crash_marker_details(
+        phase_label=str(phase_label),
+        candidate_voltage_mv=int(candidate_voltage_mv),
+        lock_clock_mhz=int(lock_clock_mhz),
+        stable_history=stable_history,
+        initial_target_voltage_mv=initial_target_voltage_mv,
+        initial_probe_clock_mhz=initial_probe_clock_mhz,
+        min_performance_core_clock_pct=min_performance_core_clock_pct,
+        used_companion_load=bool(q2rtx_config.companion_command),
+        expected_total_duration_s=expected_total_duration_s,
+        marker_details=marker_details,
+    )
 
     def record_probe_unsafe(reason: str, details: dict | None = None) -> None:
         if not mark_in_progress:
@@ -271,7 +284,7 @@ def probe_voltage_candidate(
         candidate_voltage_mv=int(candidate_voltage_mv),
         lock_clock_mhz=int(lock_clock_mhz),
         log_context=log_context,
-        marker_details=marker_details,
+        marker_details=crash_marker_details,
         unsafe_clock_bindings=unsafe_clock_bindings,
     )
     try:
@@ -635,6 +648,71 @@ def unsafe_clock_bindings_from_plan(
                 break
     selected_lower = sorted(lower_clocks, reverse=True)[: max(0, int(lower_bins))]
     return [failed_clock_mhz, *selected_lower]
+
+
+def probe_crash_marker_details(
+    *,
+    phase_label: str,
+    candidate_voltage_mv: int,
+    lock_clock_mhz: int,
+    stable_history: list[AutoUvProbeSummary],
+    initial_target_voltage_mv: int | None,
+    initial_probe_clock_mhz: float | None,
+    min_performance_core_clock_pct: float | None,
+    used_companion_load: bool,
+    expected_total_duration_s: int | None,
+    marker_details: dict | None,
+) -> dict:
+    start_voltage_mv = (
+        int(initial_target_voltage_mv) if initial_target_voltage_mv else None
+    )
+    if start_voltage_mv is None and stable_history:
+        start_voltage_mv = int(stable_history[0].candidate_voltage_mv)
+
+    details = {
+        "phase_label": str(phase_label),
+        "candidate_voltage_mv": int(candidate_voltage_mv),
+        "lock_clock_mhz": int(lock_clock_mhz),
+        "used_companion_load": bool(used_companion_load),
+    }
+    if start_voltage_mv is not None and int(start_voltage_mv) > 0:
+        details["start_voltage_mv"] = int(start_voltage_mv)
+        details["initial_target_voltage_mv"] = int(start_voltage_mv)
+        details["voltage_drop_from_start_pct"] = round(
+            (
+                (float(start_voltage_mv) - float(candidate_voltage_mv))
+                / float(start_voltage_mv)
+            )
+            * 100.0,
+            4,
+        )
+    if initial_probe_clock_mhz is not None and float(initial_probe_clock_mhz) > 0.0:
+        baseline_clock_mhz = float(initial_probe_clock_mhz)
+        details["initial_probe_clock_mhz"] = round(baseline_clock_mhz, 4)
+        details["baseline_clock_mhz"] = round(baseline_clock_mhz, 4)
+        details["target_clock_pct_of_baseline"] = round(
+            float(lock_clock_mhz) / baseline_clock_mhz * 100.0,
+            4,
+        )
+    if min_performance_core_clock_pct is not None:
+        details["min_performance_core_clock_pct"] = float(
+            min_performance_core_clock_pct
+        )
+    if expected_total_duration_s is not None:
+        details["expected_total_duration_s"] = int(expected_total_duration_s)
+    if stable_history:
+        latest_stable = stable_history[-1]
+        details["previous_stable_voltage_mv"] = int(
+            latest_stable.candidate_voltage_mv
+        )
+        details["previous_stable_lock_clock_mhz"] = int(latest_stable.lock_clock_mhz)
+        if latest_stable.avg_core_clock_mhz is not None:
+            details["previous_stable_avg_core_clock_mhz"] = round(
+                float(latest_stable.avg_core_clock_mhz),
+                4,
+            )
+    details.update(dict(marker_details or {}))
+    return details
 
 
 def write_probe_marker_if_needed(

@@ -133,6 +133,7 @@ class Q2RtxCudaProbeRunner:
             nvml_session=self.live_voltage_reader,
             log=self.log,
             phase_label=str(phase_label),
+            initial_target_voltage_mv=int(self.start_voltage_mv),
             power_limit_w=self.power_limit_w,
             enforce_target_core_clock_floor=bool(enforce_target_core_clock_floor),
             summarize_saturated_tail=bool(summarize_saturated_tail),

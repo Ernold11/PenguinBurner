@@ -835,8 +835,8 @@ def test_click_jump_slider_maps_click_position_to_exact_value() -> None:
 
 def test_auto_uv_bias_defaults_mode_threshold_and_gpu_table_default() -> None:
     assert DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT == 100.0
-    assert DEFAULT_AUTO_UV_MAX_DROP_PCT == 15.0
-    assert GENERIC_AUTO_UV_MAX_DROP_PCT == 15.0
+    assert DEFAULT_AUTO_UV_MAX_DROP_PCT == 12.5
+    assert GENERIC_AUTO_UV_MAX_DROP_PCT == 12.5
     assert AUTO_UV_DROP_REFERENCE_VOLTAGE_MV == 1000
     assert DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT == 10.0
     assert _auto_uv_mode_for_performance_bias(99.9) == "efficiency"
@@ -858,14 +858,27 @@ def test_auto_uv_voltage_drop_default_uses_detected_gpu_table_floor() -> None:
 
 
 def test_auto_uv_voltage_drop_default_falls_back_to_generic_when_unmatched() -> None:
-    preview = _auto_uv_voltage_drop_default(gpu_name="NVIDIA GeForce RTX 3080")
+    preview = _auto_uv_voltage_drop_default(gpu_name="NVIDIA GeForce GTX 1080")
 
     assert preview.preset_matched is False
-    assert preview.value_pct == pytest.approx(15.0)
+    assert preview.value_pct == pytest.approx(12.5)
     assert preview.floor_voltage_mv is None
     assert (
         _auto_voltage_drop_note_text(preview)
-        == "Using generic max voltage drop for NVIDIA GeForce RTX 3080"
+        == "Using generic max voltage drop for NVIDIA GeForce GTX 1080"
+    )
+
+
+def test_auto_uv_voltage_drop_default_uses_conservative_3080_override() -> None:
+    preview = _auto_uv_voltage_drop_default(gpu_name="NVIDIA GeForce RTX 3080")
+
+    assert preview.preset_matched is True
+    assert preview.gpu_family == "RTX 3080"
+    assert preview.floor_voltage_mv == 900
+    assert preview.value_pct == pytest.approx(10.0)
+    assert (
+        _auto_voltage_drop_note_text(preview)
+        == "Max voltage drop auto-filled for NVIDIA GeForce RTX 3080"
     )
 
 

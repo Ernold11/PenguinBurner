@@ -444,3 +444,74 @@ def test_auto_uv3_user_stop_offers_stable_history_for_final_choice(monkeypatch) 
     assert captured["history"] == [(1000, 2200)]
     assert captured["final_duration_s"] == 240
     assert captured["final_budget_used_pct"] == 0.0
+
+
+def test_crash_adjacent_final_voltage_margin_bumps_one_bin() -> None:
+    curve = base_curve(875, 906, 6, 1800, 15)
+
+    margin = undervolt_main_loop.crash_adjacent_final_voltage_margin(
+        curve,
+        stable_voltage_mv=881,
+        stable_lock_clock_mhz=1919,
+        unsafe_entries=[
+            {
+                "reason": "previous-run-abruptly-ended",
+                "candidate_voltage_mv": 875,
+                "lock_clock_mhz": 1919,
+                "blocked_lock_clock_mhz": [1919, 1905],
+            }
+        ],
+    )
+
+    assert margin == (875, 887)
+
+
+def test_crash_adjacent_final_voltage_margin_ignores_other_clock_band() -> None:
+    curve = base_curve(875, 906, 6, 1800, 15)
+
+    margin = undervolt_main_loop.crash_adjacent_final_voltage_margin(
+        curve,
+        stable_voltage_mv=881,
+        stable_lock_clock_mhz=1800,
+        unsafe_entries=[
+            {
+                "reason": "previous-run-abruptly-ended",
+                "candidate_voltage_mv": 875,
+                "lock_clock_mhz": 1919,
+                "blocked_lock_clock_mhz": [1919, 1905],
+            }
+        ],
+    )
+
+    assert margin is None
+
+
+def test_apply_crash_adjacent_final_voltage_margin_rebuilds_plan() -> None:
+    curve = base_curve(875, 906, 6, 1800, 15)
+    log_messages: list[str] = []
+
+    plan, voltage_mv, stable_probe = (
+        undervolt_main_loop.apply_crash_adjacent_final_voltage_margin(
+            curve,
+            stable_plan=curve,
+            stable_voltage_mv=881,
+            stable_lock_clock_mhz=1919,
+            stable_probe=_summary(881, 1919),
+            unsafe_entries=[
+                {
+                    "reason": "previous-run-abruptly-ended",
+                    "candidate_voltage_mv": 875,
+                    "lock_clock_mhz": 1919,
+                    "blocked_lock_clock_mhz": [1919, 1905],
+                }
+            ],
+            log=log_messages.append,
+        )
+    )
+
+    assert voltage_mv == 887
+    assert stable_probe is None
+    assert {point["target_mhz"] for point in plan if point["voltage_mv"] >= 887} == {
+        1919
+    }
+    assert any("crash-adjacent voltage margin" in message for message in log_messages)

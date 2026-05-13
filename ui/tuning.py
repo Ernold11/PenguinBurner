@@ -19,12 +19,19 @@ DEFAULT_SHORT_VERIFICATION_BASE_S = 20
 PERFORMANCE_BIAS_WARNING_PCT = 110.0
 PERFORMANCE_BIAS_DANGER_PCT = 130.0
 DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT = 100.0
-DEFAULT_AUTO_UV_MAX_DROP_PCT = 15.0
+DEFAULT_AUTO_UV_MAX_DROP_PCT = 12.5
 GENERIC_AUTO_UV_MAX_DROP_PCT = DEFAULT_AUTO_UV_MAX_DROP_PCT
 AUTO_UV_DROP_REFERENCE_VOLTAGE_MV = 1000
 DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT = 10.0
 MAX_OVERCLOCK_BUDGET_PCT = AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO * 100.0
 YOLO_MAX_OVERCLOCK_BUDGET_PCT = AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO * 100.0
+GPU_SPECIFIC_AUTO_UV_MAX_DROP_DEFAULTS: tuple[dict[str, object], ...] = (
+    {
+        "family": "RTX 3080",
+        "patterns": ("RTX 3080", "3080"),
+        "value_pct": 10.0,
+    },
+)
 GPU_UNDERVOLTING_PURPOSE_TEXT = (
     "GPU undervolting is meant to make your graphics card consume significantly "
     "less power while giving up as little performance as possible. The practical "
@@ -67,6 +74,12 @@ def auto_uv_voltage_drop_default(
         yolo=bool(yolo),
     )
     if target is None:
+        gpu_default = gpu_specific_auto_uv_voltage_drop_default(
+            detected_name,
+            reference_voltage_mv=int(reference_voltage_mv),
+        )
+        if gpu_default is not None:
+            return gpu_default
         return AutoUvVoltageDropDefault(
             value_pct=float(DEFAULT_AUTO_UV_MAX_DROP_PCT),
             gpu_name=detected_name or None,
@@ -86,6 +99,33 @@ def auto_uv_voltage_drop_default(
         reference_voltage_mv=int(reference_voltage_mv),
         preset_matched=True,
     )
+
+
+def gpu_specific_auto_uv_voltage_drop_default(
+    gpu_name: object | None,
+    *,
+    reference_voltage_mv: int,
+) -> AutoUvVoltageDropDefault | None:
+    normalized_name = str(gpu_name or "").upper()
+    if not normalized_name:
+        return None
+    for entry in GPU_SPECIFIC_AUTO_UV_MAX_DROP_DEFAULTS:
+        patterns = tuple(str(pattern).upper() for pattern in entry["patterns"])
+        if not any(pattern in normalized_name for pattern in patterns):
+            continue
+        value_pct = float(entry["value_pct"])
+        floor_voltage_mv = int(
+            round(float(reference_voltage_mv) * (1.0 - (value_pct / 100.0)))
+        )
+        return AutoUvVoltageDropDefault(
+            value_pct=value_pct,
+            gpu_name=str(gpu_name).strip() if gpu_name else None,
+            gpu_family=str(entry["family"]),
+            floor_voltage_mv=floor_voltage_mv,
+            reference_voltage_mv=int(reference_voltage_mv),
+            preset_matched=True,
+        )
+    return None
 
 
 def auto_uv_mode_for_performance_bias(value_pct: float | int) -> str:
