@@ -11,10 +11,16 @@ from typing import Any
 from ..auto_uv_types import BaseLoadTarget
 from .base_load_telemetry import (
     LoadedTelemetryRules,
+    decision_samples,
     derive_active_core_clock_mhz,
     derive_power_saturated_clock_mhz,
+    sample_values,
     saturated_tail_samples,
 )
+
+
+LIGHT_LOAD_DIAGNOSTIC_BUSY_UTIL_PCT = 60.0
+LIGHT_LOAD_DIAGNOSTIC_POWER_LIMIT_PCT = 50.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +66,14 @@ def choose_base_load_flatten_target(
         if value is not None
     ]
     if not candidates:
-        raise ValueError("baseline probe did not report a loaded core clock")
+        raise ValueError(
+            "baseline probe did not report a loaded core clock; "
+            + base_load_telemetry_diagnostic(
+                telemetry_samples,
+                power_limit_w=power_limit_w,
+                rules=rules,
+            )
+        )
 
     # Pick the lowest credible loaded clock so the flat curve does not chase boost spikes.
     measured_clock_mhz = min(float(value) for value in candidates)
@@ -102,3 +115,102 @@ def snap_clock_at_or_below(clock_mhz: float, *, clock_step_mhz: int = 15) -> int
         raise ValueError("clock must be positive")
     step = max(1, int(clock_step_mhz))
     return max(step, int(float(clock_mhz) // float(step)) * step)
+
+
+def selected_nvidia_light_load_diagnostic(
+    telemetry_samples: list[Any],
+    *,
+    power_limit_w: int | None,
+    rules: LoadedTelemetryRules = LoadedTelemetryRules(),
+) -> str | None:
+    """Return a non-fatal diagnostic when a busy selected GPU is far below its limit."""
+
+    if power_limit_w is None or int(power_limit_w) <= 0:
+        return None
+    samples = decision_samples(list(telemetry_samples or []), rules=rules)
+    max_power_w = _max_metric(samples, "power_w")
+    max_util_pct = _max_metric(samples, "gpu_util_pct")
+    if max_power_w is None or max_util_pct is None:
+        return None
+    if float(max_util_pct) < LIGHT_LOAD_DIAGNOSTIC_BUSY_UTIL_PCT:
+        return None
+
+    low_power_floor_w = float(power_limit_w) * (
+        LIGHT_LOAD_DIAGNOSTIC_POWER_LIMIT_PCT / 100.0
+    )
+    if float(max_power_w) >= float(low_power_floor_w):
+        return None
+
+    return (
+        "warning selected NVIDIA GPU light-load diagnostic: "
+        + base_load_telemetry_diagnostic(
+            telemetry_samples,
+            power_limit_w=power_limit_w,
+            rules=rules,
+        )
+        + f" low_power_floor={_format_metric(low_power_floor_w, 'W')}"
+        + " continuing; laptop power policy can legitimately cap load"
+    )
+
+
+def base_load_telemetry_diagnostic(
+    telemetry_samples: list[Any],
+    *,
+    power_limit_w: int | None,
+    rules: LoadedTelemetryRules = LoadedTelemetryRules(),
+) -> str:
+    samples = list(telemetry_samples or [])
+    decision = decision_samples(samples, rules=rules)
+    tail = saturated_tail_samples(samples, rules=rules)
+    _saturated_clock_mhz, saturated_count, saturated_floor_w = (
+        derive_power_saturated_clock_mhz(
+            tail,
+            power_limit_w=power_limit_w,
+            rules=rules,
+        )
+    )
+    _active_avg_clock_mhz, _active_preferred_clock_mhz, active_count, active_floor_w = (
+        derive_active_core_clock_mhz(
+            tail,
+            power_limit_w=power_limit_w,
+            use_power_limit_floor=True,
+            rules=rules,
+        )
+    )
+    return (
+        f"telemetry samples={len(samples)} decision_samples={len(decision)} "
+        f"power_limit={_format_power_limit(power_limit_w)} "
+        f"max_power={_format_metric(_max_metric(decision, 'power_w'), 'W')} "
+        f"avg_power={_format_metric(_avg_metric(decision, 'power_w'), 'W')} "
+        f"max_util={_format_metric(_max_metric(decision, 'gpu_util_pct'), '%')} "
+        f"max_clock={_format_metric(_max_metric(decision, 'core_clock_mhz'), 'MHz')} "
+        f"avg_clock={_format_metric(_avg_metric(decision, 'core_clock_mhz'), 'MHz')} "
+        f"active_samples={int(active_count)} "
+        f"active_floor={_format_metric(active_floor_w, 'W')} "
+        f"saturated_samples={int(saturated_count)} "
+        f"saturated_floor={_format_metric(saturated_floor_w, 'W')}"
+    )
+
+
+def _max_metric(samples: list[Any], field_name: str) -> float | None:
+    values = sample_values(samples, field_name)
+    return max(values) if values else None
+
+
+def _avg_metric(samples: list[Any], field_name: str) -> float | None:
+    values = sample_values(samples, field_name)
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _format_power_limit(power_limit_w: int | None) -> str:
+    if power_limit_w is None or int(power_limit_w) <= 0:
+        return "n/a"
+    return f"{int(power_limit_w)}W"
+
+
+def _format_metric(value: float | None, unit: str) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.1f}{unit}"

@@ -21,7 +21,10 @@ from .auto_uv_scan_settings import AutoUvScanSettings
 from .auto_uv_console_log import log_benchmark, log_phase, log_user_stage
 from .auto_uv_scan_result import build_voltage_scan_result, curve_overclock_summary
 from .recovery.baseline_upward_stabilization import find_upward_stable_baseline_candidate
-from .curve.base_load_flatten_target import choose_base_load_flatten_target
+from .curve.base_load_flatten_target import (
+    choose_base_load_flatten_target,
+    selected_nvidia_light_load_diagnostic,
+)
 from .curve.base_load_voltage import derive_loaded_voltage_band
 from .curve.base_vf_curve import editable_base_vf_points
 from .curve.base_vf_curve_validation import validate_base_vf_curve
@@ -461,6 +464,12 @@ def run_discovery_probe(
         ),
     )
     log_benchmark(log, phase="discover", probe=summary)
+    light_load_diagnostic = selected_nvidia_light_load_diagnostic(
+        list(getattr(result, "telemetry_samples", []) or []),
+        power_limit_w=gpu.power_limit_w,
+    )
+    if light_load_diagnostic is not None:
+        log_phase(log, "discover", light_load_diagnostic)
     return summary, result
 
 

@@ -96,6 +96,73 @@ def test_discovery_probe_runner_uses_live_voltage_reader_keyword(monkeypatch) ->
     assert captured["label_voltage_mv"] == 1000
 
 
+def test_discovery_probe_logs_selected_gpu_light_load_diagnostic(monkeypatch) -> None:
+    log_messages: list[str] = []
+
+    class FakeGpu:
+        reader = object()
+        live_voltage_reader = object()
+        runtime_default_plan = []
+        power_limit_w = 110
+
+    class FakeRunner:
+        def __init__(self, **_kwargs):
+            return None
+
+        def probe_default_curve(self, *, base_curve, label_voltage_mv, label_clock_mhz):
+            _ = base_curve, label_voltage_mv, label_clock_mhz
+            return (
+                _summary(1000, 1335),
+                SimpleNamespace(
+                    success=True,
+                    reason="ok",
+                    telemetry_samples=[
+                        {
+                            "elapsed_s": 6.0,
+                            "power_w": 30.0,
+                            "gpu_util_pct": 97.0,
+                            "core_clock_mhz": 1320.0,
+                        },
+                        {
+                            "elapsed_s": 7.0,
+                            "power_w": 31.0,
+                            "gpu_util_pct": 98.0,
+                            "core_clock_mhz": 1335.0,
+                        },
+                    ],
+                ),
+            )
+
+    monkeypatch.setattr(undervolt_main_loop, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(
+        undervolt_main_loop,
+        "emit_ui_json_event",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        undervolt_main_loop,
+        "probe_summary_ui_payload",
+        lambda *args, **kwargs: {},
+    )
+
+    undervolt_main_loop.run_discovery_probe(
+        base_curve(900, 1025, 25, 2000, 40),
+        gpu=FakeGpu(),
+        q2rtx_config=object(),
+        short_probe_base_duration_s=10,
+        timedemo_warmup_runs=0,
+        log=log_messages.append,
+        event_callback=None,
+    )
+
+    assert any(
+        "warning selected NVIDIA GPU light-load diagnostic" in message
+        for message in log_messages
+    )
+    assert any("power_limit=110W" in message for message in log_messages)
+    assert any("max_power=31.0W" in message for message in log_messages)
+
+
 def test_auto_uv3_final_choice_runs_before_final_verification(monkeypatch) -> None:
     curve = base_curve(900, 1025, 25, 2000, 40)
     captured: dict[str, object] = {}
