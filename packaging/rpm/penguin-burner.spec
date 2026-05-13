@@ -69,7 +69,6 @@ Fusion.
     dry_run_preview \
     hidden_nvapi_voltage \
     hidden_nvapi_vf \
-    hidden_nvml_voltage \
     import_afterburner_fan_curve \
     import_afterburner_vf_curve \
     nvidia_runtime_defaults \

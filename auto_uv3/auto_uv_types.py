@@ -48,6 +48,11 @@ class AutoUvProbeSummary:
     q2rtx_avg_core_clock_mhz: float | None = None
     cuda_avg_voltage_mv: float | None = None
     cuda_avg_core_clock_mhz: float | None = None
+    loaded_median_voltage_mv: float | None = None
+    loaded_median_core_clock_mhz: float | None = None
+    loaded_p90_core_clock_mhz: float | None = None
+    loaded_qualified_sample_count: int = 0
+    observed_vdroop_mv: float | None = None
 
 
 @dataclass(slots=True)

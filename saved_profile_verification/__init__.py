@@ -1,7 +1,4 @@
-"""Small rules used while verifying saved undervolt profiles.
-
-The runner remains in the foreground command; this package holds reusable decisions.
-"""
+"""Rules and runner helpers for verifying saved undervolt profiles."""
 
 from .applied_vf_plan_check import apply_and_verify_profile_vf_plan
 from .baseline_vf_plan import (

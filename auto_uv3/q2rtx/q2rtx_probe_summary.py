@@ -15,6 +15,7 @@ from ..curve.base_load_telemetry import (
     decision_samples,
     saturated_tail_samples,
 )
+from ..shared.probe_data_fields import read_field
 
 
 def mean(values: Sequence[float | int | None]) -> float | None:
@@ -32,9 +33,9 @@ def max_or_none(values: Sequence[float | int | None]) -> float | None:
 def sample_mean(samples: list, attr: str) -> float | None:
     return mean(
         [
-            getattr(sample, attr)
+            read_field(sample, attr)
             for sample in decision_samples(samples, rules=AUTO_UV_METRIC_TUNING)
-            if sample is not None and getattr(sample, attr, None) is not None
+            if sample is not None and read_field(sample, attr) is not None
         ]
     )
 
@@ -42,9 +43,9 @@ def sample_mean(samples: list, attr: str) -> float | None:
 def sample_max(samples: list, attr: str) -> float | None:
     return max_or_none(
         [
-            getattr(sample, attr)
+            read_field(sample, attr)
             for sample in samples
-            if sample is not None and getattr(sample, attr, None) is not None
+            if sample is not None and read_field(sample, attr) is not None
         ]
     )
 
@@ -69,6 +70,32 @@ def history_average(history: list[AutoUvProbeSummary], attr: str) -> float | Non
     return mean([getattr(item, attr) for item in history])
 
 
+def loaded_telemetry_samples(
+    telemetry_samples: list,
+    *,
+    power_limit_w: int | None,
+    use_power_limit_floor: bool = False,
+) -> tuple[list, float | None]:
+    samples = decision_samples(telemetry_samples, rules=AUTO_UV_METRIC_TUNING)
+    active_power_floor_w = derive_active_power_floor_w(
+        samples,
+        power_limit_w=power_limit_w,
+        use_power_limit_floor=use_power_limit_floor,
+        rules=AUTO_UV_METRIC_TUNING,
+    )
+    if active_power_floor_w is None:
+        return [], None
+
+    active_samples = [
+        sample
+        for sample in samples
+        if sample is not None
+        and read_field(sample, "power_w") is not None
+        and float(read_field(sample, "power_w")) >= float(active_power_floor_w)
+    ]
+    return active_samples, float(active_power_floor_w)
+
+
 def loaded_telemetry_means(
     telemetry_samples: list,
     *,
@@ -83,35 +110,78 @@ def loaded_telemetry_means(
     int,
     float | None,
 ]:
-    samples = decision_samples(telemetry_samples, rules=AUTO_UV_METRIC_TUNING)
-    active_power_floor_w = derive_active_power_floor_w(
-        samples,
+    active_samples, active_power_floor_w = loaded_telemetry_samples(
+        telemetry_samples,
         power_limit_w=power_limit_w,
         use_power_limit_floor=use_power_limit_floor,
-        rules=AUTO_UV_METRIC_TUNING,
     )
     if active_power_floor_w is None:
         return None, None, None, None, None, 0, None
 
-    active_samples = [
-        sample
-        for sample in samples
-        if sample is not None
-        and getattr(sample, "power_w", None) is not None
-        and float(sample.power_w) >= float(active_power_floor_w)
-    ]
     if not active_samples:
         return None, None, None, None, None, 0, float(active_power_floor_w)
 
     return (
-        mean([getattr(sample, "power_w", None) for sample in active_samples]),
-        mean([getattr(sample, "core_clock_mhz", None) for sample in active_samples]),
-        mean([getattr(sample, "voltage_mv", None) for sample in active_samples]),
-        mean([getattr(sample, "temperature_c", None) for sample in active_samples]),
-        mean([getattr(sample, "fan_speed_pct", None) for sample in active_samples]),
+        mean([read_field(sample, "power_w") for sample in active_samples]),
+        mean([read_field(sample, "core_clock_mhz") for sample in active_samples]),
+        mean([read_field(sample, "voltage_mv") for sample in active_samples]),
+        mean([read_field(sample, "temperature_c") for sample in active_samples]),
+        mean([read_field(sample, "fan_speed_pct") for sample in active_samples]),
         len(active_samples),
         float(active_power_floor_w),
     )
+
+
+def loaded_telemetry_diagnostics(
+    telemetry_samples: list,
+    *,
+    power_limit_w: int | None,
+    use_power_limit_floor: bool = False,
+) -> tuple[float | None, float | None, float | None, int]:
+    active_samples, _active_power_floor_w = loaded_telemetry_samples(
+        telemetry_samples,
+        power_limit_w=power_limit_w,
+        use_power_limit_floor=use_power_limit_floor,
+    )
+    if not active_samples:
+        return None, None, None, 0
+
+    loaded_voltage_values = [
+        float(read_field(sample, "voltage_mv"))
+        for sample in active_samples
+        if read_field(sample, "voltage_mv") is not None
+        and float(read_field(sample, "voltage_mv")) > 0.0
+    ]
+    loaded_clock_values = [
+        float(read_field(sample, "core_clock_mhz"))
+        for sample in active_samples
+        if read_field(sample, "core_clock_mhz") is not None
+    ]
+    return (
+        upper_median(loaded_voltage_values),
+        upper_median(loaded_clock_values),
+        value_at_fractional_index(loaded_clock_values, 0.90),
+        len(active_samples),
+    )
+
+
+def upper_median(values: Sequence[float | int]) -> float | None:
+    if not values:
+        return None
+    sorted_values = sorted(float(value) for value in values)
+    return sorted_values[len(sorted_values) // 2]
+
+
+def value_at_fractional_index(
+    values: Sequence[float | int],
+    fraction: float,
+) -> float | None:
+    if not values:
+        return None
+    sorted_values = sorted(float(value) for value in values)
+    position = int(len(sorted_values) * float(fraction))
+    position = max(0, min(len(sorted_values) - 1, position))
+    return sorted_values[position]
 
 
 def summarize_q2rtx_cuda_probe(
@@ -164,6 +234,11 @@ def summarize_q2rtx_cuda_probe(
         power_limit_w=power_limit_w,
         use_power_limit_floor=use_power_limit_floor,
     )
+    loaded_diagnostics = loaded_telemetry_diagnostics(
+        q2rtx_samples,
+        power_limit_w=power_limit_w,
+        use_power_limit_floor=use_power_limit_floor,
+    )
     cuda_loaded = loaded_telemetry_means(
         companion_samples,
         power_limit_w=power_limit_w,
@@ -171,6 +246,12 @@ def summarize_q2rtx_cuda_probe(
     )
     loaded_power_w, loaded_clock_mhz, loaded_voltage_mv = loaded[:3]
     loaded_temperature_c, loaded_fan_speed_pct = loaded[3:5]
+    (
+        loaded_median_voltage_mv,
+        loaded_median_clock_mhz,
+        loaded_p90_clock_mhz,
+        loaded_qualified_sample_count,
+    ) = loaded_diagnostics
     _cuda_power_w, cuda_loaded_clock_mhz, cuda_loaded_voltage_mv = cuda_loaded[:3]
     q2rtx_summary_clock_mhz = loaded_clock_mhz or sample_mean(
         q2rtx_samples,
@@ -191,6 +272,11 @@ def summarize_q2rtx_cuda_probe(
     avg_fps = mean(fps_values)
     summary_power_w = loaded_power_w or telemetry.get("power_avg")
     summary_clock_mhz = loaded_clock_mhz or telemetry.get("core_clock_avg")
+    observed_vdroop_mv = (
+        float(candidate_voltage_mv) - float(loaded_median_voltage_mv)
+        if loaded_median_voltage_mv is not None
+        else None
+    )
     return AutoUvProbeSummary(
         candidate_voltage_mv=int(candidate_voltage_mv),
         lock_clock_mhz=int(lock_clock_mhz),
@@ -237,6 +323,11 @@ def summarize_q2rtx_cuda_probe(
         q2rtx_avg_core_clock_mhz=q2rtx_summary_clock_mhz,
         cuda_avg_voltage_mv=cuda_summary_voltage_mv,
         cuda_avg_core_clock_mhz=cuda_summary_clock_mhz,
+        loaded_median_voltage_mv=loaded_median_voltage_mv,
+        loaded_median_core_clock_mhz=loaded_median_clock_mhz,
+        loaded_p90_core_clock_mhz=loaded_p90_clock_mhz,
+        loaded_qualified_sample_count=int(loaded_qualified_sample_count),
+        observed_vdroop_mv=observed_vdroop_mv,
     )
 
 

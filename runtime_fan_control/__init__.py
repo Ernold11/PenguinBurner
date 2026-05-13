@@ -19,8 +19,10 @@ from .fan_curve_runtime_rules import (
     speed_for_temp,
     validate_curve,
 )
+from .runtime_loop import RuntimeFanLoopDependencies, run_runtime_fan_control_loop
 
 __all__ = [
+    "RuntimeFanLoopDependencies",
     "apply_hysteresis",
     "build_effective_manual_curve",
     "clamp",
@@ -30,6 +32,7 @@ __all__ = [
     "limit_speed_change",
     "load_auto_uv_fan_curve",
     "load_runtime_afterburner_fan_config",
+    "run_runtime_fan_control_loop",
     "speed_for_temp",
     "validate_auto_uv_fan_curve_safety",
     "validate_curve",

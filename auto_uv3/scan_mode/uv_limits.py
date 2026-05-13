@@ -27,7 +27,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("4070 TI", "4070TI"),
         "eco": (925, 2550),
         "balanced": (940, 2640),
-        "performance": (950, 2685),
+        "performance": (950, 2730),
         "max": (975, 2820),
     },
     {

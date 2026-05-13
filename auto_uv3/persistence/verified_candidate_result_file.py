@@ -109,6 +109,11 @@ def probe_metrics(probe: AutoUvProbeSummary | None) -> dict:
         return {
             "avg_fps": None,
             "avg_core_clock_mhz": None,
+            "loaded_median_core_clock_mhz": None,
+            "loaded_p90_core_clock_mhz": None,
+            "loaded_median_voltage_mv": None,
+            "loaded_qualified_sample_count": 0,
+            "observed_vdroop_mv": None,
             "avg_power_w": None,
             "max_power_w": None,
             "avg_temperature_c": None,
@@ -122,6 +127,15 @@ def probe_metrics(probe: AutoUvProbeSummary | None) -> dict:
     return {
         "avg_fps": float_or_none(probe.avg_fps),
         "avg_core_clock_mhz": float_or_none(probe.avg_core_clock_mhz),
+        "loaded_median_core_clock_mhz": float_or_none(
+            probe.loaded_median_core_clock_mhz
+        ),
+        "loaded_p90_core_clock_mhz": float_or_none(probe.loaded_p90_core_clock_mhz),
+        "loaded_median_voltage_mv": float_or_none(probe.loaded_median_voltage_mv),
+        "loaded_qualified_sample_count": int_or_zero(
+            probe.loaded_qualified_sample_count
+        ),
+        "observed_vdroop_mv": float_or_none(probe.observed_vdroop_mv),
         "avg_power_w": float_or_none(probe.avg_power_w),
         "max_power_w": float_or_none(probe.max_power_w),
         "avg_temperature_c": float_or_none(probe.avg_temperature_c),
@@ -161,3 +175,7 @@ def artifact_points(plan: list[dict]) -> list[dict]:
 
 def float_or_none(value: object) -> float | None:
     return None if value is None else float(value)
+
+
+def int_or_zero(value: object) -> int:
+    return 0 if value is None else int(value)

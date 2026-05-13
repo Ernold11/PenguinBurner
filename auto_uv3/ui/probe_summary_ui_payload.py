@@ -20,6 +20,19 @@ def probe_summary_ui_payload(
         "measured_clock_mhz": _rounded(_read(probe, "avg_core_clock_mhz")),
         "avg_core_clock_mhz": _rounded(_read(probe, "avg_core_clock_mhz")),
         "avg_voltage_mv": _rounded(_read(probe, "avg_voltage_mv")),
+        "loaded_median_core_clock_mhz": _rounded(
+            _read(probe, "loaded_median_core_clock_mhz")
+        ),
+        "loaded_p90_core_clock_mhz": _rounded(
+            _read(probe, "loaded_p90_core_clock_mhz")
+        ),
+        "loaded_median_voltage_mv": _rounded(
+            _read(probe, "loaded_median_voltage_mv")
+        ),
+        "loaded_qualified_sample_count": int(
+            _read(probe, "loaded_qualified_sample_count") or 0
+        ),
+        "observed_vdroop_mv": _rounded(_read(probe, "observed_vdroop_mv")),
         "q2rtx_measured_clock_mhz": _rounded(
             _read(probe, "q2rtx_avg_core_clock_mhz")
         ),

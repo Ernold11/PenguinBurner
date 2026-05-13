@@ -39,3 +39,15 @@ def test_target_matching_keeps_ti_super_before_base_4070() -> None:
     assert target is not None
     assert target.gpu_family == "RTX 4070 Ti Super"
     assert target.clock_mhz == 2730
+
+
+def test_4070_ti_performance_target_matches_nvuv_table() -> None:
+    target = uv_limit_profile_target_for_gpu(
+        "NVIDIA GeForce RTX 4070 Ti",
+        "performance",
+    )
+
+    assert target is not None
+    assert target.gpu_family == "RTX 4070 Ti"
+    assert target.voltage_mv == 950
+    assert target.clock_mhz == 2730
