@@ -57,7 +57,13 @@ def core_clock_below_floor(core_clock_mhz: float, floor_mhz: float) -> bool:
 def probe_failure_should_mark_voltage_unsafe(reason: str) -> bool:
     if controlled_failure_reason(reason):
         return False
-    if str(reason).startswith(("timedemo-live-stall", "user-stop-requested")):
+    if str(reason).startswith(
+        (
+            "q2rtx-selected-nvidia-gpu-idle",
+            "timedemo-live-stall",
+            "user-stop-requested",
+        )
+    ):
         return False
     return True
 

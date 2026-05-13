@@ -17,7 +17,6 @@ from .auto_uv_user_options import (
     AUTO_UV_METRIC_TUNING,
     AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO,
 )
-from .q2rtx.q2rtx_cuda_probe_config import normalize_q2rtx_probe_config
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +45,6 @@ def read_scan_runtime_settings(
             "auto-UV voltage scan needs either timedemo loops or positive duration"
         )
 
-    normalized_q2rtx_config = normalize_q2rtx_probe_config(q2rtx_config)
     auto_uv_mode = normalize_auto_uv_mode(runtime_options.get("auto_uv_mode"))
     final_clock_drop_margin_pct = clock_drop_margin_pct(runtime_options)
     min_performance_core_clock_pct = max(0.0, 100.0 - final_clock_drop_margin_pct)
@@ -65,7 +63,7 @@ def read_scan_runtime_settings(
         final_clock_drop_margin_pct * clock_bump_budget_ratio
     )
     return ScanRuntimeSettings(
-        q2rtx_config=normalized_q2rtx_config,
+        q2rtx_config=q2rtx_config,
         auto_uv_mode=auto_uv_mode,
         final_clock_drop_margin_pct=float(final_clock_drop_margin_pct),
         min_performance_core_clock_pct=float(min_performance_core_clock_pct),

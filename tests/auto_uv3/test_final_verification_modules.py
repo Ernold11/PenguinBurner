@@ -65,7 +65,7 @@ def test_final_probe_duration_split_keeps_cuda_inside_total_budget() -> None:
 
 def test_final_probe_config_adds_cuda_and_long_timeout() -> None:
     config = final_q2rtx_cuda_probe_config(
-        Q2RTXStabilityConfig(gpu_index=2, single_pass_timeout_s=10.0),
+        Q2RTXStabilityConfig(gpu_index=2, single_pass_timeout_s=9999.0),
         total_duration_s=600,
     )
 
@@ -76,7 +76,7 @@ def test_final_probe_config_adds_cuda_and_long_timeout() -> None:
     assert "150" in config.companion_command
     assert config.timedemo_loops is None
     assert config.duration_s == 450
-    assert config.single_pass_timeout_s >= 660.0
+    assert config.single_pass_timeout_s == 660.0
 
 
 def test_final_clock_recovery_uses_same_budget_units_as_lower_sweep() -> None:

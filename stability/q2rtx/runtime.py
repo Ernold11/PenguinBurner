@@ -61,6 +61,14 @@ def _apply_hidden_window_env(
     return hidden_env
 
 
+def _apply_nvidia_render_offload_env(env: dict[str, str]) -> dict[str, str]:
+    updated = dict(env)
+    updated["__NV_PRIME_RENDER_OFFLOAD"] = "1"
+    updated["__VK_LAYER_NV_optimus"] = "NVIDIA_only"
+    updated["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
+    return updated
+
+
 def _headless_gamescope_prefix(config: Q2RTXStabilityConfig) -> list[str]:
     if not config.hide_window:
         return []
@@ -347,6 +355,7 @@ def _timedemo_abort_is_immediate(reason: str) -> bool:
     if reason.startswith(
         (
             "profile-verification-voltage-mismatch",
+            "q2rtx-selected-nvidia-gpu-idle",
             "telemetry-live-load-lost",
             "timedemo-live-frame-count",
             "timedemo-live-stall",
@@ -682,7 +691,7 @@ def _run_timedemo_process(
     gamescope_prefix = _headless_gamescope_prefix(config)
     child_env, child_preexec_fn, child_user_name = _prepare_q2rtx_subprocess_env(
         _apply_hidden_window_env(
-            runtime_env,
+            _apply_nvidia_render_offload_env(runtime_env),
             hide_window=bool(config.hide_window),
             use_headless_gamescope=bool(gamescope_prefix),
         )
@@ -705,6 +714,12 @@ def _run_timedemo_process(
             log_file.write(f"\n=== {section_name} start {section_started_at} ===\n")
             if child_user_name is not None:
                 log_file.write(f"# q2rtx_run_user={child_user_name}\n")
+            log_file.write(
+                "# q2rtx_nvidia_render_offload="
+                "__NV_PRIME_RENDER_OFFLOAD=1 "
+                "__VK_LAYER_NV_optimus=NVIDIA_only "
+                "__GLX_VENDOR_LIBRARY_NAME=nvidia\n"
+            )
             if gamescope_prefix:
                 log_file.write("# q2rtx_window=gamescope-headless\n")
                 log_file.write(

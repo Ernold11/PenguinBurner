@@ -12,6 +12,7 @@ import sys
 
 from stability.q2rtx import (
     DEFAULT_DEMO_NAME,
+    DEFAULT_SINGLE_PASS_TIMEOUT_S,
     KNOWN_TIMEDEMO_RUN_SECONDS_HINTS,
     Q2RTXStabilityConfig,
 )
@@ -25,27 +26,12 @@ def short_q2rtx_probe_config(
     target_duration_s: int,
 ) -> Q2RTXStabilityConfig:
     probe_duration_s = max(1, int(target_duration_s))
-    hinted_seconds = timedemo_seconds_hint(config)
-    if hinted_seconds is not None:
-        timedemo_loops = max(1, int(math.ceil(probe_duration_s / hinted_seconds)))
-        return replace(
-            config,
-            timedemo_loops=int(timedemo_loops),
-            duration_s=0,
-            single_pass_timeout_s=max(
-                float(config.single_pass_timeout_s),
-                float(timedemo_loops)
-                * hinted_seconds
-                * AUTO_UV_PROBE_TUNING.timeout_multiplier
-                + AUTO_UV_PROBE_TUNING.short_timeout_buffer_s,
-            ),
-        )
     return replace(
         config,
         timedemo_loops=None,
         duration_s=int(probe_duration_s),
         single_pass_timeout_s=max(
-            float(config.single_pass_timeout_s),
+            float(DEFAULT_SINGLE_PASS_TIMEOUT_S),
             float(probe_duration_s) + AUTO_UV_PROBE_TUNING.short_timeout_buffer_s,
         ),
     )

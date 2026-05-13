@@ -82,6 +82,10 @@ class AutoUvStallTuning:
     timeout_multiplier: float = 2.5
     live_core_clock_abort_min_samples: int = 8
     avg_core_clock_abort_min_samples: int = 12
+    selected_gpu_idle_min_s: float = 30.0
+    selected_gpu_idle_min_samples: int = 20
+    selected_gpu_idle_max_util_pct: float = 5.0
+    selected_gpu_idle_max_power_w: float = 25.0
     busy_gpu_util_pct: float = 60.0
     busy_reference_power_pct: float = 50.0
     busy_power_limit_pct: float = 35.0

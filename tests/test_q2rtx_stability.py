@@ -321,6 +321,16 @@ def test_hidden_window_env_forces_offscreen_x11_without_display() -> None:
     assert hidden_env["SDL_VIDEO_X11_FORCE_OVERRIDE_REDIRECT"] == "1"
 
 
+def test_q2rtx_runtime_env_forces_nvidia_prime_vulkan_offload() -> None:
+    env = q2rtx_runtime._apply_nvidia_render_offload_env(
+        {"__VK_LAYER_NV_optimus": "non_NVIDIA_only"}
+    )
+
+    assert env["__NV_PRIME_RENDER_OFFLOAD"] == "1"
+    assert env["__VK_LAYER_NV_optimus"] == "NVIDIA_only"
+    assert env["__GLX_VENDOR_LIBRARY_NAME"] == "nvidia"
+
+
 def test_duration_based_timedemo_uses_calibrated_complete_loop_count(
     tmp_path: Path,
     monkeypatch,
@@ -540,6 +550,12 @@ def test_timedemo_abort_policy_only_kills_immediate_failures() -> None:
     assert (
         q2rtx_runtime._timedemo_abort_is_immediate(
             "telemetry-live-load-lost current=45.0W"
+        )
+        is True
+    )
+    assert (
+        q2rtx_runtime._timedemo_abort_is_immediate(
+            "q2rtx-selected-nvidia-gpu-idle max_util=0.0%"
         )
         is True
     )

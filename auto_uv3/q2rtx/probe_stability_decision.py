@@ -29,6 +29,7 @@ FATAL_REASON_PREFIXES = (
     "fatal-cuda-output",
     "fatal-q2rtx-output",
     "nvidia-xid-detected",
+    "q2rtx-selected-nvidia-gpu-idle",
     "timedemo-timeout",
     "timedemo-metrics-invalid",
     "timedemo-metrics-missing",

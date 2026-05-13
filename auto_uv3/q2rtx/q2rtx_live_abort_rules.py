@@ -80,6 +80,9 @@ def telemetry_live_abort_reason(
     )
     if lost is not None:
         return lost
+    selected_gpu_idle = selected_nvidia_gpu_idle_abort_reason(state)
+    if selected_gpu_idle is not None:
+        return selected_gpu_idle
     live_clock = (
         float(latest.core_clock_mhz)
         if latest is not None and latest.core_clock_mhz is not None
@@ -107,6 +110,60 @@ def telemetry_live_abort_reason(
             f"tolerance={AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz:.1f}MHz"
         )
     return None
+
+
+def selected_nvidia_gpu_idle_abort_reason(state: dict) -> str | None:
+    if float(state.get("elapsed_s", 0.0)) < float(
+        AUTO_UV_STALL_TUNING.selected_gpu_idle_min_s
+    ):
+        return None
+    samples = [
+        sample
+        for sample in list(state.get("telemetry_samples") or [])
+        if sample is not None
+        and getattr(sample, "elapsed_s", None) is not None
+        and float(sample.elapsed_s)
+        >= float(AUTO_UV_METRIC_TUNING.loaded_sample_warmup_s)
+    ]
+    if len(samples) < int(AUTO_UV_STALL_TUNING.selected_gpu_idle_min_samples):
+        return None
+    util_values = [
+        float(sample.gpu_util_pct)
+        for sample in samples
+        if getattr(sample, "gpu_util_pct", None) is not None
+    ]
+    power_values = [
+        float(sample.power_w)
+        for sample in samples
+        if getattr(sample, "power_w", None) is not None
+    ]
+    if not util_values and not power_values:
+        return None
+    max_util = max(util_values) if util_values else None
+    max_power = max(power_values) if power_values else None
+    util_idle = (
+        max_util is not None
+        and float(max_util)
+        <= float(AUTO_UV_STALL_TUNING.selected_gpu_idle_max_util_pct)
+    )
+    power_idle = (
+        max_power is not None
+        and float(max_power)
+        <= float(AUTO_UV_STALL_TUNING.selected_gpu_idle_max_power_w)
+    )
+    if max_util is not None and not util_idle:
+        return None
+    if max_power is not None and not power_idle:
+        return None
+    if not (util_idle or power_idle):
+        return None
+    util_text = f"{float(max_util):.1f}%" if max_util is not None else "n/a"
+    power_text = f"{float(max_power):.1f}W" if max_power is not None else "n/a"
+    return (
+        "q2rtx-selected-nvidia-gpu-idle "
+        f"max_util={util_text} max_power={power_text} "
+        "hint=Q2RTX may be rendering on another GPU"
+    )
 
 
 def load_lost_abort_reason(

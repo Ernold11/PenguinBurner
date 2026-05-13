@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from .constants import DEFAULT_SINGLE_PASS_TIMEOUT_S
 from .models import Q2RTXStabilityConfig
 from auto_uv3.auto_uv_user_options import AUTO_UV_PROBE_TUNING
 from auto_uv3.q2rtx.q2rtx_cuda_probe_config import cuda_bruteforce_companion_command
@@ -67,7 +68,7 @@ def build_long_stability_test_config(
         duration_s=int(q2rtx_s if include_q2rtx else cuda_s),
         companion_command=companion,
         single_pass_timeout_s=max(
-            float(config.single_pass_timeout_s),
+            float(DEFAULT_SINGLE_PASS_TIMEOUT_S),
             float(max(1, int(total_duration_s)))
             + AUTO_UV_PROBE_TUNING.long_timeout_buffer_s,
         ),
