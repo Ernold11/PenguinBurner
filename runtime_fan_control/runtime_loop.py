@@ -1,5 +1,3 @@
-"""Long-running foreground fan, telemetry, and V/F reset loop."""
-
 from __future__ import annotations
 
 import atexit
@@ -19,6 +17,7 @@ from nvml_gpu_policy import describe_translated_gpu_policy
 from penguin_burner_errors import NvmlError
 from runtime_debug import log as runtime_log
 from runtime_gpu_control import (
+    RuntimeVfCurvePolicyResult,
     detect_vf_curve_reset,
     format_vf_curve_mismatch_preview,
 )
@@ -37,25 +36,10 @@ from .fan_curve_runtime_rules import (
 
 @dataclass(slots=True)
 class RuntimeFanLoopDependencies:
-    validate_curve: Callable = validate_curve
-    build_effective_manual_curve: Callable = build_effective_manual_curve
-    clamp: Callable = clamp
-    describe_fan_curve_state: Callable = describe_fan_curve_state
-    format_curve_points: Callable = format_curve_points
-    speed_for_temp: Callable = speed_for_temp
-    apply_hysteresis: Callable = apply_hysteresis
-    limit_speed_change: Callable = limit_speed_change
     detect_vf_curve_reset: Callable = detect_vf_curve_reset
     format_vf_curve_mismatch_preview: Callable = format_vf_curve_mismatch_preview
     apply_plan: Callable = apply_plan
     describe_translated_gpu_policy: Callable = describe_translated_gpu_policy
-    describe_afterburner_dynamic_lock: Callable = describe_afterburner_dynamic_lock
-    describe_afterburner_flatten_validation: Callable = (
-        describe_afterburner_flatten_validation
-    )
-    describe_afterburner_profile_settings: Callable = (
-        describe_afterburner_profile_settings
-    )
     log: Callable[[str], None] = runtime_log
     print_fn: Callable = print
     time_monotonic: Callable[[], float] = time.monotonic
@@ -86,12 +70,6 @@ class RuntimeFanSettings:
     force_update_every_poll: bool
 
 
-def _dependencies(
-    dependencies: RuntimeFanLoopDependencies | None,
-) -> RuntimeFanLoopDependencies:
-    return dependencies or RuntimeFanLoopDependencies()
-
-
 def run_runtime_fan_control_loop(
     *,
     gpu_index,
@@ -104,26 +82,20 @@ def run_runtime_fan_control_loop(
     voltage_reader,
     vf_curve_reader,
     gpu_policy_controller,
-    translated_gpu_policy=None,
-    afterburner_source=None,
-    afterburner_profile_settings=None,
-    auto_uv_final_curve=None,
-    vf_apply_result=None,
-    active_vf_curve_source=None,
-    auto_uv_profile_gpu_policy=None,
-    clock_ceiling_controller=None,
-    vf_expected_samples=None,
-    startup_power_limit_w=None,
+    vf_policy: RuntimeVfCurvePolicyResult | None = None,
     dependencies: RuntimeFanLoopDependencies | None = None,
     max_iterations: int | None = None,
 ) -> None:
-    deps = _dependencies(dependencies)
+    deps = dependencies or RuntimeFanLoopDependencies()
+    vf_policy = vf_policy or RuntimeVfCurvePolicyResult()
     settings = _build_runtime_fan_settings(
         fan_config,
         fan_control_enabled=fan_control_enabled,
         deps=deps,
     )
-    vf_expected_samples = list(vf_expected_samples or [])
+    clock_ceiling_controller = vf_policy.clock_ceiling_controller
+    vf_apply_result = vf_policy.vf_apply_result
+    vf_expected_samples = list(vf_policy.vf_expected_samples)
     last_vf_reapply_monotonic = 0.0
     vf_reapply_cooldown_s = max(float(settings.poll_interval_s), 10.0)
 
@@ -142,7 +114,7 @@ def run_runtime_fan_control_loop(
             device_min_fan_speed_pct=device_min_fan_speed_pct,
             device_max_fan_speed_pct=device_max_fan_speed_pct,
         )
-        settings.effective_manual_curve = deps.build_effective_manual_curve(
+        settings.effective_manual_curve = build_effective_manual_curve(
             curve=settings.curve,
             manual_enable_temp_c=settings.manual_enable_temp_c,
             effective_min_fan_speed_pct=settings.effective_min_fan_speed_pct,
@@ -188,16 +160,9 @@ def run_runtime_fan_control_loop(
         device_max_fan_speed_pct=device_max_fan_speed_pct,
         settings=settings,
         enable_persistence_mode=enable_persistence_mode,
-        translated_gpu_policy=translated_gpu_policy,
-        auto_uv_profile_gpu_policy=auto_uv_profile_gpu_policy,
-        startup_power_limit_w=startup_power_limit_w,
-        active_vf_curve_source=active_vf_curve_source,
-        auto_uv_final_curve=auto_uv_final_curve,
+        vf_policy=vf_policy,
         prefer_afterburner_curve=prefer_afterburner_curve,
-        afterburner_source=afterburner_source,
-        afterburner_profile_settings=afterburner_profile_settings,
         vf_curve_reader=vf_curve_reader,
-        clock_ceiling_controller=clock_ceiling_controller,
         deps=deps,
     )
 
@@ -207,6 +172,16 @@ def run_runtime_fan_control_loop(
     manual_mode_active = False
     hot_auto_mode_active = False
     iteration_count = 0
+
+    def log_with_timestamp(message: str) -> None:
+        deps.log(f"{deps.time_strftime('%Y-%m-%d %H:%M:%S')} {message}")
+
+    def switch_to_hardware_auto() -> None:
+        nonlocal manual_mode_active, last_speed, last_set_temp_c
+        nvml_session.set_all_fans_default(fan_count)
+        manual_mode_active = False
+        last_speed = None
+        last_set_temp_c = None
 
     while True:
         if max_iterations is not None and iteration_count >= int(max_iterations):
@@ -242,134 +217,93 @@ def run_runtime_fan_control_loop(
                 deps=deps,
             )
 
+        def fan_state_text() -> str:
+            return describe_fan_curve_state(
+                current_temp_c=current_temp_c,
+                effective_curve=settings.effective_manual_curve,
+                manual_mode_active=manual_mode_active,
+                emergency_auto_mode_active=hot_auto_mode_active,
+                emergency_auto_resume_temp_c=settings.emergency_auto_resume_temp_c,
+            )
+
         if not fan_control_enabled:
-            timestamp = deps.time_strftime("%Y-%m-%d %H:%M:%S")
-            deps.log(f"{timestamp} {telemetry_text} fan_control=disabled")
+            log_with_timestamp(f"{telemetry_text} fan_control=disabled")
             deps.time_sleep(settings.poll_interval_s)
             continue
 
-        fan_curve_state_text = deps.describe_fan_curve_state(
-            current_temp_c=current_temp_c,
-            effective_curve=settings.effective_manual_curve,
-            manual_mode_active=manual_mode_active,
-            emergency_auto_mode_active=hot_auto_mode_active,
-            emergency_auto_resume_temp_c=settings.emergency_auto_resume_temp_c,
-        )
+        # Still in emergency override.
         if hot_auto_mode_active and current_temp_c > settings.emergency_auto_resume_temp_c:
-            timestamp = deps.time_strftime("%Y-%m-%d %H:%M:%S")
-            deps.log(
-                f"{timestamp} {telemetry_text} {fan_curve_state_text} fan_mode=auto reason=emergency-override"
+            log_with_timestamp(
+                f"{telemetry_text} {fan_state_text()} fan_mode=auto reason=emergency-override"
             )
             deps.time_sleep(settings.poll_interval_s)
             continue
 
+        # Exit emergency override; fall through to normal decisions.
         if hot_auto_mode_active and current_temp_c <= settings.emergency_auto_resume_temp_c:
             hot_auto_mode_active = False
-            timestamp = deps.time_strftime("%Y-%m-%d %H:%M:%S")
-            fan_curve_state_text = deps.describe_fan_curve_state(
-                current_temp_c=current_temp_c,
-                effective_curve=settings.effective_manual_curve,
-                manual_mode_active=manual_mode_active,
-                emergency_auto_mode_active=hot_auto_mode_active,
-                emergency_auto_resume_temp_c=settings.emergency_auto_resume_temp_c,
-            )
-            deps.log(
-                f"{timestamp} {telemetry_text} {fan_curve_state_text} event=emergency-override-cleared"
+            log_with_timestamp(
+                f"{telemetry_text} {fan_state_text()} event=emergency-override-cleared"
             )
 
+        # Enter emergency override.
         if current_temp_c > settings.emergency_auto_override_temp_c:
             if manual_mode_active:
-                nvml_session.set_all_fans_default(fan_count)
-                manual_mode_active = False
-                last_speed = None
-                last_set_temp_c = None
+                switch_to_hardware_auto()
             hot_auto_mode_active = True
-            timestamp = deps.time_strftime("%Y-%m-%d %H:%M:%S")
-            fan_curve_state_text = deps.describe_fan_curve_state(
-                current_temp_c=current_temp_c,
-                effective_curve=settings.effective_manual_curve,
-                manual_mode_active=manual_mode_active,
-                emergency_auto_mode_active=hot_auto_mode_active,
-                emergency_auto_resume_temp_c=settings.emergency_auto_resume_temp_c,
-            )
-            deps.log(
-                f"{timestamp} {telemetry_text} {fan_curve_state_text} "
+            log_with_timestamp(
+                f"{telemetry_text} {fan_state_text()} "
                 f"event=restoring-auto-mode reason=emergency-override"
             )
             deps.time_sleep(settings.poll_interval_s)
             continue
 
+        # Still below the manual-takeover threshold.
         if not manual_mode_active and current_temp_c < settings.manual_enable_temp_c:
-            timestamp = deps.time_strftime("%Y-%m-%d %H:%M:%S")
-            deps.log(f"{timestamp} {telemetry_text} {fan_curve_state_text} fan_mode=auto")
+            log_with_timestamp(f"{telemetry_text} {fan_state_text()} fan_mode=auto")
             deps.time_sleep(settings.poll_interval_s)
             continue
 
+        # Enter manual mode; fall through to fan computation.
         if not manual_mode_active:
             manual_mode_active = True
             last_speed = None
             last_set_temp_c = None
             last_update_time = loop_started
-            timestamp = deps.time_strftime("%Y-%m-%d %H:%M:%S")
-            fan_curve_state_text = deps.describe_fan_curve_state(
-                current_temp_c=current_temp_c,
-                effective_curve=settings.effective_manual_curve,
-                manual_mode_active=manual_mode_active,
-                emergency_auto_mode_active=hot_auto_mode_active,
-                emergency_auto_resume_temp_c=settings.emergency_auto_resume_temp_c,
-            )
-            deps.log(
-                f"{timestamp} {telemetry_text} {fan_curve_state_text} event=entering-manual-mode"
+            log_with_timestamp(
+                f"{telemetry_text} {fan_state_text()} event=entering-manual-mode"
             )
 
+        # Hand control back to hardware once we cool down.
         if current_temp_c <= settings.auto_restore_temp_c:
-            nvml_session.set_all_fans_default(fan_count)
-            manual_mode_active = False
-            last_speed = None
-            last_set_temp_c = None
-            timestamp = deps.time_strftime("%Y-%m-%d %H:%M:%S")
-            fan_curve_state_text = deps.describe_fan_curve_state(
-                current_temp_c=current_temp_c,
-                effective_curve=settings.effective_manual_curve,
-                manual_mode_active=manual_mode_active,
-                emergency_auto_mode_active=hot_auto_mode_active,
-                emergency_auto_resume_temp_c=settings.emergency_auto_resume_temp_c,
-            )
-            deps.log(
-                f"{timestamp} {telemetry_text} {fan_curve_state_text} event=restoring-auto-mode"
+            switch_to_hardware_auto()
+            log_with_timestamp(
+                f"{telemetry_text} {fan_state_text()} event=restoring-auto-mode"
             )
             deps.time_sleep(settings.poll_interval_s)
             continue
 
-        raw_target_speed = deps.speed_for_temp(
-            current_temp_c,
-            settings.curve,
-            mode=settings.mode,
-        )
-        raw_target_speed = deps.clamp(
-            raw_target_speed,
+        raw_target_speed = clamp(
+            speed_for_temp(current_temp_c, settings.curve, mode=settings.mode),
             settings.effective_min_fan_speed_pct,
             settings.effective_max_fan_speed_pct,
         )
-
-        hysteresis_target_speed = deps.apply_hysteresis(
+        hysteresis_target_speed = apply_hysteresis(
             current_temp_c=current_temp_c,
             raw_target_speed=raw_target_speed,
             last_temp_c=last_set_temp_c,
             last_speed=last_speed,
             hysteresis_c=settings.hysteresis_c,
         )
-
-        limited_target_speed = deps.limit_speed_change(
-            target_speed=hysteresis_target_speed,
-            last_speed=last_speed,
-            elapsed_s=loop_started - last_update_time,
-            max_step_up_pct_per_s=settings.max_step_up_pct_per_s,
-            max_step_down_pct_per_s=settings.max_step_down_pct_per_s,
-        )
         target_speed = round(
-            deps.clamp(
-                limited_target_speed,
+            clamp(
+                limit_speed_change(
+                    target_speed=hysteresis_target_speed,
+                    last_speed=last_speed,
+                    elapsed_s=loop_started - last_update_time,
+                    max_step_up_pct_per_s=settings.max_step_up_pct_per_s,
+                    max_step_down_pct_per_s=settings.max_step_down_pct_per_s,
+                ),
                 settings.effective_min_fan_speed_pct,
                 settings.effective_max_fan_speed_pct,
             )
@@ -381,9 +315,8 @@ def run_runtime_fan_control_loop(
             last_speed = target_speed
             last_update_time = loop_started
 
-        timestamp = deps.time_strftime("%Y-%m-%d %H:%M:%S")
-        deps.log(
-            f"{timestamp} {telemetry_text} {fan_curve_state_text} "
+        log_with_timestamp(
+            f"{telemetry_text} {fan_state_text()} "
             f"target={target_speed}% curve={raw_target_speed:.1f}% "
             f"hyst={hysteresis_target_speed:.1f}% fan_mode=manual"
         )
@@ -419,7 +352,7 @@ def _build_runtime_fan_settings(
         return settings
 
     settings.curve = [tuple(point) for point in fan_config["curve"]]
-    deps.validate_curve(settings.curve)
+    validate_curve(settings.curve)
     settings.hysteresis_c = float(fan_config["hysteresis_c"])
     settings.mode = str(fan_config["mode"])
     settings.min_fan_speed_pct = int(fan_config["min_fan_speed_pct"])
@@ -471,18 +404,19 @@ def _log_runtime_startup(
     device_max_fan_speed_pct,
     settings: RuntimeFanSettings,
     enable_persistence_mode,
-    translated_gpu_policy,
-    auto_uv_profile_gpu_policy,
-    startup_power_limit_w,
-    active_vf_curve_source,
-    auto_uv_final_curve,
+    vf_policy: RuntimeVfCurvePolicyResult,
     prefer_afterburner_curve,
-    afterburner_source,
-    afterburner_profile_settings,
     vf_curve_reader,
-    clock_ceiling_controller,
     deps: RuntimeFanLoopDependencies,
 ) -> None:
+    translated_gpu_policy = vf_policy.translated_gpu_policy
+    auto_uv_profile_gpu_policy = vf_policy.auto_uv_profile_gpu_policy
+    startup_power_limit_w = vf_policy.startup_power_limit_w
+    active_vf_curve_source = vf_policy.active_vf_curve_source
+    auto_uv_final_curve = vf_policy.auto_uv_final_curve
+    afterburner_source = vf_policy.afterburner_source
+    afterburner_profile_settings = vf_policy.afterburner_profile_settings
+    clock_ceiling_controller = vf_policy.clock_ceiling_controller
     if fan_control_enabled:
         deps.print_fn(
             f"Controlling GPU {gpu_index} with {fan_count} fan(s), "
@@ -523,7 +457,7 @@ def _log_runtime_startup(
     if afterburner_source is not None:
         flatten_target = afterburner_source["section_info"].get("flatten_target")
         flatten_text = (
-            deps.describe_afterburner_dynamic_lock(flatten_target)
+            describe_afterburner_dynamic_lock(flatten_target)
             if flatten_target is not None
             else "none"
         )
@@ -536,12 +470,12 @@ def _log_runtime_startup(
         )
         deps.log(
             "Afterburner flatten validation: "
-            f"{deps.describe_afterburner_flatten_validation(afterburner_source['section_info'].get('flatten_validation'))}."
+            f"{describe_afterburner_flatten_validation(afterburner_source['section_info'].get('flatten_validation'))}."
         )
         if afterburner_profile_settings is not None:
             deps.log(
                 "Afterburner parsed settings: "
-                f"{deps.describe_afterburner_profile_settings(afterburner_profile_settings)}."
+                f"{describe_afterburner_profile_settings(afterburner_profile_settings)}."
             )
     if vf_curve_reader is not None:
         vf_summary = vf_curve_reader.summary()
@@ -599,10 +533,10 @@ def _log_fan_curve_startup(
                 f"Fan curve source: {curve_source} "
                 f"period={curve_period_ms}ms flags=0x{curve_flags_u32:08x}."
             )
-    deps.log(f"Fan curve points: {deps.format_curve_points(settings.curve)}")
+    deps.log(f"Fan curve points: {format_curve_points(settings.curve)}")
     deps.log(
         "Effective manual fan curve: "
-        f"{deps.format_curve_points(settings.effective_manual_curve)}"
+        f"{format_curve_points(settings.effective_manual_curve)}"
     )
     if fan_config.get("curve_override_zero_with_hardware_curve"):
         behavior_parts = ["zero-rpm zone uses hardware auto curve"]
@@ -636,16 +570,15 @@ def _maybe_reapply_vf_curve(
     if (loop_started - last_vf_reapply_monotonic) < vf_reapply_cooldown_s:
         return last_vf_reapply_monotonic
 
+    timestamp = deps.time_strftime("%Y-%m-%d %H:%M:%S")
     try:
         deps.apply_plan(vf_curve_reader, vf_apply_result["plan"])
         vf_curve_reader.refresh_points()
     except Exception as exc:
-        timestamp = deps.time_strftime("%Y-%m-%d %H:%M:%S")
         deps.log(f"{timestamp} event=vf-curve-reapply-error error={exc}")
         return last_vf_reapply_monotonic
 
     mismatch_preview = deps.format_vf_curve_mismatch_preview(vf_mismatches)
-    timestamp = deps.time_strftime("%Y-%m-%d %H:%M:%S")
     deps.log(
         f"{timestamp} {telemetry_text} "
         f"event=vf-curve-reapplied mismatches={len(vf_mismatches)} "

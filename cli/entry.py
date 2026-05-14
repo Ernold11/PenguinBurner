@@ -26,7 +26,7 @@ from .runtime_profile_argument import (
 )
 
 
-def run_penguin_burner_cli(
+def dispatch_cli(
     *,
     program_file: str | Path,
     main_callback: Callable[..., object],

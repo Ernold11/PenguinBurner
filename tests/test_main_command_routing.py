@@ -5,7 +5,7 @@ import pytest
 
 from cli.main_command_routing import (
     MainCommandRoutingDependencies,
-    run_main_command_routing,
+    route_main_command,
 )
 from penguin_burner_errors import NvmlError
 
@@ -106,7 +106,7 @@ def test_main_command_routing_lists_profiles_without_loading_runtime_config():
         )
     )
 
-    result = run_main_command_routing(
+    result = route_main_command(
         args=_args(list_auto_uv_profiles=True),
         argv=["--list-auto-uv-profiles"],
         explicit_cli_args=True,
@@ -122,7 +122,7 @@ def test_main_command_routing_rejects_clear_and_fresh_together():
     deps, _calls = _deps()
 
     with pytest.raises(NvmlError, match="choose only one"):
-        run_main_command_routing(
+        route_main_command(
             args=_args(clear_auto_uv_state=True, fresh_auto_uv_scan=True),
             argv=[],
             explicit_cli_args=True,
@@ -145,7 +145,7 @@ def test_main_command_routing_returns_runtime_inputs_for_normal_runtime():
     )
     args = _args(gpu_index=2)
 
-    result = run_main_command_routing(
+    result = route_main_command(
         args=args,
         argv=["--gpu-index", "2"],
         explicit_cli_args=True,
@@ -175,7 +175,7 @@ def test_main_command_routing_starts_default_auto_uv_foreground_when_no_runtime_
     )
     args = _args()
 
-    result = run_main_command_routing(
+    result = route_main_command(
         args=args,
         argv=[],
         explicit_cli_args=False,
@@ -198,7 +198,7 @@ def test_main_command_routing_runs_plain_stability_test_before_profile_setup():
         )
     )
 
-    result = run_main_command_routing(
+    result = route_main_command(
         args=_args(stability_test=True),
         argv=["--stability-test"],
         explicit_cli_args=True,

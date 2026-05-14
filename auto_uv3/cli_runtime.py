@@ -36,12 +36,6 @@ class AutoUvForegroundDependencies:
     log: Callable[[str], None] = runtime_log
 
 
-def _dependencies(
-    dependencies: AutoUvForegroundDependencies | None,
-) -> AutoUvForegroundDependencies:
-    return dependencies or AutoUvForegroundDependencies()
-
-
 def run_auto_uv_foreground_command(
     args,
     *,
@@ -51,7 +45,7 @@ def run_auto_uv_foreground_command(
     interactive: bool,
     dependencies: AutoUvForegroundDependencies | None = None,
 ) -> None:
-    deps = _dependencies(dependencies)
+    deps = dependencies or AutoUvForegroundDependencies()
     runtime_options = afterburner_runtime_options
     if args.restore_defaults_from_config:
         runtime_options = deps.ensure_afterburner_root_configured(
@@ -89,7 +83,7 @@ def run_auto_uv_voltage_scan(
     afterburner_runtime_options: dict,
     dependencies: AutoUvForegroundDependencies | None = None,
 ) -> None:
-    deps = _dependencies(dependencies)
+    deps = dependencies or AutoUvForegroundDependencies()
     json_events = bool(args.json_events)
     deps.emit_json_event(
         json_events,
@@ -140,7 +134,7 @@ def emit_auto_uv_final_result(
     json_events: bool,
     dependencies: AutoUvForegroundDependencies | None = None,
 ) -> None:
-    deps = _dependencies(dependencies)
+    deps = dependencies or AutoUvForegroundDependencies()
     deps.emit_json_event(
         bool(json_events),
         "final_result",

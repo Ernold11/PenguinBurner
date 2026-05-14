@@ -1,5 +1,3 @@
-"""Startup V/F curve and GPU policy selection for the foreground runtime."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -87,12 +85,6 @@ class RuntimeVfCurvePolicyResult:
     startup_power_limit_w: int | None = None
 
 
-def _dependencies(
-    dependencies: RuntimeVfCurvePolicyDependencies | None,
-) -> RuntimeVfCurvePolicyDependencies:
-    return dependencies or RuntimeVfCurvePolicyDependencies()
-
-
 def configure_runtime_vf_curve_policy(
     *,
     gpu_index,
@@ -107,7 +99,7 @@ def configure_runtime_vf_curve_policy(
     gpu_policy_controller,
     dependencies: RuntimeVfCurvePolicyDependencies | None = None,
 ) -> RuntimeVfCurvePolicyResult:
-    deps = _dependencies(dependencies)
+    deps = dependencies or RuntimeVfCurvePolicyDependencies()
     result = RuntimeVfCurvePolicyResult()
 
     try:
@@ -320,25 +312,14 @@ def _apply_auto_uv_final_curve(
             f"{int(result.auto_uv_profile_gpu_policy['mem_clk_vf_offset_mhz']):+d}MHz."
         )
 
-    try:
-        result.clock_ceiling_controller = (
-            deps.flattened_clock_ceiling_controller_factory(
-                flatten_target=auto_uv_final_curve["flatten_target"],
-                policy_controller=gpu_policy_controller,
-            )
-        )
-        result.clock_ceiling_controller.apply()
-    except Exception as exc:
-        result.clock_ceiling_controller = None
-        deps.log(
-            "Skipping auto-UV clock ceiling: "
-            f"path={auto_uv_final_curve['path']} error={exc}"
-        )
-    else:
-        deps.log(
-            "Configured auto-UV clock ceiling: "
-            f"{result.clock_ceiling_controller.describe()}."
-        )
+    _apply_clock_ceiling(
+        result,
+        flatten_target=auto_uv_final_curve["flatten_target"],
+        gpu_policy_controller=gpu_policy_controller,
+        label_prefix="auto-UV",
+        context=f"path={auto_uv_final_curve['path']}",
+        deps=deps,
+    )
     return True
 
 
@@ -385,13 +366,34 @@ def _apply_afterburner_curve(
     flatten_target = deps.derive_afterburner_dynamic_lock(
         result.vf_apply_result["materialization"]["points"]
     )
+    section_context = f"section={result.afterburner_source['section']}"
     if flatten_target is None:
         deps.log(
-            f"Skipping Afterburner clock ceiling: section={result.afterburner_source['section']} "
+            f"Skipping Afterburner clock ceiling: {section_context} "
             "no flattened V/F target was detected."
         )
         return True
 
+    _apply_clock_ceiling(
+        result,
+        flatten_target=flatten_target,
+        gpu_policy_controller=gpu_policy_controller,
+        label_prefix="Afterburner",
+        context=section_context,
+        deps=deps,
+    )
+    return True
+
+
+def _apply_clock_ceiling(
+    result: RuntimeVfCurvePolicyResult,
+    *,
+    flatten_target,
+    gpu_policy_controller,
+    label_prefix: str,
+    context: str,
+    deps: RuntimeVfCurvePolicyDependencies,
+) -> None:
     try:
         result.clock_ceiling_controller = (
             deps.flattened_clock_ceiling_controller_factory(
@@ -402,13 +404,10 @@ def _apply_afterburner_curve(
         result.clock_ceiling_controller.apply()
     except Exception as exc:
         result.clock_ceiling_controller = None
-        deps.log(
-            "Skipping Afterburner clock ceiling: "
-            f"section={result.afterburner_source['section']} error={exc}"
-        )
+        deps.log(f"Skipping {label_prefix} clock ceiling: {context} error={exc}")
     else:
+        suffix = f" {context}" if label_prefix == "Afterburner" else ""
         deps.log(
-            f"Configured Afterburner clock ceiling: section={result.afterburner_source['section']} "
+            f"Configured {label_prefix} clock ceiling:{suffix} "
             f"{result.clock_ceiling_controller.describe()}."
         )
-    return True

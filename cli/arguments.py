@@ -24,7 +24,7 @@ def default_cli_config_path() -> str:
     return str(default_runtime_config_path())
 
 
-def parse_penguin_burner_arguments(argv):
+def parse_arguments(argv):
     parser = argparse.ArgumentParser(
         prog="penguin_burner.py",
         description=(

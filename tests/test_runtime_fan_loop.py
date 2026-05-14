@@ -2,6 +2,7 @@ from runtime_fan_control.runtime_loop import (
     RuntimeFanLoopDependencies,
     run_runtime_fan_control_loop,
 )
+from runtime_gpu_control import RuntimeVfCurvePolicyResult
 
 
 class FakeNvmlSession:
@@ -207,8 +208,10 @@ def test_runtime_fan_loop_reapplies_vf_curve_after_reset_detection():
         voltage_reader=None,
         vf_curve_reader=vf_curve_reader,
         gpu_policy_controller=None,
-        vf_apply_result={"plan": plan},
-        vf_expected_samples=["sample"],
+        vf_policy=RuntimeVfCurvePolicyResult(
+            vf_apply_result={"plan": plan},
+            vf_expected_samples=["sample"],
+        ),
         dependencies=_dependencies(
             logs=logs,
             prints=prints,

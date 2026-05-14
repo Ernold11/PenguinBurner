@@ -146,18 +146,7 @@ def test_normal_runtime_wires_startup_vf_policy_and_fan_loop():
     assert loop_call["voltage_reader"] is voltage_reader
     assert loop_call["vf_curve_reader"] is vf_curve_reader
     assert loop_call["gpu_policy_controller"] is gpu_policy_controller
-    assert loop_call["translated_gpu_policy"] == {"power_limit_w": 240}
-    assert loop_call["afterburner_source"] == {"section": "startup"}
-    assert loop_call["afterburner_profile_settings"] == {"PowerLimit": "90"}
-    assert loop_call["auto_uv_final_curve"] == {"path": "/tmp/final.json"}
-    assert loop_call["vf_apply_result"] == {"plan": []}
-    assert loop_call["active_vf_curve_source"] == "auto-uv-final"
-    assert loop_call["auto_uv_profile_gpu_policy"] == {
-        "mem_clk_vf_offset_mhz": 500
-    }
-    assert loop_call["clock_ceiling_controller"] is vf_policy.clock_ceiling_controller
-    assert loop_call["vf_expected_samples"] == ["sample"]
-    assert loop_call["startup_power_limit_w"] == 240
+    assert loop_call["vf_policy"] is vf_policy
     assert loop_call["dependencies"] == "fan-deps"
 
 
