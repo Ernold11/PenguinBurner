@@ -50,7 +50,7 @@ Fusion.
 %pyproject_install
 %pyproject_save_files \
     afterburner \
-    auto_uv3 \
+    auto_uv \
     cli \
     initial_check \
     lact \

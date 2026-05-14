@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from afterburner.import_fan_curve import load_config
-from auto_uv3.scan_mode import AUTO_UV_MODE_EFFICIENCY
-from auto_uv3.scan_mode import AUTO_UV_MODE_PERFORMANCE
-from auto_uv3.auto_uv_user_options import AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO
-from auto_uv3.auto_uv_user_options import AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO
-from auto_uv3.scan_mode.uv_limits import (
+from auto_uv.scan_mode import AUTO_UV_MODE_EFFICIENCY
+from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.auto_uv_user_options import AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO
+from auto_uv.auto_uv_user_options import AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO
+from auto_uv.scan_mode.uv_limits import (
     uv_limit_voltage_floor_target_for_gpu,
     voltage_drop_pct,
 )

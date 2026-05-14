@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 
 import atexit
+import functools
 from pathlib import Path
 import shutil
 import sys
 
-from auto_uv3.cli_runtime import (
+from auto_uv.cli_runtime import (
     AutoUvForegroundDependencies,
-    run_auto_uv_foreground_command as _runner_auto_uv_foreground_command,
+    run_auto_uv_foreground_command,
 )
 from saved_uv_profiles import auto_uv_profiles_dir, load_auto_uv_final_curve
 from cli.interactive_terminal_prompt import prompt_yes_no as cli_prompt_yes_no
@@ -22,9 +23,6 @@ from cli.entry import dispatch_cli
 from cli.runtime_config_file import (
     afterburner_root_has_imported_profiles,
     load_runtime_config,
-)
-from cli.runtime_profile_argument import (
-    runtime_profile_selector_allows_unverified_from_argv,
 )
 from penguin_burner_errors import NvmlError
 from penguin_burner_paths import (
@@ -41,9 +39,7 @@ from runtime_debug import (
 )
 from runtime_gpu_control import FlattenedClockCeilingController, run_nvidia_smi_command
 from runtime_service import DEFAULT_JOURNAL_HOURS
-from saved_profile_verification.runner import (
-    run_profile_verification as _runner_run_profile_verification,
-)
+from saved_profile_verification.runner import run_profile_verification
 from stability.q2rtx import StabilityTestError, install_latest_q2rtx
 
 NVIDIA_SMI = shutil.which("nvidia-smi") or "nvidia-smi"
@@ -51,10 +47,6 @@ NVIDIA_SMI = shutil.which("nvidia-smi") or "nvidia-smi"
 
 atexit.register(close_debug_log)
 atexit.register(close_stdio_capture)
-
-
-def prompt_yes_no(prompt, *, default):
-    return cli_prompt_yes_no(prompt, default=default, debug_log=debug_log)
 
 
 def clear_auto_uv_state(*, log=print) -> None:
@@ -88,47 +80,6 @@ def clear_auto_uv_state(*, log=print) -> None:
     )
 
 
-def emit_json_event(enabled: bool, event: str, **payload) -> None:
-    emit_cli_json_event(enabled, event, **payload)
-
-
-def parse_main_args(argv):
-    return parse_arguments(argv)
-
-
-def run_profile_verification(
-    args,
-    *,
-    gpu_index,
-    config_path,
-    afterburner_runtime_options,
-):
-    return _runner_run_profile_verification(
-        args,
-        gpu_index=gpu_index,
-        config_path=config_path,
-        afterburner_runtime_options=afterburner_runtime_options,
-    )
-
-
-def run_auto_uv_foreground_command(
-    args,
-    *,
-    gpu_index,
-    config_path,
-    afterburner_runtime_options,
-    interactive,
-) -> None:
-    return _runner_auto_uv_foreground_command(
-        args,
-        gpu_index=gpu_index,
-        config_path=config_path,
-        afterburner_runtime_options=afterburner_runtime_options,
-        interactive=interactive,
-        dependencies=AutoUvForegroundDependencies(emit_json_event=emit_json_event),
-    )
-
-
 def run_q2rtx_install():
     try:
         result = install_latest_q2rtx()
@@ -150,7 +101,7 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
         argv = sys.argv[1:]
     explicit_cli_args = bool(argv)
 
-    args = parse_main_args(argv)
+    args = parse_arguments(argv)
     if args.debug_log:
         enable_debug_logging(Path(args.config).expanduser(), argv=argv)
     claim_desktop_user_ownership(
@@ -174,7 +125,12 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
             afterburner_root_has_imported_profiles=afterburner_root_has_imported_profiles,
             run_q2rtx_install=run_q2rtx_install,
             run_profile_verification=run_profile_verification,
-            run_auto_uv_foreground_command=run_auto_uv_foreground_command,
+            run_auto_uv_foreground_command=functools.partial(
+                run_auto_uv_foreground_command,
+                dependencies=AutoUvForegroundDependencies(
+                    emit_json_event=emit_cli_json_event,
+                ),
+            ),
         ),
     )
     if command_route.handled:
@@ -186,13 +142,9 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
         journal_hours=journal_hours,
         program_file=__file__,
         command_route=command_route,
-        prompt_yes_no=prompt_yes_no,
+        prompt_yes_no=functools.partial(cli_prompt_yes_no, debug_log=debug_log),
         interactive=sys.stdin.isatty(),
     )
-
-
-def _runtime_profile_selector_allows_unverified_from_argv(argv) -> bool:
-    return runtime_profile_selector_allows_unverified_from_argv(argv)
 
 
 def cli_main() -> int:

@@ -10,6 +10,9 @@ import saved_uv_profiles.profile_store as profile_store
 import penguin_burner
 import saved_profile_verification as profile_verification_rules
 import saved_profile_verification.runner as profile_verification_runner
+from cli.runtime_profile_argument import (
+    runtime_profile_selector_allows_unverified_from_argv as allow_unverified_from_argv,
+)
 import ui.curve_profiles as curve_profiles
 import ui.fan_profiles as ui_app
 from saved_uv_profiles import (
@@ -631,16 +634,16 @@ def test_runtime_profile_precheck_allows_user_edited_drafts_for_verification(
     )
 
     assert resolve_auto_uv_profile(str(stored_path)) is None
-    assert not penguin_burner._runtime_profile_selector_allows_unverified_from_argv(
+    assert not allow_unverified_from_argv(
         ["--auto-uv-profile", str(stored_path)]
     )
-    assert penguin_burner._runtime_profile_selector_allows_unverified_from_argv(
+    assert allow_unverified_from_argv(
         ["--stability-test", "--auto-uv-profile", str(stored_path)]
     )
     assert (
         resolve_auto_uv_profile(
             str(stored_path),
-            allow_unverified=penguin_burner._runtime_profile_selector_allows_unverified_from_argv(
+            allow_unverified=allow_unverified_from_argv(
                 ["--stability-test", "--auto-uv-profile", str(stored_path)]
             ),
         )

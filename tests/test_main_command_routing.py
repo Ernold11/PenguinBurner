@@ -14,7 +14,7 @@ def _args(**overrides):
     values = {
         "clear_auto_uv_state": False,
         "fresh_auto_uv_scan": False,
-        "auto_uv3": False,
+        "auto_uv": False,
         "list_auto_uv_profiles": False,
         "json_events": False,
         "delete_auto_uv_profiles": [],

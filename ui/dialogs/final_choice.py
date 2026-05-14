@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from auto_uv3.scan_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE
 
 from ..constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
 from ..constants import MAX_FINAL_VERIFICATION_DURATION_S

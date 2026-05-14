@@ -6,11 +6,11 @@ from types import SimpleNamespace
 import pytest
 
 import ui.commands as commands
-from auto_uv3.auto_uv_user_options import AUTO_UV_DEFAULTS
-from auto_uv3.scan_runtime_settings import (
+from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS
+from auto_uv.scan_runtime_settings import (
     short_probe_base_duration_s as _short_probe_base_duration_s,
 )
-from auto_uv3.ui.final_verification_candidate_choice import (
+from auto_uv.ui.candidate_choice import (
     candidate_selection_summary as _candidate_selection_summary,
     sorted_final_choice_candidates as _sorted_backend_final_choice_candidates,
 )
@@ -167,22 +167,22 @@ def test_auto_uv_short_verification_defaults_to_20_seconds() -> None:
 
 
 def test_gui_yolo_argument_is_hidden_from_qt_args() -> None:
-    qt_args, yolo, auto_uv3 = _parse_gui_args(
+    qt_args, yolo, auto_uv = _parse_gui_args(
         ["penguin-burner-ui", "--style", "Fusion", "--yolo"]
     )
 
     assert yolo is True
-    assert auto_uv3 is False
+    assert auto_uv is False
     assert qt_args == ["penguin-burner-ui", "--style", "Fusion"]
 
 
 def test_gui_auto_uv3_argument_is_hidden_from_qt_args() -> None:
-    qt_args, yolo, auto_uv3 = _parse_gui_args(
+    qt_args, yolo, auto_uv = _parse_gui_args(
         ["penguin-burner-ui", "--auto-uv3", "--style", "Fusion"]
     )
 
     assert yolo is False
-    assert auto_uv3 is True
+    assert auto_uv is True
     assert qt_args == ["penguin-burner-ui", "--style", "Fusion"]
 
 

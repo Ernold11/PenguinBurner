@@ -85,7 +85,7 @@ def route_main_command(
         deps.clear_auto_uv_state(log=deps.log)
         return MainCommandRoutingResult(handled=True)
 
-    if args.auto_uv3:
+    if args.auto_uv:
         args.auto_uv_voltage_scan = True
 
     if args.list_auto_uv_profiles:

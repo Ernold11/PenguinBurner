@@ -83,7 +83,7 @@ def scan_command(auto_uv_options: Mapping[str, object] | None = None) -> list[st
         "--json-events",
         "--auto-uv-require-final-choice",
     ]
-    if bool((auto_uv_options or {}).get("auto_uv3")) or os.environ.get(
+    if bool((auto_uv_options or {}).get("auto_uv")) or os.environ.get(
         "PENGUIN_BURNER_AUTO_UV3",
         "",
     ).strip() in {"1", "true", "yes", "on"}:

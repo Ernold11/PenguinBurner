@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Compatibility launcher for the CUDA brute-force stability workload."""
-
 from stability.cuda_bruteforce import main
 
 

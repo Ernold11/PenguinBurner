@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from auto_uv3.auto_uv_user_options import AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO
+from auto_uv.auto_uv_user_options import AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO
 from cli.effective_runtime_options import build_effective_afterburner_runtime_options
 from nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 

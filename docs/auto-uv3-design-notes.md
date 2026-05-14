@@ -42,7 +42,7 @@ Hard limits:
 ## Proposed Package
 
 ```text
-auto_uv3/
+auto_uv/
   __init__.py
   auto_uv_types.py
   auto_uv_scan_settings.py
@@ -488,8 +488,8 @@ if enough_exploration and too_many_no_gain_steps:
 
 ## Implemented Module Chain
 
-1. `auto_uv3/voltage_frequency_undervolt_main_loop.py` owns setup, base-load probe, lower-voltage sweep, final choice, final verification, and cleanup.
-2. `auto_uv3/curve/` owns base V/F curve parsing, loaded telemetry, target-clock selection, and flattening.
-3. `auto_uv3/q2rtx/` owns Q2RTX/CUDA probe config, live workload execution, telemetry parsing, and stable-run decisions.
-4. `auto_uv3/recovery/` owns upward clock recovery, crash-limited recovery budget, and final-failure stabilization.
-5. `auto_uv3/scan_mode/` owns efficiency and performance scoring policy.
+1. `auto_uv/voltage_frequency_undervolt_main_loop.py` owns setup, base-load probe, lower-voltage sweep, final choice, final verification, and cleanup.
+2. `auto_uv/curve/` owns base V/F curve parsing, loaded telemetry, target-clock selection, and flattening.
+3. `auto_uv/q2rtx/` owns Q2RTX/CUDA probe config, live workload execution, telemetry parsing, and stable-run decisions.
+4. `auto_uv/recovery/` owns upward clock recovery, crash-limited recovery budget, and final-failure stabilization.
+5. `auto_uv/scan_mode/` owns efficiency and performance scoring policy.

@@ -21,7 +21,7 @@ from nvml_gpu_policy import (
 from nvidia_runtime_defaults import reset_nvidia_runtime_defaults
 from penguin_burner_paths import resolve_afterburner_root
 
-from auto_uv3.auto_uv_types import AutoUvError
+from auto_uv.auto_uv_types import AutoUvError
 
 
 AFTERBURNER_DEFAULTS_SECTION = "Defaults"

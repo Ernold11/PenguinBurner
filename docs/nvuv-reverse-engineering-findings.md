@@ -35,7 +35,7 @@ Keep:
 ## Borrowed Table Policy
 
 Use the table as bounds, not as a replacement scan algorithm.
-The current `auto_uv3/scan_mode/uv_limits.py` table was rechecked against
+The current `auto_uv/scan_mode/uv_limits.py` table was rechecked against
 NV-UV's `UVPresetService` IL and all 11 GPU-family tier values match.
 
 - Eco preset voltage: lower sweep boundary for the automatic max voltage drop.

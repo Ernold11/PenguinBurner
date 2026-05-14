@@ -37,18 +37,18 @@ from ui.tuning import performance_bias_clock_recovery_pct
 
 
 def test_ui_launcher_ignores_old_new_ui_flag() -> None:
-    argv, yolo, auto_uv3 = parse_gui_args(["pburn-ui", "--new-ui", "--yolo"])
+    argv, yolo, auto_uv = parse_gui_args(["pburn-ui", "--new-ui", "--yolo"])
 
     assert (argv, yolo) == (["pburn-ui"], True)
-    assert auto_uv3 is False
+    assert auto_uv is False
 
 
 def test_ui_launcher_accepts_auto_uv3_flag() -> None:
-    argv, yolo, auto_uv3 = parse_gui_args(["pburn-ui", "--auto-uv3", "--yolo"])
+    argv, yolo, auto_uv = parse_gui_args(["pburn-ui", "--auto-uv3", "--yolo"])
 
     assert argv == ["pburn-ui"]
     assert yolo is True
-    assert auto_uv3 is True
+    assert auto_uv is True
 
 
 def test_new_ui_package_is_installed() -> None:

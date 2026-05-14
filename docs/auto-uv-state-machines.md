@@ -1,6 +1,6 @@
 # Auto-UV State Machines
 
-This document describes the Auto-UV main loop after the readable `auto_uv3`
+This document describes the Auto-UV main loop after the readable `auto_uv`
 rewrite. The legacy `auto_uv` package has been removed after its behavior was
 ported into smaller named modules.
 

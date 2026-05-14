@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import argparse
 
-from auto_uv3.auto_uv_user_options import (
+from auto_uv.auto_uv_user_options import (
     AUTO_UV_DEFAULTS,
     AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO,
 )
-from auto_uv3.scan_mode import AUTO_UV_MODES
+from auto_uv.scan_mode import AUTO_UV_MODES
 from nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from penguin_burner_paths import default_runtime_config_path
 from runtime_service import DEFAULT_JOURNAL_HOURS

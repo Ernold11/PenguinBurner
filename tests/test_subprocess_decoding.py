@@ -3,10 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 import json
 
-from auto_uv3.persistence import unsafe_voltage_blacklist_file
+from auto_uv.persistence import unsafe_voltage_blacklist_file
 import saved_uv_profiles.profile_store as profile_store
 import penguin_burner
 import pytest
+from cli.json_event_output import emit_cli_json_event
 from saved_uv_profiles import archive_auto_uv_profile
 
 
@@ -99,7 +100,7 @@ def test_load_auto_uv_final_curve_rejects_user_edited_draft_by_default(
 
 
 def test_json_events_omit_none_values(capsys) -> None:
-    penguin_burner.emit_json_event(
+    emit_cli_json_event(
         True,
         "load_telemetry",
         target_duration_s=None,
