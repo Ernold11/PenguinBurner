@@ -26,3 +26,18 @@ def test_scan_runtime_settings_do_not_precompute_timedemo_loops() -> None:
     assert settings.q2rtx_config.timedemo_loops is None
     assert settings.q2rtx_config.duration_s == 600
     assert settings.q2rtx_config.single_pass_timeout_s == 999.0
+
+
+def test_scan_runtime_tail_rise_defaults_follow_auto_uv_mode() -> None:
+    source_config = Q2RTXStabilityConfig(duration_s=600)
+
+    efficiency = read_scan_runtime_settings({"auto_uv_mode": "efficiency"}, source_config)
+    performance = read_scan_runtime_settings({"auto_uv_mode": "performance"}, source_config)
+    overridden = read_scan_runtime_settings(
+        {"auto_uv_mode": "performance", "auto_uv_tail_rise_bins": 4},
+        source_config,
+    )
+
+    assert efficiency.tail_rise_bins == 0
+    assert performance.tail_rise_bins == 4
+    assert overridden.tail_rise_bins == 4

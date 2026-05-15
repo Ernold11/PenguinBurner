@@ -14,7 +14,7 @@ AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO = 1.75
 
 @dataclass(frozen=True, slots=True)
 class AutoUvDefaults:
-    probe_duration_s: int = 20
+    probe_duration_s: int = 10
     shape_probe_duration_s: int = 10
     final_duration_s: int = 600
     max_drop_pct: float = 16.0
@@ -22,6 +22,9 @@ class AutoUvDefaults:
     efficiency_stop_streak: int = 1
     clock_bump_budget_ratio: float = 0.75
     performance_clock_bump_budget_ratio: float = 1.10
+    tail_rise_bins: int = 0
+    performance_tail_rise_bins: int = 4
+    max_tail_rise_bins: int = 8
 
 
 @dataclass(frozen=True, slots=True)

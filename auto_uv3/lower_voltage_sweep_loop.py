@@ -224,6 +224,7 @@ def build_next_lower_voltage_candidate(
             f"phase={phase} recovery-budget="
             f"{recovery_budget.used_pct:.2f}/{recovery_budget.limit_pct:.2f}%"
         ),
+        tail_rise_bins=int(settings.tail_rise_bins),
     )
     return candidate, replace(state, recovery_budget=recovery_budget)
 
@@ -383,6 +384,7 @@ def try_clock_recovery_probe(
             f"recovery-budget={float(charged_pct):.2f}/"
             f"{state.recovery_budget.limit_pct:.2f}%"
         ),
+        tail_rise_bins=int(settings.tail_rise_bins),
     )
     outcome = hooks.probe_candidate(candidate)
     recovered_state = replace(
@@ -406,6 +408,10 @@ def spend_remaining_clock_budget_at_voltage_floor(
 ) -> tuple[VfCurveCandidate, VoltageSweepState, list[LowerVoltageSweepEvent]]:
     events: list[LowerVoltageSweepEvent] = []
     floor_voltage_mv = int(stable_candidate.voltage_mv)
+    reference_outcome = latest_passed_outcome_for_candidate(
+        probe_history,
+        stable_candidate,
+    )
     while not state.recovery_budget.spent_or_disabled:
         next_target = next_voltage_floor_clock_target(
             base_curve,
@@ -434,6 +440,20 @@ def spend_remaining_clock_budget_at_voltage_floor(
                 )
             )
             break
+        if not recovered_result_improves_reference(
+            recovered.best_outcome,
+            reference_outcome,
+        ):
+            for passed_candidate, passed_outcome in recovered.passed_results:
+                if hooks.record_passed_candidate is not None:
+                    hooks.record_passed_candidate(passed_candidate, passed_outcome)
+            events.append(
+                LowerVoltageSweepEvent(
+                    "stop",
+                    "voltage floor clock recovery did not improve FPS",
+                )
+            )
+            break
         for passed_candidate, passed_outcome in recovered.passed_results:
             if (
                 passed_candidate is recovered.best_candidate
@@ -448,6 +468,7 @@ def spend_remaining_clock_budget_at_voltage_floor(
             outcome=recovered.best_outcome,
             recovery_budget=recovery_budget,
         )
+        reference_outcome = recovered.best_outcome
         hooks.write_verified_candidate(stable_candidate, recovered.best_outcome)
         events.append(
             LowerVoltageSweepEvent(
@@ -456,6 +477,44 @@ def spend_remaining_clock_budget_at_voltage_floor(
             )
         )
     return stable_candidate, state, events
+
+
+def latest_passed_outcome_for_candidate(
+    probe_history: list[VoltageProbeOutcome],
+    candidate: VfCurveCandidate,
+) -> VoltageProbeOutcome | None:
+    fallback: VoltageProbeOutcome | None = None
+    for outcome in reversed(probe_history):
+        if not outcome.decision.passed:
+            continue
+        if fallback is None:
+            fallback = outcome
+        probe = outcome.raw_probe
+        if probe is None:
+            continue
+        voltage_mv = read_field(probe, "candidate_voltage_mv")
+        lock_clock_mhz = read_field(probe, "lock_clock_mhz")
+        try:
+            if int(voltage_mv) == int(candidate.voltage_mv) and int(
+                lock_clock_mhz
+            ) == int(candidate.target_mhz):
+                return outcome
+        except (TypeError, ValueError):
+            continue
+    return fallback
+
+
+def recovered_result_improves_reference(
+    recovered_outcome: VoltageProbeOutcome,
+    reference_outcome: VoltageProbeOutcome | None,
+) -> bool:
+    if reference_outcome is None:
+        return True
+    recovered_fps = outcome_avg_fps(recovered_outcome)
+    reference_fps = outcome_avg_fps(reference_outcome)
+    if recovered_fps is None or reference_fps is None:
+        return True
+    return float(recovered_fps) > float(reference_fps)
 
 
 def next_voltage_floor_clock_target(
@@ -544,6 +603,7 @@ def try_voltage_floor_clock_probe(
                 f"recovery-budget={recovery_budget.used_pct:.2f}/"
                 f"{recovery_budget.limit_pct:.2f}%"
             ),
+            tail_rise_bins=int(settings.tail_rise_bins),
         )
         outcome = hooks.probe_candidate(candidate)
         probe_history.append(outcome)

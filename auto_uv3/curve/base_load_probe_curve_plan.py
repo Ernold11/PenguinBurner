@@ -11,7 +11,7 @@ from typing import Any
 from ..auto_uv_types import BaseLoadTarget
 from .base_load_flatten_target import CurveTiming, choose_base_load_flatten_target
 from .base_load_telemetry import LoadedTelemetryRules
-from .vf_curve_flattening import build_flatten_target, build_flattened_plan
+from .vf_curve_flattening import build_flatten_target_for_plan, build_flattened_plan
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +28,7 @@ def plan_base_load_curve_from_telemetry(
     start_voltage_mv: int,
     power_limit_w: int | None,
     fallback_clock_mhz: float | None,
+    tail_rise_bins: int = 0,
     curve: CurveTiming = CurveTiming(),
     telemetry_rules: LoadedTelemetryRules = LoadedTelemetryRules(),
 ) -> BaseLoadCurvePlan:
@@ -39,16 +40,20 @@ def plan_base_load_curve_from_telemetry(
         curve=curve,
         rules=telemetry_rules,
     )
+    flattened_plan = build_flattened_plan(
+        base_curve,
+        lock_clock_mhz=int(target.target_clock_mhz),
+        candidate_voltage_mv=int(start_voltage_mv),
+        tail_rise_bins=int(tail_rise_bins),
+    )
     return BaseLoadCurvePlan(
         target=target,
-        flatten_target=build_flatten_target(
+        flatten_target=build_flatten_target_for_plan(
             base_curve,
+            flattened_plan,
             lock_clock_mhz=int(target.target_clock_mhz),
             lock_voltage_mv=int(start_voltage_mv),
+            tail_rise_bins=int(tail_rise_bins),
         ),
-        flattened_plan=build_flattened_plan(
-            base_curve,
-            lock_clock_mhz=int(target.target_clock_mhz),
-            candidate_voltage_mv=int(start_voltage_mv),
-        ),
+        flattened_plan=flattened_plan,
     )

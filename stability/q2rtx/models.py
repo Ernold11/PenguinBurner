@@ -29,6 +29,7 @@ class TelemetrySample:
     temperature_c: float | None
     voltage_mv: float | None
     fan_speed_pct: float | None
+    perf_cap_reason: str | None = None
 
 
 @dataclass(slots=True)

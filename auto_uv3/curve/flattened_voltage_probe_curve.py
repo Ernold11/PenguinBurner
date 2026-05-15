@@ -16,6 +16,7 @@ def build_flattened_voltage_probe_curve(
     target_clock_mhz: int,
     label: str,
     below_lock_gap_mhz: int | None = None,
+    tail_rise_bins: int = 0,
     rules: FlatteningRules = FlatteningRules(),
 ) -> VfCurveCandidate:
     plan = build_flattened_plan(
@@ -23,6 +24,7 @@ def build_flattened_voltage_probe_curve(
         lock_clock_mhz=int(target_clock_mhz),
         candidate_voltage_mv=int(candidate_voltage_mv),
         below_lock_gap_mhz=below_lock_gap_mhz,
+        tail_rise_bins=int(tail_rise_bins),
         rules=rules,
     )
     return VfCurveCandidate(

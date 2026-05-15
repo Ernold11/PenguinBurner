@@ -53,6 +53,7 @@ class AutoUvProbeSummary:
     loaded_p90_core_clock_mhz: float | None = None
     loaded_qualified_sample_count: int = 0
     observed_vdroop_mv: float | None = None
+    perf_cap_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -119,6 +120,7 @@ class TelemetrySample:
     temperature_c: float | None = None
     fan_speed_pct: float | None = None
     gpu_util_pct: float | None = None
+    perf_cap_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

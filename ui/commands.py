@@ -95,6 +95,7 @@ def scan_command(auto_uv_options: Mapping[str, object] | None = None) -> list[st
         "auto_uv_clock_bump_budget_ratio": "--auto-uv-overclock-budget-ratio",
         "auto_uv_short_seconds": "--auto-uv-short-seconds",
         "auto_uv_memory_offset_mhz": "--auto-uv-memory-offset-mhz",
+        "auto_uv_tail_rise_bins": "--auto-uv-tail-rise-bins",
     }
     boolean_flags = {
         "auto_uv_yolo": "--yolo",

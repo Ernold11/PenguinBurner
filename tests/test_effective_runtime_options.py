@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from auto_uv3.auto_uv_user_options import AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO
+from auto_uv3.auto_uv_user_options import (
+    AUTO_UV_DEFAULTS,
+    AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO,
+)
 from cli.effective_runtime_options import build_effective_afterburner_runtime_options
 from nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 
@@ -18,6 +21,7 @@ def _args(**overrides):
         "auto_uv_final_seconds": None,
         "auto_uv_short_seconds": None,
         "auto_uv_memory_offset_mhz": None,
+        "auto_uv_tail_rise_bins": None,
         "auto_uv_efficiency_stop_streak": None,
         "auto_uv_min_efficiency_stop_drop_pct": None,
         "auto_uv_max_clock_drop_pct": None,
@@ -55,6 +59,7 @@ def test_effective_runtime_options_apply_cli_overrides_and_clamps(tmp_path) -> N
             auto_uv_final_seconds=0,
             auto_uv_short_seconds=999,
             auto_uv_memory_offset_mhz=99999,
+            auto_uv_tail_rise_bins=999,
             auto_uv_efficiency_stop_streak=-5,
             auto_uv_min_efficiency_stop_drop_pct=-2.5,
             auto_uv_max_clock_drop_pct=-4.0,
@@ -76,6 +81,7 @@ def test_effective_runtime_options_apply_cli_overrides_and_clamps(tmp_path) -> N
     assert effective["auto_uv_final_seconds"] is None
     assert effective["auto_uv_short_seconds"] == 60
     assert effective["auto_uv_memory_offset_mhz"] == MAX_AFTERBURNER_MEM_OFFSET_MHZ
+    assert effective["auto_uv_tail_rise_bins"] == AUTO_UV_DEFAULTS.max_tail_rise_bins
     assert effective["auto_uv_efficiency_stop_streak"] == 0
     assert effective["auto_uv_min_efficiency_stop_drop_pct"] == 0.0
     assert effective["auto_uv_max_clock_drop_pct"] == 0.0

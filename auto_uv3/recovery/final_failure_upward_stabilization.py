@@ -13,6 +13,7 @@ from ..curve.base_vf_curve_voltage_bins import higher_editable_voltage_bins
 from ..q2rtx.probe_stability_decision import evaluate_stable_run
 from ..q2rtx.q2rtx_cuda_probe_config import q2rtx_cuda_probe_config_for_voltage_band
 from ..q2rtx.q2rtx_cuda_voltage_probe import probe_voltage_candidate
+from ..curve.rising_tail import tail_ceiling_clock_mhz
 from ..curve.vf_curve_flattening import build_flattened_plan
 
 
@@ -39,6 +40,7 @@ def find_upward_stable_final_candidate(
     short_probe_base_duration_s: int | None = None,
     reset_plan: list[dict] | None = None,
     timedemo_warmup_runs: int = 0,
+    tail_rise_bins: int = 0,
     event_callback=None,
 ) -> tuple[object | None, AutoUvProbeSummary | None, object | None]:
     _ = failure_live_voltage_mv
@@ -63,12 +65,18 @@ def find_upward_stable_final_candidate(
             plan_source,
             lock_clock_mhz=int(target_clock_mhz),
             candidate_voltage_mv=int(voltage_mv),
+            tail_rise_bins=int(tail_rise_bins),
         )
         log_phase(log, "stabilize", f"try={voltage_mv}mV@{int(target_clock_mhz)}MHz")
         if clock_ceiling is not None:
             clock_ceiling.retarget(
                 lock_clock_mhz=int(target_clock_mhz),
                 lock_voltage_mv=int(voltage_mv),
+                ceiling_clock_mhz=tail_ceiling_clock_mhz(
+                    plan,
+                    fallback_clock_mhz=int(target_clock_mhz),
+                    lock_voltage_mv=int(voltage_mv),
+                ),
             )
             log_phase(log, "ceiling", clock_ceiling.describe())
         probe_config = q2rtx_cuda_probe_config_for_voltage_band(

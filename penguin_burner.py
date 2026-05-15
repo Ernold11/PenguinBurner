@@ -143,21 +143,7 @@ from runtime_stability_test import (
     stability_workload_split_label as _stability_workload_split_label,
 )
 import saved_profile_verification as saved_profile_verification_rules
-from saved_profile_verification import (
-    apply_and_verify_profile_vf_plan,
-    base_vf_plan_from_profile_plan as _base_vf_plan_from_profile_plan,
-    profile_needs_verify_baseline as _profile_needs_verify_baseline,
-    profile_verification_baseline_duration_s
-    as _profile_verification_baseline_duration_s,
-    profile_verification_failure_blocks_apply
-    as _profile_verification_failure_blocks_apply,
-    profile_verification_metrics_from_result
-    as _profile_verification_metrics_from_result,
-    profile_verification_voltage_abort_callback
-    as _profile_verification_voltage_abort_callback,
-    stability_stop_request_abort_callback as _stability_stop_request_abort_callback,
-    stability_stop_request_path as _stability_stop_request_path,
-)
+from saved_profile_verification import apply_and_verify_profile_vf_plan
 from saved_profile_verification.runner import (
     ProfileVerificationDependencies,
     apply_and_verify_profile_vf_plan as _runner_apply_and_verify_profile_vf_plan,
@@ -183,6 +169,28 @@ PROFILE_VERIFY_BASELINE_DURATION_S = (
 PROFILE_VERIFY_BASELINE_MIN_DURATION_S = (
     saved_profile_verification_rules.PROFILE_VERIFY_BASELINE_MIN_DURATION_S
 )
+_base_vf_plan_from_profile_plan = (
+    saved_profile_verification_rules.base_vf_plan_from_profile_plan
+)
+_profile_needs_verify_baseline = (
+    saved_profile_verification_rules.profile_needs_verify_baseline
+)
+_profile_verification_baseline_duration_s = (
+    saved_profile_verification_rules.profile_verification_baseline_duration_s
+)
+_profile_verification_failure_blocks_apply = (
+    saved_profile_verification_rules.profile_verification_failure_blocks_apply
+)
+_profile_verification_metrics_from_result = (
+    saved_profile_verification_rules.profile_verification_metrics_from_result
+)
+_profile_verification_voltage_abort_callback = (
+    saved_profile_verification_rules.profile_verification_voltage_abort_callback
+)
+_stability_stop_request_abort_callback = (
+    saved_profile_verification_rules.stability_stop_request_abort_callback
+)
+_stability_stop_request_path = saved_profile_verification_rules.stability_stop_request_path
 NVIDIA_SMI = shutil.which("nvidia-smi") or "nvidia-smi"
 
 

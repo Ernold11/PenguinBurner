@@ -15,7 +15,7 @@ from auto_uv3.scan_mode.uv_limits import (
 from penguin_burner_paths import default_runtime_config_path
 
 
-DEFAULT_SHORT_VERIFICATION_BASE_S = 20
+DEFAULT_SHORT_VERIFICATION_BASE_S = 10
 PERFORMANCE_BIAS_WARNING_PCT = 110.0
 PERFORMANCE_BIAS_DANGER_PCT = 130.0
 DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT = 100.0
@@ -23,6 +23,9 @@ DEFAULT_AUTO_UV_MAX_DROP_PCT = 12.5
 GENERIC_AUTO_UV_MAX_DROP_PCT = DEFAULT_AUTO_UV_MAX_DROP_PCT
 AUTO_UV_DROP_REFERENCE_VOLTAGE_MV = 1000
 DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT = 10.0
+DEFAULT_AUTO_UV_TAIL_RISE_BINS = 0
+DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS = 4
+MAX_AUTO_UV_TAIL_RISE_BINS = 8
 MAX_OVERCLOCK_BUDGET_PCT = AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO * 100.0
 YOLO_MAX_OVERCLOCK_BUDGET_PCT = AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO * 100.0
 GPU_SPECIFIC_AUTO_UV_MAX_DROP_DEFAULTS: tuple[dict[str, object], ...] = (
@@ -134,6 +137,24 @@ def auto_uv_mode_for_performance_bias(value_pct: float | int) -> str:
     return AUTO_UV_MODE_EFFICIENCY
 
 
+def auto_uv_tail_rise_bins_for_performance_bias(
+    value_pct: float | int,
+    *,
+    max_pct: float | int = MAX_OVERCLOCK_BUDGET_PCT,
+) -> int:
+    slider_position = _performance_bias_slider_position_float(
+        value_pct,
+        max_pct=max_pct,
+    )
+    if slider_position < 25.0:
+        return 0
+    if slider_position < 50.0:
+        return 2
+    if slider_position < 75.0:
+        return DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS
+    return 6
+
+
 def performance_bias_clock_recovery_pct(
     slider_position: float | int,
     *,
@@ -151,11 +172,26 @@ def performance_bias_slider_position(
     *,
     max_pct: float | int = MAX_OVERCLOCK_BUDGET_PCT,
 ) -> int:
+    return int(
+        round(
+            _performance_bias_slider_position_float(
+                value_pct,
+                max_pct=max_pct,
+            )
+        )
+    )
+
+
+def _performance_bias_slider_position_float(
+    value_pct: float | int,
+    *,
+    max_pct: float | int = MAX_OVERCLOCK_BUDGET_PCT,
+) -> float:
     clamped = max(0.0, min(float(max_pct), float(value_pct)))
     if clamped <= 100.0:
-        return int(round(clamped / 2.0))
+        return clamped / 2.0
     right_span = max(1.0, float(max_pct) - 100.0)
-    return int(round(50.0 + ((clamped - 100.0) / right_span * 50.0)))
+    return 50.0 + ((clamped - 100.0) / right_span * 50.0)
 
 
 def slider_value_from_click_position(

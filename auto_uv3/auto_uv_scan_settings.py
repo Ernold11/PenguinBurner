@@ -21,3 +21,4 @@ class AutoUvScanSettings:
     recovery_budget_limit_pct: float = 0.0
     spend_remaining_clock_budget_at_voltage_floor: bool = False
     allow_voltage_bump_for_floor_clock_recovery: bool = False
+    tail_rise_bins: int = 0

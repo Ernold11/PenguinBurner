@@ -183,6 +183,16 @@ def parse_penguin_burner_arguments(argv):
         ),
     )
     auto_uv_group.add_argument(
+        "--auto-uv-tail-rise-bins",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "How many voltage bins can the voltage curve rise above the locked "
+            "undervolt point."
+        ),
+    )
+    auto_uv_group.add_argument(
         "--auto-uv-efficiency-stop-streak",
         type=int,
         default=None,

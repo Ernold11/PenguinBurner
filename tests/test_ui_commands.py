@@ -44,8 +44,11 @@ from ui.tuning import (
     GPU_UNDERVOLTING_PURPOSE_TEXT,
     MAX_OVERCLOCK_BUDGET_PCT,
     PERFORMANCE_BIAS_TOOLTIP_TEXT,
+    DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS,
+    DEFAULT_AUTO_UV_TAIL_RISE_BINS,
     YOLO_MAX_OVERCLOCK_BUDGET_PCT,
     auto_uv_mode_for_performance_bias as _auto_uv_mode_for_performance_bias,
+    auto_uv_tail_rise_bins_for_performance_bias as _auto_uv_tail_rise_bins_for_performance_bias,
     auto_uv_voltage_drop_default as _auto_uv_voltage_drop_default,
     performance_bias_clock_recovery_pct as _performance_bias_clock_recovery_pct,
     performance_bias_slider_position as _performance_bias_slider_position,
@@ -123,6 +126,7 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
             "auto_uv_yolo": True,
             "auto_uv_short_seconds": 30,
             "auto_uv_memory_offset_mhz": 500,
+            "auto_uv_tail_rise_bins": 2,
         }
     )
 
@@ -141,6 +145,8 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert command[command.index("--auto-uv-short-seconds") + 1] == "30"
     assert "--auto-uv-memory-offset-mhz" in command
     assert command[command.index("--auto-uv-memory-offset-mhz") + 1] == "500"
+    assert "--auto-uv-tail-rise-bins" in command
+    assert command[command.index("--auto-uv-tail-rise-bins") + 1] == "2"
 
 
 def test_ui_scan_command_includes_auto_filled_auto_uv_max_drop(
@@ -160,10 +166,10 @@ def test_ui_scan_command_includes_auto_filled_auto_uv_max_drop(
     assert command[command.index("--auto-uv-max-drop-pct") + 1] == "15"
 
 
-def test_auto_uv_short_verification_defaults_to_20_seconds() -> None:
-    assert AUTO_UV_DEFAULTS.probe_duration_s == 20
-    assert DEFAULT_SHORT_VERIFICATION_BASE_S == 20
-    assert _short_probe_base_duration_s({}) == 20
+def test_auto_uv_short_verification_defaults_to_10_seconds() -> None:
+    assert AUTO_UV_DEFAULTS.probe_duration_s == 10
+    assert DEFAULT_SHORT_VERIFICATION_BASE_S == 10
+    assert _short_probe_base_duration_s({}) == 10
 
 
 def test_gui_yolo_argument_is_hidden_from_qt_args() -> None:
@@ -298,6 +304,7 @@ def test_runs_table_compacts_metric_delta_columns() -> None:
             "fps": 160.0,
             "power_w": 270.0,
             "efficiency_fps_per_w": 0.75,
+            "perf_cap_reason": "sw-power+hw-thermal",
             "decision": "accept",
         }
     )
@@ -306,6 +313,9 @@ def test_runs_table_compacts_metric_delta_columns() -> None:
     assert table.widget.item(0, table.FPS_COLUMN).text() == "150.00 (ref)"
     assert table.widget.item(1, table.FPS_COLUMN).text() == "160.00 (+6.67%)"
     assert table.widget.item(1, table.POWER_COLUMN).text() == "270.00 (-10.00%)"
+    assert table.widget.item(1, table.PERF_CAP_COLUMN).text() == (
+        "sw-power+hw-thermal"
+    )
     assert table.widget.item(1, table.FPSW_COLUMN).text() == "0.75 (+50.00%)"
     assert table.widget.item(1, table.POWER_COLUMN).toolTip().startswith(
         "Power W -10.00% vs base"
@@ -839,9 +849,33 @@ def test_auto_uv_bias_defaults_mode_threshold_and_gpu_table_default() -> None:
     assert GENERIC_AUTO_UV_MAX_DROP_PCT == 12.5
     assert AUTO_UV_DROP_REFERENCE_VOLTAGE_MV == 1000
     assert DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT == 10.0
+    assert DEFAULT_AUTO_UV_TAIL_RISE_BINS == 0
+    assert DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS == 4
     assert _auto_uv_mode_for_performance_bias(99.9) == "efficiency"
     assert _auto_uv_mode_for_performance_bias(100.0) == "performance"
     assert _auto_uv_mode_for_performance_bias(150.0) == "performance"
+    assert _auto_uv_tail_rise_bins_for_performance_bias(0.0) == 0
+    assert _auto_uv_tail_rise_bins_for_performance_bias(49.9) == 0
+    assert _auto_uv_tail_rise_bins_for_performance_bias(50.0) == 2
+    assert _auto_uv_tail_rise_bins_for_performance_bias(99.9) == 2
+    assert _auto_uv_tail_rise_bins_for_performance_bias(100.0) == 4
+    assert _auto_uv_tail_rise_bins_for_performance_bias(124.9) == 4
+    assert _auto_uv_tail_rise_bins_for_performance_bias(125.0) == 6
+    assert _auto_uv_tail_rise_bins_for_performance_bias(150.0) == 6
+    assert (
+        _auto_uv_tail_rise_bins_for_performance_bias(
+            137.4,
+            max_pct=YOLO_MAX_OVERCLOCK_BUDGET_PCT,
+        )
+        == 4
+    )
+    assert (
+        _auto_uv_tail_rise_bins_for_performance_bias(
+            137.5,
+            max_pct=YOLO_MAX_OVERCLOCK_BUDGET_PCT,
+        )
+        == 6
+    )
 
 
 def test_auto_uv_voltage_drop_default_uses_detected_gpu_table_floor() -> None:

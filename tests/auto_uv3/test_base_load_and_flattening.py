@@ -6,7 +6,10 @@ from auto_uv3.curve.base_load_flatten_target import (
     choose_base_load_flatten_target,
     selected_nvidia_light_load_diagnostic,
 )
-from auto_uv3.curve.vf_curve_flattening import build_flattened_plan
+from auto_uv3.curve.vf_curve_flattening import (
+    build_flatten_target_for_plan,
+    build_flattened_plan,
+)
 from auto_uv3_test_data import base_curve
 
 
@@ -113,6 +116,52 @@ def test_flattened_plan_builds_plateau_and_preserves_base_points() -> None:
     assert by_voltage[875]["new_offset_mhz"] == (
         by_voltage[875]["target_mhz"] - by_voltage[875]["base_mhz"]
     )
+
+
+def test_flattened_plan_can_add_soft_rising_tail() -> None:
+    curve = base_curve(825, 1000, 25, 1900, 30)
+
+    plan = build_flattened_plan(
+        curve,
+        lock_clock_mhz=2000,
+        candidate_voltage_mv=900,
+        tail_rise_bins=2,
+    )
+
+    by_voltage = {point["voltage_mv"]: point for point in plan}
+    assert by_voltage[900]["target_mhz"] == 2000
+    assert by_voltage[925]["target_mhz"] == 2015
+    assert by_voltage[950]["target_mhz"] == 2030
+    assert by_voltage[975]["target_mhz"] == 2030
+
+    target = build_flatten_target_for_plan(
+        curve,
+        plan,
+        lock_clock_mhz=2000,
+        lock_voltage_mv=900,
+        tail_rise_bins=2,
+    )
+    assert target["ceiling_clock_mhz"] == 2030
+    assert target["tail_rise_bins"] == 2
+
+
+def test_rising_tail_does_not_wait_for_base_curve_to_catch_up() -> None:
+    curve = base_curve(800, 1050, 25, 1900, 15)
+
+    plan = build_flattened_plan(
+        curve,
+        lock_clock_mhz=2000,
+        candidate_voltage_mv=850,
+        tail_rise_bins=4,
+    )
+
+    by_voltage = {point["voltage_mv"]: point for point in plan}
+    assert by_voltage[850]["target_mhz"] == 2000
+    assert by_voltage[875]["target_mhz"] == 2015
+    assert by_voltage[900]["target_mhz"] == 2030
+    assert by_voltage[925]["target_mhz"] == 2045
+    assert by_voltage[950]["target_mhz"] == 2060
+    assert by_voltage[975]["target_mhz"] == 2060
 
 
 def test_flattened_plan_rejects_non_editable_voltage() -> None:

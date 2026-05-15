@@ -22,7 +22,12 @@ class ProbeClockCeilingController:
 
     @property
     def target_clock_mhz(self) -> int:
-        return int(self._flatten_target["lock_clock_mhz"])
+        return int(
+            self._flatten_target.get(
+                "ceiling_clock_mhz",
+                self._flatten_target["lock_clock_mhz"],
+            )
+        )
 
     @property
     def target_voltage_mv(self) -> int | None:
@@ -48,10 +53,15 @@ class ProbeClockCeilingController:
         *,
         lock_clock_mhz: int,
         lock_voltage_mv: int | None = None,
+        ceiling_clock_mhz: int | None = None,
     ) -> dict:
         self._flatten_target["lock_clock_mhz"] = int(lock_clock_mhz)
         if lock_voltage_mv is not None:
             self._flatten_target["lock_voltage_mv"] = int(lock_voltage_mv)
+        if ceiling_clock_mhz is not None and int(ceiling_clock_mhz) > int(lock_clock_mhz):
+            self._flatten_target["ceiling_clock_mhz"] = int(ceiling_clock_mhz)
+        else:
+            self._flatten_target.pop("ceiling_clock_mhz", None)
         if self._active:
             self._policy_controller.reset_locked_core_clocks()
             self._active = False

@@ -74,6 +74,7 @@ py-modules = [
   "import_afterburner_vf_curve",
   "nvidia_runtime_defaults",
   "nvml_gpu_policy",
+  "nvml_perf_cap_reason",
   "penguin_burner",
   "penguin_burner_errors",
   "penguin_burner_paths",

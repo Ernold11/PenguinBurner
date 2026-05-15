@@ -192,11 +192,14 @@ def test_final_verified_profile_contains_fan_payload_and_memory_offset(
         base_probe=_summary(voltage_mv=1025, clock_mhz=2754),
         fan_curve_payload={"fan": {"curve": [[45.0, 0.0], [90.0, 100.0]]}},
         memory_offset_mhz=500,
+        tail_rise_bins=2,
     )
     payload = json.loads(profile_path.read_text(encoding="utf-8"))
 
     assert profile_path.parent == tmp_path / "auto-uv-profiles"
     assert payload["final_verified"] is True
     assert payload["memory_offset_mhz"] == 500
+    assert payload["tail_rise_bins"] == 2
+    assert payload["flatten_target"]["tail_rise_bins"] == 2
     assert payload["fan_curve_payload"]["fan"]["curve"][-1] == [90.0, 100.0]
     assert (tmp_path / "uv-result" / "auto-uv-verified-candidates.json").exists()

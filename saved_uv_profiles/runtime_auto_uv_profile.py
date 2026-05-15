@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 
+from auto_uv3.curve.rising_tail import tail_ceiling_clock_mhz
 from nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from penguin_burner_errors import NvmlError
 
@@ -69,6 +70,24 @@ def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = Fa
         "end_voltage_mv": int(voltage_bins[-1]),
         "tail_point_count": int(tail_point_count),
     }
+    ceiling_clock_mhz = tail_ceiling_clock_mhz(
+        plan,
+        fallback_clock_mhz=int(lock_clock_mhz),
+        lock_voltage_mv=int(candidate_voltage_mv),
+    )
+    if int(ceiling_clock_mhz) > int(lock_clock_mhz):
+        flatten_target["ceiling_clock_mhz"] = int(ceiling_clock_mhz)
+    saved_flatten_target = payload.get("flatten_target")
+    saved_tail_rise_bins = (
+        saved_flatten_target.get("tail_rise_bins")
+        if isinstance(saved_flatten_target, dict)
+        else payload.get("tail_rise_bins")
+    )
+    if saved_tail_rise_bins is not None:
+        try:
+            flatten_target["tail_rise_bins"] = max(0, int(saved_tail_rise_bins))
+        except (TypeError, ValueError):
+            pass
     return {
         "path": path,
         "plan": plan,

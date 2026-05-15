@@ -74,9 +74,11 @@ def test_performance_voltage_floor_spends_remaining_clock_budget() -> None:
     curve = base_curve(900, 1050, 25, 2000, 40)
     probed: list[tuple[int, int]] = []
     written: list[tuple[int, int]] = []
+    fps_by_target = {2080: 100.0, 2100: 101.0, 2130: 102.0}
 
     def probe(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
         probed.append((int(candidate.voltage_mv), int(candidate.target_mhz)))
+        fps = fps_by_target[int(candidate.target_mhz)]
         return VoltageProbeOutcome(
             decision=StableRunDecision(
                 passed=True,
@@ -89,6 +91,7 @@ def test_performance_voltage_floor_spends_remaining_clock_budget() -> None:
             raw_probe=probe_summary(
                 candidate.voltage_mv,
                 clock_mhz=float(candidate.target_mhz),
+                fps=fps,
             ),
         )
 
@@ -133,6 +136,11 @@ def test_performance_voltage_floor_bumps_voltage_for_clock_recovery() -> None:
     probed: list[tuple[int, int]] = []
     written: list[tuple[int, int]] = []
     unsafe: list[tuple[int, int]] = []
+    fps_by_candidate = {
+        (950, 2080): 100.0,
+        (975, 2100): 101.0,
+        (1000, 2100): 100.5,
+    }
 
     def probe(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
         probed.append((int(candidate.voltage_mv), int(candidate.target_mhz)))
@@ -155,6 +163,10 @@ def test_performance_voltage_floor_bumps_voltage_for_clock_recovery() -> None:
             raw_probe=probe_summary(
                 candidate.voltage_mv,
                 clock_mhz=float(candidate.target_mhz),
+                fps=fps_by_candidate.get(
+                    (int(candidate.voltage_mv), int(candidate.target_mhz)),
+                    100.0,
+                ),
             ),
         )
 
@@ -200,6 +212,10 @@ def test_performance_voltage_floor_bumps_voltage_for_clock_recovery() -> None:
 def test_performance_voltage_floor_recovery_respects_voltage_ceiling() -> None:
     curve = base_curve(900, 1050, 25, 2000, 40)
     probed: list[tuple[int, int]] = []
+    fps_by_candidate = {
+        (950, 2080): 100.0,
+        (975, 2100): 101.0,
+    }
 
     def probe(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
         probed.append((int(candidate.voltage_mv), int(candidate.target_mhz)))
@@ -222,6 +238,10 @@ def test_performance_voltage_floor_recovery_respects_voltage_ceiling() -> None:
             raw_probe=probe_summary(
                 candidate.voltage_mv,
                 clock_mhz=float(candidate.target_mhz),
+                fps=fps_by_candidate.get(
+                    (int(candidate.voltage_mv), int(candidate.target_mhz)),
+                    100.0,
+                ),
             ),
         )
 
@@ -256,6 +276,76 @@ def test_performance_voltage_floor_recovery_respects_voltage_ceiling() -> None:
     assert probed == [(950, 2080), (950, 2100), (975, 2100)]
     assert result.stable_candidate.voltage_mv == 975
     assert result.stable_candidate.target_mhz == 2100
+
+
+def test_performance_voltage_floor_recovery_stops_when_clock_bump_does_not_improve_fps() -> None:
+    curve = base_curve(900, 1050, 25, 2000, 40)
+    probed: list[tuple[int, int]] = []
+    written: list[tuple[int, int]] = []
+    recorded: list[tuple[int, int]] = []
+    fps_by_candidate = {
+        (950, 2080): 102.0,
+        (950, 2100): 101.0,
+    }
+
+    def probe(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
+        key = (int(candidate.voltage_mv), int(candidate.target_mhz))
+        probed.append(key)
+        fps = fps_by_candidate[key]
+        return VoltageProbeOutcome(
+            decision=StableRunDecision(
+                passed=True,
+                failure_kind=FailureKind.NONE,
+                severity=FailureSeverity.PASS,
+                reason="stable run",
+            ),
+            measured_core_clock_mhz=float(candidate.target_mhz),
+            measured_voltage_mv=float(candidate.voltage_mv),
+            raw_probe=probe_summary(
+                candidate.voltage_mv,
+                clock_mhz=float(candidate.target_mhz),
+                fps=fps,
+            ),
+        )
+
+    hooks = LowerVoltageSweepHooks(
+        probe_candidate=probe,
+        write_verified_candidate=lambda candidate, _outcome: written.append(
+            (int(candidate.voltage_mv), int(candidate.target_mhz))
+        ),
+        mark_unsafe_candidate=lambda _candidate, _outcome: None,
+        record_passed_candidate=lambda candidate, _outcome: recorded.append(
+            (int(candidate.voltage_mv), int(candidate.target_mhz))
+        ),
+    )
+    result = run_lower_voltage_sweep_loop(
+        curve,
+        settings=AutoUvScanSettings(
+            start_voltage_mv=1000,
+            min_search_voltage_mv=950,
+            preserve_base_below_mv=None,
+            baseline_core_clock_mhz=2200.0,
+            min_core_clock_pct=90.0,
+            reference_actual_voltage_mv=1000.0,
+            measured_clock_cap_mhz=2200.0,
+            recovery_budget_limit_pct=1.6,
+            spend_remaining_clock_budget_at_voltage_floor=True,
+        ),
+        initial_stable_candidate=VfCurveCandidate(
+            label="baseline",
+            voltage_mv=1000,
+            target_mhz=2160,
+            flattened_plan=curve,
+        ),
+        hooks=hooks,
+    )
+
+    assert probed == [(950, 2080), (950, 2100)]
+    assert written == [(950, 2080)]
+    assert recorded == [(950, 2100)]
+    assert result.stable_candidate.voltage_mv == 950
+    assert result.stable_candidate.target_mhz == 2080
+    assert result.events[-1].message == "voltage floor clock recovery did not improve FPS"
 
 
 def test_performance_voltage_recovery_keeps_target_and_stops_when_fps_stops_improving() -> None:

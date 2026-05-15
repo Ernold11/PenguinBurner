@@ -19,6 +19,7 @@ class RunsTable:
         "Power W",
         "Temp C",
         "Fan %",
+        "Cap",
         "FPS/W",
         "Clock recovery",
         "Decision",
@@ -30,10 +31,11 @@ class RunsTable:
     POWER_COLUMN = 5
     TEMP_COLUMN = 6
     FAN_COLUMN = 7
-    FPSW_COLUMN = 8
-    BUDGET_COLUMN = 9
-    DECISION_COLUMN = 10
-    STATUS_COLUMN = 11
+    PERF_CAP_COLUMN = 8
+    FPSW_COLUMN = 9
+    BUDGET_COLUMN = 10
+    DECISION_COLUMN = 11
+    STATUS_COLUMN = 12
 
     def __init__(self, *, QtCore, QtGui, QtWidgets):
         self.QtCore = QtCore
@@ -65,6 +67,7 @@ class RunsTable:
                 self.POWER_COLUMN: 144,
                 self.TEMP_COLUMN: 82,
                 self.FAN_COLUMN: 74,
+                self.PERF_CAP_COLUMN: 112,
                 self.FPSW_COLUMN: 134,
                 self.BUDGET_COLUMN: 132,
                 self.DECISION_COLUMN: 106,
@@ -96,6 +99,7 @@ class RunsTable:
             "label": _progress_label(payload),
         }
         self._progress_by_probe[_probe_key(payload)] = progress
+        self._set_perf_cap_cell(row, payload, row_state="running")
         self._set_status_progress_cell(
             row,
             progress=progress,
@@ -158,6 +162,7 @@ class RunsTable:
         )
         self._paint_fpsw_cell(row, payload)
         self._set_budget_cell(row, payload)
+        self._set_perf_cap_cell(row, payload, row_state=row_state)
         key = _probe_key(payload)
         progress = self._progress_by_probe.get(key)
         if progress is None:
@@ -192,6 +197,7 @@ class RunsTable:
             self._metric_text_with_delta(payload.get("power_w"), "power_w"),
             _format_float(payload.get("temp_c")),
             _format_float(payload.get("fan_pct")),
+            _perf_cap_reason_text(payload.get("perf_cap_reason")),
             self._metric_text_with_delta(
                 payload.get("efficiency_fps_per_w"),
                 "efficiency_fps_per_w",
@@ -332,6 +338,22 @@ class RunsTable:
             _progress_bar_stylesheet(fill, text_color=_progress_text_color(fill, ratio))
         )
         self.widget.setCellWidget(row, self.BUDGET_COLUMN, bar)
+
+    def _set_perf_cap_cell(self, row: int, payload: dict, *, row_state: str) -> None:
+        reason_text = _perf_cap_reason_text(payload.get("perf_cap_reason"))
+        item = self.widget.item(row, self.PERF_CAP_COLUMN)
+        if item is None:
+            item = self.widget_item(
+                reason_text,
+                row_state=row_state,
+                column=self.PERF_CAP_COLUMN,
+            )
+            self.widget.setItem(row, self.PERF_CAP_COLUMN, item)
+        elif reason_text:
+            item.setText(reason_text)
+        tooltip = _perf_cap_reason_tooltip(payload.get("perf_cap_reason"))
+        if tooltip:
+            item.setToolTip(tooltip)
 
     def _set_status_progress_cell(
         self,
@@ -855,6 +877,20 @@ def _budget_fill_color(_limit_of_clock_drop_pct=None) -> str:
 
 def _measured_clock_value(payload: dict):
     return payload.get("measured_clock_mhz", payload.get("avg_core_clock_mhz"))
+
+
+def _perf_cap_reason_text(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text.replace(",", "+")
+
+
+def _perf_cap_reason_tooltip(value) -> str:
+    text = _perf_cap_reason_text(value)
+    if not text:
+        return ""
+    return f"NVML clocks throttle reason: {text}"
 
 
 def _to_float(value) -> float | None:

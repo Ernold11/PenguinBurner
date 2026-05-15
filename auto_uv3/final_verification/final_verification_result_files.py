@@ -29,6 +29,7 @@ def write_last_stable_result_snapshot(
     lock_clock_mhz: int,
     voltage_mv: int,
     probe: AutoUvProbeSummary | None,
+    tail_rise_bins: int = 0,
 ) -> Path:
     timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     return safe_json_write(
@@ -42,6 +43,7 @@ def write_last_stable_result_snapshot(
             probe=probe,
             reason="last-stable",
             label="last-stable",
+            tail_rise_bins=int(tail_rise_bins),
         ),
     )
 
@@ -53,6 +55,7 @@ def write_final_stable_result(
     voltage_mv: int,
     probe: AutoUvProbeSummary | None,
     verification_duration_s: int | None = None,
+    tail_rise_bins: int = 0,
 ) -> Path:
     payload = verified_candidate_payload(
         plan=plan,
@@ -61,6 +64,7 @@ def write_final_stable_result(
         probe=probe,
         reason="stable",
         label="final",
+        tail_rise_bins=int(tail_rise_bins),
     )
     payload.update(
         {
@@ -87,6 +91,7 @@ def write_final_verified_profile(
     base_probe: AutoUvProbeSummary | None,
     fan_curve_payload: dict | None = None,
     memory_offset_mhz: int | None = None,
+    tail_rise_bins: int = 0,
 ) -> Path:
     payload = verified_candidate_payload(
         plan=plan,
@@ -97,6 +102,7 @@ def write_final_verified_profile(
         reason="final-verified",
         label="final-verified",
         final_verified=True,
+        tail_rise_bins=int(tail_rise_bins),
     )
     if isinstance(fan_curve_payload, dict):
         payload["fan_curve_payload"] = dict(fan_curve_payload)

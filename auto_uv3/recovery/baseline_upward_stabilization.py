@@ -10,6 +10,7 @@ from typing import Callable
 from ..auto_uv_console_log import log_benchmark, log_phase
 from ..auto_uv_types import AutoUvProbeSummary, VfCurveCandidate
 from ..curve.base_vf_curve_voltage_bins import higher_editable_voltage_bins
+from ..curve.rising_tail import tail_ceiling_clock_mhz
 from ..q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
 from ..curve.vf_curve_flattening import build_flattened_plan
 from ..voltage_sweep_state import VoltageProbeOutcome
@@ -25,6 +26,7 @@ def find_upward_stable_baseline_candidate(
     probe_history: list[AutoUvProbeSummary],
     discovery_summary: AutoUvProbeSummary,
     log: Callable[[str], None],
+    tail_rise_bins: int = 0,
 ) -> tuple[VfCurveCandidate | None, VoltageProbeOutcome | None]:
     recovery_floor_mv = int(minimum_candidate_voltage_mv or failed_candidate.voltage_mv)
     upward_bins = [
@@ -33,15 +35,17 @@ def find_upward_stable_baseline_candidate(
         if int(value) >= int(recovery_floor_mv)
     ]
     for recovery_voltage_mv in upward_bins:
+        plan = build_flattened_plan(
+            base_curve,
+            lock_clock_mhz=int(failed_candidate.target_mhz),
+            candidate_voltage_mv=int(recovery_voltage_mv),
+            tail_rise_bins=int(tail_rise_bins),
+        )
         candidate = VfCurveCandidate(
             label="baseline-upward-stabilized",
             voltage_mv=int(recovery_voltage_mv),
             target_mhz=int(failed_candidate.target_mhz),
-            flattened_plan=build_flattened_plan(
-                base_curve,
-                lock_clock_mhz=int(failed_candidate.target_mhz),
-                candidate_voltage_mv=int(recovery_voltage_mv),
-            ),
+            flattened_plan=plan,
         )
         log_phase(
             log,
@@ -52,6 +56,11 @@ def find_upward_stable_baseline_candidate(
             clock_ceiling.retarget(
                 lock_clock_mhz=int(candidate.target_mhz),
                 lock_voltage_mv=int(candidate.voltage_mv),
+                ceiling_clock_mhz=tail_ceiling_clock_mhz(
+                    plan,
+                    fallback_clock_mhz=int(candidate.target_mhz),
+                    lock_voltage_mv=int(candidate.voltage_mv),
+                ),
             )
             log_phase(log, "ceiling", clock_ceiling.describe())
         outcome = runner.probe_candidate(

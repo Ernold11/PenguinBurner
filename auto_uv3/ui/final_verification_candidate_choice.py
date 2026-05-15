@@ -36,6 +36,7 @@ def choose_final_verification_candidate(
     final_verification_duration_s: int,
     initial_target_voltage_mv: int,
     short_probe_base_duration_s: int,
+    tail_rise_bins: int = 0,
     request_reason: str = "sweep-complete",
 ) -> tuple[list[dict], int, int, AutoUvProbeSummary | None, int]:
     candidates_by_id = candidate_records_from_history(
@@ -44,6 +45,7 @@ def choose_final_verification_candidate(
         stable_plan=stable_plan,
         stable_voltage_mv=int(stable_voltage_mv),
         stable_lock_clock_mhz=int(stable_lock_clock_mhz),
+        tail_rise_bins=int(tail_rise_bins),
     )
     current_stable_id = selection_candidate_id(
         voltage_mv=int(stable_voltage_mv),
@@ -181,6 +183,7 @@ def candidate_records_from_history(
     stable_plan: list[dict],
     stable_voltage_mv: int,
     stable_lock_clock_mhz: int,
+    tail_rise_bins: int = 0,
 ) -> dict[str, dict]:
     records = {}
     for probe in stable_history:
@@ -190,6 +193,7 @@ def candidate_records_from_history(
             stable_plan=stable_plan,
             stable_voltage_mv=int(stable_voltage_mv),
             stable_lock_clock_mhz=int(stable_lock_clock_mhz),
+            tail_rise_bins=int(tail_rise_bins),
         )
         if candidate is not None:
             records[str(candidate.get("candidate_id", ""))] = candidate
@@ -203,6 +207,7 @@ def candidate_record_from_probe(
     stable_plan: list[dict],
     stable_voltage_mv: int,
     stable_lock_clock_mhz: int,
+    tail_rise_bins: int = 0,
 ) -> dict | None:
     voltage_mv = int(probe.candidate_voltage_mv)
     lock_clock_mhz = int(probe.lock_clock_mhz)
@@ -216,6 +221,7 @@ def candidate_record_from_probe(
                 base_curve,
                 lock_clock_mhz=int(lock_clock_mhz),
                 candidate_voltage_mv=int(voltage_mv),
+                tail_rise_bins=int(tail_rise_bins),
             )
         except ValueError:
             return None

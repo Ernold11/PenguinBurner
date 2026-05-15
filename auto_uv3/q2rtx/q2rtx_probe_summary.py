@@ -5,6 +5,7 @@ The summary uses only loaded telemetry samples so flattening and stability check
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -48,6 +49,56 @@ def sample_max(samples: list, attr: str) -> float | None:
             if sample is not None and read_field(sample, attr) is not None
         ]
     )
+
+
+def summarize_perf_cap_reason(
+    samples: Sequence,
+    *,
+    suppress_idle: bool = False,
+) -> str | None:
+    reasons: list[str] = []
+    saw_none = False
+    for sample in samples:
+        reason_text = read_field(sample, "perf_cap_reason")
+        if reason_text in (None, ""):
+            continue
+        for token in str(reason_text).replace(",", "+").split("+"):
+            reason = token.strip()
+            if not reason:
+                continue
+            if reason == "none" or (suppress_idle and reason == "idle"):
+                saw_none = True
+                continue
+            reasons.append(reason)
+    if not reasons:
+        return "none" if saw_none else None
+
+    counts = Counter(reasons)
+    ordered_reasons = sorted(counts, key=lambda reason: (-counts[reason], reason))
+    return "+".join(ordered_reasons[:3])
+
+
+def summarize_loaded_perf_cap_reason(
+    q2rtx_samples: list,
+    companion_samples: list,
+    *,
+    power_limit_w: int | None,
+    use_power_limit_floor: bool,
+) -> str | None:
+    q2rtx_loaded, _q2rtx_power_floor_w = loaded_telemetry_samples(
+        q2rtx_samples,
+        power_limit_w=power_limit_w,
+        use_power_limit_floor=use_power_limit_floor,
+    )
+    companion_loaded, _companion_power_floor_w = loaded_telemetry_samples(
+        companion_samples,
+        power_limit_w=power_limit_w,
+        use_power_limit_floor=use_power_limit_floor,
+    )
+    return summarize_perf_cap_reason(
+        [*q2rtx_loaded, *companion_loaded],
+        suppress_idle=True,
+    ) or summarize_perf_cap_reason([*q2rtx_samples, *companion_samples])
 
 
 def decision_timedemo_runs(
@@ -217,6 +268,12 @@ def summarize_q2rtx_cuda_probe(
             "fan_max": sample_max(q2rtx_samples, "fan_speed_pct"),
         }
     companion_samples = list(getattr(result, "companion_telemetry_samples", []) or [])
+    perf_cap_reason = summarize_loaded_perf_cap_reason(
+        q2rtx_samples,
+        companion_samples,
+        power_limit_w=power_limit_w,
+        use_power_limit_floor=use_power_limit_floor,
+    )
     max_power_w = max_or_none(
         [telemetry.get("power_max"), sample_max(companion_samples, "power_w")]
     )
@@ -328,6 +385,7 @@ def summarize_q2rtx_cuda_probe(
         loaded_p90_core_clock_mhz=loaded_p90_clock_mhz,
         loaded_qualified_sample_count=int(loaded_qualified_sample_count),
         observed_vdroop_mv=observed_vdroop_mv,
+        perf_cap_reason=perf_cap_reason,
     )
 
 

@@ -15,6 +15,7 @@ from ..auto_uv_types import (
     VfCurveCandidate,
 )
 from ..curve.base_vf_curve_voltage_bins import next_higher_editable_voltage_bin
+from ..curve.rising_tail import tail_ceiling_clock_mhz
 from ..q2rtx.probe_stability_decision import (
     StabilityThresholds,
     evaluate_stable_run,
@@ -85,6 +86,7 @@ def run_final_verification_and_save(
     max_bump_recovery_was_used=False,
     short_probe_base_duration_s: int | None = None,
     timedemo_warmup_runs: int = 0,
+    tail_rise_bins: int = 0,
     event_callback: AutoUvEventCallback | None = None,
 ):
     _ = curve_overclock_summary
@@ -110,6 +112,7 @@ def run_final_verification_and_save(
         lock_clock_mhz=final_lock_clock_mhz,
         voltage_mv=final_voltage_mv,
         probe=stable_probe,
+        tail_rise_bins=int(tail_rise_bins),
     )
     log_phase(log, "final", f"last-stable-saved={last_stable_path}")
     apply_plan_and_refresh(reader, final_plan)
@@ -152,6 +155,11 @@ def run_final_verification_and_save(
             clock_ceiling.retarget(
                 lock_clock_mhz=int(final_lock_clock_mhz),
                 lock_voltage_mv=int(final_voltage_mv),
+                ceiling_clock_mhz=tail_ceiling_clock_mhz(
+                    final_plan,
+                    fallback_clock_mhz=int(final_lock_clock_mhz),
+                    lock_voltage_mv=int(final_voltage_mv),
+                ),
             )
             log_phase(log, "ceiling", clock_ceiling.describe())
         final_probe, raw_result = probe_voltage_candidate(
@@ -224,6 +232,7 @@ def run_final_verification_and_save(
                 voltage_mv=int(final_voltage_mv),
                 probe=final_probe,
                 base_probe=discovery_summary,
+                tail_rise_bins=int(tail_rise_bins),
             )
             final_status = f"completed {format_user_duration(final_verification_duration_s)} long check"
             break
@@ -242,6 +251,7 @@ def run_final_verification_and_save(
                 budget_used_pct=float(budget_used_pct),
                 budget_limit_pct=float(budget_limit_pct),
                 reason=reason,
+                tail_rise_bins=int(tail_rise_bins),
             )
             if recovery is not None:
                 recovery_count += 1
@@ -296,6 +306,7 @@ def run_final_verification_and_save(
             short_probe_base_duration_s=short_probe_base_duration_s,
             reset_plan=runtime_default_plan,
             timedemo_warmup_runs=int(timedemo_warmup_runs),
+            tail_rise_bins=int(tail_rise_bins),
             event_callback=event_callback,
         )
         if recovery_candidate is None or recovery_summary is None or recovery_result is None:
@@ -314,6 +325,7 @@ def run_final_verification_and_save(
                 voltage_mv=int(final_voltage_mv),
                 probe=stable_probe,
                 base_probe=discovery_summary,
+                tail_rise_bins=int(tail_rise_bins),
             )
 
     if final_plan is None:
@@ -330,6 +342,7 @@ def run_final_verification_and_save(
         voltage_mv=int(final_voltage_mv),
         probe=final_comparison_probe,
         verification_duration_s=int(final_verification_duration_s),
+        tail_rise_bins=int(tail_rise_bins),
     )
     log_phase(log, "final", f"stable-config-saved={stable_path}")
     fan_result = write_final_verification_fan_curve_payload(
@@ -345,6 +358,7 @@ def run_final_verification_and_save(
         base_probe=discovery_summary,
         fan_curve_payload=fan_result.payload if fan_result is not None else None,
         memory_offset_mhz=memory_offset_from_gpu_policy(gpu_policy),
+        tail_rise_bins=int(tail_rise_bins),
     )
     log_final_summary(
         log,
@@ -419,6 +433,7 @@ def maybe_build_final_clock_recovery(
     budget_used_pct: float,
     budget_limit_pct: float,
     reason: str,
+    tail_rise_bins: int = 0,
 ):
     if float(budget_used_pct) >= float(budget_limit_pct):
         return None
@@ -434,6 +449,7 @@ def maybe_build_final_clock_recovery(
         budget_limit_pct=float(budget_limit_pct),
         clock_cap_mhz=baseline_clock_mhz,
         reason=str(reason),
+        tail_rise_bins=int(tail_rise_bins),
     )
 
 

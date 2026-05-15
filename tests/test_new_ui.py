@@ -33,6 +33,7 @@ from ui.verify import progress_percent
 from ui.verify import workload_label
 from ui.tuning import YOLO_MAX_OVERCLOCK_BUDGET_PCT
 from ui.tuning import auto_uv_mode_for_performance_bias
+from ui.tuning import auto_uv_tail_rise_bins_for_performance_bias
 from ui.tuning import performance_bias_clock_recovery_pct
 
 
@@ -112,6 +113,8 @@ def test_new_ui_profile_and_tuning_helpers_cover_moved_workflows() -> None:
     )
     assert auto_uv_mode_for_performance_bias(99.9) == "efficiency"
     assert auto_uv_mode_for_performance_bias(100.0) == "performance"
+    assert auto_uv_tail_rise_bins_for_performance_bias(99.9) == 2
+    assert auto_uv_tail_rise_bins_for_performance_bias(100.0) == 4
     assert performance_bias_clock_recovery_pct(
         100,
         max_pct=YOLO_MAX_OVERCLOCK_BUDGET_PCT,

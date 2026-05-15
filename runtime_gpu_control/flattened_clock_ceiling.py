@@ -23,7 +23,14 @@ class FlattenedClockCeilingController:
 
     @property
     def target_clock_mhz(self):
-        return int(self._flatten_target["lock_clock_mhz"])
+        if self._exact_lock:
+            return int(self._flatten_target["lock_clock_mhz"])
+        return int(
+            self._flatten_target.get(
+                "ceiling_clock_mhz",
+                self._flatten_target["lock_clock_mhz"],
+            )
+        )
 
     @property
     def target_voltage_mv(self):

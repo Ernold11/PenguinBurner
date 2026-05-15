@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from auto_uv3.auto_uv_user_options import (
+    AUTO_UV_DEFAULTS,
     AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO,
     AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO,
 )
@@ -57,6 +58,15 @@ def build_effective_afterburner_runtime_options(args, stored_options: dict) -> d
         runtime_options["auto_uv_memory_offset_mhz"] = max(
             0,
             min(MAX_AFTERBURNER_MEM_OFFSET_MHZ, int(args.auto_uv_memory_offset_mhz)),
+        )
+    auto_uv_tail_rise_bins = getattr(args, "auto_uv_tail_rise_bins", None)
+    if auto_uv_tail_rise_bins is not None:
+        runtime_options["auto_uv_tail_rise_bins"] = max(
+            0,
+            min(
+                int(AUTO_UV_DEFAULTS.max_tail_rise_bins),
+                int(auto_uv_tail_rise_bins),
+            ),
         )
     if args.auto_uv_efficiency_stop_streak is not None:
         runtime_options["auto_uv_efficiency_stop_streak"] = max(

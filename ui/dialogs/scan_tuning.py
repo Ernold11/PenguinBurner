@@ -8,10 +8,12 @@ from ..tuning import DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT
 from ..tuning import DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT
 from ..tuning import DEFAULT_SHORT_VERIFICATION_BASE_S
 from ..tuning import GPU_UNDERVOLTING_PURPOSE_TEXT
+from ..tuning import MAX_AUTO_UV_TAIL_RISE_BINS
 from ..tuning import MAX_OVERCLOCK_BUDGET_PCT
 from ..tuning import PERFORMANCE_BIAS_TOOLTIP_TEXT
 from ..tuning import YOLO_MAX_OVERCLOCK_BUDGET_PCT
 from ..tuning import auto_uv_mode_for_performance_bias
+from ..tuning import auto_uv_tail_rise_bins_for_performance_bias
 from ..tuning import auto_uv_voltage_drop_default
 from ..tuning import memory_offset_mhz_range
 from ..tuning import performance_bias_clock_recovery_pct
@@ -134,6 +136,11 @@ def select_scan_tuning(
     memory_offset_spin.setSuffix(" MHz")
     memory_offset_spin.setSingleStep(50)
     memory_offset_spin.setFixedWidth(118)
+    tail_rise_bins_spin = QtWidgets.QSpinBox()
+    tail_rise_bins_spin.setRange(0, MAX_AUTO_UV_TAIL_RISE_BINS)
+    tail_rise_bins_spin.setSingleStep(1)
+    tail_rise_bins_spin.setFixedWidth(90)
+    tail_rise_bins_manually_edited = {"value": False}
 
     _add_form_row(
         QtCore=QtCore,
@@ -178,15 +185,47 @@ def select_scan_tuning(
         QtCore=QtCore,
         QtWidgets=QtWidgets,
         form_layout=form,
+        text="Curve tail rise bins",
+        widget=tail_rise_bins_spin,
+        tooltip=(
+            "How many voltage bins can the voltage curve rise above the locked "
+            "undervolt point."
+        ),
+    )
+    _add_form_row(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        form_layout=form,
         text="Base verification length",
         widget=short_seconds_spin,
     )
 
-    bias_slider.setValue(
-        performance_bias_slider_position(
-            DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT,
+    default_slider_position = performance_bias_slider_position(
+        DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT,
+        max_pct=max_bias_pct,
+    )
+
+    def _sync_tail_rise_bins_to_bias() -> None:
+        if bool(tail_rise_bins_manually_edited["value"]):
+            return
+        performance_bias_pct = performance_bias_clock_recovery_pct(
+            bias_slider.value(),
             max_pct=max_bias_pct,
         )
+        signals_were_blocked = tail_rise_bins_spin.blockSignals(True)
+        tail_rise_bins_spin.setValue(
+            auto_uv_tail_rise_bins_for_performance_bias(
+                performance_bias_pct,
+                max_pct=max_bias_pct,
+            )
+        )
+        tail_rise_bins_spin.blockSignals(signals_were_blocked)
+
+    bias_slider.valueChanged.connect(lambda _value: _sync_tail_rise_bins_to_bias())
+    bias_slider.setValue(default_slider_position)
+    _sync_tail_rise_bins_to_bias()
+    tail_rise_bins_spin.valueChanged.connect(
+        lambda _value: tail_rise_bins_manually_edited.__setitem__("value", True)
     )
 
     buttons = QtWidgets.QDialogButtonBox()
@@ -224,6 +263,7 @@ def select_scan_tuning(
         "auto_uv_clock_bump_budget_ratio": performance_bias_pct / 100.0,
         "auto_uv_yolo": bool(yolo),
         "auto_uv_memory_offset_mhz": int(memory_offset_spin.value()),
+        "auto_uv_tail_rise_bins": int(tail_rise_bins_spin.value()),
         "auto_uv_short_seconds": int(short_seconds_spin.value()),
     }
 

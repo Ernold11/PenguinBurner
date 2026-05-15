@@ -44,6 +44,7 @@ def probe_summary_ui_payload(
         "power_w": _rounded(_read(probe, "avg_power_w")),
         "temp_c": _rounded(_read(probe, "avg_temperature_c")),
         "fan_pct": _rounded(_read(probe, "avg_fan_speed_pct")),
+        "perf_cap_reason": _string_or_empty(_read(probe, "perf_cap_reason")),
         "efficiency_fps_per_w": _rounded(_read(probe, "efficiency_fps_per_w")),
         "efficiency_mhz_per_w": _rounded(_read(probe, "efficiency_mhz_per_w")),
         "decision": str(decision),
@@ -62,3 +63,9 @@ def _rounded(value: float | int | None) -> float | None:
     if value is None:
         return None
     return round(float(value), 2)
+
+
+def _string_or_empty(value) -> str:
+    if value in (None, ""):
+        return ""
+    return str(value)

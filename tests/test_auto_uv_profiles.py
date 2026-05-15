@@ -798,6 +798,51 @@ def test_profile_verification_can_reapply_curve_after_clock_lock(monkeypatch) ->
     assert reader.offset_mhz == 623
 
 
+def test_runtime_clock_ceiling_uses_saved_rising_tail_ceiling() -> None:
+    class RangePolicy:
+        def __init__(self) -> None:
+            self.range_calls = []
+
+        def get_supported_core_clock_steps_mhz(self) -> list[int]:
+            return [210, 2600, 2630]
+
+        def apply_locked_core_clock_range_mhz(
+            self,
+            min_clock_mhz,
+            max_clock_mhz,
+            **kwargs,
+        ):
+            self.range_calls.append((int(min_clock_mhz), int(max_clock_mhz), dict(kwargs)))
+            return {
+                "requested_min_clock_mhz": int(min_clock_mhz),
+                "requested_max_clock_mhz": int(max_clock_mhz),
+                "applied_min_clock_mhz": int(min_clock_mhz),
+                "applied_max_clock_mhz": int(max_clock_mhz),
+                "min_mode": "exact",
+                "max_mode": "exact",
+                "supported_steps_mhz": [210, 2600, 2630],
+            }
+
+        def reset_locked_core_clocks(self) -> None:
+            pass
+
+    policy = RangePolicy()
+    controller = penguin_burner.FlattenedClockCeilingController(
+        {
+            "source": "auto-uv-final",
+            "lock_clock_mhz": 2600,
+            "lock_voltage_mv": 900,
+            "ceiling_clock_mhz": 2630,
+        },
+        policy,
+    )
+
+    controller.apply()
+
+    assert policy.range_calls[0][1] == 2630
+    assert controller.telemetry_text().startswith("clk_ceiling=2630MHz@900mV")
+
+
 def test_profile_verification_metrics_from_q2rtx_result() -> None:
     result = SimpleNamespace(
         timedemo_runs=[

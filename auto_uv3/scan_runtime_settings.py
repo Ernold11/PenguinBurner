@@ -33,6 +33,7 @@ class ScanRuntimeSettings:
     min_efficiency_stop_voltage_drop_pct: float
     clock_bump_budget_ratio: float
     clock_bump_budget_limit_pct: float
+    tail_rise_bins: int
     timedemo_warmup_runs: int
 
 
@@ -77,6 +78,7 @@ def read_scan_runtime_settings(
         ),
         clock_bump_budget_ratio=float(clock_bump_budget_ratio),
         clock_bump_budget_limit_pct=float(clock_bump_budget_limit_pct),
+        tail_rise_bins=tail_rise_bins(runtime_options, auto_uv_mode=auto_uv_mode),
         timedemo_warmup_runs=timedemo_warmup_runs_for_mode(auto_uv_mode),
     )
 
@@ -141,6 +143,17 @@ def recovery_budget_ratio(runtime_options: dict, *, auto_uv_mode: str) -> float:
     if bool(runtime_options.get("auto_uv_yolo")):
         max_ratio = AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO
     return max(0.0, min(float(max_ratio), float(value)))
+
+
+def tail_rise_bins(runtime_options: dict, *, auto_uv_mode: str) -> int:
+    value = runtime_options.get("auto_uv_tail_rise_bins")
+    if value is None:
+        value = (
+            AUTO_UV_DEFAULTS.performance_tail_rise_bins
+            if auto_uv_mode == AUTO_UV_MODE_PERFORMANCE
+            else AUTO_UV_DEFAULTS.tail_rise_bins
+        )
+    return max(0, min(int(AUTO_UV_DEFAULTS.max_tail_rise_bins), int(value)))
 
 
 def timedemo_warmup_runs_for_mode(auto_uv_mode: str) -> int:

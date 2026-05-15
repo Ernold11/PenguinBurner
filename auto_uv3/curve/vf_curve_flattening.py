@@ -7,6 +7,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .rising_tail import (
+    normalize_tail_rise_bins,
+    rising_tail_targets,
+    tail_ceiling_clock_mhz,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class FlatteningRules:
@@ -19,19 +25,46 @@ def build_flatten_target(
     *,
     lock_clock_mhz: int,
     lock_voltage_mv: int,
+    ceiling_clock_mhz: int | None = None,
+    tail_rise_bins: int = 0,
 ) -> dict:
     voltages = sorted({int(point["voltage_mv"]) for point in base_curve})
     end_voltage_mv = voltages[-1] if voltages else int(lock_voltage_mv)
     tail_point_count = sum(
         1 for point in base_curve if int(point["voltage_mv"]) >= int(lock_voltage_mv)
     )
-    return {
+    target = {
         "baseline_measurement": "q2rtx-loaded-telemetry",
         "lock_clock_mhz": int(lock_clock_mhz),
         "lock_voltage_mv": int(lock_voltage_mv),
         "end_voltage_mv": int(end_voltage_mv),
         "tail_point_count": int(tail_point_count),
+        "tail_rise_bins": normalize_tail_rise_bins(tail_rise_bins),
     }
+    if ceiling_clock_mhz is not None and int(ceiling_clock_mhz) > int(lock_clock_mhz):
+        target["ceiling_clock_mhz"] = int(ceiling_clock_mhz)
+    return target
+
+
+def build_flatten_target_for_plan(
+    base_curve: list[dict],
+    plan: list[dict],
+    *,
+    lock_clock_mhz: int,
+    lock_voltage_mv: int,
+    tail_rise_bins: int = 0,
+) -> dict:
+    return build_flatten_target(
+        base_curve,
+        lock_clock_mhz=int(lock_clock_mhz),
+        lock_voltage_mv=int(lock_voltage_mv),
+        ceiling_clock_mhz=tail_ceiling_clock_mhz(
+            plan,
+            fallback_clock_mhz=int(lock_clock_mhz),
+            lock_voltage_mv=int(lock_voltage_mv),
+        ),
+        tail_rise_bins=int(tail_rise_bins),
+    )
 
 
 def build_flattened_plan(
@@ -40,6 +73,7 @@ def build_flattened_plan(
     lock_clock_mhz: int,
     candidate_voltage_mv: int,
     below_lock_gap_mhz: int | None = None,
+    tail_rise_bins: int = 0,
     rules: FlatteningRules = FlatteningRules(),
 ) -> list[dict]:
     editable_voltages = {
@@ -66,6 +100,13 @@ def build_flattened_plan(
         int(candidate_voltage_mv) - int(rules.flatten_ramp_window_mv),
     )
     ramp_span_mv = max(1, int(candidate_voltage_mv) - int(ramp_start_voltage_mv))
+    tail_targets = rising_tail_targets(
+        base_curve,
+        lock_clock_mhz=int(flattened_clock_mhz),
+        candidate_voltage_mv=int(candidate_voltage_mv),
+        tail_rise_bins=int(tail_rise_bins),
+        clock_step_mhz=int(rules.clock_step_mhz),
+    )
 
     plan = []
     for base_point in base_curve:
@@ -76,7 +117,7 @@ def build_flattened_plan(
         if bool(point.get("preserve_base")):
             target_mhz = int(base_mhz)
         elif voltage_mv >= int(candidate_voltage_mv):
-            target_mhz = int(flattened_clock_mhz)
+            target_mhz = int(tail_targets.get(voltage_mv, flattened_clock_mhz))
         elif voltage_mv <= int(ramp_start_voltage_mv):
             target_mhz = int(original_target_mhz)
         else:

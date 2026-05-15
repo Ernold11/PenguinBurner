@@ -5,6 +5,7 @@ import shutil
 import subprocess
 
 from hidden_nvapi_voltage import create_hidden_voltage_reader
+from nvml_perf_cap_reason import NvmlPerfCapReasonReader
 from subprocess_locale import stable_subprocess_env
 
 from .models import TelemetrySample
@@ -31,12 +32,17 @@ class _HiddenNvmlVoltageSession:
     def __init__(self, gpu_index: int):
         self._gpu_index = int(gpu_index)
         self._voltage_reader = None
+        self._perf_cap_reader = None
         try:
             self._voltage_reader = create_hidden_voltage_reader(
                 gpu_index=self._gpu_index
             )
         except Exception:
-            self.close()
+            self._voltage_reader = None
+        try:
+            self._perf_cap_reader = NvmlPerfCapReasonReader(gpu_index=self._gpu_index)
+        except Exception:
+            self._perf_cap_reader = None
 
     def read_live_voltage_mv(self) -> float | None:
         if self._voltage_reader is None:
@@ -49,6 +55,14 @@ class _HiddenNvmlVoltageSession:
             return None
         return float(int(voltage_uv) / 1000.0)
 
+    def read_perf_cap_reason(self) -> str | None:
+        if self._perf_cap_reader is None:
+            return None
+        try:
+            return self._perf_cap_reader.read_reason()
+        except Exception:
+            return None
+
     def close(self) -> None:
         if self._voltage_reader is not None:
             try:
@@ -56,6 +70,12 @@ class _HiddenNvmlVoltageSession:
             except Exception:
                 pass
         self._voltage_reader = None
+        if self._perf_cap_reader is not None:
+            try:
+                self._perf_cap_reader.close()
+            except Exception:
+                pass
+        self._perf_cap_reader = None
 
 
 def _parse_metric(value: str) -> float | None:
@@ -77,8 +97,11 @@ def query_gpu_metrics(
     voltage_mv = (
         voltage_session.read_live_voltage_mv() if voltage_session is not None else None
     )
+    perf_cap_reason = (
+        voltage_session.read_perf_cap_reason() if voltage_session is not None else None
+    )
     if not nvidia_smi:
-        if voltage_mv is None:
+        if voltage_mv is None and perf_cap_reason is None:
             return None
         return TelemetrySample(
             elapsed_s=0.0,
@@ -88,6 +111,7 @@ def query_gpu_metrics(
             temperature_c=None,
             voltage_mv=voltage_mv,
             fan_speed_pct=None,
+            perf_cap_reason=perf_cap_reason,
         )
 
     command = [
@@ -108,7 +132,7 @@ def query_gpu_metrics(
             env=stable_subprocess_env(),
         )
     except (OSError, subprocess.SubprocessError):
-        if voltage_mv is None:
+        if voltage_mv is None and perf_cap_reason is None:
             return None
         return TelemetrySample(
             elapsed_s=0.0,
@@ -118,6 +142,7 @@ def query_gpu_metrics(
             temperature_c=None,
             voltage_mv=voltage_mv,
             fan_speed_pct=None,
+            perf_cap_reason=perf_cap_reason,
         )
 
     line = result.stdout.strip().splitlines()
@@ -134,6 +159,7 @@ def query_gpu_metrics(
         temperature_c=_parse_metric(fields[3]),
         voltage_mv=voltage_mv,
         fan_speed_pct=_parse_metric(fields[4]),
+        perf_cap_reason=perf_cap_reason,
     )
 
 

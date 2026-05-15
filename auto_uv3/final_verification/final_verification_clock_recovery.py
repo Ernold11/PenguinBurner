@@ -46,6 +46,7 @@ def build_final_clock_recovery_candidate(
     budget_limit_pct: float,
     clock_cap_mhz: float | None,
     reason: str,
+    tail_rise_bins: int = 0,
 ) -> FinalClockRecoveryAttempt | None:
     next_used_pct = next_recovery_budget_used_pct(
         current_used_pct=float(current_budget_used_pct),
@@ -89,6 +90,7 @@ def build_final_clock_recovery_candidate(
                 base_curve,
                 lock_clock_mhz=int(target_mhz),
                 candidate_voltage_mv=int(voltage_mv),
+                tail_rise_bins=int(tail_rise_bins),
             ),
         ),
         budget_used_pct=float(charged_pct),

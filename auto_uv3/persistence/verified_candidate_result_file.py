@@ -13,6 +13,7 @@ from .auto_uv_persisted_json_files import safe_json_write, verified_candidates_p
 from .auto_uv_persisted_json_files import auto_uv_user_config_dir
 from ..auto_uv_types import AutoUvProbeSummary
 from ..curve.base_vf_curve import read_base_vf_points
+from ..curve.vf_curve_flattening import build_flatten_target_for_plan
 
 
 def write_latest_verified_candidate(
@@ -22,6 +23,7 @@ def write_latest_verified_candidate(
     voltage_mv: int,
     probe: AutoUvProbeSummary | None,
     base_probe: AutoUvProbeSummary | None = None,
+    tail_rise_bins: int = 0,
 ) -> Path:
     output_path = auto_uv_user_config_dir() / "uv-result" / "auto-uv-latest-verified.json"
     payload = verified_candidate_payload(
@@ -32,6 +34,7 @@ def write_latest_verified_candidate(
         base_probe=base_probe,
         reason="latest-verified",
         label="passed-short-probe",
+        tail_rise_bins=int(tail_rise_bins),
     )
     path = safe_json_write(output_path, payload)
     append_verified_candidate(payload)
@@ -81,7 +84,16 @@ def verified_candidate_payload(
     label: str,
     base_probe: AutoUvProbeSummary | None = None,
     final_verified: bool = False,
+    tail_rise_bins: int = 0,
 ) -> dict:
+    flatten_target = build_flatten_target_for_plan(
+        plan,
+        plan,
+        lock_clock_mhz=int(lock_clock_mhz),
+        lock_voltage_mv=int(voltage_mv),
+        tail_rise_bins=int(tail_rise_bins),
+    )
+    flatten_target["source"] = "auto-uv-final" if bool(final_verified) else "auto-uv"
     return {
         "candidate_id": candidate_id(
             voltage_mv=int(voltage_mv),
@@ -93,8 +105,10 @@ def verified_candidate_payload(
         "final_verified": bool(final_verified),
         "lock_clock_mhz": int(lock_clock_mhz),
         "candidate_voltage_mv": int(voltage_mv),
+        "tail_rise_bins": int(tail_rise_bins),
         **probe_metrics(probe),
         **base_probe_metrics(base_probe),
+        "flatten_target": flatten_target,
         "points": artifact_points(plan),
         "plan": list(plan),
     }
@@ -123,6 +137,7 @@ def probe_metrics(probe: AutoUvProbeSummary | None) -> dict:
             "efficiency_fps_per_w": None,
             "efficiency_mhz_per_w": None,
             "watts_per_mhz": None,
+            "perf_cap_reason": None,
         }
     return {
         "avg_fps": float_or_none(probe.avg_fps),
@@ -145,6 +160,7 @@ def probe_metrics(probe: AutoUvProbeSummary | None) -> dict:
         "efficiency_fps_per_w": float_or_none(probe.efficiency_fps_per_w),
         "efficiency_mhz_per_w": float_or_none(probe.efficiency_mhz_per_w),
         "watts_per_mhz": float_or_none(probe.watts_per_mhz),
+        "perf_cap_reason": str_or_none(probe.perf_cap_reason),
     }
 
 
@@ -179,3 +195,9 @@ def float_or_none(value: object) -> float | None:
 
 def int_or_zero(value: object) -> int:
     return 0 if value is None else int(value)
+
+
+def str_or_none(value: object) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)

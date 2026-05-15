@@ -524,6 +524,7 @@ def emit_live_telemetry_event(
         power_w=round_or_none(getattr(latest_sample, "power_w", None)),
         temp_c=round_or_none(getattr(latest_sample, "temperature_c", None)),
         fan_pct=round_or_none(getattr(latest_sample, "fan_speed_pct", None)),
+        perf_cap_reason=str(getattr(latest_sample, "perf_cap_reason", "") or ""),
     )
 
 

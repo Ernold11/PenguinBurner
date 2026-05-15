@@ -104,6 +104,7 @@ def test_package_installs_shared_subprocess_locale_helper() -> None:
     assert "hidden_nvapi_voltage" in py_modules
     assert "import_afterburner_fan_curve" in py_modules
     assert "import_afterburner_vf_curve" in py_modules
+    assert "nvml_perf_cap_reason" in py_modules
     assert "penguin_burner_errors" in py_modules
     assert "q2rtx_stability" in py_modules
 
