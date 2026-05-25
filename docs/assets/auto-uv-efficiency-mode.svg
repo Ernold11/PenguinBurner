@@ -101,7 +101,7 @@
 <g id="node7" class="node">
 <title>budget</title>
 <path fill="#f8fafc" stroke="#334155" d="M1205.53,-191.76C1205.53,-191.76 1071.25,-191.76 1071.25,-191.76 1065.25,-191.76 1059.25,-185.76 1059.25,-179.76 1059.25,-179.76 1059.25,-167.76 1059.25,-167.76 1059.25,-161.76 1065.25,-155.76 1071.25,-155.76 1071.25,-155.76 1205.53,-155.76 1205.53,-155.76 1211.53,-155.76 1217.53,-161.76 1217.53,-167.76 1217.53,-167.76 1217.53,-179.76 1217.53,-179.76 1217.53,-185.76 1211.53,-191.76 1205.53,-191.76"/>
-<text xml:space="preserve" text-anchor="middle" x="1138.39" y="-168.91" font-family="Arial" font-size="13.00">check overclock budget</text>
+<text xml:space="preserve" text-anchor="middle" x="1138.39" y="-168.91" font-family="Arial" font-size="13.00">check OC budget</text>
 </g>
 <!-- min_drop&#45;&gt;budget -->
 <g id="edge6" class="edge">
@@ -121,7 +121,7 @@
 <title>try_oc</title>
 <path fill="#eff6ff" stroke="#334155" d="M1490.59,-194.52C1490.59,-194.52 1384.81,-194.52 1384.81,-194.52 1378.81,-194.52 1372.81,-188.52 1372.81,-182.52 1372.81,-182.52 1372.81,-165 1372.81,-165 1372.81,-159 1378.81,-153 1384.81,-153 1384.81,-153 1490.59,-153 1490.59,-153 1496.59,-153 1502.59,-159 1502.59,-165 1502.59,-165 1502.59,-182.52 1502.59,-182.52 1502.59,-188.52 1496.59,-194.52 1490.59,-194.52"/>
 <text xml:space="preserve" text-anchor="middle" x="1437.7" y="-176.41" font-family="Arial" font-size="13.00">try efficiency&#45;wall</text>
-<text xml:space="preserve" text-anchor="middle" x="1437.7" y="-161.41" font-family="Arial" font-size="13.00">overclock recovery</text>
+<text xml:space="preserve" text-anchor="middle" x="1437.7" y="-161.41" font-family="Arial" font-size="13.00">OC budget</text>
 </g>
 <!-- budget&#45;&gt;try_oc -->
 <g id="edge7" class="edge">

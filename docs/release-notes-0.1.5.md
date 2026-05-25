@@ -21,10 +21,10 @@ voltage handling, and clearer Auto-UV final selection.
 
 ### Auto-UV Behavior
 
-- Performance mode spends remaining clock recovery budget at the voltage floor.
+- Performance mode spends remaining OC budget at the voltage floor.
 - Performance voltage recovery can test higher voltages at the same recovered
   clock target and stops when FPS stops improving.
-- Efficiency mode still spends clock recovery budget, but keeps the lower
+- Efficiency mode still spends OC budget, but keeps the lower
   voltage-focused policy.
 - Final and long verification workload ratios remain anchored to the previous
   long-check reference, independent of the shorter default probe duration.

@@ -1,6 +1,6 @@
 # Auto-UV State Machines
 
-This document describes the Auto-UV main loop after the readable `auto_uv3`
+This document describes the Auto-UV main loop after the readable `auto_uv`
 rewrite. The legacy `auto_uv` package has been removed after its behavior was
 ported into smaller named modules.
 
@@ -67,7 +67,7 @@ stateDiagram-v2
 ### Shared State Notes
 
 - `InitialCheck` checks that the GPU, driver, Q2RTX setup, and validation policy are usable.
-- `NormalizeSettings` resolves mode, max voltage drop, final duration, short probe duration, and overclock budget.
+- `NormalizeSettings` resolves mode, max voltage drop, final duration, short probe duration, and OC budget.
 - `ConsumeCrashMarker` loads a stale probe marker from the previous run and may add a persistent unsafe entry.
 - `ReadBaseCurve` gets editable Linux NVAPI V/F points and validates that the base curve is usable.
 - `DiscoveryProbe` measures stock loaded FPS, power, temperature, fan, clock, and voltage.
@@ -89,22 +89,22 @@ stateDiagram-v2
     SkipUnsafe --> PickLowerVoltage: try next lower bin
     PickLowerVoltage --> BuildCandidate
 
-    BuildCandidate --> PreemptiveOverclock: predicted clock floor miss
-    PreemptiveOverclock --> ProbeCandidate
+    BuildCandidate --> PreemptiveOcBudget: predicted clock floor miss
+    PreemptiveOcBudget --> ProbeCandidate
     BuildCandidate --> ProbeCandidate
 
     ProbeCandidate --> AcceptCandidate: stable and guardrails pass
     ProbeCandidate --> AcceptLowestFloorMiss: workload passed, clock floor missed, budget spent
-    ProbeCandidate --> TryOverclock: low loaded clock and budget remains
+    ProbeCandidate --> TryOcBudget: low loaded clock and budget remains
     ProbeCandidate --> RecoverUpward: hard failure or guardrail rejection
     ProbeCandidate --> StopCritical: critical failure
 
-    TryOverclock --> ProbeOverclock
-    ProbeOverclock --> AcceptCandidate: overclocked candidate stable
-    ProbeOverclock --> TryOverclock: still low clock and budget remains
-    ProbeOverclock --> BackoffOverclock: overclock caused hard failure
-    BackoffOverclock --> RecoverUpward
-    ProbeOverclock --> StopCritical: critical failure
+    TryOcBudget --> ProbeOcBudget
+    ProbeOcBudget --> AcceptCandidate: OC-budget targeted candidate stable
+    ProbeOcBudget --> TryOcBudget: still low clock and budget remains
+    ProbeOcBudget --> BackoffOcBudget: OC-budget target caused hard failure
+    BackoffOcBudget --> RecoverUpward
+    ProbeOcBudget --> StopCritical: critical failure
 
     RecoverUpward --> AcceptRecovered: higher voltage stable
     RecoverUpward --> StopKeepPrevious: recovery failed
@@ -128,8 +128,8 @@ stateDiagram-v2
 - The default target follows the base curve downward instead of pinning the original clock forever.
 - After a stable probe, the next target may use the measured loaded clock, not only the requested target.
 - A recent accepted voltage/clock slope can predict that the next lower voltage will miss the clock floor.
-- If a floor miss is predicted and budget remains, the candidate can spend overclock budget before probing.
-- Persistent overclock budget carries forward so later lower-voltage probes do not lose recovered clock.
+- If a floor miss is predicted and budget remains, the candidate can spend OC budget before probing.
+- Persistent OC budget carries forward so later lower-voltage probes do not lose recovered clock.
 - When full budget is spent, the first full-budget target is fixed for future lower-voltage probes.
 - Unsafe cache entries block the failed voltage and lower voltages only in the failed clock band when clock data exists.
 
@@ -141,11 +141,11 @@ stateDiagram-v2
     ProbeResult --> Accept: success and no evaluation error
     ProbeResult --> AcceptLowestFloorMiss: success with final acceptable clock miss
     ProbeResult --> RejectGuardrail: success but FPS/frame/power/clock guardrail failed
-    ProbeResult --> TryOverclock: failed only because loaded clock was low
+    ProbeResult --> TryOcBudget: failed only because loaded clock was low
     ProbeResult --> RecoverUpward: failed from CUDA/Q2RTX/stall/regression
     ProbeResult --> StopCritical: fatal output, Xid, load lost, invalid timedemo, timeout
 
-    TryOverclock --> [*]
+    TryOcBudget --> [*]
     RecoverUpward --> [*]
     StopCritical --> [*]
     RejectGuardrail --> [*]
@@ -166,9 +166,9 @@ stateDiagram-v2
     MeasureEfficiencyDelta --> ArmStop: FPS/W did not improve or power rose while efficiency fell
 
     ArmStop --> Continue: minimum voltage drop not reached
-    ArmStop --> TryEfficiencyOverclock: minimum drop reached and overclock budget remains
-    TryEfficiencyOverclock --> Continue: overclock restored FPS/W gain
-    TryEfficiencyOverclock --> ConfirmWall: overclock rejected or no FPS/W gain
+    ArmStop --> TryEfficiencyOcBudget: minimum drop reached and OC budget remains
+    TryEfficiencyOcBudget --> Continue: OC-budget target restored FPS/W gain
+    TryEfficiencyOcBudget --> ConfirmWall: OC-budget target rejected or no FPS/W gain
 
     ArmStop --> ConfirmWall: budget already spent
     ConfirmWall --> Continue: confirmation streak not reached
@@ -186,12 +186,12 @@ Efficiency mode state:
 - `pending_stop_candidate` stores the previous stable curve when the wall is first seen.
 - `min_efficiency_stop_voltage_drop_pct` prevents stopping too close to the start voltage.
 - `efficiency_stop_streak` requires extra confirmation after the first no-gain probe.
-- Available overclock budget delays the final stop so the algorithm can try to recover lost clock first.
+- Available OC budget delays the final stop so the algorithm can try to recover lost clock first.
 
 ## Performance Mode State Machine
 
 Performance mode still descends voltage, but it scores candidates by FPS first
-and FPS/W second. It is allowed to spend more recovery budget and can sweep back
+and FPS/W second. It is allowed to spend more OC budget and can sweep back
 up in voltage to recover a better high-performance point.
 
 ```mermaid
@@ -201,10 +201,10 @@ stateDiagram-v2
     ScoreCandidate --> RecordBest: score improved
     ScoreCandidate --> CountNoGain: score did not improve
 
-    CountNoGain --> TryPerformanceOverclock: budget remains
-    TryPerformanceOverclock --> RecordBest: overclock improves score
-    TryPerformanceOverclock --> Continue: overclock stable but no score gain
-    TryPerformanceOverclock --> VoltageRecovery: overclock hard-failed
+    CountNoGain --> TryPerformanceOcBudget: budget remains
+    TryPerformanceOcBudget --> RecordBest: OC-budget target improves score
+    TryPerformanceOcBudget --> Continue: OC-budget target stable but no score gain
+    TryPerformanceOcBudget --> VoltageRecovery: OC-budget target hard-failed
 
     CountNoGain --> Continue: exploration budget remains
     CountNoGain --> VoltageRecovery: no-gain streak reached
@@ -223,7 +223,7 @@ Performance mode state:
 - `no_score_gain_steps` counts accepted probes that did not beat the best score.
 - `min_exploration_steps` prevents stopping before enough lower-voltage points are sampled.
 - `max_no_score_gain_steps` stops the descent after repeated non-improvements.
-- `max_overclock_step_pct` caps one performance recovery jump.
+- `max_OC-budget target_step_pct` caps one performance recovery jump.
 - `max_voltage_recovery_mv` and `max_voltage_recovery_probes` bound the upward voltage sweep.
 
 ## Crash And Unsafe Cache State Machine
@@ -240,7 +240,7 @@ stateDiagram-v2
     ProcessDies --> NextRun
     NextRun --> ValidateMarker
     ValidateMarker --> IgnoreMarker: not aggressive enough or incomplete
-    ValidateMarker --> RecordUnsafe: voltage drop and clock recovery thresholds met
+    ValidateMarker --> RecordUnsafe: voltage drop and OC budget thresholds met
     RecordUnsafe --> LoadUnsafeEntries
     LoadUnsafeEntries --> BlockFutureCandidates
     LoadUnsafeEntries --> CapRecoveryBudget: recovery probe crashed
@@ -251,13 +251,13 @@ stateDiagram-v2
 
 Crash and unsafe rules:
 
-- Candidate, recovery, stabilize, final-recovery, and final-verify probes write an in-progress marker.
+- Candidate, candidate-OC-budget, stabilize, final-OC-budget, and final-verify probes write an in-progress marker.
 - Clean probe exit clears the marker.
 - A stale marker is treated as a crash only if it passes crash-cache validation.
-- Crash-cache validation currently requires at least `5%` voltage drop and `110%` clock recovery.
+- Crash-cache validation currently requires at least `5%` voltage drop and `110%` OC budget.
 - Explicit failed probes can also record unsafe voltage entries when the failure reason is unsafe enough.
 - Clock-aware unsafe entries block the failed voltage and lower voltages only for the failed clock band.
-- Recovery crashes can cap future overclock budget before the failed recovery attempt.
+- Recovery crashes can cap future OC budget before the failed recovery attempt.
 
 ## Outputs
 

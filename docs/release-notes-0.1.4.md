@@ -11,13 +11,12 @@ performance-mode controls, and clearer install/run workflows.
   and curve-shifting controls in place.
 - Performance bias for Automatic Undervolt, especially for older GPUs where
   users may want to maximize FPS.
-- "Undocumented" yolo mode for users who want more overclocking adventure.
 - Manual silent fan curve editor with single-degree temperature control and
   RPM-level tuning.
 
 ### Auto-UV Safety
 
-- Performance/yolo scans no longer move downward in voltage after an unstable
+- Performance-biased scans no longer move downward in voltage after an unstable
   probe.
 - Failed voltage/clock probes are blocked by clock band instead of globally
   banning that voltage forever.
@@ -28,7 +27,6 @@ performance-mode controls, and clearer install/run workflows.
 
 ### Packaging And Local Testing
 
-- Kept yolo mode as a hidden `--yolo` command-line option.
 - Documented the clean profile reset command for fresh local testing.
 - Verified local wheel/source builds and metadata checks.
 
@@ -42,7 +40,6 @@ Highlights:
 - MSI Afterburner-like manual V/F curve editor for Linux.
 - Automatic Undervolt performance bias for users who want to preserve or
   maximize FPS, especially on older GPUs.
-- "Undocumented" yolo mode for more aggressive overclocking experiments.
 - Manual silent fan curve editor with single-degree temperature and RPM-level
   tuning.
-- Safer performance/yolo Auto-UV recovery after instability.
+- Safer performance-biased Auto-UV recovery after instability.

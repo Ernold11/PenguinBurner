@@ -158,7 +158,7 @@
 <g id="node11" class="node">
 <title>cap</title>
 <path fill="#fff7ed" stroke="#334155" d="M1822.35,-41.52C1822.35,-41.52 1676.82,-41.52 1676.82,-41.52 1670.82,-41.52 1664.82,-35.52 1664.82,-29.52 1664.82,-29.52 1664.82,-12 1664.82,-12 1664.82,-6 1670.82,0 1676.82,0 1676.82,0 1822.35,0 1822.35,0 1828.35,0 1834.35,-6 1834.35,-12 1834.35,-12 1834.35,-29.52 1834.35,-29.52 1834.35,-35.52 1828.35,-41.52 1822.35,-41.52"/>
-<text xml:space="preserve" text-anchor="middle" x="1749.58" y="-23.41" font-family="Arial" font-size="13.00">cap recovery budget</text>
+<text xml:space="preserve" text-anchor="middle" x="1749.58" y="-23.41" font-family="Arial" font-size="13.00">cap OC budget</text>
 <text xml:space="preserve" text-anchor="middle" x="1749.58" y="-8.41" font-family="Arial" font-size="13.00">if recovery probe crashed</text>
 </g>
 <!-- unsafe&#45;&gt;cap -->

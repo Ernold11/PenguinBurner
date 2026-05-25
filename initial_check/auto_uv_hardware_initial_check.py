@@ -1,6 +1,6 @@
 """Check Nvidia driver and GPU controls before Auto-UV starts.
 
-This package is outside auto_uv3 because it validates system readiness, not the undervolt algorithm.
+This package is outside auto_uv because it validates system readiness, not the undervolt algorithm.
 """
 
 from __future__ import annotations

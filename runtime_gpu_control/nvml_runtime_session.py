@@ -1,5 +1,3 @@
-"""Public NVML runtime session used by the foreground daemon."""
-
 from __future__ import annotations
 
 import ctypes
@@ -16,8 +14,6 @@ from .nvml_return_code import (
 
 
 class NvmlRuntimeSession:
-    """Owns the public NVML library binding and selected GPU handle."""
-
     def __init__(self, gpu_index: int):
         self.gpu_index = int(gpu_index)
         self._nvml = ctypes.CDLL("libnvidia-ml.so.1")
@@ -27,62 +23,31 @@ class NvmlRuntimeSession:
         self._initialize_session()
 
     def _bind_functions(self) -> None:
-        c_uint = ctypes.c_uint
-        c_void_p = ctypes.c_void_p
-
-        self._nvml.nvmlInit_v2.restype = ctypes.c_int
-        self._nvml.nvmlShutdown.restype = ctypes.c_int
-        self._nvml.nvmlDeviceGetHandleByIndex_v2.argtypes = [
-            c_uint,
-            ctypes.POINTER(c_void_p),
+        u, dev = ctypes.c_uint, ctypes.c_void_p
+        u_out = ctypes.POINTER(ctypes.c_uint)
+        # (name, argtypes, optional)
+        bindings = [
+            ("nvmlInit_v2", [], False),
+            ("nvmlShutdown", [], False),
+            ("nvmlDeviceGetHandleByIndex_v2", [u, ctypes.POINTER(dev)], False),
+            ("nvmlDeviceGetTemperature", [dev, u, u_out], False),
+            ("nvmlDeviceGetNumFans", [dev, u_out], False),
+            ("nvmlDeviceGetFanSpeed", [dev, u_out], False),
+            ("nvmlDeviceGetFanSpeed_v2", [dev, u, u_out], False),
+            ("nvmlDeviceGetPowerUsage", [dev, u_out], False),
+            ("nvmlDeviceGetClockInfo", [dev, u, u_out], False),
+            ("nvmlDeviceGetMinMaxFanSpeed", [dev, u_out, u_out], True),
+            ("nvmlDeviceSetFanSpeed_v2", [dev, u, u], True),
+            ("nvmlDeviceSetDefaultFanSpeed_v2", [dev, u], True),
         ]
-        self._nvml.nvmlDeviceGetHandleByIndex_v2.restype = ctypes.c_int
-        self._nvml.nvmlDeviceGetTemperature.argtypes = [
-            c_void_p,
-            c_uint,
-            ctypes.POINTER(c_uint),
-        ]
-        self._nvml.nvmlDeviceGetTemperature.restype = ctypes.c_int
-        self._nvml.nvmlDeviceGetNumFans.argtypes = [
-            c_void_p,
-            ctypes.POINTER(c_uint),
-        ]
-        self._nvml.nvmlDeviceGetNumFans.restype = ctypes.c_int
-        self._nvml.nvmlDeviceGetFanSpeed.argtypes = [
-            c_void_p,
-            ctypes.POINTER(c_uint),
-        ]
-        self._nvml.nvmlDeviceGetFanSpeed.restype = ctypes.c_int
-        self._nvml.nvmlDeviceGetFanSpeed_v2.argtypes = [
-            c_void_p,
-            c_uint,
-            ctypes.POINTER(c_uint),
-        ]
-        self._nvml.nvmlDeviceGetFanSpeed_v2.restype = ctypes.c_int
-        self._nvml.nvmlDeviceGetPowerUsage.argtypes = [
-            c_void_p,
-            ctypes.POINTER(c_uint),
-        ]
-        self._nvml.nvmlDeviceGetPowerUsage.restype = ctypes.c_int
-        self._nvml.nvmlDeviceGetClockInfo.argtypes = [
-            c_void_p,
-            c_uint,
-            ctypes.POINTER(c_uint),
-        ]
-        self._nvml.nvmlDeviceGetClockInfo.restype = ctypes.c_int
-        if hasattr(self._nvml, "nvmlDeviceGetMinMaxFanSpeed"):
-            self._nvml.nvmlDeviceGetMinMaxFanSpeed.argtypes = [
-                c_void_p,
-                ctypes.POINTER(c_uint),
-                ctypes.POINTER(c_uint),
-            ]
-            self._nvml.nvmlDeviceGetMinMaxFanSpeed.restype = ctypes.c_int
-        if hasattr(self._nvml, "nvmlDeviceSetFanSpeed_v2"):
-            self._nvml.nvmlDeviceSetFanSpeed_v2.argtypes = [c_void_p, c_uint, c_uint]
-            self._nvml.nvmlDeviceSetFanSpeed_v2.restype = ctypes.c_int
-        if hasattr(self._nvml, "nvmlDeviceSetDefaultFanSpeed_v2"):
-            self._nvml.nvmlDeviceSetDefaultFanSpeed_v2.argtypes = [c_void_p, c_uint]
-            self._nvml.nvmlDeviceSetDefaultFanSpeed_v2.restype = ctypes.c_int
+        for name, argtypes, optional in bindings:
+            fn = getattr(self._nvml, name, None)
+            if fn is None:
+                if optional:
+                    continue
+                raise AttributeError(f"libnvidia-ml is missing required symbol {name}")
+            fn.argtypes = argtypes
+            fn.restype = ctypes.c_int
 
     def _initialize_session(self) -> None:
         check_nvml_return_code(self._nvml.nvmlInit_v2(), "nvmlInit_v2")

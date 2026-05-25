@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from afterburner.import_fan_curve import load_config
-from auto_uv3.scan_mode import AUTO_UV_MODE_EFFICIENCY
-from auto_uv3.scan_mode import AUTO_UV_MODE_PERFORMANCE
-from auto_uv3.auto_uv_user_options import AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO
-from auto_uv3.auto_uv_user_options import AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO
-from auto_uv3.scan_mode.uv_limits import (
+from auto_uv.scan_mode import AUTO_UV_MODE_EFFICIENCY
+from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.scan_mode.uv_limits import (
+    AUTO_UV_PERFORMANCE_OC_PROFILE_ID,
+    uv_limit_profile_target_for_gpu,
     uv_limit_voltage_floor_target_for_gpu,
     voltage_drop_pct,
 )
@@ -16,25 +16,18 @@ from penguin_burner_paths import default_runtime_config_path
 
 
 DEFAULT_SHORT_VERIFICATION_BASE_S = 10
-PERFORMANCE_BIAS_WARNING_PCT = 110.0
-PERFORMANCE_BIAS_DANGER_PCT = 130.0
-DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT = 100.0
-DEFAULT_AUTO_UV_MAX_DROP_PCT = 12.5
+DEFAULT_AUTO_UV_MAX_DROP_PCT = 10.0
 GENERIC_AUTO_UV_MAX_DROP_PCT = DEFAULT_AUTO_UV_MAX_DROP_PCT
 AUTO_UV_DROP_REFERENCE_VOLTAGE_MV = 1000
 DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT = 10.0
 DEFAULT_AUTO_UV_TAIL_RISE_BINS = 0
-DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS = 4
+DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS = 4
+DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS = 6
 MAX_AUTO_UV_TAIL_RISE_BINS = 8
-MAX_OVERCLOCK_BUDGET_PCT = AUTO_UV_MAX_CLOCK_BUMP_BUDGET_RATIO * 100.0
-YOLO_MAX_OVERCLOCK_BUDGET_PCT = AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO * 100.0
-GPU_SPECIFIC_AUTO_UV_MAX_DROP_DEFAULTS: tuple[dict[str, object], ...] = (
-    {
-        "family": "RTX 3080",
-        "patterns": ("RTX 3080", "3080"),
-        "value_pct": 10.0,
-    },
-)
+AUTO_UV_PRESET_EFFICIENCY = "efficiency"
+AUTO_UV_PRESET_BALANCED = "balanced"
+AUTO_UV_PRESET_PERFORMANCE = "performance"
+DEFAULT_AUTO_UV_PRESET = AUTO_UV_PRESET_BALANCED
 GPU_UNDERVOLTING_PURPOSE_TEXT = (
     "GPU undervolting is meant to make your graphics card consume significantly "
     "less power while giving up as little performance as possible. The practical "
@@ -42,13 +35,6 @@ GPU_UNDERVOLTING_PURPOSE_TEXT = (
     "electricity bills. PenguinBurner automatically searches for the operating "
     "sweet spot of your Nvidia GPU, so you do not have to resort to trial and "
     "error or risk introducing avoidable system instability."
-)
-PERFORMANCE_BIAS_TOOLTIP_TEXT = (
-    "Controls how strongly Auto-UV favors recovering clocks after lowering "
-    "voltage. Moving toward Performance allows more aggressive clock recovery. "
-    "The far Performance side can push the curve above the measured baseline "
-    "clock and might hang your system. Changing this can result in instability; "
-    "modify with care."
 )
 
 
@@ -62,32 +48,80 @@ class AutoUvVoltageDropDefault:
     preset_matched: bool
 
 
+@dataclass(frozen=True, slots=True)
+class AutoUvPerformanceTargetDefault:
+    gpu_name: str | None
+    gpu_family: str | None
+    voltage_mv: int | None
+    clock_mhz: int | None
+    profile_id: str
+    preset_matched: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AutoUvPreset:
+    preset_id: str
+    label: str
+    auto_uv_mode: str
+    tail_rise_bins: int
+
+
+def auto_uv_preset(preset_id: object) -> AutoUvPreset:
+    normalized = str(preset_id or DEFAULT_AUTO_UV_PRESET).strip().lower()
+    if normalized == AUTO_UV_PRESET_EFFICIENCY:
+        return AutoUvPreset(
+            preset_id=AUTO_UV_PRESET_EFFICIENCY,
+            label="Efficiency",
+            auto_uv_mode=AUTO_UV_MODE_EFFICIENCY,
+            tail_rise_bins=DEFAULT_AUTO_UV_TAIL_RISE_BINS,
+        )
+    if normalized == AUTO_UV_PRESET_PERFORMANCE:
+        return AutoUvPreset(
+            preset_id=AUTO_UV_PRESET_PERFORMANCE,
+            label="Performance",
+            auto_uv_mode=AUTO_UV_MODE_PERFORMANCE,
+            tail_rise_bins=DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS,
+        )
+    return AutoUvPreset(
+        preset_id=AUTO_UV_PRESET_BALANCED,
+        label="Balanced",
+        auto_uv_mode=AUTO_UV_MODE_EFFICIENCY,
+        tail_rise_bins=DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS,
+    )
+
+
+def auto_uv_presets() -> tuple[AutoUvPreset, ...]:
+    return (
+        auto_uv_preset(AUTO_UV_PRESET_EFFICIENCY),
+        auto_uv_preset(AUTO_UV_PRESET_BALANCED),
+        auto_uv_preset(AUTO_UV_PRESET_PERFORMANCE),
+    )
+
+
 def auto_uv_voltage_drop_default(
     *,
     gpu_name: object | None = None,
     gpu_index: int | None = None,
     auto_uv_mode: object | None = None,
-    yolo: bool = False,
     reference_voltage_mv: int = AUTO_UV_DROP_REFERENCE_VOLTAGE_MV,
 ) -> AutoUvVoltageDropDefault:
     detected_name = str(gpu_name).strip() if gpu_name else _query_gpu_name(gpu_index)
     target = uv_limit_voltage_floor_target_for_gpu(
         detected_name,
         auto_uv_mode,
-        yolo=bool(yolo),
     )
     if target is None:
-        gpu_default = gpu_specific_auto_uv_voltage_drop_default(
-            detected_name,
-            reference_voltage_mv=int(reference_voltage_mv),
+        floor_voltage_mv = int(
+            round(
+                float(reference_voltage_mv)
+                * (1.0 - (float(DEFAULT_AUTO_UV_MAX_DROP_PCT) / 100.0))
+            )
         )
-        if gpu_default is not None:
-            return gpu_default
         return AutoUvVoltageDropDefault(
             value_pct=float(DEFAULT_AUTO_UV_MAX_DROP_PCT),
             gpu_name=detected_name or None,
             gpu_family=None,
-            floor_voltage_mv=None,
+            floor_voltage_mv=floor_voltage_mv,
             reference_voltage_mv=int(reference_voltage_mv),
             preset_matched=False,
         )
@@ -104,111 +138,58 @@ def auto_uv_voltage_drop_default(
     )
 
 
-def gpu_specific_auto_uv_voltage_drop_default(
-    gpu_name: object | None,
+def auto_uv_performance_target_default(
     *,
-    reference_voltage_mv: int,
-) -> AutoUvVoltageDropDefault | None:
-    normalized_name = str(gpu_name or "").upper()
-    if not normalized_name:
-        return None
-    for entry in GPU_SPECIFIC_AUTO_UV_MAX_DROP_DEFAULTS:
-        patterns = tuple(str(pattern).upper() for pattern in entry["patterns"])
-        if not any(pattern in normalized_name for pattern in patterns):
-            continue
-        value_pct = float(entry["value_pct"])
-        floor_voltage_mv = int(
-            round(float(reference_voltage_mv) * (1.0 - (value_pct / 100.0)))
+    gpu_name: object | None = None,
+    gpu_index: int | None = None,
+) -> AutoUvPerformanceTargetDefault:
+    detected_name = str(gpu_name).strip() if gpu_name else _query_gpu_name(gpu_index)
+    profile_id = AUTO_UV_PERFORMANCE_OC_PROFILE_ID
+    target = uv_limit_profile_target_for_gpu(detected_name, profile_id)
+    if target is None:
+        return AutoUvPerformanceTargetDefault(
+            gpu_name=detected_name or None,
+            gpu_family=None,
+            voltage_mv=None,
+            clock_mhz=None,
+            profile_id=str(profile_id),
+            preset_matched=False,
         )
-        return AutoUvVoltageDropDefault(
-            value_pct=value_pct,
-            gpu_name=str(gpu_name).strip() if gpu_name else None,
-            gpu_family=str(entry["family"]),
-            floor_voltage_mv=floor_voltage_mv,
-            reference_voltage_mv=int(reference_voltage_mv),
-            preset_matched=True,
-        )
-    return None
-
-
-def auto_uv_mode_for_performance_bias(value_pct: float | int) -> str:
-    if float(value_pct) >= 100.0:
-        return AUTO_UV_MODE_PERFORMANCE
-    return AUTO_UV_MODE_EFFICIENCY
-
-
-def auto_uv_tail_rise_bins_for_performance_bias(
-    value_pct: float | int,
-    *,
-    max_pct: float | int = MAX_OVERCLOCK_BUDGET_PCT,
-) -> int:
-    slider_position = _performance_bias_slider_position_float(
-        value_pct,
-        max_pct=max_pct,
-    )
-    if slider_position < 25.0:
-        return 0
-    if slider_position < 50.0:
-        return 2
-    if slider_position < 75.0:
-        return DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS
-    return 6
-
-
-def performance_bias_clock_recovery_pct(
-    slider_position: float | int,
-    *,
-    max_pct: float | int = MAX_OVERCLOCK_BUDGET_PCT,
-) -> float:
-    clamped = max(0.0, min(100.0, float(slider_position)))
-    if clamped <= 50.0:
-        return clamped * 2.0
-    right_span = max(0.0, float(max_pct) - 100.0)
-    return 100.0 + ((clamped - 50.0) / 50.0 * right_span)
-
-
-def performance_bias_slider_position(
-    value_pct: float | int,
-    *,
-    max_pct: float | int = MAX_OVERCLOCK_BUDGET_PCT,
-) -> int:
-    return int(
-        round(
-            _performance_bias_slider_position_float(
-                value_pct,
-                max_pct=max_pct,
-            )
-        )
+    return AutoUvPerformanceTargetDefault(
+        gpu_name=detected_name or None,
+        gpu_family=str(target.gpu_family),
+        voltage_mv=int(target.voltage_mv),
+        clock_mhz=int(target.clock_mhz),
+        profile_id=str(target.profile_id),
+        preset_matched=True,
     )
 
 
-def _performance_bias_slider_position_float(
-    value_pct: float | int,
-    *,
-    max_pct: float | int = MAX_OVERCLOCK_BUDGET_PCT,
-) -> float:
-    clamped = max(0.0, min(float(max_pct), float(value_pct)))
-    if clamped <= 100.0:
-        return clamped / 2.0
-    right_span = max(1.0, float(max_pct) - 100.0)
-    return 50.0 + ((clamped - 100.0) / right_span * 50.0)
+def auto_uv_performance_target_text(
+    target: AutoUvPerformanceTargetDefault,
+) -> str:
+    if (
+        target.preset_matched
+        and target.voltage_mv is not None
+        and target.clock_mhz is not None
+    ):
+        family = target.gpu_family or "GPU table"
+        return (
+            f"{int(target.voltage_mv)} mV / {int(target.clock_mhz)} MHz "
+            f"({family} {target.profile_id})"
+        )
+    return "No GPU table target detected"
 
 
-def slider_value_from_click_position(
-    *,
-    position_px: float,
-    width_px: float,
-    minimum: int,
-    maximum: int,
-    inverted: bool = False,
-) -> int:
-    if int(maximum) <= int(minimum):
-        return int(minimum)
-    width = max(1.0, float(width_px) - 1.0)
-    ratio = max(0.0, min(1.0, float(position_px) / width))
-    if inverted:
-        ratio = 1.0 - ratio
-    return int(round(int(minimum) + ratio * (int(maximum) - int(minimum))))
+def auto_uv_performance_preset_label(_preview=None) -> str:
+    return "Performance"
+
+
+def auto_uv_performance_preset_tooltip(_preview=None) -> str:
+    return (
+        "Use the same undervolt search as Balanced, but let the tail of the "
+        "curve rise 6 V/F bins up from the locked point."
+    )
 
 
 def memory_offset_mhz_range() -> tuple[int, int]:

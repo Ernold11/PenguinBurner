@@ -1,8 +1,3 @@
-"""Build Q2RTX and CUDA stability-test workloads from CLI options.
-
-This module also repairs stale managed Q2RTX paths and persists the selected source.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path

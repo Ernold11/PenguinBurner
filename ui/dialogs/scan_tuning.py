@@ -3,22 +3,18 @@ from __future__ import annotations
 import html
 
 from ..assets import asset_image_path
-from ..styles import performance_bias_slider_stylesheet
+from ..tuning import AUTO_UV_PRESET_EFFICIENCY
+from ..tuning import AUTO_UV_PRESET_PERFORMANCE
 from ..tuning import DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT
-from ..tuning import DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT
-from ..tuning import DEFAULT_SHORT_VERIFICATION_BASE_S
+from ..tuning import DEFAULT_AUTO_UV_PRESET
 from ..tuning import GPU_UNDERVOLTING_PURPOSE_TEXT
-from ..tuning import MAX_AUTO_UV_TAIL_RISE_BINS
-from ..tuning import MAX_OVERCLOCK_BUDGET_PCT
-from ..tuning import PERFORMANCE_BIAS_TOOLTIP_TEXT
-from ..tuning import YOLO_MAX_OVERCLOCK_BUDGET_PCT
-from ..tuning import auto_uv_mode_for_performance_bias
-from ..tuning import auto_uv_tail_rise_bins_for_performance_bias
+from ..tuning import auto_uv_preset
+from ..tuning import auto_uv_performance_preset_label
+from ..tuning import auto_uv_performance_target_default
+from ..tuning import auto_uv_performance_preset_tooltip
+from ..tuning import auto_uv_presets
 from ..tuning import auto_uv_voltage_drop_default
 from ..tuning import memory_offset_mhz_range
-from ..tuning import performance_bias_clock_recovery_pct
-from ..tuning import performance_bias_slider_position
-from ..tuning import slider_value_from_click_position
 from .error_details import qt_flags
 
 
@@ -28,53 +24,27 @@ def select_scan_tuning(
     QtGui,
     QtWidgets,
     parent,
-    yolo: bool = False,
 ) -> dict | None:
     dialog = QtWidgets.QDialog(parent)
     dialog.setWindowTitle("Automatic undervolt behavior")
     layout = QtWidgets.QVBoxLayout(dialog)
+    layout.setContentsMargins(18, 16, 18, 16)
     layout.setSpacing(12)
 
     purpose = QtWidgets.QLabel(GPU_UNDERVOLTING_PURPOSE_TEXT)
     purpose.setObjectName("purposeText")
     purpose.setWordWrap(True)
-    purpose.setAlignment(qt_flags(QtCore.Qt, "AlignmentFlag", "AlignLeft", "AlignVCenter"))
+    purpose.setContentsMargins(0, 0, 0, 0)
+    purpose.setAlignment(qt_flags(QtCore.Qt, "AlignmentFlag", "AlignLeft", "AlignTop"))
 
-    max_bias_pct = YOLO_MAX_OVERCLOCK_BUDGET_PCT if yolo else MAX_OVERCLOCK_BUDGET_PCT
-    bias_group = QtWidgets.QGroupBox("Performance bias")
-    bias_group.setObjectName("performanceBiasGroup")
-    bias_layout = QtWidgets.QVBoxLayout(bias_group)
-    bias_layout.setContentsMargins(14, 24, 14, 14)
-    bias_layout.setSpacing(12)
+    voltage_drop_default = auto_uv_voltage_drop_default()
 
-    bias_slider = _click_jump_slider_class(QtCore, QtWidgets)(QtCore.Qt.Horizontal)
-    bias_slider.setObjectName("performanceBiasSlider")
-    bias_slider.setRange(0, 100)
-    bias_slider.setSingleStep(1)
-    bias_slider.setPageStep(5)
-    bias_slider.setToolTip(_wrapped_tooltip(PERFORMANCE_BIAS_TOOLTIP_TEXT))
-    bias_slider.setToolTipDuration(20000)
-    bias_slider.setStyleSheet(performance_bias_slider_stylesheet(max_bias_pct))
-
-    slider_column = QtWidgets.QVBoxLayout()
-    slider_column.setContentsMargins(0, 0, 0, 0)
-    slider_column.setSpacing(5)
-    bias_labels = QtWidgets.QHBoxLayout()
-    efficiency_label = QtWidgets.QLabel("Efficiency")
-    performance_label = QtWidgets.QLabel("Performance")
-    performance_label.setAlignment(
-        qt_flags(QtCore.Qt, "AlignmentFlag", "AlignRight", "AlignVCenter")
-    )
-    bias_labels.addWidget(efficiency_label)
-    bias_labels.addStretch(1)
-    bias_labels.addWidget(performance_label)
-    slider_column.addWidget(bias_slider)
-    slider_column.addLayout(bias_labels)
-
-    bias_control_layout = QtWidgets.QHBoxLayout()
-    bias_control_layout.setContentsMargins(0, 0, 0, 0)
-    bias_control_layout.setSpacing(12)
-    bias_control_layout.addWidget(
+    preset_group = QtWidgets.QGroupBox("Auto-UV preset")
+    preset_group.setObjectName("autoUvPresetGroup")
+    preset_layout = QtWidgets.QHBoxLayout(preset_group)
+    preset_layout.setContentsMargins(14, 24, 14, 14)
+    preset_layout.setSpacing(12)
+    preset_layout.addWidget(
         _bias_icon(
             QtCore=QtCore,
             QtGui=QtGui,
@@ -83,8 +53,42 @@ def select_scan_tuning(
             tooltip="Efficiency",
         )
     )
-    bias_control_layout.addLayout(slider_column, 1)
-    bias_control_layout.addWidget(
+
+    preset_buttons_layout = QtWidgets.QHBoxLayout()
+    preset_buttons_layout.setContentsMargins(0, 0, 0, 0)
+    preset_buttons_layout.setSpacing(0)
+    preset_button_group = QtWidgets.QButtonGroup(dialog)
+    preset_button_group.setExclusive(True)
+    preset_buttons = {}
+    preset_tooltips = {
+        "efficiency": (
+            "Allow up to 10% max efficiency clock drop; prefer best "
+            "efficiency FPS per watt."
+        ),
+        "balanced": (
+            "Try to maintain baseline clock while lowering the voltage; "
+            "the tail of the curve goes 4 V/F bins up."
+        ),
+        "performance": auto_uv_performance_preset_tooltip(),
+    }
+    for preset in auto_uv_presets():
+        label = (
+            auto_uv_performance_preset_label()
+            if preset.preset_id == "performance"
+            else preset.label
+        )
+        button = QtWidgets.QPushButton(label)
+        button.setObjectName("autoUvPresetButton")
+        button.setCheckable(True)
+        button.setProperty("presetId", preset.preset_id)
+        button.setToolTip(_wrapped_tooltip(preset_tooltips[preset.preset_id]))
+        button.setToolTipDuration(20000)
+        preset_button_group.addButton(button)
+        preset_buttons[preset.preset_id] = button
+        preset_buttons_layout.addWidget(button)
+    preset_buttons[DEFAULT_AUTO_UV_PRESET].setChecked(True)
+    preset_layout.addLayout(preset_buttons_layout, 1)
+    preset_layout.addWidget(
         _bias_icon(
             QtCore=QtCore,
             QtGui=QtGui,
@@ -93,30 +97,20 @@ def select_scan_tuning(
             tooltip="Performance",
         )
     )
-    bias_layout.addLayout(bias_control_layout)
 
     advanced_group = QtWidgets.QGroupBox("Advanced")
     advanced_group.setObjectName("advancedTuningGroup")
-    form = QtWidgets.QFormLayout(advanced_group)
-    form.setContentsMargins(14, 24, 14, 14)
-    form.setHorizontalSpacing(16)
-    form.setVerticalSpacing(10)
-    form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldsStayAtSizeHint)
+    advanced_layout = QtWidgets.QVBoxLayout(advanced_group)
+    advanced_layout.setContentsMargins(18, 28, 18, 16)
+    advanced_layout.setSpacing(10)
 
-    voltage_drop_default = auto_uv_voltage_drop_default(yolo=bool(yolo))
-    max_drop_spin = _double_spin(
-        QtWidgets,
-        1.0,
-        30.0,
-        float(voltage_drop_default.value_pct),
-        "%",
+    preset_advanced_stack = QtWidgets.QStackedWidget()
+    preset_advanced_stack.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Expanding,
+        QtWidgets.QSizePolicy.Policy.Fixed,
     )
-    max_drop_spin.setSingleStep(1.0)
-    voltage_drop_note = QtWidgets.QLabel(
-        _auto_voltage_drop_note_text(voltage_drop_default)
-    )
-    voltage_drop_note.setObjectName("autoVoltageDropNote")
-    voltage_drop_note.setWordWrap(False)
+    advanced_pages = {}
+
     max_clock_drop_spin = _double_spin(
         QtWidgets,
         1.0,
@@ -124,43 +118,20 @@ def select_scan_tuning(
         DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT,
         "%",
     )
-    short_seconds_spin = QtWidgets.QSpinBox()
-    short_seconds_spin.setRange(10, 60)
-    short_seconds_spin.setSuffix(" sec")
-    short_seconds_spin.setSingleStep(5)
-    short_seconds_spin.setFixedWidth(110)
-    short_seconds_spin.setValue(DEFAULT_SHORT_VERIFICATION_BASE_S)
     memory_offset_spin = QtWidgets.QSpinBox()
     memory_min_mhz, memory_max_mhz = memory_offset_mhz_range()
     memory_offset_spin.setRange(memory_min_mhz, memory_max_mhz)
     memory_offset_spin.setSuffix(" MHz")
     memory_offset_spin.setSingleStep(50)
-    memory_offset_spin.setFixedWidth(118)
-    tail_rise_bins_spin = QtWidgets.QSpinBox()
-    tail_rise_bins_spin.setRange(0, MAX_AUTO_UV_TAIL_RISE_BINS)
-    tail_rise_bins_spin.setSingleStep(1)
-    tail_rise_bins_spin.setFixedWidth(90)
-    tail_rise_bins_manually_edited = {"value": False}
-
+    memory_offset_spin.setFixedWidth(136)
+    efficiency_page = QtWidgets.QWidget()
+    efficiency_form = _advanced_form_layout(QtCore=QtCore, QtWidgets=QtWidgets)
+    efficiency_page.setLayout(efficiency_form)
     _add_form_row(
         QtCore=QtCore,
         QtWidgets=QtWidgets,
-        form_layout=form,
-        text="Max voltage drop",
-        widget=max_drop_spin,
-        tooltip=(
-            "Default is calculated from the detected GPU preset efficiency "
-            "voltage floor. If the GPU is unsupported or cannot be detected, "
-            "the default is 15%. Changing this can result in instability; "
-            "modify with care."
-        ),
-    )
-    form.addRow("", voltage_drop_note)
-    _add_form_row(
-        QtCore=QtCore,
-        QtWidgets=QtWidgets,
-        form_layout=form,
-        text="Max clock drop",
+        form_layout=efficiency_form,
+        text="Max efficiency clock drop",
         widget=max_clock_drop_spin,
         tooltip=(
             "How much loaded frequency degradation Auto-UV may accept while "
@@ -168,10 +139,61 @@ def select_scan_tuning(
             "performance loss. Changing this can result in instability; modify with care."
         ),
     )
+
+    balanced_page = QtWidgets.QWidget()
+    balanced_page.setLayout(_advanced_form_layout(QtCore=QtCore, QtWidgets=QtWidgets))
+
+    performance_page = QtWidgets.QWidget()
+    performance_form = _advanced_form_layout(QtCore=QtCore, QtWidgets=QtWidgets)
+    performance_page.setLayout(performance_form)
+    performance_target = auto_uv_performance_target_default(
+        gpu_name=voltage_drop_default.gpu_name,
+    )
+    performance_voltage_spin = QtWidgets.QSpinBox()
+    performance_voltage_spin.setRange(700, 1250)
+    performance_voltage_spin.setSuffix(" mV")
+    performance_voltage_spin.setSingleStep(5)
+    performance_voltage_spin.setFixedWidth(136)
+    performance_voltage_spin.setValue(int(performance_target.voltage_mv or 950))
+    performance_clock_spin = QtWidgets.QSpinBox()
+    performance_clock_spin.setRange(1000, 4000)
+    performance_clock_spin.setSuffix(" MHz")
+    performance_clock_spin.setSingleStep(15)
+    performance_clock_spin.setFixedWidth(136)
+    performance_clock_spin.setValue(int(performance_target.clock_mhz or 3000))
     _add_form_row(
         QtCore=QtCore,
         QtWidgets=QtWidgets,
-        form_layout=form,
+        form_layout=performance_form,
+        text="Auto-OC voltage target",
+        widget=performance_voltage_spin,
+        tooltip="Editable voltage cap for the internal Performance Auto-OC pass.",
+    )
+    _add_form_row(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        form_layout=performance_form,
+        text="Auto-OC clock target",
+        widget=performance_clock_spin,
+        tooltip="Editable core clock cap for the internal Performance Auto-OC pass.",
+    )
+
+    advanced_pages[AUTO_UV_PRESET_EFFICIENCY] = efficiency_page
+    advanced_pages[DEFAULT_AUTO_UV_PRESET] = balanced_page
+    advanced_pages[AUTO_UV_PRESET_PERFORMANCE] = performance_page
+    for page in advanced_pages.values():
+        preset_advanced_stack.addWidget(page)
+    preset_advanced_stack.setMinimumHeight(
+        max(page.sizeHint().height() for page in advanced_pages.values())
+    )
+
+    common_advanced = QtWidgets.QWidget()
+    common_form = _advanced_form_layout(QtCore=QtCore, QtWidgets=QtWidgets)
+    common_advanced.setLayout(common_form)
+    _add_form_row(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        form_layout=common_form,
         text="Memory Offset MHz",
         widget=memory_offset_spin,
         tooltip=(
@@ -181,52 +203,23 @@ def select_scan_tuning(
             "rejected by the Nvidia driver; modify with care."
         ),
     )
-    _add_form_row(
-        QtCore=QtCore,
-        QtWidgets=QtWidgets,
-        form_layout=form,
-        text="Curve tail rise bins",
-        widget=tail_rise_bins_spin,
-        tooltip=(
-            "How many voltage bins can the voltage curve rise above the locked "
-            "undervolt point."
-        ),
-    )
-    _add_form_row(
-        QtCore=QtCore,
-        QtWidgets=QtWidgets,
-        form_layout=form,
-        text="Base verification length",
-        widget=short_seconds_spin,
-    )
 
-    default_slider_position = performance_bias_slider_position(
-        DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT,
-        max_pct=max_bias_pct,
-    )
+    advanced_layout.addWidget(preset_advanced_stack)
+    advanced_layout.addWidget(common_advanced)
 
-    def _sync_tail_rise_bins_to_bias() -> None:
-        if bool(tail_rise_bins_manually_edited["value"]):
-            return
-        performance_bias_pct = performance_bias_clock_recovery_pct(
-            bias_slider.value(),
-            max_pct=max_bias_pct,
+    def checked_preset_id() -> str:
+        checked_button = preset_button_group.checkedButton()
+        if checked_button is None:
+            return DEFAULT_AUTO_UV_PRESET
+        return str(checked_button.property("presetId") or DEFAULT_AUTO_UV_PRESET)
+
+    def sync_preset_specific_fields() -> None:
+        preset_advanced_stack.setCurrentWidget(
+            advanced_pages.get(checked_preset_id(), balanced_page)
         )
-        signals_were_blocked = tail_rise_bins_spin.blockSignals(True)
-        tail_rise_bins_spin.setValue(
-            auto_uv_tail_rise_bins_for_performance_bias(
-                performance_bias_pct,
-                max_pct=max_bias_pct,
-            )
-        )
-        tail_rise_bins_spin.blockSignals(signals_were_blocked)
 
-    bias_slider.valueChanged.connect(lambda _value: _sync_tail_rise_bins_to_bias())
-    bias_slider.setValue(default_slider_position)
-    _sync_tail_rise_bins_to_bias()
-    tail_rise_bins_spin.valueChanged.connect(
-        lambda _value: tail_rise_bins_manually_edited.__setitem__("value", True)
-    )
+    preset_button_group.buttonClicked.connect(lambda _button: sync_preset_specific_fields())
+    sync_preset_specific_fields()
 
     buttons = QtWidgets.QDialogButtonBox()
     role_enum = getattr(QtWidgets.QDialogButtonBox, "ButtonRole", QtWidgets.QDialogButtonBox)
@@ -245,81 +238,36 @@ def select_scan_tuning(
     start_button.setDefault(True)
 
     layout.addWidget(purpose)
-    layout.addWidget(bias_group)
+    layout.addWidget(preset_group)
     layout.addWidget(advanced_group)
     layout.addWidget(buttons)
-    dialog.setMinimumWidth(520)
+    dialog.setMinimumWidth(860)
+    dialog.resize(860, dialog.sizeHint().height())
     if dialog.exec() != QtWidgets.QDialog.Accepted:
         return None
 
-    performance_bias_pct = performance_bias_clock_recovery_pct(
-        bias_slider.value(),
-        max_pct=max_bias_pct,
+    checked_button = preset_button_group.checkedButton()
+    preset_id = (
+        checked_button.property("presetId")
+        if checked_button is not None
+        else DEFAULT_AUTO_UV_PRESET
     )
-    return {
-        "auto_uv_mode": auto_uv_mode_for_performance_bias(performance_bias_pct),
-        "auto_uv_max_drop_pct": float(max_drop_spin.value()),
+    preset = auto_uv_preset(preset_id)
+    options = {
+        "auto_uv_mode": preset.auto_uv_mode,
+        "auto_uv_max_drop_pct": float(voltage_drop_default.value_pct),
         "auto_uv_max_clock_drop_pct": float(max_clock_drop_spin.value()),
-        "auto_uv_clock_bump_budget_ratio": performance_bias_pct / 100.0,
-        "auto_uv_yolo": bool(yolo),
         "auto_uv_memory_offset_mhz": int(memory_offset_spin.value()),
-        "auto_uv_tail_rise_bins": int(tail_rise_bins_spin.value()),
-        "auto_uv_short_seconds": int(short_seconds_spin.value()),
+        "auto_uv_tail_rise_bins": int(preset.tail_rise_bins),
     }
-
-
-def _auto_voltage_drop_note_text(default) -> str:
-    gpu_label = str(default.gpu_name or default.gpu_family or "").strip()
-    if bool(default.preset_matched):
-        return f"Max voltage drop auto-filled for {gpu_label}"
-    if gpu_label:
-        return f"Using generic max voltage drop for {gpu_label}"
-    return "Using generic max voltage drop"
-
-
-def _click_jump_slider_class(QtCore, QtWidgets):
-    class ClickJumpSlider(QtWidgets.QSlider):
-        def _event_x(self, event) -> float:
-            position = event.position() if hasattr(event, "position") else event.pos()
-            return float(position.x())
-
-        def _set_value_from_event(self, event) -> None:
-            self.setValue(
-                slider_value_from_click_position(
-                    position_px=self._event_x(event),
-                    width_px=self.width(),
-                    minimum=self.minimum(),
-                    maximum=self.maximum(),
-                    inverted=self.invertedAppearance(),
-                )
-            )
-
-        def mousePressEvent(self, event) -> None:
-            left_button = getattr(
-                QtCore.Qt.MouseButton,
-                "LeftButton",
-                QtCore.Qt.LeftButton,
-            )
-            if event.button() == left_button:
-                self.setSliderDown(True)
-                self._set_value_from_event(event)
-                event.accept()
-                return
-            super().mousePressEvent(event)
-
-        def mouseMoveEvent(self, event) -> None:
-            left_button = getattr(
-                QtCore.Qt.MouseButton,
-                "LeftButton",
-                QtCore.Qt.LeftButton,
-            )
-            if event.buttons() & left_button:
-                self._set_value_from_event(event)
-                event.accept()
-                return
-            super().mouseMoveEvent(event)
-
-    return ClickJumpSlider
+    if preset.preset_id == AUTO_UV_PRESET_PERFORMANCE:
+        options.update(
+            {
+                "auto_oc_target_voltage_mv": int(performance_voltage_spin.value()),
+                "auto_oc_target_clock_mhz": int(performance_clock_spin.value()),
+            }
+        )
+    return options
 
 
 def _bias_icon(*, QtCore, QtGui, QtWidgets, filename: str, tooltip: str):
@@ -342,7 +290,15 @@ def _bias_icon(*, QtCore, QtGui, QtWidgets, filename: str, tooltip: str):
     return label
 
 
-def _add_form_row(*, QtCore, QtWidgets, form_layout, text: str, widget, tooltip: str = ""):
+def _add_form_row(
+    *,
+    QtCore,
+    QtWidgets,
+    form_layout,
+    text: str,
+    widget,
+    tooltip: str = "",
+) -> None:
     label_widget = QtWidgets.QLabel(text)
     if not tooltip:
         form_layout.addRow(label_widget, widget)
@@ -354,8 +310,8 @@ def _add_form_row(*, QtCore, QtWidgets, form_layout, text: str, widget, tooltip:
     widget.setToolTipDuration(20000)
     label_container = QtWidgets.QWidget()
     label_layout = QtWidgets.QHBoxLayout(label_container)
-    label_layout.setContentsMargins(0, 0, 0, 0)
-    label_layout.setSpacing(6)
+    label_layout.setContentsMargins(0, 2, 12, 2)
+    label_layout.setSpacing(8)
     info_button = QtWidgets.QToolButton()
     info_button.setObjectName("infoButton")
     info_button.setText("i")
@@ -376,6 +332,17 @@ def _add_form_row(*, QtCore, QtWidgets, form_layout, text: str, widget, tooltip:
     form_layout.addRow(label_container, widget)
 
 
+def _advanced_form_layout(*, QtCore, QtWidgets):
+    form = QtWidgets.QFormLayout()
+    form.setContentsMargins(0, 0, 0, 0)
+    form.setHorizontalSpacing(24)
+    form.setVerticalSpacing(10)
+    form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldsStayAtSizeHint)
+    form.setFormAlignment(qt_flags(QtCore.Qt, "AlignmentFlag", "AlignLeft", "AlignTop"))
+    form.setLabelAlignment(qt_flags(QtCore.Qt, "AlignmentFlag", "AlignLeft", "AlignVCenter"))
+    return form
+
+
 def _wrapped_tooltip(text: str) -> str:
     normalized = " ".join(str(text).split())
     escaped = html.escape(normalized)
@@ -387,7 +354,7 @@ def _double_spin(QtWidgets, minimum: float, maximum: float, value: float, suffix
     spin.setRange(float(minimum), float(maximum))
     spin.setDecimals(1)
     spin.setSuffix(str(suffix))
-    spin.setFixedWidth(96)
+    spin.setFixedWidth(116)
     spin.setValue(float(value))
     return spin
 

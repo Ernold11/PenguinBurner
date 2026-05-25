@@ -9,8 +9,8 @@ from dataclasses import replace
 
 from .constants import DEFAULT_SINGLE_PASS_TIMEOUT_S
 from .models import Q2RTXStabilityConfig
-from auto_uv3.auto_uv_user_options import AUTO_UV_PROBE_TUNING
-from auto_uv3.q2rtx.q2rtx_cuda_probe_config import cuda_bruteforce_companion_command
+from auto_uv.auto_uv_user_options import AUTO_UV_PROBE_TUNING
+from auto_uv.q2rtx.q2rtx_cuda_probe_config import cuda_bruteforce_companion_command
 
 LONG_STABILITY_CUDA_RATIO_REFERENCE_S = 30
 
@@ -33,7 +33,7 @@ def long_stability_workload_durations(
 
 def _q2rtx_cuda_duration_s(total_duration_s: int) -> tuple[int, int]:
     total_s = max(2, int(total_duration_s))
-    cuda_ratio = float(AUTO_UV_PROBE_TUNING.tiered_cuda_duration_s) / float(
+    cuda_ratio = float(AUTO_UV_PROBE_TUNING.long_cuda_duration_s) / float(
         LONG_STABILITY_CUDA_RATIO_REFERENCE_S * 2
     )
     cuda_s = max(1, int(round(float(total_s) * cuda_ratio)))

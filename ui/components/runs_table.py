@@ -14,6 +14,7 @@ class RunsTable:
         "Run",
         "mV",
         "Target MHz",
+        "OC MHz",
         "Measured MHz",
         "FPS",
         "Power W",
@@ -21,19 +22,18 @@ class RunsTable:
         "Fan %",
         "Cap",
         "FPS/W",
-        "Clock recovery",
         "Decision",
         "Status",
     ]
     TARGET_MHZ_COLUMN = 2
-    MEASURED_MHZ_COLUMN = 3
-    FPS_COLUMN = 4
-    POWER_COLUMN = 5
-    TEMP_COLUMN = 6
-    FAN_COLUMN = 7
-    PERF_CAP_COLUMN = 8
-    FPSW_COLUMN = 9
-    BUDGET_COLUMN = 10
+    OC_MHZ_COLUMN = 3
+    MEASURED_MHZ_COLUMN = 4
+    FPS_COLUMN = 5
+    POWER_COLUMN = 6
+    TEMP_COLUMN = 7
+    FAN_COLUMN = 8
+    PERF_CAP_COLUMN = 9
+    FPSW_COLUMN = 10
     DECISION_COLUMN = 11
     STATUS_COLUMN = 12
 
@@ -43,7 +43,7 @@ class RunsTable:
         self.QtWidgets = QtWidgets
         self.base_baseline: dict | None = None
         self._progress_by_probe: dict[tuple[str, str], dict] = {}
-        self._busy_progress_class = _busy_progress_class(QtCore, QtGui, QtWidgets)
+        self._oc_progress_by_probe: dict[tuple[str, str], tuple[int, int]] = {}
         self._progress_bar_class = _clickable_progress_bar_class(QtWidgets)
         self._selected_candidate_id = ""
         self.on_candidate_selection_changed: Callable[[str | None], None] | None = None
@@ -62,6 +62,7 @@ class RunsTable:
                 0: 46,
                 1: 62,
                 self.TARGET_MHZ_COLUMN: 108,
+                self.OC_MHZ_COLUMN: 104,
                 self.MEASURED_MHZ_COLUMN: 128,
                 self.FPS_COLUMN: 134,
                 self.POWER_COLUMN: 144,
@@ -69,7 +70,6 @@ class RunsTable:
                 self.FAN_COLUMN: 74,
                 self.PERF_CAP_COLUMN: 112,
                 self.FPSW_COLUMN: 134,
-                self.BUDGET_COLUMN: 132,
                 self.DECISION_COLUMN: 106,
                 self.STATUS_COLUMN: 190,
             },
@@ -80,6 +80,7 @@ class RunsTable:
     def clear(self) -> None:
         self.base_baseline = None
         self._progress_by_probe.clear()
+        self._oc_progress_by_probe.clear()
         self._selected_candidate_id = ""
         self.widget.clearSelection()
         self.widget.setRowCount(0)
@@ -89,15 +90,30 @@ class RunsTable:
         self.widget.insertRow(row)
         self._write_row(row, payload, running=True)
 
+    def record_candidate_curve(self, payload: dict) -> None:
+        oc_progress = _payload_curve_oc_progress(payload)
+        if oc_progress is None:
+            return
+        key = _probe_key(payload)
+        self._oc_progress_by_probe[key] = oc_progress
+        row = self._find_row_by_probe_key(key)
+        if row is not None:
+            row_state = (
+                "running"
+                if _is_active_decision(self._cell_text(row, self.DECISION_COLUMN))
+                else _row_state(payload, running=False)
+            )
+            self._set_oc_cell(
+                row,
+                oc_progress,
+                row_state=row_state,
+            )
+
     def update_probe_progress(self, payload: dict) -> None:
         row = self._find_running_row(payload)
         if row is None:
             return
-        progress = {
-            "elapsed_s": _to_float(payload.get("elapsed_s")),
-            "target_duration_s": _to_float(payload.get("target_duration_s")),
-            "label": _progress_label(payload),
-        }
+        progress = self._merged_progress(_probe_key(payload), _payload_progress(payload))
         self._progress_by_probe[_probe_key(payload)] = progress
         self._set_perf_cap_cell(row, payload, row_state="running")
         self._set_status_progress_cell(
@@ -141,6 +157,10 @@ class RunsTable:
     def _write_row(self, row: int, payload: dict, *, running: bool) -> None:
         row_state = _row_state(payload, running=running)
         values = self._row_values(row, payload, running=running)
+        if len(values) != len(self.COLUMNS):
+            raise RuntimeError(
+                f"runs table row has {len(values)} values for {len(self.COLUMNS)} columns"
+            )
         for column, value in enumerate(values):
             item = self.widget_item(str(value), row_state=row_state, column=column)
             self.widget.setItem(row, column, item)
@@ -161,21 +181,16 @@ class RunsTable:
             label="Power W",
         )
         self._paint_fpsw_cell(row, payload)
-        self._set_budget_cell(row, payload)
         self._set_perf_cap_cell(row, payload, row_state=row_state)
         key = _probe_key(payload)
-        progress = self._progress_by_probe.get(key)
-        if progress is None:
-            progress = {
-                "elapsed_s": _to_float(payload.get("elapsed_s")),
-                "target_duration_s": _to_float(payload.get("target_duration_s")),
-                "label": _progress_label(payload),
-            }
-        elif not running:
+        progress = self._merged_progress(key, _payload_progress(payload))
+        if not running:
             label = _progress_label(payload)
             if label:
                 progress = dict(progress)
                 progress["label"] = label
+        else:
+            self._progress_by_probe[key] = dict(progress)
         self._set_status_progress_cell(
             row,
             progress=progress,
@@ -192,6 +207,7 @@ class RunsTable:
             f"{int(row) + 1}.",
             _format_int(payload.get("voltage_mv")),
             _format_int(payload.get("clock_mhz")),
+            _format_oc_progress(self._oc_progress_for_payload(payload)),
             _format_float(_measured_clock_value(payload)),
             self._metric_text_with_delta(payload.get("fps"), "fps"),
             self._metric_text_with_delta(payload.get("power_w"), "power_w"),
@@ -202,10 +218,29 @@ class RunsTable:
                 payload.get("efficiency_fps_per_w"),
                 "efficiency_fps_per_w",
             ),
-            "",
             str(decision),
             "",
         ]
+
+    def _merged_progress(self, key: tuple[str, str], incoming: dict) -> dict:
+        progress = dict(self._progress_by_probe.get(key, {}))
+        for field in ("elapsed_s", "target_duration_s"):
+            value = incoming.get(field)
+            if value is not None:
+                progress[field] = value
+        if incoming.get("label"):
+            progress["label"] = incoming["label"]
+        else:
+            progress.setdefault("label", "")
+        progress.setdefault("elapsed_s", None)
+        progress.setdefault("target_duration_s", None)
+        return progress
+
+    def _oc_progress_for_payload(self, payload: dict) -> tuple[int, int]:
+        payload_oc = _payload_oc_progress(payload)
+        if payload_oc is not None:
+            return payload_oc
+        return self._oc_progress_by_probe.get(_probe_key(payload), (0, 0))
 
     def _metric_text_with_delta(self, value, baseline_key: str) -> str:
         value_text = _format_float(value)
@@ -298,47 +333,6 @@ class RunsTable:
         item.setFont(_bold_font(item))
         item.setToolTip(f"FPS/W {delta_pct:+.2f}% vs base")
 
-    def _set_budget_cell(self, row: int, payload: dict) -> None:
-        used = _to_float(payload.get("overclock_budget_used_pct"))
-        limit = _to_float(payload.get("overclock_budget_limit_pct"))
-        if used is None or limit is None:
-            self.widget.removeCellWidget(row, self.BUDGET_COLUMN)
-            return
-
-        bar = self._make_progress_bar(row, self.BUDGET_COLUMN)
-        bar.setRange(0, 1000)
-        bar.setTextVisible(True)
-        bar.setFixedHeight(18)
-        if float(limit) <= 0.0:
-            ratio = 0.0
-        else:
-            ratio = max(0.0, min(1.0, float(used) / float(limit)))
-        fill = _budget_fill_color()
-        bar.setValue(int(round(ratio * 1000.0)))
-        display_used, display_limit = _budget_display_values(used, limit)
-        used_recovery_pct, limit_recovery_pct = _budget_recovery_display_values(
-            payload,
-            used=display_used,
-            limit=display_limit,
-        )
-        bar.setFormat(
-            _budget_recovery_text(
-                used_recovery_pct,
-                limit_recovery_pct,
-            )
-        )
-        bar.setToolTip(
-            "Clock recovery used: "
-            f"{used_recovery_pct:.0f}% of {limit_recovery_pct:.0f}% of the "
-            "allowed clock-drop gap "
-            f"({display_used:.2f} of {display_limit:.2f} internal "
-            "clock-percent points)"
-        )
-        bar.setStyleSheet(
-            _progress_bar_stylesheet(fill, text_color=_progress_text_color(fill, ratio))
-        )
-        self.widget.setCellWidget(row, self.BUDGET_COLUMN, bar)
-
     def _set_perf_cap_cell(self, row: int, payload: dict, *, row_state: str) -> None:
         reason_text = _perf_cap_reason_text(payload.get("perf_cap_reason"))
         item = self.widget.item(row, self.PERF_CAP_COLUMN)
@@ -389,26 +383,14 @@ class RunsTable:
                 f"{_format_duration_compact(target)}"
             )
         elif running:
-            existing = self.widget.cellWidget(row, self.STATUS_COLUMN)
-            if isinstance(existing, self._busy_progress_class):
-                busy = existing
-                busy.set_progress_style(
-                    label=label,
-                    fill=fill,
-                    text_color=_progress_text_color(fill, ratio),
-                )
-                busy.set_row_click_callback(
-                    self._row_click_callback(row, self.STATUS_COLUMN)
-                )
-            else:
-                busy = self._busy_progress_class(
-                    label=label,
-                    fill=fill,
-                    text_color=_progress_text_color(fill, ratio),
-                    on_row_click=self._row_click_callback(row, self.STATUS_COLUMN),
-                )
-            busy.setToolTip("Stability progress is waiting for target duration data")
-            self.widget.setCellWidget(row, self.STATUS_COLUMN, busy)
+            self.widget.removeCellWidget(row, self.STATUS_COLUMN)
+            item = self.widget_item(
+                label or "Running",
+                row_state=row_state,
+                column=self.STATUS_COLUMN,
+            )
+            item.setToolTip("Waiting for stability progress timing")
+            self.widget.setItem(row, self.STATUS_COLUMN, item)
             return
         else:
             bar.setRange(0, 1000)
@@ -423,17 +405,22 @@ class RunsTable:
         self.widget.setCellWidget(row, self.STATUS_COLUMN, bar)
 
     def _find_running_row(self, payload: dict) -> int | None:
-        voltage = _format_int(payload.get("voltage_mv"))
-        clock = _format_int(payload.get("clock_mhz"))
+        key = _probe_key(payload)
         for row in range(self.widget.rowCount() - 1, -1, -1):
             if not _is_active_decision(self._cell_text(row, self.DECISION_COLUMN)):
                 continue
-            if (
-                self._cell_text(row, 1) == voltage
-                and self._cell_text(row, self.TARGET_MHZ_COLUMN) == clock
-            ):
+            if self._row_probe_key(row) == key:
                 return row
         return None
+
+    def _find_row_by_probe_key(self, key: tuple[str, str]) -> int | None:
+        for row in range(self.widget.rowCount() - 1, -1, -1):
+            if self._row_probe_key(row) == key:
+                return row
+        return None
+
+    def _row_probe_key(self, row: int) -> tuple[str, str]:
+        return (self._cell_text(row, 1), self._cell_text(row, self.TARGET_MHZ_COLUMN))
 
     def _cell_text(self, row: int, column: int) -> str:
         item = self.widget.item(row, column)
@@ -475,6 +462,10 @@ class RunsTable:
         status_widget = self.widget.cellWidget(row, self.STATUS_COLUMN)
         if status_widget is not None:
             status_widget.setToolTip(tooltip)
+            return
+        status_item = self.widget.item(row, self.STATUS_COLUMN)
+        if status_item is not None:
+            status_item.setToolTip(tooltip)
 
     def _apply_row_state(self, row: int, row_state: str) -> None:
         colors = _row_colors(row_state)
@@ -544,11 +535,32 @@ class RunsTable:
                 self.QtWidgets.QAbstractItemView.PositionAtBottom,
             )
 
+    def _set_oc_cell(
+        self,
+        row: int,
+        oc_progress: tuple[int, int] | None,
+        *,
+        row_state: str,
+    ) -> None:
+        item = self.widget_item(
+            _format_oc_progress(oc_progress),
+            row_state=row_state,
+            column=self.OC_MHZ_COLUMN,
+        )
+        if oc_progress is not None:
+            applied_mhz, limit_mhz = oc_progress
+            item.setToolTip(
+                "Auto-OC applied clock gain: "
+                f"{int(applied_mhz)} of {int(limit_mhz)} MHz"
+            )
+        self.widget.setItem(row, self.OC_MHZ_COLUMN, item)
+
     def widget_item(self, text: str, *, row_state: str, column: int):
         item = self.QtWidgets.QTableWidgetItem(text)
         if column in {
             1,
             self.TARGET_MHZ_COLUMN,
+            self.OC_MHZ_COLUMN,
             self.MEASURED_MHZ_COLUMN,
             self.FPS_COLUMN,
             self.POWER_COLUMN,
@@ -686,99 +698,6 @@ def _clickable_progress_bar_class(QtWidgets):
     return RowClickableProgressBar
 
 
-def _busy_progress_class(QtCore, QtGui, QtWidgets):
-    class BusyBounceProgress(QtWidgets.QWidget):
-        def __init__(
-            self,
-            *,
-            label: str,
-            fill: str,
-            text_color: str = theme.TEXT_PROGRESS,
-            on_row_click=None,
-        ):
-            super().__init__()
-            self._label = str(label or "")
-            self._fill = str(fill or theme.RUNNING)
-            self._text_color = str(text_color or theme.TEXT_PROGRESS)
-            self._on_row_click = on_row_click
-            self._frame = 0
-            self.setFixedHeight(18)
-            self.setMinimumWidth(80)
-            self._timer = QtCore.QTimer(self)
-            self._timer.setInterval(70)
-            self._timer.timeout.connect(self._advance)
-            self._timer.start()
-
-        def set_progress_style(
-            self,
-            *,
-            label: str,
-            fill: str,
-            text_color: str = theme.TEXT_PROGRESS,
-        ) -> None:
-            self._label = str(label or "")
-            self._fill = str(fill or theme.RUNNING)
-            self._text_color = str(text_color or theme.TEXT_PROGRESS)
-            self.update()
-
-        def set_row_click_callback(self, on_row_click) -> None:
-            self._on_row_click = on_row_click
-
-        def mousePressEvent(self, event) -> None:
-            if self._on_row_click is not None:
-                self._on_row_click()
-            super().mousePressEvent(event)
-
-        def _advance(self) -> None:
-            self._frame += 1
-            self.update()
-
-        def paintEvent(self, _event) -> None:
-            painter = QtGui.QPainter(self)
-            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-            outer = self.rect().adjusted(0, 0, -1, -1)
-            inner = outer.adjusted(2, 2, -2, -2)
-            painter.setPen(QtGui.QColor(theme.BORDER))
-            painter.setBrush(QtGui.QColor(theme.WINDOW_BG))
-            painter.drawRoundedRect(outer, 3, 3)
-
-            available_width = max(1, int(inner.width()))
-            chunk_width = max(22, min(available_width, int(available_width * 0.34)))
-            travel = max(0, available_width - chunk_width)
-            position = _bounce_position_for_frame(self._frame)
-            chunk_left = int(inner.left() + round(travel * position))
-            chunk_rect = QtCore.QRect(
-                chunk_left,
-                inner.top(),
-                chunk_width,
-                inner.height(),
-            )
-            painter.setPen(QtCore.Qt.NoPen)
-            painter.setBrush(QtGui.QColor(self._fill))
-            painter.drawRoundedRect(chunk_rect, 2, 2)
-
-            if self._label:
-                painter.setPen(QtGui.QColor(self._text_color))
-                font = painter.font()
-                font.setPointSize(8)
-                font.setBold(True)
-                painter.setFont(font)
-                painter.drawText(outer, QtCore.Qt.AlignCenter, self._label)
-
-    return BusyBounceProgress
-
-
-def _bounce_position_for_frame(frame: int, *, steps: int = 18) -> float:
-    steps = max(1, int(steps))
-    cycle = steps * 2 + 2
-    index = int(frame) % cycle
-    if index <= steps:
-        return float(index) / float(steps)
-    if index == steps + 1:
-        return 1.0
-    return float(cycle - 1 - index) / float(steps)
-
-
 def _is_base_baseline(payload: dict) -> bool:
     stage = str(payload.get("stage", "")).lower()
     return stage in {"base-baseline", "stock-baseline"}
@@ -800,6 +719,30 @@ def _progress_label(payload: dict) -> str:
     if "final" in stage:
         return "Final verification"
     return ""
+
+
+def _payload_progress(payload: dict) -> dict:
+    return {
+        "elapsed_s": _to_float(payload.get("elapsed_s")),
+        "target_duration_s": _to_float(payload.get("target_duration_s")),
+        "label": _progress_label(payload),
+    }
+
+
+def _payload_curve_oc_progress(payload: dict) -> tuple[int, int] | None:
+    return _payload_oc_progress(payload)
+
+
+def _payload_oc_progress(payload: dict) -> tuple[int, int] | None:
+    auto_oc = _payload_bool(payload.get("auto_oc"))
+    applied = _payload_number(payload, "auto_oc_applied_mhz")
+    limit = _payload_number(payload, "auto_oc_limit_mhz")
+    if not auto_oc and applied is None and limit is None:
+        return None
+    return (
+        max(0, int(round(float(applied or 0)))),
+        max(0, int(round(float(limit or 0)))),
+    )
 
 
 def _progress_time_text(elapsed_s, target_s) -> str:
@@ -842,41 +785,24 @@ def _format_duration_compact(seconds) -> str:
     return f"{hours}h"
 
 
-def _budget_display_values(used, limit) -> tuple[float, float]:
-    used_value = max(0.0, float(used))
-    limit_value = max(0.0, float(limit))
-    if limit_value > 0.0:
-        used_value = min(used_value, limit_value)
-    return used_value, limit_value
-
-
-def _budget_recovery_display_values(
-    payload: dict,
-    *,
-    used: float,
-    limit: float,
-) -> tuple[float, float]:
-    used_recovery = _to_float(payload.get("overclock_budget_used_of_clock_drop_pct"))
-    limit_recovery = _to_float(payload.get("overclock_budget_limit_of_clock_drop_pct"))
-    if used_recovery is None or limit_recovery is None:
-        return float(used), float(limit)
-    limit_recovery = max(0.0, float(limit_recovery))
-    used_recovery = max(0.0, float(used_recovery))
-    if limit_recovery > 0.0:
-        used_recovery = min(used_recovery, limit_recovery)
-    return used_recovery, limit_recovery
-
-
-def _budget_recovery_text(used_recovery_pct: float, limit_recovery_pct: float) -> str:
-    return f"{float(used_recovery_pct):.0f}% / {float(limit_recovery_pct):.0f}%"
-
-
-def _budget_fill_color(_limit_of_clock_drop_pct=None) -> str:
-    return theme.GOOD
-
-
 def _measured_clock_value(payload: dict):
     return payload.get("measured_clock_mhz", payload.get("avg_core_clock_mhz"))
+
+
+def _payload_number(payload: dict, *keys: str):
+    for key in keys:
+        value = _to_float(payload.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _payload_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _perf_cap_reason_text(value) -> str:
@@ -907,6 +833,17 @@ def _format_int(value) -> str:
     if number is None:
         return ""
     return str(int(round(number)))
+
+
+def _format_oc_progress(value: tuple[int, int] | None) -> str:
+    if value is None:
+        return "0/0"
+    applied_mhz, limit_mhz = value
+    applied = max(0, int(round(float(applied_mhz))))
+    limit = max(0, int(round(float(limit_mhz))))
+    if limit == 0:
+        return "0/0"
+    return f"{applied}/{limit} MHz"
 
 
 def _format_float(value) -> str:

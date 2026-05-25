@@ -6,7 +6,7 @@ Q2RTX output, CUDA output, timedemo runs, or telemetry directly.
 The proposed pure module is:
 
 ```text
-auto_uv3/probe_stability_decision.py
+auto_uv/probe_stability_decision.py
 ```
 
 ## Stable Pass Definition
@@ -80,7 +80,7 @@ hardware-safety reason:
 
 - Q2RTX success alone is not enough.
 - Timedemo metrics prove the FPS result.
-- Low clock can be recoverable through overclock budget.
+- Low clock can be recoverable through OC budget.
 - CUDA failure invalidates the whole probe when CUDA is enabled.
 - Missing metrics fail closed.
 - Xid and fatal output bypass normal recovery.

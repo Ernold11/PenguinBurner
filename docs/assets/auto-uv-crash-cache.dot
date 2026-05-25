@@ -33,7 +33,7 @@ digraph auto_uv_crash_cache {
   ignore [label="ignore marker\nnot aggressive enough", fillcolor="#f8fafc"];
   unsafe [label="record unsafe point\npersistent blacklist", fillcolor="#fff7ed"];
   block [label="block future candidates\nsame/lower voltage in clock band", fillcolor="#fff7ed"];
-  cap [label="cap recovery budget\nif recovery probe crashed", fillcolor="#fff7ed"];
+  cap [label="cap OC budget\nif recovery probe crashed", fillcolor="#fff7ed"];
   end [label="done", shape=doublecircle, fillcolor="#dcfce7"];
 
   start -> marker;

@@ -1,5 +1,3 @@
-"""Prepare normal runtime startup before NVML/NVAPI resources are opened."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -39,12 +37,6 @@ class RuntimeStartupPreparationResult:
     should_exit: bool = False
 
 
-def _dependencies(
-    dependencies: RuntimeStartupPreparationDependencies | None,
-) -> RuntimeStartupPreparationDependencies:
-    return dependencies or RuntimeStartupPreparationDependencies()
-
-
 def prepare_runtime_startup(
     *,
     config_path,
@@ -61,7 +53,7 @@ def prepare_runtime_startup(
     prompt_yes_no,
     dependencies: RuntimeStartupPreparationDependencies | None = None,
 ) -> RuntimeStartupPreparationResult:
-    deps = _dependencies(dependencies)
+    deps = dependencies or RuntimeStartupPreparationDependencies()
     runtime_options = afterburner_runtime_options
     prepared_fan_config = fan_config
     afterburner_root, afterburner_profile, afterburner_device_profile = (

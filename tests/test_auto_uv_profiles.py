@@ -8,6 +8,11 @@ import pytest
 
 import saved_uv_profiles.profile_store as profile_store
 import penguin_burner
+import saved_profile_verification as profile_verification_rules
+import saved_profile_verification.runner as profile_verification_runner
+from cli.runtime_profile_argument import (
+    runtime_profile_selector_allows_unverified_from_argv as allow_unverified_from_argv,
+)
 import ui.curve_profiles as curve_profiles
 import ui.fan_profiles as ui_app
 from saved_uv_profiles import (
@@ -629,16 +634,16 @@ def test_runtime_profile_precheck_allows_user_edited_drafts_for_verification(
     )
 
     assert resolve_auto_uv_profile(str(stored_path)) is None
-    assert not penguin_burner._runtime_profile_selector_allows_unverified_from_argv(
+    assert not allow_unverified_from_argv(
         ["--auto-uv-profile", str(stored_path)]
     )
-    assert penguin_burner._runtime_profile_selector_allows_unverified_from_argv(
+    assert allow_unverified_from_argv(
         ["--stability-test", "--auto-uv-profile", str(stored_path)]
     )
     assert (
         resolve_auto_uv_profile(
             str(stored_path),
-            allow_unverified=penguin_burner._runtime_profile_selector_allows_unverified_from_argv(
+            allow_unverified=allow_unverified_from_argv(
                 ["--stability-test", "--auto-uv-profile", str(stored_path)]
             ),
         )
@@ -650,7 +655,7 @@ def test_profile_verification_stop_request_uses_immediate_user_stop_reason(
     tmp_path,
 ) -> None:
     stop_path = tmp_path / "verify.stop"
-    callback = penguin_burner._stability_stop_request_abort_callback(stop_path)
+    callback = profile_verification_rules.stability_stop_request_abort_callback(stop_path)
 
     assert callback({}) is None
     stop_path.write_text("stop\n", encoding="utf-8")
@@ -702,10 +707,8 @@ def test_profile_verification_rejects_vf_curve_apply_mismatch(monkeypatch) -> No
         def editable_core_points(self) -> list[dict]:
             return [{"index": 4, "current_offset_khz": 0}]
 
-    monkeypatch.setattr(
-        penguin_burner,
-        "load_auto_uv_final_curve",
-        lambda _selector, *, allow_unverified=False: {
+    deps = profile_verification_runner.ProfileVerificationDependencies(
+        load_auto_uv_final_curve=lambda _s, *, allow_unverified=False: {
             "path": "/tmp/draft.json",
             "plan": plan,
             "lock_clock_mhz": 2865,
@@ -713,14 +716,14 @@ def test_profile_verification_rejects_vf_curve_apply_mismatch(monkeypatch) -> No
             "memory_offset_mhz": None,
             "flatten_target": {},
         },
+        apply_plan=lambda _reader, _plan: None,
     )
-    monkeypatch.setattr(penguin_burner, "apply_plan", lambda _reader, _plan: None)
-
     with pytest.raises(penguin_burner.NvmlError, match="did not match"):
-        penguin_burner._apply_verify_auto_uv_profile(
+        profile_verification_runner.apply_verify_auto_uv_profile(
             FakeReader(),
             "/tmp/draft.json",
             None,
+            dependencies=deps,
         )
 
 
@@ -765,14 +768,17 @@ def test_profile_verification_can_reapply_curve_after_clock_lock(monkeypatch) ->
     def fake_apply_plan(reader: FakeReader, applied_plan: list[dict]) -> None:
         reader.offset_mhz = int(applied_plan[0]["new_offset_mhz"])
 
-    monkeypatch.setattr(penguin_burner, "apply_plan", fake_apply_plan)
     reader = FakeReader()
     policy = ResettingPolicy(reader)
+    deps = profile_verification_runner.ProfileVerificationDependencies(
+        apply_plan=fake_apply_plan,
+    )
 
-    penguin_burner._apply_and_verify_profile_vf_plan(
+    profile_verification_runner.apply_and_verify_profile_vf_plan(
         reader,
         plan,
         context="selected profile",
+        dependencies=deps,
     )
     assert reader.offset_mhz == 623
 
@@ -790,10 +796,11 @@ def test_profile_verification_can_reapply_curve_after_clock_lock(monkeypatch) ->
     assert controller.telemetry_text().startswith("clk_lock=")
     assert reader.offset_mhz == 0
 
-    penguin_burner._apply_and_verify_profile_vf_plan(
+    profile_verification_runner.apply_and_verify_profile_vf_plan(
         reader,
         plan,
         context="selected profile after clock lock",
+        dependencies=deps,
     )
     assert reader.offset_mhz == 623
 
@@ -862,7 +869,7 @@ def test_profile_verification_metrics_from_q2rtx_result() -> None:
         },
     )
 
-    metrics = penguin_burner._profile_verification_metrics_from_result(result)
+    metrics = profile_verification_rules.profile_verification_metrics_from_result(result)
 
     assert metrics["avg_fps"] == 123.0
     assert metrics["avg_core_clock_mhz"] == 2580.0
@@ -890,7 +897,7 @@ def test_profile_baseline_plan_restores_base_offsets() -> None:
         }
     ]
 
-    base_plan = penguin_burner._base_vf_plan_from_profile_plan(plan)
+    base_plan = profile_verification_rules.base_vf_plan_from_profile_plan(plan)
 
     assert base_plan == [
         {
@@ -927,7 +934,7 @@ def test_user_edited_profile_with_missing_base_metrics_needs_baseline(
         }
     )
 
-    assert penguin_burner._profile_needs_verify_baseline(str(stored_path)) is True
+    assert profile_verification_rules.profile_needs_verify_baseline(str(stored_path)) is True
 
     mark_auto_uv_profile_verified(
         str(stored_path),
@@ -939,7 +946,7 @@ def test_user_edited_profile_with_missing_base_metrics_needs_baseline(
         },
     )
 
-    assert penguin_burner._profile_needs_verify_baseline(str(stored_path)) is False
+    assert profile_verification_rules.profile_needs_verify_baseline(str(stored_path)) is False
 
 
 def test_mark_auto_uv_profile_verification_failed_blocks_user_edited_apply(
@@ -1035,36 +1042,6 @@ def test_profile_verification_promotes_verified_profile(
         }
     ]
     baseline_calls = []
-    monkeypatch.setattr(
-        penguin_burner,
-        "stop_existing_penguin_burner_runtime",
-        lambda **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        penguin_burner,
-        "create_hidden_vf_curve_reader",
-        lambda **_kwargs: FakeReader(),
-    )
-    monkeypatch.setattr(
-        penguin_burner,
-        "NvmlGpuPolicyController",
-        lambda **_kwargs: FakePolicy(),
-    )
-    monkeypatch.setattr(
-        penguin_burner,
-        "backup_current_offsets",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        penguin_burner,
-        "restore_offsets",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        penguin_burner,
-        "_apply_verify_auto_uv_profile",
-        lambda *_args, **_kwargs: ("auto-UV:2600MHz@900mV", None, plan),
-    )
 
     def fake_baseline_probe(*_args, **kwargs):
         baseline_calls.append(kwargs)
@@ -1076,37 +1053,30 @@ def test_profile_verification_promotes_verified_profile(
         }
 
     monkeypatch.setattr(
-        penguin_burner,
-        "_run_profile_verification_baseline_probe",
+        profile_verification_runner,
+        "apply_verify_auto_uv_profile",
+        lambda *_args, **_kwargs: ("auto-UV:2600MHz@900mV", None, plan),
+    )
+    monkeypatch.setattr(
+        profile_verification_runner,
+        "run_profile_verification_baseline_probe",
         fake_baseline_probe,
     )
-    monkeypatch.setattr(
-        penguin_burner,
-        "build_stability_config",
-        lambda *_args, **_kwargs: config,
-    )
-    monkeypatch.setattr(
-        penguin_burner,
-        "build_long_stability_test_config",
-        lambda stability_config, **_kwargs: stability_config,
-    )
-    monkeypatch.setattr(
-        penguin_burner,
-        "attach_stdout_progress",
-        lambda _config: None,
-    )
-    monkeypatch.setattr(
-        penguin_burner,
-        "run_q2rtx_stability_test",
-        lambda _config: result,
-    )
-    monkeypatch.setattr(
-        penguin_burner,
-        "print_q2rtx_stability_result",
-        lambda _result: None,
+
+    deps = profile_verification_runner.ProfileVerificationDependencies(
+        stop_existing_penguin_burner_runtime=lambda **_kwargs: None,
+        create_hidden_vf_curve_reader=lambda **_kwargs: FakeReader(),
+        gpu_policy_controller_factory=lambda **_kwargs: FakePolicy(),
+        backup_current_offsets=lambda *_args, **_kwargs: None,
+        restore_offsets=lambda *_args, **_kwargs: None,
+        build_stability_config=lambda *_args, **_kwargs: config,
+        build_long_stability_test_config=lambda stability_config, **_kwargs: stability_config,
+        attach_stdout_progress=lambda _config: None,
+        run_q2rtx_stability_test=lambda _config: result,
+        print_q2rtx_stability_result=lambda _result: None,
     )
 
-    penguin_burner.run_profile_verification(
+    profile_verification_runner.run_profile_verification(
         SimpleNamespace(
             auto_uv_profile=str(stored_path),
             prefer_afterburner_curve=False,
@@ -1116,6 +1086,7 @@ def test_profile_verification_promotes_verified_profile(
         gpu_index=0,
         config_path=tmp_path / "runtime.ini",
         afterburner_runtime_options={},
+        dependencies=deps,
     )
 
     payload = json.loads(stored_path.read_text(encoding="utf-8"))
@@ -1136,7 +1107,7 @@ def test_profile_verification_promotes_verified_profile(
 
 
 def test_profile_verification_voltage_abort_requires_sustained_busy_mismatch() -> None:
-    callback = penguin_burner._profile_verification_voltage_abort_callback(
+    callback = profile_verification_rules.profile_verification_voltage_abort_callback(
         {"lock_voltage_mv": 870}
     )
     high_voltage_sample = SimpleNamespace(voltage_mv=1025, gpu_util_pct=99)
@@ -1154,7 +1125,7 @@ def test_profile_verification_voltage_abort_requires_sustained_busy_mismatch() -
         )
         is None
     )
-    for _ in range(penguin_burner.PROFILE_VERIFY_VOLTAGE_MISMATCH_STREAK - 1):
+    for _ in range(profile_verification_rules.PROFILE_VERIFY_VOLTAGE_MISMATCH_STREAK - 1):
         assert (
             callback({"progress_elapsed_s": 10.0, "latest_sample": high_voltage_sample})
             is None
@@ -1668,7 +1639,7 @@ def test_final_choice_candidate_table_helpers_show_metrics_and_default() -> None
     assert _candidate_status_text(candidate, True) == "Best FPS/W | Passed short probe"
     assert (
         _candidate_status_text(candidate, True, auto_uv_mode="performance")
-        == "Best FPS | Passed short probe"
+        == "Highest FPS | Passed short probe"
     )
 
 

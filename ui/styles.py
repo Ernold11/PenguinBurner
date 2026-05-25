@@ -1,7 +1,4 @@
 from . import theme
-from .tuning import PERFORMANCE_BIAS_DANGER_PCT
-from .tuning import PERFORMANCE_BIAS_WARNING_PCT
-from .tuning import performance_bias_slider_position
 
 
 STYLESHEET = f"""
@@ -35,18 +32,11 @@ QLabel#purposeText {{
     font-weight: 400;
     line-height: 1.25;
 }}
-QLabel#autoVoltageDropNote {{
-    color: {theme.TEXT_MUTED};
-    font-size: 11px;
-}}
-QGroupBox#performanceBiasGroup {{
+QGroupBox#autoUvPresetGroup {{
     margin-top: 12px;
 }}
 QGroupBox#advancedTuningGroup {{
     margin-top: 12px;
-}}
-QSlider#performanceBiasSlider {{
-    margin: 8px 0 10px 0;
 }}
 QLineEdit, QPlainTextEdit, QTableWidget {{
     background: {theme.SURFACE_BG};
@@ -75,6 +65,35 @@ QPushButton:hover, QToolButton:hover {{
 }}
 QPushButton:disabled, QToolButton:disabled {{
     color: {theme.TEXT_DISABLED};
+}}
+QPushButton#autoUvPresetButton {{
+    min-width: 108px;
+    padding: 7px 12px;
+}}
+QPushButton#autoUvPresetButton:checked {{
+    color: {theme.TEXT_ON_LIGHT};
+}}
+QPushButton#autoUvPresetButton[presetId="efficiency"]:checked {{
+    background: {theme.GOOD};
+    border-color: {theme.GOOD_BRIGHT};
+}}
+QPushButton#autoUvPresetButton[presetId="efficiency"]:checked:hover {{
+    border-color: {theme.GOOD_TEXT};
+}}
+QPushButton#autoUvPresetButton[presetId="balanced"]:checked {{
+    background: {theme.WARNING};
+    border-color: {theme.WARNING_TEXT};
+}}
+QPushButton#autoUvPresetButton[presetId="balanced"]:checked:hover {{
+    border-color: #fff0c7;
+}}
+QPushButton#autoUvPresetButton[presetId="performance"]:checked {{
+    background: {theme.ERROR};
+    border-color: {theme.ERROR_TEXT};
+    color: {theme.TEXT_ON_ERROR};
+}}
+QPushButton#autoUvPresetButton[presetId="performance"]:checked:hover {{
+    border-color: #fff0f0;
 }}
 QPushButton#startAutoUvButton {{
     background: {theme.AUTO_UV_BUTTON_BG};
@@ -185,43 +204,6 @@ QTabBar::tab:selected {{
     color: {theme.TEXT_STRONG};
 }}
 """
-
-
-def performance_bias_slider_stylesheet(max_pct: float) -> str:
-    warning_stop = performance_bias_slider_position(
-        PERFORMANCE_BIAS_WARNING_PCT,
-        max_pct=float(max_pct),
-    ) / 100.0
-    danger_stop = performance_bias_slider_position(
-        PERFORMANCE_BIAS_DANGER_PCT,
-        max_pct=float(max_pct),
-    ) / 100.0
-    return f"""
-    QSlider#performanceBiasSlider {{
-        margin: 8px 0 10px 0;
-    }}
-    QSlider#performanceBiasSlider::groove:horizontal {{
-        height: 7px;
-        border-radius: 3px;
-        background: qlineargradient(
-            x1: 0, y1: 0, x2: 1, y2: 0,
-            stop: 0 {theme.GOOD},
-            stop: {warning_stop:.2f} {theme.GOOD},
-            stop: {warning_stop:.2f} {theme.WARNING},
-            stop: {danger_stop:.2f} {theme.WARNING},
-            stop: {danger_stop:.2f} {theme.ERROR},
-            stop: 1.00 {theme.ERROR}
-        );
-    }}
-    QSlider#performanceBiasSlider::handle:horizontal {{
-        background: {theme.TEXT_PROGRESS};
-        border: 1px solid {theme.TEXT_ON_LIGHT};
-        width: 18px;
-        margin: -7px 0;
-        border-radius: 9px;
-    }}
-    """
-
 
 def curve_editor_legend_stylesheet(object_prefix: str) -> str:
     return f"""

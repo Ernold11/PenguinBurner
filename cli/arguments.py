@@ -1,0 +1,456 @@
+"""Command-line arguments for the PenguinBurner CLI.
+
+This module only defines flags and defaults; command execution stays in the runtime entrypoint.
+"""
+
+from __future__ import annotations
+
+import argparse
+
+from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS
+from auto_uv.scan_mode import AUTO_UV_MODES
+from nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
+from penguin_burner_paths import default_runtime_config_path
+from runtime_service import DEFAULT_JOURNAL_HOURS
+from stability.q2rtx import DEFAULT_HEIGHT, DEFAULT_WIDTH
+
+DEFAULT_AUTO_UV_FINAL_DURATION_S = AUTO_UV_DEFAULTS.final_duration_s
+
+
+def default_cli_config_path() -> str:
+    return str(default_runtime_config_path())
+
+
+def parse_arguments(argv):
+    parser = argparse.ArgumentParser(
+        prog="penguin_burner.py",
+        description=(
+            "PenguinBurner Auto-UV runtime, stability, and optional "
+            "Afterburner import utility."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    auto_uv_group = parser.add_argument_group("Auto-UV")
+    daemon_group = parser.add_argument_group("Runtime and daemon essentials")
+    runtime_group = parser.add_argument_group("Runtime tuning")
+    lact_group = parser.add_argument_group("LACT export")
+    stability_group = parser.add_argument_group("Stability workload")
+    afterburner_group = parser.add_argument_group("Afterburner import")
+    advanced_group = parser.add_argument_group("Advanced/debug")
+
+    auto_uv_group.add_argument(
+        "--auto-uv-voltage-scan",
+        action="store_true",
+        help=(
+            "Discover a stable fixed-clock undervolt from the live/default "
+            "NVIDIA V/F curve, step the lock voltage down through real editable "
+            "VF bins, and verify candidates with Q2RTX plus CUDA load"
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv3",
+        action="store_true",
+        help=(
+            "Use the Auto-UV3 voltage-frequency undervolt main loop."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--json-events",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-require-final-choice",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    auto_uv_group.add_argument(
+        "--list-auto-uv-profiles",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    auto_uv_group.add_argument(
+        "--delete-auto-uv-profiles",
+        nargs="+",
+        default=[],
+        metavar="PROFILE",
+        help=argparse.SUPPRESS,
+    )
+    auto_uv_group.add_argument(
+        "--fresh-auto-uv-scan",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    auto_uv_group.add_argument(
+        "--clear-auto-uv-state",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-max-clock-drop-pct",
+        type=float,
+        default=None,
+        metavar="N",
+        help=(
+            "Maximum loaded GPU core clock drop allowed during Auto-UV; "
+            "default 10.0. Example: 12 allows up to a looser 12%% clock drop."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-mode",
+        choices=AUTO_UV_MODES,
+        default=None,
+        metavar="MODE",
+        help=(
+            "Auto-UV tuning behavior. efficiency keeps the current FPS/W-first "
+            "search behavior; performance disables efficiency-wall stopping so "
+            "performance-specific behavior can evolve separately."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-max-drop-pct",
+        type=float,
+        default=None,
+        metavar="N",
+        help=(
+            "Maximum percentage drop below the first discovered auto-UV start "
+            "voltage allowed during candidate search; default 16.0 for "
+            "efficiency, 14.0 for performance."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-final-seconds",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Final Auto-UV verification duration in seconds after the best curve "
+            "is selected; default 600. Candidate probes remain tiered short tests."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-short-seconds",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Base Auto-UV verification length in seconds; default "
+            f"{AUTO_UV_DEFAULTS.probe_duration_s}. Allowed range 10..60. "
+            "Deeper voltage tiers use 2x and 3x this value."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-memory-offset-mhz",
+        type=int,
+        default=None,
+        metavar="MHz",
+        help=(
+            "Memory clock V/F offset in MHz to apply during Auto-UV and save "
+            f"with the final profile; range 0..{MAX_AFTERBURNER_MEM_OFFSET_MHZ}."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-tail-rise-bins",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "How many voltage bins can the voltage curve rise above the locked "
+            "undervolt point."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-oc-target-voltage-mv",
+        type=int,
+        default=None,
+        metavar="mV",
+        help=(
+            "Performance-mode Auto-OC voltage cap in mV. Overrides the detected "
+            "GPU table target."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-oc-target-clock-mhz",
+        type=int,
+        default=None,
+        metavar="MHz",
+        help=(
+            "Performance-mode Auto-OC core clock cap in MHz. Overrides the detected "
+            "GPU table target."
+        ),
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-efficiency-stop-streak",
+        type=int,
+        default=None,
+        metavar="N",
+        help=argparse.SUPPRESS,
+    )
+    auto_uv_group.add_argument(
+        "--auto-uv-min-efficiency-stop-drop-pct",
+        type=float,
+        default=None,
+        metavar="N",
+        help=argparse.SUPPRESS,
+    )
+    daemon_group.add_argument(
+        "--silent-fan-curve",
+        action="store_true",
+        help=(
+            "Runtime/daemon only: opt in to PenguinBurner manual fan-curve "
+            "control; by default fan control is left to the GPU driver. "
+            "Auto-UV scans write a suggested fan curve automatically when safe."
+        ),
+    )
+    daemon_group.add_argument(
+        "--daemonize",
+        action="store_true",
+        help=(
+            "Launch normal runtime as a transient systemd service after an "
+            "Auto-UV final curve exists. Auto-UV scans remain foreground-only."
+        ),
+    )
+    daemon_group.add_argument(
+        "--install-systemd-service",
+        action="store_true",
+        help=(
+            "Install and start the persistent boot-time PenguinBurner systemd "
+            "service for the current checkout."
+        ),
+    )
+    daemon_group.add_argument(
+        "--uninstall-systemd-service",
+        "--deinstall-systemd-service",
+        dest="uninstall_systemd_service",
+        action="store_true",
+        help="Stop and remove the persistent PenguinBurner systemd service.",
+    )
+    daemon_group.add_argument(
+        "--foreground",
+        action="store_true",
+        help=(
+            "Force normal runtime to stay in the current foreground process; "
+            "this is the default when not daemonizing."
+        ),
+    )
+    daemon_group.add_argument(
+        "--auto-uv-profile",
+        default="",
+        help=(
+            "Runtime/daemon only: use an Auto-UV profile by profile id, candidate "
+            "id, JSON path, 'active', or 'latest'."
+        ),
+    )
+    daemon_group.add_argument(
+        "--journal-hours",
+        type=float,
+        default=DEFAULT_JOURNAL_HOURS,
+        metavar="N",
+        help=(
+            "Hours of systemd journal history to suggest after daemonizing; "
+            f"default {DEFAULT_JOURNAL_HOURS}."
+        ),
+    )
+    runtime_group.add_argument(
+        "--config",
+        default=default_cli_config_path(),
+        help="Runtime config path to read defaults from",
+    )
+    runtime_group.add_argument(
+        "--gpu-index",
+        type=int,
+        default=None,
+        help="Override the configured GPU index",
+    )
+    runtime_group.add_argument(
+        "--power-limit-override-w",
+        type=int,
+        default=None,
+        help="Optional manual power-limit cap in watts for translation preview",
+    )
+    lact_group.add_argument(
+        "--export-lact-config",
+        default="",
+        help=(
+            "Write a complete Nvidia-only LACT config.yaml from the saved "
+            "Auto-UV or Afterburner V/F curve. Add --silent-fan-curve to "
+            "include fan settings. Use --lact-gpu-id with the id from `lact cli list-gpus`."
+        ),
+    )
+    lact_group.add_argument(
+        "--lact-source",
+        choices=("auto-uv", "afterburner"),
+        default="auto-uv",
+        help="Source for --export-lact-config; default auto-uv.",
+    )
+    lact_group.add_argument(
+        "--fan-curve-export",
+        action="store_true",
+        help=(
+            "With --export-lact-config, export only the fan curve to LACT and "
+            "omit gpu_vf_curve."
+        ),
+    )
+    lact_group.add_argument(
+        "--lact-gpu-id",
+        default="",
+        help="LACT GPU id to use in --export-lact-config output.",
+    )
+    stability_group.add_argument(
+        "--stability-test",
+        action="store_true",
+        help=("Run a non-interactive Q2RTX timedemo stability workload and exit"),
+    )
+    stability_group.add_argument(
+        "--install-q2rtx",
+        action="store_true",
+        help=(
+            "Download the latest official Q2RTX Linux tar.gz to "
+            "~/.cache/PenguinBurner/q2rtx and extract everything under "
+            "~/.local/share/PenguinBurner/q2rtx"
+        ),
+    )
+    stability_group.add_argument(
+        "--stability-seconds",
+        type=int,
+        default=DEFAULT_AUTO_UV_FINAL_DURATION_S,
+        help=(
+            "Wall-clock duration budget for --stability-test; uses the same "
+            "Q2RTX + CUDA companion load as auto-UV final verification; "
+            "default 600"
+        ),
+    )
+    stability_group.add_argument(
+        "--stability-workload",
+        choices=("q2rtx-cuda", "q2rtx", "cuda"),
+        default="q2rtx-cuda",
+        help=(
+            "Workload selection for --stability-test; q2rtx-cuda keeps the "
+            "standard Q2RTX timedemo plus CUDA compute split, q2rtx or cuda "
+            "runs only that workload for the full duration."
+        ),
+    )
+    stability_group.add_argument(
+        "--stability-width",
+        type=int,
+        default=DEFAULT_WIDTH,
+        help=f"Q2RTX render width used by --stability-test; default {DEFAULT_WIDTH}",
+    )
+    stability_group.add_argument(
+        "--stability-height",
+        type=int,
+        default=DEFAULT_HEIGHT,
+        help=f"Q2RTX render height used by --stability-test; default {DEFAULT_HEIGHT}",
+    )
+    stability_group.add_argument(
+        "--show-q2rtx-window",
+        action="store_true",
+        help=(
+            "Do not move the Q2RTX Vulkan window off-screen during stability "
+            "tests and Auto-UV scans"
+        ),
+    )
+    stability_group.add_argument(
+        "--stability-log-dir",
+        default="",
+        help=(
+            "Optional log directory for --stability-test; defaults to "
+            "~/.config/PenguinBurner/stability-logs"
+        ),
+    )
+    stability_group.add_argument(
+        "--stability-stop-request-file",
+        default="",
+        help=argparse.SUPPRESS,
+    )
+    stability_group.add_argument(
+        "--stability-q2rtx-dir",
+        default="",
+        help="Q2RTX install/source root containing q2rtx and baseq2/",
+    )
+    stability_group.add_argument(
+        "--stability-q2rtx-binary",
+        default="",
+        help="Explicit q2rtx executable path",
+    )
+    afterburner_group.add_argument(
+        "--afterburner-dir",
+        default="",
+        help="Path to the MSI Afterburner root directory",
+    )
+    afterburner_group.add_argument(
+        "--profile-section",
+        "--section",
+        dest="profile_section",
+        default="",
+        help="Optional saved Afterburner profile section such as profile2",
+    )
+    afterburner_group.add_argument(
+        "--afterburner-device-profile",
+        default="",
+        help="Optional device profile file under Profiles/ to inspect or use",
+    )
+    afterburner_group.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Inspect Afterburner fan/VF data and draw dry-run previews without "
+            "touching GPU state; recommended first step and does not require sudo"
+        ),
+    )
+    afterburner_group.add_argument(
+        "--prefer-afterburner-curve",
+        action="store_true",
+        help=(
+            "Runtime/daemon only: apply the imported Afterburner V/F curve before "
+            "the saved Auto-UV final curve. Auto-UV remains the fallback if "
+            "Afterburner is missing or cannot be applied."
+        ),
+    )
+    afterburner_group.add_argument(
+        "--restore-defaults-from-config",
+        "--restore-afterburner-defaults",
+        dest="restore_defaults_from_config",
+        action="store_true",
+        help=(
+            "Apply the Defaults V/F curve and translated GPU policy from the "
+            "Afterburner device profile saved in config, then exit"
+        ),
+    )
+    advanced_group.add_argument(
+        "--preserve-vf-below-mv",
+        "--preserve-base-vf-below-mv",
+        dest="preserve_base_below_mv",
+        type=int,
+        default=None,
+        help=(
+            "Keep the base Linux VF curve at and below this inclusive "
+            "voltage; useful if repeated Afterburner curve edits disturbed "
+            "idle or low-voltage scaling"
+        ),
+    )
+    advanced_group.add_argument(
+        "--preserve-vanilla-vf-below-mv",
+        dest="preserve_base_below_mv",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
+    advanced_group.add_argument(
+        "--dangerously-skip-validation",
+        action="store_true",
+        help=(
+            "Bypass the default flat-tail and undervolt checks when selecting "
+            "the saved Afterburner profile; advanced and not recommended"
+        ),
+    )
+    advanced_group.add_argument(
+        "--debug-log",
+        action="store_true",
+        help=(
+            "Write a verbose dry-run and first-import diagnostic log next to "
+            "the selected config file under debug-logs/; with the default "
+            "config this is ~/.config/PenguinBurner/debug-logs"
+        ),
+    )
+    return parser.parse_args(argv)

@@ -1,7 +1,6 @@
-"""Foreground runner for verifying saved undervolt profiles."""
-
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -51,21 +50,17 @@ from stability.q2rtx import (
     run_q2rtx_stability_test,
 )
 
-from .applied_vf_plan_check import (
+from .metrics import profile_verification_metrics_from_result
+from .rules import (
     apply_and_verify_profile_vf_plan as verify_profile_vf_plan,
-)
-from .baseline_vf_plan import (
     base_vf_plan_from_profile_plan,
+    profile_needs_verify_baseline,
     profile_verification_baseline_duration_s,
-)
-from .stability_stop_request_file import (
+    profile_verification_failure_blocks_apply,
+    profile_verification_voltage_abort_callback,
     stability_stop_request_abort_callback,
     stability_stop_request_path,
 )
-from .target_voltage_abort_rule import profile_verification_voltage_abort_callback
-from .user_edited_profile_baseline_requirement import profile_needs_verify_baseline
-from .verification_failure_policy import profile_verification_failure_blocks_apply
-from .verification_result_metrics import profile_verification_metrics_from_result
 
 
 @dataclass(slots=True)
@@ -75,46 +70,16 @@ class ProfileVerificationDependencies:
     )
     create_hidden_vf_curve_reader: Callable = create_hidden_vf_curve_reader
     gpu_policy_controller_factory: Callable = NvmlGpuPolicyController
-    flattened_clock_ceiling_controller_factory: Callable = (
-        FlattenedClockCeilingController
-    )
     backup_current_offsets: Callable = backup_current_offsets
     restore_offsets: Callable = restore_offsets
     apply_plan: Callable = apply_plan
-    verify_profile_vf_plan: Callable = verify_profile_vf_plan
-    apply_afterburner_curve_to_reader: Callable = apply_afterburner_curve_to_reader
-    derive_afterburner_dynamic_lock: Callable = derive_afterburner_dynamic_lock
-    load_afterburner_profile_settings: Callable = load_afterburner_profile_settings
-    resolve_afterburner_vf_source: Callable = resolve_afterburner_vf_source
-    translate_afterburner_gpu_policy: Callable = translate_afterburner_gpu_policy
-    apply_translated_gpu_policy: Callable = apply_translated_gpu_policy
     load_auto_uv_final_curve: Callable = load_auto_uv_final_curve
-    apply_auto_uv_profile_memory_offset: Callable = apply_auto_uv_profile_memory_offset
-    mark_auto_uv_profile_verification_failed: Callable = (
-        mark_auto_uv_profile_verification_failed
-    )
-    mark_auto_uv_profile_verified: Callable = mark_auto_uv_profile_verified
-    run_stability_test: Callable = run_stability_test
     build_stability_config: Callable = build_stability_config
-    build_cuda_stability_config: Callable = build_cuda_stability_config
     build_long_stability_test_config: Callable = build_long_stability_test_config
     run_q2rtx_stability_test: Callable = run_q2rtx_stability_test
-    run_cuda_stability_test: Callable = run_cuda_stability_test
     attach_stdout_progress: Callable = attach_stdout_progress
     print_q2rtx_stability_result: Callable = print_q2rtx_stability_result
-    stability_workload_selection: Callable = stability_workload_selection
-    stability_workload_label: Callable = stability_workload_label
-    stability_workload_split_label: Callable = stability_workload_split_label
-    apply_verify_auto_uv_profile: Callable | None = None
-    apply_verify_afterburner_profile: Callable | None = None
-    run_profile_verification_baseline_probe: Callable | None = None
     log: Callable[[str], None] = runtime_log
-
-
-def _dependencies(
-    dependencies: ProfileVerificationDependencies | None,
-) -> ProfileVerificationDependencies:
-    return dependencies or ProfileVerificationDependencies()
 
 
 def run_profile_verification(
@@ -125,11 +90,11 @@ def run_profile_verification(
     afterburner_runtime_options,
     dependencies: ProfileVerificationDependencies | None = None,
 ):
-    deps = _dependencies(dependencies)
+    deps = dependencies or ProfileVerificationDependencies()
     selector = str(args.auto_uv_profile or "").strip()
     prefer_afterburner_curve = bool(args.prefer_afterburner_curve)
     if not selector and not prefer_afterburner_curve:
-        deps.run_stability_test(args, gpu_index=gpu_index, config_path=config_path)
+        run_stability_test(args, gpu_index=gpu_index, config_path=config_path)
         return
 
     deps.stop_existing_penguin_burner_runtime(log=deps.log)
@@ -137,16 +102,31 @@ def run_profile_verification(
     if vf_curve_reader is None:
         raise NvmlError("could not open the live Nvidia V/F curve reader")
 
-    gpu_policy_controller = None
-    clock_ceiling_controller = None
-    backup_path = None
-    try:
+    clock_ceiling_controller: object | None = None
+
+    def close_clock_ceiling() -> None:
+        nonlocal clock_ceiling_controller
+        if clock_ceiling_controller is None:
+            return
+        try:
+            clock_ceiling_controller.close()
+        except Exception as exc:
+            deps.log(f"Warning: failed to reset verification clock lock: {exc}")
+        clock_ceiling_controller = None
+
+    with contextlib.ExitStack() as stack:
+        stack.callback(vf_curve_reader.close)
+
         try:
             gpu_policy_controller = deps.gpu_policy_controller_factory(
                 gpu_index=gpu_index
             )
         except Exception as exc:
+            gpu_policy_controller = None
             deps.log(f"Linux GPU policy helper unavailable: {exc}")
+        if gpu_policy_controller is not None:
+            stack.callback(gpu_policy_controller.close)
+
         backup_file = tempfile.NamedTemporaryFile(
             prefix="penguin-burner-verify-", suffix=".json", delete=False
         )
@@ -157,48 +137,31 @@ def run_profile_verification(
             backup_path,
             policy_controller=gpu_policy_controller,
         )
+        stack.callback(_restore_and_unlink_backup, deps, vf_curve_reader, backup_path, gpu_policy_controller)
+        stack.callback(close_clock_ceiling)
 
         if prefer_afterburner_curve:
-            if deps.apply_verify_afterburner_profile is not None:
-                label, flatten_target, verify_plan = (
-                    deps.apply_verify_afterburner_profile(
-                        vf_curve_reader,
-                        gpu_policy_controller,
-                        afterburner_runtime_options,
-                        gpu_index=gpu_index,
-                    )
-                )
-            else:
-                label, flatten_target, verify_plan = apply_verify_afterburner_profile(
-                    vf_curve_reader,
-                    gpu_policy_controller,
-                    afterburner_runtime_options,
-                    gpu_index=gpu_index,
-                    dependencies=deps,
-                )
+            label, flatten_target, verify_plan = apply_verify_afterburner_profile(
+                vf_curve_reader,
+                gpu_policy_controller,
+                afterburner_runtime_options,
+                gpu_index=gpu_index,
+                dependencies=deps,
+            )
         else:
-            if deps.apply_verify_auto_uv_profile is not None:
-                label, flatten_target, verify_plan = deps.apply_verify_auto_uv_profile(
-                    vf_curve_reader,
-                    selector,
-                    gpu_policy_controller,
-                )
-            else:
-                label, flatten_target, verify_plan = apply_verify_auto_uv_profile(
-                    vf_curve_reader,
-                    selector,
-                    gpu_policy_controller,
-                    dependencies=deps,
-                )
+            label, flatten_target, verify_plan = apply_verify_auto_uv_profile(
+                vf_curve_reader,
+                selector,
+                gpu_policy_controller,
+                dependencies=deps,
+            )
 
         if flatten_target is not None and gpu_policy_controller is not None:
             try:
-                clock_ceiling_controller = (
-                    deps.flattened_clock_ceiling_controller_factory(
-                        flatten_target=flatten_target,
-                        policy_controller=gpu_policy_controller,
-                        exact_lock=True,
-                    )
+                clock_ceiling_controller = FlattenedClockCeilingController(
+                    flatten_target=flatten_target,
+                    policy_controller=gpu_policy_controller,
+                    exact_lock=True,
                 )
                 clock_ceiling_controller.apply()
             except Exception as exc:
@@ -221,12 +184,12 @@ def run_profile_verification(
                 )
 
         duration_s = int(args.stability_seconds)
-        include_q2rtx, include_cuda = deps.stability_workload_selection(args)
-        workload_label = deps.stability_workload_label(
+        include_q2rtx, include_cuda = stability_workload_selection(args)
+        workload_label = stability_workload_label(
             include_q2rtx=include_q2rtx,
             include_cuda=include_cuda,
         )
-        split_label = deps.stability_workload_split_label(
+        split_label = stability_workload_split_label(
             duration_s,
             include_q2rtx=include_q2rtx,
             include_cuda=include_cuda,
@@ -244,7 +207,7 @@ def run_profile_verification(
                 progress_context="Profile verification",
             )
             if include_q2rtx
-            else deps.build_cuda_stability_config(
+            else build_cuda_stability_config(
                 args,
                 gpu_index=gpu_index,
                 config_path=config_path,
@@ -272,7 +235,7 @@ def run_profile_verification(
             result = (
                 deps.run_q2rtx_stability_test(stability_config)
                 if include_q2rtx
-                else deps.run_cuda_stability_test(stability_config)
+                else run_cuda_stability_test(stability_config)
             )
         except StabilityTestError as exc:
             raise NvmlError(f"stability test configuration error: {exc}") from exc
@@ -283,7 +246,7 @@ def run_profile_verification(
                 and profile_verification_failure_blocks_apply(result.reason)
             ):
                 try:
-                    failed_path = deps.mark_auto_uv_profile_verification_failed(
+                    failed_path = mark_auto_uv_profile_verification_failed(
                         selector,
                         failure={
                             "reason": result.reason,
@@ -306,45 +269,25 @@ def run_profile_verification(
             )
         base_metrics = None
         if not prefer_afterburner_curve and profile_needs_verify_baseline(selector):
-            if clock_ceiling_controller is not None:
-                try:
-                    clock_ceiling_controller.close()
-                except Exception as exc:
-                    deps.log(
-                        "Warning: failed to reset verification clock lock before "
-                        f"baseline probe: {exc}"
-                    )
-                clock_ceiling_controller = None
+            close_clock_ceiling()
             try:
                 base_plan = base_vf_plan_from_profile_plan(verify_plan)
             except Exception as exc:
                 deps.log(f"Profile verification baseline probe skipped: {exc}")
             else:
-                if deps.run_profile_verification_baseline_probe is not None:
-                    base_metrics = deps.run_profile_verification_baseline_probe(
-                        args,
-                        gpu_index=gpu_index,
-                        config_path=config_path,
-                        base_plan=base_plan,
-                        gpu_policy_controller=gpu_policy_controller,
-                        duration_s=profile_verification_baseline_duration_s(duration_s),
-                        include_q2rtx=include_q2rtx,
-                        include_cuda=include_cuda,
-                    )
-                else:
-                    base_metrics = run_profile_verification_baseline_probe(
-                        args,
-                        gpu_index=gpu_index,
-                        config_path=config_path,
-                        base_plan=base_plan,
-                        gpu_policy_controller=gpu_policy_controller,
-                        duration_s=profile_verification_baseline_duration_s(duration_s),
-                        include_q2rtx=include_q2rtx,
-                        include_cuda=include_cuda,
-                        dependencies=deps,
-                    )
+                base_metrics = run_profile_verification_baseline_probe(
+                    args,
+                    gpu_index=gpu_index,
+                    config_path=config_path,
+                    base_plan=base_plan,
+                    gpu_policy_controller=gpu_policy_controller,
+                    duration_s=profile_verification_baseline_duration_s(duration_s),
+                    include_q2rtx=include_q2rtx,
+                    include_cuda=include_cuda,
+                    dependencies=deps,
+                )
         if not prefer_afterburner_curve:
-            verified_path = deps.mark_auto_uv_profile_verified(
+            verified_path = mark_auto_uv_profile_verified(
                 selector,
                 verification={
                     "workload": workload_label,
@@ -367,29 +310,27 @@ def run_profile_verification(
             )
             deps.log(f"Marked profile verified: path={verified_path}")
         deps.log(f"Profile verification passed: profile={label}.")
-    finally:
-        if clock_ceiling_controller is not None:
-            try:
-                clock_ceiling_controller.close()
-            except Exception as exc:
-                deps.log(f"Warning: failed to reset verification clock lock: {exc}")
-        if backup_path is not None:
-            try:
-                deps.restore_offsets(
-                    vf_curve_reader,
-                    backup_path,
-                    policy_controller=gpu_policy_controller,
-                )
-                deps.log("Restored V/F offsets after profile verification.")
-            except Exception as exc:
-                deps.log(f"Warning: failed to restore V/F offsets after verification: {exc}")
-            try:
-                backup_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-        if gpu_policy_controller is not None:
-            gpu_policy_controller.close()
-        vf_curve_reader.close()
+
+
+def _restore_and_unlink_backup(
+    deps: ProfileVerificationDependencies,
+    vf_curve_reader,
+    backup_path: Path,
+    gpu_policy_controller,
+) -> None:
+    try:
+        deps.restore_offsets(
+            vf_curve_reader,
+            backup_path,
+            policy_controller=gpu_policy_controller,
+        )
+        deps.log("Restored V/F offsets after profile verification.")
+    except Exception as exc:
+        deps.log(f"Warning: failed to restore V/F offsets after verification: {exc}")
+    try:
+        backup_path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def apply_verify_auto_uv_profile(
@@ -399,7 +340,7 @@ def apply_verify_auto_uv_profile(
     *,
     dependencies: ProfileVerificationDependencies | None = None,
 ):
-    deps = _dependencies(dependencies)
+    deps = dependencies or ProfileVerificationDependencies()
     auto_uv_final_curve = deps.load_auto_uv_final_curve(
         selector,
         allow_unverified=True,
@@ -423,7 +364,7 @@ def apply_verify_auto_uv_profile(
         f"{auto_uv_final_curve['candidate_voltage_mv']}mV "
         f"points={len(auto_uv_final_curve['plan'])}."
     )
-    memory_policy = deps.apply_auto_uv_profile_memory_offset(
+    memory_policy = apply_auto_uv_profile_memory_offset(
         profile_label=label,
         memory_offset_mhz=auto_uv_final_curve.get("memory_offset_mhz"),
         gpu_policy_controller=gpu_policy_controller,
@@ -443,8 +384,8 @@ def apply_and_verify_profile_vf_plan(
     context: str,
     dependencies: ProfileVerificationDependencies | None = None,
 ) -> None:
-    deps = _dependencies(dependencies)
-    deps.verify_profile_vf_plan(
+    deps = dependencies or ProfileVerificationDependencies()
+    verify_profile_vf_plan(
         vf_curve_reader,
         plan,
         context=context,
@@ -464,12 +405,12 @@ def run_profile_verification_baseline_probe(
     include_cuda: bool,
     dependencies: ProfileVerificationDependencies | None = None,
 ) -> dict | None:
-    deps = _dependencies(dependencies)
+    deps = dependencies or ProfileVerificationDependencies()
     try:
         deps.log(
             "Profile verification baseline probe starting: "
             f"duration={int(duration_s)}s "
-            f"{deps.stability_workload_split_label(duration_s, include_q2rtx=include_q2rtx, include_cuda=include_cuda)}."
+            f"{stability_workload_split_label(duration_s, include_q2rtx=include_q2rtx, include_cuda=include_cuda)}."
         )
         baseline_reader = deps.create_hidden_vf_curve_reader(gpu_index=gpu_index)
         if baseline_reader is None:
@@ -497,7 +438,7 @@ def run_profile_verification_baseline_probe(
                 progress_context="Profile baseline",
             )
             if include_q2rtx
-            else deps.build_cuda_stability_config(
+            else build_cuda_stability_config(
                 args,
                 gpu_index=gpu_index,
                 config_path=config_path,
@@ -519,7 +460,7 @@ def run_profile_verification_baseline_probe(
         result = (
             deps.run_q2rtx_stability_test(stability_config)
             if include_q2rtx
-            else deps.run_cuda_stability_test(stability_config)
+            else run_cuda_stability_test(stability_config)
         )
         deps.print_q2rtx_stability_result(result)
         if not result.success:
@@ -544,7 +485,7 @@ def apply_verify_afterburner_profile(
     gpu_index,
     dependencies: ProfileVerificationDependencies | None = None,
 ):
-    deps = _dependencies(dependencies)
+    deps = dependencies or ProfileVerificationDependencies()
     afterburner_root = str(
         afterburner_runtime_options.get("afterburner_root", "")
     ).strip()
@@ -554,7 +495,7 @@ def apply_verify_afterburner_profile(
     device_profile = str(
         afterburner_runtime_options.get("afterburner_device_profile", "")
     ).strip()
-    source = deps.resolve_afterburner_vf_source(
+    source = resolve_afterburner_vf_source(
         afterburner_root=afterburner_root,
         section=section or None,
         device_profile_hint=device_profile or None,
@@ -565,22 +506,22 @@ def apply_verify_afterburner_profile(
     translated_gpu_policy = None
     if gpu_policy_controller is not None:
         try:
-            profile_settings = deps.load_afterburner_profile_settings(
+            profile_settings = load_afterburner_profile_settings(
                 profile_path=source["profile_path"],
                 section=source["section"],
             )
-            translated_gpu_policy = deps.translate_afterburner_gpu_policy(
+            translated_gpu_policy = translate_afterburner_gpu_policy(
                 profile_settings,
                 power_limits=gpu_policy_controller.query_power_limits(),
                 power_limit_cap_w=afterburner_runtime_options[
                     "power_limit_override_w"
                 ],
             )
-            deps.apply_translated_gpu_policy(gpu_policy_controller, translated_gpu_policy)
+            apply_translated_gpu_policy(gpu_policy_controller, translated_gpu_policy)
         except Exception as exc:
             translated_gpu_policy = None
             deps.log(f"Skipping Afterburner GPU policy during verification: {exc}")
-    vf_apply_result = deps.apply_afterburner_curve_to_reader(
+    vf_apply_result = apply_afterburner_curve_to_reader(
         vf_curve_reader,
         profile_path=source["profile_path"],
         section=source["section"],
@@ -588,7 +529,7 @@ def apply_verify_afterburner_profile(
         preserve_base_below_mv=afterburner_runtime_options["preserve_base_below_mv"],
     )
     vf_curve_reader.refresh_points()
-    flatten_target = deps.derive_afterburner_dynamic_lock(
+    flatten_target = derive_afterburner_dynamic_lock(
         vf_apply_result["materialization"]["points"]
     )
     label = f"afterburner:{source['section']}"

@@ -6,11 +6,11 @@ from types import SimpleNamespace
 import pytest
 
 import ui.commands as commands
-from auto_uv3.auto_uv_user_options import AUTO_UV_DEFAULTS
-from auto_uv3.scan_runtime_settings import (
+from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS
+from auto_uv.scan_runtime_settings import (
     short_probe_base_duration_s as _short_probe_base_duration_s,
 )
-from auto_uv3.ui.final_verification_candidate_choice import (
+from auto_uv.ui.candidate_choice import (
     candidate_selection_summary as _candidate_selection_summary,
     sorted_final_choice_candidates as _sorted_backend_final_choice_candidates,
 )
@@ -25,42 +25,34 @@ from ui.dialogs.final_choice import (
     final_choice_intro_text as _final_choice_intro_text,
     sort_candidates_for_final_choice as _sort_candidates_for_final_choice,
 )
-from ui.dialogs.scan_tuning import (
-    _auto_voltage_drop_note_text,
-)
 from ui.main import parse_gui_args as _parse_gui_args
 from ui.models import top_status_text as _top_status_text
 from ui.models import probe_decision_label as _probe_decision_label
 from ui.models import probe_failure_label as _probe_failure_label
 from ui.styles import STYLESHEET
-from ui.styles import performance_bias_slider_stylesheet
 from ui.tuning import (
+    AUTO_UV_PRESET_BALANCED,
+    AUTO_UV_PRESET_EFFICIENCY,
+    AUTO_UV_PRESET_PERFORMANCE,
     AUTO_UV_DROP_REFERENCE_VOLTAGE_MV,
+    DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS,
     DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT,
     DEFAULT_AUTO_UV_MAX_DROP_PCT,
-    DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT,
+    DEFAULT_AUTO_UV_PRESET,
     DEFAULT_SHORT_VERIFICATION_BASE_S,
     GENERIC_AUTO_UV_MAX_DROP_PCT,
     GPU_UNDERVOLTING_PURPOSE_TEXT,
-    MAX_OVERCLOCK_BUDGET_PCT,
-    PERFORMANCE_BIAS_TOOLTIP_TEXT,
     DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS,
     DEFAULT_AUTO_UV_TAIL_RISE_BINS,
-    YOLO_MAX_OVERCLOCK_BUDGET_PCT,
-    auto_uv_mode_for_performance_bias as _auto_uv_mode_for_performance_bias,
-    auto_uv_tail_rise_bins_for_performance_bias as _auto_uv_tail_rise_bins_for_performance_bias,
+    auto_uv_preset as _auto_uv_preset,
+    auto_uv_performance_preset_label as _auto_uv_performance_preset_label,
+    auto_uv_performance_target_default as _auto_uv_performance_target_default,
+    auto_uv_performance_target_text as _auto_uv_performance_target_text,
+    auto_uv_performance_preset_tooltip as _auto_uv_performance_preset_tooltip,
     auto_uv_voltage_drop_default as _auto_uv_voltage_drop_default,
-    performance_bias_clock_recovery_pct as _performance_bias_clock_recovery_pct,
-    performance_bias_slider_position as _performance_bias_slider_position,
-    slider_value_from_click_position as _slider_value_from_click_position,
 )
 from ui.components.runs_table import (
     RunsTable,
-    _bounce_position_for_frame,
-    _budget_fill_color,
-    _budget_display_values,
-    _budget_recovery_display_values,
-    _budget_recovery_text,
     _format_duration_compact,
     _is_active_decision,
     _progress_label,
@@ -122,11 +114,10 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
             "auto_uv_mode": "performance",
             "auto_uv_max_drop_pct": 16.0,
             "auto_uv_max_clock_drop_pct": 10.0,
-            "auto_uv_clock_bump_budget_ratio": 1.25,
-            "auto_uv_yolo": True,
-            "auto_uv_short_seconds": 30,
             "auto_uv_memory_offset_mhz": 500,
             "auto_uv_tail_rise_bins": 2,
+            "auto_oc_target_voltage_mv": 925,
+            "auto_oc_target_clock_mhz": 2670,
         }
     )
 
@@ -136,17 +127,20 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert command[command.index("--auto-uv-max-drop-pct") + 1] == "16"
     assert "--auto-uv-max-clock-drop-pct" in command
     assert command[command.index("--auto-uv-max-clock-drop-pct") + 1] == "10"
-    assert "--auto-uv-overclock-budget-ratio" in command
-    assert command[command.index("--auto-uv-overclock-budget-ratio") + 1] == "1.25"
-    assert "--yolo" in command
+    assert "--auto-oc-target-voltage-mv" in command
+    assert command[command.index("--auto-oc-target-voltage-mv") + 1] == "925"
+    assert "--auto-oc-target-clock-mhz" in command
+    assert command[command.index("--auto-oc-target-clock-mhz") + 1] == "2670"
+    assert "--auto-uv-oc-budget-ratio" not in command
+    assert "--yolo" not in command
     assert "--auto-uv-efficiency-stop-streak" not in command
     assert "--auto-uv-min-efficiency-stop-drop-pct" not in command
-    assert "--auto-uv-short-seconds" in command
-    assert command[command.index("--auto-uv-short-seconds") + 1] == "30"
     assert "--auto-uv-memory-offset-mhz" in command
     assert command[command.index("--auto-uv-memory-offset-mhz") + 1] == "500"
     assert "--auto-uv-tail-rise-bins" in command
     assert command[command.index("--auto-uv-tail-rise-bins") + 1] == "2"
+    assert "--auto-uv-performance-clock-ceiling-mhz" not in command
+    assert "--auto-uv-performance-voltage-ceiling-mv" not in command
 
 
 def test_ui_scan_command_includes_auto_filled_auto_uv_max_drop(
@@ -172,23 +166,12 @@ def test_auto_uv_short_verification_defaults_to_10_seconds() -> None:
     assert _short_probe_base_duration_s({}) == 10
 
 
-def test_gui_yolo_argument_is_hidden_from_qt_args() -> None:
-    qt_args, yolo, auto_uv3 = _parse_gui_args(
-        ["penguin-burner-ui", "--style", "Fusion", "--yolo"]
-    )
-
-    assert yolo is True
-    assert auto_uv3 is False
-    assert qt_args == ["penguin-burner-ui", "--style", "Fusion"]
-
-
 def test_gui_auto_uv3_argument_is_hidden_from_qt_args() -> None:
-    qt_args, yolo, auto_uv3 = _parse_gui_args(
+    qt_args, auto_uv = _parse_gui_args(
         ["penguin-burner-ui", "--auto-uv3", "--style", "Fusion"]
     )
 
-    assert yolo is False
-    assert auto_uv3 is True
+    assert auto_uv is True
     assert qt_args == ["penguin-burner-ui", "--style", "Fusion"]
 
 
@@ -435,7 +418,7 @@ def test_final_choice_user_stop_intro_mentions_previous_stable_metric() -> None:
     assert "stopped" in efficiency_text.lower()
     assert "previously stable candidates" in efficiency_text
     assert "best FPS/W" in efficiency_text
-    assert "highest-FPS" in performance_text
+    assert "highest FPS" in performance_text
 
 
 def test_backend_final_choice_performance_mode_sorts_by_fps() -> None:
@@ -744,138 +727,49 @@ def test_ui_profile_verify_command_rejects_empty_workload(monkeypatch) -> None:
         )
 
 
-def test_oc_budget_display_clamps_used_value_to_limit() -> None:
-    assert _budget_display_values(4.14, 4.0) == (4.0, 4.0)
-    assert _budget_display_values(2.25, 4.0) == (2.25, 4.0)
-    assert _budget_display_values(1.0, 0.0) == (1.0, 0.0)
-
-
-def test_clock_recovery_display_uses_drop_gap_percentages() -> None:
-    payload = {
-        "overclock_budget_used_of_clock_drop_pct": 130.0,
-        "overclock_budget_limit_of_clock_drop_pct": 150.0,
-    }
-
-    used, limit = _budget_recovery_display_values(payload, used=13.0, limit=15.0)
-
-    assert (used, limit) == (130.0, 150.0)
-    assert _budget_recovery_text(used, limit) == "130% / 150%"
-
-
-def test_auto_uv_table_clock_recovery_bar_stays_light_green() -> None:
-    assert _budget_fill_color() == "#55d27a"
-    assert _budget_fill_color(100.0) == "#55d27a"
-    assert _budget_fill_color(105.0) == "#55d27a"
-    assert _budget_fill_color(110.0) == "#55d27a"
-    assert _budget_fill_color(110.1) == "#55d27a"
-    assert _budget_fill_color(125.0) == "#55d27a"
-
-
-def test_performance_bias_maps_physical_slider_to_clock_recovery() -> None:
-    assert MAX_OVERCLOCK_BUDGET_PCT == 150.0
-    assert YOLO_MAX_OVERCLOCK_BUDGET_PCT == 175.0
-    assert _performance_bias_clock_recovery_pct(0) == 0.0
-    assert _performance_bias_clock_recovery_pct(25) == 50.0
-    assert _performance_bias_clock_recovery_pct(50) == 100.0
-    assert _performance_bias_clock_recovery_pct(75) == 125.0
-    assert _performance_bias_clock_recovery_pct(100) == 150.0
-    assert _performance_bias_slider_position(0.0) == 0
-    assert _performance_bias_slider_position(100.0) == 50
-    assert _performance_bias_slider_position(150.0) == 100
-    assert (
-        _performance_bias_clock_recovery_pct(
-            75,
-            max_pct=YOLO_MAX_OVERCLOCK_BUDGET_PCT,
-        )
-        == 137.5
-    )
-    assert (
-        _performance_bias_clock_recovery_pct(
-            100,
-            max_pct=YOLO_MAX_OVERCLOCK_BUDGET_PCT,
-        )
-        == 175.0
-    )
-    assert _performance_bias_slider_position(
-        175.0,
-        max_pct=YOLO_MAX_OVERCLOCK_BUDGET_PCT,
-    ) == 100
-    assert "might hang your system" in PERFORMANCE_BIAS_TOOLTIP_TEXT
-
-
-def test_click_jump_slider_maps_click_position_to_exact_value() -> None:
-    assert (
-        _slider_value_from_click_position(
-            position_px=0,
-            width_px=101,
-            minimum=0,
-            maximum=100,
-        )
-        == 0
-    )
-    assert (
-        _slider_value_from_click_position(
-            position_px=50,
-            width_px=101,
-            minimum=0,
-            maximum=100,
-        )
-        == 50
-    )
-    assert (
-        _slider_value_from_click_position(
-            position_px=100,
-            width_px=101,
-            minimum=0,
-            maximum=100,
-        )
-        == 100
-    )
-    assert (
-        _slider_value_from_click_position(
-            position_px=25,
-            width_px=101,
-            minimum=0,
-            maximum=100,
-            inverted=True,
-        )
-        == 75
-    )
-
-
-def test_auto_uv_bias_defaults_mode_threshold_and_gpu_table_default() -> None:
-    assert DEFAULT_AUTO_UV_PERFORMANCE_BIAS_PCT == 100.0
-    assert DEFAULT_AUTO_UV_MAX_DROP_PCT == 12.5
-    assert GENERIC_AUTO_UV_MAX_DROP_PCT == 12.5
+def test_auto_uv_preset_defaults_and_gpu_table_default() -> None:
+    assert DEFAULT_AUTO_UV_PRESET == AUTO_UV_PRESET_BALANCED
+    assert DEFAULT_AUTO_UV_MAX_DROP_PCT == 10.0
+    assert GENERIC_AUTO_UV_MAX_DROP_PCT == 10.0
     assert AUTO_UV_DROP_REFERENCE_VOLTAGE_MV == 1000
     assert DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT == 10.0
     assert DEFAULT_AUTO_UV_TAIL_RISE_BINS == 0
-    assert DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS == 4
-    assert _auto_uv_mode_for_performance_bias(99.9) == "efficiency"
-    assert _auto_uv_mode_for_performance_bias(100.0) == "performance"
-    assert _auto_uv_mode_for_performance_bias(150.0) == "performance"
-    assert _auto_uv_tail_rise_bins_for_performance_bias(0.0) == 0
-    assert _auto_uv_tail_rise_bins_for_performance_bias(49.9) == 0
-    assert _auto_uv_tail_rise_bins_for_performance_bias(50.0) == 2
-    assert _auto_uv_tail_rise_bins_for_performance_bias(99.9) == 2
-    assert _auto_uv_tail_rise_bins_for_performance_bias(100.0) == 4
-    assert _auto_uv_tail_rise_bins_for_performance_bias(124.9) == 4
-    assert _auto_uv_tail_rise_bins_for_performance_bias(125.0) == 6
-    assert _auto_uv_tail_rise_bins_for_performance_bias(150.0) == 6
-    assert (
-        _auto_uv_tail_rise_bins_for_performance_bias(
-            137.4,
-            max_pct=YOLO_MAX_OVERCLOCK_BUDGET_PCT,
-        )
-        == 4
+    assert DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS == 4
+    assert DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS == 6
+    efficiency = _auto_uv_preset(AUTO_UV_PRESET_EFFICIENCY)
+    balanced = _auto_uv_preset(AUTO_UV_PRESET_BALANCED)
+    performance = _auto_uv_preset(AUTO_UV_PRESET_PERFORMANCE)
+    assert (efficiency.auto_uv_mode, efficiency.tail_rise_bins) == (
+        "efficiency",
+        0,
     )
-    assert (
-        _auto_uv_tail_rise_bins_for_performance_bias(
-            137.5,
-            max_pct=YOLO_MAX_OVERCLOCK_BUDGET_PCT,
-        )
-        == 6
+    assert (balanced.auto_uv_mode, balanced.tail_rise_bins) == (
+        "efficiency",
+        4,
     )
+    assert (performance.auto_uv_mode, performance.tail_rise_bins) == (
+        "performance",
+        6,
+    )
+
+
+def test_auto_uv_performance_preset_is_tail_shape_only() -> None:
+    assert _auto_uv_performance_preset_label() == "Performance"
+    tooltip = _auto_uv_performance_preset_tooltip()
+    assert "same undervolt search as Balanced" in tooltip
+    assert "6 V/F bins up" in tooltip
+
+
+def test_auto_uv_performance_target_default_uses_gpu_table_target() -> None:
+    target = _auto_uv_performance_target_default(
+        gpu_name="NVIDIA GeForce RTX 4090",
+    )
+
+    assert target.preset_matched is True
+    assert target.gpu_family == "RTX 4090"
+    assert target.voltage_mv == 925
+    assert target.clock_mhz == 2670
+    assert "925 mV / 2670 MHz" in _auto_uv_performance_target_text(target)
 
 
 def test_auto_uv_voltage_drop_default_uses_detected_gpu_table_floor() -> None:
@@ -885,35 +779,23 @@ def test_auto_uv_voltage_drop_default_uses_detected_gpu_table_floor() -> None:
     assert preview.gpu_family == "RTX 5080"
     assert preview.floor_voltage_mv == 850
     assert preview.value_pct == pytest.approx(15.0)
-    assert (
-        _auto_voltage_drop_note_text(preview)
-        == "Max voltage drop auto-filled for NVIDIA GeForce RTX 5080"
-    )
 
 
 def test_auto_uv_voltage_drop_default_falls_back_to_generic_when_unmatched() -> None:
     preview = _auto_uv_voltage_drop_default(gpu_name="NVIDIA GeForce GTX 1080")
 
     assert preview.preset_matched is False
-    assert preview.value_pct == pytest.approx(12.5)
-    assert preview.floor_voltage_mv is None
-    assert (
-        _auto_voltage_drop_note_text(preview)
-        == "Using generic max voltage drop for NVIDIA GeForce GTX 1080"
-    )
+    assert preview.value_pct == pytest.approx(10.0)
+    assert preview.floor_voltage_mv == 900
 
 
 def test_auto_uv_voltage_drop_default_uses_conservative_3080_override() -> None:
     preview = _auto_uv_voltage_drop_default(gpu_name="NVIDIA GeForce RTX 3080")
 
-    assert preview.preset_matched is True
-    assert preview.gpu_family == "RTX 3080"
+    assert preview.preset_matched is False
+    assert preview.gpu_family is None
     assert preview.floor_voltage_mv == 900
     assert preview.value_pct == pytest.approx(10.0)
-    assert (
-        _auto_voltage_drop_note_text(preview)
-        == "Max voltage drop auto-filled for NVIDIA GeForce RTX 3080"
-    )
 
 
 def test_progress_text_stays_light_until_bar_is_full() -> None:
@@ -937,24 +819,7 @@ def test_progress_time_uses_human_duration_text() -> None:
     assert _scan_controls_clamped_elapsed_s(9, 7) == 7.0
 
 
-def test_busy_progress_bounces_with_edge_hold() -> None:
-    assert [_bounce_position_for_frame(frame, steps=4) for frame in range(12)] == [
-        0.0,
-        0.25,
-        0.5,
-        0.75,
-        1.0,
-        1.0,
-        0.75,
-        0.5,
-        0.25,
-        0.0,
-        0.0,
-        0.25,
-    ]
-
-
-def test_busy_progress_widget_is_reused_while_scale_is_unknown() -> None:
+def test_running_status_without_duration_is_static_text() -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -970,15 +835,216 @@ def test_busy_progress_widget_is_reused_while_scale_is_unknown() -> None:
     payload = {"stage": "candidate", "voltage_mv": 900, "clock_mhz": 2600}
 
     table.add_probe_start(payload)
-    first_widget = table.widget.cellWidget(0, table.STATUS_COLUMN)
-    assert first_widget is not None
-    first_widget._frame = 9
+    assert table.widget.cellWidget(0, table.STATUS_COLUMN) is None
+    assert table.widget.item(0, table.STATUS_COLUMN).text() == "Running"
 
-    table.update_probe_progress(payload)
-    second_widget = table.widget.cellWidget(0, table.STATUS_COLUMN)
 
-    assert second_widget is first_widget
-    assert second_widget._frame == 9
+def test_running_status_with_duration_uses_seconds_progress() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    from ui.components.runs_table import RunsTable
+
+    table = RunsTable(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    payload = {
+        "stage": "candidate",
+        "voltage_mv": 900,
+        "clock_mhz": 2600,
+        "elapsed_s": 0,
+        "target_duration_s": 32,
+    }
+
+    table.add_probe_start(payload)
+    widget = table.widget.cellWidget(0, table.STATUS_COLUMN)
+
+    assert widget is not None
+    assert widget.format() == "0s / 32s"
+    assert table.widget.item(0, table.DECISION_COLUMN).text() == "running"
+    assert table.widget.item(0, table.STATUS_COLUMN).text() == ""
+
+    table.update_probe_progress(
+        {
+            "stage": "candidate",
+            "voltage_mv": 900,
+            "clock_mhz": 2600,
+            "elapsed_s": 12,
+            "target_duration_s": 32,
+        }
+    )
+
+    widget = table.widget.cellWidget(0, table.STATUS_COLUMN)
+    assert widget is not None
+    assert widget.format() == "12s / 32s"
+
+
+def test_probe_result_reuses_running_row_and_keeps_seconds_progress() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    from ui.components.runs_table import RunsTable
+
+    table = RunsTable(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    start_payload = {
+        "stage": "candidate",
+        "voltage_mv": 900,
+        "clock_mhz": 2600,
+        "elapsed_s": 0,
+        "target_duration_s": 32,
+    }
+    result_payload = {
+        "stage": "candidate",
+        "voltage_mv": 900,
+        "clock_mhz": 2600,
+        "fps": 120,
+        "power_w": 240,
+        "decision": "pass",
+    }
+
+    table.add_probe_start(start_payload)
+    table.add_probe_result(result_payload)
+    widget = table.widget.cellWidget(0, table.STATUS_COLUMN)
+
+    assert table.widget.rowCount() == 1
+    assert table.widget.item(0, table.DECISION_COLUMN).text() == "Pass"
+    assert table.widget.item(0, table.STATUS_COLUMN).text() == ""
+    assert widget is not None
+    assert widget.format() == "32s / 32s"
+
+
+def test_auto_oc_target_mhz_stays_in_target_column() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    table = RunsTable(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    table.record_candidate_curve(
+        {
+            "stage": "candidate",
+            "label": "performance-oc 3/10",
+            "voltage_mv": 950,
+            "clock_mhz": 2745,
+            "auto_oc": True,
+            "auto_oc_applied_mhz": 180,
+            "auto_oc_limit_mhz": 180,
+            "points": [
+                {
+                    "voltage_mv": 950,
+                    "base_mhz": 2565,
+                    "clock_mhz": 2745,
+                    "offset_mhz": 180,
+                }
+            ],
+        }
+    )
+    start_payload = {
+        "stage": "candidate",
+        "label": "performance-oc 3/10",
+        "voltage_mv": 950,
+        "clock_mhz": 2745,
+        "elapsed_s": 0,
+        "target_duration_s": 32,
+    }
+    result_payload = {
+        "stage": "candidate",
+        "label": "performance-oc 3/10",
+        "voltage_mv": 950,
+        "clock_mhz": 2745,
+        "measured_clock_mhz": 2733.5,
+        "decision": "pass",
+    }
+
+    table.add_probe_start(start_payload)
+    table.add_probe_result(result_payload)
+
+    assert table.widget.rowCount() == 1
+    assert table.widget.item(0, table.TARGET_MHZ_COLUMN).text() == "2745"
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "180/180 MHz"
+    assert table.widget.item(0, table.MEASURED_MHZ_COLUMN).text() == "2733.50"
+    assert table.widget.item(0, table.DECISION_COLUMN).text() == "Pass"
+
+
+def test_candidate_curve_updates_oc_column_for_existing_run_row() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    table = RunsTable(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    table.add_probe_start(
+        {
+            "stage": "candidate",
+            "voltage_mv": 910,
+            "clock_mhz": 2890,
+            "elapsed_s": 0,
+            "target_duration_s": 32,
+        }
+    )
+
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "0/0"
+
+    table.record_candidate_curve(
+        {
+            "stage": "candidate",
+            "voltage_mv": 910,
+            "clock_mhz": 2890,
+            "auto_oc": True,
+            "auto_oc_applied_mhz": 90,
+            "auto_oc_limit_mhz": 150,
+            "points": [
+                {
+                    "voltage_mv": 910,
+                    "base_mhz": 2400,
+                    "clock_mhz": 2890,
+                }
+            ],
+        }
+    )
+
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "90/150 MHz"
+
+
+def test_non_auto_oc_run_shows_zero_oc_progress() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    table = RunsTable(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    table.add_probe_result(
+        {
+            "stage": "candidate",
+            "voltage_mv": 900,
+            "clock_mhz": 2600,
+            "decision": "pass",
+        }
+    )
+
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "0/0"
 
 
 def test_runs_table_row_click_toggles_single_candidate_selection() -> None:
@@ -1084,18 +1150,40 @@ def test_candidate_header_detail_is_smaller_and_not_bold() -> None:
     assert "font-weight: 400;" in candidate_style
 
 
-def test_performance_bias_slider_has_breathing_room_and_autofill_note() -> None:
-    assert "QGroupBox#performanceBiasGroup" in STYLESHEET
-    assert "QSlider#performanceBiasSlider" in STYLESHEET
-    assert "margin: 8px 0 10px 0;" in STYLESHEET
-    assert "QLabel#autoVoltageDropNote" in STYLESHEET
-    slider_style = performance_bias_slider_stylesheet(MAX_OVERCLOCK_BUDGET_PCT)
-    assert "qlineargradient" in slider_style
+def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
+    assert "QGroupBox#autoUvPresetGroup" in STYLESHEET
+    assert "QPushButton#autoUvPresetButton" in STYLESHEET
+    assert 'presetId="efficiency"' in STYLESHEET
+    assert 'presetId="balanced"' in STYLESHEET
+    assert 'presetId="performance"' in STYLESHEET
     source = Path("ui/dialogs/scan_tuning.py").read_text(encoding="utf-8")
+    assert "auto_uv_presets" in source
     assert "auto_uv_voltage_drop_default" in source
-    assert "auto-filled for" in source
+    assert "auto-filled for" not in source
     assert "efficiency floor" not in source
+    assert "Max voltage drop" not in source
+    assert "Base verification length" not in source
+    assert '"auto_uv_short_seconds"' not in source
+    assert "Allow up to 10% max efficiency clock drop" in source
+    assert "Try to maintain baseline clock" in source
+    assert "AUTO_UV_PRESET_EFFICIENCY" in source
+    assert "QStackedWidget" in source
+    assert "preset_advanced_stack.setMinimumHeight" in source
+    assert "buttonClicked.connect" in source
+    assert "Auto-OC voltage target" in source
+    assert "Auto-OC clock target" in source
+    assert "auto_uv_performance_target_default" in source
+    assert "Auto-OC table target" not in source
+    assert "autoOcTargetPreview" not in source
+    assert "auto_uv_performance_target_text" not in source
+    assert '"auto_oc_target_voltage_mv"' in source
+    assert '"auto_oc_target_clock_mhz"' in source
     assert '"auto_uv_max_drop_pct"' in source
+    assert '"auto_uv_tail_rise_bins": int(preset.tail_rise_bins)' in source
+    assert "Core ceiling MHz" not in source
+    assert "Voltage ceiling mV" not in source
+    assert '"auto_uv_performance_clock_ceiling_mhz"' not in source
+    assert '"auto_uv_performance_voltage_ceiling_mv"' not in source
     assert '"penguin-burner-green.png"' in source
     assert '"penguin-burner.png"' in source
 
@@ -1103,6 +1191,70 @@ def test_performance_bias_slider_has_breathing_room_and_autofill_note() -> None:
 def test_advanced_tuning_group_has_breathing_room() -> None:
     assert "QGroupBox#advancedTuningGroup" in STYLESHEET
     assert "margin-top: 12px;" in STYLESHEET
+    source = Path("ui/dialogs/scan_tuning.py").read_text(encoding="utf-8")
+    assert "layout.setContentsMargins(18, 16, 18, 16)" in source
+    assert "advanced_layout.setContentsMargins(18, 28, 18, 16)" in source
+    assert "form.setHorizontalSpacing(24)" in source
+    assert "form.setVerticalSpacing(10)" in source
+    assert "dialog.setMinimumWidth(860)" in source
+    assert "dialog.resize(860, dialog.sizeHint().height())" in source
+    assert "dialog.adjustSize()" not in source
+    assert "dialog.setFixedSize" not in source
+    assert "label_layout.setContentsMargins(0, 2, 12, 2)" in source
+
+
+def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    import ui.dialogs.scan_tuning as scan_tuning
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    dialogs = []
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_voltage_drop_default",
+        lambda: SimpleNamespace(
+            gpu_name="NVIDIA GeForce RTX 5080",
+            value_pct=15.0,
+        ),
+    )
+    monkeypatch.setattr(
+        QtWidgets.QDialog,
+        "exec",
+        lambda dialog: dialogs.append(dialog) or QtWidgets.QDialog.DialogCode.Rejected,
+    )
+
+    scan_tuning.select_scan_tuning(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgets,
+        parent=None,
+    )
+
+    dialog = dialogs[0]
+    stack = dialog.findChild(QtWidgets.QStackedWidget)
+    assert dialog.minimumWidth() == 860
+    assert stack is not None
+    assert stack.count() == 3
+    assert stack.minimumHeight() >= max(
+        stack.widget(index).sizeHint().height() for index in range(stack.count())
+    )
+    initial_size = dialog.size()
+    buttons = {
+        str(button.property("presetId")): button
+        for button in dialog.findChildren(QtWidgets.QPushButton)
+        if button.property("presetId")
+    }
+
+    buttons[AUTO_UV_PRESET_PERFORMANCE].click()
+    assert dialog.size() == initial_size
+    buttons[AUTO_UV_PRESET_EFFICIENCY].click()
+    assert dialog.size() == initial_size
 
 
 def test_about_dialog_preserves_project_links() -> None:
@@ -1113,7 +1265,7 @@ def test_about_dialog_preserves_project_links() -> None:
 
 def test_top_status_text_does_not_truncate_live_temperature() -> None:
     text = (
-        "Auto-UV phase=candidate-live overclocking-budget=2.91/4.00% "
+        "Auto-UV phase=candidate-live oc-budget=2.91/4.00% "
         "candidate=990mV target=2640MHz elapsed=15.40s running=q2rtx "
         "live=975mV power=294.40W load=busy core_clock=2580MHz temp=60C fan=33%"
     )

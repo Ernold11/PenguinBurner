@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from auto_uv3.auto_uv_user_options import (
-    AUTO_UV_DEFAULTS,
-    AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO,
-)
+from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS
 from cli.effective_runtime_options import build_effective_afterburner_runtime_options
 from nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 
@@ -22,11 +19,11 @@ def _args(**overrides):
         "auto_uv_short_seconds": None,
         "auto_uv_memory_offset_mhz": None,
         "auto_uv_tail_rise_bins": None,
+        "auto_oc_target_voltage_mv": None,
+        "auto_oc_target_clock_mhz": None,
         "auto_uv_efficiency_stop_streak": None,
         "auto_uv_min_efficiency_stop_drop_pct": None,
         "auto_uv_max_clock_drop_pct": None,
-        "auto_uv_clock_bump_budget_ratio": None,
-        "yolo": False,
         "auto_uv_mode": None,
         "auto_uv_require_final_choice": False,
         "dangerously_skip_validation": False,
@@ -60,11 +57,11 @@ def test_effective_runtime_options_apply_cli_overrides_and_clamps(tmp_path) -> N
             auto_uv_short_seconds=999,
             auto_uv_memory_offset_mhz=99999,
             auto_uv_tail_rise_bins=999,
+            auto_oc_target_voltage_mv=925,
+            auto_oc_target_clock_mhz=2670,
             auto_uv_efficiency_stop_streak=-5,
             auto_uv_min_efficiency_stop_drop_pct=-2.5,
             auto_uv_max_clock_drop_pct=-4.0,
-            auto_uv_clock_bump_budget_ratio=999.0,
-            yolo=True,
             auto_uv_mode="performance",
             auto_uv_require_final_choice=True,
             dangerously_skip_validation=True,
@@ -82,14 +79,11 @@ def test_effective_runtime_options_apply_cli_overrides_and_clamps(tmp_path) -> N
     assert effective["auto_uv_short_seconds"] == 60
     assert effective["auto_uv_memory_offset_mhz"] == MAX_AFTERBURNER_MEM_OFFSET_MHZ
     assert effective["auto_uv_tail_rise_bins"] == AUTO_UV_DEFAULTS.max_tail_rise_bins
+    assert effective["auto_oc_target_voltage_mv"] == 925
+    assert effective["auto_oc_target_clock_mhz"] == 2670
     assert effective["auto_uv_efficiency_stop_streak"] == 0
     assert effective["auto_uv_min_efficiency_stop_drop_pct"] == 0.0
     assert effective["auto_uv_max_clock_drop_pct"] == 0.0
-    assert (
-        effective["auto_uv_clock_bump_budget_ratio"]
-        == AUTO_UV_YOLO_MAX_CLOCK_BUMP_BUDGET_RATIO
-    )
-    assert effective["auto_uv_yolo"] is True
     assert effective["auto_uv_mode"] == "performance"
     assert effective["auto_uv_require_final_choice"] is True
     assert effective["dangerously_skip_validation"] is True

@@ -73,7 +73,7 @@
 <g id="node5" class="node">
 <title>budget</title>
 <path fill="#f8fafc" stroke="#334155" d="M942.25,-158.76C942.25,-158.76 807.97,-158.76 807.97,-158.76 801.97,-158.76 795.97,-152.76 795.97,-146.76 795.97,-146.76 795.97,-134.76 795.97,-134.76 795.97,-128.76 801.97,-122.76 807.97,-122.76 807.97,-122.76 942.25,-122.76 942.25,-122.76 948.25,-122.76 954.25,-128.76 954.25,-134.76 954.25,-134.76 954.25,-146.76 954.25,-146.76 954.25,-152.76 948.25,-158.76 942.25,-158.76"/>
-<text xml:space="preserve" text-anchor="middle" x="875.11" y="-135.91" font-family="Arial" font-size="13.00">check overclock budget</text>
+<text xml:space="preserve" text-anchor="middle" x="875.11" y="-135.91" font-family="Arial" font-size="13.00">check OC budget</text>
 </g>
 <!-- no_gain&#45;&gt;budget -->
 <g id="edge4" class="edge">
@@ -86,7 +86,7 @@
 <title>try_oc</title>
 <path fill="#eff6ff" stroke="#334155" d="M1225.03,-128.52C1225.03,-128.52 1119.25,-128.52 1119.25,-128.52 1113.25,-128.52 1107.25,-122.52 1107.25,-116.52 1107.25,-116.52 1107.25,-99 1107.25,-99 1107.25,-93 1113.25,-87 1119.25,-87 1119.25,-87 1225.03,-87 1225.03,-87 1231.03,-87 1237.03,-93 1237.03,-99 1237.03,-99 1237.03,-116.52 1237.03,-116.52 1237.03,-122.52 1231.03,-128.52 1225.03,-128.52"/>
 <text xml:space="preserve" text-anchor="middle" x="1172.14" y="-110.41" font-family="Arial" font-size="13.00">try performance</text>
-<text xml:space="preserve" text-anchor="middle" x="1172.14" y="-95.41" font-family="Arial" font-size="13.00">overclock recovery</text>
+<text xml:space="preserve" text-anchor="middle" x="1172.14" y="-95.41" font-family="Arial" font-size="13.00">OC budget</text>
 </g>
 <!-- budget&#45;&gt;try_oc -->
 <g id="edge5" class="edge">
@@ -139,7 +139,7 @@
 <g id="node8" class="node">
 <title>oc_best</title>
 <path fill="#ecfdf5" stroke="#334155" d="M2038.56,-77.52C2038.56,-77.52 1944.78,-77.52 1944.78,-77.52 1938.78,-77.52 1932.78,-71.52 1932.78,-65.52 1932.78,-65.52 1932.78,-48 1932.78,-48 1932.78,-42 1938.78,-36 1944.78,-36 1944.78,-36 2038.56,-36 2038.56,-36 2044.56,-36 2050.56,-42 2050.56,-48 2050.56,-48 2050.56,-65.52 2050.56,-65.52 2050.56,-71.52 2044.56,-77.52 2038.56,-77.52"/>
-<text xml:space="preserve" text-anchor="middle" x="1991.67" y="-59.41" font-family="Arial" font-size="13.00">accept overclock</text>
+<text xml:space="preserve" text-anchor="middle" x="1991.67" y="-59.41" font-family="Arial" font-size="13.00">accept OC budget</text>
 <text xml:space="preserve" text-anchor="middle" x="1991.67" y="-44.41" font-family="Arial" font-size="13.00">new best score</text>
 </g>
 <!-- oc_probe&#45;&gt;oc_best -->

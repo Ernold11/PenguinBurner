@@ -27,10 +27,10 @@ digraph auto_uv_performance_mode {
   score [label="score candidate\nFPS first, FPS/W second"];
   best [label="record best\nreset no-gain count", fillcolor="#ecfdf5"];
   no_gain [label="count no-score-gain"];
-  budget [label="check overclock budget"];
-  try_oc [label="try performance\noverclock recovery", fillcolor="#eff6ff"];
+  budget [label="check OC budget"];
+  try_oc [label="try performance\nOC budget", fillcolor="#eff6ff"];
   oc_probe [label="probe recovered clock"];
-  oc_best [label="accept overclock\nnew best score", fillcolor="#ecfdf5"];
+  oc_best [label="accept OC budget\nnew best score", fillcolor="#ecfdf5"];
   oc_no_gain [label="continue descent\nstable but no score gain", fillcolor="#ecfdf5"];
   voltage_recovery [label="sweep higher voltage\nrecover performance", fillcolor="#eff6ff"];
   recovered [label="stop at recovered\nhigher voltage improved", fillcolor="#fef9c3"];
@@ -60,4 +60,3 @@ digraph auto_uv_performance_mode {
   recovered -> end;
   stop_best -> end;
 }
-

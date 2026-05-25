@@ -31,25 +31,22 @@ from ui.profiles import runner_status_text
 from ui.verify import elapsed_from_line
 from ui.verify import progress_percent
 from ui.verify import workload_label
-from ui.tuning import YOLO_MAX_OVERCLOCK_BUDGET_PCT
-from ui.tuning import auto_uv_mode_for_performance_bias
-from ui.tuning import auto_uv_tail_rise_bins_for_performance_bias
-from ui.tuning import performance_bias_clock_recovery_pct
+from ui.tuning import auto_uv_performance_preset_label
+from ui.tuning import auto_uv_preset
 
 
 def test_ui_launcher_ignores_old_new_ui_flag() -> None:
-    argv, yolo, auto_uv3 = parse_gui_args(["pburn-ui", "--new-ui", "--yolo"])
+    argv, auto_uv = parse_gui_args(["pburn-ui", "--new-ui"])
 
-    assert (argv, yolo) == (["pburn-ui"], True)
-    assert auto_uv3 is False
+    assert argv == ["pburn-ui"]
+    assert auto_uv is False
 
 
 def test_ui_launcher_accepts_auto_uv3_flag() -> None:
-    argv, yolo, auto_uv3 = parse_gui_args(["pburn-ui", "--auto-uv3", "--yolo"])
+    argv, auto_uv = parse_gui_args(["pburn-ui", "--auto-uv3"])
 
     assert argv == ["pburn-ui"]
-    assert yolo is True
-    assert auto_uv3 is True
+    assert auto_uv is True
 
 
 def test_new_ui_package_is_installed() -> None:
@@ -111,14 +108,9 @@ def test_new_ui_profile_and_tuning_helpers_cover_moved_workflows() -> None:
         profiles,
         running_selector="profile-a",
     )
-    assert auto_uv_mode_for_performance_bias(99.9) == "efficiency"
-    assert auto_uv_mode_for_performance_bias(100.0) == "performance"
-    assert auto_uv_tail_rise_bins_for_performance_bias(99.9) == 2
-    assert auto_uv_tail_rise_bins_for_performance_bias(100.0) == 4
-    assert performance_bias_clock_recovery_pct(
-        100,
-        max_pct=YOLO_MAX_OVERCLOCK_BUDGET_PCT,
-    ) == 175.0
+    assert auto_uv_preset("balanced").tail_rise_bins == 4
+    assert auto_uv_preset("performance").tail_rise_bins == 6
+    assert auto_uv_performance_preset_label() == "Performance"
     assert profile_verify_selector({"path": "/tmp/profile.json"}) == "/tmp/profile.json"
     assert workload_label(q2rtx_enabled=True, cuda_enabled=False) == "Q2RTX timedemo"
     assert elapsed_from_line("Stability progress elapsed=150.0s") == 150.0

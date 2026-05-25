@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.1.7
+Version:        0.1.8
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -50,7 +50,8 @@ Fusion.
 %pyproject_install
 %pyproject_save_files \
     afterburner \
-    auto_uv3 \
+    auto_oc \
+    auto_uv \
     cli \
     initial_check \
     lact \
@@ -103,6 +104,12 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Mon May 25 2026 PenguinBurner contributors <noreply@github.com> - 0.1.8-1
+- Replace Auto-UV3 internals with the cleaned Auto-UV package namespace.
+- Add a separate Performance Auto-OC ladder after the balanced undervolt pass.
+- Improve Auto-UV table progress, status, and Auto-OC reporting.
+- Keep Performance final selection sorted by measured FPS.
+
 * Wed May 13 2026 PenguinBurner contributors <noreply@github.com> - 0.1.7-1
 - Honor time-based Q2RTX verification durations instead of precomputed loop counts.
 - Improve PRIME laptop selected-GPU execution and diagnostics.

@@ -29,8 +29,8 @@ digraph auto_uv_efficiency_mode {
   arm [label="arm stop\nstore previous stable"];
   min_drop [label="check minimum\nvoltage drop"];
   too_shallow [label="continue descent\nnot deep enough", fillcolor="#ecfdf5"];
-  budget [label="check overclock budget"];
-  try_oc [label="try efficiency-wall\noverclock recovery", fillcolor="#eff6ff"];
+  budget [label="check OC budget"];
+  try_oc [label="try efficiency-wall\nOC budget", fillcolor="#eff6ff"];
   oc_probe [label="probe recovered clock"];
   oc_accept [label="continue descent\nFPS/W improved", fillcolor="#ecfdf5"];
   confirm [label="confirm wall\nno-gain streak"];

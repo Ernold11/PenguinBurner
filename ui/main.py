@@ -10,28 +10,24 @@ from .qt import import_qt
 from .window import MainWindow
 
 
-def parse_gui_args(argv: list[str] | None = None) -> tuple[list[str], bool, bool]:
+def parse_gui_args(argv: list[str] | None = None) -> tuple[list[str], bool]:
     raw = list(sys.argv if argv is None else argv)
     if not raw:
         raw = ["penguin-burner-ui"]
     qt_argv = [raw[0]]
-    yolo = False
-    auto_uv3 = False
+    auto_uv = False
     for arg in raw[1:]:
         if arg == "--new-ui":
             continue
         if arg == "--auto-uv3":
-            auto_uv3 = True
-            continue
-        if arg == "--yolo":
-            yolo = True
+            auto_uv = True
             continue
         qt_argv.append(arg)
-    return qt_argv, bool(yolo), bool(auto_uv3)
+    return qt_argv, bool(auto_uv)
 
 
 def run(argv: list[str] | None = None) -> int:
-    qt_argv, yolo, auto_uv3 = parse_gui_args(sys.argv if argv is None else argv)
+    qt_argv, auto_uv = parse_gui_args(sys.argv if argv is None else argv)
     try:
         qt_modules = import_qt()
     except RuntimeError as exc:
@@ -49,7 +45,7 @@ def run(argv: list[str] | None = None) -> int:
     if not icon.isNull():
         app.setWindowIcon(icon)
     apply_dark_palette(app, QtGui)
-    window = MainWindow(qt_modules, yolo=yolo, auto_uv3=auto_uv3)
+    window = MainWindow(qt_modules, auto_uv=auto_uv)
     icon = application_icon(QtGui)
     if not icon.isNull():
         window.window.setWindowIcon(icon)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from auto_uv3.scan_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE, normalize_auto_uv_mode
 
 from ..constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
 from ..constants import MAX_FINAL_VERIFICATION_DURATION_S
@@ -39,8 +39,8 @@ def candidate_status_text(
     parts = []
     if is_default:
         parts.append(
-            "Best FPS"
-            if final_choice_is_performance_mode(auto_uv_mode)
+            "Highest FPS"
+            if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE
             else "Best FPS/W"
         )
     parts.append(
@@ -76,25 +76,23 @@ def final_choice_sort_values(candidate: dict) -> list[float | str]:
 
 
 def final_choice_sort_column_for_mode(auto_uv_mode: object) -> int:
-    return (
-        FINAL_CHOICE_FPS_SORT_COLUMN
-        if final_choice_is_performance_mode(auto_uv_mode)
-        else FINAL_CHOICE_FPSW_SORT_COLUMN
-    )
+    if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE:
+        return FINAL_CHOICE_FPS_SORT_COLUMN
+    return FINAL_CHOICE_FPSW_SORT_COLUMN
 
 
 def sort_candidates_for_final_choice(
     candidates: list[dict],
     auto_uv_mode: object,
 ) -> list[dict]:
-    if final_choice_is_performance_mode(auto_uv_mode):
+    if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE:
         return sorted(
             candidates,
             key=lambda candidate: (
                 candidate_fps(candidate) is None,
                 -float(candidate_fps(candidate) or 0.0),
-                int(candidate.get("candidate_voltage_mv") or 99999),
                 -int(candidate.get("lock_clock_mhz") or 0),
+                int(candidate.get("candidate_voltage_mv") or 99999),
             ),
         )
     return sorted(
@@ -109,13 +107,13 @@ def sort_candidates_for_final_choice(
 
 
 def best_final_choice_candidate_id(candidates: list[dict], auto_uv_mode: object) -> str:
-    metric = (
-        candidate_fps
-        if final_choice_is_performance_mode(auto_uv_mode)
-        else candidate_fpsw
-    )
+    if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE:
+        for candidate in candidates:
+            if candidate_fps(candidate) is not None:
+                return str(candidate.get("candidate_id", ""))
+        return str(candidates[0].get("candidate_id", "")) if candidates else ""
     for candidate in candidates:
-        if metric(candidate) is not None:
+        if candidate_fpsw(candidate) is not None:
             return str(candidate.get("candidate_id", ""))
     return str(candidates[0].get("candidate_id", "")) if candidates else ""
 
@@ -144,10 +142,6 @@ def numeric_sort_value(value) -> float | str:
     except (TypeError, ValueError):
         return ""
     return float(number) if math.isfinite(number) else ""
-
-
-def final_choice_is_performance_mode(auto_uv_mode: object) -> bool:
-    return str(auto_uv_mode or "").strip().lower() == AUTO_UV_MODE_PERFORMANCE
 
 
 def candidate_fpsw(candidate: dict) -> float | None:
@@ -271,10 +265,11 @@ def select_final_candidate(
 
 def final_choice_intro_text(auto_uv_mode: object, *, request_reason: object = "") -> str:
     stopped = str(request_reason or "").strip().lower() == "user-stop"
-    if final_choice_is_performance_mode(auto_uv_mode):
-        metric_text = "highest-FPS"
-    else:
-        metric_text = "best FPS/W"
+    metric_text = (
+        "highest FPS"
+        if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE
+        else "best FPS/W"
+    )
     if stopped:
         return (
             "Auto-UV was stopped. Choose one of the previously stable candidates. "

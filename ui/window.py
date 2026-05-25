@@ -79,10 +79,9 @@ from .styles import STYLESHEET
 
 
 class MainWindow:
-    def __init__(self, qt_modules, *, yolo: bool = False, auto_uv3: bool = False):
+    def __init__(self, qt_modules, *, auto_uv: bool = False):
         self.QtCore, self.QtGui, self.QtWidgets, self.pg = qt_modules
-        self.auto_uv_yolo = bool(yolo)
-        self.auto_uv3 = bool(auto_uv3)
+        self.auto_uv = bool(auto_uv)
         self.profile_summaries: list[dict] = []
         self.fan_measured_points: list[tuple[float, float]] = []
         self.pending_final_result_payload: dict | None = None
@@ -258,11 +257,10 @@ class MainWindow:
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
             parent=self.window,
-            yolo=self.auto_uv_yolo,
         )
         if options is None:
             return
-        options["auto_uv3"] = bool(self.auto_uv3)
+        options["auto_uv"] = bool(self.auto_uv)
         command = scan_command(options)
         self.runs_table.clear()
         self.vf_plot.clear()
@@ -320,6 +318,7 @@ class MainWindow:
             self.vf_plot.set_source_points(points)
             self.curve_tabs.set_base_points(points)
         elif event == "candidate_curve":
+            self.runs_table.record_candidate_curve(payload)
             self.vf_plot.set_candidate_points(
                 event_points(payload),
                 curve_id=candidate_id_from_payload(payload),

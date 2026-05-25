@@ -42,7 +42,7 @@ Hard limits:
 ## Proposed Package
 
 ```text
-auto_uv3/
+auto_uv/
   __init__.py
   auto_uv_types.py
   auto_uv_scan_settings.py
@@ -54,9 +54,9 @@ auto_uv3/
   lower_voltage_probe_target.py
   lower_voltage_sweep_loop.py
 
-  clock_recovery_budget.py
-  clock_recovery_target.py
-  clock_recovery_backoff.py
+  oc_budget.py
+  oc_target.py
+  oc_backoff.py
 
   efficiency_fps_per_w_policy.py
   performance_fps_score_policy.py
@@ -96,7 +96,7 @@ auto_uv3/
     unsafe_voltage_cache.py
     unsafe_voltage_blacklist_file.py
     interrupted_probe_crash_cache.py
-    previous_crash_recovery_budget_limit.py
+    previous_crash_oc_budget_limit.py
     verified_candidate_result_file.py
     probe_in_progress_marker_file.py
 
@@ -105,7 +105,7 @@ auto_uv3/
     ui_voltage_probe_events.py
     final_verification_candidate_choice.py
     probe_summary_ui_payload.py
-    clock_recovery_budget_ui_payload.py
+    oc_budget_ui_payload.py
     vf_curve_ui_points.py
 
   recovery/
@@ -141,8 +141,8 @@ flowchart TD
     FinalChoice --> FinalVerify[voltage_frequency_undervolt_main_loop.py]
     Unsafe[persistence/unsafe_voltage_cache.py] --> VoltageSearch
     Crash[persistence/interrupted_probe_crash_cache.py] --> Unsafe
-    Budget[clock_recovery_budget.py] --> ProbeCurve
-    Budget --> Recovery[clock_recovery_target.py]
+    Budget[oc_budget.py] --> ProbeCurve
+    Budget --> Recovery[oc_target.py]
     Recovery --> Sweep
     Events[ui/ui_voltage_probe_events.py] --> Sweep
 ```
@@ -168,10 +168,10 @@ flowchart TD
 | `q2rtx/q2rtx_cuda_voltage_probe.py` | Apply one curve and run Q2RTX/CUDA with live guardrails | Sweep state |
 | `q2rtx/q2rtx_live_abort_rules.py` | Live timedemo, load, clock, and stall abort rules | Candidate selection |
 | `q2rtx/q2rtx_probe_summary.py` | Loaded probe summary metrics | Curve planning |
-| `clock_recovery_budget.py` | Recovery budget math and labels | Candidate probing |
-| `clock_recovery_target.py` | Recovery target MHz calculation | Efficiency/performance scoring |
-| `clock_recovery_probe.py` | Retest same voltage with recovered clock target | FPS/W policy |
-| `clock_recovery_backoff.py` | Step back a failed recovered clock target | Baseline selection |
+| `oc_budget.py` | OC budget math and labels | Candidate probing |
+| `oc_target.py` | Recovery target MHz calculation | Efficiency/performance scoring |
+| `oc_budget_probe.py` | Retest same voltage with recovered clock target | FPS/W policy |
+| `oc_backoff.py` | Step back a failed recovered clock target | Baseline selection |
 | `efficiency_fps_per_w_policy.py` | FPS/W wall and confirmation policy | Performance scoring |
 | `performance_fps_score_policy.py` | FPS-first score and best-candidate policy | FPS/W wall logic |
 | `performance_voltage_recovery.py` | Sweep upward in voltage to recover performance | Generic sweep state |
@@ -253,10 +253,10 @@ dead/redundant/contradictory, or blocked with a written reason.
 - Candidate phase labels.
 - Unsafe-cache candidate blocking.
 - Predicted clock-floor miss from recent accepted slope.
-- Persistent clock-recovery budget across lower-voltage probes.
-- Preemptive overclock when the next point is predicted to miss the floor.
-- Iterative low-clock recovery while budget remains.
-- Backoff after a hard failure at an overclocked target.
+- Persistent OC budget across lower-voltage probes.
+- Preemptive OC-budget target when the next point is predicted to miss the floor.
+- Iterative OC-budget target while budget remains.
+- Backoff after a hard failure at an OC-budget target.
 - Upward voltage recovery after hard failures.
 - Stop on critical failure while keeping previous stable curve.
 - Accept lowest floor miss only when budget is spent and failure is controlled.
@@ -267,11 +267,11 @@ dead/redundant/contradictory, or blocked with a written reason.
 - Efficiency FPS/W delta using temperature-normalized power.
 - Efficiency no-gain streak and pending previous candidate.
 - Minimum voltage drop before efficiency-wall stop.
-- Efficiency wall overclock attempt before stopping.
+- Efficiency wall OC-budget target attempt before stopping.
 - Performance score that heavily weights FPS and lightly weights FPS/W.
 - Performance best-candidate tracking.
 - Performance no-score-gain exploration window.
-- Performance overclock step cap.
+- Performance OC-budget target step cap.
 - Performance upward voltage recovery before final stop.
 - Skip already-visited voltage/clock/memory points during performance recovery.
 
@@ -292,7 +292,7 @@ dead/redundant/contradictory, or blocked with a written reason.
 
 ## Core Data Model
 
-Use explicit names instead of the current mixed "clock bump", "overclock", and
+Use explicit names instead of the current mixed "OC budget", "OC-budget target", and
 "recovery" vocabulary.
 
 ```python
@@ -303,7 +303,7 @@ ProbeSummary
 ProbeOutcome
 StableRunDecision
 SweepState
-OverclockBudget
+OcBudget
 ProbeDecision
 ModeDecision
 SweepResult
@@ -316,7 +316,7 @@ Important state fields:
 - `stable_target_mhz`
 - `stable_measured_mhz`
 - `next_voltage_mv`
-- `overclock_budget`
+- `OC-budget target_budget`
 - `persistent_recovery_pct`
 - `fixed_full_budget_target_mhz`
 - `unsafe_points`
@@ -339,7 +339,7 @@ These should become readable function names:
 - `build_candidate_curve`
 - `predict_clock_floor_miss`
 - `apply_persistent_recovery`
-- `spend_recovery_budget`
+- `spend_oc_budget`
 - `probe_candidate`
 - `classify_probe`
 - `accept_candidate`
@@ -362,8 +362,8 @@ while state.next_voltage_mv is not None:
     raw_probe = q2rtx_cuda_probe_runner.run(candidate)
     decision = probe_stability_decision.evaluate(raw_probe, state)
 
-    if decision == TRY_OVERCLOCK:
-        state = overclock_recovery.try_until_stable_or_spent(state, candidate)
+    if decision == TRY_OC_BUDGET:
+        state = oc_budget.try_until_stable_or_spent(state, candidate)
         continue
 
     if decision == RECOVER_UPWARD:
@@ -392,9 +392,9 @@ arm_previous_curve_as_stop_candidate()
 if voltage_drop_is_too_small:
     continue
 
-if overclock_budget_remains:
-    if overclock_probe_improves_efficiency:
-        accept_overclocked_curve()
+if OC-budget target_budget_remains:
+    if OC-budget target_probe_improves_efficiency:
+        accept_OC-budget targeted_curve()
         continue
 
 if confirmation_streak_reached and budget_spent:
@@ -412,10 +412,10 @@ if score beats_best:
 count_no_score_gain()
 
 if budget_remains:
-    if overclock_probe_beats_current_score:
-        accept_overclocked_curve()
+    if OC-budget target_probe_beats_current_score:
+        accept_OC-budget targeted_curve()
         continue
-    if overclock_probe_hard_failed:
+    if OC-budget target_probe_hard_failed:
         sweep_higher_voltage_recovery()
         stop()
 
@@ -436,12 +436,12 @@ if enough_exploration and too_many_no_gain_steps:
 - Save the latest short verified curve after every accepted candidate.
 - Normalize accepted candidates to measured loaded clock when appropriate.
 - Measure FPS, power, temperature, fan speed, voltage, and loaded core clock.
-- Treat low loaded clock as recoverable with overclock budget.
+- Treat low loaded clock as recoverable with OC budget.
 - Treat CUDA/Q2RTX/stall/regression failures as upward-recovery candidates.
 - Treat fatal output, Xid, load lost, invalid timedemo, and timeouts as critical.
 - Persist unsafe voltage/clock bands across runs.
 - Leave a crash marker during dangerous probes and consume it on the next run.
-- Cap future recovery budget if a previous recovery probe crashed.
+- Cap future OC budget if a previous recovery probe crashed.
 - Let efficiency mode stop on confirmed FPS/W wall.
 - Let performance mode stop on FPS-first score wall.
 - Let performance mode sweep back upward in voltage before final stop.
@@ -454,7 +454,7 @@ if enough_exploration and too_many_no_gain_steps:
 - `live_sweep.py` mixes live GPU side effects, event emission, logging, and hook construction.
 - `performance.py` owns both scoring policy and extra probing behavior.
 - Probe failure reasons are strings; this makes transitions easy to mistype.
-- "clock bump", "overclock", and "recovery" name the same family of behavior.
+- "OC budget", "OC-budget target", and "recovery" name the same family of behavior.
 - Unsafe cache rules are partly in planning, artifacts, and probe runner modules.
 - Candidate acceptance can mean requested target or measured target depending on context.
 
@@ -466,7 +466,7 @@ if enough_exploration and too_many_no_gain_steps:
 - Replace free-form failure prefix checks with a typed `FailureKind`.
 - Move all unsafe-cache read/write/block logic behind one interface.
 - Move crash marker validation out of artifact serialization.
-- Keep all budget math in `clock_recovery_budget.py`.
+- Keep all budget math in `oc_budget.py`.
 - Make performance voltage recovery a mode plugin, not special code inside the generic loop.
 - Make every sweep transition return a single `Transition` object with state, events, and side effects.
 - Keep `gpu_vf_curve_applier.py` and `q2rtx_cuda_probe_runner.py` as the only modules allowed to touch GPU state or run workloads.
@@ -480,7 +480,7 @@ if enough_exploration and too_many_no_gain_steps:
 - Unit-test `flattened_voltage_probe_curve.py` for labels and flattened plan handoff.
 - Unit-test `probe_stability_decision.py` with typed failure kinds.
 - Unit-test `voltage_sweep_state.py` transitions without GPU calls.
-- Unit-test `clock_recovery_budget.py` for budget spend, persistent recovery, and full-budget target fixing.
+- Unit-test `oc_budget.py` for budget spend, persistent recovery, and full-budget target fixing.
 - Unit-test `efficiency_fps_per_w_policy.py` with FPS/W deltas and confirmation streaks.
 - Unit-test `performance_fps_score_policy.py` with score sequences and upward voltage recovery.
 - Integration-test `lower_voltage_sweep_loop.py` with fake Q2RTX/CUDA probe results.
@@ -488,8 +488,8 @@ if enough_exploration and too_many_no_gain_steps:
 
 ## Implemented Module Chain
 
-1. `auto_uv3/voltage_frequency_undervolt_main_loop.py` owns setup, base-load probe, lower-voltage sweep, final choice, final verification, and cleanup.
-2. `auto_uv3/curve/` owns base V/F curve parsing, loaded telemetry, target-clock selection, and flattening.
-3. `auto_uv3/q2rtx/` owns Q2RTX/CUDA probe config, live workload execution, telemetry parsing, and stable-run decisions.
-4. `auto_uv3/recovery/` owns upward clock recovery, crash-limited recovery budget, and final-failure stabilization.
-5. `auto_uv3/scan_mode/` owns efficiency and performance scoring policy.
+1. `auto_uv/voltage_frequency_undervolt_main_loop.py` owns setup, base-load probe, lower-voltage sweep, final choice, final verification, and cleanup.
+2. `auto_uv/curve/` owns base V/F curve parsing, loaded telemetry, target-clock selection, and flattening.
+3. `auto_uv/q2rtx/` owns Q2RTX/CUDA probe config, live workload execution, telemetry parsing, and stable-run decisions.
+4. `auto_uv/recovery/` owns upward OC budget, crash-limited OC budget, and final-failure stabilization.
+5. `auto_uv/scan_mode/` owns efficiency and performance scoring policy.

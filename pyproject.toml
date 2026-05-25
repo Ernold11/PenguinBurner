@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "penguin-burner"
-version = "0.1.7"
+version = "0.1.8"
 description = "NVIDIA GPU automatic undervolting tool with precision V/F tuning, MSI Afterburner imports, and LACT exports"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -85,16 +85,17 @@ py-modules = [
 ]
 packages = [
   "afterburner",
-  "auto_uv3",
-  "auto_uv3.curve",
-  "auto_uv3.final_verification",
-  "auto_uv3.gpu",
-  "auto_uv3.persistence",
-  "auto_uv3.q2rtx",
-  "auto_uv3.recovery",
-  "auto_uv3.scan_mode",
-  "auto_uv3.shared",
-  "auto_uv3.ui",
+  "auto_oc",
+  "auto_uv",
+  "auto_uv.curve",
+  "auto_uv.final_verification",
+  "auto_uv.gpu",
+  "auto_uv.persistence",
+  "auto_uv.q2rtx",
+  "auto_uv.recovery",
+  "auto_uv.scan_mode",
+  "auto_uv.shared",
+  "auto_uv.ui",
   "cli",
   "initial_check",
   "lact",

@@ -119,16 +119,17 @@ def test_fedora_rpm_accepts_fedora_and_rpmfusion_nvidia_drivers() -> None:
     assert "xorg-x11-drv-nvidia-580xx-cuda >= 3:580" in spec_text
 
 
-def test_package_installs_auto_uv3_subpackages_and_initial_check() -> None:
+def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     packages = set(metadata["tool"]["setuptools"]["packages"])
 
-    assert "auto_uv" not in packages
+    assert "auto_uv" in packages
+    assert "auto_oc" in packages
     assert "cli" in packages
     assert "initial_check" in packages
-    assert "auto_uv3.recovery" in packages
-    assert "auto_uv3.scan_mode" in packages
-    assert "auto_uv3.final_verification" in packages
+    assert "auto_uv.recovery" in packages
+    assert "auto_uv.scan_mode" in packages
+    assert "auto_uv.final_verification" in packages
     assert "manual_fan_curve_editor" in packages
     assert "manual_uv_curve_editor" in packages
     assert "runtime_fan_control" in packages

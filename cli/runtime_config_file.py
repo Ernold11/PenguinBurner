@@ -9,7 +9,7 @@ from pathlib import Path
 import tomllib
 
 from afterburner.import_fan_curve import write_config as write_runtime_config
-from auto_uv3.auto_uv_user_options import AUTO_UV_DEFAULTS, AUTO_UV_METRIC_TUNING
+from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS, AUTO_UV_METRIC_TUNING
 from penguin_burner_paths import default_runtime_config_path
 
 

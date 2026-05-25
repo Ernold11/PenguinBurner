@@ -83,7 +83,7 @@ Feel at home and import your MSI Afterburner profile from Windows.
 
 ![PenguinBurner MSI Afterburner import](docs/assets/2-afterburner-import.png)
 
-Performance profile for the undervolt, especially for those with older GPU where every FPS matters. Hidden --yolo mode.
+Performance-oriented undervolt profiles can bias the scan toward preserving FPS when every frame matters.
 
 ## Silent Fan Curve
 
@@ -159,5 +159,5 @@ from pip flags:
 
 ```bash
 python -m pip install --user --no-index --no-deps --find-links dist --upgrade penguin-burner
-penguin-burner --yolo
+penguin-burner
 ```

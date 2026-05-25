@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from auto_uv3.auto_uv_types import AutoUvError, AutoUvFinalChoiceDiscarded
-from auto_uv3.cli_runtime import (
+from auto_uv.auto_uv_types import AutoUvError, AutoUvFinalChoiceDiscarded
+from auto_uv.cli_runtime import (
     AutoUvForegroundDependencies,
     format_auto_uv_final_state,
     run_auto_uv_foreground_command,
@@ -67,7 +67,7 @@ def test_auto_uv_voltage_scan_wires_json_events_and_final_result() -> None:
     assert emitted[0] == (
         True,
         "auto_uv_start",
-        {"gpu_index": 1, "algorithm": "auto_uv3"},
+        {"gpu_index": 1, "algorithm": "auto_uv"},
     )
     assert (True, "dependency_progress", {"step": "download"}) in emitted
     assert (True, "probe_progress", {"candidate_voltage_mv": 900}) in emitted

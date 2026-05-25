@@ -47,7 +47,7 @@ flowchart TD
 
 ## Code Placement
 
-In `auto_uv3`, this belongs in:
+In `auto_uv`, this belongs in:
 
 - `base_load_telemetry.py`: warmup filtering, saturated tail, active samples
 - `base_load_flatten_target.py`: choose the measured target MHz and snap it down

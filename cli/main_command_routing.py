@@ -1,5 +1,3 @@
-"""Top-level command routing and preflight for the main CLI entry point."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -56,12 +54,10 @@ class MainCommandRoutingDependencies:
 @dataclass(slots=True)
 class MainCommandRoutingResult:
     handled: bool
-    config: dict | None = None
     config_path: object | None = None
     gpu_config: dict | None = None
     fan_config: dict | None = None
     gpu_index: int | None = None
-    stored_afterburner_runtime_options: dict | None = None
     afterburner_runtime_options: dict | None = None
     prefer_afterburner_curve: bool = False
     auto_uv_profile_selector: str = ""
@@ -69,7 +65,7 @@ class MainCommandRoutingResult:
     had_persisted_afterburner_root: bool = False
 
 
-def run_main_command_routing(
+def route_main_command(
     *,
     args,
     argv,
@@ -89,7 +85,7 @@ def run_main_command_routing(
         deps.clear_auto_uv_state(log=deps.log)
         return MainCommandRoutingResult(handled=True)
 
-    if args.auto_uv3:
+    if getattr(args, "auto_uv", False) or getattr(args, "auto_uv3", False):
         args.auto_uv_voltage_scan = True
 
     if args.list_auto_uv_profiles:
@@ -213,12 +209,10 @@ def run_main_command_routing(
 
     return MainCommandRoutingResult(
         handled=False,
-        config=config,
         config_path=config_path,
         gpu_config=gpu_config,
         fan_config=fan_config,
         gpu_index=gpu_index,
-        stored_afterburner_runtime_options=stored_options,
         afterburner_runtime_options=afterburner_runtime_options,
         prefer_afterburner_curve=prefer_afterburner_curve,
         auto_uv_profile_selector=auto_uv_profile_selector,

@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Compatibility launcher for the Afterburner V/F curve importer."""
-
 from afterburner.import_vf_curve import (
     AfterburnerProfileSelectionError,
     AfterburnerVfCurveSafetyError,

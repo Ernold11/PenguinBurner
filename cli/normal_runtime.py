@@ -1,5 +1,3 @@
-"""Normal runtime orchestration after top-level command routing."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -26,12 +24,6 @@ class NormalRuntimeDependencies:
     log: Callable[[str], None] = runtime_log
 
 
-def _dependencies(
-    dependencies: NormalRuntimeDependencies | None,
-) -> NormalRuntimeDependencies:
-    return dependencies or NormalRuntimeDependencies()
-
-
 def run_normal_runtime(
     *,
     args,
@@ -46,7 +38,7 @@ def run_normal_runtime(
     fan_loop_dependencies=None,
     dependencies: NormalRuntimeDependencies | None = None,
 ) -> None:
-    deps = _dependencies(dependencies)
+    deps = dependencies or NormalRuntimeDependencies()
     config_path = command_route.config_path
     gpu_config = command_route.gpu_config
     fan_config = command_route.fan_config
@@ -109,15 +101,6 @@ def run_normal_runtime(
         voltage_reader=voltage_reader,
         vf_curve_reader=vf_curve_reader,
         gpu_policy_controller=gpu_policy_controller,
-        translated_gpu_policy=vf_policy.translated_gpu_policy,
-        afterburner_source=vf_policy.afterburner_source,
-        afterburner_profile_settings=vf_policy.afterburner_profile_settings,
-        auto_uv_final_curve=vf_policy.auto_uv_final_curve,
-        vf_apply_result=vf_policy.vf_apply_result,
-        active_vf_curve_source=vf_policy.active_vf_curve_source,
-        auto_uv_profile_gpu_policy=vf_policy.auto_uv_profile_gpu_policy,
-        clock_ceiling_controller=vf_policy.clock_ceiling_controller,
-        vf_expected_samples=vf_policy.vf_expected_samples,
-        startup_power_limit_w=vf_policy.startup_power_limit_w,
+        vf_policy=vf_policy,
         dependencies=fan_loop_dependencies,
     )

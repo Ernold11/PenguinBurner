@@ -152,16 +152,16 @@
 <polygon fill="#475569" stroke="#475569" points="1252.61,-362.34 1260.92,-360.7 1253.4,-356.8 1252.61,-362.34"/>
 <text xml:space="preserve" text-anchor="middle" x="1198.54" y="-360.81" font-family="Arial" font-size="11.00">floor miss accepted</text>
 </g>
-<!-- overclock -->
+<!-- OC budget -->
 <g id="node10" class="node">
-<title>overclock</title>
+<title>OC budget</title>
 <path fill="#eff6ff" stroke="#334155" d="M1426.95,-284.52C1426.95,-284.52 1302.42,-284.52 1302.42,-284.52 1296.42,-284.52 1290.42,-278.52 1290.42,-272.52 1290.42,-272.52 1290.42,-255 1290.42,-255 1290.42,-249 1296.42,-243 1302.42,-243 1302.42,-243 1426.95,-243 1426.95,-243 1432.95,-243 1438.95,-249 1438.95,-255 1438.95,-255 1438.95,-272.52 1438.95,-272.52 1438.95,-278.52 1432.95,-284.52 1426.95,-284.52"/>
-<text xml:space="preserve" text-anchor="middle" x="1364.68" y="-266.41" font-family="Arial" font-size="13.00">try overclock recovery</text>
+<text xml:space="preserve" text-anchor="middle" x="1364.68" y="-266.41" font-family="Arial" font-size="13.00">try OC budget</text>
 <text xml:space="preserve" text-anchor="middle" x="1364.68" y="-251.41" font-family="Arial" font-size="13.00">spend budget</text>
 </g>
-<!-- probe&#45;&gt;overclock -->
+<!-- probe&#45;&gt;OC budget -->
 <g id="edge11" class="edge">
-<title>probe&#45;&gt;overclock</title>
+<title>probe&#45;&gt;OC budget</title>
 <path fill="none" stroke="#475569" d="M1134.68,-248.01C1180.63,-251.17 1235.99,-254.98 1280.78,-258.06"/>
 <polygon fill="#475569" stroke="#475569" points="1280.48,-260.84 1288.66,-258.6 1280.87,-255.26 1280.48,-260.84"/>
 <text xml:space="preserve" text-anchor="middle" x="1198.54" y="-258.43" font-family="Arial" font-size="11.00">low loaded clock</text>
@@ -220,29 +220,29 @@
 <path fill="none" stroke="#475569" d="M1467.06,-367.01C1539.23,-367.18 1634.6,-367.42 1699.92,-367.58"/>
 <polygon fill="#475569" stroke="#475569" points="1699.81,-370.38 1707.82,-367.6 1699.83,-364.78 1699.81,-370.38"/>
 </g>
-<!-- probe_overclock -->
+<!-- probe_oc_budget -->
 <g id="node11" class="node">
-<title>probe_overclock</title>
+<title>probe_oc_budget</title>
 <path fill="#f8fafc" stroke="#334155" d="M1679.73,-287.52C1679.73,-287.52 1576.2,-287.52 1576.2,-287.52 1570.2,-287.52 1564.2,-281.52 1564.2,-275.52 1564.2,-275.52 1564.2,-258 1564.2,-258 1564.2,-252 1570.2,-246 1576.2,-246 1576.2,-246 1679.73,-246 1679.73,-246 1685.73,-246 1691.73,-252 1691.73,-258 1691.73,-258 1691.73,-275.52 1691.73,-275.52 1691.73,-281.52 1685.73,-287.52 1679.73,-287.52"/>
-<text xml:space="preserve" text-anchor="middle" x="1627.96" y="-269.41" font-family="Arial" font-size="13.00">probe overclocked</text>
+<text xml:space="preserve" text-anchor="middle" x="1627.96" y="-269.41" font-family="Arial" font-size="13.00">probe OC-budget</text>
 <text xml:space="preserve" text-anchor="middle" x="1627.96" y="-254.41" font-family="Arial" font-size="13.00">candidate</text>
 </g>
-<!-- overclock&#45;&gt;probe_overclock -->
+<!-- OC budget&#45;&gt;probe_oc_budget -->
 <g id="edge14" class="edge">
-<title>overclock&#45;&gt;probe_overclock</title>
+<title>OC budget&#45;&gt;probe_oc_budget</title>
 <path fill="none" stroke="#475569" d="M1439.33,-265.11C1454.34,-265.35 1470.03,-265.59 1484.7,-265.76 1507.39,-266.03 1532.12,-266.24 1554.5,-266.39"/>
 <polygon fill="#475569" stroke="#475569" points="1554.4,-269.19 1562.42,-266.44 1554.44,-263.59 1554.4,-269.19"/>
 </g>
-<!-- probe_overclock&#45;&gt;accept -->
+<!-- probe_oc_budget&#45;&gt;accept -->
 <g id="edge15" class="edge">
-<title>probe_overclock&#45;&gt;accept</title>
+<title>probe_oc_budget&#45;&gt;accept</title>
 <path fill="none" stroke="#475569" d="M1676.03,-245.66C1687,-241.02 1698.7,-236.29 1709.73,-232.26 1758.39,-214.48 1814.19,-197.44 1857.5,-184.93"/>
 <polygon fill="#475569" stroke="#475569" points="1858.18,-187.65 1865.09,-182.75 1856.63,-182.27 1858.18,-187.65"/>
 <text xml:space="preserve" text-anchor="middle" x="1775.74" y="-235.31" font-family="Arial" font-size="11.00">stable</text>
 </g>
-<!-- probe_overclock&#45;&gt;overclock -->
+<!-- probe_oc_budget&#45;&gt;OC budget -->
 <g id="edge16" class="edge">
-<title>probe_overclock&#45;&gt;overclock</title>
+<title>probe_oc_budget&#45;&gt;OC budget</title>
 <path fill="none" stroke="#475569" d="M1563.71,-250.85C1557.82,-249.8 1551.92,-248.91 1546.2,-248.26 1514.33,-244.66 1479.22,-246.38 1448.49,-249.76"/>
 <polygon fill="#475569" stroke="#475569" points="1448.23,-246.97 1440.61,-250.69 1448.88,-252.54 1448.23,-246.97"/>
 <text xml:space="preserve" text-anchor="middle" x="1515.45" y="-251.31" font-family="Arial" font-size="11.00">still low clock</text>
@@ -251,19 +251,19 @@
 <g id="node12" class="node">
 <title>backoff</title>
 <path fill="#fff7ed" stroke="#334155" d="M1982.04,-283.52C1982.04,-283.52 1880.76,-283.52 1880.76,-283.52 1874.76,-283.52 1868.76,-277.52 1868.76,-271.52 1868.76,-271.52 1868.76,-254 1868.76,-254 1868.76,-248 1874.76,-242 1880.76,-242 1880.76,-242 1982.04,-242 1982.04,-242 1988.04,-242 1994.04,-248 1994.04,-254 1994.04,-254 1994.04,-271.52 1994.04,-271.52 1994.04,-277.52 1988.04,-283.52 1982.04,-283.52"/>
-<text xml:space="preserve" text-anchor="middle" x="1931.4" y="-265.41" font-family="Arial" font-size="13.00">back off overclock</text>
+<text xml:space="preserve" text-anchor="middle" x="1931.4" y="-265.41" font-family="Arial" font-size="13.00">back off OC budget</text>
 <text xml:space="preserve" text-anchor="middle" x="1931.4" y="-250.41" font-family="Arial" font-size="13.00">hard failure</text>
 </g>
-<!-- probe_overclock&#45;&gt;backoff -->
+<!-- probe_oc_budget&#45;&gt;backoff -->
 <g id="edge17" class="edge">
-<title>probe_overclock&#45;&gt;backoff</title>
+<title>probe_oc_budget&#45;&gt;backoff</title>
 <path fill="none" stroke="#475569" d="M1691.89,-255.21C1697.9,-254.42 1703.92,-253.74 1709.73,-253.26 1768.21,-248.41 1783.16,-250.13 1841.76,-253.26 1847.44,-253.56 1853.31,-253.98 1859.21,-254.46"/>
 <polygon fill="#475569" stroke="#475569" points="1858.75,-257.23 1866.97,-255.14 1859.24,-251.65 1858.75,-257.23"/>
 <text xml:space="preserve" text-anchor="middle" x="1775.74" y="-256.31" font-family="Arial" font-size="11.00">hard fail</text>
 </g>
-<!-- probe_overclock&#45;&gt;stop_critical -->
+<!-- probe_oc_budget&#45;&gt;stop_critical -->
 <g id="edge18" class="edge">
-<title>probe_overclock&#45;&gt;stop_critical</title>
+<title>probe_oc_budget&#45;&gt;stop_critical</title>
 <path fill="none" stroke="#475569" d="M1692.02,-269.72C1734.73,-272.7 1792.19,-278.62 1841.76,-290.26 1851.07,-292.45 1860.74,-295.33 1870.12,-298.47"/>
 <polygon fill="#475569" stroke="#475569" points="1869.11,-301.08 1877.58,-301.05 1870.94,-295.79 1869.11,-301.08"/>
 <text xml:space="preserve" text-anchor="middle" x="1775.74" y="-293.31" font-family="Arial" font-size="11.00">critical fail</text>

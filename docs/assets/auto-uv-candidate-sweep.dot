@@ -32,9 +32,9 @@ digraph auto_uv_candidate_sweep {
   probe [label="probe candidate\nQ2RTX + CUDA + telemetry"];
   accept [label="accept candidate\nwrite latest verified", fillcolor="#ecfdf5"];
   lowest [label="accept lowest floor miss\nworkload passed, budget spent", fillcolor="#ecfdf5"];
-  overclock [label="try overclock recovery\nspend budget", fillcolor="#eff6ff"];
-  probe_overclock [label="probe overclocked\ncandidate"];
-  backoff [label="back off overclock\nhard failure", fillcolor="#fff7ed"];
+  oc_budget [label="try OC budget\nspend budget", fillcolor="#eff6ff"];
+  probe_oc_budget [label="probe OC-budget\ncandidate"];
+  backoff [label="back off OC budget\nhard failure", fillcolor="#fff7ed"];
   recover [label="recover upward\nhigher voltage same target", fillcolor="#eff6ff"];
   recovered [label="accept recovered\nwrite latest verified", fillcolor="#ecfdf5"];
   mode [label="mode policy\nefficiency or performance", fillcolor="#f5f3ff"];
@@ -54,14 +54,14 @@ digraph auto_uv_candidate_sweep {
   build -> probe [label="normal"];
   probe -> accept [label="stable"];
   probe -> lowest [label="floor miss accepted"];
-  probe -> overclock [label="low loaded clock"];
+  probe -> oc_budget [label="low loaded clock"];
   probe -> recover [label="hard fail or guardrail"];
   probe -> stop_critical [label="critical fail"];
-  overclock -> probe_overclock;
-  probe_overclock -> accept [label="stable"];
-  probe_overclock -> overclock [label="still low clock"];
-  probe_overclock -> backoff [label="hard fail"];
-  probe_overclock -> stop_critical [label="critical fail"];
+  oc_budget -> probe_oc_budget;
+  probe_oc_budget -> accept [label="stable"];
+  probe_oc_budget -> oc_budget [label="still low clock"];
+  probe_oc_budget -> backoff [label="hard fail"];
+  probe_oc_budget -> stop_critical [label="critical fail"];
   backoff -> recover;
   recover -> recovered [label="higher voltage passes"];
   recover -> stop_previous [label="recovery fails"];
@@ -76,4 +76,3 @@ digraph auto_uv_candidate_sweep {
   stop_critical -> end;
   stop_wall -> end;
 }
-

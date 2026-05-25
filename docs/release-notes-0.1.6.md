@@ -25,13 +25,13 @@ selection, and safer performance-mode voltage recovery.
 
 - The borrowed voltage/frequency table is used as a guardrail, not as a forced
   clock target.
-- Performance and YOLO clock recovery still use measured baseline and
-  lower-voltage clocks; YOLO mode can use up to 175% clock recovery budget.
+- Performance OC budget still uses measured baseline and lower-voltage clocks;
+  the top endpoint is bounded by the borrowed Performance table voltage/clock.
 - Performance-mode upward voltage recovery is capped by the table Performance
   voltage and no longer climbs toward the table Max voltage.
 - Final upward stabilization after a failed long verification uses the same
   performance voltage ceiling.
-- NV-UV reverse-engineering findings are documented separately, with direct-mode
+- Reference performance findings are documented separately, with direct-mode
   V-droop compensation kept out of production core logic.
 
 ### Packaging And Local Testing

@@ -83,7 +83,7 @@ def scan_command(auto_uv_options: Mapping[str, object] | None = None) -> list[st
         "--json-events",
         "--auto-uv-require-final-choice",
     ]
-    if bool((auto_uv_options or {}).get("auto_uv3")) or os.environ.get(
+    if bool((auto_uv_options or {}).get("auto_uv")) or os.environ.get(
         "PENGUIN_BURNER_AUTO_UV3",
         "",
     ).strip() in {"1", "true", "yes", "on"}:
@@ -92,17 +92,12 @@ def scan_command(auto_uv_options: Mapping[str, object] | None = None) -> list[st
         "auto_uv_mode": "--auto-uv-mode",
         "auto_uv_max_drop_pct": "--auto-uv-max-drop-pct",
         "auto_uv_max_clock_drop_pct": "--auto-uv-max-clock-drop-pct",
-        "auto_uv_clock_bump_budget_ratio": "--auto-uv-overclock-budget-ratio",
         "auto_uv_short_seconds": "--auto-uv-short-seconds",
         "auto_uv_memory_offset_mhz": "--auto-uv-memory-offset-mhz",
         "auto_uv_tail_rise_bins": "--auto-uv-tail-rise-bins",
+        "auto_oc_target_voltage_mv": "--auto-oc-target-voltage-mv",
+        "auto_oc_target_clock_mhz": "--auto-oc-target-clock-mhz",
     }
-    boolean_flags = {
-        "auto_uv_yolo": "--yolo",
-    }
-    for key, flag in boolean_flags.items():
-        if bool((auto_uv_options or {}).get(key)):
-            command.append(flag)
     for key, flag in option_flags.items():
         value = (auto_uv_options or {}).get(key)
         if value in (None, ""):
