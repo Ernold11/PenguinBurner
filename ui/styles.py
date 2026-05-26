@@ -33,7 +33,7 @@ QLabel#purposeText {{
     line-height: 1.25;
 }}
 QGroupBox#autoUvPresetGroup {{
-    margin-top: 12px;
+    margin-top: 6px;
 }}
 QGroupBox#advancedTuningGroup {{
     margin-top: 12px;

@@ -71,7 +71,7 @@ What Auto-UV does:
 3. Measure the base loaded behavior: clock, voltage, power, temperature, fan speed, and FPS/W.
 4. Pick a safe target core clock and start lowering voltage one real V/F bin at a time.
 5. Test each candidate with Q2RTX plus CUDA load.
-6. If a candidate only misses the loaded-clock floor and OC budget is enabled, retry that same voltage with a bounded clock target. OC budget is disabled by default; each retry spends only the measured clock shortfall plus one small clock step.
+6. In Performance mode, run a separate Auto-OC ladder after the undervolt pass.
 7. Accept a candidate only if it stays stable, keeps enough loaded core clock,
    keeps FPS within a `10%` floor of the previous stable probe, and does not
    collapse into idle or low-load telemetry.
@@ -235,6 +235,12 @@ Current local release checks:
 
 ## Acknowledgements
 
+Additional thanks:
+
+- NVIDIA: For the amazing graphics technology, that unfortunately lacks some features and polish on Linux.
+- Qt Project: For the excellent Qt6 UI.
+- Codex GPT 5.5 (Open AI): This project was implemented fully with AI based on human driven ideas and reverse engineering.
+
 Special thanks to the LACT project and to Ilya Zlobintsev for pushing Linux NVIDIA tuning forward.
 
 While PenguinBurner was still reverse engineering proprietary NVIDIA binaries and had only working voltage getters, LACT landed a working custom voltage/frequency point setter first. In particular, LACT pull request [`#957`](https://github.com/ilya-zlobintsev/LACT/pull/957), `feat: add Nvidia VF curve editor`, was merged on April 18, 2026.
@@ -286,8 +292,10 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--auto-uv-final-seconds N`: final verification duration after the best curve is selected; default `600`.
 - `--auto-uv-short-seconds N`: base Q2RTX verification length; default `10` seconds, allowed range `10..60`. Deeper voltage tiers use 2x and 3x this value, with a shorter CUDA companion check after Q2RTX.
 - `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default `10.0`.
-- `--auto-uv-oc-budget-ratio N`: fraction of `--auto-uv-max-clock-drop-pct` available as total OC budget; default `0.0`, clamped to `0.0..1.5`.
-- `--auto-uv-max-drop-pct N`: maximum voltage drop below the first discovered start voltage; default `16.0`.
+- `--auto-oc-target-voltage-mv N`: Performance Auto-OC voltage ceiling.
+- `--auto-oc-target-clock-mhz N`: Performance Auto-OC clock ceiling.
+- `--auto-uv-min-voltage-mv N`: lowest voltage bin Auto-UV may try; overrides the detected GPU table floor.
+- `--auto-uv-max-drop-pct N`: fallback voltage search depth when no GPU table floor or explicit min voltage is available; default `10.0`.
 - `--stability-test`: run the Q2RTX plus CUDA stability workload directly and exit.
 - `--stability-seconds N`: duration for `--stability-test`; default `600`.
 - `--stability-width N` and `--stability-height N`: Q2RTX render size; defaults `2560x1440`.
@@ -298,30 +306,24 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 
 #### Auto-UV Aggressiveness Tuning
 
-The three most important Auto-UV aggressiveness knobs are voltage search depth,
-loaded-clock drop allowance, and OC budget.
+The most important Auto-UV aggressiveness knobs are voltage search depth,
+loaded-clock drop allowance, and Performance Auto-OC targets.
 
-- `--auto-uv-max-drop-pct N` controls how far below the starting voltage Auto-UV
-  may search. The default `16.0` means Auto-UV may test down to 16% below the
-  first discovered start voltage. Higher values search deeper and can find lower
-  power points, but they also spend more time near crash-prone voltage bins.
+- `--auto-uv-min-voltage-mv N` controls the lowest voltage bin Auto-UV may try.
+  The UI fills this from PenguinBurner's GPU table when the card is known. If
+  the GPU is unknown, Auto-UV falls back to `--auto-uv-max-drop-pct 15`.
+- `--auto-uv-max-drop-pct N` controls the fallback percentage depth below the
+  starting voltage only when there is no explicit mV floor and no GPU table
+  floor. Higher values search deeper and can find lower power points, but they
+  also spend more time near crash-prone voltage bins.
 - `--auto-uv-max-clock-drop-pct N` controls how much loaded core clock Auto-UV
   may sacrifice while lowering voltage. The default `10.0` means the scan may
   accept loaded clocks down to about `90%` of the initial measured loaded clock.
   Lower values preserve more performance; higher values search deeper.
-- `--auto-uv-oc-budget-ratio N` controls how much of that clock-drop
-  allowance Auto-UV may spend trying higher clock targets in performance mode.
-  Efficiency and Balanced UI presets keep this at `0.0`; Performance uses the
-  maximum table-backed OC behavior. With the default 10% clock-drop allowance,
-  `0.75` gives a 7.5% OC budget. Values above `1.5` are clamped.
-  Values above `1.0` may push the curve above the measured baseline clock and can
-  hang the system.
-- `--auto-uv-performance-clock-ceiling-mhz N` and
-  `--auto-uv-performance-voltage-ceiling-mv N` override the Performance-mode
-  reference performance point. The UI shows these only when the detected GPU
-  has a known reference performance point. Unknown GPUs derive a generic
-  `+7.5%` clock target during the scan while keeping the voltage ceiling at
-  least `5%` below measured pre-OC voltage.
+- `--auto-oc-target-voltage-mv N` and `--auto-oc-target-clock-mhz N` override
+  the Performance-mode Auto-OC endpoint. Performance first completes the same
+  undervolt pass as Balanced, then probes a bounded proportional voltage/clock
+  ladder up to those targets.
 
 Verification duration knobs:
 
@@ -332,32 +334,22 @@ Verification duration knobs:
   `10`, `20`, and `30` seconds of Q2RTX respectively. The CUDA companion
   check is shorter than the Q2RTX run.
 
-With the default `10%` clock-drop allowance:
-
-- `--auto-uv-oc-budget-ratio 0.25` gives up to `+2.5%` total OC budget.
-- `--auto-uv-oc-budget-ratio 0.4` gives up to `+4%` total OC budget.
-- `--auto-uv-oc-budget-ratio 0.5` gives up to `+5%` total OC budget.
-- `--auto-uv-oc-budget-ratio 0.75` gives up to `+7.5%` total OC budget.
-- `--auto-uv-oc-budget-ratio 1.0` gives up to `+10%` total OC budget.
-- `--auto-uv-oc-budget-ratio 1.25` gives up to `+12.5%` total OC budget.
-- `--auto-uv-oc-budget-ratio 1.5` gives up to `+15%` total OC budget.
-
 Efficiency profile:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-voltage-scan \
-  --auto-uv-max-drop-pct 16 \
-  --auto-uv-max-clock-drop-pct 10 \
-  --auto-uv-oc-budget-ratio 0.5
+  --auto-uv-min-voltage-mv 850 \
+  --auto-uv-max-clock-drop-pct 10
 ```
 
 Performance profile:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-voltage-scan \
-  --auto-uv-max-drop-pct 18 \
+  --auto-uv-min-voltage-mv 850 \
   --auto-uv-max-clock-drop-pct 10 \
-  --auto-uv-oc-budget-ratio 1.0
+  --auto-oc-target-voltage-mv 925 \
+  --auto-oc-target-clock-mhz 2670
 ```
 
 Example: use a looser `12%` core-clock drop allowance during Auto-UV:

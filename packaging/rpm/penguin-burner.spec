@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.1.8
+Version:        0.2
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -104,8 +104,14 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Tue May 26 2026 PenguinBurner contributors <noreply@github.com> - 0.2-1
+- Revise Auto-UV profiles for the 0.2 major release.
+- Tune the Efficiency profile for the lowest stable voltage while retaining as much clock as possible.
+- Keep Performance profiles focused on revised voltage and clock targets.
+- Reapply memory OC offset consistently with runtime V/F curve reapplies, thanks to cbro33's pull request.
+
 * Mon May 25 2026 PenguinBurner contributors <noreply@github.com> - 0.1.8-1
-- Replace Auto-UV3 internals with the cleaned Auto-UV package namespace.
+- Replace old Auto-UV internals with the cleaned Auto-UV package namespace.
 - Add a separate Performance Auto-OC ladder after the balanced undervolt pass.
 - Improve Auto-UV table progress, status, and Auto-OC reporting.
 - Keep Performance final selection sorted by measured FPS.
@@ -113,13 +119,13 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 * Wed May 13 2026 PenguinBurner contributors <noreply@github.com> - 0.1.7-1
 - Honor time-based Q2RTX verification durations instead of precomputed loop counts.
 - Improve PRIME laptop selected-GPU execution and diagnostics.
-- Add safer interrupted-probe crash recovery and crash-adjacent final voltage margin.
+- Add safer interrupted-probe crash caching.
 - Use a conservative Auto-UV default for RTX 3080.
 
 * Fri May 08 2026 PenguinBurner contributors <noreply@github.com> - 0.1.6-1
 - Add python3-colorama runtime dependency for pyqtgraph.
-- Add borrowed GPU voltage/frequency guardrails for Auto-UV3.
-- Cap performance-mode voltage recovery by the GPU Performance table voltage.
+- Add borrowed GPU voltage/frequency guardrails for Auto-UV.
+- Cap performance-mode Auto-OC by the GPU Performance table voltage.
 - Improve final candidate sorting and stopped-scan final candidate selection.
 
 * Mon May 04 2026 PenguinBurner contributors <noreply@github.com> - 0.1.5-1

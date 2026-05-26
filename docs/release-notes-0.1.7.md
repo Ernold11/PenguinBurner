@@ -4,7 +4,7 @@
 
 PenguinBurner 0.1.7 focuses on Auto-UV stability edge cases reported from real
 systems: time-based final verification, NVIDIA PRIME laptop routing, and safer
-recovery after hard hangs during lower-voltage probing.
+hard-hang handling during lower-voltage probing.
 
 ### Highlights
 
@@ -16,9 +16,8 @@ recovery after hard hangs during lower-voltage probing.
   stops without blacklisting the tested voltage.
 - Stale in-progress markers from obvious normal candidate hard hangs can now be
   converted into unsafe voltage/clock cache entries on the next run.
-- If a previous hard-crash point is immediately below the selected final
-  candidate, final verification bumps one editable voltage bin upward as a
-  safety margin.
+- Previous hard-crash points are cached conservatively so later scans avoid the
+  unsafe voltage/clock band.
 - RTX 3080 now gets a conservative 10% Auto-UV voltage-drop default, equivalent
   to a 900 mV floor from the 1000 mV reference.
 
@@ -46,5 +45,5 @@ recovery after hard hangs during lower-voltage probing.
 
 PenguinBurner 0.1.7 fixes time-based final verification, improves NVIDIA PRIME
 laptop workload routing, records obvious interrupted-probe hard hangs as unsafe
-voltage/clock bands, adds a crash-adjacent final voltage margin, and uses a
+voltage/clock bands and uses a
 more conservative RTX 3080 Auto-UV voltage-drop default.

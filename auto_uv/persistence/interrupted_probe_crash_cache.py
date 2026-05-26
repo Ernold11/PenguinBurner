@@ -9,7 +9,7 @@ from .unsafe_voltage_blacklist_file import record_unsafe_voltage
 
 CRASH_CACHE_MIN_VOLTAGE_DROP_PCT = 5.0
 CRASH_CACHE_MIN_CANDIDATE_TARGET_BASELINE_PCT = 95.0
-CRASH_CACHE_CANDIDATE_PHASES = {"candidate", "final-verify", "stabilize"}
+CRASH_CACHE_CANDIDATE_PHASES = {"candidate", "final-verify"}
 
 
 def consume_interrupted_probe_crash_marker() -> tuple[Path, dict] | None:

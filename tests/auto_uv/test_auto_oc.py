@@ -165,7 +165,6 @@ def test_auto_oc_search_keeps_exploring_after_measured_clock_regression() -> Non
         950,
         2745,
     )
-    assert result.recovery_voltage_ceiling_mv == 950
     assert [attempt.candidate.metadata["auto_oc_applied_mhz"] for attempt in result.attempts] == [
         45,
         75,

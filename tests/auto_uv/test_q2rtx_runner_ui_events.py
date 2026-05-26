@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from stability.q2rtx import Q2RTXStabilityConfig
 
-from auto_uv.auto_uv_types import AutoUvProbeSummary, VfCurveCandidate
+from auto_uv.auto_uv_types import AutoUvProbeSummary, FailureKind, VfCurveCandidate
 from auto_uv.q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
 from auto_uv_test_data import base_curve
 
@@ -208,6 +208,41 @@ def test_probe_runner_evaluates_cuda_from_per_voltage_config() -> None:
 
     assert outcome.decision.passed is True
     assert outcome.decision.evidence["cuda_required"] is True
+
+
+def test_probe_runner_uses_original_baseline_clock_for_final_clock_floor() -> None:
+    stable_baseline = _summary(1020, 2625, used_companion_load=False)
+    current_summary = _summary(1020, 2425, used_companion_load=False)
+    result = {
+        "success": True,
+        "timedemo_runs": [{"frames": 1000, "seconds": 10.0, "fps": 100.0}],
+        "telemetry_samples": [
+            {"power_w": 180.0, "core_clock_mhz": 2425.0, "gpu_util_pct": 99.0}
+        ],
+    }
+    runner = Q2RtxCudaProbeRunner(
+        reader=object(),
+        live_voltage_reader=object(),
+        q2rtx_config=SimpleNamespace(companion_command=None),
+        runtime_default_plan=[],
+        power_limit_w=360,
+        start_voltage_mv=1020,
+        baseline_clock_mhz=2745.0,
+        min_performance_core_clock_pct=90.0,
+        short_probe_base_duration_s=10,
+        timedemo_warmup_runs=0,
+        log=lambda _message: None,
+    )
+
+    outcome = runner.outcome_from_probe_result(
+        current_summary,
+        result,
+        stable_history=[stable_baseline],
+    )
+
+    assert outcome.decision.passed is False
+    assert outcome.decision.failure_kind == FailureKind.LOW_CLOCK
+    assert outcome.decision.evidence["floor_mhz"] == 2470.5
 
 
 def _summary(

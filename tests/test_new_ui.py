@@ -36,17 +36,9 @@ from ui.tuning import auto_uv_preset
 
 
 def test_ui_launcher_ignores_old_new_ui_flag() -> None:
-    argv, auto_uv = parse_gui_args(["pburn-ui", "--new-ui"])
+    argv = parse_gui_args(["pburn-ui", "--new-ui"])
 
     assert argv == ["pburn-ui"]
-    assert auto_uv is False
-
-
-def test_ui_launcher_accepts_auto_uv3_flag() -> None:
-    argv, auto_uv = parse_gui_args(["pburn-ui", "--auto-uv3"])
-
-    assert argv == ["pburn-ui"]
-    assert auto_uv is True
 
 
 def test_new_ui_package_is_installed() -> None:

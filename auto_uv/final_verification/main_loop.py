@@ -14,7 +14,6 @@ from ..auto_uv_types import (
     StableRunDecision,
     VfCurveCandidate,
 )
-from ..curve.base_vf_curve_voltage_bins import next_higher_editable_voltage_bin
 from ..curve.rising_tail import tail_ceiling_clock_mhz
 from ..q2rtx.probe_stability_decision import (
     StabilityThresholds,
@@ -50,9 +49,7 @@ from ..persistence.verified_candidate_result_file import write_latest_verified_c
 def run_final_verification_and_save(
     *,
     probe_voltage_candidate,
-    probe_stabilization_search,
     build_voltage_scan_result,
-    curve_overclock_summary,
     log,
     reader,
     stable_plan,
@@ -63,7 +60,6 @@ def run_final_verification_and_save(
     probe_history,
     q2rtx_config,
     final_verification_duration_s,
-    source_result,
     start_voltage_mv,
     measured_clock_mhz,
     nvml_session,
@@ -73,19 +69,14 @@ def run_final_verification_and_save(
     min_performance_core_clock_pct,
     runtime_default_plan,
     final_clock_drop_margin_pct,
-    recovery_voltage_ceiling_mv=None,
-    short_probe_base_duration_s: int | None = None,
     timedemo_warmup_runs: int = 0,
     tail_rise_bins: int = 0,
     event_callback: AutoUvEventCallback | None = None,
 ):
-    _ = curve_overclock_summary
-    base_curve = list(source_result.get("plan") or runtime_default_plan or stable_plan)
     gpu_policy = translated_gpu_policy if isinstance(translated_gpu_policy, dict) else {}
     final_voltage_mv = int(stable_voltage_mv)
     final_lock_clock_mhz = int(stable_lock_clock_mhz)
     final_plan = stable_plan
-    final_probe = None
     final_status = "not-run"
 
     log_phase(
@@ -110,153 +101,106 @@ def run_final_verification_and_save(
     q2rtx_duration_s, cuda_duration_s = final_q2rtx_cuda_duration_s(
         int(final_verification_duration_s)
     )
-    while final_plan is not None:
-        candidate = final_candidate(
-            plan=final_plan,
-            voltage_mv=int(final_voltage_mv),
+    candidate = final_candidate(
+        plan=final_plan,
+        voltage_mv=int(final_voltage_mv),
+        lock_clock_mhz=int(final_lock_clock_mhz),
+    )
+    emit_ui_voltage_probe_started(
+        event_callback,
+        candidate,
+        stage="final-verify",
+        max_clock_drop_pct=float(final_clock_drop_margin_pct),
+        target_duration_s=int(final_verification_duration_s),
+    )
+    log_final_probe_start(
+        log,
+        voltage_mv=int(final_voltage_mv),
+        lock_clock_mhz=int(final_lock_clock_mhz),
+        total_duration_s=int(final_verification_duration_s),
+        q2rtx_duration_s=int(q2rtx_duration_s),
+        cuda_duration_s=int(cuda_duration_s),
+    )
+    if clock_ceiling is not None:
+        clock_ceiling.retarget(
             lock_clock_mhz=int(final_lock_clock_mhz),
-        )
-        emit_ui_voltage_probe_started(
-            event_callback,
-            candidate,
-            stage="final-verify",
-            max_clock_drop_pct=float(final_clock_drop_margin_pct),
-            target_duration_s=int(final_verification_duration_s),
-        )
-        log_final_probe_start(
-            log,
-            voltage_mv=int(final_voltage_mv),
-            lock_clock_mhz=int(final_lock_clock_mhz),
-            total_duration_s=int(final_verification_duration_s),
-            q2rtx_duration_s=int(q2rtx_duration_s),
-            cuda_duration_s=int(cuda_duration_s),
-        )
-        if clock_ceiling is not None:
-            clock_ceiling.retarget(
-                lock_clock_mhz=int(final_lock_clock_mhz),
+            lock_voltage_mv=int(final_voltage_mv),
+            ceiling_clock_mhz=tail_ceiling_clock_mhz(
+                final_plan,
+                fallback_clock_mhz=int(final_lock_clock_mhz),
                 lock_voltage_mv=int(final_voltage_mv),
-                ceiling_clock_mhz=tail_ceiling_clock_mhz(
-                    final_plan,
-                    fallback_clock_mhz=int(final_lock_clock_mhz),
-                    lock_voltage_mv=int(final_voltage_mv),
-                ),
-            )
-            log_phase(log, "ceiling", clock_ceiling.describe())
-        final_probe, raw_result = probe_voltage_candidate(
-            reader=reader,
-            candidate_plan=final_plan,
-            candidate_voltage_mv=int(final_voltage_mv),
-            lock_clock_mhz=int(final_lock_clock_mhz),
-            q2rtx_config=final_config,
-            stable_history=stable_history,
-            initial_probe_clock_mhz=measured_clock_mhz,
-            nvml_session=nvml_session,
-            log=log,
-            phase_label="final-verify",
-            log_context="",
-            power_limit_w=gpu_policy.get("power_limit_w"),
-            min_performance_core_clock_pct=float(min_performance_core_clock_pct),
-            enforce_target_core_clock_floor=False,
-            reset_plan=runtime_default_plan,
-            marker_details=final_probe_crash_marker_details(
-                start_voltage_mv=int(start_voltage_mv),
-                candidate_voltage_mv=int(final_voltage_mv),
-                translated_gpu_policy=gpu_policy,
             ),
-            expected_total_duration_s=int(final_verification_duration_s),
-            timedemo_warmup_runs=int(timedemo_warmup_runs),
-            event_callback=event_callback,
         )
-        probe_history.append(final_probe)
-        decision = final_probe_stability_decision(
-            raw_result,
-            stable_history=stable_history,
-            power_limit_w=gpu_policy.get("power_limit_w"),
-            q2rtx_config=final_config,
-            min_performance_core_clock_pct=float(min_performance_core_clock_pct),
-        )
-        outcome = VoltageProbeOutcome(
-            decision=decision,
-            measured_core_clock_mhz=final_probe.avg_core_clock_mhz,
-            measured_voltage_mv=final_probe.avg_voltage_mv,
-            raw_probe=final_probe,
-            raw_result=raw_result,
-        )
-        emit_ui_voltage_probe_finished(
-            event_callback,
-            candidate,
-            outcome,
-            stage="final-verify",
-            max_clock_drop_pct=float(final_clock_drop_margin_pct),
-        )
-        log_benchmark(
-            log,
-            phase="final-verify",
-            probe=final_probe,
-            reference_probe=discovery_summary,
-            reference_label="initial",
-        )
-        if decision.passed:
-            write_latest_verified_candidate(
-                plan=final_plan,
-                lock_clock_mhz=int(final_lock_clock_mhz),
-                voltage_mv=int(final_voltage_mv),
-                probe=final_probe,
-                base_probe=discovery_summary,
-                tail_rise_bins=int(tail_rise_bins),
-            )
-            final_status = f"completed {format_user_duration(final_verification_duration_s)} long check"
-            break
-
+        log_phase(log, "ceiling", clock_ceiling.describe())
+    final_probe, raw_result = probe_voltage_candidate(
+        reader=reader,
+        candidate_plan=final_plan,
+        candidate_voltage_mv=int(final_voltage_mv),
+        lock_clock_mhz=int(final_lock_clock_mhz),
+        q2rtx_config=final_config,
+        stable_history=stable_history,
+        initial_probe_clock_mhz=measured_clock_mhz,
+        nvml_session=nvml_session,
+        log=log,
+        phase_label="final-verify",
+        log_context="",
+        power_limit_w=gpu_policy.get("power_limit_w"),
+        min_performance_core_clock_pct=float(min_performance_core_clock_pct),
+        enforce_target_core_clock_floor=False,
+        reset_plan=runtime_default_plan,
+        marker_details=final_probe_crash_marker_details(
+            start_voltage_mv=int(start_voltage_mv),
+            candidate_voltage_mv=int(final_voltage_mv),
+            translated_gpu_policy=gpu_policy,
+        ),
+        expected_total_duration_s=int(final_verification_duration_s),
+        timedemo_warmup_runs=int(timedemo_warmup_runs),
+        event_callback=event_callback,
+    )
+    probe_history.append(final_probe)
+    decision = final_probe_stability_decision(
+        raw_result,
+        stable_history=stable_history,
+        power_limit_w=gpu_policy.get("power_limit_w"),
+        q2rtx_config=final_config,
+        min_performance_core_clock_pct=float(min_performance_core_clock_pct),
+    )
+    outcome = VoltageProbeOutcome(
+        decision=decision,
+        measured_core_clock_mhz=final_probe.avg_core_clock_mhz,
+        measured_voltage_mv=final_probe.avg_voltage_mv,
+        raw_probe=final_probe,
+        raw_result=raw_result,
+    )
+    emit_ui_voltage_probe_finished(
+        event_callback,
+        candidate,
+        outcome,
+        stage="final-verify",
+        max_clock_drop_pct=float(final_clock_drop_margin_pct),
+    )
+    log_benchmark(
+        log,
+        phase="final-verify",
+        probe=final_probe,
+        reference_probe=discovery_summary,
+        reference_label="initial",
+    )
+    if not decision.passed:
         raw_reason = str(getattr(raw_result, "reason", "") or "")
         reason = str(decision.reason or raw_reason or "unknown")
         log_phase(log, "final-verify", f"rejected {reason}")
-        recovery_candidate, recovery_summary, recovery_result = probe_stabilization_search(
-            reader=reader,
-            plan_source=base_curve,
-            failure_voltage_mv=int(final_voltage_mv),
-            failure_live_voltage_mv=final_probe.live_voltage_after_mv,
-            minimum_candidate_voltage_mv=next_higher_editable_voltage_bin(
-                base_curve,
-                int(final_voltage_mv),
-            ),
-            target_clock_mhz=int(final_lock_clock_mhz),
-            q2rtx_config=q2rtx_config,
-            stable_history=stable_history,
-            nvml_session=nvml_session,
-            clock_ceiling=clock_ceiling,
-            log=log,
-            probe_history=probe_history,
-            baseline_probe=discovery_summary,
-            initial_target_voltage_mv=int(start_voltage_mv),
-            initial_probe_clock_mhz=measured_clock_mhz,
-            power_limit_w=gpu_policy.get("power_limit_w"),
-            min_performance_core_clock_pct=float(min_performance_core_clock_pct),
-            max_candidate_voltage_mv=recovery_voltage_ceiling_mv,
-            short_probe_base_duration_s=short_probe_base_duration_s,
-            reset_plan=runtime_default_plan,
-            timedemo_warmup_runs=int(timedemo_warmup_runs),
-            tail_rise_bins=int(tail_rise_bins),
-            event_callback=event_callback,
-        )
-        if recovery_candidate is None or recovery_summary is None or recovery_result is None:
-            raise AutoUvError(
-                "final long verification failed and upward voltage recovery found no stable point"
-            )
-        final_plan = recovery_candidate.plan
-        final_voltage_mv = int(recovery_candidate.candidate_voltage_mv)
-        final_lock_clock_mhz = int(recovery_candidate.target_clock_mhz)
-        stable_probe = recovery_summary
-        stable_history.append(recovery_summary)
-        if not recovery_summary.used_companion_load:
-            write_latest_verified_candidate(
-                plan=final_plan,
-                lock_clock_mhz=int(final_lock_clock_mhz),
-                voltage_mv=int(final_voltage_mv),
-                probe=stable_probe,
-                base_probe=discovery_summary,
-                tail_rise_bins=int(tail_rise_bins),
-            )
+        raise AutoUvError(f"final long verification failed: {reason}")
+
+    write_latest_verified_candidate(
+        plan=final_plan,
+        lock_clock_mhz=int(final_lock_clock_mhz),
+        voltage_mv=int(final_voltage_mv),
+        probe=final_probe,
+        base_probe=discovery_summary,
+        tail_rise_bins=int(tail_rise_bins),
+    )
+    final_status = f"completed {format_user_duration(final_verification_duration_s)} long check"
 
     if final_plan is None:
         raise AutoUvError("final verification did not produce a final curve")

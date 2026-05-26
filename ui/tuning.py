@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from afterburner.import_fan_curve import load_config
+from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS
 from auto_uv.scan_mode import AUTO_UV_MODE_EFFICIENCY
 from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE
 from auto_uv.scan_mode.uv_limits import (
@@ -16,14 +17,14 @@ from penguin_burner_paths import default_runtime_config_path
 
 
 DEFAULT_SHORT_VERIFICATION_BASE_S = 10
-DEFAULT_AUTO_UV_MAX_DROP_PCT = 10.0
+DEFAULT_AUTO_UV_MAX_DROP_PCT = AUTO_UV_DEFAULTS.max_drop_pct
 GENERIC_AUTO_UV_MAX_DROP_PCT = DEFAULT_AUTO_UV_MAX_DROP_PCT
 AUTO_UV_DROP_REFERENCE_VOLTAGE_MV = 1000
 DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT = 10.0
 DEFAULT_AUTO_UV_TAIL_RISE_BINS = 0
-DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS = 4
-DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS = 6
-MAX_AUTO_UV_TAIL_RISE_BINS = 8
+DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.balanced_tail_rise_bins
+DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.performance_tail_rise_bins
+MAX_AUTO_UV_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.max_tail_rise_bins
 AUTO_UV_PRESET_EFFICIENCY = "efficiency"
 AUTO_UV_PRESET_BALANCED = "balanced"
 AUTO_UV_PRESET_PERFORMANCE = "performance"

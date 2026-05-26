@@ -43,7 +43,8 @@ Auto-UV uses the readable candidate-sweep engine by default.
 - Q2RTX renders at a real GPU-bound size. PenguinBurner uses `gamescope --backend headless` when available so Q2RTX does not create a visible desktop window. If gamescope is unavailable, it falls back to moving the real Vulkan window off-screen. Use `--show-q2rtx-window` if you want to see it.
 - If Q2RTX is missing, PenguinBurner downloads and installs the managed copy automatically.
 - It walks voltage down step by step, testing each candidate before accepting it.
-- It can spend bounded OC budget when enabled and a lower-voltage candidate only misses the loaded-clock floor, or when an FPS/W wall may be improved by a small clock increase.
+- Balanced and Efficiency stop after the undervolt pass and final verification.
+- Performance runs the same undervolt pass, then a separate Auto-OC ladder that raises voltage and clock proportionally up to the configured targets.
 - It stops before unsafe points, severe clock loss, crashes, CUDA failures, Q2RTX failures, or NVIDIA Xid errors.
 - It saves stable checkpoints while scanning, so progress is not lost if something fails.
 - It runs a longer final verification before publishing the final curve.
@@ -83,29 +84,20 @@ power, and temperature-normalized FPS per watt.
 - If measured loaded voltage went down, temperature-normalized power went up, and temperature-normalized FPS per watt did not improve by at least `1.0%`, PenguinBurner treats that as a regression/no-gain step.
 - By default, Auto-UV requires two confirmed regression/no-gain steps before FPS/W can stop the scan. To require a different confirmation count, use `--auto-uv-efficiency-stop-streak`.
 - Auto-UV will not stop early from FPS/W regression/no-gain until it has scanned at least `10%` below the starting voltage by default. To change that floor, use `--auto-uv-min-efficiency-stop-drop-pct`.
-- FPS/W stopping also waits until the OC budget is spent or disabled. The loaded core-clock floor remains a safety guardrail; Auto-UV does not force the scan down to that floor just to stop on marginal FPS/W gains.
+- The loaded core-clock floor remains a safety guardrail; Auto-UV does not force the scan down to that floor just to stop on marginal FPS/W gains.
 - If the next probe improves again, the stop streak is cleared and scanning continues.
 
-If a candidate misses the loaded-clock floor but otherwise looks viable,
-Auto-UV may retry the same voltage with OC budget. The same
-budget can also be used at an FPS/W wall if a higher clock improves
-temperature-normalized efficiency. The total OC budget is
-`--auto-uv-max-clock-drop-pct * --auto-uv-oc-budget-ratio`. The UI exposes this
-through presets: Efficiency uses `0` tail bins with no OC, Balanced uses `4`
-tail bins with no OC, and Performance uses `6` tail bins with the reference
-performance point when the detected GPU is in the table. Unsupported GPUs still
-prefer FPS and can spend OC budget at undervolted voltages up to the measured
-baseline clock; in Performance mode they also derive a generic `+7.5%` clock
-target during the scan while keeping the voltage ceiling at least `5%` below
-measured pre-OC voltage.
-Advanced CLI users can override the Performance ceilings with
-`--auto-uv-performance-clock-ceiling-mhz` and
-`--auto-uv-performance-voltage-ceiling-mv`. Individual retries are sized from
-the failed probe: Auto-UV reads the measured clock shortfall, adds one clock-step of
-overhead, snaps to the V/F clock grid, and charges the actual target increase
-against the remaining budget. If the machine crashes during an OC-budget probe, the next
-scan remembers the budget used before that failed probe and caps future OC budget
-there unless you clear Auto-UV state.
+The UI exposes this through presets: Efficiency uses `0` tail bins, Balanced
+uses `4` tail bins, and Performance uses `6` tail bins. Performance also shows
+editable Auto-OC voltage and clock targets. Advanced CLI users can override
+those same targets with `--auto-oc-target-voltage-mv` and
+`--auto-oc-target-clock-mhz`.
+
+Auto-OC is intentionally separate from the lower-voltage sweep. It builds up to
+10 proportional voltage/clock interpolation steps by default, probes each legal
+step, keeps exploring after ordinary measured-clock/FPS regressions, and selects
+the passing candidate with the best measured effective Q2RTX clock before the
+single final verification.
 
 Measured voltage is read through the Linux NVAPI voltage query automatically.
 There is no opt-in flag. If voltage telemetry is unavailable on a driver or GPU,
@@ -121,18 +113,21 @@ sudo ./penguin_burner.sh --auto-uv-max-clock-drop-pct 12
 The three main aggressiveness options are:
 
 - `--auto-uv-max-drop-pct N`: voltage search depth below the starting voltage;
-  default `16.0`.
+  fallback default `10.0` when no GPU table floor or explicit mV floor exists.
+- `--auto-uv-min-voltage-mv N`: explicit lowest voltage bin Auto-UV may try;
+  overrides the GPU table floor.
 - `--auto-uv-max-clock-drop-pct N`: allowed loaded-clock loss; default `10.0`.
-- `--auto-uv-oc-budget-ratio N`: fraction of the clock-drop allowance that
-  can be spent on higher clock targets; default `0.0`, which disables OC budget.
+- `--auto-oc-target-voltage-mv N`: Performance Auto-OC voltage ceiling.
+- `--auto-oc-target-clock-mhz N`: Performance Auto-OC clock ceiling.
 
 Performance example:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-voltage-scan \
-  --auto-uv-max-drop-pct 18 \
+  --auto-uv-min-voltage-mv 850 \
   --auto-uv-max-clock-drop-pct 10 \
-  --auto-uv-oc-budget-ratio 1.0
+  --auto-oc-target-voltage-mv 925 \
+  --auto-oc-target-clock-mhz 2670
 ```
 
 ## After The Scan
@@ -203,7 +198,7 @@ Every Auto-UV scan writes an attachable stdout/stderr log under:
 PenguinBurner user config directory / debug-logs
 ```
 
-Auto-UV result and recovery files live under:
+Auto-UV result and crash-cache files live under:
 
 ```text
 PenguinBurner user config directory / uv-result

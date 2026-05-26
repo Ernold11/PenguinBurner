@@ -1,4 +1,4 @@
-"""Hold the knobs that shape one Auto-UV3 scan.
+"""Hold the knobs that shape one Auto-UV scan.
 
 Settings are plain data so tests and UI code can construct a scan without knowing loop internals.
 """

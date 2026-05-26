@@ -79,9 +79,8 @@ from .styles import STYLESHEET
 
 
 class MainWindow:
-    def __init__(self, qt_modules, *, auto_uv: bool = False):
+    def __init__(self, qt_modules):
         self.QtCore, self.QtGui, self.QtWidgets, self.pg = qt_modules
-        self.auto_uv = bool(auto_uv)
         self.profile_summaries: list[dict] = []
         self.fan_measured_points: list[tuple[float, float]] = []
         self.pending_final_result_payload: dict | None = None
@@ -260,7 +259,6 @@ class MainWindow:
         )
         if options is None:
             return
-        options["auto_uv"] = bool(self.auto_uv)
         command = scan_command(options)
         self.runs_table.clear()
         self.vf_plot.clear()

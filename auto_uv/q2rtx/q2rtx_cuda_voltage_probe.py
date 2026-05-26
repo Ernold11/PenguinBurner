@@ -604,7 +604,6 @@ def probe_phase_writes_crash_marker(phase_label: str) -> bool:
     return str(phase_label) in {
         "candidate",
         "final-verify",
-        "stabilize",
     }
 
 

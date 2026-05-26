@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,9 @@ from auto_uv.auto_uv_types import (
     VfCurveCandidate,
 )
 from auto_uv import voltage_frequency_undervolt_main_loop as undervolt_main_loop
+from auto_uv.final_verification.main_loop import (
+    run_final_verification_and_save as real_run_final_verification_and_save,
+)
 from auto_uv.voltage_sweep_state import (
     LowerVoltageSweepResult,
     VoltageProbeOutcome,
@@ -45,6 +49,13 @@ def _summary(voltage_mv: int, clock_mhz: int) -> AutoUvProbeSummary:
         result_reason="stable run",
         log_path=Path("/tmp/q2rtx.log"),
     )
+
+
+def _assert_final_verification_kwargs_match_real_signature(kwargs: dict) -> None:
+    accepted = set(inspect.signature(real_run_final_verification_and_save).parameters)
+    unexpected = set(kwargs) - accepted
+
+    assert unexpected == set()
 
 
 def test_discovery_probe_runner_uses_live_voltage_reader_keyword(monkeypatch) -> None:
@@ -162,9 +173,9 @@ def test_discovery_probe_logs_selected_gpu_light_load_diagnostic(monkeypatch) ->
     assert any("max_power=31.0W" in message for message in log_messages)
 
 
-def test_auto_uv3_final_choice_runs_before_final_verification(monkeypatch) -> None:
+def test_auto_uv_final_choice_runs_before_final_verification(monkeypatch) -> None:
     curve = base_curve(900, 1025, 25, 2000, 40)
-    captured: dict[str, object] = {}
+    captured: dict[str, object] = {"direct_probe_calls": [], "sweep_calls": []}
 
     class FakeGpu:
         reader = object()
@@ -197,6 +208,27 @@ def test_auto_uv3_final_choice_runs_before_final_verification(monkeypatch) -> No
                 raw_probe=_summary(candidate.voltage_mv, candidate.target_mhz),
             )
 
+        def probe_sweep_candidate(self, candidate, *, stable_history, phase_label):
+            _ = stable_history, phase_label
+            captured["direct_probe_calls"].append(
+                (
+                    str(candidate.label),
+                    int(candidate.voltage_mv),
+                    int(candidate.target_mhz),
+                )
+            )
+            return VoltageProbeOutcome(
+                decision=StableRunDecision(
+                    True,
+                    FailureKind.NONE,
+                    FailureSeverity.PASS,
+                    "stable run",
+                ),
+                measured_core_clock_mhz=float(candidate.target_mhz),
+                measured_voltage_mv=float(candidate.voltage_mv),
+                raw_probe=_summary(candidate.voltage_mv, candidate.target_mhz),
+            )
+
     def fake_sweep_loop(
         _base_curve,
         *,
@@ -206,12 +238,24 @@ def test_auto_uv3_final_choice_runs_before_final_verification(monkeypatch) -> No
         unsafe_entries,
         initial_stable_outcome=None,
     ):
-        _ = settings, initial_stable_candidate, unsafe_entries, initial_stable_outcome
+        _ = unsafe_entries, initial_stable_outcome
+        captured["sweep_calls"].append(
+            (
+                str(settings.auto_uv_mode),
+                int(settings.tail_rise_bins),
+                int(initial_stable_candidate.voltage_mv),
+                int(initial_stable_candidate.target_mhz),
+            )
+        )
+        assert (
+            captured["direct_probe_calls"] == []
+        ), "efficiency must not run a private pre-sweep probe stage"
         candidate = VfCurveCandidate(
             label="lower-voltage",
             voltage_mv=950,
             target_mhz=2120,
             flattened_plan=curve,
+            metadata={"tail_rise_bins": int(settings.tail_rise_bins)},
         )
         outcome = VoltageProbeOutcome(
             decision=StableRunDecision(
@@ -245,8 +289,14 @@ def test_auto_uv3_final_choice_runs_before_final_verification(monkeypatch) -> No
         )
 
     def fake_final(**kwargs):
+        _assert_final_verification_kwargs_match_real_signature(kwargs)
         captured["final_duration_s"] = kwargs["final_verification_duration_s"]
+        captured["final_tail_rise_bins"] = kwargs["tail_rise_bins"]
         return "final-result"
+
+    def fake_discovery(*_args, **kwargs):
+        captured["discovery_short_s"] = kwargs["short_probe_base_duration_s"]
+        return _summary(1000, 2200), SimpleNamespace(success=True)
 
     monkeypatch.setattr(
         undervolt_main_loop,
@@ -256,11 +306,13 @@ def test_auto_uv3_final_choice_runs_before_final_verification(monkeypatch) -> No
             auto_uv_mode="efficiency",
             timedemo_warmup_runs=0,
             short_probe_base_duration_s=10,
+            configured_min_voltage_mv=None,
             configured_max_drop_pct=15.0,
             preserve_base_below_mv=None,
             min_performance_core_clock_pct=90.0,
             final_verification_duration_s=600,
             final_clock_drop_margin_pct=10.0,
+            tail_rise_bins=0,
         ),
     )
     monkeypatch.setattr(undervolt_main_loop, "consume_crash_cache", lambda **_kwargs: [])
@@ -269,7 +321,7 @@ def test_auto_uv3_final_choice_runs_before_final_verification(monkeypatch) -> No
     monkeypatch.setattr(
         undervolt_main_loop,
         "run_discovery_probe",
-        lambda *_args, **_kwargs: (_summary(1000, 2200), SimpleNamespace(success=True)),
+        fake_discovery,
     )
     monkeypatch.setattr(
         undervolt_main_loop,
@@ -298,8 +350,15 @@ def test_auto_uv3_final_choice_runs_before_final_verification(monkeypatch) -> No
     )
 
     assert result == "final-result"
+    assert captured["discovery_short_s"] == 10
     assert captured["choice_called"] is True
     assert captured["final_duration_s"] == 180
+    assert captured["direct_probe_calls"] == []
+    assert captured["sweep_calls"] == [
+        ("efficiency", 0, 1000, 2200),
+        ("efficiency-tail-tune", 4, 950, 2120),
+    ]
+    assert captured["final_tail_rise_bins"] == 4
 
 
 def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
@@ -390,7 +449,6 @@ def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
         return SimpleNamespace(
             selected_candidate=VfCurveCandidate("performance-oc", 910, 2890, curve),
             selected_probe=selected_probe,
-            recovery_voltage_ceiling_mv=910,
             attempts=[SimpleNamespace(outcome=outcome)],
         )
 
@@ -413,6 +471,7 @@ def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
         )
 
     def fake_final(**kwargs):
+        _assert_final_verification_kwargs_match_real_signature(kwargs)
         captured["order"].append("final")
         captured["final"] = (
             kwargs["stable_voltage_mv"],
@@ -428,11 +487,13 @@ def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
             auto_uv_mode="performance",
             timedemo_warmup_runs=0,
             short_probe_base_duration_s=10,
+            configured_min_voltage_mv=None,
             configured_max_drop_pct=15.0,
             preserve_base_below_mv=None,
             min_performance_core_clock_pct=90.0,
             final_verification_duration_s=600,
             final_clock_drop_margin_pct=10.0,
+            tail_rise_bins=6,
         ),
     )
     monkeypatch.setattr(undervolt_main_loop, "consume_crash_cache", lambda **_kwargs: [])
@@ -494,7 +555,7 @@ def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
     assert captured["final"] == (910, 2890)
 
 
-def test_auto_uv3_user_stop_offers_stable_history_for_final_choice(monkeypatch) -> None:
+def test_auto_uv_user_stop_offers_stable_history_for_final_choice(monkeypatch) -> None:
     curve = base_curve(900, 1025, 25, 2000, 40)
     captured: dict[str, object] = {}
 
@@ -551,6 +612,7 @@ def test_auto_uv3_user_stop_offers_stable_history_for_final_choice(monkeypatch) 
         )
 
     def fake_final(**kwargs):
+        _assert_final_verification_kwargs_match_real_signature(kwargs)
         captured["final_duration_s"] = kwargs["final_verification_duration_s"]
         return "final-result"
 
@@ -562,11 +624,13 @@ def test_auto_uv3_user_stop_offers_stable_history_for_final_choice(monkeypatch) 
             auto_uv_mode="performance",
             timedemo_warmup_runs=0,
             short_probe_base_duration_s=10,
+            configured_min_voltage_mv=None,
             configured_max_drop_pct=15.0,
             preserve_base_below_mv=None,
             min_performance_core_clock_pct=90.0,
             final_verification_duration_s=600,
             final_clock_drop_margin_pct=10.0,
+            tail_rise_bins=6,
         ),
     )
     monkeypatch.setattr(undervolt_main_loop, "consume_crash_cache", lambda **_kwargs: [])
@@ -642,7 +706,6 @@ def test_performance_auto_oc_selection_runs_before_final_verification(monkeypatc
                 2745,
                 curve,
             ),
-            recovery_voltage_ceiling_mv=950,
         )
 
     monkeypatch.setattr(
@@ -651,7 +714,7 @@ def test_performance_auto_oc_selection_runs_before_final_verification(monkeypatc
         fake_auto_oc_search,
     )
 
-    plan, voltage_mv, clock_mhz, probe, recovery_ceiling_mv = (
+    plan, voltage_mv, clock_mhz, probe = (
         undervolt_main_loop.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="performance",
@@ -675,7 +738,6 @@ def test_performance_auto_oc_selection_runs_before_final_verification(monkeypatc
     assert voltage_mv == 950
     assert clock_mhz == 2745
     assert probe is None
-    assert recovery_ceiling_mv == 950
     assert captured["start_candidate"].voltage_mv == 925
     assert captured["start_candidate"].target_mhz == 2600
     assert captured["tail_rise_bins"] == 6
@@ -696,7 +758,7 @@ def test_non_performance_mode_skips_auto_oc_selection(monkeypatch) -> None:
         fail_auto_oc_search,
     )
 
-    plan, voltage_mv, clock_mhz, probe, recovery_ceiling_mv = (
+    plan, voltage_mv, clock_mhz, probe = (
         undervolt_main_loop.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="efficiency",
@@ -717,75 +779,3 @@ def test_non_performance_mode_skips_auto_oc_selection(monkeypatch) -> None:
     assert voltage_mv == 925
     assert clock_mhz == 2600
     assert probe is start_probe
-    assert recovery_ceiling_mv is None
-
-
-def test_crash_adjacent_final_voltage_margin_bumps_one_bin() -> None:
-    curve = base_curve(875, 906, 6, 1800, 15)
-
-    margin = undervolt_main_loop.crash_adjacent_final_voltage_margin(
-        curve,
-        stable_voltage_mv=881,
-        stable_lock_clock_mhz=1919,
-        unsafe_entries=[
-            {
-                "reason": "previous-run-abruptly-ended",
-                "candidate_voltage_mv": 875,
-                "lock_clock_mhz": 1919,
-                "blocked_lock_clock_mhz": [1919, 1905],
-            }
-        ],
-    )
-
-    assert margin == (875, 887)
-
-
-def test_crash_adjacent_final_voltage_margin_ignores_other_clock_band() -> None:
-    curve = base_curve(875, 906, 6, 1800, 15)
-
-    margin = undervolt_main_loop.crash_adjacent_final_voltage_margin(
-        curve,
-        stable_voltage_mv=881,
-        stable_lock_clock_mhz=1800,
-        unsafe_entries=[
-            {
-                "reason": "previous-run-abruptly-ended",
-                "candidate_voltage_mv": 875,
-                "lock_clock_mhz": 1919,
-                "blocked_lock_clock_mhz": [1919, 1905],
-            }
-        ],
-    )
-
-    assert margin is None
-
-
-def test_apply_crash_adjacent_final_voltage_margin_rebuilds_plan() -> None:
-    curve = base_curve(875, 906, 6, 1800, 15)
-    log_messages: list[str] = []
-
-    plan, voltage_mv, stable_probe = (
-        undervolt_main_loop.apply_crash_adjacent_final_voltage_margin(
-            curve,
-            stable_plan=curve,
-            stable_voltage_mv=881,
-            stable_lock_clock_mhz=1919,
-            stable_probe=_summary(881, 1919),
-            unsafe_entries=[
-                {
-                    "reason": "previous-run-abruptly-ended",
-                    "candidate_voltage_mv": 875,
-                    "lock_clock_mhz": 1919,
-                    "blocked_lock_clock_mhz": [1919, 1905],
-                }
-            ],
-            log=log_messages.append,
-        )
-    )
-
-    assert voltage_mv == 887
-    assert stable_probe is None
-    assert {point["target_mhz"] for point in plan if point["voltage_mv"] >= 887} == {
-        1919
-    }
-    assert any("crash-adjacent voltage margin" in message for message in log_messages)

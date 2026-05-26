@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Small Auto-UV3 data builders keep tests readable without hiding behavior.
+"""Small Auto-UV data builders keep tests readable without hiding behavior.
 Each builder returns the plain dictionaries used by the production boundary."""
 
 

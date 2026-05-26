@@ -60,6 +60,18 @@ class FakeVfCurveReader:
         self.refresh_count += 1
 
 
+class FakeGpuPolicyController:
+    def __init__(self):
+        self.clock_offsets = []
+        self.closed = False
+
+    def apply_clock_offsets(self, **kwargs):
+        self.clock_offsets.append(kwargs)
+
+    def close(self):
+        self.closed = True
+
+
 def _fan_config():
     return {
         "poll_interval_s": 1.0,
@@ -228,4 +240,51 @@ def test_runtime_fan_loop_reapplies_vf_curve_after_reset_detection():
 
     assert applied_plans == [(vf_curve_reader, plan)]
     assert vf_curve_reader.refresh_count == 1
+    assert any("event=vf-curve-reapplied" in message for message in logs)
+
+
+def test_runtime_fan_loop_reapplies_memory_offset_after_vf_curve_reset():
+    logs = []
+    prints = []
+    sleeps = []
+    applied_plans = []
+    nvml_session = FakeNvmlSession([55.0])
+    vf_curve_reader = FakeVfCurveReader()
+    gpu_policy_controller = FakeGpuPolicyController()
+    plan = [{"index": 4, "new_offset_mhz": 500}]
+
+    run_runtime_fan_control_loop(
+        gpu_index=0,
+        config_path="/tmp/config.json",
+        fan_config={"poll_interval_s": 1.0},
+        fan_control_enabled=False,
+        enable_persistence_mode=True,
+        prefer_afterburner_curve=False,
+        nvml_session=nvml_session,
+        voltage_reader=None,
+        vf_curve_reader=vf_curve_reader,
+        gpu_policy_controller=gpu_policy_controller,
+        vf_policy=RuntimeVfCurvePolicyResult(
+            vf_apply_result={"plan": plan},
+            vf_expected_samples=["sample"],
+            auto_uv_profile_gpu_policy={"mem_clk_vf_offset_mhz": 750},
+        ),
+        dependencies=_dependencies(
+            logs=logs,
+            prints=prints,
+            sleeps=sleeps,
+            monotonic_values=[100.0, 111.0],
+            detect_vf_curve_reset=lambda reader, samples: [{"index": 4}],
+            apply_plan=lambda reader, applied_plan: applied_plans.append(
+                (reader, applied_plan)
+            ),
+            format_vf_curve_mismatch_preview=lambda mismatches: "idx=4",
+        ),
+        max_iterations=1,
+    )
+
+    assert applied_plans == [(vf_curve_reader, plan)]
+    assert gpu_policy_controller.clock_offsets == [
+        {"mem_clk_vf_offset_mhz": 750}
+    ]
     assert any("event=vf-curve-reapplied" in message for message in logs)

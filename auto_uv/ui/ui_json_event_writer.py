@@ -1,4 +1,4 @@
-"""Emit Auto-UV3 JSON events to the UI callback.
+"""Emit Auto-UV JSON events to the UI callback.
 
 The writer strips None values so every UI payload stays compact and predictable.
 """

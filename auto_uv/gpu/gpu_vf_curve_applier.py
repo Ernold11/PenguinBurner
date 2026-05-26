@@ -1,6 +1,6 @@
-"""Apply Auto-UV3 V/F curve plans to the live GPU.
+"""Apply Auto-UV V/F curve plans to the live GPU.
 
-This is the only Auto-UV3 module that creates NVAPI/NVML helpers and applies curve plans.
+This is the only Auto-UV module that creates NVAPI/NVML helpers and applies curve plans.
 """
 
 from __future__ import annotations

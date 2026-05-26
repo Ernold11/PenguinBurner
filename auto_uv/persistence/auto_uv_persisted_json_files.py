@@ -1,4 +1,4 @@
-"""Define the JSON files Auto-UV uses for UI handoff and crash recovery.
+"""Define the JSON files Auto-UV uses for UI handoff and crash caching.
 
 The helpers make writes atomic and preserve desktop-user ownership for files created by elevated runs.
 """

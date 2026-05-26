@@ -34,6 +34,7 @@ _FLOAT_NONNEG = lambda v: max(0.0, float(v))
 _NULLABLE_NUMERIC_OPTIONS = [
     ("power_limit_override_w", "power_limit_override_w", _INT_POS),
     ("preserve_base_below_mv", "preserve_base_below_mv", _INT_POS),
+    ("auto_uv_min_voltage_mv", "auto_uv_min_voltage_mv", _INT_POS),
     ("auto_uv_max_drop_pct", "auto_uv_max_drop_pct", _FLOAT_POS),
     ("auto_uv_final_seconds", "auto_uv_final_seconds", _INT_POS),
     ("auto_uv_short_seconds", "auto_uv_short_seconds", _short_seconds),

@@ -45,7 +45,7 @@ def base_curve_target_for_lower_voltage(
         voltage_mv=int(candidate_voltage_mv),
         fallback_mhz=int(stable_target_mhz),
     )
-    # Lower voltage should naturally descend with the base curve until recovery raises it.
+    # Lower voltage naturally descends with the base curve as bins get colder.
     return min(int(stable_target_mhz), int(base_target_mhz))
 
 

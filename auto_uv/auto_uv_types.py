@@ -1,4 +1,4 @@
-"""Typed data passed between Auto-UV3 rule modules.
+"""Typed data passed between Auto-UV rule modules.
 
 The types describe algorithm state and decisions only; they do not touch GPU APIs.
 """

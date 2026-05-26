@@ -35,7 +35,6 @@ class AutoOcAttempt:
 class AutoOcSearchResult:
     selected_candidate: VfCurveCandidate
     selected_probe: AutoUvProbeSummary | None
-    recovery_voltage_ceiling_mv: int | None
     endpoint: UvTierTarget | None = None
     attempts: tuple[AutoOcAttempt, ...] = ()
     skipped_reason: str | None = None
@@ -64,11 +63,6 @@ def run_auto_oc_candidate_search(
     if endpoint is None:
         return _skip(start_candidate, start_probe, "no-auto-oc-target")
 
-    recovery_ceiling = (
-        int(endpoint.voltage_mv)
-        if int(endpoint.voltage_mv) >= int(start_candidate.voltage_mv)
-        else None
-    )
     ladder = build_auto_oc_ladder(
         base_curve,
         start_voltage_mv=int(start_candidate.voltage_mv),
@@ -88,7 +82,6 @@ def run_auto_oc_candidate_search(
         return AutoOcSearchResult(
             selected_candidate=start_candidate,
             selected_probe=start_probe,
-            recovery_voltage_ceiling_mv=recovery_ceiling,
             endpoint=endpoint,
             skipped_reason="no-legal-step",
         )
@@ -174,7 +167,6 @@ def run_auto_oc_candidate_search(
     return AutoOcSearchResult(
         selected_candidate=selected_candidate,
         selected_probe=selected_probe,
-        recovery_voltage_ceiling_mv=recovery_ceiling,
         endpoint=endpoint,
         attempts=tuple(attempts),
     )
@@ -284,7 +276,6 @@ def _skip(
     return AutoOcSearchResult(
         selected_candidate=candidate,
         selected_probe=probe,
-        recovery_voltage_ceiling_mv=None,
         skipped_reason=str(reason),
     )
 

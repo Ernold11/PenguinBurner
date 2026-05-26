@@ -2,16 +2,16 @@
 
 ## GitHub Release Notes
 
-PenguinBurner 0.1.6 focuses on Auto-UV3 guardrails, better final candidate
-selection, and safer performance-mode voltage recovery.
+PenguinBurner 0.1.6 focuses on Auto-UV guardrails, better final candidate
+selection, and safer performance-mode limits.
 
 ### Highlights
 
 - Added a borrowed GPU voltage/frequency table for RTX 50 and RTX 40 families.
-- Auto-filled max voltage drop now uses the detected GPU's Eco table voltage as
-  the lower sweep boundary, with a generic 15% fallback for unsupported GPUs.
-- Performance-mode voltage recovery now uses the GPU's Performance table voltage
-  as the ceiling. For RTX 5080, recovery can seek FPS only up to 925 mV.
+- Auto-filled minimum voltage now uses the detected GPU's Eco table voltage as
+  the lower sweep boundary, with a generic 10% fallback for unsupported GPUs.
+- Performance-mode limits now use the GPU's Performance table voltage as the
+  ceiling. For RTX 5080, performance probing is capped at 925 mV.
 - Final candidate choice now follows the selected mode: Efficiency sorts by
   FPS/W, Performance sorts by FPS.
 - The final candidate modal shows relative FPS and FPS/W deltas against the
@@ -25,12 +25,11 @@ selection, and safer performance-mode voltage recovery.
 
 - The borrowed voltage/frequency table is used as a guardrail, not as a forced
   clock target.
-- Performance OC budget still uses measured baseline and lower-voltage clocks;
-  the top endpoint is bounded by the borrowed Performance table voltage/clock.
-- Performance-mode upward voltage recovery is capped by the table Performance
+- Performance probing uses measured baseline and lower-voltage clocks; the top
+  endpoint is bounded by the borrowed Performance table voltage/clock.
+- Performance-mode voltage/clock probing is capped by the table Performance
   voltage and no longer climbs toward the table Max voltage.
-- Final upward stabilization after a failed long verification uses the same
-  performance voltage ceiling.
+- Final verification uses the selected curve directly.
 - Reference performance findings are documented separately, with direct-mode
   V-droop compensation kept out of production core logic.
 
@@ -44,6 +43,6 @@ selection, and safer performance-mode voltage recovery.
 
 ## PyPI Release Summary
 
-PenguinBurner 0.1.6 adds Auto-UV3 GPU table guardrails, RTX 5080 performance
-voltage recovery capped at 925 mV, mode-correct final candidate sorting, stopped
+PenguinBurner 0.1.6 adds Auto-UV GPU table guardrails, RTX 5080 performance
+performance probing capped at 925 mV, mode-correct final candidate sorting, stopped
 scan candidate selection, and clearer Auto-UV tuning modal text.

@@ -18,8 +18,8 @@ from .auto_uv_types import (
 )
 from .auto_uv_scan_settings import AutoUvScanSettings
 from .auto_uv_console_log import log_benchmark, log_phase, log_user_stage
-from .auto_uv_scan_result import build_voltage_scan_result, curve_overclock_summary
-from .recovery.baseline_upward_stabilization import find_upward_stable_baseline_candidate
+from .auto_uv_scan_result import build_voltage_scan_result
+from .auto_uv_user_options import AUTO_UV_DEFAULTS
 from .curve.base_load_flatten_target import (
     choose_base_load_flatten_target,
     selected_nvidia_light_load_diagnostic,
@@ -30,10 +30,12 @@ from .curve.base_vf_curve_validation import validate_base_vf_curve
 from .curve.base_vf_curve_voltage_bins import (
     lock_voltage_for_target_clock,
     nearest_editable_voltage_bin,
-    next_higher_editable_voltage_bin,
 )
 from .ui.candidate_choice import choose_final_verification_candidate
-from .recovery.final_failure_upward_stabilization import find_upward_stable_final_candidate
+from .efficiency_tune import (
+    min_search_voltage_mv,
+    voltage_descent_tail_rise_bins,
+)
 from .gpu.gpu_vf_curve_applier import open_live_gpu_vf_curve_applier
 from .persistence.interrupted_probe_crash_cache import consume_interrupted_probe_crash_marker
 from .lower_voltage_sweep_loop import (
@@ -41,7 +43,6 @@ from .lower_voltage_sweep_loop import (
     run_lower_voltage_sweep_loop,
 )
 from .curve.measured_probe_lock_clock import lock_clock_from_probe_loaded_clock
-from .persistence.unsafe_voltage_cache import unsafe_entry_clock_floor_mhz
 from .ui.probe_summary_ui_payload import probe_summary_ui_payload
 from .q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
 from .q2rtx.q2rtx_cuda_voltage_probe import probe_voltage_candidate
@@ -58,7 +59,7 @@ from .curve.vf_curve_flattening import (
 from .ui.vf_curve_ui_points import vf_curve_ui_points
 from .voltage_sweep_state import VoltageProbeOutcome
 from .final_verification import run_final_verification_and_save
-from .scan_mode import AUTO_UV_MODE_PERFORMANCE
+from .scan_mode import AUTO_UV_MODE_EFFICIENCY, AUTO_UV_MODE_PERFORMANCE
 
 
 def run_voltage_frequency_undervolt_main_loop(
@@ -73,6 +74,7 @@ def run_voltage_frequency_undervolt_main_loop(
     q2rtx_config = settings.q2rtx_config
     timedemo_warmup_runs = int(settings.timedemo_warmup_runs)
     tail_rise_bins = int(getattr(settings, "tail_rise_bins", 0))
+    descent_tail_rise_bins = int(voltage_descent_tail_rise_bins(settings))
     unsafe_entries = consume_crash_cache(log=log)
     cleanup_managed_q2rtx_processes(q2rtx_config, log=log)
     gpu = open_live_gpu_vf_curve_applier(
@@ -90,7 +92,7 @@ def run_voltage_frequency_undervolt_main_loop(
         )
         log_phase(
             log,
-            "auto-uv3",
+            "auto-uv",
             "Auto-UV voltage-frequency main loop enabled "
             f"tail-rise-bins={int(tail_rise_bins)}",
         )
@@ -145,18 +147,9 @@ def run_voltage_frequency_undervolt_main_loop(
         if baseline_outcome.raw_probe is not None:
             probe_history.append(baseline_outcome.raw_probe)
         if not baseline_outcome.decision.passed:
-            baseline_candidate, baseline_outcome = stabilize_failed_baseline(
-                base_curve,
-                failed_candidate=baseline_candidate,
-                failed_outcome=baseline_outcome,
-                runner=runner,
-                gpu=gpu,
-                q2rtx_config=q2rtx_config,
-                probe_history=probe_history,
-                discovery_summary=discovery_summary,
-                settings=settings,
-                log=log,
-                event_callback=event_callback,
+            raise AutoUvError(
+                "baseline flattened curve failed the Q2RTX probe: "
+                f"{baseline_outcome.decision.reason}"
             )
         stable_probe = require_probe_summary(baseline_outcome)
         baseline_candidate = adjust_baseline_to_measured_clock(
@@ -175,16 +168,23 @@ def run_voltage_frequency_undervolt_main_loop(
         )
         log_user_stage(
             log,
-            "Auto-UV3 baseline accepted",
+            "Auto-UV baseline accepted",
             [
                 f"Starting point: {baseline_candidate.target_mhz}MHz at {baseline_candidate.voltage_mv}mV.",
-                "Next, Auto-UV3 will walk downward through real editable voltage bins.",
+                "Next, Auto-UV will walk downward through real editable voltage bins.",
             ],
         )
 
         stable_candidate = baseline_candidate
+        effective_min_search_voltage_mv = min_search_voltage_mv(
+            start_voltage_mv=int(baseline_candidate.voltage_mv),
+            configured_min_voltage_mv=settings.configured_min_voltage_mv,
+            configured_max_drop_pct=float(settings.configured_max_drop_pct),
+            gpu_name=gpu.translated_gpu_policy.get("gpu_name"),
+        )
 
         def probe_candidate(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
+            retarget_clock_ceiling_for_candidate(gpu.clock_ceiling, candidate)
             outcome = runner.probe_sweep_candidate(
                 candidate,
                 stable_history=stable_history,
@@ -207,7 +207,7 @@ def run_voltage_frequency_undervolt_main_loop(
                 candidate,
                 summary,
                 discovery_summary=discovery_summary,
-                tail_rise_bins=int(tail_rise_bins),
+                tail_rise_bins=int(descent_tail_rise_bins),
             )
 
         def record_passed_candidate(
@@ -229,10 +229,7 @@ def run_voltage_frequency_undervolt_main_loop(
                 base_curve,
                 settings=AutoUvScanSettings(
                     start_voltage_mv=int(baseline_candidate.voltage_mv),
-                    min_search_voltage_mv=min_search_voltage_mv(
-                        start_voltage_mv=int(baseline_candidate.voltage_mv),
-                        configured_max_drop_pct=float(settings.configured_max_drop_pct),
-                    ),
+                    min_search_voltage_mv=int(effective_min_search_voltage_mv),
                     preserve_base_below_mv=settings.preserve_base_below_mv,
                     baseline_core_clock_mhz=float(baseline_target.measured_clock_mhz),
                     auto_uv_mode=settings.auto_uv_mode,
@@ -248,7 +245,7 @@ def run_voltage_frequency_undervolt_main_loop(
                             10.0,
                         )
                     ),
-                    tail_rise_bins=int(tail_rise_bins),
+                    tail_rise_bins=int(descent_tail_rise_bins),
                 ),
                 initial_stable_candidate=stable_candidate,
                 hooks=hooks,
@@ -262,6 +259,52 @@ def run_voltage_frequency_undervolt_main_loop(
                 ),
             )
             stable_candidate = loop_result.stable_candidate
+            if (
+                settings.auto_uv_mode == AUTO_UV_MODE_EFFICIENCY
+                and int(stable_candidate.voltage_mv)
+                > int(effective_min_search_voltage_mv)
+            ):
+                log_user_stage(
+                    log,
+                    "Auto-UV efficiency tail tune",
+                    [
+                        (
+                            "Continuing toward the card minimum voltage with "
+                            f"{int(AUTO_UV_DEFAULTS.balanced_tail_rise_bins)} tail-rise bins."
+                        ),
+                        f"Keeping target clock: {int(stable_candidate.target_mhz)}MHz.",
+                    ],
+                )
+                post_loop_result = run_lower_voltage_sweep_loop(
+                    base_curve,
+                    settings=AutoUvScanSettings(
+                        start_voltage_mv=int(baseline_candidate.voltage_mv),
+                        min_search_voltage_mv=int(effective_min_search_voltage_mv),
+                        preserve_base_below_mv=settings.preserve_base_below_mv,
+                        baseline_core_clock_mhz=float(
+                            baseline_target.measured_clock_mhz
+                        ),
+                        auto_uv_mode="efficiency-tail-tune",
+                        min_core_clock_pct=float(
+                            settings.min_performance_core_clock_pct
+                        ),
+                        reference_actual_voltage_mv=stable_probe.avg_voltage_mv,
+                        efficiency_stop_streak=0,
+                        min_efficiency_stop_voltage_drop_pct=0.0,
+                        tail_rise_bins=int(AUTO_UV_DEFAULTS.balanced_tail_rise_bins),
+                    ),
+                    initial_stable_candidate=stable_candidate,
+                    hooks=hooks,
+                    unsafe_entries=unsafe_entries,
+                    initial_stable_outcome=VoltageProbeOutcome(
+                        decision=baseline_outcome.decision,
+                        measured_core_clock_mhz=stable_probe.avg_core_clock_mhz,
+                        measured_voltage_mv=stable_probe.avg_voltage_mv,
+                        raw_probe=stable_probe,
+                        raw_result=baseline_outcome.raw_result,
+                    ),
+                )
+                stable_candidate = post_loop_result.stable_candidate
         except KeyboardInterrupt:
             if not bool(runtime_options.get("auto_uv_require_final_choice")):
                 raise
@@ -269,7 +312,7 @@ def run_voltage_frequency_undervolt_main_loop(
             clear_auto_uv_stop_request()
             log_phase(
                 log,
-                "auto-uv3",
+                "auto-uv",
                 "user stop requested; offering past stable candidates for final verification",
             )
         final_verification_duration_s = int(settings.final_verification_duration_s)
@@ -277,6 +320,9 @@ def run_voltage_frequency_undervolt_main_loop(
         final_stable_voltage_mv = int(stable_candidate.voltage_mv)
         final_stable_lock_clock_mhz = int(stable_candidate.target_mhz)
         final_stable_probe = stable_probe
+        final_tail_rise_bins = int(
+            stable_candidate.metadata.get("tail_rise_bins", descent_tail_rise_bins)
+        )
         if bool(runtime_options.get("auto_uv_require_final_choice")) and bool(
             user_stop_final_choice
         ):
@@ -300,7 +346,7 @@ def run_voltage_frequency_undervolt_main_loop(
                 final_verification_duration_s=int(final_verification_duration_s),
                 initial_target_voltage_mv=int(baseline_candidate.voltage_mv),
                 short_probe_base_duration_s=int(settings.short_probe_base_duration_s),
-                tail_rise_bins=int(tail_rise_bins),
+                tail_rise_bins=int(final_tail_rise_bins),
                 request_reason=(
                     "user-stop" if bool(user_stop_final_choice) else "sweep-complete"
                 ),
@@ -309,26 +355,12 @@ def run_voltage_frequency_undervolt_main_loop(
             if selected_stable_probe is not None:
                 final_stable_probe = selected_stable_probe
 
-        final_stable_plan, final_stable_voltage_mv, final_stable_probe = (
-            apply_crash_adjacent_final_voltage_margin(
-                base_curve,
-                stable_plan=final_stable_plan,
-                stable_voltage_mv=int(final_stable_voltage_mv),
-                stable_lock_clock_mhz=int(final_stable_lock_clock_mhz),
-                stable_probe=final_stable_probe,
-                unsafe_entries=unsafe_entries,
-                log=log,
-                tail_rise_bins=int(tail_rise_bins),
-            )
-        )
-        recovery_voltage_ceiling_mv = None
         if not bool(user_stop_final_choice):
             (
                 final_stable_plan,
                 final_stable_voltage_mv,
                 final_stable_lock_clock_mhz,
                 final_stable_probe,
-                recovery_voltage_ceiling_mv,
             ) = select_performance_auto_oc_candidate(
                 base_curve,
                 auto_uv_mode=settings.auto_uv_mode,
@@ -342,7 +374,7 @@ def run_voltage_frequency_undervolt_main_loop(
                 clock_ceiling=gpu.clock_ceiling,
                 probe_history=probe_history,
                 log=log,
-                tail_rise_bins=int(tail_rise_bins),
+                tail_rise_bins=int(final_tail_rise_bins),
                 target_voltage_mv=positive_int(
                     runtime_options.get("auto_oc_target_voltage_mv")
                 ),
@@ -374,7 +406,7 @@ def run_voltage_frequency_undervolt_main_loop(
                 final_verification_duration_s=int(final_verification_duration_s),
                 initial_target_voltage_mv=int(baseline_candidate.voltage_mv),
                 short_probe_base_duration_s=int(settings.short_probe_base_duration_s),
-                tail_rise_bins=int(tail_rise_bins),
+                tail_rise_bins=int(final_tail_rise_bins),
                 request_reason="sweep-complete",
             )
             final_verification_duration_s = int(selected_final_verification_duration_s)
@@ -383,9 +415,7 @@ def run_voltage_frequency_undervolt_main_loop(
 
         return run_final_verification_and_save(
             probe_voltage_candidate=probe_voltage_candidate,
-            probe_stabilization_search=find_upward_stable_final_candidate,
             build_voltage_scan_result=build_voltage_scan_result,
-            curve_overclock_summary=curve_overclock_summary,
             log=log,
             reader=gpu.reader,
             stable_plan=final_stable_plan,
@@ -396,7 +426,6 @@ def run_voltage_frequency_undervolt_main_loop(
             probe_history=probe_history,
             q2rtx_config=q2rtx_config,
             final_verification_duration_s=int(final_verification_duration_s),
-            source_result={"plan": base_curve, "translation_mode": "runtime-defaults"},
             start_voltage_mv=int(baseline_candidate.voltage_mv),
             measured_clock_mhz=float(baseline_target.measured_clock_mhz),
             nvml_session=gpu.live_voltage_reader,
@@ -406,10 +435,8 @@ def run_voltage_frequency_undervolt_main_loop(
             min_performance_core_clock_pct=float(settings.min_performance_core_clock_pct),
             runtime_default_plan=gpu.runtime_default_plan,
             final_clock_drop_margin_pct=float(settings.final_clock_drop_margin_pct),
-            recovery_voltage_ceiling_mv=recovery_voltage_ceiling_mv,
-            short_probe_base_duration_s=int(settings.short_probe_base_duration_s),
             timedemo_warmup_runs=int(timedemo_warmup_runs),
-            tail_rise_bins=int(tail_rise_bins),
+            tail_rise_bins=int(final_tail_rise_bins),
             event_callback=event_callback,
         )
     finally:
@@ -423,12 +450,29 @@ def consume_crash_cache(*, log: Callable[[str], None]) -> list[dict]:
         _path, unsafe_entry = interrupted
         log_phase(
             log,
-            "crash-recovery",
+            "crash-cache",
             "previous auto-UV probe ended abruptly; "
             f"blacklisted={int(unsafe_entry['candidate_voltage_mv'])}mV "
             f"target={int(unsafe_entry['lock_clock_mhz'])}MHz",
         )
     return load_unsafe_voltage_blacklist()
+
+
+def retarget_clock_ceiling_for_candidate(
+    clock_ceiling,
+    candidate: VfCurveCandidate,
+) -> None:
+    if clock_ceiling is None:
+        return
+    clock_ceiling.retarget(
+        lock_clock_mhz=int(candidate.target_mhz),
+        lock_voltage_mv=int(candidate.voltage_mv),
+        ceiling_clock_mhz=tail_ceiling_for_plan(
+            candidate.flattened_plan,
+            lock_clock_mhz=int(candidate.target_mhz),
+            lock_voltage_mv=int(candidate.voltage_mv),
+        ),
+    )
 
 
 def run_auto_oc_candidate_search(**kwargs):
@@ -454,14 +498,13 @@ def select_performance_auto_oc_candidate(
     tail_rise_bins: int = 0,
     target_voltage_mv: int | None = None,
     target_clock_mhz: int | None = None,
-) -> tuple[list[dict], int, int, AutoUvProbeSummary | None, int | None]:
+) -> tuple[list[dict], int, int, AutoUvProbeSummary | None]:
     if str(auto_uv_mode) != AUTO_UV_MODE_PERFORMANCE:
         return (
             stable_plan,
             int(stable_voltage_mv),
             int(stable_lock_clock_mhz),
             stable_probe,
-            None,
         )
     start_candidate = VfCurveCandidate(
         label="performance-auto-oc-start",
@@ -496,96 +539,7 @@ def select_performance_auto_oc_candidate(
         int(selected.voltage_mv),
         int(selected.target_mhz),
         None if selected_changed else stable_probe,
-        result.recovery_voltage_ceiling_mv,
     )
-
-
-def apply_crash_adjacent_final_voltage_margin(
-    base_curve: list[dict],
-    *,
-    stable_plan: list[dict],
-    stable_voltage_mv: int,
-    stable_lock_clock_mhz: int,
-    stable_probe: AutoUvProbeSummary | None,
-    unsafe_entries: list[dict],
-    log: Callable[[str], None],
-    tail_rise_bins: int = 0,
-) -> tuple[list[dict], int, AutoUvProbeSummary | None]:
-    margin = crash_adjacent_final_voltage_margin(
-        base_curve,
-        stable_voltage_mv=int(stable_voltage_mv),
-        stable_lock_clock_mhz=int(stable_lock_clock_mhz),
-        unsafe_entries=unsafe_entries,
-    )
-    if margin is None:
-        return stable_plan, int(stable_voltage_mv), stable_probe
-    failed_voltage_mv, bumped_voltage_mv = margin
-    bumped_plan = build_flattened_plan(
-        base_curve,
-        lock_clock_mhz=int(stable_lock_clock_mhz),
-        candidate_voltage_mv=int(bumped_voltage_mv),
-        tail_rise_bins=int(tail_rise_bins),
-    )
-    log_phase(
-        log,
-        "final",
-        "crash-adjacent voltage margin: "
-        f"{int(stable_voltage_mv)}mV is one editable bin above cached hard-crash "
-        f"{int(failed_voltage_mv)}mV; verifying "
-        f"{int(bumped_voltage_mv)}mV@{int(stable_lock_clock_mhz)}MHz",
-    )
-    return bumped_plan, int(bumped_voltage_mv), None
-
-
-def crash_adjacent_final_voltage_margin(
-    base_curve: list[dict],
-    *,
-    stable_voltage_mv: int,
-    stable_lock_clock_mhz: int,
-    unsafe_entries: list[dict],
-) -> tuple[int, int] | None:
-    for entry in unsafe_entries:
-        if not unsafe_entry_is_previous_run_hard_crash(entry):
-            continue
-        failed_voltage_mv = positive_int(entry.get("candidate_voltage_mv"))
-        if failed_voltage_mv is None:
-            continue
-        if not unsafe_entry_clock_band_matches(
-            entry,
-            lock_clock_mhz=int(stable_lock_clock_mhz),
-        ):
-            continue
-        adjacent_stable_voltage_mv = next_higher_editable_voltage_bin(
-            base_curve,
-            int(failed_voltage_mv),
-        )
-        if int(adjacent_stable_voltage_mv or -1) != int(stable_voltage_mv):
-            continue
-        bumped_voltage_mv = next_higher_editable_voltage_bin(
-            base_curve,
-            int(stable_voltage_mv),
-        )
-        if bumped_voltage_mv is None:
-            return None
-        return int(failed_voltage_mv), int(bumped_voltage_mv)
-    return None
-
-
-def unsafe_entry_is_previous_run_hard_crash(entry: dict) -> bool:
-    if not isinstance(entry, dict):
-        return False
-    return str(entry.get("reason") or "") == "previous-run-abruptly-ended"
-
-
-def unsafe_entry_clock_band_matches(entry: dict, *, lock_clock_mhz: int) -> bool:
-    unsafe_lock_clock_mhz = positive_int(entry.get("lock_clock_mhz"))
-    if unsafe_lock_clock_mhz is None:
-        return True
-    clock_floor_mhz = unsafe_entry_clock_floor_mhz(
-        entry,
-        fallback_lock_clock_mhz=int(unsafe_lock_clock_mhz),
-    )
-    return int(lock_clock_mhz) >= int(clock_floor_mhz)
 
 
 def positive_int(value: object) -> int | None:
@@ -702,42 +656,6 @@ def build_loaded_baseline_candidate(
     )
 
 
-def stabilize_failed_baseline(
-    base_curve: list[dict],
-    *,
-    failed_candidate: VfCurveCandidate,
-    failed_outcome: VoltageProbeOutcome,
-    runner: Q2RtxCudaProbeRunner,
-    gpu,
-    q2rtx_config: Q2RTXStabilityConfig,
-    probe_history: list[AutoUvProbeSummary],
-    discovery_summary: AutoUvProbeSummary,
-    settings,
-    log: Callable[[str], None],
-    event_callback: AutoUvEventCallback | None,
-) -> tuple[VfCurveCandidate, VoltageProbeOutcome]:
-    require_probe_summary(failed_outcome)
-    recovery_candidate, recovery_outcome = find_upward_stable_baseline_candidate(
-        base_curve,
-        failed_candidate=failed_candidate,
-        minimum_candidate_voltage_mv=next_higher_editable_voltage_bin(
-            base_curve,
-            int(failed_candidate.voltage_mv),
-        ),
-        runner=runner,
-        clock_ceiling=gpu.clock_ceiling,
-        probe_history=probe_history,
-        discovery_summary=discovery_summary,
-        log=log,
-        tail_rise_bins=int(getattr(settings, "tail_rise_bins", 0)),
-    )
-    if recovery_candidate is None or recovery_outcome is None:
-        raise AutoUvError(
-            "baseline flattened curve failed and upward stabilization found no stable point"
-        )
-    return recovery_candidate, recovery_outcome
-
-
 def adjust_baseline_to_measured_clock(
     base_curve: list[dict],
     *,
@@ -784,19 +702,22 @@ def write_verified_candidate(
     discovery_summary: AutoUvProbeSummary,
     tail_rise_bins: int = 0,
 ) -> None:
+    effective_tail_rise_bins = int(
+        candidate.metadata.get("tail_rise_bins", tail_rise_bins)
+    )
     write_latest_verified_candidate(
         plan=candidate.flattened_plan,
         lock_clock_mhz=int(candidate.target_mhz),
         voltage_mv=int(candidate.voltage_mv),
         probe=probe,
         base_probe=discovery_summary,
-        tail_rise_bins=int(tail_rise_bins),
+        tail_rise_bins=int(effective_tail_rise_bins),
     )
 
 
 def require_probe_summary(outcome: VoltageProbeOutcome) -> AutoUvProbeSummary:
     if outcome.raw_probe is None:
-        raise AutoUvError("Auto-UV3 probe outcome did not include a probe summary")
+        raise AutoUvError("Auto-UV probe outcome did not include a probe summary")
     return outcome.raw_probe
 
 
@@ -813,15 +734,3 @@ def tail_ceiling_for_plan(
         lock_voltage_mv=int(lock_voltage_mv),
     )
     return int(target.get("ceiling_clock_mhz", target["lock_clock_mhz"]))
-
-
-def min_search_voltage_mv(*, start_voltage_mv: int, configured_max_drop_pct: float) -> int:
-    return max(
-        0,
-        int(
-            round(
-                float(start_voltage_mv)
-                * (1.0 - (float(configured_max_drop_pct) / 100.0))
-            )
-        ),
-    )

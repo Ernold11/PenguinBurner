@@ -75,7 +75,7 @@ Afterburner alike curve editor in Linux, fully manual with all the shortcuts bel
 Before a scan starts, the Performance bias slider lets you decide what kind of
 undervolt PenguinBurner should search for. Move it toward **Efficiency** for the
 lowest practical power draw, or toward **Performance** when you want the scan to
-recover more clock and prioritize keeping or improving FPS.
+preserve more clock and prioritize keeping or improving FPS.
 
 ## MSI Afterburner Import
 
@@ -110,6 +110,12 @@ C:\Program Files (x86)\MSI Afterburner
 ```
 
 ## Acknowledgements
+
+Additional thanks:
+
+- NVIDIA: For the amazing graphics technology, that unfortunately lacks some features and polish on Linux.
+- Qt Project: For the excellent Qt6 UI.
+- Codex GPT 5.5 (Open AI): This project was implemented fully with AI based on human driven ideas and reverse engineering.
 
 Special thanks to the [LACT project](https://github.com/ilya-zlobintsev/LACT) and to Ilya Zlobintsev for pushing Linux NVIDIA tuning forward.
 

@@ -1,4 +1,4 @@
-"""Translate one Auto-UV3 voltage probe into the JSON events the UI table expects.
+"""Translate one Auto-UV voltage probe into the JSON events the UI table expects.
 
 The scan emits these events around Q2RTX/CUDA probes so the UI can create a row,
 stream live telemetry into it, then replace it with the final measured result.

@@ -107,7 +107,7 @@ def run_auto_uv_voltage_scan(
     except RuntimeError as exc:
         raise NvmlError(str(exc)) from exc
 
-    deps.log("Auto-UV3: running the voltage-frequency undervolt main loop.")
+    deps.log("Auto-UV: running the voltage-frequency undervolt main loop.")
     result = deps.run_voltage_frequency_undervolt_main_loop(
         gpu_index=gpu_index,
         runtime_options=afterburner_runtime_options,

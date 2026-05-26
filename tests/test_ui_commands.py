@@ -112,6 +112,7 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     command = commands.scan_command(
         {
             "auto_uv_mode": "performance",
+            "auto_uv_min_voltage_mv": 850,
             "auto_uv_max_drop_pct": 16.0,
             "auto_uv_max_clock_drop_pct": 10.0,
             "auto_uv_memory_offset_mhz": 500,
@@ -123,6 +124,8 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
 
     assert "--auto-uv-mode" in command
     assert command[command.index("--auto-uv-mode") + 1] == "performance"
+    assert "--auto-uv-min-voltage-mv" in command
+    assert command[command.index("--auto-uv-min-voltage-mv") + 1] == "850"
     assert "--auto-uv-max-drop-pct" in command
     assert command[command.index("--auto-uv-max-drop-pct") + 1] == "16"
     assert "--auto-uv-max-clock-drop-pct" in command
@@ -131,7 +134,6 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert command[command.index("--auto-oc-target-voltage-mv") + 1] == "925"
     assert "--auto-oc-target-clock-mhz" in command
     assert command[command.index("--auto-oc-target-clock-mhz") + 1] == "2670"
-    assert "--auto-uv-oc-budget-ratio" not in command
     assert "--yolo" not in command
     assert "--auto-uv-efficiency-stop-streak" not in command
     assert "--auto-uv-min-efficiency-stop-drop-pct" not in command
@@ -139,8 +141,6 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert command[command.index("--auto-uv-memory-offset-mhz") + 1] == "500"
     assert "--auto-uv-tail-rise-bins" in command
     assert command[command.index("--auto-uv-tail-rise-bins") + 1] == "2"
-    assert "--auto-uv-performance-clock-ceiling-mhz" not in command
-    assert "--auto-uv-performance-voltage-ceiling-mv" not in command
 
 
 def test_ui_scan_command_includes_auto_filled_auto_uv_max_drop(
@@ -166,12 +166,9 @@ def test_auto_uv_short_verification_defaults_to_10_seconds() -> None:
     assert _short_probe_base_duration_s({}) == 10
 
 
-def test_gui_auto_uv3_argument_is_hidden_from_qt_args() -> None:
-    qt_args, auto_uv = _parse_gui_args(
-        ["penguin-burner-ui", "--auto-uv3", "--style", "Fusion"]
-    )
+def test_gui_new_ui_argument_is_hidden_from_qt_args() -> None:
+    qt_args = _parse_gui_args(["penguin-burner-ui", "--new-ui", "--style", "Fusion"])
 
-    assert auto_uv is True
     assert qt_args == ["penguin-burner-ui", "--style", "Fusion"]
 
 
@@ -789,7 +786,7 @@ def test_auto_uv_voltage_drop_default_falls_back_to_generic_when_unmatched() -> 
     assert preview.floor_voltage_mv == 900
 
 
-def test_auto_uv_voltage_drop_default_uses_conservative_3080_override() -> None:
+def test_auto_uv_voltage_drop_default_uses_generic_for_unlisted_3080() -> None:
     preview = _auto_uv_voltage_drop_default(gpu_name="NVIDIA GeForce RTX 3080")
 
     assert preview.preset_matched is False
@@ -1165,6 +1162,9 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
     assert "Base verification length" not in source
     assert '"auto_uv_short_seconds"' not in source
     assert "Allow up to 10% max efficiency clock drop" in source
+    assert "Min voltage" in source
+    assert "sync_voltage_floor_from_drop" not in source
+    assert "sync_voltage_drop_from_floor" not in source
     assert "Try to maintain baseline clock" in source
     assert "AUTO_UV_PRESET_EFFICIENCY" in source
     assert "QStackedWidget" in source
@@ -1178,7 +1178,8 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
     assert "auto_uv_performance_target_text" not in source
     assert '"auto_oc_target_voltage_mv"' in source
     assert '"auto_oc_target_clock_mhz"' in source
-    assert '"auto_uv_max_drop_pct"' in source
+    assert '"auto_uv_min_voltage_mv"' in source
+    assert '"auto_uv_max_drop_pct"' not in source
     assert '"auto_uv_tail_rise_bins": int(preset.tail_rise_bins)' in source
     assert "Core ceiling MHz" not in source
     assert "Voltage ceiling mV" not in source
@@ -1191,8 +1192,11 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
 def test_advanced_tuning_group_has_breathing_room() -> None:
     assert "QGroupBox#advancedTuningGroup" in STYLESHEET
     assert "margin-top: 12px;" in STYLESHEET
+    assert "QGroupBox#autoUvPresetGroup {\n    margin-top: 6px;" in STYLESHEET
     source = Path("ui/dialogs/scan_tuning.py").read_text(encoding="utf-8")
     assert "layout.setContentsMargins(18, 16, 18, 16)" in source
+    assert "layout.setSpacing(8)" in source
+    assert "preset_layout.setContentsMargins(14, 18, 14, 12)" in source
     assert "advanced_layout.setContentsMargins(18, 28, 18, 16)" in source
     assert "form.setHorizontalSpacing(24)" in source
     assert "form.setVerticalSpacing(10)" in source
@@ -1201,7 +1205,6 @@ def test_advanced_tuning_group_has_breathing_room() -> None:
     assert "dialog.adjustSize()" not in source
     assert "dialog.setFixedSize" not in source
     assert "label_layout.setContentsMargins(0, 2, 12, 2)" in source
-
 
 def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -> None:
     import os

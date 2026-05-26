@@ -19,6 +19,7 @@ class ScanRuntimeSettings:
     final_clock_drop_margin_pct: float
     min_performance_core_clock_pct: float
     preserve_base_below_mv: int | None
+    configured_min_voltage_mv: int | None
     configured_max_drop_pct: float
     final_verification_duration_s: int
     short_probe_base_duration_s: int
@@ -53,6 +54,9 @@ def read_scan_runtime_settings(
         final_clock_drop_margin_pct=float(final_clock_drop_margin_pct),
         min_performance_core_clock_pct=float(min_performance_core_clock_pct),
         preserve_base_below_mv=preserve_base_below_mv,
+        configured_min_voltage_mv=optional_int(
+            runtime_options.get("auto_uv_min_voltage_mv")
+        ),
         configured_max_drop_pct=float(configured_max_drop_pct),
         final_verification_duration_s=final_verification_duration_s(runtime_options),
         short_probe_base_duration_s=short_probe_base_duration_s(runtime_options),

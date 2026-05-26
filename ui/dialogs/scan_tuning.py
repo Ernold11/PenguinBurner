@@ -29,7 +29,7 @@ def select_scan_tuning(
     dialog.setWindowTitle("Automatic undervolt behavior")
     layout = QtWidgets.QVBoxLayout(dialog)
     layout.setContentsMargins(18, 16, 18, 16)
-    layout.setSpacing(12)
+    layout.setSpacing(8)
 
     purpose = QtWidgets.QLabel(GPU_UNDERVOLTING_PURPOSE_TEXT)
     purpose.setObjectName("purposeText")
@@ -42,7 +42,7 @@ def select_scan_tuning(
     preset_group = QtWidgets.QGroupBox("Auto-UV preset")
     preset_group.setObjectName("autoUvPresetGroup")
     preset_layout = QtWidgets.QHBoxLayout(preset_group)
-    preset_layout.setContentsMargins(14, 24, 14, 14)
+    preset_layout.setContentsMargins(14, 18, 14, 12)
     preset_layout.setSpacing(12)
     preset_layout.addWidget(
         _bias_icon(
@@ -118,6 +118,14 @@ def select_scan_tuning(
         DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT,
         "%",
     )
+    voltage_floor_spin = QtWidgets.QSpinBox()
+    voltage_floor_spin.setRange(700, 1250)
+    voltage_floor_spin.setSuffix(" mV")
+    voltage_floor_spin.setSingleStep(5)
+    voltage_floor_spin.setFixedWidth(136)
+    voltage_floor_spin.setValue(
+        int(getattr(voltage_drop_default, "floor_voltage_mv", None) or 850)
+    )
     memory_offset_spin = QtWidgets.QSpinBox()
     memory_min_mhz, memory_max_mhz = memory_offset_mhz_range()
     memory_offset_spin.setRange(memory_min_mhz, memory_max_mhz)
@@ -127,6 +135,18 @@ def select_scan_tuning(
     efficiency_page = QtWidgets.QWidget()
     efficiency_form = _advanced_form_layout(QtCore=QtCore, QtWidgets=QtWidgets)
     efficiency_page.setLayout(efficiency_form)
+    _add_form_row(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        form_layout=efficiency_form,
+        text="Min voltage",
+        widget=voltage_floor_spin,
+        tooltip=(
+            "Lowest V/F voltage bin Auto-UV may try in Efficiency. The default "
+            "comes from PenguinBurner's GPU table when detected; unknown GPUs "
+            "use a 10% fallback from the reference voltage."
+        ),
+    )
     _add_form_row(
         QtCore=QtCore,
         QtWidgets=QtWidgets,
@@ -255,11 +275,12 @@ def select_scan_tuning(
     preset = auto_uv_preset(preset_id)
     options = {
         "auto_uv_mode": preset.auto_uv_mode,
-        "auto_uv_max_drop_pct": float(voltage_drop_default.value_pct),
         "auto_uv_max_clock_drop_pct": float(max_clock_drop_spin.value()),
         "auto_uv_memory_offset_mhz": int(memory_offset_spin.value()),
         "auto_uv_tail_rise_bins": int(preset.tail_rise_bins),
     }
+    if preset.preset_id == AUTO_UV_PRESET_EFFICIENCY:
+        options["auto_uv_min_voltage_mv"] = int(voltage_floor_spin.value())
     if preset.preset_id == AUTO_UV_PRESET_PERFORMANCE:
         options.update(
             {

@@ -1,6 +1,6 @@
 """Persist each candidate that passed the short stability probe.
 
-The latest file feeds recovery and the candidate list feeds the final-choice UI.
+The latest file feeds resume handoff and the candidate list feeds the final-choice UI.
 """
 
 from __future__ import annotations

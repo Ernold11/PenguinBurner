@@ -1,4 +1,4 @@
-"""Validate that the base V/F curve is safe enough for Auto-UV3 to edit.
+"""Validate that the base V/F curve is safe enough for Auto-UV to edit.
 
 The scan should fail before touching the GPU if editable voltage bins are missing or malformed.
 """

@@ -127,7 +127,7 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     assert "auto_oc" in packages
     assert "cli" in packages
     assert "initial_check" in packages
-    assert "auto_uv.recovery" in packages
+    assert "auto_uv.efficiency_tune" in packages
     assert "auto_uv.scan_mode" in packages
     assert "auto_uv.final_verification" in packages
     assert "manual_fan_curve_editor" in packages

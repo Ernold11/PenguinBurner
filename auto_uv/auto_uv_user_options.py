@@ -8,9 +8,10 @@ class AutoUvDefaults:
     probe_duration_s: int = 10
     shape_probe_duration_s: int = 10
     final_duration_s: int = 600
-    max_drop_pct: float = 16.0
+    max_drop_pct: float = 10.0
     efficiency_stop_streak: int = 2
     tail_rise_bins: int = 0
+    balanced_tail_rise_bins: int = 4
     performance_tail_rise_bins: int = 6
     max_tail_rise_bins: int = 8
 

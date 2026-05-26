@@ -174,7 +174,7 @@ def test_auto_uv_foreground_command_logs_discarded_final_choice() -> None:
     )
 
     assert logs == [
-        "Auto-UV3: running the voltage-frequency undervolt main loop.",
+        "Auto-UV: running the voltage-frequency undervolt main loop.",
         "discarded",
     ]
 

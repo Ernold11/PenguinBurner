@@ -42,4 +42,4 @@ Highlights:
   maximize FPS, especially on older GPUs.
 - Manual silent fan curve editor with single-degree temperature and RPM-level
   tuning.
-- Safer performance-biased Auto-UV recovery after instability.
+- Safer performance-biased Auto-UV handling after instability.

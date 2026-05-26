@@ -1,6 +1,6 @@
-"""Run one live Q2RTX/CUDA probe for an Auto-UV3 curve candidate.
+"""Run one live Q2RTX/CUDA probe for an Auto-UV curve candidate.
 
-It converts the raw workload result into the strict Auto-UV3 stability decision.
+It converts the raw workload result into the strict Auto-UV stability decision.
 """
 
 from __future__ import annotations
@@ -182,6 +182,9 @@ class Q2RtxCudaProbeRunner:
         q2rtx_config: Q2RTXStabilityConfig | None = None,
     ) -> VoltageProbeOutcome:
         baseline_probe = stable_history[0] if stable_history else None
+        baseline_core_clock_mhz = self.baseline_clock_mhz
+        if baseline_core_clock_mhz is None and baseline_probe is not None:
+            baseline_core_clock_mhz = baseline_probe.avg_core_clock_mhz
         effective_config = q2rtx_config or self.q2rtx_config
         cuda_required = bool(getattr(effective_config, "companion_command", None))
         decision = evaluate_stable_run(
@@ -204,9 +207,8 @@ class Q2RtxCudaProbeRunner:
                 else None
             ),
             baseline_core_clock_mhz=(
-                float(baseline_probe.avg_core_clock_mhz)
-                if baseline_probe is not None
-                and baseline_probe.avg_core_clock_mhz is not None
+                float(baseline_core_clock_mhz)
+                if baseline_core_clock_mhz is not None
                 else None
             ),
             power_limit_w=self.power_limit_w,

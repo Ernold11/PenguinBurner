@@ -49,13 +49,6 @@ def parse_arguments(argv):
         ),
     )
     auto_uv_group.add_argument(
-        "--auto-uv3",
-        action="store_true",
-        help=(
-            "Use the Auto-UV3 voltage-frequency undervolt main loop."
-        ),
-    )
-    auto_uv_group.add_argument(
         "--json-events",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -109,14 +102,24 @@ def parse_arguments(argv):
         ),
     )
     auto_uv_group.add_argument(
+        "--auto-uv-min-voltage-mv",
+        type=int,
+        default=None,
+        metavar="mV",
+        help=(
+            "Lowest voltage bin Auto-UV may try. Overrides the detected GPU "
+            "table floor and the percentage-drop fallback."
+        ),
+    )
+    auto_uv_group.add_argument(
         "--auto-uv-max-drop-pct",
         type=float,
         default=None,
         metavar="N",
         help=(
             "Maximum percentage drop below the first discovered auto-UV start "
-            "voltage allowed during candidate search; default 16.0 for "
-            "efficiency, 14.0 for performance."
+            "voltage allowed during candidate search when no GPU table floor "
+            "or explicit min voltage is available; default 10.0."
         ),
     )
     auto_uv_group.add_argument(

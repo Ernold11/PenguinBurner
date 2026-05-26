@@ -83,13 +83,9 @@ def scan_command(auto_uv_options: Mapping[str, object] | None = None) -> list[st
         "--json-events",
         "--auto-uv-require-final-choice",
     ]
-    if bool((auto_uv_options or {}).get("auto_uv")) or os.environ.get(
-        "PENGUIN_BURNER_AUTO_UV3",
-        "",
-    ).strip() in {"1", "true", "yes", "on"}:
-        command.append("--auto-uv3")
     option_flags = {
         "auto_uv_mode": "--auto-uv-mode",
+        "auto_uv_min_voltage_mv": "--auto-uv-min-voltage-mv",
         "auto_uv_max_drop_pct": "--auto-uv-max-drop-pct",
         "auto_uv_max_clock_drop_pct": "--auto-uv-max-clock-drop-pct",
         "auto_uv_short_seconds": "--auto-uv-short-seconds",

@@ -16,7 +16,9 @@ from .scan_mode.efficiency_fps_per_w_policy import (
     decide_efficiency_stop,
     power_increased_while_efficiency_flat,
 )
+from .scan_mode import AUTO_UV_MODE_EFFICIENCY
 from .curve.flattened_voltage_probe_curve import build_flattened_voltage_probe_curve
+from .efficiency_tune import voltage_descent_candidate_policy
 from .lower_voltage_probe_target import (
     base_curve_target_for_lower_voltage,
     lower_voltage_phase,
@@ -94,6 +96,9 @@ def run_lower_voltage_sweep_loop(
             preserve_base_below_mv=settings.preserve_base_below_mv,
             min_search_voltage_mv=min_search_voltage_mv,
             failed_floor_voltage_mv=unsafe_floor_mv,
+        ),
+        stable_measured_target_mhz=measured_target_from_outcome(
+            initial_stable_outcome
         ),
     )
     stable_candidate = initial_stable_candidate
@@ -208,14 +213,17 @@ def build_next_lower_voltage_candidate(
     probe_history: list[VoltageProbeOutcome],
 ) -> tuple[VfCurveCandidate, VoltageSweepState]:
     assert state.next_voltage_mv is not None
-    measured_target_mhz = base_curve_target_for_lower_voltage(
-        base_curve,
-        candidate_voltage_mv=int(state.next_voltage_mv),
+    policy = voltage_descent_candidate_policy(
+        settings=settings,
         stable_target_mhz=int(state.stable_target_mhz),
-        stable_measured_target_mhz=state.stable_measured_target_mhz,
     )
     _ = probe_history
-    target_mhz = int(measured_target_mhz)
+    target_mhz = base_curve_target_for_lower_voltage(
+        base_curve,
+        candidate_voltage_mv=int(state.next_voltage_mv),
+        stable_target_mhz=int(policy.target_mhz),
+        stable_measured_target_mhz=state.stable_measured_target_mhz,
+    )
     phase = lower_voltage_phase(
         start_voltage_mv=int(settings.start_voltage_mv),
         candidate_voltage_mv=int(state.next_voltage_mv),
@@ -228,9 +236,19 @@ def build_next_lower_voltage_candidate(
             f"lower-voltage {int(state.next_voltage_mv)}mV "
             f"phase={phase}"
         ),
-        tail_rise_bins=int(settings.tail_rise_bins),
+        tail_rise_bins=int(policy.tail_rise_bins),
+        metadata={
+            "tail_rise_bins": int(policy.tail_rise_bins),
+            "target_policy": "hold-required-clock",
+        },
     )
     return candidate, state
+
+
+def measured_target_from_outcome(outcome: VoltageProbeOutcome | None) -> int | None:
+    if outcome is None or outcome.measured_core_clock_mhz is None:
+        return None
+    return int(outcome.measured_core_clock_mhz)
 
 
 def decide_efficiency_acceptance(
@@ -315,8 +333,7 @@ def decide_efficiency_acceptance(
 
 
 def efficiency_stop_enabled(settings: AutoUvScanSettings) -> bool:
-    _ = settings
-    return True
+    return str(settings.auto_uv_mode) == AUTO_UV_MODE_EFFICIENCY
 
 
 def select_current_efficiency_candidate(

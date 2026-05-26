@@ -595,7 +595,7 @@ def _row_state(payload: dict, *, running: bool) -> str:
         return "warning"
     if severity in {"critical", "unsafe"}:
         return "error"
-    if any(token in text for token in ("fail", "failed", "error", "crash", "stall", "timeout", "recover-upward")):
+    if any(token in text for token in ("fail", "failed", "error", "crash", "stall", "timeout")):
         return "error"
     if any(
         token in text
