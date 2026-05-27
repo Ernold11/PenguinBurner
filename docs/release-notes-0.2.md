@@ -22,7 +22,7 @@ version 0.2, and includes cbro33's memory OC offset consistency fix.
 
 - Package metadata is prepared for version 0.2.
 - GitHub release tag: `v0.2`.
-- Fedora COPR package version: `0.2-1`.
+- Fedora COPR package version: `0.2-2`.
 - Local wheel and source distributions should pass `twine check`.
 
 ## PyPI Release Summary

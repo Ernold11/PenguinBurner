@@ -1,6 +1,6 @@
 Name:           penguin-burner
 Version:        0.2
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
 %global debug_package %{nil}
@@ -74,6 +74,7 @@ Fusion.
     import_afterburner_vf_curve \
     nvidia_runtime_defaults \
     nvml_gpu_policy \
+    nvml_perf_cap_reason \
     penguin_burner \
     penguin_burner_errors \
     penguin_burner_paths \
@@ -104,6 +105,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Wed May 27 2026 PenguinBurner contributors <noreply@github.com> - 0.2-2
+- Include nvml_perf_cap_reason in the RPM Python file manifest.
+
 * Tue May 26 2026 PenguinBurner contributors <noreply@github.com> - 0.2-1
 - Revise Auto-UV profiles for the 0.2 major release.
 - Tune the Efficiency profile for the lowest stable voltage while retaining as much clock as possible.
