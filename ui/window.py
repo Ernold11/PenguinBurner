@@ -34,6 +34,7 @@ from .dialogs import select_verify_options
 from .dialogs import select_scan_tuning
 from .dialogs import show_about_dialog
 from .error_reporting import ErrorReporter
+from .gpu_selection import persist_runtime_gpu_index
 from .components.fan_curve_editor import open_fan_curve_editor_dialog
 from .components.vf_curve_editor import open_vf_curve_editor_dialog
 from .fan_profiles import fan_curve_points_from_payload
@@ -264,13 +265,21 @@ class MainWindow:
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
             parent=self.window,
+            gpu_index=self.gpu_index,
         )
         if options is None:
             return
+        try:
+            self.gpu_index = persist_runtime_gpu_index(options.get("gpu_index", 0))
+        except Exception as exc:
+            self.errors.show(
+                "GPU selection",
+                f"Could not save selected GPU index: {exc}",
+            )
+            return
+        options = {**options, "gpu_index": int(self.gpu_index)}
         if self.auto_uv_options:
             options = {**options, **self.auto_uv_options}
-        if self.gpu_index is not None:
-            options = {**options, "gpu_index": int(self.gpu_index)}
         command = scan_command(options)
         self.runs_table.clear()
         self.vf_plot.clear()

@@ -87,6 +87,7 @@ def test_effective_runtime_options_apply_cli_overrides_and_clamps(tmp_path) -> N
     assert effective["auto_oc_target_voltage_mv"] == 925
     assert effective["auto_oc_target_clock_mhz"] == 2670
     assert effective["auto_uv_efficiency_stop_streak"] == 0
+    assert effective["auto_uv_efficiency_stop_streak_explicit"] is True
     assert effective["auto_uv_min_efficiency_stop_drop_pct"] == 0.0
     assert effective["auto_uv_max_clock_drop_pct"] == 0.0
     assert effective["auto_uv_mode"] == "performance"

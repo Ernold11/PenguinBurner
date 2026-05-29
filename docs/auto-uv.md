@@ -82,7 +82,7 @@ power, and temperature-normalized FPS per watt.
 
 - If requested voltage went down but measured loaded voltage did not go down, PenguinBurner assumes the NVIDIA driver ignored that step and keeps probing lower.
 - If measured loaded voltage went down, temperature-normalized power went up, and temperature-normalized FPS per watt did not improve by at least `1.0%`, PenguinBurner treats that as a regression/no-gain step.
-- By default, Auto-UV requires two confirmed regression/no-gain steps before FPS/W can stop the scan. To require a different confirmation count, use `--auto-uv-efficiency-stop-streak`.
+- By default, Auto-UV derives the regression/no-gain confirmation count from baseline FPS variance: below `2%` run-to-run variance uses `2`, while `2%` or higher uses `4`. To require a fixed confirmation count, use `--auto-uv-efficiency-stop-streak`.
 - Auto-UV will not stop early from FPS/W regression/no-gain until it has scanned at least `10%` below the starting voltage by default. To change that floor, use `--auto-uv-min-efficiency-stop-drop-pct`.
 - The loaded core-clock floor remains a safety guardrail; Auto-UV does not force the scan down to that floor just to stop on marginal FPS/W gains.
 - If the next probe improves again, the stop streak is cleared and scanning continues.
@@ -103,8 +103,9 @@ Measured voltage is read through the Linux NVAPI voltage query automatically.
 There is no opt-in flag. If voltage telemetry is unavailable on a driver or GPU,
 PenguinBurner prints `n/a` and relies on the remaining safety checks.
 
-The default efficiency guardrail allows up to a `10%` loaded GPU core clock
-drop. If you want a looser efficiency clock-drop allowance, for example `12%`, run:
+The default efficiency guardrail uses the GPU table's Eco-to-Max clock ratio as
+the loaded core-clock drop allowance. Unknown GPUs use `12.5%`. To force a
+specific allowance, for example `12%`, run:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-max-clock-drop-pct 12
@@ -116,7 +117,7 @@ The three main aggressiveness options are:
   fallback default `10.0` when no GPU table floor or explicit mV floor exists.
 - `--auto-uv-min-voltage-mv N`: explicit lowest voltage bin Auto-UV may try;
   overrides the GPU table floor.
-- `--auto-uv-max-clock-drop-pct N`: allowed loaded-clock loss; default `10.0`.
+- `--auto-uv-max-clock-drop-pct N`: allowed loaded-clock loss; default is the detected GPU table's Eco-to-Max clock ratio, or `12.5` for unknown GPUs.
 - `--auto-uv-tail-rise-bins N`: number of V/F bins above the lock point that
   may rise after the flattened target. A value of `0` keeps the post-lock curve
   flat. If you explicitly combine `--auto-uv-tail-rise-bins 0` with an explicit
@@ -130,6 +131,11 @@ The three main aggressiveness options are:
   including control, telemetry, Q2RTX render binding, CUDA load, verification,
   and runtime profile application. Use this on multi-GPU systems when the
   display-attached card is not GPU `0`.
+
+The GUI exposes the same choice in the Auto-UV tuning modal. The dropdown lists
+detected NVIDIA cards as `GPU N - name (PCI bus)`, still shows the single card
+when only one is present, and saves the selected value to `[gpu].index` before
+the scan starts.
 
 Performance example:
 

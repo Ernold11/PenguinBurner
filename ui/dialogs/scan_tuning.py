@@ -5,7 +5,6 @@ import html
 from ..assets import asset_image_path
 from ..tuning import AUTO_UV_PRESET_EFFICIENCY
 from ..tuning import AUTO_UV_PRESET_PERFORMANCE
-from ..tuning import DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT
 from ..tuning import DEFAULT_AUTO_UV_PRESET
 from ..tuning import GPU_UNDERVOLTING_PURPOSE_TEXT
 from ..tuning import auto_uv_preset
@@ -13,8 +12,10 @@ from ..tuning import auto_uv_performance_preset_label
 from ..tuning import auto_uv_performance_target_default
 from ..tuning import auto_uv_performance_preset_tooltip
 from ..tuning import auto_uv_presets
+from ..tuning import auto_uv_clock_drop_default
 from ..tuning import auto_uv_voltage_drop_default
 from ..tuning import memory_offset_mhz_range
+from ..gpu_selection import gpu_choices_with_fallback
 from .error_details import qt_flags
 
 
@@ -24,6 +25,7 @@ def select_scan_tuning(
     QtGui,
     QtWidgets,
     parent,
+    gpu_index: int | None = None,
 ) -> dict | None:
     dialog = QtWidgets.QDialog(parent)
     dialog.setWindowTitle("Automatic undervolt behavior")
@@ -37,7 +39,42 @@ def select_scan_tuning(
     purpose.setContentsMargins(0, 0, 0, 0)
     purpose.setAlignment(qt_flags(QtCore.Qt, "AlignmentFlag", "AlignLeft", "AlignTop"))
 
-    voltage_drop_default = auto_uv_voltage_drop_default()
+    gpu_choices, selected_gpu_index = gpu_choices_with_fallback(
+        selected_index=gpu_index
+    )
+    voltage_drop_default = auto_uv_voltage_drop_default(gpu_index=selected_gpu_index)
+    clock_drop_default = auto_uv_clock_drop_default(gpu_index=selected_gpu_index)
+    gpu_combo = QtWidgets.QComboBox()
+    gpu_combo.setObjectName("gpuSelector")
+    gpu_combo.setMinimumWidth(360)
+    size_adjust_policy = getattr(
+        getattr(QtWidgets.QComboBox, "SizeAdjustPolicy", QtWidgets.QComboBox),
+        "AdjustToContents",
+    )
+    gpu_combo.setSizeAdjustPolicy(size_adjust_policy)
+    for choice in gpu_choices:
+        gpu_combo.addItem(choice.label, int(choice.index))
+    selected_combo_index = _gpu_combo_index(gpu_combo, selected_gpu_index)
+    if selected_combo_index >= 0:
+        gpu_combo.setCurrentIndex(selected_combo_index)
+
+    gpu_group = QtWidgets.QGroupBox("GPU")
+    gpu_group.setObjectName("gpuSelectionGroup")
+    gpu_layout = _advanced_form_layout(QtCore=QtCore, QtWidgets=QtWidgets)
+    gpu_layout.setContentsMargins(14, 18, 14, 12)
+    gpu_group.setLayout(gpu_layout)
+    _add_form_row(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        form_layout=gpu_layout,
+        text="Graphics card",
+        widget=gpu_combo,
+        tooltip=(
+            "Select the NVIDIA GPU PenguinBurner should use for the full "
+            "Auto-UV scan, Q2RTX stability workload, profile verification, "
+            "and runtime profile application."
+        ),
+    )
 
     preset_group = QtWidgets.QGroupBox("Auto-UV preset")
     preset_group.setObjectName("autoUvPresetGroup")
@@ -62,8 +99,8 @@ def select_scan_tuning(
     preset_buttons = {}
     preset_tooltips = {
         "efficiency": (
-            "Allow up to 10% max efficiency clock drop; prefer best "
-            "efficiency FPS per watt."
+            "Allow up to 15% max loaded clock drop; prefer best efficiency "
+            "FPS per watt."
         ),
         "balanced": (
             "Try to maintain baseline clock while lowering the voltage; "
@@ -115,7 +152,7 @@ def select_scan_tuning(
         QtWidgets,
         1.0,
         30.0,
-        DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT,
+        float(clock_drop_default.value_pct),
         "%",
     )
     voltage_floor_spin = QtWidgets.QSpinBox()
@@ -147,19 +184,6 @@ def select_scan_tuning(
             "use a 10% fallback from the reference voltage."
         ),
     )
-    _add_form_row(
-        QtCore=QtCore,
-        QtWidgets=QtWidgets,
-        form_layout=efficiency_form,
-        text="Max efficiency clock drop",
-        widget=max_clock_drop_spin,
-        tooltip=(
-            "How much loaded frequency degradation Auto-UV may accept while "
-            "lowering voltage. Higher values allow deeper undervolts with more "
-            "performance loss. Changing this can result in instability; modify with care."
-        ),
-    )
-
     balanced_page = QtWidgets.QWidget()
     balanced_page.setLayout(_advanced_form_layout(QtCore=QtCore, QtWidgets=QtWidgets))
 
@@ -214,6 +238,18 @@ def select_scan_tuning(
         QtCore=QtCore,
         QtWidgets=QtWidgets,
         form_layout=common_form,
+        text="Max loaded clock drop",
+        widget=max_clock_drop_spin,
+        tooltip=(
+            "How much loaded core-clock degradation Auto-UV may accept. The "
+            "default comes from the GPU table's Eco-to-Max clock ratio when "
+            "detected; unknown GPUs use a generic fallback."
+        ),
+    )
+    _add_form_row(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        form_layout=common_form,
         text="Memory Offset MHz",
         widget=memory_offset_spin,
         tooltip=(
@@ -258,6 +294,7 @@ def select_scan_tuning(
     start_button.setDefault(True)
 
     layout.addWidget(purpose)
+    layout.addWidget(gpu_group)
     layout.addWidget(preset_group)
     layout.addWidget(advanced_group)
     layout.addWidget(buttons)
@@ -274,6 +311,7 @@ def select_scan_tuning(
     )
     preset = auto_uv_preset(preset_id)
     options = {
+        "gpu_index": _selected_gpu_index(gpu_combo, selected_gpu_index),
         "auto_uv_mode": preset.auto_uv_mode,
         "auto_uv_max_clock_drop_pct": float(max_clock_drop_spin.value()),
         "auto_uv_memory_offset_mhz": int(memory_offset_spin.value()),
@@ -290,6 +328,23 @@ def select_scan_tuning(
             }
         )
     return options
+
+
+def _gpu_combo_index(gpu_combo, gpu_index: int) -> int:
+    for index in range(gpu_combo.count()):
+        try:
+            if int(gpu_combo.itemData(index)) == int(gpu_index):
+                return index
+        except (TypeError, ValueError):
+            continue
+    return -1
+
+
+def _selected_gpu_index(gpu_combo, fallback: int) -> int:
+    try:
+        return max(0, int(gpu_combo.currentData()))
+    except (TypeError, ValueError):
+        return max(0, int(fallback))
 
 
 def _bias_icon(*, QtCore, QtGui, QtWidgets, filename: str, tooltip: str):

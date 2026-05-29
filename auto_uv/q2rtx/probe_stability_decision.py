@@ -15,7 +15,7 @@ class StabilityThresholds:
     min_average_fps_pct: float = 90.0
     min_single_run_fps_pct: float = 80.0
     min_power_pct: float = 50.0
-    min_core_clock_pct: float = 90.0
+    min_core_clock_pct: float = 85.0
     clock_tolerance_mhz: float = 5.0
     busy_gpu_util_pct: float = 60.0
 

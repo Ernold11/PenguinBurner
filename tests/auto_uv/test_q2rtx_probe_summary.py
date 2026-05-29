@@ -94,6 +94,40 @@ def test_probe_summary_records_loaded_median_and_p90_diagnostics() -> None:
     assert metrics["perf_cap_reason"] == "sw-power+hw-thermal"
 
 
+def test_probe_summary_records_run_to_run_fps_variance() -> None:
+    result = SimpleNamespace(
+        timedemo_runs=[
+            SimpleNamespace(frames=1000, seconds=10.0, fps=100.0),
+            SimpleNamespace(frames=1020, seconds=10.0, fps=102.0),
+            SimpleNamespace(frames=980, seconds=10.0, fps=98.0),
+        ],
+        telemetry_samples=[
+            {"elapsed_s": 6.0, "power_w": 180.0, "core_clock_mhz": 2200.0}
+        ],
+        companion_telemetry_samples=[],
+        telemetry_summary=lambda: {"power_avg": 180.0, "core_clock_avg": 2200.0},
+        reason="ok",
+        log_path=Path("/tmp/q2rtx.log"),
+    )
+
+    summary = summarize_q2rtx_cuda_probe(
+        candidate_voltage_mv=900,
+        lock_clock_mhz=2200,
+        live_voltage_before_mv=900,
+        live_voltage_after_mv=900,
+        used_companion_load=False,
+        power_limit_w=None,
+        result=result,
+    )
+
+    assert summary.fps_stddev == pytest.approx(1.632993161855452)
+    assert summary.fps_variance_pct == pytest.approx(1.632993161855452)
+    assert probe_summary_ui_payload(summary, stage="probe")["fps_variance_pct"] == 1.63
+    assert probe_metrics(summary)["fps_variance_pct"] == pytest.approx(
+        1.632993161855452
+    )
+
+
 def test_loaded_perf_cap_reason_suppresses_idle_as_none() -> None:
     loaded_samples = [
         {"elapsed_s": 6.0, "power_w": 220.0, "perf_cap_reason": "idle"},

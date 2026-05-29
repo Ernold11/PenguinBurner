@@ -9,6 +9,7 @@ class AutoUvDefaults:
     shape_probe_duration_s: int = 10
     final_duration_s: int = 600
     max_drop_pct: float = 10.0
+    max_core_clock_drop_pct: float = 12.5
     efficiency_stop_streak: int = 2
     tail_rise_bins: int = 0
     balanced_tail_rise_bins: int = 4
@@ -42,10 +43,13 @@ class AutoUvMetricTuning:
     saturated_tail_power_pct: float = 90.0
     saturated_tail_core_clock_pct: float = 98.0
     saturated_tail_min_samples: int = 2
-    min_performance_core_clock_pct: float = 90.0
+    min_performance_core_clock_pct: float = 85.0
     min_proper_run_fps_pct: float = 90.0
     min_proper_run_fps_regression_streak: int = 2
     min_proper_run_power_pct: float = 50.0
+    efficiency_stop_high_fps_variance_pct: float = 2.0
+    efficiency_stop_low_variance_streak: int = 2
+    efficiency_stop_high_variance_streak: int = 4
     target_core_clock_low_streak_samples: int = 3
     power_saturation_headroom_pct: float = 2.0
     loaded_sample_power_floor_pct: float = 75.0

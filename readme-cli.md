@@ -35,6 +35,10 @@ Start the GUI:
 ~/.local/bin/penguin-burner
 ```
 
+Before Auto-UV starts, the GUI shows a GPU dropdown in the tuning modal. It
+lists detected NVIDIA cards as `GPU N - name (PCI bus)`, shows the single card
+when only one is present, and saves the selected index to `[gpu].index`.
+
 The short alias starts the same GUI:
 
 ```bash
@@ -79,8 +83,9 @@ What Auto-UV does:
 9. Run a final long verification, `600s` by default. If that long check fails, Auto-UV backs off to a safer voltage/curve and reruns the long verification; the final result is published only after the long verification completes.
 10. Return the GPU to the driver/default curve before the foreground scan exits. The saved curve is applied later by runtime or daemon mode.
 
-By default Auto-UV allows up to a `10%` loaded GPU core clock drop while
-searching. To use a looser `12%` clock-drop allowance:
+By default Auto-UV uses the GPU table's Eco-to-Max clock ratio as the loaded
+core-clock drop allowance. Unknown GPUs use `12.5%`. To force a `12%`
+clock-drop allowance:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-max-clock-drop-pct 12
@@ -291,7 +296,7 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--lact-gpu-id ID`: LACT GPU id for `--export-lact-config`; get it from `lact cli list-gpus`.
 - `--auto-uv-final-seconds N`: final verification duration after the best curve is selected; default `600`.
 - `--auto-uv-short-seconds N`: base Q2RTX verification length; default `10` seconds, allowed range `10..60`. Deeper voltage tiers use 2x and 3x this value, with a shorter CUDA companion check after Q2RTX.
-- `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default `10.0`.
+- `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default is the detected GPU table's Eco-to-Max clock ratio, or `12.5` for unknown GPUs.
 - `--auto-oc-target-voltage-mv N`: Performance Auto-OC voltage ceiling.
 - `--auto-oc-target-clock-mhz N`: Performance Auto-OC clock ceiling.
 - `--auto-uv-min-voltage-mv N`: lowest voltage bin Auto-UV may try; overrides the detected GPU table floor.
@@ -319,9 +324,9 @@ loaded-clock drop allowance, and Performance Auto-OC targets.
   floor. Higher values search deeper and can find lower power points, but they
   also spend more time near crash-prone voltage bins.
 - `--auto-uv-max-clock-drop-pct N` controls how much loaded core clock Auto-UV
-  may sacrifice while lowering voltage. The default `10.0` means the scan may
-  accept loaded clocks down to about `90%` of the initial measured loaded clock.
-  Lower values preserve more performance; higher values search deeper.
+  may sacrifice while lowering voltage. By default, known GPUs use the table
+  Eco-to-Max clock ratio and unknown GPUs use `12.5%`. Lower values preserve
+  more performance; higher values search deeper.
 - `--auto-uv-tail-rise-bins N` controls the rising tail after the flattened
   lock point. Higher values preserve more upper-curve headroom; `0` keeps the
   post-lock curve flat. When both `--auto-uv-tail-rise-bins 0` and
@@ -344,7 +349,9 @@ GPU selection:
   first `nvidia-smi` GPU may differ.
 - The Qt GUI accepts the same selection at launch with
   `penguin-burner-ui --gpu-index N` or `penguin-burner-ui --index N`. If no GUI
-  index is provided, the GUI reads `[gpu].index` from the runtime config.
+  index is provided, the GUI reads `[gpu].index` from the runtime config. The
+  Auto-UV tuning modal also includes a GPU dropdown and saves the selected GPU
+  index before starting the scan.
 
 Verification duration knobs:
 

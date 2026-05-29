@@ -132,7 +132,7 @@ def test_stability_reports_the_timedemo_run_that_missed_single_run_floor() -> No
 
 def test_stability_treats_loaded_low_clock_as_recoverable() -> None:
     decision = evaluate_stable_run(
-        stable_probe_result(clock_mhz=1800.0),
+        stable_probe_result(clock_mhz=1750.0),
         baseline_frames=1000,
         baseline_fps=100.0,
         baseline_power_w=180.0,

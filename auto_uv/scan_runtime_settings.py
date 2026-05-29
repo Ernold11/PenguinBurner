@@ -10,6 +10,7 @@ from .auto_uv_user_options import (
     AUTO_UV_DEFAULTS,
     AUTO_UV_METRIC_TUNING,
 )
+from .scan_mode.uv_limits import uv_limit_eco_to_max_clock_drop_pct_for_gpu
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +25,7 @@ class ScanRuntimeSettings:
     final_verification_duration_s: int
     short_probe_base_duration_s: int
     efficiency_stop_streak: int
+    derive_efficiency_stop_streak: bool
     min_efficiency_stop_voltage_drop_pct: float
     tail_rise_bins: int
     timedemo_warmup_runs: int
@@ -32,6 +34,7 @@ class ScanRuntimeSettings:
 def read_scan_runtime_settings(
     runtime_options: dict,
     q2rtx_config: Q2RTXStabilityConfig,
+    gpu_name: object | None = None,
 ) -> ScanRuntimeSettings:
     if q2rtx_config.timedemo_loops is None and int(q2rtx_config.duration_s) <= 0:
         raise AutoUvError(
@@ -39,7 +42,10 @@ def read_scan_runtime_settings(
         )
 
     auto_uv_mode = normalize_auto_uv_mode(runtime_options.get("auto_uv_mode"))
-    final_clock_drop_margin_pct = clock_drop_margin_pct(runtime_options)
+    final_clock_drop_margin_pct = clock_drop_margin_pct(
+        runtime_options,
+        gpu_name=gpu_name,
+    )
     min_performance_core_clock_pct = max(0.0, 100.0 - final_clock_drop_margin_pct)
     preserve_base_below_mv = optional_int(
         runtime_options.get(
@@ -61,6 +67,7 @@ def read_scan_runtime_settings(
         final_verification_duration_s=final_verification_duration_s(runtime_options),
         short_probe_base_duration_s=short_probe_base_duration_s(runtime_options),
         efficiency_stop_streak=efficiency_stop_streak(runtime_options),
+        derive_efficiency_stop_streak=derive_efficiency_stop_streak(runtime_options),
         min_efficiency_stop_voltage_drop_pct=min_efficiency_stop_voltage_drop_pct(
             runtime_options
         ),
@@ -69,10 +76,16 @@ def read_scan_runtime_settings(
     )
 
 
-def clock_drop_margin_pct(runtime_options: dict) -> float:
+def clock_drop_margin_pct(
+    runtime_options: dict,
+    *,
+    gpu_name: object | None = None,
+) -> float:
     value = runtime_options.get("auto_uv_max_clock_drop_pct")
     if value is None:
-        value = AUTO_UV_METRIC_TUNING.max_core_clock_drop_pct
+        value = uv_limit_eco_to_max_clock_drop_pct_for_gpu(gpu_name)
+    if value is None:
+        value = AUTO_UV_DEFAULTS.max_core_clock_drop_pct
     return max(0.0, min(100.0, float(value)))
 
 
@@ -105,6 +118,18 @@ def efficiency_stop_streak(runtime_options: dict) -> int:
     if value is None:
         value = AUTO_UV_DEFAULTS.efficiency_stop_streak
     return max(0, int(value))
+
+
+def derive_efficiency_stop_streak(runtime_options: dict) -> bool:
+    if bool(runtime_options.get("auto_uv_efficiency_stop_streak_explicit")):
+        return False
+    value = runtime_options.get("auto_uv_efficiency_stop_streak")
+    if value is None:
+        return True
+    try:
+        return int(value) == int(AUTO_UV_DEFAULTS.efficiency_stop_streak)
+    except (TypeError, ValueError):
+        return True
 
 
 def min_efficiency_stop_voltage_drop_pct(runtime_options: dict) -> float:

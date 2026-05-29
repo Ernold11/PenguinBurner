@@ -15,7 +15,7 @@ class AutoUvScanSettings:
     preserve_base_below_mv: int | None
     baseline_core_clock_mhz: float | None
     auto_uv_mode: str = "efficiency"
-    min_core_clock_pct: float = 90.0
+    min_core_clock_pct: float = 85.0
     reference_actual_voltage_mv: float | None = None
     efficiency_stop_streak: int = 2
     min_efficiency_stop_voltage_drop_pct: float = 10.0

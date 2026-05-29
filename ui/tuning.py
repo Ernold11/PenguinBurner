@@ -9,6 +9,7 @@ from auto_uv.scan_mode import AUTO_UV_MODE_EFFICIENCY
 from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE
 from auto_uv.scan_mode.uv_limits import (
     AUTO_UV_PERFORMANCE_OC_PROFILE_ID,
+    uv_limit_eco_to_max_clock_drop_pct_for_gpu,
     uv_limit_profile_target_for_gpu,
     uv_limit_voltage_floor_target_for_gpu,
     voltage_drop_pct,
@@ -20,7 +21,7 @@ DEFAULT_SHORT_VERIFICATION_BASE_S = 10
 DEFAULT_AUTO_UV_MAX_DROP_PCT = AUTO_UV_DEFAULTS.max_drop_pct
 GENERIC_AUTO_UV_MAX_DROP_PCT = DEFAULT_AUTO_UV_MAX_DROP_PCT
 AUTO_UV_DROP_REFERENCE_VOLTAGE_MV = 1000
-DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT = 10.0
+DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT = AUTO_UV_DEFAULTS.max_core_clock_drop_pct
 DEFAULT_AUTO_UV_TAIL_RISE_BINS = 0
 DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.balanced_tail_rise_bins
 DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.performance_tail_rise_bins
@@ -56,6 +57,14 @@ class AutoUvPerformanceTargetDefault:
     voltage_mv: int | None
     clock_mhz: int | None
     profile_id: str
+    preset_matched: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AutoUvClockDropDefault:
+    value_pct: float
+    gpu_name: str | None
+    gpu_family: str | None
     preset_matched: bool
 
 
@@ -135,6 +144,29 @@ def auto_uv_voltage_drop_default(
         gpu_family=str(target.gpu_family),
         floor_voltage_mv=int(target.voltage_mv),
         reference_voltage_mv=int(reference_voltage_mv),
+        preset_matched=True,
+    )
+
+
+def auto_uv_clock_drop_default(
+    *,
+    gpu_name: object | None = None,
+    gpu_index: int | None = None,
+) -> AutoUvClockDropDefault:
+    detected_name = str(gpu_name).strip() if gpu_name else _query_gpu_name(gpu_index)
+    value_pct = uv_limit_eco_to_max_clock_drop_pct_for_gpu(detected_name)
+    target = uv_limit_profile_target_for_gpu(detected_name, "eco")
+    if value_pct is None:
+        return AutoUvClockDropDefault(
+            value_pct=float(DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT),
+            gpu_name=detected_name or None,
+            gpu_family=None,
+            preset_matched=False,
+        )
+    return AutoUvClockDropDefault(
+        value_pct=float(value_pct),
+        gpu_name=detected_name or None,
+        gpu_family=str(target.gpu_family) if target is not None else None,
         preset_matched=True,
     )
 

@@ -87,7 +87,8 @@ def parse_arguments(argv):
         metavar="N",
         help=(
             "Maximum loaded GPU core clock drop allowed during Auto-UV; "
-            "default 10.0. Example: 12 allows up to a looser 12%% clock drop."
+            "default uses the GPU table Eco-to-Max clock ratio when detected, "
+            "otherwise 12.5. Example: 12 allows up to a 12%% clock drop."
         ),
     )
     auto_uv_group.add_argument(

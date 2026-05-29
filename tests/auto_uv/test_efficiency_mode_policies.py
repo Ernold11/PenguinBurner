@@ -5,6 +5,7 @@ import pytest
 from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
     compare_temperature_normalized_fps_per_w,
     decide_efficiency_stop,
+    derive_efficiency_stop_streak_from_fps_variance,
 )
 from auto_uv_test_data import probe_summary
 
@@ -66,3 +67,42 @@ def test_efficiency_stop_reverts_to_previous_curve_after_confirmed_wall() -> Non
     assert decision.should_stop
     assert not decision.use_current_curve
     assert decision.reason == "fps-per-watt wall reached"
+
+
+def test_efficiency_stop_streak_uses_two_confirmations_for_low_fps_variance() -> None:
+    decision = derive_efficiency_stop_streak_from_fps_variance(
+        {"fps_variance_pct": 1.2},
+        configured_streak=2,
+        derive=True,
+        high_variance_threshold_pct=2.0,
+        low_variance_streak=2,
+        high_variance_streak=4,
+    )
+
+    assert decision.value == 2
+    assert decision.source == "low-fps-variance"
+
+
+def test_efficiency_stop_streak_uses_four_confirmations_for_high_fps_variance() -> None:
+    decision = derive_efficiency_stop_streak_from_fps_variance(
+        {"fps_variance_pct": 2.1},
+        configured_streak=2,
+        derive=True,
+        high_variance_threshold_pct=2.0,
+        low_variance_streak=2,
+        high_variance_streak=4,
+    )
+
+    assert decision.value == 4
+    assert decision.source == "high-fps-variance"
+
+
+def test_efficiency_stop_streak_keeps_user_override() -> None:
+    decision = derive_efficiency_stop_streak_from_fps_variance(
+        {"fps_variance_pct": 3.0},
+        configured_streak=1,
+        derive=False,
+    )
+
+    assert decision.value == 1
+    assert decision.source == "user"

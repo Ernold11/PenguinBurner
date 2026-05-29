@@ -83,6 +83,8 @@ def build_effective_afterburner_runtime_options(args, stored_options: dict) -> d
                 runtime_options["auto_uv_min_voltage_mv_explicit"] = True
             if key == "auto_uv_tail_rise_bins":
                 runtime_options["auto_uv_tail_rise_bins_explicit"] = True
+            if key == "auto_uv_efficiency_stop_streak":
+                runtime_options["auto_uv_efficiency_stop_streak_explicit"] = True
 
     if args.auto_uv_mode is not None:
         requested_auto_uv_mode = str(args.auto_uv_mode).strip().lower()

@@ -54,6 +54,8 @@ class AutoUvProbeSummary:
     loaded_qualified_sample_count: int = 0
     observed_vdroop_mv: float | None = None
     perf_cap_reason: str | None = None
+    fps_stddev: float | None = None
+    fps_variance_pct: float | None = None
 
 
 @dataclass(slots=True)

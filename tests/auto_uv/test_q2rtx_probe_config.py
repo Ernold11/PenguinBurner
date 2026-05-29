@@ -112,12 +112,40 @@ def test_deeper_voltage_probe_extends_q2rtx_not_cuda() -> None:
 def test_scan_runtime_settings_do_not_precompute_timedemo_loops() -> None:
     source_config = Q2RTXStabilityConfig(duration_s=600, single_pass_timeout_s=999.0)
 
-    settings = read_scan_runtime_settings({}, source_config)
+    settings = read_scan_runtime_settings(
+        {},
+        source_config,
+        gpu_name="NVIDIA GeForce RTX 5080",
+    )
 
     assert settings.q2rtx_config is source_config
     assert settings.q2rtx_config.timedemo_loops is None
     assert settings.q2rtx_config.duration_s == 600
     assert settings.q2rtx_config.single_pass_timeout_s == 999.0
+    assert round(settings.final_clock_drop_margin_pct, 4) == 11.1111
+    assert round(settings.min_performance_core_clock_pct, 4) == 88.8889
+    assert settings.derive_efficiency_stop_streak is True
+
+
+def test_scan_runtime_settings_use_generic_clock_drop_for_unknown_gpu() -> None:
+    source_config = Q2RTXStabilityConfig(duration_s=600, single_pass_timeout_s=999.0)
+
+    settings = read_scan_runtime_settings({}, source_config)
+
+    assert settings.final_clock_drop_margin_pct == 12.5
+    assert settings.min_performance_core_clock_pct == 87.5
+
+
+def test_scan_runtime_settings_preserve_non_default_efficiency_stop_streak() -> None:
+    source_config = Q2RTXStabilityConfig(duration_s=600)
+
+    settings = read_scan_runtime_settings(
+        {"auto_uv_efficiency_stop_streak": 4},
+        source_config,
+    )
+
+    assert settings.efficiency_stop_streak == 4
+    assert settings.derive_efficiency_stop_streak is False
 
 
 def test_scan_runtime_tail_rise_defaults_follow_auto_uv_mode() -> None:

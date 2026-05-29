@@ -362,7 +362,7 @@ def test_auto_uv_final_choice_runs_before_final_verification(monkeypatch) -> Non
     monkeypatch.setattr(
         undervolt_main_loop,
         "read_scan_runtime_settings",
-        lambda runtime_options, q2rtx_config: SimpleNamespace(
+        lambda runtime_options, q2rtx_config, gpu_name=None: SimpleNamespace(
             q2rtx_config=q2rtx_config,
             auto_uv_mode="efficiency",
             timedemo_warmup_runs=0,
@@ -543,7 +543,7 @@ def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
     monkeypatch.setattr(
         undervolt_main_loop,
         "read_scan_runtime_settings",
-        lambda runtime_options, q2rtx_config: SimpleNamespace(
+        lambda runtime_options, q2rtx_config, gpu_name=None: SimpleNamespace(
             q2rtx_config=q2rtx_config,
             auto_uv_mode="performance",
             timedemo_warmup_runs=0,
@@ -680,7 +680,7 @@ def test_auto_uv_user_stop_offers_stable_history_for_final_choice(monkeypatch) -
     monkeypatch.setattr(
         undervolt_main_loop,
         "read_scan_runtime_settings",
-        lambda runtime_options, q2rtx_config: SimpleNamespace(
+        lambda runtime_options, q2rtx_config, gpu_name=None: SimpleNamespace(
             q2rtx_config=q2rtx_config,
             auto_uv_mode="performance",
             timedemo_warmup_runs=0,

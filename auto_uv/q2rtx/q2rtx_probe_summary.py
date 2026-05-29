@@ -31,6 +31,25 @@ def max_or_none(values: Sequence[float | int | None]) -> float | None:
     return max(usable) if usable else None
 
 
+def stddev_or_none(values: Sequence[float | int | None]) -> float | None:
+    usable = [float(value) for value in values if value is not None]
+    if len(usable) < 2:
+        return None
+    average = sum(usable) / len(usable)
+    variance = sum((value - average) ** 2 for value in usable) / len(usable)
+    return variance**0.5
+
+
+def stddev_pct_or_none(values: Sequence[float | int | None]) -> float | None:
+    average = mean(values)
+    if average in (None, 0.0):
+        return None
+    stddev = stddev_or_none(values)
+    if stddev is None:
+        return None
+    return float(stddev) / float(average) * 100.0
+
+
 def sample_mean(samples: list, attr: str) -> float | None:
     return mean(
         [
@@ -327,6 +346,8 @@ def summarize_q2rtx_cuda_probe(
         "voltage_mv",
     )
     avg_fps = mean(fps_values)
+    fps_stddev = stddev_or_none(fps_values)
+    fps_variance_pct = stddev_pct_or_none(fps_values)
     summary_power_w = loaded_power_w or telemetry.get("power_avg")
     summary_clock_mhz = loaded_clock_mhz or telemetry.get("core_clock_avg")
     observed_vdroop_mv = (
@@ -386,6 +407,8 @@ def summarize_q2rtx_cuda_probe(
         loaded_qualified_sample_count=int(loaded_qualified_sample_count),
         observed_vdroop_mv=observed_vdroop_mv,
         perf_cap_reason=perf_cap_reason,
+        fps_stddev=fps_stddev,
+        fps_variance_pct=fps_variance_pct,
     )
 
 

@@ -21,6 +21,68 @@ class EfficiencyStopDecision:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class EfficiencyStopStreakDefault:
+    value: int
+    source: str
+    fps_variance_pct: float | None
+    threshold_pct: float
+
+
+def derive_efficiency_stop_streak_from_fps_variance(
+    probe: Any | None,
+    *,
+    configured_streak: int,
+    derive: bool,
+    high_variance_threshold_pct: float = 2.0,
+    low_variance_streak: int = 2,
+    high_variance_streak: int = 4,
+) -> EfficiencyStopStreakDefault:
+    threshold = max(0.0, float(high_variance_threshold_pct))
+    configured = max(0, int(configured_streak))
+    if not bool(derive):
+        return EfficiencyStopStreakDefault(
+            configured,
+            "user",
+            fps_variance_pct(probe),
+            threshold,
+        )
+
+    variance_pct = fps_variance_pct(probe)
+    if variance_pct is None:
+        return EfficiencyStopStreakDefault(
+            configured,
+            "fallback",
+            None,
+            threshold,
+        )
+    if float(variance_pct) >= threshold:
+        return EfficiencyStopStreakDefault(
+            max(0, int(high_variance_streak)),
+            "high-fps-variance",
+            float(variance_pct),
+            threshold,
+        )
+    return EfficiencyStopStreakDefault(
+        max(0, int(low_variance_streak)),
+        "low-fps-variance",
+        float(variance_pct),
+        threshold,
+    )
+
+
+def fps_variance_pct(probe: Any | None) -> float | None:
+    if probe is None:
+        return None
+    value = read_field(probe, "fps_variance_pct")
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def compare_temperature_normalized_fps_per_w(
     previous_probe: Any | None,
     candidate_probe: Any | None,

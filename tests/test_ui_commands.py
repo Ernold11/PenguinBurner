@@ -45,6 +45,7 @@ from ui.tuning import (
     DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS,
     DEFAULT_AUTO_UV_TAIL_RISE_BINS,
     auto_uv_preset as _auto_uv_preset,
+    auto_uv_clock_drop_default as _auto_uv_clock_drop_default,
     auto_uv_performance_preset_label as _auto_uv_performance_preset_label,
     auto_uv_performance_target_default as _auto_uv_performance_target_default,
     auto_uv_performance_target_text as _auto_uv_performance_target_text,
@@ -758,7 +759,7 @@ def test_auto_uv_preset_defaults_and_gpu_table_default() -> None:
     assert DEFAULT_AUTO_UV_MAX_DROP_PCT == 10.0
     assert GENERIC_AUTO_UV_MAX_DROP_PCT == 10.0
     assert AUTO_UV_DROP_REFERENCE_VOLTAGE_MV == 1000
-    assert DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT == 10.0
+    assert DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT == 12.5
     assert DEFAULT_AUTO_UV_TAIL_RISE_BINS == 0
     assert DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS == 4
     assert DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS == 6
@@ -805,6 +806,21 @@ def test_auto_uv_voltage_drop_default_uses_detected_gpu_table_floor() -> None:
     assert preview.gpu_family == "RTX 5080"
     assert preview.floor_voltage_mv == 850
     assert preview.value_pct == pytest.approx(15.0)
+
+
+def test_auto_uv_clock_drop_default_uses_gpu_table_eco_to_max_ratio() -> None:
+    preview = _auto_uv_clock_drop_default(gpu_name="NVIDIA GeForce RTX 5080")
+
+    assert preview.preset_matched is True
+    assert preview.gpu_family == "RTX 5080"
+    assert preview.value_pct == pytest.approx(11.111111111111116)
+
+
+def test_auto_uv_clock_drop_default_falls_back_to_generic_when_unmatched() -> None:
+    preview = _auto_uv_clock_drop_default(gpu_name="NVIDIA GeForce GTX 1080")
+
+    assert preview.preset_matched is False
+    assert preview.value_pct == pytest.approx(12.5)
 
 
 def test_auto_uv_voltage_drop_default_falls_back_to_generic_when_unmatched() -> None:
@@ -1190,7 +1206,7 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
     assert "Max voltage drop" not in source
     assert "Base verification length" not in source
     assert '"auto_uv_short_seconds"' not in source
-    assert "Allow up to 10% max efficiency clock drop" in source
+    assert "Eco-to-Max clock ratio" in source
     assert "Min voltage" in source
     assert "sync_voltage_floor_from_drop" not in source
     assert "sync_voltage_drop_from_floor" not in source
@@ -1250,9 +1266,25 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_voltage_drop_default",
-        lambda: SimpleNamespace(
+        lambda gpu_index=None: SimpleNamespace(
             gpu_name="NVIDIA GeForce RTX 5080",
             value_pct=15.0,
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_clock_drop_default",
+        lambda gpu_index=None: SimpleNamespace(value_pct=11.1),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "gpu_choices_with_fallback",
+        lambda selected_index=None: (
+            [
+                SimpleNamespace(index=0, label="GPU 0 - NVIDIA GeForce RTX 4090"),
+                SimpleNamespace(index=1, label="GPU 1 - NVIDIA GeForce RTX 5090"),
+            ],
+            1 if selected_index is None else selected_index,
         ),
     )
     monkeypatch.setattr(
@@ -1266,11 +1298,22 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
         QtGui=QtGui,
         QtWidgets=QtWidgets,
         parent=None,
+        gpu_index=1,
     )
 
     dialog = dialogs[0]
     stack = dialog.findChild(QtWidgets.QStackedWidget)
+    gpu_combo = dialog.findChild(QtWidgets.QComboBox, "gpuSelector")
+    advanced_group = dialog.findChild(QtWidgets.QGroupBox, "advancedTuningGroup")
     assert dialog.minimumWidth() == 860
+    assert gpu_combo is not None
+    assert gpu_combo.count() == 2
+    assert gpu_combo.currentData() == 1
+    assert advanced_group is not None
+    advanced_labels = {
+        label.text() for label in advanced_group.findChildren(QtWidgets.QLabel)
+    }
+    assert "Max loaded clock drop" in advanced_labels
     assert stack is not None
     assert stack.count() == 3
     assert stack.minimumHeight() >= max(

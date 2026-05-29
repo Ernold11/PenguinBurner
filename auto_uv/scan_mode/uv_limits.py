@@ -116,6 +116,17 @@ def uv_limit_voltage_floor_target_for_gpu(
     return uv_limit_profile_target_for_gpu(gpu_name, "eco")
 
 
+def uv_limit_eco_to_max_clock_drop_pct_for_gpu(
+    gpu_name: object | None,
+) -> float | None:
+    eco = uv_limit_profile_target_for_gpu(gpu_name, "eco")
+    max_target = uv_limit_profile_target_for_gpu(gpu_name, "max")
+    if eco is None or max_target is None or int(max_target.clock_mhz) <= 0:
+        return None
+    drop_pct = 1.0 - (float(eco.clock_mhz) / float(max_target.clock_mhz))
+    return max(0.0, drop_pct * 100.0)
+
+
 def uv_limit_profile_target_for_gpu(
     gpu_name: object | None,
     profile_id: str,

@@ -36,6 +36,8 @@ def probe_summary_ui_payload(
         "cuda_measured_voltage_mv": _rounded(_read(probe, "cuda_avg_voltage_mv")),
         "used_companion_load": bool(_read(probe, "used_companion_load")),
         "fps": _rounded(_read(probe, "avg_fps")),
+        "fps_stddev": _rounded(_read(probe, "fps_stddev")),
+        "fps_variance_pct": _rounded(_read(probe, "fps_variance_pct")),
         "power_w": _rounded(_read(probe, "avg_power_w")),
         "temp_c": _rounded(_read(probe, "avg_temperature_c")),
         "fan_pct": _rounded(_read(probe, "avg_fan_speed_pct")),

@@ -19,7 +19,7 @@ from .auto_uv_types import (
 from .auto_uv_scan_settings import AutoUvScanSettings
 from .auto_uv_console_log import log_benchmark, log_phase, log_user_stage
 from .auto_uv_scan_result import build_voltage_scan_result
-from .auto_uv_user_options import AUTO_UV_DEFAULTS
+from .auto_uv_user_options import AUTO_UV_DEFAULTS, AUTO_UV_METRIC_TUNING
 from .curve.base_load_flatten_target import (
     choose_base_load_flatten_target,
     selected_nvidia_light_load_diagnostic,
@@ -48,6 +48,9 @@ from .q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
 from .q2rtx.q2rtx_cuda_voltage_probe import probe_voltage_candidate
 from .q2rtx.q2rtx_cuda_probe_config import reference_discovery_q2rtx_duration_s
 from .scan_runtime_settings import read_scan_runtime_settings
+from .scan_mode.efficiency_fps_per_w_policy import (
+    derive_efficiency_stop_streak_from_fps_variance,
+)
 from .ui.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
 from .persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
 from .persistence.verified_candidate_result_file import write_latest_verified_candidate
@@ -70,27 +73,31 @@ def run_voltage_frequency_undervolt_main_loop(
     log: Callable[[str], None] = print,
     event_callback: AutoUvEventCallback | None = None,
 ) -> AutoUvVoltageScanResult:
-    settings = read_scan_runtime_settings(runtime_options, q2rtx_config)
-    q2rtx_config = settings.q2rtx_config
-    timedemo_warmup_runs = int(settings.timedemo_warmup_runs)
-    tail_rise_bins = int(getattr(settings, "tail_rise_bins", 0))
-    descent_tail_rise_bins = int(voltage_descent_tail_rise_bins(settings))
-    efficiency_tail_tune_rise_bins = efficiency_tail_tune_tail_rise_bins(
-        runtime_options,
-        descent_tail_rise_bins=int(descent_tail_rise_bins),
-    )
-    enforce_descent_clock_floor = lower_voltage_descent_enforces_clock_floor(
-        runtime_options,
-        tail_rise_bins=int(descent_tail_rise_bins),
-    )
     unsafe_entries = consume_crash_cache(log=log)
-    cleanup_managed_q2rtx_processes(q2rtx_config, log=log)
     gpu = open_live_gpu_vf_curve_applier(
         gpu_index=int(gpu_index),
         runtime_options=runtime_options,
         log=log,
     )
     try:
+        settings = read_scan_runtime_settings(
+            runtime_options,
+            q2rtx_config,
+            gpu_name=gpu.translated_gpu_policy.get("gpu_name"),
+        )
+        q2rtx_config = settings.q2rtx_config
+        timedemo_warmup_runs = int(settings.timedemo_warmup_runs)
+        tail_rise_bins = int(getattr(settings, "tail_rise_bins", 0))
+        descent_tail_rise_bins = int(voltage_descent_tail_rise_bins(settings))
+        efficiency_tail_tune_rise_bins = efficiency_tail_tune_tail_rise_bins(
+            runtime_options,
+            descent_tail_rise_bins=int(descent_tail_rise_bins),
+        )
+        enforce_descent_clock_floor = lower_voltage_descent_enforces_clock_floor(
+            runtime_options,
+            tail_rise_bins=int(descent_tail_rise_bins),
+        )
+        cleanup_managed_q2rtx_processes(q2rtx_config, log=log)
         base_curve = list(gpu.runtime_default_plan)
         validate_base_vf_curve(base_curve)
         emit_ui_json_event(
@@ -182,6 +189,46 @@ def run_voltage_frequency_undervolt_main_loop(
                 "Next, Auto-UV will walk downward through real editable voltage bins.",
             ],
         )
+        efficiency_stop_streak_default = derive_efficiency_stop_streak_from_fps_variance(
+            stable_probe,
+            configured_streak=int(
+                getattr(
+                    settings,
+                    "efficiency_stop_streak",
+                    AUTO_UV_DEFAULTS.efficiency_stop_streak,
+                )
+            ),
+            derive=bool(getattr(settings, "derive_efficiency_stop_streak", True)),
+            high_variance_threshold_pct=float(
+                AUTO_UV_METRIC_TUNING.efficiency_stop_high_fps_variance_pct
+            ),
+            low_variance_streak=int(
+                AUTO_UV_METRIC_TUNING.efficiency_stop_low_variance_streak
+            ),
+            high_variance_streak=int(
+                AUTO_UV_METRIC_TUNING.efficiency_stop_high_variance_streak
+            ),
+        )
+        emit_ui_json_event(
+            event_callback,
+            "derived_defaults",
+            efficiency_stop_streak=int(efficiency_stop_streak_default.value),
+            efficiency_stop_streak_source=str(efficiency_stop_streak_default.source),
+            fps_variance_pct=efficiency_stop_streak_default.fps_variance_pct,
+            fps_variance_threshold_pct=float(
+                efficiency_stop_streak_default.threshold_pct
+            ),
+        )
+        log_phase(
+            log,
+            "efficiency",
+            "stop-streak="
+            f"{int(efficiency_stop_streak_default.value)} "
+            f"source={efficiency_stop_streak_default.source} "
+            "fps_variance_pct="
+            f"{_format_optional_pct(efficiency_stop_streak_default.fps_variance_pct)} "
+            f"threshold={float(efficiency_stop_streak_default.threshold_pct):.2f}%",
+        )
 
         stable_candidate = baseline_candidate
         effective_min_search_voltage_mv = min_search_voltage_mv(
@@ -245,9 +292,7 @@ def run_voltage_frequency_undervolt_main_loop(
                     auto_uv_mode=settings.auto_uv_mode,
                     min_core_clock_pct=float(settings.min_performance_core_clock_pct),
                     reference_actual_voltage_mv=stable_probe.avg_voltage_mv,
-                    efficiency_stop_streak=int(
-                        getattr(settings, "efficiency_stop_streak", 2)
-                    ),
+                    efficiency_stop_streak=int(efficiency_stop_streak_default.value),
                     min_efficiency_stop_voltage_drop_pct=float(
                         getattr(
                             settings,
@@ -753,6 +798,12 @@ def require_probe_summary(outcome: VoltageProbeOutcome) -> AutoUvProbeSummary:
     if outcome.raw_probe is None:
         raise AutoUvError("Auto-UV probe outcome did not include a probe summary")
     return outcome.raw_probe
+
+
+def _format_optional_pct(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.2f}%"
 
 
 def tail_ceiling_for_plan(

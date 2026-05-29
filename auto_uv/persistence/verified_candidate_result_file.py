@@ -138,9 +138,13 @@ def probe_metrics(probe: AutoUvProbeSummary | None) -> dict:
             "efficiency_mhz_per_w": None,
             "watts_per_mhz": None,
             "perf_cap_reason": None,
+            "fps_stddev": None,
+            "fps_variance_pct": None,
         }
     return {
         "avg_fps": float_or_none(probe.avg_fps),
+        "fps_stddev": float_or_none(probe.fps_stddev),
+        "fps_variance_pct": float_or_none(probe.fps_variance_pct),
         "avg_core_clock_mhz": float_or_none(probe.avg_core_clock_mhz),
         "loaded_median_core_clock_mhz": float_or_none(
             probe.loaded_median_core_clock_mhz

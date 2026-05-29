@@ -10,6 +10,10 @@ from ui.main import parse_gui_args
 from ui.main import parse_gui_launch_options
 from ui.constants import AFTERBURNER_PROFILE_ID
 from ui.fan_profiles import fan_payload_has_silent_runtime_fields
+from ui.gpu_selection import GpuChoice
+from ui.gpu_selection import gpu_choices_with_fallback
+from ui.gpu_selection import parse_nvidia_smi_gpu_choices
+from ui.gpu_selection import persist_runtime_gpu_index
 from ui.fan_profiles import profile_fan_curve_points
 from ui.fan_profiles import profile_fan_measurement_points
 from ui.fan_profiles import profile_fan_curve_target_point
@@ -77,6 +81,48 @@ def test_new_ui_package_is_installed() -> None:
 
     assert {"ui", "ui.components", "ui.controllers", "ui.dialogs"} <= packages
     assert "*.png" in package_data["ui.assets"]
+
+
+def test_gpu_selection_parses_nvidia_smi_choices() -> None:
+    choices = parse_nvidia_smi_gpu_choices(
+        "\n".join(
+            [
+                "0, NVIDIA GeForce RTX 4090, 00000000:01:00.0, GPU-4090",
+                "1, NVIDIA GeForce RTX 5090, 00000000:03:00.0, GPU-5090",
+            ]
+        )
+    )
+
+    assert [choice.index for choice in choices] == [0, 1]
+    assert choices[0].label == "GPU 0 - NVIDIA GeForce RTX 4090 (01:00.0)"
+    assert choices[1].label == "GPU 1 - NVIDIA GeForce RTX 5090 (03:00.0)"
+
+
+def test_gpu_selection_falls_back_to_configured_index() -> None:
+    choices, selected = gpu_choices_with_fallback(
+        selected_index=2,
+        choices=[GpuChoice(index=0, name="NVIDIA GeForce RTX 4090")],
+    )
+
+    assert selected == 2
+    assert [choice.index for choice in choices] == [0, 2]
+    assert choices[1].label == "GPU 2 - NVIDIA GPU"
+
+
+def test_gpu_selection_persists_runtime_index(tmp_path) -> None:
+    config_path = tmp_path / "runtime.toml"
+    config_path.write_text(
+        "[gpu]\nenable_persistence_mode = true\n\n[fan]\nmode = \"linear\"\n",
+        encoding="utf-8",
+    )
+
+    selected = persist_runtime_gpu_index(3, config_path=config_path)
+
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert selected == 3
+    assert config["gpu"]["index"] == 3
+    assert config["gpu"]["enable_persistence_mode"] is True
+    assert config["fan"]["mode"] == "linear"
 
 
 def test_new_ui_vf_plot_does_not_hardcode_gpu_clock_or_voltage_range() -> None:
