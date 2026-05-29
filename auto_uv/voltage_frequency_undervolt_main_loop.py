@@ -75,6 +75,14 @@ def run_voltage_frequency_undervolt_main_loop(
     timedemo_warmup_runs = int(settings.timedemo_warmup_runs)
     tail_rise_bins = int(getattr(settings, "tail_rise_bins", 0))
     descent_tail_rise_bins = int(voltage_descent_tail_rise_bins(settings))
+    efficiency_tail_tune_rise_bins = efficiency_tail_tune_tail_rise_bins(
+        runtime_options,
+        descent_tail_rise_bins=int(descent_tail_rise_bins),
+    )
+    enforce_descent_clock_floor = lower_voltage_descent_enforces_clock_floor(
+        runtime_options,
+        tail_rise_bins=int(descent_tail_rise_bins),
+    )
     unsafe_entries = consume_crash_cache(log=log)
     cleanup_managed_q2rtx_processes(q2rtx_config, log=log)
     gpu = open_live_gpu_vf_curve_applier(
@@ -185,11 +193,13 @@ def run_voltage_frequency_undervolt_main_loop(
 
         def probe_candidate(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
             retarget_clock_ceiling_for_candidate(gpu.clock_ceiling, candidate)
-            outcome = runner.probe_sweep_candidate(
-                candidate,
-                stable_history=stable_history,
-                phase_label="candidate",
-            )
+            probe_kwargs = {
+                "stable_history": stable_history,
+                "phase_label": "candidate",
+            }
+            if not bool(enforce_descent_clock_floor):
+                probe_kwargs["enforce_target_core_clock_floor"] = False
+            outcome = runner.probe_sweep_candidate(candidate, **probe_kwargs)
             if outcome.raw_probe is not None:
                 probe_history.append(outcome.raw_probe)
             return outcome
@@ -270,7 +280,7 @@ def run_voltage_frequency_undervolt_main_loop(
                     [
                         (
                             "Continuing toward the card minimum voltage with "
-                            f"{int(AUTO_UV_DEFAULTS.balanced_tail_rise_bins)} tail-rise bins."
+                            f"{int(efficiency_tail_tune_rise_bins)} tail-rise bins."
                         ),
                         f"Keeping target clock: {int(stable_candidate.target_mhz)}MHz.",
                     ],
@@ -291,7 +301,7 @@ def run_voltage_frequency_undervolt_main_loop(
                         reference_actual_voltage_mv=stable_probe.avg_voltage_mv,
                         efficiency_stop_streak=0,
                         min_efficiency_stop_voltage_drop_pct=0.0,
-                        tail_rise_bins=int(AUTO_UV_DEFAULTS.balanced_tail_rise_bins),
+                        tail_rise_bins=int(efficiency_tail_tune_rise_bins),
                     ),
                     initial_stable_candidate=stable_candidate,
                     hooks=hooks,
@@ -548,6 +558,30 @@ def positive_int(value: object) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def efficiency_tail_tune_tail_rise_bins(
+    runtime_options: dict,
+    *,
+    descent_tail_rise_bins: int,
+) -> int:
+    if bool(runtime_options.get("auto_uv_tail_rise_bins_explicit")):
+        return max(0, int(descent_tail_rise_bins))
+    return int(AUTO_UV_DEFAULTS.balanced_tail_rise_bins)
+
+
+def lower_voltage_descent_enforces_clock_floor(
+    runtime_options: dict,
+    *,
+    tail_rise_bins: int,
+) -> bool:
+    if (
+        bool(runtime_options.get("auto_uv_tail_rise_bins_explicit"))
+        and bool(runtime_options.get("auto_uv_min_voltage_mv_explicit"))
+        and int(tail_rise_bins) == 0
+    ):
+        return False
+    return True
 
 
 def run_discovery_probe(

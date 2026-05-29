@@ -58,6 +58,67 @@ def _assert_final_verification_kwargs_match_real_signature(kwargs: dict) -> None
     assert unexpected == set()
 
 
+def test_efficiency_tail_tune_uses_balanced_bins_unless_tail_bins_were_explicit() -> None:
+    assert (
+        undervolt_main_loop.efficiency_tail_tune_tail_rise_bins(
+            {},
+            descent_tail_rise_bins=0,
+        )
+        == 4
+    )
+    assert (
+        undervolt_main_loop.efficiency_tail_tune_tail_rise_bins(
+            {"auto_uv_tail_rise_bins_explicit": True},
+            descent_tail_rise_bins=2,
+        )
+        == 2
+    )
+    assert (
+        undervolt_main_loop.efficiency_tail_tune_tail_rise_bins(
+            {"auto_uv_tail_rise_bins_explicit": True},
+            descent_tail_rise_bins=0,
+        )
+        == 0
+    )
+
+
+def test_explicit_zero_tail_descent_does_not_enforce_clock_floor() -> None:
+    assert (
+        undervolt_main_loop.lower_voltage_descent_enforces_clock_floor(
+            {
+                "auto_uv_tail_rise_bins_explicit": True,
+                "auto_uv_min_voltage_mv_explicit": True,
+            },
+            tail_rise_bins=0,
+        )
+        is False
+    )
+    assert (
+        undervolt_main_loop.lower_voltage_descent_enforces_clock_floor(
+            {
+                "auto_uv_tail_rise_bins_explicit": True,
+                "auto_uv_min_voltage_mv_explicit": True,
+            },
+            tail_rise_bins=2,
+        )
+        is True
+    )
+    assert (
+        undervolt_main_loop.lower_voltage_descent_enforces_clock_floor(
+            {},
+            tail_rise_bins=0,
+        )
+        is True
+    )
+    assert (
+        undervolt_main_loop.lower_voltage_descent_enforces_clock_floor(
+            {"auto_uv_tail_rise_bins_explicit": True},
+            tail_rise_bins=0,
+        )
+        is True
+    )
+
+
 def test_discovery_probe_runner_uses_live_voltage_reader_keyword(monkeypatch) -> None:
     captured = {}
 

@@ -117,8 +117,19 @@ The three main aggressiveness options are:
 - `--auto-uv-min-voltage-mv N`: explicit lowest voltage bin Auto-UV may try;
   overrides the GPU table floor.
 - `--auto-uv-max-clock-drop-pct N`: allowed loaded-clock loss; default `10.0`.
+- `--auto-uv-tail-rise-bins N`: number of V/F bins above the lock point that
+  may rise after the flattened target. A value of `0` keeps the post-lock curve
+  flat. If you explicitly combine `--auto-uv-tail-rise-bins 0` with an explicit
+  `--auto-uv-min-voltage-mv N`, Auto-UV treats the lower-voltage pass as a
+  user-requested floor search and does not stop that descent only because the
+  loaded clock falls below `--auto-uv-max-clock-drop-pct`. Stability, load, FPS,
+  crash, and final verification checks still apply.
 - `--auto-oc-target-voltage-mv N`: Performance Auto-OC voltage ceiling.
 - `--auto-oc-target-clock-mhz N`: Performance Auto-OC clock ceiling.
+- `--gpu-index N`: select one NVIDIA GPU for the full Auto-UV lifecycle,
+  including control, telemetry, Q2RTX render binding, CUDA load, verification,
+  and runtime profile application. Use this on multi-GPU systems when the
+  display-attached card is not GPU `0`.
 
 Performance example:
 
@@ -128,6 +139,15 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-max-clock-drop-pct 10 \
   --auto-oc-target-voltage-mv 925 \
   --auto-oc-target-clock-mhz 2670
+```
+
+Explicit flat-tail floor-search example for the second NVIDIA GPU:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+  --gpu-index 1 \
+  --auto-uv-min-voltage-mv 800 \
+  --auto-uv-tail-rise-bins 0
 ```
 
 ## After The Scan

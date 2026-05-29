@@ -323,12 +323,57 @@ def test_hidden_window_env_forces_offscreen_x11_without_display() -> None:
 
 def test_q2rtx_runtime_env_forces_nvidia_prime_vulkan_offload() -> None:
     env = q2rtx_runtime._apply_nvidia_render_offload_env(
-        {"__VK_LAYER_NV_optimus": "non_NVIDIA_only"}
+        {"__VK_LAYER_NV_optimus": "non_NVIDIA_only"},
+        selected_gpu={},
     )
 
     assert env["__NV_PRIME_RENDER_OFFLOAD"] == "1"
     assert env["__VK_LAYER_NV_optimus"] == "NVIDIA_only"
     assert env["__GLX_VENDOR_LIBRARY_NAME"] == "nvidia"
+
+
+def test_q2rtx_runtime_env_binds_selected_gpu_from_runtime_identity() -> None:
+    selected_gpu = {
+        "dri_prime": "pci-0000_03_00_0",
+        "vk_loader_device_select": "0x10de:0x2c02",
+        "mesa_vk_device_select": "10de:2c02",
+    }
+
+    env = q2rtx_runtime._apply_nvidia_render_offload_env(
+        {},
+        selected_gpu=selected_gpu,
+    )
+
+    assert env["DRI_PRIME"] == "pci-0000_03_00_0!"
+    assert env["VK_LOADER_DEVICE_SELECT"] == "0x10de:0x2c02"
+    assert env["MESA_VK_DEVICE_SELECT"] == "10de:2c02!"
+    assert env["MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE"] == "1"
+
+
+def test_q2rtx_selected_gpu_identity_is_derived_from_nvidia_smi(monkeypatch) -> None:
+    monkeypatch.setattr(q2rtx_runtime.shutil, "which", lambda command: f"/bin/{command}")
+
+    def fake_run(command, **kwargs):
+        assert command[-2:] == ["-i", "1"]
+        return q2rtx_runtime.subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=(
+                "1, NVIDIA GeForce RTX 5090, 00000000:03:00.0, "
+                "0x2C0210DE, GPU-test\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(q2rtx_runtime.subprocess, "run", fake_run)
+
+    selected_gpu = q2rtx_runtime._query_selected_nvidia_gpu(1)
+
+    assert selected_gpu["index"] == "1"
+    assert selected_gpu["pci_bus_id"] == "00000000:03:00.0"
+    assert selected_gpu["dri_prime"] == "pci-0000_03_00_0"
+    assert selected_gpu["vk_loader_device_select"] == "0x10de:0x2c02"
+    assert selected_gpu["mesa_vk_device_select"] == "10de:2c02"
 
 
 def test_duration_based_timedemo_uses_calibrated_complete_loop_count(

@@ -366,6 +366,42 @@ def test_profile_table_defaults_to_newest_date_first() -> None:
     ] == ["New", "Middle", "Old"]
 
 
+def test_profile_list_syncs_silent_fan_toggle_from_runtime_state() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+
+    profile_list.set_profiles(
+        [{"profile_id": "profile-a", "final_verified": True}],
+        silent_fan_checked=True,
+    )
+
+    assert profile_list.silent_fan_enabled() is True
+
+
+def test_profile_list_preserves_silent_fan_toggle_for_same_selection_refresh() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [{"profile_id": "profile-a", "final_verified": True}]
+    profile_list.set_profiles(profiles)
+    profile_list.select_profile("profile-a")
+    profile_list.silent_fan_checkbox.setChecked(True)
+
+    profile_list.set_profiles(profiles, silent_fan_checked=False)
+
+    assert profile_list.selected_profile_id() == "profile-a"
+    assert profile_list.silent_fan_enabled() is True
+
+
 def test_process_error_details_are_copy_friendly() -> None:
     details = _process_failure_details(
         action_label="Auto-UV process",

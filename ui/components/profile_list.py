@@ -131,9 +131,12 @@ class ProfileList:
         preferred_profile_id: str = "",
         select_preferred: bool = False,
         preserve_persist_toggle: bool = True,
+        silent_fan_checked: bool | None = None,
+        preserve_silent_fan_toggle: bool = True,
     ) -> None:
         selected_profile_ids = self.selected_profile_ids()
         persist_toggle_checked = self.install_button.isChecked()
+        silent_fan_checked_before = self.silent_fan_checkbox.isChecked()
         sort_column = self._active_sort_column()
         sort_order = self._sort_order
         profiles = _promote_preferred_profile(
@@ -302,6 +305,17 @@ class ProfileList:
         )
         if should_preserve_persist_toggle:
             self._set_persist_toggle_checked(persist_toggle_checked)
+        should_preserve_silent_fan_toggle = (
+            preserve_silent_fan_toggle
+            and _should_preserve_persist_toggle(
+                selected_profile_ids,
+                self.selected_profile_ids(),
+            )
+        )
+        if should_preserve_silent_fan_toggle:
+            self._set_silent_fan_checked(silent_fan_checked_before)
+        elif silent_fan_checked is not None:
+            self._set_silent_fan_checked(bool(silent_fan_checked))
         self._sync_action_state(sync_persist_toggle=not should_preserve_persist_toggle)
 
     def _active_sort_column(self) -> int:
@@ -469,6 +483,13 @@ class ProfileList:
         finally:
             self.install_button.blockSignals(signals_blocked)
             self._syncing_persist_toggle = False
+
+    def _set_silent_fan_checked(self, checked: bool) -> None:
+        signals_blocked = self.silent_fan_checkbox.blockSignals(True)
+        try:
+            self.silent_fan_checkbox.setChecked(bool(checked))
+        finally:
+            self.silent_fan_checkbox.blockSignals(signals_blocked)
 
     def _selected_rows(self) -> list[int]:
         selection_model = self.table.selectionModel()

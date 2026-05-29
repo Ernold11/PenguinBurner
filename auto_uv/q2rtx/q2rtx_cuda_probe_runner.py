@@ -11,7 +11,7 @@ from typing import Callable
 from stability.q2rtx import Q2RTXStabilityConfig
 
 from ..auto_uv_types import AutoUvProbeSummary, VfCurveCandidate
-from .probe_stability_decision import evaluate_stable_run
+from .probe_stability_decision import StabilityThresholds, evaluate_stable_run
 from .q2rtx_cuda_voltage_probe import probe_voltage_candidate
 from .q2rtx_cuda_voltage_probe import companion_duration_s_from_command
 from .q2rtx_cuda_probe_config import (
@@ -93,12 +93,13 @@ class Q2RtxCudaProbeRunner:
         *,
         stable_history: list[AutoUvProbeSummary],
         phase_label: str = "candidate",
+        enforce_target_core_clock_floor: bool = True,
     ) -> VoltageProbeOutcome:
         return self.probe_candidate(
             candidate,
             stable_history=stable_history,
             phase_label=phase_label,
-            enforce_target_core_clock_floor=True,
+            enforce_target_core_clock_floor=bool(enforce_target_core_clock_floor),
             summarize_saturated_tail=False,
             use_power_limit_floor=False,
             use_companion_load=True,
@@ -159,6 +160,7 @@ class Q2RtxCudaProbeRunner:
             result,
             stable_history=stable_history,
             q2rtx_config=config,
+            enforce_core_clock_floor=bool(enforce_target_core_clock_floor),
         )
         emit_ui_voltage_probe_finished(
             self.event_callback,
@@ -180,6 +182,7 @@ class Q2RtxCudaProbeRunner:
         *,
         stable_history: list[AutoUvProbeSummary],
         q2rtx_config: Q2RTXStabilityConfig | None = None,
+        enforce_core_clock_floor: bool = True,
     ) -> VoltageProbeOutcome:
         baseline_probe = stable_history[0] if stable_history else None
         baseline_core_clock_mhz = self.baseline_clock_mhz
@@ -216,6 +219,13 @@ class Q2RtxCudaProbeRunner:
             companion_result={"success": True} if cuda_required else None,
             fatal_output_found=bool(getattr(result, "fatal_output_matches", [])),
             xid_found=bool(getattr(result, "xid_messages", [])),
+            thresholds=StabilityThresholds(
+                min_core_clock_pct=(
+                    float(self.min_performance_core_clock_pct)
+                    if bool(enforce_core_clock_floor)
+                    else 0.0
+                )
+            ),
         )
         return VoltageProbeOutcome(
             decision=decision,

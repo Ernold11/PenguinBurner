@@ -2,6 +2,7 @@
 
 from .auto_uv_mode import (
     AUTO_UV_MODE_EFFICIENCY,
+    AUTO_UV_MODE_BALANCED,
     AUTO_UV_MODE_PERFORMANCE,
     AUTO_UV_MODES,
     normalize_auto_uv_mode,
@@ -9,6 +10,7 @@ from .auto_uv_mode import (
 
 __all__ = [
     "AUTO_UV_MODE_EFFICIENCY",
+    "AUTO_UV_MODE_BALANCED",
     "AUTO_UV_MODE_PERFORMANCE",
     "AUTO_UV_MODES",
     "normalize_auto_uv_mode",

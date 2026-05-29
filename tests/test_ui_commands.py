@@ -108,6 +108,7 @@ def test_ui_scan_command_passes_desktop_user_through_pkexec(monkeypatch) -> None
 
 def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 2)
 
     command = commands.scan_command(
         {
@@ -122,6 +123,8 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
         }
     )
 
+    assert "--gpu-index" in command
+    assert command[command.index("--gpu-index") + 1] == "2"
     assert "--auto-uv-mode" in command
     assert command[command.index("--auto-uv-mode") + 1] == "performance"
     assert "--auto-uv-min-voltage-mv" in command
@@ -158,6 +161,15 @@ def test_ui_scan_command_includes_auto_filled_auto_uv_max_drop(
 
     assert "--auto-uv-max-drop-pct" in command
     assert command[command.index("--auto-uv-max-drop-pct") + 1] == "15"
+
+
+def test_ui_scan_command_can_override_runtime_gpu_index(monkeypatch) -> None:
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 2)
+
+    command = commands.scan_command({"gpu_index": 1})
+
+    assert command[command.index("--gpu-index") + 1] == "1"
 
 
 def test_auto_uv_short_verification_defaults_to_10_seconds() -> None:
@@ -330,12 +342,14 @@ def test_ui_runtime_command_can_prefer_afterburner_curve(monkeypatch) -> None:
         "daemonize",
         prefer_afterburner_curve=True,
         silent_fan_curve=True,
+        gpu_index=1,
     )
 
     assert "--daemonize" in command
     assert "--prefer-afterburner-curve" in command
     assert "--silent-fan-curve" in command
     assert "--auto-uv-profile" not in command
+    assert command[command.index("--gpu-index") + 1] == "1"
 
 
 def test_final_choice_performance_mode_sorts_by_fps() -> None:
@@ -640,6 +654,7 @@ def test_start_auto_uv_button_uses_orange_without_changing_primary_green() -> No
 
 def test_ui_profile_verify_command_uses_selected_auto_uv_profile(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 2)
 
     command = commands.profile_verify_command(
         profile_selector="profile-a",
@@ -649,6 +664,7 @@ def test_ui_profile_verify_command_uses_selected_auto_uv_profile(monkeypatch) ->
 
     assert "--stability-test" in command
     assert command[command.index("--stability-seconds") + 1] == "600"
+    assert command[command.index("--gpu-index") + 1] == "2"
     assert command[command.index("--auto-uv-profile") + 1] == "profile-a"
     assert command[command.index("--stability-stop-request-file") + 1] == (
         "/tmp/verify.stop"
@@ -669,6 +685,19 @@ def test_ui_profile_verify_command_keeps_q2rtx_cuda_default_when_both_checked(
     )
 
     assert "--stability-workload" not in command
+
+
+def test_ui_profile_verify_command_can_override_runtime_gpu_index(monkeypatch) -> None:
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 2)
+
+    command = commands.profile_verify_command(
+        profile_selector="profile-a",
+        duration_s=600,
+        gpu_index=1,
+    )
+
+    assert command[command.index("--gpu-index") + 1] == "1"
 
 
 def test_ui_profile_verify_command_can_use_afterburner_profile(monkeypatch) -> None:
@@ -1180,7 +1209,7 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
     assert '"auto_oc_target_clock_mhz"' in source
     assert '"auto_uv_min_voltage_mv"' in source
     assert '"auto_uv_max_drop_pct"' not in source
-    assert '"auto_uv_tail_rise_bins": int(preset.tail_rise_bins)' in source
+    assert 'options["auto_uv_tail_rise_bins"] = int(preset.tail_rise_bins)' in source
     assert "Core ceiling MHz" not in source
     assert "Voltage ceiling mV" not in source
     assert '"auto_uv_performance_clock_ceiling_mhz"' not in source

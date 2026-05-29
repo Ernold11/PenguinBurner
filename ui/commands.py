@@ -5,7 +5,10 @@ from pathlib import Path
 import pwd
 import shutil
 import sys
+import tomllib
 from typing import Mapping
+
+from penguin_burner_paths import default_runtime_config_path
 
 
 def cli_base_command() -> list[str]:
@@ -76,12 +79,32 @@ def _command_value_text(value: object) -> str:
     return str(value)
 
 
+def runtime_gpu_index(config_path: str | Path | None = None) -> int:
+    path = (
+        default_runtime_config_path()
+        if config_path is None
+        else Path(config_path).expanduser()
+    )
+    try:
+        with path.open("rb") as config_file:
+            config = tomllib.load(config_file)
+    except (OSError, tomllib.TOMLDecodeError):
+        return 0
+    try:
+        return max(0, int(config.get("gpu", {}).get("index", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
 def scan_command(auto_uv_options: Mapping[str, object] | None = None) -> list[str]:
+    options = auto_uv_options or {}
     command = [
         *cli_base_command(),
         "--auto-uv-voltage-scan",
         "--json-events",
         "--auto-uv-require-final-choice",
+        "--gpu-index",
+        _command_value_text(options.get("gpu_index", runtime_gpu_index())),
     ]
     option_flags = {
         "auto_uv_mode": "--auto-uv-mode",
@@ -95,7 +118,7 @@ def scan_command(auto_uv_options: Mapping[str, object] | None = None) -> list[st
         "auto_oc_target_clock_mhz": "--auto-oc-target-clock-mhz",
     }
     for key, flag in option_flags.items():
-        value = (auto_uv_options or {}).get(key)
+        value = options.get(key)
         if value in (None, ""):
             continue
         command.extend([flag, _command_value_text(value)])
@@ -125,6 +148,7 @@ def runtime_profile_command(
     profile_selector: str = "",
     silent_fan_curve: bool = False,
     prefer_afterburner_curve: bool = False,
+    gpu_index: int | None = None,
 ) -> list[str]:
     command = [*cli_base_command()]
     if action == "daemonize":
@@ -141,6 +165,8 @@ def runtime_profile_command(
         command.append("--prefer-afterburner-curve")
     if silent_fan_curve and action != "uninstall-systemd":
         command.append("--silent-fan-curve")
+    if gpu_index is not None:
+        command.extend(["--gpu-index", str(max(0, int(gpu_index)))])
     return privileged_command(command)
 
 
@@ -152,6 +178,7 @@ def profile_verify_command(
     stop_request_path: str | Path = "",
     q2rtx_enabled: bool = True,
     cuda_enabled: bool = True,
+    gpu_index: int | None = None,
 ) -> list[str]:
     duration_s = max(1, int(duration_s))
     workload = _stability_workload_value(
@@ -163,6 +190,8 @@ def profile_verify_command(
         "--stability-test",
         "--stability-seconds",
         str(duration_s),
+        "--gpu-index",
+        str(runtime_gpu_index() if gpu_index is None else max(0, int(gpu_index))),
     ]
     if workload != "q2rtx-cuda":
         command.extend(["--stability-workload", workload])

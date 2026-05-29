@@ -277,8 +277,9 @@ def select_scan_tuning(
         "auto_uv_mode": preset.auto_uv_mode,
         "auto_uv_max_clock_drop_pct": float(max_clock_drop_spin.value()),
         "auto_uv_memory_offset_mhz": int(memory_offset_spin.value()),
-        "auto_uv_tail_rise_bins": int(preset.tail_rise_bins),
     }
+    if int(preset.tail_rise_bins) > 0:
+        options["auto_uv_tail_rise_bins"] = int(preset.tail_rise_bins)
     if preset.preset_id == AUTO_UV_PRESET_EFFICIENCY:
         options["auto_uv_min_voltage_mv"] = int(voltage_floor_spin.value())
     if preset.preset_id == AUTO_UV_PRESET_PERFORMANCE:

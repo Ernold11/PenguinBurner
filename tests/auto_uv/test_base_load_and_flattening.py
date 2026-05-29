@@ -96,6 +96,8 @@ def test_baseline_target_failure_includes_telemetry_diagnostic() -> None:
     assert "max_util=0.0%" in message
     assert "max_clock=210.0MHz" in message
     assert "active_samples=0" in message
+    assert "display-attached GPU" in message
+    assert "--gpu-index" in message
 
 
 def test_selected_nvidia_light_load_diagnostic_is_non_fatal_and_specific() -> None:

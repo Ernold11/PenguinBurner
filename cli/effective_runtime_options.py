@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS
-from auto_uv.scan_mode import normalize_auto_uv_mode
+from auto_uv.scan_mode import AUTO_UV_MODE_BALANCED, normalize_auto_uv_mode
 from nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from penguin_burner_paths import resolve_afterburner_root
 
@@ -79,9 +79,21 @@ def build_effective_afterburner_runtime_options(args, stored_options: dict) -> d
         value = getattr(args, arg_name)
         if value is not None:
             runtime_options[key] = transform(value)
+            if key == "auto_uv_min_voltage_mv":
+                runtime_options["auto_uv_min_voltage_mv_explicit"] = True
+            if key == "auto_uv_tail_rise_bins":
+                runtime_options["auto_uv_tail_rise_bins_explicit"] = True
 
     if args.auto_uv_mode is not None:
+        requested_auto_uv_mode = str(args.auto_uv_mode).strip().lower()
         runtime_options["auto_uv_mode"] = normalize_auto_uv_mode(args.auto_uv_mode)
+        if (
+            requested_auto_uv_mode == AUTO_UV_MODE_BALANCED
+            and getattr(args, "auto_uv_tail_rise_bins") is None
+        ):
+            runtime_options["auto_uv_tail_rise_bins"] = (
+                AUTO_UV_DEFAULTS.balanced_tail_rise_bins
+            )
     if args.auto_uv_require_final_choice:
         runtime_options["auto_uv_require_final_choice"] = True
     if args.dangerously_skip_validation:

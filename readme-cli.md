@@ -295,7 +295,9 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--auto-oc-target-voltage-mv N`: Performance Auto-OC voltage ceiling.
 - `--auto-oc-target-clock-mhz N`: Performance Auto-OC clock ceiling.
 - `--auto-uv-min-voltage-mv N`: lowest voltage bin Auto-UV may try; overrides the detected GPU table floor.
+- `--auto-uv-tail-rise-bins N`: number of V/F bins above the lock point that may rise after the flattened target; default depends on Auto-UV mode.
 - `--auto-uv-max-drop-pct N`: fallback voltage search depth when no GPU table floor or explicit min voltage is available; default `10.0`.
+- `--gpu-index N`: select the NVIDIA GPU index used for Auto-UV control, telemetry, Q2RTX, CUDA, and runtime actions. Use `nvidia-smi -L` to list indices.
 - `--stability-test`: run the Q2RTX plus CUDA stability workload directly and exit.
 - `--stability-seconds N`: duration for `--stability-test`; default `600`.
 - `--stability-width N` and `--stability-height N`: Q2RTX render size; defaults `2560x1440`.
@@ -320,10 +322,29 @@ loaded-clock drop allowance, and Performance Auto-OC targets.
   may sacrifice while lowering voltage. The default `10.0` means the scan may
   accept loaded clocks down to about `90%` of the initial measured loaded clock.
   Lower values preserve more performance; higher values search deeper.
+- `--auto-uv-tail-rise-bins N` controls the rising tail after the flattened
+  lock point. Higher values preserve more upper-curve headroom; `0` keeps the
+  post-lock curve flat. When both `--auto-uv-tail-rise-bins 0` and
+  `--auto-uv-min-voltage-mv N` are explicitly provided, Auto-UV treats the
+  lower-voltage descent as a user-requested floor search and does not stop that
+  descent only because the loaded clock falls below
+  `--auto-uv-max-clock-drop-pct`. Stability, load, FPS, crash, and final
+  verification checks still apply.
 - `--auto-oc-target-voltage-mv N` and `--auto-oc-target-clock-mhz N` override
   the Performance-mode Auto-OC endpoint. Performance first completes the same
   undervolt pass as Balanced, then probes a bounded proportional voltage/clock
   ladder up to those targets.
+
+GPU selection:
+
+- `--gpu-index N` binds the whole PenguinBurner lifecycle to one NVIDIA GPU:
+  NVML/NVAPI control, telemetry, Q2RTX render launch, CUDA load, profile
+  verification, and daemon/runtime actions all use that index. This matters on
+  systems with multiple NVIDIA cards, where the display-attached GPU and the
+  first `nvidia-smi` GPU may differ.
+- The Qt GUI accepts the same selection at launch with
+  `penguin-burner-ui --gpu-index N` or `penguin-burner-ui --index N`. If no GUI
+  index is provided, the GUI reads `[gpu].index` from the runtime config.
 
 Verification duration knobs:
 
@@ -356,6 +377,15 @@ Example: use a looser `12%` core-clock drop allowance during Auto-UV:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-voltage-scan --auto-uv-max-clock-drop-pct 12
+```
+
+Example: explicitly sweep a flat-tail curve toward `800mV` on GPU index `1`:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+  --gpu-index 1 \
+  --auto-uv-min-voltage-mv 800 \
+  --auto-uv-tail-rise-bins 0
 ```
 
 ### Afterburner Import Options

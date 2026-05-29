@@ -162,7 +162,8 @@ def selected_nvidia_gpu_idle_abort_reason(state: dict) -> str | None:
     return (
         "q2rtx-selected-nvidia-gpu-idle "
         f"max_util={util_text} max_power={power_text} "
-        "hint=Q2RTX may be rendering on another GPU"
+        "hint=Q2RTX may be rendering on another GPU; on multi-GPU systems "
+        "select the display-attached card with --gpu-index"
     )
 
 

@@ -7,6 +7,7 @@ import ui.afterburner_import as afterburner_import
 import ui.fan_profiles as fan_profiles
 import ui.profiles as profiles_module
 from ui.main import parse_gui_args
+from ui.main import parse_gui_launch_options
 from ui.constants import AFTERBURNER_PROFILE_ID
 from ui.fan_profiles import fan_payload_has_silent_runtime_fields
 from ui.fan_profiles import profile_fan_curve_points
@@ -39,6 +40,34 @@ def test_ui_launcher_ignores_old_new_ui_flag() -> None:
     argv = parse_gui_args(["pburn-ui", "--new-ui"])
 
     assert argv == ["pburn-ui"]
+
+
+def test_ui_launcher_accepts_gpu_index_without_passing_it_to_qt() -> None:
+    options = parse_gui_launch_options(
+        ["pburn-ui", "--gpu-index", "2", "--style", "Fusion"]
+    )
+
+    assert options.qt_argv == ["pburn-ui", "--style", "Fusion"]
+    assert options.gpu_index == 2
+
+
+def test_ui_launcher_accepts_index_alias() -> None:
+    options = parse_gui_launch_options(["pburn-ui", "--index=1"])
+
+    assert options.qt_argv == ["pburn-ui"]
+    assert options.gpu_index == 1
+
+
+def test_ui_launcher_accepts_auto_uv_tail_rise_bins() -> None:
+    options = parse_gui_launch_options(
+        ["pburn-ui", "--auto-uv-tail-rise-bins=5", "--style", "Fusion"]
+    )
+
+    assert options.qt_argv == ["pburn-ui", "--style", "Fusion"]
+    assert options.auto_uv_options == {
+        "auto_uv_tail_rise_bins": 5,
+        "auto_uv_tail_rise_bins_explicit": True,
+    }
 
 
 def test_new_ui_package_is_installed() -> None:

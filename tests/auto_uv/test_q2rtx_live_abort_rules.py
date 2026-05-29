@@ -25,12 +25,12 @@ def _sample(
 def test_telemetry_abort_detects_q2rtx_not_loading_selected_nvidia_gpu() -> None:
     samples = [
         _sample(float(index), gpu_util_pct=0.0, power_w=4.5)
-        for index in range(5, 36)
+        for index in range(5, 24)
     ]
 
     reason = telemetry_live_abort_reason(
         {
-            "elapsed_s": 35.0,
+            "elapsed_s": 23.6,
             "latest_sample": samples[-1],
             "telemetry_samples": samples,
         },
@@ -43,6 +43,7 @@ def test_telemetry_abort_detects_q2rtx_not_loading_selected_nvidia_gpu() -> None
     assert reason is not None
     assert reason.startswith("q2rtx-selected-nvidia-gpu-idle")
     assert "may be rendering on another GPU" in reason
+    assert "--gpu-index" in reason
 
 
 def test_telemetry_idle_abort_allows_actual_selected_gpu_load() -> None:

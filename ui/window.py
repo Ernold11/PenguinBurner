@@ -79,8 +79,16 @@ from .styles import STYLESHEET
 
 
 class MainWindow:
-    def __init__(self, qt_modules):
+    def __init__(
+        self,
+        qt_modules,
+        *,
+        gpu_index: int | None = None,
+        auto_uv_options: dict[str, object] | None = None,
+    ):
         self.QtCore, self.QtGui, self.QtWidgets, self.pg = qt_modules
+        self.gpu_index = None if gpu_index is None else max(0, int(gpu_index))
+        self.auto_uv_options = dict(auto_uv_options or {})
         self.profile_summaries: list[dict] = []
         self.fan_measured_points: list[tuple[float, float]] = []
         self.pending_final_result_payload: dict | None = None
@@ -259,6 +267,10 @@ class MainWindow:
         )
         if options is None:
             return
+        if self.auto_uv_options:
+            options = {**options, **self.auto_uv_options}
+        if self.gpu_index is not None:
+            options = {**options, "gpu_index": int(self.gpu_index)}
         command = scan_command(options)
         self.runs_table.clear()
         self.vf_plot.clear()
@@ -494,6 +506,7 @@ class MainWindow:
             ),
             silent_fan_curve=self.profile_list.silent_fan_enabled(),
             prefer_afterburner_curve=prefer_afterburner_curve,
+            gpu_index=self.gpu_index,
         )
         self.controls.set_status_text(self._runtime_action_start_text(action))
         self._set_profile_actions_enabled(False)
@@ -652,6 +665,7 @@ class MainWindow:
             stop_request_path=verify_stop_request_path(),
             q2rtx_enabled=q2rtx_enabled,
             cuda_enabled=cuda_enabled,
+            gpu_index=self.gpu_index,
         )
         workload = workload_label(
             q2rtx_enabled=q2rtx_enabled,
@@ -912,6 +926,11 @@ class MainWindow:
     def _load_profiles(self) -> None:
         self.profile_summaries = load_profile_summaries()
         autostart_info = systemd_autostart_profile_info()
+        running_info = (
+            running_auto_uv_profile_info()
+            if penguin_burner_runtime_is_active()
+            else {"selector": "", "silent_fan_curve": False}
+        )
         systemd_selector = str(autostart_info["selector"])
         if systemd_selector in {"active", "latest", "__systemd_default__"}:
             systemd_selector = str(
@@ -926,13 +945,13 @@ class MainWindow:
             has_systemd_entry=systemd_unit_entry_exists(),
             preferred_candidate_id=self.last_auto_uv_candidate_id,
             select_preferred=bool(self.last_auto_uv_candidate_id),
+            silent_fan_checked=(
+                bool(running_info["silent_fan_curve"])
+                if str(running_info["selector"]).strip()
+                else bool(autostart_info["silent_fan_curve"])
+            ),
         )
         self._set_profile_actions_enabled(not self._workflow_running())
-        running_info = (
-            running_auto_uv_profile_info()
-            if penguin_burner_runtime_is_active()
-            else {"selector": "", "silent_fan_curve": False}
-        )
         self.controls.set_status_text(
             runner_status_text(
                 self.profile_summaries,

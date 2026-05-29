@@ -21,6 +21,9 @@ from .base_load_telemetry import (
 
 LIGHT_LOAD_DIAGNOSTIC_BUSY_UTIL_PCT = 60.0
 LIGHT_LOAD_DIAGNOSTIC_POWER_LIMIT_PCT = 50.0
+IDLE_SELECTED_GPU_DIAGNOSTIC_MAX_UTIL_PCT = 5.0
+IDLE_SELECTED_GPU_DIAGNOSTIC_MAX_POWER_LIMIT_PCT = 15.0
+IDLE_SELECTED_GPU_DIAGNOSTIC_MAX_CLOCK_MHZ = 600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +192,30 @@ def base_load_telemetry_diagnostic(
         f"active_floor={_format_metric(active_floor_w, 'W')} "
         f"saturated_samples={int(saturated_count)} "
         f"saturated_floor={_format_metric(saturated_floor_w, 'W')}"
+        f"{_selected_gpu_idle_hint(decision, power_limit_w=power_limit_w)}"
+    )
+
+
+def _selected_gpu_idle_hint(samples: list[Any], *, power_limit_w: int | None) -> str:
+    max_util = _max_metric(samples, "gpu_util_pct")
+    max_power = _max_metric(samples, "power_w")
+    max_clock = _max_metric(samples, "core_clock_mhz")
+    if max_util is None or max_power is None or max_clock is None:
+        return ""
+    if float(max_util) > IDLE_SELECTED_GPU_DIAGNOSTIC_MAX_UTIL_PCT:
+        return ""
+    if float(max_clock) > IDLE_SELECTED_GPU_DIAGNOSTIC_MAX_CLOCK_MHZ:
+        return ""
+    if power_limit_w is not None and int(power_limit_w) > 0:
+        idle_power_floor = float(power_limit_w) * (
+            IDLE_SELECTED_GPU_DIAGNOSTIC_MAX_POWER_LIMIT_PCT / 100.0
+        )
+        if float(max_power) > idle_power_floor:
+            return ""
+    return (
+        " hint=selected GPU stayed idle while Q2RTX completed; on multi-GPU "
+        "systems Q2RTX may be rendering on the display-attached GPU instead. "
+        "Select that GPU with --gpu-index."
     )
 
 

@@ -245,6 +245,90 @@ def test_probe_runner_uses_original_baseline_clock_for_final_clock_floor() -> No
     assert outcome.decision.evidence["floor_mhz"] == 2470.5
 
 
+def test_probe_runner_can_disable_clock_floor_for_voltage_descent() -> None:
+    stable_baseline = _summary(1020, 2625, used_companion_load=False)
+    current_summary = _summary(950, 2325, used_companion_load=False)
+    result = {
+        "success": True,
+        "timedemo_runs": [{"frames": 1000, "seconds": 10.0, "fps": 100.0}],
+        "telemetry_samples": [
+            {"power_w": 180.0, "core_clock_mhz": 2325.0, "gpu_util_pct": 99.0}
+        ],
+    }
+    runner = Q2RtxCudaProbeRunner(
+        reader=object(),
+        live_voltage_reader=object(),
+        q2rtx_config=SimpleNamespace(companion_command=None),
+        runtime_default_plan=[],
+        power_limit_w=360,
+        start_voltage_mv=1020,
+        baseline_clock_mhz=2745.0,
+        min_performance_core_clock_pct=90.0,
+        short_probe_base_duration_s=10,
+        timedemo_warmup_runs=0,
+        log=lambda _message: None,
+    )
+
+    outcome = runner.outcome_from_probe_result(
+        current_summary,
+        result,
+        stable_history=[stable_baseline],
+        enforce_core_clock_floor=False,
+    )
+
+    assert outcome.decision.passed is True
+
+
+def test_probe_sweep_candidate_can_run_without_live_clock_floor(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    candidate = VfCurveCandidate("candidate", 965, 2404, [])
+    summary = _summary(965, 2325, used_companion_load=True)
+    result = {
+        "success": True,
+        "timedemo_runs": [{"frames": 1000, "seconds": 10.0, "fps": 100.0}],
+        "telemetry_samples": [
+            {"power_w": 180.0, "core_clock_mhz": 2325.0, "gpu_util_pct": 99.0}
+        ],
+    }
+
+    def fake_probe_voltage_candidate(**kwargs):
+        captured["enforce_target_core_clock_floor"] = kwargs[
+            "enforce_target_core_clock_floor"
+        ]
+        return summary, result
+
+    monkeypatch.setattr(
+        "auto_uv.q2rtx.q2rtx_cuda_probe_runner.probe_voltage_candidate",
+        fake_probe_voltage_candidate,
+    )
+    runner = Q2RtxCudaProbeRunner(
+        reader=object(),
+        live_voltage_reader=object(),
+        q2rtx_config=Q2RTXStabilityConfig(
+            companion_command=("cuda",),
+            duration_s=10,
+            timedemo_loops=1,
+        ),
+        runtime_default_plan=[],
+        power_limit_w=360,
+        start_voltage_mv=1020,
+        baseline_clock_mhz=2745.0,
+        min_performance_core_clock_pct=90.0,
+        short_probe_base_duration_s=10,
+        timedemo_warmup_runs=0,
+        log=lambda _message: None,
+    )
+
+    outcome = runner.probe_sweep_candidate(
+        candidate,
+        stable_history=[_summary(1020, 2625, used_companion_load=True)],
+        enforce_target_core_clock_floor=False,
+    )
+
+    assert captured["enforce_target_core_clock_floor"] is False
+    assert outcome.decision.passed is True
+
+
 def _summary(
     voltage_mv: int,
     clock_mhz: int,

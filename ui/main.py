@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import sys
 
 from .assets import application_icon
@@ -10,20 +11,86 @@ from .qt import import_qt
 from .window import MainWindow
 
 
-def parse_gui_args(argv: list[str] | None = None) -> list[str]:
+@dataclass(frozen=True, slots=True)
+class GuiLaunchOptions:
+    qt_argv: list[str]
+    gpu_index: int | None = None
+    auto_uv_options: dict[str, object] | None = None
+
+
+def parse_gui_launch_options(argv: list[str] | None = None) -> GuiLaunchOptions:
     raw = list(sys.argv if argv is None else argv)
     if not raw:
         raw = ["penguin-burner-ui"]
     qt_argv = [raw[0]]
-    for arg in raw[1:]:
+    gpu_index = None
+    auto_uv_options: dict[str, object] = {}
+    index = 1
+    while index < len(raw):
+        arg = raw[index]
         if arg == "--new-ui":
+            index += 1
             continue
-        qt_argv.append(arg)
-    return qt_argv
+        if arg in {"--gpu-index", "--index"}:
+            if index + 1 >= len(raw):
+                raise ValueError(f"{arg} requires an integer value")
+            try:
+                gpu_index = max(0, int(raw[index + 1]))
+            except ValueError as exc:
+                raise ValueError(f"{arg} requires an integer value") from exc
+            index += 2
+            continue
+        if arg == "--auto-uv-tail-rise-bins":
+            if index + 1 >= len(raw):
+                raise ValueError(f"{arg} requires an integer value")
+            try:
+                auto_uv_options["auto_uv_tail_rise_bins"] = max(0, int(raw[index + 1]))
+                auto_uv_options["auto_uv_tail_rise_bins_explicit"] = True
+            except ValueError as exc:
+                raise ValueError(f"{arg} requires an integer value") from exc
+            index += 2
+            continue
+        for prefix in ("--gpu-index=", "--index="):
+            if arg.startswith(prefix):
+                try:
+                    gpu_index = max(0, int(arg[len(prefix) :]))
+                except ValueError as exc:
+                    raise ValueError(f"{prefix[:-1]} requires an integer value") from exc
+                break
+        else:
+            if arg.startswith("--auto-uv-tail-rise-bins="):
+                try:
+                    auto_uv_options["auto_uv_tail_rise_bins"] = max(
+                        0,
+                        int(arg.split("=", 1)[1]),
+                    )
+                    auto_uv_options["auto_uv_tail_rise_bins_explicit"] = True
+                except ValueError as exc:
+                    raise ValueError(
+                        "--auto-uv-tail-rise-bins requires an integer value"
+                    ) from exc
+                index += 1
+                continue
+            qt_argv.append(arg)
+        index += 1
+    return GuiLaunchOptions(
+        qt_argv=qt_argv,
+        gpu_index=gpu_index,
+        auto_uv_options=auto_uv_options or None,
+    )
+
+
+def parse_gui_args(argv: list[str] | None = None) -> list[str]:
+    return parse_gui_launch_options(argv).qt_argv
 
 
 def run(argv: list[str] | None = None) -> int:
-    qt_argv = parse_gui_args(sys.argv if argv is None else argv)
+    try:
+        launch_options = parse_gui_launch_options(sys.argv if argv is None else argv)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    qt_argv = launch_options.qt_argv
     try:
         qt_modules = import_qt()
     except RuntimeError as exc:
@@ -41,7 +108,11 @@ def run(argv: list[str] | None = None) -> int:
     if not icon.isNull():
         app.setWindowIcon(icon)
     apply_dark_palette(app, QtGui)
-    window = MainWindow(qt_modules)
+    window = MainWindow(
+        qt_modules,
+        gpu_index=launch_options.gpu_index,
+        auto_uv_options=launch_options.auto_uv_options,
+    )
     icon = application_icon(QtGui)
     if not icon.isNull():
         window.window.setWindowIcon(icon)

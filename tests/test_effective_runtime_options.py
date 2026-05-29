@@ -81,7 +81,9 @@ def test_effective_runtime_options_apply_cli_overrides_and_clamps(tmp_path) -> N
     assert effective["auto_uv_final_seconds"] is None
     assert effective["auto_uv_short_seconds"] == 60
     assert effective["auto_uv_memory_offset_mhz"] == MAX_AFTERBURNER_MEM_OFFSET_MHZ
+    assert effective["auto_uv_min_voltage_mv_explicit"] is True
     assert effective["auto_uv_tail_rise_bins"] == AUTO_UV_DEFAULTS.max_tail_rise_bins
+    assert effective["auto_uv_tail_rise_bins_explicit"] is True
     assert effective["auto_oc_target_voltage_mv"] == 925
     assert effective["auto_oc_target_clock_mhz"] == 2670
     assert effective["auto_uv_efficiency_stop_streak"] == 0
@@ -90,3 +92,23 @@ def test_effective_runtime_options_apply_cli_overrides_and_clamps(tmp_path) -> N
     assert effective["auto_uv_mode"] == "performance"
     assert effective["auto_uv_require_final_choice"] is True
     assert effective["dangerously_skip_validation"] is True
+
+
+def test_effective_runtime_options_balanced_mode_uses_balanced_tail_default() -> None:
+    effective = build_effective_afterburner_runtime_options(
+        _args(auto_uv_mode="balanced"),
+        {},
+    )
+
+    assert effective["auto_uv_mode"] == "efficiency"
+    assert effective["auto_uv_tail_rise_bins"] == AUTO_UV_DEFAULTS.balanced_tail_rise_bins
+
+
+def test_effective_runtime_options_balanced_mode_keeps_explicit_tail_override() -> None:
+    effective = build_effective_afterburner_runtime_options(
+        _args(auto_uv_mode="balanced", auto_uv_tail_rise_bins=2),
+        {},
+    )
+
+    assert effective["auto_uv_mode"] == "efficiency"
+    assert effective["auto_uv_tail_rise_bins"] == 2
