@@ -2,15 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from auto_oc.ladder import build_auto_oc_ladder
+from auto_oc.ladder import AutoOcStep, build_auto_oc_ladder
 from auto_oc.scoring import auto_oc_probe_key
-from auto_oc.search import run_auto_oc_candidate_search
+from auto_oc.search import AutoOcAttempt, run_auto_oc_candidate_search
 from auto_uv.auto_uv_types import (
     AutoUvProbeSummary,
     FailureKind,
     FailureSeverity,
     StableRunDecision,
     VfCurveCandidate,
+)
+from auto_uv.curve.flattened_voltage_probe_curve import (
+    build_flattened_voltage_probe_curve,
+)
+from auto_uv.curve.performance_sweep_profile import (
+    build_performance_sweep_profile_candidate,
 )
 from auto_uv.voltage_sweep_state import VoltageProbeOutcome
 from auto_uv_test_data import base_curve
@@ -172,3 +178,57 @@ def test_auto_oc_search_keeps_exploring_after_measured_clock_regression() -> Non
     assert {attempt.candidate.metadata["auto_oc_limit_mhz"] for attempt in result.attempts} == {
         75,
     }
+
+
+def test_performance_sweep_profile_uses_passed_auto_oc_anchors_below_selection() -> None:
+    curve = base_curve(800, 1000, 25, 1000, 50)
+    selected = build_flattened_voltage_probe_curve(
+        curve,
+        candidate_voltage_mv=950,
+        target_clock_mhz=1450,
+        label="performance-oc",
+        tail_rise_bins=0,
+    )
+    attempts = [
+        AutoOcAttempt(
+            step=AutoOcStep(1, 850, 1300, 0.25),
+            candidate=build_flattened_voltage_probe_curve(
+                curve,
+                candidate_voltage_mv=850,
+                target_clock_mhz=1300,
+                label="performance-oc 1",
+            ),
+            outcome=_passed_outcome(_probe(850, 1300)),
+        ),
+        AutoOcAttempt(
+            step=AutoOcStep(2, 900, 1400, 0.50),
+            candidate=build_flattened_voltage_probe_curve(
+                curve,
+                candidate_voltage_mv=900,
+                target_clock_mhz=1400,
+                label="performance-oc 2",
+            ),
+            outcome=_passed_outcome(_probe(900, 1400)),
+        ),
+        AutoOcAttempt(
+            step=AutoOcStep(3, 950, 1450, 1.0),
+            candidate=selected,
+            outcome=_passed_outcome(_probe(950, 1450)),
+        ),
+    ]
+
+    sweep = build_performance_sweep_profile_candidate(
+        curve,
+        selected_candidate=selected,
+        stable_history=[_probe(800, 1250)],
+        auto_oc_attempts=attempts,
+    )
+
+    by_voltage = {int(point["voltage_mv"]): point for point in sweep.flattened_plan}
+    assert sweep.metadata["profile_curve"] == "performance-sweep"
+    assert by_voltage[800]["target_mhz"] == 1250
+    assert by_voltage[850]["target_mhz"] == 1300
+    assert by_voltage[875]["target_mhz"] == 1350
+    assert by_voltage[900]["target_mhz"] == 1400
+    assert by_voltage[925]["target_mhz"] == 1425
+    assert by_voltage[950]["target_mhz"] == 1450

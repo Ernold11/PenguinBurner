@@ -59,6 +59,9 @@ from .curve.vf_curve_flattening import (
     build_flatten_target_for_plan,
     build_flattened_plan,
 )
+from .curve.performance_sweep_profile import (
+    build_performance_sweep_profile_candidate,
+)
 from .ui.vf_curve_ui_points import vf_curve_ui_points
 from .voltage_sweep_state import VoltageProbeOutcome
 from .final_verification import run_final_verification_and_save
@@ -582,9 +585,25 @@ def select_performance_auto_oc_candidate(
     )
     if stable_history is not None:
         for attempt in getattr(result, "attempts", ()) or ():
-            if attempt.outcome.decision.passed and attempt.outcome.raw_probe is not None:
+            if (
+                attempt.outcome.decision.passed
+                and attempt.outcome.raw_probe is not None
+            ):
                 stable_history.append(attempt.outcome.raw_probe)
-    selected = result.selected_candidate
+    selected = build_performance_sweep_profile_candidate(
+        base_curve,
+        selected_candidate=result.selected_candidate,
+        stable_history=stable_history,
+        auto_oc_attempts=getattr(result, "attempts", ()) or (),
+    )
+    if selected.metadata.get("profile_curve") == "performance-sweep":
+        log_phase(
+            log,
+            "auto-oc",
+            "profile-curve=performance-sweep "
+            f"start={int(selected.metadata['profile_curve_start_voltage_mv'])}mV "
+            f"anchors={int(selected.metadata['profile_curve_anchor_count'])}",
+        )
     selected_changed = (
         int(selected.voltage_mv) != int(stable_voltage_mv)
         or int(selected.target_mhz) != int(stable_lock_clock_mhz)
