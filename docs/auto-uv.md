@@ -174,6 +174,15 @@ sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
   --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
 ```
 
+To export a specific saved Auto-UV profile instead of the latest profile:
+
+```bash
+./penguin_burner.sh --list-auto-uv-profiles
+sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
+  --auto-uv-profile 900mv-2100mhz \
+  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
+```
+
 To export a validated Afterburner profile instead:
 
 ```bash
@@ -187,6 +196,12 @@ sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
 The default LACT export writes only the V/F curve. Add `--silent-fan-curve` to
 include fan settings too. Add `--fan-curve-export` only when you want fan
 settings without replacing LACT's V/F curve.
+
+`--auto-uv-profile` accepts a profile id, candidate id, JSON path, `active`, or
+`latest`. PenguinBurner clamps exported Nvidia V/F clocks to LACT's default
+positive offset ceiling of `base_mhz + 1000` MHz and logs a warning if any point
+is reduced. Use `--lact-max-vf-offset-mhz N` only if your LACT/NVML setup allows
+a different maximum offset.
 
 Review the generated file before replacing LACT's config:
 

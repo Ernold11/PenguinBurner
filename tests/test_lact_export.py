@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 import saved_uv_profiles.profile_store as profile_store
 import lact.export as lact_export
+import lact.runtime_lact_export as runtime_lact_export
 from saved_uv_profiles import archive_auto_uv_profile
 from lact import (
     build_lact_nvidia_config,
@@ -168,6 +171,121 @@ def test_lact_nvidia_writer_can_export_selected_auto_uv_profile(
     rendered = output_path.read_text(encoding="utf-8")
     assert "clockspeed: 2100" in rendered
     assert "clockspeed: 2200" not in rendered
+
+
+def test_lact_nvidia_export_resolves_selected_auto_uv_profile(
+    tmp_path, monkeypatch
+) -> None:
+    _use_auto_uv_config_dir(tmp_path, monkeypatch)
+    _write_final_profile(
+        {
+            "profile_id": "selected",
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2100,
+            "points": [
+                {
+                    "index": 1,
+                    "voltage_mv": 900,
+                    "base_mhz": 2000,
+                    "target_mhz": 2100,
+                    "new_offset_mhz": 100,
+                }
+            ],
+        }
+    )
+    _write_final_profile(
+        {
+            "profile_id": "newer",
+            "candidate_voltage_mv": 925,
+            "lock_clock_mhz": 2200,
+            "points": [
+                {
+                    "index": 1,
+                    "voltage_mv": 925,
+                    "base_mhz": 2050,
+                    "target_mhz": 2200,
+                    "new_offset_mhz": 150,
+                }
+            ],
+        }
+    )
+
+    rendered, warnings = build_lact_nvidia_config(
+        gpu_id="gpu0",
+        profile_selector="selected",
+    )
+
+    assert warnings == []
+    assert "clockspeed: 2100" in rendered
+    assert "clockspeed: 2200" not in rendered
+
+
+def test_lact_nvidia_export_clamps_offsets_to_lact_limit() -> None:
+    rendered, warnings = build_lact_nvidia_config_from_plan(
+        gpu_id="gpu0",
+        vf_plan=[
+            {
+                "index": 4,
+                "voltage_mv": 900,
+                "base_mhz": 2000,
+                "target_mhz": 3300,
+                "new_offset_mhz": 1300,
+            }
+        ],
+        source_label="auto-uv",
+        source_vf="/tmp/profile.json",
+    )
+
+    assert "4:\n        clockspeed: 3000\n        voltage: 900" in rendered
+    assert "clockspeed: 3300" not in rendered
+    assert warnings == [
+        "LACT V/F offsets were clamped to +1000MHz over each point's base clock: "
+        "index=4 voltage=900mV offset=+1300->+1000MHz"
+    ]
+
+
+def test_runtime_lact_export_passes_profile_selector_and_offset_limit(
+    tmp_path, monkeypatch
+) -> None:
+    calls: list[dict] = []
+
+    def fake_write_lact_nvidia_config(**kwargs):
+        calls.append(kwargs)
+        return Path(kwargs["output_path"]), []
+
+    monkeypatch.setattr(
+        runtime_lact_export,
+        "write_lact_nvidia_config",
+        fake_write_lact_nvidia_config,
+    )
+    args = SimpleNamespace(
+        export_lact_config=str(tmp_path / "lact-config.yaml"),
+        fan_curve_export=False,
+        silent_fan_curve=False,
+        lact_source="auto-uv",
+        lact_gpu_id="gpu0",
+        auto_uv_profile="selected",
+        lact_max_vf_offset_mhz=777,
+    )
+
+    runtime_lact_export.export_lact_config(
+        args=args,
+        fan_config={},
+        gpu_index=0,
+        afterburner_runtime_options={},
+        log=lambda _message: None,
+    )
+
+    assert calls == [
+        {
+            "output_path": tmp_path / "lact-config.yaml",
+            "gpu_id": "gpu0",
+            "profile_selector": "selected",
+            "include_vf_curve": True,
+            "include_fan_curve": False,
+            "max_vf_offset_mhz": 777,
+        }
+    ]
 
 
 def test_lact_nvidia_export_disables_fan_when_no_fan_artifact(

@@ -126,6 +126,15 @@ sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
   --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
 ```
 
+To export a specific saved Auto-UV profile instead of the latest profile:
+
+```bash
+./penguin_burner.sh --list-auto-uv-profiles
+sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
+  --auto-uv-profile 900mv-2100mhz \
+  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
+```
+
 To export a validated Afterburner profile instead:
 
 ```bash
@@ -159,6 +168,12 @@ Example LACT result after importing PenguinBurner's saved Auto-UV curve. The
 active curve is the exported undervolt: lower voltage bins ramp normally, then
 the tuned load range flattens at the verified target clock while LACT keeps the
 driver's original base curve visible underneath for comparison.
+
+`--auto-uv-profile` accepts a profile id, candidate id, JSON path, `active`, or
+`latest`. PenguinBurner clamps exported Nvidia V/F clocks to LACT's default
+positive offset ceiling of `base_mhz + 1000` MHz and logs a warning if any point
+is reduced. Use `--lact-max-vf-offset-mhz N` only if your LACT/NVML setup allows
+a different maximum offset.
 
 If you already have a known-good MSI Afterburner profile, you can still
 preview/import it with:
@@ -289,11 +304,13 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 ### Auto-UV Options
 
 - `--auto-uv-voltage-scan`: start the foreground Auto-UV voltage scan explicitly.
+- `--list-auto-uv-profiles`: list saved Auto-UV profiles and exit; use a shown profile id or candidate id with `--auto-uv-profile`.
 - `--install-q2rtx`: download the managed Q2RTX workload without starting a scan.
-- `--export-lact-config PATH`: write a complete Nvidia-only LACT `config.yaml` from the saved Auto-UV V/F curve; add `--silent-fan-curve` to include fan settings.
+- `--export-lact-config PATH`: write a complete Nvidia-only LACT `config.yaml` from the saved Auto-UV V/F curve; add `--auto-uv-profile PROFILE` to select a profile and `--silent-fan-curve` to include fan settings.
 - `--lact-source auto-uv|afterburner`: choose the LACT export source; default `auto-uv`. The `afterburner` source uses the same Afterburner selection flags as `--dry-run`.
 - `--fan-curve-export`: with `--export-lact-config`, export only fan settings and omit LACT's `gpu_vf_curve`.
 - `--lact-gpu-id ID`: LACT GPU id for `--export-lact-config`; get it from `lact cli list-gpus`.
+- `--lact-max-vf-offset-mhz N`: maximum positive Nvidia V/F offset to emit for LACT; default `1000`, with exported clocks clamped to `base_mhz + N`.
 - `--auto-uv-final-seconds N`: final verification duration after the best curve is selected; default `600`.
 - `--auto-uv-short-seconds N`: base Q2RTX verification length; default `10` seconds, allowed range `10..60`. Deeper voltage tiers use 2x and 3x this value, with a shorter CUDA companion check after Q2RTX.
 - `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default is the detected GPU table's Eco-to-Max clock ratio, or `12.5` for unknown GPUs.

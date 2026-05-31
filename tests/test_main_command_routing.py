@@ -30,6 +30,10 @@ def _args(**overrides):
         "restore_defaults_from_config": False,
         "silent_fan_curve": False,
         "export_lact_config": "",
+        "lact_source": "auto-uv",
+        "lact_gpu_id": "",
+        "fan_curve_export": False,
+        "lact_max_vf_offset_mhz": 1000,
         "dry_run": False,
     }
     values.update(overrides)

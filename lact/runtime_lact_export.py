@@ -27,13 +27,16 @@ def export_lact_config(
     output_path = Path(args.export_lact_config)
     include_vf_curve = not bool(args.fan_curve_export)
     include_fan_curve = bool(args.fan_curve_export or args.silent_fan_curve)
+    max_vf_offset_mhz = getattr(args, "lact_max_vf_offset_mhz", 1000)
     try:
         if args.lact_source == "auto-uv":
             written_path, warnings = write_lact_nvidia_config(
                 output_path=output_path,
                 gpu_id=str(args.lact_gpu_id),
+                profile_selector=str(args.auto_uv_profile or ""),
                 include_vf_curve=include_vf_curve,
                 include_fan_curve=include_fan_curve,
+                max_vf_offset_mhz=max_vf_offset_mhz,
             )
         else:
             written_path, warnings = write_lact_nvidia_config_from_afterburner(
@@ -57,6 +60,7 @@ def export_lact_config(
                 ),
                 include_vf_curve=include_vf_curve,
                 include_fan_curve=include_fan_curve,
+                max_vf_offset_mhz=max_vf_offset_mhz,
             )
     except LactExportError as exc:
         raise NvmlError(str(exc)) from exc

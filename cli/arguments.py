@@ -15,6 +15,7 @@ from runtime_service import DEFAULT_JOURNAL_HOURS
 from stability.q2rtx import DEFAULT_HEIGHT, DEFAULT_WIDTH
 
 DEFAULT_AUTO_UV_FINAL_DURATION_S = AUTO_UV_DEFAULTS.final_duration_s
+DEFAULT_LACT_NVIDIA_MAX_VF_OFFSET_MHZ = 1000
 
 
 def default_cli_config_path() -> str:
@@ -61,7 +62,10 @@ def parse_arguments(argv):
     auto_uv_group.add_argument(
         "--list-auto-uv-profiles",
         action="store_true",
-        help=argparse.SUPPRESS,
+        help=(
+            "List saved Auto-UV profiles and exit; use a shown profile id or "
+            "candidate id with --auto-uv-profile."
+        ),
     )
     auto_uv_group.add_argument(
         "--delete-auto-uv-profiles",
@@ -242,8 +246,8 @@ def parse_arguments(argv):
         "--auto-uv-profile",
         default="",
         help=(
-            "Runtime/daemon only: use an Auto-UV profile by profile id, candidate "
-            "id, JSON path, 'active', or 'latest'."
+            "Use an Auto-UV profile by profile id, candidate id, JSON path, "
+            "'active', or 'latest' for runtime, daemon, stability, and LACT export."
         ),
     )
     daemon_group.add_argument(
@@ -300,6 +304,17 @@ def parse_arguments(argv):
         "--lact-gpu-id",
         default="",
         help="LACT GPU id to use in --export-lact-config output.",
+    )
+    lact_group.add_argument(
+        "--lact-max-vf-offset-mhz",
+        type=int,
+        default=DEFAULT_LACT_NVIDIA_MAX_VF_OFFSET_MHZ,
+        metavar="MHz",
+        help=(
+            "Maximum positive per-point Nvidia V/F offset to emit for LACT; "
+            f"default {DEFAULT_LACT_NVIDIA_MAX_VF_OFFSET_MHZ}. Exported "
+            "clocks are clamped to base_mhz plus this value."
+        ),
     )
     stability_group.add_argument(
         "--stability-test",

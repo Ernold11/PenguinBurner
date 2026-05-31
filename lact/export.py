@@ -20,6 +20,9 @@ class LactExportError(RuntimeError):
     pass
 
 
+LACT_NVIDIA_DEFAULT_MAX_VF_OFFSET_MHZ = 1000
+
+
 def _read_json(path: Path) -> dict:
     try:
         payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
@@ -107,11 +110,28 @@ def _auto_uv_fan_config(fan_payload: dict | None) -> dict | None:
     return fan
 
 
-def _vf_curve_yaml_from_points(raw_points: list[dict]) -> list[str]:
+def _optional_int(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _vf_curve_yaml_from_points(
+    raw_points: list[dict],
+    *,
+    max_vf_offset_mhz: int | None = LACT_NVIDIA_DEFAULT_MAX_VF_OFFSET_MHZ,
+) -> tuple[list[str], list[str]]:
     if not isinstance(raw_points, list) or not raw_points:
         raise LactExportError("V/F curve has no points")
 
     points: list[tuple[int, int, int]] = []
+    warnings: list[str] = []
+    clamped_offsets: list[str] = []
+    clamped_negative: list[str] = []
+    max_offset = None if max_vf_offset_mhz is None else max(0, int(max_vf_offset_mhz))
     for raw in raw_points:
         if not isinstance(raw, dict):
             raise LactExportError(f"invalid V/F point: {raw!r}")
@@ -123,6 +143,20 @@ def _vf_curve_yaml_from_points(raw_points: list[dict]) -> list[str]:
             raise LactExportError(f"invalid V/F point: {raw!r}") from exc
         if not 0 <= index <= 255:
             raise LactExportError(f"V/F point index is outside LACT range: {index}")
+        base_mhz = _optional_int(raw.get("base_mhz"))
+        if base_mhz is not None:
+            offset_mhz = int(target_mhz) - int(base_mhz)
+            if max_offset is not None and offset_mhz > max_offset:
+                target_mhz = int(base_mhz) + int(max_offset)
+                clamped_offsets.append(
+                    f"index={index} voltage={voltage_mv}mV "
+                    f"offset={offset_mhz:+d}->{int(max_offset):+d}MHz"
+                )
+        if target_mhz < 0:
+            clamped_negative.append(
+                f"index={index} voltage={voltage_mv}mV clockspeed={target_mhz}->0MHz"
+            )
+            target_mhz = 0
         points.append((index, voltage_mv, target_mhz))
 
     lines = ["    gpu_vf_curve:"]
@@ -134,7 +168,20 @@ def _vf_curve_yaml_from_points(raw_points: list[dict]) -> list[str]:
                 f"        voltage: {voltage_mv}",
             ]
         )
-    return lines
+    if clamped_offsets:
+        warnings.append(
+            "LACT V/F offsets were clamped to "
+            f"+{int(max_offset)}MHz over each point's base clock: "
+            + "; ".join(clamped_offsets[:8])
+            + (" ..." if len(clamped_offsets) > 8 else "")
+        )
+    if clamped_negative:
+        warnings.append(
+            "LACT V/F clocks were clamped to non-negative values: "
+            + "; ".join(clamped_negative[:8])
+            + (" ..." if len(clamped_negative) > 8 else "")
+        )
+    return lines, warnings
 
 
 def build_lact_nvidia_config_from_plan(
@@ -147,13 +194,21 @@ def build_lact_nvidia_config_from_plan(
     source_fan: str | None = None,
     include_vf_curve: bool = True,
     include_fan_curve: bool = False,
+    max_vf_offset_mhz: int | None = LACT_NVIDIA_DEFAULT_MAX_VF_OFFSET_MHZ,
 ) -> tuple[str, list[str]]:
     gpu_id = str(gpu_id).strip()
     if not gpu_id:
         raise LactExportError("LACT GPU id is required; use `lact cli list-gpus`")
 
     fan_lines, warnings = _fan_config_yaml(fan_config if include_fan_curve else None)
-    vf_lines = _vf_curve_yaml_from_points(vf_plan or []) if include_vf_curve else []
+    if include_vf_curve:
+        vf_lines, vf_warnings = _vf_curve_yaml_from_points(
+            vf_plan or [],
+            max_vf_offset_mhz=max_vf_offset_mhz,
+        )
+        warnings.extend(vf_warnings)
+    else:
+        vf_lines = []
     generated_at = datetime.now().astimezone().isoformat()
 
     lines = [
@@ -181,17 +236,22 @@ def build_lact_nvidia_config(
     gpu_id: str,
     final_curve_path: Path | None = None,
     fan_curve_path: Path | None = None,
+    profile_selector: str = "",
     include_vf_curve: bool = True,
     include_fan_curve: bool = False,
+    max_vf_offset_mhz: int | None = LACT_NVIDIA_DEFAULT_MAX_VF_OFFSET_MHZ,
 ) -> tuple[str, list[str]]:
     config_dir = default_user_config_dir()
-    if final_curve_path is None:
-        resolved_profile = resolve_auto_uv_profile("latest")
+    if final_curve_path is None and include_vf_curve:
+        selector = str(profile_selector or "latest").strip() or "latest"
+        resolved_profile = resolve_auto_uv_profile(selector)
         final_curve_path = (
             resolved_profile[0]
             if resolved_profile is not None
             else config_dir / "auto-uv-profiles" / "latest-profile.json"
         )
+        if resolved_profile is None and selector not in {"active", "latest"}:
+            raise LactExportError(f"Auto-UV profile not found: {selector}")
     fan_curve_path = fan_curve_path or config_dir / "auto-uv-fan-curve.json"
     final_curve_payload = _read_json(Path(final_curve_path)) if include_vf_curve else {}
     fan_curve_payload = None
@@ -207,6 +267,7 @@ def build_lact_nvidia_config(
         source_fan=str(fan_curve_path),
         include_vf_curve=include_vf_curve,
         include_fan_curve=include_fan_curve,
+        max_vf_offset_mhz=max_vf_offset_mhz,
     )
 
 
@@ -216,15 +277,19 @@ def write_lact_nvidia_config(
     gpu_id: str,
     final_curve_path: Path | None = None,
     fan_curve_path: Path | None = None,
+    profile_selector: str = "",
     include_vf_curve: bool = True,
     include_fan_curve: bool = False,
+    max_vf_offset_mhz: int | None = LACT_NVIDIA_DEFAULT_MAX_VF_OFFSET_MHZ,
 ) -> tuple[Path, list[str]]:
     rendered, warnings = build_lact_nvidia_config(
         gpu_id=gpu_id,
         final_curve_path=final_curve_path,
         fan_curve_path=fan_curve_path,
+        profile_selector=profile_selector,
         include_vf_curve=include_vf_curve,
         include_fan_curve=include_fan_curve,
+        max_vf_offset_mhz=max_vf_offset_mhz,
     )
     output_path = Path(output_path).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -272,6 +337,7 @@ def build_lact_nvidia_config_from_afterburner(
     preserve_base_below_mv: int | None = None,
     include_vf_curve: bool = True,
     include_fan_curve: bool = False,
+    max_vf_offset_mhz: int | None = LACT_NVIDIA_DEFAULT_MAX_VF_OFFSET_MHZ,
 ) -> tuple[str, list[str]]:
     afterburner_root = str(afterburner_root).strip()
     if not afterburner_root:
@@ -326,6 +392,7 @@ def build_lact_nvidia_config_from_afterburner(
         source_fan=source_fan,
         include_vf_curve=include_vf_curve,
         include_fan_curve=include_fan_curve,
+        max_vf_offset_mhz=max_vf_offset_mhz,
     )
     warnings.extend(render_warnings)
     return rendered, warnings
@@ -344,6 +411,7 @@ def write_lact_nvidia_config_from_afterburner(
     preserve_base_below_mv: int | None = None,
     include_vf_curve: bool = True,
     include_fan_curve: bool = False,
+    max_vf_offset_mhz: int | None = LACT_NVIDIA_DEFAULT_MAX_VF_OFFSET_MHZ,
 ) -> tuple[Path, list[str]]:
     rendered, warnings = build_lact_nvidia_config_from_afterburner(
         gpu_id=gpu_id,
@@ -356,6 +424,7 @@ def write_lact_nvidia_config_from_afterburner(
         preserve_base_below_mv=preserve_base_below_mv,
         include_vf_curve=include_vf_curve,
         include_fan_curve=include_fan_curve,
+        max_vf_offset_mhz=max_vf_offset_mhz,
     )
     output_path = Path(output_path).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
