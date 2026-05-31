@@ -101,6 +101,7 @@ def test_package_installs_shared_subprocess_locale_helper() -> None:
 
     assert "subprocess_locale" in py_modules
     assert "cuda_bruteforce_stability" in py_modules
+    assert "hidden_nvapi_gpu_selection" in py_modules
     assert "hidden_nvapi_voltage" in py_modules
     assert "import_afterburner_fan_curve" in py_modules
     assert "import_afterburner_vf_curve" in py_modules
