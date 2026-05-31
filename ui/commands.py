@@ -18,13 +18,17 @@ def cli_base_command() -> list[str]:
     return ["penguin-burner-cli"]
 
 
-def desktop_user_env() -> list[str]:
-    user = (
+def _desktop_user_name() -> str:
+    return (
         os.environ.get("PENGUIN_BURNER_Q2RTX_USER", "").strip()
         or os.environ.get("SUDO_USER", "").strip()
         or os.environ.get("USER", "").strip()
         or os.environ.get("LOGNAME", "").strip()
     )
+
+
+def desktop_user_env() -> list[str]:
+    user = _desktop_user_name()
     uid = (
         os.environ.get("PENGUIN_BURNER_Q2RTX_UID", "").strip()
         or os.environ.get("SUDO_UID", "").strip()
@@ -70,7 +74,27 @@ def desktop_session_env() -> list[str]:
         value = os.environ.get(name, "").strip()
         if value:
             values.append(f"{name}={value}")
+    if os.environ.get("DISPLAY", "").strip() and not os.environ.get(
+        "XAUTHORITY", ""
+    ).strip():
+        xauthority = _default_xauthority_path()
+        if xauthority:
+            values.append(f"XAUTHORITY={xauthority}")
     return values
+
+
+def _default_xauthority_path() -> str:
+    user = _desktop_user_name()
+    home = ""
+    if user:
+        try:
+            home = pwd.getpwnam(user).pw_dir
+        except KeyError:
+            home = ""
+    if not home:
+        return ""
+    path = Path(home) / ".Xauthority"
+    return str(path) if path.is_file() else ""
 
 
 def _command_value_text(value: object) -> str:

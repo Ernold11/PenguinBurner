@@ -446,14 +446,23 @@ def _validate_nvapi_voltage_reader(gpu_index: int) -> list[InitialCheckIssue]:
                 )
             ]
         if voltage_uv is None:
+            raw_voltage_uv = _reader_last_raw_microvolts(reader)
+            raw_detail = (
+                f" Raw NVAPI sample: {raw_voltage_uv / 1000.0:.0f}mV."
+                if raw_voltage_uv is not None
+                else ""
+            )
             return [
                 InitialCheckIssue(
-                    "error",
+                    "warning",
                     "nvapi-voltage-reader",
-                    "NVAPI voltage reader returned no sane voltage",
-                    "PenguinBurner could not read a plausible live GPU voltage.",
-                    "This usually means the GPU/driver does not expose the voltage "
-                    "getter PenguinBurner needs for Auto-UV.",
+                    "NVAPI voltage reader returned no plausible idle voltage",
+                    "PenguinBurner could not read a plausible live GPU voltage "
+                    f"before starting a workload.{raw_detail}",
+                    "Auto-UV will continue and try to collect voltage telemetry "
+                    "under load. If live voltage stays unavailable, report the "
+                    "raw sample, driver version, GPU model, and whether LACT "
+                    "shows live GPU voltage on the same card.",
                 )
             ]
         return []
@@ -601,6 +610,22 @@ def _validate_nvml_clock_lock(
             if callable(close):
                 close()
     return []
+
+
+def _reader_last_raw_microvolts(reader) -> int | None:
+    getter = getattr(reader, "last_raw_microvolts", None)
+    if not callable(getter):
+        return None
+    try:
+        raw = getter()
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _format_issue_lines(issues: tuple[InitialCheckIssue, ...]) -> list[str]:

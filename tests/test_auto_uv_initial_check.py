@@ -209,6 +209,35 @@ def test_initial_check_rejects_nvapi_voltage_reader_failure(monkeypatch):
     assert "0mV" in result.format_for_user()
 
 
+def test_nvapi_voltage_idle_implausible_sample_is_warning(monkeypatch):
+    class FakeVoltageReader:
+        closed = False
+
+        def read_microvolts(self):
+            return None
+
+        def last_raw_microvolts(self):
+            return 0
+
+        def close(self):
+            self.closed = True
+
+    reader = FakeVoltageReader()
+    monkeypatch.setattr(
+        initial_check,
+        "create_hidden_voltage_reader",
+        lambda gpu_index: reader,
+    )
+
+    issues = initial_check._validate_nvapi_voltage_reader(0)
+
+    assert len(issues) == 1
+    assert issues[0].severity == "warning"
+    assert "idle voltage" in issues[0].title
+    assert "0mV" in issues[0].detail
+    assert reader.closed is True
+
+
 def test_initial_check_rejects_nvapi_setter_failure(monkeypatch):
     _patch_probe_dependencies(monkeypatch)
 

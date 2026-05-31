@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import ctypes
 
+from hidden_nvapi_gpu_selection import (
+    pci_bus_number_from_bus_id,
+    query_nvidia_smi_pci_bus_id,
+)
+
 
 NvAPI_Status = ctypes.c_int32
 NvU32 = ctypes.c_uint32
@@ -96,13 +101,21 @@ class HiddenNvapiVfCurveReader:
     _QUERY_UNLOAD = 0xD22BDD7E
     _QUERY_GET_ERROR_MESSAGE = 0x6C2D048C
     _QUERY_ENUM_PHYSICAL_GPUS = 0xE5AC921F
+    _QUERY_GET_BUS_ID = 0x1BE0B8E5
     _QUERY_GET_VF_INFO = 0x507B4B59
     _QUERY_GET_VF_STATUS = 0x21537AD4
     _QUERY_GET_VF_CONTROL = 0x23F1B133
     _QUERY_SET_VF_CONTROL = 0x0733E009
 
-    def __init__(self, gpu_index=0):
-        self._gpu_index = gpu_index
+    def __init__(self, gpu_index=0, *, pci_bus_id: str = ""):
+        self._gpu_index = int(gpu_index)
+        self._requested_pci_bus_id = (
+            str(pci_bus_id or "").strip()
+            or query_nvidia_smi_pci_bus_id(self._gpu_index)
+        )
+        self._requested_bus_number = pci_bus_number_from_bus_id(
+            self._requested_pci_bus_id
+        )
         self._lib = ctypes.CDLL("libnvidia-api.so.1")
         self._initialize = self._query_interface(self._QUERY_INITIALIZE, NvAPI_Status)
         self._unload = self._query_interface(self._QUERY_UNLOAD, NvAPI_Status)
@@ -116,6 +129,12 @@ class HiddenNvapiVfCurveReader:
             self._QUERY_ENUM_PHYSICAL_GPUS,
             NvAPI_Status,
             ctypes.POINTER(NvPhysicalGpuHandle),
+            ctypes.POINTER(NvU32),
+        )
+        self._get_bus_id = self._try_query_interface(
+            self._QUERY_GET_BUS_ID,
+            NvAPI_Status,
+            NvPhysicalGpuHandle,
             ctypes.POINTER(NvU32),
         )
         self._get_vf_info = self._query_interface(
@@ -157,6 +176,12 @@ class HiddenNvapiVfCurveReader:
             raise RuntimeError(f"nvapi_QueryInterface({interface_id:#x}) returned NULL")
         return ctypes.CFUNCTYPE(restype, *argtypes)(ptr)
 
+    def _try_query_interface(self, interface_id, restype, *argtypes):
+        try:
+            return self._query_interface(interface_id, restype, *argtypes)
+        except RuntimeError:
+            return None
+
     @staticmethod
     def _make_version(struct_type, version):
         return (ctypes.sizeof(struct_type) & 0xFFFF) | (version << 16)
@@ -194,7 +219,17 @@ class HiddenNvapiVfCurveReader:
                 f"GPU index {self._gpu_index} is out of range for {count.value} GPU(s)"
             )
 
-        self._gpu = handles[self._gpu_index]
+        self._gpu = self._select_gpu_handle(handles, count.value)
+
+    def _select_gpu_handle(self, handles, count: int):
+        requested_bus = self._requested_bus_number
+        if requested_bus is not None and self._get_bus_id is not None:
+            for index in range(int(count)):
+                bus_id = NvU32(0)
+                rc = int(self._get_bus_id(handles[index], ctypes.byref(bus_id)))
+                if rc == 0 and int(bus_id.value) == int(requested_bus):
+                    return handles[index]
+        return handles[self._gpu_index]
 
     def _read_points(self):
         if not self._initialized or self._gpu is None:

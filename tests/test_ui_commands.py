@@ -107,6 +107,27 @@ def test_ui_scan_command_passes_desktop_user_through_pkexec(monkeypatch) -> None
     assert "--auto-uv-require-final-choice" in command
 
 
+def test_desktop_session_env_infers_xauthority_for_x11_forwarding(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    xauthority = tmp_path / ".Xauthority"
+    xauthority.write_text("cookie", encoding="utf-8")
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setenv("DISPLAY", "localhost:10.0")
+    monkeypatch.delenv("XAUTHORITY", raising=False)
+    monkeypatch.setattr(
+        commands.pwd,
+        "getpwnam",
+        lambda user: SimpleNamespace(pw_dir=str(tmp_path)),
+    )
+
+    env = commands.desktop_session_env()
+
+    assert "DISPLAY=localhost:10.0" in env
+    assert f"XAUTHORITY={xauthority}" in env
+
+
 def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
     monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 2)

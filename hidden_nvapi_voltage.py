@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import ctypes
 
+from hidden_nvapi_gpu_selection import (
+    pci_bus_number_from_bus_id,
+    query_nvidia_smi_pci_bus_id,
+)
+
 
 NvAPI_Status = ctypes.c_int32
 NvU32 = ctypes.c_uint32
@@ -31,10 +36,18 @@ class HiddenNvapiVoltageReader:
     _QUERY_UNLOAD = 0xD22BDD7E
     _QUERY_GET_ERROR_MESSAGE = 0x6C2D048C
     _QUERY_ENUM_PHYSICAL_GPUS = 0xE5AC921F
+    _QUERY_GET_BUS_ID = 0x1BE0B8E5
     _QUERY_VOLTAGE = 0x465F9BCF
 
-    def __init__(self, gpu_index=0):
+    def __init__(self, gpu_index=0, *, pci_bus_id: str = ""):
         self._gpu_index = int(gpu_index)
+        self._requested_pci_bus_id = (
+            str(pci_bus_id or "").strip()
+            or query_nvidia_smi_pci_bus_id(self._gpu_index)
+        )
+        self._requested_bus_number = pci_bus_number_from_bus_id(
+            self._requested_pci_bus_id
+        )
         self._lib = ctypes.CDLL("libnvidia-api.so.1")
         self._initialize = self._query_interface(self._QUERY_INITIALIZE, NvAPI_Status)
         self._unload = self._query_interface(self._QUERY_UNLOAD, NvAPI_Status)
@@ -50,6 +63,12 @@ class HiddenNvapiVoltageReader:
             ctypes.POINTER(NvPhysicalGpuHandle),
             ctypes.POINTER(NvU32),
         )
+        self._get_bus_id = self._try_query_interface(
+            self._QUERY_GET_BUS_ID,
+            NvAPI_Status,
+            NvPhysicalGpuHandle,
+            ctypes.POINTER(NvU32),
+        )
         self._get_voltage = self._query_interface(
             self._QUERY_VOLTAGE,
             NvAPI_Status,
@@ -58,6 +77,7 @@ class HiddenNvapiVoltageReader:
         )
         self._initialized = False
         self._gpu = None
+        self._last_raw_microvolts: int | None = None
         try:
             self._initialize_session()
         except Exception:
@@ -72,6 +92,12 @@ class HiddenNvapiVoltageReader:
         if not ptr:
             raise RuntimeError(f"nvapi_QueryInterface({interface_id:#x}) returned NULL")
         return ctypes.CFUNCTYPE(restype, *argtypes)(ptr)
+
+    def _try_query_interface(self, interface_id, restype, *argtypes):
+        try:
+            return self._query_interface(interface_id, restype, *argtypes)
+        except RuntimeError:
+            return None
 
     @staticmethod
     def _make_version(struct_type, version):
@@ -100,7 +126,17 @@ class HiddenNvapiVoltageReader:
                 f"GPU index {self._gpu_index} is out of range for {count.value} GPU(s)"
             )
 
-        self._gpu = handles[self._gpu_index]
+        self._gpu = self._select_gpu_handle(handles, count.value)
+
+    def _select_gpu_handle(self, handles, count: int):
+        requested_bus = self._requested_bus_number
+        if requested_bus is not None and self._get_bus_id is not None:
+            for index in range(int(count)):
+                bus_id = NvU32(0)
+                rc = int(self._get_bus_id(handles[index], ctypes.byref(bus_id)))
+                if rc == 0 and int(bus_id.value) == int(requested_bus):
+                    return handles[index]
+        return handles[self._gpu_index]
 
     def status_text(self, status):
         buf = ctypes.create_string_buffer(NVAPI_SHORT_STRING_MAX)
@@ -110,6 +146,14 @@ class HiddenNvapiVoltageReader:
         return f"status={status}"
 
     def read_microvolts(self, *_ignored):
+        voltage_uv = self.read_raw_microvolts()
+        if voltage_uv is None:
+            return None
+        if voltage_uv < 300_000 or voltage_uv > 1_500_000:
+            return None
+        return voltage_uv
+
+    def read_raw_microvolts(self):
         if not self._initialized or self._gpu is None:
             return None
 
@@ -122,9 +166,11 @@ class HiddenNvapiVoltageReader:
             )
 
         voltage_uv = int(data.value_uv)
-        if voltage_uv < 300_000 or voltage_uv > 1_500_000:
-            return None
+        self._last_raw_microvolts = voltage_uv
         return voltage_uv
+
+    def last_raw_microvolts(self) -> int | None:
+        return self._last_raw_microvolts
 
     def close(self):
         if self._initialized:
