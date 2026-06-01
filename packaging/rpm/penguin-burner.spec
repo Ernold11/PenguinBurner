@@ -1,6 +1,6 @@
 Name:           penguin-burner
-Version:        0.2
-Release:        2%{?dist}
+Version:        0.2.5
+Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
 %global debug_package %{nil}
@@ -17,13 +17,12 @@ BuildRequires:  python3-setuptools
 BuildRequires:  python3-wheel
 BuildRequires:  desktop-file-utils
 
-Requires:       python3-pyside6
-Requires:       python3-colorama
-Requires:       python3-pyqtgraph
+Requires:       python3-pyside6 >= 6.7
+Requires:       python3-colorama >= 0.4
+Requires:       python3-pyqtgraph >= 0.13
 Requires:       hicolor-icon-theme
 Requires:       bash
 Requires:       systemd
-Requires:       (nvidia-driver-cuda >= 3:580 or xorg-x11-drv-nvidia-cuda >= 3:580 or xorg-x11-drv-nvidia-580xx-cuda >= 3:580)
 
 %description
 PenguinBurner is an NVIDIA GPU automatic undervolting tool. It helps you
@@ -106,6 +105,11 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Mon Jun 01 2026 PenguinBurner contributors <noreply@github.com> - 0.2.5-1
+- Package PenguinBurner 0.2.5.
+- Constrain Fedora Python GUI dependency versions.
+- Do not hard-require distro-packaged NVIDIA drivers.
+
 * Wed May 27 2026 PenguinBurner contributors <noreply@github.com> - 0.2-2
 - Include nvml_perf_cap_reason in the RPM Python file manifest.
 

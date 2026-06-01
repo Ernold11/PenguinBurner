@@ -16,6 +16,7 @@ PY
 
 rm -rf "$outdir"
 mkdir -p "$outdir"
+outdir="$(cd "$outdir" && pwd)"
 
 tarball="$outdir/$name-$version.tar.gz"
 
@@ -29,7 +30,7 @@ tar \
     -czf "$tarball" .
 
 rpmbuild -bs packaging/rpm/penguin-burner.spec \
-    --define "_sourcedir $PWD/$outdir" \
-    --define "_srcrpmdir $PWD/$outdir"
+    --define "_sourcedir $outdir" \
+    --define "_srcrpmdir $outdir"
 
 ls -1 "$outdir"/*.src.rpm

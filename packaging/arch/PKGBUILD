@@ -1,7 +1,7 @@
 # Maintainer: PenguinBurner contributors
 
 pkgname=penguin-burner
-pkgver=0.2
+pkgver=0.2.5
 pkgrel=1
 pkgdesc='NVIDIA GPU automatic undervolting and fine tuning tool'
 arch=('x86_64')
@@ -10,10 +10,9 @@ license=('GPL-3.0-or-later')
 depends=(
   'bash'
   'hicolor-icon-theme'
-  'nvidia-utils>=580'
   'pyside6>=6.7'
   'python'
-  'python-colorama'
+  'python-colorama>=0.4'
   'python-pyqtgraph>=0.13'
 )
 makedepends=(

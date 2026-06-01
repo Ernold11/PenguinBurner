@@ -29,12 +29,34 @@ def test_native_packages_install_pyqtgraph_colorama_runtime_dependency() -> None
     debian_control = Path("packaging/debian/control").read_text(encoding="utf-8")
     rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(encoding="utf-8")
 
-    assert "'python-colorama'" in arch_pkgbuild
+    assert "'python-colorama>=0.4'" in arch_pkgbuild
     assert "'python-pyqtgraph>=0.13'" in arch_pkgbuild
-    assert " python3-colorama," in debian_control
+    assert " python3-colorama (>= 0.4)," in debian_control
     assert " python3-pyqtgraph (>= 0.13)," in debian_control
-    assert "Requires:       python3-colorama" in rpm_spec
-    assert "Requires:       python3-pyqtgraph" in rpm_spec
+    assert "Requires:       python3-colorama >= 0.4" in rpm_spec
+    assert "Requires:       python3-pyqtgraph >= 0.13" in rpm_spec
+
+
+def test_native_packages_install_pyside6_runtime_dependency() -> None:
+    arch_pkgbuild = Path("packaging/arch/PKGBUILD").read_text(encoding="utf-8")
+    debian_control = Path("packaging/debian/control").read_text(encoding="utf-8")
+    rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(encoding="utf-8")
+
+    assert "'pyside6>=6.7'" in arch_pkgbuild
+    assert " python3-pyside6.qtcore (>= 6.7)," in debian_control
+    assert " python3-pyside6.qtgui (>= 6.7)," in debian_control
+    assert " python3-pyside6.qtwidgets (>= 6.7)," in debian_control
+    assert "Requires:       python3-pyside6 >= 6.7" in rpm_spec
+
+
+def test_native_package_versions_match_python_project() -> None:
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    version = metadata["project"]["version"]
+    arch_pkgbuild = Path("packaging/arch/PKGBUILD").read_text(encoding="utf-8")
+    rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(encoding="utf-8")
+
+    assert f"pkgver={version}" in arch_pkgbuild
+    assert f"Version:        {version}" in rpm_spec
 
 
 def test_console_scripts_use_gui_default_and_explicit_cli_names() -> None:
@@ -110,14 +132,28 @@ def test_package_installs_shared_subprocess_locale_helper() -> None:
     assert "q2rtx_stability" in py_modules
 
 
-def test_fedora_rpm_accepts_fedora_and_rpmfusion_nvidia_drivers() -> None:
+def test_fedora_rpm_does_not_hard_require_distro_nvidia_drivers() -> None:
     spec_text = Path("packaging/rpm/penguin-burner.spec").read_text(
         encoding="utf-8"
     )
 
-    assert "nvidia-driver-cuda >= 3:580" in spec_text
-    assert "xorg-x11-drv-nvidia-cuda >= 3:580" in spec_text
-    assert "xorg-x11-drv-nvidia-580xx-cuda >= 3:580" in spec_text
+    assert "Requires:       nvidia-driver" not in spec_text
+    assert "Requires:       xorg-x11-drv-nvidia" not in spec_text
+    assert "nvidia-driver-cuda >=" not in spec_text
+    assert "xorg-x11-drv-nvidia-cuda >=" not in spec_text
+    assert "xorg-x11-drv-nvidia-580xx-cuda >=" not in spec_text
+
+
+def test_native_packages_do_not_hard_require_distro_nvidia_driver_packages() -> None:
+    arch_pkgbuild = Path("packaging/arch/PKGBUILD").read_text(encoding="utf-8")
+    debian_control = Path("packaging/debian/control").read_text(encoding="utf-8")
+    rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(encoding="utf-8")
+
+    assert "'nvidia-utils" not in arch_pkgbuild
+    assert " nvidia-driver-" not in debian_control
+    assert " nvidia-utils-" not in debian_control
+    assert "Requires:       nvidia-driver" not in rpm_spec
+    assert "Requires:       xorg-x11-drv-nvidia" not in rpm_spec
 
 
 def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
