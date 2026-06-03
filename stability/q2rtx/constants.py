@@ -17,10 +17,20 @@ DEFAULT_INSTALL_DATA_DIR = Path.home() / ".local" / "share" / "PenguinBurner" / 
 DEFAULT_INSTALL_CACHE_DIR = Path.home() / ".cache" / "PenguinBurner" / "q2rtx"
 
 Q2RTX_RELEASES_API_URL = "https://api.github.com/repos/NVIDIA/Q2RTX/releases/latest"
+Q2RTX_RELEASES_LATEST_URL = "https://github.com/NVIDIA/Q2RTX/releases/latest"
 Q2RTX_GITHUB_RELEASES_URL = "https://github.com/NVIDIA/Q2RTX/releases"
+Q2RTX_RELEASE_DOWNLOAD_BASE_URLS = (
+    "https://github.com/NVIDIA/Q2RTX/releases/download",
+)
 OPENSSL_111_VERSION = "1.1.1w"
 OPENSSL_111_COMPAT_RPM_INDEX_URL = (
     "https://mirror.stream.centos.org/9-stream/AppStream/x86_64/os/Packages/"
+)
+OPENSSL_111_COMPAT_RPM_INDEX_URLS = (
+    OPENSSL_111_COMPAT_RPM_INDEX_URL,
+    "https://mirror.rackspace.com/centos-stream/9-stream/AppStream/x86_64/os/Packages/",
+    "https://mirrors.dotsrc.org/pub/centos-stream/9-stream/AppStream/x86_64/os/Packages/",
+    "https://ftp2.osuosl.org/pub/centos-stream/9-stream/AppStream/x86_64/os/Packages/",
 )
 OPENSSL_111_REQUIRED_LIBS = ("libssl.so.1.1", "libcrypto.so.1.1")
 PAK_ENTRY_SIZE = 64
