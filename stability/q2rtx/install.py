@@ -25,11 +25,13 @@ from .assets import _effective_q2rtx_xdg_dir, resolve_q2rtx_executable
 from .constants import (
     DEFAULT_INSTALL_CACHE_DIR,
     DEFAULT_INSTALL_DATA_DIR,
-    OPENSSL_111_COMPAT_RPM_INDEX_URL,
+    OPENSSL_111_COMPAT_RPM_INDEX_URLS,
     OPENSSL_111_REQUIRED_LIBS,
     OPENSSL_111_VERSION,
+    Q2RTX_RELEASE_DOWNLOAD_BASE_URLS,
     Q2RTX_GITHUB_RELEASES_URL,
     Q2RTX_RELEASES_API_URL,
+    Q2RTX_RELEASES_LATEST_URL,
 )
 from .models import Q2RTXInstallResult, StabilityTestError
 
@@ -75,6 +77,26 @@ def _require_https_url(url: str) -> str:
     if parsed.scheme != "https" or not parsed.netloc:
         raise StabilityTestError(f"refusing non-HTTPS download URL: {url}")
     return url
+
+
+def _unique_https_urls(urls: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    unique: list[str] = []
+    for url in urls:
+        clean_url = _require_https_url(str(url).strip())
+        if clean_url not in unique:
+            unique.append(clean_url)
+    return tuple(unique)
+
+
+def _join_mirror_url(base_url: str, filename: str) -> str:
+    base = _require_https_url(base_url)
+    if not base.endswith("/"):
+        base += "/"
+    return _require_https_url(urllib_parse.urljoin(base, filename))
+
+
+def _format_attempt_errors(errors: list[tuple[str, str]]) -> str:
+    return "; ".join(f"{url}: {detail}" for url, detail in errors)
 
 
 def _emit_dependency_progress(
@@ -124,10 +146,36 @@ def _download_text(url: str) -> str:
     except urllib_error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace").strip()
         if detail:
-            raise StabilityTestError(f"download failed ({exc.code}): {detail}") from exc
-        raise StabilityTestError(f"download failed with status {exc.code}") from exc
+            raise StabilityTestError(
+                f"download failed from {url} ({exc.code}): {detail}"
+            ) from exc
+        raise StabilityTestError(
+            f"download failed from {url} with status {exc.code}"
+        ) from exc
     except urllib_error.URLError as exc:
-        raise StabilityTestError(f"download failed: {exc}") from exc
+        raise StabilityTestError(f"download failed from {url}: {exc}") from exc
+    except TimeoutError as exc:
+        raise StabilityTestError(
+            f"download timed out while reading {url}: {exc}"
+        ) from exc
+    except OSError as exc:
+        raise StabilityTestError(f"download failed from {url}: {exc}") from exc
+
+
+def _download_text_from_urls(
+    urls: tuple[str, ...],
+    *,
+    label: str,
+) -> tuple[str, str]:
+    errors: list[tuple[str, str]] = []
+    for url in _unique_https_urls(urls):
+        try:
+            return url, _download_text(url)
+        except StabilityTestError as exc:
+            errors.append((url, str(exc)))
+    raise StabilityTestError(
+        f"failed to fetch {label}; tried {_format_attempt_errors(errors)}"
+    )
 
 
 def _github_json(url: str) -> dict:
@@ -146,13 +194,19 @@ def _github_json(url: str) -> dict:
         detail = exc.read().decode("utf-8", errors="replace").strip()
         if detail:
             raise StabilityTestError(
-                f"GitHub API request failed ({exc.code}): {detail}"
+                f"GitHub API request failed for {url} ({exc.code}): {detail}"
             ) from exc
         raise StabilityTestError(
-            f"GitHub API request failed with status {exc.code}"
+            f"GitHub API request failed for {url} with status {exc.code}"
         ) from exc
     except urllib_error.URLError as exc:
-        raise StabilityTestError(f"failed to contact GitHub: {exc}") from exc
+        raise StabilityTestError(f"failed to contact GitHub at {url}: {exc}") from exc
+    except TimeoutError as exc:
+        raise StabilityTestError(
+            f"GitHub API request timed out while reading {url}: {exc}"
+        ) from exc
+    except OSError as exc:
+        raise StabilityTestError(f"GitHub API request failed for {url}: {exc}") from exc
 
     try:
         data = json.loads(payload.decode("utf-8"))
@@ -163,7 +217,22 @@ def _github_json(url: str) -> dict:
     return data
 
 
-def fetch_latest_q2rtx_release_metadata() -> tuple[str, str, str]:
+def _q2rtx_release_asset_urls(
+    tag_name: str,
+    asset_name: str,
+    primary_url: str | None = None,
+) -> tuple[str, ...]:
+    urls: list[str] = []
+    if primary_url:
+        urls.append(primary_url)
+    tag_path = urllib_parse.quote(tag_name.strip(), safe="")
+    asset_path = urllib_parse.quote(asset_name.strip(), safe="")
+    for base_url in Q2RTX_RELEASE_DOWNLOAD_BASE_URLS:
+        urls.append(_join_mirror_url(base_url, f"{tag_path}/{asset_path}"))
+    return _unique_https_urls(tuple(urls))
+
+
+def _fetch_latest_q2rtx_release_metadata_from_api() -> tuple[str, str, str]:
     data = _github_json(Q2RTX_RELEASES_API_URL)
     tag_name = str(data.get("tag_name", "")).strip()
     if not tag_name:
@@ -187,6 +256,46 @@ def fetch_latest_q2rtx_release_metadata() -> tuple[str, str, str]:
 
     raise StabilityTestError(
         f"no Linux tar.gz asset found in the latest Q2RTX release; see {Q2RTX_GITHUB_RELEASES_URL}"
+    )
+
+
+def _fetch_latest_q2rtx_release_metadata_from_page() -> tuple[str, str, str]:
+    _source_url, text = _download_text_from_urls(
+        (Q2RTX_RELEASES_LATEST_URL, Q2RTX_GITHUB_RELEASES_URL),
+        label="Q2RTX release page",
+    )
+    tag_matches = re.findall(
+        r"/NVIDIA/Q2RTX/releases/tag/(?P<tag>v[0-9][A-Za-z0-9_.-]*)",
+        text,
+    )
+    if not tag_matches:
+        tag_matches = re.findall(r"\b(?P<tag>v[0-9]+\.[0-9]+(?:\.[0-9]+)?)\b", text)
+    if not tag_matches:
+        raise StabilityTestError(
+            f"could not find a Q2RTX release tag in {Q2RTX_GITHUB_RELEASES_URL}"
+        )
+    tag_name = tag_matches[0]
+    version = tag_name[1:] if tag_name.startswith("v") else tag_name
+    asset_name = f"q2rtx-{version}-linux.tar.gz"
+    asset_url = _q2rtx_release_asset_urls(tag_name, asset_name)[0]
+    return tag_name, asset_name, asset_url
+
+
+def fetch_latest_q2rtx_release_metadata() -> tuple[str, str, str]:
+    errors: list[tuple[str, str]] = []
+    try:
+        return _fetch_latest_q2rtx_release_metadata_from_api()
+    except StabilityTestError as exc:
+        errors.append((Q2RTX_RELEASES_API_URL, str(exc)))
+
+    try:
+        return _fetch_latest_q2rtx_release_metadata_from_page()
+    except StabilityTestError as exc:
+        errors.append((Q2RTX_RELEASES_LATEST_URL, str(exc)))
+
+    raise StabilityTestError(
+        "failed to fetch latest Q2RTX release metadata; tried "
+        + _format_attempt_errors(errors)
     )
 
 
@@ -296,13 +405,21 @@ def _download_file(
     except urllib_error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace").strip()
         if detail:
-            raise StabilityTestError(f"download failed ({exc.code}): {detail}") from exc
-        raise StabilityTestError(f"download failed with status {exc.code}") from exc
+            raise StabilityTestError(
+                f"download failed from {url} ({exc.code}): {detail}"
+            ) from exc
+        raise StabilityTestError(
+            f"download failed from {url} with status {exc.code}"
+        ) from exc
     except urllib_error.URLError as exc:
-        raise StabilityTestError(f"download failed: {exc}") from exc
+        raise StabilityTestError(f"download failed from {url}: {exc}") from exc
+    except TimeoutError as exc:
+        raise StabilityTestError(
+            f"download timed out while reading {url}: {exc}"
+        ) from exc
     except OSError as exc:
         raise StabilityTestError(
-            f"failed writing download to {tmp_path}: {exc}"
+            f"failed writing download from {url} to {tmp_path}: {exc}"
         ) from exc
 
     try:
@@ -312,6 +429,57 @@ def _download_file(
             f"failed to finalize download at {destination}: {exc}"
         ) from exc
     claim_desktop_user_ownership(destination)
+
+
+def _download_file_from_urls(
+    urls: tuple[str, ...],
+    destination: Path,
+    *,
+    label: str,
+    show_progress: bool,
+    progress_callback: DependencyProgressCallback | None = None,
+    progress_start_pct: float = 0.0,
+    progress_end_pct: float = 100.0,
+) -> str:
+    errors: list[tuple[str, str]] = []
+    source_urls = _unique_https_urls(urls)
+    for index, url in enumerate(source_urls):
+        try:
+            _download_file(
+                url,
+                destination,
+                label=label,
+                show_progress=show_progress,
+                progress_callback=progress_callback,
+                progress_start_pct=progress_start_pct,
+                progress_end_pct=progress_end_pct,
+            )
+            return url
+        except StabilityTestError as exc:
+            errors.append((url, str(exc)))
+            has_next_source = index < len(source_urls) - 1
+            detail = (
+                f"{label} download failed; trying mirror"
+                if has_next_source
+                else f"{label} download failed; no mirrors left"
+            )
+            _emit_dependency_progress(
+                progress_callback,
+                progress_start_pct,
+                detail,
+                label=label,
+                url=url,
+                error=str(exc),
+            )
+            if show_progress:
+                suffix = "trying next mirror" if has_next_source else "no mirrors left"
+                print(
+                    f"Download failed from {url}; {suffix}: {exc}",
+                    flush=True,
+                )
+    raise StabilityTestError(
+        f"failed to download {label}; tried {_format_attempt_errors(errors)}"
+    )
 
 
 def _extract_q2rtx_archive(archive_path: Path, install_dir: Path) -> None:
@@ -378,18 +546,40 @@ def _openssl_compat_rpm_archive_path(cache_dir: Path, rpm_name: str) -> Path:
     return cache_dir / rpm_name
 
 
-def _fetch_latest_openssl_compat_rpm_metadata() -> tuple[str, str]:
-    text = _download_text(OPENSSL_111_COMPAT_RPM_INDEX_URL)
-    matches = re.findall(
-        r'href="(compat-openssl11-[^"]+\.x86_64\.rpm)"',
-        text,
-    )
-    if not matches:
-        raise StabilityTestError(
-            "could not find compat-openssl11 x86_64 RPM in the CentOS Stream AppStream index"
+def _openssl_compat_rpm_urls(rpm_name: str, first_index_url: str) -> tuple[str, ...]:
+    return _unique_https_urls(
+        tuple(
+            _join_mirror_url(index_url, rpm_name)
+            for index_url in (first_index_url, *OPENSSL_111_COMPAT_RPM_INDEX_URLS)
         )
-    rpm_name = matches[-1]
-    return rpm_name, OPENSSL_111_COMPAT_RPM_INDEX_URL + rpm_name
+    )
+
+
+def _fetch_latest_openssl_compat_rpm_metadata() -> tuple[str, tuple[str, ...]]:
+    errors: list[tuple[str, str]] = []
+    for index_url in _unique_https_urls(OPENSSL_111_COMPAT_RPM_INDEX_URLS):
+        try:
+            text = _download_text(index_url)
+        except StabilityTestError as exc:
+            errors.append((index_url, str(exc)))
+            continue
+        matches = re.findall(
+            r'href="(compat-openssl11-[^"]+\.x86_64\.rpm)"',
+            text,
+        )
+        if matches:
+            rpm_name = matches[-1]
+            return rpm_name, _openssl_compat_rpm_urls(rpm_name, index_url)
+        errors.append(
+            (
+                index_url,
+                "could not find compat-openssl11 x86_64 RPM in package index",
+            )
+        )
+    raise StabilityTestError(
+        "could not find compat-openssl11 x86_64 RPM in any CentOS Stream "
+        f"AppStream package index; tried {_format_attempt_errors(errors)}"
+    )
 
 
 def _copy_preserving_link(src: Path, dst: Path) -> None:
@@ -773,11 +963,11 @@ def _ensure_openssl_111_compat_libs(
         "Checking OpenSSL compatibility libraries",
     )
     cache_dir = default_q2rtx_install_cache_dir() / "compat-rpms"
-    rpm_name, rpm_url = _fetch_latest_openssl_compat_rpm_metadata()
+    rpm_name, rpm_urls = _fetch_latest_openssl_compat_rpm_metadata()
     rpm_path = _openssl_compat_rpm_archive_path(cache_dir, rpm_name)
     if not rpm_path.is_file():
-        _download_file(
-            rpm_url,
+        _download_file_from_urls(
+            rpm_urls,
             rpm_path,
             label=f"compat-openssl11 RPM ({rpm_name})",
             show_progress=show_progress,
@@ -967,9 +1157,11 @@ def install_latest_q2rtx(
         asset=asset_name,
     )
 
+    asset_urls = _q2rtx_release_asset_urls(tag_name, asset_name, asset_url)
+    selected_asset_url = asset_url
     if not archive_path.is_file():
-        _download_file(
-            asset_url,
+        selected_asset_url = _download_file_from_urls(
+            asset_urls,
             archive_path,
             label=f"Q2RTX {version} Linux build",
             show_progress=show_progress,
@@ -1050,7 +1242,7 @@ def install_latest_q2rtx(
     return Q2RTXInstallResult(
         version=version,
         asset_name=asset_name,
-        asset_url=asset_url,
+        asset_url=selected_asset_url,
         archive_path=archive_path,
         install_dir=install_dir,
         executable_path=executable_path,

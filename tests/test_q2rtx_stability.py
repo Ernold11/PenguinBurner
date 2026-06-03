@@ -5,14 +5,19 @@ from pathlib import Path
 import sys
 import tarfile
 
+import stability.q2rtx.install as q2rtx_install
 import stability.q2rtx.runtime as q2rtx_runtime
 from stability.q2rtx.install import (
     _copy_system_openssl_111_libs,
+    _download_file_from_urls,
     _emit_dependency_progress,
     _extract_compat_openssl_rpm,
     _extract_q2rtx_archive,
+    _fetch_latest_openssl_compat_rpm_metadata,
     _progress_range_value,
+    _q2rtx_release_asset_urls,
     _require_https_url,
+    fetch_latest_q2rtx_release_metadata,
 )
 from stability.q2rtx.models import (
     Q2RTXStabilityConfig,
@@ -73,6 +78,113 @@ def test_dependency_download_progress_maps_to_overall_range() -> None:
     assert _progress_range_value(10.0, 70.0, 0.0) == 10.0
     assert _progress_range_value(10.0, 70.0, 50.0) == 40.0
     assert _progress_range_value(10.0, 70.0, 100.0) == 70.0
+
+
+def test_download_file_from_urls_retries_next_source(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    destination = tmp_path / "payload.rpm"
+    calls: list[str] = []
+
+    def fake_download_file(url: str, destination: Path, **_kwargs) -> None:
+        calls.append(url)
+        if "primary.example" in url:
+            raise StabilityTestError("read timeout")
+        destination.write_bytes(b"ok")
+
+    monkeypatch.setattr(q2rtx_install, "_download_file", fake_download_file)
+
+    selected_url = _download_file_from_urls(
+        (
+            "https://primary.example/payload.rpm",
+            "https://mirror.example/payload.rpm",
+        ),
+        destination,
+        label="test payload",
+        show_progress=False,
+    )
+
+    assert selected_url == "https://mirror.example/payload.rpm"
+    assert calls == [
+        "https://primary.example/payload.rpm",
+        "https://mirror.example/payload.rpm",
+    ]
+    assert destination.read_bytes() == b"ok"
+
+
+def test_q2rtx_release_metadata_falls_back_to_release_page(monkeypatch) -> None:
+    def fail_github_json(_url: str) -> dict:
+        raise StabilityTestError("api timeout")
+
+    def fake_download_text_from_urls(urls: tuple[str, ...], *, label: str):
+        assert label == "Q2RTX release page"
+        return urls[0], '<a href="/NVIDIA/Q2RTX/releases/tag/v1.8.1">latest</a>'
+
+    monkeypatch.setattr(q2rtx_install, "_github_json", fail_github_json)
+    monkeypatch.setattr(
+        q2rtx_install,
+        "_download_text_from_urls",
+        fake_download_text_from_urls,
+    )
+
+    tag_name, asset_name, asset_url = fetch_latest_q2rtx_release_metadata()
+
+    assert tag_name == "v1.8.1"
+    assert asset_name == "q2rtx-1.8.1-linux.tar.gz"
+    assert asset_url == (
+        "https://github.com/NVIDIA/Q2RTX/releases/download/"
+        "v1.8.1/q2rtx-1.8.1-linux.tar.gz"
+    )
+
+
+def test_q2rtx_asset_urls_include_primary_and_release_base_mirrors() -> None:
+    urls = _q2rtx_release_asset_urls(
+        "v1.8.1",
+        "q2rtx-1.8.1-linux.tar.gz",
+        "https://download.example/q2rtx-1.8.1-linux.tar.gz",
+    )
+
+    assert urls == (
+        "https://download.example/q2rtx-1.8.1-linux.tar.gz",
+        "https://github.com/NVIDIA/Q2RTX/releases/download/v1.8.1/q2rtx-1.8.1-linux.tar.gz",
+    )
+
+
+def test_openssl_compat_rpm_metadata_tries_mirror_indexes(monkeypatch) -> None:
+    calls: list[str] = []
+    rpm_name = "compat-openssl11-1.1.1k-5.el9.3.x86_64.rpm"
+
+    monkeypatch.setattr(
+        q2rtx_install,
+        "OPENSSL_111_COMPAT_RPM_INDEX_URLS",
+        (
+            "https://primary.example/Packages/",
+            "https://mirror.example/Packages/",
+            "https://backup.example/Packages/",
+        ),
+    )
+
+    def fake_download_text(url: str) -> str:
+        calls.append(url)
+        if "primary.example" in url:
+            raise StabilityTestError("read timeout")
+        return f'<a href="{rpm_name}">{rpm_name}</a>'
+
+    monkeypatch.setattr(q2rtx_install, "_download_text", fake_download_text)
+
+    resolved_name, rpm_urls = _fetch_latest_openssl_compat_rpm_metadata()
+
+    assert resolved_name == rpm_name
+    assert calls == [
+        "https://primary.example/Packages/",
+        "https://mirror.example/Packages/",
+    ]
+    assert rpm_urls == (
+        f"https://mirror.example/Packages/{rpm_name}",
+        f"https://primary.example/Packages/{rpm_name}",
+        f"https://backup.example/Packages/{rpm_name}",
+    )
 
 
 def test_q2rtx_archive_extracts_regular_payload(tmp_path: Path) -> None:
