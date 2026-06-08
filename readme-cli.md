@@ -327,6 +327,11 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--stability-log-dir PATH`: write `--stability-test` logs to a specific directory.
 - `--stability-q2rtx-dir PATH`: use an existing Q2RTX install/source directory instead of the managed install.
 - `--stability-q2rtx-binary PATH`: use an explicit Q2RTX executable path instead of the managed install.
+- `--check-latency-layer`: check Vulkan loader discovery for the opt-in PenguinBurner latency telemetry layer and print Steam launch options.
+
+The normal runtime also opens a latency telemetry socket at
+`$XDG_RUNTIME_DIR/penguin-burner/latency.sock` and logs
+`event=latency-meter` summaries when the opt-in Vulkan layer sends samples.
 
 #### Auto-UV Aggressiveness Tuning
 

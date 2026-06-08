@@ -1,0 +1,21 @@
+{
+  "file_format_version": "1.2.1",
+  "layer": {
+    "name": "VK_LAYER_PENGUINBURNER_latency",
+    "type": "GLOBAL",
+    "api_version": "1.4.0",
+    "library_path": "@PB_LAYER_LIBRARY_PATH@",
+    "implementation_version": "1",
+    "description": "PenguinBurner latency telemetry observer",
+    "functions": {
+      "vkGetInstanceProcAddr": "vkGetInstanceProcAddr",
+      "vkGetDeviceProcAddr": "vkGetDeviceProcAddr"
+    },
+    "enable_environment": {
+      "PENGUIN_BURNER_LATENCY_LAYER": "1"
+    },
+    "disable_environment": {
+      "DISABLE_PENGUIN_BURNER_LATENCY_LAYER": ""
+    }
+  }
+}

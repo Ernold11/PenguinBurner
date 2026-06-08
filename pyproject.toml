@@ -100,6 +100,7 @@ packages = [
   "cli",
   "initial_check",
   "lact",
+  "latency_telemetry",
   "manual_fan_curve_editor",
   "manual_uv_curve_editor",
   "runtime_fan_control",

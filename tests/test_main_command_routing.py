@@ -20,6 +20,7 @@ def _args(**overrides):
         "json_events": False,
         "delete_auto_uv_profiles": [],
         "install_q2rtx": False,
+        "check_latency_layer": False,
         "config": "/tmp/config.json",
         "gpu_index": None,
         "stability_test": False,
@@ -121,6 +122,30 @@ def test_main_command_routing_lists_profiles_without_loading_runtime_config():
 
     assert result.handled is True
     assert calls["prints"][0][0] == ("table:profile-a",)
+
+
+def test_main_command_routing_checks_latency_layer_without_loading_runtime_config():
+    deps, calls = _deps(
+        load_config=lambda config_path: (_ for _ in ()).throw(
+            AssertionError("config should not be loaded")
+        ),
+        check_latency_layer=lambda: {
+            "ok": True,
+            "layer_name": "VK_LAYER_PENGUINBURNER_latency",
+            "launch_options": "PENGUIN_BURNER_LATENCY_LAYER=1 %command%",
+        },
+    )
+
+    result = route_main_command(
+        args=_args(check_latency_layer=True),
+        argv=["--check-latency-layer"],
+        explicit_cli_args=True,
+        interactive=False,
+        dependencies=deps,
+    )
+
+    assert result.handled is True
+    assert "PenguinBurner latency layer: found" in calls["prints"][0][0][0]
 
 
 def test_main_command_routing_rejects_clear_and_fresh_together():

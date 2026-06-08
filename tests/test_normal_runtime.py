@@ -102,6 +102,7 @@ def test_normal_runtime_wires_startup_vf_policy_and_fan_loop():
         gpu_policy_controller_factory=lambda **kwargs: gpu_policy_controller,
         configure_runtime_vf_curve_policy=configure,
         run_runtime_fan_control_loop=run_loop,
+        start_latency_telemetry_logger=lambda **kwargs: None,
     )
 
     run_normal_runtime(
@@ -192,6 +193,7 @@ def test_normal_runtime_logs_gpu_policy_helper_failure_and_continues():
         ),
         configure_runtime_vf_curve_policy=configure,
         run_runtime_fan_control_loop=lambda **kwargs: loop_calls.append(kwargs),
+        start_latency_telemetry_logger=lambda **kwargs: None,
         log=logs.append,
     )
 

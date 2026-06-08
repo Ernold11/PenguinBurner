@@ -6,6 +6,7 @@ from typing import Callable
 from cli.runtime_startup_preparation import prepare_runtime_startup
 from hidden_nvapi_vf import create_hidden_vf_curve_reader
 from hidden_nvapi_voltage import create_hidden_voltage_reader
+from latency_telemetry import start_latency_telemetry_logger
 from nvml_gpu_policy import NvmlGpuPolicyController
 from runtime_debug import log as runtime_log
 from runtime_fan_control import run_runtime_fan_control_loop
@@ -21,6 +22,7 @@ class NormalRuntimeDependencies:
     gpu_policy_controller_factory: Callable = NvmlGpuPolicyController
     configure_runtime_vf_curve_policy: Callable = configure_runtime_vf_curve_policy
     run_runtime_fan_control_loop: Callable = run_runtime_fan_control_loop
+    start_latency_telemetry_logger: Callable = start_latency_telemetry_logger
     log: Callable[[str], None] = runtime_log
 
 
@@ -90,17 +92,22 @@ def run_normal_runtime(
         gpu_policy_controller=gpu_policy_controller,
         dependencies=vf_curve_policy_dependencies,
     )
-    deps.run_runtime_fan_control_loop(
-        gpu_index=gpu_index,
-        config_path=config_path,
-        fan_config=runtime_startup.fan_config,
-        fan_control_enabled=runtime_startup.fan_control_enabled,
-        enable_persistence_mode=enable_persistence_mode,
-        prefer_afterburner_curve=command_route.prefer_afterburner_curve,
-        nvml_session=nvml_session,
-        voltage_reader=voltage_reader,
-        vf_curve_reader=vf_curve_reader,
-        gpu_policy_controller=gpu_policy_controller,
-        vf_policy=vf_policy,
-        dependencies=fan_loop_dependencies,
-    )
+    latency_logger = deps.start_latency_telemetry_logger(log=deps.log)
+    try:
+        deps.run_runtime_fan_control_loop(
+            gpu_index=gpu_index,
+            config_path=config_path,
+            fan_config=runtime_startup.fan_config,
+            fan_control_enabled=runtime_startup.fan_control_enabled,
+            enable_persistence_mode=enable_persistence_mode,
+            prefer_afterburner_curve=command_route.prefer_afterburner_curve,
+            nvml_session=nvml_session,
+            voltage_reader=voltage_reader,
+            vf_curve_reader=vf_curve_reader,
+            gpu_policy_controller=gpu_policy_controller,
+            vf_policy=vf_policy,
+            dependencies=fan_loop_dependencies,
+        )
+    finally:
+        if latency_logger is not None:
+            latency_logger.close()

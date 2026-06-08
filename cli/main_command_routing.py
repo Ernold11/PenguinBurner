@@ -8,6 +8,7 @@ from afterburner.import_vf_curve import load_afterburner_runtime_options
 from cli.effective_runtime_options import build_effective_afterburner_runtime_options
 from dry_run_preview import run_afterburner_dry_run
 from lact import export_lact_config
+from latency_telemetry import check_latency_layer, format_latency_layer_check
 from penguin_burner_errors import NvmlError
 from runtime_debug import (
     debug_effective_runtime_options,
@@ -47,6 +48,7 @@ class MainCommandRoutingDependencies:
     read_auto_uv_profile_summaries: Callable = read_auto_uv_profile_summaries
     format_profile_table: Callable = format_profile_table
     delete_auto_uv_profiles: Callable = delete_auto_uv_profiles
+    check_latency_layer: Callable = check_latency_layer
     log: Callable[[str], None] = runtime_log
     print_fn: Callable = print
 
@@ -87,6 +89,10 @@ def route_main_command(
 
     if getattr(args, "auto_uv", False):
         args.auto_uv_voltage_scan = True
+
+    if getattr(args, "check_latency_layer", False):
+        _check_latency_layer(args, deps=deps)
+        return MainCommandRoutingResult(handled=True)
 
     if args.list_auto_uv_profiles:
         _print_profile_list(args, deps=deps)
@@ -240,6 +246,14 @@ def _delete_profiles(args, *, deps: MainCommandRoutingDependencies) -> None:
     else:
         label = "profile" if len(deleted) == 1 else "profiles"
         deps.print_fn(f"Deleted {len(deleted)} Auto-UV {label}.", flush=True)
+
+
+def _check_latency_layer(args, *, deps: MainCommandRoutingDependencies) -> None:
+    result = deps.check_latency_layer()
+    if args.json_events:
+        deps.print_fn(json.dumps({"latency_layer": result}, indent=2), flush=True)
+    else:
+        deps.print_fn(format_latency_layer_check(result), flush=True)
 
 
 def _auto_uv_final_curve_available(

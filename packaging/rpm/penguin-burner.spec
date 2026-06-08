@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.2.5
+Version:        0.2.6
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -105,8 +105,8 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
-* Mon Jun 01 2026 PenguinBurner contributors <noreply@github.com> - 0.2.5-1
-- Package PenguinBurner 0.2.5.
+* Mon Jun 01 2026 PenguinBurner contributors <noreply@github.com> - 0.2.6-1
+- Package PenguinBurner 0.2.6.
 - Constrain Fedora Python GUI dependency versions.
 - Do not hard-require distro-packaged NVIDIA drivers.
 

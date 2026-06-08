@@ -2,6 +2,8 @@
 
 Date: 2026-06-01
 
+Implementation follow-up: [Auto Profile Latency Telemetry Implementation Plan](./auto-profile-latency-implementation-plan.md)
+
 ## Goal
 
 PenguinBurner should be able to switch saved GPU profiles automatically:

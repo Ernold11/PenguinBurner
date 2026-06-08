@@ -202,6 +202,14 @@ def parse_arguments(argv):
         metavar="N",
         help=argparse.SUPPRESS,
     )
+    advanced_group.add_argument(
+        "--check-latency-layer",
+        action="store_true",
+        help=(
+            "Check Vulkan loader discovery for PenguinBurner's opt-in latency "
+            "telemetry layer and print Steam launch options."
+        ),
+    )
     daemon_group.add_argument(
         "--silent-fan-curve",
         action="store_true",
