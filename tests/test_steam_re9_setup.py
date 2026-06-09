@@ -86,6 +86,14 @@ def test_set_launch_options_in_localconfig_replaces_re9_only() -> None:
 
     assert changed
     assert RE9_PATCHED_LAUNCH_OPTIONS in updated
+    assert (
+        "VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency,VK_LAYER_DXVK_NVAPI_reflex"
+        in updated
+    )
+    assert "third_party/dxvk-nvapi/build.layer" in updated
+    assert "PENGUIN_BURNER_LATENCY_QUERY_TIMINGS=0" in updated
+    assert "PENGUIN_BURNER_DXVK_NVAPI_TIMING_QUERY_INTERVAL=4" in updated
+    assert "PENGUIN_BURNER_DXVK_NVAPI_MAX_DRIVER_REPORT_LAG=240" in updated
     assert '"4180480"' in updated
     assert 'OTHER=1 %command%' in updated
 

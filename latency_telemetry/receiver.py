@@ -15,6 +15,7 @@ from .layer_check import DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS
 
 MARKER_INPUT_SAMPLE_BIT = 1 << 6
 RAW_TIMING_LOG_ENV = "PENGUIN_BURNER_LATENCY_RAW_TIMING_LOG"
+DXVK_NVAPI_VKREFLEX_SOURCE = "dxvk-nvapi-vkreflex"
 
 QUALITY_RANK = {
     "none": 0,
@@ -171,6 +172,57 @@ def _positive_us(sample: dict, key: str) -> bool:
     return _int_value(sample.get(key)) > 0
 
 
+def _elapsed_us_from_sample(sample: dict, start_key: str, end_key: str) -> int:
+    start_us = _int_value(sample.get(start_key))
+    end_us = _int_value(sample.get(end_key))
+    if not start_us or not end_us or end_us <= start_us:
+        return 0
+    return end_us - start_us
+
+
+def _looks_like_driver_timing_report(sample: dict) -> bool:
+    if _positive_us(sample, "timing_count"):
+        return True
+    return any(
+        _positive_us(sample, key)
+        for key in (
+            "driver_start_us",
+            "driver_end_us",
+            "gpu_render_start_us",
+            "gpu_render_end_us",
+        )
+    )
+
+
+def normalize_timing_sample(sample: dict) -> dict:
+    if sample.get("type") != "timing":
+        return sample
+
+    normalized = dict(sample)
+    if (
+        not str(normalized.get("measurement") or "")
+        and normalized.get("source") == DXVK_NVAPI_VKREFLEX_SOURCE
+        and _looks_like_driver_timing_report(normalized)
+    ):
+        normalized["measurement"] = "driver-report"
+
+    if not _positive_us(normalized, "gpu_render_us"):
+        gpu_render_us = _elapsed_us_from_sample(
+            normalized, "gpu_render_start_us", "gpu_render_end_us"
+        )
+        if gpu_render_us:
+            normalized["gpu_render_us"] = gpu_render_us
+
+    if not _positive_us(normalized, "render_present_us"):
+        render_present_us = _elapsed_us_from_sample(
+            normalized, "present_start_us", "gpu_render_end_us"
+        )
+        if render_present_us:
+            normalized["render_present_us"] = render_present_us
+
+    return normalized
+
+
 def _quality_for_sample(sample: dict) -> str:
     is_marker_proxy = str(sample.get("measurement") or "") == "marker-proxy"
     if is_marker_proxy:
@@ -271,21 +323,49 @@ class LatencyTelemetryMeter:
         self._stale_driver_report_max_age_s = float(stale_driver_report_max_age_s)
         self._time_monotonic = time_monotonic
         self._last_ignored_driver_report: dict | None = None
+        self._driver_report_present_ids: dict[tuple[object, ...], tuple[int, int]] = {}
 
-    def add_sample(self, sample: dict) -> None:
+    def add_sample(self, sample: dict) -> dict | None:
         if sample.get("type") != "timing":
-            return
-        stored = dict(sample)
+            return None
+        stored = normalize_timing_sample(sample)
         stored["_received_monotonic"] = self._time_monotonic()
+        if str(stored.get("measurement") or "") == "driver-report":
+            self._synthesize_driver_report_duplicate_count(stored)
         if (
-            str(sample.get("measurement") or "") == "driver-report"
-            and _int_value(sample.get("driver_report_duplicate_count")) > 0
+            str(stored.get("measurement") or "") == "driver-report"
+            and _int_value(stored.get("driver_report_duplicate_count")) > 0
         ):
             self._last_ignored_driver_report = stored
-            return
-        if str(sample.get("measurement") or "") == "driver-report":
+            return stored
+        if str(stored.get("measurement") or "") == "driver-report":
             self._last_ignored_driver_report = None
         self._samples.append(stored)
+        return stored
+
+    def _synthesize_driver_report_duplicate_count(self, sample: dict) -> None:
+        if "driver_report_duplicate_count" in sample:
+            return
+        present_id = _int_value(sample.get("present_id"))
+        if not present_id:
+            sample["driver_report_duplicate_count"] = 0
+            return
+
+        key = (
+            sample.get("pid"),
+            sample.get("source"),
+            sample.get("device"),
+            sample.get("swapchain"),
+        )
+        last_present_id, duplicate_count = self._driver_report_present_ids.get(
+            key, (0, 0)
+        )
+        if present_id == last_present_id:
+            duplicate_count += 1
+        else:
+            duplicate_count = 0
+        self._driver_report_present_ids[key] = (present_id, duplicate_count)
+        sample["driver_report_duplicate_count"] = duplicate_count
 
     def summary(self, *, now: float | None = None) -> str | None:
         if not self._samples:
@@ -503,8 +583,11 @@ class LatencyTelemetryLogger:
             if sample.get("type") == "status":
                 self._log_status(sample)
             else:
-                self.meter.add_sample(sample)
-                self._maybe_log_raw_timing(sample)
+                if sample.get("type") == "timing":
+                    sample = normalize_timing_sample(sample)
+                stored_sample = self.meter.add_sample(sample)
+                if stored_sample is not None:
+                    self._maybe_log_raw_timing(stored_sample)
 
     def _maybe_log_summary(self) -> None:
         now = self.time_monotonic()
@@ -520,12 +603,15 @@ class LatencyTelemetryLogger:
         if sample.get("type") != "timing" or self.raw_log_interval_s is None:
             return
         now = self.time_monotonic()
+        always_log = str(sample.get("measurement") or "") == "driver-report"
         if (
-            self.raw_log_interval_s > 0
+            not always_log
+            and self.raw_log_interval_s > 0
             and now - self._last_raw_log_monotonic < self.raw_log_interval_s
         ):
             return
-        self._last_raw_log_monotonic = now
+        if not always_log:
+            self._last_raw_log_monotonic = now
         fields = [
             "event=latency-raw",
             f"pid={sample.get('pid', 'unknown')}",
@@ -550,6 +636,8 @@ class LatencyTelemetryLogger:
             "input_to_present_us",
             "gpu_frame_time_us",
             "gpu_render_us",
+            "requested_present_id",
+            "driver_report_lag_frames",
             "present_frametime_us",
             "input_sample_us",
             "sim_start_us",
@@ -600,6 +688,13 @@ class LatencyTelemetryLogger:
             "low_latency_boost",
             "minimum_interval_us",
             "driver_report_duplicate_count",
+            "driver_report_count",
+            "requested_present_id",
+            "first_driver_report_present_id",
+            "newest_driver_report_present_id",
+            "selected_driver_report_present_id",
+            "driver_report_lag_frames",
+            "timing_query_interval",
             "present_count",
             "last_vulkan_present_id",
             "latest_marker_present_id",

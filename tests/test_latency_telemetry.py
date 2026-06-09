@@ -86,6 +86,68 @@ def test_latency_telemetry_meter_reports_gpu_render_time() -> None:
     assert "gpu-render-p95=16.60ms" in summary
 
 
+def test_latency_telemetry_meter_normalizes_dxvk_nvapi_driver_report() -> None:
+    now = 100.0
+    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
+    meter.add_sample(
+        {
+            "type": "timing",
+            "source": "dxvk-nvapi-vkreflex",
+            "pid": 123,
+            "device": "0x1",
+            "swapchain": "0x2",
+            "present_id": 7,
+            "quality": "reflex-render-submit",
+            "timing_count": 8,
+            "render_submit_us": 2100,
+            "gpu_render_start_us": 10000,
+            "gpu_render_end_us": 26600,
+        }
+    )
+
+    summary = meter.summary(now=101.25)
+
+    assert summary is not None
+    assert "quality=reflex-render-submit" in summary
+    assert "gpu-render-p95=16.60ms" in summary
+    assert "missing=" not in summary
+
+
+def test_latency_telemetry_meter_marks_repeated_dxvk_nvapi_report_stale() -> None:
+    now = 100.0
+    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
+    sample = {
+        "type": "timing",
+        "source": "dxvk-nvapi-vkreflex",
+        "pid": 123,
+        "device": "0x1",
+        "swapchain": "0x2",
+        "present_id": 7,
+        "quality": "reflex-render-submit",
+        "timing_count": 8,
+        "render_submit_us": 7000,
+        "gpu_render_start_us": 10000,
+        "gpu_render_end_us": 26600,
+    }
+    first_stored = meter.add_sample(sample)
+
+    now = 106.0
+    second_stored = meter.add_sample(sample)
+
+    summary = meter.summary(now=106.0)
+
+    assert first_stored is not None
+    assert first_stored["measurement"] == "driver-report"
+    assert first_stored["driver_report_duplicate_count"] == 0
+    assert second_stored is not None
+    assert second_stored["driver_report_duplicate_count"] == 1
+    assert summary is not None
+    assert "quality=stale-driver-report" in summary
+    assert "samples=0" in summary
+    assert "stale-present_id=7" in summary
+    assert "stale-driver-report-duplicates=1" in summary
+
+
 def test_latency_telemetry_meter_reports_render_submit_only_missing_inputs() -> None:
     now = 100.0
     meter = LatencyTelemetryMeter(time_monotonic=lambda: now)

@@ -14,6 +14,7 @@ def test_latency_flow_capture_filter_keeps_only_flow_lines() -> None:
     assert is_latency_flow_line("status=create-swapchain present_mode_name=IMMEDIATE")
     assert is_latency_flow_line("event=latency-raw present_id=12 gpu_render_us=16000")
     assert is_latency_flow_line("status=latency-stream-stale live_swapchain_count=1")
+    assert is_latency_flow_line("status=dxvk-driver-report-miss count=120")
     assert not is_latency_flow_line("2026-06-09 temp=50C fan=30% power=125W")
 
 
@@ -96,6 +97,30 @@ def test_filtered_lines_fold_raw_timing_continuations() -> None:
         "driver_report_duplicate_count=840 marker_bits=63 "
         "render_submit_us=608 gpu_render_start_us=0 gpu_render_end_us=0 "
         "driver_start_us=0 driver_end_us=0\n",
+    ]
+
+
+def test_filtered_lines_fold_dxvk_driver_report_continuations() -> None:
+    lines = list(
+        iter_filtered_latency_flow_lines(
+            [
+                "2026-06-09 event=latency-layer-status "
+                "status=dxvk-driver-report-lag-selected pid=28769 count=120\n",
+                "requested_present_id=2389 newest_driver_report_present_id=2391 "
+                "selected_driver_report_present_id=2380\n",
+                "driver_report_lag_frames=9 timing_query_interval=4 "
+                "last_driver_report_present_id=2379\n",
+            ]
+        )
+    )
+
+    assert lines == [
+        "2026-06-09 event=latency-layer-status "
+        "status=dxvk-driver-report-lag-selected pid=28769 count=120 "
+        "requested_present_id=2389 newest_driver_report_present_id=2391 "
+        "selected_driver_report_present_id=2380 "
+        "driver_report_lag_frames=9 timing_query_interval=4 "
+        "last_driver_report_present_id=2379\n",
     ]
 
 

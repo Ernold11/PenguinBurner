@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cctype>
 #include <cinttypes>
 #include <cstddef>
 #include <cstdint>
@@ -34,6 +35,7 @@ constexpr const char* kSocketEnv = "PENGUIN_BURNER_LATENCY_SOCKET";
 constexpr const char* kEnableEnv = "PENGUIN_BURNER_LATENCY_LAYER";
 constexpr const char* kRecoveryResetEnv = "PENGUIN_BURNER_LATENCY_RECOVERY_RESET";
 constexpr const char* kDebugFlowEnv = "PENGUIN_BURNER_LATENCY_DEBUG_FLOW";
+constexpr const char* kQueryTimingsEnv = "PENGUIN_BURNER_LATENCY_QUERY_TIMINGS";
 constexpr uint64_t kStaleRecoveryDuplicateThreshold = 240;
 constexpr uint64_t kStaleRecoveryDuplicateInterval = 600;
 
@@ -358,6 +360,21 @@ std::atomic<bool> g_reported_create_instance_enter{false};
 
 bool should_report_counter(uint64_t count) {
     return count <= 3 || (count % 600) == 0;
+}
+
+bool env_value_is_false(const char* value) {
+    if (!value || !*value) {
+        return false;
+    }
+    std::string text(value);
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return text == "0" || text == "false" || text == "no" || text == "off";
+}
+
+bool timing_queries_enabled() {
+    return !env_value_is_false(std::getenv(kQueryTimingsEnv));
 }
 
 uint64_t live_swapchain_count_locked(VkDevice device) {
@@ -2135,7 +2152,16 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
                 send_present_pacing_sample(
                     device, swapchain, present_frametime_us, present_count);
             }
-            query_latency_timing(device, swapchain);
+            if (timing_queries_enabled()) {
+                query_latency_timing(device, swapchain);
+            } else if (should_report_counter(present_count)) {
+                send_status_event(
+                    "latency-timing-query-disabled",
+                    device,
+                    swapchain,
+                    present_count,
+                    device_telemetry_flags(device));
+            }
         }
     }
     return result;

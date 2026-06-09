@@ -74,8 +74,11 @@ Vulkan apps are never touched unless you opt in per launch.
 Steam launch options for a DX12/Proton title (e.g. RE9, Steam app `3764200`):
 
 ```text
-VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/git/PenguinBurner/native/latency_layer/build
+VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/third_party/dxvk-nvapi/build.layer:/home/jp/PenguinBurner/native/latency_layer/build
+VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency,VK_LAYER_DXVK_NVAPI_reflex
 PENGUIN_BURNER_LATENCY_LAYER=1
+PENGUIN_BURNER_LATENCY_QUERY_TIMINGS=0
+PENGUIN_BURNER_DXVK_NVAPI_TIMING_QUERY_INTERVAL=4
 PROTON_ENABLE_NVAPI=1
 PROTON_HIDE_NVIDIA_GPU=0
 DXVK_NVAPI_VKREFLEX=1
@@ -85,6 +88,16 @@ gamemoderun %command%
 
 - `DXVK_NVAPI_VKREFLEX=1` + `PROTON_ENABLE_NVAPI=1` are what expose
   `VK_NV_low_latency2` through DXVK-NVAPI → VKD3D-Proton.
+- Vulkan layer order is application-to-driver. Put PenguinBurner first so it is
+  the top observer, with DXVK-NVAPI below it to provide the Reflex translation
+  and marker-side timing export.
+- `PENGUIN_BURNER_LATENCY_QUERY_TIMINGS=0` disables PenguinBurner's per-present
+  `vkGetLatencyTimingsNV` polling. Use it only with a DXVK-NVAPI layer build
+  that contains the PenguinBurner socket exporter, otherwise no driver timing
+  reports will be emitted.
+- `PENGUIN_BURNER_DXVK_NVAPI_TIMING_QUERY_INTERVAL=4` throttles the patched
+  DXVK-NVAPI driver-report query to every fourth present-end marker. `0`
+  disables driver-report export while keeping marker-proxy export.
 - **Do NOT** set any `PENGUIN_BURNER_LATENCY_GPU_TIMESTAMPS=...` or
   `PENGUIN_BURNER_LATENCY_INJECT_FRAME_IDS=...` — those flags no longer exist and
   were the cause of the crashes. If you find them in old launch options, delete
@@ -218,15 +231,19 @@ Event names you may see (status): `create-instance`, `negotiate`,
 | `latency-sleep-mode-reapplied-create` | A new swapchain was created after the game had already set Reflex sleep mode, so the layer replayed that state immediately after creation. |
 | `latency-recovery-unavailable` | Stale recovery wanted to run, but no prior sleep-mode state or no `vkSetLatencySleepModeNV` function was available. The meter should keep treating Reflex as stale. |
 | `latency-stream-stale` | Snapshot emitted at the stale threshold before recovery. Compare `present_count`, `last_vulkan_present_id`, latest marker IDs, and `last_driver_report_present_id` to see which side stopped advancing. |
-| `latency-sleep` | `vkLatencySleepNV` was called. `sleep_value` is the timeline value passed by the game/VKD3D path. |
+| `latency-sleep` | `vkLatencySleepNV` was called. `sleep_value` is the timeline value passed by the game/VKD3D path. After a daemon restart this may be the only status snapshot carrying `driver_report_duplicate_count` plus marker IDs, so the analyzer also uses it to classify stale driver reports. |
 | `latency-queue-out-of-band` | `vkQueueNotifyOutOfBandNV` was called. `queue_type` identifies render vs present out-of-band queue type. |
 | `present-flow` | Extra present snapshot emitted only with `PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1`; useful when checking whether Vulkan `VkPresentIdKHR` / `VkPresentId2KHR` IDs advance. |
 | `latest_marker_present_id` / `last_*_present_id` | Last Reflex marker IDs seen by the layer. If these advance past `last_driver_report_present_id`, the app/VKD3D side is still feeding markers but the driver report ring is stuck. |
 | `present_mode_name` | Vulkan swapchain present mode seen at creation (`IMMEDIATE`, `MAILBOX`, `FIFO`, `FIFO_RELAXED`, or `UNKNOWN`). Use this to verify `VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE` actually reached VKD3D. |
 | `swapchain_latency_mode` | Whether `VkSwapchainLatencyCreateInfoNV(latencyModeEnable=true)` was visible on `vkCreateSwapchainKHR`. If false, layer ordering may hide the DXVK-NVAPI create-info patch from this observer. |
 | `live_swapchain_count` | Number of live Vulkan swapchains for the device after the lifecycle event or at the flow snapshot. If this rises above 1 around the stale point, VKD3D-Proton's multi-swapchain Reflex guard is a likely trigger. |
+| `dxvk-driver-report-lag-selected` | DXVK-NVAPI found an advancing driver report, but its `presentID` lagged behind the marker frame that triggered the query. In RE9 this was usually about 9 frames early in the run, then grew before the report stream stalled. |
+| `dxvk-driver-report-miss` | DXVK-NVAPI could not find an advancing report within the allowed lag window. If `last_driver_report_present_id` stays fixed while requested IDs climb, the driver timing stream is stalled. |
+| `requested_present_id` / `selected_driver_report_present_id` / `driver_report_lag_frames` | Correlation fields for the DXVK-NVAPI driver-report path. They explain why exact `presentID` matching hid reports and whether lag selection is still finding fresh IDs. |
 | `gpu_render_us` | The headline metric: per-frame GPU render time = `gpu_render_end_us - gpu_render_start_us`. This is the adaptive control signal (target ~16.6 ms). |
 | `gpu_render_start_us` / `gpu_render_end_us` | Raw driver timestamps. **If both are persistently 0**, the driver isn't filling them on this stack and `gpu_render_us` will be 0 / `gpu-render-p95=n/a`; `render-submit-p95` can be logged as a weaker diagnostic, but it is not the same pre-frame-generation GPU render metric. |
+| `present-frametime-p95` / `present-fps` | Vulkan present-to-present pacing. With frame generation enabled this tracks the base frames before generated frames are inserted. For RE9 FG x3, `present-fps=54` implies about 162 generated/display FPS. Treat it as pre-FG cadence, not GPU render latency. |
 | `quality` | Confidence ladder (low→high): `present-frametime` < `driver-timing`/`reflex-marker*` < `reflex-render-submit` < `reflex-input-present`. |
 | `marker_bits` | Bitmask of which Reflex markers the game set (see `marker_bit()` in the layer). `0` means the game isn't driving Reflex markers. |
 
@@ -254,6 +271,23 @@ Quick extraction:
 journalctl -u PenguinBurner.service --since '5 min ago' -o cat \
   | grep -oE 'present_id=[0-9]+ .*gpu_render_us=[0-9]+' | head -40
 ```
+
+For the RE9 diagnostic run, use the guarded wrapper after Steam has been closed
+and the patched setup has been applied:
+
+```bash
+penguin-burner-re9-latency-test --wait-for-re9 --duration 240
+```
+
+The wrapper verifies the RE9 launch tokens first, then captures and analyzes the
+PenguinBurner journal. It refuses to capture when the Steam config is still the
+old launch line unless `--allow-bad-launch` is passed.
+
+By default the wrapper also writes a filtered kernel sidecar next to the latency
+capture (`<capture>.kernel.log`). It follows `journalctl -k` for `NVRM`, `Xid`,
+`dmaAllocMapping`, `NV_ERR_NO_MEMORY`, GPU reset/hang, and `re9.exe` lines, so a
+post-reboot investigation has the driver-fault evidence next to the latency
+analysis.
 
 #### No-GPU receiver retest harness
 
@@ -359,7 +393,7 @@ For post-run analysis directly from the journal, classify the captured flow with
 
 ```bash
 journalctl -u PenguinBurner.service --since '10 min ago' -o cat --no-pager \
-  | rg 'create-swapchain|destroy-swapchain|latency-stream-stale|present-flow|latency-sleep|latency-queue-out-of-band|latency-raw|latency-meter' \
+  | rg -A2 'create-swapchain|destroy-swapchain|dxvk-driver-report|latency-stream-stale|present-flow|latency-sleep|latency-queue-out-of-band|latency-raw|latency-meter' \
   | penguin-burner-latency-flow
 ```
 
@@ -383,6 +417,14 @@ Expected useful outcomes:
 - `root_cause=no-stall-detected-with-immediate-present-mode`: the
   `VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE` workaround is a candidate, but only if
   the capture spans the menu-to-gameplay transition that previously stalled.
+- `root_cause=dxvk-nvapi-driver-report-lagged-then-stalled`: DXVK-NVAPI found
+  lagged `vkGetLatencyTimingsNV` reports for a while, then only misses remained.
+  The driver report IDs stopped advancing and no GPU render timestamps were
+  filled. Do not use this path as RE9 GPU render latency.
+- `root_cause=present-cadence-only-no-driver-gpu-timestamps`: the capture has a
+  usable Vulkan present cadence but no driver GPU timestamps. With DLSS frame
+  generation enabled, `present-frametime-p95` / `present-fps` is the
+  pre-frame-generation base-frame cadence. It is not GPU render latency.
 - `root_cause=vkd3d-multi-swapchain-reflex-guard`: `live_swapchain_count > 1`
   when stale; likely needs a VKD3D-Proton patch/test build or avoiding the
   setting that creates a second swapchain.
@@ -434,6 +476,10 @@ journalctl -k --since '15 min ago' -o short-iso \
 # VRAM usage over time:
 nvidia-smi --query-gpu=memory.used,memory.total --format=csv -l 1
 ```
+
+For RE9, prefer `penguin-burner-re9-latency-test` because it writes the same
+filtered kernel-fault search into a durable sidecar (`<capture>.kernel.log`)
+while the latency capture is running.
 
 Note in the bug report whether an `Xid`/reset appeared (kernel-level hang) vs only
 a user-space SIGSEGV (game/driver crash) — they point at very different causes.

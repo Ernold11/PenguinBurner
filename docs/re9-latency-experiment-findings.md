@@ -26,8 +26,11 @@ latency layer and DXVK-NVAPI Reflex:
 
 ```text
 PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock
-VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/native/latency_layer/build
+VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/third_party/dxvk-nvapi/build.layer:/home/jp/PenguinBurner/native/latency_layer/build
+VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency,VK_LAYER_DXVK_NVAPI_reflex
 PENGUIN_BURNER_LATENCY_LAYER=1
+PENGUIN_BURNER_LATENCY_QUERY_TIMINGS=0
+PENGUIN_BURNER_DXVK_NVAPI_TIMING_QUERY_INTERVAL=4
 PROTON_ENABLE_NVAPI=1
 PROTON_HIDE_NVIDIA_GPU=0
 DXVK_NVAPI_VKREFLEX=1
@@ -277,8 +280,11 @@ Several live retries were run with the rebuilt read-only layer and RE9 Steam app
 
 ```text
 PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock
-VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/native/latency_layer/build
+VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/third_party/dxvk-nvapi/build.layer:/home/jp/PenguinBurner/native/latency_layer/build
+VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency,VK_LAYER_DXVK_NVAPI_reflex
 PENGUIN_BURNER_LATENCY_LAYER=1
+PENGUIN_BURNER_LATENCY_QUERY_TIMINGS=0
+PENGUIN_BURNER_DXVK_NVAPI_TIMING_QUERY_INTERVAL=4
 PROTON_ENABLE_NVAPI=1
 PROTON_HIDE_NVIDIA_GPU=0
 DXVK_NVAPI_VKREFLEX=1
@@ -400,7 +406,7 @@ or DXGI format changes.
 The RE9 launch line used for the next test is:
 
 ```text
-PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/native/latency_layer/build PENGUIN_BURNER_LATENCY_LAYER=1 PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1 VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE PROTON_ENABLE_NVAPI=1 PROTON_HIDE_NVIDIA_GPU=0 DXVK_NVAPI_VKREFLEX=1 gamemoderun %command% /WineDetectionEnabled:False
+PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/third_party/dxvk-nvapi/build.layer:/home/jp/PenguinBurner/native/latency_layer/build VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency,VK_LAYER_DXVK_NVAPI_reflex PENGUIN_BURNER_LATENCY_LAYER=1 PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1 PENGUIN_BURNER_LATENCY_QUERY_TIMINGS=0 PENGUIN_BURNER_DXVK_NVAPI_TIMING_QUERY_INTERVAL=4 VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE PROTON_ENABLE_NVAPI=1 PROTON_HIDE_NVIDIA_GPU=0 DXVK_NVAPI_VKREFLEX=1 gamemoderun %command% /WineDetectionEnabled:False
 ```
 
 Read the result as follows:
@@ -475,8 +481,33 @@ For the patched proof run, RE9 must use the copied compatibility tool and the
 launch line must add `VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1`:
 
 ```text
-PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/native/latency_layer/build PENGUIN_BURNER_LATENCY_LAYER=1 PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1 VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1 PROTON_ENABLE_NVAPI=1 PROTON_HIDE_NVIDIA_GPU=0 DXVK_NVAPI_VKREFLEX=1 gamemoderun %command% /WineDetectionEnabled:False
+PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/third_party/dxvk-nvapi/build.layer:/home/jp/PenguinBurner/native/latency_layer/build VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency,VK_LAYER_DXVK_NVAPI_reflex PENGUIN_BURNER_LATENCY_LAYER=1 PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1 PENGUIN_BURNER_LATENCY_QUERY_TIMINGS=0 PENGUIN_BURNER_DXVK_NVAPI_TIMING_QUERY_INTERVAL=4 VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1 PROTON_ENABLE_NVAPI=1 PROTON_HIDE_NVIDIA_GPU=0 DXVK_NVAPI_VKREFLEX=1 gamemoderun %command% /WineDetectionEnabled:False
 ```
+
+The forced layer order is intentional. Vulkan layer order is application-to-
+driver, so `VK_LAYER_PENGUINBURNER_latency` is now closest to the application and
+`VK_LAYER_DXVK_NVAPI_reflex` remains below it to provide the Reflex translation.
+The local DXVK-NVAPI layer path is also intentional: the installed Proton copy
+does not contain the PenguinBurner timing exporter, while
+`third_party/dxvk-nvapi/build.layer` does. `PENGUIN_BURNER_LATENCY_QUERY_TIMINGS=0`
+keeps PenguinBurner from polling `vkGetLatencyTimingsNV` every present.
+`PENGUIN_BURNER_DXVK_NVAPI_TIMING_QUERY_INTERVAL=4` lets the patched DXVK-NVAPI
+layer query driver timing from the marker path at 1/4 rate while still emitting
+marker-proxy timing every frame.
+
+The local layer path was also checked inside Steam Runtime 4 with
+`VK_LOADER_DEBUG=layer`. Pressure-vessel rewrote the manifests into
+`/usr/lib/pressure-vessel/overrides/share/vulkan/implicit_layer.d`, but the
+resolved libraries were still:
+
+```text
+/home/jp/PenguinBurner/third_party/dxvk-nvapi/build.layer/libdxvk_nvapi_vkreflex_layer.so
+/home/jp/PenguinBurner/native/latency_layer/build/libVkLayer_penguinburner_latency.so
+```
+
+The pressure-vessel check should show both local libraries. With the current
+launch line, the first enabled layer should be `VK_LAYER_PENGUINBURNER_latency`
+and the second should be `VK_LAYER_DXVK_NVAPI_reflex`.
 
 The guarded setup command applies both pieces after Steam is closed:
 
@@ -486,6 +517,20 @@ penguin-burner-steam-launch-check \
   --extra-require VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1 \
   --compat-tool 'Proton-CachyOS PB-Re9-Reflex'
 ```
+
+The timed capture/analyze command for the fresh RE9 run is:
+
+```bash
+penguin-burner-re9-latency-test --wait-for-re9 --duration 240
+```
+
+It checks the launch config before capturing, so an old Steam launch line fails
+fast instead of producing another ambiguous old-env capture.
+
+It also writes a filtered kernel sidecar next to the latency capture as
+`<capture>.kernel.log`. That file keeps the `NVRM`, `Xid`, `dmaAllocMapping`,
+`NV_ERR_NO_MEMORY`, GPU reset/hang, and `re9.exe` lines from `journalctl -k`, so
+another hard lock can be diagnosed from the same capture bundle after reboot.
 
 Without `--wait`, it refuses to write while Steam or a Wine game process is
 still running. With `--wait`, it waits until those processes exit and writes
@@ -552,6 +597,98 @@ workaround on this run. The active failure is the NVIDIA
 `VK_NV_low_latency2` timing report stream becoming stale/partial while Reflex
 markers keep advancing. PenguinBurner should keep marking this state stale
 instead of showing a frozen render-latency number.
+
+### Old-env Baseline After Receiver Restart
+
+The same still-running RE9 process was captured after the receiver-side
+normalization change. This process had **not** picked up the new launch line:
+there was no local `third_party/dxvk-nvapi/build.layer`, no forced
+`VK_LOADER_LAYERS_ENABLE`, and no
+`PENGUIN_BURNER_LATENCY_QUERY_TIMINGS=0`.
+
+Capture:
+
+```text
+~/.cache/penguin-burner/latency-captures/re9-old-env-post-receiver-20260609-220820.log
+```
+
+Analyzer result after teaching it to use stale `latency-sleep` status snapshots:
+
+```text
+root_cause=driver-report-stale-after-reflex-markers
+stale_events=0
+stale_status_snapshots=13162
+highest_live_swapchain_count=1
+distinct_gpu_render_us=0
+raw_driver_timestamp_samples=0
+latest_stale.source_status=latency-sleep
+latest_stale.last_driver_report_present_id=227050
+latest_stale.last_vulkan_present_id=0
+latest_stale.max_marker_present_id=227200
+latest_stale.driver_report_duplicate_count=47
+latest_stale.swapchain_latency_mode=True
+```
+
+This confirms the baseline failure still exists with the old game process: the
+daemon can classify the stall, but a fresh RE9 launch is required to test the
+local DXVK-NVAPI timing-export path with PenguinBurner per-present timing
+queries disabled.
+
+### Hard-freeze Root Cause, 2026-06-09 22:16 CEST
+
+The last crash was not a normal RE9/Wine process crash. The previous boot's
+kernel journal showed an NVIDIA driver-side lock:
+
+```text
+22:16:11 NVRM: dmaAllocMapping_GM107: can't alloc VA space for mapping.
+22:16:11 NVRM: ... Out of memory [NV_ERR_NO_MEMORY] ... mapping_reuse.c:273
+22:16:17 NVRM: ... reusemappingdbMap ... kern_bus_gm107.c:3150
+22:16:19 NVRM: krcWatchdog_IMPL: RC watchdog: GPU is probably locked!
+22:16:19 NVRM: Xid (PCI:0000:2b:00): 8, pid=148786, name=re9.exe
+```
+
+PenguinBurner telemetry immediately before the lock showed the Reflex timing
+ring already stale: `last_driver_report_present_id=289244`, markers advancing
+past `289700`, and `stale-driver-report-duplicates=94`.
+
+That changes the workaround criteria. The observer must not poll
+`vkGetLatencyTimingsNV` every present. The DXVK-NVAPI local patch now:
+
+- keeps marker-proxy export every frame;
+- samples driver timing only every fourth present-end marker by default;
+- selects the newest advancing driver report within a bounded lag window instead
+  of requiring an exact `presentID` match or falling back to a stale report.
+
+### DXVK-NVAPI Lag Selection and RE9 FG x3 Cadence
+
+The later DXVK-NVAPI patch loosened the exact `presentID` match and selected the
+newest driver report that advanced and stayed within a bounded lag window. That
+proved exact matching was too strict: early in the RE9 run, driver reports were
+typically about 9 frames behind the requested marker frame. Later the lag grew,
+and then the driver report stream stopped advancing at
+`last_driver_report_present_id=5939` while requested IDs continued climbing.
+
+The driver reports still did not contain usable GPU render timestamps:
+`gpu_render_start_us=0`, `gpu_render_end_us=0`, and `gpu-render-p95=n/a`.
+Therefore this path cannot supply the NVIDIA App style pre-frame-generation GPU
+render latency for RE9 on this stack.
+
+What did remain stable was Vulkan present pacing. In the RE9 FG x3 run:
+
+```text
+root_cause=present-cadence-only-no-driver-gpu-timestamps
+present_fps_median=54
+present_frametime_p95_ms_median=18.94
+raw_driver_timestamp_samples=0
+distinct_gpu_render_us=0
+```
+
+With frame generation set to x3, `present-fps=54` maps to about 162 generated /
+displayed FPS. That strongly indicates `present-frametime-p95` / `present-fps`
+is the pre-frame-generation base-frame cadence. It is usable for adaptive
+profile pacing, but it must be labeled separately from GPU render latency
+because it includes CPU/game/pacing/GPU time and cannot prove the frame was
+GPU-bound.
 
 ## Debugging
 

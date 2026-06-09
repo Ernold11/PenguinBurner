@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import argparse
 import json
+import re
+import statistics
 import sys
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -17,6 +19,10 @@ MARKER_ID_KEYS = (
     "last_oob_render_submit_present_id",
     "last_oob_present_present_id",
 )
+
+
+JOURNAL_PREFIX_RE = re.compile(r"^\w{3}\s+\d+\s+\S+\s+\S+\[\d+\]:\s+")
+MS_VALUE_RE = re.compile(r"^-?\d+(?:\.\d+)?ms$")
 
 
 @dataclass(frozen=True)
@@ -101,13 +107,55 @@ def _max_marker_id(sample: Mapping[str, object]) -> int:
     return max((_as_int(sample.get(key)) for key in MARKER_ID_KEYS), default=0)
 
 
+def _is_stale_driver_report_snapshot(sample: Mapping[str, object]) -> bool:
+    duplicate_count = _as_int(sample.get("driver_report_duplicate_count"))
+    last_driver = _as_int(sample.get("last_driver_report_present_id"))
+    if duplicate_count <= 0 or last_driver <= 0:
+        return False
+
+    return (
+        _max_marker_id(sample) > last_driver
+        or _as_int(sample.get("last_vulkan_present_id")) > last_driver
+        or _as_int(sample.get("present_count")) > last_driver
+    )
+
+
 def _format_modes(modes: Iterable[object]) -> str:
     labels = sorted({str(mode) for mode in modes if mode not in (None, "", "UNKNOWN")})
     return ",".join(labels) if labels else "unknown"
 
 
+def _strip_journal_prefix(line: str) -> str:
+    return JOURNAL_PREFIX_RE.sub("", line.strip())
+
+
+def _merge_continuation_samples(samples: Iterable[dict[str, object]]) -> list[dict[str, object]]:
+    merged: list[dict[str, object]] = []
+    for sample in samples:
+        if merged and "event" not in sample:
+            merged[-1].update(sample)
+            continue
+        merged.append(sample)
+    return merged
+
+
+def _as_float_ms(value: object) -> float:
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value)
+    if not isinstance(value, str):
+        return 0.0
+    stripped = value.strip()
+    if not MS_VALUE_RE.match(stripped):
+        return 0.0
+    return float(stripped[:-2])
+
+
 def analyze_latency_flow_lines(lines: Iterable[str]) -> FlowDiagnosis:
-    samples = [sample for line in lines if (sample := parse_latency_log_line(line))]
+    samples = _merge_continuation_samples(
+        sample
+        for line in lines
+        if (sample := parse_latency_log_line(_strip_journal_prefix(line)))
+    )
 
     status_samples = [sample for sample in samples if _status_name(sample)]
     create_swapchains = [
@@ -116,8 +164,26 @@ def analyze_latency_flow_lines(lines: Iterable[str]) -> FlowDiagnosis:
     stale_events = [
         sample for sample in status_samples if _status_name(sample) == "latency-stream-stale"
     ]
+    stale_status_snapshots = [
+        sample for sample in status_samples if _is_stale_driver_report_snapshot(sample)
+    ]
     present_flow_events = [
         sample for sample in status_samples if _status_name(sample) == "present-flow"
+    ]
+    dxvk_driver_empty = [
+        sample
+        for sample in status_samples
+        if _status_name(sample) == "dxvk-driver-report-empty"
+    ]
+    dxvk_driver_misses = [
+        sample
+        for sample in status_samples
+        if _status_name(sample) == "dxvk-driver-report-miss"
+    ]
+    dxvk_driver_lag_selected = [
+        sample
+        for sample in status_samples
+        if _status_name(sample) == "dxvk-driver-report-lag-selected"
     ]
     raw_samples = [sample for sample in samples if sample.get("event") == "latency-raw"]
     meter_samples = [sample for sample in samples if sample.get("event") == "latency-meter"]
@@ -152,18 +218,48 @@ def analyze_latency_flow_lines(lines: Iterable[str]) -> FlowDiagnosis:
             )
         )
     )
+    present_pacing_values = [
+        (
+            _as_int(sample.get("present-fps")),
+            _as_float_ms(sample.get("present-frametime-p95")),
+        )
+        for sample in meter_samples
+        if _as_int(sample.get("present-fps")) > 0
+        and _as_float_ms(sample.get("present-frametime-p95")) > 0.0
+    ]
+    present_fps_values = [fps for fps, _frametime_ms in present_pacing_values]
+    present_frametime_ms_values = [
+        frametime_ms for _fps, frametime_ms in present_pacing_values
+    ]
+    present_pacing_samples = len(present_pacing_values)
 
     evidence = [
         f"parsed_lines={len(samples)} flow_lines={flow_sample_count} "
         f"status_events={len(status_samples)} "
         f"raw_samples={len(raw_samples)} meter_samples={len(meter_samples)}",
         f"create_swapchains={len(create_swapchains)} present_modes={_format_modes(present_modes)}",
-        f"present_flow_events={len(present_flow_events)} stale_events={len(stale_events)}",
+        f"present_flow_events={len(present_flow_events)} stale_events={len(stale_events)} "
+        f"stale_status_snapshots={len(stale_status_snapshots)}",
+        f"dxvk_driver_report_empty={len(dxvk_driver_empty)} "
+        f"dxvk_driver_report_lag_selected={len(dxvk_driver_lag_selected)} "
+        f"dxvk_driver_report_miss={len(dxvk_driver_misses)}",
         f"highest_live_swapchain_count={highest_live_swapchain_count}",
         f"distinct_raw_present_ids={len(raw_present_ids)}",
         f"distinct_gpu_render_us={len(raw_gpu_render_values)}",
         f"raw_driver_timestamp_samples={raw_driver_timestamp_samples}",
     ]
+    if present_pacing_samples:
+        present_fps_median = statistics.median(present_fps_values)
+        present_frametime_ms_median = statistics.median(present_frametime_ms_values)
+        evidence.append(
+            f"present_pacing_samples={present_pacing_samples} "
+            f"present_fps_min={min(present_fps_values)} "
+            f"present_fps_median={present_fps_median:g} "
+            f"present_fps_max={max(present_fps_values)} "
+            f"present_frametime_p95_ms_min={min(present_frametime_ms_values):.2f} "
+            f"present_frametime_p95_ms_median={present_frametime_ms_median:.2f} "
+            f"present_frametime_p95_ms_max={max(present_frametime_ms_values):.2f}"
+        )
 
     stats: dict[str, object] = {
         "samples": len(samples),
@@ -176,14 +272,81 @@ def analyze_latency_flow_lines(lines: Iterable[str]) -> FlowDiagnosis:
         "immediate_seen": immediate_seen,
         "present_flow_events": len(present_flow_events),
         "stale_events": len(stale_events),
+        "stale_status_snapshots": len(stale_status_snapshots),
+        "dxvk_driver_report_empty": len(dxvk_driver_empty),
+        "dxvk_driver_report_lag_selected": len(dxvk_driver_lag_selected),
+        "dxvk_driver_report_miss": len(dxvk_driver_misses),
         "highest_live_swapchain_count": highest_live_swapchain_count,
         "distinct_raw_present_ids": len(raw_present_ids),
         "distinct_gpu_render_us": len(raw_gpu_render_values),
         "raw_driver_timestamp_samples": raw_driver_timestamp_samples,
+        "present_pacing_samples": present_pacing_samples,
     }
+    if present_pacing_samples:
+        stats["present_fps_min"] = min(present_fps_values)
+        stats["present_fps_median"] = statistics.median(present_fps_values)
+        stats["present_fps_max"] = max(present_fps_values)
+        stats["present_frametime_p95_ms_min"] = min(present_frametime_ms_values)
+        stats["present_frametime_p95_ms_median"] = statistics.median(
+            present_frametime_ms_values
+        )
+        stats["present_frametime_p95_ms_max"] = max(present_frametime_ms_values)
 
-    if stale_events:
-        stale = stale_events[-1]
+    if dxvk_driver_lag_selected and dxvk_driver_misses and raw_driver_timestamp_samples == 0:
+        latest_lag = dxvk_driver_lag_selected[-1]
+        latest_miss = dxvk_driver_misses[-1]
+        selected = _as_int(latest_lag.get("selected_driver_report_present_id"))
+        requested = _as_int(latest_lag.get("requested_present_id"))
+        newest = _as_int(latest_lag.get("newest_driver_report_present_id"))
+        lag_frames = _as_int(latest_lag.get("driver_report_lag_frames"))
+        last_driver = _as_int(latest_miss.get("last_driver_report_present_id"))
+        latest_count = _as_int(latest_miss.get("count"))
+        evidence.extend(
+            (
+                f"latest_dxvk_lag.selected_driver_report_present_id={selected}",
+                f"latest_dxvk_lag.requested_present_id={requested}",
+                f"latest_dxvk_lag.newest_driver_report_present_id={newest}",
+                f"latest_dxvk_lag.driver_report_lag_frames={lag_frames}",
+                f"latest_dxvk_miss.count={latest_count}",
+                f"latest_dxvk_miss.last_driver_report_present_id={last_driver}",
+            )
+        )
+        stats["latest_dxvk_driver_report_lag_selected"] = dict(latest_lag)
+        stats["latest_dxvk_driver_report_miss"] = dict(latest_miss)
+
+        recommendation = (
+            (
+                "Do not use the Reflex driver-report path as RE9 GPU render "
+                "latency on this stack. Use present-frametime-p95 / present-fps "
+                "as a pre-frame-generation base-frame cadence signal, and label "
+                "it separately from GPU render latency."
+            )
+            if present_pacing_samples
+            else (
+                "Do not use the Reflex driver-report path as RE9 GPU render "
+                "latency on this stack. Repeat with latency-meter lines captured "
+                "to verify the present-frametime-p95 / present-fps base-frame "
+                "cadence fallback."
+            )
+        )
+        return FlowDiagnosis(
+            root_cause="dxvk-nvapi-driver-report-lagged-then-stalled",
+            summary=(
+                "DXVK-NVAPI could find lagged NVIDIA Reflex timing reports for "
+                "a while, then only misses remained. The driver report IDs "
+                "stopped advancing and the reports never carried usable GPU "
+                "render timestamps."
+            ),
+            recommendation=recommendation,
+            evidence=tuple(evidence),
+            stats=stats,
+        )
+
+    stale_snapshots = stale_events or stale_status_snapshots
+    if stale_snapshots:
+        stale = stale_snapshots[-1]
+        stale_status = _status_name(stale) or "unknown"
+        stale_source = "latency-stream-stale" if stale_events else stale_status
         live_count = _as_int(stale.get("live_swapchain_count"))
         last_driver = _as_int(stale.get("last_driver_report_present_id"))
         last_vulkan = _as_int(stale.get("last_vulkan_present_id"))
@@ -193,6 +356,7 @@ def analyze_latency_flow_lines(lines: Iterable[str]) -> FlowDiagnosis:
 
         evidence.extend(
             (
+                f"latest_stale.source_status={stale_source}",
                 f"latest_stale.live_swapchain_count={live_count}",
                 f"latest_stale.last_driver_report_present_id={last_driver}",
                 f"latest_stale.last_vulkan_present_id={last_vulkan}",
@@ -279,6 +443,28 @@ def analyze_latency_flow_lines(lines: Iterable[str]) -> FlowDiagnosis:
             recommendation=(
                 "Repeat with PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1 and verify "
                 "create-swapchain, present-flow, and latency-stream-stale lines."
+            ),
+            evidence=tuple(evidence),
+            stats=stats,
+        )
+
+    if (
+        present_pacing_samples
+        and raw_driver_timestamp_samples == 0
+        and not raw_gpu_render_values
+    ):
+        return FlowDiagnosis(
+            root_cause="present-cadence-only-no-driver-gpu-timestamps",
+            summary=(
+                "The capture has live Vulkan present pacing, but no usable driver "
+                "GPU render timestamps. This is a base-frame pacing signal, not "
+                "the NVIDIA Reflex GPU render-latency signal."
+            ),
+            recommendation=(
+                "For RE9 with frame generation enabled, use present-frametime-p95 "
+                "/ present-fps as the pre-frame-generation base-frame cadence. "
+                "Do not label it GPU render latency, and multiply present-fps by "
+                "the frame-generation factor only as an output-FPS sanity check."
             ),
             evidence=tuple(evidence),
             stats=stats,
