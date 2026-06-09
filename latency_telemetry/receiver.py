@@ -27,7 +27,6 @@ QUALITY_RANK = {
     "reflex-marker-input-present": 3,
     "reflex-render-submit": 3,
     "reflex-simulation": 3,
-    "gpu-submit-proxy": 4,
     "reflex-input-present": 5,
 }
 
@@ -169,10 +168,6 @@ def _quality_for_sample(sample: dict) -> str:
         if _int_value(sample.get("marker_bits")):
             return "reflex-marker-presence"
 
-    if str(sample.get("measurement") or "") == "gpu-submit-proxy":
-        if _positive_us(sample, "gpu_submit_us"):
-            return "gpu-submit-proxy"
-
     if _positive_us(sample, "input_to_present_us"):
         return "reflex-input-present"
 
@@ -306,8 +301,8 @@ class LatencyTelemetryMeter:
         render_present_p95 = _p95_us(
             [_int_value(sample.get("render_present_us")) for sample in samples]
         )
-        gpu_submit_p95 = _p95_us(
-            [_int_value(sample.get("gpu_submit_us")) for sample in samples]
+        gpu_render_p95 = _p95_us(
+            [_int_value(sample.get("gpu_render_us")) for sample in samples]
         )
         latency_proxy_p95 = _latency_proxy_p95(samples)
         missing_hints = _missing_metric_hints(
@@ -324,7 +319,7 @@ class LatencyTelemetryMeter:
             f"latency-proxy-p95={_format_ms(latency_proxy_p95)} "
             f"render-submit-p95={_format_ms(render_submit_p95)} "
             f"render-present-p95={_format_ms(render_present_p95)} "
-            f"gpu-submit-p95={_format_ms(gpu_submit_p95)} "
+            f"gpu-render-p95={_format_ms(gpu_render_p95)} "
             f"input-present-p95={_format_ms(input_present_p95)} "
             f"gpu-frame-p95={_format_ms(gpu_frame_p95)}"
             f"{missing_text}"
@@ -342,7 +337,7 @@ class LatencyTelemetryMeter:
             f"event=latency-meter pid={latest.get('pid', 'unknown')} "
             "quality=stale-driver-report samples=0 "
             "latency-proxy-p95=n/a render-submit-p95=n/a "
-            "render-present-p95=n/a gpu-submit-p95=n/a "
+            "render-present-p95=n/a gpu-render-p95=n/a "
             "input-present-p95=n/a gpu-frame-p95=n/a "
             f"stale-present_id={latest.get('present_id', 'unknown')} "
             "stale-driver-report-duplicates="
@@ -501,13 +496,11 @@ class LatencyTelemetryLogger:
             "driver_report_count",
             "driver_report_duplicate_count",
             "marker_bits",
-            "gpu_timestamp_mode",
-            "gpu_submit_us",
             "render_submit_us",
             "render_present_us",
             "input_to_present_us",
             "gpu_frame_time_us",
-            "cpu_age_us",
+            "gpu_render_us",
             "input_sample_us",
             "sim_start_us",
             "sim_end_us",
@@ -540,10 +533,6 @@ class LatencyTelemetryLogger:
             "queue_family",
             "queue_flags",
             "timestamp_valid_bits",
-            "gpu_timestamps_enabled",
-            "gpu_timestamp_mode",
-            "gpu_timestamp_interval",
-            "gpu_timestamp_slot_drops",
             "simulation_start",
             "simulation_end",
             "render_submit_start",

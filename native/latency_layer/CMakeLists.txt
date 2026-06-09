@@ -29,6 +29,16 @@ set_target_properties(penguinburner_latency_layer PROPERTIES
   OUTPUT_NAME "VkLayer_penguinburner_latency"
 )
 
+# Unit test for the pure per-frame emit-decision logic (no Vulkan device needed).
+# Enabled by default; run with `ctest` or the built binary directly.
+enable_testing()
+add_executable(test_latency_emit_plan test/test_latency_emit_plan.cpp)
+target_compile_features(test_latency_emit_plan PRIVATE cxx_std_17)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(test_latency_emit_plan PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME latency_emit_plan COMMAND test_latency_emit_plan)
+
 set(PB_LAYER_LIBRARY_PATH "./libVkLayer_penguinburner_latency.so")
 configure_file(
   VkLayer_PENGUINBURNER_latency.json.in

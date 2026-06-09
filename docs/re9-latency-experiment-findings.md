@@ -225,6 +225,33 @@ For RE9 on this stack:
 Do not use command-buffer timestamp injection as a PenguinBurner production
 telemetry path for RE9.
 
+> **Update (2026-06-09):** acted on this decision. The GPU-timestamp injection
+> paths (`PENGUIN_BURNER_LATENCY_GPU_TIMESTAMPS=unsafe-submit-wrapper` and
+> `unsafe-side-submit`, with `PENGUIN_BURNER_LATENCY_GPU_TIMESTAMP_INTERVAL`)
+> and the frame-ID injection path (`PENGUIN_BURNER_LATENCY_INJECT_FRAME_IDS`)
+> were **removed from the layer entirely**. They were the only sources of the
+> VRAM OOMs, hard freezes, and the `libnvidia-gpucomp` SIGSEGV. The layer no
+> longer intercepts `vkQueueSubmit*` at all and performs no command-buffer or
+> present-info mutation. The `gpu-submit-proxy` measurement and quality level
+> are gone with them. The flags above are kept here only as a historical record
+> of what was tried; they are no longer recognized.
+>
+> Two read-only improvements landed alongside the removal:
+>
+> - **Per-frame emission.** `query_latency_timing` now forwards every Reflex
+>   frame report whose `presentID` is newer than the last one already sent,
+>   instead of only re-sending the newest report each present. This is what
+>   stops the meter from latching a single stale value (the "stuck 24.3 ms").
+>   When the Reflex ring stops advancing the newest report is re-emitted once so
+>   the receiver's duplicate-report detection flags `quality=stale-driver-report`
+>   rather than silently freezing on the old number.
+> - **Real GPU render time.** The layer now emits
+>   `gpu_render_us = gpuRenderEndTimeUs - gpuRenderStartTimeUs` from the Reflex
+>   report, surfaced as `gpu-render-p95`. This is the per-frame
+>   pre-frame-generation GPU processing time (the closest Linux equivalent to
+>   the NVIDIA App overlay's render-latency number) and is the preferred adaptive
+>   control signal, gated by the stale-detection above.
+
 Keep the layer useful for diagnostics:
 
 - log raw Reflex timing endpoints,
@@ -239,6 +266,12 @@ For adaptive profile switching, RE9 should fall back to safer signals:
 - NVML/GPU pressure as a conservative fallback,
 - possible future external capture/perf tooling, but not in-process submit
   mutation.
+
+## Debugging
+
+For a step-by-step guide to building the layer, capturing telemetry, reading the
+log fields, and verifying the per-frame emission and `gpu_render_us` fixes, see
+[Latency Telemetry Debugging Guide](./latency-telemetry-debugging.md).
 
 ## Useful Commands
 

@@ -25,21 +25,13 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "latency_emit_plan.h"
+
 namespace {
 
 constexpr const char* kLayerName = "VK_LAYER_PENGUINBURNER_latency";
 constexpr const char* kSocketEnv = "PENGUIN_BURNER_LATENCY_SOCKET";
 constexpr const char* kEnableEnv = "PENGUIN_BURNER_LATENCY_LAYER";
-constexpr const char* kGpuTimestampsEnv =
-    "PENGUIN_BURNER_LATENCY_GPU_TIMESTAMPS";
-constexpr const char* kGpuTimestampIntervalEnv =
-    "PENGUIN_BURNER_LATENCY_GPU_TIMESTAMP_INTERVAL";
-constexpr const char* kInjectFrameIdsEnv =
-    "PENGUIN_BURNER_LATENCY_INJECT_FRAME_IDS";
-constexpr const char* kGpuTimestampsUnsafeOptIn = "unsafe-submit-wrapper";
-constexpr const char* kGpuTimestampsUnsafeSideSubmitOptIn =
-    "unsafe-side-submit";
-constexpr uint32_t kGpuTimestampSlots = 96;
 
 template <typename Handle>
 uint64_t handle_to_u64(Handle handle) {
@@ -70,29 +62,6 @@ auto find_layer_link(CreateInfo* create_info) {
         item = reinterpret_cast<LayerInfo*>(const_cast<void*>(item->pNext));
     }
     return static_cast<LayerInfo*>(nullptr);
-}
-
-bool pnext_has_structure(const void* p_next, VkStructureType s_type) {
-    auto* current = reinterpret_cast<const VkBaseInStructure*>(p_next);
-    while (current) {
-        if (current->sType == s_type) {
-            return true;
-        }
-        current = reinterpret_cast<const VkBaseInStructure*>(current->pNext);
-    }
-    return false;
-}
-
-template <typename T>
-T* find_mutable_pnext(void* p_next, VkStructureType s_type) {
-    auto* current = reinterpret_cast<VkBaseOutStructure*>(p_next);
-    while (current) {
-        if (current->sType == s_type) {
-            return reinterpret_cast<T*>(current);
-        }
-        current = reinterpret_cast<VkBaseOutStructure*>(current->pNext);
-    }
-    return nullptr;
 }
 
 uint32_t marker_bit(VkLatencyMarkerNV marker) {
@@ -134,50 +103,6 @@ bool report_has_driver_timing(const VkLatencyTimingsFrameReportNV& report) {
     return report.driverStartTimeUs || report.driverEndTimeUs
         || report.osRenderQueueStartTimeUs || report.osRenderQueueEndTimeUs
         || report.gpuRenderStartTimeUs || report.gpuRenderEndTimeUs;
-}
-
-bool env_enabled(const char* name) {
-    const char* value = std::getenv(name);
-    if (!value || !value[0]) {
-        return false;
-    }
-    return std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0
-        && std::strcmp(value, "False") != 0 && std::strcmp(value, "FALSE") != 0;
-}
-
-bool gpu_timestamps_unsafe_opted_in() {
-    const char* value = std::getenv(kGpuTimestampsEnv);
-    return value
-        && (std::strcmp(value, kGpuTimestampsUnsafeOptIn) == 0
-            || std::strcmp(value, kGpuTimestampsUnsafeSideSubmitOptIn) == 0);
-}
-
-bool gpu_timestamps_side_submit_opted_in() {
-    const char* value = std::getenv(kGpuTimestampsEnv);
-    return value && std::strcmp(value, kGpuTimestampsUnsafeSideSubmitOptIn) == 0;
-}
-
-const char* gpu_timestamp_mode_name(bool enabled, bool side_submit) {
-    if (!enabled) {
-        return "disabled";
-    }
-    return side_submit ? "unsafe-side-submit" : "unsafe-submit-wrapper";
-}
-
-uint32_t env_uint32(const char* name, uint32_t default_value, uint32_t max_value) {
-    const char* value = std::getenv(name);
-    if (!value || !value[0]) {
-        return default_value;
-    }
-    char* end = nullptr;
-    unsigned long parsed = std::strtoul(value, &end, 10);
-    if (end == value || parsed == 0) {
-        return default_value;
-    }
-    if (parsed > max_value) {
-        return max_value;
-    }
-    return static_cast<uint32_t>(parsed);
 }
 
 class TelemetrySocket {
@@ -304,53 +229,7 @@ struct QueueContext {
     uint32_t queue_index = 0;
     VkQueueFlags queue_flags = 0;
     uint32_t timestamp_valid_bits = 0;
-    bool saw_present = false;
     uint64_t present_count = 0;
-};
-
-struct GpuTimestampSlot {
-    bool active = false;
-    VkQueue queue = VK_NULL_HANDLE;
-    uint64_t sequence = 0;
-    uint64_t cpu_submit_us = 0;
-};
-
-struct GpuTimestampResources {
-    bool initialized = false;
-    bool failed = false;
-    uint32_t queue_family_index = UINT32_MAX;
-    VkCommandPool command_pool = VK_NULL_HANDLE;
-    VkQueryPool query_pool = VK_NULL_HANDLE;
-    std::array<VkCommandBuffer, kGpuTimestampSlots> pre_command_buffers{};
-    std::array<VkCommandBuffer, kGpuTimestampSlots> post_command_buffers{};
-    std::array<GpuTimestampSlot, kGpuTimestampSlots> slots{};
-    uint32_t next_slot = 0;
-    uint64_t sample_count = 0;
-    uint64_t active_slot_drop_count = 0;
-};
-
-struct GpuTimestampResult {
-    VkDevice device = VK_NULL_HANDLE;
-    VkQueue queue = VK_NULL_HANDLE;
-    uint32_t queue_family_index = UINT32_MAX;
-    uint64_t sequence = 0;
-    uint64_t gpu_submit_us = 0;
-    uint64_t cpu_age_us = 0;
-    bool advertised = false;
-    bool requested = false;
-    bool functions_available = false;
-    bool side_submit = false;
-};
-
-struct PreparedGpuTimestamp {
-    bool enabled = false;
-    VkDevice device = VK_NULL_HANDLE;
-    VkQueue queue = VK_NULL_HANDLE;
-    uint32_t queue_family_index = UINT32_MAX;
-    uint32_t slot_index = UINT32_MAX;
-    uint64_t sequence = 0;
-    VkCommandBuffer pre_command_buffer = VK_NULL_HANDLE;
-    VkCommandBuffer post_command_buffer = VK_NULL_HANDLE;
 };
 
 struct InstanceContext {
@@ -374,43 +253,22 @@ struct DeviceContext {
     PFN_vkDestroyDevice destroy_device = nullptr;
     PFN_vkGetDeviceQueue get_device_queue = nullptr;
     PFN_vkGetDeviceQueue2 get_device_queue2 = nullptr;
-    PFN_vkQueueSubmit queue_submit = nullptr;
-    PFN_vkQueueSubmit2 queue_submit2 = nullptr;
-    PFN_vkQueueSubmit2KHR queue_submit2_khr = nullptr;
     PFN_vkCreateSwapchainKHR create_swapchain_khr = nullptr;
     PFN_vkDestroySwapchainKHR destroy_swapchain_khr = nullptr;
     PFN_vkQueuePresentKHR queue_present_khr = nullptr;
     PFN_vkSetLatencyMarkerNV set_latency_marker_nv = nullptr;
     PFN_vkGetLatencyTimingsNV get_latency_timings_nv = nullptr;
-    PFN_vkCreateCommandPool create_command_pool = nullptr;
-    PFN_vkDestroyCommandPool destroy_command_pool = nullptr;
-    PFN_vkAllocateCommandBuffers allocate_command_buffers = nullptr;
-    PFN_vkBeginCommandBuffer begin_command_buffer = nullptr;
-    PFN_vkEndCommandBuffer end_command_buffer = nullptr;
-    PFN_vkCreateQueryPool create_query_pool = nullptr;
-    PFN_vkDestroyQueryPool destroy_query_pool = nullptr;
-    PFN_vkGetQueryPoolResults get_query_pool_results = nullptr;
-    PFN_vkCmdResetQueryPool cmd_reset_query_pool = nullptr;
-    PFN_vkCmdWriteTimestamp cmd_write_timestamp = nullptr;
     VkPhysicalDeviceProperties physical_device_properties{};
     std::vector<VkQueueFamilyProperties> queue_family_properties;
     bool low_latency_extension_advertised = false;
     bool low_latency_extension_requested = false;
     bool low_latency_functions_available = false;
-    bool frame_id_injection_enabled = false;
-    bool present_id_extension_enabled = false;
-    bool gpu_timestamps_enabled = false;
-    bool gpu_timestamps_side_submit = false;
-    uint32_t gpu_timestamp_interval = 1;
-    uint64_t gpu_timestamp_submit_count = 0;
     uint64_t latest_marker_present_id = 0;
     uint64_t marker_count = 0;
     MarkerCounts marker_counts{};
     std::unordered_map<uint64_t, uint32_t> marker_bits_by_present_id;
     std::unordered_map<uint64_t, MarkerTiming> marker_timings_by_present_id;
     std::vector<uint64_t> marker_order;
-    std::unordered_map<uint32_t, GpuTimestampResources>
-        gpu_timestamp_resources_by_family;
 };
 
 struct SwapchainContext {
@@ -420,6 +278,7 @@ struct SwapchainContext {
     uint64_t timing_sample_count = 0;
     uint64_t driver_timing_sample_count = 0;
     uint64_t last_driver_report_present_id = 0;
+    uint64_t last_emitted_present_id = 0;
     uint64_t duplicate_driver_report_count = 0;
     uint64_t present_count = 0;
     uint64_t timing_unavailable_count = 0;
@@ -496,49 +355,6 @@ void send_status_event(
         flags.requested ? "true" : "false",
         flags.functions_available ? "true" : "false",
         flags.marker_count);
-
-    if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
-        g_socket.send_line(line, static_cast<size_t>(length));
-    }
-}
-
-void send_gpu_timestamp_status_event(
-    const char* event,
-    VkDevice device,
-    VkQueue queue,
-    uint32_t queue_family_index,
-    VkQueueFlags queue_flags,
-    uint32_t timestamp_valid_bits,
-    uint32_t interval,
-    uint64_t count,
-    uint64_t active_slot_drop_count,
-    bool enabled,
-    bool side_submit) {
-    char line[2048]{};
-    int length = std::snprintf(
-        line,
-        sizeof(line),
-        "{\"v\":1,\"type\":\"status\",\"event\":\"%s\",\"pid\":%ld,"
-        "\"device\":\"0x%016" PRIx64 "\",\"queue\":\"0x%016" PRIx64 "\","
-        "\"queue_family\":%u,\"queue_flags\":%" PRIu64 ","
-        "\"timestamp_valid_bits\":%u,"
-        "\"gpu_timestamps_enabled\":%s,"
-        "\"gpu_timestamp_mode\":\"%s\","
-        "\"gpu_timestamp_interval\":%u,"
-        "\"gpu_timestamp_slot_drops\":%" PRIu64 ","
-        "\"count\":%" PRIu64 "}",
-        event,
-        static_cast<long>(::getpid()),
-        handle_to_u64(device),
-        handle_to_u64(queue),
-        queue_family_index,
-        static_cast<uint64_t>(queue_flags),
-        timestamp_valid_bits,
-        enabled ? "true" : "false",
-        gpu_timestamp_mode_name(enabled, side_submit),
-        interval,
-        active_slot_drop_count,
-        count);
 
     if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
         g_socket.send_line(line, static_cast<size_t>(length));
@@ -687,46 +503,6 @@ void send_marker_timing_sample(
     }
 }
 
-void send_gpu_timestamp_sample(const GpuTimestampResult& result) {
-    char line[1024]{};
-    int length = std::snprintf(
-        line,
-        sizeof(line),
-        "{\"v\":1,\"type\":\"timing\",\"measurement\":\"gpu-submit-proxy\","
-        "\"pid\":%ld,"
-        "\"device\":\"0x%016" PRIx64 "\",\"queue\":\"0x%016" PRIx64 "\","
-        "\"queue_family\":%u,\"submit_sequence\":%" PRIu64 ","
-        "\"quality\":\"gpu-submit-proxy\","
-        "\"vk_nv_low_latency2_advertised\":%s,"
-        "\"vk_nv_low_latency2_requested\":%s,"
-        "\"vk_nv_low_latency2_functions\":%s,"
-        "\"gpu_timestamp_mode\":\"%s\","
-        "\"gpu_submit_us\":%" PRIu64 ","
-        "\"gpu_frame_time_us\":0,"
-        "\"render_submit_us\":0,"
-        "\"input_to_present_us\":0,"
-        "\"gpu_render_start_us\":0,"
-        "\"gpu_render_end_us\":0,"
-        "\"driver_start_us\":0,"
-        "\"driver_end_us\":0,"
-        "\"cpu_age_us\":%" PRIu64 "}",
-        static_cast<long>(::getpid()),
-        handle_to_u64(result.device),
-        handle_to_u64(result.queue),
-        result.queue_family_index,
-        result.sequence,
-        result.advertised ? "true" : "false",
-        result.requested ? "true" : "false",
-        result.functions_available ? "true" : "false",
-        gpu_timestamp_mode_name(true, result.side_submit),
-        result.gpu_submit_us,
-        result.cpu_age_us);
-
-    if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
-        g_socket.send_line(line, static_cast<size_t>(length));
-    }
-}
-
 void send_status_event_once(const char* event, std::atomic<bool>& reported) {
     if (!std::getenv(kEnableEnv)) {
         return;
@@ -820,599 +596,19 @@ void store_queue(
     queue_context.device = device;
     queue_context.queue_family_index = queue_family_index;
     queue_context.queue_index = queue_index;
-    bool gpu_timestamps_enabled = false;
-    bool gpu_timestamps_side_submit = false;
-    uint32_t gpu_timestamp_interval = 1;
 
-    {
-        std::lock_guard lock(g_mutex);
-        auto device_it = g_devices.find(device);
-        if (device_it != g_devices.end()) {
-            gpu_timestamps_enabled = device_it->second.gpu_timestamps_enabled;
-            gpu_timestamps_side_submit =
-                device_it->second.gpu_timestamps_side_submit;
-            gpu_timestamp_interval = device_it->second.gpu_timestamp_interval;
-            if (queue_family_index
-                < device_it->second.queue_family_properties.size()) {
-                const auto& properties =
-                    device_it->second.queue_family_properties[queue_family_index];
-                queue_context.queue_flags = properties.queueFlags;
-                queue_context.timestamp_valid_bits = properties.timestampValidBits;
-            }
-        }
-        g_queues[queue] = queue_context;
-    }
-
-    if (gpu_timestamps_enabled) {
-        send_gpu_timestamp_status_event(
-            "gpu-timestamp-queue",
-            device,
-            queue,
-            queue_context.queue_family_index,
-            queue_context.queue_flags,
-            queue_context.timestamp_valid_bits,
-            gpu_timestamp_interval,
-            1,
-            0,
-            true,
-            gpu_timestamps_side_submit);
-    }
-}
-
-void release_gpu_timestamp_resources_locked(
-    DeviceContext& context,
-    GpuTimestampResources& resources) {
-    if (resources.query_pool != VK_NULL_HANDLE && context.destroy_query_pool) {
-        context.destroy_query_pool(context.device, resources.query_pool, nullptr);
-    }
-    if (resources.command_pool != VK_NULL_HANDLE && context.destroy_command_pool) {
-        context.destroy_command_pool(context.device, resources.command_pool, nullptr);
-    }
-
-    resources.command_pool = VK_NULL_HANDLE;
-    resources.query_pool = VK_NULL_HANDLE;
-    resources.pre_command_buffers = {};
-    resources.post_command_buffers = {};
-    resources.slots = {};
-    resources.initialized = false;
-}
-
-void release_all_gpu_timestamp_resources_locked(DeviceContext& context) {
-    for (auto& [_, resources] : context.gpu_timestamp_resources_by_family) {
-        release_gpu_timestamp_resources_locked(context, resources);
-    }
-    context.gpu_timestamp_resources_by_family.clear();
-}
-
-bool record_gpu_timestamp_command_buffers_locked(
-    DeviceContext& context,
-    GpuTimestampResources& resources) {
-    for (uint32_t slot = 0; slot < kGpuTimestampSlots; ++slot) {
-        VkCommandBufferBeginInfo begin_info{};
-        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
-
-        VkResult result = context.begin_command_buffer(
-            resources.pre_command_buffers[slot],
-            &begin_info);
-        if (result != VK_SUCCESS) {
-            return false;
-        }
-        context.cmd_reset_query_pool(
-            resources.pre_command_buffers[slot],
-            resources.query_pool,
-            slot * 2,
-            2);
-        context.cmd_write_timestamp(
-            resources.pre_command_buffers[slot],
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            resources.query_pool,
-            slot * 2);
-        result = context.end_command_buffer(resources.pre_command_buffers[slot]);
-        if (result != VK_SUCCESS) {
-            return false;
-        }
-
-        result = context.begin_command_buffer(
-            resources.post_command_buffers[slot],
-            &begin_info);
-        if (result != VK_SUCCESS) {
-            return false;
-        }
-        context.cmd_write_timestamp(
-            resources.post_command_buffers[slot],
-            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-            resources.query_pool,
-            slot * 2 + 1);
-        result = context.end_command_buffer(resources.post_command_buffers[slot]);
-        if (result != VK_SUCCESS) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool init_gpu_timestamp_resources_locked(
-    DeviceContext& context,
-    uint32_t queue_family_index) {
-    auto& resources =
-        context.gpu_timestamp_resources_by_family[queue_family_index];
-    if (resources.initialized) {
-        return true;
-    }
-    if (resources.failed) {
-        return false;
-    }
-
-    resources.queue_family_index = queue_family_index;
-    VkQueueFlags queue_flags = 0;
-    uint32_t timestamp_valid_bits = 0;
-    if (queue_family_index < context.queue_family_properties.size()) {
-        const auto& properties =
-            context.queue_family_properties[queue_family_index];
-        queue_flags = properties.queueFlags;
-        timestamp_valid_bits = properties.timestampValidBits;
-    }
-    auto send_init_status = [&](const char* event) {
-        send_gpu_timestamp_status_event(
-            event,
-            context.device,
-            VK_NULL_HANDLE,
-            queue_family_index,
-            queue_flags,
-            timestamp_valid_bits,
-            context.gpu_timestamp_interval,
-            resources.sample_count,
-            resources.active_slot_drop_count,
-            context.gpu_timestamps_enabled,
-            context.gpu_timestamps_side_submit);
-    };
-
-    if (!context.create_command_pool || !context.destroy_command_pool
-        || !context.allocate_command_buffers || !context.begin_command_buffer
-        || !context.end_command_buffer || !context.create_query_pool
-        || !context.destroy_query_pool || !context.get_query_pool_results
-        || !context.cmd_reset_query_pool || !context.cmd_write_timestamp) {
-        resources.failed = true;
-        send_init_status("gpu-timestamp-init-missing-functions");
-        return false;
-    }
-
-    VkCommandPoolCreateInfo command_pool_info{};
-    command_pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    command_pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    command_pool_info.queueFamilyIndex = queue_family_index;
-
-    VkResult result = context.create_command_pool(
-        context.device,
-        &command_pool_info,
-        nullptr,
-        &resources.command_pool);
-    if (result != VK_SUCCESS) {
-        resources.failed = true;
-        send_init_status("gpu-timestamp-init-command-pool-failed");
-        return false;
-    }
-
-    VkQueryPoolCreateInfo query_pool_info{};
-    query_pool_info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
-    query_pool_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
-    query_pool_info.queryCount = kGpuTimestampSlots * 2;
-
-    result = context.create_query_pool(
-        context.device,
-        &query_pool_info,
-        nullptr,
-        &resources.query_pool);
-    if (result != VK_SUCCESS) {
-        release_gpu_timestamp_resources_locked(context, resources);
-        resources.failed = true;
-        send_init_status("gpu-timestamp-init-query-pool-failed");
-        return false;
-    }
-
-    std::array<VkCommandBuffer, kGpuTimestampSlots * 2> command_buffers{};
-    VkCommandBufferAllocateInfo allocate_info{};
-    allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocate_info.commandPool = resources.command_pool;
-    allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocate_info.commandBufferCount =
-        static_cast<uint32_t>(command_buffers.size());
-    result = context.allocate_command_buffers(
-        context.device,
-        &allocate_info,
-        command_buffers.data());
-    if (result != VK_SUCCESS) {
-        release_gpu_timestamp_resources_locked(context, resources);
-        resources.failed = true;
-        send_init_status("gpu-timestamp-init-command-buffer-failed");
-        return false;
-    }
-
-    for (uint32_t slot = 0; slot < kGpuTimestampSlots; ++slot) {
-        resources.pre_command_buffers[slot] = command_buffers[slot * 2];
-        resources.post_command_buffers[slot] = command_buffers[slot * 2 + 1];
-    }
-
-    if (!record_gpu_timestamp_command_buffers_locked(context, resources)) {
-        release_gpu_timestamp_resources_locked(context, resources);
-        resources.failed = true;
-        send_init_status("gpu-timestamp-init-record-failed");
-        return false;
-    }
-
-    resources.initialized = true;
-    send_init_status("gpu-timestamp-ready");
-    return true;
-}
-
-bool collect_gpu_timestamp_slot_locked(
-    DeviceContext& context,
-    GpuTimestampResources& resources,
-    uint32_t slot_index,
-    GpuTimestampResult* result_out) {
-    if (slot_index >= kGpuTimestampSlots) {
-        return true;
-    }
-
-    auto& slot = resources.slots[slot_index];
-    if (!slot.active) {
-        return true;
-    }
-
-    std::array<uint64_t, 4> query_data{};
-    VkResult result = context.get_query_pool_results(
-        context.device,
-        resources.query_pool,
-        slot_index * 2,
-        2,
-        sizeof(query_data),
-        query_data.data(),
-        sizeof(uint64_t) * 2,
-        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
-    if (result != VK_SUCCESS && result != VK_NOT_READY) {
-        slot.active = false;
-        return true;
-    }
-
-    const bool start_available = query_data[1] != 0;
-    const bool end_available = query_data[3] != 0;
-    if (!start_available || !end_available) {
-        return false;
-    }
-
-    uint64_t start = query_data[0];
-    uint64_t end = query_data[2];
-    if (resources.queue_family_index < context.queue_family_properties.size()) {
-        uint32_t valid_bits =
-            context
-                .queue_family_properties[resources.queue_family_index]
-                .timestampValidBits;
-        if (valid_bits > 0 && valid_bits < 64) {
-            const uint64_t mask = (1ull << valid_bits) - 1ull;
-            start &= mask;
-            end &= mask;
-        }
-    }
-
-    if (end > start && result_out) {
-        const double duration_ns =
-            static_cast<double>(end - start)
-            * static_cast<double>(
-                context.physical_device_properties.limits.timestampPeriod);
-        result_out->device = context.device;
-        result_out->queue = slot.queue;
-        result_out->queue_family_index = resources.queue_family_index;
-        result_out->sequence = slot.sequence;
-        result_out->gpu_submit_us =
-            static_cast<uint64_t>(duration_ns / 1000.0);
-        result_out->cpu_age_us = elapsed_us(slot.cpu_submit_us, now_monotonic_us());
-        result_out->advertised = context.low_latency_extension_advertised;
-        result_out->requested = context.low_latency_extension_requested;
-        result_out->functions_available =
-            context.low_latency_functions_available;
-        result_out->side_submit = context.gpu_timestamps_side_submit;
-    }
-
-    slot.active = false;
-    return true;
-}
-
-PreparedGpuTimestamp prepare_gpu_timestamp_submission(
-    VkQueue queue,
-    uint32_t command_buffer_count) {
-    PreparedGpuTimestamp prepared{};
-    std::vector<GpuTimestampResult> collected_results;
-    {
-        std::lock_guard lock(g_mutex);
-        auto queue_it = g_queues.find(queue);
-        if (queue_it == g_queues.end() || command_buffer_count == 0) {
-            return prepared;
-        }
-        auto device_it = g_devices.find(queue_it->second.device);
-        if (device_it == g_devices.end()) {
-            return prepared;
-        }
-
-        auto& context = device_it->second;
-        auto& queue_context = queue_it->second;
-        if (!context.gpu_timestamps_enabled
-            || !(queue_context.queue_flags & VK_QUEUE_GRAPHICS_BIT)
-            || queue_context.timestamp_valid_bits == 0
-            || (context.gpu_timestamps_side_submit
-                && !queue_context.saw_present)) {
-            return prepared;
-        }
-
-        const uint64_t submit_count = ++context.gpu_timestamp_submit_count;
-        if (((submit_count - 1) % context.gpu_timestamp_interval) != 0) {
-            return prepared;
-        }
-
-        if (!init_gpu_timestamp_resources_locked(
-                context,
-                queue_context.queue_family_index)) {
-            return prepared;
-        }
-
-        auto& resources =
-            context.gpu_timestamp_resources_by_family
-                [queue_context.queue_family_index];
-        const uint32_t slot_index = resources.next_slot;
-        GpuTimestampResult old_result{};
-        const bool slot_reusable = collect_gpu_timestamp_slot_locked(
-            context,
-            resources,
-            slot_index,
-            &old_result);
-        if (old_result.gpu_submit_us) {
-            collected_results.push_back(old_result);
-        }
-        if (!slot_reusable) {
-            resources.active_slot_drop_count++;
-            if (should_report_counter(resources.active_slot_drop_count)) {
-                send_gpu_timestamp_status_event(
-                    "gpu-timestamp-slot-busy",
-                    context.device,
-                    queue,
-                    queue_context.queue_family_index,
-                    queue_context.queue_flags,
-                    queue_context.timestamp_valid_bits,
-                    context.gpu_timestamp_interval,
-                    resources.sample_count,
-                    resources.active_slot_drop_count,
-                    true,
-                    context.gpu_timestamps_side_submit);
-            }
-            return prepared;
-        }
-
-        auto& slot = resources.slots[slot_index];
-        slot.active = true;
-        slot.queue = queue;
-        slot.sequence = ++resources.sample_count;
-        slot.cpu_submit_us = now_monotonic_us();
-
-        resources.next_slot = (slot_index + 1) % kGpuTimestampSlots;
-
-        prepared.enabled = true;
-        prepared.device = context.device;
-        prepared.queue = queue;
-        prepared.queue_family_index = queue_context.queue_family_index;
-        prepared.slot_index = slot_index;
-        prepared.sequence = slot.sequence;
-        prepared.pre_command_buffer = resources.pre_command_buffers[slot_index];
-        prepared.post_command_buffer =
-            resources.post_command_buffers[slot_index];
-    }
-
-    for (const auto& result : collected_results) {
-        send_gpu_timestamp_sample(result);
-    }
-    return prepared;
-}
-
-void discard_gpu_timestamp_submissions(
-    const std::vector<PreparedGpuTimestamp>& prepared_submissions) {
     std::lock_guard lock(g_mutex);
-    for (const auto& prepared : prepared_submissions) {
-        if (!prepared.enabled) {
-            continue;
-        }
-        auto device_it = g_devices.find(prepared.device);
-        if (device_it == g_devices.end()) {
-            continue;
-        }
-        auto& resources =
-            device_it->second.gpu_timestamp_resources_by_family
-                [prepared.queue_family_index];
-        if (prepared.slot_index >= kGpuTimestampSlots) {
-            continue;
-        }
-        auto& slot = resources.slots[prepared.slot_index];
-        if (slot.active && slot.sequence == prepared.sequence) {
-            slot.active = false;
+    auto device_it = g_devices.find(device);
+    if (device_it != g_devices.end()) {
+        if (queue_family_index
+            < device_it->second.queue_family_properties.size()) {
+            const auto& properties =
+                device_it->second.queue_family_properties[queue_family_index];
+            queue_context.queue_flags = properties.queueFlags;
+            queue_context.timestamp_valid_bits = properties.timestampValidBits;
         }
     }
-}
-
-void discard_gpu_timestamp_submission(const PreparedGpuTimestamp& prepared) {
-    if (!prepared.enabled) {
-        return;
-    }
-    discard_gpu_timestamp_submissions({prepared});
-}
-
-void report_gpu_timestamp_side_submit_status(
-    const PreparedGpuTimestamp& prepared,
-    const char* event) {
-    if (!prepared.enabled) {
-        return;
-    }
-
-    VkQueueFlags queue_flags = 0;
-    uint32_t timestamp_valid_bits = 0;
-    uint32_t interval = 0;
-    uint64_t active_slot_drop_count = 0;
-    {
-        std::lock_guard lock(g_mutex);
-        auto queue_it = g_queues.find(prepared.queue);
-        if (queue_it != g_queues.end()) {
-            queue_flags = queue_it->second.queue_flags;
-            timestamp_valid_bits = queue_it->second.timestamp_valid_bits;
-        }
-        auto device_it = g_devices.find(prepared.device);
-        if (device_it != g_devices.end()) {
-            interval = device_it->second.gpu_timestamp_interval;
-            auto resources_it =
-                device_it->second.gpu_timestamp_resources_by_family.find(
-                    prepared.queue_family_index);
-            if (resources_it
-                != device_it->second.gpu_timestamp_resources_by_family.end()) {
-                active_slot_drop_count =
-                    resources_it->second.active_slot_drop_count;
-            }
-        }
-    }
-
-    send_gpu_timestamp_status_event(
-        event,
-        prepared.device,
-        prepared.queue,
-        prepared.queue_family_index,
-        queue_flags,
-        timestamp_valid_bits,
-        interval,
-        prepared.sequence,
-        active_slot_drop_count,
-        true,
-        true);
-}
-
-bool submit_gpu_timestamp_side_command_buffer(
-    VkQueue queue,
-    PFN_vkQueueSubmit next_queue_submit,
-    const PreparedGpuTimestamp& prepared,
-    VkCommandBuffer command_buffer,
-    const char* failure_event) {
-    if (!prepared.enabled || !next_queue_submit
-        || command_buffer == VK_NULL_HANDLE) {
-        return false;
-    }
-
-    VkSubmitInfo submit_info{};
-    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &command_buffer;
-
-    VkResult result =
-        next_queue_submit(queue, 1, &submit_info, VK_NULL_HANDLE);
-    if (result != VK_SUCCESS) {
-        report_gpu_timestamp_side_submit_status(prepared, failure_event);
-        return false;
-    }
-    return true;
-}
-
-uint32_t submit_command_buffer_count(
-    const VkSubmitInfo* submits,
-    uint32_t submit_count) {
-    uint32_t command_buffer_count = 0;
-    if (!submits) {
-        return 0;
-    }
-    for (uint32_t i = 0; i < submit_count; ++i) {
-        command_buffer_count += submits[i].commandBufferCount;
-    }
-    return command_buffer_count;
-}
-
-uint32_t submit2_command_buffer_count(
-    const VkSubmitInfo2* submits,
-    uint32_t submit_count) {
-    uint32_t command_buffer_count = 0;
-    if (!submits) {
-        return 0;
-    }
-    for (uint32_t i = 0; i < submit_count; ++i) {
-        command_buffer_count += submits[i].commandBufferInfoCount;
-    }
-    return command_buffer_count;
-}
-
-uint32_t first_submit2_device_mask(
-    const VkSubmitInfo2* submits,
-    uint32_t submit_count) {
-    if (!submits) {
-        return 0;
-    }
-    for (uint32_t i = 0; i < submit_count; ++i) {
-        if (submits[i].pCommandBufferInfos
-            && submits[i].commandBufferInfoCount > 0) {
-            return submits[i].pCommandBufferInfos[0].deviceMask;
-        }
-    }
-    return 0;
-}
-
-bool submit_gpu_timestamp_side_command_buffer2(
-    VkQueue queue,
-    PFN_vkQueueSubmit2 next_queue_submit2,
-    const PreparedGpuTimestamp& prepared,
-    VkCommandBuffer command_buffer,
-    uint32_t device_mask,
-    const char* failure_event) {
-    if (!prepared.enabled || !next_queue_submit2
-        || command_buffer == VK_NULL_HANDLE) {
-        return false;
-    }
-
-    VkCommandBufferSubmitInfo command_buffer_info{};
-    command_buffer_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-    command_buffer_info.commandBuffer = command_buffer;
-    command_buffer_info.deviceMask = device_mask;
-
-    VkSubmitInfo2 submit_info{};
-    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-    submit_info.commandBufferInfoCount = 1;
-    submit_info.pCommandBufferInfos = &command_buffer_info;
-
-    VkResult result =
-        next_queue_submit2(queue, 1, &submit_info, VK_NULL_HANDLE);
-    if (result != VK_SUCCESS) {
-        report_gpu_timestamp_side_submit_status(prepared, failure_event);
-        return false;
-    }
-    return true;
-}
-
-void poll_gpu_timestamp_results(VkDevice device) {
-    std::vector<GpuTimestampResult> collected_results;
-    {
-        std::lock_guard lock(g_mutex);
-        auto device_it = g_devices.find(device);
-        if (device_it == g_devices.end()) {
-            return;
-        }
-        auto& context = device_it->second;
-        for (auto& [_, resources] : context.gpu_timestamp_resources_by_family) {
-            for (uint32_t slot = 0; slot < kGpuTimestampSlots; ++slot) {
-                GpuTimestampResult result{};
-                collect_gpu_timestamp_slot_locked(
-                    context,
-                    resources,
-                    slot,
-                    &result);
-                if (result.gpu_submit_us) {
-                    collected_results.push_back(result);
-                }
-            }
-        }
-    }
-
-    for (const auto& result : collected_results) {
-        send_gpu_timestamp_sample(result);
-    }
+    g_queues[queue] = queue_context;
 }
 
 void record_marker(
@@ -1625,6 +821,12 @@ void send_timing_sample(
         render_present_us = report.gpuRenderEndTimeUs - report.presentStartTimeUs;
     }
 
+    uint64_t gpu_render_us = 0;
+    if (report.gpuRenderStartTimeUs && report.gpuRenderEndTimeUs
+        && report.gpuRenderEndTimeUs > report.gpuRenderStartTimeUs) {
+        gpu_render_us = report.gpuRenderEndTimeUs - report.gpuRenderStartTimeUs;
+    }
+
     const bool has_reflex_report_timestamps = report_has_reflex_markers(report);
     const bool has_driver_timing = report_has_driver_timing(report);
     const char* quality = "present-frametime";
@@ -1655,6 +857,7 @@ void send_timing_sample(
         "\"vk_nv_low_latency2_requested\":%s,"
         "\"vk_nv_low_latency2_functions\":%s,"
         "\"gpu_frame_time_us\":%" PRIu64 ","
+        "\"gpu_render_us\":%" PRIu64 ","
         "\"render_submit_us\":%" PRIu64 ","
         "\"render_present_us\":%" PRIu64 ","
         "\"input_to_present_us\":%" PRIu64 ","
@@ -1685,6 +888,7 @@ void send_timing_sample(
         requested ? "true" : "false",
         functions_available ? "true" : "false",
         gpu_frame_time_us,
+        gpu_render_us,
         render_submit_us,
         render_present_us,
         input_to_present_us,
@@ -1792,14 +996,65 @@ void query_latency_timing(VkDevice device, VkSwapchainKHR swapchain) {
     }
 
     const uint32_t written_count = std::min(info.timingCount, timing_count);
-    for (uint32_t offset = 0; offset < written_count; ++offset) {
-        const uint32_t index = written_count - 1 - offset;
+
+    // The driver returns a ring of up to kMaxTimings frame reports, oldest
+    // first. Emitting only the newest report re-latches the same value every
+    // present once the Reflex ring stops advancing, which is what produced the
+    // stuck constant latency. Instead, forward every report whose presentID is
+    // newer than the last one we already emitted for this swapchain, so the
+    // receiver sees genuine per-frame samples. The dedup/reset decision lives in
+    // plan_latency_emits() (see latency_emit_plan.h) so it can be unit-tested.
+    //
+    // Collect the usable reports (preserving original index) and their present
+    // IDs for the planner.
+    std::vector<uint32_t> usable_indices;
+    std::vector<uint64_t> usable_present_ids;
+    usable_indices.reserve(written_count);
+    usable_present_ids.reserve(written_count);
+    for (uint32_t index = 0; index < written_count; ++index) {
         const auto& report = reports[index];
-        if (report.presentID || report_has_driver_timing(report)
-            || report_has_reflex_markers(report)) {
-            send_timing_sample(device, swapchain, report, written_count);
-            return;
+        const bool usable = report.presentID || report_has_driver_timing(report)
+            || report_has_reflex_markers(report);
+        if (!usable) {
+            continue;
         }
+        usable_indices.push_back(index);
+        usable_present_ids.push_back(report.presentID);
+    }
+
+    uint64_t last_emitted = 0;
+    {
+        std::lock_guard lock(g_mutex);
+        auto swapchain_it = g_swapchains.find(swapchain);
+        if (swapchain_it != g_swapchains.end()) {
+            last_emitted = swapchain_it->second.last_emitted_present_id;
+        }
+    }
+
+    const penguinburner::LatencyEmitPlan plan =
+        penguinburner::plan_latency_emits(usable_present_ids, last_emitted);
+
+    for (std::size_t pos : plan.emit_indices) {
+        send_timing_sample(
+            device, swapchain, reports[usable_indices[pos]], written_count);
+    }
+
+    if (plan.new_last_emitted != last_emitted || plan.reset_detected) {
+        std::lock_guard lock(g_mutex);
+        auto swapchain_it = g_swapchains.find(swapchain);
+        if (swapchain_it != g_swapchains.end()) {
+            swapchain_it->second.last_emitted_present_id = plan.new_last_emitted;
+        }
+    }
+
+    // Nothing newer than last time: the Reflex ring has stopped advancing.
+    // Re-emit the newest report once so the receiver's duplicate-report
+    // detection can flag the stream as stale instead of us silently dropping
+    // it (which would otherwise leave the meter showing a frozen value).
+    if (!plan.emitted_fresh && plan.has_newest) {
+        send_timing_sample(
+            device, swapchain, reports[usable_indices[plan.newest_pos]],
+            written_count);
     }
 }
 
@@ -1980,52 +1235,11 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
     const bool requested = extension_requested(
         create_info,
         VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
-    const bool inject_frame_ids = env_enabled(kInjectFrameIdsEnv);
-    const bool present_id_advertised = extension_advertised(
-        instance_context,
-        physical_device,
-        VK_KHR_PRESENT_ID_EXTENSION_NAME);
-    const bool present_id_requested = extension_requested(
-        create_info,
-        VK_KHR_PRESENT_ID_EXTENSION_NAME);
-
-    VkDeviceCreateInfo amended_create_info = *create_info;
-    std::vector<const char*> enabled_extensions;
-    VkPhysicalDevicePresentIdFeaturesKHR present_id_features{};
-    bool present_id_extension_enabled = present_id_requested;
-    if (inject_frame_ids && present_id_advertised) {
-        enabled_extensions.assign(
-            create_info->ppEnabledExtensionNames,
-            create_info->ppEnabledExtensionNames + create_info->enabledExtensionCount);
-        if (!present_id_requested) {
-            enabled_extensions.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME);
-            amended_create_info.ppEnabledExtensionNames = enabled_extensions.data();
-            amended_create_info.enabledExtensionCount =
-                static_cast<uint32_t>(enabled_extensions.size());
-            present_id_extension_enabled = true;
-        }
-
-        void* mutable_pnext = const_cast<void*>(amended_create_info.pNext);
-        auto* existing_present_id_features =
-            find_mutable_pnext<VkPhysicalDevicePresentIdFeaturesKHR>(
-                mutable_pnext,
-                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR);
-        if (existing_present_id_features) {
-            existing_present_id_features->presentId = VK_TRUE;
-        } else {
-            present_id_features.sType =
-                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
-            present_id_features.presentId = VK_TRUE;
-            present_id_features.pNext =
-                const_cast<void*>(amended_create_info.pNext);
-            amended_create_info.pNext = &present_id_features;
-        }
-    }
 
     VkResult result =
         instance_context.create_device(
             physical_device,
-            &amended_create_info,
+            create_info,
             allocator,
             device);
     if (result != VK_SUCCESS) {
@@ -2042,12 +1256,6 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
         next_get_device_proc_addr(*device, "vkGetDeviceQueue"));
     context.get_device_queue2 = reinterpret_cast<PFN_vkGetDeviceQueue2>(
         next_get_device_proc_addr(*device, "vkGetDeviceQueue2"));
-    context.queue_submit = reinterpret_cast<PFN_vkQueueSubmit>(
-        next_get_device_proc_addr(*device, "vkQueueSubmit"));
-    context.queue_submit2 = reinterpret_cast<PFN_vkQueueSubmit2>(
-        next_get_device_proc_addr(*device, "vkQueueSubmit2"));
-    context.queue_submit2_khr = reinterpret_cast<PFN_vkQueueSubmit2KHR>(
-        next_get_device_proc_addr(*device, "vkQueueSubmit2KHR"));
     context.create_swapchain_khr = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
         next_get_device_proc_addr(*device, "vkCreateSwapchainKHR"));
     context.destroy_swapchain_khr = reinterpret_cast<PFN_vkDestroySwapchainKHR>(
@@ -2058,30 +1266,6 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
         next_get_device_proc_addr(*device, "vkSetLatencyMarkerNV"));
     context.get_latency_timings_nv = reinterpret_cast<PFN_vkGetLatencyTimingsNV>(
         next_get_device_proc_addr(*device, "vkGetLatencyTimingsNV"));
-    context.create_command_pool = reinterpret_cast<PFN_vkCreateCommandPool>(
-        next_get_device_proc_addr(*device, "vkCreateCommandPool"));
-    context.destroy_command_pool = reinterpret_cast<PFN_vkDestroyCommandPool>(
-        next_get_device_proc_addr(*device, "vkDestroyCommandPool"));
-    context.allocate_command_buffers =
-        reinterpret_cast<PFN_vkAllocateCommandBuffers>(
-            next_get_device_proc_addr(*device, "vkAllocateCommandBuffers"));
-    context.begin_command_buffer = reinterpret_cast<PFN_vkBeginCommandBuffer>(
-        next_get_device_proc_addr(*device, "vkBeginCommandBuffer"));
-    context.end_command_buffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
-        next_get_device_proc_addr(*device, "vkEndCommandBuffer"));
-    context.create_query_pool = reinterpret_cast<PFN_vkCreateQueryPool>(
-        next_get_device_proc_addr(*device, "vkCreateQueryPool"));
-    context.destroy_query_pool = reinterpret_cast<PFN_vkDestroyQueryPool>(
-        next_get_device_proc_addr(*device, "vkDestroyQueryPool"));
-    context.get_query_pool_results =
-        reinterpret_cast<PFN_vkGetQueryPoolResults>(
-            next_get_device_proc_addr(*device, "vkGetQueryPoolResults"));
-    context.cmd_reset_query_pool =
-        reinterpret_cast<PFN_vkCmdResetQueryPool>(
-            next_get_device_proc_addr(*device, "vkCmdResetQueryPool"));
-    context.cmd_write_timestamp =
-        reinterpret_cast<PFN_vkCmdWriteTimestamp>(
-            next_get_device_proc_addr(*device, "vkCmdWriteTimestamp"));
     if (instance_context.get_physical_device_properties) {
         instance_context.get_physical_device_properties(
             physical_device,
@@ -2106,13 +1290,6 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
     context.low_latency_extension_requested = requested;
     context.low_latency_functions_available =
         context.set_latency_marker_nv && context.get_latency_timings_nv;
-    context.frame_id_injection_enabled = inject_frame_ids;
-    context.present_id_extension_enabled = present_id_extension_enabled;
-    const bool gpu_timestamps_requested = env_enabled(kGpuTimestampsEnv);
-    context.gpu_timestamps_enabled = gpu_timestamps_unsafe_opted_in();
-    context.gpu_timestamps_side_submit = gpu_timestamps_side_submit_opted_in();
-    context.gpu_timestamp_interval =
-        env_uint32(kGpuTimestampIntervalEnv, 240, 3600);
 
     DeviceTelemetryFlags flags{
         advertised,
@@ -2120,9 +1297,6 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
         context.low_latency_functions_available,
         0,
     };
-    const bool gpu_timestamps_enabled = context.gpu_timestamps_enabled;
-    const bool gpu_timestamps_side_submit = context.gpu_timestamps_side_submit;
-    const uint32_t gpu_timestamp_interval = context.gpu_timestamp_interval;
     {
         std::lock_guard lock(g_mutex);
         g_devices[*device] = std::move(context);
@@ -2133,22 +1307,6 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
         VK_NULL_HANDLE,
         1,
         flags);
-    if (gpu_timestamps_enabled || gpu_timestamps_requested) {
-        send_gpu_timestamp_status_event(
-            gpu_timestamps_enabled
-                ? "gpu-timestamp-config"
-                : "gpu-timestamp-disabled-requires-unsafe-opt-in",
-            *device,
-            VK_NULL_HANDLE,
-            UINT32_MAX,
-            0,
-            0,
-            gpu_timestamp_interval,
-            1,
-            0,
-            gpu_timestamps_enabled,
-            gpu_timestamps_side_submit);
-    }
     return VK_SUCCESS;
 }
 
@@ -2160,7 +1318,6 @@ VKAPI_ATTR void VKAPI_CALL layer_destroy_device(
         std::lock_guard lock(g_mutex);
         auto it = g_devices.find(device);
         if (it != g_devices.end()) {
-            release_all_gpu_timestamp_resources_locked(it->second);
             next_destroy_device = it->second.destroy_device;
         }
     }
@@ -2269,314 +1426,6 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_swapchain_khr(
     return result;
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL layer_queue_submit(
-    VkQueue queue,
-    uint32_t submit_count,
-    const VkSubmitInfo* submits,
-    VkFence fence) {
-    VkDevice device = VK_NULL_HANDLE;
-    PFN_vkQueueSubmit next_queue_submit = nullptr;
-    bool inject_submit_frame_ids = false;
-    bool gpu_timestamps_side_submit = false;
-    uint64_t submit_present_id = 0;
-    {
-        std::lock_guard lock(g_mutex);
-        auto queue_it = g_queues.find(queue);
-        if (queue_it != g_queues.end()) {
-            device = queue_it->second.device;
-            auto device_it = g_devices.find(device);
-            if (device_it != g_devices.end()) {
-                next_queue_submit = device_it->second.queue_submit;
-                inject_submit_frame_ids =
-                    device_it->second.frame_id_injection_enabled;
-                gpu_timestamps_side_submit =
-                    device_it->second.gpu_timestamps_side_submit;
-                submit_present_id = device_it->second.latest_marker_present_id;
-            }
-        }
-    }
-
-    if (!next_queue_submit) {
-        return VK_ERROR_INITIALIZATION_FAILED;
-    }
-    if (!submits || submit_count == 0) {
-        return next_queue_submit(queue, submit_count, submits, fence);
-    }
-
-    std::vector<VkSubmitInfo> wrapped_submits(submits, submits + submit_count);
-    std::vector<VkLatencySubmissionPresentIdNV> latency_submission_present_ids;
-    if (inject_submit_frame_ids && submit_present_id) {
-        latency_submission_present_ids.resize(submit_count);
-        for (uint32_t i = 0; i < submit_count; ++i) {
-            auto& present_id_info = latency_submission_present_ids[i];
-            present_id_info.sType =
-                VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV;
-            present_id_info.presentID = submit_present_id;
-            present_id_info.pNext = wrapped_submits[i].pNext;
-            wrapped_submits[i].pNext = &present_id_info;
-        }
-    }
-
-    if (gpu_timestamps_side_submit) {
-        PreparedGpuTimestamp prepared = prepare_gpu_timestamp_submission(
-            queue,
-            submit_command_buffer_count(submits, submit_count));
-        const bool pre_submitted = submit_gpu_timestamp_side_command_buffer(
-            queue,
-            next_queue_submit,
-            prepared,
-            prepared.pre_command_buffer,
-            "gpu-timestamp-side-pre-submit-failed");
-        if (!pre_submitted) {
-            discard_gpu_timestamp_submission(prepared);
-        }
-
-        VkResult result =
-            next_queue_submit(queue, submit_count, wrapped_submits.data(), fence);
-        if (pre_submitted && result == VK_SUCCESS) {
-            if (!submit_gpu_timestamp_side_command_buffer(
-                    queue,
-                    next_queue_submit,
-                    prepared,
-                    prepared.post_command_buffer,
-                    "gpu-timestamp-side-post-submit-failed")) {
-                report_gpu_timestamp_side_submit_status(
-                    prepared,
-                    "gpu-timestamp-side-post-abandoned");
-            }
-            poll_gpu_timestamp_results(device);
-        } else if (pre_submitted) {
-            report_gpu_timestamp_side_submit_status(
-                prepared,
-                "gpu-timestamp-side-original-submit-failed");
-        }
-        return result;
-    }
-
-    std::vector<std::vector<VkCommandBuffer>> wrapped_command_buffers(submit_count);
-    std::vector<PreparedGpuTimestamp> prepared_submissions;
-
-    for (uint32_t i = 0; i < submit_count; ++i) {
-        const auto& original = submits[i];
-        if (!original.pCommandBuffers || original.commandBufferCount == 0) {
-            continue;
-        }
-
-        PreparedGpuTimestamp prepared =
-            prepare_gpu_timestamp_submission(queue, original.commandBufferCount);
-        if (!prepared.enabled) {
-            continue;
-        }
-
-        auto& command_buffers = wrapped_command_buffers[i];
-        command_buffers.reserve(original.commandBufferCount + 2);
-        command_buffers.push_back(prepared.pre_command_buffer);
-        command_buffers.insert(
-            command_buffers.end(),
-            original.pCommandBuffers,
-            original.pCommandBuffers + original.commandBufferCount);
-        command_buffers.push_back(prepared.post_command_buffer);
-        wrapped_submits[i].commandBufferCount =
-            static_cast<uint32_t>(command_buffers.size());
-        wrapped_submits[i].pCommandBuffers = command_buffers.data();
-        prepared_submissions.push_back(prepared);
-    }
-
-    VkResult result =
-        next_queue_submit(queue, submit_count, wrapped_submits.data(), fence);
-    if (result != VK_SUCCESS) {
-        discard_gpu_timestamp_submissions(prepared_submissions);
-    } else {
-        poll_gpu_timestamp_results(device);
-    }
-    return result;
-}
-
-VkResult layer_queue_submit2_common(
-    VkQueue queue,
-    uint32_t submit_count,
-    const VkSubmitInfo2* submits,
-    VkFence fence,
-    PFN_vkQueueSubmit2 next_queue_submit2) {
-    VkDevice device = VK_NULL_HANDLE;
-    bool inject_submit_frame_ids = false;
-    bool gpu_timestamps_side_submit = false;
-    uint64_t submit_present_id = 0;
-    {
-        std::lock_guard lock(g_mutex);
-        auto queue_it = g_queues.find(queue);
-        if (queue_it != g_queues.end()) {
-            device = queue_it->second.device;
-            auto device_it = g_devices.find(device);
-            if (device_it != g_devices.end()) {
-                inject_submit_frame_ids =
-                    device_it->second.frame_id_injection_enabled;
-                gpu_timestamps_side_submit =
-                    device_it->second.gpu_timestamps_side_submit;
-                submit_present_id = device_it->second.latest_marker_present_id;
-            }
-        }
-    }
-
-    if (!next_queue_submit2) {
-        return VK_ERROR_INITIALIZATION_FAILED;
-    }
-    if (!submits || submit_count == 0) {
-        return next_queue_submit2(queue, submit_count, submits, fence);
-    }
-
-    std::vector<VkSubmitInfo2> wrapped_submits(submits, submits + submit_count);
-    std::vector<VkLatencySubmissionPresentIdNV> latency_submission_present_ids;
-    if (inject_submit_frame_ids && submit_present_id) {
-        latency_submission_present_ids.resize(submit_count);
-        for (uint32_t i = 0; i < submit_count; ++i) {
-            auto& present_id_info = latency_submission_present_ids[i];
-            present_id_info.sType =
-                VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV;
-            present_id_info.presentID = submit_present_id;
-            present_id_info.pNext = wrapped_submits[i].pNext;
-            wrapped_submits[i].pNext = &present_id_info;
-        }
-    }
-
-    if (gpu_timestamps_side_submit) {
-        PreparedGpuTimestamp prepared = prepare_gpu_timestamp_submission(
-            queue,
-            submit2_command_buffer_count(submits, submit_count));
-        const uint32_t device_mask =
-            first_submit2_device_mask(submits, submit_count);
-        const bool pre_submitted = submit_gpu_timestamp_side_command_buffer2(
-            queue,
-            next_queue_submit2,
-            prepared,
-            prepared.pre_command_buffer,
-            device_mask,
-            "gpu-timestamp-side-pre-submit2-failed");
-        if (!pre_submitted) {
-            discard_gpu_timestamp_submission(prepared);
-        }
-
-        VkResult result =
-            next_queue_submit2(queue, submit_count, wrapped_submits.data(), fence);
-        if (pre_submitted && result == VK_SUCCESS) {
-            if (!submit_gpu_timestamp_side_command_buffer2(
-                    queue,
-                    next_queue_submit2,
-                    prepared,
-                    prepared.post_command_buffer,
-                    device_mask,
-                    "gpu-timestamp-side-post-submit2-failed")) {
-                report_gpu_timestamp_side_submit_status(
-                    prepared,
-                    "gpu-timestamp-side-post2-abandoned");
-            }
-            poll_gpu_timestamp_results(device);
-        } else if (pre_submitted) {
-            report_gpu_timestamp_side_submit_status(
-                prepared,
-                "gpu-timestamp-side-original-submit2-failed");
-        }
-        return result;
-    }
-
-    std::vector<std::vector<VkCommandBufferSubmitInfo>>
-        wrapped_command_buffer_infos(submit_count);
-    std::vector<PreparedGpuTimestamp> prepared_submissions;
-
-    for (uint32_t i = 0; i < submit_count; ++i) {
-        const auto& original = submits[i];
-        if (!original.pCommandBufferInfos
-            || original.commandBufferInfoCount == 0) {
-            continue;
-        }
-
-        PreparedGpuTimestamp prepared = prepare_gpu_timestamp_submission(
-            queue,
-            original.commandBufferInfoCount);
-        if (!prepared.enabled) {
-            continue;
-        }
-
-        VkCommandBufferSubmitInfo pre_info{};
-        pre_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-        pre_info.commandBuffer = prepared.pre_command_buffer;
-
-        VkCommandBufferSubmitInfo post_info{};
-        post_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-        post_info.commandBuffer = prepared.post_command_buffer;
-
-        auto& command_buffer_infos = wrapped_command_buffer_infos[i];
-        command_buffer_infos.reserve(original.commandBufferInfoCount + 2);
-        command_buffer_infos.push_back(pre_info);
-        command_buffer_infos.insert(
-            command_buffer_infos.end(),
-            original.pCommandBufferInfos,
-            original.pCommandBufferInfos + original.commandBufferInfoCount);
-        command_buffer_infos.push_back(post_info);
-        wrapped_submits[i].commandBufferInfoCount =
-            static_cast<uint32_t>(command_buffer_infos.size());
-        wrapped_submits[i].pCommandBufferInfos = command_buffer_infos.data();
-        prepared_submissions.push_back(prepared);
-    }
-
-    VkResult result =
-        next_queue_submit2(queue, submit_count, wrapped_submits.data(), fence);
-    if (result != VK_SUCCESS) {
-        discard_gpu_timestamp_submissions(prepared_submissions);
-    } else {
-        poll_gpu_timestamp_results(device);
-    }
-    return result;
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL layer_queue_submit2(
-    VkQueue queue,
-    uint32_t submit_count,
-    const VkSubmitInfo2* submits,
-    VkFence fence) {
-    PFN_vkQueueSubmit2 next_queue_submit2 = nullptr;
-    {
-        std::lock_guard lock(g_mutex);
-        auto queue_it = g_queues.find(queue);
-        if (queue_it != g_queues.end()) {
-            auto device_it = g_devices.find(queue_it->second.device);
-            if (device_it != g_devices.end()) {
-                next_queue_submit2 = device_it->second.queue_submit2;
-            }
-        }
-    }
-    return layer_queue_submit2_common(
-        queue,
-        submit_count,
-        submits,
-        fence,
-        next_queue_submit2);
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL layer_queue_submit2_khr(
-    VkQueue queue,
-    uint32_t submit_count,
-    const VkSubmitInfo2* submits,
-    VkFence fence) {
-    PFN_vkQueueSubmit2 next_queue_submit2 = nullptr;
-    {
-        std::lock_guard lock(g_mutex);
-        auto queue_it = g_queues.find(queue);
-        if (queue_it != g_queues.end()) {
-            auto device_it = g_devices.find(queue_it->second.device);
-            if (device_it != g_devices.end()) {
-                next_queue_submit2 = device_it->second.queue_submit2_khr;
-            }
-        }
-    }
-    return layer_queue_submit2_common(
-        queue,
-        submit_count,
-        submits,
-        fence,
-        next_queue_submit2);
-}
-
 VKAPI_ATTR void VKAPI_CALL layer_destroy_swapchain_khr(
     VkDevice device,
     VkSwapchainKHR swapchain,
@@ -2603,9 +1452,6 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
     const VkPresentInfoKHR* present_info) {
     VkDevice device = VK_NULL_HANDLE;
     PFN_vkQueuePresentKHR next_queue_present = nullptr;
-    bool inject_present_frame_ids = false;
-    bool present_id_extension_enabled = false;
-    uint64_t present_id = 0;
     {
         std::lock_guard lock(g_mutex);
         auto queue_it = g_queues.find(queue);
@@ -2614,11 +1460,6 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
             auto device_it = g_devices.find(device);
             if (device_it != g_devices.end()) {
                 next_queue_present = device_it->second.queue_present_khr;
-                inject_present_frame_ids =
-                    device_it->second.frame_id_injection_enabled;
-                present_id_extension_enabled =
-                    device_it->second.present_id_extension_enabled;
-                present_id = device_it->second.latest_marker_present_id;
             }
         }
     }
@@ -2627,59 +1468,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    VkPresentInfoKHR wrapped_present_info{};
-    VkPresentIdKHR present_id_info{};
-    std::vector<uint64_t> present_ids;
-    const VkPresentInfoKHR* next_present_info = present_info;
-    if (inject_present_frame_ids && present_id_extension_enabled && present_id
-        && present_info && present_info->pSwapchains && present_info->swapchainCount
-        && !pnext_has_structure(present_info->pNext, VK_STRUCTURE_TYPE_PRESENT_ID_KHR)) {
-        wrapped_present_info = *present_info;
-        present_ids.assign(present_info->swapchainCount, present_id);
-        present_id_info.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
-        present_id_info.pNext = wrapped_present_info.pNext;
-        present_id_info.swapchainCount = present_info->swapchainCount;
-        present_id_info.pPresentIds = present_ids.data();
-        wrapped_present_info.pNext = &present_id_info;
-        next_present_info = &wrapped_present_info;
-    }
-
-    VkResult result = next_queue_present(queue, next_present_info);
-    QueueContext present_queue_context{};
-    uint64_t present_queue_count = 0;
-    uint32_t present_queue_interval = 0;
-    bool report_present_queue = false;
-    {
-        std::lock_guard lock(g_mutex);
-        auto queue_it = g_queues.find(queue);
-        if (queue_it != g_queues.end()) {
-            queue_it->second.saw_present = true;
-            present_queue_count = ++queue_it->second.present_count;
-            present_queue_context = queue_it->second;
-            auto device_it = g_devices.find(queue_it->second.device);
-            if (device_it != g_devices.end()) {
-                present_queue_interval =
-                    device_it->second.gpu_timestamp_interval;
-                report_present_queue =
-                    device_it->second.gpu_timestamps_side_submit
-                    && should_report_counter(present_queue_count);
-            }
-        }
-    }
-    if (report_present_queue) {
-        send_gpu_timestamp_status_event(
-            "gpu-timestamp-present-queue",
-            present_queue_context.device,
-            queue,
-            present_queue_context.queue_family_index,
-            present_queue_context.queue_flags,
-            present_queue_context.timestamp_valid_bits,
-            present_queue_interval,
-            present_queue_count,
-            0,
-            true,
-            true);
-    }
+    VkResult result = next_queue_present(queue, present_info);
     if (present_info && present_info->pSwapchains) {
         for (uint32_t i = 0; i < present_info->swapchainCount; ++i) {
             VkSwapchainKHR swapchain = present_info->pSwapchains[i];
@@ -2701,7 +1490,6 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
             }
             query_latency_timing(device, swapchain);
         }
-        poll_gpu_timestamp_results(device);
     }
     return result;
 }
@@ -2813,15 +1601,6 @@ VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* name) {
     if (std::strcmp(name, "vkGetDeviceQueue2") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(layer_get_device_queue2);
     }
-    if (std::strcmp(name, "vkQueueSubmit") == 0) {
-        return reinterpret_cast<PFN_vkVoidFunction>(layer_queue_submit);
-    }
-    if (std::strcmp(name, "vkQueueSubmit2") == 0) {
-        return reinterpret_cast<PFN_vkVoidFunction>(layer_queue_submit2);
-    }
-    if (std::strcmp(name, "vkQueueSubmit2KHR") == 0) {
-        return reinterpret_cast<PFN_vkVoidFunction>(layer_queue_submit2_khr);
-    }
     if (std::strcmp(name, "vkCreateSwapchainKHR") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(layer_create_swapchain_khr);
     }
@@ -2868,15 +1647,6 @@ VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* name) {
     }
     if (std::strcmp(name, "vkGetDeviceQueue2") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(layer_get_device_queue2);
-    }
-    if (std::strcmp(name, "vkQueueSubmit") == 0) {
-        return reinterpret_cast<PFN_vkVoidFunction>(layer_queue_submit);
-    }
-    if (std::strcmp(name, "vkQueueSubmit2") == 0) {
-        return reinterpret_cast<PFN_vkVoidFunction>(layer_queue_submit2);
-    }
-    if (std::strcmp(name, "vkQueueSubmit2KHR") == 0) {
-        return reinterpret_cast<PFN_vkVoidFunction>(layer_queue_submit2_khr);
     }
     if (std::strcmp(name, "vkCreateSwapchainKHR") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(layer_create_swapchain_khr);

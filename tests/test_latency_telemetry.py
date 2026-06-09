@@ -37,6 +37,28 @@ def test_latency_telemetry_meter_formats_reflex_summary() -> None:
     assert "missing=" not in summary
 
 
+def test_latency_telemetry_meter_reports_gpu_render_time() -> None:
+    now = 100.0
+    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
+    meter.add_sample(
+        {
+            "type": "timing",
+            "measurement": "driver-report",
+            "pid": 123,
+            "present_id": 7,
+            "quality": "reflex-render-submit",
+            "driver_report_duplicate_count": 0,
+            "render_submit_us": 2100,
+            "gpu_render_us": 16600,
+        }
+    )
+
+    summary = meter.summary(now=101.25)
+
+    assert summary is not None
+    assert "gpu-render-p95=16.60ms" in summary
+
+
 def test_latency_telemetry_meter_reports_render_submit_only_missing_inputs() -> None:
     now = 100.0
     meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
@@ -97,35 +119,6 @@ def test_latency_telemetry_meter_labels_marker_proxy_without_promoting_to_driver
     assert "quality=reflex-marker-input-present" in summary
     assert "latency-proxy-p95=27.00ms" in summary
     assert "input-present-p95=27.00ms" in summary
-    assert "gpu-frame-p95=n/a" in summary
-
-
-def test_latency_telemetry_meter_reports_gpu_submit_proxy_separately() -> None:
-    now = 100.0
-    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
-    meter.add_sample(
-        {
-            "type": "timing",
-            "pid": 123,
-            "quality": "gpu-submit-proxy",
-            "measurement": "gpu-submit-proxy",
-            "gpu_submit_us": 18400,
-            "render_submit_us": 0,
-            "input_to_present_us": 0,
-            "gpu_frame_time_us": 0,
-            "gpu_render_start_us": 0,
-            "gpu_render_end_us": 0,
-            "driver_start_us": 0,
-            "driver_end_us": 0,
-        }
-    )
-
-    summary = meter.summary(now=101.25)
-
-    assert summary is not None
-    assert "quality=gpu-submit-proxy" in summary
-    assert "latency-proxy-p95=n/a" in summary
-    assert "gpu-submit-p95=18.40ms" in summary
     assert "gpu-frame-p95=n/a" in summary
 
 
@@ -261,6 +254,7 @@ def test_latency_telemetry_logger_formats_raw_timing_events() -> None:
             "render_present_us": 24230,
             "input_to_present_us": 0,
             "gpu_frame_time_us": 0,
+            "gpu_render_us": 16600,
             "input_sample_us": 0,
             "sim_start_us": 100,
             "sim_end_us": 200,
@@ -284,6 +278,7 @@ def test_latency_telemetry_logger_formats_raw_timing_events() -> None:
         "driver_report_count=5 driver_report_duplicate_count=0 marker_bits=48 "
         "render_submit_us=7900 "
         "render_present_us=24230 input_to_present_us=0 gpu_frame_time_us=0 "
+        "gpu_render_us=16600 "
         "input_sample_us=0 sim_start_us=100 sim_end_us=200 "
         "render_submit_start_us=300 render_submit_end_us=8200 "
         "present_start_us=9000 present_end_us=10000 driver_start_us=0 "
