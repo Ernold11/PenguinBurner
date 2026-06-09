@@ -478,6 +478,18 @@ launch line must add `VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1`:
 PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/native/latency_layer/build PENGUIN_BURNER_LATENCY_LAYER=1 PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1 VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1 PROTON_ENABLE_NVAPI=1 PROTON_HIDE_NVIDIA_GPU=0 DXVK_NVAPI_VKREFLEX=1 gamemoderun %command% /WineDetectionEnabled:False
 ```
 
+The guarded setup command applies both pieces after Steam is closed:
+
+```bash
+penguin-burner-steam-re9-patched-setup
+penguin-burner-steam-launch-check \
+  --extra-require VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1 \
+  --compat-tool 'Proton-CachyOS PB-Re9-Reflex'
+```
+
+It refuses to write while Steam or a Wine game process is still running and
+writes `.pburn-bak` backups next to the edited Steam config files.
+
 If this run keeps fresh `gpu_render_us` through menu-to-gameplay while the
 previous run reported `root_cause=vkd3d-multi-swapchain-reflex-guard`, the
 actual workaround is a VKD3D-Proton build that keeps the low-latency swapchain
