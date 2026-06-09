@@ -340,6 +340,7 @@ sustained live stream:
 For a live RE9 attempt, start a durable capture before launching the game:
 
 ```bash
+penguin-burner-steam-launch-check
 penguin-burner-latency-capture --output ~/.cache/penguin-burner/latency-captures/re9-live.log
 ```
 
