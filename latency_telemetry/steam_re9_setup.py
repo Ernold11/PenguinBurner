@@ -4,6 +4,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
+import time
 
 from .steam_launch_check import (
     RE9_APP_ID,
@@ -84,6 +85,21 @@ def running_steam_processes() -> tuple[str, ...]:
             continue
         lines.append(line)
     return tuple(lines)
+
+
+def wait_for_steam_exit(
+    *,
+    timeout_s: float | None = None,
+    poll_interval_s: float = 2.0,
+) -> tuple[str, ...]:
+    start = time.monotonic()
+    while True:
+        processes = running_steam_processes()
+        if not processes:
+            return ()
+        if timeout_s is not None and time.monotonic() - start >= timeout_s:
+            return processes
+        time.sleep(poll_interval_s)
 
 
 def _quote_vdf_value(value: str) -> str:
@@ -264,9 +280,19 @@ def apply_patched_re9_setup(
     steam_config_path: Path | None = None,
     dry_run: bool = False,
     check_running: bool = True,
+    wait: bool = False,
+    wait_timeout_s: float | None = None,
+    poll_interval_s: float = 2.0,
 ) -> SteamSetupResult:
     if check_running:
-        processes = running_steam_processes()
+        processes = (
+            wait_for_steam_exit(
+                timeout_s=wait_timeout_s,
+                poll_interval_s=poll_interval_s,
+            )
+            if wait
+            else running_steam_processes()
+        )
         if processes:
             preview = "\n".join(processes[:8])
             raise SteamConfigError(
@@ -334,6 +360,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--localconfig", type=Path, default=None)
     parser.add_argument("--steam-config", type=Path, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--wait",
+        action="store_true",
+        help="Wait until Steam/Wine game processes exit before writing.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Maximum seconds to wait with --wait. Defaults to no timeout.",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=2.0,
+        help="Seconds between process checks with --wait.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -341,6 +384,9 @@ def main(argv: list[str] | None = None) -> int:
             localconfig_path=args.localconfig,
             steam_config_path=args.steam_config,
             dry_run=args.dry_run,
+            wait=args.wait,
+            wait_timeout_s=args.timeout,
+            poll_interval_s=args.poll_interval,
         )
     except SteamConfigError as exc:
         print(f"error={exc}")

@@ -157,6 +157,67 @@ def test_apply_patched_re9_setup_refuses_when_steam_is_running(
     assert "OLD=1" in localconfig.read_text(encoding="utf-8")
 
 
+def test_apply_patched_re9_setup_waits_until_steam_exits(
+    tmp_path, monkeypatch
+) -> None:
+    localconfig = tmp_path / "localconfig.vdf"
+    steam_config = tmp_path / "config.vdf"
+    localconfig.write_text(_localconfig("OLD=1 %command%"), encoding="utf-8")
+    steam_config.write_text(_steam_config("Proton-CachyOS Latest"), encoding="utf-8")
+    process_states = [("123 steam",), ()]
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr(
+        "latency_telemetry.steam_re9_setup.running_steam_processes",
+        lambda: process_states.pop(0),
+    )
+    monkeypatch.setattr(
+        "latency_telemetry.steam_re9_setup.time.sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
+
+    result = apply_patched_re9_setup(
+        localconfig_path=localconfig,
+        steam_config_path=steam_config,
+        wait=True,
+        poll_interval_s=0.25,
+    )
+
+    assert sleep_calls == [0.25]
+    assert result.launch_options_changed
+    assert result.compat_tool_changed
+    assert check_launch_options(
+        app_id=RE9_APP_ID,
+        required_tokens=RE9_PATCHED_EXTRA_TOKENS,
+        config_paths=[localconfig],
+    ).ok
+
+
+def test_apply_patched_re9_setup_wait_timeout_refuses(tmp_path, monkeypatch) -> None:
+    localconfig = tmp_path / "localconfig.vdf"
+    steam_config = tmp_path / "config.vdf"
+    localconfig.write_text(_localconfig("OLD=1 %command%"), encoding="utf-8")
+    steam_config.write_text(_steam_config("Proton-CachyOS Latest"), encoding="utf-8")
+    monkeypatch.setattr(
+        "latency_telemetry.steam_re9_setup.running_steam_processes",
+        lambda: ("123 steam",),
+    )
+
+    try:
+        apply_patched_re9_setup(
+            localconfig_path=localconfig,
+            steam_config_path=steam_config,
+            wait=True,
+            wait_timeout_s=0.0,
+        )
+    except SteamConfigError as exc:
+        assert "Steam or a Wine game process is still running" in str(exc)
+    else:
+        raise AssertionError("expected SteamConfigError")
+
+    assert "OLD=1" in localconfig.read_text(encoding="utf-8")
+
+
 def test_apply_patched_re9_setup_dry_run_does_not_write(tmp_path) -> None:
     localconfig = tmp_path / "localconfig.vdf"
     steam_config = tmp_path / "config.vdf"

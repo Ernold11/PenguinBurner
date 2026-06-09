@@ -481,14 +481,15 @@ PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock VK_ADD_
 The guarded setup command applies both pieces after Steam is closed:
 
 ```bash
-penguin-burner-steam-re9-patched-setup
+penguin-burner-steam-re9-patched-setup --wait
 penguin-burner-steam-launch-check \
   --extra-require VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1 \
   --compat-tool 'Proton-CachyOS PB-Re9-Reflex'
 ```
 
-It refuses to write while Steam or a Wine game process is still running and
-writes `.pburn-bak` backups next to the edited Steam config files.
+Without `--wait`, it refuses to write while Steam or a Wine game process is
+still running. With `--wait`, it waits until those processes exit and writes
+`.pburn-bak` backups next to the edited Steam config files.
 
 If this run keeps fresh `gpu_render_us` through menu-to-gameplay while the
 previous run reported `root_cause=vkd3d-multi-swapchain-reflex-guard`, the

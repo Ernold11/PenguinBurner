@@ -367,15 +367,16 @@ For the patched VKD3D-Proton proof run, close Steam completely first, then apply
 and verify the guarded setup:
 
 ```bash
-penguin-burner-steam-re9-patched-setup
+penguin-burner-steam-re9-patched-setup --wait
 penguin-burner-steam-launch-check \
   --extra-require VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1 \
   --compat-tool 'Proton-CachyOS PB-Re9-Reflex'
 ```
 
-The setup command refuses to write while Steam or a Wine game process is still
-running, writes `.pburn-bak` backups next to the edited Steam config files, and
-sets RE9 to the copied patched compatibility tool.
+Without `--wait`, the setup command refuses to write while Steam or a Wine game
+process is still running. With `--wait`, it waits until those processes exit,
+writes `.pburn-bak` backups next to the edited Steam config files, and sets RE9
+to the copied patched compatibility tool.
 
 Expected useful outcomes:
 
