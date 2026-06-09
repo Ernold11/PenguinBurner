@@ -71,6 +71,18 @@ def write_analysis(output_path: Path, analysis_path: Path | None = None) -> Path
     return analysis_path
 
 
+def _ensure_capture_file(output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.touch(exist_ok=True)
+
+
+def _captured_line_count(output_path: Path) -> int:
+    if not output_path.exists():
+        return 0
+    with output_path.open("r", encoding="utf-8", errors="replace") as handle:
+        return sum(1 for _line in handle)
+
+
 def _terminate_process(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
         return
@@ -180,18 +192,27 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     output_path = args.output or default_capture_path()
-    count = capture_journal(
-        output_path,
-        service=args.service,
-        since=args.since,
-        follow=not args.no_follow,
-        duration_s=args.duration,
-        sync=not args.no_sync,
-    )
+    interrupted = False
+    try:
+        count = capture_journal(
+            output_path,
+            service=args.service,
+            since=args.since,
+            follow=not args.no_follow,
+            duration_s=args.duration,
+            sync=not args.no_sync,
+        )
+    except KeyboardInterrupt:
+        interrupted = True
+        _ensure_capture_file(output_path)
+        count = _captured_line_count(output_path)
+
     analysis_path = write_analysis(output_path)
     print(f"capture={output_path}")
     print(f"analysis={analysis_path}")
     print(f"captured_lines={count}")
+    if interrupted:
+        print("interrupted=True")
     sys.stdout.write(analysis_path.read_text(encoding="utf-8"))
     return 0
 

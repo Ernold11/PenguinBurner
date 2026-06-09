@@ -1,5 +1,6 @@
 from datetime import datetime
 
+import latency_telemetry.flow_capture as flow_capture
 from latency_telemetry.flow_capture import (
     default_capture_path,
     is_latency_flow_line,
@@ -69,3 +70,38 @@ def test_write_analysis_classifies_capture_file(tmp_path) -> None:
     assert "root_cause=vkd3d-multi-swapchain-reflex-guard" in analysis.read_text(
         encoding="utf-8"
     )
+
+
+def test_main_writes_analysis_after_keyboard_interrupt(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    capture = tmp_path / "capture.log"
+    capture.write_text(
+        "\n".join(
+            [
+                "2026-06-09 event=latency-layer-status "
+                "status=create-swapchain live_swapchain_count=1 "
+                "present_mode_name=IMMEDIATE swapchain_latency_mode=True",
+                "2026-06-09 event=latency-layer-status "
+                "status=latency-stream-stale live_swapchain_count=1 "
+                "swapchain_latency_mode=True last_vulkan_present_id=512 "
+                "latest_marker_present_id=512 last_driver_report_present_id=470 "
+                "driver_report_duplicate_count=240",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def raise_interrupt(*_args, **_kwargs) -> int:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(flow_capture, "capture_journal", raise_interrupt)
+
+    assert flow_capture.main(["--output", str(capture)]) == 0
+
+    output = capsys.readouterr().out
+    assert f"capture={capture}" in output
+    assert "captured_lines=2" in output
+    assert "interrupted=True" in output
+    assert "root_cause=nvidia-reflex-timing-ring-stale" in output
+    assert capture.with_suffix(".log.analysis.txt").exists()
