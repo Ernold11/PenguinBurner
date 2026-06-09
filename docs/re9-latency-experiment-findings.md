@@ -418,6 +418,39 @@ Read the result as follows:
   app/VKD3D side is feeding frames and the NVIDIA timing report ring itself is
   stale.
 
+## Custom VKD3D-Proton Fallback
+
+If the `IMMEDIATE` no-build probe still stalls and the analyzer reports
+`root_cause=vkd3d-multi-swapchain-reflex-guard`, the next experiment is a custom
+VKD3D-Proton build, not another PenguinBurner layer toggle.
+
+Patch candidate:
+
+```text
+docs/patches/vkd3d-proton-re9-allow-multi-swapchain-reflex.patch
+```
+
+The patch is intentionally opt-in. It adds
+`VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1`, which keeps VKD3D-Proton's current
+`low_latency_swapchain` owner instead of clearing it when
+`vk_swapchain_count > 1`. This is a diagnostic patch, not a general upstream
+proposal. A successful run would mean the stall is caused by VKD3D-Proton's
+multi-swapchain Reflex ownership guard. A failed run, especially with
+`live_swapchain_count=1` or markers/presents advancing beyond the last driver
+report, points back to the NVIDIA timing report ring.
+
+Installed Proton-CachyOS stores VKD3D-Proton here:
+
+```text
+files/lib/wine/vkd3d-proton/x86_64-windows/d3d12.dll
+files/lib/wine/vkd3d-proton/x86_64-windows/d3d12core.dll
+```
+
+So a safe test should use a copied compatibility tool directory, not overwrite
+the active Proton payload in place. This host currently has `ninja` but not
+`meson` or the `x86_64-w64-mingw32-*` cross compiler on `PATH`, so the patch is
+prepared but not built locally yet.
+
 ## Debugging
 
 For a step-by-step guide to building the layer, capturing telemetry, reading the

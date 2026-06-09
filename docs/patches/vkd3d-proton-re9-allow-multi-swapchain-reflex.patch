@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: PenguinBurner diagnostics <noreply@example.invalid>
+Date: Tue, 9 Jun 2026 00:00:00 +0000
+Subject: [PATCH] vkd3d: optionally keep Reflex owner with multiple swapchains
+
+This is a diagnostic patch for RE9/PenguinBurner latency testing, not a
+general upstream proposal.
+
+Upstream commit 298eaf00 intentionally clears the device
+low_latency_swapchain when more than one Vulkan swapchain is live. That is
+normally conservative: NVIDIA Reflex has one low-latency swapchain owner per
+D3D12 device in this path.
+
+For RE9 debugging we need to distinguish:
+
+1. the game really creates/uses a second swapchain and VKD3D disables Reflex;
+2. the NVIDIA timing report ring stalls even while markers and presents still
+   advance on the primary swapchain.
+
+Setting VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1 keeps the existing
+low_latency_swapchain owner instead of clearing it when vk_swapchain_count > 1.
+If that makes RE9's gpuRender timing stream survive, the root cause is the
+multi-swapchain Reflex guard/ownership path. If it still stalls, the issue is
+not solved by keeping the owner alive.
+---
+ libs/vkd3d/swapchain.c | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/libs/vkd3d/swapchain.c b/libs/vkd3d/swapchain.c
+index 44b59d4d..99d7e8d2 100644
+--- a/libs/vkd3d/swapchain.c
++++ b/libs/vkd3d/swapchain.c
+@@ -1907,6 +1907,24 @@ static void dxgi_vk_swap_chain_set_low_latency_state(struct dxgi_vk_swap_chain *
+     chain->present.low_latency_state = *low_latency_state;
+ }
+ 
++static bool dxgi_vk_swap_chain_allow_multi_swapchain_reflex(void)
++{
++    static bool initialized;
++    static bool enabled;
++    char env[16];
++
++    if (!initialized)
++    {
++        enabled = vkd3d_get_env_var("VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN",
++                env, sizeof(env)) && strcmp(env, "1") == 0;
++        initialized = true;
++        if (enabled)
++            WARN("VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1: keeping Reflex low-latency swapchain owner with multiple Vulkan swapchains.\n");
++    }
++
++    return enabled;
++}
++
+ static void dxgi_vk_swap_chain_low_latency_state_update(struct dxgi_vk_swap_chain *chain)
+ {
+     if (chain->request.low_latency_update_requested)
+@@ -2288,7 +2306,9 @@ static void dxgi_vk_swap_chain_recreate_swapchain_in_present_task(struct dxgi_vk
+         spinlock_acquire(&device->low_latency_swapchain_spinlock);
+         device->swapchain_info.vk_swapchain_count++;
+ 
+-        if (device->swapchain_info.vk_swapchain_count > 1 && device->swapchain_info.low_latency_swapchain)
++        if (device->swapchain_info.vk_swapchain_count > 1 &&
++                device->swapchain_info.low_latency_swapchain &&
++                !dxgi_vk_swap_chain_allow_multi_swapchain_reflex())
+         {
+             dxgi_vk_swap_chain_decref(device->swapchain_info.low_latency_swapchain);
+             device->swapchain_info.low_latency_swapchain = NULL;
+-- 
+2.50.0
