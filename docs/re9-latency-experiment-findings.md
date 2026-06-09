@@ -446,10 +446,44 @@ files/lib/wine/vkd3d-proton/x86_64-windows/d3d12.dll
 files/lib/wine/vkd3d-proton/x86_64-windows/d3d12core.dll
 ```
 
-So a safe test should use a copied compatibility tool directory, not overwrite
-the active Proton payload in place. This host currently has `ninja` but not
-`meson` or the `x86_64-w64-mingw32-*` cross compiler on `PATH`, so the patch is
-prepared but not built locally yet.
+Build status on this host:
+
+- `third_party/vkd3d-proton` was fetched from the public upstream HTTPS remote
+  and submodules were initialized without credentials.
+- The patch applies cleanly to upstream `vkd3d-proton` HEAD `210e7741`.
+- The host only has `ninja` locally, so the 64-bit DLLs were built inside the
+  public Proton SDK container
+  `registry.gitlab.steamos.cloud/proton/steamrt4/sdk/x86_64:4.0.20260331.220802-0`.
+- Built artifacts:
+  `third_party/vkd3d-proton-re9-build/prefix/x64/d3d12.dll` and
+  `third_party/vkd3d-proton-re9-build/prefix/x64/d3d12core.dll`.
+- `strings d3d12core.dll` confirms the patched
+  `VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN` path is present.
+
+A safe Steam test copy now exists at:
+
+```text
+/home/jp/.local/share/Steam/compatibilitytools.d/Proton-CachyOS PB-Re9-Reflex
+```
+
+Only the copied tool's
+`files/lib/wine/vkd3d-proton/x86_64-windows/d3d12.dll` and
+`d3d12core.dll` were replaced. The original `Proton-CachyOS Latest` payload was
+not overwritten.
+
+For the patched proof run, RE9 must use the copied compatibility tool and the
+launch line must add `VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1`:
+
+```text
+PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/native/latency_layer/build PENGUIN_BURNER_LATENCY_LAYER=1 PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1 VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1 PROTON_ENABLE_NVAPI=1 PROTON_HIDE_NVIDIA_GPU=0 DXVK_NVAPI_VKREFLEX=1 gamemoderun %command% /WineDetectionEnabled:False
+```
+
+If this run keeps fresh `gpu_render_us` through menu-to-gameplay while the
+previous run reported `root_cause=vkd3d-multi-swapchain-reflex-guard`, the
+actual workaround is a VKD3D-Proton build that keeps the low-latency swapchain
+owner across RE9's second live swapchain. If it still stalls, the remaining
+cause is lower than VKD3D ownership: the NVIDIA Reflex timing report stream
+itself is stale or the driver cannot correlate the submitted/presented frame IDs.
 
 ## Debugging
 

@@ -44,11 +44,13 @@ def write_filtered_lines(
     lines: Iterable[str],
     output_path: Path,
     *,
+    append: bool = False,
     sync: bool = True,
 ) -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     count = 0
-    with output_path.open("a", encoding="utf-8") as handle:
+    mode = "a" if append else "w"
+    with output_path.open(mode, encoding="utf-8") as handle:
         for line in lines:
             if not is_latency_flow_line(line):
                 continue
@@ -76,6 +78,14 @@ def _ensure_capture_file(output_path: Path) -> None:
     output_path.touch(exist_ok=True)
 
 
+def _prepare_capture_file(output_path: Path, *, append: bool) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if append:
+        output_path.touch(exist_ok=True)
+    else:
+        output_path.write_text("", encoding="utf-8")
+
+
 def _captured_line_count(output_path: Path) -> int:
     if not output_path.exists():
         return 0
@@ -101,6 +111,7 @@ def capture_journal(
     since: str = "now",
     follow: bool = True,
     duration_s: float | None = None,
+    append: bool = False,
     sync: bool = True,
 ) -> int:
     command = [
@@ -116,7 +127,7 @@ def capture_journal(
     if follow:
         command.append("-f")
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _prepare_capture_file(output_path, append=append)
     deadline = time.monotonic() + duration_s if duration_s is not None else None
     process = subprocess.Popen(
         command,
@@ -189,6 +200,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Do not fsync every captured line.",
     )
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Append to an existing capture log instead of replacing it.",
+    )
     args = parser.parse_args(argv)
 
     output_path = args.output or default_capture_path()
@@ -200,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
             since=args.since,
             follow=not args.no_follow,
             duration_s=args.duration,
+            append=args.append,
             sync=not args.no_sync,
         )
     except KeyboardInterrupt:

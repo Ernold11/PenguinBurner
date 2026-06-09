@@ -344,6 +344,10 @@ penguin-burner-steam-launch-check
 penguin-burner-latency-capture --output ~/.cache/penguin-burner/latency-captures/re9-live.log
 ```
 
+The capture command replaces the output file by default, so a reused
+`re9-live.log` contains only the current run. Pass `--append` only when you
+intentionally want one analysis file to combine multiple runs.
+
 Stop it with `Ctrl-C` after the game exits. If the desktop hard-freezes and has
 to be reset, inspect the captured log after reboot:
 
