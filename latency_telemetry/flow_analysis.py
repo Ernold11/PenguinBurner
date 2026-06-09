@@ -129,6 +129,29 @@ def analyze_latency_flow_lines(lines: Iterable[str]) -> FlowDiagnosis:
         (_as_int(sample.get("live_swapchain_count")) for sample in status_samples),
         default=0,
     )
+    raw_present_ids = {
+        _as_int(sample.get("present_id"))
+        for sample in raw_samples
+        if _as_int(sample.get("present_id")) > 0
+    }
+    raw_gpu_render_values = {
+        _as_int(sample.get("gpu_render_us"))
+        for sample in raw_samples
+        if _as_int(sample.get("gpu_render_us")) > 0
+    }
+    raw_driver_timestamp_samples = sum(
+        1
+        for sample in raw_samples
+        if any(
+            _as_int(sample.get(key)) > 0
+            for key in (
+                "driver_start_us",
+                "driver_end_us",
+                "gpu_render_start_us",
+                "gpu_render_end_us",
+            )
+        )
+    )
 
     evidence = [
         f"parsed_lines={len(samples)} flow_lines={flow_sample_count} "
@@ -137,6 +160,9 @@ def analyze_latency_flow_lines(lines: Iterable[str]) -> FlowDiagnosis:
         f"create_swapchains={len(create_swapchains)} present_modes={_format_modes(present_modes)}",
         f"present_flow_events={len(present_flow_events)} stale_events={len(stale_events)}",
         f"highest_live_swapchain_count={highest_live_swapchain_count}",
+        f"distinct_raw_present_ids={len(raw_present_ids)}",
+        f"distinct_gpu_render_us={len(raw_gpu_render_values)}",
+        f"raw_driver_timestamp_samples={raw_driver_timestamp_samples}",
     ]
 
     stats: dict[str, object] = {
@@ -151,6 +177,9 @@ def analyze_latency_flow_lines(lines: Iterable[str]) -> FlowDiagnosis:
         "present_flow_events": len(present_flow_events),
         "stale_events": len(stale_events),
         "highest_live_swapchain_count": highest_live_swapchain_count,
+        "distinct_raw_present_ids": len(raw_present_ids),
+        "distinct_gpu_render_us": len(raw_gpu_render_values),
+        "raw_driver_timestamp_samples": raw_driver_timestamp_samples,
     }
 
     if stale_events:
@@ -254,24 +283,6 @@ def analyze_latency_flow_lines(lines: Iterable[str]) -> FlowDiagnosis:
             evidence=tuple(evidence),
             stats=stats,
         )
-
-    raw_present_ids = {
-        _as_int(sample.get("present_id"))
-        for sample in raw_samples
-        if _as_int(sample.get("present_id")) > 0
-    }
-    raw_gpu_render_values = {
-        _as_int(sample.get("gpu_render_us"))
-        for sample in raw_samples
-        if _as_int(sample.get("gpu_render_us")) > 0
-    }
-
-    evidence.extend(
-        (
-            f"distinct_raw_present_ids={len(raw_present_ids)}",
-            f"distinct_gpu_render_us={len(raw_gpu_render_values)}",
-        )
-    )
 
     if immediate_seen and len(raw_present_ids) >= 10 and len(raw_gpu_render_values) >= 3:
         return FlowDiagnosis(

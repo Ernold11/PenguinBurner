@@ -64,6 +64,9 @@ def test_flow_analysis_flags_driver_ring_stale_after_markers_and_presents() -> N
             "2026-06-09 21:05:00 event=latency-layer-status "
             "status=create-swapchain live_swapchain_count=1 "
             "present_mode_name=IMMEDIATE swapchain_latency_mode=True",
+            "2026-06-09 21:05:01 event=latency-raw measurement=marker-proxy "
+            "present_id=512 timing_count=0 gpu_render_us=0 "
+            "gpu_render_start_us=0 gpu_render_end_us=0",
             "2026-06-09 21:05:02 event=latency-layer-status "
             "status=latency-stream-stale live_swapchain_count=1 "
             "swapchain_latency_mode=True present_count=512 "
@@ -77,6 +80,8 @@ def test_flow_analysis_flags_driver_ring_stale_after_markers_and_presents() -> N
 
     assert diagnosis.root_cause == "nvidia-reflex-timing-ring-stale"
     assert "vkGetLatencyTimingsNV kept returning the same report" in diagnosis.summary
+    assert "distinct_gpu_render_us=0" in diagnosis.evidence
+    assert "raw_driver_timestamp_samples=0" in diagnosis.evidence
 
 
 def test_flow_analysis_treats_advancing_immediate_capture_as_candidate_workaround() -> None:

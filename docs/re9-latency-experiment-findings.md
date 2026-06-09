@@ -498,6 +498,61 @@ owner across RE9's second live swapchain. If it still stalls, the remaining
 cause is lower than VKD3D ownership: the NVIDIA Reflex timing report stream
 itself is stale or the driver cannot correlate the submitted/presented frame IDs.
 
+### Patched VKD3D-Proton Test Result
+
+Live RE9 test on 2026-06-09 used:
+
+- compatibility tool: `Proton-CachyOS PB-Re9-Reflex`
+- launch option: `VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1`
+- launch option: `VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE`
+- launch option: `PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1`
+
+Preflight confirmed the copied compatibility tool and patched
+`d3d12core.dll` were active. The layer and DXVK-NVAPI Reflex path were also
+active.
+
+The patched VKD3D run did **not** prove the multi-swapchain guard as the active
+RE9 failure. In the stale interval the highest live swapchain count stayed at
+`1`, so there was no second live swapchain for the diagnostic patch to save.
+
+Folded capture:
+
+```text
+~/.cache/penguin-burner/latency-captures/re9-live-20260609-214430-214710-folded.log
+```
+
+Analyzer result:
+
+```text
+root_cause=driver-report-stale-after-reflex-markers
+stale_events=4
+highest_live_swapchain_count=1
+distinct_raw_present_ids=108
+distinct_gpu_render_us=0
+raw_driver_timestamp_samples=2
+latest_stale.last_driver_report_present_id=8298
+latest_stale.last_vulkan_present_id=0
+latest_stale.max_marker_present_id=8544
+latest_stale.driver_report_duplicate_count=240
+latest_stale.swapchain_latency_mode=True
+```
+
+The two raw driver timestamp samples were duplicate reports for an old
+`present_id` and still had `gpu_render_start_us=0` and
+`gpu_render_end_us=0`, so they did not provide a real GPU render duration.
+Meter output briefly showed fresh-looking values before the transition, then
+dropped to:
+
+```text
+gpu-render-p95=n/a missing=input-sample,driver-timing
+```
+
+Conclusion: the custom VKD3D-Proton multi-swapchain patch is not a usable RE9
+workaround on this run. The active failure is the NVIDIA
+`VK_NV_low_latency2` timing report stream becoming stale/partial while Reflex
+markers keep advancing. PenguinBurner should keep marking this state stale
+instead of showing a frozen render-latency number.
+
 ## Debugging
 
 For a step-by-step guide to building the layer, capturing telemetry, reading the

@@ -24,9 +24,84 @@ FLOW_FILTER_TERMS = (
     "latency-meter",
 )
 
+FLOW_CONTINUATION_PREFIXES = (
+    "swapchain=",
+    "swapchain_latency_mode=",
+    "queue=",
+    "present_count=",
+    "last_",
+    "vk_nv_low_latency2_",
+    "quality=",
+    "sample_count=",
+    "timing_count=",
+    "driver_report_count=",
+    "driver_report_duplicate_count=",
+    "marker_bits=",
+    "simulation_start=",
+    "simulation_end=",
+    "simulation_start_us=",
+    "simulation_end_us=",
+    "render_submit_start=",
+    "render_submit_end=",
+    "render_submit_start_us=",
+    "render_submit_end_us=",
+    "render_submit_us=",
+    "render_present_us=",
+    "present_start=",
+    "present_end=",
+    "present_start_us=",
+    "present_end_us=",
+    "present_frametime_us=",
+    "input_sample=",
+    "input_sample_us=",
+    "input_to_present_us=",
+    "gpu_frame_time_us=",
+    "gpu_render_us=",
+    "gpu_render_start_us=",
+    "gpu_render_end_us=",
+    "driver_start_us=",
+    "driver_end_us=",
+    "os_render_queue_start_us=",
+    "os_render_queue_end_us=",
+    "sim_start_us=",
+    "sim_end_us=",
+    "out_of_band_",
+    "render-present-p95=",
+    "gpu-render-p95=",
+    "input-present-p95=",
+    "gpu-frame-p95=",
+    "present-frametime-p95=",
+    "stale-present_id=",
+    "missing=",
+)
+
 
 def is_latency_flow_line(line: str) -> bool:
     return any(term in line for term in FLOW_FILTER_TERMS)
+
+
+def is_latency_flow_continuation_line(line: str) -> bool:
+    stripped = line.strip()
+    return any(stripped.startswith(prefix) for prefix in FLOW_CONTINUATION_PREFIXES)
+
+
+def iter_filtered_latency_flow_lines(lines: Iterable[str]) -> Iterable[str]:
+    pending: str | None = None
+    for line in lines:
+        text = line.rstrip("\n")
+        if is_latency_flow_line(text):
+            if pending is not None:
+                yield f"{pending}\n"
+            pending = text
+            continue
+        if pending is not None and is_latency_flow_continuation_line(text):
+            pending = f"{pending} {text.strip()}"
+            continue
+        if pending is not None:
+            yield f"{pending}\n"
+            pending = None
+    if pending is not None:
+        yield f"{pending}\n"
 
 
 def default_capture_path(
@@ -51,11 +126,7 @@ def write_filtered_lines(
     count = 0
     mode = "a" if append else "w"
     with output_path.open(mode, encoding="utf-8") as handle:
-        for line in lines:
-            if not is_latency_flow_line(line):
-                continue
-            if not line.endswith("\n"):
-                line = f"{line}\n"
+        for line in iter_filtered_latency_flow_lines(lines):
             handle.write(line)
             handle.flush()
             if sync:
@@ -109,6 +180,7 @@ def capture_journal(
     *,
     service: str = "PenguinBurner.service",
     since: str = "now",
+    until: str | None = None,
     follow: bool = True,
     duration_s: float | None = None,
     append: bool = False,
@@ -124,6 +196,8 @@ def capture_journal(
         "cat",
         "--no-pager",
     ]
+    if until:
+        command.extend(["--until", until])
     if follow:
         command.append("-f")
 
@@ -141,32 +215,55 @@ def capture_journal(
         raise RuntimeError("journalctl stdout was not captured")
 
     count = 0
+    pending: str | None = None
+
+    def flush_pending(handle) -> None:
+        nonlocal count, pending
+        if pending is None:
+            return
+        handle.write(f"{pending}\n")
+        handle.flush()
+        if sync:
+            os.fsync(handle.fileno())
+        count += 1
+        pending = None
+
     try:
         with output_path.open("a", encoding="utf-8") as handle:
-            while True:
-                if deadline is not None and time.monotonic() >= deadline:
-                    break
-                timeout = 0.25
-                if deadline is not None:
-                    timeout = max(0.0, min(timeout, deadline - time.monotonic()))
-                ready, _, _ = select.select([process.stdout], [], [], timeout)
-                if not ready:
-                    if process.poll() is not None:
+            try:
+                while True:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        flush_pending(handle)
                         break
-                    continue
-                line = process.stdout.readline()
-                if not line:
-                    if process.poll() is not None:
-                        break
-                    continue
-                if not is_latency_flow_line(line):
-                    continue
-                handle.write(line)
-                handle.flush()
-                if sync:
-                    os.fsync(handle.fileno())
-                count += 1
+                    timeout = 0.25
+                    if deadline is not None:
+                        timeout = max(0.0, min(timeout, deadline - time.monotonic()))
+                    ready, _, _ = select.select([process.stdout], [], [], timeout)
+                    if not ready:
+                        if process.poll() is not None:
+                            flush_pending(handle)
+                            break
+                        continue
+                    line = process.stdout.readline()
+                    if not line:
+                        if process.poll() is not None:
+                            flush_pending(handle)
+                            break
+                        continue
+                    text = line.rstrip("\n")
+                    if is_latency_flow_line(text):
+                        flush_pending(handle)
+                        pending = text
+                        continue
+                    if pending is not None and is_latency_flow_continuation_line(text):
+                        pending = f"{pending} {text.strip()}"
+                        continue
+                    flush_pending(handle)
+            finally:
+                flush_pending(handle)
     finally:
+        if process.stdout is not None:
+            process.stdout.close()
         _terminate_process(process)
     return count
 
@@ -184,6 +281,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--service", default="PenguinBurner.service")
     parser.add_argument("--since", default="now")
+    parser.add_argument(
+        "--until",
+        default=None,
+        help="Read journal entries up to this time. Useful with --no-follow.",
+    )
     parser.add_argument(
         "--duration",
         type=float,
@@ -214,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
             output_path,
             service=args.service,
             since=args.since,
+            until=args.until,
             follow=not args.no_follow,
             duration_s=args.duration,
             append=args.append,
