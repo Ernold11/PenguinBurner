@@ -335,6 +335,28 @@ sustained live stream:
 - DXVK-NVAPI `DXVK_NVAPI_VKREFLEX_INJECT_PRESENT_FRAME_IDS=1`;
 - DXVK-NVAPI submit+present frame-ID injection.
 
+### RE9 flow diagnosis helper
+
+After a RE9 run, classify the captured flow with:
+
+```bash
+journalctl -u PenguinBurner.service --since '10 min ago' -o cat --no-pager \
+  | rg 'create-swapchain|destroy-swapchain|latency-stream-stale|present-flow|latency-sleep|latency-queue-out-of-band|latency-raw|latency-meter' \
+  | penguin-burner-latency-flow
+```
+
+Expected useful outcomes:
+
+- `root_cause=no-stall-detected-with-immediate-present-mode`: the
+  `VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE` workaround is a candidate, but only if
+  the capture spans the menu-to-gameplay transition that previously stalled.
+- `root_cause=vkd3d-multi-swapchain-reflex-guard`: `live_swapchain_count > 1`
+  when stale; likely needs a VKD3D-Proton patch/test build or avoiding the
+  setting that creates a second swapchain.
+- `root_cause=nvidia-reflex-timing-ring-stale`: markers and Vulkan present IDs
+  advanced while `vkGetLatencyTimingsNV` repeated the old report; do not display
+  the frozen Reflex value.
+
 ---
 
 ## 6. If the layer isn't loading / no samples at all

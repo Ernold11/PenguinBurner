@@ -61,6 +61,7 @@ q2rtx-stability = "stability.q2rtx:main"
 cuda-bruteforce-stability = "stability.cuda_bruteforce:main"
 penguin-burner-import-afterburner-vf = "afterburner.import_vf_curve:main"
 penguin-burner-import-afterburner-fan = "afterburner.import_fan_curve:main"
+penguin-burner-latency-flow = "latency_telemetry.flow_analysis:main"
 
 [tool.setuptools]
 py-modules = [
