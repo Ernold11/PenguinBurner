@@ -37,6 +37,33 @@ def test_latency_telemetry_meter_formats_reflex_summary() -> None:
     assert "missing=" not in summary
 
 
+def test_latency_telemetry_meter_reports_present_pacing_without_reflex() -> None:
+    now = 100.0
+    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
+    # No Reflex markers, no driver timing — only present-to-present pacing,
+    # the signal available for any Vulkan app regardless of Reflex.
+    for frametime_us in (16600, 16700, 16600, 50000):
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "present-pacing",
+                "pid": 123,
+                "quality": "present-frametime",
+                "present_frametime_us": frametime_us,
+            }
+        )
+
+    summary = meter.summary(now=101.25)
+
+    assert summary is not None
+    assert "quality=present-frametime" in summary
+    # p95 frametime is dominated by the slow 50 ms frame.
+    assert "present-frametime-p95=50.00ms" in summary
+    # FPS is derived from the typical (median) frametime, not the p95 tail,
+    # so a single hitch does not crater the reported rate.
+    assert "present-fps=60" in summary
+
+
 def test_latency_telemetry_meter_reports_gpu_render_time() -> None:
     now = 100.0
     meter = LatencyTelemetryMeter(time_monotonic=lambda: now)

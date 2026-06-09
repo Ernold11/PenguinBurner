@@ -124,10 +124,25 @@ def _p95_us(values: list[int]) -> int | None:
     return values[index]
 
 
+def _median_us(values: list[int]) -> int | None:
+    values = sorted(value for value in values if value > 0)
+    if not values:
+        return None
+    return values[len(values) // 2]
+
+
 def _format_ms(value_us: int | None) -> str:
     if value_us is None:
         return "n/a"
     return f"{value_us / 1000.0:.2f}ms"
+
+
+def _format_fps(frametime_us: int | None) -> str:
+    # FPS from a typical (median) frametime, so a single hitch in the p95 tail
+    # does not crater the reported rate.
+    if not frametime_us:
+        return "n/a"
+    return f"{round(1_000_000 / frametime_us)}"
 
 
 def _int_value(value: object) -> int:
@@ -304,6 +319,11 @@ class LatencyTelemetryMeter:
         gpu_render_p95 = _p95_us(
             [_int_value(sample.get("gpu_render_us")) for sample in samples]
         )
+        present_frametime_values = [
+            _int_value(sample.get("present_frametime_us")) for sample in samples
+        ]
+        present_frametime_p95 = _p95_us(present_frametime_values)
+        present_fps = _format_fps(_median_us(present_frametime_values))
         latency_proxy_p95 = _latency_proxy_p95(samples)
         missing_hints = _missing_metric_hints(
             samples,
@@ -321,7 +341,9 @@ class LatencyTelemetryMeter:
             f"render-present-p95={_format_ms(render_present_p95)} "
             f"gpu-render-p95={_format_ms(gpu_render_p95)} "
             f"input-present-p95={_format_ms(input_present_p95)} "
-            f"gpu-frame-p95={_format_ms(gpu_frame_p95)}"
+            f"gpu-frame-p95={_format_ms(gpu_frame_p95)} "
+            f"present-frametime-p95={_format_ms(present_frametime_p95)} "
+            f"present-fps={present_fps}"
             f"{missing_text}"
         )
 
@@ -339,6 +361,7 @@ class LatencyTelemetryMeter:
             "latency-proxy-p95=n/a render-submit-p95=n/a "
             "render-present-p95=n/a gpu-render-p95=n/a "
             "input-present-p95=n/a gpu-frame-p95=n/a "
+            "present-frametime-p95=n/a present-fps=n/a "
             f"stale-present_id={latest.get('present_id', 'unknown')} "
             "stale-driver-report-duplicates="
             f"{_int_value(latest.get('driver_report_duplicate_count'))} "
@@ -501,6 +524,7 @@ class LatencyTelemetryLogger:
             "input_to_present_us",
             "gpu_frame_time_us",
             "gpu_render_us",
+            "present_frametime_us",
             "input_sample_us",
             "sim_start_us",
             "sim_end_us",

@@ -281,6 +281,7 @@ struct SwapchainContext {
     uint64_t last_emitted_present_id = 0;
     uint64_t duplicate_driver_report_count = 0;
     uint64_t present_count = 0;
+    uint64_t last_present_us = 0;
     uint64_t timing_unavailable_count = 0;
     uint64_t timing_empty_count = 0;
 };
@@ -911,6 +912,37 @@ void send_timing_sample(
     }
 }
 
+// Present-to-present frametime. This is the only cadence signal that works for
+// every Vulkan app regardless of Reflex/markers, so it is the lowest tier of the
+// quality ladder (quality=present-frametime). It counts *presented* frames, so
+// with frame generation active it reflects presented FPS, not the real rendered
+// frame cadence -- callers must not treat it as input-bearing latency.
+void send_present_pacing_sample(
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    uint64_t present_frametime_us,
+    uint64_t present_count) {
+    char line[512]{};
+    int length = std::snprintf(
+        line,
+        sizeof(line),
+        "{\"v\":1,\"type\":\"timing\",\"measurement\":\"present-pacing\","
+        "\"pid\":%ld,"
+        "\"device\":\"0x%016" PRIx64 "\",\"swapchain\":\"0x%016" PRIx64 "\","
+        "\"quality\":\"present-frametime\","
+        "\"present_count\":%" PRIu64 ","
+        "\"present_frametime_us\":%" PRIu64 "}",
+        static_cast<long>(::getpid()),
+        handle_to_u64(device),
+        handle_to_u64(swapchain),
+        present_count,
+        present_frametime_us);
+
+    if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
+        g_socket.send_line(line, static_cast<size_t>(length));
+    }
+}
+
 void query_latency_timing(VkDevice device, VkSwapchainKHR swapchain) {
     PFN_vkGetLatencyTimingsNV get_latency_timings = nullptr;
     {
@@ -1470,14 +1502,23 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
 
     VkResult result = next_queue_present(queue, present_info);
     if (present_info && present_info->pSwapchains) {
+        const uint64_t present_time_us = now_monotonic_us();
         for (uint32_t i = 0; i < present_info->swapchainCount; ++i) {
             VkSwapchainKHR swapchain = present_info->pSwapchains[i];
             uint64_t present_count = 0;
+            uint64_t present_frametime_us = 0;
             {
                 std::lock_guard lock(g_mutex);
                 auto swapchain_it = g_swapchains.find(swapchain);
                 if (swapchain_it != g_swapchains.end()) {
-                    present_count = ++swapchain_it->second.present_count;
+                    auto& swapchain_context = swapchain_it->second;
+                    present_count = ++swapchain_context.present_count;
+                    if (swapchain_context.last_present_us
+                        && present_time_us > swapchain_context.last_present_us) {
+                        present_frametime_us =
+                            present_time_us - swapchain_context.last_present_us;
+                    }
+                    swapchain_context.last_present_us = present_time_us;
                 }
             }
             if (should_report_counter(present_count)) {
@@ -1487,6 +1528,11 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
                     swapchain,
                     present_count,
                     device_telemetry_flags(device));
+            }
+            // Present-pacing FPS works without Reflex; emit it for every present.
+            if (present_frametime_us) {
+                send_present_pacing_sample(
+                    device, swapchain, present_frametime_us, present_count);
             }
             query_latency_timing(device, swapchain);
         }
