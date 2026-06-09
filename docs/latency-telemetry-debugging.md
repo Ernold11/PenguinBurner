@@ -337,7 +337,20 @@ sustained live stream:
 
 ### RE9 flow diagnosis helper
 
-After a RE9 run, classify the captured flow with:
+For a live RE9 attempt, start a durable capture before launching the game:
+
+```bash
+penguin-burner-latency-capture --output ~/.cache/penguin-burner/latency-captures/re9-live.log
+```
+
+Stop it with `Ctrl-C` after the game exits. If the desktop hard-freezes and has
+to be reset, inspect the captured log after reboot:
+
+```bash
+penguin-burner-latency-flow ~/.cache/penguin-burner/latency-captures/re9-live.log
+```
+
+For post-run analysis directly from the journal, classify the captured flow with:
 
 ```bash
 journalctl -u PenguinBurner.service --since '10 min ago' -o cat --no-pager \
