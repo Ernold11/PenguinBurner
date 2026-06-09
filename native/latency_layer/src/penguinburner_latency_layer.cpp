@@ -32,6 +32,9 @@ namespace {
 constexpr const char* kLayerName = "VK_LAYER_PENGUINBURNER_latency";
 constexpr const char* kSocketEnv = "PENGUIN_BURNER_LATENCY_SOCKET";
 constexpr const char* kEnableEnv = "PENGUIN_BURNER_LATENCY_LAYER";
+constexpr const char* kRecoveryResetEnv = "PENGUIN_BURNER_LATENCY_RECOVERY_RESET";
+constexpr uint64_t kStaleRecoveryDuplicateThreshold = 240;
+constexpr uint64_t kStaleRecoveryDuplicateInterval = 600;
 
 template <typename Handle>
 uint64_t handle_to_u64(Handle handle) {
@@ -103,6 +106,16 @@ bool report_has_driver_timing(const VkLatencyTimingsFrameReportNV& report) {
     return report.driverStartTimeUs || report.driverEndTimeUs
         || report.osRenderQueueStartTimeUs || report.osRenderQueueEndTimeUs
         || report.gpuRenderStartTimeUs || report.gpuRenderEndTimeUs;
+}
+
+bool env_flag_enabled(const char* name) {
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return false;
+    }
+    return std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0
+        && std::strcmp(value, "False") != 0 && std::strcmp(value, "no") != 0
+        && std::strcmp(value, "off") != 0;
 }
 
 class TelemetrySocket {
@@ -256,6 +269,7 @@ struct DeviceContext {
     PFN_vkCreateSwapchainKHR create_swapchain_khr = nullptr;
     PFN_vkDestroySwapchainKHR destroy_swapchain_khr = nullptr;
     PFN_vkQueuePresentKHR queue_present_khr = nullptr;
+    PFN_vkSetLatencySleepModeNV set_latency_sleep_mode_nv = nullptr;
     PFN_vkSetLatencyMarkerNV set_latency_marker_nv = nullptr;
     PFN_vkGetLatencyTimingsNV get_latency_timings_nv = nullptr;
     VkPhysicalDeviceProperties physical_device_properties{};
@@ -265,6 +279,10 @@ struct DeviceContext {
     bool low_latency_functions_available = false;
     uint64_t latest_marker_present_id = 0;
     uint64_t marker_count = 0;
+    bool has_latency_sleep_mode_info = false;
+    VkLatencySleepModeInfoNV latency_sleep_mode_info{};
+    uint64_t latency_sleep_mode_set_count = 0;
+    uint64_t latency_sleep_mode_reapply_count = 0;
     MarkerCounts marker_counts{};
     std::unordered_map<uint64_t, uint32_t> marker_bits_by_present_id;
     std::unordered_map<uint64_t, MarkerTiming> marker_timings_by_present_id;
@@ -284,6 +302,8 @@ struct SwapchainContext {
     uint64_t last_present_us = 0;
     uint64_t timing_unavailable_count = 0;
     uint64_t timing_empty_count = 0;
+    uint64_t latency_recovery_attempt_count = 0;
+    uint64_t last_latency_recovery_duplicate_count = 0;
 };
 
 std::mutex g_mutex;
@@ -330,6 +350,22 @@ uint64_t elapsed_us(uint64_t start_us, uint64_t end_us) {
     return end_us - start_us;
 }
 
+bool swapchain_latency_mode_enabled(const VkSwapchainCreateInfoKHR* create_info) {
+    if (!create_info) {
+        return false;
+    }
+    auto* current = reinterpret_cast<const VkBaseInStructure*>(create_info->pNext);
+    while (current) {
+        if (current->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV) {
+            auto* latency_info =
+                reinterpret_cast<const VkSwapchainLatencyCreateInfoNV*>(current);
+            return latency_info->latencyModeEnable == VK_TRUE;
+        }
+        current = reinterpret_cast<const VkBaseInStructure*>(current->pNext);
+    }
+    return false;
+}
+
 void send_status_event(
     const char* event,
     VkDevice device,
@@ -352,6 +388,106 @@ void send_status_event(
         handle_to_u64(device),
         handle_to_u64(swapchain),
         count,
+        flags.advertised ? "true" : "false",
+        flags.requested ? "true" : "false",
+        flags.functions_available ? "true" : "false",
+        flags.marker_count);
+
+    if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
+        g_socket.send_line(line, static_cast<size_t>(length));
+    }
+}
+
+void send_swapchain_event(
+    const char* event,
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    const VkSwapchainCreateInfoKHR* create_info,
+    DeviceTelemetryFlags flags) {
+    const VkSwapchainKHR old_swapchain =
+        create_info ? create_info->oldSwapchain : VK_NULL_HANDLE;
+    const uint32_t min_image_count = create_info ? create_info->minImageCount : 0;
+    const uint32_t image_width = create_info ? create_info->imageExtent.width : 0;
+    const uint32_t image_height = create_info ? create_info->imageExtent.height : 0;
+    const int image_format = create_info ? static_cast<int>(create_info->imageFormat) : 0;
+    const int present_mode = create_info ? static_cast<int>(create_info->presentMode) : 0;
+    const bool latency_mode_enabled = swapchain_latency_mode_enabled(create_info);
+
+    char line[1024]{};
+    int length = std::snprintf(
+        line,
+        sizeof(line),
+        "{\"v\":1,\"type\":\"status\",\"event\":\"%s\",\"pid\":%ld,"
+        "\"device\":\"0x%016" PRIx64 "\",\"swapchain\":\"0x%016" PRIx64 "\","
+        "\"old_swapchain\":\"0x%016" PRIx64 "\","
+        "\"count\":1,"
+        "\"min_image_count\":%u,\"image_width\":%u,\"image_height\":%u,"
+        "\"image_format\":%d,\"present_mode\":%d,"
+        "\"swapchain_latency_mode\":%s,"
+        "\"vk_nv_low_latency2_advertised\":%s,"
+        "\"vk_nv_low_latency2_requested\":%s,"
+        "\"vk_nv_low_latency2_functions\":%s,"
+        "\"marker_count\":%" PRIu64 "}",
+        event,
+        static_cast<long>(::getpid()),
+        handle_to_u64(device),
+        handle_to_u64(swapchain),
+        handle_to_u64(old_swapchain),
+        min_image_count,
+        image_width,
+        image_height,
+        image_format,
+        present_mode,
+        latency_mode_enabled ? "true" : "false",
+        flags.advertised ? "true" : "false",
+        flags.requested ? "true" : "false",
+        flags.functions_available ? "true" : "false",
+        flags.marker_count);
+
+    if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
+        g_socket.send_line(line, static_cast<size_t>(length));
+    }
+}
+
+void send_latency_sleep_mode_event(
+    const char* event,
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    uint64_t count,
+    VkResult result,
+    bool has_sleep_mode_info,
+    const VkLatencySleepModeInfoNV& sleep_mode_info,
+    uint64_t duplicate_count,
+    uint64_t present_count,
+    DeviceTelemetryFlags flags) {
+    char line[1024]{};
+    int length = std::snprintf(
+        line,
+        sizeof(line),
+        "{\"v\":1,\"type\":\"status\",\"event\":\"%s\",\"pid\":%ld,"
+        "\"device\":\"0x%016" PRIx64 "\",\"swapchain\":\"0x%016" PRIx64 "\","
+        "\"count\":%" PRIu64 ",\"result\":%d,"
+        "\"has_latency_sleep_mode\":%s,"
+        "\"low_latency_mode\":%s,\"low_latency_boost\":%s,"
+        "\"minimum_interval_us\":%u,"
+        "\"driver_report_duplicate_count\":%" PRIu64 ","
+        "\"present_count\":%" PRIu64 ","
+        "\"vk_nv_low_latency2_advertised\":%s,"
+        "\"vk_nv_low_latency2_requested\":%s,"
+        "\"vk_nv_low_latency2_functions\":%s,"
+        "\"marker_count\":%" PRIu64 "}",
+        event,
+        static_cast<long>(::getpid()),
+        handle_to_u64(device),
+        handle_to_u64(swapchain),
+        count,
+        static_cast<int>(result),
+        has_sleep_mode_info ? "true" : "false",
+        has_sleep_mode_info && sleep_mode_info.lowLatencyMode ? "true" : "false",
+        has_sleep_mode_info && sleep_mode_info.lowLatencyBoost ? "true" : "false",
+        has_sleep_mode_info ? sleep_mode_info.minimumIntervalUs : 0,
+        duplicate_count,
+        present_count,
         flags.advertised ? "true" : "false",
         flags.requested ? "true" : "false",
         flags.functions_available ? "true" : "false",
@@ -943,6 +1079,182 @@ void send_present_pacing_sample(
     }
 }
 
+struct LatencySleepModeReplay {
+    PFN_vkSetLatencySleepModeNV set_latency_sleep_mode = nullptr;
+    VkLatencySleepModeInfoNV sleep_mode_info{};
+    bool has_sleep_mode_info = false;
+    uint64_t count = 0;
+    DeviceTelemetryFlags flags{};
+};
+
+LatencySleepModeReplay load_latency_sleep_mode_replay(VkDevice device) {
+    LatencySleepModeReplay replay{};
+    std::lock_guard lock(g_mutex);
+    auto device_it = g_devices.find(device);
+    if (device_it == g_devices.end()) {
+        return replay;
+    }
+
+    auto& context = device_it->second;
+    replay.set_latency_sleep_mode = context.set_latency_sleep_mode_nv;
+    replay.has_sleep_mode_info = context.has_latency_sleep_mode_info;
+    if (!replay.set_latency_sleep_mode || !replay.has_sleep_mode_info) {
+        return replay;
+    }
+    replay.sleep_mode_info = context.latency_sleep_mode_info;
+    replay.count = ++context.latency_sleep_mode_reapply_count;
+    replay.flags = {
+        context.low_latency_extension_advertised,
+        context.low_latency_extension_requested,
+        context.low_latency_functions_available,
+        context.marker_count,
+    };
+    return replay;
+}
+
+bool reapply_latency_sleep_mode(
+    const char* event,
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    uint64_t duplicate_count,
+    uint64_t present_count) {
+    LatencySleepModeReplay replay = load_latency_sleep_mode_replay(device);
+    if (!replay.set_latency_sleep_mode || !replay.has_sleep_mode_info) {
+        return false;
+    }
+
+    VkResult result =
+        replay.set_latency_sleep_mode(device, swapchain, &replay.sleep_mode_info);
+    send_latency_sleep_mode_event(
+        event,
+        device,
+        swapchain,
+        replay.count,
+        result,
+        true,
+        replay.sleep_mode_info,
+        duplicate_count,
+        present_count,
+        replay.flags);
+    return result == VK_SUCCESS;
+}
+
+void maybe_recover_stale_latency_stream(VkDevice device, VkSwapchainKHR swapchain) {
+    PFN_vkSetLatencySleepModeNV set_latency_sleep_mode = nullptr;
+    VkLatencySleepModeInfoNV sleep_mode_info{};
+    bool has_sleep_mode_info = false;
+    uint64_t attempt_count = 0;
+    uint64_t duplicate_count = 0;
+    uint64_t present_count = 0;
+    DeviceTelemetryFlags flags{};
+
+    {
+        std::lock_guard lock(g_mutex);
+        auto swapchain_it = g_swapchains.find(swapchain);
+        if (swapchain_it == g_swapchains.end()) {
+            return;
+        }
+        auto& swapchain_context = swapchain_it->second;
+        duplicate_count = swapchain_context.duplicate_driver_report_count;
+        if (duplicate_count < kStaleRecoveryDuplicateThreshold) {
+            return;
+        }
+        if (swapchain_context.last_latency_recovery_duplicate_count
+            && duplicate_count - swapchain_context.last_latency_recovery_duplicate_count
+                < kStaleRecoveryDuplicateInterval) {
+            return;
+        }
+        swapchain_context.last_latency_recovery_duplicate_count = duplicate_count;
+        attempt_count = ++swapchain_context.latency_recovery_attempt_count;
+        present_count = swapchain_context.present_count;
+
+        auto device_it = g_devices.find(device);
+        if (device_it != g_devices.end()) {
+            const auto& device_context = device_it->second;
+            set_latency_sleep_mode = device_context.set_latency_sleep_mode_nv;
+            has_sleep_mode_info = device_context.has_latency_sleep_mode_info;
+            sleep_mode_info = device_context.latency_sleep_mode_info;
+            flags = {
+                device_context.low_latency_extension_advertised,
+                device_context.low_latency_extension_requested,
+                device_context.low_latency_functions_available,
+                device_context.marker_count,
+            };
+        }
+    }
+
+    if (!set_latency_sleep_mode || !has_sleep_mode_info) {
+        send_latency_sleep_mode_event(
+            "latency-recovery-unavailable",
+            device,
+            swapchain,
+            attempt_count,
+            VK_ERROR_EXTENSION_NOT_PRESENT,
+            has_sleep_mode_info,
+            sleep_mode_info,
+            duplicate_count,
+            present_count,
+            flags);
+        return;
+    }
+
+    VkLatencySleepModeInfoNV disabled_sleep_mode_info = sleep_mode_info;
+    disabled_sleep_mode_info.lowLatencyMode = VK_FALSE;
+    disabled_sleep_mode_info.lowLatencyBoost = VK_FALSE;
+    VkResult disable_result =
+        set_latency_sleep_mode(device, swapchain, &disabled_sleep_mode_info);
+    send_latency_sleep_mode_event(
+        "latency-recovery-disable-sleep-mode",
+        device,
+        swapchain,
+        attempt_count,
+        disable_result,
+        true,
+        disabled_sleep_mode_info,
+        duplicate_count,
+        present_count,
+        flags);
+
+    if (env_flag_enabled(kRecoveryResetEnv)) {
+        send_latency_sleep_mode_event(
+            "latency-recovery-reset-sleep-mode-enter",
+            device,
+            swapchain,
+            attempt_count,
+            VK_NOT_READY,
+            false,
+            disabled_sleep_mode_info,
+            duplicate_count,
+            present_count,
+            flags);
+        VkResult reset_result = set_latency_sleep_mode(device, swapchain, nullptr);
+        send_latency_sleep_mode_event(
+            "latency-recovery-reset-sleep-mode",
+            device,
+            swapchain,
+            attempt_count,
+            reset_result,
+            false,
+            disabled_sleep_mode_info,
+            duplicate_count,
+            present_count,
+            flags);
+    }
+
+    VkResult result = set_latency_sleep_mode(device, swapchain, &sleep_mode_info);
+    send_latency_sleep_mode_event(
+        "latency-recovery-reapply-sleep-mode",
+        device,
+        swapchain,
+        attempt_count,
+        result,
+        true,
+        sleep_mode_info,
+        duplicate_count,
+        present_count,
+        flags);
+}
+
 void query_latency_timing(VkDevice device, VkSwapchainKHR swapchain) {
     PFN_vkGetLatencyTimingsNV get_latency_timings = nullptr;
     {
@@ -1087,6 +1399,7 @@ void query_latency_timing(VkDevice device, VkSwapchainKHR swapchain) {
         send_timing_sample(
             device, swapchain, reports[usable_indices[plan.newest_pos]],
             written_count);
+        maybe_recover_stale_latency_stream(device, swapchain);
     }
 }
 
@@ -1294,6 +1607,9 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
         next_get_device_proc_addr(*device, "vkDestroySwapchainKHR"));
     context.queue_present_khr = reinterpret_cast<PFN_vkQueuePresentKHR>(
         next_get_device_proc_addr(*device, "vkQueuePresentKHR"));
+    context.set_latency_sleep_mode_nv =
+        reinterpret_cast<PFN_vkSetLatencySleepModeNV>(
+            next_get_device_proc_addr(*device, "vkSetLatencySleepModeNV"));
     context.set_latency_marker_nv = reinterpret_cast<PFN_vkSetLatencyMarkerNV>(
         next_get_device_proc_addr(*device, "vkSetLatencyMarkerNV"));
     context.get_latency_timings_nv = reinterpret_cast<PFN_vkGetLatencyTimingsNV>(
@@ -1445,15 +1761,23 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_swapchain_khr(
         next_create_swapchain(device, create_info, allocator, swapchain);
     if (result == VK_SUCCESS && swapchain) {
         std::lock_guard lock(g_mutex);
-        g_swapchains[*swapchain] = SwapchainContext{device, 0, 0, 0, 0, 0, 0};
+        SwapchainContext context{};
+        context.device = device;
+        g_swapchains[*swapchain] = context;
     }
     if (result == VK_SUCCESS && swapchain) {
-        send_status_event(
+        send_swapchain_event(
             "create-swapchain",
             device,
             *swapchain,
-            1,
+            create_info,
             device_telemetry_flags(device));
+        reapply_latency_sleep_mode(
+            "latency-sleep-mode-reapplied-create",
+            device,
+            *swapchain,
+            0,
+            0);
     }
     return result;
 }
@@ -1474,6 +1798,13 @@ VKAPI_ATTR void VKAPI_CALL layer_destroy_swapchain_khr(
     if (next_destroy_swapchain) {
         next_destroy_swapchain(device, swapchain, allocator);
     }
+
+    send_status_event(
+        "destroy-swapchain",
+        device,
+        swapchain,
+        1,
+        device_telemetry_flags(device));
 
     std::lock_guard lock(g_mutex);
     g_swapchains.erase(swapchain);
@@ -1537,6 +1868,67 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
             query_latency_timing(device, swapchain);
         }
     }
+    return result;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL layer_set_latency_sleep_mode_nv(
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    const VkLatencySleepModeInfoNV* sleep_mode_info) {
+    PFN_vkSetLatencySleepModeNV next_set_latency_sleep_mode = nullptr;
+    {
+        std::lock_guard lock(g_mutex);
+        auto it = g_devices.find(device);
+        if (it != g_devices.end()) {
+            next_set_latency_sleep_mode = it->second.set_latency_sleep_mode_nv;
+        }
+    }
+
+    VkLatencySleepModeInfoNV saved_info{};
+    bool has_sleep_mode_info = false;
+    if (sleep_mode_info) {
+        saved_info = *sleep_mode_info;
+        saved_info.pNext = nullptr;
+        has_sleep_mode_info = true;
+    }
+
+    VkResult result = VK_ERROR_EXTENSION_NOT_PRESENT;
+    if (next_set_latency_sleep_mode) {
+        result = next_set_latency_sleep_mode(device, swapchain, sleep_mode_info);
+    }
+
+    uint64_t count = 0;
+    DeviceTelemetryFlags flags{};
+    if (result == VK_SUCCESS) {
+        std::lock_guard lock(g_mutex);
+        auto it = g_devices.find(device);
+        if (it != g_devices.end()) {
+            auto& context = it->second;
+            context.has_latency_sleep_mode_info = has_sleep_mode_info;
+            context.latency_sleep_mode_info = saved_info;
+            count = ++context.latency_sleep_mode_set_count;
+            flags = {
+                context.low_latency_extension_advertised,
+                context.low_latency_extension_requested,
+                context.low_latency_functions_available,
+                context.marker_count,
+            };
+        }
+    } else {
+        flags = device_telemetry_flags(device);
+    }
+
+    send_latency_sleep_mode_event(
+        "latency-sleep-mode-set",
+        device,
+        swapchain,
+        count,
+        result,
+        has_sleep_mode_info,
+        saved_info,
+        0,
+        0,
+        flags);
     return result;
 }
 
@@ -1656,6 +2048,10 @@ VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* name) {
     if (std::strcmp(name, "vkQueuePresentKHR") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(layer_queue_present_khr);
     }
+    if (std::strcmp(name, "vkSetLatencySleepModeNV") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(
+            layer_set_latency_sleep_mode_nv);
+    }
     if (std::strcmp(name, "vkSetLatencyMarkerNV") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(layer_set_latency_marker_nv);
     }
@@ -1702,6 +2098,10 @@ VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* name) {
     }
     if (std::strcmp(name, "vkQueuePresentKHR") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(layer_queue_present_khr);
+    }
+    if (std::strcmp(name, "vkSetLatencySleepModeNV") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(
+            layer_set_latency_sleep_mode_nv);
     }
     if (std::strcmp(name, "vkSetLatencyMarkerNV") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(layer_set_latency_marker_nv);

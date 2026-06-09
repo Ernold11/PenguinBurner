@@ -7,10 +7,11 @@ the 2026-06-09 change set touched:
 1. **per-frame emission** (no more latched constant latency), and
 2. **`gpu_render_us`** — the real pre-frame-generation GPU render time.
 
-> This environment that produced the layer change has **no NVIDIA GPU**, so there
-> are **no captured live logs** in the repo. This guide tells you how to produce
-> and read them. Everything below is derived from the actual code paths, not from
-> a recorded run. Cross-check line references if the code has moved.
+> The live RE9 runs on 2026-06-09 validated the plumbing but not the desired
+> sustained metric: `gpu_render_us` appears while the Reflex timing ring is
+> fresh, then RE9 repeatedly stalls the ring after gameplay/swapchain
+> transitions. Treat `quality=stale-driver-report ... gpu-render-p95=n/a` as a
+> correct stale-signal handoff, not as a usable latency value.
 
 ---
 
@@ -197,7 +198,11 @@ Three line types are emitted (formatters in `receiver.py`):
 Event names you may see (status): `create-instance`, `negotiate`,
 `get-device-proc-addr`, `create-device`, `create-swapchain`, `present`,
 `latency-marker`, `latency-marker-coverage`, `latency-timing-unavailable`,
-`latency-timing-empty`.
+`latency-timing-empty`, `latency-sleep-mode-set`,
+`latency-sleep-mode-reapplied-create`, `latency-recovery-disable-sleep-mode`,
+`latency-recovery-reapply-sleep-mode`, `latency-recovery-reset-sleep-mode-enter`,
+`latency-recovery-reset-sleep-mode`, `latency-recovery-unavailable`,
+`destroy-swapchain`.
 
 ### Field cheat-sheet for the two fixes
 
@@ -206,8 +211,13 @@ Event names you may see (status): `create-instance`, `negotiate`,
 | `present_id` | **Must advance** frame-to-frame. Frozen `present_id` while `present` counters climb = the driver's Reflex ring went stale. |
 | `driver_report_duplicate_count` | `>0` → the receiver saw a repeated `present_id` and **dropped** that sample. Sustained growth = stale stream. |
 | `quality=stale-driver-report` | The stale-detection fired; the meter is intentionally reporting `*-p95=n/a` instead of a frozen value. **This is correct behavior**, not a bug. |
+| `latency-recovery-disable-sleep-mode` / `latency-recovery-reapply-sleep-mode` | The layer saw a sustained duplicate `present_id` run, toggled Reflex sleep mode off with a valid struct, then replayed the game's last saved sleep-mode state. `result=0` means Vulkan accepted that call. |
+| `latency-recovery-reset-sleep-mode-enter` / `latency-recovery-reset-sleep-mode` | Only emitted when `PENGUIN_BURNER_LATENCY_RECOVERY_RESET=1` is set. This crash-test path calls `vkSetLatencySleepModeNV(..., nullptr)` before replaying the saved state. If `*-enter` is the final line before the game exits, the reset call did not return. |
+| `latency-sleep-mode-reapplied-create` | A new swapchain was created after the game had already set Reflex sleep mode, so the layer replayed that state immediately after creation. |
+| `latency-recovery-unavailable` | Stale recovery wanted to run, but no prior sleep-mode state or no `vkSetLatencySleepModeNV` function was available. The meter should keep treating Reflex as stale. |
+| `swapchain_latency_mode` | Whether `VkSwapchainLatencyCreateInfoNV(latencyModeEnable=true)` was visible on `vkCreateSwapchainKHR`. If false, layer ordering may hide the DXVK-NVAPI create-info patch from this observer. |
 | `gpu_render_us` | The headline metric: per-frame GPU render time = `gpu_render_end_us - gpu_render_start_us`. This is the adaptive control signal (target ~16.6 ms). |
-| `gpu_render_start_us` / `gpu_render_end_us` | Raw driver timestamps. **If both are persistently 0**, the driver isn't filling them on this stack and `gpu_render_us` will be 0 / `gpu-render-p95=n/a` → fall back to `render-submit-p95`. |
+| `gpu_render_start_us` / `gpu_render_end_us` | Raw driver timestamps. **If both are persistently 0**, the driver isn't filling them on this stack and `gpu_render_us` will be 0 / `gpu-render-p95=n/a`; `render-submit-p95` can be logged as a weaker diagnostic, but it is not the same pre-frame-generation GPU render metric. |
 | `quality` | Confidence ladder (low→high): `present-frametime` < `driver-timing`/`reflex-marker*` < `reflex-render-submit` < `reflex-input-present`. |
 | `marker_bits` | Bitmask of which Reflex markers the game set (see `marker_bit()` in the layer). `0` means the game isn't driving Reflex markers. |
 
@@ -295,7 +305,26 @@ journalctl -u PenguinBurner.service --since '5 min ago' -o cat \
 - A single value with a huge count → either genuinely steady load **or** a stale
   ring (cross-check `present_id` and `driver_report_duplicate_count`).
 - All `gpu_render_us=0` → driver not populating `gpuRenderStart/End` on this
-  title/stack; use `render-submit-p95` as the fallback signal and note it.
+  title/stack; keep `render-submit-p95` as a diagnostic only and note that the
+  requested metric is unavailable.
+
+### Known RE9 result from 2026-06-09
+
+RE9 can produce short fresh windows, including `gpu-render-p95=16.59ms` after a
+swapchain recreation, but the stream then stalls again. In the submit+present
+DXVK-NVAPI injection run, the last swapchain emitted about 59 advancing reports
+(`present_id=359` through `418`) before collapsing to IDs `483..487` repeating.
+The final state was `quality=stale-driver-report ... gpu-render-p95=n/a`.
+
+The following recovery experiments were already tried and did not produce a
+sustained live stream:
+
+- replaying the captured `vkSetLatencySleepModeNV` state;
+- toggling saved sleep mode off, then replaying it;
+- `PENGUIN_BURNER_LATENCY_RECOVERY_RESET=1`, which made RE9 exit before the
+  reset result was logged;
+- DXVK-NVAPI `DXVK_NVAPI_VKREFLEX_INJECT_PRESENT_FRAME_IDS=1`;
+- DXVK-NVAPI submit+present frame-ID injection.
 
 ---
 

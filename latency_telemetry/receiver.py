@@ -304,6 +304,13 @@ class LatencyTelemetryMeter:
             (_quality_for_sample(sample) for sample in samples),
             key=lambda quality: QUALITY_RANK.get(quality, 0),
         )
+        stale_driver_report = self._fresh_stale_driver_report(now=now)
+        has_fresh_reflex_or_driver_sample = any(
+            str(sample.get("measurement") or "") != "present-pacing"
+            for sample in samples
+        )
+        if stale_driver_report is not None and not has_fresh_reflex_or_driver_sample:
+            best_quality = "stale-driver-report"
         gpu_frame_p95 = _p95_us(
             [_int_value(sample.get("gpu_frame_time_us")) for sample in samples]
         )
@@ -333,6 +340,14 @@ class LatencyTelemetryMeter:
         missing_text = (
             f" missing={','.join(missing_hints)}" if missing_hints else ""
         )
+        stale_text = ""
+        if stale_driver_report is not None and not has_fresh_reflex_or_driver_sample:
+            stale_text = (
+                f" stale-present_id={stale_driver_report.get('present_id', 'unknown')}"
+                " stale-driver-report-duplicates="
+                f"{_int_value(stale_driver_report.get('driver_report_duplicate_count'))}"
+                f" stale-age-s={self._stale_driver_report_age_s(stale_driver_report, now=now):.1f}"
+            )
         return (
             f"event=latency-meter pid={latest.get('pid', 'unknown')} "
             f"quality={best_quality} samples={len(samples)} "
@@ -344,17 +359,28 @@ class LatencyTelemetryMeter:
             f"gpu-frame-p95={_format_ms(gpu_frame_p95)} "
             f"present-frametime-p95={_format_ms(present_frametime_p95)} "
             f"present-fps={present_fps}"
+            f"{stale_text}"
             f"{missing_text}"
         )
 
-    def _stale_driver_report_summary(self, *, now: float | None = None) -> str | None:
+    def _stale_driver_report_age_s(self, latest: dict, *, now: float) -> float:
+        return now - float(latest.get("_received_monotonic") or 0.0)
+
+    def _fresh_stale_driver_report(self, *, now: float) -> dict | None:
         latest = self._last_ignored_driver_report
         if latest is None:
             return None
-        now = self._time_monotonic() if now is None else now
-        age_s = now - float(latest.get("_received_monotonic") or 0.0)
+        age_s = self._stale_driver_report_age_s(latest, now=now)
         if age_s > self._stale_driver_report_max_age_s:
             return None
+        return latest
+
+    def _stale_driver_report_summary(self, *, now: float | None = None) -> str | None:
+        now = self._time_monotonic() if now is None else now
+        latest = self._fresh_stale_driver_report(now=now)
+        if latest is None:
+            return None
+        age_s = self._stale_driver_report_age_s(latest, now=now)
         return (
             f"event=latency-meter pid={latest.get('pid', 'unknown')} "
             "quality=stale-driver-report samples=0 "
@@ -551,12 +577,26 @@ class LatencyTelemetryLogger:
         ]
         for key in (
             "count",
+            "result",
             "device",
             "swapchain",
+            "old_swapchain",
             "queue",
             "queue_family",
             "queue_flags",
             "timestamp_valid_bits",
+            "min_image_count",
+            "image_width",
+            "image_height",
+            "image_format",
+            "present_mode",
+            "swapchain_latency_mode",
+            "has_latency_sleep_mode",
+            "low_latency_mode",
+            "low_latency_boost",
+            "minimum_interval_us",
+            "driver_report_duplicate_count",
+            "present_count",
             "simulation_start",
             "simulation_end",
             "render_submit_start",

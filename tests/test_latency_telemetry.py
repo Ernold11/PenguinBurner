@@ -223,6 +223,58 @@ def test_latency_telemetry_meter_marks_stale_duplicate_driver_reports() -> None:
     assert "missing=fresh-samples" in summary
 
 
+def test_latency_telemetry_meter_marks_stale_reflex_with_present_pacing_fallback() -> None:
+    now = 100.0
+    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
+    meter.add_sample(
+        {
+            "type": "timing",
+            "measurement": "driver-report",
+            "pid": 123,
+            "present_id": 497,
+            "quality": "reflex-render-submit",
+            "driver_report_duplicate_count": 0,
+            "render_submit_us": 7935,
+            "gpu_render_us": 8469,
+        }
+    )
+
+    now = 106.0
+    meter.add_sample(
+        {
+            "type": "timing",
+            "measurement": "driver-report",
+            "pid": 123,
+            "present_id": 497,
+            "quality": "reflex-render-submit",
+            "driver_report_duplicate_count": 6717,
+            "render_submit_us": 7935,
+            "gpu_render_us": 8469,
+        }
+    )
+    for frametime_us in (27000, 29000, 28000):
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "present-pacing",
+                "pid": 123,
+                "quality": "present-frametime",
+                "present_frametime_us": frametime_us,
+            }
+        )
+
+    summary = meter.summary(now=106.0)
+
+    assert summary is not None
+    assert "quality=stale-driver-report" in summary
+    assert "samples=3" in summary
+    assert "gpu-render-p95=n/a" in summary
+    assert "present-frametime-p95=29.00ms" in summary
+    assert "present-fps=36" in summary
+    assert "stale-present_id=497" in summary
+    assert "stale-driver-report-duplicates=6717" in summary
+
+
 def test_latency_telemetry_logger_formats_status_events() -> None:
     logs: list[str] = []
     logger = LatencyTelemetryLogger(
@@ -251,6 +303,74 @@ def test_latency_telemetry_logger_formats_status_events() -> None:
         "swapchain=0x2 vk_nv_low_latency2_advertised=True "
         "vk_nv_low_latency2_requested=False vk_nv_low_latency2_functions=False "
         "marker_count=0"
+    ]
+
+
+def test_latency_telemetry_logger_formats_recovery_status_events() -> None:
+    logs: list[str] = []
+    logger = LatencyTelemetryLogger(
+        log=logs.append,
+        time_strftime=lambda _format: "2026-06-03 22:00:00",
+    )
+
+    logger._log_status(
+        {
+            "type": "status",
+            "event": "latency-recovery-reapply-sleep-mode",
+            "pid": 123,
+            "count": 1,
+            "result": 0,
+            "device": "0x1",
+            "swapchain": "0x2",
+            "has_latency_sleep_mode": True,
+            "low_latency_mode": True,
+            "low_latency_boost": False,
+            "minimum_interval_us": 750,
+            "driver_report_duplicate_count": 240,
+            "present_count": 512,
+        }
+    )
+
+    assert logs == [
+        "2026-06-03 22:00:00 event=latency-layer-status "
+        "status=latency-recovery-reapply-sleep-mode pid=123 count=1 result=0 "
+        "device=0x1 swapchain=0x2 has_latency_sleep_mode=True "
+        "low_latency_mode=True low_latency_boost=False minimum_interval_us=750 "
+        "driver_report_duplicate_count=240 present_count=512"
+    ]
+
+
+def test_latency_telemetry_logger_formats_recovery_disable_status_event() -> None:
+    logs: list[str] = []
+    logger = LatencyTelemetryLogger(
+        log=logs.append,
+        time_strftime=lambda _format: "2026-06-03 22:00:00",
+    )
+
+    logger._log_status(
+        {
+            "type": "status",
+            "event": "latency-recovery-disable-sleep-mode",
+            "pid": 123,
+            "count": 2,
+            "result": 0,
+            "device": "0x1",
+            "swapchain": "0x2",
+            "has_latency_sleep_mode": True,
+            "low_latency_mode": False,
+            "low_latency_boost": False,
+            "minimum_interval_us": 0,
+            "driver_report_duplicate_count": 840,
+            "present_count": 2048,
+        }
+    )
+
+    assert logs == [
+        "2026-06-03 22:00:00 event=latency-layer-status "
+        "status=latency-recovery-disable-sleep-mode pid=123 count=2 result=0 "
+        "device=0x1 swapchain=0x2 has_latency_sleep_mode=True "
+        "low_latency_mode=False low_latency_boost=False minimum_interval_us=0 "
+        "driver_report_duplicate_count=840 present_count=2048"
     ]
 
 

@@ -10,10 +10,12 @@ Context / prior art: [auto-profile-latency-findings.md](./auto-profile-latency-f
 [re9-latency-experiment-findings.md](./re9-latency-experiment-findings.md).
 How to debug/verify on a GPU host: [latency-telemetry-debugging.md](./latency-telemetry-debugging.md).
 
-> Status: **not yet validated on an NVIDIA host.** This environment has no NVIDIA
-> GPU. Everything below is verified by unit tests, a no-GPU end-to-end socket
-> test, and clean builds — but the live RE9/Proton confirmation is still pending
-> (deferred by request).
+> Status: **validated on the target NVIDIA + Proton host, but RE9 still does not
+> provide a sustained live Reflex GPU-render stream.** Startup and short
+> post-swapchain samples can populate `gpu_render_us`, but RE9 repeatedly stalls
+> the driver timing ring during gameplay transitions. The receiver now reports
+> that as `quality=stale-driver-report` with `gpu-render-p95=n/a`, which is the
+> correct behavior for this stack.
 
 ---
 
@@ -22,9 +24,10 @@ How to debug/verify on a GPU host: [latency-telemetry-debugging.md](./latency-te
 | Symptom | Root cause | Fix |
 |---------|-----------|-----|
 | Latency stuck at a single value (~24.3 ms) | Layer emitted only the **newest** `vkGetLatencyTimingsNV` report each present; when the driver's Reflex ring froze after a transition it re-latched the same frame forever. The 24 ms was `gpuRenderEnd − presentStart` of the last live frame. | **Per-frame emission** (§2) + **stale re-emit handoff** so the receiver flags it instead of freezing. |
-| VRAM OOM / hard freeze / `libnvidia-gpucomp` SIGSEGV | The opt-in GPU-timestamp **injection** paths (`unsafe-submit-wrapper`, `unsafe-side-submit`) and frame-ID injection mutated the game's command buffers / submits / present info. Unsafe on the DXVK-NVAPI → VKD3D-Proton → NVIDIA stack. | **Removed entirely** (§4). The layer no longer intercepts `vkQueueSubmit*` at all. |
+| VRAM OOM / hard freeze / `libnvidia-gpucomp` SIGSEGV | The opt-in GPU-timestamp **injection** paths (`unsafe-submit-wrapper`, `unsafe-side-submit`) and frame-ID injection mutated the game's command buffers / submits / present info. Unsafe on the DXVK-NVAPI → VKD3D-Proton → NVIDIA stack. | **Removed entirely** (§5). The layer no longer intercepts `vkQueueSubmit*` at all. |
 | No real "GPU processing" number | The metric available (`render_present_us`, frame-to-frame `gpu_frame_time_us`) wasn't the GPU's per-frame render duration. | **`gpu_render_us`** computed from the Reflex report's GPU timestamps (§3). |
-| Per-frame emission could re-freeze | Naive `presentID <= last_emitted` dedup breaks when the driver restarts its present-ID counter on swapchain recreation (resolution/HDR/fullscreen change). | **Reset detection** in the emit planner (§5). |
+| Per-frame emission could re-freeze | Naive `presentID <= last_emitted` dedup breaks when the driver restarts its present-ID counter on swapchain recreation (resolution/HDR/fullscreen change). | **Reset detection** in the emit planner (§6). |
+| Reflex timing stays stale after swapchain recreation | RE9/Proton can recreate swapchains automatically while markers and presents continue, but `vkGetLatencyTimingsNV` keeps returning the last old `presentID`. | Capture `vkSetLatencySleepModeNV`, replay it on new swapchains, and retry it after sustained duplicate reports (§4). |
 
 ---
 
@@ -58,6 +61,44 @@ intended adaptive control signal (target ~16.6 ms). Because Reflex markers track
 the real input-bearing rendered frames, DLSS3 frame-generation (x2/x3/x4/adaptive)
 generated frames do not pollute it.
 
+## 4. Conservative stale-stream recovery
+
+The layer now observes `vkSetLatencySleepModeNV` and stores the last successful
+sleep-mode state requested by the game. It uses that state in two default
+recovery cases:
+
+- immediately after `vkCreateSwapchainKHR`, replay the captured sleep mode to the
+  new swapchain and log `latency-sleep-mode-reapplied-create`;
+- after a sustained duplicate `presentID` run, toggle sleep mode off with a
+  valid `VkLatencySleepModeInfoNV`, replay the same state to the active
+  swapchain, and log `latency-recovery-disable-sleep-mode` plus
+  `latency-recovery-reapply-sleep-mode`.
+
+The more aggressive reset probe is opt-in with
+`PENGUIN_BURNER_LATENCY_RECOVERY_RESET=1`. That path logs
+`latency-recovery-reset-sleep-mode-enter`, calls
+`vkSetLatencySleepModeNV(..., nullptr)`, then logs
+`latency-recovery-reset-sleep-mode` if the Vulkan call returns. RE9 testing on
+2026-06-09 showed the process can exit at that reset point, so it is not enabled
+for normal gaming.
+
+This does **not** invent a Reflex mode, force boost, or mutate submits/presents.
+If the game never set a sleep mode, or the function is unavailable, the layer logs
+`latency-recovery-unavailable` and the receiver continues to report
+`quality=stale-driver-report`.
+
+Live RE9 results on 2026-06-09:
+
+- replay-only recovery returned `result=0` repeatedly, but the stream stayed
+  frozen at `present_id=469` and duplicate count reached `8918`;
+- `PENGUIN_BURNER_LATENCY_RECOVERY_RESET=1` reached the stale threshold at
+  `present_id=462` / duplicate count `240`, then RE9 exited before the reset call
+  returned;
+- the default off/on sleep-mode toggle kept RE9 alive and returned `result=0`,
+  but the stream stayed frozen at `present_id=473`;
+- DXVK-NVAPI present-ID injection and submit+present-ID injection also failed to
+  keep the stream live (`present_id=496` and `487` stalls respectively).
+
 Plumbed through:
 - emitted in the `driver-report` JSON (`send_timing_sample`),
 - surfaced as `gpu-render-p95` in the meter summary,
@@ -65,7 +106,7 @@ Plumbed through:
 
 Tested test-first on the Python side (`tests/test_latency_telemetry.py`).
 
-## 4. Injection removed (safety)
+## 5. Injection removed (safety)
 
 Deleted both opt-in injection subsystems entirely:
 
@@ -92,7 +133,7 @@ markers/timings and never mutates the game's Vulkan work.
 These flags are kept only as historical record in
 `re9-latency-experiment-findings.md`; they are no longer recognized.
 
-## 5. presentID-reset bug fix + extracted, tested logic
+## 6. presentID-reset bug fix + extracted, tested logic
 
 The per-frame dedup decision was extracted into a pure, unit-tested header:
 
@@ -112,7 +153,7 @@ The per-frame dedup decision was extracted into a pure, unit-tested header:
 `query_latency_timing()` now calls `plan_latency_emits()` rather than inlining the
 logic, so the layer and the test cannot drift.
 
-## 6. Present-pacing FPS (no-Reflex fallback)
+## 7. Present-pacing FPS (no-Reflex fallback)
 
 A bottom-tier cadence signal that works for **any** Vulkan app, with no Reflex,
 no markers, no MangoHud, and no game cooperation.
@@ -165,13 +206,23 @@ verified end-to-end over the socket on a no-GPU host
   gpu-render-p95=n/a`; present-pacing-only samples produced
   `present-frametime-p95=50.00ms present-fps=60`.
 
+## Live RE9 validation result
+
+- `gpu_render_start/end_us` and `gpu_render_us` do populate through the
+  DXVK-NVAPI/VKD3D-Proton path while the Reflex ring is fresh.
+- The Reflex ring does not remain fresh through RE9 gameplay transitions. It
+  repeatedly collapses to a single duplicated `present_id`; the meter then
+  reports `quality=stale-driver-report ... gpu-render-p95=n/a`.
+- Sleep-mode replay, the safer off/on toggle, and DXVK-NVAPI's submit/present
+  frame-ID injection knobs did not produce sustained recovery. The null reset
+  probe is unsafe and remains opt-in only.
+
 ## Still pending
 
-- **Live validation on an NVIDIA + Proton host** (RE9, Steam `3764200`) — confirm
-  `gpu_render_start/end_us` are populated through DXVK-NVAPI/VKD3D-Proton, that
-  `gpu_render_us` tracks load and isn't frozen, and that the stale handoff fires
-  on menu / DLSS-FG-mode transitions. Steps: see
-  [latency-telemetry-debugging.md](./latency-telemetry-debugging.md) §5.
+- **A real sustained source for RE9 pre-frame-generation GPU render latency.**
+  That likely requires deeper DXVK-NVAPI/Proton instrumentation or an external
+  NVIDIA tooling path; present-pacing is only liveness/pacing and is not the
+  requested latency value.
 - **No consumer yet.** The meter only logs; nothing reads `gpu_render_us` to
   switch efficiency/balanced/performance profiles. A test run can validate the
   *number*, not *adaptation*. Building the control loop (target 16.6 ms,

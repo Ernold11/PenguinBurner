@@ -259,13 +259,83 @@ Keep the layer useful for diagnostics:
 - expose telemetry quality explicitly,
 - avoid presenting stale Reflex values as live latency.
 
-For adaptive profile switching, RE9 should fall back to safer signals:
+For adaptive profile switching, RE9 still has no reliable Linux source for the
+requested pre-frame-generation GPU render latency once the Reflex stream goes
+stale. These signals are useful only for liveness, diagnostics, or conservative
+profile decisions; they are not replacements for the missing Reflex value:
 
 - Reflex timing only while fresh,
 - present/marker diagnostics only as low-confidence data,
 - NVML/GPU pressure as a conservative fallback,
 - possible future external capture/perf tooling, but not in-process submit
   mutation.
+
+## RE9 Recovery and DXVK-NVAPI Injection Retries, 2026-06-09
+
+Several live retries were run with the rebuilt read-only layer and RE9 Steam app
+`3764200`. The normal Steam launch options were restored afterwards to:
+
+```text
+PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock
+VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/native/latency_layer/build
+PENGUIN_BURNER_LATENCY_LAYER=1
+PROTON_ENABLE_NVAPI=1
+PROTON_HIDE_NVIDIA_GPU=0
+DXVK_NVAPI_VKREFLEX=1
+gamemoderun %command% /WineDetectionEnabled:False
+```
+
+The first retry confirmed that the swapchain latency create-info was present
+(`swapchain_latency_mode=True`) and that replaying the captured
+`vkSetLatencySleepModeNV` state after swapchain creation succeeds
+(`result=0`). Once the Reflex timing ring stalled, the layer repeatedly replayed
+the saved sleep-mode state and Vulkan accepted those calls, but
+`vkGetLatencyTimingsNV` kept returning the same stale `present_id` instead of
+resuming. This run froze at `present_id=469`; duplicate count reached `8918`.
+
+The second retry tested the stronger reset probe that called
+`vkSetLatencySleepModeNV(device, swapchain, nullptr)` at the stale threshold.
+The log stopped at `present_id=462` with
+`driver_report_duplicate_count=240`, and Steam removed the RE9 process at
+`20:06:01`. No reset-result event was emitted, which means the process exited
+before the reset call returned. That reset path is therefore opt-in only via
+`PENGUIN_BURNER_LATENCY_RECOVERY_RESET=1`.
+
+The default recovery was then changed to a safer off/on toggle:
+
+1. call `vkSetLatencySleepModeNV` with the saved mode but
+   `lowLatencyMode=false`, `lowLatencyBoost=false`;
+2. replay the game's last saved sleep-mode state.
+
+RE9 stayed alive, and both calls returned `result=0`, but the driver timing ring
+still did not recover. The run froze at `present_id=473` and ended with
+`quality=stale-driver-report ... gpu-render-p95=n/a`.
+
+DXVK-NVAPI's own Vulkan Reflex layer also has frame-ID injection knobs:
+
+```text
+DXVK_NVAPI_VKREFLEX_INJECT_PRESENT_FRAME_IDS=1
+DXVK_NVAPI_VKREFLEX_INJECT_SUBMIT_FRAME_IDS=1
+```
+
+Both were tested because `third_party/dxvk-nvapi/layer/vulkan_reflex_layer.cpp`
+defaults them to disabled and its README describes them as correlation helpers.
+They did not make RE9 reliable:
+
+- Present-only injection froze at `present_id=496`; duplicate count reached
+  `4581`.
+- Submit+present injection froze at `present_id=487`; duplicate count reached
+  `6042`.
+
+The submit+present run briefly produced fresh reports after a later swapchain
+creation, but only for about 59 reports (`present_id=359` through `418`). It
+then collapsed immediately to IDs `483..487` repeating. That short pulse is not
+a sustained recovery.
+
+Conclusion: layer-level sleep-mode replay, sleep-mode off/on recovery, and
+DXVK-NVAPI submit/present frame-ID injection do not recover the true
+`gpu_render_us` stream in RE9. The correct behavior for PenguinBurner is to mark
+the Reflex value stale and avoid showing a frozen latency number.
 
 ## Debugging
 
