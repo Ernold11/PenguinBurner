@@ -337,6 +337,87 @@ DXVK-NVAPI submit/present frame-ID injection do not recover the true
 `gpu_render_us` stream in RE9. The correct behavior for PenguinBurner is to mark
 the Reflex value stale and avoid showing a frozen latency number.
 
+## Source Inspection
+
+Local source checkouts used:
+
+- `third_party/vkd3d-proton` (`HansKristian-Work/vkd3d-proton`, HEAD
+  `210e774` during inspection)
+- `third_party/dxvk-nvapi` (`jp7677/dxvk-nvapi`, HEAD `46c300b`, with local
+  telemetry edits in `layer/vulkan_reflex_layer.cpp`)
+- scratch clones `third_party/proton`, `third_party/dxvk`, and dated
+  `third_party/proton-cachyos-*` branch snapshots
+
+Important version correction: the installed `files/lib/vkd3d/version` entry is
+Wine VKD3D, not the active D3D12 translation path. RE9's D3D12 path uses
+`files/lib/wine/vkd3d-proton/version`.
+
+Installed VKD3D-Proton versions checked:
+
+- `Proton-CachyOS Latest` / `cachyos-11.0-20260506-slr`:
+  `64f5776f` (`v3.0.1-2-g64f5776f`)
+- `proton-cachyos-11.0-20260520-slr-x86_64`:
+  `84a46a23` (`v3.0.1-93-g84a46a23`)
+- `proton-cachyos-11.0-20260521-slr-x86_64` and Steam Proton Experimental:
+  `110e8bd4` (`v3.0.1-143-g110e8bd4`)
+- Steam Proton Hotfix: `6062cc70` (`v3.0.1-154-g6062cc70`)
+
+The current RE9 baseline (`64f5776f`) already contains upstream commits
+`298eaf00` (multi-swapchain Reflex guard), `c8c8ab50` (DLSS Frame Generation
+Reflex desync/freeze fix), and `e72c0753` (out-of-band present marker mapping
+for downstream latency tools). So this is not simply a missing upstream Reflex
+mapping fix in the installed Proton.
+
+The relevant D3D12 path is VKD3D-Proton's `ID3DLowLatencyDevice`
+implementation, not generic Proton launcher code. VKD3D stores one
+`low_latency_swapchain` per D3D12 device, clears it when more than one Vulkan
+swapchain exists, resets present-ID state during swapchain destruction, and only
+attaches `VkLatencySubmissionPresentIdNV` when a low-latency swapchain exists
+and low-latency mode is enabled. DXVK-NVAPI's Vulkan layer also remaps fake
+NVAPI swapchain handles to a single latest real Vulkan swapchain.
+
+That makes the next debugging target handle-level flow, not another sleep-mode
+toggle: log whether `vkLatencySleepNV`, `vkQueueNotifyOutOfBandNV`, Reflex
+marker IDs, Vulkan present IDs, live Vulkan swapchain count, and driver timing
+report IDs keep advancing across the RE9 menu-to-gameplay transition.
+`PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1` enables extra `present-flow` snapshots;
+stale threshold snapshots are emitted as `status=latency-stream-stale` even
+without the verbose flag. If `live_swapchain_count` rises above 1 near the stale
+point, VKD3D-Proton's intentional multi-swapchain Reflex disable path is the
+leading suspect; if it stays 1 while markers advance beyond
+`last_driver_report_present_id`, the NVIDIA timing ring is stalling despite a
+valid marker feed.
+
+## No-build Present-mode Probe
+
+VKD3D-Proton accepts `VKD3D_SWAPCHAIN_PRESENT_MODE` with uppercase Vulkan mode
+names: `IMMEDIATE`, `MAILBOX`, `FIFO`, `FIFO_RELAXED`, or `FIFO_LATEST_READY`.
+In source, a supported override sets `present.override_present_mode=true`.
+That specifically prevents swapchain recreation caused only by the boolean
+`swap_interval` transition; it does **not** prevent recreation for color-space
+or DXGI format changes.
+
+The RE9 launch line used for the next test is:
+
+```text
+PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/native/latency_layer/build PENGUIN_BURNER_LATENCY_LAYER=1 PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1 VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE PROTON_ENABLE_NVAPI=1 PROTON_HIDE_NVIDIA_GPU=0 DXVK_NVAPI_VKREFLEX=1 gamemoderun %command% /WineDetectionEnabled:False
+```
+
+Read the result as follows:
+
+- `create-swapchain ... present_mode_name=IMMEDIATE` confirms the override
+  reached VKD3D and the driver accepted it.
+- If `gpu_render_us` remains fresh through the menu-to-gameplay transition, the
+  likely trigger was VKD3D's swap-interval recreation path and the no-build
+  workaround is to keep `VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE` for RE9.
+- If `latency-stream-stale` still appears with `live_swapchain_count > 1`, the
+  remaining suspect is VKD3D-Proton clearing `low_latency_swapchain` when more
+  than one Vulkan swapchain exists.
+- If `latency-stream-stale` appears with `live_swapchain_count=1` while marker
+  IDs and Vulkan present IDs advance beyond `last_driver_report_present_id`, the
+  app/VKD3D side is feeding frames and the NVIDIA timing report ring itself is
+  stale.
+
 ## Debugging
 
 For a step-by-step guide to building the layer, capturing telemetry, reading the

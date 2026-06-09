@@ -306,6 +306,42 @@ def test_latency_telemetry_logger_formats_status_events() -> None:
     ]
 
 
+def test_latency_telemetry_logger_formats_swapchain_lifecycle_status_event() -> None:
+    logs: list[str] = []
+    logger = LatencyTelemetryLogger(
+        log=logs.append,
+        time_strftime=lambda _format: "2026-06-03 22:00:00",
+    )
+
+    logger._log_status(
+        {
+            "type": "status",
+            "event": "create-swapchain",
+            "pid": 123,
+            "count": 1,
+            "live_swapchain_count": 2,
+            "device": "0x1",
+            "swapchain": "0x2",
+            "old_swapchain": "0x9",
+            "min_image_count": 3,
+            "image_width": 3840,
+            "image_height": 2160,
+            "image_format": 44,
+            "present_mode": 0,
+            "present_mode_name": "IMMEDIATE",
+            "swapchain_latency_mode": True,
+        }
+    )
+
+    assert logs == [
+        "2026-06-03 22:00:00 event=latency-layer-status "
+        "status=create-swapchain pid=123 count=1 live_swapchain_count=2 "
+        "device=0x1 swapchain=0x2 old_swapchain=0x9 min_image_count=3 "
+        "image_width=3840 image_height=2160 image_format=44 present_mode=0 "
+        "present_mode_name=IMMEDIATE swapchain_latency_mode=True"
+    ]
+
+
 def test_latency_telemetry_logger_formats_recovery_status_events() -> None:
     logs: list[str] = []
     logger = LatencyTelemetryLogger(
@@ -371,6 +407,55 @@ def test_latency_telemetry_logger_formats_recovery_disable_status_event() -> Non
         "device=0x1 swapchain=0x2 has_latency_sleep_mode=True "
         "low_latency_mode=False low_latency_boost=False minimum_interval_us=0 "
         "driver_report_duplicate_count=840 present_count=2048"
+    ]
+
+
+def test_latency_telemetry_logger_formats_flow_status_event() -> None:
+    logs: list[str] = []
+    logger = LatencyTelemetryLogger(
+        log=logs.append,
+        time_strftime=lambda _format: "2026-06-03 22:00:00",
+    )
+
+    logger._log_status(
+        {
+            "type": "status",
+            "event": "latency-stream-stale",
+            "pid": 123,
+            "count": 1,
+            "result": 1,
+            "device": "0x1",
+            "swapchain": "0x2",
+            "queue": "0x3",
+            "queue_type": 2,
+            "sleep_value": 99,
+            "live_swapchain_count": 1,
+            "swapchain_latency_mode": True,
+            "present_count": 512,
+            "last_vulkan_present_id": 510,
+            "latest_marker_present_id": 512,
+            "last_input_sample_present_id": 511,
+            "last_simulation_present_id": 512,
+            "last_render_submit_present_id": 512,
+            "last_present_marker_present_id": 512,
+            "last_oob_render_submit_present_id": 512,
+            "last_oob_present_present_id": 512,
+            "last_driver_report_present_id": 470,
+            "driver_report_duplicate_count": 240,
+            "marker_count": 4096,
+        }
+    )
+
+    assert logs == [
+        "2026-06-03 22:00:00 event=latency-layer-status "
+        "status=latency-stream-stale pid=123 count=1 live_swapchain_count=1 result=1 "
+        "device=0x1 swapchain=0x2 queue=0x3 queue_type=2 sleep_value=99 "
+        "swapchain_latency_mode=True driver_report_duplicate_count=240 present_count=512 "
+        "last_vulkan_present_id=510 latest_marker_present_id=512 "
+        "last_input_sample_present_id=511 last_simulation_present_id=512 "
+        "last_render_submit_present_id=512 last_present_marker_present_id=512 "
+        "last_oob_render_submit_present_id=512 last_oob_present_present_id=512 "
+        "last_driver_report_present_id=470 marker_count=4096"
     ]
 
 

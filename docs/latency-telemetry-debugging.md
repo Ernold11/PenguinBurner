@@ -199,6 +199,8 @@ Event names you may see (status): `create-instance`, `negotiate`,
 `get-device-proc-addr`, `create-device`, `create-swapchain`, `present`,
 `latency-marker`, `latency-marker-coverage`, `latency-timing-unavailable`,
 `latency-timing-empty`, `latency-sleep-mode-set`,
+`latency-sleep`, `latency-queue-out-of-band`, `latency-stream-stale`,
+`present-flow`,
 `latency-sleep-mode-reapplied-create`, `latency-recovery-disable-sleep-mode`,
 `latency-recovery-reapply-sleep-mode`, `latency-recovery-reset-sleep-mode-enter`,
 `latency-recovery-reset-sleep-mode`, `latency-recovery-unavailable`,
@@ -215,7 +217,14 @@ Event names you may see (status): `create-instance`, `negotiate`,
 | `latency-recovery-reset-sleep-mode-enter` / `latency-recovery-reset-sleep-mode` | Only emitted when `PENGUIN_BURNER_LATENCY_RECOVERY_RESET=1` is set. This crash-test path calls `vkSetLatencySleepModeNV(..., nullptr)` before replaying the saved state. If `*-enter` is the final line before the game exits, the reset call did not return. |
 | `latency-sleep-mode-reapplied-create` | A new swapchain was created after the game had already set Reflex sleep mode, so the layer replayed that state immediately after creation. |
 | `latency-recovery-unavailable` | Stale recovery wanted to run, but no prior sleep-mode state or no `vkSetLatencySleepModeNV` function was available. The meter should keep treating Reflex as stale. |
+| `latency-stream-stale` | Snapshot emitted at the stale threshold before recovery. Compare `present_count`, `last_vulkan_present_id`, latest marker IDs, and `last_driver_report_present_id` to see which side stopped advancing. |
+| `latency-sleep` | `vkLatencySleepNV` was called. `sleep_value` is the timeline value passed by the game/VKD3D path. |
+| `latency-queue-out-of-band` | `vkQueueNotifyOutOfBandNV` was called. `queue_type` identifies render vs present out-of-band queue type. |
+| `present-flow` | Extra present snapshot emitted only with `PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1`; useful when checking whether Vulkan `VkPresentIdKHR` / `VkPresentId2KHR` IDs advance. |
+| `latest_marker_present_id` / `last_*_present_id` | Last Reflex marker IDs seen by the layer. If these advance past `last_driver_report_present_id`, the app/VKD3D side is still feeding markers but the driver report ring is stuck. |
+| `present_mode_name` | Vulkan swapchain present mode seen at creation (`IMMEDIATE`, `MAILBOX`, `FIFO`, `FIFO_RELAXED`, or `UNKNOWN`). Use this to verify `VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE` actually reached VKD3D. |
 | `swapchain_latency_mode` | Whether `VkSwapchainLatencyCreateInfoNV(latencyModeEnable=true)` was visible on `vkCreateSwapchainKHR`. If false, layer ordering may hide the DXVK-NVAPI create-info patch from this observer. |
+| `live_swapchain_count` | Number of live Vulkan swapchains for the device after the lifecycle event or at the flow snapshot. If this rises above 1 around the stale point, VKD3D-Proton's multi-swapchain Reflex guard is a likely trigger. |
 | `gpu_render_us` | The headline metric: per-frame GPU render time = `gpu_render_end_us - gpu_render_start_us`. This is the adaptive control signal (target ~16.6 ms). |
 | `gpu_render_start_us` / `gpu_render_end_us` | Raw driver timestamps. **If both are persistently 0**, the driver isn't filling them on this stack and `gpu_render_us` will be 0 / `gpu-render-p95=n/a`; `render-submit-p95` can be logged as a weaker diagnostic, but it is not the same pre-frame-generation GPU render metric. |
 | `quality` | Confidence ladder (low→high): `present-frametime` < `driver-timing`/`reflex-marker*` < `reflex-render-submit` < `reflex-input-present`. |

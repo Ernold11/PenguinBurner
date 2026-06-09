@@ -33,6 +33,7 @@ constexpr const char* kLayerName = "VK_LAYER_PENGUINBURNER_latency";
 constexpr const char* kSocketEnv = "PENGUIN_BURNER_LATENCY_SOCKET";
 constexpr const char* kEnableEnv = "PENGUIN_BURNER_LATENCY_LAYER";
 constexpr const char* kRecoveryResetEnv = "PENGUIN_BURNER_LATENCY_RECOVERY_RESET";
+constexpr const char* kDebugFlowEnv = "PENGUIN_BURNER_LATENCY_DEBUG_FLOW";
 constexpr uint64_t kStaleRecoveryDuplicateThreshold = 240;
 constexpr uint64_t kStaleRecoveryDuplicateInterval = 600;
 
@@ -116,6 +117,11 @@ bool env_flag_enabled(const char* name) {
     return std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0
         && std::strcmp(value, "False") != 0 && std::strcmp(value, "no") != 0
         && std::strcmp(value, "off") != 0;
+}
+
+bool debug_flow_enabled() {
+    static const bool enabled = env_flag_enabled(kDebugFlowEnv);
+    return enabled;
 }
 
 class TelemetrySocket {
@@ -210,6 +216,26 @@ struct DeviceTelemetryFlags {
     uint64_t marker_count = 0;
 };
 
+struct FlowSnapshot {
+    bool advertised = false;
+    bool requested = false;
+    bool functions_available = false;
+    bool swapchain_latency_mode = false;
+    uint64_t marker_count = 0;
+    uint64_t live_swapchain_count = 0;
+    uint64_t present_count = 0;
+    uint64_t last_vulkan_present_id = 0;
+    uint64_t latest_marker_present_id = 0;
+    uint64_t last_input_sample_present_id = 0;
+    uint64_t last_simulation_present_id = 0;
+    uint64_t last_render_submit_present_id = 0;
+    uint64_t last_present_marker_present_id = 0;
+    uint64_t last_oob_render_submit_present_id = 0;
+    uint64_t last_oob_present_present_id = 0;
+    uint64_t last_driver_report_present_id = 0;
+    uint64_t driver_report_duplicate_count = 0;
+};
+
 struct MarkerTiming {
     uint32_t bits = 0;
     uint64_t input_sample_us = 0;
@@ -243,6 +269,8 @@ struct QueueContext {
     VkQueueFlags queue_flags = 0;
     uint32_t timestamp_valid_bits = 0;
     uint64_t present_count = 0;
+    uint64_t out_of_band_notify_count = 0;
+    int last_out_of_band_queue_type = -1;
 };
 
 struct InstanceContext {
@@ -270,8 +298,10 @@ struct DeviceContext {
     PFN_vkDestroySwapchainKHR destroy_swapchain_khr = nullptr;
     PFN_vkQueuePresentKHR queue_present_khr = nullptr;
     PFN_vkSetLatencySleepModeNV set_latency_sleep_mode_nv = nullptr;
+    PFN_vkLatencySleepNV latency_sleep_nv = nullptr;
     PFN_vkSetLatencyMarkerNV set_latency_marker_nv = nullptr;
     PFN_vkGetLatencyTimingsNV get_latency_timings_nv = nullptr;
+    PFN_vkQueueNotifyOutOfBandNV queue_notify_out_of_band_nv = nullptr;
     VkPhysicalDeviceProperties physical_device_properties{};
     std::vector<VkQueueFamilyProperties> queue_family_properties;
     bool low_latency_extension_advertised = false;
@@ -283,7 +313,14 @@ struct DeviceContext {
     VkLatencySleepModeInfoNV latency_sleep_mode_info{};
     uint64_t latency_sleep_mode_set_count = 0;
     uint64_t latency_sleep_mode_reapply_count = 0;
+    uint64_t latency_sleep_count = 0;
     MarkerCounts marker_counts{};
+    uint64_t last_input_sample_present_id = 0;
+    uint64_t last_simulation_present_id = 0;
+    uint64_t last_render_submit_present_id = 0;
+    uint64_t last_present_marker_present_id = 0;
+    uint64_t last_oob_render_submit_present_id = 0;
+    uint64_t last_oob_present_present_id = 0;
     std::unordered_map<uint64_t, uint32_t> marker_bits_by_present_id;
     std::unordered_map<uint64_t, MarkerTiming> marker_timings_by_present_id;
     std::vector<uint64_t> marker_order;
@@ -291,6 +328,7 @@ struct DeviceContext {
 
 struct SwapchainContext {
     VkDevice device = VK_NULL_HANDLE;
+    bool swapchain_latency_mode = false;
     uint64_t last_gpu_render_end_us = 0;
     uint64_t last_present_id = 0;
     uint64_t timing_sample_count = 0;
@@ -299,6 +337,7 @@ struct SwapchainContext {
     uint64_t last_emitted_present_id = 0;
     uint64_t duplicate_driver_report_count = 0;
     uint64_t present_count = 0;
+    uint64_t last_vulkan_present_id = 0;
     uint64_t last_present_us = 0;
     uint64_t timing_unavailable_count = 0;
     uint64_t timing_empty_count = 0;
@@ -319,6 +358,16 @@ std::atomic<bool> g_reported_create_instance_enter{false};
 
 bool should_report_counter(uint64_t count) {
     return count <= 3 || (count % 600) == 0;
+}
+
+uint64_t live_swapchain_count_locked(VkDevice device) {
+    uint64_t count = 0;
+    for (const auto& entry : g_swapchains) {
+        if (entry.second.device == device) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 DeviceTelemetryFlags device_telemetry_flags(VkDevice device) {
@@ -366,6 +415,53 @@ bool swapchain_latency_mode_enabled(const VkSwapchainCreateInfoKHR* create_info)
     return false;
 }
 
+const char* present_mode_name(VkPresentModeKHR present_mode) {
+    switch (present_mode) {
+        case VK_PRESENT_MODE_IMMEDIATE_KHR:
+            return "IMMEDIATE";
+        case VK_PRESENT_MODE_MAILBOX_KHR:
+            return "MAILBOX";
+        case VK_PRESENT_MODE_FIFO_KHR:
+            return "FIFO";
+        case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
+            return "FIFO_RELAXED";
+#ifdef VK_KHR_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME
+        case VK_PRESENT_MODE_FIFO_LATEST_READY_KHR:
+            return "FIFO_LATEST_READY";
+#endif
+        default:
+            return "UNKNOWN";
+    }
+}
+
+uint64_t present_id_for_swapchain(
+    const VkPresentInfoKHR* present_info,
+    uint32_t swapchain_index) {
+    if (!present_info || swapchain_index >= present_info->swapchainCount) {
+        return 0;
+    }
+
+    auto* current =
+        reinterpret_cast<const VkBaseInStructure*>(present_info->pNext);
+    while (current) {
+        if (current->sType == VK_STRUCTURE_TYPE_PRESENT_ID_KHR) {
+            auto* present_id = reinterpret_cast<const VkPresentIdKHR*>(current);
+            if (present_id->pPresentIds
+                && swapchain_index < present_id->swapchainCount) {
+                return present_id->pPresentIds[swapchain_index];
+            }
+        } else if (current->sType == VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR) {
+            auto* present_id = reinterpret_cast<const VkPresentId2KHR*>(current);
+            if (present_id->pPresentIds
+                && swapchain_index < present_id->swapchainCount) {
+                return present_id->pPresentIds[swapchain_index];
+            }
+        }
+        current = reinterpret_cast<const VkBaseInStructure*>(current->pNext);
+    }
+    return 0;
+}
+
 void send_status_event(
     const char* event,
     VkDevice device,
@@ -403,6 +499,8 @@ void send_swapchain_event(
     VkDevice device,
     VkSwapchainKHR swapchain,
     const VkSwapchainCreateInfoKHR* create_info,
+    uint64_t live_swapchain_count,
+    bool latency_mode_enabled,
     DeviceTelemetryFlags flags) {
     const VkSwapchainKHR old_swapchain =
         create_info ? create_info->oldSwapchain : VK_NULL_HANDLE;
@@ -410,9 +508,9 @@ void send_swapchain_event(
     const uint32_t image_width = create_info ? create_info->imageExtent.width : 0;
     const uint32_t image_height = create_info ? create_info->imageExtent.height : 0;
     const int image_format = create_info ? static_cast<int>(create_info->imageFormat) : 0;
-    const int present_mode = create_info ? static_cast<int>(create_info->presentMode) : 0;
-    const bool latency_mode_enabled = swapchain_latency_mode_enabled(create_info);
-
+    const int present_mode = create_info ? static_cast<int>(create_info->presentMode) : -1;
+    const char* present_mode_label =
+        create_info ? present_mode_name(create_info->presentMode) : "UNKNOWN";
     char line[1024]{};
     int length = std::snprintf(
         line,
@@ -420,9 +518,9 @@ void send_swapchain_event(
         "{\"v\":1,\"type\":\"status\",\"event\":\"%s\",\"pid\":%ld,"
         "\"device\":\"0x%016" PRIx64 "\",\"swapchain\":\"0x%016" PRIx64 "\","
         "\"old_swapchain\":\"0x%016" PRIx64 "\","
-        "\"count\":1,"
+        "\"count\":1,\"live_swapchain_count\":%" PRIu64 ","
         "\"min_image_count\":%u,\"image_width\":%u,\"image_height\":%u,"
-        "\"image_format\":%d,\"present_mode\":%d,"
+        "\"image_format\":%d,\"present_mode\":%d,\"present_mode_name\":\"%s\","
         "\"swapchain_latency_mode\":%s,"
         "\"vk_nv_low_latency2_advertised\":%s,"
         "\"vk_nv_low_latency2_requested\":%s,"
@@ -433,11 +531,13 @@ void send_swapchain_event(
         handle_to_u64(device),
         handle_to_u64(swapchain),
         handle_to_u64(old_swapchain),
+        live_swapchain_count,
         min_image_count,
         image_width,
         image_height,
         image_format,
         present_mode,
+        present_mode_label,
         latency_mode_enabled ? "true" : "false",
         flags.advertised ? "true" : "false",
         flags.requested ? "true" : "false",
@@ -492,6 +592,115 @@ void send_latency_sleep_mode_event(
         flags.requested ? "true" : "false",
         flags.functions_available ? "true" : "false",
         flags.marker_count);
+
+    if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
+        g_socket.send_line(line, static_cast<size_t>(length));
+    }
+}
+
+FlowSnapshot flow_snapshot(VkDevice device, VkSwapchainKHR swapchain) {
+    FlowSnapshot snapshot{};
+    std::lock_guard lock(g_mutex);
+
+    auto device_it = g_devices.find(device);
+    if (device_it != g_devices.end()) {
+        const auto& context = device_it->second;
+        snapshot.advertised = context.low_latency_extension_advertised;
+        snapshot.requested = context.low_latency_extension_requested;
+        snapshot.functions_available = context.low_latency_functions_available;
+        snapshot.marker_count = context.marker_count;
+        snapshot.live_swapchain_count = live_swapchain_count_locked(device);
+        snapshot.latest_marker_present_id = context.latest_marker_present_id;
+        snapshot.last_input_sample_present_id = context.last_input_sample_present_id;
+        snapshot.last_simulation_present_id = context.last_simulation_present_id;
+        snapshot.last_render_submit_present_id =
+            context.last_render_submit_present_id;
+        snapshot.last_present_marker_present_id =
+            context.last_present_marker_present_id;
+        snapshot.last_oob_render_submit_present_id =
+            context.last_oob_render_submit_present_id;
+        snapshot.last_oob_present_present_id =
+            context.last_oob_present_present_id;
+    }
+
+    auto swapchain_it = g_swapchains.find(swapchain);
+    if (swapchain_it != g_swapchains.end()) {
+        const auto& context = swapchain_it->second;
+        snapshot.swapchain_latency_mode = context.swapchain_latency_mode;
+        snapshot.present_count = context.present_count;
+        snapshot.last_vulkan_present_id = context.last_vulkan_present_id;
+        snapshot.last_driver_report_present_id =
+            context.last_driver_report_present_id;
+        snapshot.driver_report_duplicate_count =
+            context.duplicate_driver_report_count;
+    }
+
+    return snapshot;
+}
+
+void send_flow_state_event(
+    const char* event,
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    VkQueue queue,
+    uint64_t count,
+    VkResult result,
+    int queue_type,
+    uint64_t sleep_value,
+    const FlowSnapshot& snapshot) {
+    char line[1600]{};
+    int length = std::snprintf(
+        line,
+        sizeof(line),
+        "{\"v\":1,\"type\":\"status\",\"event\":\"%s\",\"pid\":%ld,"
+        "\"device\":\"0x%016" PRIx64 "\","
+        "\"swapchain\":\"0x%016" PRIx64 "\","
+        "\"queue\":\"0x%016" PRIx64 "\","
+        "\"count\":%" PRIu64 ",\"result\":%d,"
+        "\"queue_type\":%d,\"sleep_value\":%" PRIu64 ","
+        "\"live_swapchain_count\":%" PRIu64 ","
+        "\"swapchain_latency_mode\":%s,"
+        "\"present_count\":%" PRIu64 ","
+        "\"last_vulkan_present_id\":%" PRIu64 ","
+        "\"latest_marker_present_id\":%" PRIu64 ","
+        "\"last_input_sample_present_id\":%" PRIu64 ","
+        "\"last_simulation_present_id\":%" PRIu64 ","
+        "\"last_render_submit_present_id\":%" PRIu64 ","
+        "\"last_present_marker_present_id\":%" PRIu64 ","
+        "\"last_oob_render_submit_present_id\":%" PRIu64 ","
+        "\"last_oob_present_present_id\":%" PRIu64 ","
+        "\"last_driver_report_present_id\":%" PRIu64 ","
+        "\"driver_report_duplicate_count\":%" PRIu64 ","
+        "\"vk_nv_low_latency2_advertised\":%s,"
+        "\"vk_nv_low_latency2_requested\":%s,"
+        "\"vk_nv_low_latency2_functions\":%s,"
+        "\"marker_count\":%" PRIu64 "}",
+        event,
+        static_cast<long>(::getpid()),
+        handle_to_u64(device),
+        handle_to_u64(swapchain),
+        handle_to_u64(queue),
+        count,
+        static_cast<int>(result),
+        queue_type,
+        sleep_value,
+        snapshot.live_swapchain_count,
+        snapshot.swapchain_latency_mode ? "true" : "false",
+        snapshot.present_count,
+        snapshot.last_vulkan_present_id,
+        snapshot.latest_marker_present_id,
+        snapshot.last_input_sample_present_id,
+        snapshot.last_simulation_present_id,
+        snapshot.last_render_submit_present_id,
+        snapshot.last_present_marker_present_id,
+        snapshot.last_oob_render_submit_present_id,
+        snapshot.last_oob_present_present_id,
+        snapshot.last_driver_report_present_id,
+        snapshot.driver_report_duplicate_count,
+        snapshot.advertised ? "true" : "false",
+        snapshot.requested ? "true" : "false",
+        snapshot.functions_available ? "true" : "false",
+        snapshot.marker_count);
 
     if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
         g_socket.send_line(line, static_cast<size_t>(length));
@@ -793,43 +1002,54 @@ void record_marker(
         switch (marker_info->marker) {
             case VK_LATENCY_MARKER_SIMULATION_START_NV:
                 context.marker_counts.simulation_start++;
+                context.last_simulation_present_id = marker_info->presentID;
                 timing.sim_start_us = marker_time_us;
                 break;
             case VK_LATENCY_MARKER_SIMULATION_END_NV:
                 context.marker_counts.simulation_end++;
+                context.last_simulation_present_id = marker_info->presentID;
                 timing.sim_end_us = marker_time_us;
                 break;
             case VK_LATENCY_MARKER_RENDERSUBMIT_START_NV:
                 context.marker_counts.render_submit_start++;
+                context.last_render_submit_present_id = marker_info->presentID;
                 timing.render_submit_start_us = marker_time_us;
                 break;
             case VK_LATENCY_MARKER_RENDERSUBMIT_END_NV:
                 context.marker_counts.render_submit_end++;
+                context.last_render_submit_present_id = marker_info->presentID;
                 timing.render_submit_end_us = marker_time_us;
                 break;
             case VK_LATENCY_MARKER_PRESENT_START_NV:
                 context.marker_counts.present_start++;
+                context.last_present_marker_present_id = marker_info->presentID;
                 timing.present_start_us = marker_time_us;
                 break;
             case VK_LATENCY_MARKER_PRESENT_END_NV:
                 context.marker_counts.present_end++;
+                context.last_present_marker_present_id = marker_info->presentID;
                 timing.present_end_us = marker_time_us;
                 break;
             case VK_LATENCY_MARKER_INPUT_SAMPLE_NV:
                 context.marker_counts.input_sample++;
+                context.last_input_sample_present_id = marker_info->presentID;
                 timing.input_sample_us = marker_time_us;
                 break;
             case VK_LATENCY_MARKER_OUT_OF_BAND_RENDERSUBMIT_START_NV:
                 context.marker_counts.out_of_band_render_submit_start++;
+                context.last_oob_render_submit_present_id = marker_info->presentID;
                 break;
             case VK_LATENCY_MARKER_OUT_OF_BAND_RENDERSUBMIT_END_NV:
                 context.marker_counts.out_of_band_render_submit_end++;
+                context.last_oob_render_submit_present_id = marker_info->presentID;
                 break;
             case VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_START_NV:
                 context.marker_counts.out_of_band_present_start++;
+                context.last_oob_present_present_id = marker_info->presentID;
                 break;
             case VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_END_NV:
                 context.marker_counts.out_of_band_present_end++;
+                context.last_oob_present_present_id = marker_info->presentID;
                 break;
             default:
                 break;
@@ -1182,6 +1402,17 @@ void maybe_recover_stale_latency_stream(VkDevice device, VkSwapchainKHR swapchai
             };
         }
     }
+
+    send_flow_state_event(
+        "latency-stream-stale",
+        device,
+        swapchain,
+        VK_NULL_HANDLE,
+        attempt_count,
+        VK_NOT_READY,
+        -1,
+        0,
+        flow_snapshot(device, swapchain));
 
     if (!set_latency_sleep_mode || !has_sleep_mode_info) {
         send_latency_sleep_mode_event(
@@ -1610,10 +1841,15 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
     context.set_latency_sleep_mode_nv =
         reinterpret_cast<PFN_vkSetLatencySleepModeNV>(
             next_get_device_proc_addr(*device, "vkSetLatencySleepModeNV"));
+    context.latency_sleep_nv = reinterpret_cast<PFN_vkLatencySleepNV>(
+        next_get_device_proc_addr(*device, "vkLatencySleepNV"));
     context.set_latency_marker_nv = reinterpret_cast<PFN_vkSetLatencyMarkerNV>(
         next_get_device_proc_addr(*device, "vkSetLatencyMarkerNV"));
     context.get_latency_timings_nv = reinterpret_cast<PFN_vkGetLatencyTimingsNV>(
         next_get_device_proc_addr(*device, "vkGetLatencyTimingsNV"));
+    context.queue_notify_out_of_band_nv =
+        reinterpret_cast<PFN_vkQueueNotifyOutOfBandNV>(
+            next_get_device_proc_addr(*device, "vkQueueNotifyOutOfBandNV"));
     if (instance_context.get_physical_device_properties) {
         instance_context.get_physical_device_properties(
             physical_device,
@@ -1759,11 +1995,15 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_swapchain_khr(
 
     VkResult result =
         next_create_swapchain(device, create_info, allocator, swapchain);
+    const bool latency_mode_enabled = swapchain_latency_mode_enabled(create_info);
+    uint64_t live_swapchain_count = 0;
     if (result == VK_SUCCESS && swapchain) {
         std::lock_guard lock(g_mutex);
         SwapchainContext context{};
         context.device = device;
+        context.swapchain_latency_mode = latency_mode_enabled;
         g_swapchains[*swapchain] = context;
+        live_swapchain_count = live_swapchain_count_locked(device);
     }
     if (result == VK_SUCCESS && swapchain) {
         send_swapchain_event(
@@ -1771,6 +2011,8 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_swapchain_khr(
             device,
             *swapchain,
             create_info,
+            live_swapchain_count,
+            latency_mode_enabled,
             device_telemetry_flags(device));
         reapply_latency_sleep_mode(
             "latency-sleep-mode-reapplied-create",
@@ -1799,15 +2041,25 @@ VKAPI_ATTR void VKAPI_CALL layer_destroy_swapchain_khr(
         next_destroy_swapchain(device, swapchain, allocator);
     }
 
-    send_status_event(
+    bool latency_mode_enabled = false;
+    uint64_t live_swapchain_count = 0;
+    {
+        std::lock_guard lock(g_mutex);
+        auto swapchain_it = g_swapchains.find(swapchain);
+        if (swapchain_it != g_swapchains.end()) {
+            latency_mode_enabled = swapchain_it->second.swapchain_latency_mode;
+            g_swapchains.erase(swapchain_it);
+        }
+        live_swapchain_count = live_swapchain_count_locked(device);
+    }
+    send_swapchain_event(
         "destroy-swapchain",
         device,
         swapchain,
-        1,
+        nullptr,
+        live_swapchain_count,
+        latency_mode_enabled,
         device_telemetry_flags(device));
-
-    std::lock_guard lock(g_mutex);
-    g_swapchains.erase(swapchain);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
@@ -1836,6 +2088,8 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
         const uint64_t present_time_us = now_monotonic_us();
         for (uint32_t i = 0; i < present_info->swapchainCount; ++i) {
             VkSwapchainKHR swapchain = present_info->pSwapchains[i];
+            const uint64_t vulkan_present_id =
+                present_id_for_swapchain(present_info, i);
             uint64_t present_count = 0;
             uint64_t present_frametime_us = 0;
             {
@@ -1844,6 +2098,10 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
                 if (swapchain_it != g_swapchains.end()) {
                     auto& swapchain_context = swapchain_it->second;
                     present_count = ++swapchain_context.present_count;
+                    if (vulkan_present_id) {
+                        swapchain_context.last_vulkan_present_id =
+                            vulkan_present_id;
+                    }
                     if (swapchain_context.last_present_us
                         && present_time_us > swapchain_context.last_present_us) {
                         present_frametime_us =
@@ -1859,6 +2117,18 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
                     swapchain,
                     present_count,
                     device_telemetry_flags(device));
+            }
+            if (debug_flow_enabled() && should_report_counter(present_count)) {
+                send_flow_state_event(
+                    "present-flow",
+                    device,
+                    swapchain,
+                    queue,
+                    present_count,
+                    result,
+                    -1,
+                    0,
+                    flow_snapshot(device, swapchain));
             }
             // Present-pacing FPS works without Reflex; emit it for every present.
             if (present_frametime_us) {
@@ -1932,6 +2202,42 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_set_latency_sleep_mode_nv(
     return result;
 }
 
+VKAPI_ATTR VkResult VKAPI_CALL layer_latency_sleep_nv(
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    const VkLatencySleepInfoNV* sleep_info) {
+    PFN_vkLatencySleepNV next_latency_sleep = nullptr;
+    uint64_t count = 0;
+    {
+        std::lock_guard lock(g_mutex);
+        auto it = g_devices.find(device);
+        if (it != g_devices.end()) {
+            next_latency_sleep = it->second.latency_sleep_nv;
+            count = ++it->second.latency_sleep_count;
+        }
+    }
+
+    VkResult result = VK_ERROR_EXTENSION_NOT_PRESENT;
+    if (next_latency_sleep) {
+        result = next_latency_sleep(device, swapchain, sleep_info);
+    }
+
+    if (debug_flow_enabled() || should_report_counter(count)) {
+        send_flow_state_event(
+            "latency-sleep",
+            device,
+            swapchain,
+            VK_NULL_HANDLE,
+            count,
+            result,
+            -1,
+            sleep_info ? sleep_info->value : 0,
+            flow_snapshot(device, swapchain));
+    }
+
+    return result;
+}
+
 VKAPI_ATTR void VKAPI_CALL layer_set_latency_marker_nv(
     VkDevice device,
     VkSwapchainKHR swapchain,
@@ -1949,6 +2255,48 @@ VKAPI_ATTR void VKAPI_CALL layer_set_latency_marker_nv(
         next_set_latency_marker(device, swapchain, marker_info);
     }
     record_marker(device, swapchain, marker_info);
+}
+
+VKAPI_ATTR void VKAPI_CALL layer_queue_notify_out_of_band_nv(
+    VkQueue queue,
+    const VkOutOfBandQueueTypeInfoNV* queue_type_info) {
+    VkDevice device = VK_NULL_HANDLE;
+    PFN_vkQueueNotifyOutOfBandNV next_queue_notify = nullptr;
+    uint64_t count = 0;
+    int queue_type = queue_type_info
+        ? static_cast<int>(queue_type_info->queueType)
+        : -1;
+    {
+        std::lock_guard lock(g_mutex);
+        auto queue_it = g_queues.find(queue);
+        if (queue_it != g_queues.end()) {
+            auto& queue_context = queue_it->second;
+            device = queue_context.device;
+            count = ++queue_context.out_of_band_notify_count;
+            queue_context.last_out_of_band_queue_type = queue_type;
+            auto device_it = g_devices.find(device);
+            if (device_it != g_devices.end()) {
+                next_queue_notify = device_it->second.queue_notify_out_of_band_nv;
+            }
+        }
+    }
+
+    if (next_queue_notify) {
+        next_queue_notify(queue, queue_type_info);
+    }
+
+    if (debug_flow_enabled() || should_report_counter(count)) {
+        send_flow_state_event(
+            "latency-queue-out-of-band",
+            device,
+            VK_NULL_HANDLE,
+            queue,
+            count,
+            next_queue_notify ? VK_SUCCESS : VK_ERROR_EXTENSION_NOT_PRESENT,
+            queue_type,
+            0,
+            flow_snapshot(device, VK_NULL_HANDLE));
+    }
 }
 
 VKAPI_ATTR void VKAPI_CALL layer_get_latency_timings_nv(
@@ -2052,12 +2400,19 @@ VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* name) {
         return reinterpret_cast<PFN_vkVoidFunction>(
             layer_set_latency_sleep_mode_nv);
     }
+    if (std::strcmp(name, "vkLatencySleepNV") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(layer_latency_sleep_nv);
+    }
     if (std::strcmp(name, "vkSetLatencyMarkerNV") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(layer_set_latency_marker_nv);
     }
     if (std::strcmp(name, "vkGetLatencyTimingsNV") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(
             layer_get_latency_timings_nv);
+    }
+    if (std::strcmp(name, "vkQueueNotifyOutOfBandNV") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(
+            layer_queue_notify_out_of_band_nv);
     }
 
     std::lock_guard lock(g_mutex);
@@ -2103,12 +2458,19 @@ VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* name) {
         return reinterpret_cast<PFN_vkVoidFunction>(
             layer_set_latency_sleep_mode_nv);
     }
+    if (std::strcmp(name, "vkLatencySleepNV") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(layer_latency_sleep_nv);
+    }
     if (std::strcmp(name, "vkSetLatencyMarkerNV") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(layer_set_latency_marker_nv);
     }
     if (std::strcmp(name, "vkGetLatencyTimingsNV") == 0) {
         return reinterpret_cast<PFN_vkVoidFunction>(
             layer_get_latency_timings_nv);
+    }
+    if (std::strcmp(name, "vkQueueNotifyOutOfBandNV") == 0) {
+        return reinterpret_cast<PFN_vkVoidFunction>(
+            layer_queue_notify_out_of_band_nv);
     }
 
     std::lock_guard lock(g_mutex);
