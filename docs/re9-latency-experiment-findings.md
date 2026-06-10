@@ -683,12 +683,29 @@ raw_driver_timestamp_samples=0
 distinct_gpu_render_us=0
 ```
 
-With frame generation set to x3, `present-fps=54` maps to about 162 generated /
-displayed FPS. That strongly indicates `present-frametime-p95` / `present-fps`
-is the pre-frame-generation base-frame cadence. It is usable for adaptive
-profile pacing, but it must be labeled separately from GPU render latency
-because it includes CPU/game/pacing/GPU time and cannot prove the frame was
-GPU-bound.
+With frame generation set to x3, a static scene showed `present-fps=54`, which
+maps to about 162 generated / displayed FPS. That made the slow-tail present
+cadence look like the pre-frame-generation base-frame cadence for this
+RE9/NVIDIA stack.
+
+A later mouse/camera-motion test exposed the limitation: median/average present
+cadence can jump to generated/output FPS as soon as motion makes frame
+generation active. The PenguinBurner layer measures app-visible Vulkan
+`vkQueuePresentKHR` calls after the downstream present returns; this is not a
+guaranteed pre-frame-generation boundary.
+
+The meter therefore keeps the clean final line but defines `present-fps` as a
+base-cadence estimate, not median cadence. It uses `present-frametime-p95` while
+slow base intervals are visible. If camera motion makes the present stream flip
+to clean generated/output cadence, it compares raw cadence with the last stable
+base cadence and divides by an inferred 2x/3x/4x multiplier. If the first
+present-only window after startup is already high output cadence, `present-fps`
+stays `n/a` until marker/base evidence arrives. The same 3 second window also
+reports `raw-present-fps-avg`, `raw-present-fps-median`,
+`raw-present-fps-5pct-low`, and `raw-present-fps-1pct-low` for debugging. These
+raw numbers can become generated/output cadence during camera motion, so
+adaptive profile logic must use `present-fps` as the base-cadence estimate and
+must not consume the `raw-*` diagnostics as base FPS.
 
 ## Debugging
 

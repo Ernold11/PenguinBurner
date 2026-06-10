@@ -162,18 +162,26 @@ no markers, no MangoHud, and no game cooperation.
   interval per swapchain (`SwapchainContext::last_present_us`) and emits
   `send_present_pacing_sample` → `measurement=present-pacing
   quality=present-frametime present_frametime_us=<delta>`.
-- Receiver surfaces `present-frametime-p95` (hitch/tail) and `present-fps` (derived
-  from the **median** frametime via `_median_us`/`_format_fps`, so one stutter in
-  the p95 tail doesn't crater the rate).
-- **It counts *presented* frames**, so with DLSS3 frame generation it reflects
-  inflated presentation FPS, not the real rendered-frame cadence. It is tagged at
-  the lowest quality tier and must be treated as liveness/pacing, never as
-  input-bearing latency. Differentiation rule documented in
-  [latency-alternative-sources.md](./latency-alternative-sources.md) §5.
+- Receiver surfaces `present-frametime-p95` (hitch/tail) plus present cadence
+  stats over the 3 s meter window: `raw-present-fps-avg`,
+  `raw-present-fps-median`, `raw-present-fps-5pct-low`, and
+  `raw-present-fps-1pct-low`. `present-fps` is FPS from
+  `present-frametime-p95`, so the headline follows the slow/base-looking cadence
+  instead of median/output cadence when frame generation inserts presents. If
+  the stream flips to clean output cadence, the receiver deinterlaces
+  `present-fps` from raw cadence using the last stable base cadence and an
+  inferred 2x/3x/4x multiplier. The `raw-*` fields are diagnostics and must not
+  drive adaptive profile decisions.
+- It counts app-visible Vulkan presents at `vkQueuePresentKHR`. In RE9 with
+  NVIDIA frame generation x3, static scenes looked like base cadence, but
+  mouse/camera motion exposed generated/output cadence in the same stream. This
+  is still tagged at the lowest quality tier and must be treated as
+  liveness/pacing, never as input-bearing latency.
 
 Tested test-first on the receiver side; the layer change builds clean and was
 verified end-to-end over the socket on a no-GPU host
-(`present-frametime-p95=50.00ms present-fps=60` from synthetic samples).
+(`present-frametime-p95=50.00ms present-fps=20 raw-present-fps-avg=40` from
+synthetic samples with one slow frame).
 
 ---
 
@@ -204,7 +212,7 @@ verified end-to-end over the socket on a no-GPU host
   samples produced 3 per-frame raw lines and `gpu-render-p95=15.90ms` in the
   meter; a duplicate-count sample produced `quality=stale-driver-report ...
   gpu-render-p95=n/a`; present-pacing-only samples produced
-  `present-frametime-p95=50.00ms present-fps=60`.
+  `present-frametime-p95=50.00ms present-fps=20`.
 
 ## Live RE9 validation result
 

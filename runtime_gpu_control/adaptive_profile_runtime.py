@@ -90,7 +90,7 @@ class AdaptiveAutoUvRuntimeController:
             return None
         present_ms = None
         if isinstance(latency_snapshot, dict):
-            present_ms = latency_snapshot.get("present_frametime_p95_ms")
+            present_ms = latency_snapshot.get("base_present_frametime_p95_ms")
         decision = self.policy.update(
             present_frametime_p95_ms=present_ms,
             available_tiers=self.available_tiers,

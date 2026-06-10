@@ -87,13 +87,12 @@ def test_set_launch_options_in_localconfig_replaces_re9_only() -> None:
     assert changed
     assert RE9_PATCHED_LAUNCH_OPTIONS in updated
     assert (
-        "VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency,VK_LAYER_DXVK_NVAPI_reflex"
-        in updated
-    )
+        "VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency,"
+        "VK_LAYER_DXVK_NVAPI_reflex"
+    ) in updated
+    assert "native/latency_layer/build" in updated
     assert "third_party/dxvk-nvapi/build.layer" in updated
-    assert "PENGUIN_BURNER_LATENCY_QUERY_TIMINGS=0" in updated
-    assert "PENGUIN_BURNER_DXVK_NVAPI_TIMING_QUERY_INTERVAL=4" in updated
-    assert "PENGUIN_BURNER_DXVK_NVAPI_MAX_DRIVER_REPORT_LAG=240" in updated
+    assert "DXVK_NVAPI_VKREFLEX=1" in updated
     assert '"4180480"' in updated
     assert 'OTHER=1 %command%' in updated
 
@@ -130,7 +129,10 @@ def test_apply_patched_re9_setup_updates_files_and_writes_backups(tmp_path) -> N
     assert result.steam_config_backup.exists()
     assert check_launch_options(
         app_id=RE9_APP_ID,
-        required_tokens=RE9_PATCHED_EXTRA_TOKENS,
+        required_tokens=RE9_PATCHED_EXTRA_TOKENS
+        + (
+            "VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency,VK_LAYER_DXVK_NVAPI_reflex",
+        ),
         config_paths=[localconfig],
     ).ok
     assert check_compat_tool(
@@ -196,7 +198,10 @@ def test_apply_patched_re9_setup_waits_until_steam_exits(
     assert result.compat_tool_changed
     assert check_launch_options(
         app_id=RE9_APP_ID,
-        required_tokens=RE9_PATCHED_EXTRA_TOKENS,
+        required_tokens=RE9_PATCHED_EXTRA_TOKENS
+        + (
+            "VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency,VK_LAYER_DXVK_NVAPI_reflex",
+        ),
         config_paths=[localconfig],
     ).ok
 

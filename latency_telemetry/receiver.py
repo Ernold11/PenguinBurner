@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 import json
+import math
 import os
 import pwd
 from pathlib import Path
@@ -20,6 +21,7 @@ DXVK_NVAPI_VKREFLEX_SOURCE = "dxvk-nvapi-vkreflex"
 QUALITY_RANK = {
     "none": 0,
     "present-frametime": 1,
+    "base-frame-marker": 2,
     "driver-timing": 2,
     "reflex-marker-presence": 2,
     "reflex-marker-simulation": 2,
@@ -31,8 +33,18 @@ QUALITY_RANK = {
     "reflex-input-present": 5,
 }
 
-METER_SAMPLE_MAX_AGE_S = 5.0
+METER_LOG_INTERVAL_S = 3.0
+METER_SAMPLE_MAX_AGE_S = 3.0
+METER_MAX_SAMPLES = 4096
 STALE_DRIVER_REPORT_MAX_AGE_S = 30.0
+METER_MIN_PRESENT_SAMPLES = 4
+METER_UNSEEDED_PRESENT_FPS_MAX = 70.0
+METER_MARKER_FPS_MAX_PRESENT_RATIO = 1.25
+BASE_FRAME_MARKER_PRIORITY = (
+    "oob-present-start",
+    "present-start",
+    "rendersubmit-start",
+)
 
 
 def latency_socket_path(env: dict[str, str] | None = None) -> Path:
@@ -129,7 +141,10 @@ def _median_us(values: list[int]) -> int | None:
     values = sorted(value for value in values if value > 0)
     if not values:
         return None
-    return values[len(values) // 2]
+    mid = len(values) // 2
+    if len(values) % 2:
+        return values[mid]
+    return int(round((values[mid - 1] + values[mid]) / 2.0))
 
 
 def _format_ms(value_us: int | None) -> str:
@@ -138,12 +153,101 @@ def _format_ms(value_us: int | None) -> str:
     return f"{value_us / 1000.0:.2f}ms"
 
 
+def _format_fps_value(fps: float | None) -> str:
+    if not fps or fps <= 0:
+        return "n/a"
+    return f"{math.floor(fps + 0.5)}"
+
+
 def _format_fps(frametime_us: int | None) -> str:
-    # FPS from a typical (median) frametime, so a single hitch in the p95 tail
-    # does not crater the reported rate.
     if not frametime_us:
         return "n/a"
-    return f"{round(1_000_000 / frametime_us)}"
+    return _format_fps_value(1_000_000 / frametime_us)
+
+
+def _fps_from_frametime(frametime_us: int | None) -> float | None:
+    if not frametime_us:
+        return None
+    return 1_000_000 / frametime_us
+
+
+def _mean_fps(frametime_values_us: list[int]) -> float | None:
+    frametimes = [value for value in frametime_values_us if value > 0]
+    if not frametimes:
+        return None
+    return len(frametimes) * 1_000_000 / sum(frametimes)
+
+
+def _empty_present_fps_stats() -> dict[str, str]:
+    return {
+        "p95": "n/a",
+        "avg": "n/a",
+        "median": "n/a",
+        "5pct_low": "n/a",
+        "1pct_low": "n/a",
+    }
+
+
+def _present_fps_stats(frametime_values_us: list[int]) -> dict[str, str]:
+    frametimes = [value for value in frametime_values_us if value > 0]
+    if len(frametimes) < METER_MIN_PRESENT_SAMPLES:
+        return _empty_present_fps_stats()
+
+    def low_fps(percent: float) -> str:
+        slow_frame_count = max(1, math.ceil(len(frametimes) * percent))
+        slow_frametimes = sorted(frametimes, reverse=True)[:slow_frame_count]
+        slow_mean_frametime_us = sum(slow_frametimes) / slow_frame_count
+        return _format_fps_value(1_000_000 / slow_mean_frametime_us)
+
+    return {
+        "p95": _format_fps(_p95_us(frametimes)),
+        "avg": _format_fps_value(len(frametimes) * 1_000_000 / sum(frametimes)),
+        "median": _format_fps(_median_us(frametimes)),
+        "5pct_low": low_fps(0.05),
+        "1pct_low": low_fps(0.01),
+    }
+
+
+def _select_base_marker_frametime_p95(
+    samples: list[dict],
+    *,
+    raw_avg_fps: float | None,
+) -> int | None:
+    marker_frametimes: dict[str, list[int]] = {}
+    for sample in samples:
+        frametime_us = _int_value(sample.get("base_frame_frametime_us"))
+        if frametime_us <= 0:
+            continue
+        marker_name = str(sample.get("marker_name") or "unknown")
+        marker_frametimes.setdefault(marker_name, []).append(frametime_us)
+
+    def valid_p95(frametimes: list[int]) -> int | None:
+        if len(frametimes) < METER_MIN_PRESENT_SAMPLES:
+            return None
+        p95_us = _p95_us(frametimes)
+        marker_fps = _fps_from_frametime(p95_us)
+        if (
+            marker_fps is not None
+            and raw_avg_fps is not None
+            and marker_fps > raw_avg_fps * METER_MARKER_FPS_MAX_PRESENT_RATIO
+        ):
+            return None
+        return p95_us
+
+    for marker_name in BASE_FRAME_MARKER_PRIORITY:
+        p95_us = valid_p95(marker_frametimes.get(marker_name, []))
+        if p95_us is not None:
+            return p95_us
+
+    eligible_sources = [
+        (marker_name, frametimes, p95_us)
+        for marker_name, frametimes in marker_frametimes.items()
+        if (p95_us := valid_p95(frametimes)) is not None
+    ]
+    if not eligible_sources:
+        return None
+    eligible_sources.sort(key=lambda source: (-len(source[1]), source[0]))
+    return eligible_sources[0][2]
 
 
 def _int_value(value: object) -> int:
@@ -157,7 +261,7 @@ def _raw_timing_log_interval(env: dict[str, str] | None = None) -> float | None:
     env = os.environ if env is None else env
     value = str(env.get(RAW_TIMING_LOG_ENV) or "").strip()
     if not value:
-        return 1.0
+        return None
     if value.lower() in {"0", "false", "no", "off"}:
         return None
     if value.lower() in {"all", "always"}:
@@ -313,7 +417,7 @@ class LatencyTelemetryMeter:
     def __init__(
         self,
         *,
-        max_samples: int = 240,
+        max_samples: int = METER_MAX_SAMPLES,
         max_sample_age_s: float = METER_SAMPLE_MAX_AGE_S,
         stale_driver_report_max_age_s: float = STALE_DRIVER_REPORT_MAX_AGE_S,
         time_monotonic: Callable[[], float] = time.monotonic,
@@ -322,6 +426,8 @@ class LatencyTelemetryMeter:
         self._max_sample_age_s = float(max_sample_age_s)
         self._stale_driver_report_max_age_s = float(stale_driver_report_max_age_s)
         self._time_monotonic = time_monotonic
+        self._last_base_present_fps: float | None = None
+        self._last_framegen_multiplier: int | None = None
         self._last_ignored_driver_report: dict | None = None
         self._driver_report_present_ids: dict[tuple[object, ...], tuple[int, int]] = {}
 
@@ -388,8 +494,26 @@ class LatencyTelemetryMeter:
         render_present_p95 = snapshot["render_present_p95_us"]
         gpu_render_p95 = snapshot["gpu_render_p95_us"]
         present_frametime_p95 = snapshot["present_frametime_p95_us"]
-        present_fps = snapshot["present_fps"]
         latency_proxy_p95 = snapshot["latency_proxy_p95_us"]
+        present_fps = snapshot["present_fps"]
+        present_fps_stats = snapshot["raw_present_fps_stats"]
+        has_rich_latency_sample = any(
+            str(sample.get("measurement") or "")
+            not in {"present-pacing", "base-frame-marker-pacing"}
+            for sample in samples
+        )
+        if not has_rich_latency_sample and stale_driver_report is None:
+            return (
+                f"event=latency-meter pid={latest.get('pid', 'unknown')} "
+                f"quality={best_quality} samples={len(samples)} "
+                f"present-frametime-p95={_format_ms(present_frametime_p95)} "
+                f"present-fps={present_fps} "
+                f"raw-present-fps-avg={present_fps_stats['avg']} "
+                f"raw-present-fps-median={present_fps_stats['median']} "
+                f"raw-present-fps-5pct-low={present_fps_stats['5pct_low']} "
+                f"raw-present-fps-1pct-low={present_fps_stats['1pct_low']}"
+            )
+
         missing_hints = _missing_metric_hints(
             samples,
             input_present_p95=input_present_p95,
@@ -416,7 +540,11 @@ class LatencyTelemetryMeter:
             f"input-present-p95={_format_ms(input_present_p95)} "
             f"gpu-frame-p95={_format_ms(gpu_frame_p95)} "
             f"present-frametime-p95={_format_ms(present_frametime_p95)} "
-            f"present-fps={present_fps}"
+            f"present-fps={present_fps} "
+            f"raw-present-fps-avg={present_fps_stats['avg']} "
+            f"raw-present-fps-median={present_fps_stats['median']} "
+            f"raw-present-fps-5pct-low={present_fps_stats['5pct_low']} "
+            f"raw-present-fps-1pct-low={present_fps_stats['1pct_low']}"
             f"{stale_text}"
             f"{missing_text}"
         )
@@ -440,8 +568,35 @@ class LatencyTelemetryMeter:
         present_frametime_values = [
             _int_value(sample.get("present_frametime_us")) for sample in samples
         ]
-        present_frametime_p95 = _p95_us(present_frametime_values)
+        present_frametimes = [
+            value for value in present_frametime_values if value > 0
+        ]
+        present_frametime_p95 = (
+            _p95_us(present_frametimes)
+            if len(present_frametimes) >= METER_MIN_PRESENT_SAMPLES
+            else None
+        )
         present_median = _median_us(present_frametime_values)
+        present_fps_stats = _present_fps_stats(present_frametime_values)
+        raw_present_avg_fps = _mean_fps(present_frametimes)
+        marker_frametime_p95 = _select_base_marker_frametime_p95(
+            samples,
+            raw_avg_fps=raw_present_avg_fps,
+        )
+        if marker_frametime_p95 is not None:
+            base_present_frametime_p95 = marker_frametime_p95
+            present_fps_value = _fps_from_frametime(marker_frametime_p95)
+            self._last_base_present_fps = present_fps_value
+        else:
+            present_fps_value = self._estimate_base_present_fps(
+                p95_fps=_fps_from_frametime(present_frametime_p95),
+                raw_avg_fps=raw_present_avg_fps,
+            )
+            base_present_frametime_p95 = (
+                int(round(1_000_000 / present_fps_value))
+                if present_fps_value
+                else None
+            )
         return {
             "now": float(now),
             "samples": samples,
@@ -468,7 +623,18 @@ class LatencyTelemetryMeter:
                 if present_frametime_p95 is None
                 else float(present_frametime_p95) / 1000.0
             ),
-            "present_fps": _format_fps(present_median),
+            "present_fps": _format_fps_value(present_fps_value),
+            "present_fps_value": present_fps_value,
+            "base_present_fps": present_fps_value,
+            "base_present_frametime_p95_us": base_present_frametime_p95,
+            "base_present_frametime_p95_ms": (
+                None
+                if base_present_frametime_p95 is None
+                else float(base_present_frametime_p95) / 1000.0
+            ),
+            "raw_present_fps_stats": present_fps_stats,
+            "raw_present_fps_avg": raw_present_avg_fps,
+            "raw_present_fps_median": _format_fps(present_median),
         }
 
     def _stale_driver_report_age_s(self, latest: dict, *, now: float) -> float:
@@ -502,6 +668,47 @@ class LatencyTelemetryMeter:
             f"stale-age-s={age_s:.1f} missing=fresh-samples"
         )
 
+    def _estimate_base_present_fps(
+        self,
+        *,
+        p95_fps: float | None,
+        raw_avg_fps: float | None,
+    ) -> float | None:
+        if p95_fps is None:
+            return None
+
+        last_base = self._last_base_present_fps
+        if last_base is None and p95_fps > METER_UNSEEDED_PRESENT_FPS_MAX:
+            return None
+
+        inferred_multiplier = self._infer_framegen_multiplier(raw_avg_fps, last_base)
+        if inferred_multiplier is not None:
+            self._last_framegen_multiplier = inferred_multiplier
+
+        base_fps = p95_fps
+        if last_base is not None and p95_fps > last_base * 1.6 and raw_avg_fps:
+            multiplier = inferred_multiplier or self._last_framegen_multiplier
+            if multiplier is not None:
+                base_fps = raw_avg_fps / multiplier
+
+        self._last_base_present_fps = base_fps
+        return base_fps
+
+    @staticmethod
+    def _infer_framegen_multiplier(
+        raw_avg_fps: float | None,
+        last_base_fps: float | None,
+    ) -> int | None:
+        if not raw_avg_fps or not last_base_fps:
+            return None
+        ratio = raw_avg_fps / last_base_fps
+        nearest = int(round(ratio))
+        if nearest not in {2, 3, 4}:
+            return None
+        if abs(ratio - nearest) > 0.45:
+            return None
+        return nearest
+
 
 class LatencyTelemetryLogger:
     def __init__(
@@ -510,7 +717,7 @@ class LatencyTelemetryLogger:
         path: Path | None = None,
         paths: list[Path] | None = None,
         log: Callable[[str], None],
-        log_interval_s: float = 10.0,
+        log_interval_s: float = METER_LOG_INTERVAL_S,
         raw_log_interval_s: float | None = None,
         time_monotonic: Callable[[], float] = time.monotonic,
         time_strftime: Callable[[str], str] = time.strftime,
@@ -608,14 +815,11 @@ class LatencyTelemetryLogger:
                 continue
             if not isinstance(sample, dict):
                 continue
-            if sample.get("type") == "status":
-                self._log_status(sample)
-            else:
-                if sample.get("type") == "timing":
-                    sample = normalize_timing_sample(sample)
-                stored_sample = self.meter.add_sample(sample)
-                if stored_sample is not None:
-                    self._maybe_log_raw_timing(stored_sample)
+            if sample.get("type") != "timing":
+                continue
+            stored_sample = self.meter.add_sample(normalize_timing_sample(sample))
+            if stored_sample is not None:
+                self._maybe_log_raw_timing(stored_sample)
 
     def _maybe_log_summary(self) -> None:
         now = self.time_monotonic()
@@ -631,123 +835,23 @@ class LatencyTelemetryLogger:
         if sample.get("type") != "timing" or self.raw_log_interval_s is None:
             return
         now = self.time_monotonic()
-        always_log = str(sample.get("measurement") or "") == "driver-report"
         if (
-            not always_log
-            and self.raw_log_interval_s > 0
+            self.raw_log_interval_s > 0
             and now - self._last_raw_log_monotonic < self.raw_log_interval_s
         ):
             return
-        if not always_log:
-            self._last_raw_log_monotonic = now
+        self._last_raw_log_monotonic = now
         fields = [
             "event=latency-raw",
             f"pid={sample.get('pid', 'unknown')}",
         ]
         for key in (
-            "source",
             "measurement",
             "device",
-            "queue",
-            "queue_family",
             "swapchain",
-            "present_id",
-            "submit_sequence",
             "quality",
-            "sample_count",
-            "timing_count",
-            "driver_report_count",
-            "driver_report_duplicate_count",
-            "marker_bits",
-            "render_submit_us",
-            "render_present_us",
-            "input_to_present_us",
-            "gpu_frame_time_us",
-            "gpu_render_us",
-            "requested_present_id",
-            "driver_report_lag_frames",
-            "present_frametime_us",
-            "input_sample_us",
-            "sim_start_us",
-            "sim_end_us",
-            "render_submit_start_us",
-            "render_submit_end_us",
-            "present_start_us",
-            "present_end_us",
-            "driver_start_us",
-            "driver_end_us",
-            "os_render_queue_start_us",
-            "os_render_queue_end_us",
-            "gpu_render_start_us",
-            "gpu_render_end_us",
-        ):
-            if key in sample:
-                fields.append(f"{key}={sample[key]}")
-        self.log(f"{self.time_strftime('%Y-%m-%d %H:%M:%S')} {' '.join(fields)}")
-
-    def _log_status(self, sample: dict) -> None:
-        fields = [
-            "event=latency-layer-status",
-            f"status={sample.get('event', 'unknown')}",
-            f"pid={sample.get('pid', 'unknown')}",
-        ]
-        for key in (
-            "count",
-            "live_swapchain_count",
-            "result",
-            "device",
-            "swapchain",
-            "old_swapchain",
-            "queue",
-            "queue_family",
-            "queue_type",
-            "queue_flags",
-            "timestamp_valid_bits",
-            "sleep_value",
-            "min_image_count",
-            "image_width",
-            "image_height",
-            "image_format",
-            "present_mode",
-            "present_mode_name",
-            "swapchain_latency_mode",
-            "has_latency_sleep_mode",
-            "low_latency_mode",
-            "low_latency_boost",
-            "minimum_interval_us",
-            "driver_report_duplicate_count",
-            "driver_report_count",
-            "requested_present_id",
-            "first_driver_report_present_id",
-            "newest_driver_report_present_id",
-            "selected_driver_report_present_id",
-            "driver_report_lag_frames",
-            "timing_query_interval",
             "present_count",
-            "last_vulkan_present_id",
-            "latest_marker_present_id",
-            "last_input_sample_present_id",
-            "last_simulation_present_id",
-            "last_render_submit_present_id",
-            "last_present_marker_present_id",
-            "last_oob_render_submit_present_id",
-            "last_oob_present_present_id",
-            "last_driver_report_present_id",
-            "simulation_start",
-            "simulation_end",
-            "render_submit_start",
-            "render_submit_end",
-            "present_start",
-            "present_end",
-            "input_sample",
-            "out_of_band_render_submit_start",
-            "out_of_band_render_submit_end",
-            "out_of_band_present_start",
-            "out_of_band_present_end",
-            "vk_nv_low_latency2_advertised",
-            "vk_nv_low_latency2_requested",
-            "vk_nv_low_latency2_functions",
-            "marker_count",
+            "present_frametime_us",
         ):
             if key in sample:
                 fields.append(f"{key}={sample[key]}")

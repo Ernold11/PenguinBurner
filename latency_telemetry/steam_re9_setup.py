@@ -19,24 +19,26 @@ from .steam_launch_check import (
 )
 
 
-RE9_PATCHED_COMPAT_TOOL = "Proton-CachyOS PB-Re9-Reflex"
-RE9_PATCHED_EXTRA_TOKENS = ("VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1",)
-RE9_PATCHED_LAUNCH_OPTIONS = (
+RE9_PRESENT_COMPAT_TOOL = "Proton-CachyOS Latest"
+RE9_PRESENT_EXTRA_TOKENS = (
+    "PROTON_ENABLE_NVAPI=1",
+    "PROTON_HIDE_NVIDIA_GPU=0",
+    "DXVK_NVAPI_VKREFLEX=1",
+)
+RE9_PRESENT_LAUNCH_OPTIONS = (
     "PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock "
-    "VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/third_party/dxvk-nvapi/build.layer:/home/jp/PenguinBurner/native/latency_layer/build "
+    "VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/native/latency_layer/build:/home/jp/PenguinBurner/third_party/dxvk-nvapi/build.layer "
     "VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency,VK_LAYER_DXVK_NVAPI_reflex "
     "PENGUIN_BURNER_LATENCY_LAYER=1 "
-    "PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1 "
-    "PENGUIN_BURNER_LATENCY_QUERY_TIMINGS=0 "
-    "PENGUIN_BURNER_DXVK_NVAPI_TIMING_QUERY_INTERVAL=4 "
-    "PENGUIN_BURNER_DXVK_NVAPI_MAX_DRIVER_REPORT_LAG=240 "
-    "VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE "
-    "VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1 "
     "PROTON_ENABLE_NVAPI=1 "
     "PROTON_HIDE_NVIDIA_GPU=0 "
     "DXVK_NVAPI_VKREFLEX=1 "
     "gamemoderun %command% /WineDetectionEnabled:False"
 )
+
+RE9_PATCHED_COMPAT_TOOL = RE9_PRESENT_COMPAT_TOOL
+RE9_PATCHED_EXTRA_TOKENS = RE9_PRESENT_EXTRA_TOKENS
+RE9_PATCHED_LAUNCH_OPTIONS = RE9_PRESENT_LAUNCH_OPTIONS
 
 
 class SteamConfigError(RuntimeError):
@@ -63,8 +65,8 @@ class SteamSetupResult:
                 f"compat_tool_changed={self.compat_tool_changed}",
                 f"localconfig_backup={self.localconfig_backup or 'not-written'}",
                 f"steam_config_backup={self.steam_config_backup or 'not-written'}",
-                f"launch_options={RE9_PATCHED_LAUNCH_OPTIONS}",
-                f"compat_tool={RE9_PATCHED_COMPAT_TOOL}",
+                f"launch_options={RE9_PRESENT_LAUNCH_OPTIONS}",
+                f"compat_tool={RE9_PRESENT_COMPAT_TOOL}",
             ]
         )
 
@@ -85,7 +87,10 @@ def running_steam_processes() -> tuple[str, ...]:
         return ()
     lines = []
     for line in result.stdout.splitlines():
-        if "penguin-burner-steam-re9-patched-setup" in line:
+        if (
+            "penguin-burner-steam-re9-patched-setup" in line
+            or "latency_telemetry.steam_re9_setup" in line
+        ):
             continue
         lines.append(line)
     return tuple(lines)
@@ -317,12 +322,12 @@ def apply_patched_re9_setup(
     new_localconfig_text, launch_changed = set_launch_options_in_localconfig(
         localconfig_text,
         app_id=RE9_APP_ID,
-        launch_options=RE9_PATCHED_LAUNCH_OPTIONS,
+        launch_options=RE9_PRESENT_LAUNCH_OPTIONS,
     )
     new_steam_config_text, compat_changed = set_compat_tool_in_config(
         steam_config_text,
         app_id=RE9_APP_ID,
-        compat_tool=RE9_PATCHED_COMPAT_TOOL,
+        compat_tool=RE9_PRESENT_COMPAT_TOOL,
     )
 
     localconfig_backup = None
@@ -335,12 +340,12 @@ def apply_patched_re9_setup(
 
         launch_check = check_launch_options(
             app_id=RE9_APP_ID,
-            required_tokens=RE9_REQUIRED_TOKENS + RE9_PATCHED_EXTRA_TOKENS,
+            required_tokens=RE9_REQUIRED_TOKENS + RE9_PRESENT_EXTRA_TOKENS,
             config_paths=[localconfig_path],
         )
         compat_check = check_compat_tool(
             app_id=RE9_APP_ID,
-            expected_tool=RE9_PATCHED_COMPAT_TOOL,
+            expected_tool=RE9_PRESENT_COMPAT_TOOL,
             config_paths=[steam_config_path],
         )
         if not launch_check.ok or not compat_check.ok:
@@ -359,7 +364,7 @@ def apply_patched_re9_setup(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Apply the patched RE9 latency test Steam launch configuration."
+        description="Apply the RE9 PenguinBurner present-cadence Steam launch configuration."
     )
     parser.add_argument("--localconfig", type=Path, default=None)
     parser.add_argument("--steam-config", type=Path, default=None)

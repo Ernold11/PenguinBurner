@@ -7,41 +7,9 @@ from latency_telemetry.receiver import (
 )
 
 
-def test_latency_telemetry_meter_formats_reflex_summary() -> None:
+def test_latency_telemetry_meter_reports_present_pacing() -> None:
     now = 100.0
     meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
-    meter.add_sample(
-        {
-            "type": "timing",
-            "pid": 123,
-            "present_id": 7,
-            "quality": "reflex-markers",
-            "gpu_frame_time_us": 16667,
-            "input_to_present_us": 32000,
-            "render_submit_us": 2100,
-            "render_present_us": 12800,
-        }
-    )
-
-    summary = meter.summary(now=101.25)
-
-    assert summary is not None
-    assert "event=latency-meter" in summary
-    assert "quality=reflex-input-present" in summary
-    assert "pid=123" in summary
-    assert "latency-proxy-p95=32.00ms" in summary
-    assert "render-submit-p95=2.10ms" in summary
-    assert "render-present-p95=12.80ms" in summary
-    assert "gpu-frame-p95=16.67ms" in summary
-    assert "input-present-p95=32.00ms" in summary
-    assert "missing=" not in summary
-
-
-def test_latency_telemetry_meter_reports_present_pacing_without_reflex() -> None:
-    now = 100.0
-    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
-    # No Reflex markers, no driver timing — only present-to-present pacing,
-    # the signal available for any Vulkan app regardless of Reflex.
     for frametime_us in (16600, 16700, 16600, 50000):
         meter.add_sample(
             {
@@ -56,265 +24,32 @@ def test_latency_telemetry_meter_reports_present_pacing_without_reflex() -> None
     summary = meter.summary(now=101.25)
 
     assert summary is not None
-    assert "quality=present-frametime" in summary
-    # p95 frametime is dominated by the slow 50 ms frame.
-    assert "present-frametime-p95=50.00ms" in summary
-    # FPS is derived from the typical (median) frametime, not the p95 tail,
-    # so a single hitch does not crater the reported rate.
-    assert "present-fps=60" in summary
-
-
-def test_latency_telemetry_meter_reports_gpu_render_time() -> None:
-    now = 100.0
-    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
-    meter.add_sample(
-        {
-            "type": "timing",
-            "measurement": "driver-report",
-            "pid": 123,
-            "present_id": 7,
-            "quality": "reflex-render-submit",
-            "driver_report_duplicate_count": 0,
-            "render_submit_us": 2100,
-            "gpu_render_us": 16600,
-        }
+    assert summary == (
+        "event=latency-meter pid=123 quality=present-frametime samples=4 "
+        "present-frametime-p95=50.00ms present-fps=20 "
+        "raw-present-fps-avg=40 raw-present-fps-median=60 "
+        "raw-present-fps-5pct-low=20 raw-present-fps-1pct-low=20"
     )
+    assert "render-present-p95" not in summary
+    assert "gpu-render-p95" not in summary
+    assert "input-present-p95" not in summary
+    assert "gpu-frame-p95" not in summary
 
-    summary = meter.summary(now=101.25)
 
-    assert summary is not None
-    assert "gpu-render-p95=16.60ms" in summary
-
-
-def test_latency_telemetry_meter_normalizes_dxvk_nvapi_driver_report() -> None:
-    now = 100.0
-    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
-    meter.add_sample(
-        {
-            "type": "timing",
-            "source": "dxvk-nvapi-vkreflex",
-            "pid": 123,
-            "device": "0x1",
-            "swapchain": "0x2",
-            "present_id": 7,
-            "quality": "reflex-render-submit",
-            "timing_count": 8,
-            "render_submit_us": 2100,
-            "gpu_render_start_us": 10000,
-            "gpu_render_end_us": 26600,
-        }
+def test_latency_telemetry_meter_reports_present_fps_stats_over_sample_window() -> None:
+    clock = {"now": 99.0}
+    meter = LatencyTelemetryMeter(
+        max_sample_age_s=3.0,
+        time_monotonic=lambda: clock["now"],
     )
-
-    summary = meter.summary(now=101.25)
-
-    assert summary is not None
-    assert "quality=reflex-render-submit" in summary
-    assert "gpu-render-p95=16.60ms" in summary
-    assert "missing=" not in summary
-
-
-def test_latency_telemetry_meter_marks_repeated_dxvk_nvapi_report_stale() -> None:
-    now = 100.0
-    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
-    sample = {
-        "type": "timing",
-        "source": "dxvk-nvapi-vkreflex",
-        "pid": 123,
-        "device": "0x1",
-        "swapchain": "0x2",
-        "present_id": 7,
-        "quality": "reflex-render-submit",
-        "timing_count": 8,
-        "render_submit_us": 7000,
-        "gpu_render_start_us": 10000,
-        "gpu_render_end_us": 26600,
-    }
-    first_stored = meter.add_sample(sample)
-
-    now = 106.0
-    second_stored = meter.add_sample(sample)
-
-    summary = meter.summary(now=106.0)
-
-    assert first_stored is not None
-    assert first_stored["measurement"] == "driver-report"
-    assert first_stored["driver_report_duplicate_count"] == 0
-    assert second_stored is not None
-    assert second_stored["driver_report_duplicate_count"] == 1
-    assert summary is not None
-    assert "quality=stale-driver-report" in summary
-    assert "samples=0" in summary
-    assert "stale-present_id=7" in summary
-    assert "stale-driver-report-duplicates=1" in summary
-
-
-def test_latency_telemetry_meter_reports_render_submit_only_missing_inputs() -> None:
-    now = 100.0
-    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
-    meter.add_sample(
-        {
-            "type": "timing",
-            "pid": 123,
-            "present_id": 7,
-            "quality": "reflex-markers",
-            "marker_bits": (1 << 2) | (1 << 3),
-            "vk_nv_low_latency2_functions": True,
-            "render_submit_us": 7990,
-            "input_to_present_us": 0,
-            "gpu_frame_time_us": 0,
-            "gpu_render_start_us": 0,
-            "gpu_render_end_us": 0,
-            "driver_start_us": 0,
-            "driver_end_us": 0,
-        }
-    )
-
-    summary = meter.summary(now=101.25)
-
-    assert summary is not None
-    assert "quality=reflex-render-submit" in summary
-    assert "latency-proxy-p95=7.99ms" in summary
-    assert "render-submit-p95=7.99ms" in summary
-    assert "input-present-p95=n/a" in summary
-    assert "gpu-frame-p95=n/a" in summary
-    assert "missing=input-sample,driver-timing" in summary
-
-
-def test_latency_telemetry_meter_labels_marker_proxy_without_promoting_to_driver_latency() -> None:
-    now = 100.0
-    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
-    meter.add_sample(
-        {
-            "type": "timing",
-            "pid": 123,
-            "present_id": 7,
-            "quality": "reflex-marker-input-present",
-            "measurement": "marker-proxy",
-            "marker_bits": (1 << 4) | (1 << 5) | (1 << 6),
-            "vk_nv_low_latency2_functions": True,
-            "render_submit_us": 0,
-            "input_to_present_us": 27000,
-            "gpu_frame_time_us": 0,
-            "gpu_render_start_us": 0,
-            "gpu_render_end_us": 0,
-            "driver_start_us": 0,
-            "driver_end_us": 0,
-        }
-    )
-
-    summary = meter.summary(now=101.25)
-
-    assert summary is not None
-    assert "quality=reflex-marker-input-present" in summary
-    assert "latency-proxy-p95=27.00ms" in summary
-    assert "input-present-p95=27.00ms" in summary
-    assert "gpu-frame-p95=n/a" in summary
-
-
-def test_latency_telemetry_meter_ignores_duplicate_driver_reports() -> None:
-    now = 100.0
-    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
-    meter.add_sample(
-        {
-            "type": "timing",
-            "measurement": "driver-report",
-            "pid": 123,
-            "present_id": 7,
-            "quality": "reflex-render-submit",
-            "driver_report_duplicate_count": 0,
-            "render_submit_us": 7000,
-        }
-    )
-    meter.add_sample(
-        {
-            "type": "timing",
-            "measurement": "driver-report",
-            "pid": 123,
-            "present_id": 7,
-            "quality": "reflex-render-submit",
-            "driver_report_duplicate_count": 1,
-            "render_submit_us": 99000,
-        }
-    )
-
-    summary = meter.summary(now=101.25)
-
-    assert summary is not None
-    assert "samples=1" in summary
-    assert "render-submit-p95=7.00ms" in summary
-
-
-def test_latency_telemetry_meter_marks_stale_duplicate_driver_reports() -> None:
-    now = 100.0
-    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
-    meter.add_sample(
-        {
-            "type": "timing",
-            "measurement": "driver-report",
-            "pid": 123,
-            "present_id": 102,
-            "quality": "reflex-render-submit",
-            "driver_report_duplicate_count": 0,
-            "render_submit_us": 7000,
-            "render_present_us": 32000,
-        }
-    )
-
-    now = 106.0
-    meter.add_sample(
-        {
-            "type": "timing",
-            "measurement": "driver-report",
-            "pid": 123,
-            "present_id": 476,
-            "quality": "reflex-render-submit",
-            "driver_report_duplicate_count": 9000,
-            "render_submit_us": 99000,
-            "render_present_us": 24000,
-        }
-    )
-
-    summary = meter.summary(now=106.0)
-
-    assert summary is not None
-    assert "quality=stale-driver-report" in summary
-    assert "samples=0" in summary
-    assert "render-submit-p95=n/a" in summary
-    assert "stale-present_id=476" in summary
-    assert "stale-driver-report-duplicates=9000" in summary
-    assert "missing=fresh-samples" in summary
-
-
-def test_latency_telemetry_meter_marks_stale_reflex_with_present_pacing_fallback() -> None:
-    now = 100.0
-    meter = LatencyTelemetryMeter(time_monotonic=lambda: now)
-    meter.add_sample(
-        {
-            "type": "timing",
-            "measurement": "driver-report",
-            "pid": 123,
-            "present_id": 497,
-            "quality": "reflex-render-submit",
-            "driver_report_duplicate_count": 0,
-            "render_submit_us": 7935,
-            "gpu_render_us": 8469,
-        }
-    )
-
-    now = 106.0
-    meter.add_sample(
-        {
-            "type": "timing",
-            "measurement": "driver-report",
-            "pid": 123,
-            "present_id": 497,
-            "quality": "reflex-render-submit",
-            "driver_report_duplicate_count": 6717,
-            "render_submit_us": 7935,
-            "gpu_render_us": 8469,
-        }
-    )
-    for frametime_us in (27000, 29000, 28000):
+    for sample_time, frametime_us in (
+        (99.0, 100000),
+        (100.0, 16667),
+        (101.0, 16667),
+        (102.0, 33333),
+        (103.0, 50000),
+    ):
+        clock["now"] = sample_time
         meter.add_sample(
             {
                 "type": "timing",
@@ -325,203 +60,325 @@ def test_latency_telemetry_meter_marks_stale_reflex_with_present_pacing_fallback
             }
         )
 
-    summary = meter.summary(now=106.0)
+    summary = meter.summary(now=103.0)
 
     assert summary is not None
-    assert "quality=stale-driver-report" in summary
-    assert "samples=3" in summary
-    assert "gpu-render-p95=n/a" in summary
-    assert "present-frametime-p95=29.00ms" in summary
-    assert "present-fps=36" in summary
-    assert "stale-present_id=497" in summary
-    assert "stale-driver-report-duplicates=6717" in summary
+    assert "present-frametime-p95=50.00ms" in summary
+    assert "present-fps=20" in summary
+    assert "raw-present-fps-median=40" in summary
+    assert "raw-present-fps-avg=34" in summary
+    assert "raw-present-fps-5pct-low=20" in summary
+    assert "raw-present-fps-1pct-low=20" in summary
 
 
-def test_latency_telemetry_logger_formats_status_events() -> None:
-    logs: list[str] = []
-    logger = LatencyTelemetryLogger(
-        log=logs.append,
-        time_strftime=lambda _format: "2026-06-03 22:00:00",
+def test_latency_telemetry_meter_keeps_full_three_second_high_fps_window() -> None:
+    clock = {"now": 100.0}
+    meter = LatencyTelemetryMeter(
+        max_sample_age_s=3.0,
+        time_monotonic=lambda: clock["now"],
     )
 
-    logger._log_status(
+    for index in range(360):
+        clock["now"] = 100.0 + index / 120.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "present-pacing",
+                "pid": 123,
+                "quality": "present-frametime",
+                "present_frametime_us": 8333,
+            }
+        )
+
+    summary = meter.summary(now=103.0)
+
+    assert summary is not None
+    assert "samples=360" in summary
+    assert "present-frametime-p95=8.33ms" in summary
+    assert "present-fps=n/a" in summary
+    assert "raw-present-fps-avg=120" in summary
+
+
+def test_latency_telemetry_meter_suppresses_single_sample_restart_spike() -> None:
+    meter = LatencyTelemetryMeter(time_monotonic=lambda: 100.0)
+    meter.add_sample(
         {
-            "type": "status",
-            "event": "latency-timing-unavailable",
+            "type": "timing",
+            "measurement": "present-pacing",
             "pid": 123,
-            "count": 2,
-            "device": "0x1",
-            "swapchain": "0x2",
-            "vk_nv_low_latency2_advertised": True,
-            "vk_nv_low_latency2_requested": False,
-            "vk_nv_low_latency2_functions": False,
-            "marker_count": 0,
+            "quality": "present-frametime",
+            "present_frametime_us": 7900,
         }
     )
 
-    assert logs == [
-        "2026-06-03 22:00:00 event=latency-layer-status "
-        "status=latency-timing-unavailable pid=123 count=2 device=0x1 "
-        "swapchain=0x2 vk_nv_low_latency2_advertised=True "
-        "vk_nv_low_latency2_requested=False vk_nv_low_latency2_functions=False "
-        "marker_count=0"
-    ]
+    summary = meter.summary(now=100.0)
+
+    assert summary is not None
+    assert "samples=1" in summary
+    assert "present-frametime-p95=n/a" in summary
+    assert "present-fps=n/a" in summary
+    assert "raw-present-fps-avg=n/a" in summary
 
 
-def test_latency_telemetry_logger_formats_swapchain_lifecycle_status_event() -> None:
-    logs: list[str] = []
-    logger = LatencyTelemetryLogger(
-        log=logs.append,
-        time_strftime=lambda _format: "2026-06-03 22:00:00",
+def test_latency_telemetry_meter_deinterlaces_output_cadence_from_previous_base() -> None:
+    clock = {"now": 100.0}
+    meter = LatencyTelemetryMeter(
+        max_sample_age_s=3.0,
+        time_monotonic=lambda: clock["now"],
     )
 
-    logger._log_status(
-        {
-            "type": "status",
-            "event": "create-swapchain",
-            "pid": 123,
-            "count": 1,
-            "live_swapchain_count": 2,
-            "device": "0x1",
-            "swapchain": "0x2",
-            "old_swapchain": "0x9",
-            "min_image_count": 3,
-            "image_width": 3840,
-            "image_height": 2160,
-            "image_format": 44,
-            "present_mode": 0,
-            "present_mode_name": "IMMEDIATE",
-            "swapchain_latency_mode": True,
-        }
+    for index in range(120):
+        clock["now"] = 100.0 + index / 40.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "present-pacing",
+                "pid": 123,
+                "quality": "present-frametime",
+                "present_frametime_us": 25000,
+            }
+        )
+
+    base_summary = meter.summary(now=103.0)
+    assert base_summary is not None
+    assert "present-fps=40" in base_summary
+
+    for index in range(360):
+        clock["now"] = 104.0 + index / 120.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "present-pacing",
+                "pid": 123,
+                "quality": "present-frametime",
+                "present_frametime_us": 8333,
+            }
+        )
+
+    output_summary = meter.summary(now=107.0)
+
+    assert output_summary is not None
+    assert "present-frametime-p95=8.33ms" in output_summary
+    assert "present-fps=40" in output_summary
+    assert "raw-present-fps-avg=120" in output_summary
+
+
+def test_latency_telemetry_meter_prefers_base_frame_markers_over_output_presents() -> None:
+    clock = {"now": 100.0}
+    meter = LatencyTelemetryMeter(
+        max_sample_age_s=3.0,
+        time_monotonic=lambda: clock["now"],
     )
 
-    assert logs == [
-        "2026-06-03 22:00:00 event=latency-layer-status "
-        "status=create-swapchain pid=123 count=1 live_swapchain_count=2 "
-        "device=0x1 swapchain=0x2 old_swapchain=0x9 min_image_count=3 "
-        "image_width=3840 image_height=2160 image_format=44 present_mode=0 "
-        "present_mode_name=IMMEDIATE swapchain_latency_mode=True"
-    ]
+    for index in range(360):
+        clock["now"] = 100.0 + index / 120.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "present-pacing",
+                "pid": 123,
+                "quality": "present-frametime",
+                "present_frametime_us": 8333,
+            }
+        )
+
+    for index in range(120):
+        clock["now"] = 100.0 + index / 40.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "base-frame-marker-pacing",
+                "pid": 123,
+                "quality": "base-frame-marker",
+                "base_frame_id": index + 1,
+                "base_frame_frametime_us": 25000,
+            }
+        )
+
+    summary = meter.summary(now=103.0)
+
+    assert summary is not None
+    assert "quality=base-frame-marker" in summary
+    assert "present-fps=40" in summary
+    assert "raw-present-fps-avg=120" in summary
 
 
-def test_latency_telemetry_logger_formats_recovery_status_events() -> None:
-    logs: list[str] = []
-    logger = LatencyTelemetryLogger(
-        log=logs.append,
-        time_strftime=lambda _format: "2026-06-03 22:00:00",
+def test_latency_telemetry_snapshot_exposes_base_present_cadence() -> None:
+    clock = {"now": 100.0}
+    meter = LatencyTelemetryMeter(
+        max_sample_age_s=3.0,
+        time_monotonic=lambda: clock["now"],
     )
 
-    logger._log_status(
-        {
-            "type": "status",
-            "event": "latency-recovery-reapply-sleep-mode",
-            "pid": 123,
-            "count": 1,
-            "result": 0,
-            "device": "0x1",
-            "swapchain": "0x2",
-            "has_latency_sleep_mode": True,
-            "low_latency_mode": True,
-            "low_latency_boost": False,
-            "minimum_interval_us": 750,
-            "driver_report_duplicate_count": 240,
-            "present_count": 512,
-        }
+    for index in range(360):
+        clock["now"] = 100.0 + index / 120.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "present-pacing",
+                "pid": 123,
+                "quality": "present-frametime",
+                "present_frametime_us": 8333,
+            }
+        )
+
+    for index in range(120):
+        clock["now"] = 100.0 + index / 40.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "base-frame-marker-pacing",
+                "pid": 123,
+                "quality": "base-frame-marker",
+                "base_frame_id": index + 1,
+                "base_frame_frametime_us": 25000,
+                "marker_name": "oob-present-start",
+            }
+        )
+
+    snapshot = meter.snapshot(now=103.0)
+
+    assert snapshot is not None
+    assert snapshot["present_frametime_p95_ms"] == 8.333
+    assert snapshot["present_fps"] == "40"
+    assert snapshot["base_present_fps"] == 40
+    assert snapshot["base_present_frametime_p95_ms"] == 25.0
+    assert snapshot["raw_present_fps_stats"]["avg"] == "120"
+
+
+def test_latency_telemetry_meter_prefers_oob_marker_source_over_fast_marker_source() -> None:
+    clock = {"now": 100.0}
+    meter = LatencyTelemetryMeter(
+        max_sample_age_s=3.0,
+        time_monotonic=lambda: clock["now"],
     )
 
-    assert logs == [
-        "2026-06-03 22:00:00 event=latency-layer-status "
-        "status=latency-recovery-reapply-sleep-mode pid=123 count=1 result=0 "
-        "device=0x1 swapchain=0x2 has_latency_sleep_mode=True "
-        "low_latency_mode=True low_latency_boost=False minimum_interval_us=750 "
-        "driver_report_duplicate_count=240 present_count=512"
-    ]
+    for index in range(360):
+        clock["now"] = 100.0 + index / 120.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "present-pacing",
+                "pid": 123,
+                "quality": "present-frametime",
+                "present_frametime_us": 8333,
+            }
+        )
+
+    for index in range(360):
+        clock["now"] = 100.0 + index / 120.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "base-frame-marker-pacing",
+                "pid": 123,
+                "quality": "base-frame-marker",
+                "base_frame_id": index + 1,
+                "base_frame_frametime_us": 8333,
+                "marker_name": "rendersubmit-start",
+            }
+        )
+
+    for index in range(120):
+        clock["now"] = 100.0 + index / 40.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "base-frame-marker-pacing",
+                "pid": 123,
+                "quality": "base-frame-marker",
+                "base_frame_id": index + 1,
+                "base_frame_frametime_us": 25000,
+                "marker_name": "oob-present-start",
+            }
+        )
+
+    summary = meter.summary(now=103.0)
+
+    assert summary is not None
+    assert "quality=base-frame-marker" in summary
+    assert "present-fps=40" in summary
+    assert "raw-present-fps-avg=120" in summary
 
 
-def test_latency_telemetry_logger_formats_recovery_disable_status_event() -> None:
-    logs: list[str] = []
-    logger = LatencyTelemetryLogger(
-        log=logs.append,
-        time_strftime=lambda _format: "2026-06-03 22:00:00",
+def test_latency_telemetry_meter_falls_back_to_present_start_marker_source() -> None:
+    clock = {"now": 100.0}
+    meter = LatencyTelemetryMeter(
+        max_sample_age_s=3.0,
+        time_monotonic=lambda: clock["now"],
     )
 
-    logger._log_status(
-        {
-            "type": "status",
-            "event": "latency-recovery-disable-sleep-mode",
-            "pid": 123,
-            "count": 2,
-            "result": 0,
-            "device": "0x1",
-            "swapchain": "0x2",
-            "has_latency_sleep_mode": True,
-            "low_latency_mode": False,
-            "low_latency_boost": False,
-            "minimum_interval_us": 0,
-            "driver_report_duplicate_count": 840,
-            "present_count": 2048,
-        }
+    for index in range(120):
+        clock["now"] = 100.0 + index / 40.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "base-frame-marker-pacing",
+                "pid": 123,
+                "quality": "base-frame-marker",
+                "base_frame_id": index + 1,
+                "base_frame_frametime_us": 25000,
+                "marker_name": "present-start",
+            }
+        )
+
+    summary = meter.summary(now=103.0)
+
+    assert summary is not None
+    assert "quality=base-frame-marker" in summary
+    assert "present-fps=40" in summary
+
+
+def test_latency_telemetry_meter_rejects_marker_source_faster_than_output() -> None:
+    clock = {"now": 100.0}
+    meter = LatencyTelemetryMeter(
+        max_sample_age_s=3.0,
+        time_monotonic=lambda: clock["now"],
     )
 
-    assert logs == [
-        "2026-06-03 22:00:00 event=latency-layer-status "
-        "status=latency-recovery-disable-sleep-mode pid=123 count=2 result=0 "
-        "device=0x1 swapchain=0x2 has_latency_sleep_mode=True "
-        "low_latency_mode=False low_latency_boost=False minimum_interval_us=0 "
-        "driver_report_duplicate_count=840 present_count=2048"
-    ]
+    for index in range(300):
+        clock["now"] = 100.0 + index / 100.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "present-pacing",
+                "pid": 123,
+                "quality": "present-frametime",
+                "present_frametime_us": 10000,
+            }
+        )
+
+    for index in range(300):
+        clock["now"] = 100.0 + index / 100.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "base-frame-marker-pacing",
+                "pid": 123,
+                "quality": "base-frame-marker",
+                "base_frame_id": index + 1,
+                "base_frame_frametime_us": 5000,
+                "marker_name": "oob-present-start",
+            }
+        )
+
+    summary = meter.summary(now=103.0)
+
+    assert summary is not None
+    assert "quality=base-frame-marker" in summary
+    assert "present-frametime-p95=10.00ms" in summary
+    assert "present-fps=n/a" in summary
+    assert "raw-present-fps-avg=100" in summary
 
 
-def test_latency_telemetry_logger_formats_flow_status_event() -> None:
-    logs: list[str] = []
-    logger = LatencyTelemetryLogger(
-        log=logs.append,
-        time_strftime=lambda _format: "2026-06-03 22:00:00",
-    )
+def test_latency_telemetry_meter_ignores_non_timing_samples() -> None:
+    meter = LatencyTelemetryMeter(time_monotonic=lambda: 100.0)
 
-    logger._log_status(
-        {
-            "type": "status",
-            "event": "latency-stream-stale",
-            "pid": 123,
-            "count": 1,
-            "result": 1,
-            "device": "0x1",
-            "swapchain": "0x2",
-            "queue": "0x3",
-            "queue_type": 2,
-            "sleep_value": 99,
-            "live_swapchain_count": 1,
-            "swapchain_latency_mode": True,
-            "present_count": 512,
-            "last_vulkan_present_id": 510,
-            "latest_marker_present_id": 512,
-            "last_input_sample_present_id": 511,
-            "last_simulation_present_id": 512,
-            "last_render_submit_present_id": 512,
-            "last_present_marker_present_id": 512,
-            "last_oob_render_submit_present_id": 512,
-            "last_oob_present_present_id": 512,
-            "last_driver_report_present_id": 470,
-            "driver_report_duplicate_count": 240,
-            "marker_count": 4096,
-        }
-    )
-
-    assert logs == [
-        "2026-06-03 22:00:00 event=latency-layer-status "
-        "status=latency-stream-stale pid=123 count=1 live_swapchain_count=1 result=1 "
-        "device=0x1 swapchain=0x2 queue=0x3 queue_type=2 sleep_value=99 "
-        "swapchain_latency_mode=True driver_report_duplicate_count=240 present_count=512 "
-        "last_vulkan_present_id=510 latest_marker_present_id=512 "
-        "last_input_sample_present_id=511 last_simulation_present_id=512 "
-        "last_render_submit_present_id=512 last_present_marker_present_id=512 "
-        "last_oob_render_submit_present_id=512 last_oob_present_present_id=512 "
-        "last_driver_report_present_id=470 marker_count=4096"
-    ]
+    assert meter.add_sample({"type": "status", "event": "ignored"}) is None
+    assert meter.summary(now=100.0) is None
 
 
-def test_latency_telemetry_logger_formats_raw_timing_events() -> None:
+def test_latency_telemetry_logger_formats_raw_present_timing_events() -> None:
     logs: list[str] = []
     logger = LatencyTelemetryLogger(
         log=logs.append,
@@ -533,52 +390,25 @@ def test_latency_telemetry_logger_formats_raw_timing_events() -> None:
     logger._maybe_log_raw_timing(
         {
             "type": "timing",
-            "measurement": "driver-report",
+            "measurement": "present-pacing",
             "pid": 123,
             "device": "0x1",
             "swapchain": "0x2",
-            "present_id": 99,
-            "quality": "reflex-render-submit",
-            "sample_count": 4,
-            "timing_count": 8,
-            "driver_report_count": 5,
-            "driver_report_duplicate_count": 0,
-            "marker_bits": 48,
-            "render_submit_us": 7900,
-            "render_present_us": 24230,
-            "input_to_present_us": 0,
-            "gpu_frame_time_us": 0,
-            "gpu_render_us": 16600,
-            "input_sample_us": 0,
-            "sim_start_us": 100,
-            "sim_end_us": 200,
-            "render_submit_start_us": 300,
-            "render_submit_end_us": 8200,
-            "present_start_us": 9000,
-            "present_end_us": 10000,
-            "driver_start_us": 0,
-            "driver_end_us": 0,
-            "os_render_queue_start_us": 0,
-            "os_render_queue_end_us": 0,
-            "gpu_render_start_us": 0,
-            "gpu_render_end_us": 33230,
+            "quality": "present-frametime",
+            "present_count": 99,
+            "present_frametime_us": 16667,
         }
     )
 
     assert logs == [
         "2026-06-03 22:00:00 event=latency-raw pid=123 "
-        "measurement=driver-report device=0x1 swapchain=0x2 present_id=99 "
-        "quality=reflex-render-submit sample_count=4 timing_count=8 "
-        "driver_report_count=5 driver_report_duplicate_count=0 marker_bits=48 "
-        "render_submit_us=7900 "
-        "render_present_us=24230 input_to_present_us=0 gpu_frame_time_us=0 "
-        "gpu_render_us=16600 "
-        "input_sample_us=0 sim_start_us=100 sim_end_us=200 "
-        "render_submit_start_us=300 render_submit_end_us=8200 "
-        "present_start_us=9000 present_end_us=10000 driver_start_us=0 "
-        "driver_end_us=0 os_render_queue_start_us=0 os_render_queue_end_us=0 "
-        "gpu_render_start_us=0 gpu_render_end_us=33230"
+        "measurement=present-pacing device=0x1 swapchain=0x2 "
+        "quality=present-frametime present_count=99 present_frametime_us=16667"
     ]
+
+
+def test_latency_telemetry_raw_logs_are_off_by_default() -> None:
+    assert receiver._raw_timing_log_interval({}) is None
 
 
 def test_latency_socket_path_uses_sudo_user_runtime_for_root_service(

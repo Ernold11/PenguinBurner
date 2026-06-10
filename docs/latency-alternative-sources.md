@@ -203,17 +203,28 @@ no game cooperation, works for **any** Vulkan app.
 
 - Emitted sample (`send_present_pacing_sample`):
   `measurement=present-pacing quality=present-frametime present_frametime_us=<delta>`.
-- Receiver surfaces `present-frametime-p95` (the hitch/tail) and `present-fps`
-  (derived from the **median** frametime, so a single stutter in the p95 tail does
-  not crater the reported rate).
+- Receiver surfaces `present-frametime-p95` (the hitch/tail) plus 3 s present
+  cadence stats: `raw-present-fps-avg`, `raw-present-fps-median`,
+  `raw-present-fps-5pct-low`, and `raw-present-fps-1pct-low`. `present-fps` is
+  derived from `present-frametime-p95`, so the headline follows the
+  slow/base-looking cadence instead of median/output cadence when frame
+  generation inserts presents. If the stream flips to clean generated/output
+  cadence, the receiver can deinterlace `present-fps` from raw cadence using the
+  last stable base cadence and an inferred 2x/3x/4x multiplier. If no base
+  evidence exists yet and the present-only fallback starts at high output
+  cadence, `present-fps` stays `n/a` instead of publishing the ambiguous high
+  value. The `raw-*` fields are diagnostics and must not drive adaptive profile
+  decisions.
 - This is the bottom telemetry tier — it always works as long as the layer loads,
   and it keeps producing data when the Reflex stream goes stale (the RE9 case).
 
-**Critical caveat — it counts *presented* frames.** With DLSS3 frame generation
-active, generated frames are presented too, so `present-fps` is the *inflated*
-presentation rate, **not** the real rendered-frame cadence. This is precisely the
-"huge FPS, unplayable latency" blind spot the project exists to avoid. Treat
-`present-fps` as **liveness / pacing**, never as input-bearing latency. See §5.
+**Critical caveat — it counts app-visible Vulkan presents.** In RE9 with NVIDIA
+frame generation x3, static scenes looked like base cadence, but mouse/camera
+motion exposed generated/output cadence in the same stream. `present-fps` is a
+stateful base estimate, not a guaranteed pre-FG counter. If the daemon starts
+after the stream is already pure output cadence, present timing alone cannot
+separate 120 real FPS from x2/x3/x4 generated output. Treat this tier as
+**liveness / pacing**, never as input-bearing latency. See §5.
 
 - Pro: zero game cooperation, zero injection, universal, cheap; feeds the
   CPU/GPU-bound verdict (frametime) and is a reliable liveness signal.
@@ -263,49 +274,45 @@ this environment:
 - Does it register `dma_fence` / `gpu_scheduler` tracepoints, or use a private
   fence path that's invisible to ftrace/eBPF?
 
-## 5. Differentiating Reflex vs non-Reflex metrics
+## 5. Final implemented metric
 
-Every sample carries a `quality=` tag, and the meter reports the highest-ranked
-quality present plus each metric in its **own named column**, so latency and
-cadence numbers are never collapsed into one figure. The ladder (low → high):
+The shipped PenguinBurner layer currently exposes one low-risk cadence tier:
 
-| `quality=` | Source | Reflex? | Measures | Frame-gen aware? |
-|------------|--------|---------|----------|------------------|
-| `present-frametime` | present pacing (§2.5) | ❌ | **presented** cadence | **no** |
-| `driver-timing` | driver timestamps | ✅ (driver) | GPU/driver timing, no markers | yes |
-| `reflex-marker-*` | marker proxy | ✅ | markers seen | yes |
-| `reflex-markers` | reflex markers | ✅ | real-frame timing, partial | yes |
-| `reflex-render-submit` | render-submit markers | ✅ | real-frame render submit | yes |
-| `reflex-input-present` | `input_to_present_us` | ✅ | full end-to-end real-frame latency | yes |
-| `stale-driver-report` | — | — | Reflex went stale; meter holds, reports `n/a` | — |
+| `quality=` | Source | Measures |
+|------------|--------|----------|
+| `present-frametime` | app-visible `vkQueuePresentKHR` pacing | slow-tail/base present cadence estimate |
 
-Latency-tier columns (Reflex): `gpu-render-p95`, `input-present-p95`,
-`render-submit-p95`, `render-present-p95`, `gpu-frame-p95`, `latency-proxy-p95`.
-Cadence-tier columns (non-Reflex): `present-frametime-p95`, `present-fps`.
+Current meter columns:
+
+```text
+present-frametime-p95 present-fps raw-present-fps-avg raw-present-fps-median raw-present-fps-5pct-low raw-present-fps-1pct-low
+```
+
+The previous Reflex/GPU-render meter columns were removed from the runtime code
+because they did not produce a sustained usable RE9 signal on this Linux stack.
 
 ### The rule a consumer MUST follow
 
-**Never compare a cadence-tier number with a latency-tier number, and never let
-the cadence tier override a Reflex verdict.** They measure different things:
+**Do not treat the cadence number as a latency number.**
 
-- Reflex `gpu_render_us` / `input_to_present_us` = **real rendered-frame** latency
-  (frame-generation aware — generated frames carry no markers).
-- `present-fps` = **presented-frame** rate (frame-generation blind — counts
-  generated frames).
+- `present-fps` = base-cadence estimate. It prefers marker-derived base cadence.
+  Without markers, it uses P95 only after seeing plausible base cadence, and can
+  use a stateful inferred 2x/3x/4x deinterlace when the raw stream flips to clean
+  output cadence.
+- `raw-present-fps-avg` / `raw-present-fps-median` = app-visible Vulkan present cadence;
+  with frame generation these can become generated/output cadence.
 
-If a controller demoted the GPU profile because `present-fps` looked high while
-DLSS3 frame generation was inflating it, it would make exactly the wrong call —
-the original problem this project set out to avoid. The quality ladder already
-encodes precedence (any `reflex-*` outranks `present-frametime`); the policy must
-honor it: use Reflex latency when available, and treat `present-fps` as
-**liveness / pacing / CPU-vs-GPU input**, not as latency.
+If a controller promoted or demoted the GPU profile by treating `present-fps` as
+latency, it would make the wrong call. Treat `present-fps` as the only
+base-cadence estimate in this line. Treat `raw-present-fps-*` as debugging data,
+not as latency and not as the base-FPS control input.
 
-### Bonus: present-fps as a frame-generation detector
+### Bonus: present-fps as a frame-generation sanity check
 
-When both tiers are live, a large divergence is itself a useful signal: if
-`present-fps` is ~2–3× the implied real-frame rate from the Reflex stream, frame
-generation (x2/x3/x4) is active. That divergence can be logged as an explicit
-"frame-gen active" flag rather than discarded as noise.
+When both a display/output FPS source and this slow-tail Vulkan present estimate
+are live, a large ratio can confirm frame generation. In the tested RE9 x3 path,
+static scenes produced a roughly 3x ratio, while mouse/camera motion showed why
+median/avg present cadence must not be used as the base signal.
 
 ## References
 

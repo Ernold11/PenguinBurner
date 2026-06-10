@@ -9,13 +9,9 @@ import re
 RE9_APP_ID = "3764200"
 RE9_REQUIRED_TOKENS = (
     "PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock",
-    "VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/third_party/dxvk-nvapi/build.layer:/home/jp/PenguinBurner/native/latency_layer/build",
+    "VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/native/latency_layer/build:/home/jp/PenguinBurner/third_party/dxvk-nvapi/build.layer",
     "VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency,VK_LAYER_DXVK_NVAPI_reflex",
     "PENGUIN_BURNER_LATENCY_LAYER=1",
-    "PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1",
-    "PENGUIN_BURNER_LATENCY_QUERY_TIMINGS=0",
-    "PENGUIN_BURNER_DXVK_NVAPI_TIMING_QUERY_INTERVAL=4",
-    "VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE",
     "PROTON_ENABLE_NVAPI=1",
     "PROTON_HIDE_NVIDIA_GPU=0",
     "DXVK_NVAPI_VKREFLEX=1",

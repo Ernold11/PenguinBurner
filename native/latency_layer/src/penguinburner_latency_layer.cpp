@@ -26,8 +26,6 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#include "latency_emit_plan.h"
-
 namespace {
 
 constexpr const char* kLayerName = "VK_LAYER_PENGUINBURNER_latency";
@@ -331,6 +329,11 @@ struct DeviceContext {
     std::vector<uint64_t> marker_order;
 };
 
+struct BaseMarkerState {
+    uint64_t frame_id = 0;
+    uint64_t timestamp_us = 0;
+};
+
 struct SwapchainContext {
     VkDevice device = VK_NULL_HANDLE;
     bool swapchain_latency_mode = false;
@@ -351,6 +354,9 @@ struct SwapchainContext {
     std::array<uint64_t, 120> present_frametimes{};
     uint32_t present_frametime_index = 0;
     uint32_t present_frametime_count = 0;
+    BaseMarkerState out_of_band_present_start{};
+    BaseMarkerState present_start{};
+    BaseMarkerState render_submit_start{};
 };
 
 struct OverlayGpuState {
@@ -1470,6 +1476,118 @@ void send_present_pacing_sample(
     }
 }
 
+const char* latency_marker_name(VkLatencyMarkerNV marker) {
+    switch (marker) {
+        case VK_LATENCY_MARKER_RENDERSUBMIT_START_NV:
+            return "rendersubmit-start";
+        case VK_LATENCY_MARKER_PRESENT_START_NV:
+            return "present-start";
+        case VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_START_NV:
+            return "oob-present-start";
+        default:
+            return "other";
+    }
+}
+
+bool is_base_frame_marker(VkLatencyMarkerNV marker) {
+    return marker == VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_START_NV
+        || marker == VK_LATENCY_MARKER_PRESENT_START_NV
+        || marker == VK_LATENCY_MARKER_RENDERSUBMIT_START_NV;
+}
+
+BaseMarkerState* base_marker_state_for(
+    SwapchainContext& context,
+    VkLatencyMarkerNV marker) {
+    switch (marker) {
+        case VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_START_NV:
+            return &context.out_of_band_present_start;
+        case VK_LATENCY_MARKER_PRESENT_START_NV:
+            return &context.present_start;
+        case VK_LATENCY_MARKER_RENDERSUBMIT_START_NV:
+            return &context.render_submit_start;
+        default:
+            return nullptr;
+    }
+}
+
+void send_base_frame_marker_sample(
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    uint64_t base_frame_id,
+    uint64_t base_frame_frametime_us,
+    VkLatencyMarkerNV marker) {
+    char line[640]{};
+    const int length = std::snprintf(
+        line,
+        sizeof(line),
+        "{\"v\":1,\"type\":\"timing\","
+        "\"measurement\":\"base-frame-marker-pacing\","
+        "\"pid\":%ld,"
+        "\"device\":\"0x%016" PRIx64 "\",\"swapchain\":\"0x%016" PRIx64 "\","
+        "\"quality\":\"base-frame-marker\","
+        "\"base_frame_id\":%" PRIu64 ","
+        "\"base_frame_frametime_us\":%" PRIu64 ","
+        "\"marker\":%d,"
+        "\"marker_name\":\"%s\"}",
+        static_cast<long>(::getpid()),
+        handle_to_u64(device),
+        handle_to_u64(swapchain),
+        base_frame_id,
+        base_frame_frametime_us,
+        static_cast<int>(marker),
+        latency_marker_name(marker));
+
+    if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
+        g_socket.send_line(line, static_cast<size_t>(length));
+    }
+}
+
+void observe_latency_marker(
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    const VkSetLatencyMarkerInfoNV* marker_info) {
+    if (!marker_info || !marker_info->presentID
+        || !is_base_frame_marker(marker_info->marker)) {
+        return;
+    }
+
+    const uint64_t marker_time_us = now_monotonic_us();
+    uint64_t base_frame_frametime_us = 0;
+    {
+        std::lock_guard lock(g_mutex);
+        auto swapchain_it = g_swapchains.find(swapchain);
+        if (swapchain_it == g_swapchains.end()) {
+            return;
+        }
+
+        auto* state = base_marker_state_for(swapchain_it->second, marker_info->marker);
+        if (!state) {
+            return;
+        }
+
+        if (state->frame_id == marker_info->presentID) {
+            return;
+        }
+
+        if (state->timestamp_us && marker_time_us > state->timestamp_us) {
+            base_frame_frametime_us =
+                marker_time_us - state->timestamp_us;
+        }
+
+        state->frame_id = marker_info->presentID;
+        state->timestamp_us = marker_time_us;
+    }
+
+    if (base_frame_frametime_us) {
+        send_base_frame_marker_sample(
+            device,
+            swapchain,
+            marker_info->presentID,
+            base_frame_frametime_us,
+            marker_info->marker);
+    }
+}
+
 struct LatencySleepModeReplay {
     PFN_vkSetLatencySleepModeNV set_latency_sleep_mode = nullptr;
     VkLatencySleepModeInfoNV sleep_mode_info{};
@@ -1748,15 +1866,9 @@ void query_latency_timing(VkDevice device, VkSwapchainKHR swapchain) {
     // present once the Reflex ring stops advancing, which is what produced the
     // stuck constant latency. Instead, forward every report whose presentID is
     // newer than the last one we already emitted for this swapchain, so the
-    // receiver sees genuine per-frame samples. The dedup/reset decision lives in
-    // plan_latency_emits() (see latency_emit_plan.h) so it can be unit-tested.
-    //
-    // Collect the usable reports (preserving original index) and their present
-    // IDs for the planner.
+    // receiver sees genuine per-frame samples.
     std::vector<uint32_t> usable_indices;
-    std::vector<uint64_t> usable_present_ids;
     usable_indices.reserve(written_count);
-    usable_present_ids.reserve(written_count);
     for (uint32_t index = 0; index < written_count; ++index) {
         const auto& report = reports[index];
         const bool usable = report.presentID || report_has_driver_timing(report)
@@ -1765,7 +1877,6 @@ void query_latency_timing(VkDevice device, VkSwapchainKHR swapchain) {
             continue;
         }
         usable_indices.push_back(index);
-        usable_present_ids.push_back(report.presentID);
     }
 
     uint64_t last_emitted = 0;
@@ -1777,19 +1888,48 @@ void query_latency_timing(VkDevice device, VkSwapchainKHR swapchain) {
         }
     }
 
-    const penguinburner::LatencyEmitPlan plan =
-        penguinburner::plan_latency_emits(usable_present_ids, last_emitted);
-
-    for (std::size_t pos : plan.emit_indices) {
-        send_timing_sample(
-            device, swapchain, reports[usable_indices[pos]], written_count);
+    bool has_newest = false;
+    uint32_t newest_index = 0;
+    uint64_t newest_present_id = 0;
+    bool saw_lower_present_id = false;
+    bool saw_higher_present_id = false;
+    for (uint32_t index : usable_indices) {
+        const uint64_t present_id = reports[index].presentID;
+        if (!has_newest || present_id >= newest_present_id) {
+            has_newest = true;
+            newest_index = index;
+            newest_present_id = present_id;
+        }
+        if (last_emitted && present_id && present_id < last_emitted) {
+            saw_lower_present_id = true;
+        }
+        if (present_id > last_emitted) {
+            saw_higher_present_id = true;
+        }
     }
 
-    if (plan.new_last_emitted != last_emitted || plan.reset_detected) {
+    const bool reset_detected =
+        last_emitted && saw_lower_present_id && !saw_higher_present_id;
+    const uint64_t emit_after = reset_detected ? 0 : last_emitted;
+    uint64_t new_last_emitted = reset_detected ? 0 : last_emitted;
+    bool emitted_fresh = false;
+    for (uint32_t index : usable_indices) {
+        const uint64_t present_id = reports[index].presentID;
+        if (present_id && present_id <= emit_after) {
+            continue;
+        }
+        send_timing_sample(device, swapchain, reports[index], written_count);
+        emitted_fresh = true;
+        if (present_id > new_last_emitted) {
+            new_last_emitted = present_id;
+        }
+    }
+
+    if (new_last_emitted != last_emitted || reset_detected) {
         std::lock_guard lock(g_mutex);
         auto swapchain_it = g_swapchains.find(swapchain);
         if (swapchain_it != g_swapchains.end()) {
-            swapchain_it->second.last_emitted_present_id = plan.new_last_emitted;
+            swapchain_it->second.last_emitted_present_id = new_last_emitted;
         }
     }
 
@@ -1797,10 +1937,8 @@ void query_latency_timing(VkDevice device, VkSwapchainKHR swapchain) {
     // Re-emit the newest report once so the receiver's duplicate-report
     // detection can flag the stream as stale instead of us silently dropping
     // it (which would otherwise leave the meter showing a frozen value).
-    if (!plan.emitted_fresh && plan.has_newest) {
-        send_timing_sample(
-            device, swapchain, reports[usable_indices[plan.newest_pos]],
-            written_count);
+    if (!emitted_fresh && has_newest) {
+        send_timing_sample(device, swapchain, reports[newest_index], written_count);
         maybe_recover_stale_latency_stream(device, swapchain);
     }
 }
@@ -2444,6 +2582,7 @@ VKAPI_ATTR void VKAPI_CALL layer_set_latency_marker_nv(
         next_set_latency_marker(device, swapchain, marker_info);
     }
     record_marker(device, swapchain, marker_info);
+    observe_latency_marker(device, swapchain, marker_info);
 }
 
 VKAPI_ATTR void VKAPI_CALL layer_queue_notify_out_of_band_nv(
