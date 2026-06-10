@@ -368,22 +368,13 @@ class LatencyTelemetryMeter:
         sample["driver_report_duplicate_count"] = duplicate_count
 
     def summary(self, *, now: float | None = None) -> str | None:
-        if not self._samples:
+        snapshot = self.snapshot(now=now)
+        if not snapshot:
             return self._stale_driver_report_summary(now=now)
-        now = self._time_monotonic() if now is None else now
-        samples = [
-            sample
-            for sample in self._samples
-            if now - float(sample.get("_received_monotonic") or 0.0)
-            <= self._max_sample_age_s
-        ]
-        if not samples:
-            return self._stale_driver_report_summary(now=now)
+        samples = snapshot["samples"]
+        now = float(snapshot["now"])
         latest = samples[-1]
-        best_quality = max(
-            (_quality_for_sample(sample) for sample in samples),
-            key=lambda quality: QUALITY_RANK.get(quality, 0),
-        )
+        best_quality = snapshot["best_quality"]
         stale_driver_report = self._fresh_stale_driver_report(now=now)
         has_fresh_reflex_or_driver_sample = any(
             str(sample.get("measurement") or "") != "present-pacing"
@@ -391,27 +382,14 @@ class LatencyTelemetryMeter:
         )
         if stale_driver_report is not None and not has_fresh_reflex_or_driver_sample:
             best_quality = "stale-driver-report"
-        gpu_frame_p95 = _p95_us(
-            [_int_value(sample.get("gpu_frame_time_us")) for sample in samples]
-        )
-        input_present_p95 = _p95_us(
-            [_int_value(sample.get("input_to_present_us")) for sample in samples]
-        )
-        render_submit_p95 = _p95_us(
-            [_int_value(sample.get("render_submit_us")) for sample in samples]
-        )
-        render_present_p95 = _p95_us(
-            [_int_value(sample.get("render_present_us")) for sample in samples]
-        )
-        gpu_render_p95 = _p95_us(
-            [_int_value(sample.get("gpu_render_us")) for sample in samples]
-        )
-        present_frametime_values = [
-            _int_value(sample.get("present_frametime_us")) for sample in samples
-        ]
-        present_frametime_p95 = _p95_us(present_frametime_values)
-        present_fps = _format_fps(_median_us(present_frametime_values))
-        latency_proxy_p95 = _latency_proxy_p95(samples)
+        gpu_frame_p95 = snapshot["gpu_frame_p95_us"]
+        input_present_p95 = snapshot["input_present_p95_us"]
+        render_submit_p95 = snapshot["render_submit_p95_us"]
+        render_present_p95 = snapshot["render_present_p95_us"]
+        gpu_render_p95 = snapshot["gpu_render_p95_us"]
+        present_frametime_p95 = snapshot["present_frametime_p95_us"]
+        present_fps = snapshot["present_fps"]
+        latency_proxy_p95 = snapshot["latency_proxy_p95_us"]
         missing_hints = _missing_metric_hints(
             samples,
             input_present_p95=input_present_p95,
@@ -442,6 +420,56 @@ class LatencyTelemetryMeter:
             f"{stale_text}"
             f"{missing_text}"
         )
+
+    def snapshot(self, *, now: float | None = None) -> dict | None:
+        if not self._samples:
+            return None
+        now = self._time_monotonic() if now is None else now
+        samples = [
+            sample
+            for sample in self._samples
+            if now - float(sample.get("_received_monotonic") or 0.0)
+            <= self._max_sample_age_s
+        ]
+        if not samples:
+            return None
+        best_quality = max(
+            (_quality_for_sample(sample) for sample in samples),
+            key=lambda quality: QUALITY_RANK.get(quality, 0),
+        )
+        present_frametime_values = [
+            _int_value(sample.get("present_frametime_us")) for sample in samples
+        ]
+        present_frametime_p95 = _p95_us(present_frametime_values)
+        present_median = _median_us(present_frametime_values)
+        return {
+            "now": float(now),
+            "samples": samples,
+            "best_quality": best_quality,
+            "latency_proxy_p95_us": _latency_proxy_p95(samples),
+            "render_submit_p95_us": _p95_us(
+                [_int_value(sample.get("render_submit_us")) for sample in samples]
+            ),
+            "render_present_p95_us": _p95_us(
+                [_int_value(sample.get("render_present_us")) for sample in samples]
+            ),
+            "gpu_render_p95_us": _p95_us(
+                [_int_value(sample.get("gpu_render_us")) for sample in samples]
+            ),
+            "input_present_p95_us": _p95_us(
+                [_int_value(sample.get("input_to_present_us")) for sample in samples]
+            ),
+            "gpu_frame_p95_us": _p95_us(
+                [_int_value(sample.get("gpu_frame_time_us")) for sample in samples]
+            ),
+            "present_frametime_p95_us": present_frametime_p95,
+            "present_frametime_p95_ms": (
+                None
+                if present_frametime_p95 is None
+                else float(present_frametime_p95) / 1000.0
+            ),
+            "present_fps": _format_fps(present_median),
+        }
 
     def _stale_driver_report_age_s(self, latest: dict, *, now: float) -> float:
         return now - float(latest.get("_received_monotonic") or 0.0)

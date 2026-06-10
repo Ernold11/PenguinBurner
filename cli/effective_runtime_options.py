@@ -88,6 +88,7 @@ def build_effective_afterburner_runtime_options(args, stored_options: dict) -> d
 
     if args.auto_uv_mode is not None:
         requested_auto_uv_mode = str(args.auto_uv_mode).strip().lower()
+        runtime_options["auto_uv_requested_mode"] = requested_auto_uv_mode
         runtime_options["auto_uv_mode"] = normalize_auto_uv_mode(args.auto_uv_mode)
         if (
             requested_auto_uv_mode == AUTO_UV_MODE_BALANCED

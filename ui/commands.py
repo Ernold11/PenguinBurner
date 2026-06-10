@@ -172,6 +172,7 @@ def runtime_profile_command(
     profile_selector: str = "",
     silent_fan_curve: bool = False,
     prefer_afterburner_curve: bool = False,
+    adaptive_auto_uv: bool = False,
     gpu_index: int | None = None,
 ) -> list[str]:
     command = [*cli_base_command()]
@@ -189,6 +190,8 @@ def runtime_profile_command(
         command.append("--prefer-afterburner-curve")
     if silent_fan_curve and action != "uninstall-systemd":
         command.append("--silent-fan-curve")
+    if adaptive_auto_uv and action == "install-systemd":
+        command.append("--adaptive-auto-uv")
     if gpu_index is not None:
         command.extend(["--gpu-index", str(max(0, int(gpu_index)))])
     return privileged_command(command)

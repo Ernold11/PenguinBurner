@@ -210,6 +210,7 @@ def test_new_ui_afterburner_profile_helpers_cover_moved_workflow(monkeypatch) ->
     assert profile_info_from_command_text("--prefer-afterburner-curve") == {
         "selector": AFTERBURNER_PROFILE_ID,
         "silent_fan_curve": False,
+        "adaptive_auto_uv": False,
     }
 
 

@@ -33,6 +33,9 @@ namespace {
 constexpr const char* kLayerName = "VK_LAYER_PENGUINBURNER_latency";
 constexpr const char* kSocketEnv = "PENGUIN_BURNER_LATENCY_SOCKET";
 constexpr const char* kEnableEnv = "PENGUIN_BURNER_LATENCY_LAYER";
+constexpr const char* kOverlayEnableEnv = "PENGUIN_BURNER_OVERLAY";
+constexpr const char* kOverlayStateEnv = "PENGUIN_BURNER_OVERLAY_STATE";
+constexpr const char* kOverlayTextEnv = "PENGUIN_BURNER_OVERLAY_TEXT";
 constexpr const char* kRecoveryResetEnv = "PENGUIN_BURNER_LATENCY_RECOVERY_RESET";
 constexpr const char* kDebugFlowEnv = "PENGUIN_BURNER_LATENCY_DEBUG_FLOW";
 constexpr const char* kQueryTimingsEnv = "PENGUIN_BURNER_LATENCY_QUERY_TIMINGS";
@@ -345,6 +348,16 @@ struct SwapchainContext {
     uint64_t timing_empty_count = 0;
     uint64_t latency_recovery_attempt_count = 0;
     uint64_t last_latency_recovery_duplicate_count = 0;
+    std::array<uint64_t, 120> present_frametimes{};
+    uint32_t present_frametime_index = 0;
+    uint32_t present_frametime_count = 0;
+};
+
+struct OverlayGpuState {
+    bool available = false;
+    std::string clock_mhz;
+    std::string voltage_mv;
+    std::string profile_tier = "Balanced";
 };
 
 std::mutex g_mutex;
@@ -357,6 +370,7 @@ std::atomic<bool> g_reported_negotiate{false};
 std::atomic<bool> g_reported_get_instance_proc_addr{false};
 std::atomic<bool> g_reported_get_device_proc_addr{false};
 std::atomic<bool> g_reported_create_instance_enter{false};
+std::mutex g_overlay_file_mutex;
 
 bool should_report_counter(uint64_t count) {
     return count <= 3 || (count % 600) == 0;
@@ -375,6 +389,144 @@ bool env_value_is_false(const char* value) {
 
 bool timing_queries_enabled() {
     return !env_value_is_false(std::getenv(kQueryTimingsEnv));
+}
+
+bool overlay_enabled() {
+    static const bool enabled = env_flag_enabled(kOverlayEnableEnv);
+    return enabled;
+}
+
+std::string overlay_runtime_path(const char* env_name, const char* file_name) {
+    if (const char* explicit_path = std::getenv(env_name)) {
+        if (explicit_path[0]) {
+            return explicit_path;
+        }
+    }
+    if (const char* runtime_dir = std::getenv("XDG_RUNTIME_DIR")) {
+        if (runtime_dir[0]) {
+            return std::string(runtime_dir) + "/penguin-burner/" + file_name;
+        }
+    }
+    char fallback[160]{};
+    std::snprintf(
+        fallback,
+        sizeof(fallback),
+        "/tmp/penguin-burner-%s-%ld.txt",
+        file_name,
+        static_cast<long>(::getuid()));
+    return fallback;
+}
+
+std::string trim_ascii(std::string value) {
+    while (!value.empty()
+        && std::isspace(static_cast<unsigned char>(value.front()))) {
+        value.erase(value.begin());
+    }
+    while (!value.empty()
+        && std::isspace(static_cast<unsigned char>(value.back()))) {
+        value.pop_back();
+    }
+    return value;
+}
+
+OverlayGpuState read_overlay_gpu_state() {
+    OverlayGpuState state{};
+    const std::string path =
+        overlay_runtime_path(kOverlayStateEnv, "overlay-state.txt");
+    FILE* file = std::fopen(path.c_str(), "r");
+    if (!file) {
+        return state;
+    }
+    state.available = true;
+    char line[512]{};
+    while (std::fgets(line, sizeof(line), file)) {
+        std::string text(line);
+        const std::size_t sep = text.find('=');
+        if (sep == std::string::npos) {
+            continue;
+        }
+        const std::string key = trim_ascii(text.substr(0, sep));
+        const std::string value = trim_ascii(text.substr(sep + 1));
+        if (key == "clock_mhz") {
+            state.clock_mhz = value;
+        } else if (key == "voltage_mv") {
+            state.voltage_mv = value;
+        } else if (key == "profile_tier" && !value.empty()) {
+            state.profile_tier = value;
+        }
+    }
+    std::fclose(file);
+    return state;
+}
+
+uint64_t median_fps_from_present_frametime_locked(
+    SwapchainContext& context,
+    uint64_t present_frametime_us) {
+    if (!present_frametime_us) {
+        return 0;
+    }
+    context.present_frametimes[context.present_frametime_index] =
+        present_frametime_us;
+    context.present_frametime_index =
+        (context.present_frametime_index + 1)
+        % static_cast<uint32_t>(context.present_frametimes.size());
+    context.present_frametime_count = std::min<uint32_t>(
+        context.present_frametime_count + 1,
+        static_cast<uint32_t>(context.present_frametimes.size()));
+    std::vector<uint64_t> values;
+    values.reserve(context.present_frametime_count);
+    for (uint32_t i = 0; i < context.present_frametime_count; ++i) {
+        uint64_t value = context.present_frametimes[i];
+        if (value) {
+            values.push_back(value);
+        }
+    }
+    if (values.empty()) {
+        return 0;
+    }
+    std::sort(values.begin(), values.end());
+    const uint64_t median = values[values.size() / 2];
+    return median ? static_cast<uint64_t>((1000000ull + median / 2) / median) : 0;
+}
+
+std::string overlay_value_or_na(const std::string& value) {
+    return value.empty() ? "n/a" : value;
+}
+
+std::string build_overlay_text(uint64_t fps, const OverlayGpuState& state) {
+    char fps_text[64]{};
+    if (fps) {
+        std::snprintf(fps_text, sizeof(fps_text), "%" PRIu64 " FPS", fps);
+    } else {
+        std::snprintf(fps_text, sizeof(fps_text), "n/a FPS");
+    }
+    return std::string(fps_text)
+        + " " + overlay_value_or_na(state.clock_mhz) + " MHz"
+        + " " + overlay_value_or_na(state.voltage_mv) + " mV"
+        + " " + (state.profile_tier.empty() ? "Balanced" : state.profile_tier);
+}
+
+void write_overlay_text_file(uint64_t fps, uint64_t now_us) {
+    if (!overlay_enabled()) {
+        return;
+    }
+    static uint64_t last_write_us = 0;
+    if (last_write_us && now_us > last_write_us && now_us - last_write_us < 250000) {
+        return;
+    }
+    last_write_us = now_us;
+    const std::string path =
+        overlay_runtime_path(kOverlayTextEnv, "overlay-text.txt");
+    const std::string text = build_overlay_text(fps, read_overlay_gpu_state());
+    std::lock_guard lock(g_overlay_file_mutex);
+    const std::string temp_path = path + ".tmp";
+    FILE* file = std::fopen(temp_path.c_str(), "w");
+    if (!file) {
+        return;
+    }
+    std::fprintf(file, "%s\n", text.c_str());
+    std::fclose(file);
+    std::rename(temp_path.c_str(), path.c_str());
 }
 
 uint64_t live_swapchain_count_locked(VkDevice device) {
@@ -467,12 +619,14 @@ uint64_t present_id_for_swapchain(
                 && swapchain_index < present_id->swapchainCount) {
                 return present_id->pPresentIds[swapchain_index];
             }
+#ifdef VK_KHR_PRESENT_ID_2_EXTENSION_NAME
         } else if (current->sType == VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR) {
             auto* present_id = reinterpret_cast<const VkPresentId2KHR*>(current);
             if (present_id->pPresentIds
                 && swapchain_index < present_id->swapchainCount) {
                 return present_id->pPresentIds[swapchain_index];
             }
+#endif
         }
         current = reinterpret_cast<const VkBaseInStructure*>(current->pNext);
     }
@@ -2109,6 +2263,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
                 present_id_for_swapchain(present_info, i);
             uint64_t present_count = 0;
             uint64_t present_frametime_us = 0;
+            uint64_t overlay_fps = 0;
             {
                 std::lock_guard lock(g_mutex);
                 auto swapchain_it = g_swapchains.find(swapchain);
@@ -2125,6 +2280,11 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
                             present_time_us - swapchain_context.last_present_us;
                     }
                     swapchain_context.last_present_us = present_time_us;
+                    if (overlay_enabled() && present_frametime_us) {
+                        overlay_fps = median_fps_from_present_frametime_locked(
+                            swapchain_context,
+                            present_frametime_us);
+                    }
                 }
             }
             if (should_report_counter(present_count)) {
@@ -2151,6 +2311,9 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
             if (present_frametime_us) {
                 send_present_pacing_sample(
                     device, swapchain, present_frametime_us, present_count);
+            }
+            if (overlay_fps) {
+                write_overlay_text_file(overlay_fps, present_time_us);
             }
             if (timing_queries_enabled()) {
                 query_latency_timing(device, swapchain);

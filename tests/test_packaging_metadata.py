@@ -71,6 +71,8 @@ def test_console_scripts_use_gui_default_and_explicit_cli_names() -> None:
     assert "pburn-yolo" not in scripts
     assert scripts["penguin-burner-cli"] == "penguin_burner:cli_main"
     assert scripts["pburn-cli"] == "penguin_burner:cli_main"
+    assert scripts["PB_OVERLAY"] == "penguin_burner_overlay.launcher:main"
+    assert scripts["pb-overlay"] == "penguin_burner_overlay.launcher:main"
     assert "penguin_burner" not in scripts
 
 
@@ -174,6 +176,7 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     assert "runtime_stability_test" in packages
     assert "saved_profile_verification" in packages
     assert "saved_uv_profiles" in packages
+    assert "penguin_burner_overlay" in packages
 
 
 def test_desktop_launcher_is_english_only_nvidia_gpu_tool() -> None:

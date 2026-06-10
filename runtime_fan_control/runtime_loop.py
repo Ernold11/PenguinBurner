@@ -41,6 +41,7 @@ class RuntimeFanLoopDependencies:
     apply_plan: Callable = apply_plan
     describe_translated_gpu_policy: Callable = describe_translated_gpu_policy
     log: Callable[[str], None] = runtime_log
+    overlay_state_publisher_factory: Callable | None = None
     print_fn: Callable = print
     time_monotonic: Callable[[], float] = time.monotonic
     time_sleep: Callable[[float], None] = time.sleep
@@ -83,6 +84,9 @@ def run_runtime_fan_control_loop(
     vf_curve_reader,
     gpu_policy_controller,
     vf_policy: RuntimeVfCurvePolicyResult | None = None,
+    overlay_state_publisher=None,
+    latency_meter=None,
+    adaptive_auto_uv_controller=None,
     dependencies: RuntimeFanLoopDependencies | None = None,
     max_iterations: int | None = None,
 ) -> None:
@@ -177,6 +181,8 @@ def run_runtime_fan_control_loop(
     manual_mode_active = False
     hot_auto_mode_active = False
     iteration_count = 0
+    overlay_publish_failed = False
+    adaptive_update_failed = False
 
     def log_with_timestamp(message: str) -> None:
         deps.log(f"{deps.time_strftime('%Y-%m-%d %H:%M:%S')} {message}")
@@ -194,6 +200,28 @@ def run_runtime_fan_control_loop(
         iteration_count += 1
 
         loop_started = deps.time_monotonic()
+        if adaptive_auto_uv_controller is not None:
+            try:
+                latency_snapshot = (
+                    latency_meter.snapshot(now=loop_started)
+                    if latency_meter is not None
+                    else None
+                )
+                adaptive_update = adaptive_auto_uv_controller.update(
+                    latency_snapshot=latency_snapshot,
+                    now_monotonic=loop_started,
+                )
+            except Exception as exc:
+                if not adaptive_update_failed:
+                    deps.log(f"Adaptive Auto-UV update failed: {exc}")
+                adaptive_update_failed = True
+            else:
+                if adaptive_update is not None and adaptive_update.changed:
+                    if adaptive_update.vf_apply_result is not None:
+                        vf_apply_result = adaptive_update.vf_apply_result
+                    vf_expected_samples = list(adaptive_update.vf_expected_samples)
+                    reapply_memory_offset_mhz = adaptive_update.memory_offset_mhz
+
         current_temp_c = nvml_session.temperature_c()
         power_draw_w = nvml_session.power_draw_w()
 
@@ -206,6 +234,13 @@ def run_runtime_fan_control_loop(
             power_draw_w=power_draw_w,
             clock_ceiling_controller=clock_ceiling_controller,
         )
+        if overlay_state_publisher is not None:
+            try:
+                overlay_state_publisher.publish()
+            except Exception as exc:
+                if not overlay_publish_failed:
+                    deps.log(f"Overlay state publish unavailable: {exc}")
+                overlay_publish_failed = True
         if (
             vf_curve_reader is not None
             and vf_expected_samples

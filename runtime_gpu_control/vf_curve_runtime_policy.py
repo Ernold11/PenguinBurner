@@ -80,6 +80,9 @@ class RuntimeVfCurvePolicyResult:
     vf_apply_result: dict | None = None
     active_vf_curve_source: str | None = None
     auto_uv_profile_gpu_policy: dict | None = None
+    active_profile_id: str = ""
+    active_profile_tier: str = ""
+    active_profile_tier_key: str = ""
     clock_ceiling_controller: object | None = None
     vf_expected_samples: list = field(default_factory=list)
     startup_power_limit_w: int | None = None
@@ -291,6 +294,11 @@ def _apply_auto_uv_final_curve(
         "path": auto_uv_final_curve["path"],
     }
     result.active_vf_curve_source = "auto-uv-final"
+    result.active_profile_id = str(auto_uv_final_curve.get("profile_id") or "")
+    result.active_profile_tier = str(auto_uv_final_curve.get("profile_tier") or "")
+    result.active_profile_tier_key = str(
+        auto_uv_final_curve.get("profile_tier_key") or ""
+    )
     result.vf_expected_samples = deps.select_expected_vf_samples(
         result.vf_apply_result["plan"]
     )

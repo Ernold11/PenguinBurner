@@ -66,6 +66,7 @@ from .ui.vf_curve_ui_points import vf_curve_ui_points
 from .voltage_sweep_state import VoltageProbeOutcome
 from .final_verification import run_final_verification_and_save
 from .scan_mode import AUTO_UV_MODE_EFFICIENCY, AUTO_UV_MODE_PERFORMANCE
+from saved_uv_profiles.profile_tiers import generated_profile_tier_from_runtime_options
 
 
 def run_voltage_frequency_undervolt_main_loop(
@@ -495,6 +496,10 @@ def run_voltage_frequency_undervolt_main_loop(
             final_clock_drop_margin_pct=float(settings.final_clock_drop_margin_pct),
             timedemo_warmup_runs=int(timedemo_warmup_runs),
             tail_rise_bins=int(final_tail_rise_bins),
+            auto_uv_mode=str(settings.auto_uv_mode),
+            generated_profile_tier=generated_profile_tier_from_runtime_options(
+                runtime_options
+            ),
             event_callback=event_callback,
         )
     finally:

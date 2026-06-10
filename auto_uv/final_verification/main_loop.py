@@ -71,6 +71,8 @@ def run_final_verification_and_save(
     final_clock_drop_margin_pct,
     timedemo_warmup_runs: int = 0,
     tail_rise_bins: int = 0,
+    auto_uv_mode: str = "",
+    generated_profile_tier: str = "",
     event_callback: AutoUvEventCallback | None = None,
 ):
     gpu_policy = translated_gpu_policy if isinstance(translated_gpu_policy, dict) else {}
@@ -233,6 +235,8 @@ def run_final_verification_and_save(
         fan_curve_payload=fan_result.payload if fan_result is not None else None,
         memory_offset_mhz=memory_offset_from_gpu_policy(gpu_policy),
         tail_rise_bins=int(tail_rise_bins),
+        auto_uv_mode=str(auto_uv_mode or ""),
+        generated_profile_tier=str(generated_profile_tier or ""),
     )
     log_final_summary(
         log,

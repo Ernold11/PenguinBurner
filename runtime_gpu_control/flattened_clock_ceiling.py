@@ -129,3 +129,8 @@ class FlattenedClockCeilingController:
         if self._active:
             self._policy_controller.reset_locked_core_clocks()
             self._active = False
+
+    def retarget(self, flatten_target):
+        self.close()
+        self._flatten_target = dict(flatten_target)
+        return self.apply()

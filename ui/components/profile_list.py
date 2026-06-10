@@ -25,6 +25,7 @@ class ProfileList:
         "FPS",
         "Power W",
         "Mem",
+        "Tier",
         "Source",
         "Autostart",
     ]
@@ -37,8 +38,9 @@ class ProfileList:
     FPS_COLUMN = 6
     POWER_COLUMN = 7
     MEMORY_OFFSET_COLUMN = 8
-    SOURCE_COLUMN = 9
-    AUTOSTART_COLUMN = 10
+    TIER_COLUMN = 9
+    SOURCE_COLUMN = 10
+    AUTOSTART_COLUMN = 11
     PROFILE_ID_ROLE = 257
     CANDIDATE_ID_ROLE = 258
     PROFILE_PATH_ROLE = 259
@@ -66,6 +68,10 @@ class ProfileList:
         top = QtWidgets.QHBoxLayout()
         self.silent_fan_checkbox = QtWidgets.QCheckBox("Silent fan curve")
         self.install_button = QtWidgets.QCheckBox("Persist on Startup")
+        self.adaptive_checkbox = QtWidgets.QCheckBox("Adaptive")
+        self.adaptive_checkbox.setToolTip(
+            "Adapt between saved Efficiency, Balanced, and Performance tiers at startup."
+        )
         self.daemonize_button = QtWidgets.QPushButton("Apply Selected")
         self.delete_button = QtWidgets.QToolButton()
         self.delete_button.setObjectName("deleteProfilesButton")
@@ -78,6 +84,7 @@ class ProfileList:
         top.addStretch(1)
         top.addWidget(self.silent_fan_checkbox)
         top.addWidget(self.install_button)
+        top.addWidget(self.adaptive_checkbox)
         top.addWidget(self.daemonize_button)
         top.addWidget(self.delete_button)
         top.addWidget(self.remove_button)
@@ -96,6 +103,7 @@ class ProfileList:
                 self.VOLTAGE_COLUMN: 124,
                 self.TARGET_MHZ_COLUMN: 108,
                 self.MEMORY_OFFSET_COLUMN: 104,
+                self.TIER_COLUMN: 112,
                 self.EFFECTIVE_MHZ_COLUMN: 158,
                 self.FPSW_COLUMN: 134,
                 self.FPS_COLUMN: 134,
@@ -119,6 +127,9 @@ class ProfileList:
         layout.addLayout(top)
         layout.addWidget(self.table, 1)
         self.table.itemSelectionChanged.connect(self._sync_action_state)
+        self.install_button.toggled.connect(
+            lambda _checked: self._sync_action_state(sync_persist_toggle=False)
+        )
         self._sync_action_state()
 
     def set_profiles(
@@ -133,10 +144,13 @@ class ProfileList:
         preserve_persist_toggle: bool = True,
         silent_fan_checked: bool | None = None,
         preserve_silent_fan_toggle: bool = True,
+        adaptive_checked: bool | None = None,
+        preserve_adaptive_toggle: bool = True,
     ) -> None:
         selected_profile_ids = self.selected_profile_ids()
         persist_toggle_checked = self.install_button.isChecked()
         silent_fan_checked_before = self.silent_fan_checkbox.isChecked()
+        adaptive_checked_before = self.adaptive_checkbox.isChecked()
         sort_column = self._active_sort_column()
         sort_order = self._sort_order
         profiles = _promote_preferred_profile(
@@ -205,6 +219,7 @@ class ProfileList:
                         profile.get("memory_offset_mhz"),
                         precision=0,
                     ),
+                    _profile_tier_label(profile),
                     _profile_source_label(profile),
                     (
                         "installed"
@@ -316,6 +331,17 @@ class ProfileList:
             self._set_silent_fan_checked(silent_fan_checked_before)
         elif silent_fan_checked is not None:
             self._set_silent_fan_checked(bool(silent_fan_checked))
+        should_preserve_adaptive_toggle = (
+            preserve_adaptive_toggle
+            and _should_preserve_persist_toggle(
+                selected_profile_ids,
+                self.selected_profile_ids(),
+            )
+        )
+        if should_preserve_adaptive_toggle:
+            self._set_adaptive_checked(adaptive_checked_before)
+        elif adaptive_checked is not None:
+            self._set_adaptive_checked(bool(adaptive_checked))
         self._sync_action_state(sync_persist_toggle=not should_preserve_persist_toggle)
 
     def _active_sort_column(self) -> int:
@@ -392,6 +418,9 @@ class ProfileList:
     def persist_on_startup_enabled(self) -> bool:
         return bool(self.install_button.isChecked())
 
+    def adaptive_enabled(self) -> bool:
+        return bool(self.adaptive_checkbox.isChecked() and self.adaptive_checkbox.isEnabled())
+
     def selected_profile_name(self) -> str:
         rows = self._selected_rows()
         if not rows:
@@ -466,6 +495,10 @@ class ProfileList:
         )
         self.daemonize_button.setEnabled(has_apply_selection)
         self.install_button.setEnabled(has_apply_selection)
+        adaptive_available = has_apply_selection and self.install_button.isChecked()
+        self.adaptive_checkbox.setEnabled(adaptive_available)
+        if not adaptive_available:
+            self._set_adaptive_checked(False)
         self.delete_button.setEnabled(has_delete_selection)
         if sync_persist_toggle and not self._syncing_persist_toggle:
             self._set_persist_toggle_checked(
@@ -490,6 +523,13 @@ class ProfileList:
             self.silent_fan_checkbox.setChecked(bool(checked))
         finally:
             self.silent_fan_checkbox.blockSignals(signals_blocked)
+
+    def _set_adaptive_checked(self, checked: bool) -> None:
+        signals_blocked = self.adaptive_checkbox.blockSignals(True)
+        try:
+            self.adaptive_checkbox.setChecked(bool(checked))
+        finally:
+            self.adaptive_checkbox.blockSignals(signals_blocked)
 
     def _selected_rows(self) -> list[int]:
         selection_model = self.table.selectionModel()
@@ -815,6 +855,7 @@ def _profile_sort_values(profile: dict) -> list[float | str]:
         "",
         "",
         "",
+        "",
     ]
 
 
@@ -825,6 +866,17 @@ def _profile_source_label(profile: dict) -> str:
         "user-edited": "User edited",
     }
     return labels.get(source, source)
+
+
+def _profile_tier_label(profile: dict) -> str:
+    assigned = str(profile.get("assigned_profile_tier") or "").strip()
+    if assigned:
+        return assigned
+    tier = str(profile.get("profile_tier") or "").strip()
+    if tier:
+        return tier
+    generated = str(profile.get("generated_profile_tier") or "").strip()
+    return generated
 
 
 def _profile_name(profile: dict) -> str:

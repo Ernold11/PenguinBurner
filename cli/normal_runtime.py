@@ -10,7 +10,12 @@ from latency_telemetry import start_latency_telemetry_logger
 from nvml_gpu_policy import NvmlGpuPolicyController
 from runtime_debug import log as runtime_log
 from runtime_fan_control import run_runtime_fan_control_loop
-from runtime_gpu_control import NvmlRuntimeSession, configure_runtime_vf_curve_policy
+from runtime_gpu_control import (
+    AdaptiveAutoUvRuntimeController,
+    NvmlRuntimeSession,
+    OverlayStatePublisher,
+    configure_runtime_vf_curve_policy,
+)
 
 
 @dataclass(slots=True)
@@ -21,6 +26,8 @@ class NormalRuntimeDependencies:
     create_hidden_vf_curve_reader: Callable = create_hidden_vf_curve_reader
     gpu_policy_controller_factory: Callable = NvmlGpuPolicyController
     configure_runtime_vf_curve_policy: Callable = configure_runtime_vf_curve_policy
+    overlay_state_publisher_factory: Callable = OverlayStatePublisher
+    adaptive_auto_uv_runtime_factory: Callable = AdaptiveAutoUvRuntimeController
     run_runtime_fan_control_loop: Callable = run_runtime_fan_control_loop
     start_latency_telemetry_logger: Callable = start_latency_telemetry_logger
     log: Callable[[str], None] = runtime_log
@@ -92,7 +99,30 @@ def run_normal_runtime(
         gpu_policy_controller=gpu_policy_controller,
         dependencies=vf_curve_policy_dependencies,
     )
+    overlay_state_publisher = deps.overlay_state_publisher_factory(
+        gpu_index=gpu_index,
+        nvml_session=nvml_session,
+        voltage_reader=voltage_reader,
+        profile_tier=str(getattr(vf_policy, "active_profile_tier", "") or ""),
+        profile_tier_key=str(getattr(vf_policy, "active_profile_tier_key", "") or ""),
+        profile_id=str(getattr(vf_policy, "active_profile_id", "") or ""),
+        adaptive=bool(getattr(args, "adaptive_auto_uv", False)),
+    )
     latency_logger = deps.start_latency_telemetry_logger(log=deps.log)
+    adaptive_auto_uv_controller = None
+    if bool(getattr(args, "adaptive_auto_uv", False)):
+        if vf_policy.active_vf_curve_source == "auto-uv-final":
+            adaptive_auto_uv_controller = deps.adaptive_auto_uv_runtime_factory(
+                current_tier=vf_policy.active_profile_tier_key,
+                vf_curve_reader=vf_curve_reader,
+                gpu_policy_controller=gpu_policy_controller,
+                clock_ceiling_controller=vf_policy.clock_ceiling_controller,
+                overlay_state_publisher=overlay_state_publisher,
+            )
+        else:
+            deps.log(
+                "Adaptive Auto-UV disabled: active runtime curve is not an Auto-UV profile."
+            )
     try:
         deps.run_runtime_fan_control_loop(
             gpu_index=gpu_index,
@@ -106,6 +136,9 @@ def run_normal_runtime(
             vf_curve_reader=vf_curve_reader,
             gpu_policy_controller=gpu_policy_controller,
             vf_policy=vf_policy,
+            overlay_state_publisher=overlay_state_publisher,
+            latency_meter=(latency_logger.meter if latency_logger is not None else None),
+            adaptive_auto_uv_controller=adaptive_auto_uv_controller,
             dependencies=fan_loop_dependencies,
         )
     finally:

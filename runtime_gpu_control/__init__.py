@@ -4,6 +4,16 @@ The main script owns orchestration; this package owns public NVML and V/F helper
 """
 
 from .flattened_clock_ceiling import FlattenedClockCeilingController
+from .adaptive_profile_policy import (
+    AdaptiveProfileController,
+    AdaptiveProfileDecision,
+    AdaptiveProfilePolicyConfig,
+)
+from .adaptive_profile_runtime import (
+    AdaptiveAutoUvRuntimeController,
+    AdaptiveAutoUvRuntimeDependencies,
+    AdaptiveAutoUvSwitchResult,
+)
 from .gpu_policy_state_text import describe_current_gpu_policy_state, khz_to_mhz
 from .live_gpu_telemetry_text import (
     format_clock_ceiling_state,
@@ -17,6 +27,7 @@ from .live_gpu_telemetry_text import (
 )
 from .nvidia_smi_command import apply_gpu_base_policy, run_nvidia_smi_command
 from .nvml_runtime_session import NvmlRuntimeSession
+from .overlay_state_publisher import OverlayStatePublisher
 from .nvml_return_code import (
     NVML_CLOCK_GRAPHICS,
     NVML_CLOCK_MEM,
@@ -37,11 +48,18 @@ from .vf_curve_reset_guard import (
 
 __all__ = [
     "FlattenedClockCeilingController",
+    "AdaptiveAutoUvRuntimeController",
+    "AdaptiveAutoUvRuntimeDependencies",
+    "AdaptiveAutoUvSwitchResult",
+    "AdaptiveProfileController",
+    "AdaptiveProfileDecision",
+    "AdaptiveProfilePolicyConfig",
     "NVML_CLOCK_GRAPHICS",
     "NVML_CLOCK_MEM",
     "NVML_SUCCESS",
     "NVML_TEMPERATURE_GPU",
     "NvmlRuntimeSession",
+    "OverlayStatePublisher",
     "RuntimeVfCurvePolicyDependencies",
     "RuntimeVfCurvePolicyResult",
     "apply_gpu_base_policy",

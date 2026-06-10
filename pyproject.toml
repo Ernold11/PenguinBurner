@@ -66,6 +66,8 @@ penguin-burner-latency-capture = "latency_telemetry.flow_capture:main"
 penguin-burner-re9-latency-test = "latency_telemetry.re9_latency_test:main"
 penguin-burner-steam-launch-check = "latency_telemetry.steam_launch_check:main"
 penguin-burner-steam-re9-patched-setup = "latency_telemetry.steam_re9_setup:main"
+PB_OVERLAY = "penguin_burner_overlay.launcher:main"
+pb-overlay = "penguin_burner_overlay.launcher:main"
 
 [tool.setuptools]
 py-modules = [
@@ -108,6 +110,7 @@ packages = [
   "latency_telemetry",
   "manual_fan_curve_editor",
   "manual_uv_curve_editor",
+  "penguin_burner_overlay",
   "runtime_fan_control",
   "runtime_gpu_control",
   "runtime_stability_test",

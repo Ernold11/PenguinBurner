@@ -11,6 +11,7 @@ from auto_uv.curve.rising_tail import tail_ceiling_clock_mhz
 from nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from penguin_burner_errors import NvmlError
 
+from .profile_tiers import profile_tier_summary_fields
 from .profile_store import resolve_auto_uv_profile
 
 
@@ -24,7 +25,7 @@ def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = Fa
         if selector:
             raise NvmlError(f"Auto-UV profile not found: {selector}")
         return None
-    path, _profile_payload = resolved_profile
+    path, profile_payload = resolved_profile
     if not path.is_file():
         return None
 
@@ -88,8 +89,16 @@ def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = Fa
             flatten_target["tail_rise_bins"] = max(0, int(saved_tail_rise_bins))
         except (TypeError, ValueError):
             pass
+    tier_fields = profile_tier_summary_fields(payload)
     return {
         "path": path,
+        "profile_id": str(
+            payload.get("profile_id") or profile_payload.get("profile_id") or ""
+        ),
+        "candidate_id": str(
+            payload.get("candidate_id") or profile_payload.get("candidate_id") or ""
+        ),
+        **tier_fields,
         "plan": plan,
         "lock_clock_mhz": int(lock_clock_mhz),
         "candidate_voltage_mv": int(candidate_voltage_mv),

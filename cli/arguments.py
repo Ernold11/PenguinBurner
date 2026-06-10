@@ -259,6 +259,15 @@ def parse_arguments(argv):
         ),
     )
     daemon_group.add_argument(
+        "--adaptive-auto-uv",
+        action="store_true",
+        help=(
+            "Runtime/daemon only: allow PenguinBurner to adapt between saved "
+            "Auto-UV profile tiers from present-frame p95 pacing. Requires at "
+            "least two available profile tiers."
+        ),
+    )
+    daemon_group.add_argument(
         "--journal-hours",
         type=float,
         default=DEFAULT_JOURNAL_HOURS,

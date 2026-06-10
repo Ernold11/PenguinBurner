@@ -77,6 +77,8 @@ from .profiles import systemd_unit_entry_exists
 from .verify import stop_request_path as verify_stop_request_path
 from .verify import workload_label
 from .styles import STYLESHEET
+from saved_uv_profiles import clear_profile_tier_assignment
+from saved_uv_profiles import save_profile_tier_assignment
 
 
 class MainWindow:
@@ -515,6 +517,7 @@ class MainWindow:
             ),
             silent_fan_curve=self.profile_list.silent_fan_enabled(),
             prefer_afterburner_curve=prefer_afterburner_curve,
+            adaptive_auto_uv=self.profile_list.adaptive_enabled(),
             gpu_index=self.gpu_index,
         )
         self.controls.set_status_text(self._runtime_action_start_text(action))
@@ -850,6 +853,21 @@ class MainWindow:
         )
         export_action = menu.addAction("Export LACT")
         export_action.setEnabled(not self._workflow_running() and profile_can_apply(profile))
+        tier_menu = menu.addMenu("Assign Tier")
+        tier_actions = {
+            "efficiency": tier_menu.addAction("Efficiency"),
+            "balanced": tier_menu.addAction("Balanced"),
+            "performance": tier_menu.addAction("Performance"),
+        }
+        tier_menu.addSeparator()
+        clear_tier_action = tier_menu.addAction("Clear Tier Assignment")
+        can_assign_tier = (
+            not self._workflow_running()
+            and profile_can_apply(profile)
+            and not profile_is_afterburner(profile)
+            and bool(str(profile.get("profile_id") or "").strip())
+        )
+        tier_menu.setEnabled(can_assign_tier)
         menu.addSeparator()
         delete_action = menu.addAction("Delete")
         delete_action.setEnabled(
@@ -867,6 +885,16 @@ class MainWindow:
             self._verify_profile(profile)
         elif chosen == export_action:
             self._export_lact_profile(profile)
+        elif chosen in set(tier_actions.values()):
+            profile_id = str(profile.get("profile_id") or "").strip()
+            for tier, action in tier_actions.items():
+                if chosen == action:
+                    save_profile_tier_assignment(profile_id, tier)
+                    self._load_profiles()
+                    break
+        elif chosen == clear_tier_action:
+            clear_profile_tier_assignment(str(profile.get("profile_id") or ""))
+            self._load_profiles()
         elif chosen == delete_action:
             self._delete_selected_profiles()
 
@@ -958,6 +986,11 @@ class MainWindow:
                 bool(running_info["silent_fan_curve"])
                 if str(running_info["selector"]).strip()
                 else bool(autostart_info["silent_fan_curve"])
+            ),
+            adaptive_checked=(
+                bool(running_info.get("adaptive_auto_uv"))
+                if str(running_info["selector"]).strip()
+                else bool(autostart_info.get("adaptive_auto_uv"))
             ),
         )
         self._set_profile_actions_enabled(not self._workflow_running())

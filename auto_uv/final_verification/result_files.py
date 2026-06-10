@@ -92,6 +92,8 @@ def write_final_verified_profile(
     fan_curve_payload: dict | None = None,
     memory_offset_mhz: int | None = None,
     tail_rise_bins: int = 0,
+    auto_uv_mode: str = "",
+    generated_profile_tier: str = "",
 ) -> Path:
     payload = verified_candidate_payload(
         plan=plan,
@@ -108,6 +110,10 @@ def write_final_verified_profile(
         payload["fan_curve_payload"] = dict(fan_curve_payload)
     if memory_offset_mhz is not None:
         payload["memory_offset_mhz"] = int(memory_offset_mhz)
+    if str(auto_uv_mode or "").strip():
+        payload["auto_uv_mode"] = str(auto_uv_mode).strip()
+    if str(generated_profile_tier or "").strip():
+        payload["generated_profile_tier"] = str(generated_profile_tier).strip()
     append_verified_candidate(payload)
     return archive_final_verified_profile(payload)
 

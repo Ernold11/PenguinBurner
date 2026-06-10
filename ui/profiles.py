@@ -212,6 +212,7 @@ def profile_info_from_command_text(
     return {
         "selector": selector,
         "silent_fan_curve": "--silent-fan-curve" in parts,
+        "adaptive_auto_uv": "--adaptive-auto-uv" in parts,
     }
 
 

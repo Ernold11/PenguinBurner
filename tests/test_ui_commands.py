@@ -374,6 +374,24 @@ def test_ui_runtime_command_can_prefer_afterburner_curve(monkeypatch) -> None:
     assert command[command.index("--gpu-index") + 1] == "1"
 
 
+def test_ui_runtime_command_adds_adaptive_only_for_persistent_autostart(monkeypatch) -> None:
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
+
+    persistent = commands.runtime_profile_command(
+        "install-systemd",
+        profile_selector="profile-a",
+        adaptive_auto_uv=True,
+    )
+    transient = commands.runtime_profile_command(
+        "daemonize",
+        profile_selector="profile-a",
+        adaptive_auto_uv=True,
+    )
+
+    assert "--adaptive-auto-uv" in persistent
+    assert "--adaptive-auto-uv" not in transient
+
+
 def test_final_choice_performance_mode_sorts_by_fps() -> None:
     candidates = [
         {

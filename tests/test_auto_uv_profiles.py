@@ -220,7 +220,8 @@ def test_profile_table_headers_and_sorting_scope() -> None:
     assert ProfileList.COLUMNS[5] == "FPS/W"
     assert ProfileList.COLUMNS[7] == "Power W"
     assert ProfileList.COLUMNS[8] == "Mem"
-    assert ProfileList.COLUMNS[10] == "Autostart"
+    assert ProfileList.COLUMNS[9] == "Tier"
+    assert ProfileList.COLUMNS[11] == "Autostart"
     assert "Voltage vs base" not in ProfileList.COLUMNS
     assert "FPS/W vs base" not in ProfileList.COLUMNS
     assert "Power vs base" not in ProfileList.COLUMNS
@@ -1639,7 +1640,11 @@ def test_profile_info_from_command_text_parses_selector_and_silent_fan_flag() ->
         default_if_present=True,
     )
 
-    assert info == {"selector": "profile-a", "silent_fan_curve": True}
+    assert info == {
+        "selector": "profile-a",
+        "silent_fan_curve": True,
+        "adaptive_auto_uv": False,
+    }
 
 
 def test_profile_info_from_command_text_parses_afterburner_preference() -> None:
@@ -1652,6 +1657,7 @@ def test_profile_info_from_command_text_parses_afterburner_preference() -> None:
     assert info == {
         "selector": AFTERBURNER_PROFILE_ID,
         "silent_fan_curve": True,
+        "adaptive_auto_uv": False,
     }
 
 
