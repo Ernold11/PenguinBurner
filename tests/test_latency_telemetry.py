@@ -451,7 +451,7 @@ def test_latency_socket_path_uses_sudo_user_runtime_for_root_service(
 
 def test_latency_socket_paths_include_home_visible_fallback(tmp_path) -> None:
     runtime_dir = tmp_path / "run" / "user" / "1000"
-    home = tmp_path / "home" / "jp"
+    home = tmp_path / "home" / "desktop"
 
     paths = latency_socket_paths(
         {
