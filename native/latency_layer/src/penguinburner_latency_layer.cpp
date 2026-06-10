@@ -295,11 +295,31 @@ struct DeviceContext {
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     PFN_vkGetDeviceProcAddr get_device_proc_addr = nullptr;
     PFN_vkDestroyDevice destroy_device = nullptr;
+    PFN_vkDeviceWaitIdle device_wait_idle = nullptr;
     PFN_vkGetDeviceQueue get_device_queue = nullptr;
     PFN_vkGetDeviceQueue2 get_device_queue2 = nullptr;
     PFN_vkCreateSwapchainKHR create_swapchain_khr = nullptr;
     PFN_vkDestroySwapchainKHR destroy_swapchain_khr = nullptr;
+    PFN_vkGetSwapchainImagesKHR get_swapchain_images_khr = nullptr;
     PFN_vkQueuePresentKHR queue_present_khr = nullptr;
+    PFN_vkQueueSubmit queue_submit = nullptr;
+    PFN_vkCreateImageView create_image_view = nullptr;
+    PFN_vkDestroyImageView destroy_image_view = nullptr;
+    PFN_vkCreateRenderPass create_render_pass = nullptr;
+    PFN_vkDestroyRenderPass destroy_render_pass = nullptr;
+    PFN_vkCreateFramebuffer create_framebuffer = nullptr;
+    PFN_vkDestroyFramebuffer destroy_framebuffer = nullptr;
+    PFN_vkCreateCommandPool create_command_pool = nullptr;
+    PFN_vkDestroyCommandPool destroy_command_pool = nullptr;
+    PFN_vkAllocateCommandBuffers allocate_command_buffers = nullptr;
+    PFN_vkResetCommandBuffer reset_command_buffer = nullptr;
+    PFN_vkBeginCommandBuffer begin_command_buffer = nullptr;
+    PFN_vkEndCommandBuffer end_command_buffer = nullptr;
+    PFN_vkCmdBeginRenderPass cmd_begin_render_pass = nullptr;
+    PFN_vkCmdEndRenderPass cmd_end_render_pass = nullptr;
+    PFN_vkCmdClearAttachments cmd_clear_attachments = nullptr;
+    PFN_vkCreateSemaphore create_semaphore = nullptr;
+    PFN_vkDestroySemaphore destroy_semaphore = nullptr;
     PFN_vkSetLatencySleepModeNV set_latency_sleep_mode_nv = nullptr;
     PFN_vkLatencySleepNV latency_sleep_nv = nullptr;
     PFN_vkSetLatencyMarkerNV set_latency_marker_nv = nullptr;
@@ -334,9 +354,26 @@ struct BaseMarkerState {
     uint64_t timestamp_us = 0;
 };
 
+struct OverlayRenderResources {
+    bool attempted = false;
+    bool ready = false;
+    uint32_t queue_family_index = UINT32_MAX;
+    VkRenderPass render_pass = VK_NULL_HANDLE;
+    VkCommandPool command_pool = VK_NULL_HANDLE;
+    std::vector<VkImage> images;
+    std::vector<VkImageView> image_views;
+    std::vector<VkFramebuffer> framebuffers;
+    std::vector<VkCommandBuffer> command_buffers;
+    std::vector<VkSemaphore> signal_semaphores;
+};
+
 struct SwapchainContext {
     VkDevice device = VK_NULL_HANDLE;
     bool swapchain_latency_mode = false;
+    VkFormat image_format = VK_FORMAT_UNDEFINED;
+    VkExtent2D image_extent{};
+    uint32_t image_array_layers = 1;
+    VkImageUsageFlags image_usage = 0;
     uint64_t last_gpu_render_end_us = 0;
     uint64_t last_present_id = 0;
     uint64_t timing_sample_count = 0;
@@ -357,10 +394,12 @@ struct SwapchainContext {
     BaseMarkerState out_of_band_present_start{};
     BaseMarkerState present_start{};
     BaseMarkerState render_submit_start{};
+    OverlayRenderResources overlay{};
 };
 
 struct OverlayGpuState {
     bool available = false;
+    std::string present_fps;
     std::string clock_mhz;
     std::string voltage_mv;
     std::string profile_tier = "Balanced";
@@ -453,7 +492,9 @@ OverlayGpuState read_overlay_gpu_state() {
         }
         const std::string key = trim_ascii(text.substr(0, sep));
         const std::string value = trim_ascii(text.substr(sep + 1));
-        if (key == "clock_mhz") {
+        if (key == "present_fps") {
+            state.present_fps = value;
+        } else if (key == "clock_mhz") {
             state.clock_mhz = value;
         } else if (key == "voltage_mv") {
             state.voltage_mv = value;
@@ -499,17 +540,51 @@ std::string overlay_value_or_na(const std::string& value) {
     return value.empty() ? "n/a" : value;
 }
 
-std::string build_overlay_text(uint64_t fps, const OverlayGpuState& state) {
+std::string overlay_fps_text(uint64_t fps, const OverlayGpuState& state) {
+    std::string value = trim_ascii(state.present_fps);
+    if (!value.empty()) {
+        std::string lower = value;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        if (lower.size() >= 3 && lower.rfind("fps") == lower.size() - 3) {
+            return value;
+        }
+        return value + " FPS";
+    }
+
     char fps_text[64]{};
     if (fps) {
         std::snprintf(fps_text, sizeof(fps_text), "%" PRIu64 " FPS", fps);
     } else {
         std::snprintf(fps_text, sizeof(fps_text), "n/a FPS");
     }
-    return std::string(fps_text)
-        + " " + overlay_value_or_na(state.clock_mhz) + " MHz"
-        + " " + overlay_value_or_na(state.voltage_mv) + " mV"
-        + " " + (state.profile_tier.empty() ? "Balanced" : state.profile_tier);
+    return fps_text;
+}
+
+std::string compact_profile_tier(const std::string& value) {
+    const std::string tier = trim_ascii(value).empty() ? "Balanced" : trim_ascii(value);
+    std::string lower = tier;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (lower == "balanced") {
+        return "Bal";
+    }
+    if (lower == "efficiency") {
+        return "Eff";
+    }
+    if (lower == "performance") {
+        return "Perf";
+    }
+    return tier.size() > 6 ? tier.substr(0, 6) : tier;
+}
+
+std::string build_overlay_text(uint64_t fps, const OverlayGpuState& state) {
+    return overlay_fps_text(fps, state)
+        + " " + overlay_value_or_na(state.clock_mhz) + "MHz"
+        + " " + overlay_value_or_na(state.voltage_mv) + "mV"
+        + " " + compact_profile_tier(state.profile_tier);
 }
 
 void write_overlay_text_file(uint64_t fps, uint64_t now_us) {
@@ -533,6 +608,556 @@ void write_overlay_text_file(uint64_t fps, uint64_t now_us) {
     std::fprintf(file, "%s\n", text.c_str());
     std::fclose(file);
     std::rename(temp_path.c_str(), path.c_str());
+}
+
+std::string cached_overlay_text(uint64_t fps, uint64_t now_us) {
+    static uint64_t last_read_us = 0;
+    static std::string last_text;
+    std::lock_guard lock(g_overlay_file_mutex);
+    if (last_text.empty() || !last_read_us || now_us < last_read_us
+        || now_us - last_read_us >= 250000) {
+        last_text = build_overlay_text(fps, read_overlay_gpu_state());
+        last_read_us = now_us;
+    }
+    return last_text;
+}
+
+VkClearColorValue overlay_color(float r, float g, float b, float a) {
+    VkClearColorValue value{};
+    value.float32[0] = r;
+    value.float32[1] = g;
+    value.float32[2] = b;
+    value.float32[3] = a;
+    return value;
+}
+
+std::array<uint8_t, 7> overlay_glyph_rows(char ch) {
+    switch (static_cast<char>(std::toupper(static_cast<unsigned char>(ch)))) {
+        case '0': return {0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e};
+        case '1': return {0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e};
+        case '2': return {0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f};
+        case '3': return {0x1e, 0x01, 0x01, 0x0e, 0x01, 0x01, 0x1e};
+        case '4': return {0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02};
+        case '5': return {0x1f, 0x10, 0x1e, 0x01, 0x01, 0x11, 0x0e};
+        case '6': return {0x06, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e};
+        case '7': return {0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08};
+        case '8': return {0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e};
+        case '9': return {0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c};
+        case 'A': return {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11};
+        case 'B': return {0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e};
+        case 'C': return {0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e};
+        case 'D': return {0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e};
+        case 'E': return {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f};
+        case 'F': return {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10};
+        case 'G': return {0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0f};
+        case 'H': return {0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11};
+        case 'I': return {0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e};
+        case 'J': return {0x01, 0x01, 0x01, 0x01, 0x11, 0x11, 0x0e};
+        case 'K': return {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11};
+        case 'L': return {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f};
+        case 'M': return {0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11};
+        case 'N': return {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11};
+        case 'O': return {0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e};
+        case 'P': return {0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10};
+        case 'Q': return {0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d};
+        case 'R': return {0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11};
+        case 'S': return {0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e};
+        case 'T': return {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04};
+        case 'U': return {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e};
+        case 'V': return {0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04};
+        case 'W': return {0x11, 0x11, 0x11, 0x15, 0x15, 0x1b, 0x11};
+        case 'X': return {0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11};
+        case 'Y': return {0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04};
+        case 'Z': return {0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f};
+        case '-': return {0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00};
+        case '/': return {0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10};
+        case '.': return {0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x06};
+        default: return {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    }
+}
+
+uint32_t overlay_char_width(char ch, uint32_t scale) {
+    return ch == ' ' ? 3u * scale : 5u * scale;
+}
+
+uint32_t overlay_text_width(const std::string& text, uint32_t scale) {
+    uint32_t width = 0;
+    bool first = true;
+    for (char ch : text) {
+        if (!first) {
+            width += scale;
+        }
+        first = false;
+        width += overlay_char_width(ch, scale);
+    }
+    return width;
+}
+
+void overlay_clear_rect(
+    const DeviceContext& device_context,
+    VkCommandBuffer command_buffer,
+    const VkExtent2D& extent,
+    int32_t x,
+    int32_t y,
+    uint32_t width,
+    uint32_t height,
+    VkClearColorValue color) {
+    if (!device_context.cmd_clear_attachments || !width || !height) {
+        return;
+    }
+    if (x >= static_cast<int32_t>(extent.width)
+        || y >= static_cast<int32_t>(extent.height)) {
+        return;
+    }
+    if (x < 0) {
+        const uint32_t clipped = static_cast<uint32_t>(-x);
+        if (clipped >= width) {
+            return;
+        }
+        width -= clipped;
+        x = 0;
+    }
+    if (y < 0) {
+        const uint32_t clipped = static_cast<uint32_t>(-y);
+        if (clipped >= height) {
+            return;
+        }
+        height -= clipped;
+        y = 0;
+    }
+    width = std::min<uint32_t>(
+        width,
+        static_cast<uint32_t>(static_cast<int32_t>(extent.width) - x));
+    height = std::min<uint32_t>(
+        height,
+        static_cast<uint32_t>(static_cast<int32_t>(extent.height) - y));
+    VkClearAttachment attachment{};
+    attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    attachment.colorAttachment = 0;
+    attachment.clearValue.color = color;
+    VkClearRect rect{};
+    rect.rect.offset = {x, y};
+    rect.rect.extent = {width, height};
+    rect.baseArrayLayer = 0;
+    rect.layerCount = 1;
+    device_context.cmd_clear_attachments(command_buffer, 1, &attachment, 1, &rect);
+}
+
+void overlay_draw_glyph(
+    const DeviceContext& device_context,
+    VkCommandBuffer command_buffer,
+    const VkExtent2D& extent,
+    char ch,
+    int32_t x,
+    int32_t y,
+    uint32_t scale,
+    VkClearColorValue color) {
+    const auto rows = overlay_glyph_rows(ch);
+    for (uint32_t row = 0; row < rows.size(); ++row) {
+        uint8_t bits = rows[row];
+        uint32_t col = 0;
+        while (col < 5) {
+            const bool enabled = (bits & (1u << (4u - col))) != 0;
+            if (!enabled) {
+                ++col;
+                continue;
+            }
+            const uint32_t start_col = col;
+            while (col < 5 && (bits & (1u << (4u - col)))) {
+                ++col;
+            }
+            overlay_clear_rect(
+                device_context,
+                command_buffer,
+                extent,
+                x + static_cast<int32_t>(start_col * scale),
+                y + static_cast<int32_t>(row * scale),
+                (col - start_col) * scale,
+                scale,
+                color);
+        }
+    }
+}
+
+void overlay_draw_text(
+    const DeviceContext& device_context,
+    VkCommandBuffer command_buffer,
+    const VkExtent2D& extent,
+    const std::string& text) {
+    if (text.empty() || extent.width < 64 || extent.height < 32) {
+        return;
+    }
+    const uint32_t scale = 2;
+    const uint32_t padding = 4;
+    const uint32_t margin = 10;
+    const uint32_t text_height = 7 * scale;
+    uint32_t text_width = overlay_text_width(text, scale);
+    if (text_width + padding * 2 + margin * 2 > extent.width) {
+        text_width = extent.width > margin * 2 + padding * 2
+            ? extent.width - margin * 2 - padding * 2
+            : 0;
+    }
+    if (!text_width) {
+        return;
+    }
+    const int32_t x0 = static_cast<int32_t>(
+        extent.width - text_width - padding * 2 - margin);
+    const int32_t y0 = static_cast<int32_t>(margin);
+    overlay_clear_rect(
+        device_context,
+        command_buffer,
+        extent,
+        x0,
+        y0,
+        text_width + padding * 2,
+        text_height + padding * 2,
+        overlay_color(0.0f, 0.0f, 0.0f, 1.0f));
+
+    int32_t pen_x = x0 + static_cast<int32_t>(padding);
+    const int32_t pen_y = y0 + static_cast<int32_t>(padding);
+    const int32_t max_x = x0 + static_cast<int32_t>(padding + text_width);
+    const VkClearColorValue text_color = overlay_color(1.0f, 1.0f, 1.0f, 1.0f);
+    for (char ch : text) {
+        const uint32_t advance = overlay_char_width(ch, scale);
+        if (pen_x + static_cast<int32_t>(advance) > max_x) {
+            break;
+        }
+        if (ch != ' ') {
+            overlay_draw_glyph(
+                device_context,
+                command_buffer,
+                extent,
+                ch,
+                pen_x,
+                pen_y,
+                scale,
+                text_color);
+        }
+        pen_x += static_cast<int32_t>(advance + scale);
+    }
+}
+
+bool overlay_device_functions_available(const DeviceContext& context) {
+    return context.get_swapchain_images_khr && context.queue_submit
+        && context.create_image_view && context.destroy_image_view
+        && context.create_render_pass && context.destroy_render_pass
+        && context.create_framebuffer && context.destroy_framebuffer
+        && context.create_command_pool && context.destroy_command_pool
+        && context.allocate_command_buffers && context.reset_command_buffer
+        && context.begin_command_buffer && context.end_command_buffer
+        && context.cmd_begin_render_pass && context.cmd_end_render_pass
+        && context.cmd_clear_attachments && context.create_semaphore
+        && context.destroy_semaphore;
+}
+
+void destroy_overlay_resources(
+    const DeviceContext& device_context,
+    SwapchainContext& swapchain_context) {
+    auto& overlay = swapchain_context.overlay;
+    for (VkSemaphore semaphore : overlay.signal_semaphores) {
+        if (semaphore != VK_NULL_HANDLE && device_context.destroy_semaphore) {
+            device_context.destroy_semaphore(device_context.device, semaphore, nullptr);
+        }
+    }
+    for (VkFramebuffer framebuffer : overlay.framebuffers) {
+        if (framebuffer != VK_NULL_HANDLE && device_context.destroy_framebuffer) {
+            device_context.destroy_framebuffer(device_context.device, framebuffer, nullptr);
+        }
+    }
+    for (VkImageView image_view : overlay.image_views) {
+        if (image_view != VK_NULL_HANDLE && device_context.destroy_image_view) {
+            device_context.destroy_image_view(device_context.device, image_view, nullptr);
+        }
+    }
+    if (overlay.command_pool != VK_NULL_HANDLE
+        && device_context.destroy_command_pool) {
+        device_context.destroy_command_pool(device_context.device, overlay.command_pool, nullptr);
+    }
+    if (overlay.render_pass != VK_NULL_HANDLE
+        && device_context.destroy_render_pass) {
+        device_context.destroy_render_pass(device_context.device, overlay.render_pass, nullptr);
+    }
+    overlay = {};
+}
+
+bool init_overlay_resources(
+    const DeviceContext& device_context,
+    VkSwapchainKHR swapchain,
+    SwapchainContext& swapchain_context,
+    uint32_t queue_family_index) {
+    auto& overlay = swapchain_context.overlay;
+    if (overlay.ready && overlay.queue_family_index == queue_family_index) {
+        return true;
+    }
+    if (overlay.ready) {
+        destroy_overlay_resources(device_context, swapchain_context);
+    }
+    if (overlay.attempted && overlay.queue_family_index == queue_family_index) {
+        return false;
+    }
+
+    overlay.attempted = true;
+    overlay.queue_family_index = queue_family_index;
+    if (!overlay_enabled() || !overlay_device_functions_available(device_context)
+        || queue_family_index == UINT32_MAX
+        || swapchain_context.image_format == VK_FORMAT_UNDEFINED
+        || swapchain_context.image_extent.width == 0
+        || swapchain_context.image_extent.height == 0
+        || swapchain_context.image_array_layers != 1
+        || !(swapchain_context.image_usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
+        return false;
+    }
+
+    uint32_t image_count = 0;
+    VkResult result = device_context.get_swapchain_images_khr(
+        device_context.device,
+        swapchain,
+        &image_count,
+        nullptr);
+    if (result != VK_SUCCESS || image_count == 0) {
+        return false;
+    }
+    overlay.images.resize(image_count);
+    result = device_context.get_swapchain_images_khr(
+        device_context.device,
+        swapchain,
+        &image_count,
+        overlay.images.data());
+    if ((result != VK_SUCCESS && result != VK_INCOMPLETE) || image_count == 0) {
+        destroy_overlay_resources(device_context, swapchain_context);
+        return false;
+    }
+    overlay.images.resize(image_count);
+
+    VkAttachmentDescription attachment{};
+    attachment.format = swapchain_context.image_format;
+    attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachment.initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentReference color_attachment{};
+    color_attachment.attachment = 0;
+    color_attachment.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color_attachment;
+
+    std::array<VkSubpassDependency, 2> dependencies{};
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[0].dstAccessMask =
+        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+    dependencies[1].srcSubpass = 0;
+    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    VkRenderPassCreateInfo render_pass_info{};
+    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    render_pass_info.attachmentCount = 1;
+    render_pass_info.pAttachments = &attachment;
+    render_pass_info.subpassCount = 1;
+    render_pass_info.pSubpasses = &subpass;
+    render_pass_info.dependencyCount =
+        static_cast<uint32_t>(dependencies.size());
+    render_pass_info.pDependencies = dependencies.data();
+    result = device_context.create_render_pass(
+        device_context.device,
+        &render_pass_info,
+        nullptr,
+        &overlay.render_pass);
+    if (result != VK_SUCCESS) {
+        destroy_overlay_resources(device_context, swapchain_context);
+        return false;
+    }
+
+    overlay.image_views.resize(image_count, VK_NULL_HANDLE);
+    overlay.framebuffers.resize(image_count, VK_NULL_HANDLE);
+    for (uint32_t i = 0; i < image_count; ++i) {
+        VkImageViewCreateInfo view_info{};
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image = overlay.images[i];
+        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format = swapchain_context.image_format;
+        view_info.components = {
+            VK_COMPONENT_SWIZZLE_IDENTITY,
+            VK_COMPONENT_SWIZZLE_IDENTITY,
+            VK_COMPONENT_SWIZZLE_IDENTITY,
+            VK_COMPONENT_SWIZZLE_IDENTITY,
+        };
+        view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        view_info.subresourceRange.baseMipLevel = 0;
+        view_info.subresourceRange.levelCount = 1;
+        view_info.subresourceRange.baseArrayLayer = 0;
+        view_info.subresourceRange.layerCount = 1;
+        result = device_context.create_image_view(
+            device_context.device,
+            &view_info,
+            nullptr,
+            &overlay.image_views[i]);
+        if (result != VK_SUCCESS) {
+            destroy_overlay_resources(device_context, swapchain_context);
+            return false;
+        }
+
+        VkFramebufferCreateInfo framebuffer_info{};
+        framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebuffer_info.renderPass = overlay.render_pass;
+        framebuffer_info.attachmentCount = 1;
+        framebuffer_info.pAttachments = &overlay.image_views[i];
+        framebuffer_info.width = swapchain_context.image_extent.width;
+        framebuffer_info.height = swapchain_context.image_extent.height;
+        framebuffer_info.layers = 1;
+        result = device_context.create_framebuffer(
+            device_context.device,
+            &framebuffer_info,
+            nullptr,
+            &overlay.framebuffers[i]);
+        if (result != VK_SUCCESS) {
+            destroy_overlay_resources(device_context, swapchain_context);
+            return false;
+        }
+    }
+
+    VkCommandPoolCreateInfo pool_info{};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pool_info.queueFamilyIndex = queue_family_index;
+    result = device_context.create_command_pool(
+        device_context.device,
+        &pool_info,
+        nullptr,
+        &overlay.command_pool);
+    if (result != VK_SUCCESS) {
+        destroy_overlay_resources(device_context, swapchain_context);
+        return false;
+    }
+
+    overlay.command_buffers.resize(image_count, VK_NULL_HANDLE);
+    VkCommandBufferAllocateInfo allocate_info{};
+    allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocate_info.commandPool = overlay.command_pool;
+    allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocate_info.commandBufferCount = image_count;
+    result = device_context.allocate_command_buffers(
+        device_context.device,
+        &allocate_info,
+        overlay.command_buffers.data());
+    if (result != VK_SUCCESS) {
+        destroy_overlay_resources(device_context, swapchain_context);
+        return false;
+    }
+
+    overlay.signal_semaphores.resize(image_count, VK_NULL_HANDLE);
+    VkSemaphoreCreateInfo semaphore_info{};
+    semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    for (uint32_t i = 0; i < image_count; ++i) {
+        result = device_context.create_semaphore(
+            device_context.device,
+            &semaphore_info,
+            nullptr,
+            &overlay.signal_semaphores[i]);
+        if (result != VK_SUCCESS) {
+            destroy_overlay_resources(device_context, swapchain_context);
+            return false;
+        }
+    }
+
+    overlay.ready = true;
+    return true;
+}
+
+VkSemaphore submit_overlay_locked(
+    const DeviceContext& device_context,
+    VkSwapchainKHR swapchain,
+    SwapchainContext& swapchain_context,
+    const QueueContext& queue_context,
+    VkQueue queue,
+    uint32_t image_index,
+    const VkPresentInfoKHR* present_info,
+    const std::string& text) {
+    if (!overlay_enabled()
+        || !(queue_context.queue_flags & VK_QUEUE_GRAPHICS_BIT)
+        || !present_info) {
+        return VK_NULL_HANDLE;
+    }
+    if (!init_overlay_resources(
+            device_context,
+            swapchain,
+            swapchain_context,
+            queue_context.queue_family_index)) {
+        return VK_NULL_HANDLE;
+    }
+    auto& overlay = swapchain_context.overlay;
+    if (image_index >= overlay.command_buffers.size()
+        || image_index >= overlay.framebuffers.size()
+        || image_index >= overlay.signal_semaphores.size()) {
+        return VK_NULL_HANDLE;
+    }
+
+    VkCommandBuffer command_buffer = overlay.command_buffers[image_index];
+    VkResult result = device_context.reset_command_buffer(command_buffer, 0);
+    if (result != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+
+    VkCommandBufferBeginInfo begin_info{};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    result = device_context.begin_command_buffer(command_buffer, &begin_info);
+    if (result != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+
+    VkRenderPassBeginInfo render_pass_info{};
+    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    render_pass_info.renderPass = overlay.render_pass;
+    render_pass_info.framebuffer = overlay.framebuffers[image_index];
+    render_pass_info.renderArea.offset = {0, 0};
+    render_pass_info.renderArea.extent = swapchain_context.image_extent;
+    device_context.cmd_begin_render_pass(
+        command_buffer,
+        &render_pass_info,
+        VK_SUBPASS_CONTENTS_INLINE);
+    overlay_draw_text(
+        device_context,
+        command_buffer,
+        swapchain_context.image_extent,
+        text);
+    device_context.cmd_end_render_pass(command_buffer);
+
+    result = device_context.end_command_buffer(command_buffer);
+    if (result != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+
+    std::vector<VkPipelineStageFlags> wait_stages(
+        present_info->waitSemaphoreCount,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    VkSemaphore signal = overlay.signal_semaphores[image_index];
+    VkSubmitInfo submit_info{};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.waitSemaphoreCount = present_info->waitSemaphoreCount;
+    submit_info.pWaitSemaphores = present_info->pWaitSemaphores;
+    submit_info.pWaitDstStageMask =
+        wait_stages.empty() ? nullptr : wait_stages.data();
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &command_buffer;
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = &signal;
+    result = device_context.queue_submit(queue, 1, &submit_info, VK_NULL_HANDLE);
+    return result == VK_SUCCESS ? signal : VK_NULL_HANDLE;
 }
 
 uint64_t live_swapchain_count_locked(VkDevice device) {
@@ -2137,6 +2762,8 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
     context.get_device_proc_addr = next_get_device_proc_addr;
     context.destroy_device = reinterpret_cast<PFN_vkDestroyDevice>(
         next_get_device_proc_addr(*device, "vkDestroyDevice"));
+    context.device_wait_idle = reinterpret_cast<PFN_vkDeviceWaitIdle>(
+        next_get_device_proc_addr(*device, "vkDeviceWaitIdle"));
     context.get_device_queue = reinterpret_cast<PFN_vkGetDeviceQueue>(
         next_get_device_proc_addr(*device, "vkGetDeviceQueue"));
     context.get_device_queue2 = reinterpret_cast<PFN_vkGetDeviceQueue2>(
@@ -2145,8 +2772,48 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
         next_get_device_proc_addr(*device, "vkCreateSwapchainKHR"));
     context.destroy_swapchain_khr = reinterpret_cast<PFN_vkDestroySwapchainKHR>(
         next_get_device_proc_addr(*device, "vkDestroySwapchainKHR"));
+    context.get_swapchain_images_khr =
+        reinterpret_cast<PFN_vkGetSwapchainImagesKHR>(
+            next_get_device_proc_addr(*device, "vkGetSwapchainImagesKHR"));
     context.queue_present_khr = reinterpret_cast<PFN_vkQueuePresentKHR>(
         next_get_device_proc_addr(*device, "vkQueuePresentKHR"));
+    context.queue_submit = reinterpret_cast<PFN_vkQueueSubmit>(
+        next_get_device_proc_addr(*device, "vkQueueSubmit"));
+    context.create_image_view = reinterpret_cast<PFN_vkCreateImageView>(
+        next_get_device_proc_addr(*device, "vkCreateImageView"));
+    context.destroy_image_view = reinterpret_cast<PFN_vkDestroyImageView>(
+        next_get_device_proc_addr(*device, "vkDestroyImageView"));
+    context.create_render_pass = reinterpret_cast<PFN_vkCreateRenderPass>(
+        next_get_device_proc_addr(*device, "vkCreateRenderPass"));
+    context.destroy_render_pass = reinterpret_cast<PFN_vkDestroyRenderPass>(
+        next_get_device_proc_addr(*device, "vkDestroyRenderPass"));
+    context.create_framebuffer = reinterpret_cast<PFN_vkCreateFramebuffer>(
+        next_get_device_proc_addr(*device, "vkCreateFramebuffer"));
+    context.destroy_framebuffer = reinterpret_cast<PFN_vkDestroyFramebuffer>(
+        next_get_device_proc_addr(*device, "vkDestroyFramebuffer"));
+    context.create_command_pool = reinterpret_cast<PFN_vkCreateCommandPool>(
+        next_get_device_proc_addr(*device, "vkCreateCommandPool"));
+    context.destroy_command_pool = reinterpret_cast<PFN_vkDestroyCommandPool>(
+        next_get_device_proc_addr(*device, "vkDestroyCommandPool"));
+    context.allocate_command_buffers =
+        reinterpret_cast<PFN_vkAllocateCommandBuffers>(
+            next_get_device_proc_addr(*device, "vkAllocateCommandBuffers"));
+    context.reset_command_buffer = reinterpret_cast<PFN_vkResetCommandBuffer>(
+        next_get_device_proc_addr(*device, "vkResetCommandBuffer"));
+    context.begin_command_buffer = reinterpret_cast<PFN_vkBeginCommandBuffer>(
+        next_get_device_proc_addr(*device, "vkBeginCommandBuffer"));
+    context.end_command_buffer = reinterpret_cast<PFN_vkEndCommandBuffer>(
+        next_get_device_proc_addr(*device, "vkEndCommandBuffer"));
+    context.cmd_begin_render_pass = reinterpret_cast<PFN_vkCmdBeginRenderPass>(
+        next_get_device_proc_addr(*device, "vkCmdBeginRenderPass"));
+    context.cmd_end_render_pass = reinterpret_cast<PFN_vkCmdEndRenderPass>(
+        next_get_device_proc_addr(*device, "vkCmdEndRenderPass"));
+    context.cmd_clear_attachments = reinterpret_cast<PFN_vkCmdClearAttachments>(
+        next_get_device_proc_addr(*device, "vkCmdClearAttachments"));
+    context.create_semaphore = reinterpret_cast<PFN_vkCreateSemaphore>(
+        next_get_device_proc_addr(*device, "vkCreateSemaphore"));
+    context.destroy_semaphore = reinterpret_cast<PFN_vkDestroySemaphore>(
+        next_get_device_proc_addr(*device, "vkDestroySemaphore"));
     context.set_latency_sleep_mode_nv =
         reinterpret_cast<PFN_vkSetLatencySleepModeNV>(
             next_get_device_proc_addr(*device, "vkSetLatencySleepModeNV"));
@@ -2207,11 +2874,28 @@ VKAPI_ATTR void VKAPI_CALL layer_destroy_device(
     VkDevice device,
     const VkAllocationCallbacks* allocator) {
     PFN_vkDestroyDevice next_destroy_device = nullptr;
+    DeviceContext device_context{};
+    bool has_device_context = false;
     {
         std::lock_guard lock(g_mutex);
         auto it = g_devices.find(device);
         if (it != g_devices.end()) {
             next_destroy_device = it->second.destroy_device;
+            device_context = it->second;
+            has_device_context = true;
+        }
+    }
+
+    if (has_device_context && device_context.device_wait_idle) {
+        device_context.device_wait_idle(device);
+    }
+
+    if (has_device_context) {
+        std::lock_guard lock(g_mutex);
+        for (auto& entry : g_swapchains) {
+            if (entry.second.device == device) {
+                destroy_overlay_resources(device_context, entry.second);
+            }
         }
     }
 
@@ -2311,6 +2995,12 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_swapchain_khr(
         SwapchainContext context{};
         context.device = device;
         context.swapchain_latency_mode = latency_mode_enabled;
+        if (create_info) {
+            context.image_format = create_info->imageFormat;
+            context.image_extent = create_info->imageExtent;
+            context.image_array_layers = create_info->imageArrayLayers;
+            context.image_usage = create_info->imageUsage;
+        }
         g_swapchains[*swapchain] = context;
         live_swapchain_count = live_swapchain_count_locked(device);
     }
@@ -2338,11 +3028,19 @@ VKAPI_ATTR void VKAPI_CALL layer_destroy_swapchain_khr(
     VkSwapchainKHR swapchain,
     const VkAllocationCallbacks* allocator) {
     PFN_vkDestroySwapchainKHR next_destroy_swapchain = nullptr;
+    DeviceContext device_context{};
+    bool has_device_context = false;
     {
         std::lock_guard lock(g_mutex);
         auto it = g_devices.find(device);
         if (it != g_devices.end()) {
             next_destroy_swapchain = it->second.destroy_swapchain_khr;
+            device_context = it->second;
+            has_device_context = true;
+        }
+        auto swapchain_it = g_swapchains.find(swapchain);
+        if (swapchain_it != g_swapchains.end() && has_device_context) {
+            destroy_overlay_resources(device_context, swapchain_it->second);
         }
     }
 
@@ -2376,14 +3074,22 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
     const VkPresentInfoKHR* present_info) {
     VkDevice device = VK_NULL_HANDLE;
     PFN_vkQueuePresentKHR next_queue_present = nullptr;
+    DeviceContext device_context{};
+    QueueContext queue_context{};
+    bool has_device_context = false;
+    bool has_queue_context = false;
     {
         std::lock_guard lock(g_mutex);
         auto queue_it = g_queues.find(queue);
         if (queue_it != g_queues.end()) {
+            queue_context = queue_it->second;
+            has_queue_context = true;
             device = queue_it->second.device;
             auto device_it = g_devices.find(device);
             if (device_it != g_devices.end()) {
                 next_queue_present = device_it->second.queue_present_khr;
+                device_context = device_it->second;
+                has_device_context = true;
             }
         }
     }
@@ -2392,77 +3098,117 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    VkResult result = next_queue_present(queue, present_info);
+    struct PresentObservation {
+        VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+        uint64_t present_count = 0;
+        uint64_t present_frametime_us = 0;
+        uint64_t overlay_fps = 0;
+    };
+    std::vector<PresentObservation> observations;
+    VkSemaphore overlay_signal = VK_NULL_HANDLE;
+    const uint64_t present_time_us = now_monotonic_us();
     if (present_info && present_info->pSwapchains) {
-        const uint64_t present_time_us = now_monotonic_us();
+        observations.reserve(present_info->swapchainCount);
+        std::lock_guard lock(g_mutex);
         for (uint32_t i = 0; i < present_info->swapchainCount; ++i) {
             VkSwapchainKHR swapchain = present_info->pSwapchains[i];
             const uint64_t vulkan_present_id =
                 present_id_for_swapchain(present_info, i);
-            uint64_t present_count = 0;
-            uint64_t present_frametime_us = 0;
-            uint64_t overlay_fps = 0;
-            {
-                std::lock_guard lock(g_mutex);
-                auto swapchain_it = g_swapchains.find(swapchain);
-                if (swapchain_it != g_swapchains.end()) {
-                    auto& swapchain_context = swapchain_it->second;
-                    present_count = ++swapchain_context.present_count;
-                    if (vulkan_present_id) {
-                        swapchain_context.last_vulkan_present_id =
-                            vulkan_present_id;
-                    }
-                    if (swapchain_context.last_present_us
-                        && present_time_us > swapchain_context.last_present_us) {
-                        present_frametime_us =
-                            present_time_us - swapchain_context.last_present_us;
-                    }
-                    swapchain_context.last_present_us = present_time_us;
-                    if (overlay_enabled() && present_frametime_us) {
-                        overlay_fps = median_fps_from_present_frametime_locked(
+            PresentObservation observation{};
+            observation.swapchain = swapchain;
+            auto swapchain_it = g_swapchains.find(swapchain);
+            if (swapchain_it != g_swapchains.end()) {
+                auto& swapchain_context = swapchain_it->second;
+                observation.present_count = ++swapchain_context.present_count;
+                if (vulkan_present_id) {
+                    swapchain_context.last_vulkan_present_id =
+                        vulkan_present_id;
+                }
+                if (swapchain_context.last_present_us
+                    && present_time_us > swapchain_context.last_present_us) {
+                    observation.present_frametime_us =
+                        present_time_us - swapchain_context.last_present_us;
+                }
+                swapchain_context.last_present_us = present_time_us;
+                if (overlay_enabled() && observation.present_frametime_us) {
+                    observation.overlay_fps =
+                        median_fps_from_present_frametime_locked(
                             swapchain_context,
-                            present_frametime_us);
-                    }
+                            observation.present_frametime_us);
+                }
+                if (overlay_enabled() && has_device_context && has_queue_context
+                    && present_info->swapchainCount == 1
+                    && present_info->pImageIndices) {
+                    overlay_signal = submit_overlay_locked(
+                        device_context,
+                        swapchain,
+                        swapchain_context,
+                        queue_context,
+                        queue,
+                        present_info->pImageIndices[i],
+                        present_info,
+                        cached_overlay_text(
+                            observation.overlay_fps,
+                            present_time_us));
                 }
             }
-            if (should_report_counter(present_count)) {
-                send_status_event(
-                    "present",
-                    device,
-                    swapchain,
-                    present_count,
-                    device_telemetry_flags(device));
-            }
-            if (debug_flow_enabled() && should_report_counter(present_count)) {
-                send_flow_state_event(
-                    "present-flow",
-                    device,
-                    swapchain,
-                    queue,
-                    present_count,
-                    result,
-                    -1,
-                    0,
-                    flow_snapshot(device, swapchain));
-            }
-            // Present-pacing FPS works without Reflex; emit it for every present.
-            if (present_frametime_us) {
-                send_present_pacing_sample(
-                    device, swapchain, present_frametime_us, present_count);
-            }
-            if (overlay_fps) {
-                write_overlay_text_file(overlay_fps, present_time_us);
-            }
-            if (timing_queries_enabled()) {
-                query_latency_timing(device, swapchain);
-            } else if (should_report_counter(present_count)) {
-                send_status_event(
-                    "latency-timing-query-disabled",
-                    device,
-                    swapchain,
-                    present_count,
-                    device_telemetry_flags(device));
-            }
+            observations.push_back(observation);
+        }
+    }
+
+    VkPresentInfoKHR overlay_present_info{};
+    const VkPresentInfoKHR* next_present_info = present_info;
+    if (overlay_signal != VK_NULL_HANDLE && present_info) {
+        overlay_present_info = *present_info;
+        overlay_present_info.waitSemaphoreCount = 1;
+        overlay_present_info.pWaitSemaphores = &overlay_signal;
+        next_present_info = &overlay_present_info;
+    }
+
+    VkResult result = next_queue_present(queue, next_present_info);
+    for (const PresentObservation& observation : observations) {
+        VkSwapchainKHR swapchain = observation.swapchain;
+        const uint64_t present_count = observation.present_count;
+        if (should_report_counter(present_count)) {
+            send_status_event(
+                "present",
+                device,
+                swapchain,
+                present_count,
+                device_telemetry_flags(device));
+        }
+        if (debug_flow_enabled() && should_report_counter(present_count)) {
+            send_flow_state_event(
+                "present-flow",
+                device,
+                swapchain,
+                queue,
+                present_count,
+                result,
+                -1,
+                0,
+                flow_snapshot(device, swapchain));
+        }
+        // Present-pacing FPS works without Reflex; emit it for every present.
+        if (observation.present_frametime_us) {
+            send_present_pacing_sample(
+                device,
+                swapchain,
+                observation.present_frametime_us,
+                present_count);
+        }
+        if (observation.overlay_fps) {
+            write_overlay_text_file(observation.overlay_fps, present_time_us);
+        }
+        if (timing_queries_enabled()) {
+            query_latency_timing(device, swapchain);
+        } else if (should_report_counter(present_count)) {
+            send_status_event(
+                "latency-timing-query-disabled",
+                device,
+                swapchain,
+                present_count,
+                device_telemetry_flags(device));
         }
     }
     return result;

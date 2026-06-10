@@ -49,11 +49,11 @@ def _prepare_overlay_paths(env: dict[str, str]) -> None:
 
 
 def _start_overlay_window(env: dict[str, str]) -> None:
-    if str(env.get("PENGUIN_BURNER_OVERLAY_WINDOW") or "").lower() in {
-        "0",
-        "false",
-        "no",
-        "off",
+    if str(env.get("PENGUIN_BURNER_OVERLAY_WINDOW") or "").lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
     }:
         return
     command = [

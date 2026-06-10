@@ -45,6 +45,39 @@ def test_pb_overlay_launcher_execs_with_layer_environment(monkeypatch, tmp_path)
     assert env["PROTON_ENABLE_NVAPI"] == "1"
     assert env[OVERLAY_STATE_ENV] == str(state_path)
     assert env[OVERLAY_TEXT_ENV] == str(text_path)
+    assert not popen_calls
+
+
+def test_pb_overlay_launcher_can_start_debug_overlay_window(monkeypatch, tmp_path) -> None:
+    calls = []
+    popen_calls = []
+    state_path = tmp_path / "overlay-state.txt"
+    text_path = tmp_path / "overlay-text.txt"
+    monkeypatch.setenv(OVERLAY_STATE_ENV, str(state_path))
+    monkeypatch.setenv(OVERLAY_TEXT_ENV, str(text_path))
+    monkeypatch.setenv("PENGUIN_BURNER_OVERLAY_WINDOW", "1")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("LD_PRELOAD", "steam-overlay.so")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/steam/runtime")
+    monkeypatch.setenv("PRESSURE_VESSEL_RUNTIME", "steamrt")
+
+    def fake_execvpe(file, args, env):
+        calls.append((file, args, env))
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "Popen",
+        lambda *args, **kwargs: popen_calls.append((args, kwargs)),
+    )
+
+    try:
+        launcher.main(["game", "--arg"])
+    except RuntimeError:
+        pass
+
+    assert calls
     assert popen_calls
     display_env = popen_calls[0][1]["env"]
     assert display_env["QT_QPA_PLATFORM"] == "xcb"
