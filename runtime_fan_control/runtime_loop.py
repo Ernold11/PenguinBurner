@@ -183,6 +183,7 @@ def run_runtime_fan_control_loop(
     iteration_count = 0
     overlay_publish_failed = False
     adaptive_update_failed = False
+    latency_snapshot_failed = False
 
     def log_with_timestamp(message: str) -> None:
         deps.log(f"{deps.time_strftime('%Y-%m-%d %H:%M:%S')} {message}")
@@ -200,13 +201,16 @@ def run_runtime_fan_control_loop(
         iteration_count += 1
 
         loop_started = deps.time_monotonic()
+        latency_snapshot = None
+        if latency_meter is not None:
+            try:
+                latency_snapshot = latency_meter.snapshot(now=loop_started)
+            except Exception as exc:
+                if not latency_snapshot_failed:
+                    deps.log(f"Latency telemetry snapshot unavailable: {exc}")
+                latency_snapshot_failed = True
         if adaptive_auto_uv_controller is not None:
             try:
-                latency_snapshot = (
-                    latency_meter.snapshot(now=loop_started)
-                    if latency_meter is not None
-                    else None
-                )
                 adaptive_update = adaptive_auto_uv_controller.update(
                     latency_snapshot=latency_snapshot,
                     now_monotonic=loop_started,
@@ -236,7 +240,7 @@ def run_runtime_fan_control_loop(
         )
         if overlay_state_publisher is not None:
             try:
-                overlay_state_publisher.publish()
+                overlay_state_publisher.publish(latency_snapshot=latency_snapshot)
             except Exception as exc:
                 if not overlay_publish_failed:
                     deps.log(f"Overlay state publish unavailable: {exc}")

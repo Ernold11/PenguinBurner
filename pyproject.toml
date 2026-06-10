@@ -65,6 +65,7 @@ penguin-burner-steam-launch-check = "latency_telemetry.steam_launch_check:main"
 penguin-burner-steam-re9-patched-setup = "latency_telemetry.steam_re9_setup:main"
 PB_OVERLAY = "penguin_burner_overlay.launcher:main"
 pb-overlay = "penguin_burner_overlay.launcher:main"
+pb-overlay-text = "penguin_burner_overlay.mangohud_text:main"
 
 [tool.setuptools]
 py-modules = [

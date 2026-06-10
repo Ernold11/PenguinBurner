@@ -24,6 +24,7 @@ def test_overlay_state_round_trips_key_value_file(tmp_path) -> None:
             clock_mhz=2760,
             voltage_mv=875,
             profile_tier="Balanced",
+            present_fps="58",
             profile_tier_key="balanced",
             profile_id="profile-a",
             adaptive=True,
@@ -38,6 +39,7 @@ def test_overlay_state_round_trips_key_value_file(tmp_path) -> None:
     assert values["gpu_index"] == "0"
     assert values["clock_mhz"] == "2760"
     assert values["voltage_mv"] == "875"
+    assert values["present_fps"] == "58"
     assert values["profile_tier"] == "Balanced"
     assert values["profile_tier_key"] == "balanced"
     assert values["profile_id"] == "profile-a"

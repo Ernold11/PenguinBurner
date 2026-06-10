@@ -23,7 +23,7 @@ class OverlayStatePublisher:
     path: str | Path | None = None
     time_ns: Callable[[], int] = time.time_ns
 
-    def publish(self) -> Path:
+    def publish(self, *, latency_snapshot: dict | None = None) -> Path:
         clock_mhz = None
         try:
             clock_mhz = get_core_clock_mhz(
@@ -47,12 +47,16 @@ class OverlayStatePublisher:
         label = str(self.profile_tier or "").strip()
         if not label:
             label = profile_tier_label(self.profile_tier_key) or "Balanced"
+        present_fps = ""
+        if isinstance(latency_snapshot, dict):
+            present_fps = str(latency_snapshot.get("present_fps") or "").strip()
         return write_overlay_state(
             OverlayState(
                 gpu_index=int(self.gpu_index),
                 clock_mhz=clock_mhz,
                 voltage_mv=voltage_mv,
                 profile_tier=label,
+                present_fps=present_fps,
                 profile_tier_key=str(self.profile_tier_key or ""),
                 profile_id=str(self.profile_id or ""),
                 adaptive=bool(self.adaptive),

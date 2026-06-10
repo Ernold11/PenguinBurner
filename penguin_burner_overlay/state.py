@@ -20,6 +20,7 @@ class OverlayState:
     clock_mhz: int | None
     voltage_mv: int | None
     profile_tier: str
+    present_fps: str = ""
     profile_tier_key: str = ""
     profile_id: str = ""
     adaptive: bool = False
@@ -80,6 +81,7 @@ def write_overlay_state(
         "gpu_index": str(int(state.gpu_index)),
         "clock_mhz": _value_text(state.clock_mhz),
         "voltage_mv": _value_text(state.voltage_mv),
+        "present_fps": str(state.present_fps or ""),
         "profile_tier": str(state.profile_tier or ""),
         "profile_tier_key": str(state.profile_tier_key or ""),
         "profile_id": str(state.profile_id or ""),
