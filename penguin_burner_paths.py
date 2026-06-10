@@ -75,7 +75,7 @@ def claim_desktop_user_ownership(
     if ids is None:
         return
     path = Path(path).expanduser()
-    if not _is_under_effective_home(path):
+    if not _is_under_effective_desktop_path(path, uid=ids[0]):
         return
     paths = _ownership_paths(path, recursive=recursive)
     if include_parents:
@@ -101,6 +101,21 @@ def _is_under_effective_home(path: Path) -> bool:
         resolved = path.expanduser().resolve(strict=False)
         return resolved == home or home in resolved.parents
     except OSError:
+        return False
+
+
+def _is_under_effective_desktop_path(path: Path, *, uid: int) -> bool:
+    return _is_under_effective_home(path) or _is_under_effective_runtime_dir(
+        path, uid=uid
+    )
+
+
+def _is_under_effective_runtime_dir(path: Path, *, uid: int) -> bool:
+    try:
+        runtime_dir = (Path("/run/user") / str(int(uid))).resolve(strict=False)
+        resolved = path.expanduser().resolve(strict=False)
+        return resolved == runtime_dir or runtime_dir in resolved.parents
+    except (OSError, ValueError):
         return False
 
 

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import latency_telemetry.receiver as receiver
 from latency_telemetry.receiver import (
     LatencyTelemetryLogger,
@@ -34,6 +36,22 @@ def test_latency_telemetry_meter_reports_present_pacing() -> None:
     assert "gpu-render-p95" not in summary
     assert "input-present-p95" not in summary
     assert "gpu-frame-p95" not in summary
+
+
+def test_latency_telemetry_logger_claims_socket_ownership(tmp_path, monkeypatch) -> None:
+    calls = []
+    socket_path = tmp_path / "runtime" / "latency.sock"
+    monkeypatch.setattr(
+        receiver,
+        "claim_desktop_user_ownership",
+        lambda path, **kwargs: calls.append((Path(path), dict(kwargs))),
+    )
+
+    logger = LatencyTelemetryLogger(paths=[socket_path], log=lambda message: None).start()
+    logger.close()
+
+    assert (socket_path.parent, {"include_parents": True}) in calls
+    assert (socket_path, {}) in calls
 
 
 def test_latency_telemetry_meter_reports_present_fps_stats_over_sample_window() -> None:

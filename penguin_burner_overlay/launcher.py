@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 
 from .state import (
     OVERLAY_ENABLE_ENV,
@@ -31,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     env.setdefault("DXVK_NVAPI_VKREFLEX", "1")
     env.setdefault("PROTON_ENABLE_NVAPI", "1")
     env.setdefault(OVERLAY_STATE_ENV, str(overlay_state_path(env)))
-    env.setdefault(OVERLAY_TEXT_ENV, str(_writable_overlay_text_path(env)))
+    env.setdefault(OVERLAY_TEXT_ENV, str(overlay_text_path(env)))
     _prepare_overlay_paths(env)
     _start_overlay_window(env)
     os.execvpe(args[0], args, env)
@@ -67,34 +66,29 @@ def _start_overlay_window(env: dict[str, str]) -> None:
         str(os.getpid()),
     ]
     try:
-        log_path = _overlay_display_log_path(env)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("ab") as log_file:
+        log_file = None
+        try:
+            log_path = Path(str(env[OVERLAY_TEXT_ENV])).expanduser().with_name(
+                "overlay-display.log"
+            )
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_file = log_path.open("ab")
+        except OSError:
+            pass
+        try:
             subprocess.Popen(
                 command,
                 env=_display_process_env(env),
                 stdin=subprocess.DEVNULL,
-                stdout=log_file,
-                stderr=log_file,
+                stdout=log_file if log_file is not None else subprocess.DEVNULL,
+                stderr=log_file if log_file is not None else subprocess.DEVNULL,
                 start_new_session=True,
             )
+        finally:
+            if log_file is not None:
+                log_file.close()
     except Exception:
         return
-
-
-def _writable_overlay_text_path(env: dict[str, str]) -> Path:
-    path = overlay_text_path(env)
-    if _path_parent_writable(path):
-        return path
-    return Path(tempfile.gettempdir()) / f"penguin-burner-overlay-text-{os.getuid()}.txt"
-
-
-def _path_parent_writable(path: Path) -> bool:
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return False
-    return os.access(path.parent, os.W_OK)
 
 
 def _display_process_env(env: dict[str, str]) -> dict[str, str]:
@@ -118,10 +112,3 @@ def _display_process_env(env: dict[str, str]) -> dict[str, str]:
         elif display_env.get("WAYLAND_DISPLAY"):
             display_env["QT_QPA_PLATFORM"] = "wayland"
     return display_env
-
-
-def _overlay_display_log_path(env: dict[str, str]) -> Path:
-    text_path = Path(str(env.get(OVERLAY_TEXT_ENV) or "")).expanduser()
-    if text_path and _path_parent_writable(text_path):
-        return text_path.with_name("overlay-display.log")
-    return Path(tempfile.gettempdir()) / f"penguin-burner-overlay-display-{os.getuid()}.log"

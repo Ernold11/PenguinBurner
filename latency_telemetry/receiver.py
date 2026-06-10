@@ -12,6 +12,8 @@ import threading
 import time
 from typing import Callable
 
+from penguin_burner_paths import claim_desktop_user_ownership
+
 from .layer_check import DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS
 
 MARKER_INPUT_SAMPLE_BIT = 1 << 6
@@ -749,6 +751,7 @@ class LatencyTelemetryLogger:
     def start(self) -> "LatencyTelemetryLogger":
         for path in self.paths:
             path.parent.mkdir(parents=True, exist_ok=True)
+            claim_desktop_user_ownership(path.parent, include_parents=True)
             if path.exists():
                 path.unlink()
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -758,6 +761,7 @@ class LatencyTelemetryLogger:
                 path.chmod(0o666)
             except OSError:
                 pass
+            claim_desktop_user_ownership(path)
             self._sockets.append((sock, path))
         self._socket = self._sockets[0][0]
         for path in self.paths:

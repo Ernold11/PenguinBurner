@@ -4,7 +4,11 @@ import os
 from pathlib import Path
 import pwd
 
-from penguin_burner_paths import default_user_config_dir, effective_desktop_user_ids
+from penguin_burner_paths import (
+    claim_desktop_user_ownership,
+    default_user_config_dir,
+    effective_desktop_user_ids,
+)
 
 
 def test_config_dir_uses_penguin_burner_home_override(
@@ -46,3 +50,27 @@ def test_effective_desktop_user_ids_ignores_root_target(monkeypatch) -> None:
     monkeypatch.delenv("SUDO_GID", raising=False)
 
     assert effective_desktop_user_ids() is None
+
+
+def test_claim_desktop_user_ownership_allows_runtime_dir(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setenv("SUDO_USER", "desktop")
+    monkeypatch.delenv("SUDO_UID", raising=False)
+    monkeypatch.delenv("SUDO_GID", raising=False)
+    monkeypatch.setattr("penguin_burner_paths.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "penguin_burner_paths.pwd.getpwnam",
+        lambda user: type(
+            "Entry",
+            (),
+            {"pw_uid": 1234, "pw_gid": 5678, "pw_dir": "/home/desktop"},
+        )(),
+    )
+    monkeypatch.setattr(
+        "penguin_burner_paths.os.lchown",
+        lambda path, uid, gid: calls.append((Path(path), uid, gid)),
+    )
+
+    claim_desktop_user_ownership(Path("/run/user/1234/penguin-burner"))
+
+    assert calls == [(Path("/run/user/1234/penguin-burner"), 1234, 5678)]
