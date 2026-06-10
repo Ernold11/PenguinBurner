@@ -25,6 +25,8 @@ RE9_PRESENT_EXTRA_TOKENS = (
     "PROTON_HIDE_NVIDIA_GPU=0",
     "DXVK_NVAPI_VKREFLEX=1",
 )
+PB_OVERLAY_WRAPPER = str(Path.home() / ".local" / "bin" / "PB_OVERLAY")
+RE9_PRESENT_OVERLAY_TOKENS = (PB_OVERLAY_WRAPPER,)
 RE9_PRESENT_LAUNCH_OPTIONS = (
     "PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock "
     "VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/native/latency_layer/build:/home/jp/PenguinBurner/third_party/dxvk-nvapi/build.layer "
@@ -33,11 +35,12 @@ RE9_PRESENT_LAUNCH_OPTIONS = (
     "PROTON_ENABLE_NVAPI=1 "
     "PROTON_HIDE_NVIDIA_GPU=0 "
     "DXVK_NVAPI_VKREFLEX=1 "
+    f"{PB_OVERLAY_WRAPPER} "
     "gamemoderun %command% /WineDetectionEnabled:False"
 )
 
 RE9_PATCHED_COMPAT_TOOL = RE9_PRESENT_COMPAT_TOOL
-RE9_PATCHED_EXTRA_TOKENS = RE9_PRESENT_EXTRA_TOKENS
+RE9_PATCHED_EXTRA_TOKENS = RE9_PRESENT_EXTRA_TOKENS + RE9_PRESENT_OVERLAY_TOKENS
 RE9_PATCHED_LAUNCH_OPTIONS = RE9_PRESENT_LAUNCH_OPTIONS
 
 
@@ -340,7 +343,9 @@ def apply_patched_re9_setup(
 
         launch_check = check_launch_options(
             app_id=RE9_APP_ID,
-            required_tokens=RE9_REQUIRED_TOKENS + RE9_PRESENT_EXTRA_TOKENS,
+            required_tokens=RE9_REQUIRED_TOKENS
+            + RE9_PRESENT_EXTRA_TOKENS
+            + RE9_PRESENT_OVERLAY_TOKENS,
             config_paths=[localconfig_path],
         )
         compat_check = check_compat_tool(

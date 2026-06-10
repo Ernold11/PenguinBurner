@@ -6,6 +6,7 @@ from latency_telemetry.steam_launch_check import (
     check_launch_options,
 )
 from latency_telemetry.steam_re9_setup import (
+    PB_OVERLAY_WRAPPER,
     RE9_PATCHED_COMPAT_TOOL,
     RE9_PATCHED_EXTRA_TOKENS,
     RE9_PATCHED_LAUNCH_OPTIONS,
@@ -93,6 +94,7 @@ def test_set_launch_options_in_localconfig_replaces_re9_only() -> None:
     assert "native/latency_layer/build" in updated
     assert "third_party/dxvk-nvapi/build.layer" in updated
     assert "DXVK_NVAPI_VKREFLEX=1" in updated
+    assert PB_OVERLAY_WRAPPER in updated
     assert '"4180480"' in updated
     assert 'OTHER=1 %command%' in updated
 
