@@ -75,15 +75,15 @@ def test_console_scripts_use_gui_default_and_explicit_cli_names() -> None:
         "latency_telemetry.steam_game_setup:main"
     )
     assert "penguin-burner-steam-re9-patched-setup" not in scripts
-    assert scripts["PB_OVERLAY"] == "penguin_burner_overlay.launcher:main"
-    assert scripts["PENGUIN_BURNER"] == "penguin_burner_overlay.launcher:main"
-    assert scripts["pb-overlay"] == "penguin_burner_overlay.launcher:main"
+    assert scripts["PB_OVERLAY"] == "overlay.launcher:main"
+    assert scripts["PENGUIN_BURNER"] == "overlay.launcher:main"
+    assert scripts["pb-overlay"] == "overlay.launcher:main"
     assert (
         scripts["penguin-burner-overlay-text"]
-        == "penguin_burner_overlay.overlay_text:main"
+        == "overlay.overlay_text:main"
     )
-    assert scripts["pburn-overlay-text"] == "penguin_burner_overlay.overlay_text:main"
-    assert scripts["pb-overlay-text"] == "penguin_burner_overlay.overlay_text:main"
+    assert scripts["pburn-overlay-text"] == "overlay.overlay_text:main"
+    assert scripts["pb-overlay-text"] == "overlay.overlay_text:main"
     assert "penguin_burner" not in scripts
 
 
@@ -94,8 +94,8 @@ def test_package_installs_desktop_launcher_and_icons() -> None:
     packages = set(metadata["tool"]["setuptools"]["packages"])
 
     assert "ui.assets" in packages
-    assert "native_layer/*.json" in package_data["penguin_burner_overlay"]
-    assert "native_layer/*.so" in package_data["penguin_burner_overlay"]
+    assert "native_layer/*.json" in package_data["overlay"]
+    assert "native_layer/*.so" in package_data["overlay"]
     assert data_files["share/applications"] == [
         "packaging/linux/io.github.jpietek.PenguinBurner.desktop"
     ]
@@ -245,7 +245,7 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     assert "runtime_stability_test" in packages
     assert "saved_profile_verification" in packages
     assert "saved_uv_profiles" in packages
-    assert "penguin_burner_overlay" in packages
+    assert "overlay" in packages
 
 
 def test_desktop_launcher_is_english_only_nvidia_gpu_tool() -> None:

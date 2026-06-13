@@ -931,7 +931,7 @@ def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
     _ = app
 
     from ui.window import MainWindow
-    from penguin_burner_overlay.config import ADVANCED_OVERLAY_ITEM_IDS
+    from overlay.config import ADVANCED_OVERLAY_ITEM_IDS
     from ui.components.overlay_config import ITEM_LABELS
 
     monkeypatch.setattr(MainWindow, "_load_profiles", lambda self: None)
@@ -1022,7 +1022,7 @@ def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     _ = app
 
-    from penguin_burner_overlay.config import load_overlay_config
+    from overlay.config import load_overlay_config
     from ui.components.overlay_config import OverlayConfigPanel
 
     config_path = tmp_path / "overlay.toml"
@@ -1053,7 +1053,7 @@ def test_overlay_panel_launch_box_enables_overlay_and_latency(tmp_path) -> None:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     _ = app
 
-    from penguin_burner_overlay.config import STEAM_LAUNCH_OPTION_WITH_LATENCY
+    from overlay.config import STEAM_LAUNCH_OPTION_WITH_LATENCY
     from ui.components.overlay_config import OverlayConfigPanel
 
     panel = OverlayConfigPanel(

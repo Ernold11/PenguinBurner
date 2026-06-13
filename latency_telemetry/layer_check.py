@@ -6,8 +6,8 @@ import shutil
 import subprocess
 from typing import Callable
 
-from penguin_burner_overlay.native_layer import LATENCY_LAYER_NAME
-from penguin_burner_overlay.native_layer import native_layer_dirs
+from overlay.native_layer import LATENCY_LAYER_NAME
+from overlay.native_layer import native_layer_dirs
 
 DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS = "PENGUIN_BURNER %command%"
 _REPO_ROOT = Path(__file__).resolve().parent.parent

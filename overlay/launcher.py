@@ -219,7 +219,7 @@ def _start_overlay_window(env: dict[str, str]) -> None:
     command = [
         sys.executable,
         "-m",
-        "penguin_burner_overlay.display",
+        "overlay.display",
         "--text-file",
         str(env[OVERLAY_TEXT_ENV]),
         "--parent-pid",

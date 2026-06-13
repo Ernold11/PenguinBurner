@@ -13,7 +13,7 @@ OVERLAY_CONFIG_ENV = "PENGUIN_BURNER_OVERLAY_CONFIG"
 STEAM_LAUNCH_OPTION = "PENGUIN_BURNER %command%"
 # Steam launch line that explicitly turns the overlay on and enables the in-game
 # latency meter. PB_OVERLAY / PB_INGAME_LATENCY are the short Steam-launch-line
-# aliases consumed by penguin_burner_overlay.launcher.
+# aliases consumed by overlay.launcher.
 STEAM_LAUNCH_OPTION_WITH_LATENCY = (
     "PB_OVERLAY=1 PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%"
 )

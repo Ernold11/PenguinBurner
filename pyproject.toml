@@ -63,14 +63,14 @@ penguin-burner-import-afterburner-vf = "afterburner.import_vf_curve:main"
 penguin-burner-import-afterburner-fan = "afterburner.import_fan_curve:main"
 penguin-burner-steam-launch-check = "latency_telemetry.steam_launch_check:main"
 penguin-burner-steam-game-setup = "latency_telemetry.steam_game_setup:main"
-PB_OVERLAY = "penguin_burner_overlay.launcher:main"
-PENGUIN_BURNER = "penguin_burner_overlay.launcher:main"
-penguin-burner-overlay = "penguin_burner_overlay.launcher:main"
-pburn-overlay = "penguin_burner_overlay.launcher:main"
-pb-overlay = "penguin_burner_overlay.launcher:main"
-penguin-burner-overlay-text = "penguin_burner_overlay.overlay_text:main"
-pburn-overlay-text = "penguin_burner_overlay.overlay_text:main"
-pb-overlay-text = "penguin_burner_overlay.overlay_text:main"
+PB_OVERLAY = "overlay.launcher:main"
+PENGUIN_BURNER = "overlay.launcher:main"
+penguin-burner-overlay = "overlay.launcher:main"
+pburn-overlay = "overlay.launcher:main"
+pb-overlay = "overlay.launcher:main"
+penguin-burner-overlay-text = "overlay.overlay_text:main"
+pburn-overlay-text = "overlay.overlay_text:main"
+pb-overlay-text = "overlay.overlay_text:main"
 
 [tool.setuptools]
 py-modules = [
@@ -114,7 +114,7 @@ packages = [
   "latency_telemetry",
   "manual_fan_curve_editor",
   "manual_uv_curve_editor",
-  "penguin_burner_overlay",
+  "overlay",
   "runtime_fan_control",
   "runtime_gpu_control",
   "runtime_stability_test",
@@ -130,7 +130,7 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-"penguin_burner_overlay" = [
+"overlay" = [
   "native_layer/*.json",
   "native_layer/*.so",
 ]

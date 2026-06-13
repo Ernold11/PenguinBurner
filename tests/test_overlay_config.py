@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from penguin_burner_overlay.config import ADVANCED_OVERLAY_ITEM_IDS
-from penguin_burner_overlay.config import BASIC_OVERLAY_ITEM_IDS
-from penguin_burner_overlay.config import OVERLAY_ITEM_IDS
-from penguin_burner_overlay.config import OverlayConfig
-from penguin_burner_overlay.config import load_overlay_config
-from penguin_burner_overlay.config import save_overlay_config
-from penguin_burner_overlay.config import OVERLAY_SCALE_OPTIONS
-from penguin_burner_overlay.config import set_overlay_item_enabled
-from penguin_burner_overlay.config import set_overlay_scale
-from penguin_burner_overlay.config import set_overlay_update_interval_s
-from penguin_burner_overlay.config import snap_overlay_scale
+from overlay.config import ADVANCED_OVERLAY_ITEM_IDS
+from overlay.config import BASIC_OVERLAY_ITEM_IDS
+from overlay.config import OVERLAY_ITEM_IDS
+from overlay.config import OverlayConfig
+from overlay.config import load_overlay_config
+from overlay.config import save_overlay_config
+from overlay.config import OVERLAY_SCALE_OPTIONS
+from overlay.config import set_overlay_item_enabled
+from overlay.config import set_overlay_scale
+from overlay.config import set_overlay_update_interval_s
+from overlay.config import snap_overlay_scale
 
 
 def test_overlay_config_defaults_to_hidden_base_items() -> None:

@@ -1,8 +1,7 @@
 from pathlib import Path
 
 from latency_telemetry.steam_launch_check import (
-    RE9_APP_ID,
-    RE9_REQUIRED_TOKENS,
+    DEFAULT_REQUIRED_TOKENS,
     check_compat_tool,
     check_launch_options,
     compat_tool_from_config,
@@ -11,6 +10,10 @@ from latency_telemetry.steam_launch_check import (
     launch_options_from_localconfig,
     main,
 )
+
+# Synthetic app id -- the helpers are game-agnostic, so the tests do not name a
+# real Steam title.
+APP_ID = "1234567"
 
 
 def _localconfig(launch_options: str) -> str:
@@ -25,7 +28,7 @@ def _localconfig(launch_options: str) -> str:
             {{
                 "apps"
                 {{
-                    "{RE9_APP_ID}"
+                    "{APP_ID}"
                     {{
                         "LastPlayed" "1781029254"
                         "LaunchOptions" "{launch_options}"
@@ -60,7 +63,7 @@ def _steam_config(tool_name: str) -> str:
                         "config" ""
                         "priority" "75"
                     }}
-                    "{RE9_APP_ID}"
+                    "{APP_ID}"
                     {{
                         "name" "{tool_name}"
                         "config" ""
@@ -78,20 +81,20 @@ def test_launch_options_from_localconfig_finds_app_block() -> None:
     launch_options = "PENGUIN_BURNER_LATENCY_LAYER=1 %command%"
 
     assert launch_options_from_localconfig(
-        _localconfig(launch_options), RE9_APP_ID
+        _localconfig(launch_options), APP_ID
     ) == launch_options
 
 
-def test_check_launch_options_accepts_current_re9_probe_tokens(tmp_path) -> None:
+def test_check_launch_options_accepts_default_probe_tokens(tmp_path) -> None:
     path = tmp_path / "localconfig.vdf"
     path.write_text(
-        _localconfig(" ".join(RE9_REQUIRED_TOKENS) + " gamemoderun %command%"),
+        _localconfig(" ".join(DEFAULT_REQUIRED_TOKENS) + " gamemoderun %command%"),
         encoding="utf-8",
     )
 
     result = check_launch_options(
-        app_id=RE9_APP_ID,
-        required_tokens=RE9_REQUIRED_TOKENS,
+        app_id=APP_ID,
+        required_tokens=DEFAULT_REQUIRED_TOKENS,
         config_paths=[path],
     )
 
@@ -111,7 +114,7 @@ def test_check_launch_options_reports_steam_overwrite_missing_token(tmp_path) ->
     )
 
     result = check_launch_options(
-        app_id=RE9_APP_ID,
+        app_id=APP_ID,
         required_tokens=("VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency",),
         config_paths=[path],
     )
@@ -137,7 +140,7 @@ def test_default_localconfig_paths_deduplicates_steam_symlink(tmp_path) -> None:
 def test_compat_tool_from_config_finds_app_mapping() -> None:
     assert (
         compat_tool_from_config(
-            _steam_config("Proton-CachyOS Latest"), RE9_APP_ID
+            _steam_config("Proton-CachyOS Latest"), APP_ID
         )
         == "Proton-CachyOS Latest"
     )
@@ -148,7 +151,7 @@ def test_check_compat_tool_reports_wrong_tool(tmp_path) -> None:
     path.write_text(_steam_config("Proton Hotfix"), encoding="utf-8")
 
     result = check_compat_tool(
-        app_id=RE9_APP_ID,
+        app_id=APP_ID,
         expected_tool="Proton-CachyOS Latest",
         config_paths=[path],
     )
@@ -173,13 +176,15 @@ def test_default_steam_config_paths_deduplicates_steam_symlink(tmp_path) -> None
 def test_main_checks_extra_require_and_compat_tool(tmp_path, capsys) -> None:
     localconfig = tmp_path / "localconfig.vdf"
     steam_config = tmp_path / "config.vdf"
-    launch_options = " ".join(RE9_REQUIRED_TOKENS + ("gamemoderun", "%command%"))
+    launch_options = " ".join(DEFAULT_REQUIRED_TOKENS + ("gamemoderun", "%command%"))
     localconfig.write_text(_localconfig(launch_options), encoding="utf-8")
     steam_config.write_text(_steam_config("Proton-CachyOS Latest"), encoding="utf-8")
 
     assert (
         main(
             [
+                "--app-id",
+                APP_ID,
                 "--config",
                 str(localconfig),
                 "--steam-config",

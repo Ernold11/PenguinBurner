@@ -9,7 +9,7 @@ from cli.main_command_routing import (
     route_main_command,
 )
 from penguin_burner_errors import NvmlError
-from penguin_burner_overlay.config import OverlayConfig
+from overlay.config import OverlayConfig
 
 
 def _args(**overrides):

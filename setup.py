@@ -45,7 +45,7 @@ class build_py(_build_py):
         build_root = Path(self.build_lib).parent / "penguinburner-latency-layer"
         if build_root.exists():
             shutil.rmtree(build_root)
-        output_dir = Path(self.build_lib) / "penguin_burner_overlay" / "native_layer"
+        output_dir = Path(self.build_lib) / "overlay" / "native_layer"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         try:

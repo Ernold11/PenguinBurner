@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from penguin_burner_overlay.state import (
+from overlay.state import (
     OVERLAY_STATE_ENV,
     OverlayState,
     overlay_state_path,
@@ -314,7 +314,7 @@ def test_overlay_state_publisher_keeps_cpu_util_sticky_through_sample_gap(
 
 def test_overlay_state_publisher_refreshes_live_overlay_config(tmp_path) -> None:
     import runtime_gpu_control.overlay_state_publisher as overlay_state_publisher
-    from penguin_burner_overlay.config import OverlayConfig
+    from overlay.config import OverlayConfig
 
     class _NvmlSession:
         nvml = None

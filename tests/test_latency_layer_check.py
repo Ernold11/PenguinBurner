@@ -3,8 +3,8 @@ from __future__ import annotations
 import subprocess
 
 from latency_telemetry import layer_check
-from penguin_burner_overlay.native_layer import NATIVE_LAYER_LIBRARY
-from penguin_burner_overlay.native_layer import NATIVE_LAYER_MANIFEST
+from overlay.native_layer import NATIVE_LAYER_LIBRARY
+from overlay.native_layer import NATIVE_LAYER_MANIFEST
 
 
 def test_latency_layer_check_uses_build_tree_layer_path(monkeypatch, tmp_path) -> None:

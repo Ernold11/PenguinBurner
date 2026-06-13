@@ -1,6 +1,6 @@
 """Bridge dxvk-nvapi Reflex marker trace lines into the latency receiver.
 
-The current RE9 path uses stock Proton/DXVK-NVAPI with
+The supported path uses stock Proton/DXVK-NVAPI with
 ``DXVK_NVAPI_LOG_LEVEL=trace``. The PenguinBurner wrapper routes stderr into an
 in-memory FIFO, so dxvk-nvapi's ``NvAPI_D3D_SetLatencyMarker`` trace lines are
 drained by this bridge without compiling or replacing a custom DLL.
@@ -13,8 +13,8 @@ This bridge tails that log, pairs SIMULATION_START (NV marker 0) with
 PRESENT_END (NV marker 5) by frame id, and sends the resulting
 ``sim_to_present_us`` span to the PenguinBurner latency socket as a
 ``marker-proxy`` timing sample. When the title also emits INPUT_SAMPLE
-(NV marker 6) -- the full Reflex PCL instrumentation, present in titles like
-Quake II RTX but not in RE9/007 -- the bridge additionally pairs it with the
+(NV marker 6) -- the full Reflex PCL instrumentation, present in some titles
+but not all -- the bridge additionally pairs it with the
 present to report ``input_to_present_us`` (the true input-to-present Reflex
 lag) and ``input_to_oob_present_us`` (input through the frame-generation hold). The existing receiver -> overlay-state
 publisher -> Vulkan overlay path then surfaces it as ``latency_ms`` with no
@@ -31,7 +31,7 @@ software-measurable proxy to click-to-photon: it spans real timestamps from
 input/simulation up to the actual hand-off to the display, omitting only the
 two unmeasurable ends (peripheral input and physical scanout/panel).
 
-Experimental and opt-in; see docs/pc-latency-windows-tools-findings.md.
+Experimental and opt-in.
 """
 
 from __future__ import annotations
@@ -303,8 +303,8 @@ def run(
                 )
             continue
         if marker == NV_MARKER_INPUT_SAMPLE:
-            # Emitted by titles with full Reflex PCL markers (e.g. Quake II RTX),
-            # right before SIMULATION_START. Anchors the true input-to-present lag.
+            # Emitted by titles with full Reflex PCL markers, right before
+            # SIMULATION_START. Anchors the true input-to-present lag.
             if frame not in pending_input:
                 input_order.append(frame)
             pending_input[frame] = t_us
@@ -363,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
             "Bridge dxvk-nvapi trace marker records into the latency socket."
         )
     )
-    default_log = Path.home() / "steam-3764200.log"
+    default_log = Path.home() / ".cache" / "penguin-burner" / "nvapi-trace.fifo"
     parser.add_argument("--log", type=Path, default=default_log)
     parser.add_argument("--poll-interval", type=float, default=0.25)
     parser.add_argument(

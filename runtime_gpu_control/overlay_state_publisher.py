@@ -5,11 +5,11 @@ from pathlib import Path
 import time
 from typing import Callable
 
-from penguin_burner_overlay.config import DEFAULT_OVERLAY_UPDATE_INTERVAL_S
-from penguin_burner_overlay.config import MAX_OVERLAY_UPDATE_INTERVAL_S
-from penguin_burner_overlay.config import MIN_OVERLAY_UPDATE_INTERVAL_S
-from penguin_burner_overlay.config import load_overlay_config
-from penguin_burner_overlay.state import OverlayState, write_overlay_state
+from overlay.config import DEFAULT_OVERLAY_UPDATE_INTERVAL_S
+from overlay.config import MAX_OVERLAY_UPDATE_INTERVAL_S
+from overlay.config import MIN_OVERLAY_UPDATE_INTERVAL_S
+from overlay.config import load_overlay_config
+from overlay.state import OverlayState, write_overlay_state
 from saved_uv_profiles.profile_tiers import profile_tier_label
 
 from .live_gpu_telemetry_text import get_core_clock_mhz

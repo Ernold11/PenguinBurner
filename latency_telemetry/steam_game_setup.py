@@ -9,7 +9,6 @@ import time
 
 from .steam_launch_check import (
     PENGUIN_BURNER_WRAPPER,
-    RE9_APP_ID,
     check_compat_tool,
     check_launch_options,
     default_localconfig_paths,
@@ -24,12 +23,6 @@ EXCLUDED_INSTALLED_APP_NAME_PREFIXES = (
     "Steam Linux Runtime",
     "Steamworks Common Redistributables",
 )
-FF7_REBIRTH_APP_ID = "2909400"
-FIRST_LIGHT_APP_ID = "3768760"
-HL2_RTX_APP_ID = "2477290"
-LEGO_BATMAN_APP_ID = "2215200"
-CRASH_4_APP_ID = "1378990"
-QUAKE_II_RTX_APP_ID = "1089130"
 GENERIC_REQUIRED_TOKENS = (PENGUIN_BURNER_WRAPPER,)
 
 # The experimental in-game-latency toggle. Present in the launch line, it tells
@@ -48,54 +41,25 @@ class SteamGamePreset:
     key: str
     name: str
     app_id: str
-    disable_wine_detection: bool = True
+    # Adds ``/WineDetectionEnabled:False`` to the launch line. Only some engines
+    # (e.g. RE Engine titles) need it; off by default so the generic path stays
+    # game-agnostic. Opt in per app with --disable-wine-detection.
+    disable_wine_detection: bool = False
 
 
-RE9_PRESET = SteamGamePreset(
-    key="re9",
-    name="Resident Evil Requiem",
-    app_id=RE9_APP_ID,
-)
-FF7_REBIRTH_PRESET = SteamGamePreset(
-    key="ff7-rebirth",
-    name="FINAL FANTASY VII REBIRTH",
-    app_id=FF7_REBIRTH_APP_ID,
-)
-FIRST_LIGHT_PRESET = SteamGamePreset(
-    key="007-first-light",
-    name="007 First Light",
-    app_id=FIRST_LIGHT_APP_ID,
-)
-HL2_RTX_PRESET = SteamGamePreset(
-    key="hl2-rtx",
-    name="Half-Life 2 RTX",
-    app_id=HL2_RTX_APP_ID,
-)
-LEGO_BATMAN_PRESET = SteamGamePreset(
-    key="lego-batman",
-    name="LEGO Batman: Legacy of the Dark Knight",
-    app_id=LEGO_BATMAN_APP_ID,
-)
-CRASH_4_PRESET = SteamGamePreset(
-    key="crash-4",
-    name="Crash Bandicoot 4: It's About Time",
-    app_id=CRASH_4_APP_ID,
-)
-QUAKE_II_RTX_PRESET = SteamGamePreset(
-    key="quake-ii-rtx",
-    name="Quake II RTX",
-    app_id=QUAKE_II_RTX_APP_ID,
-)
-STEAM_GAME_PRESETS = (
-    RE9_PRESET,
-    FF7_REBIRTH_PRESET,
-    FIRST_LIGHT_PRESET,
-    HL2_RTX_PRESET,
-    LEGO_BATMAN_PRESET,
-    CRASH_4_PRESET,
-    QUAKE_II_RTX_PRESET,
-)
-STEAM_GAME_PRESETS_BY_KEY = {preset.key: preset for preset in STEAM_GAME_PRESETS}
+def game_preset(
+    app_id: str,
+    *,
+    name: str | None = None,
+    disable_wine_detection: bool = False,
+) -> SteamGamePreset:
+    """Build a preset for an arbitrary Steam app id, no game hardcoded."""
+    return SteamGamePreset(
+        key=f"app-{app_id}",
+        name=name or app_id,
+        app_id=app_id,
+        disable_wine_detection=disable_wine_detection,
+    )
 
 
 @dataclass(frozen=True)
@@ -170,11 +134,11 @@ def running_steam_processes() -> tuple[str, ...]:
         [
             "pgrep",
             "-af",
+            # Generic Steam/Proton/Wine markers -- no specific game is named, so
+            # this catches any running title without a hardcoded list.
             (
-                "steam|steamwebhelper|wineserver|SteamLaunch|re9|Resident|"
-                "BIOHAZARD|ff7rebirth|007 First Light|engine.exe|hl2|"
-                "Half-Life 2|LEGO Batman|CrashBandicoot4|Crash Bandicoot|"
-                "quake2rtx|Quake II RTX"
+                "steam|steamwebhelper|wineserver|SteamLaunch|"
+                "proton|wine64-preloader|reaper"
             ),
         ],
         check=False,
@@ -655,7 +619,7 @@ def _write_with_backup(path: Path, text: str) -> Path:
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 # In-memory trace FIFO the wrapper writes to and the bridge drains -- matches
-# penguin_burner_overlay.launcher.trace_fifo_path. No on-disk Proton log.
+# overlay.launcher.trace_fifo_path. No on-disk Proton log.
 NVAPI_TRACE_FIFO_PATH = Path.home() / ".cache" / "penguin-burner" / "nvapi-trace.fifo"
 _BRIDGE_SERVICE_NAME = "pb-latency-bridge.service"
 
@@ -819,21 +783,34 @@ def apply_steam_game_setup(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Apply PenguinBurner Steam launch configuration for supported games."
+            "Apply PenguinBurner Steam launch configuration to Steam apps."
         )
     )
     parser.add_argument(
-        "--game",
+        "--app-id",
         action="append",
-        choices=tuple(STEAM_GAME_PRESETS_BY_KEY),
         default=None,
-        help="Game preset to update. May be repeated. Defaults to all supported games.",
+        help="Steam numeric app id to update. May be repeated.",
+    )
+    parser.add_argument(
+        "--name",
+        default=None,
+        help="Optional display name for a single --app-id target.",
+    )
+    parser.add_argument(
+        "--disable-wine-detection",
+        action="store_true",
+        help=(
+            "Append /WineDetectionEnabled:False to the launch line (only some "
+            "engines need it; applies to --app-id targets)."
+        ),
     )
     parser.add_argument(
         "--installed",
         action="store_true",
         help=(
-            "Update every installed non-tool Steam app discovered from app manifests."
+            "Update every installed non-tool Steam app discovered from app "
+            "manifests. This is the default when no --app-id is given."
         ),
     )
     parser.add_argument("--localconfig", type=Path, default=None)
@@ -890,13 +867,22 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         results = []
-        if args.installed and args.game:
-            raise SteamConfigError("--installed cannot be combined with --game.")
-        if args.installed:
-            presets = installed_steam_game_presets()
+        if args.installed and args.app_id:
+            raise SteamConfigError("--installed cannot be combined with --app-id.")
+        if args.name and (not args.app_id or len(args.app_id) != 1):
+            raise SteamConfigError("--name requires exactly one --app-id.")
+        if args.app_id:
+            presets = [
+                game_preset(
+                    app_id,
+                    name=args.name if len(args.app_id) == 1 else None,
+                    disable_wine_detection=args.disable_wine_detection,
+                )
+                for app_id in args.app_id
+            ]
         else:
-            game_keys = args.game or [preset.key for preset in STEAM_GAME_PRESETS]
-            presets = [STEAM_GAME_PRESETS_BY_KEY[game_key] for game_key in game_keys]
+            # No explicit app id: fall back to every installed non-tool app.
+            presets = installed_steam_game_presets()
         for preset in presets:
             results.append(
                 apply_steam_game_setup(

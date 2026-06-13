@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from penguin_burner_overlay import launcher
-from penguin_burner_overlay.config import OVERLAY_CONFIG_ENV
-from penguin_burner_overlay.config import OverlayConfig
-from penguin_burner_overlay.config import save_overlay_config
-from penguin_burner_overlay.native_layer import NATIVE_LAYER_DIR_ENV
-from penguin_burner_overlay.native_layer import NATIVE_LAYER_LIBRARY
-from penguin_burner_overlay.native_layer import NATIVE_LAYER_MANIFEST
-from penguin_burner_overlay.state import (
+from overlay import launcher
+from overlay.config import OVERLAY_CONFIG_ENV
+from overlay.config import OverlayConfig
+from overlay.config import save_overlay_config
+from overlay.native_layer import NATIVE_LAYER_DIR_ENV
+from overlay.native_layer import NATIVE_LAYER_LIBRARY
+from overlay.native_layer import NATIVE_LAYER_MANIFEST
+from overlay.state import (
     OVERLAY_ENABLE_ENV_ALIAS,
     OVERLAY_ENABLE_ENV,
     OVERLAY_STATE_ENV,

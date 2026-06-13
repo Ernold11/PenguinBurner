@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import penguin_burner_overlay.native_layer as native_layer
-from penguin_burner_overlay.native_layer import NATIVE_LAYER_DIR_ENV
-from penguin_burner_overlay.native_layer import NATIVE_LAYER_LIBRARY
-from penguin_burner_overlay.native_layer import NATIVE_LAYER_MANIFEST
-from penguin_burner_overlay.native_layer import native_layer_dirs
+import overlay.native_layer as native_layer
+from overlay.native_layer import NATIVE_LAYER_DIR_ENV
+from overlay.native_layer import NATIVE_LAYER_LIBRARY
+from overlay.native_layer import NATIVE_LAYER_MANIFEST
+from overlay.native_layer import native_layer_dirs
 
 
 def test_native_layer_dirs_prefers_explicit_installed_layer(tmp_path) -> None:

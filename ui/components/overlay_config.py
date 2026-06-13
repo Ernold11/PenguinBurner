@@ -9,22 +9,22 @@ from adaptive_target_fps import (
     adaptive_target_fps_from_env,
 )
 from cli.runtime_config_file import persist_adaptive_target_fps_to_runtime_config
-from penguin_burner_overlay.config import ADVANCED_OVERLAY_ITEM_IDS
-from penguin_burner_overlay.config import BASIC_OVERLAY_ITEM_IDS
-from penguin_burner_overlay.config import STEAM_LAUNCH_OPTION_WITH_LATENCY
-from penguin_burner_overlay.config import MAX_OVERLAY_UPDATE_INTERVAL_S
-from penguin_burner_overlay.config import MIN_OVERLAY_UPDATE_INTERVAL_S
-from penguin_burner_overlay.config import OVERLAY_SCALE_OPTIONS
-from penguin_burner_overlay.config import load_overlay_config
-from penguin_burner_overlay.config import save_overlay_config
-from penguin_burner_overlay.config import set_overlay_enabled
-from penguin_burner_overlay.config import set_overlay_item_enabled
-from penguin_burner_overlay.config import set_overlay_scale
-from penguin_burner_overlay.config import set_overlay_update_interval_s
-from penguin_burner_overlay.config import snap_overlay_scale
-from penguin_burner_overlay.overlay_text import SAMPLE_OVERLAY_VALUES
-from penguin_burner_overlay.overlay_text import preview_overlay_text
-from penguin_burner_overlay.state import read_overlay_state
+from overlay.config import ADVANCED_OVERLAY_ITEM_IDS
+from overlay.config import BASIC_OVERLAY_ITEM_IDS
+from overlay.config import STEAM_LAUNCH_OPTION_WITH_LATENCY
+from overlay.config import MAX_OVERLAY_UPDATE_INTERVAL_S
+from overlay.config import MIN_OVERLAY_UPDATE_INTERVAL_S
+from overlay.config import OVERLAY_SCALE_OPTIONS
+from overlay.config import load_overlay_config
+from overlay.config import save_overlay_config
+from overlay.config import set_overlay_enabled
+from overlay.config import set_overlay_item_enabled
+from overlay.config import set_overlay_scale
+from overlay.config import set_overlay_update_interval_s
+from overlay.config import snap_overlay_scale
+from overlay.overlay_text import SAMPLE_OVERLAY_VALUES
+from overlay.overlay_text import preview_overlay_text
+from overlay.state import read_overlay_state
 
 
 ITEM_LABELS = {

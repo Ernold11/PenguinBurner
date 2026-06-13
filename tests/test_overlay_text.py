@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from penguin_burner_overlay.config import OverlayConfig
-from penguin_burner_overlay.overlay_text import format_overlay_text
-from penguin_burner_overlay.overlay_text import preview_overlay_text
+from overlay.config import OverlayConfig
+from overlay.overlay_text import format_overlay_text
+from overlay.overlay_text import preview_overlay_text
 
 
 def test_overlay_text_formats_compact_line_with_explicit_fg_fps() -> None:

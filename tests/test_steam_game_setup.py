@@ -2,31 +2,29 @@ from pathlib import Path
 
 from latency_telemetry.steam_launch_check import (
     PENGUIN_BURNER_WRAPPER,
-    RE9_APP_ID,
     check_compat_tool,
     check_launch_options,
 )
 from latency_telemetry.steam_game_setup import (
-    CRASH_4_APP_ID,
-    CRASH_4_PRESET,
     DEFAULT_CACHYOS_COMPAT_TOOL,
-    FIRST_LIGHT_APP_ID,
-    FIRST_LIGHT_PRESET,
-    HL2_RTX_APP_ID,
-    HL2_RTX_PRESET,
-    LEGO_BATMAN_APP_ID,
-    LEGO_BATMAN_PRESET,
-    QUAKE_II_RTX_APP_ID,
-    QUAKE_II_RTX_PRESET,
-    RE9_PRESET,
-    STEAM_GAME_PRESETS_BY_KEY,
     SteamConfigError,
     apply_steam_game_setup,
     build_game_launch_options,
+    game_preset,
     installed_steam_game_presets,
     preferred_cachyos_compat_tool_name,
     set_compat_tool_in_config,
     set_launch_options_in_localconfig,
+)
+
+# Synthetic app ids and presets -- the setup machinery is game-agnostic, so the
+# tests never name a real Steam title. disable_wine_detection is exercised here
+# to keep coverage of the optional /WineDetectionEnabled:False suffix.
+APP_ID = "1234567"
+OTHER_APP_ID = "7654321"
+PRESET = game_preset(APP_ID, name="Test Game", disable_wine_detection=True)
+OTHER_PRESET = game_preset(
+    OTHER_APP_ID, name="Other Test Game", disable_wine_detection=True
 )
 
 
@@ -42,7 +40,7 @@ def _localconfig(launch_options: str) -> str:
             {{
                 "apps"
                 {{
-                    "{RE9_APP_ID}"
+                    "{APP_ID}"
                     {{
                         "LastPlayed" "1781029254"
                         "LaunchOptions" "{launch_options}"
@@ -129,7 +127,7 @@ def _steam_config(tool_name: str) -> str:
                         "config" ""
                         "priority" "75"
                     }}
-                    "{RE9_APP_ID}"
+                    "{APP_ID}"
                     {{
                         "name" "{tool_name}"
                         "config" ""
@@ -182,28 +180,28 @@ def _pin_cachyos_tool(
     )
 
 
-def test_requested_games_are_supported_presets() -> None:
-    expected = {
-        "hl2-rtx": (HL2_RTX_PRESET, HL2_RTX_APP_ID),
-        "lego-batman": (LEGO_BATMAN_PRESET, LEGO_BATMAN_APP_ID),
-        "crash-4": (CRASH_4_PRESET, CRASH_4_APP_ID),
-        "quake-ii-rtx": (QUAKE_II_RTX_PRESET, QUAKE_II_RTX_APP_ID),
-    }
-
-    for key, (preset, app_id) in expected.items():
-        assert STEAM_GAME_PRESETS_BY_KEY[key] == preset
-        assert preset.app_id == app_id
+def test_game_preset_builds_arbitrary_app_id() -> None:
+    preset = game_preset("9876543", name="Some Game", disable_wine_detection=True)
+    assert preset.app_id == "9876543"
+    assert preset.name == "Some Game"
+    assert preset.key == "app-9876543"
     assert build_game_launch_options(
         preset,
         ingame_latency=True,
     ) == "PB_INGAME_LATENCY=1 PENGUIN_BURNER %command% /WineDetectionEnabled:False"
 
 
-def test_set_launch_options_in_localconfig_replaces_re9_only() -> None:
-    launch_options = build_game_launch_options(RE9_PRESET)
+def test_game_preset_defaults_to_no_wine_detection_suffix() -> None:
+    preset = game_preset("9876543")
+    assert preset.name == "9876543"
+    assert build_game_launch_options(preset) == "PENGUIN_BURNER %command%"
+
+
+def test_set_launch_options_in_localconfig_replaces_target_app_only() -> None:
+    launch_options = build_game_launch_options(PRESET)
     updated, changed = set_launch_options_in_localconfig(
         _localconfig("OLD=1 %command%"),
-        app_id=RE9_APP_ID,
+        app_id=APP_ID,
         launch_options=launch_options,
     )
 
@@ -219,8 +217,8 @@ def test_set_launch_options_in_localconfig_replaces_re9_only() -> None:
 
 def test_set_launch_options_in_localconfig_inserts_missing_value() -> None:
     updated, changed = set_launch_options_in_localconfig(
-        _localconfig_without_launch_options(FIRST_LIGHT_APP_ID),
-        app_id=FIRST_LIGHT_APP_ID,
+        _localconfig_without_launch_options(OTHER_APP_ID),
+        app_id=OTHER_APP_ID,
         launch_options="PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%",
     )
 
@@ -244,10 +242,10 @@ def test_set_launch_options_in_localconfig_inserts_missing_app_block() -> None:
     assert 'OTHER=1 %command%' in updated
 
 
-def test_set_compat_tool_in_config_replaces_re9_only() -> None:
+def test_set_compat_tool_in_config_replaces_target_app_only() -> None:
     updated, changed = set_compat_tool_in_config(
         _steam_config("Proton-CachyOS Latest"),
-        app_id=RE9_APP_ID,
+        app_id=APP_ID,
         compat_tool=DEFAULT_CACHYOS_COMPAT_TOOL,
     )
 
@@ -259,12 +257,12 @@ def test_set_compat_tool_in_config_replaces_re9_only() -> None:
 def test_set_compat_tool_in_config_inserts_missing_app_mapping() -> None:
     updated, changed = set_compat_tool_in_config(
         _steam_config_without_app_mapping(),
-        app_id=FIRST_LIGHT_APP_ID,
+        app_id=OTHER_APP_ID,
         compat_tool="proton-cachyos-11.0-20260521-slr-x86_64",
     )
 
     assert changed
-    assert f'"{FIRST_LIGHT_APP_ID}"' in updated
+    assert f'"{OTHER_APP_ID}"' in updated
     assert '"name"\t\t"proton-cachyos-11.0-20260521-slr-x86_64"' in updated
     assert '"priority"\t\t"250"' in updated
 
@@ -352,7 +350,7 @@ def test_installed_steam_game_presets_skip_steam_tools(tmp_path) -> None:
     assert presets[0].key == "installed-1"
 
 
-def test_apply_game_setup_updates_re9_files_and_writes_backups(
+def test_apply_game_setup_updates_files_and_writes_backups(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -376,7 +374,7 @@ def test_apply_game_setup_updates_re9_files_and_writes_backups(
     steam_config.write_text(_steam_config("Proton-CachyOS Latest"), encoding="utf-8")
 
     result = apply_steam_game_setup(
-        RE9_PRESET,
+        PRESET,
         localconfig_path=localconfig,
         steam_config_path=steam_config,
         check_running=False,
@@ -389,12 +387,12 @@ def test_apply_game_setup_updates_re9_files_and_writes_backups(
     assert result.localconfig_backup.exists()
     assert result.steam_config_backup.exists()
     assert check_launch_options(
-        app_id=RE9_APP_ID,
+        app_id=APP_ID,
         required_tokens=(PENGUIN_BURNER_WRAPPER,),
         config_paths=[localconfig],
     ).ok
     assert check_compat_tool(
-        app_id=RE9_APP_ID,
+        app_id=APP_ID,
         expected_tool=DEFAULT_CACHYOS_COMPAT_TOOL,
         config_paths=[steam_config],
     ).ok
@@ -415,7 +413,7 @@ def test_apply_game_setup_refuses_when_steam_is_running(
 
     try:
         apply_steam_game_setup(
-            RE9_PRESET,
+            PRESET,
             localconfig_path=localconfig,
             steam_config_path=steam_config,
         )
@@ -461,7 +459,7 @@ def test_apply_game_setup_waits_until_steam_exits(
     )
 
     result = apply_steam_game_setup(
-        RE9_PRESET,
+        PRESET,
         localconfig_path=localconfig,
         steam_config_path=steam_config,
         wait=True,
@@ -472,7 +470,7 @@ def test_apply_game_setup_waits_until_steam_exits(
     assert result.launch_options_changed
     assert result.compat_tool_changed
     assert check_launch_options(
-        app_id=RE9_APP_ID,
+        app_id=APP_ID,
         required_tokens=(PENGUIN_BURNER_WRAPPER,),
         config_paths=[localconfig],
     ).ok
@@ -491,7 +489,7 @@ def test_apply_game_setup_wait_timeout_refuses(tmp_path, monkeypatch) -> None:
 
     try:
         apply_steam_game_setup(
-            RE9_PRESET,
+            PRESET,
             localconfig_path=localconfig,
             steam_config_path=steam_config,
             wait=True,
@@ -513,7 +511,7 @@ def test_apply_game_setup_dry_run_does_not_write(tmp_path, monkeypatch) -> None:
     steam_config.write_text(_steam_config("Proton-CachyOS Latest"), encoding="utf-8")
 
     result = apply_steam_game_setup(
-        RE9_PRESET,
+        PRESET,
         localconfig_path=localconfig,
         steam_config_path=steam_config,
         dry_run=True,
@@ -528,7 +526,7 @@ def test_apply_game_setup_dry_run_does_not_write(tmp_path, monkeypatch) -> None:
 
 
 def test_build_launch_options_default_has_no_trace() -> None:
-    opts = build_game_launch_options(RE9_PRESET, ingame_latency=False)
+    opts = build_game_launch_options(PRESET, ingame_latency=False)
     assert "DXVK_NVAPI_LOG_LEVEL=trace" not in opts
     assert "PROTON_LOG=1" not in opts
     assert "VK_ADD_IMPLICIT_LAYER_PATH" not in opts
@@ -538,17 +536,17 @@ def test_build_launch_options_default_has_no_trace() -> None:
 
 
 def test_build_launch_options_experimental_adds_toggle_before_wrapper() -> None:
-    opts = build_game_launch_options(RE9_PRESET, ingame_latency=True)
+    opts = build_game_launch_options(PRESET, ingame_latency=True)
     # The trace env lives in the wrapper, not the Steam line; the line only
     # carries the toggle that tells the wrapper to enable trace.
     assert "DXVK_NVAPI_LOG_LEVEL=trace" not in opts
     assert "PB_INGAME_LATENCY=1" in opts
     assert opts.index("PB_INGAME_LATENCY=1") < opts.index(PENGUIN_BURNER_WRAPPER)
-    assert opts != build_game_launch_options(RE9_PRESET, ingame_latency=False)
+    assert opts != build_game_launch_options(PRESET, ingame_latency=False)
 
 
 def test_build_launch_options_overlay_adds_short_toggle_before_wrapper() -> None:
-    opts = build_game_launch_options(RE9_PRESET, ingame_latency=True, overlay=True)
+    opts = build_game_launch_options(PRESET, ingame_latency=True, overlay=True)
 
     assert opts.startswith(
         "PENGUIN_BURNER_OVERLAY=1 PB_OVERLAY=1 "
@@ -574,7 +572,7 @@ def test_apply_experimental_writes_wrapper_and_verifies(tmp_path, monkeypatch) -
     steam_config.write_text(_steam_config("Proton-CachyOS Latest"), encoding="utf-8")
 
     result = apply_steam_game_setup(
-        RE9_PRESET,
+        PRESET,
         localconfig_path=localconfig,
         steam_config_path=steam_config,
         check_running=False,
@@ -605,7 +603,7 @@ def test_apply_default_removes_bridge_service(tmp_path, monkeypatch) -> None:
     steam_config.write_text(_steam_config("Proton-CachyOS Latest"), encoding="utf-8")
 
     apply_steam_game_setup(
-        RE9_PRESET,
+        PRESET,
         localconfig_path=localconfig,
         steam_config_path=steam_config,
         check_running=False,
@@ -616,7 +614,7 @@ def test_apply_default_removes_bridge_service(tmp_path, monkeypatch) -> None:
     assert installed == ["off"]
 
 
-def test_apply_first_light_setup_adds_trace_wrapper_and_mapping(
+def test_apply_second_app_setup_adds_trace_wrapper_and_mapping(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -634,28 +632,28 @@ def test_apply_first_light_setup_adds_trace_wrapper_and_mapping(
     localconfig = tmp_path / "localconfig.vdf"
     steam_config = tmp_path / "config.vdf"
     localconfig.write_text(
-        _localconfig_without_launch_options(FIRST_LIGHT_APP_ID),
+        _localconfig_without_launch_options(OTHER_APP_ID),
         encoding="utf-8",
     )
     steam_config.write_text(_steam_config_without_app_mapping(), encoding="utf-8")
 
     result = apply_steam_game_setup(
-        FIRST_LIGHT_PRESET,
+        OTHER_PRESET,
         localconfig_path=localconfig,
         steam_config_path=steam_config,
         check_running=False,
         ingame_latency=True,
     )
 
-    assert result.game_name == "007 First Light"
-    assert result.app_id == FIRST_LIGHT_APP_ID
+    assert result.game_name == "Other Test Game"
+    assert result.app_id == OTHER_APP_ID
     assert result.compat_tool == tool_name
     written = localconfig.read_text(encoding="utf-8")
     assert "PB_INGAME_LATENCY=1" in written
     assert PENGUIN_BURNER_WRAPPER in written
     assert "DXVK_NVAPI_LOG_LEVEL=trace" not in written
     assert check_compat_tool(
-        app_id=FIRST_LIGHT_APP_ID,
+        app_id=OTHER_APP_ID,
         expected_tool=tool_name,
         config_paths=[steam_config],
     ).ok
@@ -682,7 +680,7 @@ def test_apply_overlay_setup_writes_short_overlay_toggle(
     steam_config.write_text(_steam_config("Proton-CachyOS Latest"), encoding="utf-8")
 
     result = apply_steam_game_setup(
-        RE9_PRESET,
+        PRESET,
         localconfig_path=localconfig,
         steam_config_path=steam_config,
         check_running=False,

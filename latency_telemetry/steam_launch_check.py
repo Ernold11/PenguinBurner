@@ -2,31 +2,17 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-import os
 from pathlib import Path
 import re
 
 
-RE9_APP_ID = "3764200"
 # Clean command name resolved via PATH, so the Steam launch line stays readable
 # instead of carrying a hardcoded /home/<user>/.local/bin/... path.
 PENGUIN_BURNER_WRAPPER = "PENGUIN_BURNER"
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-
-RE9_LATENCY_SOCKET_PATH = (
-    f"/run/user/{os.getuid()}/penguin-burner/latency.sock"
-)
-# Keep both implicit-layer manifests discoverable. The runtime wrapper controls
-# the effective layer order with VK_LOADER_LAYERS_ENABLE so PB remains before
-# dxvk-nvapi for marker observation.
-RE9_IMPLICIT_LAYER_PATH = ":".join(
-    (
-        str(_REPO_ROOT / "third_party" / "dxvk-nvapi" / "build.layer"),
-        str(_REPO_ROOT / "native" / "latency_layer" / "build"),
-    )
-)
-RE9_REQUIRED_TOKENS = (
+# The only token any game needs in its launch line is the PenguinBurner wrapper;
+# overlay and in-game latency are opt-in via extra tokens (see steam_game_setup).
+DEFAULT_REQUIRED_TOKENS = (
     PENGUIN_BURNER_WRAPPER,
 )
 
@@ -271,7 +257,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Verify Steam launch options contain required latency tokens."
     )
-    parser.add_argument("--app-id", default=RE9_APP_ID)
+    parser.add_argument(
+        "--app-id",
+        required=True,
+        help="Steam numeric app id to verify.",
+    )
     parser.add_argument(
         "--config",
         action="append",
@@ -290,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
         "--require",
         action="append",
         default=None,
-        help="Required token. May be repeated. Defaults to the RE9 latency probe tokens.",
+        help="Required token. May be repeated. Defaults to the PenguinBurner wrapper token.",
     )
     parser.add_argument(
         "--extra-require",
@@ -305,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    required = tuple(args.require) if args.require else RE9_REQUIRED_TOKENS
+    required = tuple(args.require) if args.require else DEFAULT_REQUIRED_TOKENS
     if args.extra_require:
         required += tuple(args.extra_require)
     result = check_launch_options(
