@@ -36,10 +36,10 @@ from .models import (
     TimedemoRun,
 )
 from .output import attach_stdout_progress
+from .process_harness import cleanup_managed_q2rtx_processes
 from .reporting import print_q2rtx_stability_result
 from .runtime import (
     build_timedemo_command,
-    cleanup_managed_q2rtx_processes,
     run_cuda_stability_test,
     run_q2rtx_stability_test,
 )

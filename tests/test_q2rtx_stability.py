@@ -5,20 +5,25 @@ from pathlib import Path
 import sys
 import tarfile
 
+import stability.q2rtx.downloader as q2rtx_downloader
+import stability.q2rtx.gpu_binding as q2rtx_gpu_binding
 import stability.q2rtx.install as q2rtx_install
+import stability.q2rtx.openssl_compat as q2rtx_openssl_compat
 import stability.q2rtx.runtime as q2rtx_runtime
 from stability.q2rtx.install import (
-    _copy_system_openssl_111_libs,
     _download_file_from_urls,
     _emit_dependency_progress,
-    _extract_compat_openssl_rpm,
     _extract_q2rtx_archive,
-    _fetch_latest_openssl_compat_rpm_metadata,
-    _progress_range_value,
     _q2rtx_release_asset_urls,
     _require_https_url,
     fetch_latest_q2rtx_release_metadata,
 )
+from stability.q2rtx.openssl_compat import (
+    _copy_system_openssl_111_libs,
+    _extract_compat_openssl_rpm,
+    _fetch_latest_openssl_compat_rpm_metadata,
+)
+from stability.q2rtx.progress import _progress_range_value
 from stability.q2rtx.models import (
     Q2RTXStabilityConfig,
     Q2RTXStabilityResult,
@@ -93,7 +98,7 @@ def test_download_file_from_urls_retries_next_source(
             raise StabilityTestError("read timeout")
         destination.write_bytes(b"ok")
 
-    monkeypatch.setattr(q2rtx_install, "_download_file", fake_download_file)
+    monkeypatch.setattr(q2rtx_downloader, "_download_file", fake_download_file)
 
     selected_url = _download_file_from_urls(
         (
@@ -156,7 +161,7 @@ def test_openssl_compat_rpm_metadata_tries_mirror_indexes(monkeypatch) -> None:
     rpm_name = "compat-openssl11-1.1.1k-5.el9.3.x86_64.rpm"
 
     monkeypatch.setattr(
-        q2rtx_install,
+        q2rtx_openssl_compat,
         "OPENSSL_111_COMPAT_RPM_INDEX_URLS",
         (
             "https://primary.example/Packages/",
@@ -171,7 +176,7 @@ def test_openssl_compat_rpm_metadata_tries_mirror_indexes(monkeypatch) -> None:
             raise StabilityTestError("read timeout")
         return f'<a href="{rpm_name}">{rpm_name}</a>'
 
-    monkeypatch.setattr(q2rtx_install, "_download_text", fake_download_text)
+    monkeypatch.setattr(q2rtx_openssl_compat, "_download_text", fake_download_text)
 
     resolved_name, rpm_urls = _fetch_latest_openssl_compat_rpm_metadata()
 
@@ -384,7 +389,7 @@ def test_system_openssl_111_libs_can_seed_compat_dir(
     (system_lib / "libcrypto.so.1.1").write_bytes(b"crypto")
 
     monkeypatch.setattr(
-        "stability.q2rtx.install.Path",
+        "stability.q2rtx.openssl_compat.Path",
         lambda value="": system_lib if str(value) == "/usr/lib" else Path(value),
     )
 
@@ -463,11 +468,13 @@ def test_q2rtx_runtime_env_binds_selected_gpu_from_runtime_identity() -> None:
 
 
 def test_q2rtx_selected_gpu_identity_is_derived_from_nvidia_smi(monkeypatch) -> None:
-    monkeypatch.setattr(q2rtx_runtime.shutil, "which", lambda command: f"/bin/{command}")
+    monkeypatch.setattr(
+        q2rtx_gpu_binding.shutil, "which", lambda command: f"/bin/{command}"
+    )
 
     def fake_run(command, **kwargs):
         assert command[-2:] == ["-i", "1"]
-        return q2rtx_runtime.subprocess.CompletedProcess(
+        return q2rtx_gpu_binding.subprocess.CompletedProcess(
             command,
             0,
             stdout=(
@@ -477,9 +484,9 @@ def test_q2rtx_selected_gpu_identity_is_derived_from_nvidia_smi(monkeypatch) -> 
             stderr="",
         )
 
-    monkeypatch.setattr(q2rtx_runtime.subprocess, "run", fake_run)
+    monkeypatch.setattr(q2rtx_gpu_binding.subprocess, "run", fake_run)
 
-    selected_gpu = q2rtx_runtime._query_selected_nvidia_gpu(1)
+    selected_gpu = q2rtx_gpu_binding._query_selected_nvidia_gpu(1)
 
     assert selected_gpu["index"] == "1"
     assert selected_gpu["pci_bus_id"] == "00000000:03:00.0"

@@ -5,16 +5,19 @@ from datetime import datetime
 import math
 import os
 from pathlib import Path
-import signal
-import shutil
 import subprocess
 import time
 
 from penguin_burner_paths import claim_desktop_user_ownership
-from subprocess_locale import stable_subprocess_env
 
 from .assets import _validate_demo_name, resolve_q2rtx_executable, resolve_workload
 from .constants import HIDDEN_WINDOW_POSITION
+from .gpu_binding import (
+    _apply_hidden_window_env,
+    _apply_nvidia_render_offload_env,
+    _query_selected_nvidia_gpu,
+    _selected_gpu_log_lines,
+)
 from .identity import _prepare_q2rtx_subprocess_env, _resolve_q2rtx_run_identity
 from .install import _prepare_q2rtx_runtime_env
 from .models import (
@@ -31,205 +34,18 @@ from .output import (
     _read_recent_output,
     _scan_output_for_fatal_patterns,
 )
+from .process_harness import (
+    _child_process_group_preexec,
+    _headless_gamescope_prefix,
+    _terminate_process_group,
+    _wrap_command_for_live_output,
+    _wrap_q2rtx_command,
+)
 from .telemetry import (
     _HiddenNvmlVoltageSession,
     _query_xid_messages_since,
     query_gpu_metrics,
 )
-
-
-def _apply_hidden_window_env(
-    env: dict[str, str],
-    *,
-    hide_window: bool,
-    use_headless_gamescope: bool,
-) -> dict[str, str]:
-    if not hide_window:
-        return env
-    if use_headless_gamescope:
-        return env
-
-    hidden_env = dict(env)
-    # SDL's offscreen backend cannot create a Vulkan surface for Q2RTX. Use a
-    # real X11 Vulkan window, but place it outside the visible desktop. Force
-    # X11 even on Wayland-only sessions so hidden mode fails closed instead of
-    # creating a visible Wayland window.
-    hidden_env["SDL_VIDEODRIVER"] = "x11"
-    hidden_env["SDL_VIDEO_WINDOW_POS"] = HIDDEN_WINDOW_POSITION
-    hidden_env["SDL_VIDEO_X11_FORCE_OVERRIDE_REDIRECT"] = "1"
-    hidden_env["SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS"] = "0"
-    return hidden_env
-
-
-def _nvidia_pci_bus_id_to_dri_prime(bus_id: str) -> str:
-    cleaned = str(bus_id or "").strip()
-    if not cleaned:
-        return ""
-    try:
-        domain_text, rest = cleaned.split(":", 1)
-        bus_text, slot_func = rest.split(":", 1)
-        slot_text, function_text = slot_func.split(".", 1)
-    except ValueError:
-        return ""
-    try:
-        domain = int(domain_text, 16) & 0xFFFF
-        bus = int(bus_text, 16)
-        slot = int(slot_text, 16)
-        function = int(function_text, 16)
-    except ValueError:
-        return ""
-    return f"pci-{domain:04x}_{bus:02x}_{slot:02x}_{function:x}"
-
-
-def _nvidia_pci_device_id_selectors(pci_device_id: str) -> tuple[str, str]:
-    cleaned = str(pci_device_id or "").strip().lower()
-    if cleaned.startswith("0x"):
-        cleaned = cleaned[2:]
-    cleaned = "".join(ch for ch in cleaned if ch in "0123456789abcdef")
-    if len(cleaned) < 8:
-        return "", ""
-    device_id = cleaned[:4]
-    vendor_id = cleaned[-4:]
-    return f"0x{vendor_id}:0x{device_id}", f"{vendor_id}:{device_id}"
-
-
-def _query_selected_nvidia_gpu(gpu_index: int) -> dict[str, str]:
-    nvidia_smi = shutil.which("nvidia-smi")
-    if not nvidia_smi:
-        return {}
-    command = [
-        nvidia_smi,
-        "--query-gpu=index,name,pci.bus_id,pci.device_id,uuid",
-        "--format=csv,noheader,nounits",
-        "-i",
-        str(int(gpu_index)),
-    ]
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=5,
-            env=stable_subprocess_env(),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    if int(result.returncode) != 0:
-        return {}
-    line = (result.stdout or "").strip().splitlines()
-    if not line:
-        return {}
-    parts = [part.strip() for part in line[0].split(",", 4)]
-    while len(parts) < 5:
-        parts.append("")
-    dri_prime = _nvidia_pci_bus_id_to_dri_prime(parts[2])
-    vk_loader_select, mesa_vk_select = _nvidia_pci_device_id_selectors(parts[3])
-    return {
-        "index": parts[0],
-        "name": parts[1],
-        "pci_bus_id": parts[2],
-        "pci_device_id": parts[3],
-        "uuid": parts[4],
-        "dri_prime": dri_prime,
-        "vk_loader_device_select": vk_loader_select,
-        "mesa_vk_device_select": mesa_vk_select,
-    }
-
-
-def _apply_nvidia_render_offload_env(
-    env: dict[str, str],
-    *,
-    selected_gpu: dict[str, str] | None = None,
-) -> dict[str, str]:
-    updated = dict(env)
-    updated["__NV_PRIME_RENDER_OFFLOAD"] = "1"
-    updated["__VK_LAYER_NV_optimus"] = "NVIDIA_only"
-    updated["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
-    selected_gpu = selected_gpu or {}
-    dri_prime = str(selected_gpu.get("dri_prime", "")).strip()
-    if dri_prime:
-        updated["DRI_PRIME"] = f"{dri_prime}!"
-    vk_loader_select = str(selected_gpu.get("vk_loader_device_select", "")).strip()
-    if vk_loader_select:
-        updated["VK_LOADER_DEVICE_SELECT"] = vk_loader_select
-    mesa_vk_select = str(selected_gpu.get("mesa_vk_device_select", "")).strip()
-    if mesa_vk_select:
-        updated["MESA_VK_DEVICE_SELECT"] = f"{mesa_vk_select}!"
-        updated["MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE"] = "1"
-    return updated
-
-
-def _selected_gpu_log_lines(
-    *,
-    selected_gpu: dict[str, str],
-    child_env: dict[str, str],
-) -> list[str]:
-    lines = []
-    if selected_gpu:
-        lines.append(
-            "# selected_nvidia_gpu="
-            f"index={selected_gpu.get('index', '')} "
-            f"name={selected_gpu.get('name', '')} "
-            f"pci_bus_id={selected_gpu.get('pci_bus_id', '')} "
-            f"pci_device_id={selected_gpu.get('pci_device_id', '')} "
-            f"uuid={selected_gpu.get('uuid', '')}"
-        )
-    keys = [
-        "__NV_PRIME_RENDER_OFFLOAD",
-        "__VK_LAYER_NV_optimus",
-        "__GLX_VENDOR_LIBRARY_NAME",
-        "DRI_PRIME",
-        "VK_LOADER_DEVICE_SELECT",
-        "MESA_VK_DEVICE_SELECT",
-        "MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE",
-    ]
-    values = [
-        f"{key}={child_env[key]}"
-        for key in keys
-        if str(child_env.get(key, "")).strip()
-    ]
-    if values:
-        lines.append("# q2rtx_gpu_binding_env=" + " ".join(values))
-    return lines
-
-
-def _headless_gamescope_prefix(config: Q2RTXStabilityConfig) -> list[str]:
-    if not config.hide_window:
-        return []
-    if not config.use_headless_gamescope:
-        return []
-    gamescope = shutil.which("gamescope")
-    if not gamescope:
-        return []
-    return [
-        gamescope,
-        "--backend",
-        "headless",
-        "-W",
-        str(int(config.width)),
-        "-H",
-        str(int(config.height)),
-        "-w",
-        str(int(config.width)),
-        "-h",
-        str(int(config.height)),
-        "-r",
-        "0",
-        "--",
-    ]
-
-
-def _wrap_q2rtx_command(
-    command: list[str],
-    *,
-    gamescope_prefix: list[str],
-) -> list[str]:
-    if not gamescope_prefix:
-        return list(command)
-    return [*gamescope_prefix, *command]
 
 
 def _result_looks_like_gamescope_startup_crash(result: Q2RTXStabilityResult) -> bool:
@@ -412,55 +228,6 @@ def _prepare_log_path(log_dir: Path) -> Path:
     return log_dir / f"q2rtx-stability-{timestamp}.log"
 
 
-def _wrap_command_for_live_output(command: list[str]) -> list[str]:
-    stdbuf = shutil.which("stdbuf")
-    if not stdbuf:
-        return list(command)
-    return [stdbuf, "-oL", "-eL", *command]
-
-
-def _child_process_group_preexec(
-    child_preexec_fn,
-):
-    def _preexec() -> None:
-        os.setsid()
-        if child_preexec_fn is not None:
-            child_preexec_fn()
-
-    return _preexec
-
-
-def _terminate_process_group(
-    process: subprocess.Popen | None,
-    *,
-    timeout_s: float = 5.0,
-) -> None:
-    if process is None:
-        return
-    try:
-        if process.poll() is not None:
-            return
-        try:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            process.wait(timeout=timeout_s)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            return
-        process.wait(timeout=timeout_s)
-    except Exception:
-        try:
-            process.kill()
-        except Exception:
-            pass
-
-
 def _timedemo_runs_net_seconds(timedemo_runs: list[TimedemoRun]) -> float:
     return sum(max(0.0, float(run.seconds)) for run in timedemo_runs)
 
@@ -502,97 +269,6 @@ def _fatal_output_abort_reason(
     if str(running).strip().lower() == "cuda":
         return "fatal-cuda-output"
     return "fatal-q2rtx-output"
-
-
-def _managed_q2rtx_process_groups(config: Q2RTXStabilityConfig) -> set[int]:
-    try:
-        executable_path, _workdir = resolve_q2rtx_executable(
-            q2rtx_dir=config.q2rtx_dir,
-            q2rtx_binary=config.q2rtx_binary,
-        )
-    except Exception:
-        return set()
-    executable_text = str(executable_path)
-    result = subprocess.run(
-        ["ps", "-eo", "pid=,pgid=,args="],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=stable_subprocess_env(),
-        check=False,
-    )
-    if result.returncode != 0:
-        return set()
-    current_pid = os.getpid()
-    current_pgid = os.getpgid(current_pid)
-    process_groups: set[int] = set()
-    for line in result.stdout.splitlines():
-        parts = line.strip().split(maxsplit=2)
-        if len(parts) < 3:
-            continue
-        try:
-            pid = int(parts[0])
-            pgid = int(parts[1])
-        except ValueError:
-            continue
-        if pid == current_pid or pgid == current_pgid:
-            continue
-        args = parts[2]
-        if executable_text in args:
-            process_groups.add(pgid)
-    return process_groups
-
-
-def cleanup_managed_q2rtx_processes(
-    config: Q2RTXStabilityConfig,
-    *,
-    log=None,
-) -> int:
-    process_groups = _managed_q2rtx_process_groups(config)
-    if not process_groups:
-        return 0
-    stopped = 0
-    for pgid in sorted(process_groups):
-        try:
-            os.killpg(int(pgid), signal.SIGTERM)
-            stopped += 1
-        except ProcessLookupError:
-            continue
-        except Exception as exc:
-            if log is not None:
-                log(f"Q2RTX cleanup: failed to terminate process group {pgid}: {exc}")
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
-        live_groups = []
-        for pgid in sorted(process_groups):
-            try:
-                os.killpg(int(pgid), 0)
-            except ProcessLookupError:
-                continue
-            except Exception:
-                continue
-            live_groups.append(pgid)
-        if not live_groups:
-            break
-        time.sleep(0.1)
-    for pgid in sorted(process_groups):
-        try:
-            os.killpg(int(pgid), 0)
-        except ProcessLookupError:
-            continue
-        except Exception:
-            continue
-        try:
-            os.killpg(int(pgid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        except Exception as exc:
-            if log is not None:
-                log(f"Q2RTX cleanup: failed to kill process group {pgid}: {exc}")
-    if log is not None and stopped:
-        log(f"Q2RTX cleanup: stopped {stopped} managed process group(s).")
-    return stopped
 
 
 def _run_companion_process(
