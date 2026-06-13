@@ -22,7 +22,7 @@ class RunsTable:
         "Fan %",
         "Cap",
         "FPS/W",
-        "Decision",
+        "Result",
         "Status",
     ]
     TARGET_MHZ_COLUMN = 2
@@ -59,22 +59,22 @@ class RunsTable:
         set_header_fit_column_widths(
             self.widget,
             {
-                0: 46,
-                1: 62,
-                self.TARGET_MHZ_COLUMN: 108,
-                self.OC_MHZ_COLUMN: 104,
-                self.MEASURED_MHZ_COLUMN: 128,
-                self.FPS_COLUMN: 134,
-                self.POWER_COLUMN: 144,
-                self.TEMP_COLUMN: 82,
-                self.FAN_COLUMN: 74,
-                self.PERF_CAP_COLUMN: 112,
-                self.FPSW_COLUMN: 134,
-                self.DECISION_COLUMN: 106,
-                self.STATUS_COLUMN: 190,
+                0: 38,
+                1: 48,
+                self.TARGET_MHZ_COLUMN: 86,
+                self.OC_MHZ_COLUMN: 88,
+                self.MEASURED_MHZ_COLUMN: 96,
+                self.FPS_COLUMN: 118,
+                self.POWER_COLUMN: 120,
+                self.TEMP_COLUMN: 62,
+                self.FAN_COLUMN: 58,
+                self.PERF_CAP_COLUMN: 92,
+                self.FPSW_COLUMN: 110,
+                self.DECISION_COLUMN: 88,
+                self.STATUS_COLUMN: 150,
             },
             QtCore=QtCore,
-            padding=34,
+            padding=18,
         )
 
     def clear(self) -> None:
