@@ -289,6 +289,8 @@ class MainWindow:
         options = {**options, "gpu_index": int(self.gpu_index)}
         if self.auto_uv_options:
             options = {**options, **self.auto_uv_options}
+        # Bring the scan into view: the live runs/curve are on the Auto-UV tab.
+        self.tabs.setCurrentIndex(self.auto_uv_tab_index)
         command = scan_command(options)
         self.runs_table.clear()
         self.vf_plot.clear()

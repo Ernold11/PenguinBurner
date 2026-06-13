@@ -79,9 +79,17 @@ class ScanController:
             self.process.kill()
 
     def _read_output(self) -> None:
-        if self.process is None:
+        process = self.process
+        if process is None:
             return
-        data = bytes(self.process.readAllStandardOutput()).decode(
+        try:
+            chunk = process.readAllStandardOutput()
+        except RuntimeError:
+            # A readyRead signal can be delivered after the QProcess has been
+            # retired/deleted (e.g. right after a stop). The underlying C++
+            # object is gone, so there is nothing left to read.
+            return
+        data = bytes(chunk).decode(
             "utf-8",
             errors="replace",
         )
@@ -110,11 +118,31 @@ class ScanController:
             self.on_event(payload)
 
     def _finished(self, exit_code, exit_status) -> None:
+        process = self.process
+        # Drain anything still buffered in the pipe so trailing JSON events
+        # (e.g. a final_choice_request emitted just before exit) are not lost.
+        if process is not None:
+            try:
+                tail = bytes(process.readAllStandardOutput()).decode(
+                    "utf-8", errors="replace"
+                )
+            except RuntimeError:
+                tail = ""
+            if tail:
+                self.on_output(tail)
+                self._buffer += tail
         if self._buffer.strip():
             self._handle_line(self._buffer)
         self._buffer = ""
-        process = self.process
         self.process = None
+        if process is not None:
+            # Detach the slots so a late readyRead/finished can never fire on a
+            # retired process (which would touch a deleted C++ object).
+            try:
+                process.readyReadStandardOutput.disconnect(self._read_output)
+                process.finished.disconnect(self._finished)
+            except (RuntimeError, TypeError):
+                pass
         stopped = bool(self.stop_requested)
         self.stop_requested = False
         self.on_finished(exit_code, exit_status, stopped)

@@ -36,6 +36,62 @@ def test_scan_handle_line_routes_events_and_human_text() -> None:
     assert humans == ["plain human progress line", "{bad json"]
 
 
+class _DeletedQProcess:
+    """Stand-in for a QProcess whose underlying C++ object has been deleted:
+    touching it raises RuntimeError, mirroring shiboken's behaviour."""
+
+    def readAllStandardOutput(self):
+        raise RuntimeError("Internal C++ object (QProcess) already deleted.")
+
+
+def test_scan_read_output_survives_deleted_process() -> None:
+    # A readyRead delivered after the process was retired must not crash.
+    controller = ScanController(QtCore=QtCore)
+    controller.process = _DeletedQProcess()
+    controller._read_output()  # no exception propagates
+
+
+class _RecordingSignal:
+    def __init__(self) -> None:
+        self.disconnected: list = []
+
+    def disconnect(self, slot) -> None:
+        self.disconnected.append(slot)
+
+
+class _FinishingQProcess:
+    def __init__(self) -> None:
+        self.readyReadStandardOutput = _RecordingSignal()
+        self.finished = _RecordingSignal()
+        self.deleted = False
+
+    def readAllStandardOutput(self):
+        return b""
+
+    def deleteLater(self) -> None:
+        self.deleted = True
+
+
+def test_scan_finished_detaches_slots_and_reports() -> None:
+    controller = ScanController(QtCore=QtCore)
+    finished: list = []
+    controller.on_finished = lambda code, status, stopped: finished.append(
+        (code, stopped)
+    )
+    process = _FinishingQProcess()
+    controller.process = process
+    controller.stop_requested = True
+
+    controller._finished(0, 0)
+
+    assert controller.process is None
+    assert finished == [(0, True)]
+    assert process.deleted is True
+    # Both slots were detached so a late callback cannot touch the dead process.
+    assert controller._read_output in process.readyReadStandardOutput.disconnected
+    assert controller._finished in process.finished.disconnected
+
+
 def test_scan_write_json_response(tmp_path) -> None:
     controller = ScanController(QtCore=QtCore)
     out = tmp_path / "resp.json"

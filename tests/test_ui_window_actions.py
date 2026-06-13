@@ -77,6 +77,19 @@ def test_start_scan_runs(win) -> None:
     assert fake.started  # scan command launched
 
 
+def test_start_scan_switches_to_auto_uv_tab(win) -> None:
+    window, monkeypatch = win
+    monkeypatch.setattr(window_mod, "select_scan_tuning", lambda **k: {"gpu_index": 0})
+    monkeypatch.setattr(window_mod, "persist_runtime_gpu_index", lambda idx: int(idx))
+    monkeypatch.setattr(window_mod, "scan_command", lambda options: ["echo", "scan"])
+    window.scan_controller = _FakeController()
+    # Start from a different tab; the scan must pull the user to Auto-UV.
+    window.tabs.setCurrentIndex(window.profiles_tab_index)
+    assert window.tabs.currentIndex() != window.auto_uv_tab_index
+    window.start_scan()
+    assert window.tabs.currentIndex() == window.auto_uv_tab_index
+
+
 def test_start_scan_gpu_persist_error(win) -> None:
     window, monkeypatch = win
     monkeypatch.setattr(window_mod, "select_scan_tuning", lambda **k: {"gpu_index": 0})

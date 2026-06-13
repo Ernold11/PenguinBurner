@@ -4,7 +4,6 @@ from datetime import datetime
 
 from saved_uv_profiles import profile_display_name
 from .. import theme
-from .table_sizing import set_header_fit_column_widths
 
 
 GOOD_DELTA_COLOR = theme.GOOD
@@ -92,26 +91,22 @@ class ProfileList:
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        set_header_fit_column_widths(
-            self.table,
-            {
-                0: 154,
-                1: 150,
-                self.VOLTAGE_COLUMN: 124,
-                self.TARGET_MHZ_COLUMN: 108,
-                self.MEMORY_OFFSET_COLUMN: 104,
-                self.TIER_COLUMN: 112,
-                self.EFFECTIVE_MHZ_COLUMN: 158,
-                self.FPSW_COLUMN: 134,
-                self.FPS_COLUMN: 134,
-                self.POWER_COLUMN: 144,
-                self.SOURCE_COLUMN: 170,
-            },
-            QtCore=QtCore,
-            padding=34,
-        )
-        self.table.horizontalHeader().setStretchLastSection(True)
         header = self.table.horizontalHeader()
+        # Size columns to their contents so the table fits the viewport width;
+        # the free-text columns (Profile, Source) take up any remaining slack.
+        # A horizontal scrollbar only appears when the window is genuinely too
+        # narrow for the content, rather than always.
+        header.setMinimumSectionSize(48)
+        for column in range(len(self.COLUMNS)):
+            header.setSectionResizeMode(
+                column, QtWidgets.QHeaderView.ResizeToContents
+            )
+        header.setSectionResizeMode(
+            self.PROFILE_COLUMN, QtWidgets.QHeaderView.Stretch
+        )
+        header.setSectionResizeMode(
+            self.SOURCE_COLUMN, QtWidgets.QHeaderView.Stretch
+        )
         header.setHighlightSections(False)
         header_font = header.font()
         header_font.setBold(False)
