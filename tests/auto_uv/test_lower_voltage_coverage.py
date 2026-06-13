@@ -1,0 +1,541 @@
+"""Coverage-focused tests for the lower-voltage pure-logic modules.
+
+These exercise the reachable decision branches in:
+- auto_uv/lower_voltage_probe_target.py
+- auto_uv/lower_voltage_search.py
+- auto_uv/lower_voltage_sweep_loop.py
+
+They follow the stubbing conventions of test_lower_voltage_sweep_loop.py and
+test_voltage_search_and_cache.py (hooks + base_curve/probe_summary builders).
+"""
+
+from __future__ import annotations
+
+from auto_uv.auto_uv_scan_settings import AutoUvScanSettings
+from auto_uv.auto_uv_types import (
+    FailureKind,
+    FailureSeverity,
+    StableRunDecision,
+    VfCurveCandidate,
+)
+from auto_uv.lower_voltage_probe_target import (
+    lower_voltage_clock_floor_miss_reason,
+    lower_voltage_phase,
+    predict_clock_at_lower_voltage,
+)
+from auto_uv.lower_voltage_search import (
+    filter_effective_voltage_candidates,
+    select_aggressive_voltage_bins,
+    select_next_lower_voltage,
+)
+from auto_uv.lower_voltage_sweep_loop import (
+    EfficiencySelection,
+    LowerVoltageSweepHooks,
+    decide_efficiency_acceptance,
+    float_or_none,
+    run_lower_voltage_sweep_loop,
+    state_for_selected_candidate,
+    voltage_drop_from_start_pct,
+)
+from auto_uv.voltage_sweep_state import VoltageProbeOutcome, VoltageSweepState
+from auto_uv_test_data import base_curve, probe_summary
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _passed_outcome(
+    candidate: VfCurveCandidate,
+    *,
+    clock_mhz: float | None = None,
+    power_w: float = 200.0,
+    fps: float = 100.0,
+) -> VoltageProbeOutcome:
+    clock = float(candidate.target_mhz) if clock_mhz is None else float(clock_mhz)
+    return VoltageProbeOutcome(
+        decision=StableRunDecision(
+            passed=True,
+            failure_kind=FailureKind.NONE,
+            severity=FailureSeverity.PASS,
+            reason="stable run",
+        ),
+        measured_core_clock_mhz=clock,
+        measured_voltage_mv=float(candidate.voltage_mv),
+        raw_probe=probe_summary(
+            candidate.voltage_mv,
+            clock_mhz=clock,
+            fps=fps,
+            power_w=power_w,
+        ),
+    )
+
+
+def _baseline_candidate(curve: list[dict]) -> VfCurveCandidate:
+    return VfCurveCandidate(
+        label="baseline",
+        voltage_mv=1000,
+        target_mhz=2160,
+        flattened_plan=curve,
+    )
+
+
+# ---------------------------------------------------------------------------
+# lower_voltage_probe_target.py
+# ---------------------------------------------------------------------------
+
+
+def test_lower_voltage_phase_returns_fine_below_medium_threshold() -> None:
+    # ratio = 850/1000 = 0.85 < medium 0.88 -> "fine" (line 31)
+    assert (
+        lower_voltage_phase(start_voltage_mv=1000, candidate_voltage_mv=850) == "fine"
+    )
+    # ratio > coarse 0.94 -> "coarse"
+    assert (
+        lower_voltage_phase(start_voltage_mv=1000, candidate_voltage_mv=960)
+        == "coarse"
+    )
+    # between -> "medium"
+    assert (
+        lower_voltage_phase(start_voltage_mv=1000, candidate_voltage_mv=900)
+        == "medium"
+    )
+    # start_voltage_mv <= 0 -> ratio forced to 1.0 -> "coarse"
+    assert (
+        lower_voltage_phase(start_voltage_mv=0, candidate_voltage_mv=900) == "coarse"
+    )
+
+
+def test_predict_clock_returns_none_with_fewer_than_two_points() -> None:
+    # only one usable point -> len(points) < 2 -> None (line 64)
+    assert (
+        predict_clock_at_lower_voltage(
+            [probe_summary(1000, clock_mhz=2400.0)],
+            candidate_voltage_mv=950,
+        )
+        is None
+    )
+
+
+def test_predict_clock_returns_none_when_voltage_span_zero() -> None:
+    # two points but identical voltages -> span 0 -> None (line 70)
+    assert (
+        predict_clock_at_lower_voltage(
+            [
+                probe_summary(1000, clock_mhz=2400.0),
+                probe_summary(1000, clock_mhz=2300.0),
+            ],
+            candidate_voltage_mv=950,
+        )
+        is None
+    )
+
+
+def test_predict_clock_extrapolates_linearly_when_span_nonzero() -> None:
+    predicted = predict_clock_at_lower_voltage(
+        [
+            probe_summary(1000, clock_mhz=2400.0),
+            probe_summary(950, clock_mhz=2250.0),
+        ],
+        candidate_voltage_mv=900,
+    )
+    # slope 3 MHz/mV, extrapolate to 900mV -> 2100
+    assert predicted == 2100.0
+
+
+def test_clock_floor_miss_returns_none_without_baseline() -> None:
+    # baseline_core_clock_mhz is None -> None (line 83)
+    assert (
+        lower_voltage_clock_floor_miss_reason(
+            [
+                probe_summary(1000, clock_mhz=2400.0),
+                probe_summary(950, clock_mhz=2250.0),
+            ],
+            candidate_voltage_mv=900,
+            baseline_core_clock_mhz=None,
+            min_core_clock_pct=90.0,
+        )
+        is None
+    )
+
+
+def test_clock_floor_miss_returns_none_when_prediction_unavailable() -> None:
+    # too little history -> predicted None -> None (line 89)
+    assert (
+        lower_voltage_clock_floor_miss_reason(
+            [probe_summary(1000, clock_mhz=2400.0)],
+            candidate_voltage_mv=900,
+            baseline_core_clock_mhz=2400.0,
+            min_core_clock_pct=90.0,
+        )
+        is None
+    )
+
+
+def test_clock_floor_miss_returns_none_when_prediction_above_floor() -> None:
+    # predicted 2100 >= floor (2400 * 0.80 = 1920) -> None (line 92)
+    assert (
+        lower_voltage_clock_floor_miss_reason(
+            [
+                probe_summary(1000, clock_mhz=2400.0),
+                probe_summary(950, clock_mhz=2250.0),
+            ],
+            candidate_voltage_mv=900,
+            baseline_core_clock_mhz=2400.0,
+            min_core_clock_pct=80.0,
+        )
+        is None
+    )
+
+
+# ---------------------------------------------------------------------------
+# lower_voltage_search.py
+# ---------------------------------------------------------------------------
+
+
+def test_select_next_lower_voltage_filters_failed_floor() -> None:
+    # failed_floor_voltage_mv=920 drops the 900 bin while keeping 925/950/975
+    # (lines 44-48: the floor-filter list comprehension runs and removes a bin).
+    selected = select_next_lower_voltage(
+        base_curve(900, 1025, 25),
+        start_voltage_mv=1000,
+        stable_voltage_mv=1000,
+        reference_actual_voltage_mv=1000.0,
+        preserve_base_below_mv=None,
+        min_search_voltage_mv=900,
+        failed_floor_voltage_mv=920,
+    )
+    assert selected == 925
+
+
+def test_select_next_lower_voltage_none_when_floor_clears_all_bins() -> None:
+    # failed floor removes every editable bin below stable -> bins empty -> None
+    # (line 49-50 path: `if not bins: return None`).
+    selected = select_next_lower_voltage(
+        base_curve(900, 1025, 25),
+        start_voltage_mv=1000,
+        stable_voltage_mv=925,
+        reference_actual_voltage_mv=None,
+        preserve_base_below_mv=None,
+        min_search_voltage_mv=None,
+        failed_floor_voltage_mv=924,
+    )
+    assert selected is None
+
+
+def test_select_aggressive_bins_uses_fine_step_below_medium() -> None:
+    # All bins far below medium threshold (90% of 1000 = 900) so fine step (1)
+    # is used for each (line 92), and final bin appended (line 100 path).
+    bins = [880, 860, 840, 820, 800]
+    selected = select_aggressive_voltage_bins(bins, start_voltage_mv=1000)
+    # fine step of 1 picks every bin; final already present
+    assert selected == [880, 860, 840, 820, 800]
+
+
+def test_select_aggressive_bins_lands_on_final_bin() -> None:
+    # Aggressive (>= 90%) stepping always clamps pick_index to the last index,
+    # so the final bin is selected by the loop itself.
+    bins = [990, 980, 970, 960, 950]
+    selected = select_aggressive_voltage_bins(bins, start_voltage_mv=1000)
+    assert selected[-1] == 950
+    assert 950 in selected
+
+
+def test_filter_effective_returns_empty_for_empty_bins() -> None:
+    # line 112
+    assert (
+        filter_effective_voltage_candidates(
+            [],
+            stable_voltage_mv=1000,
+            reference_actual_voltage_mv=1000.0,
+        )
+        == []
+    )
+
+
+def test_filter_effective_passes_through_without_reference() -> None:
+    # reference None -> return list copy unchanged (line 114)
+    bins = [950, 925, 900]
+    result = filter_effective_voltage_candidates(
+        bins,
+        stable_voltage_mv=1000,
+        reference_actual_voltage_mv=None,
+    )
+    assert result == bins
+    assert result is not bins
+
+
+def test_filter_effective_uses_lower_voltage_gaps_and_appends_final() -> None:
+    # Bins well below the medium ratio threshold so the lower-voltage gap rules
+    # apply (lines 129-130). The final bin (803) fails both the 5mV nominal-drop
+    # test (806-803=3) and the 5mV effective-gap test (|803-805|=2), so the loop
+    # drops it -- then line 143 re-appends it as the testable low bin.
+    result = filter_effective_voltage_candidates(
+        [806, 803],
+        stable_voltage_mv=1000,
+        reference_actual_voltage_mv=805.0,
+    )
+    # first always kept (lower-voltage branch reached, lines 129-130)
+    assert result[0] == 806
+    # final low bin re-appended despite failing the gap tests (line 143)
+    assert result[-1] == 803
+    assert result == [806, 803]
+
+
+# ---------------------------------------------------------------------------
+# lower_voltage_sweep_loop.py -- module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def test_voltage_drop_from_start_pct_zero_when_start_nonpositive() -> None:
+    # lines 385-387
+    assert voltage_drop_from_start_pct(start_voltage_mv=0, candidate_voltage_mv=900) == 0.0
+    assert (
+        voltage_drop_from_start_pct(start_voltage_mv=-5, candidate_voltage_mv=900)
+        == 0.0
+    )
+
+
+def test_voltage_drop_from_start_pct_normal() -> None:
+    assert voltage_drop_from_start_pct(
+        start_voltage_mv=1000, candidate_voltage_mv=900
+    ) == 10.0
+
+
+def test_float_or_none_handles_none_and_bad_values() -> None:
+    # line 395-398
+    assert float_or_none(None) is None
+    assert float_or_none("not-a-number") is None
+    assert float_or_none(object()) is None
+    assert float_or_none("3.5") == 3.5
+    assert float_or_none(7) == 7.0
+
+
+def test_state_for_selected_candidate_uses_candidate_target_without_outcome() -> None:
+    # lines 362-369 with outcome None -> falls back to candidate.target_mhz
+    state = VoltageSweepState(
+        stable_voltage_mv=1000,
+        stable_target_mhz=2160,
+        next_voltage_mv=900,
+    )
+    candidate = VfCurveCandidate(
+        label="x", voltage_mv=925, target_mhz=2100, flattened_plan=[]
+    )
+    new_state = state_for_selected_candidate(state, candidate=candidate, outcome=None)
+    assert new_state.stable_voltage_mv == 925
+    assert new_state.stable_target_mhz == 2100
+    assert new_state.stable_measured_target_mhz == 2100
+    assert new_state.next_voltage_mv is None
+
+
+def test_decide_efficiency_acceptance_records_without_stopping() -> None:
+    """Efficiency declines but stop is not yet armed: record-not-write path.
+
+    Covers lines 292-311 + the non-stop return (323-332).
+    """
+    settings = AutoUvScanSettings(
+        start_voltage_mv=1000,
+        min_search_voltage_mv=900,
+        preserve_base_below_mv=None,
+        baseline_core_clock_mhz=2160.0,
+        reference_actual_voltage_mv=1000.0,
+        efficiency_stop_streak=2,
+    )
+    state = VoltageSweepState(
+        stable_voltage_mv=975, stable_target_mhz=2100, next_voltage_mv=950
+    )
+    # previous probe: better efficiency; candidate probe: worse efficiency.
+    previous_outcome = VoltageProbeOutcome(
+        decision=StableRunDecision(
+            passed=True,
+            failure_kind=FailureKind.NONE,
+            severity=FailureSeverity.PASS,
+            reason="ok",
+        ),
+        measured_core_clock_mhz=2100.0,
+        measured_voltage_mv=1000.0,
+        raw_probe=probe_summary(1000, clock_mhz=2100.0, fps=100.0, power_w=180.0),
+    )
+    candidate = VfCurveCandidate(
+        label="c", voltage_mv=975, target_mhz=2100, flattened_plan=[]
+    )
+    candidate_outcome = VoltageProbeOutcome(
+        decision=StableRunDecision(
+            passed=True,
+            failure_kind=FailureKind.NONE,
+            severity=FailureSeverity.PASS,
+            reason="ok",
+        ),
+        measured_core_clock_mhz=2100.0,
+        measured_voltage_mv=975.0,
+        # same fps, more power -> worse fps/W -> improved False
+        raw_probe=probe_summary(975, clock_mhz=2100.0, fps=100.0, power_w=200.0),
+    )
+    selection = EfficiencySelection(
+        selected_candidate=VfCurveCandidate(
+            label="prev", voltage_mv=1000, target_mhz=2100, flattened_plan=[]
+        ),
+        selected_outcome=previous_outcome,
+        no_gain_streak=0,
+        pending_previous_curve=False,
+    )
+    decision = decide_efficiency_acceptance(
+        settings=settings,
+        state=state,
+        selection=selection,
+        candidate=candidate,
+        outcome=candidate_outcome,
+    )
+    # First no-gain probe arms the stop but does not stop yet.
+    assert decision.should_stop is False
+    assert decision.write_current is False
+    assert decision.record_current is True
+    assert decision.pending_previous_curve is True
+    assert decision.no_gain_streak == 1
+    # keeps the previous selection
+    assert decision.selected_candidate.voltage_mv == 1000
+
+
+# ---------------------------------------------------------------------------
+# lower_voltage_sweep_loop.py -- full-loop branches
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_loop_stops_when_cached_unsafe_blocks_first_candidate() -> None:
+    """Unsafe cache blocks the very first candidate -> stop before probing.
+
+    Covers lines 119-120 (block_reason -> stop event + break).
+    """
+    curve = base_curve(900, 1025, 25, 2000, 40)
+    probed: list[int] = []
+
+    def probe(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
+        probed.append(int(candidate.voltage_mv))
+        return _passed_outcome(candidate)
+
+    hooks = LowerVoltageSweepHooks(
+        probe_candidate=probe,
+        write_verified_candidate=lambda _c, _o: None,
+        mark_unsafe_candidate=lambda _c, _o: None,
+    )
+    result = run_lower_voltage_sweep_loop(
+        curve,
+        settings=AutoUvScanSettings(
+            start_voltage_mv=1000,
+            min_search_voltage_mv=900,
+            preserve_base_below_mv=None,
+            baseline_core_clock_mhz=2160.0,
+            auto_uv_mode="performance",
+            reference_actual_voltage_mv=1000.0,
+        ),
+        initial_stable_candidate=_baseline_candidate(curve),
+        hooks=hooks,
+        # Clock-aware unsafe entry at the first candidate (950mV): it does NOT
+        # raise the min-search floor (so 950 stays the first candidate) but it
+        # blocks that candidate's clock band, tripping block_reason.
+        unsafe_entries=[
+            {"candidate_voltage_mv": 950, "lock_clock_mhz": 2000, "reason": "crash"}
+        ],
+    )
+
+    assert probed == []  # never probed: blocked first
+    assert [event.name for event in result.events] == ["stop"]
+    assert "cached unsafe point" in result.events[0].message
+    assert result.stable_candidate.voltage_mv == 1000
+
+
+def test_sweep_loop_efficiency_records_pending_curve_then_finishes() -> None:
+    """Efficiency declines on the last reachable bin.
+
+    The probe passes but efficiency drops, so it is recorded (not written) and
+    the previous stable curve is kept as the selection. Covers the
+    record_passed_candidate branch (157-161) and the end-of-loop
+    state_for_selected_candidate reconciliation (191-199 incl. 195).
+    """
+    curve = base_curve(900, 1025, 25, 2000, 40)
+    written: list[int] = []
+    recorded: list[int] = []
+
+    # power increases as voltage drops so fps/W gets worse -> no efficiency gain.
+    def probe(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
+        # higher power at lower voltage -> efficiency declines
+        power = 180.0 + (1000 - int(candidate.voltage_mv))
+        return _passed_outcome(candidate, fps=100.0, power_w=power)
+
+    hooks = LowerVoltageSweepHooks(
+        probe_candidate=probe,
+        write_verified_candidate=lambda c, _o: written.append(int(c.voltage_mv)),
+        mark_unsafe_candidate=lambda _c, _o: None,
+        record_passed_candidate=lambda c, _o: recorded.append(int(c.voltage_mv)),
+    )
+    result = run_lower_voltage_sweep_loop(
+        curve,
+        settings=AutoUvScanSettings(
+            start_voltage_mv=1000,
+            min_search_voltage_mv=950,
+            preserve_base_below_mv=None,
+            baseline_core_clock_mhz=2160.0,
+            reference_actual_voltage_mv=1000.0,
+            # high voltage-drop requirement so stop never arms; only one bin (950)
+            min_efficiency_stop_voltage_drop_pct=99.0,
+        ),
+        initial_stable_candidate=_baseline_candidate(curve),
+        hooks=hooks,
+        initial_stable_outcome=_passed_outcome(
+            _baseline_candidate(curve), fps=100.0, power_w=180.0
+        ),
+    )
+
+    # the single lower bin (950) declined efficiency -> recorded, not written
+    assert recorded == [950]
+    assert written == []
+    # selection stays on the baseline (1000mV) curve
+    assert result.stable_candidate.voltage_mv == 1000
+    # end-of-loop reconciliation restored state to the selected (baseline) curve
+    assert result.state.stable_voltage_mv == 1000
+
+
+def test_sweep_loop_efficiency_stop_uses_current_curve() -> None:
+    """Efficiency wall reached with use_current_curve -> stop on current curve.
+
+    Drives the no-gain streak past the required confirmations so
+    decide_efficiency_stop returns should_stop=True and use_current_curve=True,
+    covering lines 169-184 (stop branch) and 312-322.
+    """
+    curve = base_curve(875, 1025, 25, 2000, 40)
+    written: list[int] = []
+
+    # First lower bins keep efficiency flat (same fps/W) at lower power, so
+    # delta_pct ~ 0 (>= 0) and power does not rise -> use_current_curve True.
+    def probe(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
+        # identical fps and power at every bin -> delta_pct exactly 0
+        return _passed_outcome(candidate, fps=100.0, power_w=180.0)
+
+    hooks = LowerVoltageSweepHooks(
+        probe_candidate=probe,
+        write_verified_candidate=lambda c, _o: written.append(int(c.voltage_mv)),
+        mark_unsafe_candidate=lambda _c, _o: None,
+        record_passed_candidate=lambda _c, _o: None,
+    )
+    result = run_lower_voltage_sweep_loop(
+        curve,
+        settings=AutoUvScanSettings(
+            start_voltage_mv=1000,
+            min_search_voltage_mv=875,
+            preserve_base_below_mv=None,
+            baseline_core_clock_mhz=2160.0,
+            reference_actual_voltage_mv=1000.0,
+            efficiency_stop_streak=0,  # arm + confirm quickly
+            min_efficiency_stop_voltage_drop_pct=0.0,
+        ),
+        initial_stable_candidate=_baseline_candidate(curve),
+        hooks=hooks,
+        initial_stable_outcome=_passed_outcome(
+            _baseline_candidate(curve), fps=100.0, power_w=180.0
+        ),
+    )
+
+    stop_events = [e for e in result.events if e.name == "stop"]
+    assert stop_events, "expected an efficiency stop event"
+    assert stop_events[-1].message == "fps-per-watt wall reached"

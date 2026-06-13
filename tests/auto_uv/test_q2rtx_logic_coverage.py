@@ -1,0 +1,414 @@
+"""Line-coverage tests for pure-logic q2rtx probe modules.
+
+Covers config-building, runtime-guardrail, and summary-computation branches
+that the existing focused suites leave untouched.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from stability.q2rtx import DEFAULT_SINGLE_PASS_TIMEOUT_S, Q2RTXStabilityConfig
+
+from auto_uv.auto_uv_user_options import (
+    AUTO_UV_CURVE_TUNING,
+    AUTO_UV_DEFAULTS,
+    AUTO_UV_PROBE_TUNING,
+    AUTO_UV_STALL_TUNING,
+)
+from auto_uv.q2rtx.q2rtx_cuda_probe_config import (
+    base_q2rtx_probe_duration_s,
+    cuda_companion_enabled_for_voltage_band,
+    normalize_q2rtx_probe_config,
+    tiered_q2rtx_probe_duration_s,
+    timedemo_seconds_hint,
+)
+from auto_uv.q2rtx.probe_runtime_guardrails import (
+    core_clock_below_floor,
+    percent,
+    probe_failure_should_mark_voltage_unsafe,
+    target_core_clock_floor,
+    telemetry_sample_is_busy,
+)
+from auto_uv.q2rtx.q2rtx_probe_summary import (
+    decision_timedemo_runs,
+    history_average,
+    loaded_telemetry_diagnostics,
+    loaded_telemetry_means,
+    saturated_probe_tail_samples,
+    stddev_pct_or_none,
+    summarize_perf_cap_reason,
+    summarize_q2rtx_cuda_probe,
+    value_at_fractional_index,
+)
+
+
+# --------------------------------------------------------------------------- #
+# q2rtx_cuda_probe_config.py
+# --------------------------------------------------------------------------- #
+
+
+def test_normalize_keeps_config_when_timedemo_loops_already_set() -> None:
+    config = Q2RTXStabilityConfig(timedemo_loops=3, duration_s=20)
+    assert normalize_q2rtx_probe_config(config) is config
+
+
+def test_normalize_keeps_config_when_duration_non_positive() -> None:
+    config = Q2RTXStabilityConfig(timedemo_loops=None, duration_s=0)
+    assert normalize_q2rtx_probe_config(config) is config
+
+
+def test_normalize_keeps_config_when_demo_has_no_seconds_hint() -> None:
+    config = Q2RTXStabilityConfig(
+        timedemo_loops=None,
+        duration_s=20,
+        demo_name="unknown-demo-without-hint",
+    )
+    assert normalize_q2rtx_probe_config(config) is config
+
+
+def test_normalize_converts_duration_to_timedemo_loops_for_hinted_demo() -> None:
+    # q2demo1 is hinted at 4.45s/run; ceil(20 / 4.45) == 5 loops.
+    config = Q2RTXStabilityConfig(
+        timedemo_loops=None,
+        duration_s=20,
+        single_pass_timeout_s=1.0,
+        demo_name="q2demo1",
+    )
+    normalized = normalize_q2rtx_probe_config(config)
+
+    assert normalized.timedemo_loops == 5
+    assert normalized.duration_s == 0
+    # 5 * 4.45 * timeout_multiplier + buffer
+    expected_timeout = (
+        5 * 4.45 * AUTO_UV_PROBE_TUNING.timeout_multiplier
+        + AUTO_UV_PROBE_TUNING.short_timeout_buffer_s
+    )
+    assert normalized.single_pass_timeout_s == pytest.approx(expected_timeout)
+
+
+def test_normalize_resolves_default_demo_alias_to_q2demo1_hint() -> None:
+    # demo_name "auto" (the default) aliases to the q2demo1 hint.
+    config = Q2RTXStabilityConfig(
+        timedemo_loops=None,
+        duration_s=9,
+        demo_name="auto",
+    )
+    normalized = normalize_q2rtx_probe_config(config)
+    assert normalized.timedemo_loops == 3  # ceil(9 / 4.45)
+
+
+def test_timedemo_seconds_hint_returns_none_for_unknown_demo() -> None:
+    config = Q2RTXStabilityConfig(demo_name="no-such-demo")
+    assert timedemo_seconds_hint(config) is None
+
+
+def test_timedemo_seconds_hint_returns_float_for_known_demo() -> None:
+    config = Q2RTXStabilityConfig(demo_name="q2demo1")
+    assert timedemo_seconds_hint(config) == pytest.approx(4.45)
+
+
+def test_cuda_companion_enabled_returns_true_on_non_numeric_voltage() -> None:
+    assert (
+        cuda_companion_enabled_for_voltage_band(
+            initial_target_voltage_mv="not-a-number",  # type: ignore[arg-type]
+            candidate_voltage_mv=900,
+        )
+        is True
+    )
+
+
+def test_cuda_companion_enabled_returns_true_when_initial_voltage_non_positive() -> None:
+    assert (
+        cuda_companion_enabled_for_voltage_band(
+            initial_target_voltage_mv=0,
+            candidate_voltage_mv=900,
+        )
+        is True
+    )
+
+
+def test_tiered_q2rtx_duration_falls_back_to_base_on_non_numeric_voltage() -> None:
+    assert (
+        tiered_q2rtx_probe_duration_s(
+            initial_target_voltage_mv="bad",  # type: ignore[arg-type]
+            candidate_voltage_mv=900,
+            base_duration_s=10,
+        )
+        == 10
+    )
+
+
+def test_tiered_q2rtx_duration_falls_back_to_base_when_initial_non_positive() -> None:
+    assert (
+        tiered_q2rtx_probe_duration_s(
+            initial_target_voltage_mv=0,
+            candidate_voltage_mv=900,
+            base_duration_s=10,
+        )
+        == 10
+    )
+
+
+def test_base_probe_duration_uses_default_when_unspecified() -> None:
+    assert base_q2rtx_probe_duration_s(None) == int(AUTO_UV_DEFAULTS.probe_duration_s)
+
+
+def test_base_probe_duration_clamps_to_minimum_ten() -> None:
+    assert base_q2rtx_probe_duration_s(3) == 10
+
+
+# --------------------------------------------------------------------------- #
+# probe_runtime_guardrails.py
+# --------------------------------------------------------------------------- #
+
+
+def test_percent_clamps_negative_to_zero() -> None:
+    assert percent(-10) == 0.0
+    assert percent(50) == 0.5
+
+
+def test_target_core_clock_floor_disabled_returns_none_pair() -> None:
+    assert target_core_clock_floor(
+        lock_clock_mhz=2000,
+        initial_probe_clock_mhz=2100.0,
+        min_performance_core_clock_pct=90.0,
+        enforce_target_core_clock_floor=False,
+    ) == (None, None)
+
+
+def test_target_core_clock_floor_uses_lock_clock_when_no_probe_clock() -> None:
+    floor, base = target_core_clock_floor(
+        lock_clock_mhz=2000,
+        initial_probe_clock_mhz=None,
+        min_performance_core_clock_pct=90.0,
+        enforce_target_core_clock_floor=True,
+    )
+    assert base == 2000.0
+    assert floor == pytest.approx(1800.0)
+
+
+def test_target_core_clock_floor_prefers_higher_initial_probe_clock() -> None:
+    floor, base = target_core_clock_floor(
+        lock_clock_mhz=2000,
+        initial_probe_clock_mhz=2200.0,
+        min_performance_core_clock_pct=90.0,
+        enforce_target_core_clock_floor=True,
+    )
+    assert base == 2200.0
+    assert floor == pytest.approx(1980.0)
+
+
+def test_telemetry_sample_is_busy_returns_false_for_none_sample() -> None:
+    assert telemetry_sample_is_busy(None, busy_power_floor_w=100.0) is False
+
+
+def test_telemetry_sample_is_busy_true_on_high_gpu_util() -> None:
+    busy_util = AUTO_UV_STALL_TUNING.busy_gpu_util_pct
+    sample = SimpleNamespace(gpu_util_pct=busy_util, power_w=None)
+    assert telemetry_sample_is_busy(sample, busy_power_floor_w=None) is True
+
+
+def test_telemetry_sample_is_busy_true_on_power_floor() -> None:
+    sample = SimpleNamespace(gpu_util_pct=0.0, power_w=200.0)
+    assert telemetry_sample_is_busy(sample, busy_power_floor_w=150.0) is True
+
+
+def test_telemetry_sample_is_busy_false_when_below_thresholds() -> None:
+    sample = SimpleNamespace(gpu_util_pct=1.0, power_w=10.0)
+    assert telemetry_sample_is_busy(sample, busy_power_floor_w=150.0) is False
+
+
+def test_core_clock_below_floor_respects_tolerance() -> None:
+    tol = AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz
+    # Just within tolerance is not "below floor".
+    assert core_clock_below_floor(2000.0 - tol, 2000.0) is False
+    # Beyond tolerance is below floor.
+    assert core_clock_below_floor(2000.0 - tol - 1.0, 2000.0) is True
+
+
+def test_probe_failure_controlled_reason_does_not_mark_unsafe() -> None:
+    assert probe_failure_should_mark_voltage_unsafe("user-stop-requested") is False
+
+
+def test_probe_failure_idle_and_stall_prefixes_do_not_mark_unsafe() -> None:
+    assert (
+        probe_failure_should_mark_voltage_unsafe("q2rtx-selected-nvidia-gpu-idle-12s")
+        is False
+    )
+    assert (
+        probe_failure_should_mark_voltage_unsafe("timedemo-live-stall-no-frames")
+        is False
+    )
+
+
+def test_probe_failure_unknown_reason_marks_unsafe() -> None:
+    assert probe_failure_should_mark_voltage_unsafe("gpu-hang-detected") is True
+
+
+# --------------------------------------------------------------------------- #
+# q2rtx_probe_summary.py
+# --------------------------------------------------------------------------- #
+
+
+def test_stddev_pct_returns_none_when_single_usable_value() -> None:
+    # mean is non-zero so we pass the first guard, but stddev needs >= 2 values.
+    assert stddev_pct_or_none([5.0, None]) is None
+
+
+def test_stddev_pct_returns_none_when_mean_zero() -> None:
+    assert stddev_pct_or_none([0.0, 0.0]) is None
+
+
+def test_stddev_pct_computes_coefficient_of_variation() -> None:
+    assert stddev_pct_or_none([10.0, 30.0]) == pytest.approx(50.0)
+
+
+def test_summarize_perf_cap_reason_skips_blank_tokens() -> None:
+    # Tokens that are blank after stripping ("+ +") must be ignored, while the
+    # real reason is still reported.
+    samples = [{"perf_cap_reason": "+ +sw-power+"}]
+    assert summarize_perf_cap_reason(samples) == "sw-power"
+
+
+def test_summarize_perf_cap_reason_returns_none_when_empty() -> None:
+    assert summarize_perf_cap_reason([{"perf_cap_reason": None}]) is None
+
+
+def test_decision_timedemo_runs_drops_warmup_when_enough_remain() -> None:
+    runs = list(range(6))
+    # 1 warmup dropped leaves 5 >= min_remaining(3), so warmup is stripped.
+    assert decision_timedemo_runs(runs, timedemo_warmup_runs=1) == [1, 2, 3, 4, 5]
+
+
+def test_decision_timedemo_runs_keeps_all_when_too_few_remain() -> None:
+    runs = list(range(3))
+    # Dropping 1 warmup would leave 2 < min_remaining(3): keep everything.
+    assert decision_timedemo_runs(runs, timedemo_warmup_runs=1) == runs
+
+
+def test_history_average_means_attribute_across_history() -> None:
+    history = [
+        SimpleNamespace(avg_fps=100.0),
+        SimpleNamespace(avg_fps=200.0),
+    ]
+    assert history_average(history, "avg_fps") == pytest.approx(150.0)
+
+
+def test_history_average_none_for_empty_history() -> None:
+    assert history_average([], "avg_fps") is None
+
+
+def test_loaded_telemetry_means_empty_active_samples_branch() -> None:
+    # use_power_limit_floor sets the floor from the power limit, above every
+    # sample's power, so active_samples is empty but the floor is not None.
+    samples = [
+        {"elapsed_s": 6.0, "power_w": 10.0},
+        {"elapsed_s": 7.0, "power_w": 12.0},
+    ]
+    result = loaded_telemetry_means(
+        samples,
+        power_limit_w=1000,
+        use_power_limit_floor=True,
+    )
+    assert result[:5] == (None, None, None, None, None)
+    assert result[5] == 0
+    assert result[6] == pytest.approx(750.0)  # 1000 * 75%
+
+
+def test_loaded_telemetry_means_none_floor_for_no_samples() -> None:
+    assert loaded_telemetry_means([], power_limit_w=None) == (
+        None,
+        None,
+        None,
+        None,
+        None,
+        0,
+        None,
+    )
+
+
+def test_loaded_telemetry_diagnostics_empty_when_no_active_samples() -> None:
+    samples = [
+        {"elapsed_s": 6.0, "power_w": 10.0},
+        {"elapsed_s": 7.0, "power_w": 12.0},
+    ]
+    assert loaded_telemetry_diagnostics(
+        samples,
+        power_limit_w=1000,
+        use_power_limit_floor=True,
+    ) == (None, None, None, 0)
+
+
+def test_value_at_fractional_index_none_for_empty_values() -> None:
+    assert value_at_fractional_index([], 0.9) is None
+
+
+def test_value_at_fractional_index_clamps_to_last_element() -> None:
+    # int(3 * 0.9) == 2, clamped to the final index → 3.0.
+    assert value_at_fractional_index([1.0, 2.0, 3.0], 0.9) == 3.0
+
+
+def test_summarize_uses_override_samples_for_telemetry_summary() -> None:
+    # Passing telemetry_samples overrides result.telemetry_samples and rebuilds
+    # the telemetry summary from those override samples (max power/temp/fan).
+    override_samples = [
+        {
+            "elapsed_s": 6.0,
+            "power_w": 220.0,
+            "core_clock_mhz": 2400.0,
+            "voltage_mv": 850.0,
+            "temperature_c": 60.0,
+            "fan_speed_pct": 55.0,
+        },
+        {
+            "elapsed_s": 7.0,
+            "power_w": 240.0,
+            "core_clock_mhz": 2450.0,
+            "voltage_mv": 860.0,
+            "temperature_c": 65.0,
+            "fan_speed_pct": 60.0,
+        },
+    ]
+    result = SimpleNamespace(
+        timedemo_runs=[SimpleNamespace(frames=1000, seconds=10.0, fps=100.0)],
+        telemetry_samples=[{"elapsed_s": 6.0, "power_w": 1.0}],
+        companion_telemetry_samples=[],
+        telemetry_summary=lambda: {"power_max": 9999.0},
+        reason="ok",
+        log_path=Path("/tmp/q2rtx.log"),
+    )
+
+    summary = summarize_q2rtx_cuda_probe(
+        candidate_voltage_mv=860,
+        lock_clock_mhz=2450,
+        live_voltage_before_mv=860,
+        live_voltage_after_mv=858,
+        used_companion_load=False,
+        power_limit_w=None,
+        result=result,
+        telemetry_samples=override_samples,
+    )
+
+    # Max power comes from the override samples (240W), not the stale summary.
+    assert summary.max_power_w == pytest.approx(240.0)
+    assert summary.max_temperature_c == pytest.approx(65.0)
+    assert summary.max_fan_speed_pct == pytest.approx(60.0)
+
+
+def test_saturated_probe_tail_samples_returns_high_load_tail() -> None:
+    low_load = {"elapsed_s": 6.0, "power_w": 50.0, "core_clock_mhz": 1000.0}
+    samples = [
+        low_load,
+        {"elapsed_s": 7.0, "power_w": 200.0, "core_clock_mhz": 2400.0},
+        {"elapsed_s": 8.0, "power_w": 205.0, "core_clock_mhz": 2420.0},
+        {"elapsed_s": 9.0, "power_w": 210.0, "core_clock_mhz": 2450.0},
+    ]
+    tail = saturated_probe_tail_samples(samples)
+    assert isinstance(tail, list)
+    # The low-power sample is excluded from the saturated (high-load) tail.
+    assert low_load not in tail
+    assert len(tail) >= 1

@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from saved_uv_profiles.profile_tiers import (
     PROFILE_TIER_BALANCED,
     PROFILE_TIER_EFFICIENCY,
     PROFILE_TIER_PERFORMANCE,
+    assigned_tier_for_profile,
     available_adaptive_tiers,
     clear_profile_tier_assignment,
     generated_profile_tier,
     generated_profile_tier_from_runtime_options,
     load_profile_tier_disabled_profile_ids,
     load_profile_tier_assignments,
+    profile_tier_disabled,
     profile_tier_summary_fields,
     profile_tier_label,
     resolve_profile_tier_profiles,
@@ -207,3 +211,256 @@ def test_resolve_profile_tier_profiles_uses_latest_for_balanced_score_tie() -> N
     resolved = resolve_profile_tier_profiles(profiles, assignments={})
 
     assert resolved[PROFILE_TIER_BALANCED]["profile_id"] == "balanced-new"
+
+
+# --- generated_profile_tier_from_runtime_options: tail_rise_bins thresholds ---
+
+
+def test_runtime_options_tail_rise_bins_maps_to_performance() -> None:
+    # tail_rise_bins >= _PERFORMANCE_TAIL_RISE_BINS (6) -> performance (line 73-74)
+    assert (
+        generated_profile_tier_from_runtime_options({"auto_uv_tail_rise_bins": 6})
+        == PROFILE_TIER_PERFORMANCE
+    )
+
+
+def test_runtime_options_tail_rise_bins_maps_to_balanced() -> None:
+    # _BALANCED_TAIL_RISE_BINS (4) <= tail_rise_bins < 6 -> balanced (line 75-76)
+    assert (
+        generated_profile_tier_from_runtime_options({"auto_uv_tail_rise_bins": 4})
+        == PROFILE_TIER_BALANCED
+    )
+
+
+def test_runtime_options_tail_rise_bins_maps_to_efficiency() -> None:
+    # tail_rise_bins < 4 -> efficiency (line 77)
+    assert (
+        generated_profile_tier_from_runtime_options({"auto_uv_tail_rise_bins": 1})
+        == PROFILE_TIER_EFFICIENCY
+    )
+
+
+def test_runtime_options_mode_efficiency_fallback() -> None:
+    # No tail_rise_bins, mode efficiency -> efficiency (line 79-80)
+    assert (
+        generated_profile_tier_from_runtime_options({"auto_uv_mode": "efficiency"})
+        == PROFILE_TIER_EFFICIENCY
+    )
+
+
+def test_runtime_options_mode_balanced_fallback() -> None:
+    # No tail_rise_bins, mode balanced -> balanced (line 81-82)
+    assert (
+        generated_profile_tier_from_runtime_options({"auto_uv_mode": "balanced"})
+        == PROFILE_TIER_BALANCED
+    )
+
+
+# --- generated_profile_tier: mode / profile_curve / tail thresholds ---
+
+
+def test_generated_profile_tier_mode_performance() -> None:
+    # auto_uv_mode performance with no explicit tier key -> performance (line 100-101)
+    assert (
+        generated_profile_tier({"auto_uv_mode": "performance"})
+        == PROFILE_TIER_PERFORMANCE
+    )
+
+
+def test_generated_profile_tier_profile_curve_performance_sweep() -> None:
+    # profile_curve performance-sweep -> performance (line 104-105)
+    assert (
+        generated_profile_tier({"profile_curve": "performance-sweep"})
+        == PROFILE_TIER_PERFORMANCE
+    )
+
+
+def test_generated_profile_tier_profile_curve_auto_oc() -> None:
+    # profile_curve auto-oc -> performance (line 104-105)
+    assert (
+        generated_profile_tier({"profile_curve": "auto-oc"})
+        == PROFILE_TIER_PERFORMANCE
+    )
+
+
+def test_generated_profile_tier_tail_rise_bins_from_nested_flatten_target() -> None:
+    # tail_rise_bins absent at top level but present in nested flatten_target dict
+    # (line 109-111), and >= 6 -> performance (line 113-114)
+    assert (
+        generated_profile_tier({"flatten_target": {"tail_rise_bins": 6}})
+        == PROFILE_TIER_PERFORMANCE
+    )
+
+
+def test_generated_profile_tier_tail_rise_bins_efficiency() -> None:
+    # tail_rise_bins below balanced threshold -> efficiency (line 117)
+    assert (
+        generated_profile_tier({"tail_rise_bins": 0})
+        == PROFILE_TIER_EFFICIENCY
+    )
+
+
+def test_generated_profile_tier_mode_efficiency_fallback() -> None:
+    # No tier keys / curve / tail bins, mode efficiency -> efficiency (line 119-120)
+    assert (
+        generated_profile_tier({"auto_uv_mode": "efficiency"})
+        == PROFILE_TIER_EFFICIENCY
+    )
+
+
+def test_generated_profile_tier_mode_balanced_fallback() -> None:
+    # mode balanced -> balanced (line 121-122)
+    assert (
+        generated_profile_tier({"auto_uv_mode": "balanced"})
+        == PROFILE_TIER_BALANCED
+    )
+
+
+# --- load_profile_tier_assignments dedup / disabled skip (line 148) ---
+
+
+def test_load_profile_tier_assignments_skips_duplicate_and_disabled(tmp_path) -> None:
+    path = tmp_path / "assignments.json"
+    payload = {
+        "format_version": 2,
+        "tiers": {
+            "efficiency": "shared-profile",
+            "balanced": "shared-profile",  # duplicate profile_id -> skipped (line 148)
+            "performance": "disabled-profile",  # disabled -> skipped (line 148)
+        },
+        "disabled_profile_ids": ["disabled-profile"],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assignments = load_profile_tier_assignments(path)
+
+    # Only the first (efficiency) wins for the shared id; balanced + performance dropped.
+    assert assignments == {PROFILE_TIER_EFFICIENCY: "shared-profile"}
+
+
+# --- ValueError raises (lines 169, 173, 198) ---
+
+
+def test_save_profile_tier_assignment_requires_profile_id(tmp_path) -> None:
+    path = tmp_path / "assignments.json"
+    with pytest.raises(ValueError, match="profile_id is required"):
+        save_profile_tier_assignment("   ", "efficiency", path=path)
+
+
+def test_save_profile_tier_assignment_requires_known_tier(tmp_path) -> None:
+    path = tmp_path / "assignments.json"
+    # Non-empty profile, not a "none" alias, but tier does not normalize -> tier required.
+    with pytest.raises(ValueError, match="profile tier is required"):
+        save_profile_tier_assignment("profile-a", "nonsense-tier", path=path)
+
+
+def test_save_profile_tier_none_assignment_requires_profile_id(tmp_path) -> None:
+    path = tmp_path / "assignments.json"
+    with pytest.raises(ValueError, match="profile_id is required"):
+        save_profile_tier_none_assignment("", path=path)
+
+
+# --- profile_tier_disabled inline flag (line 241) ---
+
+
+def test_profile_tier_disabled_honors_inline_flag() -> None:
+    # _truthy(profile_tier_disabled) short-circuits to True without touching disk.
+    assert profile_tier_disabled(
+        {"profile_id": "p1", "profile_tier_disabled": "true"},
+        disabled_profile_ids=set(),
+    )
+
+
+# --- assigned_tier_for_profile match (line 263) ---
+
+
+def test_assigned_tier_for_profile_returns_matching_tier() -> None:
+    tier = assigned_tier_for_profile(
+        {"profile_id": "p1"},
+        assignments={PROFILE_TIER_PERFORMANCE: "p1"},
+    )
+    assert tier == PROFILE_TIER_PERFORMANCE
+
+
+# --- available_adaptive_tiers dedup continue (line 359) ---
+
+
+def test_available_adaptive_tiers_dedups_shared_profile() -> None:
+    shared = {"profile_id": "shared"}
+    resolved = {
+        PROFILE_TIER_EFFICIENCY: shared,
+        PROFILE_TIER_BALANCED: shared,  # same profile_id -> skipped (line 359)
+        PROFILE_TIER_PERFORMANCE: {"profile_id": "perf"},
+    }
+    assert available_adaptive_tiers(resolved) == [
+        PROFILE_TIER_EFFICIENCY,
+        PROFILE_TIER_PERFORMANCE,
+    ]
+
+
+# --- _optional_float except branch (lines 468-469), exercised via balanced score ---
+
+
+def test_balanced_score_tolerates_non_numeric_metrics() -> None:
+    # Non-numeric efficiency_fps_per_w / avg_fps must not raise; _optional_float
+    # returns None on the ValueError path, so the score falls back gracefully.
+    profiles = [
+        _measured_profile(
+            "good",
+            "Balanced",
+            "2026-06-03T12:00:00+00:00",
+            fpsw=0.65,
+            fps=160.0,
+        ),
+        {
+            "profile_id": "bad-metrics",
+            "final_verified": True,
+            "generated_profile_tier": "Balanced",
+            "profile_created_at": "2026-06-05T12:00:00+00:00",
+            "efficiency_fps_per_w": "not-a-number",
+            "avg_fps": "also-bad",
+        },
+    ]
+
+    resolved = resolve_profile_tier_profiles(profiles, assignments={})
+
+    # The profile with valid metrics scores higher than the un-parseable one.
+    assert resolved[PROFILE_TIER_BALANCED]["profile_id"] == "good"
+
+
+# --- _profile_sort_time ValueError continue + OSError fallback (lines 483-489) ---
+
+
+def test_profile_sort_time_falls_back_to_path_mtime(tmp_path) -> None:
+    # Bad isoformat timestamps -> ValueError continue (line 483-484); then a real
+    # path resolves via stat().st_mtime (line 485-487).
+    real_file = tmp_path / "real-profile.json"
+    real_file.write_text("{}", encoding="utf-8")
+    profile_with_mtime = {
+        "profile_id": "mtime-profile",
+        "final_verified": True,
+        "generated_profile_tier": "Efficiency",
+        "profile_created_at": "not-a-timestamp",
+        "verified_at": "also-not-a-timestamp",
+        "path": str(real_file),
+    }
+    # Missing path entirely -> stat OSError -> time.time() fallback (line 488-489).
+    profile_with_walltime = {
+        "profile_id": "walltime-profile",
+        "final_verified": True,
+        "generated_profile_tier": "Efficiency",
+        "profile_created_at": "bad",
+        "path": str(tmp_path / "does-not-exist.json"),
+    }
+
+    resolved = resolve_profile_tier_profiles(
+        [profile_with_mtime, profile_with_walltime],
+        assignments={},
+    )
+
+    # Both are efficiency-tier; resolution must succeed without raising and pick one.
+    assert resolved[PROFILE_TIER_EFFICIENCY] is not None
+    assert resolved[PROFILE_TIER_EFFICIENCY]["profile_id"] in {
+        "mtime-profile",
+        "walltime-profile",
+    }

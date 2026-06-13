@@ -2023,3 +2023,413 @@ def test_fan_measurement_points_are_sorted_and_deduplicated_for_plotting() -> No
     )
 
     assert points == [(62.0, 34.0), (63.0, 34.5), (64.0, 35.0)]
+
+
+# --- profile_store branch coverage -----------------------------------------
+
+
+def _archive_in(tmp_path, monkeypatch, payload):
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    return archive_auto_uv_profile(payload)
+
+
+def test_file_time_iso_falls_back_to_now_on_stat_error(monkeypatch) -> None:
+    sentinel = "2099-01-01T00:00:00+00:00"
+    monkeypatch.setattr(profile_store, "_now_iso", lambda: sentinel)
+
+    class _BadPath:
+        def stat(self):
+            raise OSError("no stat")
+
+    assert profile_store._file_time_iso(_BadPath()) == sentinel
+
+
+def test_candidate_id_prefers_explicit_candidate_id() -> None:
+    assert profile_store._candidate_id({"candidate_id": "My Cand!"}) == "My-Cand"
+
+
+def test_profile_sort_time_skips_empty_and_invalid_then_uses_mtime(
+    tmp_path,
+) -> None:
+    target = tmp_path / "p.json"
+    target.write_text("{}", encoding="utf-8")
+    profile = {
+        "profile_created_at": "",  # skipped (empty)
+        "verified_at": "not-a-date",  # ValueError -> continue
+        "created_at": "also bad",  # ValueError -> continue
+        "path": str(target),
+    }
+    assert profile_store._profile_sort_time(profile) == pytest.approx(
+        target.stat().st_mtime
+    )
+
+
+def test_profile_sort_time_returns_zero_when_path_missing() -> None:
+    profile = {"path": "/nonexistent/path/should/not/exist.json"}
+    assert profile_store._profile_sort_time(profile) == 0.0
+
+
+def test_profile_sort_time_parses_iso_timestamp() -> None:
+    profile = {"profile_created_at": "2026-06-13T10:00:00+00:00"}
+    assert profile_store._profile_sort_time(profile) > 0.0
+
+
+def test_mark_verified_raises_when_profile_not_found(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    with pytest.raises(FileNotFoundError):
+        mark_auto_uv_profile_verified("does-not-exist")
+
+
+def test_mark_verified_raises_when_profile_unreadable(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    missing = tmp_path / "ghost.json"
+    # Resolver succeeds but the subsequent _read_json(path) returns None.
+    monkeypatch.setattr(
+        profile_store,
+        "resolve_auto_uv_profile",
+        lambda *a, **k: (missing, {}),
+    )
+    with pytest.raises(FileNotFoundError):
+        mark_auto_uv_profile_verified("anything")
+
+
+def test_mark_verified_merges_existing_verification_dict(
+    tmp_path, monkeypatch
+) -> None:
+    stored = _archive_in(
+        tmp_path,
+        monkeypatch,
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "final_verified": True,
+            "verification": {"prior_key": "prior_value"},
+            "points": [{"voltage_mv": 900, "target_mhz": 2600}],
+        },
+    )
+    mark_auto_uv_profile_verified(str(stored))
+    payload = json.loads(stored.read_text(encoding="utf-8"))
+    assert payload["verification"]["prior_key"] == "prior_value"
+    assert "verified_at" in payload["verification"]
+
+
+def test_mark_verification_failed_raises_when_not_found(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    with pytest.raises(FileNotFoundError):
+        profile_store.mark_auto_uv_profile_verification_failed("missing")
+
+
+def test_mark_verification_failed_raises_when_unreadable(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    missing = tmp_path / "ghost.json"
+    monkeypatch.setattr(
+        profile_store,
+        "resolve_auto_uv_profile",
+        lambda *a, **k: (missing, {}),
+    )
+    with pytest.raises(FileNotFoundError):
+        profile_store.mark_auto_uv_profile_verification_failed(
+            "anything", failure={"reason": "x"}
+        )
+
+
+def test_mark_verification_failed_returns_none_for_non_user_edited(
+    tmp_path, monkeypatch
+) -> None:
+    stored = _archive_in(
+        tmp_path,
+        monkeypatch,
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "final_verified": True,
+            "profile_source": "auto-uv-final",
+            "points": [{"voltage_mv": 900, "target_mhz": 2600}],
+        },
+    )
+    assert (
+        profile_store.mark_auto_uv_profile_verification_failed(
+            str(stored), failure={"reason": "x"}
+        )
+        is None
+    )
+
+
+def test_mark_verification_failed_merges_existing_dict_and_failure(
+    tmp_path, monkeypatch
+) -> None:
+    stored = _archive_in(
+        tmp_path,
+        monkeypatch,
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "profile_source": "user-edited",
+            "requires_verification": True,
+            "verification": {"prior": "kept"},
+            "points": [{"voltage_mv": 900, "target_mhz": 2600}],
+        },
+    )
+    result = profile_store.mark_auto_uv_profile_verification_failed(
+        str(stored), failure={"reason": "crash", "empty": ""}
+    )
+    payload = json.loads(result.read_text(encoding="utf-8"))
+    assert payload["verification"]["prior"] == "kept"
+    assert payload["verification"]["failed_at"]
+    assert payload["verification"]["failure"] == {"reason": "crash"}
+    assert payload["verification_status"] == "failed"
+
+
+def test_normalize_returns_none_without_points_or_plan() -> None:
+    assert (
+        profile_store._normalize_profile_payload(
+            {"candidate_voltage_mv": 900, "lock_clock_mhz": 2600},
+            path=profile_store.Path("/tmp/x.json"),
+            source="profile-store",
+        )
+        is None
+    )
+
+
+def test_normalize_returns_none_without_voltage_or_clock() -> None:
+    assert (
+        profile_store._normalize_profile_payload(
+            {"points": [{"voltage_mv": 900}], "lock_clock_mhz": 2600},
+            path=profile_store.Path("/tmp/x.json"),
+            source="profile-store",
+        )
+        is None
+    )
+
+
+def test_load_profile_files_skips_unreadable(tmp_path) -> None:
+    good = tmp_path / "good.json"
+    good.write_text(
+        json.dumps(
+            {
+                "candidate_voltage_mv": 900,
+                "lock_clock_mhz": 2600,
+                "final_verified": True,
+                "points": [{"voltage_mv": 900, "target_mhz": 2600}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    bad = tmp_path / "bad.json"
+    bad.write_text("{ broken", encoding="utf-8")
+    profiles = profile_store._load_profile_files(
+        [bad, good], source="profile-store"
+    )
+    assert len(profiles) == 1
+    assert profiles[0]["lock_clock_mhz"] == 2600
+
+
+def test_profile_display_name_clock_only() -> None:
+    assert profile_display_name({"lock_clock_mhz": 2600}) == "2600 MHz"
+
+
+def test_profile_display_name_voltage_only() -> None:
+    assert profile_display_name({"candidate_voltage_mv": 900}) == "900 mV"
+
+
+def test_profile_display_name_falls_back_to_candidate_id() -> None:
+    assert profile_display_name({"candidate_id": "fallback-id"}) == "fallback-id"
+
+
+def test_display_date_empty_returns_empty() -> None:
+    assert profile_store._display_date("") == ""
+    assert profile_store._display_date(None) == ""
+
+
+def test_display_date_parses_iso() -> None:
+    assert (
+        profile_store._display_date("2026-06-13T10:11:12+00:00")
+        == "2026-06-13 10:11:12"
+    )
+
+
+def test_display_date_falls_back_on_unparseable_value() -> None:
+    assert profile_store._display_date("2026-06-13Tgarbage") == "2026-06-13 garbage"
+
+
+def test_delete_auto_uv_profiles_skips_blank_and_uses_path_fallback(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    # Blank selector is skipped; an unresolved selector falls back to a raw Path
+    # (which is then rejected by the deletable-path guard since it is outside the dir).
+    deleted = delete_auto_uv_profiles(["", "  ", "/tmp/not-a-profile.json"])
+    assert deleted == []
+
+
+def test_delete_auto_uv_profiles_resolves_real_profile(tmp_path, monkeypatch) -> None:
+    stored = _archive_in(
+        tmp_path,
+        monkeypatch,
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "final_verified": True,
+            "points": [{"voltage_mv": 900, "target_mhz": 2600}],
+        },
+    )
+    deleted = delete_auto_uv_profiles([str(stored)])
+    assert deleted == [stored.resolve()]
+    assert not stored.exists()
+
+
+def test_delete_paths_skips_unresolvable_path(monkeypatch) -> None:
+    # Simulate path.resolve() raising OSError -> the path is skipped.
+    base = profile_store.Path
+
+    class _FlakyResolvePath(type(base())):
+        def resolve(self, *args, **kwargs):
+            raise OSError("resolve failed")
+
+    monkeypatch.setattr(profile_store, "Path", _FlakyResolvePath)
+    assert delete_auto_uv_profile_paths(["/tmp/boom.json"]) == []
+
+
+def test_delete_paths_dedupes_repeated_paths(tmp_path, monkeypatch) -> None:
+    stored = _archive_in(
+        tmp_path,
+        monkeypatch,
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "final_verified": True,
+            "points": [{"voltage_mv": 900, "target_mhz": 2600}],
+        },
+    )
+    # Same path listed twice: second occurrence hits the "already seen" branch.
+    deleted = delete_auto_uv_profile_paths([str(stored), str(stored)])
+    assert deleted == [stored.resolve()]
+
+
+def test_delete_paths_skips_file_that_vanishes(tmp_path, monkeypatch) -> None:
+    stored = _archive_in(
+        tmp_path,
+        monkeypatch,
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "final_verified": True,
+            "points": [{"voltage_mv": 900, "target_mhz": 2600}],
+        },
+    )
+    base = profile_store.Path
+
+    class _VanishingUnlinkPath(type(base())):
+        def unlink(self, *args, **kwargs):
+            raise FileNotFoundError(str(self))
+
+    monkeypatch.setattr(profile_store, "Path", _VanishingUnlinkPath)
+    assert delete_auto_uv_profile_paths([str(stored)]) == []
+
+
+def test_resolve_returns_none_for_blank_selector() -> None:
+    assert resolve_auto_uv_profile("   ") is None
+
+
+def test_resolve_active_returns_none_when_no_profiles(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    assert resolve_auto_uv_profile("latest") is None
+
+
+def test_resolve_active_returns_latest_profile(tmp_path, monkeypatch) -> None:
+    stored = _archive_in(
+        tmp_path,
+        monkeypatch,
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "final_verified": True,
+            "points": [{"voltage_mv": 900, "target_mhz": 2600}],
+        },
+    )
+    resolved = resolve_auto_uv_profile("active")
+    assert resolved is not None
+    assert resolved[0] == stored
+
+
+def test_resolve_file_returns_none_when_unreadable(tmp_path) -> None:
+    bad = tmp_path / "bad.json"
+    bad.write_text("{ broken", encoding="utf-8")
+    assert resolve_auto_uv_profile(str(bad)) is None
+
+
+def test_resolve_matches_by_candidate_id(tmp_path, monkeypatch) -> None:
+    _archive_in(
+        tmp_path,
+        monkeypatch,
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "final_verified": True,
+            "points": [{"voltage_mv": 900, "target_mhz": 2600}],
+        },
+    )
+    resolved = resolve_auto_uv_profile("900mv-2600mhz")
+    assert resolved is not None
+    assert resolved[1]["candidate_id"] == "900mv-2600mhz"
+
+
+def test_deletable_path_rejects_non_json(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    profiles_dir = profile_store.auto_uv_profiles_dir()
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    txt = profiles_dir / "note.txt"
+    txt.write_text("x", encoding="utf-8")
+    assert profile_store._is_deletable_auto_uv_profile_path(txt) is False
+
+
+def test_display_number_empty_and_non_numeric() -> None:
+    assert profile_store._display_number(None, precision=0) == ""
+    assert profile_store._display_number("", precision=0) == ""
+    assert profile_store._display_number(object(), precision=0) == ""
+
+
+def test_display_signed_number_variants() -> None:
+    assert profile_store._display_signed_number("", precision=0) == ""
+    assert profile_store._display_signed_number(0.1, precision=0) == "0"
+    assert profile_store._display_signed_number(5, precision=0) == "+5"
+    assert profile_store._display_signed_number(-5, precision=0) == "-5"
+
+
+def test_display_signed_number_returns_text_when_value_non_numeric(
+    monkeypatch,
+) -> None:
+    # _display_number yields non-empty text, but the float() reparse raises
+    # -> the formatted text is returned unsigned.
+    monkeypatch.setattr(
+        profile_store, "_display_number", lambda value, *, precision: "7"
+    )
+
+    class _Weird:
+        def __float__(self):
+            raise ValueError("not a number")
+
+    assert profile_store._display_signed_number(_Weird(), precision=0) == "7"
+
+
+def test_wait_for_new_profile_returns_matching_profile(tmp_path, monkeypatch) -> None:
+    _archive_in(
+        tmp_path,
+        monkeypatch,
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "final_verified": True,
+            "profile_created_at": "2026-06-13T10:00:00+00:00",
+            "points": [{"voltage_mv": 900, "target_mhz": 2600}],
+        },
+    )
+    result = profile_store.wait_for_new_profile(0.0, timeout_s=1.0)
+    assert result is not None
+    assert result["lock_clock_mhz"] == 2600
+
+
+def test_wait_for_new_profile_times_out(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    # Far-future after_timestamp means no profile qualifies before the timeout.
+    assert profile_store.wait_for_new_profile(9.9e18, timeout_s=0.05) is None
