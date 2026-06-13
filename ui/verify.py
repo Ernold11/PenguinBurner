@@ -19,10 +19,8 @@ def elapsed_from_line(line: str) -> float | None:
     match = _ELAPSED_RE.search(str(line or ""))
     if match is None:
         return None
-    try:
-        return max(0.0, float(match.group(1)))
-    except ValueError:
-        return None
+    # The pattern only ever captures a valid decimal, so float() cannot fail.
+    return max(0.0, float(match.group(1)))
 
 
 def progress_percent(elapsed_s, target_s) -> int:
