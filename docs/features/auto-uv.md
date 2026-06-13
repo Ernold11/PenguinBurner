@@ -41,6 +41,8 @@ to an off-screen window). Use `--show-q2rtx-window` to watch it.
 
 ## Presets / tiers
 
+![Auto-UV setup: GPU, preset, and Auto-OC targets](../assets/auto-uv-setup.png)
+
 The performance-bias preset sets how much clock tail the curve keeps. These map
 directly to [adaptive UV tiers](./adaptive-uv.md):
 

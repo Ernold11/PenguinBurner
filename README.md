@@ -71,6 +71,8 @@ plus a **CUDA** compute test, with stability and performance checks built in.
 Pick a bias (Efficiency, Balanced, or Performance) and it finds the matching
 sweet spot, then verifies it before saving.
 
+![Auto-UV setup: GPU, preset, and Auto-OC targets](docs/assets/auto-uv-setup.png)
+
 [Read the guide](docs/features/auto-uv.md)
 
 ## Adaptive Undervolting
