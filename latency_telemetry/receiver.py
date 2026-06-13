@@ -41,8 +41,8 @@ QUALITY_RANK = {
 
 # Latency tier names published as snapshot latency_quality. The cross-phase
 # span fields originate in the C++ layer (marker_timing_quality /
-# send_marker_timing_sample in penguinburner_latency_layer.cpp); keep the
-# vocabularies in sync.
+# send_marker_timing_sample in native/latency_layer/src/telemetry_events.cpp);
+# keep the vocabularies in sync.
 LATENCY_TIER_INPUT_PRESENT = "input-to-present"
 LATENCY_TIER_MARKER_INPUT_PRESENT = "marker-input-to-present"
 LATENCY_TIER_INPUT_OOB_PRESENT = "input-to-oob-present"

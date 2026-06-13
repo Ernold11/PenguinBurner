@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(penguinburner_latency_layer LANGUAGES CXX)
+project(latency_layer LANGUAGES CXX)
 
 enable_testing()
 
@@ -8,15 +8,20 @@ include(GNUInstallDirs)
 
 find_path(VULKAN_INCLUDE_DIR vulkan/vulkan.h REQUIRED)
 
-add_library(penguinburner_latency_layer SHARED
-  src/penguinburner_latency_layer.cpp
+add_library(latency_layer SHARED
+  src/latency_state.cpp
+  src/overlay_text.cpp
+  src/overlay_render.cpp
+  src/telemetry_events.cpp
+  src/marker_timing.cpp
+  src/latency_layer.cpp
 )
 
-target_include_directories(penguinburner_latency_layer PRIVATE
+target_include_directories(latency_layer PRIVATE
   "${VULKAN_INCLUDE_DIR}"
 )
 
-target_compile_features(penguinburner_latency_layer PRIVATE cxx_std_17)
+target_compile_features(latency_layer PRIVATE cxx_std_17)
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
   set(PB_LAYER_LIBRARY_ARCH "64")
@@ -25,7 +30,7 @@ else()
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(penguinburner_latency_layer PRIVATE
+  target_compile_options(latency_layer PRIVATE
     -Wall
     -Wextra
     -Wpedantic
@@ -33,7 +38,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   )
 endif()
 
-set_target_properties(penguinburner_latency_layer PROPERTIES
+# Output name, manifest, and layer name stay on the public contract referenced by
+# the Python overlay package, packaging, and tests; only the C++ sources were
+# de-prefixed and split.
+set_target_properties(latency_layer PROPERTIES
   OUTPUT_NAME "VkLayer_penguinburner_latency"
 )
 
@@ -53,7 +61,7 @@ configure_file(
   @ONLY
 )
 
-install(TARGETS penguinburner_latency_layer
+install(TARGETS latency_layer
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 )
 
