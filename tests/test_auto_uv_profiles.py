@@ -95,6 +95,7 @@ from ui.components.profile_list import (
     _profile_source_label,
     _profile_tier_label,
     _promote_preferred_profile,
+    _resolved_tier_winner_ids,
     _should_preserve_selection,
     _should_preserve_single_selection_toggle,
     _sort_value_less,
@@ -504,6 +505,50 @@ def test_profile_list_tier_label_hides_none_assignment() -> None:
         )
         == ""
     )
+
+
+def test_profile_list_tier_column_is_unique_per_tier() -> None:
+    # Two verified performance profiles must not both show "Performance" -- only
+    # the one adaptive mode would resolve (the newest) keeps the tier label.
+    perf_old = {
+        "profile_id": "perf-old",
+        "final_verified": True,
+        "profile_tier": "Performance",
+        "profile_created_at": "2026-01-01T00:00:00",
+    }
+    perf_new = {
+        "profile_id": "perf-new",
+        "final_verified": True,
+        "profile_tier": "Performance",
+        "profile_created_at": "2026-02-01T00:00:00",
+    }
+    eff = {
+        "profile_id": "eff-a",
+        "final_verified": True,
+        "profile_tier": "Efficiency",
+        "profile_created_at": "2026-01-15T00:00:00",
+    }
+    profiles = [perf_old, perf_new, eff]
+
+    winner_ids = _resolved_tier_winner_ids(profiles)
+    assert winner_ids["performance"] == "perf-new"
+    assert winner_ids["efficiency"] == "eff-a"
+
+    assert _profile_tier_label(perf_new, winner_ids) == "Performance"
+    assert _profile_tier_label(perf_old, winner_ids) == ""
+    assert _profile_tier_label(eff, winner_ids) == "Efficiency"
+
+
+def test_profile_list_tier_label_without_winners_keeps_legacy_label() -> None:
+    # Backward compatibility: with no resolved-winner map, every profile still
+    # reports its own tier (no uniqueness collapse).
+    perf_old = {
+        "profile_id": "perf-old",
+        "final_verified": True,
+        "profile_tier": "Performance",
+    }
+    assert _profile_tier_label(perf_old) == "Performance"
+    assert _profile_tier_label(perf_old, {}) == "Performance"
 
 
 def test_process_error_details_are_copy_friendly() -> None:

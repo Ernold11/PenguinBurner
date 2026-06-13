@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from saved_uv_profiles import profile_display_name
+from saved_uv_profiles import (
+    normalize_profile_tier,
+    profile_display_name,
+    resolve_profile_tier_profiles,
+)
 from .. import theme
 
 
@@ -156,6 +160,7 @@ class ProfileList:
         table_signals_blocked = self.table.blockSignals(True)
         try:
             self.table.setRowCount(0)
+            tier_winner_ids = _resolved_tier_winner_ids(profiles)
             for profile in profiles:
                 row = self.table.rowCount()
                 self.table.insertRow(row)
@@ -208,7 +213,7 @@ class ProfileList:
                         profile.get("memory_offset_mhz"),
                         precision=0,
                     ),
-                    _profile_tier_label(profile),
+                    _profile_tier_label(profile, tier_winner_ids),
                     _profile_source_label(profile),
                 ]
                 sort_values = _profile_sort_values(profile)
@@ -799,17 +804,45 @@ def _profile_source_label(profile: dict) -> str:
     return labels.get(source, source)
 
 
-def _profile_tier_label(profile: dict) -> str:
+def _resolved_tier_winner_ids(profiles: list[dict]) -> dict[str, str]:
+    # Adaptive mode collapses every tier down to a single profile (see
+    # resolve_profile_tier_profiles); the table mirrors that so each tier label
+    # appears on exactly one row -- the profile adaptive mode would actually
+    # pick. Superseded duplicates fall back to a blank tier in the UI.
+    resolved = resolve_profile_tier_profiles(profiles)
+    winners: dict[str, str] = {}
+    for tier, profile in resolved.items():
+        if not isinstance(profile, dict):
+            continue
+        profile_id = str(profile.get("profile_id") or "").strip()
+        if profile_id:
+            winners[tier] = profile_id
+    return winners
+
+
+def _profile_tier_label(
+    profile: dict,
+    tier_winner_ids: dict[str, str] | None = None,
+) -> str:
     if _truthy(profile.get("profile_tier_disabled")):
         return ""
     assigned = str(profile.get("assigned_profile_tier") or "").strip()
-    if assigned:
-        return assigned
-    tier = str(profile.get("profile_tier") or "").strip()
-    if tier:
-        return tier
-    generated = str(profile.get("generated_profile_tier") or "").strip()
-    return generated
+    label = (
+        assigned
+        or str(profile.get("profile_tier") or "").strip()
+        or str(profile.get("generated_profile_tier") or "").strip()
+    )
+    if not label:
+        return ""
+    if tier_winner_ids:
+        tier_key = normalize_profile_tier(label)
+        winner_id = str(tier_winner_ids.get(tier_key) or "").strip()
+        profile_id = str(profile.get("profile_id") or "").strip()
+        # Only the resolved winner keeps the tier; duplicates show no tier so
+        # the column stays unique and matches adaptive mode's choice.
+        if winner_id and profile_id and winner_id != profile_id:
+            return ""
+    return label
 
 
 def _truthy(value: object) -> bool:
