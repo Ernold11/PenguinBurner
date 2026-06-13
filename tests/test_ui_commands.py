@@ -1252,7 +1252,7 @@ def test_candidate_curve_updates_oc_column_for_existing_run_row() -> None:
         }
     )
 
-    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "0/0"
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "—"
 
     table.record_candidate_curve(
         {
@@ -1275,7 +1275,7 @@ def test_candidate_curve_updates_oc_column_for_existing_run_row() -> None:
     assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "90/150 MHz"
 
 
-def test_non_auto_oc_run_shows_zero_oc_progress() -> None:
+def test_non_auto_oc_run_shows_dash_oc_progress() -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1295,7 +1295,8 @@ def test_non_auto_oc_run_shows_zero_oc_progress() -> None:
         }
     )
 
-    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "0/0"
+    # A row with no Auto-OC stage reads as a neutral dash, not "0/0".
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "—"
 
 
 def test_runs_table_row_click_toggles_single_candidate_selection() -> None:

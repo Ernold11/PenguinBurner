@@ -236,11 +236,11 @@ class RunsTable:
         progress.setdefault("target_duration_s", None)
         return progress
 
-    def _oc_progress_for_payload(self, payload: dict) -> tuple[int, int]:
+    def _oc_progress_for_payload(self, payload: dict) -> tuple[int, int] | None:
         payload_oc = _payload_oc_progress(payload)
         if payload_oc is not None:
             return payload_oc
-        return self._oc_progress_by_probe.get(_probe_key(payload), (0, 0))
+        return self._oc_progress_by_probe.get(_probe_key(payload))
 
     def _metric_text_with_delta(self, value, baseline_key: str) -> str:
         value_text = _format_float(value)
@@ -836,13 +836,18 @@ def _format_int(value) -> str:
 
 
 def _format_oc_progress(value: tuple[int, int] | None) -> str:
+    # Auto-OC runs only as a late stage of a Performance scan, so most rows
+    # (the whole UV sweep, and every Efficiency/Balanced row) have no OC data.
+    # Show a neutral dash there rather than a literal "0/0", which reads as
+    # "Auto-OC ran and gained nothing". A real OC result with no held gain is
+    # still shown as "0/<limit> MHz" because its limit is non-zero.
     if value is None:
-        return "0/0"
+        return "—"
     applied_mhz, limit_mhz = value
     applied = max(0, int(round(float(applied_mhz))))
     limit = max(0, int(round(float(limit_mhz))))
     if limit == 0:
-        return "0/0"
+        return "—"
     return f"{applied}/{limit} MHz"
 
 

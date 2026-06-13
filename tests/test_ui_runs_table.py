@@ -97,8 +97,10 @@ def test_duration_and_progress_text() -> None:
 
 def test_oc_progress_and_cap_helpers() -> None:
     assert rt._format_oc_progress((1, 4)) == "1/4 MHz"
-    assert rt._format_oc_progress(None) == "0/0"
-    assert rt._format_oc_progress((2, 0)) == "0/0"  # zero limit
+    # Non-OC rows (UV sweep, Efficiency/Balanced) read as a neutral dash, not
+    # an "0/0" that looks like Auto-OC ran and gained nothing.
+    assert rt._format_oc_progress(None) == "—"
+    assert rt._format_oc_progress((2, 0)) == "—"  # zero limit -> no OC component
     assert rt._payload_oc_progress(
         {"auto_oc": True, "auto_oc_applied_mhz": 30, "auto_oc_limit_mhz": 90}
     ) == (30, 90)
