@@ -58,6 +58,25 @@ def profile_tier_is_none(value: object | None) -> bool:
     return text in _PROFILE_TIER_NONE_ALIASES
 
 
+def _tier_from_tail_rise_bins(tail_rise_bins: int) -> str:
+    # Single source of truth for the tail-bins -> tier thresholds, shared by
+    # both the runtime-options and saved-profile classifiers so they can never
+    # drift apart (efficiency=flat, balanced>=4 bins, performance>=6 bins).
+    if tail_rise_bins >= _PERFORMANCE_TAIL_RISE_BINS:
+        return PROFILE_TIER_PERFORMANCE
+    if tail_rise_bins >= _BALANCED_TAIL_RISE_BINS:
+        return PROFILE_TIER_BALANCED
+    return PROFILE_TIER_EFFICIENCY
+
+
+def _tier_from_mode(mode: str) -> str:
+    # Mode-only fallback when no tail-bins signal is present: an explicit
+    # efficiency mode maps to efficiency, everything else defaults to balanced.
+    if mode == PROFILE_TIER_EFFICIENCY:
+        return PROFILE_TIER_EFFICIENCY
+    return PROFILE_TIER_BALANCED
+
+
 def generated_profile_tier_from_runtime_options(runtime_options: dict | None) -> str:
     options = runtime_options if isinstance(runtime_options, dict) else {}
     requested = normalize_profile_tier(options.get("auto_uv_requested_mode"))
@@ -70,17 +89,9 @@ def generated_profile_tier_from_runtime_options(runtime_options: dict | None) ->
 
     tail_rise_bins = _optional_int(options.get("auto_uv_tail_rise_bins"))
     if tail_rise_bins is not None:
-        if tail_rise_bins >= _PERFORMANCE_TAIL_RISE_BINS:
-            return PROFILE_TIER_PERFORMANCE
-        if tail_rise_bins >= _BALANCED_TAIL_RISE_BINS:
-            return PROFILE_TIER_BALANCED
-        return PROFILE_TIER_EFFICIENCY
+        return _tier_from_tail_rise_bins(tail_rise_bins)
 
-    if mode == PROFILE_TIER_EFFICIENCY:
-        return PROFILE_TIER_EFFICIENCY
-    if mode == PROFILE_TIER_BALANCED:
-        return PROFILE_TIER_BALANCED
-    return PROFILE_TIER_BALANCED
+    return _tier_from_mode(mode)
 
 
 def generated_profile_tier(profile: dict | None) -> str:
@@ -110,18 +121,9 @@ def generated_profile_tier(profile: dict | None) -> str:
         if isinstance(flatten_target, dict):
             tail_rise_bins = _optional_int(flatten_target.get("tail_rise_bins"))
     if tail_rise_bins is not None:
-        if tail_rise_bins >= _PERFORMANCE_TAIL_RISE_BINS:
-            return PROFILE_TIER_PERFORMANCE
-        if tail_rise_bins >= _BALANCED_TAIL_RISE_BINS:
-            return PROFILE_TIER_BALANCED
-        return PROFILE_TIER_EFFICIENCY
+        return _tier_from_tail_rise_bins(tail_rise_bins)
 
-    if mode == PROFILE_TIER_EFFICIENCY:
-        return PROFILE_TIER_EFFICIENCY
-    if mode == PROFILE_TIER_BALANCED:
-        return PROFILE_TIER_BALANCED
-
-    return PROFILE_TIER_BALANCED
+    return _tier_from_mode(mode)
 
 
 def profile_tier_assignments_path() -> Path:

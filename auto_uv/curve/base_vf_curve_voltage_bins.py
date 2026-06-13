@@ -9,10 +9,6 @@ from ..auto_uv_types import AutoUvError
 from .base_vf_curve import editable_base_vf_points, read_base_vf_points
 
 
-def all_voltage_bins(base_curve: list[dict]) -> list[int]:
-    return sorted({int(point.voltage_mv) for point in read_base_vf_points(base_curve)})
-
-
 def editable_voltage_bins(base_curve: list[dict]) -> list[int]:
     return [int(point.voltage_mv) for point in editable_base_vf_points(base_curve)]
 

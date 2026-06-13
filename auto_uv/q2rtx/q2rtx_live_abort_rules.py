@@ -155,8 +155,8 @@ def selected_nvidia_gpu_idle_abort_reason(state: dict) -> str | None:
         return None
     if max_power is not None and not power_idle:
         return None
-    if not (util_idle or power_idle):
-        return None
+    # At least one metric is present (guarded above) and every present metric is
+    # idle, so reaching here always means the selected GPU is idle.
     util_text = f"{float(max_util):.1f}%" if max_util is not None else "n/a"
     power_text = f"{float(max_power):.1f}W" if max_power is not None else "n/a"
     return (

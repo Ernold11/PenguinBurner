@@ -20,6 +20,7 @@ from .auto_uv_scan_settings import AutoUvScanSettings
 from .auto_uv_console_log import log_benchmark, log_phase, log_user_stage
 from .auto_uv_scan_result import build_voltage_scan_result
 from .auto_uv_user_options import AUTO_UV_DEFAULTS, AUTO_UV_METRIC_TUNING
+from .shared.positive_int import positive_int
 from .curve.base_load_flatten_target import (
     choose_base_load_flatten_target,
     selected_nvidia_light_load_diagnostic,
@@ -93,10 +94,11 @@ def run_voltage_frequency_undervolt_main_loop(
         timedemo_warmup_runs = int(settings.timedemo_warmup_runs)
         tail_rise_bins = int(getattr(settings, "tail_rise_bins", 0))
         descent_tail_rise_bins = int(voltage_descent_tail_rise_bins(settings))
-        efficiency_tail_tune_rise_bins = efficiency_tail_tune_tail_rise_bins(
-            runtime_options,
-            descent_tail_rise_bins=int(descent_tail_rise_bins),
-        )
+        # The efficiency tail-tune reuses the descent bins so every preset keeps
+        # its own tail shape (efficiency flat at 0, balanced rising at 4). It must
+        # not fall back to a fixed balanced default, or efficiency profiles would
+        # inherit the balanced tail and the two tiers would collapse into one.
+        efficiency_tail_tune_rise_bins = descent_tail_rise_bins
         enforce_descent_clock_floor = lower_voltage_descent_enforces_clock_floor(
             runtime_options,
             tail_rise_bins=int(descent_tail_rise_bins),
@@ -619,24 +621,6 @@ def select_performance_auto_oc_candidate(
         int(selected.target_mhz),
         None if selected_changed else stable_probe,
     )
-
-
-def positive_int(value: object) -> int | None:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
-
-
-def efficiency_tail_tune_tail_rise_bins(
-    runtime_options: dict,
-    *,
-    descent_tail_rise_bins: int,
-) -> int:
-    if bool(runtime_options.get("auto_uv_tail_rise_bins_explicit")):
-        return max(0, int(descent_tail_rise_bins))
-    return int(AUTO_UV_DEFAULTS.balanced_tail_rise_bins)
 
 
 def lower_voltage_descent_enforces_clock_floor(

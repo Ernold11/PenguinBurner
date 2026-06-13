@@ -53,7 +53,7 @@ def read_scan_runtime_settings(
             runtime_options.get("preserve_vanilla_below_mv"),
         )
     )
-    configured_max_drop_pct = max_drop_pct(runtime_options, auto_uv_mode=auto_uv_mode)
+    configured_max_drop_pct = max_drop_pct(runtime_options)
     return ScanRuntimeSettings(
         q2rtx_config=q2rtx_config,
         auto_uv_mode=auto_uv_mode,
@@ -72,7 +72,7 @@ def read_scan_runtime_settings(
             runtime_options
         ),
         tail_rise_bins=tail_rise_bins(runtime_options, auto_uv_mode=auto_uv_mode),
-        timedemo_warmup_runs=timedemo_warmup_runs_for_mode(auto_uv_mode),
+        timedemo_warmup_runs=timedemo_warmup_runs_for_mode(),
     )
 
 
@@ -89,8 +89,7 @@ def clock_drop_margin_pct(
     return max(0.0, min(100.0, float(value)))
 
 
-def max_drop_pct(runtime_options: dict, *, auto_uv_mode: str) -> float:
-    _ = auto_uv_mode
+def max_drop_pct(runtime_options: dict) -> float:
     value = runtime_options.get("auto_uv_max_drop_pct")
     if value is None:
         value = AUTO_UV_DEFAULTS.max_drop_pct
@@ -150,8 +149,7 @@ def tail_rise_bins(runtime_options: dict, *, auto_uv_mode: str) -> int:
     return max(0, min(int(AUTO_UV_DEFAULTS.max_tail_rise_bins), int(value)))
 
 
-def timedemo_warmup_runs_for_mode(auto_uv_mode: str) -> int:
-    _ = auto_uv_mode
+def timedemo_warmup_runs_for_mode() -> int:
     return 0
 
 

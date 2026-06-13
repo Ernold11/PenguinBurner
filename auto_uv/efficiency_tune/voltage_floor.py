@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..scan_mode.uv_limits import uv_limit_voltage_floor_target_for_gpu
+from ..shared.positive_int import positive_int
 
 
 def min_search_voltage_mv(
@@ -34,11 +35,3 @@ def percent_floor_voltage_mv(*, start_voltage_mv: int, configured_max_drop_pct: 
             )
         ),
     )
-
-
-def positive_int(value: object | None) -> int | None:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None

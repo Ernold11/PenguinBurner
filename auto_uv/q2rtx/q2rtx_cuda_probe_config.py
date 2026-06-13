@@ -13,6 +13,7 @@ from stability.q2rtx import (
 )
 
 from ..auto_uv_user_options import AUTO_UV_DEFAULTS, AUTO_UV_PROBE_TUNING
+from ..shared.probe_data_fields import percent
 
 REFERENCE_DISCOVERY_Q2RTX_DURATION_MULTIPLIER = 2
 
@@ -146,7 +147,7 @@ def cuda_companion_enabled_for_voltage_band(
     if initial_voltage <= 0:
         return True
     voltage_ratio = float(candidate_voltage) / float(initial_voltage)
-    return voltage_ratio < pct(AUTO_UV_PROBE_TUNING.high_voltage_pct)
+    return voltage_ratio < percent(AUTO_UV_PROBE_TUNING.high_voltage_pct)
 
 
 def tiered_q2rtx_probe_duration_s(
@@ -165,9 +166,9 @@ def tiered_q2rtx_probe_duration_s(
         return int(base_probe_duration_s)
 
     voltage_ratio = float(candidate_voltage) / float(initial_voltage)
-    if voltage_ratio >= pct(AUTO_UV_PROBE_TUNING.high_voltage_pct):
+    if voltage_ratio >= percent(AUTO_UV_PROBE_TUNING.high_voltage_pct):
         multiplier = 1
-    elif voltage_ratio >= pct(AUTO_UV_PROBE_TUNING.medium_voltage_pct):
+    elif voltage_ratio >= percent(AUTO_UV_PROBE_TUNING.medium_voltage_pct):
         multiplier = 2
     else:
         multiplier = 3
@@ -224,6 +225,3 @@ def timedemo_seconds_hint(config: Q2RTXStabilityConfig) -> float | None:
         return None
     return float(hinted_seconds)
 
-
-def pct(value: float | int) -> float:
-    return max(0.0, float(value) / 100.0)

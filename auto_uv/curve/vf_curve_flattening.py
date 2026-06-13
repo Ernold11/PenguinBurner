@@ -74,7 +74,7 @@ def build_flattened_plan(
     editable_voltages = {
         int(point["voltage_mv"])
         for point in base_curve
-        if not bool(point.get("preserve_base"))
+        if not point.get("preserve_base")
     }
     if int(candidate_voltage_mv) not in editable_voltages:
         raise ValueError(f"{int(candidate_voltage_mv)}mV is not an editable VF bin")
@@ -108,7 +108,7 @@ def build_flattened_plan(
         voltage_mv = int(point["voltage_mv"])
         base_mhz = int(point["base_mhz"])
         original_target_mhz = int(point["target_mhz"])
-        if bool(point.get("preserve_base")):
+        if point.get("preserve_base"):
             target_mhz = int(base_mhz)
         elif voltage_mv >= int(candidate_voltage_mv):
             target_mhz = int(tail_targets.get(voltage_mv, flattened_clock_mhz))
@@ -133,7 +133,7 @@ def build_flattened_plan(
                     snap_target_clock(int(round(interpolated_mhz)), rules=rules),
                 ),
             )
-        if not bool(point.get("preserve_base")) and voltage_mv < int(candidate_voltage_mv):
+        if not point.get("preserve_base") and voltage_mv < int(candidate_voltage_mv):
             target_mhz = min(int(target_mhz), int(below_plateau_cap_mhz))
         point["target_mhz"] = int(target_mhz)
         point["new_offset_mhz"] = int(target_mhz) - int(base_mhz)

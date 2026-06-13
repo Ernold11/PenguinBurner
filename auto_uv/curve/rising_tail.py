@@ -31,7 +31,7 @@ def rising_tail_targets(
     editable_tail_voltages = [
         int(point["voltage_mv"])
         for point in base_curve
-        if not bool(point.get("preserve_base"))
+        if not point.get("preserve_base")
         and int(point["voltage_mv"]) > candidate_voltage
     ]
     tail_index_by_voltage = {
@@ -43,7 +43,7 @@ def rising_tail_targets(
     targets: dict[int, int] = {}
     for point in base_curve:
         voltage_mv = int(point["voltage_mv"])
-        if voltage_mv < candidate_voltage or bool(point.get("preserve_base")):
+        if voltage_mv < candidate_voltage or point.get("preserve_base"):
             continue
         if voltage_mv == candidate_voltage or bins <= 0:
             targets[voltage_mv] = lock_clock

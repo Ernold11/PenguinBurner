@@ -6,6 +6,7 @@ The cache blocks known-crashing voltage/clock bands but keeps controlled low-clo
 from __future__ import annotations
 
 from ..curve.base_vf_curve_voltage_bins import next_higher_editable_voltage_bin
+from ..shared.positive_int import positive_int
 
 
 CONTROLLED_CLOCK_FLOOR_FAILURE_PREFIXES = (
@@ -30,8 +31,8 @@ def unsafe_min_search_voltage(
     for entry in unsafe_entries:
         if not unsafe_entry_blocks_future_search(entry):
             continue
-        voltage_mv = _positive_int(entry.get("candidate_voltage_mv"))
-        lock_clock_mhz = _positive_int(entry.get("lock_clock_mhz"))
+        voltage_mv = positive_int(entry.get("candidate_voltage_mv"))
+        lock_clock_mhz = positive_int(entry.get("lock_clock_mhz"))
         if voltage_mv is None or lock_clock_mhz is not None:
             continue
         if isinstance(entry.get("blocked_lock_clock_mhz"), list):
@@ -54,10 +55,10 @@ def unsafe_entry_blocks_voltage_candidate(
 ) -> bool:
     if not unsafe_entry_blocks_future_search(entry):
         return False
-    unsafe_voltage_mv = _positive_int(entry.get("candidate_voltage_mv"))
+    unsafe_voltage_mv = positive_int(entry.get("candidate_voltage_mv"))
     if unsafe_voltage_mv is None:
         return False
-    unsafe_lock_clock_mhz = _positive_int(entry.get("lock_clock_mhz")) or 0
+    unsafe_lock_clock_mhz = positive_int(entry.get("lock_clock_mhz")) or 0
     clock_floor_mhz = unsafe_entry_clock_floor_mhz(
         entry,
         fallback_lock_clock_mhz=int(unsafe_lock_clock_mhz),
@@ -84,8 +85,8 @@ def unsafe_voltage_block_reason(
             lock_clock_mhz=int(lock_clock_mhz),
         ):
             continue
-        unsafe_voltage_mv = _positive_int(entry.get("candidate_voltage_mv"))
-        unsafe_clock_mhz = _positive_int(entry.get("lock_clock_mhz"))
+        unsafe_voltage_mv = positive_int(entry.get("candidate_voltage_mv"))
+        unsafe_clock_mhz = positive_int(entry.get("lock_clock_mhz"))
         clock_floor_mhz = unsafe_entry_clock_floor_mhz(
             entry,
             fallback_lock_clock_mhz=int(unsafe_clock_mhz or 0),
@@ -96,7 +97,7 @@ def unsafe_voltage_block_reason(
             if clock_floor_mhz > 0 and unsafe_clock_mhz
             else ""
         )
-        voltage_text = int(unsafe_voltage_mv or candidate_voltage_mv)
+        voltage_text = int(unsafe_voltage_mv)
         return f"cached unsafe point {voltage_text}mV@{clock_text}{band_text}"
     return ""
 
@@ -110,7 +111,7 @@ def unsafe_entry_clock_floor_mhz(
     blocked = entry.get("blocked_lock_clock_mhz")
     if isinstance(blocked, list):
         for value in blocked:
-            parsed = _positive_int(value)
+            parsed = positive_int(value)
             if parsed is not None:
                 clocks.append(int(parsed))
     if clocks:
@@ -144,11 +145,3 @@ def controlled_failure_reason(reason: str | None) -> bool:
         CONTROLLED_CLOCK_FLOOR_FAILURE_PREFIXES
         + CONTROLLED_TERMINATION_FAILURE_PREFIXES
     )
-
-
-def _positive_int(value: object) -> int | None:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None

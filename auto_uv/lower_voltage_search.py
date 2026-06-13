@@ -94,10 +94,8 @@ def select_aggressive_voltage_bins(
         selected.append(int(bins_descending[pick_index]))
         cursor = int(pick_index) + 1
 
-    if bins_descending:
-        final_voltage_mv = int(bins_descending[-1])
-        if final_voltage_mv not in selected:
-            selected.append(final_voltage_mv)
+    # The clamped pick_index always lands on the last bin before the loop exits,
+    # so the final bin is already selected here.
     return selected
 
 

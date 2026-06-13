@@ -7,10 +7,7 @@ from __future__ import annotations
 
 from ..auto_uv_user_options import AUTO_UV_CURVE_TUNING, AUTO_UV_STALL_TUNING
 from ..persistence.unsafe_voltage_cache import controlled_failure_reason
-
-
-def percent(value: float | int) -> float:
-    return max(0.0, float(value) / 100.0)
+from ..shared.probe_data_fields import percent
 
 
 def target_core_clock_floor(
