@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+import adaptive_target_fps
 from runtime_gpu_control.adaptive_profile_runtime import (
     AdaptiveAutoUvRuntimeController,
     AdaptiveAutoUvRuntimeDependencies,
@@ -8,6 +11,26 @@ from saved_uv_profiles.profile_tiers import (
     PROFILE_TIER_EFFICIENCY,
     PROFILE_TIER_PERFORMANCE,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_adaptive_target_fps(tmp_path, monkeypatch):
+    """Keep policy thresholds deterministic across machines.
+
+    The controller resolves its initial target FPS via
+    adaptive_target_fps_from_env(), which falls back to the real user runtime
+    config. Without isolation these tests read whatever Target FPS the developer
+    set in the UI (e.g. 30), shifting the frametime thresholds and breaking the
+    assumed default (60 FPS) behavior. Point the config lookup at an empty temp
+    file and clear any env override so the built-in default applies.
+    """
+    monkeypatch.setattr(
+        adaptive_target_fps,
+        "default_runtime_config_path",
+        lambda: tmp_path / "penguin_burner.toml",
+    )
+    for name in adaptive_target_fps.ADAPTIVE_TARGET_FPS_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
 
 
 class FakeReader:
