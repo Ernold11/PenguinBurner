@@ -76,6 +76,7 @@ pb-overlay-text = "overlay.overlay_text:main"
 py-modules = [
   "ascii_chart",
   "adaptive_target_fps",
+  "afterburner_policy",
   "cli_output",
   "cuda_bruteforce_stability",
   "dry_run_preview",
