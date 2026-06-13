@@ -1,0 +1,176 @@
+"""Coverage for ui/dialogs/*.
+
+Pure helpers (final_choice ranking, error_details formatting) tested directly;
+the build-then-exec dialogs are constructed with QDialog.exec monkeypatched so
+their layout/wiring runs without blocking.
+"""
+
+from __future__ import annotations
+
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
+
+from ui.dialogs import about as about_dialog
+from ui.dialogs import afterburner_import as ab_dialog
+from ui.dialogs import error_details
+from ui.dialogs import final_choice as fc
+from ui.dialogs import scan_tuning as scan_tuning_dialog
+from ui.dialogs import verify as verify_dialog
+from ui.qt import import_qt
+
+
+# --- final_choice pure helpers ------------------------------------------------
+
+
+def test_candidate_status_text() -> None:
+    assert "Best FPS/W" in fc.candidate_status_text({"final_verified": True}, True)
+    assert "Highest FPS" in fc.candidate_status_text(
+        {}, True, auto_uv_mode="performance"
+    )
+    assert fc.candidate_status_text({}, False) == "Passed short probe"
+
+
+def test_candidate_number_and_numeric_sort() -> None:
+    assert fc.candidate_number(2500.4, precision=0) == "2500"
+    assert fc.candidate_number(12.34, precision=2) == "12.34"
+    assert fc.candidate_number(None, precision=2) == ""
+    assert fc.candidate_number("x", precision=2) == ""
+    assert fc.numeric_sort_value("") == ""
+    assert fc.numeric_sort_value(5) == 5.0
+    assert fc.numeric_sort_value("nan") == ""
+
+
+def test_sort_and_best_candidate() -> None:
+    candidates = [
+        {"candidate_id": "a", "avg_fps": 100, "efficiency_fps_per_w": 0.5, "lock_clock_mhz": 2400, "candidate_voltage_mv": 950},
+        {"candidate_id": "b", "avg_fps": 120, "efficiency_fps_per_w": 0.6, "lock_clock_mhz": 2500, "candidate_voltage_mv": 900},
+    ]
+    perf_sorted = fc.sort_candidates_for_final_choice(candidates, "performance")
+    assert perf_sorted[0]["candidate_id"] == "b"  # highest fps first
+    eff_sorted = fc.sort_candidates_for_final_choice(candidates, "efficiency")
+    assert eff_sorted[0]["candidate_id"] == "b"  # best fps/w first
+    # best_* returns the first candidate (in the given, already-sorted order)
+    # with a usable metric.
+    assert fc.best_final_choice_candidate_id(perf_sorted, "performance") == "b"
+    assert fc.best_final_choice_candidate_id(eff_sorted, "efficiency") == "b"
+    assert fc.best_final_choice_candidate_id([], "efficiency") == ""
+    assert fc.final_choice_sort_column_for_mode("performance") == fc.FINAL_CHOICE_FPS_SORT_COLUMN
+    assert isinstance(fc.final_choice_sort_values(candidates[0]), list)
+
+
+def test_duration_helpers_and_fps() -> None:
+    assert fc.duration_minutes_for_control(120) == 2
+    assert fc.duration_minutes_for_control("bad") >= 1
+    assert fc.candidate_short_duration_s({"short_verification_duration_s": 45}) == 45
+    assert fc.candidate_short_duration_s({}) == 30
+    assert fc.candidate_fpsw({"efficiency_fps_per_w": 0.6}) == 0.6
+    assert fc.candidate_fpsw({}) is None
+    assert fc.candidate_fps({"avg_fps": 120}) == 120.0
+
+
+def test_final_choice_intro_text() -> None:
+    assert "stopped" in fc.final_choice_intro_text("efficiency", request_reason="user-stop")
+    assert "best FPS/W" in fc.final_choice_intro_text("efficiency")
+    assert "highest FPS" in fc.final_choice_intro_text("performance")
+
+
+# --- error_details pure helpers -----------------------------------------------
+
+
+def test_process_failure_details() -> None:
+    text = error_details.process_failure_details(
+        action_label="Auto-UV scan",
+        exit_code=3,
+        exit_status="crash",
+        extra_details="boom",
+        log_tail="line1\nline2",
+    )
+    assert "Action: Auto-UV scan" in text
+    assert "Exit code: 3" in text
+    assert "Recent logs:" in text
+    # defaults when blank
+    assert "Unknown action" in error_details.process_failure_details(
+        action_label="", exit_code=0, exit_status=""
+    )
+
+
+def test_qt_enum_name_and_copy_text() -> None:
+    from types import SimpleNamespace
+
+    assert error_details.qt_enum_name(SimpleNamespace(name="CrashExit")) == "CrashExit"
+    assert error_details.qt_enum_name("QProcess.CrashExit") == "CrashExit"
+    assert error_details.qt_enum_name("plain") == "plain"
+    assert error_details.error_dialog_copy_text("T", "M", details="D").endswith("D")
+    assert "T" in error_details.error_dialog_copy_text("T", "M")
+
+
+# --- dialog construction (exec patched) ---------------------------------------
+
+
+@pytest.fixture
+def qt(qapp, monkeypatch):
+    modules = import_qt()
+    monkeypatch.setattr(modules[2].QDialog, "exec", lambda self: modules[2].QDialog.Rejected)
+    return modules
+
+
+def test_show_error_dialog_builds(qt) -> None:
+    qtcore, qtgui, qtwidgets, _pg = qt
+    error_details.show_error_dialog(
+        QtCore=qtcore,
+        QtGui=qtgui,
+        QtWidgets=qtwidgets,
+        parent=None,
+        title="Boom",
+        message="It failed",
+        details="trace",
+    )
+
+
+def test_show_about_dialog_builds(qt) -> None:
+    qtcore, qtgui, qtwidgets, _pg = qt
+    about_dialog.show_about_dialog(
+        QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets, parent=None
+    )
+
+
+def test_select_verify_options_rejected_returns_none(qt) -> None:
+    _qtcore, _qtgui, qtwidgets, _pg = qt
+    assert verify_dialog.select_verify_options(
+        QtWidgets=qtwidgets, parent=None, profile_label="P1"
+    ) is None
+
+
+def test_select_final_candidate_paths(qt) -> None:
+    qtcore, qtgui, qtwidgets, _pg = qt
+    # No candidates -> discarded.
+    selected, duration, discarded = fc.select_final_candidate(
+        QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets, parent=None,
+        candidates=[], default_candidate_id="",
+    )
+    assert selected is None and discarded is True
+    # With candidates + rejected exec -> still returns a 3-tuple.
+    result = fc.select_final_candidate(
+        QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets, parent=None,
+        candidates=[{"candidate_id": "c1", "avg_fps": 120, "efficiency_fps_per_w": 0.6,
+                     "lock_clock_mhz": 2500, "candidate_voltage_mv": 900}],
+        default_candidate_id="c1", auto_uv_mode="efficiency",
+    )
+    assert isinstance(result, tuple) and len(result) == 3
+
+
+def test_select_afterburner_import_builds(qt) -> None:
+    qtcore, qtgui, qtwidgets, pg = qt
+    assert ab_dialog.select_afterburner_import(
+        QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets, pg=pg, parent=None
+    ) is None
+
+
+def test_select_scan_tuning_builds(qt) -> None:
+    qtcore, qtgui, qtwidgets, _pg = qt
+    assert scan_tuning_dialog.select_scan_tuning(
+        QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets, parent=None, gpu_index=0
+    ) is None
