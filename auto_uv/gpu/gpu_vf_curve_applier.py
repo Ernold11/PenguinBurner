@@ -9,11 +9,11 @@ from dataclasses import dataclass
 from typing import Callable
 
 from afterburner.import_vf_curve import apply_plan
-from hidden_nvapi_vf import (
+from nvidia_driver.hidden_nvapi_vf import (
     create_hidden_vf_curve_reader,
     get_hidden_vf_curve_reader_last_error,
 )
-from nvml_gpu_policy import NvmlGpuPolicyController
+from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
 from nvidia_runtime_defaults import reset_nvidia_runtime_defaults
 
 from ..auto_uv_types import AutoUvError

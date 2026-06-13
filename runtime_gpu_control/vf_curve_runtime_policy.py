@@ -13,7 +13,7 @@ from afterburner.vfcurve import (
     load_afterburner_profile_settings,
     resolve_afterburner_vf_source,
 )
-from nvml_gpu_policy import (
+from nvidia_driver.nvml_gpu_policy import (
     apply_translated_gpu_policy,
     describe_translated_gpu_policy,
     translate_afterburner_gpu_policy,

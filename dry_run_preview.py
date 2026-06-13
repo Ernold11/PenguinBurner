@@ -18,8 +18,8 @@ from afterburner.vfcurve_describe import (
     describe_afterburner_vfcurve_analysis,
 )
 from ascii_chart import render_line_chart
-from hidden_nvapi_vf import create_hidden_vf_curve_reader
-from nvml_gpu_policy import (
+from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
+from nvidia_driver.nvml_gpu_policy import (
     NvmlGpuPolicyController,
     describe_translated_gpu_policy,
     translate_afterburner_gpu_policy,

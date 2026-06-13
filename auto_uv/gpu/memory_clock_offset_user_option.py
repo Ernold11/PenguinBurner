@@ -5,7 +5,7 @@ Driver limits and Afterburner limits are both respected so the applied value is 
 
 from __future__ import annotations
 
-from nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
+from nvidia_driver.nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 
 
 def auto_uv_memory_offset_mhz(

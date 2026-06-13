@@ -80,14 +80,9 @@ py-modules = [
   "cli_output",
   "cuda_bruteforce_stability",
   "dry_run_preview",
-  "hidden_nvapi_gpu_selection",
-  "hidden_nvapi_voltage",
-  "hidden_nvapi_vf",
   "import_afterburner_fan_curve",
   "import_afterburner_vf_curve",
   "nvidia_runtime_defaults",
-  "nvml_gpu_policy",
-  "nvml_perf_cap_reason",
   "penguin_burner",
   "penguin_burner_errors",
   "penguin_burner_paths",
@@ -115,6 +110,7 @@ packages = [
   "latency_telemetry",
   "manual_fan_curve_editor",
   "manual_uv_curve_editor",
+  "nvidia_driver",
   "overlay",
   "runtime_fan_control",
   "runtime_gpu_control",
@@ -153,3 +149,7 @@ packages = [
 "share/icons/hicolor/512x512/apps" = [
   "packaging/icons/hicolor/512x512/apps/penguin-burner.png",
 ]
+
+[tool.pytest.ini_options]
+# Keep collection inside our own suite; never walk vendored third_party/ trees.
+testpaths = ["tests"]

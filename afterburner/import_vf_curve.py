@@ -8,8 +8,8 @@ import sys
 import time
 from pathlib import Path
 
-from hidden_nvapi_vf import create_hidden_vf_curve_reader
-from nvml_gpu_policy import (
+from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
+from nvidia_driver.nvml_gpu_policy import (
     NvmlGpuPolicyController,
     apply_translated_gpu_policy,
     describe_translated_gpu_policy,

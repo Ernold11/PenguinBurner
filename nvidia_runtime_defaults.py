@@ -6,9 +6,9 @@ import shutil
 import subprocess
 from typing import Callable
 
-from hidden_nvapi_vf import create_hidden_vf_curve_reader
+from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
 from afterburner.import_vf_curve import apply_plan
-from nvml_gpu_policy import NvmlGpuPolicyController
+from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
 from subprocess_locale import stable_subprocess_env
 
 

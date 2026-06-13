@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ctypes
 
-from hidden_nvapi_gpu_selection import (
+from .hidden_nvapi_gpu_selection import (
     pci_bus_number_from_bus_id,
     query_nvidia_smi_pci_bus_id,
 )

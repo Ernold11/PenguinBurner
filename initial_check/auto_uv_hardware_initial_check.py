@@ -12,15 +12,15 @@ import shutil
 import subprocess
 from typing import Callable
 
-from hidden_nvapi_vf import (
+from nvidia_driver.hidden_nvapi_vf import (
     create_hidden_vf_curve_reader,
     get_hidden_vf_curve_reader_last_error,
 )
-from hidden_nvapi_voltage import (
+from nvidia_driver.hidden_nvapi_voltage import (
     create_hidden_voltage_reader,
     get_hidden_voltage_reader_last_error,
 )
-from nvml_gpu_policy import NvmlGpuPolicyController
+from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
 
 
 MINIMUM_NVIDIA_DRIVER_VERSION = (580, 0)

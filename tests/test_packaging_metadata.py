@@ -191,16 +191,17 @@ def test_package_installs_shared_subprocess_locale_helper() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
     py_modules = set(metadata["tool"]["setuptools"]["py-modules"])
+    packages = set(metadata["tool"]["setuptools"]["packages"])
 
     assert "subprocess_locale" in py_modules
     assert "cuda_bruteforce_stability" in py_modules
-    assert "hidden_nvapi_gpu_selection" in py_modules
-    assert "hidden_nvapi_voltage" in py_modules
     assert "import_afterburner_fan_curve" in py_modules
     assert "import_afterburner_vf_curve" in py_modules
-    assert "nvml_perf_cap_reason" in py_modules
     assert "penguin_burner_errors" in py_modules
     assert "q2rtx_stability" in py_modules
+
+    # The low-level NVIDIA driver readers live in the nvidia_driver package.
+    assert "nvidia_driver" in packages
 
 
 def test_fedora_rpm_does_not_hard_require_distro_nvidia_drivers() -> None:

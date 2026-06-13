@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS
 from auto_uv.scan_mode import AUTO_UV_MODE_BALANCED, normalize_auto_uv_mode
-from nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
+from nvidia_driver.nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from penguin_burner_paths import resolve_afterburner_root
 
 

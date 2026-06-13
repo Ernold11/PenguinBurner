@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS
 from cli.effective_runtime_options import build_effective_afterburner_runtime_options
-from nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
+from nvidia_driver.nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 
 
 def _args(**overrides):

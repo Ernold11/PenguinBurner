@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 
 from auto_uv.curve.rising_tail import tail_ceiling_clock_mhz
-from nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
+from nvidia_driver.nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from penguin_burner_errors import NvmlError
 
 from .profile_tiers import profile_tier_summary_fields

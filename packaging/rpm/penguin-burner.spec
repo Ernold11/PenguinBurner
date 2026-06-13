@@ -71,14 +71,10 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
     cli_output \
     cuda_bruteforce_stability \
     dry_run_preview \
-    hidden_nvapi_gpu_selection \
-    hidden_nvapi_voltage \
-    hidden_nvapi_vf \
     import_afterburner_fan_curve \
     import_afterburner_vf_curve \
+    nvidia_driver \
     nvidia_runtime_defaults \
-    nvml_gpu_policy \
-    nvml_perf_cap_reason \
     penguin_burner \
     penguin_burner_errors \
     penguin_burner_paths \

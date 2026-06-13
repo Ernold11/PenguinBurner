@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ctypes
 
-import hidden_nvapi_voltage as voltage
+from nvidia_driver import hidden_nvapi_voltage as voltage
 
 
 class _QueryInterface:
