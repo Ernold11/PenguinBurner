@@ -15,3 +15,7 @@ reverse-engineering/
 reverse/
 specs/
 byobu-history.txt
+.coverage
+# Vendored upstream checkouts/build trees (dxvk, proton, PresentMon, vkd3d-proton,
+# dxvk-nvapi). Each is its own external repo with its own .git; not tracked here.
+third_party/
