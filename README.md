@@ -1,169 +1,209 @@
+# <img src="docs/assets/penguin-burner-logo.png" alt="PenguinBurner logo" width="38" align="top"> NVIDIA GPU Automatic Tuning Tool
+
 <p align="center">
-  <img src="docs/assets/penguin-burner-logo.png" alt="PenguinBurner logo" width="180">
+  <a href="https://pypi.org/project/penguin-burner/"><img alt="PyPI" src="https://img.shields.io/pypi/v/penguin-burner?style=flat-square&logo=pypi&logoColor=white&color=3775A9"></a>
+  <a href="https://pypi.org/project/penguin-burner/"><img alt="Python" src="https://img.shields.io/badge/python-3-3776AB?style=flat-square&logo=python&logoColor=white"></a>
+  <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square&logo=cplusplus&logoColor=white">
+  <a href="LICENSE"><img alt="License: GPL v3" src="https://img.shields.io/github/license/jpietek/PenguinBurner?style=flat-square&color=blue"></a>
+  <a href="https://github.com/jpietek/PenguinBurner/actions"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/jpietek/PenguinBurner/publish-python-package.yml?style=flat-square&logo=github&label=build"></a>
+  <img alt="Coverage" src="https://img.shields.io/badge/coverage-81%25-green?style=flat-square">
+  <a href="https://github.com/sponsors/jpietek"><img alt="Sponsors" src="https://img.shields.io/badge/sponsors-1-EA4AAA?style=flat-square&logo=githubsponsors&logoColor=white"></a>
+  <a href="https://github.com/jpietek/PenguinBurner/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/jpietek/PenguinBurner?style=flat-square&logo=github"></a>
+</p>
+<p align="center">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Linux-FCC624?style=flat-square&logo=linux&logoColor=black">
+  <img alt="GPU" src="https://img.shields.io/badge/GPU-NVIDIA%20RTX%2030%2F40%2F50-76B900?style=flat-square&logo=nvidia&logoColor=white">
+  <img alt="Vulkan" src="https://img.shields.io/badge/Vulkan-AC162C?style=flat-square&logo=vulkan&logoColor=white">
+  <img alt="Proton" src="https://img.shields.io/badge/Proton-1A9FFF?style=flat-square&logo=steam&logoColor=white">
+  <a href="https://pepy.tech/project/penguin-burner"><img alt="PyPI downloads" src="https://img.shields.io/pepy/dt/penguin-burner?style=flat-square&logo=pypi&logoColor=white&label=PyPI%20downloads"></a>
+  <img alt="Installs" src="https://img.shields.io/badge/installs-15k%2B-2ea44f?style=flat-square&logo=linux&logoColor=white">
 </p>
 
-# NVIDIA GPU Automatic Undervolting Tool
+**PenguinBurner automatically tunes your NVIDIA GPU on Linux, starting with
+automatic and adaptive undervolting, plus an optional in-game monitoring overlay
+with a PC latency meter and pre-frame-generation FPS that updates live.**
 
-PenguinBurner is an NVIDIA GPU automatic undervolting tool. It helps you visualize and manage your GPU fine tuning setup with single voltage/frequency bin precision to maximize FPS per Watt, potentially leading into +33% and higher improvements for recent cards. MSI Afterburner imports and LACT exports are also supported.
+You get quieter fans, lower temperatures, and lower power draw, with no manual
+trial and error. It tests your card under real load, finds a stable efficient
+setting, and can switch settings automatically as your frame rate changes.
 
-Its main feature is **automatic** GPU undervolting: PenguinBurner tests your GPU under gaming and compute load, finds the most efficient stable undervolt, and can save it as a systemd daemon when you decide to apply it.
+Works on the NVIDIA proprietary driver with RTX 50 (Blackwell), RTX 40 (Ada),
+and RTX 30 (Ampere) cards. A recent driver is recommended.
 
-PenguinBurner is proven to work on modern Linux systems with the **NVIDIA proprietary** graphics driver. For best results, use an up-to-date driver. Supported GPUs are NVIDIA GeForce RTX 50 series Blackwell, RTX 40 series Ada Lovelace, and RTX 30 series Ampere cards. Older GPUs may miss required driver-level voltage/frequency control functionality.
-
-GPU undervolting is meant to make your graphics card consume significantly less power while giving up as little performance as possible. The practical result can be **dead-silent fan operation**, **lower temperatures**, and lower electricity bills. PenguinBurner automatically searches for the operating sweet spot of your NVIDIA GPU, so you do not have to resort to trial and error or risk introducing avoidable system instability.
+The goal is an all-in-one package for NVIDIA on Linux that is easy to install
+and use, closing the feature gap with the Windows tools Linux users miss: the
+[NVIDIA App](https://www.nvidia.com/en-us/software/nvidia-app/), NVUV, and
+[MSI Afterburner](https://www.msi.com/Landing/afterburner/graphics-cards).
 
 ## Install
-
-Install the published package:
 
 ```bash
 python -m pip install --user --upgrade penguin-burner
 ```
 
-Fedora 42/43/44 users can install the COPR package with a proprietary NVIDIA
-driver stack from either Fedora's NVIDIA driver repository or RPM Fusion.
-Make sure the NVIDIA driver and CUDA utilities are already installed, then
-enable the COPR:
+Also packaged for [Fedora (COPR)](https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/),
+[Arch / CachyOS (AUR)](https://aur.archlinux.org/packages/penguin-burner), and
+[Ubuntu (PPA)](https://launchpad.net/~jpietek/+archive/ubuntu/penguin-burner) —
+commands in the [Install guide](docs/install.md).
 
-```bash
-sudo dnf install -y dnf-plugins-core
-sudo dnf copr enable -y jpietek/penguin-burner
-sudo dnf install -y penguin-burner
-```
+Run the GUI with `penguin-burner` (or `pburn`). Install the NVIDIA driver and
+CUDA first.
 
-Arch Linux and CachyOS users can install the AUR package:
+## Quick start
 
-```bash
-paru -S penguin-burner
-```
+1. Install (above) with the NVIDIA driver and CUDA already set up.
+2. Launch PenguinBurner (`penguin-burner`).
+3. Click **Setup Auto Undervolt**, choose a performance bias, and let the scan
+   find and verify a stable curve.
+4. On the **Profiles** tab, select the result and click **Apply Selected**.
+   Toggle **Silent fan curve** for the quiet fan profile.
+5. Enable **Persist on Startup** to apply it at boot, or **Apply Adaptive** to
+   switch tiers as your frame rate changes.
 
-or:
+## Automatic Tuning
 
-```bash
-yay -S penguin-burner
-```
+Tests your card under real load and finds the most efficient stable undervolt
+curve for you. The sweep runs a path-tracing game scene ([Q2RTX](https://github.com/NVIDIA/Q2RTX))
+plus a **CUDA** compute test, with stability and performance checks built in.
 
-Ubuntu 25.10 and 26.04 users can install the PPA package:
+![Auto-UV candidate sweep](docs/assets/auto-uv-scan.png)
 
-```bash
-sudo add-apt-repository ppa:jpietek/penguin-burner
-sudo apt update
-sudo apt install penguin-burner
-```
+Pick a bias (Efficiency, Balanced, or Performance) and it finds the matching
+sweet spot, then verifies it before saving.
 
-Bundled pip entrypoints:
+[Read the guide](docs/features/auto-uv.md)
 
-- GUI: `penguin-burner` - alias: `pburn`
-- CLI/non-GUI: `penguin-burner-cli` - alias: `pburn-cli`
+## Adaptive Undervolting
 
-The pip package also provides a desktop file, so PenguinBurner should appear with its icon in your desktop environment's app launcher.
+Tag your saved profiles as **Efficiency**, **Balanced**, or **Performance**, and
+PenguinBurner switches between them while you play: efficient and silent when you
+have headroom, more clock when frames start to drop.
 
-If your shell cannot find the commands after installation, make sure `~/.local/bin` is in your `PATH`.
+![Profiles with the Assign Tier menu](docs/assets/profiles-management.png)
 
-## Automatic Undervolting
+[Read the guide](docs/features/adaptive-uv.md)
 
-Core PenguinBurner component in action: algorithmic Auto Undervolting with built-in performance and stability checks based on a path-tracing gaming scenario, **Q2RTX**, and a custom **CUDA** compute test.
+## PenguinBurner vs LACT (NVIDIA)
 
-![PenguinBurner Auto Undervolting V/F curve](docs/assets/1-uv-curve.png)
+[LACT](https://github.com/ilya-zlobintsev/LACT) is the broader, more established
+Linux GPU app, and it landed a working Nvidia VF curve setter before we did. It
+supports more brands and has deeper monitoring than we do. PenguinBurner is
+narrower on purpose: automatic undervolting, an in-game overlay, and adaptive
+switching. NVIDIA-only comparison, to the best of our knowledge:
 
-Afterburner alike curve editor in Linux, fully manual with all the shortcuts bells and whistles!
+| Capability (NVIDIA) | PenguinBurner | LACT |
+| --- | :---: | :---: |
+| **Automatic** undervolt search (stability + perf verified) | ✅ Q2RTX + CUDA sweep | ❌ manual only |
+| **Adaptive** undervolt (switches tiers by frame rate) | ✅ | ❌ |
+| **In-game performance overlay** | ✅ | ❌ |
+| **PC latency meter** | ✅ | ❌ |
+| **Pre-frame-generation FPS counter** (base vs FG FPS) | ✅ | ❌ |
+| Manual V/F curve editor | ✅ | ✅ |
+| Fan curve control | ✅ auto silent curve + editor | ✅ custom curves |
+| Power limit | ✅ | ✅ |
+| Runtime profile switching | ✅ by present-frame FPS pacing | ✅ by running process / gamemode |
+| MSI Afterburner import | ✅ | ❌ |
+| Historical telemetry charts | 🚧 planned (live overlay today) | ✅ charts + CSV export |
+| Detailed GPU info (VBIOS / VRAM / Vulkan / throttling) | ❌ tuning-focused | ✅ |
+| Other GPU brands (AMD / Intel) | ❌ NVIDIA-native, for now | ✅ AMD · Intel · NVIDIA |
+| systemd daemon · CLI / headless | ✅ · ✅ | ✅ · ✅ |
 
-![PenguinBurner V/F curve editor](docs/assets/1a-vf-curve-editor.png)
+✅ available · ❌ not available · 🚧 planned/in progress
 
-![PenguinBurner Auto Undervolting performance bias slider](docs/assets/auto-uv-performance-bias.png)
+LACT monitors inside its own window (charts and CSV) and has no in-game overlay;
+on Linux that is usually a separate tool like MangoHud. PenguinBurner's overlay
+is built in.
 
-Before a scan starts, the Performance bias slider lets you decide what kind of
-undervolt PenguinBurner should search for. Move it toward **Efficiency** for the
-lowest practical power draw, or toward **Performance** when you want the scan to
-preserve more clock and prioritize keeping or improving FPS.
+The two interoperate via LACT export, so you can tune with PenguinBurner and run
+the resulting curve under LACT if you prefer.
+
+### Roadmap (planned, not yet shipped)
+
+- **Historical data plotting** — power, clocks, and FPS over time.
+- **Steam library discovery** — find installed games automatically.
+- **Per-game tuning** — save and auto-apply a profile per game.
+
+## Performance Overlay
+
+A lightweight live on-screen readout over your game. It can visualize **PC
+latency** and **pre-frame-generation FPS** — things most Linux overlays can't —
+alongside frame-gen FPS, clocks, voltage, power, temperatures, and the active
+tier.
+
+![Performance overlay](docs/assets/overlay.png)
+
+Launch it with the game via `PENGUIN_BURNER %command%`, then toggle the fields
+you want. Any tuning change you make is reflected live in the overlay while you
+play, so you see the effect of an undervolt, clock, or fan change in real time
+without leaving the game.
+
+[Read the guide](docs/features/overlay.md)
+
+## More features
+
+- **[Profile management](docs/features/profile-management.md)** — apply, verify,
+  tier, export, and clean up saved curves.
+- **[Curve editors](docs/features/curve-editor.md)** — Afterburner-style manual
+  V/F and fan curve editors with full keyboard control.
+- **[Silent fan curve](docs/features/silent-fan-curve.md)** — auto-generated
+  quiet fan curve once the undervolt brings temperatures down.
 
 ## MSI Afterburner Import
 
-Feel at home and import your MSI Afterburner profile from Windows.
+Bring your Windows [MSI Afterburner](https://www.msi.com/Landing/afterburner/graphics-cards)
+profile over and import its V/F curve.
 
-![PenguinBurner MSI Afterburner import](docs/assets/2-afterburner-import.png)
+![MSI Afterburner import](docs/assets/afterburner-import.png)
 
-Performance-oriented undervolt profiles can bias the scan toward preserving FPS when every frame matters.
-
-## Silent Fan Curve
-
-Apply a silent fan curve after PenguinBurner finds a stable undervolt.
-
-![PenguinBurner silent fan curve](docs/assets/3-fan-curve.png)
-
-Customize your fan curve with manual editor
-
-![PenguinBurner fan curve editor](docs/assets/3a-fan-curve-editor.png)
-
-## LACT Export
-
-Export to the LACT Linux GPU control tool is available from the profiles view.
-
-## Proprietary Inputs Are Not Bundled
-
-This repository does not ship MSI Afterburner binaries or copied profile exports.
-
-If you want to import Afterburner data, point PenguinBurner at the real MSI Afterburner directory from Windows. By default that directory is:
+Point PenguinBurner at the real MSI Afterburner directory (no Afterburner
+binaries or profiles are bundled in this repo). Default Windows path:
 
 ```text
 C:\Program Files (x86)\MSI Afterburner
 ```
 
-## Acknowledgements
+## LACT Export
 
-Additional thanks:
-
-- NVIDIA: For the amazing graphics technology, that unfortunately lacks some features and polish on Linux.
-- Qt Project: For the excellent Qt6 UI.
-- Codex GPT 5.5 (Open AI): This project was implemented fully with AI based on human driven ideas and reverse engineering.
-
-Special thanks to the [LACT project](https://github.com/ilya-zlobintsev/LACT) and to Ilya Zlobintsev for pushing Linux NVIDIA tuning forward.
-
-While PenguinBurner was still reverse engineering proprietary NVIDIA binaries and had only working voltage getters, LACT landed a working custom voltage/frequency point setter first. In particular, [LACT pull request #957, feat: add Nvidia VF curve editor](https://github.com/ilya-zlobintsev/LACT/pull/957), was merged on April 18, 2026.
+Export any saved V/F (and optionally fan) curve as a complete Nvidia LACT config
+from the profiles view or the CLI. See
+[the Auto-UV guide](docs/features/auto-uv.md#after-the-scan) for the commands.
 
 ## Run At Your Own Risk
 
-Real hardware changes are made during the Auto UV procedure.
+Auto-UV makes real hardware changes — enabling persistence mode, setting board
+power limits, writing core/memory V/F offsets, and taking over fan control.
 
-PenguinBurner can perform operations such as:
+## Acknowledgements
 
-- enabling persistence mode
-- setting board power limits
-- writing core V/F offsets
-- writing memory V/F offsets
-- taking over fan control
+PenguinBurner was built through agentic AI development, guided by human ideas and
+direction. The implementation, research, and reverse engineering were driven
+primarily by **GPT 5.5** (OpenAI) and **Claude Opus** (Anthropic), with brief use
+of **Fable** (Anthropic).
+
+- **NVIDIA** — for the graphics technology that, unfortunately, lacks some
+  features and polish on Linux.
+- **[Qt Project](https://www.qt.io/)** — for the excellent Qt6 UI.
+
+Special thanks to the [LACT project](https://github.com/ilya-zlobintsev/LACT)
+and Ilya Zlobintsev for pushing Linux NVIDIA tuning forward — in particular
+[LACT #957 (Nvidia VF curve editor)](https://github.com/ilya-zlobintsev/LACT/pull/957),
+merged April 18, 2026.
 
 ## Support
 
-If you like the tool, please consider supporting the project on GitHub:
-
-https://github.com/sponsors/jpietek
-
-Having issues with PenguinBurner? Please report bugs here:
-
-https://github.com/jpietek/PenguinBurner/issues
+- [Sponsor the project](https://github.com/sponsors/jpietek)
+- [Report a bug](https://github.com/jpietek/PenguinBurner/issues)
 
 ## CLI Documentation
 
-The previous CLI-focused README has been archived here:
+The CLI-focused README is archived in [readme-cli.md](readme-cli.md).
 
-[readme-cli.md](readme-cli.md)
+## Start clean
 
-## Start Clean From Scratch
-
-To reset PenguinBurner user state for a fresh profile-style run, remove the
-config, local data, and cache directories:
+Reset PenguinBurner user state for a fresh run:
 
 ```bash
-rm -rf /home/jp/.config/PenguinBurner \
-       /home/jp/.local/share/PenguinBurner \
-       /home/jp/.cache/PenguinBurner
+rm -rf ~/.config/PenguinBurner ~/.local/share/PenguinBurner ~/.cache/PenguinBurner
 ```
 
-For a local PyPI-style wheel upgrade from this checkout, keep app flags separate
-from pip flags:
-
-```bash
-python -m pip install --user --no-index --no-deps --find-links dist --upgrade penguin-burner
-penguin-burner
-```
+Installing from a local checkout? See the [Install guide](docs/install.md#local-wheel-from-a-checkout).

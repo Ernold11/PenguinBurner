@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 
@@ -16,6 +17,47 @@ ROOT = Path(__file__).resolve().parent
 NATIVE_LAYER_SOURCE_DIR = ROOT / "native" / "latency_layer"
 NATIVE_LAYER_LIBRARY = "libVkLayer_penguinburner_latency.so"
 NATIVE_LAYER_MANIFEST = "VkLayer_PENGUINBURNER_latency.json"
+
+# README uses repo-relative image/link paths so it renders on GitHub and in the
+# local docs preview. PyPI does not resolve relative paths, so rewrite them to
+# absolute GitHub URLs for the published long_description only.
+_REPO_RAW = "https://raw.githubusercontent.com/jpietek/PenguinBurner/main/"
+_REPO_BLOB = "https://github.com/jpietek/PenguinBurner/blob/main/"
+
+
+def _absolutize_readme(text: str) -> str:
+    def _is_relative(target: str) -> bool:
+        return not target.startswith(("http://", "https://", "#", "mailto:"))
+
+    # HTML <img src="..."> (logo, badges-as-html): only relative ones.
+    text = re.sub(
+        r'(<img\b[^>]*?\bsrc=")([^"]+)(")',
+        lambda m: m.group(1)
+        + (_REPO_RAW + m.group(2) if _is_relative(m.group(2)) else m.group(2))
+        + m.group(3),
+        text,
+    )
+    # Markdown images ![alt](path) -> raw URL.
+    text = re.sub(
+        r"(!\[[^\]]*\]\()([^)]+)(\))",
+        lambda m: m.group(1)
+        + (_REPO_RAW + m.group(2) if _is_relative(m.group(2)) else m.group(2))
+        + m.group(3),
+        text,
+    )
+    # Markdown links [text](path) -> blob URL (skip images, handled above).
+    text = re.sub(
+        r"(?<!!)(\[[^\]]*\]\()([^)]+)(\))",
+        lambda m: m.group(1)
+        + (_REPO_BLOB + m.group(2) if _is_relative(m.group(2)) else m.group(2))
+        + m.group(3),
+        text,
+    )
+    return text
+
+
+def _long_description() -> str:
+    return _absolutize_readme((ROOT / "README.md").read_text(encoding="utf-8"))
 
 
 class build_py(_build_py):
@@ -124,4 +166,6 @@ def _native_layer_supported() -> bool:
 setup(
     cmdclass={"build_py": build_py, "bdist_wheel": bdist_wheel},
     distclass=BinaryDistribution,
+    long_description=_long_description(),
+    long_description_content_type="text/markdown",
 )

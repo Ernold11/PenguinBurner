@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
-Name=NVIDIA GPU Automatic Undervolting Tool
-GenericName=NVIDIA GPU Automatic Undervolting Tool
-Comment=Visualize and manage NVIDIA GPU fine tuning with single voltage/frequency bin precision, Auto-UV, MSI Afterburner imports, and LACT exports
+Name=NVIDIA GPU Automatic Tuning Tool
+GenericName=NVIDIA GPU Automatic Tuning Tool
+Comment=Automatically tune your NVIDIA GPU: automatic and adaptive undervolting, an in-game monitoring overlay, MSI Afterburner imports, and LACT exports
 Exec=penguin-burner
 Icon=penguin-burner
 Terminal=false
 Categories=Settings;HardwareSettings;Qt;
-Keywords=Penguin;Burner;Penguin Burner;PenguinBurner;penguin-burner;pburn;Nvidia;NVIDIA;GPU;Undervolt;Undervolting;Auto-UV;Q2RTX;CUDA;
+Keywords=Penguin;Burner;Penguin Burner;PenguinBurner;penguin-burner;pburn;Nvidia;NVIDIA;GPU;Tuning;Undervolt;Undervolting;Adaptive;Overlay;Auto-UV;Q2RTX;CUDA;
 StartupNotify=true
 StartupWMClass=io.github.jpietek.PenguinBurner

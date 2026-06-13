@@ -2,7 +2,7 @@
   <img src="docs/assets/penguin-burner-logo.png" alt="PenguinBurner logo" width="160">
 </p>
 
-# NVIDIA GPU Automatic Undervolting Tool
+# NVIDIA GPU Automatic Tuning Tool
 
 PenguinBurner is an NVIDIA GPU automatic undervolting tool. It helps you visualize and manage your GPU fine tuning setup with single voltage/frequency bin precision to maximize FPS per Watt, potentially leading into +33% and higher improvements for recent cards. MSI Afterburner imports and LACT exports are also supported.
 
