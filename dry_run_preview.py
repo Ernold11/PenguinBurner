@@ -6,17 +6,19 @@ from afterburner.fan_curve import (
     load_afterburner_fan_settings,
     resolve_afterburner_fan_profile,
 )
+from afterburner.import_fan_curve import build_imported_fan_section
+from afterburner.import_vf_curve import build_plan
 from afterburner.vfcurve import (
-    describe_afterburner_flatten_validation,
-    describe_afterburner_profile_settings,
-    describe_afterburner_vfcurve_analysis,
     load_afterburner_profile_settings,
     resolve_afterburner_vf_source,
 )
+from afterburner.vfcurve_describe import (
+    describe_afterburner_flatten_validation,
+    describe_afterburner_profile_settings,
+    describe_afterburner_vfcurve_analysis,
+)
 from ascii_chart import render_line_chart
 from hidden_nvapi_vf import create_hidden_vf_curve_reader
-from afterburner.import_fan_curve import build_imported_fan_section
-from afterburner.import_vf_curve import build_plan
 from nvml_gpu_policy import (
     NvmlGpuPolicyController,
     describe_translated_gpu_policy,

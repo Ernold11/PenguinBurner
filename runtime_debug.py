@@ -2,7 +2,6 @@
 
 import hashlib
 import os
-from pathlib import Path
 import platform
 import pwd
 import shlex
@@ -11,6 +10,7 @@ import subprocess
 import sys
 import time
 import traceback
+from pathlib import Path
 
 from afterburner.fan_curve import (
     load_afterburner_fan_settings,
@@ -19,14 +19,16 @@ from afterburner.fan_curve import (
 )
 from afterburner.vfcurve import (
     discover_afterburner_vf_sections,
-    describe_afterburner_dynamic_lock,
-    describe_afterburner_flatten_validation,
-    describe_afterburner_profile_settings,
-    describe_afterburner_vfcurve_analysis,
     hash_afterburner_vfcurve_hex,
     load_afterburner_profile_section,
     load_afterburner_profile_settings,
     parse_vfcurve_blob,
+)
+from afterburner.vfcurve_describe import (
+    describe_afterburner_dynamic_lock,
+    describe_afterburner_flatten_validation,
+    describe_afterburner_profile_settings,
+    describe_afterburner_vfcurve_analysis,
 )
 from penguin_burner_paths import (
     afterburner_global_profile,
@@ -36,7 +38,6 @@ from penguin_burner_paths import (
     validate_afterburner_export_root,
 )
 from subprocess_locale import stable_subprocess_env
-
 
 NVIDIA_SMI = shutil.which("nvidia-smi") or "nvidia-smi"
 DEBUG_LOG_ENABLED = False

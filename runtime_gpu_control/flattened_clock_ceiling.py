@@ -5,7 +5,7 @@ The controller hides exact-lock versus range-ceiling driver calls from the main 
 
 from __future__ import annotations
 
-from afterburner.vfcurve import describe_afterburner_dynamic_lock
+from afterburner.vfcurve_describe import describe_afterburner_dynamic_lock
 
 
 class FlattenedClockCeilingController:

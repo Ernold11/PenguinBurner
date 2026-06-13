@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import atexit
-from dataclasses import dataclass
 import signal
 import sys
 import time
+from dataclasses import dataclass
 from typing import Callable
 
-from afterburner.vfcurve import (
+from afterburner.import_vf_curve import apply_plan
+from afterburner.vfcurve_describe import (
     describe_afterburner_dynamic_lock,
     describe_afterburner_flatten_validation,
     describe_afterburner_profile_settings,
 )
-from afterburner.import_vf_curve import apply_plan
 from nvml_gpu_policy import describe_translated_gpu_policy
 from penguin_burner_errors import NvmlError
 from runtime_debug import log as runtime_log

@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 
+from hidden_nvapi_vf import create_hidden_vf_curve_reader
+from nvml_gpu_policy import (
+    NvmlGpuPolicyController,
+    apply_translated_gpu_policy,
+    describe_translated_gpu_policy,
+    translate_afterburner_gpu_policy,
+)
 from penguin_burner_paths import (
     claim_desktop_user_ownership,
     default_linux_vf_profiles_dir,
@@ -15,14 +22,12 @@ from penguin_burner_paths import (
     resolve_afterburner_root,
     sync_afterburner_export_tree,
 )
+
+from .import_fan_curve import DEFAULT_CONFIG_PATH, load_config, write_config
 from .vfcurve import (
     AfterburnerProfileSelectionError,
     AfterburnerVfCurveSafetyError,
     derive_afterburner_dynamic_lock,
-    describe_afterburner_dynamic_lock,
-    describe_afterburner_flatten_validation,
-    describe_afterburner_profile_settings,
-    describe_afterburner_vfcurve_analysis,
     ensure_safe_afterburner_vfcurve,
     hash_afterburner_vfcurve_hex,
     load_afterburner_profile_settings,
@@ -32,13 +37,11 @@ from .vfcurve import (
     point_map_by_voltage,
     resolve_afterburner_vf_source,
 )
-from hidden_nvapi_vf import create_hidden_vf_curve_reader
-from .import_fan_curve import DEFAULT_CONFIG_PATH, load_config, write_config
-from nvml_gpu_policy import (
-    NvmlGpuPolicyController,
-    apply_translated_gpu_policy,
-    describe_translated_gpu_policy,
-    translate_afterburner_gpu_policy,
+from .vfcurve_describe import (
+    describe_afterburner_dynamic_lock,
+    describe_afterburner_flatten_validation,
+    describe_afterburner_profile_settings,
+    describe_afterburner_vfcurve_analysis,
 )
 
 TRANSLATED_LINUX_PROFILE_DIR = default_linux_vf_profiles_dir()
