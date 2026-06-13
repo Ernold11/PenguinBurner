@@ -29,6 +29,12 @@ LATENCY_SOCKET_ENV = "PENGUIN_BURNER_LATENCY_SOCKET"
 INGAME_LATENCY_ENV = "PENGUIN_BURNER_INGAME_LATENCY"
 # Short alias for the toggle, used in the Steam launch line.
 INGAME_LATENCY_ENV_ALIAS = "PB_INGAME_LATENCY"
+# Display (present->scanout) latency is folded into the single in-game latency
+# opt-in: when latency is on, the wrapper also enables the present-wait tail and
+# the present-id injection that makes it work on vkd3d titles. These stay env
+# vars (not user-facing tokens) so one launch-line flag covers the whole stack.
+DISPLAY_LATENCY_ENV = "PENGUIN_BURNER_LATENCY_DISPLAY"
+INJECT_PRESENT_ID_ENV = "PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID"
 DXVK_NVAPI_ENABLE_ENV = "DXVK_NVAPI_VKREFLEX"
 VK_LAYER_PATH_ENV = "VK_ADD_IMPLICIT_LAYER_PATH"
 VK_LAYER_ENABLE_ENV = "VK_LOADER_LAYERS_ENABLE"
@@ -119,6 +125,12 @@ def configure_penguin_burner_environment(env: dict[str, str]) -> None:
     # NOT to an on-disk Proton log, so PROTON_LOG stays unset.
     if ingame_latency_enabled(env):
         env.setdefault("DXVK_NVAPI_LOG_LEVEL", "trace")
+        # Fold the present->scanout display tail into the same opt-in. Both are
+        # read-only/gated in the layer and inert where the stack doesn't support
+        # them, so enabling them with latency adds the display segment wherever
+        # it works (e.g. vkd3d titles via present-id injection).
+        env.setdefault(DISPLAY_LATENCY_ENV, "1")
+        env.setdefault(INJECT_PRESENT_ID_ENV, "1")
     env.setdefault(LATENCY_SOCKET_ENV, str(_home_latency_socket_path(env)))
     env.setdefault(OVERLAY_STATE_ENV, str(overlay_state_path(env)))
     env.setdefault(OVERLAY_TEXT_ENV, str(overlay_text_path(env)))

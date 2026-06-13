@@ -184,6 +184,7 @@ class OverlayStatePublisher:
         framegen_fps = ""
         framegen_active = False
         latency_ms = ""
+        display_latency_ms = ""
         if isinstance(latency_snapshot, dict):
             present_fps = str(latency_snapshot.get("present_fps") or "").strip()
             framegen_fps = _framegen_fps_from_snapshot(latency_snapshot)
@@ -194,6 +195,14 @@ class OverlayStatePublisher:
                     latency_ms = str(int(round(float(latency_p95_ms))))
                 except (TypeError, ValueError):
                     latency_ms = ""
+            # Present->scanout tail kept separate from latency_ms; the overlay
+            # sums the two into the displayed click-to-photon number.
+            display_latency_p95_ms = latency_snapshot.get("display_latency_p95_ms")
+            if display_latency_p95_ms is not None:
+                try:
+                    display_latency_ms = str(int(round(float(display_latency_p95_ms))))
+                except (TypeError, ValueError):
+                    display_latency_ms = ""
         return write_overlay_state(
             OverlayState(
                 gpu_index=int(self.gpu_index),
@@ -211,6 +220,7 @@ class OverlayStatePublisher:
                 framegen_fps=framegen_fps,
                 framegen_active=framegen_active,
                 latency_ms=latency_ms,
+                display_latency_ms=display_latency_ms,
                 profile_tier_key=str(self.profile_tier_key or ""),
                 profile_id=str(self.profile_id or ""),
                 adaptive=bool(self.adaptive),

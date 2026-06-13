@@ -24,6 +24,7 @@ SAMPLE_OVERLAY_VALUES = {
     "fan_pct": "62",
     "temperature_c": "67",
     "latency_ms": "23",
+    "display_latency_ms": "4",
     "uv_offset_mv": "-75",
 }
 
@@ -95,7 +96,9 @@ def _format_overlay_item(item_id: str, values: dict[str, str]) -> str:
     if item_id == "temperature_c":
         return _optional_labeled_value("T", values.get("temperature_c"), suffix=" C")
     if item_id == "latency_ms":
-        return _optional_labeled_value("LAT", values.get("latency_ms"), suffix=" ms")
+        return _optional_labeled_value(
+            "LAT", _combined_latency_ms(values), suffix=" ms"
+        )
     if item_id == "uv_offset_mv":
         return _optional_labeled_value(
             "UV",
@@ -103,6 +106,34 @@ def _format_overlay_item(item_id: str, values: dict[str, str]) -> str:
             suffix=" mV",
         )
     return ""
+
+
+def _combined_latency_ms(values: dict[str, str]) -> str:
+    """Render latency = render-latency tail + present->scanout display tail.
+
+    The two metrics are kept separate upstream (receiver/state); the overlay
+    sums them into one click-to-photon number. When the display tail is absent
+    (no VK_KHR_present_wait data), this collapses to the render latency alone,
+    exactly as before.
+    """
+    render = _ms_number(values.get("latency_ms"))
+    if render is None:
+        return ""
+    display = _ms_number(values.get("display_latency_ms"))
+    total = render if display is None else render + display
+    return str(total)
+
+
+def _ms_number(value: object) -> int | None:
+    text = str(value or "").strip()
+    if not text or text.lower() == "n/a":
+        return None
+    if text.lower().endswith(" ms"):
+        text = text[:-3].strip()
+    try:
+        return int(round(float(text)))
+    except ValueError:
+        return None
 
 
 def _value_or_na(value: object, *, suffix: str) -> str:

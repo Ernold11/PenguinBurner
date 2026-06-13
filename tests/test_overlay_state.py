@@ -73,12 +73,15 @@ def test_overlay_state_round_trips_latency_ms(tmp_path) -> None:
             profile_tier="Balanced",
             present_fps="58",
             latency_ms="34",
+            display_latency_ms="4",
             updated_unix_ns=123,
         ),
         path=path,
     )
 
-    assert read_overlay_state(path)["latency_ms"] == "34"
+    values = read_overlay_state(path)
+    assert values["latency_ms"] == "34"
+    assert values["display_latency_ms"] == "4"
 
 
 def test_overlay_state_path_prefers_container_visible_home(tmp_path) -> None:
@@ -115,6 +118,7 @@ def test_overlay_state_publisher_passes_latency_p95_ms(tmp_path, monkeypatch) ->
             "raw_present_fps_stats": {"avg": "100"},
             "framegen_active": True,
             "latency_p95_ms": 34.4,
+            "display_latency_p95_ms": 3.6,
         }
     )
 
@@ -123,6 +127,7 @@ def test_overlay_state_publisher_passes_latency_p95_ms(tmp_path, monkeypatch) ->
     assert values["framegen_fps"] == "100"
     assert values["framegen_active"] == "1"
     assert values["latency_ms"] == "34"
+    assert values["display_latency_ms"] == "4"
     assert values["power_w"] == "220"
 
 

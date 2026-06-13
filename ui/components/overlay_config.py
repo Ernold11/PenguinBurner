@@ -12,6 +12,7 @@ from cli.runtime_config_file import persist_adaptive_target_fps_to_runtime_confi
 from overlay.config import ADVANCED_OVERLAY_ITEM_IDS
 from overlay.config import BASIC_OVERLAY_ITEM_IDS
 from overlay.config import STEAM_LAUNCH_OPTION_WITH_LATENCY
+from overlay.config import steam_launch_option
 from overlay.config import MAX_OVERLAY_UPDATE_INTERVAL_S
 from overlay.config import MIN_OVERLAY_UPDATE_INTERVAL_S
 from overlay.config import OVERLAY_SCALE_OPTIONS
@@ -71,14 +72,15 @@ ITEM_TOOLTIPS = {
     "fan_pct": "Current reported GPU fan speed percentage. Missing fan data is hidden.",
     "temperature_c": "Current GPU temperature in C. Missing temperature data is hidden.",
     "latency_ms": (
-        "P95 PC latency from Reflex markers: the time from when the game samples "
-        "input (or starts simulating a frame) to when that frame is handed to the "
-        "display. With frame generation on it runs to the generated-frame display "
-        "present, so it includes the frame-gen hold. It is NOT full click-to-photon "
-        "— it cannot measure mouse/USB latency before input sampling or monitor "
-        "scanout and pixel response after present, which add roughly another "
-        "5–20 ms on top. Checking this also enables the latency capture path on "
-        "the next Steam launch and may add trace overhead."
+        "PC latency shown as render + display. Render is the Reflex-marker span "
+        "(input/sim to present, including the frame-gen hold); display is the "
+        "present->scanout tail measured via present-wait, added automatically "
+        "when supported (it grows with GPU/present-queue load). It still cannot "
+        "see mouse/USB latency before input sampling or final panel pixel "
+        "response, so it is close to but not exactly click-to-photon. This is the "
+        "single latency opt-in: checking it makes the copyable Steam launch "
+        "string add PB_INGAME_LATENCY=1, which enables the whole latency stack on "
+        "the next launch and may add trace overhead."
     ),
     "uv_offset_mv": (
         "Current voltage delta from the stock VF point for the nearest active "
@@ -210,12 +212,14 @@ class OverlayConfigPanel:
 
         launch_layout = QtWidgets.QHBoxLayout()
         launch_layout.setSpacing(6)
-        self.launch_line = QtWidgets.QLineEdit(STEAM_LAUNCH_OPTION_WITH_LATENCY)
+        self.launch_line = QtWidgets.QLineEdit(self._launch_option_text())
         self.launch_line.setReadOnly(True)
         self.launch_line.setObjectName("overlaySteamLaunchLine")
         self.launch_line.setToolTip(
-            "Steam launch options (overlay + in-game latency meter enabled)"
+            "Steam launch options. Enable the Latency item to add the single "
+            "PB_INGAME_LATENCY opt-in (render + display); off by default."
         )
+        # Size to the longer (with-latency) string so the field never reflows.
         launch_width = self.launch_line.fontMetrics().horizontalAdvance(
             STEAM_LAUNCH_OPTION_WITH_LATENCY
         )
@@ -397,6 +401,7 @@ class OverlayConfigPanel:
             enabled_items = set(self.config.enabled_item_ids)
             for item_id, checkbox in self.item_checkboxes.items():
                 checkbox.setChecked(item_id in enabled_items)
+            self.launch_line.setText(self._launch_option_text())
         finally:
             self._syncing = False
 
@@ -406,9 +411,15 @@ class OverlayConfigPanel:
         )
         self.preview_label.setEnabled(bool(self.config.enabled))
 
+    def _launch_option_text(self) -> str:
+        # Latency is opt-in: the token is added only when the Latency item is on.
+        return steam_launch_option(
+            latency_enabled="latency_ms" in self.config.enabled_item_ids
+        )
+
     def _copy_launch_option(self) -> None:
         clipboard = self.QtWidgets.QApplication.clipboard()
-        clipboard.setText(STEAM_LAUNCH_OPTION_WITH_LATENCY)
+        clipboard.setText(self._launch_option_text())
         self.status_label.setText("Copied Steam launch options.")
 
 

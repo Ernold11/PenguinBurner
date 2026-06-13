@@ -10,13 +10,17 @@
 #include <chrono>
 #include <cctype>
 #include <cinttypes>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -39,6 +43,19 @@ constexpr const char* kOverlayConfigEnv = "PENGUIN_BURNER_OVERLAY_CONFIG";
 constexpr const char* kRecoveryResetEnv = "PENGUIN_BURNER_LATENCY_RECOVERY_RESET";
 constexpr const char* kDebugFlowEnv = "PENGUIN_BURNER_LATENCY_DEBUG_FLOW";
 constexpr const char* kQueryTimingsEnv = "PENGUIN_BURNER_LATENCY_QUERY_TIMINGS";
+// Opt-in, default off: measure the present->scanout tail via VK_KHR_present_wait.
+// Read-only -- only ever waits on present IDs the app/DXVK already supplied; it
+// never injects present IDs or enables extensions the app did not request.
+constexpr const char* kDisplayLatencyEnv = "PENGUIN_BURNER_LATENCY_DISPLAY";
+// EXPERIMENTAL, default off, separate opt-in: when the app enabled
+// VK_KHR_present_id but does not stamp a present ID itself (e.g. vkd3d-proton),
+// prepend our own VkPresentIdKHR so vkWaitForPresentKHR has something to key on.
+// This MUTATES the present chain -- the previously-removed inject path crashed on
+// the dxvk-nvapi/vkd3d/NVIDIA stack -- so it is deliberately the narrowest form:
+// present-chain only (never amends device creation) and only when the app has not
+// already chained a VkPresentIdKHR. Requires PENGUIN_BURNER_LATENCY_DISPLAY too.
+constexpr const char* kInjectPresentIdEnv =
+    "PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID";
 constexpr uint64_t kStaleRecoveryDuplicateThreshold = 240;
 constexpr uint64_t kStaleRecoveryDuplicateInterval = 600;
 
@@ -126,6 +143,16 @@ bool env_flag_enabled(const char* name) {
 
 bool debug_flow_enabled() {
     static const bool enabled = env_flag_enabled(kDebugFlowEnv);
+    return enabled;
+}
+
+bool display_latency_enabled() {
+    static const bool enabled = env_flag_enabled(kDisplayLatencyEnv);
+    return enabled;
+}
+
+bool inject_present_id_enabled() {
+    static const bool enabled = env_flag_enabled(kInjectPresentIdEnv);
     return enabled;
 }
 
@@ -225,6 +252,10 @@ struct FlowSnapshot {
     bool advertised = false;
     bool requested = false;
     bool functions_available = false;
+    bool present_wait_advertised = false;
+    bool present_wait_requested = false;
+    bool present_id_advertised = false;
+    bool present_id_requested = false;
     bool swapchain_latency_mode = false;
     uint64_t marker_count = 0;
     uint64_t live_swapchain_count = 0;
@@ -337,11 +368,19 @@ struct DeviceContext {
     PFN_vkSetLatencyMarkerNV set_latency_marker_nv = nullptr;
     PFN_vkGetLatencyTimingsNV get_latency_timings_nv = nullptr;
     PFN_vkQueueNotifyOutOfBandNV queue_notify_out_of_band_nv = nullptr;
+    PFN_vkWaitForPresentKHR wait_for_present_khr = nullptr;
     VkPhysicalDeviceProperties physical_device_properties{};
     std::vector<VkQueueFamilyProperties> queue_family_properties;
     bool low_latency_extension_advertised = false;
     bool low_latency_extension_requested = false;
     bool low_latency_functions_available = false;
+    // VK_KHR_present_wait / VK_KHR_present_id availability, recorded read-only at
+    // device creation. Display-latency capture only activates when the app itself
+    // enabled both (the *_requested flags).
+    bool present_wait_advertised = false;
+    bool present_wait_requested = false;
+    bool present_id_advertised = false;
+    bool present_id_requested = false;
     uint64_t latest_marker_present_id = 0;
     uint64_t marker_count = 0;
     bool has_latency_sleep_mode_info = false;
@@ -390,6 +429,8 @@ struct SwapchainContext {
     VkImageUsageFlags image_usage = 0;
     uint64_t last_gpu_render_end_us = 0;
     uint64_t last_present_id = 0;
+    // Monotonic counter for present IDs we inject (present-id injection path).
+    uint64_t last_injected_present_id = 0;
     uint64_t timing_sample_count = 0;
     uint64_t driver_timing_sample_count = 0;
     uint64_t last_driver_report_present_id = 0;
@@ -417,6 +458,7 @@ struct OverlayGpuState {
     std::string present_fps;
     std::string framegen_fps;
     std::string latency_ms;
+    std::string display_latency_ms;
     std::string clock_mhz;
     std::string voltage_mv;
     std::string power_w;
@@ -776,6 +818,8 @@ OverlayGpuState read_overlay_gpu_state() {
             state.clock_mhz = value;
         } else if (key == "latency_ms") {
             state.latency_ms = value;
+        } else if (key == "display_latency_ms") {
+            state.display_latency_ms = value;
         } else if (key == "voltage_mv") {
             state.voltage_mv = value;
         } else if (key == "power_w") {
@@ -872,6 +916,35 @@ std::string overlay_optional_value(const std::string& value, const char* suffix)
         return text;
     }
     return text + suffix_text;
+}
+
+// Render latency plus the optional present->scanout display tail, as one number.
+// When the display field is absent (display-latency capture not enabled via the
+// Steam params), this collapses to the render latency alone.
+std::string overlay_combined_latency_value(
+    const std::string& render_ms,
+    const std::string& display_ms) {
+    if (overlay_value_missing(render_ms)) {
+        return "";
+    }
+    const std::string render_text = trim_ascii(render_ms);
+    errno = 0;
+    char* render_end = nullptr;
+    const long render = std::strtol(render_text.c_str(), &render_end, 10);
+    if (errno != 0 || render_end == render_text.c_str()) {
+        return render_text;  // non-numeric; show as-is
+    }
+    long total = render;
+    if (!overlay_value_missing(display_ms)) {
+        const std::string display_text = trim_ascii(display_ms);
+        errno = 0;
+        char* display_end = nullptr;
+        const long display = std::strtol(display_text.c_str(), &display_end, 10);
+        if (errno == 0 && display_end != display_text.c_str()) {
+            total += display;
+        }
+    }
+    return std::to_string(total);
 }
 
 std::string overlay_signed_value(const std::string& value) {
@@ -1047,8 +1120,10 @@ std::string build_overlay_text(
                 append_overlay_part(text, "T " + temp);
             }
         } else if (item == "latency_ms") {
-            const std::string latency =
-                overlay_optional_value(state.latency_ms, " ms");
+            const std::string latency = overlay_optional_value(
+                overlay_combined_latency_value(
+                    state.latency_ms, state.display_latency_ms),
+                " ms");
             if (!latency.empty()) {
                 append_overlay_part(text, "LAT " + latency);
             }
@@ -1849,6 +1924,28 @@ uint64_t present_id_for_swapchain(
     return 0;
 }
 
+// True when the present chain already carries a VkPresentIdKHR (or the v2
+// variant). If it does, we must not prepend a second one -- the app owns it.
+bool present_info_has_present_id_struct(const VkPresentInfoKHR* present_info) {
+    if (!present_info) {
+        return false;
+    }
+    auto* current =
+        reinterpret_cast<const VkBaseInStructure*>(present_info->pNext);
+    while (current) {
+        if (current->sType == VK_STRUCTURE_TYPE_PRESENT_ID_KHR) {
+            return true;
+        }
+#ifdef VK_KHR_PRESENT_ID_2_EXTENSION_NAME
+        if (current->sType == VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR) {
+            return true;
+        }
+#endif
+        current = reinterpret_cast<const VkBaseInStructure*>(current->pNext);
+    }
+    return false;
+}
+
 void send_status_event(
     const char* event,
     VkDevice device,
@@ -1995,6 +2092,10 @@ FlowSnapshot flow_snapshot(VkDevice device, VkSwapchainKHR swapchain) {
         snapshot.advertised = context.low_latency_extension_advertised;
         snapshot.requested = context.low_latency_extension_requested;
         snapshot.functions_available = context.low_latency_functions_available;
+        snapshot.present_wait_advertised = context.present_wait_advertised;
+        snapshot.present_wait_requested = context.present_wait_requested;
+        snapshot.present_id_advertised = context.present_id_advertised;
+        snapshot.present_id_requested = context.present_id_requested;
         snapshot.marker_count = context.marker_count;
         snapshot.live_swapchain_count = live_swapchain_count_locked(device);
         snapshot.latest_marker_present_id = context.latest_marker_present_id;
@@ -2061,6 +2162,10 @@ void send_flow_state_event(
         "\"vk_nv_low_latency2_advertised\":%s,"
         "\"vk_nv_low_latency2_requested\":%s,"
         "\"vk_nv_low_latency2_functions\":%s,"
+        "\"vk_khr_present_wait_advertised\":%s,"
+        "\"vk_khr_present_wait_requested\":%s,"
+        "\"vk_khr_present_id_advertised\":%s,"
+        "\"vk_khr_present_id_requested\":%s,"
         "\"marker_count\":%" PRIu64 "}",
         event,
         static_cast<long>(::getpid()),
@@ -2087,6 +2192,10 @@ void send_flow_state_event(
         snapshot.advertised ? "true" : "false",
         snapshot.requested ? "true" : "false",
         snapshot.functions_available ? "true" : "false",
+        snapshot.present_wait_advertised ? "true" : "false",
+        snapshot.present_wait_requested ? "true" : "false",
+        snapshot.present_id_advertised ? "true" : "false",
+        snapshot.present_id_requested ? "true" : "false",
         snapshot.marker_count);
 
     if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
@@ -2742,6 +2851,259 @@ void send_present_pacing_sample(
     }
 }
 
+void send_display_latency_sample(
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    uint64_t present_id,
+    uint64_t display_latency_us) {
+    char line[512]{};
+    int length = std::snprintf(
+        line,
+        sizeof(line),
+        "{\"v\":1,\"type\":\"timing\",\"measurement\":\"display-latency\","
+        "\"pid\":%ld,"
+        "\"device\":\"0x%016" PRIx64 "\",\"swapchain\":\"0x%016" PRIx64 "\","
+        "\"quality\":\"present-wait\","
+        "\"present_id\":%" PRIu64 ","
+        "\"display_latency_us\":%" PRIu64 "}",
+        static_cast<long>(::getpid()),
+        handle_to_u64(device),
+        handle_to_u64(swapchain),
+        present_id,
+        display_latency_us);
+
+    if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
+        g_socket.send_line(line, static_cast<size_t>(length));
+    }
+}
+
+// Diagnostic: what the inject path decided for a present.
+void send_inject_debug_event(
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    uint64_t present_count,
+    bool chain_has_present_id,
+    bool present_id_at_head,
+    bool want_inject,
+    uint64_t injected_present_id) {
+    char line[512]{};
+    int length = std::snprintf(
+        line,
+        sizeof(line),
+        "{\"v\":1,\"type\":\"status\",\"event\":\"present-id-inject\",\"pid\":%ld,"
+        "\"device\":\"0x%016" PRIx64 "\",\"swapchain\":\"0x%016" PRIx64 "\","
+        "\"count\":%" PRIu64 ","
+        "\"chain_has_present_id\":%s,\"present_id_at_head\":%s,"
+        "\"want_inject\":%s,\"injected_present_id\":%" PRIu64 "}",
+        static_cast<long>(::getpid()),
+        handle_to_u64(device),
+        handle_to_u64(swapchain),
+        present_count,
+        chain_has_present_id ? "true" : "false",
+        present_id_at_head ? "true" : "false",
+        want_inject ? "true" : "false",
+        injected_present_id);
+    if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
+        g_socket.send_line(line, static_cast<size_t>(length));
+    }
+}
+
+// Diagnostic: result of a vkWaitForPresentKHR call (so wait failures are visible).
+void send_wait_result_debug(
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    uint64_t present_id,
+    int result,
+    uint64_t display_latency_us) {
+    char line[512]{};
+    int length = std::snprintf(
+        line,
+        sizeof(line),
+        "{\"v\":1,\"type\":\"status\",\"event\":\"present-wait-result\",\"pid\":%ld,"
+        "\"device\":\"0x%016" PRIx64 "\",\"swapchain\":\"0x%016" PRIx64 "\","
+        "\"present_id\":%" PRIu64 ",\"result\":%d,"
+        "\"display_latency_us\":%" PRIu64 "}",
+        static_cast<long>(::getpid()),
+        handle_to_u64(device),
+        handle_to_u64(swapchain),
+        present_id,
+        result,
+        display_latency_us);
+    if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
+        g_socket.send_line(line, static_cast<size_t>(length));
+    }
+}
+
+// Measures the present->scanout tail without touching the app's Vulkan work: a
+// dedicated thread blocks in vkWaitForPresentKHR on present IDs the app already
+// supplied, and timestamps when each present is latched/displayed. Owned per
+// VkDevice in g_display_waiters and torn down before any swapchain/device the
+// app destroys, so no wait is ever in flight across a destroy.
+class DisplayLatencyWaiter {
+public:
+    DisplayLatencyWaiter(VkDevice device, PFN_vkWaitForPresentKHR wait_fn)
+        : device_(device),
+          wait_fn_(wait_fn),
+          thread_([this]() { run(); }) {}
+
+    ~DisplayLatencyWaiter() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    DisplayLatencyWaiter(const DisplayLatencyWaiter&) = delete;
+    DisplayLatencyWaiter& operator=(const DisplayLatencyWaiter&) = delete;
+
+    void enqueue(
+        VkSwapchainKHR swapchain,
+        uint64_t present_id,
+        uint64_t submit_us) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stop_ || disabled_) {
+                return;
+            }
+            if (pending_.size() >= kMaxPending) {
+                pending_.pop_front();
+            }
+            pending_.push_back(Pending{swapchain, present_id, submit_us});
+        }
+        cv_.notify_one();
+    }
+
+private:
+    struct Pending {
+        VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+        uint64_t present_id = 0;
+        uint64_t submit_us = 0;
+    };
+
+    // Keep the backlog shallow: if the wait thread falls behind the present
+    // cadence the oldest entries are dropped rather than reporting stale tails.
+    static constexpr size_t kMaxPending = 8;
+    // Bound each wait so a stalled swapchain (or teardown) cannot wedge the
+    // thread; on timeout the sample is simply skipped.
+    static constexpr uint64_t kWaitTimeoutNs = 200ull * 1000ull * 1000ull;
+    // Present->scanout is a sub-frame tail; anything larger is a backlog/clock
+    // artifact, not a real display latency, so discard it.
+    static constexpr uint64_t kMaxPlausibleUs = 100ull * 1000ull;
+    static constexpr uint64_t kErrorDisableThreshold = 16;
+
+    void run() {
+        for (;;) {
+            Pending item;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [this]() {
+                    return stop_ || !pending_.empty();
+                });
+                if (stop_ && pending_.empty()) {
+                    return;
+                }
+                if (disabled_) {
+                    pending_.clear();
+                    if (stop_) {
+                        return;
+                    }
+                    continue;
+                }
+                item = pending_.front();
+                pending_.pop_front();
+            }
+
+            const VkResult result = wait_fn_(
+                device_, item.swapchain, item.present_id, kWaitTimeoutNs);
+            const uint64_t now_us = now_monotonic_us();
+            const uint64_t latency_us =
+                now_us > item.submit_us ? now_us - item.submit_us : 0;
+            // Diagnostic: surface the first handful of wait results (success or
+            // failure) so we can see whether the wait path is the blocker.
+            if (processed_count_ < 8 || (processed_count_ % 600) == 0) {
+                send_wait_result_debug(
+                    device_,
+                    item.swapchain,
+                    item.present_id,
+                    static_cast<int>(result),
+                    latency_us);
+            }
+            ++processed_count_;
+            if (result == VK_SUCCESS) {
+                if (latency_us > 0 && latency_us <= kMaxPlausibleUs) {
+                    send_display_latency_sample(
+                        device_,
+                        item.swapchain,
+                        item.present_id,
+                        latency_us);
+                }
+                error_count_ = 0;
+            } else if (
+                result == VK_TIMEOUT || result == VK_SUBOPTIMAL_KHR
+                || result == VK_ERROR_OUT_OF_DATE_KHR) {
+                // Transient: no usable timestamp, but not a reason to give up.
+            } else if (++error_count_ >= kErrorDisableThreshold) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                disabled_ = true;
+            }
+        }
+    }
+
+    VkDevice device_;
+    PFN_vkWaitForPresentKHR wait_fn_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<Pending> pending_;
+    bool stop_ = false;
+    bool disabled_ = false;
+    uint64_t error_count_ = 0;
+    uint64_t processed_count_ = 0;
+    std::thread thread_;
+};
+
+std::mutex g_display_waiters_mutex;
+std::unordered_map<VkDevice, std::unique_ptr<DisplayLatencyWaiter>>
+    g_display_waiters;
+
+void display_latency_enqueue(
+    VkDevice device,
+    PFN_vkWaitForPresentKHR wait_fn,
+    VkSwapchainKHR swapchain,
+    uint64_t present_id,
+    uint64_t submit_us) {
+    if (!wait_fn || !present_id) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_display_waiters_mutex);
+    std::unique_ptr<DisplayLatencyWaiter>& slot = g_display_waiters[device];
+    if (!slot) {
+        slot = std::make_unique<DisplayLatencyWaiter>(device, wait_fn);
+    }
+    slot->enqueue(swapchain, present_id, submit_us);
+}
+
+// Stop and join the device's wait thread, returning before the caller destroys
+// the swapchain/device. Any in-flight wait targets a still-live swapchain (the
+// app has not yet called the driver's destroy), so the join is bounded by the
+// present completing or kWaitTimeoutNs. Recreated lazily on the next present.
+void display_latency_stop_device(VkDevice device) {
+    std::unique_ptr<DisplayLatencyWaiter> waiter;
+    {
+        std::lock_guard<std::mutex> lock(g_display_waiters_mutex);
+        auto it = g_display_waiters.find(device);
+        if (it == g_display_waiters.end()) {
+            return;
+        }
+        waiter = std::move(it->second);
+        g_display_waiters.erase(it);
+    }
+    // waiter destructor joins the thread here, outside the lock.
+}
+
 const char* latency_marker_name(VkLatencyMarkerNV marker) {
     switch (marker) {
         case VK_LATENCY_MARKER_RENDERSUBMIT_START_NV:
@@ -3392,6 +3754,20 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
     const bool requested = extension_requested(
         create_info,
         VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
+    const bool present_wait_advertised = extension_advertised(
+        instance_context,
+        physical_device,
+        VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+    const bool present_wait_requested = extension_requested(
+        create_info,
+        VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+    const bool present_id_advertised = extension_advertised(
+        instance_context,
+        physical_device,
+        VK_KHR_PRESENT_ID_EXTENSION_NAME);
+    const bool present_id_requested = extension_requested(
+        create_info,
+        VK_KHR_PRESENT_ID_EXTENSION_NAME);
 
     VkResult result =
         instance_context.create_device(
@@ -3483,6 +3859,12 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
     context.queue_notify_out_of_band_nv =
         reinterpret_cast<PFN_vkQueueNotifyOutOfBandNV>(
             next_get_device_proc_addr(*device, "vkQueueNotifyOutOfBandNV"));
+    // Only resolve the present-wait entry point when the app enabled the
+    // extension; calling it otherwise would be undefined.
+    if (present_wait_requested) {
+        context.wait_for_present_khr = reinterpret_cast<PFN_vkWaitForPresentKHR>(
+            next_get_device_proc_addr(*device, "vkWaitForPresentKHR"));
+    }
     if (instance_context.get_physical_device_properties) {
         instance_context.get_physical_device_properties(
             physical_device,
@@ -3507,6 +3889,10 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
     context.low_latency_extension_requested = requested;
     context.low_latency_functions_available =
         context.set_latency_marker_nv && context.get_latency_timings_nv;
+    context.present_wait_advertised = present_wait_advertised;
+    context.present_wait_requested = present_wait_requested;
+    context.present_id_advertised = present_id_advertised;
+    context.present_id_requested = present_id_requested;
 
     DeviceTelemetryFlags flags{
         advertised,
@@ -3542,6 +3928,10 @@ VKAPI_ATTR void VKAPI_CALL layer_destroy_device(
             has_device_context = true;
         }
     }
+
+    // Stop the present-wait thread before tearing the device down so it cannot
+    // call into a device that is about to be destroyed.
+    display_latency_stop_device(device);
 
     if (has_device_context && device_context.device_wait_idle) {
         device_context.device_wait_idle(device);
@@ -3701,6 +4091,10 @@ VKAPI_ATTR void VKAPI_CALL layer_destroy_swapchain_khr(
         }
     }
 
+    // Quiesce the present-wait thread before the driver destroys the swapchain,
+    // so no wait is ever in flight across the destroy.
+    display_latency_stop_device(device);
+
     if (next_destroy_swapchain) {
         next_destroy_swapchain(device, swapchain, allocator);
     }
@@ -3760,10 +4154,31 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
         uint64_t present_count = 0;
         uint64_t present_frametime_us = 0;
         uint64_t overlay_fps = 0;
+        uint64_t vulkan_present_id = 0;
+        uint64_t injected_present_id = 0;
     };
     std::vector<PresentObservation> observations;
     VkSemaphore overlay_signal = VK_NULL_HANDLE;
     const uint64_t present_time_us = now_monotonic_us();
+    // Whether to stamp our own present IDs this present. The app must enable
+    // present_id + present_wait, both opt-in env flags must be set, and we must
+    // be able to place our struct without duplicating one: either the app chained
+    // none, or it chained one at the head (vkd3d's zero-ID struct) which we
+    // substitute. A present-id struct buried deeper in the chain we leave alone.
+    const bool chain_has_present_id =
+        present_info_has_present_id_struct(present_info);
+    const auto* present_chain_head = present_info
+        ? reinterpret_cast<const VkBaseInStructure*>(present_info->pNext)
+        : nullptr;
+    const bool present_id_at_head = present_chain_head
+        && present_chain_head->sType == VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
+    const bool want_inject = inject_present_id_enabled()
+        && display_latency_enabled()
+        && has_device_context
+        && device_context.present_id_requested
+        && device_context.present_wait_requested
+        && device_context.wait_for_present_khr
+        && (!chain_has_present_id || present_id_at_head);
     if (present_info && present_info->pSwapchains) {
         observations.reserve(present_info->swapchainCount);
         std::lock_guard lock(g_mutex);
@@ -3773,6 +4188,7 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
                 present_id_for_swapchain(present_info, i);
             PresentObservation observation{};
             observation.swapchain = swapchain;
+            observation.vulkan_present_id = vulkan_present_id;
             auto swapchain_it = g_swapchains.find(swapchain);
             if (swapchain_it != g_swapchains.end()) {
                 auto& swapchain_context = swapchain_it->second;
@@ -3780,6 +4196,10 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
                 if (vulkan_present_id) {
                     swapchain_context.last_vulkan_present_id =
                         vulkan_present_id;
+                } else if (want_inject) {
+                    // Strictly increasing per swapchain, as the spec requires.
+                    observation.injected_present_id =
+                        ++swapchain_context.last_injected_present_id;
                 }
                 if (swapchain_context.last_present_us
                     && present_time_us > swapchain_context.last_present_us) {
@@ -3817,13 +4237,42 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
         }
     }
 
-    VkPresentInfoKHR overlay_present_info{};
+    // Present-id array must outlive the present call (the driver reads it).
+    std::vector<uint64_t> injected_present_ids;
+    bool any_injected = false;
+    if (want_inject && present_info) {
+        injected_present_ids.assign(present_info->swapchainCount, 0);
+        for (size_t i = 0;
+             i < observations.size() && i < injected_present_ids.size();
+             ++i) {
+            injected_present_ids[i] = observations[i].injected_present_id;
+            if (injected_present_ids[i]) {
+                any_injected = true;
+            }
+        }
+    }
+
+    VkPresentInfoKHR modified_present_info{};
+    VkPresentIdKHR present_id_info{};
     const VkPresentInfoKHR* next_present_info = present_info;
-    if (overlay_signal != VK_NULL_HANDLE && present_info) {
-        overlay_present_info = *present_info;
-        overlay_present_info.waitSemaphoreCount = 1;
-        overlay_present_info.pWaitSemaphores = &overlay_signal;
-        next_present_info = &overlay_present_info;
+    if (present_info && (overlay_signal != VK_NULL_HANDLE || any_injected)) {
+        modified_present_info = *present_info;
+        if (overlay_signal != VK_NULL_HANDLE) {
+            modified_present_info.waitSemaphoreCount = 1;
+            modified_present_info.pWaitSemaphores = &overlay_signal;
+        }
+        if (any_injected) {
+            present_id_info.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
+            // Replace the app's head present-id struct (skip past it), else
+            // prepend, preserving the rest of the pNext chain behind ours.
+            present_id_info.pNext = present_id_at_head
+                ? present_chain_head->pNext
+                : present_info->pNext;
+            present_id_info.swapchainCount = present_info->swapchainCount;
+            present_id_info.pPresentIds = injected_present_ids.data();
+            modified_present_info.pNext = &present_id_info;
+        }
+        next_present_info = &modified_present_info;
     }
 
     VkResult result = next_queue_present(queue, next_present_info);
@@ -3857,6 +4306,35 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
                 swapchain,
                 observation.present_frametime_us,
                 present_count);
+        }
+        // Opt-in present->scanout tail. Waits on the app's own present ID when it
+        // supplied one, else on the ID we injected this present (inject path).
+        const uint64_t effective_present_id =
+            observation.injected_present_id
+                ? observation.injected_present_id
+                : observation.vulkan_present_id;
+        if (display_latency_enabled() && has_device_context
+            && device_context.present_wait_requested
+            && device_context.present_id_requested
+            && device_context.wait_for_present_khr
+            && effective_present_id) {
+            display_latency_enqueue(
+                device,
+                device_context.wait_for_present_khr,
+                swapchain,
+                effective_present_id,
+                present_time_us);
+        }
+        if (inject_present_id_enabled()
+            && should_report_counter(present_count)) {
+            send_inject_debug_event(
+                device,
+                swapchain,
+                present_count,
+                chain_has_present_id,
+                present_id_at_head,
+                want_inject,
+                observation.injected_present_id);
         }
         if (observation.overlay_fps) {
             write_overlay_text_file(observation.overlay_fps, present_time_us);

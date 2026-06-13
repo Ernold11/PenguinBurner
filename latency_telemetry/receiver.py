@@ -692,6 +692,7 @@ class LatencyTelemetryMeter:
             f"gpu-render-p95={_format_ms(gpu_render_p95)} "
             f"input-present-p95={_format_ms(input_present_p95)} "
             f"gpu-frame-p95={_format_ms(gpu_frame_p95)} "
+            f"display-latency-p95={_format_ms(snapshot['display_latency_p95_us'])} "
             f"present-frametime-p95={_format_ms(present_frametime_p95)} "
             f"{fps_tail}"
             f"{stale_text}"
@@ -786,6 +787,22 @@ class LatencyTelemetryMeter:
             ),
             "gpu_frame_p95_us": _p95_us(
                 [_int_value(sample.get("gpu_frame_time_us")) for sample in samples]
+            ),
+            # Present->scanout tail measured by the layer via VK_KHR_present_wait
+            # (measurement="display-latency"). Kept as its own metric, separate
+            # from latency_proxy_p95; the overlay sums them into one number.
+            "display_latency_p95_us": (
+                display_latency_p95 := _p95_us(
+                    [
+                        _int_value(sample.get("display_latency_us"))
+                        for sample in samples
+                    ]
+                )
+            ),
+            "display_latency_p95_ms": (
+                None
+                if display_latency_p95 is None
+                else float(display_latency_p95) / 1000.0
             ),
             "present_frametime_p95_us": present_frametime_p95,
             "present_frametime_p95_ms": (
@@ -986,7 +1003,11 @@ class LatencyTelemetryLogger:
                 continue
             if not isinstance(sample, dict):
                 continue
-            if sample.get("type") != "timing":
+            sample_type = sample.get("type")
+            if sample_type == "status":
+                self._maybe_log_status(sample)
+                continue
+            if sample_type != "timing":
                 continue
             stored_sample = self.meter.add_sample(normalize_timing_sample(sample))
             if stored_sample is not None:
@@ -1001,6 +1022,53 @@ class LatencyTelemetryLogger:
             return
         self._last_log_monotonic = now
         self.log(f"{self.time_strftime('%Y-%m-%d %H:%M:%S')} {summary}")
+
+    # Layer status events worth surfacing. The present-flow snapshot is the only
+    # carrier of the VK_KHR_present_wait / present_id probe fields, so logging it
+    # is how the display-latency feasibility gate becomes visible.
+    _STATUS_LOG_EVENTS = (
+        "present-flow",
+        "create-device",
+        "create-swapchain",
+        "present-id-inject",
+        "present-wait-result",
+    )
+
+    def _maybe_log_status(self, sample: dict) -> None:
+        event = str(sample.get("event") or "")
+        if event not in self._STATUS_LOG_EVENTS:
+            return
+        fields = [
+            f"event=layer-status:{event}",
+            f"pid={sample.get('pid', 'unknown')}",
+        ]
+        for key in (
+            "swapchain",
+            "count",
+            "present_count",
+            "last_vulkan_present_id",
+            "chain_has_present_id",
+            "present_id_at_head",
+            "want_inject",
+            "injected_present_id",
+            "present_id",
+            "result",
+            "display_latency_us",
+            "latest_marker_present_id",
+            "last_present_marker_present_id",
+            "last_oob_present_present_id",
+            "last_input_sample_present_id",
+            "swapchain_latency_mode",
+            "vk_nv_low_latency2_advertised",
+            "vk_nv_low_latency2_requested",
+            "vk_khr_present_wait_advertised",
+            "vk_khr_present_wait_requested",
+            "vk_khr_present_id_advertised",
+            "vk_khr_present_id_requested",
+        ):
+            if key in sample:
+                fields.append(f"{key}={sample[key]}")
+        self.log(f"{self.time_strftime('%Y-%m-%d %H:%M:%S')} {' '.join(fields)}")
 
     def _maybe_log_raw_timing(self, sample: dict) -> None:
         if sample.get("type") != "timing" or self.raw_log_interval_s is None:
@@ -1023,6 +1091,8 @@ class LatencyTelemetryLogger:
             "quality",
             "present_count",
             "present_frametime_us",
+            "present_id",
+            "display_latency_us",
         ):
             if key in sample:
                 fields.append(f"{key}={sample[key]}")

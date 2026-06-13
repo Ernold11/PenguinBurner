@@ -32,6 +32,7 @@ class OverlayState:
     framegen_fps: str = ""
     framegen_active: bool = False
     latency_ms: str = ""
+    display_latency_ms: str = ""
     profile_tier_key: str = ""
     profile_id: str = ""
     adaptive: bool = False
@@ -149,6 +150,7 @@ def write_overlay_state(
         "framegen_fps": str(state.framegen_fps or ""),
         "framegen_active": "1" if bool(state.framegen_active) else "0",
         "latency_ms": str(state.latency_ms or ""),
+        "display_latency_ms": str(state.display_latency_ms or ""),
         "profile_tier": str(state.profile_tier or ""),
         "profile_tier_key": str(state.profile_tier_key or ""),
         "profile_id": str(state.profile_id or ""),

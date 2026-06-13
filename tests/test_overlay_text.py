@@ -55,6 +55,33 @@ def test_overlay_text_shows_latency_when_enabled() -> None:
     )
 
 
+def test_overlay_text_adds_display_tail_into_single_latency_number() -> None:
+    config = OverlayConfig(enabled=True, enabled_item_ids=("latency_ms",))
+
+    assert (
+        format_overlay_text(
+            {"latency_ms": "30", "display_latency_ms": "4"},
+            config=config,
+        )
+        == "LAT 34 ms"
+    )
+
+
+def test_overlay_text_latency_falls_back_to_render_without_display_tail() -> None:
+    config = OverlayConfig(enabled=True, enabled_item_ids=("latency_ms",))
+
+    assert (
+        format_overlay_text({"latency_ms": "30"}, config=config) == "LAT 30 ms"
+    )
+    assert (
+        format_overlay_text(
+            {"latency_ms": "30", "display_latency_ms": ""},
+            config=config,
+        )
+        == "LAT 30 ms"
+    )
+
+
 def test_overlay_text_normalizes_latency_into_fps_block() -> None:
     config = OverlayConfig(
         enabled=True,

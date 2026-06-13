@@ -128,6 +128,25 @@ def test_configure_environment_enables_trace_only_with_ingame_latency() -> None:
     assert "PROTON_LOG" not in on
 
 
+def test_ingame_latency_also_enables_display_tail() -> None:
+    # The single PB_INGAME_LATENCY opt-in must enable the present->scanout
+    # display tail (present-wait + present-id injection) too.
+    off = {OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml"}
+    launcher.configure_penguin_burner_environment(off)
+    assert "PENGUIN_BURNER_LATENCY_DISPLAY" not in off
+    assert "PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID" not in off
+
+    on = {
+        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
+        "PB_INGAME_LATENCY": "1",
+    }
+    launcher.configure_penguin_burner_environment(on)
+    assert on["PENGUIN_BURNER_LATENCY_DISPLAY"] == "1"
+    assert on["PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID"] == "1"
+    # Diagnostics stay out of the default opt-in.
+    assert "PENGUIN_BURNER_LATENCY_DEBUG_FLOW" not in on
+
+
 def test_configure_environment_enables_trace_from_global_latency_config(tmp_path) -> None:
     path = tmp_path / "overlay.toml"
     save_overlay_config(

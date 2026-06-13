@@ -632,6 +632,58 @@ def test_latency_meter_selects_sim_to_present_tier_without_input_marker() -> Non
     assert snapshot["best_quality"] == "reflex-marker-sim-present"
 
 
+def _display_latency_sample(display_latency_us: int) -> dict:
+    return {
+        "type": "timing",
+        "measurement": "display-latency",
+        "pid": 123,
+        "quality": "present-wait",
+        "present_id": 100,
+        "display_latency_us": display_latency_us,
+    }
+
+
+def test_latency_meter_aggregates_display_latency_p95() -> None:
+    meter = LatencyTelemetryMeter(time_monotonic=lambda: 100.0)
+    for display_us in (3000, 3500, 4000, 4500):
+        meter.add_sample(_display_latency_sample(display_us))
+
+    snapshot = meter.snapshot(now=100.5)
+
+    assert snapshot is not None
+    assert snapshot["display_latency_p95_us"] == 4500
+    assert snapshot["display_latency_p95_ms"] == 4.5
+
+
+def test_display_latency_is_separate_from_render_latency() -> None:
+    # Backend keeps the two metrics distinct: a display-latency sample must not
+    # perturb the render-latency proxy, and vice versa.
+    meter = LatencyTelemetryMeter(time_monotonic=lambda: 100.0)
+    for span_us in (30000, 32000, 34000, 36000):
+        meter.add_sample(_marker_proxy_sample(sim_to_present_us=span_us))
+    for display_us in (3000, 3500, 4000, 4500):
+        meter.add_sample(_display_latency_sample(display_us))
+
+    snapshot = meter.snapshot(now=100.5)
+
+    assert snapshot is not None
+    assert snapshot["latency_p95_ms"] == 36.0
+    assert snapshot["display_latency_p95_ms"] == 4.5
+
+
+def test_display_latency_absent_without_samples() -> None:
+    meter = LatencyTelemetryMeter(time_monotonic=lambda: 100.0)
+    meter.add_sample(_marker_proxy_sample(sim_to_present_us=30000))
+
+    snapshot = meter.snapshot(now=100.5)
+
+    assert snapshot is not None
+    assert snapshot["display_latency_p95_us"] is None
+    assert snapshot["display_latency_p95_ms"] is None
+
+
+
+
 def test_latency_meter_prefers_input_present_over_sim_present() -> None:
     meter = LatencyTelemetryMeter(time_monotonic=lambda: 100.0)
     meter.add_sample(

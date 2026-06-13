@@ -11,12 +11,27 @@ from penguin_burner_paths import default_user_config_dir
 
 OVERLAY_CONFIG_ENV = "PENGUIN_BURNER_OVERLAY_CONFIG"
 STEAM_LAUNCH_OPTION = "PENGUIN_BURNER %command%"
-# Steam launch line that explicitly turns the overlay on and enables the in-game
-# latency meter. PB_OVERLAY / PB_INGAME_LATENCY are the short Steam-launch-line
-# aliases consumed by overlay.launcher.
-STEAM_LAUNCH_OPTION_WITH_LATENCY = (
-    "PB_OVERLAY=1 PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%"
-)
+
+
+def steam_launch_option(*, latency_enabled: bool = False) -> str:
+    """Steam launch string for the overlay.
+
+    ``PB_OVERLAY=1`` turns the overlay on. ``PB_INGAME_LATENCY=1`` is the single
+    opt-in that enables the whole latency stack -- render (Reflex) AND the
+    present->scanout display tail -- via overlay.launcher; it is omitted by
+    default so a plain overlay launch measures no latency.
+    """
+    tokens = ["PB_OVERLAY=1"]
+    if latency_enabled:
+        tokens.append("PB_INGAME_LATENCY=1")
+    tokens.append(STEAM_LAUNCH_OPTION)
+    return " ".join(tokens)
+
+
+# Overlay on, no latency -- the default copy string.
+STEAM_LAUNCH_OPTION_OVERLAY = steam_launch_option()
+# Overlay on with the single latency opt-in (render + display).
+STEAM_LAUNCH_OPTION_WITH_LATENCY = steam_launch_option(latency_enabled=True)
 
 BASIC_OVERLAY_ITEM_IDS = (
     "base_fps",
