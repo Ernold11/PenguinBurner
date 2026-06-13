@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import saved_uv_profiles.profile_store as profile_store
 import lact.export as lact_export
 import lact.runtime_lact_export as runtime_lact_export
@@ -398,3 +400,124 @@ def test_lact_nvidia_export_can_emit_fan_only_plan_config() -> None:
     assert "# Source V/F curve: omitted" in rendered
     assert "fan_control_enabled: true" in rendered
     assert "gpu_vf_curve:" not in rendered
+
+
+# --- pure helper unit tests ------------------------------------------------
+
+
+def test_yaml_scalar_quotes_only_unsafe_values():
+    assert lact_export._yaml_scalar("gpu0") == "gpu0"
+    assert lact_export._yaml_scalar("10DE:2704-1462:5110-0000:09:00.0") == (
+        "10DE:2704-1462:5110-0000:09:00.0"
+    )
+    assert lact_export._yaml_scalar("") == '""'
+    assert lact_export._yaml_scalar("a b") == '"a b"'
+
+
+def test_clamp_bounds_value():
+    assert lact_export._clamp(5, 0, 10) == 5.0
+    assert lact_export._clamp(-3, 0, 10) == 0.0
+    assert lact_export._clamp(42, 0, 10) == 10.0
+
+
+def test_optional_int_coerces_or_returns_none():
+    assert lact_export._optional_int(None) is None
+    assert lact_export._optional_int("") is None
+    assert lact_export._optional_int("12.6") == 13
+    assert lact_export._optional_int(0) == 0
+    assert lact_export._optional_int("not-a-number") is None
+
+
+def test_auto_uv_fan_config_handles_none_and_blocked():
+    assert lact_export._auto_uv_fan_config(None) is None
+    assert lact_export._auto_uv_fan_config({"fan_curve_blocked": True}) is None
+
+
+def test_auto_uv_fan_config_requires_fan_section():
+    with pytest.raises(lact_export.LactExportError, match="missing the fan section"):
+        lact_export._auto_uv_fan_config({"fan": "not-a-dict"})
+
+
+def test_auto_uv_fan_config_applies_zero_rpm_override():
+    fan = lact_export._auto_uv_fan_config(
+        {"zero_rpm_until_temperature_c": 44.0, "fan": {"curve": [[44.0, 0.0]]}}
+    )
+    assert fan["auto_restore_temp_c"] == 44.0
+
+
+def test_fan_config_yaml_none_disables_control():
+    lines, warnings = lact_export._fan_config_yaml(None)
+    assert lines == ["    fan_control_enabled: false"]
+    assert warnings == []
+
+
+def test_fan_config_yaml_requires_curve_points():
+    with pytest.raises(lact_export.LactExportError, match="no curve points"):
+        lact_export._fan_config_yaml({"curve": []})
+
+
+def test_fan_config_yaml_rejects_malformed_point():
+    with pytest.raises(lact_export.LactExportError, match="invalid fan curve point"):
+        lact_export._fan_config_yaml({"curve": [[45.0, 0.0], [60.0]]})
+
+
+def test_fan_config_yaml_warns_when_auto_threshold_disabled():
+    lines, warnings = lact_export._fan_config_yaml(
+        {"curve": [[45.0, 0.0], [60.0, 50.0]], "poll_interval_s": 1.0}
+    )
+    assert "      auto_threshold: 0" in lines
+    assert warnings == [
+        "fan auto_threshold is disabled because no zero-RPM temp was saved"
+    ]
+
+
+def test_vf_curve_yaml_requires_points():
+    with pytest.raises(lact_export.LactExportError, match="no points"):
+        lact_export._vf_curve_yaml_from_points([])
+
+
+def test_vf_curve_yaml_rejects_non_dict_point():
+    with pytest.raises(lact_export.LactExportError, match="invalid V/F point"):
+        lact_export._vf_curve_yaml_from_points(["nope"])
+
+
+def test_vf_curve_yaml_rejects_missing_keys():
+    with pytest.raises(lact_export.LactExportError, match="invalid V/F point"):
+        lact_export._vf_curve_yaml_from_points([{"index": 1, "voltage_mv": 900}])
+
+
+def test_vf_curve_yaml_rejects_index_out_of_range():
+    with pytest.raises(lact_export.LactExportError, match="outside LACT range"):
+        lact_export._vf_curve_yaml_from_points(
+            [{"index": 256, "voltage_mv": 900, "target_mhz": 2000}]
+        )
+
+
+def test_vf_curve_yaml_clamps_negative_clockspeed():
+    lines, warnings = lact_export._vf_curve_yaml_from_points(
+        [{"index": 2, "voltage_mv": 800, "target_mhz": -50}]
+    )
+    assert "        clockspeed: 0" in lines
+    assert warnings == [
+        "LACT V/F clocks were clamped to non-negative values: "
+        "index=2 voltage=800mV clockspeed=-50->0MHz"
+    ]
+
+
+def test_vf_curve_yaml_unlimited_offset_when_max_is_none():
+    lines, warnings = lact_export._vf_curve_yaml_from_points(
+        [{"index": 3, "voltage_mv": 900, "base_mhz": 2000, "target_mhz": 5000}],
+        max_vf_offset_mhz=None,
+    )
+    assert "        clockspeed: 5000" in lines
+    assert warnings == []
+
+
+def test_build_from_plan_requires_gpu_id():
+    with pytest.raises(lact_export.LactExportError, match="GPU id is required"):
+        lact_export.build_lact_nvidia_config_from_plan(
+            gpu_id="   ",
+            vf_plan=[{"index": 1, "voltage_mv": 900, "target_mhz": 2000}],
+            source_label="auto-uv",
+            source_vf="/tmp/p.json",
+        )
