@@ -73,6 +73,7 @@ def run_final_verification_and_save(
     tail_rise_bins: int = 0,
     auto_uv_mode: str = "",
     generated_profile_tier: str = "",
+    auto_oc_metadata: dict | None = None,
     event_callback: AutoUvEventCallback | None = None,
 ):
     gpu_policy = translated_gpu_policy if isinstance(translated_gpu_policy, dict) else {}
@@ -107,6 +108,7 @@ def run_final_verification_and_save(
         plan=final_plan,
         voltage_mv=int(final_voltage_mv),
         lock_clock_mhz=int(final_lock_clock_mhz),
+        metadata=auto_oc_metadata,
     )
     emit_ui_voltage_probe_started(
         event_callback,
@@ -300,12 +302,14 @@ def final_candidate(
     plan: list[dict],
     voltage_mv: int,
     lock_clock_mhz: int,
+    metadata: dict | None = None,
 ) -> VfCurveCandidate:
     return VfCurveCandidate(
         label=f"final-verify {int(voltage_mv)}mV",
         voltage_mv=int(voltage_mv),
         target_mhz=int(lock_clock_mhz),
         flattened_plan=plan,
+        metadata=dict(metadata or {}),
     )
 
 

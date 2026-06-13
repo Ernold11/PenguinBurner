@@ -103,6 +103,12 @@ def test_oc_progress_and_cap_helpers() -> None:
         {"auto_oc": True, "auto_oc_applied_mhz": 30, "auto_oc_limit_mhz": 90}
     ) == (30, 90)
     assert rt._payload_oc_progress({}) is None
+    # Auto-OC ran against a target but held no extra clock: applied 0, limit > 0.
+    # The row must show the configured headroom, not the ambiguous 0/0.
+    assert rt._payload_oc_progress(
+        {"auto_oc": True, "auto_oc_applied_mhz": 0, "auto_oc_limit_mhz": 380}
+    ) == (0, 380)
+    assert rt._format_oc_progress((0, 380)) == "0/380 MHz"
     assert rt._payload_curve_oc_progress(
         {"auto_oc_applied_mhz": 15, "auto_oc_limit_mhz": 90}
     ) == (15, 90)

@@ -83,6 +83,23 @@ def test_final_verification_candidate_uses_plain_label() -> None:
     assert candidate.metadata == {}
 
 
+def test_final_verification_candidate_carries_auto_oc_metadata() -> None:
+    candidate = final_candidate(
+        plan=wide_base_curve(),
+        voltage_mv=915,
+        lock_clock_mhz=2745,
+        metadata={
+            "auto_oc": True,
+            "auto_oc_applied_mhz": 145,
+            "auto_oc_limit_mhz": 380,
+        },
+    )
+
+    assert candidate.metadata["auto_oc"] is True
+    assert candidate.metadata["auto_oc_applied_mhz"] == 145
+    assert candidate.metadata["auto_oc_limit_mhz"] == 380
+
+
 def test_final_fan_curve_blocks_when_final_load_is_too_hot() -> None:
     payload = fan_curve.build_final_verification_fan_curve_payload(
         final_probe=_summary(temp_c=80.0),

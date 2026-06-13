@@ -754,7 +754,7 @@ def test_performance_auto_oc_selection_runs_before_final_verification(monkeypatc
         fake_auto_oc_search,
     )
 
-    plan, voltage_mv, clock_mhz, probe = (
+    plan, voltage_mv, clock_mhz, probe, _oc_metadata = (
         undervolt_main_loop.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="performance",
@@ -798,7 +798,7 @@ def test_non_performance_mode_skips_auto_oc_selection(monkeypatch) -> None:
         fail_auto_oc_search,
     )
 
-    plan, voltage_mv, clock_mhz, probe = (
+    plan, voltage_mv, clock_mhz, probe, _oc_metadata = (
         undervolt_main_loop.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="efficiency",
@@ -1171,7 +1171,7 @@ def test_select_performance_auto_oc_logs_performance_sweep_profile(
         lambda *_args, **_kwargs: swept,
     )
 
-    plan, voltage_mv, clock_mhz, probe = (
+    plan, voltage_mv, clock_mhz, probe, _oc_metadata = (
         undervolt_main_loop.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="performance",
@@ -1220,7 +1220,7 @@ def test_select_performance_auto_oc_keeps_probe_when_selection_unchanged(
         lambda *_args, **_kwargs: VfCurveCandidate("oc", 925, 2600, curve),
     )
 
-    _plan, voltage_mv, clock_mhz, probe = (
+    _plan, voltage_mv, clock_mhz, probe, _oc_metadata = (
         undervolt_main_loop.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="performance",
@@ -1240,6 +1240,94 @@ def test_select_performance_auto_oc_keeps_probe_when_selection_unchanged(
     assert (voltage_mv, clock_mhz) == (925, 2600)
     # Unchanged selection keeps the original stable probe.
     assert probe is start_probe
+
+
+def test_performance_auto_oc_progress_metadata_reports_applied_and_limit() -> None:
+    metadata = undervolt_main_loop.performance_auto_oc_progress_metadata(
+        endpoint=SimpleNamespace(clock_mhz=2980),
+        start_clock_mhz=2600,
+        selected_clock_mhz=2745,
+    )
+
+    assert metadata["auto_oc"] is True
+    assert metadata["auto_oc_limit_mhz"] == 380
+    assert metadata["auto_oc_applied_mhz"] == 145
+    assert metadata["auto_oc_start_clock_mhz"] == 2600
+    assert metadata["auto_oc_target_clock_mhz"] == 2980
+
+
+def test_performance_auto_oc_progress_metadata_keeps_limit_when_no_gain() -> None:
+    # Auto-OC ran against a 2980 MHz target but the verified curve held no extra
+    # clock: the row must read 0/380, never the ambiguous 0/0.
+    metadata = undervolt_main_loop.performance_auto_oc_progress_metadata(
+        endpoint=SimpleNamespace(clock_mhz=2980),
+        start_clock_mhz=2600,
+        selected_clock_mhz=2600,
+    )
+
+    assert metadata["auto_oc_applied_mhz"] == 0
+    assert metadata["auto_oc_limit_mhz"] == 380
+
+
+def test_performance_auto_oc_progress_metadata_clamps_applied_to_limit() -> None:
+    metadata = undervolt_main_loop.performance_auto_oc_progress_metadata(
+        endpoint=SimpleNamespace(clock_mhz=2980),
+        start_clock_mhz=2600,
+        selected_clock_mhz=3100,
+    )
+
+    assert metadata["auto_oc_applied_mhz"] == 380
+    assert metadata["auto_oc_limit_mhz"] == 380
+
+
+def test_performance_auto_oc_progress_metadata_empty_without_target() -> None:
+    assert (
+        undervolt_main_loop.performance_auto_oc_progress_metadata(
+            endpoint=None,
+            start_clock_mhz=2600,
+            selected_clock_mhz=2700,
+        )
+        == {}
+    )
+
+
+def test_select_performance_auto_oc_candidate_returns_oc_metadata(monkeypatch) -> None:
+    curve = base_curve(900, 1025, 25, 2000, 40)
+
+    monkeypatch.setattr(
+        undervolt_main_loop,
+        "run_auto_oc_candidate_search",
+        lambda **_kwargs: SimpleNamespace(
+            selected_candidate=VfCurveCandidate("oc", 950, 2745, curve),
+            endpoint=SimpleNamespace(clock_mhz=2980),
+            attempts=(),
+        ),
+    )
+    monkeypatch.setattr(
+        undervolt_main_loop,
+        "build_performance_sweep_profile_candidate",
+        lambda *_args, **_kwargs: VfCurveCandidate("oc", 950, 2745, curve),
+    )
+
+    *_unused, oc_metadata = undervolt_main_loop.select_performance_auto_oc_candidate(
+        curve,
+        auto_uv_mode="performance",
+        stable_plan=curve,
+        stable_voltage_mv=925,
+        stable_lock_clock_mhz=2600,
+        stable_probe=_summary(925, 2600),
+        stable_history=[],
+        runner=object(),
+        gpu_name="NVIDIA GeForce RTX 4090",
+        clock_ceiling=None,
+        probe_history=[],
+        log=lambda _message: None,
+        target_voltage_mv=940,
+        target_clock_mhz=2980,
+    )
+
+    assert oc_metadata["auto_oc_applied_mhz"] == 145
+    assert oc_metadata["auto_oc_limit_mhz"] == 380
 
 
 # --- orchestration: discovery / baseline failure guards -------------------

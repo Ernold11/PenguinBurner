@@ -416,12 +416,14 @@ def run_voltage_frequency_undervolt_main_loop(
             if selected_stable_probe is not None:
                 final_stable_probe = selected_stable_probe
 
+        final_auto_oc_metadata: dict = {}
         if not bool(user_stop_final_choice):
             (
                 final_stable_plan,
                 final_stable_voltage_mv,
                 final_stable_lock_clock_mhz,
                 final_stable_probe,
+                final_auto_oc_metadata,
             ) = select_performance_auto_oc_candidate(
                 base_curve,
                 auto_uv_mode=settings.auto_uv_mode,
@@ -502,6 +504,7 @@ def run_voltage_frequency_undervolt_main_loop(
             generated_profile_tier=generated_profile_tier_from_runtime_options(
                 runtime_options
             ),
+            auto_oc_metadata=final_auto_oc_metadata,
             event_callback=event_callback,
         )
     finally:
@@ -570,6 +573,7 @@ def select_performance_auto_oc_candidate(
             int(stable_voltage_mv),
             int(stable_lock_clock_mhz),
             stable_probe,
+            {},
         )
     start_candidate = VfCurveCandidate(
         label="performance-auto-oc-start",
@@ -615,12 +619,46 @@ def select_performance_auto_oc_candidate(
         int(selected.voltage_mv) != int(stable_voltage_mv)
         or int(selected.target_mhz) != int(stable_lock_clock_mhz)
     )
+    auto_oc_metadata = performance_auto_oc_progress_metadata(
+        endpoint=getattr(result, "endpoint", None),
+        start_clock_mhz=int(stable_lock_clock_mhz),
+        selected_clock_mhz=int(selected.target_mhz),
+    )
     return (
         selected.flattened_plan,
         int(selected.voltage_mv),
         int(selected.target_mhz),
         None if selected_changed else stable_probe,
+        auto_oc_metadata,
     )
+
+
+def performance_auto_oc_progress_metadata(
+    *,
+    endpoint,
+    start_clock_mhz: int,
+    selected_clock_mhz: int,
+) -> dict:
+    """Auto-OC offset metadata so the final/saved row shows applied/limit MHz.
+
+    ``limit`` is the configured headroom (target clock minus the UV start clock);
+    ``applied`` is how much of it the verified curve actually holds. When Auto-OC
+    ran but gained nothing this stays ``0/<limit>`` rather than collapsing to 0/0.
+    Returns an empty dict when no Auto-OC target was configured (endpoint is None).
+    """
+    if endpoint is None:
+        return {}
+    start_clock = int(start_clock_mhz)
+    endpoint_clock = int(endpoint.clock_mhz)
+    limit_mhz = max(0, endpoint_clock - start_clock)
+    applied_mhz = max(0, min(limit_mhz, int(selected_clock_mhz) - start_clock))
+    return {
+        "auto_oc": True,
+        "auto_oc_start_clock_mhz": start_clock,
+        "auto_oc_target_clock_mhz": endpoint_clock,
+        "auto_oc_applied_mhz": applied_mhz,
+        "auto_oc_limit_mhz": limit_mhz,
+    }
 
 
 def lower_voltage_descent_enforces_clock_floor(
