@@ -145,17 +145,6 @@ def test_window_human_lines(main_window) -> None:
     main_window._handle_human_line("unrelated chatter")
 
 
-def test_window_fan_measurement_and_payload(main_window) -> None:
-    main_window._record_fan_measurement({"temp_c": 50, "fan_pct": 45})
-    main_window._record_fan_measurement({"temp_c": None})  # ignored
-    main_window._populate_fan_plot_from_payload(
-        {
-            "points": [{"temperature_c": 40, "fan_pct": 30}, {"temperature_c": 70, "fan_pct": 60}],
-            "target_point": {"temperature_c": 50, "fan_pct": 40},
-        }
-    )
-
-
 def test_window_scan_finished_branches(main_window) -> None:
     win = main_window
     # stopped-by-user
@@ -190,3 +179,19 @@ def test_window_simple_helpers(main_window) -> None:
     ).lower()
     win._load_profiles()
     win.show_about()
+
+
+def test_window_tab_order_and_bins_visibility(main_window) -> None:
+    win = main_window
+    # Tabs are Auto-UV, Profiles, Overlay (no separate fan-curve tab).
+    labels = [win.tabs.tabText(i) for i in range(win.tabs.count())]
+    assert labels == ["Auto-UV", "Profiles", "Overlay"]
+    assert not hasattr(win, "fan_plot")
+
+    # The undervolting-runs panel shows only on the Auto-UV tab.
+    win.tabs.setCurrentIndex(win.auto_uv_tab_index)
+    assert not win.table_panel.isHidden()
+    win.tabs.setCurrentIndex(win.profiles_tab_index)
+    assert win.table_panel.isHidden()
+    win.tabs.setCurrentIndex(win.overlay_tab_index)
+    assert win.table_panel.isHidden()

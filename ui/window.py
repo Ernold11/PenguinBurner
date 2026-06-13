@@ -42,9 +42,6 @@ from .error_reporting import ErrorReporter
 from .gpu_selection import persist_runtime_gpu_index
 from .components.fan_curve_editor import open_fan_curve_editor_dialog
 from .components.vf_curve_editor import open_vf_curve_editor_dialog
-from .fan_profiles import fan_curve_points_from_payload
-from .fan_profiles import fan_curve_target_point_from_payload
-from .fan_profiles import fan_measurement_points_from_payload
 from .fan_profiles import profile_fan_curve_points
 from .fan_profiles import profile_fan_curve_target_point
 from .fan_profiles import profile_fan_measurement_points
@@ -57,9 +54,6 @@ from .lact_export import write_lact_profile_config
 from .models import candidate_id_from_payload
 from .models import event_base_points
 from .models import event_points
-from .models import fan_measurement_point
-from .models import fan_points
-from .models import sorted_unique_points
 from .models import stage_title
 from .models import status_value
 from .models import top_status_text
@@ -99,7 +93,6 @@ class MainWindow:
         self.gpu_index = None if gpu_index is None else max(0, int(gpu_index))
         self.auto_uv_options = dict(auto_uv_options or {})
         self.profile_summaries: list[dict] = []
-        self.fan_measured_points: list[tuple[float, float]] = []
         self.pending_final_result_payload: dict | None = None
         self.final_choice_discarded = False
         self.last_auto_uv_candidate_id = ""
@@ -152,16 +145,6 @@ class MainWindow:
             y_label="Clock",
             y_units="MHz",
         )
-        self.fan_plot = CurvePlot(
-            QtWidgets=self.QtWidgets,
-            pg=self.pg,
-            x_label="Temperature",
-            x_units="C",
-            y_label="Fan",
-            y_units="%",
-            x_range=(35, 95),
-            y_range=(0, 100),
-        )
         self.runs_table = RunsTable(
             QtCore=self.QtCore,
             QtGui=self.QtGui,
@@ -192,12 +175,11 @@ class MainWindow:
 
         self.tabs = self.QtWidgets.QTabWidget()
         self.auto_uv_tab_index = self.tabs.addTab(auto_uv_view, "Auto-UV")
-        self.tabs.addTab(self.fan_plot.widget, "Silent Fan Curve")
+        self.profiles_tab_index = self.tabs.addTab(self.profile_list.widget, "Profiles")
         self.overlay_tab_index = self.tabs.addTab(
             self.overlay_config.widget,
             "Overlay",
         )
-        self.profiles_tab_index = self.tabs.addTab(self.profile_list.widget, "Profiles")
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self._close_dynamic_tab)
         self.errors = ErrorReporter(
@@ -273,7 +255,8 @@ class MainWindow:
         self.window.show()
 
     def _sync_selected_tab_layout(self, index: int) -> None:
-        self.table_panel.setVisible(index != self.overlay_tab_index)
+        # The undervolting-runs table belongs to the Auto-UV workflow only.
+        self.table_panel.setVisible(index == self.auto_uv_tab_index)
 
     def show_about(self) -> None:
         show_about_dialog(
@@ -309,8 +292,6 @@ class MainWindow:
         command = scan_command(options)
         self.runs_table.clear()
         self.vf_plot.clear()
-        self.fan_plot.clear()
-        self.fan_measured_points = []
         self.pending_final_result_payload = None
         self.final_choice_discarded = False
         self.last_auto_uv_candidate_id = ""
@@ -353,7 +334,6 @@ class MainWindow:
             self.header.set_stage(stage_title(payload.get("stage", "Probe")))
             self.runs_table.add_probe_result(payload)
             self.vf_plot.set_load_markers(payload)
-            self._record_fan_measurement(payload)
         elif event == "load_telemetry":
             self.runs_table.update_probe_progress(payload)
             self.vf_plot.set_live_load_marker(payload)
@@ -368,10 +348,6 @@ class MainWindow:
                 event_points(payload),
                 curve_id=candidate_id_from_payload(payload),
             )
-        elif event == "fan_curve_suggested":
-            points = fan_points(payload)
-            if points:
-                self.fan_plot.set_candidate_points(points)
         elif event == "final_choice_request":
             self._handle_final_choice_request(payload)
         elif event == "final_choice_discarded":
@@ -622,7 +598,7 @@ class MainWindow:
             return
 
         def save_edit(edit) -> str:
-            path, payload = save_edited_fan_profile(
+            path, _payload = save_edited_fan_profile(
                 profile,
                 edit,
                 original_points=curve_points,
@@ -630,9 +606,6 @@ class MainWindow:
             profile_id = profile_id_from_archive_path(path)
             if profile_id:
                 self.profile_list.select_profile(profile_id)
-            fan_payload = payload.get("fan_curve_payload")
-            if isinstance(fan_payload, dict):
-                self._populate_fan_plot_from_payload(fan_payload)
             self._load_profiles()
             return f"Saved edited fan curve: {path.name}."
 
@@ -1048,26 +1021,6 @@ class MainWindow:
                 )
         self.controls.set_running(False)
         self._load_profiles()
-
-    def _record_fan_measurement(self, payload: dict) -> None:
-        point = fan_measurement_point(payload)
-        if point is None:
-            return
-        self.fan_measured_points.append(point)
-        self.fan_plot.set_source_points(sorted_unique_points(self.fan_measured_points))
-
-    def _populate_fan_plot_from_payload(self, payload: dict) -> None:
-        points = fan_curve_points_from_payload(payload)
-        if not points:
-            return
-        measured_points = fan_measurement_points_from_payload(payload)
-        if measured_points:
-            self.fan_measured_points = list(measured_points)
-            self.fan_plot.set_source_points(measured_points)
-        self.fan_plot.set_candidate_points(points, remember_previous=False)
-        target = fan_curve_target_point_from_payload(payload)
-        if target is not None:
-            self.fan_plot.set_selected_point(target[0], target[1])
 
     def _load_profiles(self) -> None:
         self.profile_summaries = load_profile_summaries()
