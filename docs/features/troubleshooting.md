@@ -20,6 +20,16 @@ gamescope it falls back to an off-screen window, which can still show on some
 Wayland desktops. Install gamescope to keep it hidden. To watch it on purpose,
 add `--show-q2rtx-window`.
 
+### Running on a headless server (no display)
+
+Install `gamescope` first. It is the only path that runs Q2RTX with no display
+server at all (`gamescope --backend headless` uses its own private offscreen
+compositor). The off-screen X11 fallback is not headless — it needs a live
+`$DISPLAY`, so on a display-less server the run fails to create a Vulkan
+surface. `gamescope` does pull in Wayland/wlroots/Xwayland libraries, but they
+are inert files and start no desktop or window. A lighter Wayland-free Xvfb
+path is planned; see `docs/dev/q2rtx-headless-xvfb-plan.md`.
+
 ### I have more than one GPU
 
 Select the card with `--gpu-index N`, or pick it in the Auto-UV tuning dialog.

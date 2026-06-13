@@ -548,6 +548,24 @@ best-effort off-screen X11 window. That fallback may still be visible on some
 Wayland desktops because the compositor can clamp windows to the visible
 desktop.
 
+**Headless servers (no display):** install `gamescope` before running Auto-UV
+or `--stability-test` on a box with no X11/Wayland display. `gamescope
+--backend headless` is the only path that runs Q2RTX without *any* display
+server — it renders into its own private offscreen compositor and shows
+nothing. The off-screen X11 fallback is **not** headless: it needs a live
+`$DISPLAY`, so on a display-less server it cannot create a Vulkan surface and
+the run fails. So on servers, treat `gamescope` as required:
+
+```bash
+sudo dnf install gamescope      # Fedora
+sudo pacman -S gamescope        # Arch
+```
+
+Note that `gamescope` pulls in a Wayland/wlroots stack (wlroots, libwayland,
+Xwayland, and X client libraries) as inert libraries — installing them does not
+start any desktop, session, or visible window. A lighter, Wayland-free Xvfb
+path is planned; see `docs/dev/q2rtx-headless-xvfb-plan.md`.
+
 To force a normal visible Q2RTX window for debugging:
 
 ```bash
