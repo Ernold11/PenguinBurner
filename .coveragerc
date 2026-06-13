@@ -1,0 +1,57 @@
+# Coverage scope for the testable logic of PenguinBurner.
+#
+# The omitted files cannot run without a real NVIDIA GPU / NVML / NVAPI, a live
+# CUDA or Q2RTX subprocess, network downloads, or an X11/Wayland display. We do
+# not mock hardware, so those integration entry points are excluded and the
+# reported number reflects coverage of testable logic. Directories that mix
+# testable logic with hardware (stability/, runtime_gpu_control/) are omitted at
+# the file level so their tested modules still count.
+[run]
+source =
+    auto_uv
+    saved_uv_profiles
+    cli
+    ui
+    afterburner
+    lact
+    overlay
+    stability
+    runtime_fan_control
+    runtime_gpu_control
+    runtime_stability_test
+    saved_profile_verification
+    manual_fan_curve_editor
+    manual_uv_curve_editor
+    auto_oc
+    initial_check
+    latency_telemetry
+
+omit =
+    */tests/*
+    # --- Live NVIDIA GPU / NVML / NVAPI ---
+    runtime_gpu_control/nvml_runtime_session.py
+    runtime_gpu_control/live_gpu_telemetry_text.py
+    runtime_fan_control/runtime_loop.py
+    initial_check/auto_uv_hardware_initial_check.py
+    latency_telemetry/nvapi_marker_bridge.py
+    # --- External-process workload runners (Q2RTX, CUDA) + downloads ---
+    stability/q2rtx/runtime.py
+    stability/q2rtx/process_harness.py
+    stability/q2rtx/downloader.py
+    stability/q2rtx/assets.py
+    stability/q2rtx/install.py
+    stability/q2rtx/telemetry.py
+    stability/cuda_bruteforce.py
+    runtime_stability_test/q2rtx_cuda_workload_config.py
+    auto_uv/q2rtx/q2rtx_cuda_voltage_probe.py
+    auto_uv/q2rtx/q2rtx_cuda_probe_runner.py
+    auto_uv/final_verification/main_loop.py
+    saved_profile_verification/runner.py
+    # --- Overlay native/display integration ---
+    overlay/display.py
+
+[report]
+exclude_also =
+    if TYPE_CHECKING:
+    raise NotImplementedError
+    if __name__ == .__main__.:
