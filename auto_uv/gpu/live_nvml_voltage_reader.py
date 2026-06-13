@@ -5,10 +5,7 @@ The reader owns the hidden NVAPI voltage session so the rest of Auto-UV can trea
 
 from __future__ import annotations
 
-from hidden_nvapi_voltage import (
-    create_hidden_voltage_reader,
-    get_hidden_voltage_reader_last_error,
-)
+from hidden_nvapi_voltage import create_hidden_voltage_reader
 
 
 class LiveNvmlVoltageReader:
@@ -30,14 +27,6 @@ class LiveNvmlVoltageReader:
         if voltage_uv is None:
             return None
         return int(round(int(voltage_uv) / 1000.0))
-
-    def voltage_reader_available(self) -> bool:
-        return self._voltage_reader is not None
-
-    def unavailable_reason(self) -> Exception | None:
-        if self._voltage_reader is not None:
-            return None
-        return get_hidden_voltage_reader_last_error()
 
     def close(self) -> None:
         if self._voltage_reader is not None:

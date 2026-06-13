@@ -60,10 +60,9 @@ def select_next_lower_voltage(
         reference_actual_voltage_mv=reference_actual_voltage_mv,
         rules=rules,
     )
-    for voltage_mv in selected:
-        if int(voltage_mv) < int(stable_voltage_mv):
-            return int(voltage_mv)
-    return None
+    # Every candidate bin is drawn from below stable_voltage_mv, so the first
+    # survivor is the next voltage to probe.
+    return int(selected[0]) if selected else None
 
 
 def select_aggressive_voltage_bins(

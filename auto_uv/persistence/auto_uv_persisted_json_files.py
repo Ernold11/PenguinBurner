@@ -11,17 +11,12 @@ from pathlib import Path
 
 from penguin_burner_paths import (
     claim_desktop_user_ownership,
-    default_saved_uv_dir,
     default_user_config_dir,
 )
 
 
 def auto_uv_user_config_dir() -> Path:
     return default_user_config_dir()
-
-
-def auto_uv_saved_uv_dir() -> Path:
-    return default_saved_uv_dir()
 
 
 def probe_in_progress_path() -> Path:

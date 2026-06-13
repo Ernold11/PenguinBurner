@@ -6,7 +6,6 @@ It compares the final verified probe with the initial loaded baseline probe.
 from __future__ import annotations
 
 from .auto_uv_types import AutoUvProbeSummary, AutoUvVoltageScanResult
-from .curve.base_vf_curve_voltage_bins import nearest_editable_voltage_bin
 
 
 def build_voltage_scan_result(
@@ -55,49 +54,6 @@ def build_voltage_scan_result(
             probe_float(final_probe, "avg_power_w"),
         ),
     )
-
-
-def curve_overclock_summary(
-    *,
-    final_plan: list[dict],
-    base_plan: list[dict] | None,
-    final_voltage_mv: int,
-) -> dict | None:
-    if not base_plan:
-        return None
-    final_by_voltage = {int(item["voltage_mv"]): item for item in final_plan}
-    base_by_voltage = {int(item["voltage_mv"]): item for item in base_plan}
-    common_voltages = sorted(set(final_by_voltage) & set(base_by_voltage))
-    offsets = []
-    for voltage_mv in common_voltages:
-        final_item = final_by_voltage[voltage_mv]
-        base_item = base_by_voltage[voltage_mv]
-        if bool(final_item.get("preserve_base")):
-            continue
-        offsets.append(int(final_item["target_mhz"]) - int(base_item["target_mhz"]))
-    if not offsets:
-        return None
-
-    lock_voltage_mv = nearest_editable_voltage_bin(final_plan, int(final_voltage_mv))
-    lock_final = final_by_voltage.get(int(lock_voltage_mv))
-    lock_base = base_by_voltage.get(int(lock_voltage_mv))
-    lock_final_mhz = int(lock_final["target_mhz"]) if lock_final is not None else None
-    lock_base_mhz = int(lock_base["target_mhz"]) if lock_base is not None else None
-    return {
-        "lock_voltage_mv": int(lock_voltage_mv),
-        "lock_final_mhz": lock_final_mhz,
-        "lock_base_mhz": lock_base_mhz,
-        "lock_offset_mhz": (
-            int(lock_final_mhz) - int(lock_base_mhz)
-            if lock_final_mhz is not None and lock_base_mhz is not None
-            else None
-        ),
-        "min_offset_mhz": min(offsets),
-        "max_offset_mhz": max(offsets),
-        "avg_offset_mhz": sum(offsets) / float(len(offsets)),
-        "positive_points": sum(1 for offset in offsets if int(offset) > 0),
-        "total_points": len(offsets),
-    }
 
 
 def probe_float(probe: AutoUvProbeSummary | None, field_name: str) -> float | None:

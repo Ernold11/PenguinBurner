@@ -1,4 +1,4 @@
-"""Normalize the base V/F curve into typed points and back into plan dictionaries.
+"""Read the base V/F curve plan dictionaries into typed points.
 
 This module owns shape conversion only; search, flattening, and safety rules live elsewhere.
 """
@@ -23,23 +23,6 @@ def read_base_vf_points(base_curve: list[dict]) -> list[BaseVfPoint]:
             )
         )
     return points
-
-
-def write_base_vf_points(points: list[BaseVfPoint]) -> list[dict]:
-    return [write_base_vf_point(point) for point in points]
-
-
-def write_base_vf_point(point: BaseVfPoint) -> dict:
-    item = dict(point.original)
-    item.pop("preserve_vanilla", None)
-    item["index"] = int(point.index)
-    item["voltage_mv"] = int(point.voltage_mv)
-    item["base_mhz"] = int(point.base_mhz)
-    item["target_mhz"] = int(point.target_mhz)
-    item["new_offset_mhz"] = int(point.new_offset_mhz)
-    if bool(point.preserve_base) or "preserve_base" in item:
-        item["preserve_base"] = bool(point.preserve_base)
-    return item
 
 
 def editable_base_vf_points(base_curve: list[dict]) -> list[BaseVfPoint]:

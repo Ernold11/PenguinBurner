@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from auto_uv.lower_voltage_probe_target import (
-    base_curve_target_for_lower_voltage,
-    lower_voltage_clock_floor_miss_reason,
-)
+from auto_uv.lower_voltage_probe_target import base_curve_target_for_lower_voltage
 from auto_uv.lower_voltage_search import (
     filter_effective_voltage_candidates,
     select_next_lower_voltage,
@@ -17,7 +14,7 @@ from auto_uv.persistence.unsafe_voltage_cache import (
     unsafe_min_search_voltage,
     unsafe_voltage_block_reason,
 )
-from auto_uv_test_data import base_curve, probe_summary
+from auto_uv_test_data import base_curve
 
 
 def test_lower_voltage_search_keeps_final_low_bin_testable() -> None:
@@ -60,20 +57,6 @@ def test_lower_voltage_probe_target_follows_base_curve_until_measurement_exists(
         )
         == 2190
     )
-
-
-def test_lower_voltage_probe_target_predicts_clock_floor_miss() -> None:
-    reason = lower_voltage_clock_floor_miss_reason(
-        [
-            probe_summary(1000, clock_mhz=2400.0),
-            probe_summary(950, clock_mhz=2250.0),
-        ],
-        candidate_voltage_mv=900,
-        baseline_core_clock_mhz=2400.0,
-        min_core_clock_pct=90.0,
-    )
-
-    assert reason == "predicted=2100.0MHz floor=2160.0MHz"
 
 
 def test_unsafe_cache_blocks_only_the_recorded_clock_band_when_clock_aware() -> None:

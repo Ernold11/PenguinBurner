@@ -58,30 +58,6 @@ def reference_discovery_q2rtx_duration_s(base_duration_s: int | None = None) -> 
     )
 
 
-def normalize_q2rtx_probe_config(config: Q2RTXStabilityConfig) -> Q2RTXStabilityConfig:
-    if config.timedemo_loops is not None:
-        return config
-    probe_duration_s = int(config.duration_s)
-    if probe_duration_s <= 0:
-        return config
-    hinted_seconds = timedemo_seconds_hint(config)
-    if hinted_seconds is None:
-        return config
-    timedemo_loops = max(1, int(math.ceil(float(probe_duration_s) / hinted_seconds)))
-    return replace(
-        config,
-        timedemo_loops=int(timedemo_loops),
-        duration_s=0,
-        single_pass_timeout_s=max(
-            float(config.single_pass_timeout_s),
-            float(timedemo_loops)
-            * hinted_seconds
-            * AUTO_UV_PROBE_TUNING.timeout_multiplier
-            + AUTO_UV_PROBE_TUNING.short_timeout_buffer_s,
-        ),
-    )
-
-
 def q2rtx_only_probe_config_for_voltage_band(
     config: Q2RTXStabilityConfig,
     *,

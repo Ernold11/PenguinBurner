@@ -5,11 +5,6 @@ from pathlib import Path
 import pytest
 
 from auto_uv.auto_uv_types import AutoUvError, AutoUvProbeSummary
-from auto_uv.curve.base_vf_curve import (
-    read_base_vf_points,
-    write_base_vf_point,
-    write_base_vf_points,
-)
 from auto_uv.curve.base_vf_curve_validation import validate_base_vf_curve
 from auto_uv.curve.base_vf_curve_voltage_bins import (
     base_target_clock_at_voltage,
@@ -64,78 +59,6 @@ def _probe_summary(avg_core_clock_mhz: float | None) -> AutoUvProbeSummary:
         result_reason="stable run",
         log_path=Path("/tmp/q2rtx.log"),
     )
-
-
-# --- base_vf_curve.py ---------------------------------------------------------
-
-
-def test_write_base_vf_point_roundtrips_typed_fields() -> None:
-    points = read_base_vf_points(base_curve(800, 875, 25, 2000, 30))
-    point = points[0]
-
-    item = write_base_vf_point(point)
-
-    assert item["index"] == 0
-    assert item["voltage_mv"] == 800
-    assert item["base_mhz"] == 2000
-    assert item["target_mhz"] == 2000
-    # new_offset_mhz is derived from target - base.
-    assert item["new_offset_mhz"] == 0
-    # No preserve flag present in source and point is not preserved.
-    assert "preserve_base" not in item
-
-
-def test_write_base_vf_point_emits_offset_and_preserve_flag() -> None:
-    [point] = read_base_vf_points(
-        [
-            {
-                "index": 4,
-                "voltage_mv": 900,
-                "base_mhz": 2100,
-                "target_mhz": 2250,
-                "preserve_base": True,
-            }
-        ]
-    )
-
-    item = write_base_vf_point(point)
-
-    assert item["new_offset_mhz"] == 150  # 2250 - 2100
-    assert item["preserve_base"] is True
-    # The legacy alias must be dropped on write.
-    assert "preserve_vanilla" not in item
-
-
-def test_write_base_vf_point_drops_preserve_vanilla_alias() -> None:
-    [point] = read_base_vf_points(
-        [
-            {
-                "index": 1,
-                "voltage_mv": 825,
-                "base_mhz": 2000,
-                "target_mhz": 2000,
-                "preserve_vanilla": True,
-            }
-        ]
-    )
-
-    item = write_base_vf_point(point)
-
-    assert "preserve_vanilla" not in item
-    # preserve_base is truthy because it derived from the legacy alias.
-    assert item["preserve_base"] is True
-
-
-def test_write_base_vf_points_preserves_order_and_count() -> None:
-    curve = base_curve(800, 900, 25, 2000, 30)
-    points = read_base_vf_points(curve)
-
-    written = write_base_vf_points(points)
-
-    assert [item["voltage_mv"] for item in written] == [
-        item["voltage_mv"] for item in curve
-    ]
-    assert len(written) == len(curve)
 
 
 # --- base_vf_curve_validation.py ----------------------------------------------

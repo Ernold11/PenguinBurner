@@ -11,18 +11,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from stability.q2rtx import DEFAULT_SINGLE_PASS_TIMEOUT_S, Q2RTXStabilityConfig
+from stability.q2rtx import Q2RTXStabilityConfig
 
 from auto_uv.auto_uv_user_options import (
     AUTO_UV_CURVE_TUNING,
     AUTO_UV_DEFAULTS,
-    AUTO_UV_PROBE_TUNING,
     AUTO_UV_STALL_TUNING,
 )
 from auto_uv.q2rtx.q2rtx_cuda_probe_config import (
     base_q2rtx_probe_duration_s,
     cuda_companion_enabled_for_voltage_band,
-    normalize_q2rtx_probe_config,
     tiered_q2rtx_probe_duration_s,
     timedemo_seconds_hint,
 )
@@ -49,56 +47,6 @@ from auto_uv.q2rtx.q2rtx_probe_summary import (
 # --------------------------------------------------------------------------- #
 # q2rtx_cuda_probe_config.py
 # --------------------------------------------------------------------------- #
-
-
-def test_normalize_keeps_config_when_timedemo_loops_already_set() -> None:
-    config = Q2RTXStabilityConfig(timedemo_loops=3, duration_s=20)
-    assert normalize_q2rtx_probe_config(config) is config
-
-
-def test_normalize_keeps_config_when_duration_non_positive() -> None:
-    config = Q2RTXStabilityConfig(timedemo_loops=None, duration_s=0)
-    assert normalize_q2rtx_probe_config(config) is config
-
-
-def test_normalize_keeps_config_when_demo_has_no_seconds_hint() -> None:
-    config = Q2RTXStabilityConfig(
-        timedemo_loops=None,
-        duration_s=20,
-        demo_name="unknown-demo-without-hint",
-    )
-    assert normalize_q2rtx_probe_config(config) is config
-
-
-def test_normalize_converts_duration_to_timedemo_loops_for_hinted_demo() -> None:
-    # q2demo1 is hinted at 4.45s/run; ceil(20 / 4.45) == 5 loops.
-    config = Q2RTXStabilityConfig(
-        timedemo_loops=None,
-        duration_s=20,
-        single_pass_timeout_s=1.0,
-        demo_name="q2demo1",
-    )
-    normalized = normalize_q2rtx_probe_config(config)
-
-    assert normalized.timedemo_loops == 5
-    assert normalized.duration_s == 0
-    # 5 * 4.45 * timeout_multiplier + buffer
-    expected_timeout = (
-        5 * 4.45 * AUTO_UV_PROBE_TUNING.timeout_multiplier
-        + AUTO_UV_PROBE_TUNING.short_timeout_buffer_s
-    )
-    assert normalized.single_pass_timeout_s == pytest.approx(expected_timeout)
-
-
-def test_normalize_resolves_default_demo_alias_to_q2demo1_hint() -> None:
-    # demo_name "auto" (the default) aliases to the q2demo1 hint.
-    config = Q2RTXStabilityConfig(
-        timedemo_loops=None,
-        duration_s=9,
-        demo_name="auto",
-    )
-    normalized = normalize_q2rtx_probe_config(config)
-    assert normalized.timedemo_loops == 3  # ceil(9 / 4.45)
 
 
 def test_timedemo_seconds_hint_returns_none_for_unknown_demo() -> None:

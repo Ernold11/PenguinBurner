@@ -18,11 +18,7 @@ from auto_uv.auto_uv_types import (
     StableRunDecision,
     VfCurveCandidate,
 )
-from auto_uv.lower_voltage_probe_target import (
-    lower_voltage_clock_floor_miss_reason,
-    lower_voltage_phase,
-    predict_clock_at_lower_voltage,
-)
+from auto_uv.lower_voltage_probe_target import lower_voltage_phase
 from auto_uv.lower_voltage_search import (
     filter_effective_voltage_candidates,
     select_aggressive_voltage_bins,
@@ -104,88 +100,6 @@ def test_lower_voltage_phase_returns_fine_below_medium_threshold() -> None:
     # start_voltage_mv <= 0 -> ratio forced to 1.0 -> "coarse"
     assert (
         lower_voltage_phase(start_voltage_mv=0, candidate_voltage_mv=900) == "coarse"
-    )
-
-
-def test_predict_clock_returns_none_with_fewer_than_two_points() -> None:
-    # only one usable point -> len(points) < 2 -> None (line 64)
-    assert (
-        predict_clock_at_lower_voltage(
-            [probe_summary(1000, clock_mhz=2400.0)],
-            candidate_voltage_mv=950,
-        )
-        is None
-    )
-
-
-def test_predict_clock_returns_none_when_voltage_span_zero() -> None:
-    # two points but identical voltages -> span 0 -> None (line 70)
-    assert (
-        predict_clock_at_lower_voltage(
-            [
-                probe_summary(1000, clock_mhz=2400.0),
-                probe_summary(1000, clock_mhz=2300.0),
-            ],
-            candidate_voltage_mv=950,
-        )
-        is None
-    )
-
-
-def test_predict_clock_extrapolates_linearly_when_span_nonzero() -> None:
-    predicted = predict_clock_at_lower_voltage(
-        [
-            probe_summary(1000, clock_mhz=2400.0),
-            probe_summary(950, clock_mhz=2250.0),
-        ],
-        candidate_voltage_mv=900,
-    )
-    # slope 3 MHz/mV, extrapolate to 900mV -> 2100
-    assert predicted == 2100.0
-
-
-def test_clock_floor_miss_returns_none_without_baseline() -> None:
-    # baseline_core_clock_mhz is None -> None (line 83)
-    assert (
-        lower_voltage_clock_floor_miss_reason(
-            [
-                probe_summary(1000, clock_mhz=2400.0),
-                probe_summary(950, clock_mhz=2250.0),
-            ],
-            candidate_voltage_mv=900,
-            baseline_core_clock_mhz=None,
-            min_core_clock_pct=90.0,
-        )
-        is None
-    )
-
-
-def test_clock_floor_miss_returns_none_when_prediction_unavailable() -> None:
-    # too little history -> predicted None -> None (line 89)
-    assert (
-        lower_voltage_clock_floor_miss_reason(
-            [probe_summary(1000, clock_mhz=2400.0)],
-            candidate_voltage_mv=900,
-            baseline_core_clock_mhz=2400.0,
-            min_core_clock_pct=90.0,
-        )
-        is None
-    )
-
-
-def test_clock_floor_miss_returns_none_when_prediction_above_floor() -> None:
-    # predicted 2100 >= floor (2400 * 0.80 = 1920) -> None (line 92)
-    assert (
-        lower_voltage_clock_floor_miss_reason(
-            [
-                probe_summary(1000, clock_mhz=2400.0),
-                probe_summary(950, clock_mhz=2250.0),
-            ],
-            candidate_voltage_mv=900,
-            baseline_core_clock_mhz=2400.0,
-            min_core_clock_pct=80.0,
-        )
-        is None
     )
 
 
