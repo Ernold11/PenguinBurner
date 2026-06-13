@@ -164,7 +164,7 @@ class OverlayConfigPanel:
         enable_row.addWidget(scale_label)
         enable_row.addWidget(self.scale_combo)
 
-        target_fps_label = QtWidgets.QLabel("Target FPS")
+        target_fps_label = QtWidgets.QLabel("Adaptive UV Target")
         target_fps_tooltip = _wrapped_tooltip(
             "Adaptive Auto-UV target base-present FPS. PenguinBurner uses this "
             "to decide when adaptive profiles should promote or demote. Range "
@@ -372,7 +372,7 @@ class OverlayConfigPanel:
                 self.runtime_config_path,
             )
         except OSError as exc:
-            self.status_label.setText(f"Target FPS save failed: {exc}")
+            self.status_label.setText(f"Adaptive UV Target save failed: {exc}")
             self._sync_widgets()
             return
         self.status_label.setText("Saved. Running adaptive target updates live.")
