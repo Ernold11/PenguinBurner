@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.4.2
+Version:        0.4.3
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
