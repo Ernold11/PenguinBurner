@@ -117,3 +117,9 @@ def test_json_events_omit_none_values(capsys) -> None:
         "nested": {"known": 1},
         "values": [1, {"kept": True}],
     }
+
+
+def test_json_events_print_nothing_when_disabled(capsys) -> None:
+    emit_cli_json_event(False, "load_telemetry", elapsed_s=1.25)
+
+    assert capsys.readouterr().out == ""
