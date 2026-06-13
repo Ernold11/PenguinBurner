@@ -18,6 +18,7 @@ from saved_uv_profiles import (
     resolve_profile_tier_profiles,
 )
 from saved_uv_profiles.profile_tiers import profile_tier_label
+from common.runtime_log_lines import tier_switch_line
 from saved_uv_profiles.runtime_auto_uv_profile import apply_auto_uv_profile_memory_offset
 
 from .adaptive_profile_policy import AdaptiveProfileController, AdaptiveProfilePolicyConfig
@@ -91,6 +92,7 @@ class AdaptiveAutoUvRuntimeController:
             initial_tier=initial_tier,
             config=policy_config,
         )
+        self._last_tier_label = profile_tier_label(initial_tier) if initial_tier else None
         self._last_cpu_bound_guard_log_monotonic = -1_000_000_000.0
         if len(self.available_tiers) >= 2:
             labels = ", ".join(
@@ -280,11 +282,14 @@ class AdaptiveAutoUvRuntimeController:
                 curve.get("profile_tier_key") or tier
             )
             self.overlay_state_publisher.profile_id = str(curve.get("profile_id") or "")
-        path = Path(str(curve.get("path") or ""))
         self.deps.log(
-            "Adaptive Auto-UV switched profile: "
-            f"tier={profile_tier_label(tier)} reason={reason} path={path}"
+            tier_switch_line(
+                self._last_tier_label or "?",
+                profile_tier_label(tier),
+                reason,
+            )
         )
+        self._last_tier_label = profile_tier_label(tier)
         vf_apply_result = {
             "source": "auto-uv-final",
             "plan": curve["plan"],

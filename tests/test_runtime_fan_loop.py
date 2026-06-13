@@ -152,7 +152,71 @@ def test_runtime_fan_loop_disabled_logs_telemetry_without_fan_writes():
     assert nvml_session.set_speeds == []
     assert nvml_session.default_calls == []
     assert sleeps == [2.0]
-    assert any("fan_control=disabled" in message for message in logs)
+    # Concise status line; fan control off is shown as "fan off".
+    assert any(message.startswith("status |") and "fan off" in message for message in logs)
+
+
+def test_runtime_fan_loop_status_is_only_logged_on_change():
+    # Steady temperature across several polls -> a single status line, not one
+    # per iteration (the only-on-change gate keeps the journal quiet).
+    logs = []
+    prints = []
+    sleeps = []
+    nvml_session = FakeNvmlSession([55.0])
+
+    run_runtime_fan_control_loop(
+        gpu_index=0,
+        config_path="/tmp/config.json",
+        fan_config={"poll_interval_s": 2.0},
+        fan_control_enabled=False,
+        enable_persistence_mode=True,
+        prefer_afterburner_curve=False,
+        nvml_session=nvml_session,
+        voltage_reader=None,
+        vf_curve_reader=None,
+        gpu_policy_controller=None,
+        dependencies=_dependencies(
+            logs=logs,
+            prints=prints,
+            sleeps=sleeps,
+            monotonic_values=[100.0, 101.0, 102.0, 103.0, 104.0],
+        ),
+        max_iterations=4,
+    )
+
+    status_lines = [m for m in logs if m.startswith("status |")]
+    assert len(status_lines) == 1
+
+
+def test_runtime_fan_loop_keeps_full_detail_in_debug_log():
+    # The journal stays concise, but the full per-tick telemetry (which includes
+    # the VF curve points) is preserved in the debug log for troubleshooting.
+    logs = []
+    debug_logs = []
+    prints = []
+    sleeps = []
+    nvml_session = FakeNvmlSession([55.0])
+
+    run_runtime_fan_control_loop(
+        gpu_index=0,
+        config_path="/tmp/config.json",
+        fan_config={"poll_interval_s": 2.0},
+        fan_control_enabled=False,
+        enable_persistence_mode=True,
+        prefer_afterburner_curve=False,
+        nvml_session=nvml_session,
+        voltage_reader=None,
+        vf_curve_reader=None,
+        gpu_policy_controller=None,
+        dependencies=_dependencies(
+            logs=logs, prints=prints, sleeps=sleeps, debug_log=debug_logs.append
+        ),
+        max_iterations=1,
+    )
+
+    # Concise line in the journal, full telemetry in the debug log.
+    assert any(message.startswith("status |") for message in logs)
+    assert debug_logs == ["temp=55C power=240W fans=2"]
 
 
 def test_runtime_fan_loop_uses_faster_overlay_update_interval_when_enabled():
@@ -279,8 +343,11 @@ def test_runtime_fan_loop_enters_manual_mode_and_sets_target_speed():
     assert "manual-limits=20-90%" in prints[0]
     assert nvml_session.set_speeds == [(2, 50)]
     assert nvml_session.default_calls == []
-    assert any("event=entering-manual-mode" in message for message in logs)
-    assert any("target=50%" in message for message in logs)
+    # Entering manual is an event line; the steady status shows the fan target.
+    assert any(message.startswith("fan ") and "→ manual" in message for message in logs)
+    assert any(
+        message.startswith("status |") and "fan 50% manual" in message for message in logs
+    )
 
 
 def test_runtime_fan_loop_restores_auto_on_emergency_temperature():
@@ -311,7 +378,8 @@ def test_runtime_fan_loop_restores_auto_on_emergency_temperature():
 
     assert nvml_session.set_speeds == [(2, 50)]
     assert nvml_session.default_calls == [2]
-    assert any("reason=emergency-override" in message for message in logs)
+    # Emergency override is its own tagged event line.
+    assert any(message.startswith("emerg ") and "override" in message for message in logs)
 
 
 def test_runtime_fan_loop_reapplies_vf_curve_after_reset_detection():

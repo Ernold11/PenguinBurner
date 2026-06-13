@@ -44,6 +44,32 @@ class _DeletedQProcess:
         raise RuntimeError("Internal C++ object (QProcess) already deleted.")
 
 
+def test_scan_handle_line_keeps_json_out_of_log_view() -> None:
+    # The copied GUI log must show human lines but NOT the raw JSON events
+    # (which are already rendered as UI state) — otherwise it doubles per tick.
+    controller = ScanController(QtCore=QtCore)
+    output: list[str] = []
+    events: list[dict] = []
+    humans: list[str] = []
+    controller.on_output = output.append
+    controller.on_event = events.append
+    controller.on_human_line = humans.append
+
+    controller._handle_line('{"event": "load_telemetry", "voltage_mv": 880}')
+    controller._handle_line("Auto-UV phase=discover-live live=880mV power=24.5W")
+    controller._handle_line("{not valid json")
+
+    assert events == [{"event": "load_telemetry", "voltage_mv": 880}]
+    # JSON line is not echoed; the human line and the bad-json line are.
+    assert "".join(output) == (
+        "Auto-UV phase=discover-live live=880mV power=24.5W\n{not valid json\n"
+    )
+    assert humans == [
+        "Auto-UV phase=discover-live live=880mV power=24.5W",
+        "{not valid json",
+    ]
+
+
 def test_scan_read_output_survives_deleted_process() -> None:
     # A readyRead delivered after the process was retired must not crash.
     controller = ScanController(QtCore=QtCore)

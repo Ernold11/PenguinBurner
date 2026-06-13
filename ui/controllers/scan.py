@@ -95,8 +95,8 @@ class ScanController:
         )
         if not data:
             return
-        self.on_output(data)
         # CLI JSON events are line-delimited, but QProcess chunks are not.
+        # We route per line so machine events stay out of the copied log view.
         self._buffer += data
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
@@ -106,16 +106,22 @@ class ScanController:
         stripped = line.strip()
         if not stripped:
             return
-        if not stripped.startswith("{"):
-            self.on_human_line(stripped)
-            return
-        try:
-            payload = json.loads(stripped)
-        except json.JSONDecodeError:
-            self.on_human_line(stripped)
-            return
-        if isinstance(payload, dict):
-            self.on_event(payload)
+        if stripped.startswith("{"):
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                # Machine event: already rendered as UI state (runs table,
+                # curve, header). Do NOT echo it to the log view, so the log a
+                # user copies from the GUI stays readable instead of doubling
+                # every tick with a raw JSON dict.
+                self.on_event(payload)
+                return
+        # Human-readable progress line: show it in the log and let the window
+        # derive header text from it.
+        self.on_output(line + "\n")
+        self.on_human_line(stripped)
 
     def _finished(self, exit_code, exit_status) -> None:
         process = self.process
@@ -129,8 +135,12 @@ class ScanController:
             except RuntimeError:
                 tail = ""
             if tail:
-                self.on_output(tail)
                 self._buffer += tail
+        # Flush any remaining whole lines, then the trailing partial, through
+        # the same router so the final line is shown/parsed (not raw-echoed).
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            self._handle_line(line)
         if self._buffer.strip():
             self._handle_line(self._buffer)
         self._buffer = ""

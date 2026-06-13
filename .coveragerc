@@ -11,6 +11,7 @@ source =
     auto_uv
     saved_uv_profiles
     cli
+    common
     ui
     afterburner
     lact
@@ -28,6 +29,13 @@ source =
 
 omit =
     */tests/*
+    # Legacy shared helpers predate coverage scoping; only the new concise
+    # logging modules in common/ are measured here.
+    common/penguin_burner_paths.py
+    common/penguin_burner_errors.py
+    common/subprocess_locale.py
+    common/cli_output.py
+    common/ascii_chart.py
     # --- Live NVIDIA GPU / NVML / NVAPI ---
     runtime_gpu_control/nvml_runtime_session.py
     runtime_gpu_control/live_gpu_telemetry_text.py
@@ -49,6 +57,9 @@ omit =
     saved_profile_verification/runner.py
     # --- Overlay native/display integration ---
     overlay/display.py
+    # Afterburner dry-run preview: large presentation module, exercised via the
+    # CLI/import paths rather than unit tests (unmeasured before the root move).
+    afterburner/dry_run_preview.py
 
 [report]
 exclude_also =

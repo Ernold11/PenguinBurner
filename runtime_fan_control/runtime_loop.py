@@ -14,7 +14,9 @@ from afterburner.vfcurve_describe import (
     describe_afterburner_profile_settings,
 )
 from nvidia_driver.nvml_gpu_policy import describe_translated_gpu_policy
+from saved_uv_profiles.profile_tiers import profile_tier_label
 from common.penguin_burner_errors import NvmlError
+from runtime_support.runtime_debug import debug_log as runtime_debug_log
 from runtime_support.runtime_debug import log as runtime_log
 from runtime_gpu_control import (
     RuntimeVfCurvePolicyResult,
@@ -26,11 +28,17 @@ from .fan_curve_runtime_rules import (
     apply_hysteresis,
     build_effective_manual_curve,
     clamp,
-    describe_fan_curve_state,
     format_curve_points,
     limit_speed_change,
     speed_for_temp,
     validate_curve,
+)
+from common.runtime_log_lines import (
+    emergency_line,
+    fan_event_line,
+    status_line,
+    status_signature,
+    warn_line,
 )
 
 
@@ -41,6 +49,10 @@ class RuntimeFanLoopDependencies:
     apply_plan: Callable = apply_plan
     describe_translated_gpu_policy: Callable = describe_translated_gpu_policy
     log: Callable[[str], None] = runtime_log
+    # Full per-tick detail (incl. all VF curve points, clock offsets, ceiling,
+    # mem clock) for users troubleshooting a problem. Only written to the
+    # --debug-log file, never the concise journal stream.
+    debug_log: Callable[[str], None] = runtime_debug_log
     overlay_state_publisher_factory: Callable | None = None
     print_fn: Callable = print
     time_monotonic: Callable[[], float] = time.monotonic
@@ -188,9 +200,32 @@ def run_runtime_fan_control_loop(
     overlay_publish_failed = False
     adaptive_update_failed = False
     latency_snapshot_failed = False
+    current_tier_label = None
+    last_status_signature = None
 
-    def log_with_timestamp(message: str) -> None:
-        deps.log(f"{deps.time_strftime('%Y-%m-%d %H:%M:%S')} {message}")
+    def emit_status(*, fan_pct, fan_mode) -> None:
+        # Concise, single-line steady-state status, re-emitted only when it
+        # meaningfully changes so the journal is not spammed every poll.
+        nonlocal last_status_signature
+        signature = status_signature(
+            temp_c=current_temp_c,
+            power_w=power_draw_w,
+            fan_pct=fan_pct,
+            fan_mode=fan_mode,
+            tier=current_tier_label,
+        )
+        if signature == last_status_signature:
+            return
+        last_status_signature = signature
+        deps.log(
+            status_line(
+                temp_c=current_temp_c,
+                power_w=power_draw_w,
+                fan_pct=fan_pct,
+                fan_mode=fan_mode,
+                tier=current_tier_label,
+            )
+        )
 
     def switch_to_hardware_auto() -> None:
         nonlocal manual_mode_active, last_speed, last_set_temp_c
@@ -215,7 +250,7 @@ def run_runtime_fan_control_loop(
                 latency_snapshot = latency_meter.snapshot(now=loop_started)
             except Exception as exc:
                 if not latency_snapshot_failed:
-                    deps.log(f"Latency telemetry snapshot unavailable: {exc}")
+                    deps.log(warn_line("latency telemetry unavailable", exc))
                 latency_snapshot_failed = True
         if adaptive_auto_uv_controller is not None:
             try:
@@ -225,9 +260,11 @@ def run_runtime_fan_control_loop(
                 )
             except Exception as exc:
                 if not adaptive_update_failed:
-                    deps.log(f"Adaptive Auto-UV update failed: {exc}")
+                    deps.log(warn_line("adaptive update failed", exc))
                 adaptive_update_failed = True
             else:
+                if adaptive_update is not None:
+                    current_tier_label = profile_tier_label(adaptive_update.tier)
                 if adaptive_update is not None and adaptive_update.changed:
                     if adaptive_update.vf_apply_result is not None:
                         vf_apply_result = adaptive_update.vf_apply_result
@@ -246,6 +283,10 @@ def run_runtime_fan_control_loop(
             power_draw_w=power_draw_w,
             clock_ceiling_controller=clock_ceiling_controller,
         )
+        # Full detail (every VF curve point, offsets, ceiling, mem clock) is
+        # preserved for troubleshooting in the --debug-log file every tick,
+        # while the journal only gets the concise status line below.
+        deps.debug_log(telemetry_text)
         if _overlay_updates_enabled(overlay_state_publisher):
             try:
                 if (
@@ -257,7 +298,7 @@ def run_runtime_fan_control_loop(
                     last_overlay_publish_monotonic = loop_started
             except Exception as exc:
                 if not overlay_publish_failed:
-                    deps.log(f"Overlay state publish unavailable: {exc}")
+                    deps.log(warn_line("overlay publish unavailable", exc))
                 overlay_publish_failed = True
         if (
             vf_curve_reader is not None
@@ -277,50 +318,36 @@ def run_runtime_fan_control_loop(
                 memory_offset_mhz=reapply_memory_offset_mhz,
             )
 
-        def fan_state_text() -> str:
-            return describe_fan_curve_state(
-                current_temp_c=current_temp_c,
-                effective_curve=settings.effective_manual_curve,
-                manual_mode_active=manual_mode_active,
-                emergency_auto_mode_active=hot_auto_mode_active,
-                emergency_auto_resume_temp_c=settings.emergency_auto_resume_temp_c,
-            )
-
         if not fan_control_enabled:
-            log_with_timestamp(f"{telemetry_text} fan_control=disabled")
+            emit_status(fan_pct=None, fan_mode="disabled")
             sleep_loop()
             continue
 
-        # Still in emergency override.
+        # Still in emergency override (fan handed back to hardware auto).
         if hot_auto_mode_active and current_temp_c > settings.emergency_auto_resume_temp_c:
-            log_with_timestamp(
-                f"{telemetry_text} {fan_state_text()} fan_mode=auto reason=emergency-override"
-            )
+            emit_status(fan_pct=None, fan_mode="auto")
             sleep_loop()
             continue
 
         # Exit emergency override; fall through to normal decisions.
         if hot_auto_mode_active and current_temp_c <= settings.emergency_auto_resume_temp_c:
             hot_auto_mode_active = False
-            log_with_timestamp(
-                f"{telemetry_text} {fan_state_text()} event=emergency-override-cleared"
-            )
+            deps.log(emergency_line("cleared", temp_c=current_temp_c))
 
         # Enter emergency override.
         if current_temp_c > settings.emergency_auto_override_temp_c:
             if manual_mode_active:
                 switch_to_hardware_auto()
             hot_auto_mode_active = True
-            log_with_timestamp(
-                f"{telemetry_text} {fan_state_text()} "
-                f"event=restoring-auto-mode reason=emergency-override"
+            deps.log(
+                emergency_line("override", temp_c=current_temp_c, fan_mode="auto")
             )
             sleep_loop()
             continue
 
         # Still below the manual-takeover threshold.
         if not manual_mode_active and current_temp_c < settings.manual_enable_temp_c:
-            log_with_timestamp(f"{telemetry_text} {fan_state_text()} fan_mode=auto")
+            emit_status(fan_pct=None, fan_mode="auto")
             sleep_loop()
             continue
 
@@ -330,16 +357,12 @@ def run_runtime_fan_control_loop(
             last_speed = None
             last_set_temp_c = None
             last_update_time = loop_started
-            log_with_timestamp(
-                f"{telemetry_text} {fan_state_text()} event=entering-manual-mode"
-            )
+            deps.log(fan_event_line("→ manual", temp_c=current_temp_c))
 
         # Hand control back to hardware once we cool down.
         if current_temp_c <= settings.auto_restore_temp_c:
             switch_to_hardware_auto()
-            log_with_timestamp(
-                f"{telemetry_text} {fan_state_text()} event=restoring-auto-mode"
-            )
+            deps.log(fan_event_line("→ auto", temp_c=current_temp_c))
             sleep_loop()
             continue
 
@@ -375,11 +398,7 @@ def run_runtime_fan_control_loop(
             last_speed = target_speed
             last_update_time = loop_started
 
-        log_with_timestamp(
-            f"{telemetry_text} {fan_state_text()} "
-            f"target={target_speed}% curve={raw_target_speed:.1f}% "
-            f"hyst={hysteresis_target_speed:.1f}% fan_mode=manual"
-        )
+        emit_status(fan_pct=target_speed, fan_mode="manual")
 
         sleep_loop()
 
