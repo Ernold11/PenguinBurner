@@ -7,7 +7,7 @@ from afterburner.first_time_import_prompt import maybe_handle_first_time_afterbu
 from afterburner.import_vf_curve import ensure_afterburner_root_configured
 from common.penguin_burner_errors import FanCurveBlockedError
 from common.penguin_burner_paths import default_user_config_dir
-from runtime_debug import log as runtime_log
+from runtime_support.runtime_debug import log as runtime_log
 from runtime_fan_control import (
     load_auto_uv_fan_curve,
     load_runtime_afterburner_fan_config,

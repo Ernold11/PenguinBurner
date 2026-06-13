@@ -9,7 +9,7 @@ import subprocess
 import sys
 import sysconfig
 
-from adaptive_target_fps import (
+from .adaptive_target_fps import (
     ADAPTIVE_TARGET_FPS_ENV,
     adaptive_target_fps_from_env,
     format_adaptive_target_fps,

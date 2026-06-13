@@ -25,7 +25,7 @@ from nvidia_driver.nvml_gpu_policy import (
     translate_afterburner_gpu_policy,
 )
 from common.penguin_burner_paths import resolve_afterburner_root
-from runtime_debug import (
+from runtime_support.runtime_debug import (
     debug_exception,
     debug_log,
     emit_afterburner_debug_snapshot,

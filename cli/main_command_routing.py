@@ -15,12 +15,12 @@ from overlay.config import (
     save_overlay_config,
     set_overlay_enabled,
 )
-from runtime_debug import (
+from runtime_support.runtime_debug import (
     debug_effective_runtime_options,
     enable_stdio_capture,
     log as runtime_log,
 )
-from runtime_service import running_under_systemd_service, stop_existing_penguin_burner_runtime
+from runtime_support.runtime_service import running_under_systemd_service, stop_existing_penguin_burner_runtime
 from runtime_stability_test import run_stability_test
 from saved_uv_profiles import (
     delete_auto_uv_profiles,

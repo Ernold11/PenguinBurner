@@ -74,17 +74,13 @@ pb-overlay-text = "overlay.overlay_text:main"
 
 [tool.setuptools]
 py-modules = [
-  "adaptive_target_fps",
   "afterburner_policy",
   "cuda_bruteforce_stability",
   "dry_run_preview",
   "import_afterburner_fan_curve",
   "import_afterburner_vf_curve",
-  "nvidia_runtime_defaults",
   "penguin_burner",
   "q2rtx_stability",
-  "runtime_debug",
-  "runtime_service",
 ]
 packages = [
   "afterburner",
@@ -108,6 +104,7 @@ packages = [
   "manual_uv_curve_editor",
   "nvidia_driver",
   "overlay",
+  "runtime_support",
   "runtime_fan_control",
   "runtime_gpu_control",
   "runtime_stability_test",

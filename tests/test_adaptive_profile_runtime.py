@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-import adaptive_target_fps
+from runtime_support import adaptive_target_fps
 from runtime_gpu_control.adaptive_profile_runtime import (
     AdaptiveAutoUvRuntimeController,
     AdaptiveAutoUvRuntimeDependencies,

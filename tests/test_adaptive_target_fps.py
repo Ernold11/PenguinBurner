@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from adaptive_target_fps import (
+from runtime_support.adaptive_target_fps import (
     ADAPTIVE_TARGET_FPS_ENV,
     DEFAULT_ADAPTIVE_TARGET_FPS,
     adaptive_target_fps_from_config,

@@ -4,13 +4,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from adaptive_target_fps import (
+from runtime_support.adaptive_target_fps import (
     adaptive_target_fps_from_config,
     adaptive_target_fps_from_env,
     format_adaptive_target_fps,
     parse_adaptive_target_fps,
 )
-from runtime_debug import log as runtime_log
+from runtime_support.runtime_debug import log as runtime_log
 from saved_uv_profiles import (
     available_adaptive_tiers,
     load_auto_uv_final_curve,

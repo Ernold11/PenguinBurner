@@ -18,7 +18,7 @@ from nvidia_driver.nvml_gpu_policy import (
     describe_translated_gpu_policy,
     translate_afterburner_gpu_policy,
 )
-from runtime_debug import log as runtime_log
+from runtime_support.runtime_debug import log as runtime_log
 from saved_uv_profiles import (
     apply_auto_uv_profile_memory_offset,
     load_auto_uv_final_curve,

@@ -9,7 +9,7 @@ from nvidia_driver.hidden_nvapi_voltage import create_hidden_voltage_reader
 from latency_telemetry import start_latency_telemetry_logger
 from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
 from overlay.config import default_overlay_config_path, load_overlay_config
-from runtime_debug import log as runtime_log
+from runtime_support.runtime_debug import log as runtime_log
 from runtime_fan_control import run_runtime_fan_control_loop
 from runtime_gpu_control import (
     AdaptiveAutoUvRuntimeController,

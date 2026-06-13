@@ -9,7 +9,7 @@ import os
 import sys
 
 from dry_run_preview import run_afterburner_dry_run
-from runtime_service import (
+from runtime_support.runtime_service import (
     daemonize_with_systemd,
     launcher_script_path,
     running_under_systemd_service,

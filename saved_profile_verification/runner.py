@@ -24,9 +24,9 @@ from nvidia_driver.nvml_gpu_policy import (
     translate_afterburner_gpu_policy,
 )
 from common.penguin_burner_errors import NvmlError
-from runtime_debug import log as runtime_log
+from runtime_support.runtime_debug import log as runtime_log
 from runtime_gpu_control import FlattenedClockCeilingController
-from runtime_service import stop_existing_penguin_burner_runtime
+from runtime_support.runtime_service import stop_existing_penguin_burner_runtime
 from runtime_stability_test import (
     build_cuda_stability_config,
     build_stability_config,

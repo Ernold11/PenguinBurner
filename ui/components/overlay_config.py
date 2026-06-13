@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from adaptive_target_fps import (
+from runtime_support.adaptive_target_fps import (
     MAX_ADAPTIVE_TARGET_FPS,
     MIN_ADAPTIVE_TARGET_FPS,
     adaptive_target_fps_from_env,

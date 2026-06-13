@@ -991,7 +991,7 @@ def test_overlay_panel_saves_adaptive_target_fps(tmp_path) -> None:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     _ = app
 
-    from adaptive_target_fps import adaptive_target_fps_from_config
+    from runtime_support.adaptive_target_fps import adaptive_target_fps_from_config
     from ui.components.overlay_config import OverlayConfigPanel
 
     panel = OverlayConfigPanel(

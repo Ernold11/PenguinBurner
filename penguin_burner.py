@@ -30,7 +30,7 @@ from common.penguin_burner_paths import (
     default_saved_uv_dir,
     default_user_config_dir,
 )
-from runtime_debug import (
+from runtime_support.runtime_debug import (
     close_debug_log,
     close_stdio_capture,
     debug_log,
@@ -38,7 +38,7 @@ from runtime_debug import (
     log,
 )
 from runtime_gpu_control import FlattenedClockCeilingController, run_nvidia_smi_command
-from runtime_service import DEFAULT_JOURNAL_HOURS
+from runtime_support.runtime_service import DEFAULT_JOURNAL_HOURS
 from saved_profile_verification.runner import run_profile_verification
 from stability.q2rtx import StabilityTestError, install_latest_q2rtx
 

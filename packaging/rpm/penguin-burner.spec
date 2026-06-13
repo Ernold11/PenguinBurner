@@ -61,6 +61,7 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
     lact \
     manual_fan_curve_editor \
     manual_uv_curve_editor \
+    runtime_support \
     runtime_fan_control \
     runtime_gpu_control \
     runtime_stability_test \
@@ -73,11 +74,8 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
     import_afterburner_fan_curve \
     import_afterburner_vf_curve \
     nvidia_driver \
-    nvidia_runtime_defaults \
     penguin_burner \
-    q2rtx_stability \
-    runtime_debug \
-    runtime_service
+    q2rtx_stability
 
 desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.PenguinBurner.desktop
 

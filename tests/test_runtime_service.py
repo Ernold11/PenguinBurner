@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-import runtime_service
+from runtime_support import runtime_service
 
 
 def test_launcher_script_path_prefers_script_next_to_program(tmp_path: Path) -> None:

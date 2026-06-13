@@ -15,7 +15,7 @@ from afterburner.vfcurve_describe import (
 )
 from nvidia_driver.nvml_gpu_policy import describe_translated_gpu_policy
 from common.penguin_burner_errors import NvmlError
-from runtime_debug import log as runtime_log
+from runtime_support.runtime_debug import log as runtime_log
 from runtime_gpu_control import (
     RuntimeVfCurvePolicyResult,
     detect_vf_curve_reset,
