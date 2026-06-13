@@ -774,19 +774,6 @@ def _date_sort_value(profile: dict) -> float:
         return 0.0
 
 
-def _profile_delta_sort_value(
-    profile: dict,
-    metric: str,
-    *,
-    lower_is_better: bool = False,
-) -> float | str:
-    delta = _metric_delta_percent(
-        profile.get(metric),
-        _profile_base_metric(profile, metric),
-    )
-    return "" if delta is None else float(delta)
-
-
 def _profile_value_sort_value(profile: dict, metric: str) -> float | str:
     value = _to_float(profile.get(metric))
     return "" if value is None else float(value)
