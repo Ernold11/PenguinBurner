@@ -69,13 +69,8 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
     saved_uv_profiles \
     stability \
     ui \
-    cuda_bruteforce_stability \
-    dry_run_preview \
-    import_afterburner_fan_curve \
-    import_afterburner_vf_curve \
     nvidia_driver \
-    penguin_burner \
-    q2rtx_stability
+    penguin_burner
 
 desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.PenguinBurner.desktop
 

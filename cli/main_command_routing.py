@@ -6,7 +6,7 @@ from typing import Callable
 
 from afterburner.import_vf_curve import load_afterburner_runtime_options
 from cli.effective_runtime_options import build_effective_afterburner_runtime_options
-from dry_run_preview import run_afterburner_dry_run
+from afterburner.dry_run_preview import run_afterburner_dry_run
 from lact import export_lact_config
 from latency_telemetry import check_latency_layer, format_latency_layer_check
 from common.penguin_burner_errors import NvmlError

@@ -74,13 +74,7 @@ pb-overlay-text = "overlay.overlay_text:main"
 
 [tool.setuptools]
 py-modules = [
-  "afterburner_policy",
-  "cuda_bruteforce_stability",
-  "dry_run_preview",
-  "import_afterburner_fan_curve",
-  "import_afterburner_vf_curve",
   "penguin_burner",
-  "q2rtx_stability",
 ]
 packages = [
   "afterburner",

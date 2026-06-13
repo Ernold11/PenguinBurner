@@ -193,16 +193,16 @@ def test_package_installs_shared_subprocess_locale_helper() -> None:
     py_modules = set(metadata["tool"]["setuptools"]["py-modules"])
     packages = set(metadata["tool"]["setuptools"]["packages"])
 
-    assert "cuda_bruteforce_stability" in py_modules
-    assert "import_afterburner_fan_curve" in py_modules
-    assert "import_afterburner_vf_curve" in py_modules
-    assert "q2rtx_stability" in py_modules
+    # The repo root is kept minimal: only the CLI entry module ships as a
+    # top-level module; everything else lives in a package.
+    assert py_modules == {"penguin_burner"}
 
-    # The low-level NVIDIA driver readers live in the nvidia_driver package;
-    # the shared cross-cutting helpers (paths, errors, subprocess locale, CLI
-    # output, ascii chart) live in the common package.
-    assert "nvidia_driver" in packages
-    assert "common" in packages
+    # Low-level NVIDIA driver readers -> nvidia_driver; shared cross-cutting
+    # helpers (paths, errors, subprocess locale, CLI output, ascii chart) ->
+    # common; Afterburner policy + dry-run preview -> the afterburner package.
+    # The redundant run-from-checkout shims were dropped (the package modules
+    # carry their own __main__ / console-script entry points).
+    assert {"nvidia_driver", "common", "afterburner", "stability"} <= packages
 
 
 def test_fedora_rpm_does_not_hard_require_distro_nvidia_drivers() -> None:
