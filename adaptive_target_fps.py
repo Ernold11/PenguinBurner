@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import tomllib
 
-from penguin_burner_paths import default_runtime_config_path
+from common.penguin_burner_paths import default_runtime_config_path
 
 
 ADAPTIVE_TARGET_FPS_ENV = "PENGUIN_BURNER_ADAPTIVE_TARGET_FPS"

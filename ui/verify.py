@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-from penguin_burner_paths import default_user_config_dir
+from common.penguin_burner_paths import default_user_config_dir
 
 
 DEFAULT_VERIFY_DURATION_S = 600

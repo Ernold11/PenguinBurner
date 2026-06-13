@@ -5,7 +5,7 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-from penguin_burner_paths import (
+from common.penguin_burner_paths import (
     afterburner_global_profile,
     afterburner_profiles_dir,
     default_afterburner_global_profile,

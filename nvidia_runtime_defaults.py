@@ -9,7 +9,7 @@ from typing import Callable
 from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
 from afterburner.import_vf_curve import apply_plan
 from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
-from subprocess_locale import stable_subprocess_env
+from common.subprocess_locale import stable_subprocess_env
 
 
 class NvidiaRuntimeDefaultsError(RuntimeError):

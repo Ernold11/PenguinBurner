@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from cli_output import enable_cli_output_wrapping
+from common.cli_output import enable_cli_output_wrapping
 from .assets import _validate_demo_name
 from .constants import (
     DEFAULT_DEMO_NAME,

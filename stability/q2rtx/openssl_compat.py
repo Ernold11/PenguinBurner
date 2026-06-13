@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 
-from penguin_burner_paths import claim_desktop_user_ownership
+from common.penguin_burner_paths import claim_desktop_user_ownership
 
 from .archive_extraction import (
     _extract_rpm2cpio_payload,

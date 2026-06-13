@@ -4,7 +4,7 @@ from cli.runtime_startup_preparation import (
     RuntimeStartupPreparationDependencies,
     prepare_runtime_startup,
 )
-from penguin_burner_errors import FanCurveBlockedError
+from common.penguin_burner_errors import FanCurveBlockedError
 
 
 def _base_options(**overrides):

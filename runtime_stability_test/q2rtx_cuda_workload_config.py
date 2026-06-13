@@ -6,7 +6,7 @@ from cli.runtime_config_file import (
     load_runtime_config,
     persist_q2rtx_source_to_runtime_config,
 )
-from penguin_burner_errors import NvmlError
+from common.penguin_burner_errors import NvmlError
 from runtime_debug import log
 from stability.q2rtx import (
     DEFAULT_DEMO_NAME,

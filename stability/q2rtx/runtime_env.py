@@ -5,7 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
-from subprocess_locale import stable_subprocess_env
+from common.subprocess_locale import stable_subprocess_env
 
 from .constants import OPENSSL_111_REQUIRED_LIBS
 from .models import StabilityTestError

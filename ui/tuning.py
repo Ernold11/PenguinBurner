@@ -12,7 +12,7 @@ from auto_uv.scan_mode.uv_limits import (
     uv_limit_voltage_floor_target_for_gpu,
     voltage_drop_pct,
 )
-from penguin_burner_paths import default_runtime_config_path
+from common.penguin_burner_paths import default_runtime_config_path
 
 from .gpu_selection import runtime_gpu_index
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from penguin_burner_errors import NvmlError
+from common.penguin_burner_errors import NvmlError
 from runtime_gpu_control import (
     detect_vf_curve_reset,
     format_vf_curve_mismatch_preview,

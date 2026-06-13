@@ -23,7 +23,7 @@ from runtime_gpu_control.adaptive_profile_policy import (
     ADAPTIVE_TARGET_SLOW_WINDOWS_ENV,
     AdaptiveProfilePolicyConfig,
 )
-from subprocess_locale import stable_subprocess_env
+from common.subprocess_locale import stable_subprocess_env
 
 
 SYSTEMD_RUN = shutil.which("systemd-run") or "systemd-run"

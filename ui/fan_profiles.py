@@ -8,8 +8,8 @@ from afterburner.fan_curve import load_afterburner_fan_settings
 from manual_fan_curve_editor import user_edited_fan_curve_profile_payload
 from saved_uv_profiles import archive_auto_uv_profile
 from saved_uv_profiles import profile_display_name
-from penguin_burner_paths import claim_desktop_user_ownership
-from penguin_burner_paths import default_user_config_dir
+from common.penguin_burner_paths import claim_desktop_user_ownership
+from common.penguin_burner_paths import default_user_config_dir
 
 
 def profile_fan_curve_points(profile: dict) -> list[tuple[float, float]]:

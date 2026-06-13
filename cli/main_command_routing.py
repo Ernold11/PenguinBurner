@@ -9,7 +9,7 @@ from cli.effective_runtime_options import build_effective_afterburner_runtime_op
 from dry_run_preview import run_afterburner_dry_run
 from lact import export_lact_config
 from latency_telemetry import check_latency_layer, format_latency_layer_check
-from penguin_burner_errors import NvmlError
+from common.penguin_burner_errors import NvmlError
 from overlay.config import (
     load_overlay_config,
     save_overlay_config,

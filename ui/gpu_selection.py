@@ -9,7 +9,7 @@ import subprocess
 
 from afterburner.import_fan_curve import write_config
 from cli.runtime_config_file import load_raw_runtime_config
-from penguin_burner_paths import default_runtime_config_path
+from common.penguin_burner_paths import default_runtime_config_path
 
 
 @dataclass(frozen=True)

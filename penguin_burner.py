@@ -24,8 +24,8 @@ from cli.runtime_config_file import (
     afterburner_root_has_imported_profiles,
     load_runtime_config,
 )
-from penguin_burner_errors import NvmlError
-from penguin_burner_paths import (
+from common.penguin_burner_errors import NvmlError
+from common.penguin_burner_paths import (
     claim_desktop_user_ownership,
     default_saved_uv_dir,
     default_user_config_dir,

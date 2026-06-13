@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Callable
 
-from penguin_burner_paths import claim_desktop_user_ownership
+from common.penguin_burner_paths import claim_desktop_user_ownership
 
 from .layer_check import DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS
 

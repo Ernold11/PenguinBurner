@@ -26,7 +26,7 @@ from saved_uv_profiles import (
     read_auto_uv_profile_summaries,
     resolve_auto_uv_profile,
 )
-from cli_output import format_user_duration as _format_duration_for_user
+from common.cli_output import format_user_duration as _format_duration_for_user
 from ui.components.fan_curve_editor import (
     fan_curve_editor_shortcut_legend_rows as _fan_curve_editor_shortcut_legend_rows,
 )

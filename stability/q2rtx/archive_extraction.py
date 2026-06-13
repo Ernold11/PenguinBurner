@@ -11,8 +11,8 @@ import subprocess
 import tarfile
 import tempfile
 
-from penguin_burner_paths import claim_desktop_user_ownership
-from subprocess_locale import stable_subprocess_env
+from common.penguin_burner_paths import claim_desktop_user_ownership
+from common.subprocess_locale import stable_subprocess_env
 
 from .models import StabilityTestError
 

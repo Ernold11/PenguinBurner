@@ -7,7 +7,7 @@ from afterburner.import_vf_curve import load_afterburner_runtime_options
 from lact import LactExportError
 from lact import write_lact_nvidia_config
 from lact import write_lact_nvidia_config_from_afterburner
-from penguin_burner_paths import default_runtime_config_path
+from common.penguin_burner_paths import default_runtime_config_path
 
 from .afterburner_import import runtime_gpu_index
 

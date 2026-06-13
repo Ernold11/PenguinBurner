@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from cli_output import CLI_OUTPUT_WRAP_COLUMNS
+from common.cli_output import CLI_OUTPUT_WRAP_COLUMNS
 from ui.components.log_view import _timestamp_log_text
 
 

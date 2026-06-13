@@ -19,7 +19,7 @@ from nvidia_driver.nvml_gpu_policy import (
     translate_afterburner_gpu_policy,
 )
 from nvidia_runtime_defaults import reset_nvidia_runtime_defaults
-from penguin_burner_paths import resolve_afterburner_root
+from common.penguin_burner_paths import resolve_afterburner_root
 
 from auto_uv.auto_uv_types import AutoUvError
 

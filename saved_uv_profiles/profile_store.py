@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import time
 
-from penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
+from common.penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
 
 from .profile_tiers import (
     load_profile_tier_assignments,

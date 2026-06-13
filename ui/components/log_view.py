@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from cli_output import CLI_OUTPUT_WRAP_COLUMNS, wrap_cli_output_text
+from common.cli_output import CLI_OUTPUT_WRAP_COLUMNS, wrap_cli_output_text
 
 from .. import theme
 

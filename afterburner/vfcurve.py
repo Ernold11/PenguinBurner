@@ -10,13 +10,13 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
-from penguin_burner_paths import (
+from common.penguin_burner_paths import (
     afterburner_global_profile,
     default_afterburner_device_profile,
     discover_afterburner_device_profiles,
     resolve_afterburner_root,
 )
-from subprocess_locale import stable_subprocess_env
+from common.subprocess_locale import stable_subprocess_env
 
 from .vfcurve_describe import describe_afterburner_flatten_validation
 

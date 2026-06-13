@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import time
 
-from penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
+from common.penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
 
 
 PROFILE_TIER_EFFICIENCY = "efficiency"

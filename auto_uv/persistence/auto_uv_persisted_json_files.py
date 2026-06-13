@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from penguin_burner_paths import (
+from common.penguin_burner_paths import (
     claim_desktop_user_ownership,
     default_user_config_dir,
 )

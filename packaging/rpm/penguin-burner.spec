@@ -56,6 +56,7 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
     auto_oc \
     auto_uv \
     cli \
+    common \
     initial_check \
     lact \
     manual_fan_curve_editor \
@@ -67,8 +68,6 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
     saved_uv_profiles \
     stability \
     ui \
-    ascii_chart \
-    cli_output \
     cuda_bruteforce_stability \
     dry_run_preview \
     import_afterburner_fan_curve \
@@ -76,12 +75,9 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
     nvidia_driver \
     nvidia_runtime_defaults \
     penguin_burner \
-    penguin_burner_errors \
-    penguin_burner_paths \
     q2rtx_stability \
     runtime_debug \
-    runtime_service \
-    subprocess_locale
+    runtime_service
 
 desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.PenguinBurner.desktop
 

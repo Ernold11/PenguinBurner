@@ -5,7 +5,7 @@ These rules are pure math: no NVML calls, no config files, and no GPU side effec
 
 from __future__ import annotations
 
-from penguin_burner_errors import NvmlError
+from common.penguin_burner_errors import NvmlError
 
 
 def clamp(value, lower, upper):

@@ -11,7 +11,7 @@ import json
 import pytest
 
 import runtime_fan_control.auto_uv_saved_fan_curve as saved_fan_curve
-from penguin_burner_errors import FanCurveBlockedError, NvmlError
+from common.penguin_burner_errors import FanCurveBlockedError, NvmlError
 
 # A curve that satisfies every safety floor: 0% at the zero-rpm temp, >=30% at the
 # active/safe-load temps, >=75% at emergency, 100% at the full-speed temp.

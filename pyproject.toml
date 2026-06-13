@@ -74,22 +74,17 @@ pb-overlay-text = "overlay.overlay_text:main"
 
 [tool.setuptools]
 py-modules = [
-  "ascii_chart",
   "adaptive_target_fps",
   "afterburner_policy",
-  "cli_output",
   "cuda_bruteforce_stability",
   "dry_run_preview",
   "import_afterburner_fan_curve",
   "import_afterburner_vf_curve",
   "nvidia_runtime_defaults",
   "penguin_burner",
-  "penguin_burner_errors",
-  "penguin_burner_paths",
   "q2rtx_stability",
   "runtime_debug",
   "runtime_service",
-  "subprocess_locale",
 ]
 packages = [
   "afterburner",
@@ -105,6 +100,7 @@ packages = [
   "auto_uv.shared",
   "auto_uv.ui",
   "cli",
+  "common",
   "initial_check",
   "lact",
   "latency_telemetry",

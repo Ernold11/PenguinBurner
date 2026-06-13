@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 
-from cli_output import (
+from common.cli_output import (
     CLI_OUTPUT_WRAP_COLUMNS,
     WrappedOutputStream,
     wrap_cli_output_text,

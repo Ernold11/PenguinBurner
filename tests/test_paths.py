@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import pwd
 
-from penguin_burner_paths import (
+from common.penguin_burner_paths import (
     claim_desktop_user_ownership,
     default_user_config_dir,
     effective_desktop_user_ids,
@@ -57,9 +57,9 @@ def test_claim_desktop_user_ownership_allows_runtime_dir(monkeypatch) -> None:
     monkeypatch.setenv("SUDO_USER", "desktop")
     monkeypatch.delenv("SUDO_UID", raising=False)
     monkeypatch.delenv("SUDO_GID", raising=False)
-    monkeypatch.setattr("penguin_burner_paths.os.geteuid", lambda: 0)
+    monkeypatch.setattr("common.penguin_burner_paths.os.geteuid", lambda: 0)
     monkeypatch.setattr(
-        "penguin_burner_paths.pwd.getpwnam",
+        "common.penguin_burner_paths.pwd.getpwnam",
         lambda user: type(
             "Entry",
             (),
@@ -67,7 +67,7 @@ def test_claim_desktop_user_ownership_allows_runtime_dir(monkeypatch) -> None:
         )(),
     )
     monkeypatch.setattr(
-        "penguin_burner_paths.os.lchown",
+        "common.penguin_burner_paths.os.lchown",
         lambda path, uid, gid: calls.append((Path(path), uid, gid)),
     )
 

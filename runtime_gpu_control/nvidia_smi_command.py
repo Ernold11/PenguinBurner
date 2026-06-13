@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import subprocess
 
-from penguin_burner_errors import NvmlError
-from subprocess_locale import stable_subprocess_env
+from common.penguin_burner_errors import NvmlError
+from common.subprocess_locale import stable_subprocess_env
 
 
 def run_nvidia_smi_command(args, *, executable):

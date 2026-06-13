@@ -8,8 +8,8 @@ from pathlib import Path
 from manual_uv_curve_editor import user_edited_profile_payload
 from saved_uv_profiles import archive_auto_uv_profile
 from saved_uv_profiles import profile_display_name
-from penguin_burner_paths import default_runtime_config_path
-from penguin_burner_paths import default_user_config_dir
+from common.penguin_burner_paths import default_runtime_config_path
+from common.penguin_burner_paths import default_user_config_dir
 
 from .afterburner_import import runtime_gpu_index
 from .constants import AFTERBURNER_PROFILE_ID

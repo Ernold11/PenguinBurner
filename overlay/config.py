@@ -5,8 +5,8 @@ import os
 from pathlib import Path
 import tomllib
 
-from penguin_burner_paths import claim_desktop_user_ownership
-from penguin_burner_paths import default_user_config_dir
+from common.penguin_burner_paths import claim_desktop_user_ownership
+from common.penguin_burner_paths import default_user_config_dir
 
 
 OVERLAY_CONFIG_ENV = "PENGUIN_BURNER_OVERLAY_CONFIG"

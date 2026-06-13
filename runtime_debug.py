@@ -30,14 +30,14 @@ from afterburner.vfcurve_describe import (
     describe_afterburner_profile_settings,
     describe_afterburner_vfcurve_analysis,
 )
-from penguin_burner_paths import (
+from common.penguin_burner_paths import (
     afterburner_global_profile,
     afterburner_profiles_dir,
     discover_afterburner_device_profiles,
     resolve_afterburner_root,
     validate_afterburner_export_root,
 )
-from subprocess_locale import stable_subprocess_env
+from common.subprocess_locale import stable_subprocess_env
 
 NVIDIA_SMI = shutil.which("nvidia-smi") or "nvidia-smi"
 DEBUG_LOG_ENABLED = False

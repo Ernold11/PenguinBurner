@@ -1,7 +1,7 @@
 """Unit tests for the pure ascii line-chart renderer."""
 from __future__ import annotations
 
-from ascii_chart import (
+from common.ascii_chart import (
     _chart_axis_bounds,
     _chart_merge_char,
     _map_chart_x,

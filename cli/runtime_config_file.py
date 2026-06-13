@@ -16,7 +16,7 @@ from adaptive_target_fps import (
     parse_adaptive_target_fps,
 )
 from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS, AUTO_UV_METRIC_TUNING
-from penguin_burner_paths import default_runtime_config_path
+from common.penguin_burner_paths import default_runtime_config_path
 
 UI_CONFIG_SECTION = "ui"
 PERSIST_ON_STARTUP_CONFIG_KEY = "persist_on_startup"

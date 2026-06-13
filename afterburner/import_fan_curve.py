@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import tomllib
 
-from penguin_burner_paths import (
+from common.penguin_burner_paths import (
     claim_desktop_user_ownership,
     default_runtime_config_path,
     managed_afterburner_root,

@@ -8,8 +8,8 @@ from __future__ import annotations
 import json
 
 from auto_uv.auto_uv_user_options import AUTO_UV_FAN_TUNING
-from penguin_burner_errors import FanCurveBlockedError, NvmlError
-from penguin_burner_paths import default_user_config_dir
+from common.penguin_burner_errors import FanCurveBlockedError, NvmlError
+from common.penguin_burner_paths import default_user_config_dir
 
 from .fan_curve_runtime_rules import speed_for_temp, validate_curve
 

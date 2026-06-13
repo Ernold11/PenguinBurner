@@ -8,7 +8,7 @@ from pathlib import Path
 import subprocess
 import time
 
-from penguin_burner_paths import claim_desktop_user_ownership
+from common.penguin_burner_paths import claim_desktop_user_ownership
 
 from .assets import _validate_demo_name, resolve_q2rtx_executable, resolve_workload
 from .constants import HIDDEN_WINDOW_POSITION

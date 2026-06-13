@@ -11,7 +11,7 @@ from auto_uv.cli_runtime import (
     run_auto_uv_foreground_command,
     run_auto_uv_voltage_scan,
 )
-from penguin_burner_errors import NvmlError
+from common.penguin_burner_errors import NvmlError
 
 
 def test_auto_uv_voltage_scan_wires_json_events_and_final_result() -> None:

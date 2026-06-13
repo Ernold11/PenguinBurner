@@ -13,7 +13,7 @@ from afterburner.vfcurve import (
     resolve_afterburner_vf_source,
 )
 from afterburner.vfcurve_describe import describe_afterburner_flatten_validation
-from penguin_burner_paths import (
+from common.penguin_burner_paths import (
     default_runtime_config_path,
     discover_afterburner_device_profiles,
     managed_afterburner_root,

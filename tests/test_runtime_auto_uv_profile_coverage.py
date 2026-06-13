@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 import saved_uv_profiles.runtime_auto_uv_profile as runtime
-from penguin_burner_errors import NvmlError
+from common.penguin_burner_errors import NvmlError
 
 
 def _write_profile(tmp_path, payload):

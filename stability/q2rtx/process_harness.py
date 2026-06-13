@@ -6,7 +6,7 @@ import signal
 import subprocess
 import time
 
-from subprocess_locale import stable_subprocess_env
+from common.subprocess_locale import stable_subprocess_env
 
 from .assets import resolve_q2rtx_executable
 from .models import Q2RTXStabilityConfig

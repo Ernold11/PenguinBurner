@@ -9,7 +9,7 @@ from cli.runtime_config_file import (
 )
 from manual_uv_curve_editor import editable_anchor_from_profile
 from saved_uv_profiles import delete_auto_uv_profile_paths
-from penguin_burner_paths import default_user_config_dir
+from common.penguin_burner_paths import default_user_config_dir
 
 from .afterburner_import import delete_afterburner_import_config
 from .afterburner_workflow import AfterburnerImportWorkflow

@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 from urllib import parse as urllib_parse
 
-from penguin_burner_paths import claim_desktop_user_ownership
+from common.penguin_burner_paths import claim_desktop_user_ownership
 
 from .archive_extraction import _extract_q2rtx_archive
 from .assets import resolve_q2rtx_executable

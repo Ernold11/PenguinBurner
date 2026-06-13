@@ -7,7 +7,7 @@ from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
-from penguin_burner_paths import claim_desktop_user_ownership
+from common.penguin_burner_paths import claim_desktop_user_ownership
 
 from .models import StabilityTestError
 from .progress import (

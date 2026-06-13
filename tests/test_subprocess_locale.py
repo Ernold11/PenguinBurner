@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from subprocess_locale import stable_subprocess_env
+from common.subprocess_locale import stable_subprocess_env
 
 
 def test_stable_subprocess_env_forces_c_locale(monkeypatch) -> None:

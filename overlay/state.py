@@ -6,7 +6,7 @@ from pathlib import Path
 import pwd
 import time
 
-from penguin_burner_paths import claim_desktop_user_ownership
+from common.penguin_burner_paths import claim_desktop_user_ownership
 
 
 OVERLAY_STATE_ENV = "PENGUIN_BURNER_OVERLAY_STATE"

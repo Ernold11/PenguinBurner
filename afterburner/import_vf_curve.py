@@ -15,7 +15,7 @@ from nvidia_driver.nvml_gpu_policy import (
     describe_translated_gpu_policy,
     translate_afterburner_gpu_policy,
 )
-from penguin_burner_paths import (
+from common.penguin_burner_paths import (
     claim_desktop_user_ownership,
     default_linux_vf_profiles_dir,
     managed_afterburner_root,

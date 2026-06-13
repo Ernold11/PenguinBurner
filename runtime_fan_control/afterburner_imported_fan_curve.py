@@ -12,7 +12,7 @@ from afterburner.fan_curve import (
     resolve_afterburner_fan_profile,
 )
 from afterburner.import_fan_curve import build_imported_fan_section
-from penguin_burner_errors import NvmlError
+from common.penguin_burner_errors import NvmlError
 
 
 def load_runtime_afterburner_fan_config(

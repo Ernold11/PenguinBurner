@@ -23,7 +23,7 @@ from nvidia_driver.nvml_gpu_policy import (
     apply_translated_gpu_policy,
     translate_afterburner_gpu_policy,
 )
-from penguin_burner_errors import NvmlError
+from common.penguin_burner_errors import NvmlError
 from runtime_debug import log as runtime_log
 from runtime_gpu_control import FlattenedClockCeilingController
 from runtime_service import stop_existing_penguin_burner_runtime

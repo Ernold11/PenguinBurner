@@ -5,7 +5,7 @@ Every direct NVML call uses the same small guard so failures produce one error t
 
 from __future__ import annotations
 
-from penguin_burner_errors import NvmlError
+from common.penguin_burner_errors import NvmlError
 
 
 NVML_SUCCESS = 0

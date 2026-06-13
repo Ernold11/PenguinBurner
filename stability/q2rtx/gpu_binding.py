@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 
-from subprocess_locale import stable_subprocess_env
+from common.subprocess_locale import stable_subprocess_env
 
 from .constants import HIDDEN_WINDOW_POSITION
 

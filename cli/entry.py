@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 from typing import Callable
 
-from cli_output import enable_cli_output_wrapping
+from common.cli_output import enable_cli_output_wrapping
 from runtime_debug import debug_exception, log
 from runtime_service import (
     daemonize_with_systemd,

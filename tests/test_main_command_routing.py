@@ -8,7 +8,7 @@ from cli.main_command_routing import (
     MainCommandRoutingDependencies,
     route_main_command,
 )
-from penguin_burner_errors import NvmlError
+from common.penguin_burner_errors import NvmlError
 from overlay.config import OverlayConfig
 
 
