@@ -18,7 +18,7 @@ def test_overlay_config_defaults_to_hidden_base_items() -> None:
 
     assert config.enabled is False
     assert config.enabled_item_ids == BASIC_OVERLAY_ITEM_IDS
-    assert config.update_interval_s == 2
+    assert config.update_interval_s == 1
     assert config.scale == 1.0
 
 
