@@ -72,6 +72,21 @@ class FakeGpuPolicyController:
         self.closed = True
 
 
+class FakeOverlayPublisher:
+    def __init__(self, *, enabled=True, update_interval_s=2.0, refresh_values=None):
+        self.enabled = enabled
+        self.update_interval_s = update_interval_s
+        self.refresh_values = list(refresh_values or [])
+        self.calls = []
+
+    def refresh_config(self):
+        if self.refresh_values:
+            self.update_interval_s = self.refresh_values.pop(0)
+
+    def publish(self, *, latency_snapshot=None):
+        self.calls.append(latency_snapshot)
+
+
 def _fan_config():
     return {
         "poll_interval_s": 1.0,
@@ -138,6 +153,105 @@ def test_runtime_fan_loop_disabled_logs_telemetry_without_fan_writes():
     assert nvml_session.default_calls == []
     assert sleeps == [2.0]
     assert any("fan_control=disabled" in message for message in logs)
+
+
+def test_runtime_fan_loop_uses_faster_overlay_update_interval_when_enabled():
+    logs = []
+    prints = []
+    sleeps = []
+    nvml_session = FakeNvmlSession([55.0])
+    overlay = FakeOverlayPublisher(enabled=True, update_interval_s=1.0)
+
+    run_runtime_fan_control_loop(
+        gpu_index=0,
+        config_path="/tmp/config.json",
+        fan_config={"poll_interval_s": 2.0},
+        fan_control_enabled=False,
+        enable_persistence_mode=True,
+        prefer_afterburner_curve=False,
+        nvml_session=nvml_session,
+        voltage_reader=None,
+        vf_curve_reader=None,
+        gpu_policy_controller=None,
+        overlay_state_publisher=overlay,
+        dependencies=_dependencies(
+            logs=logs,
+            prints=prints,
+            sleeps=sleeps,
+            monotonic_values=[100.0, 100.0, 101.0, 102.0],
+        ),
+        max_iterations=3,
+    )
+
+    assert sleeps == [1.0, 1.0, 1.0]
+    assert len(overlay.calls) == 3
+
+
+def test_runtime_fan_loop_throttles_overlay_publish_for_longer_interval():
+    logs = []
+    prints = []
+    sleeps = []
+    nvml_session = FakeNvmlSession([55.0])
+    overlay = FakeOverlayPublisher(enabled=True, update_interval_s=10.0)
+
+    run_runtime_fan_control_loop(
+        gpu_index=0,
+        config_path="/tmp/config.json",
+        fan_config={"poll_interval_s": 2.0},
+        fan_control_enabled=False,
+        enable_persistence_mode=True,
+        prefer_afterburner_curve=False,
+        nvml_session=nvml_session,
+        voltage_reader=None,
+        vf_curve_reader=None,
+        gpu_policy_controller=None,
+        overlay_state_publisher=overlay,
+        dependencies=_dependencies(
+            logs=logs,
+            prints=prints,
+            sleeps=sleeps,
+            monotonic_values=[100.0, 100.0, 102.0, 104.0],
+        ),
+        max_iterations=3,
+    )
+
+    assert sleeps == [2.0, 2.0, 2.0]
+    assert len(overlay.calls) == 1
+
+
+def test_runtime_fan_loop_refreshes_overlay_interval_while_running():
+    logs = []
+    prints = []
+    sleeps = []
+    nvml_session = FakeNvmlSession([55.0])
+    overlay = FakeOverlayPublisher(
+        enabled=True,
+        update_interval_s=5.0,
+        refresh_values=[1.0, 3.0, 10.0],
+    )
+
+    run_runtime_fan_control_loop(
+        gpu_index=0,
+        config_path="/tmp/config.json",
+        fan_config={"poll_interval_s": 5.0},
+        fan_control_enabled=False,
+        enable_persistence_mode=True,
+        prefer_afterburner_curve=False,
+        nvml_session=nvml_session,
+        voltage_reader=None,
+        vf_curve_reader=None,
+        gpu_policy_controller=None,
+        overlay_state_publisher=overlay,
+        dependencies=_dependencies(
+            logs=logs,
+            prints=prints,
+            sleeps=sleeps,
+            monotonic_values=[100.0, 100.0, 101.0, 104.0],
+        ),
+        max_iterations=3,
+    )
+
+    assert sleeps == [1.0, 3.0, 5.0]
 
 
 def test_runtime_fan_loop_enters_manual_mode_and_sets_target_speed():

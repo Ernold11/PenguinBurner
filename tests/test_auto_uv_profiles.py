@@ -69,9 +69,12 @@ from ui.models import stage_title as _stage_title
 from ui.models import status_value as _status_value
 from ui.models import top_status_text as _top_status_text
 from ui.profiles import delete_confirmation_text as _profile_delete_confirmation_text
+from ui.profiles import adaptive_profile_tier_labels as _adaptive_profile_tier_labels
 from ui.profiles import final_profile_notice_text as _final_profile_notice_text
 from ui.profiles import profile_info_from_command_text as _profile_info_from_command_text
 from ui.profiles import profile_is_deletable as _profile_is_deletable
+from ui.profiles import profile_delete_autostart_action as _profile_delete_autostart_action
+from ui.profiles import profile_delete_removes_systemd as _profile_delete_removes_systemd
 from ui.profiles import profile_verify_selector as _profile_verify_selector
 from ui.profiles import runner_status_text as _runner_status_text
 from ui.profiles import (
@@ -90,9 +93,10 @@ from ui.components.profile_list import (
     _profile_metric_delta_color,
     _profile_sort_values,
     _profile_source_label,
+    _profile_tier_label,
     _promote_preferred_profile,
-    _should_preserve_persist_toggle,
     _should_preserve_selection,
+    _should_preserve_single_selection_toggle,
     _sort_value_less,
 )
 
@@ -221,7 +225,7 @@ def test_profile_table_headers_and_sorting_scope() -> None:
     assert ProfileList.COLUMNS[7] == "Power W"
     assert ProfileList.COLUMNS[8] == "Mem"
     assert ProfileList.COLUMNS[9] == "Tier"
-    assert ProfileList.COLUMNS[11] == "Autostart"
+    assert "Autostart" not in ProfileList.COLUMNS
     assert "Voltage vs base" not in ProfileList.COLUMNS
     assert "FPS/W vs base" not in ProfileList.COLUMNS
     assert "Power vs base" not in ProfileList.COLUMNS
@@ -401,6 +405,105 @@ def test_profile_list_preserves_silent_fan_toggle_for_same_selection_refresh() -
 
     assert profile_list.selected_profile_id() == "profile-a"
     assert profile_list.silent_fan_enabled() is True
+
+
+def test_profile_list_uses_apply_adaptive_button_instead_of_toggle() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+
+    profile_list.set_profiles([{"profile_id": "profile-a", "final_verified": True}])
+
+    assert profile_list.adaptive_button.text() == "Apply Adaptive"
+    assert not hasattr(profile_list, "adaptive_checkbox")
+    assert profile_list.adaptive_button.isEnabled()
+    assert profile_list.install_button.isEnabled()
+
+
+def test_profile_list_persist_toggle_is_global_not_per_profile() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [
+        {"profile_id": "profile-a", "final_verified": True},
+        {"profile_id": "profile-b", "final_verified": True},
+    ]
+
+    profile_list.set_profiles(
+        profiles,
+        systemd_selector="profile-a",
+        has_systemd_entry=True,
+        persist_on_startup_checked=True,
+    )
+    profile_list.select_profile("profile-b")
+
+    assert profile_list.persist_on_startup_enabled() is True
+
+    profile_list.install_button.setChecked(False)
+    profile_list.select_profile("profile-a")
+
+    assert profile_list.persist_on_startup_enabled() is False
+
+
+def test_adaptive_profile_tier_labels_need_distinct_verified_tiers() -> None:
+    profiles = [
+        {
+            "profile_id": "eff-a",
+            "final_verified": True,
+            "profile_tier": "Efficiency",
+        },
+        {
+            "profile_id": "eff-b",
+            "final_verified": True,
+            "profile_tier": "Efficiency",
+        },
+        {
+            "profile_id": "perf-draft",
+            "final_verified": False,
+            "profile_tier": "Performance",
+        },
+        {
+            "profile_id": "afterburner",
+            "runtime_source": "afterburner",
+            "profile_tier": "Performance",
+        },
+    ]
+
+    assert _adaptive_profile_tier_labels(profiles, assignments={}) == ["Efficiency"]
+
+    profiles.append(
+        {
+            "profile_id": "perf-a",
+            "final_verified": True,
+            "profile_tier": "Performance",
+        }
+    )
+
+    assert _adaptive_profile_tier_labels(profiles, assignments={}) == [
+        "Efficiency",
+        "Performance",
+    ]
+
+
+def test_profile_list_tier_label_hides_none_assignment() -> None:
+    assert (
+        _profile_tier_label(
+            {
+                "profile_tier_disabled": True,
+                "profile_tier": "",
+                "generated_profile_tier": "Performance",
+            }
+        )
+        == ""
+    )
 
 
 def test_process_error_details_are_copy_friendly() -> None:
@@ -1321,14 +1424,14 @@ def test_profile_refresh_preserves_user_selection_over_preferred_profile() -> No
     )
 
 
-def test_profile_refresh_preserves_persist_toggle_for_same_single_selection() -> None:
-    assert _should_preserve_persist_toggle(["profile-a"], ["profile-a"])
-    assert not _should_preserve_persist_toggle(["profile-a"], ["profile-b"])
-    assert not _should_preserve_persist_toggle(
+def test_profile_refresh_preserves_single_selection_toggle_for_same_selection() -> None:
+    assert _should_preserve_single_selection_toggle(["profile-a"], ["profile-a"])
+    assert not _should_preserve_single_selection_toggle(["profile-a"], ["profile-b"])
+    assert not _should_preserve_single_selection_toggle(
         ["profile-a", "profile-b"],
         ["profile-a", "profile-b"],
     )
-    assert not _should_preserve_persist_toggle([], [])
+    assert not _should_preserve_single_selection_toggle([], [])
 
 
 def test_selected_profile_ids_include_persisted_selector() -> None:
@@ -1354,6 +1457,151 @@ def test_selected_profile_ids_include_persisted_selector() -> None:
     )
 
 
+def test_adaptive_profile_delete_keeps_systemd_when_two_tiers_remain() -> None:
+    profiles = [
+        {
+            "profile_id": "eff",
+            "final_verified": True,
+            "profile_tier": "Efficiency",
+        },
+        {
+            "profile_id": "bal",
+            "final_verified": True,
+            "profile_tier": "Balanced",
+        },
+        {
+            "profile_id": "perf",
+            "final_verified": True,
+            "profile_tier": "Performance",
+        },
+    ]
+    autostart_info = {
+        "selector": "__systemd_default__",
+        "adaptive_auto_uv": True,
+    }
+
+    assert _profile_delete_autostart_action(profiles, ["bal"], autostart_info) == {
+        "action": "keep",
+    }
+    assert not _profile_delete_removes_systemd(profiles, ["bal"], autostart_info)
+
+
+def test_adaptive_profile_delete_switches_systemd_when_one_profile_remains() -> None:
+    profiles = [
+        {
+            "profile_id": "eff",
+            "final_verified": True,
+            "profile_tier": "Efficiency",
+        },
+        {
+            "profile_id": "bal",
+            "final_verified": True,
+            "profile_tier": "Balanced",
+        },
+        {
+            "profile_id": "perf",
+            "final_verified": True,
+            "profile_tier": "Performance",
+        },
+    ]
+    autostart_info = {
+        "selector": "__systemd_default__",
+        "adaptive_auto_uv": True,
+    }
+
+    assert _profile_delete_autostart_action(
+        profiles,
+        ["bal", "perf"],
+        autostart_info,
+    ) == {
+        "action": "switch-profile",
+        "profile_id": "eff",
+    }
+    assert not _profile_delete_removes_systemd(
+        profiles,
+        ["bal", "perf"],
+        autostart_info,
+    )
+
+
+def test_adaptive_profile_delete_switches_when_remaining_profiles_share_one_tier() -> None:
+    profiles = [
+        {
+            "profile_id": "bal",
+            "final_verified": True,
+            "profile_tier": "Balanced",
+        },
+        {
+            "profile_id": "perf-old",
+            "final_verified": True,
+            "profile_tier": "Performance",
+            "profile_created_at": "2026-06-01T12:00:00+00:00",
+        },
+        {
+            "profile_id": "perf-new",
+            "final_verified": True,
+            "profile_tier": "Performance",
+            "profile_created_at": "2026-06-02T12:00:00+00:00",
+        },
+    ]
+
+    assert _profile_delete_autostart_action(
+        profiles,
+        ["bal"],
+        {"selector": "__systemd_default__", "adaptive_auto_uv": True},
+    ) == {
+        "action": "switch-profile",
+        "profile_id": "perf-new",
+    }
+
+
+def test_adaptive_profile_delete_removes_systemd_when_no_profile_remains() -> None:
+    profiles = [
+        {
+            "profile_id": "eff",
+            "final_verified": True,
+            "profile_tier": "Efficiency",
+        },
+        {
+            "profile_id": "perf",
+            "final_verified": True,
+            "profile_tier": "Performance",
+        },
+    ]
+    autostart_info = {
+        "selector": "__systemd_default__",
+        "adaptive_auto_uv": True,
+    }
+
+    assert _profile_delete_autostart_action(
+        profiles,
+        ["eff", "perf"],
+        autostart_info,
+    ) == {
+        "action": "remove-systemd",
+        "reason": "last-usable-adaptive-profile",
+    }
+    assert _profile_delete_removes_systemd(profiles, ["eff", "perf"], autostart_info)
+
+
+def test_non_adaptive_profile_delete_removes_systemd_for_selected_startup_profile() -> None:
+    profiles = [
+        {"profile_id": "profile-a", "candidate_id": "875mv-2610mhz"},
+        {"profile_id": "profile-b", "candidate_id": "865mv-2625mhz"},
+    ]
+
+    assert _profile_delete_removes_systemd(
+        profiles,
+        ["profile-b"],
+        {"selector": "865mv-2625mhz", "adaptive_auto_uv": False},
+    )
+    assert not _profile_delete_removes_systemd(
+        profiles,
+        ["profile-a"],
+        {"selector": "865mv-2625mhz", "adaptive_auto_uv": False},
+    )
+
+
 def test_profile_delete_confirmation_warns_when_systemd_entry_is_removed() -> None:
     message = _profile_delete_confirmation_text(
         ["2625 MHz 865 mV"],
@@ -1363,6 +1611,30 @@ def test_profile_delete_confirmation_warns_when_systemd_entry_is_removed() -> No
     assert "Delete Auto-UV profile 2625 MHz 865 mV?" in message
     assert "currently persisted on startup" in message
     assert "remove the Systemd autostart entry" in message
+
+
+def test_profile_delete_confirmation_warns_for_last_usable_adaptive_profile() -> None:
+    message = _profile_delete_confirmation_text(
+        ["2625 MHz 865 mV"],
+        removes_systemd=True,
+        removes_last_usable_adaptive_profile=True,
+    )
+
+    assert "Delete Auto-UV profile 2625 MHz 865 mV?" in message
+    assert "last usable Adaptive Auto-UV profile" in message
+    assert "remove the Systemd autostart entry" in message
+
+
+def test_profile_delete_confirmation_describes_adaptive_startup_fallback() -> None:
+    message = _profile_delete_confirmation_text(
+        ["2625 MHz 865 mV"],
+        switches_systemd_to_profile="2610 MHz 875 mV",
+    )
+
+    assert "Delete Auto-UV profile 2625 MHz 865 mV?" in message
+    assert "Adaptive Auto-UV will have fewer than two usable tiers" in message
+    assert "switch it to profile 2610 MHz 875 mV" in message
+    assert "remove the Systemd autostart entry" not in message
 
 
 def test_afterburner_profile_is_deletable_without_profile_path() -> None:

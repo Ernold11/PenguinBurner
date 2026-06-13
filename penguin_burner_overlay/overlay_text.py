@@ -1,0 +1,220 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from .config import OverlayConfig
+from .config import default_overlay_config
+from .config import load_overlay_config
+from .config import normalize_overlay_config
+from .state import read_overlay_state
+
+
+SAMPLE_OVERLAY_VALUES = {
+    "present_fps": "119",
+    "framegen_fps": "176",
+    "framegen_active": "1",
+    "clock_mhz": "2820",
+    "voltage_mv": "925",
+    "power_w": "318",
+    "profile_tier": "Balanced",
+    "gpu_util_pct": "97",
+    "cpu_util_pct": "32",
+    "cpu_peak_thread_pct": "98",
+    "fan_pct": "62",
+    "temperature_c": "67",
+    "latency_ms": "23",
+    "uv_offset_mv": "-75",
+}
+
+
+def format_overlay_text(
+    values: dict[str, str],
+    *,
+    config: OverlayConfig | None = None,
+) -> str:
+    config = normalize_overlay_config(config or default_overlay_config(enabled=True))
+    parts = []
+    for item_id in config.enabled_item_ids:
+        part = _format_overlay_item(item_id, values)
+        if part:
+            parts.append(part)
+    return " ".join(parts) if parts else "PB waiting"
+
+
+def preview_overlay_text(
+    values: dict[str, str] | None = None,
+    *,
+    config: OverlayConfig | None = None,
+) -> str:
+    merged = dict(SAMPLE_OVERLAY_VALUES)
+    for key, value in (values or {}).items():
+        text = str(value or "").strip()
+        if key == "framegen_active" and not _flag_enabled(text):
+            continue
+        if text:
+            merged[key] = text
+    return format_overlay_text(merged, config=config)
+
+
+def _format_overlay_item(item_id: str, values: dict[str, str]) -> str:
+    if item_id == "base_fps":
+        return _value_or_na(_fps_display_value(values.get("present_fps")), suffix=" FPS")
+    if item_id == "fg_fps":
+        if not _flag_enabled(values.get("framegen_active")):
+            return ""
+        if _fps_number(values.get("framegen_fps")) is None:
+            return ""
+        return f"{_framegen_value_or_na(values.get('framegen_fps'))} FG"
+    if item_id == "clock_mhz":
+        return _value_or_na(values.get("clock_mhz"), suffix=" MHz")
+    if item_id == "voltage_mv":
+        return _value_or_na(values.get("voltage_mv"), suffix=" mV")
+    if item_id == "power_w":
+        return _value_or_na(values.get("power_w"), suffix=" W")
+    if item_id == "profile":
+        return _compact_tier(values.get("profile_tier"))
+    if item_id == "gpu_util_pct":
+        return _optional_labeled_value("GPU", values.get("gpu_util_pct"), suffix="%")
+    if item_id == "cpu_util_pct":
+        return _labeled_value_or_placeholder(
+            "CPU",
+            values.get("cpu_util_pct"),
+            suffix="%",
+            placeholder="--%",
+        )
+    if item_id == "cpu_peak_thread_pct":
+        return _labeled_value_or_placeholder(
+            "CPU-T",
+            values.get("cpu_peak_thread_pct"),
+            suffix="%",
+            placeholder="--%",
+        )
+    if item_id == "fan_pct":
+        return _optional_labeled_value("Fan", values.get("fan_pct"), suffix="%")
+    if item_id == "temperature_c":
+        return _optional_labeled_value("T", values.get("temperature_c"), suffix=" C")
+    if item_id == "latency_ms":
+        return _optional_labeled_value("LAT", values.get("latency_ms"), suffix=" ms")
+    if item_id == "uv_offset_mv":
+        return _optional_labeled_value(
+            "UV",
+            _signed_value(values.get("uv_offset_mv")),
+            suffix=" mV",
+        )
+    return ""
+
+
+def _value_or_na(value: object, *, suffix: str) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() == "n/a":
+        return f"n/a{suffix}"
+    if text.endswith(suffix):
+        return text
+    return f"{text}{suffix}"
+
+
+def _optional_value(value: object, *, suffix: str) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() == "n/a":
+        return ""
+    if text.endswith(suffix):
+        return text
+    return f"{text}{suffix}"
+
+
+def _optional_labeled_value(label: str, value: object, *, suffix: str) -> str:
+    text = _optional_value(value, suffix=suffix)
+    if not text:
+        return ""
+    return f"{label} {text}"
+
+
+def _labeled_value_or_placeholder(
+    label: str,
+    value: object,
+    *,
+    suffix: str,
+    placeholder: str,
+) -> str:
+    text = _optional_value(value, suffix=suffix)
+    return f"{label} {text or placeholder}"
+
+
+def _signed_value(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() == "n/a":
+        return ""
+    lower = text.lower()
+    for suffix in (" mv", "mv"):
+        if lower.endswith(suffix):
+            text = text[: -len(suffix)].strip()
+            break
+    try:
+        number = int(round(float(text)))
+    except ValueError:
+        return text
+    return f"{number:+d}"
+
+
+def _framegen_value_or_na(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() == "n/a":
+        return "n/a"
+    lower = text.lower()
+    if lower.endswith(" fps"):
+        return text[:-4].strip()
+    if lower.endswith("fps"):
+        return text[:-3].strip()
+    return text
+
+
+def _fps_number(value: object) -> float | None:
+    text = str(value or "").strip().lower()
+    if not text or text == "n/a":
+        return None
+    if text.endswith("fps"):
+        text = text[:-3].strip()
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    return number if number > 0 else None
+
+
+def _fps_display_value(value: object) -> str:
+    return str(value or "").strip() if _fps_number(value) is not None else ""
+
+
+def _flag_enabled(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
+def _compact_tier(value: object) -> str:
+    text = str(value or "").strip() or "Balanced"
+    lower = text.lower()
+    if lower == "balanced":
+        return "BAL"
+    if lower == "efficiency":
+        return "EFF"
+    if lower == "performance":
+        return "PERF"
+    return text[:6].upper()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="pb-overlay-text")
+    parser.add_argument("--state", type=Path, default=None)
+    args = parser.parse_args(argv)
+
+    values = read_overlay_state(args.state)
+    if not values:
+        print("PB waiting")
+    else:
+        print(format_overlay_text(values, config=load_overlay_config()))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

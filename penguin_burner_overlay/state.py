@@ -12,6 +12,7 @@ from penguin_burner_paths import claim_desktop_user_ownership
 OVERLAY_STATE_ENV = "PENGUIN_BURNER_OVERLAY_STATE"
 OVERLAY_TEXT_ENV = "PENGUIN_BURNER_OVERLAY_TEXT"
 OVERLAY_ENABLE_ENV = "PENGUIN_BURNER_OVERLAY"
+OVERLAY_ENABLE_ENV_ALIAS = "PB_OVERLAY"
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,11 +21,60 @@ class OverlayState:
     clock_mhz: int | None
     voltage_mv: int | None
     profile_tier: str
+    power_w: int | None = None
+    gpu_util_pct: int | None = None
+    cpu_util_pct: int | None = None
+    cpu_peak_thread_pct: int | None = None
+    fan_pct: int | None = None
+    temperature_c: int | None = None
+    uv_offset_mv: int | None = None
     present_fps: str = ""
+    framegen_fps: str = ""
+    framegen_active: bool = False
+    latency_ms: str = ""
     profile_tier_key: str = ""
     profile_id: str = ""
     adaptive: bool = False
     updated_unix_ns: int = 0
+
+
+def _home_overlay_dir(env: dict[str, str]) -> Path | None:
+    home = str(env.get("HOME") or "").strip()
+    if home and home != "/root":
+        return Path(home).expanduser() / ".cache" / "penguin-burner"
+
+    sudo_uid = str(env.get("SUDO_UID") or "").strip()
+    if sudo_uid.isdigit():
+        try:
+            user_home = pwd.getpwuid(int(sudo_uid)).pw_dir
+        except KeyError:
+            user_home = ""
+        if user_home:
+            return Path(user_home) / ".cache" / "penguin-burner"
+
+    sudo_user = str(env.get("SUDO_USER") or "").strip()
+    if sudo_user:
+        try:
+            user_home = pwd.getpwnam(sudo_user).pw_dir
+        except KeyError:
+            user_home = ""
+        if user_home:
+            return Path(user_home) / ".cache" / "penguin-burner"
+
+    candidates: list[Path] = []
+    try:
+        candidates.append(Path.cwd())
+    except OSError:
+        pass
+    try:
+        candidates.append(Path(__file__).resolve())
+    except OSError:
+        pass
+    for base in candidates:
+        for candidate in (base, *base.parents):
+            if candidate.parent == Path("/home"):
+                return candidate / ".cache" / "penguin-burner"
+    return None
 
 
 def overlay_state_path(env: dict[str, str] | None = None) -> Path:
@@ -32,6 +82,13 @@ def overlay_state_path(env: dict[str, str] | None = None) -> Path:
     explicit = str(env.get(OVERLAY_STATE_ENV) or "").strip()
     if explicit:
         return Path(explicit).expanduser()
+
+    # The game runs inside Steam's pressure-vessel container, where
+    # XDG_RUNTIME_DIR holds only the sockets the container forwards;
+    # the home directory is shared, so prefer it for the state files.
+    home_dir = _home_overlay_dir(env)
+    if home_dir is not None:
+        return home_dir / "overlay-state.txt"
 
     runtime_dir = str(env.get("XDG_RUNTIME_DIR") or "").strip()
     if runtime_dir:
@@ -81,7 +138,17 @@ def write_overlay_state(
         "gpu_index": str(int(state.gpu_index)),
         "clock_mhz": _value_text(state.clock_mhz),
         "voltage_mv": _value_text(state.voltage_mv),
+        "power_w": _value_text(state.power_w),
+        "gpu_util_pct": _value_text(state.gpu_util_pct),
+        "cpu_util_pct": _value_text(state.cpu_util_pct),
+        "cpu_peak_thread_pct": _value_text(state.cpu_peak_thread_pct),
+        "fan_pct": _value_text(state.fan_pct),
+        "temperature_c": _value_text(state.temperature_c),
+        "uv_offset_mv": _value_text(state.uv_offset_mv),
         "present_fps": str(state.present_fps or ""),
+        "framegen_fps": str(state.framegen_fps or ""),
+        "framegen_active": "1" if bool(state.framegen_active) else "0",
+        "latency_ms": str(state.latency_ms or ""),
         "profile_tier": str(state.profile_tier or ""),
         "profile_tier_key": str(state.profile_tier_key or ""),
         "profile_id": str(state.profile_id or ""),

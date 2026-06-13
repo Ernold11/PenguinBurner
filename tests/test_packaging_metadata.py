@@ -71,8 +71,19 @@ def test_console_scripts_use_gui_default_and_explicit_cli_names() -> None:
     assert "pburn-yolo" not in scripts
     assert scripts["penguin-burner-cli"] == "penguin_burner:cli_main"
     assert scripts["pburn-cli"] == "penguin_burner:cli_main"
+    assert scripts["penguin-burner-steam-game-setup"] == (
+        "latency_telemetry.steam_game_setup:main"
+    )
+    assert "penguin-burner-steam-re9-patched-setup" not in scripts
     assert scripts["PB_OVERLAY"] == "penguin_burner_overlay.launcher:main"
+    assert scripts["PENGUIN_BURNER"] == "penguin_burner_overlay.launcher:main"
     assert scripts["pb-overlay"] == "penguin_burner_overlay.launcher:main"
+    assert (
+        scripts["penguin-burner-overlay-text"]
+        == "penguin_burner_overlay.overlay_text:main"
+    )
+    assert scripts["pburn-overlay-text"] == "penguin_burner_overlay.overlay_text:main"
+    assert scripts["pb-overlay-text"] == "penguin_burner_overlay.overlay_text:main"
     assert "penguin_burner" not in scripts
 
 
@@ -83,6 +94,8 @@ def test_package_installs_desktop_launcher_and_icons() -> None:
     packages = set(metadata["tool"]["setuptools"]["packages"])
 
     assert "ui.assets" in packages
+    assert "native_layer/*.json" in package_data["penguin_burner_overlay"]
+    assert "native_layer/*.so" in package_data["penguin_burner_overlay"]
     assert data_files["share/applications"] == [
         "packaging/linux/io.github.jpietek.PenguinBurner.desktop"
     ]
@@ -93,6 +106,62 @@ def test_package_installs_desktop_launcher_and_icons() -> None:
         "packaging/icons/hicolor/512x512/apps/penguin-burner.png"
     ]
     assert "*.png" in package_data["ui.assets"]
+
+
+def test_python_build_requires_native_layer_build_tooling() -> None:
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    build_requires = set(metadata["build-system"]["requires"])
+    setup_py = Path("setup.py").read_text(encoding="utf-8")
+    manifest = Path("MANIFEST.in").read_text(encoding="utf-8")
+
+    assert "cmake>=3.20" in build_requires
+    assert "PENGUIN_BURNER_REQUIRE_NATIVE_LAYER" in setup_py
+    assert "root_is_pure = False" in setup_py
+    assert 'return "py3", "none", platform_tag' in setup_py
+    assert "class BinaryDistribution" in setup_py
+    assert "has_ext_modules" in setup_py
+    assert "shutil.rmtree(build_root)" in setup_py
+    assert "include README.md" in manifest
+    assert "native/latency_layer/CMakeLists.txt" in manifest
+    assert "native/latency_layer/src" in manifest
+
+
+def test_native_packages_require_native_layer_build_dependencies() -> None:
+    arch_pkgbuild = Path("packaging/arch/PKGBUILD").read_text(encoding="utf-8")
+    debian_control = Path("packaging/debian/control").read_text(encoding="utf-8")
+    debian_rules = Path("packaging/debian/rules").read_text(encoding="utf-8")
+    rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(encoding="utf-8")
+    build_script = Path("scripts/build-python-dist.sh").read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/publish-python-package.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "'cmake'" in arch_pkgbuild
+    assert "'vulkan-headers'" in arch_pkgbuild
+    assert " cmake," in debian_control
+    assert " libvulkan-dev," in debian_control
+    assert "BuildRequires:  cmake" in rpm_spec
+    assert "BuildRequires:  vulkan-headers" in rpm_spec
+    for text in (arch_pkgbuild, debian_rules, rpm_spec, build_script, workflow):
+        assert "PENGUIN_BURNER_REQUIRE_NATIVE_LAYER" in text
+
+
+def test_pypi_release_builds_manylinux_native_layer_wheel() -> None:
+    build_script = Path("scripts/build-python-dist.sh").read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/publish-python-package.yml").read_text(
+        encoding="utf-8"
+    )
+
+    for text in (build_script, workflow):
+        assert "cibuildwheel" in text
+        assert "CIBW_ARCHS_LINUX" in text
+        assert "x86_64" in text
+        assert "CIBW_BUILD" in text
+        assert "cp312-manylinux_x86_64" in text
+        assert "CIBW_ENVIRONMENT" in text
+        assert "CIBW_MANYLINUX_X86_64_IMAGE" in text
+        assert "manylinux_2_28" in text
+        assert "vulkan-headers" in text
 
 
 def test_desktop_icons_are_transparent_and_large_enough() -> None:

@@ -32,8 +32,10 @@ constexpr const char* kLayerName = "VK_LAYER_PENGUINBURNER_latency";
 constexpr const char* kSocketEnv = "PENGUIN_BURNER_LATENCY_SOCKET";
 constexpr const char* kEnableEnv = "PENGUIN_BURNER_LATENCY_LAYER";
 constexpr const char* kOverlayEnableEnv = "PENGUIN_BURNER_OVERLAY";
+constexpr const char* kOverlayEnableEnvAlias = "PB_OVERLAY";
 constexpr const char* kOverlayStateEnv = "PENGUIN_BURNER_OVERLAY_STATE";
 constexpr const char* kOverlayTextEnv = "PENGUIN_BURNER_OVERLAY_TEXT";
+constexpr const char* kOverlayConfigEnv = "PENGUIN_BURNER_OVERLAY_CONFIG";
 constexpr const char* kRecoveryResetEnv = "PENGUIN_BURNER_LATENCY_RECOVERY_RESET";
 constexpr const char* kDebugFlowEnv = "PENGUIN_BURNER_LATENCY_DEBUG_FLOW";
 constexpr const char* kQueryTimingsEnv = "PENGUIN_BURNER_LATENCY_QUERY_TIMINGS";
@@ -248,6 +250,11 @@ struct MarkerTiming {
     uint64_t render_submit_end_us = 0;
     uint64_t present_start_us = 0;
     uint64_t present_end_us = 0;
+    uint64_t oob_render_submit_start_us = 0;
+    uint64_t oob_render_submit_end_us = 0;
+    uint64_t oob_present_start_us = 0;
+    uint64_t oob_present_end_us = 0;
+    int64_t present_marker_lag_us = 0;
     uint32_t emitted_metric_bits = 0;
 };
 
@@ -320,6 +327,11 @@ struct DeviceContext {
     PFN_vkCmdClearAttachments cmd_clear_attachments = nullptr;
     PFN_vkCreateSemaphore create_semaphore = nullptr;
     PFN_vkDestroySemaphore destroy_semaphore = nullptr;
+    PFN_vkCreateFence create_fence = nullptr;
+    PFN_vkDestroyFence destroy_fence = nullptr;
+    PFN_vkGetFenceStatus get_fence_status = nullptr;
+    PFN_vkResetFences reset_fences = nullptr;
+    PFN_vkWaitForFences wait_for_fences = nullptr;
     PFN_vkSetLatencySleepModeNV set_latency_sleep_mode_nv = nullptr;
     PFN_vkLatencySleepNV latency_sleep_nv = nullptr;
     PFN_vkSetLatencyMarkerNV set_latency_marker_nv = nullptr;
@@ -365,6 +377,8 @@ struct OverlayRenderResources {
     std::vector<VkFramebuffer> framebuffers;
     std::vector<VkCommandBuffer> command_buffers;
     std::vector<VkSemaphore> signal_semaphores;
+    std::vector<VkFence> submit_fences;
+    std::vector<uint8_t> submit_pending;
 };
 
 struct SwapchainContext {
@@ -399,10 +413,30 @@ struct SwapchainContext {
 
 struct OverlayGpuState {
     bool available = false;
+    bool framegen_active = false;
     std::string present_fps;
+    std::string framegen_fps;
+    std::string latency_ms;
     std::string clock_mhz;
     std::string voltage_mv;
+    std::string power_w;
+    std::string gpu_util_pct;
+    std::string cpu_util_pct;
+    std::string cpu_peak_thread_pct;
+    std::string fan_pct;
+    std::string temperature_c;
+    std::string uv_offset_mv;
+    std::string profile_id;
     std::string profile_tier = "Balanced";
+};
+
+struct OverlayTextConfig {
+    bool enabled = true;
+    std::vector<std::string> items;
+    // User-selected overlay scale multiplier from overlay.toml. 1.0 keeps the
+    // resolution-adaptive size; 0.5/2.0 shrink/grow it. The Python UI only
+    // writes 0.5/1.0/2.0, but the value is clamped on read for safety.
+    double scale = 1.0;
 };
 
 std::mutex g_mutex;
@@ -415,7 +449,11 @@ std::atomic<bool> g_reported_negotiate{false};
 std::atomic<bool> g_reported_get_instance_proc_addr{false};
 std::atomic<bool> g_reported_get_device_proc_addr{false};
 std::atomic<bool> g_reported_create_instance_enter{false};
+std::mutex g_overlay_config_mutex;
 std::mutex g_overlay_file_mutex;
+// Latest user overlay scale multiplier, published by overlay_text_config() so
+// the present-path draw can read it without threading config through every call.
+std::atomic<double> g_overlay_user_scale{1.0};
 
 bool should_report_counter(uint64_t count) {
     return count <= 3 || (count % 600) == 0;
@@ -436,8 +474,62 @@ bool timing_queries_enabled() {
     return !env_value_is_false(std::getenv(kQueryTimingsEnv));
 }
 
+std::string trim_ascii(std::string value);
+
+double parse_overlay_scale(const std::string& value) {
+    const std::string text = trim_ascii(value);
+    if (text.empty()) {
+        return 1.0;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const double parsed = std::strtod(text.c_str(), &end);
+    if (end == text.c_str() || errno != 0 || !(parsed > 0.0)) {
+        return 1.0;
+    }
+    // Guard against absurd values; the UI only offers 0.5/1.0/2.0.
+    if (parsed < 0.25) {
+        return 0.25;
+    }
+    if (parsed > 4.0) {
+        return 4.0;
+    }
+    return parsed;
+}
+
+bool value_is_true(const std::string& value) {
+    std::string text = trim_ascii(value);
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return text == "1" || text == "true" || text == "yes" || text == "on";
+}
+
+bool value_is_false(const std::string& value) {
+    std::string text = trim_ascii(value);
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return text == "0" || text == "false" || text == "no" || text == "off";
+}
+
+std::string overlay_env_value() {
+    if (const char* value = std::getenv(kOverlayEnableEnv)) {
+        return trim_ascii(value);
+    }
+    if (const char* value = std::getenv(kOverlayEnableEnvAlias)) {
+        return trim_ascii(value);
+    }
+    return "";
+}
+
 bool overlay_enabled() {
-    static const bool enabled = env_flag_enabled(kOverlayEnableEnv);
+    static const bool enabled = !value_is_false(overlay_env_value());
+    return enabled;
+}
+
+bool overlay_env_fallback_enabled() {
+    static const bool enabled = value_is_true(overlay_env_value());
     return enabled;
 }
 
@@ -445,6 +537,13 @@ std::string overlay_runtime_path(const char* env_name, const char* file_name) {
     if (const char* explicit_path = std::getenv(env_name)) {
         if (explicit_path[0]) {
             return explicit_path;
+        }
+    }
+    // Inside Steam's pressure-vessel container XDG_RUNTIME_DIR only holds
+    // forwarded sockets; the home directory is shared with the host.
+    if (const char* home = std::getenv("HOME")) {
+        if (home[0] && std::strcmp(home, "/root") != 0) {
+            return std::string(home) + "/.cache/penguin-burner/" + file_name;
         }
     }
     if (const char* runtime_dir = std::getenv("XDG_RUNTIME_DIR")) {
@@ -474,6 +573,181 @@ std::string trim_ascii(std::string value) {
     return value;
 }
 
+std::string profile_voltage_mv_from_id(const std::string& profile_id) {
+    std::string text = profile_id;
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    std::size_t pos = text.find("mv");
+    while (pos != std::string::npos) {
+        std::size_t start = pos;
+        while (start > 0
+            && std::isdigit(static_cast<unsigned char>(text[start - 1]))) {
+            --start;
+        }
+        if (start < pos) {
+            return text.substr(start, pos - start);
+        }
+        pos = text.find("mv", pos + 2);
+    }
+    return "";
+}
+
+const std::array<const char*, 13> kOverlayItemOrder = {
+    "base_fps",
+    "fg_fps",
+    "latency_ms",
+    "clock_mhz",
+    "voltage_mv",
+    "power_w",
+    "profile",
+    "gpu_util_pct",
+    "cpu_util_pct",
+    "cpu_peak_thread_pct",
+    "fan_pct",
+    "temperature_c",
+    "uv_offset_mv",
+};
+
+OverlayTextConfig default_overlay_text_config(bool enabled = true) {
+    return OverlayTextConfig{enabled, {
+        "base_fps",
+        "fg_fps",
+        "clock_mhz",
+        "voltage_mv",
+        "power_w",
+        "profile",
+    }};
+}
+
+bool overlay_item_known(const std::string& item) {
+    for (const char* known_item : kOverlayItemOrder) {
+        if (item == known_item) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string overlay_config_path() {
+    if (const char* explicit_path = std::getenv(kOverlayConfigEnv)) {
+        if (explicit_path[0]) {
+            return explicit_path;
+        }
+    }
+    if (const char* home = std::getenv("HOME")) {
+        if (home[0] && std::strcmp(home, "/root") != 0) {
+            const std::string preferred =
+                std::string(home) + "/.config/penguin-burner/overlay.toml";
+            if (FILE* file = std::fopen(preferred.c_str(), "r")) {
+                std::fclose(file);
+                return preferred;
+            }
+            return std::string(home) + "/.config/PenguinBurner/overlay.toml";
+        }
+    }
+    return "";
+}
+
+std::vector<std::string> parse_overlay_items_line(const std::string& line) {
+    std::vector<std::string> items;
+    const std::size_t start = line.find('[');
+    const std::size_t end = line.find(']', start == std::string::npos ? 0 : start);
+    if (start == std::string::npos || end == std::string::npos || end <= start) {
+        return items;
+    }
+    std::string current;
+    bool in_quote = false;
+    for (std::size_t index = start + 1; index < end; ++index) {
+        const char ch = line[index];
+        if (ch == '"') {
+            if (in_quote) {
+                const std::string item = trim_ascii(current);
+                if (overlay_item_known(item)
+                    && std::find(items.begin(), items.end(), item) == items.end()) {
+                    items.push_back(item);
+                }
+                current.clear();
+            }
+            in_quote = !in_quote;
+            continue;
+        }
+        if (in_quote) {
+            current.push_back(ch);
+        }
+    }
+    return items;
+}
+
+std::vector<std::string> normalize_overlay_items(
+    const std::vector<std::string>& requested) {
+    std::vector<std::string> items;
+    for (const char* ordered_item : kOverlayItemOrder) {
+        const std::string item(ordered_item);
+        if (std::find(requested.begin(), requested.end(), item) != requested.end()) {
+            items.push_back(item);
+        }
+    }
+    if (items.empty()) {
+        items.push_back("base_fps");
+    }
+    return items;
+}
+
+OverlayTextConfig read_overlay_text_config() {
+    if (!overlay_enabled()) {
+        return default_overlay_text_config(false);
+    }
+    const bool fallback_enabled = overlay_env_fallback_enabled();
+    const std::string path = overlay_config_path();
+    if (path.empty()) {
+        return default_overlay_text_config(fallback_enabled);
+    }
+    FILE* file = std::fopen(path.c_str(), "r");
+    if (!file) {
+        return default_overlay_text_config(fallback_enabled);
+    }
+    bool enabled = fallback_enabled;
+    double scale = 1.0;
+    std::vector<std::string> requested;
+    char line_buffer[512]{};
+    while (std::fgets(line_buffer, sizeof(line_buffer), file)) {
+        std::string line(line_buffer);
+        const std::size_t sep = line.find('=');
+        if (sep == std::string::npos) {
+            continue;
+        }
+        const std::string key = trim_ascii(line.substr(0, sep));
+        const std::string value = trim_ascii(line.substr(sep + 1));
+        if (key == "items") {
+            requested = parse_overlay_items_line(line);
+        } else if (key == "enabled") {
+            enabled = value_is_true(value);
+        } else if (key == "scale") {
+            scale = parse_overlay_scale(value);
+        }
+    }
+    std::fclose(file);
+    OverlayTextConfig result = requested.empty()
+        ? default_overlay_text_config(enabled)
+        : OverlayTextConfig{enabled, normalize_overlay_items(requested), scale};
+    result.scale = scale;
+    return result;
+}
+
+OverlayTextConfig overlay_text_config(uint64_t now_us) {
+    static uint64_t last_read_us = 0;
+    static OverlayTextConfig config = default_overlay_text_config(false);
+    std::lock_guard lock(g_overlay_config_mutex);
+    if (!last_read_us || now_us < last_read_us
+        || now_us - last_read_us >= 250000) {
+        config = read_overlay_text_config();
+        last_read_us = now_us;
+        g_overlay_user_scale.store(config.scale, std::memory_order_relaxed);
+    }
+    return config;
+}
+
 OverlayGpuState read_overlay_gpu_state() {
     OverlayGpuState state{};
     const std::string path =
@@ -494,15 +768,42 @@ OverlayGpuState read_overlay_gpu_state() {
         const std::string value = trim_ascii(text.substr(sep + 1));
         if (key == "present_fps") {
             state.present_fps = value;
+        } else if (key == "framegen_fps") {
+            state.framegen_fps = value;
+        } else if (key == "framegen_active") {
+            state.framegen_active = value_is_true(value);
         } else if (key == "clock_mhz") {
             state.clock_mhz = value;
+        } else if (key == "latency_ms") {
+            state.latency_ms = value;
         } else if (key == "voltage_mv") {
             state.voltage_mv = value;
+        } else if (key == "power_w") {
+            state.power_w = value;
+        } else if (key == "gpu_util_pct") {
+            state.gpu_util_pct = value;
+        } else if (key == "cpu_util_pct") {
+            state.cpu_util_pct = value;
+        } else if (key == "cpu_peak_thread_pct") {
+            state.cpu_peak_thread_pct = value;
+        } else if (key == "fan_pct") {
+            state.fan_pct = value;
+        } else if (key == "temperature_c") {
+            state.temperature_c = value;
+        } else if (key == "uv_offset_mv") {
+            state.uv_offset_mv = value;
+        } else if (key == "profile_id") {
+            state.profile_id = value;
         } else if (key == "profile_tier" && !value.empty()) {
             state.profile_tier = value;
         }
     }
     std::fclose(file);
+    const std::string requested_voltage_mv =
+        profile_voltage_mv_from_id(state.profile_id);
+    if (!requested_voltage_mv.empty()) {
+        state.voltage_mv = requested_voltage_mv;
+    }
     return state;
 }
 
@@ -540,8 +841,73 @@ std::string overlay_value_or_na(const std::string& value) {
     return value.empty() ? "n/a" : value;
 }
 
-std::string overlay_fps_text(uint64_t fps, const OverlayGpuState& state) {
-    std::string value = trim_ascii(state.present_fps);
+bool overlay_value_missing(const std::string& value) {
+    std::string text = trim_ascii(value);
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return text.empty() || text == "n/a";
+}
+
+std::string overlay_optional_value(const std::string& value, const char* suffix) {
+    if (overlay_value_missing(value)) {
+        return "";
+    }
+    std::string text = trim_ascii(value);
+    std::string lower = text;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    std::string suffix_text(suffix);
+    std::string suffix_lower = suffix_text;
+    std::transform(
+        suffix_lower.begin(),
+        suffix_lower.end(),
+        suffix_lower.begin(),
+        [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+    if (lower.size() >= suffix_lower.size()
+        && lower.rfind(suffix_lower) == lower.size() - suffix_lower.size()) {
+        return text;
+    }
+    return text + suffix_text;
+}
+
+std::string overlay_signed_value(const std::string& value) {
+    if (overlay_value_missing(value)) {
+        return "";
+    }
+    std::string text = trim_ascii(value);
+    std::string lower = text;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (lower.size() >= 2 && lower.rfind("mv") == lower.size() - 2) {
+        text = trim_ascii(text.substr(0, text.size() - 2));
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(text.c_str(), &end, 10);
+    if (end == text.c_str()) {
+        return text;
+    }
+    char signed_text[64]{};
+    std::snprintf(signed_text, sizeof(signed_text), "%+ld", parsed);
+    return signed_text;
+}
+
+void append_overlay_part(std::string& text, const std::string& part) {
+    if (part.empty()) {
+        return;
+    }
+    if (!text.empty()) {
+        text += " ";
+    }
+    text += part;
+}
+
+std::string overlay_fps_value_text(const std::string& raw_value, uint64_t fallback_fps) {
+    std::string value = trim_ascii(raw_value);
     if (!value.empty()) {
         std::string lower = value;
         std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
@@ -552,14 +918,60 @@ std::string overlay_fps_text(uint64_t fps, const OverlayGpuState& state) {
         }
         return value + " FPS";
     }
-
-    char fps_text[64]{};
-    if (fps) {
-        std::snprintf(fps_text, sizeof(fps_text), "%" PRIu64 " FPS", fps);
-    } else {
-        std::snprintf(fps_text, sizeof(fps_text), "n/a FPS");
+    if (fallback_fps) {
+        char fps_text[64]{};
+        std::snprintf(fps_text, sizeof(fps_text), "%" PRIu64 " FPS", fallback_fps);
+        return fps_text;
     }
-    return fps_text;
+    return "n/a FPS";
+}
+
+std::string overlay_fps_text(uint64_t fps, const OverlayGpuState& state) {
+    return overlay_fps_value_text(state.present_fps, fps);
+}
+
+std::string overlay_framegen_fps_text(uint64_t fps, const OverlayGpuState& state) {
+    std::string value = trim_ascii(state.framegen_fps);
+    if (!value.empty()) {
+        std::string lower = value;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        if (lower.size() >= 3 && lower.rfind("fps") == lower.size() - 3) {
+            value = trim_ascii(value.substr(0, value.size() - 3));
+        }
+        return value.empty() ? "n/a" : value;
+    }
+    if (fps) {
+        char fps_text[64]{};
+        std::snprintf(fps_text, sizeof(fps_text), "%" PRIu64, fps);
+        return fps_text;
+    }
+    return "n/a";
+}
+
+bool overlay_parse_fps_value(const std::string& raw_value, double* out) {
+    std::string value = trim_ascii(raw_value);
+    if (value.empty()) {
+        return false;
+    }
+    std::string lower = value;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (lower == "n/a") {
+        return false;
+    }
+    if (lower.size() >= 3 && lower.rfind("fps") == lower.size() - 3) {
+        value = trim_ascii(value.substr(0, value.size() - 3));
+    }
+    char* end = nullptr;
+    const double parsed = std::strtod(value.c_str(), &end);
+    if (end == value.c_str() || parsed <= 0.0) {
+        return false;
+    }
+    *out = parsed;
+    return true;
 }
 
 std::string compact_profile_tier(const std::string& value) {
@@ -569,28 +981,90 @@ std::string compact_profile_tier(const std::string& value) {
         return static_cast<char>(std::tolower(ch));
     });
     if (lower == "balanced") {
-        return "Bal";
+        return "BAL";
     }
     if (lower == "efficiency") {
-        return "Eff";
+        return "EFF";
     }
     if (lower == "performance") {
-        return "Perf";
+        return "PERF";
     }
-    return tier.size() > 6 ? tier.substr(0, 6) : tier;
+    std::string compact = tier.size() > 6 ? tier.substr(0, 6) : tier;
+    std::transform(compact.begin(), compact.end(), compact.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::toupper(ch));
+    });
+    return compact;
 }
 
-std::string build_overlay_text(uint64_t fps, const OverlayGpuState& state) {
-    return overlay_fps_text(fps, state)
-        + " " + overlay_value_or_na(state.clock_mhz) + "MHz"
-        + " " + overlay_value_or_na(state.voltage_mv) + "mV"
-        + " " + compact_profile_tier(state.profile_tier);
+std::string build_overlay_text(
+    uint64_t fps,
+    const OverlayGpuState& state,
+    uint64_t now_us) {
+    std::string text;
+    const OverlayTextConfig config = overlay_text_config(now_us);
+    if (!config.enabled) {
+        return "";
+    }
+    for (const std::string& item : config.items) {
+        if (item == "base_fps") {
+            append_overlay_part(text, overlay_fps_text(fps, state));
+        } else if (item == "fg_fps") {
+            double output_fps = 0.0;
+            if (state.framegen_active
+                && overlay_parse_fps_value(state.framegen_fps, &output_fps)) {
+                append_overlay_part(
+                    text,
+                    overlay_framegen_fps_text(fps, state) + " FG");
+            }
+        } else if (item == "clock_mhz") {
+            append_overlay_part(text, overlay_value_or_na(state.clock_mhz) + " MHz");
+        } else if (item == "voltage_mv") {
+            append_overlay_part(text, overlay_value_or_na(state.voltage_mv) + " mV");
+        } else if (item == "power_w") {
+            append_overlay_part(text, overlay_value_or_na(state.power_w) + " W");
+        } else if (item == "profile") {
+            append_overlay_part(text, compact_profile_tier(state.profile_tier));
+        } else if (item == "gpu_util_pct") {
+            const std::string util = overlay_optional_value(state.gpu_util_pct, "%");
+            if (!util.empty()) {
+                append_overlay_part(text, "GPU " + util);
+            }
+        } else if (item == "cpu_util_pct") {
+            const std::string util = overlay_optional_value(state.cpu_util_pct, "%");
+            append_overlay_part(text, "CPU " + (util.empty() ? "--%" : util));
+        } else if (item == "cpu_peak_thread_pct") {
+            const std::string util =
+                overlay_optional_value(state.cpu_peak_thread_pct, "%");
+            append_overlay_part(text, "CPU-T " + (util.empty() ? "--%" : util));
+        } else if (item == "fan_pct") {
+            const std::string fan = overlay_optional_value(state.fan_pct, "%");
+            if (!fan.empty()) {
+                append_overlay_part(text, "FAN " + fan);
+            }
+        } else if (item == "temperature_c") {
+            const std::string temp = overlay_optional_value(state.temperature_c, " C");
+            if (!temp.empty()) {
+                append_overlay_part(text, "T " + temp);
+            }
+        } else if (item == "latency_ms") {
+            const std::string latency =
+                overlay_optional_value(state.latency_ms, " ms");
+            if (!latency.empty()) {
+                append_overlay_part(text, "LAT " + latency);
+            }
+        } else if (item == "uv_offset_mv") {
+            const std::string uv = overlay_optional_value(
+                overlay_signed_value(state.uv_offset_mv),
+                " mV");
+            if (!uv.empty()) {
+                append_overlay_part(text, "UV " + uv);
+            }
+        }
+    }
+    return text.empty() ? "PB WAITING" : text;
 }
 
 void write_overlay_text_file(uint64_t fps, uint64_t now_us) {
-    if (!overlay_enabled()) {
-        return;
-    }
     static uint64_t last_write_us = 0;
     if (last_write_us && now_us > last_write_us && now_us - last_write_us < 250000) {
         return;
@@ -598,7 +1072,7 @@ void write_overlay_text_file(uint64_t fps, uint64_t now_us) {
     last_write_us = now_us;
     const std::string path =
         overlay_runtime_path(kOverlayTextEnv, "overlay-text.txt");
-    const std::string text = build_overlay_text(fps, read_overlay_gpu_state());
+    const std::string text = build_overlay_text(fps, read_overlay_gpu_state(), now_us);
     std::lock_guard lock(g_overlay_file_mutex);
     const std::string temp_path = path + ".tmp";
     FILE* file = std::fopen(temp_path.c_str(), "w");
@@ -614,9 +1088,9 @@ std::string cached_overlay_text(uint64_t fps, uint64_t now_us) {
     static uint64_t last_read_us = 0;
     static std::string last_text;
     std::lock_guard lock(g_overlay_file_mutex);
-    if (last_text.empty() || !last_read_us || now_us < last_read_us
+    if (!last_read_us || now_us < last_read_us
         || now_us - last_read_us >= 250000) {
-        last_text = build_overlay_text(fps, read_overlay_gpu_state());
+        last_text = build_overlay_text(fps, read_overlay_gpu_state(), now_us);
         last_read_us = now_us;
     }
     return last_text;
@@ -669,8 +1143,10 @@ std::array<uint8_t, 7> overlay_glyph_rows(char ch) {
         case 'X': return {0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11};
         case 'Y': return {0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04};
         case 'Z': return {0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f};
+        case '+': return {0x00, 0x04, 0x04, 0x1f, 0x04, 0x04, 0x00};
         case '-': return {0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00};
         case '/': return {0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10};
+        case '%': return {0x19, 0x19, 0x02, 0x04, 0x08, 0x13, 0x13};
         case '.': return {0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x06};
         default: return {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     }
@@ -691,6 +1167,52 @@ uint32_t overlay_text_width(const std::string& text, uint32_t scale) {
         width += overlay_char_width(ch, scale);
     }
     return width;
+}
+
+uint32_t overlay_base_resolution_scale(uint32_t height) {
+    // Snap the display height to the nearest standard tier (1080p/1440p/4K)
+    // rather than assuming a 16:9 width, then map it to the bitmap-font pixel
+    // scale. Keying off height keeps ultrawide and other odd resolutions on the
+    // right tier (e.g. 3440x1440 stays 1440p, not 4K).
+    struct Tier {
+        uint32_t height;
+        uint32_t scale;
+    };
+    static constexpr Tier kTiers[] = {
+        {1080u, 2u},
+        {1440u, 3u},
+        {2160u, 4u},
+    };
+    uint32_t best_scale = kTiers[0].scale;
+    uint32_t best_diff = height > kTiers[0].height
+        ? height - kTiers[0].height
+        : kTiers[0].height - height;
+    for (const Tier& tier : kTiers) {
+        const uint32_t diff = height > tier.height
+            ? height - tier.height
+            : tier.height - height;
+        if (diff < best_diff) {
+            best_diff = diff;
+            best_scale = tier.scale;
+        }
+    }
+    return best_scale;
+}
+
+uint32_t overlay_resolution_scale(const VkExtent2D& extent) {
+    const uint32_t base = overlay_base_resolution_scale(extent.height);
+    const double user_scale = g_overlay_user_scale.load(std::memory_order_relaxed);
+    // Round to the nearest integer font scale (base values are positive, so a
+    // simple +0.5 truncation rounds correctly), then keep at least 1 pixel.
+    const double scaled = static_cast<double>(base) * user_scale;
+    long rounded = static_cast<long>(scaled + 0.5);
+    if (rounded < 1) {
+        return 1u;
+    }
+    if (rounded > 8) {
+        return 8u;
+    }
+    return static_cast<uint32_t>(rounded);
 }
 
 void overlay_clear_rect(
@@ -787,9 +1309,9 @@ void overlay_draw_text(
     if (text.empty() || extent.width < 64 || extent.height < 32) {
         return;
     }
-    const uint32_t scale = 2;
-    const uint32_t padding = 4;
-    const uint32_t margin = 10;
+    const uint32_t scale = overlay_resolution_scale(extent);
+    const uint32_t padding = 2 * scale;
+    const uint32_t margin = 5 * scale;
     const uint32_t text_height = 7 * scale;
     uint32_t text_width = overlay_text_width(text, scale);
     if (text_width + padding * 2 + margin * 2 > extent.width) {
@@ -847,13 +1369,38 @@ bool overlay_device_functions_available(const DeviceContext& context) {
         && context.begin_command_buffer && context.end_command_buffer
         && context.cmd_begin_render_pass && context.cmd_end_render_pass
         && context.cmd_clear_attachments && context.create_semaphore
-        && context.destroy_semaphore;
+        && context.destroy_semaphore && context.create_fence
+        && context.destroy_fence && context.get_fence_status
+        && context.reset_fences && context.wait_for_fences;
 }
 
 void destroy_overlay_resources(
     const DeviceContext& device_context,
     SwapchainContext& swapchain_context) {
     auto& overlay = swapchain_context.overlay;
+    if (device_context.wait_for_fences) {
+        std::vector<VkFence> pending;
+        for (std::size_t i = 0; i < overlay.submit_fences.size(); ++i) {
+            if (overlay.submit_fences[i] != VK_NULL_HANDLE
+                && i < overlay.submit_pending.size()
+                && overlay.submit_pending[i]) {
+                pending.push_back(overlay.submit_fences[i]);
+            }
+        }
+        if (!pending.empty()) {
+            device_context.wait_for_fences(
+                device_context.device,
+                static_cast<uint32_t>(pending.size()),
+                pending.data(),
+                VK_TRUE,
+                1000000000ull);
+        }
+    }
+    for (VkFence fence : overlay.submit_fences) {
+        if (fence != VK_NULL_HANDLE && device_context.destroy_fence) {
+            device_context.destroy_fence(device_context.device, fence, nullptr);
+        }
+    }
     for (VkSemaphore semaphore : overlay.signal_semaphores) {
         if (semaphore != VK_NULL_HANDLE && device_context.destroy_semaphore) {
             device_context.destroy_semaphore(device_context.device, semaphore, nullptr);
@@ -889,10 +1436,10 @@ bool init_overlay_resources(
     if (overlay.ready && overlay.queue_family_index == queue_family_index) {
         return true;
     }
-    if (overlay.ready) {
-        destroy_overlay_resources(device_context, swapchain_context);
-    }
-    if (overlay.attempted && overlay.queue_family_index == queue_family_index) {
+    // Resources are bound to the first queue family that presents this
+    // swapchain; presents from other families skip the overlay instead of
+    // destroying resources that may still be in flight.
+    if (overlay.attempted) {
         return false;
     }
 
@@ -1074,6 +1621,22 @@ bool init_overlay_resources(
         }
     }
 
+    overlay.submit_fences.resize(image_count, VK_NULL_HANDLE);
+    overlay.submit_pending.assign(image_count, 0);
+    VkFenceCreateInfo fence_info{};
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    for (uint32_t i = 0; i < image_count; ++i) {
+        result = device_context.create_fence(
+            device_context.device,
+            &fence_info,
+            nullptr,
+            &overlay.submit_fences[i]);
+        if (result != VK_SUCCESS) {
+            destroy_overlay_resources(device_context, swapchain_context);
+            return false;
+        }
+    }
+
     overlay.ready = true;
     return true;
 }
@@ -1087,7 +1650,7 @@ VkSemaphore submit_overlay_locked(
     uint32_t image_index,
     const VkPresentInfoKHR* present_info,
     const std::string& text) {
-    if (!overlay_enabled()
+    if (text.empty() || !overlay_enabled()
         || !(queue_context.queue_flags & VK_QUEUE_GRAPHICS_BIT)
         || !present_info) {
         return VK_NULL_HANDLE;
@@ -1102,7 +1665,25 @@ VkSemaphore submit_overlay_locked(
     auto& overlay = swapchain_context.overlay;
     if (image_index >= overlay.command_buffers.size()
         || image_index >= overlay.framebuffers.size()
-        || image_index >= overlay.signal_semaphores.size()) {
+        || image_index >= overlay.signal_semaphores.size()
+        || image_index >= overlay.submit_fences.size()
+        || image_index >= overlay.submit_pending.size()) {
+        return VK_NULL_HANDLE;
+    }
+
+    // The previous submit that used this image's command buffer must have
+    // retired before the buffer is reset; skip the overlay for this frame
+    // rather than stall the present path.
+    VkFence fence = overlay.submit_fences[image_index];
+    if (overlay.submit_pending[image_index]) {
+        if (device_context.get_fence_status(device_context.device, fence)
+            != VK_SUCCESS) {
+            return VK_NULL_HANDLE;
+        }
+        overlay.submit_pending[image_index] = 0;
+    }
+    if (device_context.reset_fences(device_context.device, 1, &fence)
+        != VK_SUCCESS) {
         return VK_NULL_HANDLE;
     }
 
@@ -1156,8 +1737,12 @@ VkSemaphore submit_overlay_locked(
     submit_info.pCommandBuffers = &command_buffer;
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = &signal;
-    result = device_context.queue_submit(queue, 1, &submit_info, VK_NULL_HANDLE);
-    return result == VK_SUCCESS ? signal : VK_NULL_HANDLE;
+    result = device_context.queue_submit(queue, 1, &submit_info, fence);
+    if (result != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+    overlay.submit_pending[image_index] = 1;
+    return signal;
 }
 
 uint64_t live_swapchain_count_locked(VkDevice device) {
@@ -1523,12 +2108,32 @@ uint32_t marker_timing_metric_bits(const MarkerTiming& timing) {
     if (elapsed_us(timing.present_start_us, timing.present_end_us)) {
         bits |= 1u << 3;
     }
+    if (elapsed_us(timing.sim_start_us, timing.present_end_us)) {
+        bits |= 1u << 4;
+    }
+    if (elapsed_us(timing.render_submit_start_us, timing.present_end_us)) {
+        bits |= 1u << 5;
+    }
+    if (elapsed_us(timing.sim_start_us, timing.oob_present_end_us)) {
+        bits |= 1u << 6;
+    }
     return bits;
 }
 
+// Mirrored by the Python receiver's quality ladder; see
+// latency_telemetry/receiver.py MARKER_TIMING_QUALITIES.
 const char* marker_timing_quality(const MarkerTiming& timing) {
     if (elapsed_us(timing.input_sample_us, timing.present_end_us)) {
         return "reflex-input-present";
+    }
+    if (elapsed_us(timing.sim_start_us, timing.present_end_us)) {
+        return "reflex-sim-present";
+    }
+    if (elapsed_us(timing.sim_start_us, timing.oob_present_end_us)) {
+        return "reflex-sim-oob-present";
+    }
+    if (elapsed_us(timing.render_submit_start_us, timing.present_end_us)) {
+        return "reflex-submit-present";
     }
     if (elapsed_us(timing.render_submit_start_us, timing.render_submit_end_us)) {
         return "reflex-render-submit";
@@ -1609,8 +2214,20 @@ void send_marker_timing_sample(
     const uint64_t present_marker_us = elapsed_us(
         timing.present_start_us,
         timing.present_end_us);
+    const uint64_t sim_to_present_us = elapsed_us(
+        timing.sim_start_us,
+        timing.present_end_us);
+    const uint64_t submit_to_present_us = elapsed_us(
+        timing.render_submit_start_us,
+        timing.present_end_us);
+    const uint64_t sim_to_oob_present_us = elapsed_us(
+        timing.sim_start_us,
+        timing.oob_present_end_us);
+    const uint64_t input_to_oob_present_us = elapsed_us(
+        timing.input_sample_us,
+        timing.oob_present_end_us);
 
-    char line[1024]{};
+    char line[1280]{};
     int length = std::snprintf(
         line,
         sizeof(line),
@@ -1627,6 +2244,11 @@ void send_marker_timing_sample(
         "\"input_to_present_us\":%" PRIu64 ","
         "\"sim_us\":%" PRIu64 ","
         "\"present_marker_us\":%" PRIu64 ","
+        "\"sim_to_present_us\":%" PRIu64 ","
+        "\"submit_to_present_us\":%" PRIu64 ","
+        "\"sim_to_oob_present_us\":%" PRIu64 ","
+        "\"input_to_oob_present_us\":%" PRIu64 ","
+        "\"present_marker_lag_us\":%" PRId64 ","
         "\"gpu_render_start_us\":0,"
         "\"gpu_render_end_us\":0,"
         "\"driver_start_us\":0,"
@@ -1644,7 +2266,12 @@ void send_marker_timing_sample(
         render_submit_us,
         input_to_present_us,
         sim_us,
-        present_marker_us);
+        present_marker_us,
+        sim_to_present_us,
+        submit_to_present_us,
+        sim_to_oob_present_us,
+        input_to_oob_present_us,
+        timing.present_marker_lag_us);
 
     if (length > 0 && static_cast<size_t>(length) < sizeof(line)) {
         g_socket.send_line(line, static_cast<size_t>(length));
@@ -1840,18 +2467,22 @@ void record_marker(
             case VK_LATENCY_MARKER_OUT_OF_BAND_RENDERSUBMIT_START_NV:
                 context.marker_counts.out_of_band_render_submit_start++;
                 context.last_oob_render_submit_present_id = marker_info->presentID;
+                timing.oob_render_submit_start_us = marker_time_us;
                 break;
             case VK_LATENCY_MARKER_OUT_OF_BAND_RENDERSUBMIT_END_NV:
                 context.marker_counts.out_of_band_render_submit_end++;
                 context.last_oob_render_submit_present_id = marker_info->presentID;
+                timing.oob_render_submit_end_us = marker_time_us;
                 break;
             case VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_START_NV:
                 context.marker_counts.out_of_band_present_start++;
                 context.last_oob_present_present_id = marker_info->presentID;
+                timing.oob_present_start_us = marker_time_us;
                 break;
             case VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_END_NV:
                 context.marker_counts.out_of_band_present_end++;
                 context.last_oob_present_present_id = marker_info->presentID;
+                timing.oob_present_end_us = marker_time_us;
                 break;
             default:
                 break;
@@ -1868,6 +2499,16 @@ void record_marker(
         auto swapchain_it = g_swapchains.find(swapchain);
         if (swapchain_it != g_swapchains.end()) {
             swapchain_it->second.last_present_id = marker_info->presentID;
+            // Settles whether PRESENT_END means presented or enqueued: a
+            // tight, mostly-positive distribution vs. the layer's own
+            // vkQueuePresentKHR time means the marker fires at the real
+            // present (see latency-meter plan, Phase 1 step 5).
+            if (marker_info->marker == VK_LATENCY_MARKER_PRESENT_END_NV
+                && swapchain_it->second.last_present_us) {
+                timing.present_marker_lag_us =
+                    static_cast<int64_t>(marker_time_us)
+                    - static_cast<int64_t>(swapchain_it->second.last_present_us);
+            }
         }
         uint32_t metric_bits = marker_timing_metric_bits(timing);
         if (metric_bits && metric_bits != timing.emitted_metric_bits) {
@@ -2533,8 +3174,14 @@ void query_latency_timing(VkDevice device, VkSwapchainKHR swapchain) {
         }
     }
 
+    // A frozen ring keeps its newest entry equal to last_emitted; that is
+    // staleness, not a presentID reset. Treating it as a reset re-emits all
+    // 64 stale reports every present (observed live at ~3.5k samples/s on
+    // 2026-06-11) and defeats the receiver's duplicate detection because the
+    // IDs cycle. Only call it a reset when even the newest ID went backwards.
     const bool reset_detected =
-        last_emitted && saw_lower_present_id && !saw_higher_present_id;
+        last_emitted && saw_lower_present_id && !saw_higher_present_id
+        && newest_present_id < last_emitted;
     const uint64_t emit_after = reset_detected ? 0 : last_emitted;
     uint64_t new_last_emitted = reset_detected ? 0 : last_emitted;
     bool emitted_fresh = false;
@@ -2814,6 +3461,16 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(
         next_get_device_proc_addr(*device, "vkCreateSemaphore"));
     context.destroy_semaphore = reinterpret_cast<PFN_vkDestroySemaphore>(
         next_get_device_proc_addr(*device, "vkDestroySemaphore"));
+    context.create_fence = reinterpret_cast<PFN_vkCreateFence>(
+        next_get_device_proc_addr(*device, "vkCreateFence"));
+    context.destroy_fence = reinterpret_cast<PFN_vkDestroyFence>(
+        next_get_device_proc_addr(*device, "vkDestroyFence"));
+    context.get_fence_status = reinterpret_cast<PFN_vkGetFenceStatus>(
+        next_get_device_proc_addr(*device, "vkGetFenceStatus"));
+    context.reset_fences = reinterpret_cast<PFN_vkResetFences>(
+        next_get_device_proc_addr(*device, "vkResetFences"));
+    context.wait_for_fences = reinterpret_cast<PFN_vkWaitForFences>(
+        next_get_device_proc_addr(*device, "vkWaitForFences"));
     context.set_latency_sleep_mode_nv =
         reinterpret_cast<PFN_vkSetLatencySleepModeNV>(
             next_get_device_proc_addr(*device, "vkSetLatencySleepModeNV"));
@@ -3139,17 +3796,21 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
                 if (overlay_enabled() && has_device_context && has_queue_context
                     && present_info->swapchainCount == 1
                     && present_info->pImageIndices) {
-                    overlay_signal = submit_overlay_locked(
-                        device_context,
-                        swapchain,
-                        swapchain_context,
-                        queue_context,
-                        queue,
-                        present_info->pImageIndices[i],
-                        present_info,
+                    const std::string overlay_text =
                         cached_overlay_text(
                             observation.overlay_fps,
-                            present_time_us));
+                            present_time_us);
+                    if (!overlay_text.empty()) {
+                        overlay_signal = submit_overlay_locked(
+                            device_context,
+                            swapchain,
+                            swapchain_context,
+                            queue_context,
+                            queue,
+                            present_info->pImageIndices[i],
+                            present_info,
+                            overlay_text);
+                    }
                 }
             }
             observations.push_back(observation);

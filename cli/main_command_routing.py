@@ -10,6 +10,11 @@ from dry_run_preview import run_afterburner_dry_run
 from lact import export_lact_config
 from latency_telemetry import check_latency_layer, format_latency_layer_check
 from penguin_burner_errors import NvmlError
+from penguin_burner_overlay.config import (
+    load_overlay_config,
+    save_overlay_config,
+    set_overlay_enabled,
+)
 from runtime_debug import (
     debug_effective_runtime_options,
     enable_stdio_capture,
@@ -49,6 +54,9 @@ class MainCommandRoutingDependencies:
     format_profile_table: Callable = format_profile_table
     delete_auto_uv_profiles: Callable = delete_auto_uv_profiles
     check_latency_layer: Callable = check_latency_layer
+    load_overlay_config: Callable = load_overlay_config
+    save_overlay_config: Callable = save_overlay_config
+    set_overlay_enabled: Callable = set_overlay_enabled
     log: Callable[[str], None] = runtime_log
     print_fn: Callable = print
 
@@ -89,6 +97,10 @@ def route_main_command(
 
     if getattr(args, "auto_uv", False):
         args.auto_uv_voltage_scan = True
+
+    if _overlay_action_requested(args):
+        _handle_overlay_action(args, deps=deps)
+        return MainCommandRoutingResult(handled=True)
 
     if getattr(args, "check_latency_layer", False):
         _check_latency_layer(args, deps=deps)
@@ -254,6 +266,39 @@ def _check_latency_layer(args, *, deps: MainCommandRoutingDependencies) -> None:
         deps.print_fn(json.dumps({"latency_layer": result}, indent=2), flush=True)
     else:
         deps.print_fn(format_latency_layer_check(result), flush=True)
+
+
+def _overlay_action_requested(args) -> bool:
+    return bool(
+        getattr(args, "overlay_toggle", False)
+        or getattr(args, "overlay_enable", False)
+        or getattr(args, "overlay_disable", False)
+    )
+
+
+def _handle_overlay_action(args, *, deps: MainCommandRoutingDependencies) -> None:
+    config = deps.load_overlay_config()
+    if getattr(args, "overlay_toggle", False):
+        enabled = not bool(config.enabled)
+        action = "toggle"
+    elif getattr(args, "overlay_enable", False):
+        enabled = True
+        action = "enable"
+    else:
+        enabled = False
+        action = "disable"
+    updated = deps.set_overlay_enabled(config, enabled)
+    path = deps.save_overlay_config(updated)
+    payload = {
+        "action": action,
+        "enabled": bool(updated.enabled),
+        "config_path": str(path),
+    }
+    if args.json_events:
+        deps.print_fn(json.dumps({"overlay": payload}, indent=2), flush=True)
+        return
+    state = "enabled" if updated.enabled else "disabled"
+    deps.print_fn(f"Overlay {state}: {path}", flush=True)
 
 
 def _auto_uv_final_curve_available(

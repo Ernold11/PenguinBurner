@@ -3,6 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 import shlex
 
+from cli.runtime_config_file import (
+    persist_on_startup_from_runtime_config,
+    persist_on_startup_to_runtime_config,
+)
 from manual_uv_curve_editor import editable_anchor_from_profile
 from saved_uv_profiles import delete_auto_uv_profile_paths
 from penguin_burner_paths import default_user_config_dir
@@ -15,6 +19,7 @@ from .commands import runtime_profile_command
 from .commands import scan_command
 from .components import CurvePlot
 from .components import LogView
+from .components import OverlayConfigPanel
 from .components import ProfileList
 from .components import RunsTable
 from .components import ScanControls
@@ -59,6 +64,7 @@ from .models import stage_title
 from .models import status_value
 from .models import top_status_text
 from .profiles import delete_confirmation_text
+from .profiles import adaptive_profile_tier_labels
 from .profiles import load_profile_summaries
 from .profiles import penguin_burner_runtime_is_active
 from .profiles import profile_can_apply
@@ -68,17 +74,17 @@ from .profiles import profile_is_afterburner
 from .profiles import profile_is_deletable
 from .profiles import profile_status_label
 from .profiles import profile_verify_selector
+from .profiles import profile_delete_autostart_action
 from .profiles import profiles_for_selectors
 from .profiles import runner_status_text
 from .profiles import running_auto_uv_profile_info
-from .profiles import selected_profile_ids_include_selector
 from .profiles import systemd_autostart_profile_info
 from .profiles import systemd_unit_entry_exists
 from .verify import stop_request_path as verify_stop_request_path
 from .verify import workload_label
 from .styles import STYLESHEET
-from saved_uv_profiles import clear_profile_tier_assignment
 from saved_uv_profiles import save_profile_tier_assignment
+from saved_uv_profiles import save_profile_tier_none_assignment
 
 
 class MainWindow:
@@ -98,6 +104,7 @@ class MainWindow:
         self.final_choice_discarded = False
         self.last_auto_uv_candidate_id = ""
         self._delete_remove_systemd = False
+        self._delete_switch_systemd_profile_id = ""
         self._delete_selected_ids: set[str] = set()
 
         self.window = self.QtWidgets.QMainWindow()
@@ -160,6 +167,10 @@ class MainWindow:
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
         )
+        self.overlay_config = OverlayConfigPanel(
+            QtCore=self.QtCore,
+            QtWidgets=self.QtWidgets,
+        )
         self.runs_table.on_candidate_selection_changed = (
             self.vf_plot.set_highlighted_curve
         )
@@ -182,6 +193,10 @@ class MainWindow:
         self.tabs = self.QtWidgets.QTabWidget()
         self.auto_uv_tab_index = self.tabs.addTab(auto_uv_view, "Auto-UV")
         self.tabs.addTab(self.fan_plot.widget, "Silent Fan Curve")
+        self.overlay_tab_index = self.tabs.addTab(
+            self.overlay_config.widget,
+            "Overlay",
+        )
         self.profiles_tab_index = self.tabs.addTab(self.profile_list.widget, "Profiles")
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self._close_dynamic_tab)
@@ -216,23 +231,27 @@ class MainWindow:
             show_error=self.errors.show,
         )
 
-        table_panel = self.QtWidgets.QGroupBox("Undervolting runs")
-        table_panel.setMinimumHeight(220)
-        table_layout = self.QtWidgets.QVBoxLayout(table_panel)
+        self.table_panel = self.QtWidgets.QGroupBox("Undervolting runs")
+        self.table_panel.setMinimumHeight(220)
+        table_layout = self.QtWidgets.QVBoxLayout(self.table_panel)
         table_layout.setContentsMargins(10, 18, 10, 10)
         table_layout.addWidget(self.runs_table.widget)
 
         layout.addWidget(self.header.widget)
         layout.addWidget(self.controls.widget)
         layout.addWidget(self.tabs, 1)
-        layout.addWidget(table_panel)
+        layout.addWidget(self.table_panel)
 
         self.controls.start_button.clicked.connect(self.start_scan)
         self.controls.stop_button.clicked.connect(self.stop_scan)
         self.controls.about_button.clicked.connect(self.show_about)
         self.controls.import_afterburner_button.clicked.connect(self.afterburner_import.run)
+        self.profile_list.adaptive_button.clicked.connect(self._run_adaptive_profiles)
         self.profile_list.daemonize_button.clicked.connect(self._run_selected_profile)
         self.profile_list.delete_button.clicked.connect(self._delete_selected_profiles)
+        self.profile_list.install_button.toggled.connect(
+            self._persist_startup_preference
+        )
         self.profile_list.remove_button.clicked.connect(
             lambda: self._run_runtime_action("uninstall-systemd")
         )
@@ -245,11 +264,16 @@ class MainWindow:
             self._show_profile_context_menu
         )
         self.profile_list.set_runtime_actions_enabled(False)
+        self.tabs.currentChanged.connect(self._sync_selected_tab_layout)
+        self._sync_selected_tab_layout(self.tabs.currentIndex())
         self.window.setCentralWidget(root)
         self.window.setStyleSheet(STYLESHEET)
 
     def show(self) -> None:
         self.window.show()
+
+    def _sync_selected_tab_layout(self, index: int) -> None:
+        self.table_panel.setVisible(index != self.overlay_tab_index)
 
     def show_about(self) -> None:
         show_about_dialog(
@@ -479,21 +503,51 @@ class MainWindow:
         )
         self._run_runtime_action(action)
 
-    def _run_runtime_action(self, action: str) -> None:
+    def _run_adaptive_profiles(self) -> None:
+        action = (
+            "install-systemd"
+            if self.profile_list.persist_on_startup_enabled()
+            else "daemonize"
+        )
+        self._run_runtime_action(action, adaptive_auto_uv=True)
+
+    def _run_runtime_action(
+        self,
+        action: str,
+        *,
+        adaptive_auto_uv: bool = False,
+        profile_selector: str = "",
+    ) -> None:
         if self._workflow_running():
             return
-        profile_id = self.profile_list.selected_profile_id()
-        if action != "uninstall-systemd" and not profile_id:
-            self.log_view.append("\nNo profile selected.\n")
-            return
-        selected_profile = profile_for_selector(self.profile_summaries, profile_id)
-        if action != "uninstall-systemd" and not profile_can_apply(
-            selected_profile or {}
-        ):
-            message = "This edited profile must be verified before it can be applied."
-            self.controls.set_status_text(message)
-            self.log_view.append(f"\n{message}\n")
-            return
+        profile_id = str(profile_selector or "").strip()
+        selected_profile = None
+        prefer_afterburner_curve = False
+        if action != "uninstall-systemd" and adaptive_auto_uv:
+            tiers = adaptive_profile_tier_labels(self.profile_summaries)
+            if len(tiers) < 2:
+                available = ", ".join(tiers) if tiers else "none"
+                self.errors.show(
+                    "Adaptive Auto-UV unavailable",
+                    "Adaptive Auto-UV requires at least two verified Auto-UV "
+                    f"profile tiers. Available tiers: {available}.",
+                )
+                return
+            selected_profile = profile_for_selector(self.profile_summaries, "latest")
+        elif action != "uninstall-systemd":
+            profile_id = profile_id or self.profile_list.selected_profile_id()
+            if not profile_id:
+                self.log_view.append("\nNo profile selected.\n")
+                return
+            selected_profile = profile_for_selector(self.profile_summaries, profile_id)
+            if not profile_can_apply(selected_profile or {}):
+                message = "This edited profile must be verified before it can be applied."
+                self.controls.set_status_text(message)
+                self.log_view.append(f"\n{message}\n")
+                return
+            prefer_afterburner_curve = bool(
+                selected_profile and profile_is_afterburner(selected_profile)
+            )
         if (
             action != "uninstall-systemd"
             and selected_profile
@@ -505,29 +559,57 @@ class MainWindow:
             self.controls.set_status_text("No runtime-ready silent fan curve is available.")
             self.log_view.append("\nNo runtime-ready silent fan curve is available.\n")
             return
-        prefer_afterburner_curve = bool(
-            selected_profile and profile_is_afterburner(selected_profile)
-        )
         command = runtime_profile_command(
             action,
             profile_selector=(
-                ""
-                if action == "uninstall-systemd" or prefer_afterburner_curve
-                else profile_id
+                "" if action == "uninstall-systemd" or prefer_afterburner_curve else profile_id
             ),
             silent_fan_curve=self.profile_list.silent_fan_enabled(),
             prefer_afterburner_curve=prefer_afterburner_curve,
-            adaptive_auto_uv=self.profile_list.adaptive_enabled(),
+            adaptive_auto_uv=adaptive_auto_uv,
             gpu_index=self.gpu_index,
         )
-        self.controls.set_status_text(self._runtime_action_start_text(action))
+        if action == "install-systemd":
+            self._persist_startup_preference(True)
+        elif action == "uninstall-systemd":
+            self._persist_startup_preference(False)
+        self.controls.set_status_text(
+            self._runtime_action_start_text(action, adaptive_auto_uv=adaptive_auto_uv)
+        )
         self._set_profile_actions_enabled(False)
         self.controls.start_button.setEnabled(False)
         self.command_controller.start(
-            action,
+            f"adaptive-{action}" if adaptive_auto_uv else action,
             command,
             fail_text="Failed to start runtime profile action.",
         )
+
+    def _run_delete_autostart_followup(
+        self,
+        *,
+        remove_systemd: bool,
+        switch_systemd_profile_id: str = "",
+    ) -> bool:
+        switch_profile_id = str(switch_systemd_profile_id or "").strip()
+        self._delete_remove_systemd = False
+        self._delete_switch_systemd_profile_id = ""
+        if switch_profile_id:
+            profile = profile_for_selector(self.profile_summaries, switch_profile_id)
+            if profile_can_apply(profile or {}):
+                self.log_view.append(
+                    "\nAdaptive Auto-UV now has fewer than two usable tiers; "
+                    "switching Systemd autostart to the remaining profile.\n"
+                )
+                self._run_runtime_action(
+                    "install-systemd",
+                    profile_selector=switch_profile_id,
+                )
+                return True
+            remove_systemd = True
+        if remove_systemd:
+            self._run_runtime_action("uninstall-systemd")
+            return True
+        return False
 
     def _edit_profile_fan_curve(self, profile: dict) -> None:
         curve_points = profile_fan_curve_points(profile)
@@ -714,14 +796,24 @@ class MainWindow:
         selected_paths = self.profile_list.selected_profile_paths()
         if not selected_paths and not delete_afterburner_import:
             return
-        autostart_selector = str(systemd_autostart_profile_info()["selector"])
-        remove_systemd = selected_profile_ids_include_selector(
+        autostart_info = systemd_autostart_profile_info()
+        autostart_action = profile_delete_autostart_action(
             self.profile_summaries,
             list(selected_ids),
-            autostart_selector,
+            autostart_info,
+        )
+        remove_systemd = autostart_action.get("action") == "remove-systemd"
+        switch_systemd_profile_id = (
+            str(autostart_action.get("profile_id", "")).strip()
+            if autostart_action.get("action") == "switch-profile"
+            else ""
         )
         if not self._confirm_profile_delete(
             remove_systemd=remove_systemd,
+            removes_last_usable_adaptive_profile=(
+                autostart_action.get("reason") == "last-usable-adaptive-profile"
+            ),
+            switch_systemd_profile_id=switch_systemd_profile_id,
             includes_afterburner=delete_afterburner_import,
         ):
             return
@@ -742,6 +834,7 @@ class MainWindow:
                 selected_paths,
                 selected_ids,
                 remove_systemd=remove_systemd,
+                switch_systemd_profile_id=switch_systemd_profile_id,
             )
             return
         count = len(deleted) + (1 if afterburner_deleted else 0)
@@ -749,8 +842,10 @@ class MainWindow:
         self.log_view.append(f"\nDeleted {count} saved {label}.\n")
         self.controls.set_status_text(f"Deleted {count} saved {label}.")
         self._load_profiles()
-        if remove_systemd:
-            self._run_runtime_action("uninstall-systemd")
+        self._run_delete_autostart_followup(
+            remove_systemd=remove_systemd,
+            switch_systemd_profile_id=switch_systemd_profile_id,
+        )
 
     def _run_privileged_profile_delete(
         self,
@@ -758,9 +853,11 @@ class MainWindow:
         selected_ids: set[str],
         *,
         remove_systemd: bool,
+        switch_systemd_profile_id: str = "",
     ) -> None:
         self._delete_selected_ids = set(selected_ids)
         self._delete_remove_systemd = bool(remove_systemd)
+        self._delete_switch_systemd_profile_id = str(switch_systemd_profile_id)
         self._set_profile_actions_enabled(False)
         self.controls.start_button.setEnabled(False)
         self.controls.set_status_text("Deleting selected Auto-UV profiles.")
@@ -780,9 +877,10 @@ class MainWindow:
             if success:
                 self.controls.set_status_text("Selected Auto-UV profiles deleted.")
                 self._load_profiles()
-                if self._delete_remove_systemd:
-                    self._delete_remove_systemd = False
-                    self._run_runtime_action("uninstall-systemd")
+                if self._run_delete_autostart_followup(
+                    remove_systemd=self._delete_remove_systemd,
+                    switch_systemd_profile_id=self._delete_switch_systemd_profile_id,
+                ):
                     return
             else:
                 self.controls.set_status_text("Auto-UV profile deletion failed.")
@@ -794,6 +892,7 @@ class MainWindow:
                 )
             self._delete_selected_ids = set()
             self._delete_remove_systemd = False
+            self._delete_switch_systemd_profile_id = ""
             self._load_profiles()
             return
         if success:
@@ -812,6 +911,8 @@ class MainWindow:
         self,
         *,
         remove_systemd: bool,
+        removes_last_usable_adaptive_profile: bool = False,
+        switch_systemd_profile_id: str = "",
         includes_afterburner: bool = False,
     ) -> bool:
         buttons = (
@@ -824,6 +925,14 @@ class MainWindow:
             delete_confirmation_text(
                 self.profile_list.selected_profile_names(),
                 removes_systemd=remove_systemd,
+                removes_last_usable_adaptive_profile=(
+                    removes_last_usable_adaptive_profile
+                ),
+                switches_systemd_to_profile=(
+                    profile_status_label(self.profile_summaries, switch_systemd_profile_id)
+                    if str(switch_systemd_profile_id).strip()
+                    else ""
+                ),
                 includes_afterburner=includes_afterburner,
             ),
             buttons,
@@ -860,7 +969,7 @@ class MainWindow:
             "performance": tier_menu.addAction("Performance"),
         }
         tier_menu.addSeparator()
-        clear_tier_action = tier_menu.addAction("Clear Tier Assignment")
+        none_tier_action = tier_menu.addAction("None")
         can_assign_tier = (
             not self._workflow_running()
             and profile_can_apply(profile)
@@ -892,8 +1001,8 @@ class MainWindow:
                     save_profile_tier_assignment(profile_id, tier)
                     self._load_profiles()
                     break
-        elif chosen == clear_tier_action:
-            clear_profile_tier_assignment(str(profile.get("profile_id") or ""))
+        elif chosen == none_tier_action:
+            save_profile_tier_none_assignment(str(profile.get("profile_id") or ""))
             self._load_profiles()
         elif chosen == delete_action:
             self._delete_selected_profiles()
@@ -963,10 +1072,11 @@ class MainWindow:
     def _load_profiles(self) -> None:
         self.profile_summaries = load_profile_summaries()
         autostart_info = systemd_autostart_profile_info()
+        has_systemd_entry = systemd_unit_entry_exists()
         running_info = (
             running_auto_uv_profile_info()
             if penguin_burner_runtime_is_active()
-            else {"selector": "", "silent_fan_curve": False}
+            else {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
         )
         systemd_selector = str(autostart_info["selector"])
         if systemd_selector in {"active", "latest", "__systemd_default__"}:
@@ -979,18 +1089,16 @@ class MainWindow:
         self.profile_list.set_profiles(
             self.profile_summaries,
             systemd_selector=systemd_selector,
-            has_systemd_entry=systemd_unit_entry_exists(),
+            has_systemd_entry=has_systemd_entry,
+            persist_on_startup_checked=persist_on_startup_from_runtime_config(
+                default=has_systemd_entry,
+            ),
             preferred_candidate_id=self.last_auto_uv_candidate_id,
             select_preferred=bool(self.last_auto_uv_candidate_id),
             silent_fan_checked=(
                 bool(running_info["silent_fan_curve"])
                 if str(running_info["selector"]).strip()
                 else bool(autostart_info["silent_fan_curve"])
-            ),
-            adaptive_checked=(
-                bool(running_info.get("adaptive_auto_uv"))
-                if str(running_info["selector"]).strip()
-                else bool(autostart_info.get("adaptive_auto_uv"))
             ),
         )
         self._set_profile_actions_enabled(not self._workflow_running())
@@ -1004,6 +1112,9 @@ class MainWindow:
             )
         )
 
+    def _persist_startup_preference(self, checked: bool) -> None:
+        persist_on_startup_to_runtime_config(bool(checked))
+
     def _workflow_running(self) -> bool:
         return (
             self.scan_controller.is_running()
@@ -1014,7 +1125,16 @@ class MainWindow:
     def _set_profile_actions_enabled(self, enabled: bool) -> None:
         self.profile_list.set_runtime_actions_enabled(bool(enabled))
 
-    def _runtime_action_start_text(self, action: str) -> str:
+    def _runtime_action_start_text(
+        self,
+        action: str,
+        *,
+        adaptive_auto_uv: bool = False,
+    ) -> str:
+        if adaptive_auto_uv:
+            if action == "install-systemd":
+                return "Starting adaptive Auto-UV; Systemd autostart: Yes."
+            return "Starting adaptive Auto-UV; Systemd autostart: No."
         selected = self.profile_list.selected_profile_name() or "none"
         if action == "install-systemd":
             return f"Starting profile: {selected}; Systemd autostart: Yes."
@@ -1063,7 +1183,9 @@ def _stop_request_path() -> Path:
 def _runtime_action_label(action: str) -> str:
     labels = {
         "daemonize": "Apply selected profile",
+        "adaptive-daemonize": "Apply adaptive Auto-UV",
         "install-systemd": "Install startup profile",
+        "adaptive-install-systemd": "Install adaptive startup profile",
         "uninstall-systemd": "Remove autostart entry",
         "delete-profiles": "Delete selected profiles",
     }

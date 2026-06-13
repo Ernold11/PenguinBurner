@@ -4,8 +4,11 @@ from pathlib import Path
 import shlex
 import subprocess
 
+from saved_uv_profiles import available_adaptive_tiers
 from saved_uv_profiles import profile_display_name
+from saved_uv_profiles import profile_tier_label
 from saved_uv_profiles import read_auto_uv_profile_summaries
+from saved_uv_profiles import resolve_profile_tier_profiles
 from runtime_service import PENGUIN_BURNER_UNIT_NAME
 from runtime_service import SYSTEMCTL
 from runtime_service import systemd_service_unit_path
@@ -67,8 +70,84 @@ def selected_profile_ids_include_selector(
     return bool(profile and str(profile.get("profile_id", "")) in selected)
 
 
+def profile_delete_removes_systemd(
+    profiles: list[dict],
+    selected_ids: list[str],
+    autostart_info: dict[str, object],
+) -> bool:
+    return (
+        profile_delete_autostart_action(profiles, selected_ids, autostart_info).get(
+            "action"
+        )
+        == "remove-systemd"
+    )
+
+
+def profile_delete_autostart_action(
+    profiles: list[dict],
+    selected_ids: list[str],
+    autostart_info: dict[str, object],
+) -> dict[str, str]:
+    selected = {str(value).strip() for value in selected_ids if str(value).strip()}
+    if not selected:
+        return {"action": "keep"}
+    selector = str(autostart_info.get("selector", "")).strip()
+    if not selector:
+        return {"action": "keep"}
+    if bool(autostart_info.get("adaptive_auto_uv", False)):
+        remaining_profiles = [
+            profile
+            for profile in profiles
+            if str(profile.get("profile_id", "")).strip() not in selected
+        ]
+        resolved = resolve_profile_tier_profiles(remaining_profiles)
+        remaining_tiers = available_adaptive_tiers(resolved)
+        if len(remaining_tiers) >= 2:
+            return {"action": "keep"}
+        if len(remaining_tiers) == 1:
+            profile = resolved.get(remaining_tiers[0])
+            if isinstance(profile, dict):
+                profile_id = str(profile.get("profile_id") or "").strip()
+                if profile_id:
+                    return {
+                        "action": "switch-profile",
+                        "profile_id": profile_id,
+                    }
+        return {
+            "action": "remove-systemd",
+            "reason": "last-usable-adaptive-profile",
+        }
+    if selected_profile_ids_include_selector(profiles, list(selected), selector):
+        return {"action": "remove-systemd"}
+    return {"action": "keep"}
+
+
 def profile_can_apply(profile: dict) -> bool:
     return profile_is_afterburner(profile) or bool(profile.get("final_verified", False))
+
+
+def adaptive_profile_tier_keys(
+    profiles: list[dict],
+    *,
+    assignments: dict[str, str] | None = None,
+) -> list[str]:
+    resolved = resolve_profile_tier_profiles(list(profiles), assignments=assignments)
+    return available_adaptive_tiers(resolved)
+
+
+def adaptive_profile_tier_labels(
+    profiles: list[dict],
+    *,
+    assignments: dict[str, str] | None = None,
+) -> list[str]:
+    return [
+        label
+        for label in (
+            profile_tier_label(tier)
+            for tier in adaptive_profile_tier_keys(profiles, assignments=assignments)
+        )
+        if label
+    ]
 
 
 def profile_can_verify(profile: dict) -> bool:
@@ -235,6 +314,8 @@ def delete_confirmation_text(
     names: list[str],
     *,
     removes_systemd: bool = False,
+    removes_last_usable_adaptive_profile: bool = False,
+    switches_systemd_to_profile: str = "",
     includes_afterburner: bool = False,
 ) -> str:
     clean_names = [str(name).strip() for name in names if str(name).strip()]
@@ -251,10 +332,28 @@ def delete_confirmation_text(
             "\n\nAuto-UV profile files are removed from disk. "
             "Afterburner import entries are removed from PenguinBurner's config."
         )
-    if removes_systemd:
+    if removes_systemd and removes_last_usable_adaptive_profile:
+        if len(clean_names) == 1:
+            message += (
+                "\n\nThis is the last usable Adaptive Auto-UV profile. "
+                "Deleting it will remove the Systemd autostart entry too."
+            )
+        else:
+            message += (
+                "\n\nThese are the last usable Adaptive Auto-UV profiles. "
+                "Deleting them will remove the Systemd autostart entry too."
+            )
+    elif removes_systemd:
         message += (
             "\n\nThis profile is currently persisted on startup. Deleting it will "
             "remove the Systemd autostart entry too."
+        )
+    switch_profile = str(switches_systemd_to_profile or "").strip()
+    if switch_profile:
+        message += (
+            "\n\nAdaptive Auto-UV will have fewer than two usable tiers after this "
+            "delete. PenguinBurner will keep Systemd autostart and switch it to "
+            f"profile {switch_profile}."
         )
     return message
 

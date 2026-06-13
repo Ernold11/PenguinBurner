@@ -8,12 +8,14 @@ from hidden_nvapi_vf import create_hidden_vf_curve_reader
 from hidden_nvapi_voltage import create_hidden_voltage_reader
 from latency_telemetry import start_latency_telemetry_logger
 from nvml_gpu_policy import NvmlGpuPolicyController
+from penguin_burner_overlay.config import default_overlay_config_path, load_overlay_config
 from runtime_debug import log as runtime_log
 from runtime_fan_control import run_runtime_fan_control_loop
 from runtime_gpu_control import (
     AdaptiveAutoUvRuntimeController,
     NvmlRuntimeSession,
     OverlayStatePublisher,
+    ProcessCpuUsageSampler,
     configure_runtime_vf_curve_policy,
 )
 
@@ -27,6 +29,7 @@ class NormalRuntimeDependencies:
     gpu_policy_controller_factory: Callable = NvmlGpuPolicyController
     configure_runtime_vf_curve_policy: Callable = configure_runtime_vf_curve_policy
     overlay_state_publisher_factory: Callable = OverlayStatePublisher
+    process_cpu_sampler_factory: Callable = ProcessCpuUsageSampler
     adaptive_auto_uv_runtime_factory: Callable = AdaptiveAutoUvRuntimeController
     run_runtime_fan_control_loop: Callable = run_runtime_fan_control_loop
     start_latency_telemetry_logger: Callable = start_latency_telemetry_logger
@@ -99,14 +102,21 @@ def run_normal_runtime(
         gpu_policy_controller=gpu_policy_controller,
         dependencies=vf_curve_policy_dependencies,
     )
+    overlay_config_path = default_overlay_config_path()
+    overlay_config = load_overlay_config(overlay_config_path)
     overlay_state_publisher = deps.overlay_state_publisher_factory(
         gpu_index=gpu_index,
         nvml_session=nvml_session,
         voltage_reader=voltage_reader,
+        vf_curve_reader=vf_curve_reader,
+        enabled=overlay_config.enabled,
+        update_interval_s=overlay_config.update_interval_s,
         profile_tier=str(getattr(vf_policy, "active_profile_tier", "") or ""),
         profile_tier_key=str(getattr(vf_policy, "active_profile_tier_key", "") or ""),
         profile_id=str(getattr(vf_policy, "active_profile_id", "") or ""),
         adaptive=bool(getattr(args, "adaptive_auto_uv", False)),
+        process_cpu_sampler=deps.process_cpu_sampler_factory(),
+        config_path=overlay_config_path,
     )
     latency_logger = deps.start_latency_telemetry_logger(log=deps.log)
     adaptive_auto_uv_controller = None
@@ -118,6 +128,7 @@ def run_normal_runtime(
                 gpu_policy_controller=gpu_policy_controller,
                 clock_ceiling_controller=vf_policy.clock_ceiling_controller,
                 overlay_state_publisher=overlay_state_publisher,
+                runtime_config_path=config_path,
             )
         else:
             deps.log(

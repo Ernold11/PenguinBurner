@@ -28,6 +28,7 @@ from .live_gpu_telemetry_text import (
 from .nvidia_smi_command import apply_gpu_base_policy, run_nvidia_smi_command
 from .nvml_runtime_session import NvmlRuntimeSession
 from .overlay_state_publisher import OverlayStatePublisher
+from .process_cpu_sampler import ProcessCpuUsage, ProcessCpuUsageSampler
 from .nvml_return_code import (
     NVML_CLOCK_GRAPHICS,
     NVML_CLOCK_MEM,
@@ -60,6 +61,8 @@ __all__ = [
     "NVML_TEMPERATURE_GPU",
     "NvmlRuntimeSession",
     "OverlayStatePublisher",
+    "ProcessCpuUsage",
+    "ProcessCpuUsageSampler",
     "RuntimeVfCurvePolicyDependencies",
     "RuntimeVfCurvePolicyResult",
     "apply_gpu_base_policy",

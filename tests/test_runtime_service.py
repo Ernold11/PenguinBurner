@@ -44,6 +44,7 @@ def test_systemd_unit_uses_running_python_and_program_without_launcher(
     program.parent.mkdir()
     program.write_text("# program\n", encoding="utf-8")
     monkeypatch.setattr(runtime_service.sys, "executable", "/opt/python/bin/python")
+    monkeypatch.setenv("PENGUIN_BURNER_ADAPTIVE_TARGET_FPS", "60")
 
     unit = runtime_service.build_systemd_service_unit(
         program,
@@ -54,7 +55,21 @@ def test_systemd_unit_uses_running_python_and_program_without_launcher(
         f"ExecStart=/opt/python/bin/python {program} --foreground "
         "--auto-uv-profile profile-a --silent-fan-curve"
     ) in unit
+    assert "Environment=PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=60" in unit
     assert "penguin_burner.sh" not in unit
+
+
+def test_systemd_unit_uses_adaptive_target_fps_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    program = tmp_path / "penguin_burner.py"
+    program.write_text("# program\n", encoding="utf-8")
+    monkeypatch.setenv("PENGUIN_BURNER_ADAPTIVE_TARGET_FPS", "50")
+
+    unit = runtime_service.build_systemd_service_unit(program, ["--adaptive-auto-uv"])
+
+    assert "Environment=PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=50" in unit
 
 
 def test_install_systemd_service_replaces_transient_unit_before_enabling(
@@ -112,3 +127,35 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
     )
     assert "--auto-uv-profile profile-a" in unit_path.read_text(encoding="utf-8")
     assert any("persistent service install" in message for message in logs)
+
+
+def test_daemonize_sets_adaptive_target_fps_env(monkeypatch) -> None:
+    calls = []
+    logs = []
+    monkeypatch.setenv("SUDO_USER", "jp")
+    monkeypatch.setenv("PENGUIN_BURNER_ADAPTIVE_TARGET_FPS", "120")
+    monkeypatch.setattr(runtime_service, "SYSTEMD_RUN", "/bin/systemd-run")
+    monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
+    monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        runtime_service,
+        "clear_existing_penguin_burner_unit_for_daemonize",
+        lambda **_kwargs: None,
+    )
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return SimpleNamespace(returncode=0, stdout="started\n", stderr="")
+
+    monkeypatch.setattr(runtime_service.subprocess, "run", fake_run)
+
+    runtime_service.daemonize_with_systemd(
+        "/tmp/penguin_burner.py",
+        ["--adaptive-auto-uv"],
+        journal_hours=4,
+        log=logs.append,
+    )
+
+    command = calls[0]
+    assert "--setenv" in command
+    assert "PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=120" in command

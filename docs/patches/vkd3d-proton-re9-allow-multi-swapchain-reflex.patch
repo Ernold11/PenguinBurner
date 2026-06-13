@@ -1,40 +1,75 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: PenguinBurner diagnostics <noreply@example.invalid>
-Date: Tue, 9 Jun 2026 00:00:00 +0000
-Subject: [PATCH] vkd3d: optionally keep Reflex owner with multiple swapchains
+Date: Thu, 11 Jun 2026 00:00:00 +0000
+Subject: [PATCH v2] vkd3d: keep Reflex marker owner with multiple swapchains,
+ skip LatencySleep
 
-This is a diagnostic patch for RE9/PenguinBurner latency testing, not a
-general upstream proposal.
+For RE9/PenguinBurner latency telemetry, not a general upstream proposal.
 
-Upstream commit 298eaf00 intentionally clears the device
-low_latency_swapchain when more than one Vulkan swapchain is live. That is
-normally conservative: NVIDIA Reflex has one low-latency swapchain owner per
-D3D12 device in this path.
+Upstream clears the device low_latency_swapchain when a second Vulkan
+swapchain appears (frame generation). That silently drops every in-band
+Reflex marker in d3d12_low_latency_device_SetLatencyMarker, killing
+sim-to-present latency measurement exactly when gameplay starts.
 
-For RE9 debugging we need to distinguish:
+v1 of this patch retained the owner unconditionally, which deadlocked:
+presents move to the new swapchain, and dxgi_vk_swap_chain_latency_sleep
+waits on vkLatencySleepNV's wakeup semaphore with UINT64_MAX timeout — a
+semaphore only signaled by the retained owner's presents, which never come
+(observed hard freeze at the RE9 intro on 2026-06-11).
 
-1. the game really creates/uses a second swapchain and VKD3D disables Reflex;
-2. the NVIDIA timing report ring stalls even while markers and presents still
-   advance on the primary swapchain.
+v2 splits the two concerns under VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1:
 
-Setting VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1 keeps the existing
-low_latency_swapchain owner instead of clearing it when vk_swapchain_count > 1.
-If that makes RE9's gpuRender timing stream survive, the root cause is the
-multi-swapchain Reflex guard/ownership path. If it still stalls, the issue is
-not solved by keeping the owner alive.
+- the owner is retained so SetLatencyMarker keeps forwarding in-band
+  markers (vkSetLatencyMarkerNV is synchronous and non-blocking, safe on a
+  non-presenting swapchain);
+- LatencySleep is skipped while vk_swapchain_count > 1, matching upstream's
+  effective behavior (cleared owner == no-op sleep), so Reflex pacing under
+  FG is unchanged versus stock and nothing can block.
 ---
- libs/vkd3d/swapchain.c | 21 ++++++++++++++++++++-
- 1 file changed, 20 insertions(+), 1 deletion(-)
-
+diff --git a/libs/vkd3d/device_vkd3d_ext.c b/libs/vkd3d/device_vkd3d_ext.c
+index 17395c5a..0821f49d 100644
+--- a/libs/vkd3d/device_vkd3d_ext.c
++++ b/libs/vkd3d/device_vkd3d_ext.c
+@@ -1128,6 +1128,7 @@ static BOOL STDMETHODCALLTYPE d3d12_low_latency_device_SupportsLowLatency(d3d_lo
+ static HRESULT STDMETHODCALLTYPE d3d12_low_latency_device_LatencySleep(d3d_low_latency_device_iface *iface)
+ {
+     struct dxgi_vk_swap_chain *low_latency_swapchain;
++    uint32_t vk_swapchain_count;
+     struct d3d12_device *device;
+ 
+     device = d3d12_device_from_ID3DLowLatencyDevice(iface);
+@@ -1136,13 +1137,21 @@ static HRESULT STDMETHODCALLTYPE d3d12_low_latency_device_LatencySleep(d3d_low_l
+         return E_NOTIMPL;
+ 
+     spinlock_acquire(&device->low_latency_swapchain_spinlock);
++    vk_swapchain_count = device->swapchain_info.vk_swapchain_count;
+     if ((low_latency_swapchain = device->swapchain_info.low_latency_swapchain))
+         dxgi_vk_swap_chain_incref(low_latency_swapchain);
+     spinlock_release(&device->low_latency_swapchain_spinlock);
+ 
+     if (low_latency_swapchain)
+     {
+-        dxgi_vk_swap_chain_latency_sleep(low_latency_swapchain);
++        /* With VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN the owner is retained
++         * only so latency markers keep flowing. Presents may have moved to
++         * another swapchain (frame generation), and vkLatencySleepNV's wakeup
++         * semaphore is driven by the owner's presents, so sleeping here would
++         * block forever. Skip the sleep, matching upstream's behavior where
++         * the cleared owner makes this call a no-op. */
++        if (!(vk_swapchain_count > 1 && vkd3d_low_latency_allow_multi_swapchain()))
++            dxgi_vk_swap_chain_latency_sleep(low_latency_swapchain);
+         dxgi_vk_swap_chain_decref(low_latency_swapchain);
+     }
+ 
 diff --git a/libs/vkd3d/swapchain.c b/libs/vkd3d/swapchain.c
-index 44b59d4d..99d7e8d2 100644
+index 0308c31d..c48c03c9 100644
 --- a/libs/vkd3d/swapchain.c
 +++ b/libs/vkd3d/swapchain.c
-@@ -1907,6 +1907,24 @@ static void dxgi_vk_swap_chain_set_low_latency_state(struct dxgi_vk_swap_chain *
+@@ -1928,6 +1928,24 @@ static void dxgi_vk_swap_chain_set_low_latency_state(struct dxgi_vk_swap_chain *
      chain->present.low_latency_state = *low_latency_state;
  }
  
-+static bool dxgi_vk_swap_chain_allow_multi_swapchain_reflex(void)
++bool vkd3d_low_latency_allow_multi_swapchain(void)
 +{
 +    static bool initialized;
 +    static bool enabled;
@@ -46,7 +81,7 @@ index 44b59d4d..99d7e8d2 100644
 +                env, sizeof(env)) && strcmp(env, "1") == 0;
 +        initialized = true;
 +        if (enabled)
-+            WARN("VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1: keeping Reflex low-latency swapchain owner with multiple Vulkan swapchains.\n");
++            WARN("VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1: keeping Reflex low-latency swapchain owner for markers with multiple Vulkan swapchains; LatencySleep is skipped in that state.\n");
 +    }
 +
 +    return enabled;
@@ -62,9 +97,19 @@ index 44b59d4d..99d7e8d2 100644
 -        if (device->swapchain_info.vk_swapchain_count > 1 && device->swapchain_info.low_latency_swapchain)
 +        if (device->swapchain_info.vk_swapchain_count > 1 &&
 +                device->swapchain_info.low_latency_swapchain &&
-+                !dxgi_vk_swap_chain_allow_multi_swapchain_reflex())
++                !vkd3d_low_latency_allow_multi_swapchain())
          {
              dxgi_vk_swap_chain_decref(device->swapchain_info.low_latency_swapchain);
              device->swapchain_info.low_latency_swapchain = NULL;
--- 
-2.50.0
+diff --git a/libs/vkd3d/vkd3d_private.h b/libs/vkd3d/vkd3d_private.h
+index 11e57170..7cc1efb4 100644
+--- a/libs/vkd3d/vkd3d_private.h
++++ b/libs/vkd3d/vkd3d_private.h
+@@ -3793,6 +3793,7 @@ struct dxgi_vk_swap_chain_factory
+ struct dxgi_vk_swap_chain;
+ 
+ bool dxgi_vk_swap_chain_low_latency_enabled(struct dxgi_vk_swap_chain *chain);
++bool vkd3d_low_latency_allow_multi_swapchain(void);
+ void dxgi_vk_swap_chain_latency_sleep(struct dxgi_vk_swap_chain *chain);
+ void dxgi_vk_swap_chain_set_latency_sleep_mode(struct dxgi_vk_swap_chain *chain,
+ 	bool low_latency_mode, bool low_latency_boost, uint32_t minimum_interval_us);

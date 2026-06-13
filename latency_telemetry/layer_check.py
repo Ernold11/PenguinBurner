@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import shutil
 import subprocess
 from typing import Callable
 
-LATENCY_LAYER_NAME = "VK_LAYER_PENGUINBURNER_latency"
-DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS = (
-    "PENGUIN_BURNER_LATENCY_LAYER=1 "
-    "VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency %command%"
-)
+from penguin_burner_overlay.native_layer import LATENCY_LAYER_NAME
+from penguin_burner_overlay.native_layer import native_layer_dirs
+
+DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS = "PENGUIN_BURNER %command%"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_BUILD_LAYER_DIR = _REPO_ROOT / "native" / "latency_layer" / "build"
 
 
 def check_latency_layer(
@@ -28,8 +30,7 @@ def check_latency_layer(
             "returncode": None,
         }
 
-    check_env = dict(os.environ if env is None else env)
-    check_env["PENGUIN_BURNER_LATENCY_LAYER"] = "1"
+    check_env = _latency_layer_check_env(dict(os.environ if env is None else env))
 
     try:
         completed = run(
@@ -86,10 +87,12 @@ def format_latency_layer_check(result: dict[str, object]) -> str:
     if reason and not ok:
         lines.append(f"Reason: {reason}")
     if not ok:
+        layer_dirs = native_layer_dirs(source_build_dir=_BUILD_LAYER_DIR)
+        layer_dir = layer_dirs[0] if layer_dirs else _BUILD_LAYER_DIR
         lines.extend(
             [
-                "Build-tree check example:",
-                "  VK_ADD_IMPLICIT_LAYER_PATH=/path/to/native/build "
+                "Layer check example:",
+                f"  VK_ADD_IMPLICIT_LAYER_PATH={layer_dir} "
                 "PENGUIN_BURNER_LATENCY_LAYER=1 vulkaninfo --summary",
             ]
         )
@@ -100,3 +103,38 @@ def format_latency_layer_check(result: dict[str, object]) -> str:
         lines.extend(f"  {line}" for line in list(warnings)[:5])
 
     return "\n".join(lines)
+
+
+def _latency_layer_check_env(env: dict[str, str]) -> dict[str, str]:
+    env["PENGUIN_BURNER_LATENCY_LAYER"] = "1"
+    layer_dirs = native_layer_dirs(env, source_build_dir=_BUILD_LAYER_DIR)
+    if layer_dirs:
+        _prepend_env_entries(
+            env,
+            "VK_ADD_IMPLICIT_LAYER_PATH",
+            [str(path) for path in layer_dirs],
+            separator=":",
+        )
+        _prepend_env_entries(
+            env,
+            "VK_LOADER_LAYERS_ENABLE",
+            [LATENCY_LAYER_NAME],
+            separator=",",
+        )
+    return env
+
+
+def _prepend_env_entries(
+    env: dict[str, str],
+    key: str,
+    entries: list[str],
+    *,
+    separator: str,
+) -> None:
+    existing = [item for item in str(env.get(key) or "").split(separator) if item]
+    merged: list[str] = []
+    for item in [*entries, *existing]:
+        if item not in merged:
+            merged.append(item)
+    if merged:
+        env[key] = separator.join(merged)

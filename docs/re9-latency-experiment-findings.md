@@ -512,7 +512,7 @@ and the second should be `VK_LAYER_DXVK_NVAPI_reflex`.
 The guarded setup command applies both pieces after Steam is closed:
 
 ```bash
-penguin-burner-steam-re9-patched-setup --wait
+penguin-burner-steam-game-setup --game re9 --wait
 penguin-burner-steam-launch-check \
   --extra-require VKD3D_LOW_LATENCY_ALLOW_MULTI_SWAPCHAIN=1 \
   --compat-tool 'Proton-CachyOS PB-Re9-Reflex'

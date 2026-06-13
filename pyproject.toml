@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=69", "wheel", "cmake>=3.20"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "penguin-burner"
-version = "0.2.6"
+version = "0.3.7"
 description = "NVIDIA GPU automatic undervolting tool with precision V/F tuning, MSI Afterburner imports, and LACT exports"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -62,14 +62,20 @@ cuda-bruteforce-stability = "stability.cuda_bruteforce:main"
 penguin-burner-import-afterburner-vf = "afterburner.import_vf_curve:main"
 penguin-burner-import-afterburner-fan = "afterburner.import_fan_curve:main"
 penguin-burner-steam-launch-check = "latency_telemetry.steam_launch_check:main"
-penguin-burner-steam-re9-patched-setup = "latency_telemetry.steam_re9_setup:main"
+penguin-burner-steam-game-setup = "latency_telemetry.steam_game_setup:main"
 PB_OVERLAY = "penguin_burner_overlay.launcher:main"
+PENGUIN_BURNER = "penguin_burner_overlay.launcher:main"
+penguin-burner-overlay = "penguin_burner_overlay.launcher:main"
+pburn-overlay = "penguin_burner_overlay.launcher:main"
 pb-overlay = "penguin_burner_overlay.launcher:main"
-pb-overlay-text = "penguin_burner_overlay.mangohud_text:main"
+penguin-burner-overlay-text = "penguin_burner_overlay.overlay_text:main"
+pburn-overlay-text = "penguin_burner_overlay.overlay_text:main"
+pb-overlay-text = "penguin_burner_overlay.overlay_text:main"
 
 [tool.setuptools]
 py-modules = [
   "ascii_chart",
+  "adaptive_target_fps",
   "cli_output",
   "cuda_bruteforce_stability",
   "dry_run_preview",
@@ -124,6 +130,10 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
+"penguin_burner_overlay" = [
+  "native_layer/*.json",
+  "native_layer/*.so",
+]
 "ui.assets" = [
   "*.png",
 ]

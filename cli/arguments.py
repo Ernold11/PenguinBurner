@@ -35,6 +35,7 @@ def parse_arguments(argv):
     auto_uv_group = parser.add_argument_group("Auto-UV")
     daemon_group = parser.add_argument_group("Runtime and daemon essentials")
     runtime_group = parser.add_argument_group("Runtime tuning")
+    overlay_group = parser.add_argument_group("Overlay")
     lact_group = parser.add_argument_group("LACT export")
     stability_group = parser.add_argument_group("Stability workload")
     afterburner_group = parser.add_argument_group("Afterburner import")
@@ -263,8 +264,10 @@ def parse_arguments(argv):
         action="store_true",
         help=(
             "Runtime/daemon only: allow PenguinBurner to adapt between saved "
-            "Auto-UV profile tiers from present-frame p95 pacing. Requires at "
-            "least two available profile tiers."
+            "Auto-UV profile tiers from base present-frame p95 pacing. Requires "
+            "at least two available profile tiers. Target defaults to 60 FPS; "
+            "override the service env PENGUIN_BURNER_ADAPTIVE_TARGET_FPS for "
+            "30, 50, 60, 120, etc."
         ),
     )
     daemon_group.add_argument(
@@ -293,6 +296,32 @@ def parse_arguments(argv):
         type=int,
         default=None,
         help="Optional manual power-limit cap in watts for translation preview",
+    )
+    overlay_action_group = overlay_group.add_mutually_exclusive_group()
+    overlay_action_group.add_argument(
+        "--overlay-toggle",
+        action="store_true",
+        help=(
+            "Toggle PenguinBurner's native in-game overlay and exit. The running "
+            "overlay reloads this setting live, so this is suitable for a desktop "
+            "global shortcut."
+        ),
+    )
+    overlay_action_group.add_argument(
+        "--overlay-enable",
+        action="store_true",
+        help=(
+            "Enable PenguinBurner's native in-game overlay and exit. The running "
+            "overlay reloads this setting live."
+        ),
+    )
+    overlay_action_group.add_argument(
+        "--overlay-disable",
+        action="store_true",
+        help=(
+            "Disable PenguinBurner's native in-game overlay and exit. The running "
+            "overlay reloads this setting live."
+        ),
     )
     lact_group.add_argument(
         "--export-lact-config",

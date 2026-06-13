@@ -30,6 +30,9 @@ class FakeOverlayPublisher:
     profile_tier = ""
     profile_tier_key = ""
     profile_id = ""
+    last_gpu_util_pct = None
+    last_cpu_util_pct = None
+    last_cpu_peak_thread_pct = None
 
 
 def _curve(profile_id: str, tier: str, plan: list[dict]) -> dict:
@@ -191,3 +194,200 @@ def test_adaptive_runtime_prefers_base_present_frametime() -> None:
     assert result.changed is True
     assert result.tier == PROFILE_TIER_PERFORMANCE
     assert applied == [(reader, curves["perf"]["plan"])]
+
+
+def test_adaptive_runtime_reads_target_fps_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("PENGUIN_BURNER_ADAPTIVE_TARGET_FPS", "30")
+    reader = FakeReader()
+    applied = []
+    profiles = [
+        {"profile_id": "eff", "final_verified": True},
+        {"profile_id": "perf", "final_verified": True},
+    ]
+    curves = {
+        "eff": _curve("eff", PROFILE_TIER_EFFICIENCY, [{"index": 1}]),
+        "perf": _curve("perf", PROFILE_TIER_PERFORMANCE, [{"index": 2}]),
+    }
+    logs = []
+    deps = AdaptiveAutoUvRuntimeDependencies(
+        read_auto_uv_profiles=lambda: profiles,
+        resolve_profile_tier_profiles=lambda _profiles: {
+            PROFILE_TIER_EFFICIENCY: profiles[0],
+            PROFILE_TIER_PERFORMANCE: profiles[1],
+        },
+        load_auto_uv_final_curve=lambda profile_id: curves[profile_id],
+        apply_plan=lambda target_reader, plan: applied.append((target_reader, plan)),
+        apply_memory_offset=lambda **_kwargs: {},
+        select_expected_vf_samples=lambda _plan: [],
+        log=logs.append,
+    )
+    controller = AdaptiveAutoUvRuntimeController(
+        current_tier=PROFILE_TIER_EFFICIENCY,
+        vf_curve_reader=reader,
+        gpu_policy_controller=object(),
+        dependencies=deps,
+    )
+
+    result = controller.update(
+        latency_snapshot={"base_present_frametime_p95_ms": 25.0},
+        now_monotonic=10.0,
+    )
+
+    assert result is not None
+    assert result.changed is False
+    assert applied == []
+    assert any("30 FPS (33.33 ms p95)" in message for message in logs)
+
+
+def test_adaptive_runtime_refreshes_target_fps_from_runtime_config(tmp_path) -> None:
+    reader = FakeReader()
+    applied = []
+    logs = []
+    runtime_config = tmp_path / "penguin_burner.toml"
+    runtime_config.write_text("[adaptive]\ntarget_fps = 60\n", encoding="utf-8")
+    profiles = [
+        {"profile_id": "eff", "final_verified": True},
+        {"profile_id": "perf", "final_verified": True},
+    ]
+    curves = {
+        "eff": _curve("eff", PROFILE_TIER_EFFICIENCY, [{"index": 1}]),
+        "perf": _curve("perf", PROFILE_TIER_PERFORMANCE, [{"index": 2}]),
+    }
+    deps = AdaptiveAutoUvRuntimeDependencies(
+        read_auto_uv_profiles=lambda: profiles,
+        resolve_profile_tier_profiles=lambda _profiles: {
+            PROFILE_TIER_EFFICIENCY: profiles[0],
+            PROFILE_TIER_PERFORMANCE: profiles[1],
+        },
+        load_auto_uv_final_curve=lambda profile_id: curves[profile_id],
+        apply_plan=lambda target_reader, plan: applied.append((target_reader, plan)),
+        apply_memory_offset=lambda **_kwargs: {},
+        select_expected_vf_samples=lambda _plan: [],
+        log=logs.append,
+    )
+    controller = AdaptiveAutoUvRuntimeController(
+        current_tier=PROFILE_TIER_EFFICIENCY,
+        vf_curve_reader=reader,
+        gpu_policy_controller=object(),
+        adaptive_target_fps=30,
+        runtime_config_path=runtime_config,
+        dependencies=deps,
+    )
+
+    result = controller.update(
+        latency_snapshot={"base_present_frametime_p95_ms": 24.0},
+        now_monotonic=10.0,
+    )
+
+    assert result is not None
+    assert result.changed is True
+    assert result.tier == PROFILE_TIER_PERFORMANCE
+    assert applied == [(reader, curves["perf"]["plan"])]
+    assert any("target updated: 60 FPS (16.67 ms p95)" in message for message in logs)
+
+
+def test_adaptive_runtime_restores_policy_state_after_apply_failure() -> None:
+    reader = FakeReader()
+    apply_attempts = []
+    logs = []
+    profiles = [
+        {"profile_id": "eff", "final_verified": True},
+        {"profile_id": "perf", "final_verified": True},
+    ]
+    curves = {
+        "eff": _curve("eff", PROFILE_TIER_EFFICIENCY, [{"index": 1}]),
+        "perf": _curve("perf", PROFILE_TIER_PERFORMANCE, [{"index": 2}]),
+    }
+
+    def fail_apply(target_reader, plan) -> None:
+        apply_attempts.append((target_reader, plan))
+        raise RuntimeError("driver rejected curve")
+
+    deps = AdaptiveAutoUvRuntimeDependencies(
+        read_auto_uv_profiles=lambda: profiles,
+        resolve_profile_tier_profiles=lambda _profiles: {
+            PROFILE_TIER_EFFICIENCY: profiles[0],
+            PROFILE_TIER_PERFORMANCE: profiles[1],
+        },
+        load_auto_uv_final_curve=lambda profile_id: curves[profile_id],
+        apply_plan=fail_apply,
+        apply_memory_offset=lambda **_kwargs: {},
+        select_expected_vf_samples=lambda _plan: [],
+        log=logs.append,
+    )
+    controller = AdaptiveAutoUvRuntimeController(
+        current_tier=PROFILE_TIER_EFFICIENCY,
+        vf_curve_reader=reader,
+        gpu_policy_controller=object(),
+        dependencies=deps,
+    )
+
+    first = controller.update(
+        latency_snapshot={"base_present_frametime_p95_ms": 24.0},
+        now_monotonic=10.0,
+    )
+    second = controller.update(
+        latency_snapshot={"base_present_frametime_p95_ms": 24.0},
+        now_monotonic=20.0,
+    )
+
+    assert first is not None
+    assert first.changed is False
+    assert first.tier == PROFILE_TIER_EFFICIENCY
+    assert first.reason == "apply-failed"
+    assert controller.policy.current_tier == PROFILE_TIER_EFFICIENCY
+    assert second is not None
+    assert second.reason == "apply-failed"
+    assert apply_attempts == [
+        (reader, curves["perf"]["plan"]),
+        (reader, curves["perf"]["plan"]),
+    ]
+    assert any("driver rejected curve" in message for message in logs)
+
+
+def test_adaptive_runtime_passes_overlay_busy_metrics_to_policy() -> None:
+    reader = FakeReader()
+    overlay = FakeOverlayPublisher()
+    overlay.last_gpu_util_pct = 85
+    overlay.last_cpu_peak_thread_pct = 74
+    applied = []
+    logs = []
+    profiles = [
+        {"profile_id": "eff", "final_verified": True},
+        {"profile_id": "perf", "final_verified": True},
+    ]
+    curves = {
+        "eff": _curve("eff", PROFILE_TIER_EFFICIENCY, [{"index": 1}]),
+        "perf": _curve("perf", PROFILE_TIER_PERFORMANCE, [{"index": 2}]),
+    }
+    deps = AdaptiveAutoUvRuntimeDependencies(
+        read_auto_uv_profiles=lambda: profiles,
+        resolve_profile_tier_profiles=lambda _profiles: {
+            PROFILE_TIER_EFFICIENCY: profiles[0],
+            PROFILE_TIER_PERFORMANCE: profiles[1],
+        },
+        load_auto_uv_final_curve=lambda profile_id: curves[profile_id],
+        apply_plan=lambda target_reader, plan: applied.append((target_reader, plan)),
+        apply_memory_offset=lambda **_kwargs: {},
+        select_expected_vf_samples=lambda _plan: [],
+        log=logs.append,
+    )
+    controller = AdaptiveAutoUvRuntimeController(
+        current_tier=PROFILE_TIER_EFFICIENCY,
+        vf_curve_reader=reader,
+        gpu_policy_controller=object(),
+        overlay_state_publisher=overlay,
+        dependencies=deps,
+    )
+
+    result = controller.update(
+        latency_snapshot={"base_present_frametime_p95_ms": 24.0},
+        now_monotonic=10.0,
+    )
+
+    assert result is not None
+    assert result.changed is False
+    assert result.tier == PROFILE_TIER_EFFICIENCY
+    assert result.reason == "cpu-bound-performance-block"
+    assert applied == []
+    assert any("held below Performance" in message for message in logs)

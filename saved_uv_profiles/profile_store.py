@@ -8,7 +8,11 @@ import time
 
 from penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
 
-from .profile_tiers import load_profile_tier_assignments, profile_tier_summary_fields
+from .profile_tiers import (
+    load_profile_tier_assignments,
+    load_profile_tier_disabled_profile_ids,
+    profile_tier_summary_fields,
+)
 
 
 _PROFILE_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -326,7 +330,12 @@ def read_auto_uv_profiles(
     return profiles
 
 
-def profile_summary(profile: dict, *, tier_assignments: dict[str, str] | None = None) -> dict:
+def profile_summary(
+    profile: dict,
+    *,
+    tier_assignments: dict[str, str] | None = None,
+    disabled_profile_tier_ids: set[str] | None = None,
+) -> dict:
     summary = {
         "profile_id": str(profile.get("profile_id", "")),
         "candidate_id": str(profile.get("candidate_id", "")),
@@ -353,7 +362,13 @@ def profile_summary(profile: dict, *, tier_assignments: dict[str, str] | None = 
         "verification_status": profile.get("verification_status"),
         "manual_edit": profile.get("manual_edit"),
     }
-    summary.update(profile_tier_summary_fields(profile, tier_assignments))
+    summary.update(
+        profile_tier_summary_fields(
+            profile,
+            tier_assignments,
+            disabled_profile_ids=disabled_profile_tier_ids,
+        )
+    )
     return summary
 
 
@@ -381,8 +396,13 @@ def _display_date(value) -> str:
 
 def read_auto_uv_profile_summaries() -> list[dict]:
     tier_assignments = load_profile_tier_assignments()
+    disabled_profile_tier_ids = load_profile_tier_disabled_profile_ids()
     return [
-        profile_summary(profile, tier_assignments=tier_assignments)
+        profile_summary(
+            profile,
+            tier_assignments=tier_assignments,
+            disabled_profile_tier_ids=disabled_profile_tier_ids,
+        )
         for profile in read_auto_uv_profiles()
     ]
 

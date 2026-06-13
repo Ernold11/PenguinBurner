@@ -5,6 +5,7 @@
     "type": "GLOBAL",
     "api_version": "1.4.0",
     "library_path": "@PB_LAYER_LIBRARY_PATH@",
+    "library_arch": "@PB_LAYER_LIBRARY_ARCH@",
     "implementation_version": "1",
     "description": "PenguinBurner latency telemetry observer",
     "functions": {

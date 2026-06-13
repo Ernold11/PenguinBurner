@@ -12,5 +12,6 @@ dist/
 *-manual-test.log
 # Local exploratory notes, scripts, and generated artifacts are kept out of Git.
 reverse-engineering/
+reverse/
 specs/
 byobu-history.txt

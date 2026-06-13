@@ -1,5 +1,6 @@
 from .curve_plot import CurvePlot
 from .log_view import LogView
+from .overlay_config import OverlayConfigPanel
 from .profile_list import ProfileList
 from .runs_table import RunsTable
 from .scan_controls import ScanControls
@@ -9,6 +10,7 @@ from .table_sizing import set_header_fit_column_widths
 __all__ = [
     "CurvePlot",
     "LogView",
+    "OverlayConfigPanel",
     "ProfileList",
     "RunsTable",
     "ScanControls",

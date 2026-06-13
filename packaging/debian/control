@@ -4,6 +4,9 @@ Priority: optional
 Maintainer: PenguinBurner contributors <jan.pietek@gmail.com>
 Build-Depends:
  debhelper-compat (= 13),
+ cmake,
+ g++,
+ libvulkan-dev,
  python3,
  python3-build,
  python3-installer,

@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.2.6
+Version:        0.3.7
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -15,6 +15,9 @@ BuildRequires:  pyproject-rpm-macros
 BuildRequires:  python3-pip
 BuildRequires:  python3-setuptools
 BuildRequires:  python3-wheel
+BuildRequires:  cmake
+BuildRequires:  gcc-c++
+BuildRequires:  vulkan-headers
 BuildRequires:  desktop-file-utils
 
 Requires:       python3-pyside6 >= 6.7
@@ -43,6 +46,7 @@ Fusion.
 %autosetup
 
 %build
+export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
 %pyproject_wheel
 
 %install

@@ -43,6 +43,20 @@ def get_power_draw_w(nvml, device):
     return power_mw.value / 1000.0
 
 
+class _NvmlUtilization(ctypes.Structure):
+    # nvmlUtilization_t: gpu = % of the sample period a kernel ran, memory =
+    # % of the period the memory controller was busy.
+    _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
+
+
+def get_gpu_utilization_pct(nvml, device):
+    util = _NvmlUtilization()
+    rc = nvml.nvmlDeviceGetUtilizationRates(device, ctypes.byref(util))
+    if rc != NVML_SUCCESS:
+        return None
+    return int(util.gpu)
+
+
 def get_core_clock_mhz(nvml, device):
     clock_mhz = ctypes.c_uint()
     rc = nvml.nvmlDeviceGetClockInfo(

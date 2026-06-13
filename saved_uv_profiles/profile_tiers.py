@@ -11,6 +11,7 @@ from penguin_burner_paths import claim_desktop_user_ownership, default_user_conf
 PROFILE_TIER_EFFICIENCY = "efficiency"
 PROFILE_TIER_BALANCED = "balanced"
 PROFILE_TIER_PERFORMANCE = "performance"
+PROFILE_TIER_NONE = "none"
 PROFILE_TIERS = (
     PROFILE_TIER_EFFICIENCY,
     PROFILE_TIER_BALANCED,
@@ -36,6 +37,7 @@ _PROFILE_TIER_ALIASES = {
     "performance": PROFILE_TIER_PERFORMANCE,
     "aggressive": PROFILE_TIER_PERFORMANCE,
 }
+_PROFILE_TIER_NONE_ALIASES = {"none", "no", "off", "disable", "disabled", "unassigned"}
 
 
 def normalize_profile_tier(value: object | None, *, default: str = "") -> str:
@@ -49,6 +51,11 @@ def normalize_profile_tier(value: object | None, *, default: str = "") -> str:
 def profile_tier_label(value: object | None) -> str:
     tier = normalize_profile_tier(value)
     return PROFILE_TIER_LABELS.get(tier, "")
+
+
+def profile_tier_is_none(value: object | None) -> bool:
+    text = str(value or "").strip().lower()
+    return text in _PROFILE_TIER_NONE_ALIASES
 
 
 def generated_profile_tier_from_runtime_options(runtime_options: dict | None) -> str:
@@ -122,26 +129,32 @@ def profile_tier_assignments_path() -> Path:
 
 
 def load_profile_tier_assignments(path: str | Path | None = None) -> dict[str, str]:
-    assignment_path = Path(path).expanduser() if path is not None else profile_tier_assignments_path()
-    try:
-        payload = json.loads(
-            assignment_path.read_text(encoding="utf-8", errors="replace")
-        )
-    except (OSError, json.JSONDecodeError):
-        return {}
+    payload = _read_profile_tier_assignments(path)
     raw_tiers = payload.get("tiers") if isinstance(payload, dict) else None
     if not isinstance(raw_tiers, dict):
         return {}
     assignments: dict[str, str] = {}
     seen_profiles: set[str] = set()
+    disabled_profile_ids = _disabled_profile_ids_from_payload(payload)
     for raw_tier, raw_profile_id in raw_tiers.items():
         tier = normalize_profile_tier(raw_tier)
         profile_id = str(raw_profile_id or "").strip()
-        if not tier or not profile_id or profile_id in seen_profiles:
+        if (
+            not tier
+            or not profile_id
+            or profile_id in seen_profiles
+            or profile_id in disabled_profile_ids
+        ):
             continue
         assignments[tier] = profile_id
         seen_profiles.add(profile_id)
     return assignments
+
+
+def load_profile_tier_disabled_profile_ids(
+    path: str | Path | None = None,
+) -> set[str]:
+    return _disabled_profile_ids_from_payload(_read_profile_tier_assignments(path))
 
 
 def save_profile_tier_assignment(
@@ -154,16 +167,48 @@ def save_profile_tier_assignment(
     selected_tier = normalize_profile_tier(tier)
     if not selected_profile_id:
         raise ValueError("profile_id is required")
+    if profile_tier_is_none(tier):
+        return save_profile_tier_none_assignment(selected_profile_id, path=path)
     if not selected_tier:
         raise ValueError("profile tier is required")
 
+    disabled_profile_ids = load_profile_tier_disabled_profile_ids(path)
+    disabled_profile_ids.discard(selected_profile_id)
     assignments = {
         key: value
         for key, value in load_profile_tier_assignments(path).items()
         if value != selected_profile_id
     }
     assignments[selected_tier] = selected_profile_id
-    _write_profile_tier_assignments(assignments, path=path)
+    _write_profile_tier_assignments(
+        assignments,
+        disabled_profile_ids=disabled_profile_ids,
+        path=path,
+    )
+    return assignments
+
+
+def save_profile_tier_none_assignment(
+    profile_id: str,
+    *,
+    path: str | Path | None = None,
+) -> dict[str, str]:
+    selected_profile_id = str(profile_id or "").strip()
+    if not selected_profile_id:
+        raise ValueError("profile_id is required")
+
+    assignments = {
+        key: value
+        for key, value in load_profile_tier_assignments(path).items()
+        if value != selected_profile_id
+    }
+    disabled_profile_ids = load_profile_tier_disabled_profile_ids(path)
+    disabled_profile_ids.add(selected_profile_id)
+    _write_profile_tier_assignments(
+        assignments,
+        disabled_profile_ids=disabled_profile_ids,
+        path=path,
+    )
     return assignments
 
 
@@ -178,8 +223,31 @@ def clear_profile_tier_assignment(
         for key, value in load_profile_tier_assignments(path).items()
         if value != selected_profile_id
     }
-    _write_profile_tier_assignments(assignments, path=path)
+    disabled_profile_ids = load_profile_tier_disabled_profile_ids(path)
+    disabled_profile_ids.discard(selected_profile_id)
+    _write_profile_tier_assignments(
+        assignments,
+        disabled_profile_ids=disabled_profile_ids,
+        path=path,
+    )
     return assignments
+
+
+def profile_tier_disabled(
+    profile: dict,
+    disabled_profile_ids: set[str] | None = None,
+) -> bool:
+    if _truthy(profile.get("profile_tier_disabled")):
+        return True
+    profile_id = str(profile.get("profile_id") or "").strip()
+    if not profile_id:
+        return False
+    disabled = (
+        disabled_profile_ids
+        if disabled_profile_ids is not None
+        else load_profile_tier_disabled_profile_ids()
+    )
+    return profile_id in disabled
 
 
 def assigned_tier_for_profile(
@@ -199,10 +267,12 @@ def assigned_tier_for_profile(
 def profile_tier_summary_fields(
     profile: dict,
     assignments: dict[str, str] | None = None,
-) -> dict[str, str]:
+    disabled_profile_ids: set[str] | None = None,
+) -> dict[str, object]:
     generated_tier = generated_profile_tier(profile)
-    assigned_tier = assigned_tier_for_profile(profile, assignments)
-    effective_tier = assigned_tier or generated_tier
+    disabled = profile_tier_disabled(profile, disabled_profile_ids)
+    assigned_tier = "" if disabled else assigned_tier_for_profile(profile, assignments)
+    effective_tier = "" if disabled else assigned_tier or generated_tier
     return {
         "generated_profile_tier": profile_tier_label(generated_tier),
         "generated_profile_tier_key": generated_tier,
@@ -210,16 +280,26 @@ def profile_tier_summary_fields(
         "assigned_profile_tier_key": assigned_tier,
         "profile_tier": profile_tier_label(effective_tier),
         "profile_tier_key": effective_tier,
+        "profile_tier_disabled": disabled,
     }
 
 
 def resolve_profile_tier_profiles(
     profiles: list[dict],
     assignments: dict[str, str] | None = None,
+    disabled_profile_ids: set[str] | None = None,
 ) -> dict[str, dict | None]:
     tier_assignments = assignments if assignments is not None else load_profile_tier_assignments()
+    disabled = (
+        disabled_profile_ids
+        if disabled_profile_ids is not None
+        else load_profile_tier_disabled_profile_ids()
+    )
     visible_profiles = [
-        profile for profile in profiles if bool(profile.get("final_verified", False))
+        profile
+        for profile in profiles
+        if bool(profile.get("final_verified", False))
+        and not profile_tier_disabled(profile, disabled)
     ]
     visible_profiles.sort(key=_profile_sort_time, reverse=True)
     by_profile_id = {
@@ -238,13 +318,30 @@ def resolve_profile_tier_profiles(
         resolved[tier] = profile
         assigned_profile_ids.add(assigned_profile_id)
 
+    unassigned_profiles = []
     for profile in visible_profiles:
         profile_id = str(profile.get("profile_id") or "").strip()
         if not profile_id or profile_id in assigned_profile_ids:
             continue
         tier = generated_profile_tier(profile)
-        if tier in resolved and resolved[tier] is None:
-            resolved[tier] = profile
+        if tier in resolved:
+            unassigned_profiles.append(profile)
+    for tier in PROFILE_TIERS:
+        if resolved[tier] is not None:
+            continue
+        candidates = [
+            profile
+            for profile in unassigned_profiles
+            if generated_profile_tier(profile) == tier
+        ]
+        if not candidates:
+            continue
+        resolved[tier] = max(
+            candidates,
+            key=lambda profile, tier=tier, candidates=candidates: (
+                _profile_tier_sort_key(profile, tier, candidates)
+            ),
+        )
     return resolved
 
 
@@ -268,11 +365,17 @@ def available_adaptive_tiers(
 def _write_profile_tier_assignments(
     assignments: dict[str, str],
     *,
+    disabled_profile_ids: set[str] | None = None,
     path: str | Path | None = None,
 ) -> Path:
     assignment_path = Path(path).expanduser() if path is not None else profile_tier_assignments_path()
+    disabled = sorted(
+        str(profile_id).strip()
+        for profile_id in (disabled_profile_ids or set())
+        if str(profile_id).strip()
+    )
     payload = {
-        "format_version": 1,
+        "format_version": 2,
         "updated_at": datetime.now().astimezone().isoformat(),
         "tiers": {
             tier: str(assignments[tier])
@@ -280,6 +383,8 @@ def _write_profile_tier_assignments(
             if str(assignments.get(tier) or "").strip()
         },
     }
+    if disabled:
+        payload["disabled_profile_ids"] = disabled
     assignment_path.parent.mkdir(parents=True, exist_ok=True)
     claim_desktop_user_ownership(assignment_path.parent, include_parents=True)
     temp_path = assignment_path.with_name(assignment_path.name + ".tmp")
@@ -289,6 +394,28 @@ def _write_profile_tier_assignments(
     return assignment_path
 
 
+def _read_profile_tier_assignments(path: str | Path | None = None) -> dict:
+    assignment_path = Path(path).expanduser() if path is not None else profile_tier_assignments_path()
+    try:
+        payload = json.loads(
+            assignment_path.read_text(encoding="utf-8", errors="replace")
+        )
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _disabled_profile_ids_from_payload(payload: dict) -> set[str]:
+    raw_values = payload.get("disabled_profile_ids") if isinstance(payload, dict) else None
+    if not isinstance(raw_values, list):
+        return set()
+    return {
+        str(profile_id).strip()
+        for profile_id in raw_values
+        if str(profile_id).strip()
+    }
+
+
 def _optional_int(value: object | None) -> int | None:
     if value in (None, ""):
         return None
@@ -296,6 +423,54 @@ def _optional_int(value: object | None) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _profile_tier_sort_key(
+    profile: dict,
+    tier: str,
+    candidates: list[dict],
+) -> tuple[float, float]:
+    if tier != PROFILE_TIER_BALANCED:
+        return (0.0, _profile_sort_time(profile))
+    return (
+        _balanced_profile_score(profile, candidates),
+        _profile_sort_time(profile),
+    )
+
+
+def _balanced_profile_score(profile: dict, candidates: list[dict]) -> float:
+    best_fpsw = max(
+        (_optional_float(candidate.get("efficiency_fps_per_w")) or 0.0)
+        for candidate in candidates
+    )
+    best_fps = max(
+        (_optional_float(candidate.get("avg_fps")) or 0.0)
+        for candidate in candidates
+    )
+    fpsw = _optional_float(profile.get("efficiency_fps_per_w"))
+    fps = _optional_float(profile.get("avg_fps"))
+    fpsw_score = _relative_score(fpsw, best_fpsw)
+    fps_score = _relative_score(fps, best_fps)
+    return (fpsw_score + fps_score) / 2.0
+
+
+def _relative_score(value: float | None, best: float) -> float:
+    if value is None or best <= 0.0:
+        return 0.0
+    return max(0.0, float(value) / float(best))
+
+
+def _optional_float(value: object | None) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _truthy(value: object | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _profile_sort_time(profile: dict) -> float:

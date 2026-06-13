@@ -2,19 +2,32 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import re
 
 
 RE9_APP_ID = "3764200"
+# Clean command name resolved via PATH, so the Steam launch line stays readable
+# instead of carrying a hardcoded /home/<user>/.local/bin/... path.
+PENGUIN_BURNER_WRAPPER = "PENGUIN_BURNER"
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+RE9_LATENCY_SOCKET_PATH = (
+    f"/run/user/{os.getuid()}/penguin-burner/latency.sock"
+)
+# Keep both implicit-layer manifests discoverable. The runtime wrapper controls
+# the effective layer order with VK_LOADER_LAYERS_ENABLE so PB remains before
+# dxvk-nvapi for marker observation.
+RE9_IMPLICIT_LAYER_PATH = ":".join(
+    (
+        str(_REPO_ROOT / "third_party" / "dxvk-nvapi" / "build.layer"),
+        str(_REPO_ROOT / "native" / "latency_layer" / "build"),
+    )
+)
 RE9_REQUIRED_TOKENS = (
-    "PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock",
-    "VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/native/latency_layer/build:/home/jp/PenguinBurner/third_party/dxvk-nvapi/build.layer",
-    "VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency,VK_LAYER_DXVK_NVAPI_reflex",
-    "PENGUIN_BURNER_LATENCY_LAYER=1",
-    "PROTON_ENABLE_NVAPI=1",
-    "PROTON_HIDE_NVIDIA_GPU=0",
-    "DXVK_NVAPI_VKREFLEX=1",
+    PENGUIN_BURNER_WRAPPER,
 )
 
 

@@ -29,11 +29,27 @@ QUALITY_RANK = {
     "reflex-marker-simulation": 2,
     "reflex-markers": 2,
     "reflex-marker-render-submit": 3,
-    "reflex-marker-input-present": 3,
+    "reflex-marker-sim-present": 3,
+    "reflex-marker-submit-present": 3,
+    # An input-sample anchor is strictly earlier and more complete than a
+    # sim-start anchor, so the input tier outranks the sim tier.
+    "reflex-marker-input-present": 4,
     "reflex-render-submit": 3,
     "reflex-simulation": 3,
     "reflex-input-present": 5,
 }
+
+# Latency tier names published as snapshot latency_quality. The cross-phase
+# span fields originate in the C++ layer (marker_timing_quality /
+# send_marker_timing_sample in penguinburner_latency_layer.cpp); keep the
+# vocabularies in sync.
+LATENCY_TIER_INPUT_PRESENT = "input-to-present"
+LATENCY_TIER_MARKER_INPUT_PRESENT = "marker-input-to-present"
+LATENCY_TIER_INPUT_OOB_PRESENT = "input-to-oob-present"
+LATENCY_TIER_SIM_PRESENT = "sim-to-present"
+LATENCY_TIER_SIM_OOB_PRESENT = "sim-to-oob-present"
+LATENCY_TIER_SUBMIT_PRESENT = "submit-to-present"
+LATENCY_TIER_RENDER_SUBMIT = "render-submit"
 
 METER_LOG_INTERVAL_S = 3.0
 METER_SAMPLE_MAX_AGE_S = 3.0
@@ -47,6 +63,28 @@ BASE_FRAME_MARKER_PRIORITY = (
     "present-start",
     "rendersubmit-start",
 )
+FRAMEGEN_ACTIVE_KEYS = ("framegen_active", "frame_generation_active", "fg_active")
+FRAMEGEN_MARKER_KEYS = ("framegen_frame", "generated_frame", "fg_frame")
+FRAMEGEN_COUNT_KEYS = (
+    "framegen_frame_count",
+    "generated_frame_count",
+    "fg_frame_count",
+)
+FRAMEGEN_MEASUREMENTS = {"framegen-marker", "framegen-frame", "generated-frame"}
+# Output (present) cadence must exceed the base render cadence by at least this
+# ratio before the overlay reports frame generation. Out-of-band present markers
+# and the sim->displayed-present span are emitted by Reflex low-latency mode with
+# frame generation OFF, so marker presence alone is not evidence of generated
+# frames -- only a multiplied display rate is.
+FRAMEGEN_CADENCE_RATIO = 1.5
+FRAMEGEN_MARKER_NAMES = {
+    "oob-present-start",
+    "oob-present-end",
+    "out-of-band-present-start",
+    "out-of-band-present-end",
+    "out_of_band_present_start",
+    "out_of_band_present_end",
+}
 
 
 def latency_socket_path(env: dict[str, str] | None = None) -> Path:
@@ -259,6 +297,74 @@ def _int_value(value: object) -> int:
         return 0
 
 
+def _truthy_value(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on", "active"}
+
+
+def _explicit_framegen_active(samples: list[dict]) -> bool:
+    for sample in samples:
+        if any(_truthy_value(sample.get(key)) for key in FRAMEGEN_ACTIVE_KEYS):
+            return True
+        if any(_truthy_value(sample.get(key)) for key in FRAMEGEN_MARKER_KEYS):
+            return True
+        if any(_int_value(sample.get(key)) > 0 for key in FRAMEGEN_COUNT_KEYS):
+            return True
+        marker_name = str(sample.get("marker_name") or "").strip().lower()
+        if marker_name in FRAMEGEN_MARKER_NAMES:
+            return True
+        if _positive_us(sample, "sim_to_oob_present_us") or _positive_us(
+            sample, "input_to_oob_present_us"
+        ):
+            return True
+        measurement = str(sample.get("measurement") or "").strip().lower()
+        if measurement in FRAMEGEN_MEASUREMENTS:
+            return True
+    return False
+
+
+def _framegen_active_for_overlay(
+    samples: list[dict],
+    *,
+    base_fps: float | None,
+    raw_output_fps: float | None,
+) -> bool:
+    """Whether to report frame generation on the overlay.
+
+    Frame generation is confirmed only when the displayed (present) cadence
+    clearly exceeds the base render cadence -- i.e. extra frames really are being
+    produced. Reflex out-of-band present markers and the sim->displayed-present
+    span are deliberately NOT treated as evidence here: they are emitted with
+    frame generation off, which is what made the overlay show a phantom "FG" rate.
+    Source-asserted generated-frame evidence (an explicit ``framegen_active``
+    flag, generated-frame markers/counts, or a generated-frame measurement) is
+    still trusted.
+    """
+    base = _safe_float(base_fps)
+    output = _safe_float(raw_output_fps)
+    if base and output and base > 0 and output >= base * FRAMEGEN_CADENCE_RATIO:
+        return True
+
+    for sample in samples:
+        if any(_truthy_value(sample.get(key)) for key in FRAMEGEN_ACTIVE_KEYS):
+            return True
+        if any(_truthy_value(sample.get(key)) for key in FRAMEGEN_MARKER_KEYS):
+            return True
+        if any(_int_value(sample.get(key)) > 0 for key in FRAMEGEN_COUNT_KEYS):
+            return True
+        measurement = str(sample.get("measurement") or "").strip().lower()
+        if measurement in FRAMEGEN_MEASUREMENTS:
+            return True
+    return False
+
+
+def _safe_float(value: object) -> float | None:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def _raw_timing_log_interval(env: dict[str, str] | None = None) -> float | None:
     env = os.environ if env is None else env
     value = str(env.get(RAW_TIMING_LOG_ENV) or "").strip()
@@ -334,6 +440,12 @@ def _quality_for_sample(sample: dict) -> str:
     if is_marker_proxy:
         if _positive_us(sample, "input_to_present_us"):
             return "reflex-marker-input-present"
+        if _positive_us(sample, "sim_to_present_us") or _positive_us(
+            sample, "sim_to_oob_present_us"
+        ):
+            return "reflex-marker-sim-present"
+        if _positive_us(sample, "submit_to_present_us"):
+            return "reflex-marker-submit-present"
         if _positive_us(sample, "render_submit_us"):
             return "reflex-marker-render-submit"
         if _positive_us(sample, "sim_us"):
@@ -391,28 +503,48 @@ def _missing_metric_hints(
     return hints
 
 
-def _latency_proxy_p95(samples: list[dict]) -> int | None:
-    real_input_present = _p95_us(
-        [
-            _int_value(sample.get("input_to_present_us"))
-            for sample in samples
-            if str(sample.get("measurement") or "") != "marker-proxy"
-        ]
-    )
-    if real_input_present is not None:
-        return real_input_present
+def _latency_proxy_p95(samples: list[dict]) -> tuple[int | None, str | None]:
+    def _tier_p95(key: str, *, marker_proxy: bool | None = None) -> int | None:
+        return _p95_us(
+            [
+                _int_value(sample.get(key))
+                for sample in samples
+                if marker_proxy is None
+                or (str(sample.get("measurement") or "") == "marker-proxy")
+                == marker_proxy
+            ]
+        )
 
-    marker_input_present = _p95_us(
-        [
-            _int_value(sample.get("input_to_present_us"))
-            for sample in samples
-            if str(sample.get("measurement") or "") == "marker-proxy"
-        ]
-    )
-    if marker_input_present is not None:
-        return marker_input_present
+    # When frame generation is active, the sim->out-of-band-present span is the
+    # closest available proxy to click-to-photon: it runs to the actual display
+    # hand-off after the generated-frame pacing hold. The narrower sim/input->
+    # app-present spans end at the application present and miss that hold, so they
+    # read unrealistically low (e.g. ~18 ms at a 40 fps base under frame gen).
+    # Prefer the wider displayed-present span here.
+    if _explicit_framegen_active(samples):
+        # Widest displayed-present span first: input->display when the title emits
+        # INPUT_SAMPLE, else sim->display. Both include the frame-generation hold.
+        for key, tier in (
+            ("input_to_oob_present_us", LATENCY_TIER_INPUT_OOB_PRESENT),
+            ("sim_to_oob_present_us", LATENCY_TIER_SIM_OOB_PRESENT),
+        ):
+            oob_p95 = _tier_p95(key)
+            if oob_p95 is not None:
+                return oob_p95, tier
 
-    return _p95_us([_int_value(sample.get("render_submit_us")) for sample in samples])
+    tiers = (
+        ("input_to_present_us", False, LATENCY_TIER_INPUT_PRESENT),
+        ("input_to_present_us", True, LATENCY_TIER_MARKER_INPUT_PRESENT),
+        ("sim_to_present_us", None, LATENCY_TIER_SIM_PRESENT),
+        ("sim_to_oob_present_us", None, LATENCY_TIER_SIM_OOB_PRESENT),
+        ("submit_to_present_us", None, LATENCY_TIER_SUBMIT_PRESENT),
+        ("render_submit_us", None, LATENCY_TIER_RENDER_SUBMIT),
+    )
+    for key, marker_proxy, tier in tiers:
+        p95 = _tier_p95(key, marker_proxy=marker_proxy)
+        if p95 is not None:
+            return p95, tier
+    return None, None
 
 
 class LatencyTelemetryMeter:
@@ -429,7 +561,6 @@ class LatencyTelemetryMeter:
         self._stale_driver_report_max_age_s = float(stale_driver_report_max_age_s)
         self._time_monotonic = time_monotonic
         self._last_base_present_fps: float | None = None
-        self._last_framegen_multiplier: int | None = None
         self._last_ignored_driver_report: dict | None = None
         self._driver_report_present_ids: dict[tuple[object, ...], tuple[int, int]] = {}
 
@@ -451,12 +582,15 @@ class LatencyTelemetryMeter:
         self._samples.append(stored)
         return stored
 
+    # Reflex timing rings hold up to 64 reports; a stale ring re-presented in
+    # any order cycles within this span, so a presentID at or below the max we
+    # have seen — but within the ring span — is a repeat, not fresh data.
+    _DRIVER_REPORT_RING_SPAN = 256
+
     def _synthesize_driver_report_duplicate_count(self, sample: dict) -> None:
-        if "driver_report_duplicate_count" in sample:
-            return
         present_id = _int_value(sample.get("present_id"))
         if not present_id:
-            sample["driver_report_duplicate_count"] = 0
+            sample.setdefault("driver_report_duplicate_count", 0)
             return
 
         key = (
@@ -465,15 +599,25 @@ class LatencyTelemetryMeter:
             sample.get("device"),
             sample.get("swapchain"),
         )
-        last_present_id, duplicate_count = self._driver_report_present_ids.get(
+        max_present_id, duplicate_count = self._driver_report_present_ids.get(
             key, (0, 0)
         )
-        if present_id == last_present_id:
+        if (
+            max_present_id
+            and present_id <= max_present_id
+            and max_present_id - present_id <= self._DRIVER_REPORT_RING_SPAN
+        ):
             duplicate_count += 1
         else:
+            # Fresh report, or a genuine presentID reset (e.g. swapchain
+            # recreation) far below the ring span.
             duplicate_count = 0
-        self._driver_report_present_ids[key] = (present_id, duplicate_count)
-        sample["driver_report_duplicate_count"] = duplicate_count
+            max_present_id = present_id
+        self._driver_report_present_ids[key] = (max_present_id, duplicate_count)
+        # The layer's own counter resets whenever stale IDs cycle, so trust
+        # whichever side counted more repeats (observed live on 2026-06-11).
+        provided = _int_value(sample.get("driver_report_duplicate_count"))
+        sample["driver_report_duplicate_count"] = max(provided, duplicate_count)
 
     def summary(self, *, now: float | None = None) -> str | None:
         snapshot = self.snapshot(now=now)
@@ -504,16 +648,19 @@ class LatencyTelemetryMeter:
             not in {"present-pacing", "base-frame-marker-pacing"}
             for sample in samples
         )
+        fps_tail = (
+            f"present-fps={present_fps} "
+            f"raw-present-fps-avg={present_fps_stats['avg']} "
+            f"raw-present-fps-median={present_fps_stats['median']} "
+            f"raw-present-fps-5pct-low={present_fps_stats['5pct_low']} "
+            f"raw-present-fps-1pct-low={present_fps_stats['1pct_low']}"
+        )
         if not has_rich_latency_sample and stale_driver_report is None:
             return (
                 f"event=latency-meter pid={latest.get('pid', 'unknown')} "
                 f"quality={best_quality} samples={len(samples)} "
                 f"present-frametime-p95={_format_ms(present_frametime_p95)} "
-                f"present-fps={present_fps} "
-                f"raw-present-fps-avg={present_fps_stats['avg']} "
-                f"raw-present-fps-median={present_fps_stats['median']} "
-                f"raw-present-fps-5pct-low={present_fps_stats['5pct_low']} "
-                f"raw-present-fps-1pct-low={present_fps_stats['1pct_low']}"
+                f"{fps_tail}"
             )
 
         missing_hints = _missing_metric_hints(
@@ -536,17 +683,17 @@ class LatencyTelemetryMeter:
             f"event=latency-meter pid={latest.get('pid', 'unknown')} "
             f"quality={best_quality} samples={len(samples)} "
             f"latency-proxy-p95={_format_ms(latency_proxy_p95)} "
+            f"latency-quality={snapshot['latency_quality'] or 'n/a'} "
+            f"sim-to-present-p95={_format_ms(snapshot['sim_to_present_p95_us'])} "
+            f"submit-to-present-p95="
+            f"{_format_ms(snapshot['submit_to_present_p95_us'])} "
             f"render-submit-p95={_format_ms(render_submit_p95)} "
             f"render-present-p95={_format_ms(render_present_p95)} "
             f"gpu-render-p95={_format_ms(gpu_render_p95)} "
             f"input-present-p95={_format_ms(input_present_p95)} "
             f"gpu-frame-p95={_format_ms(gpu_frame_p95)} "
             f"present-frametime-p95={_format_ms(present_frametime_p95)} "
-            f"present-fps={present_fps} "
-            f"raw-present-fps-avg={present_fps_stats['avg']} "
-            f"raw-present-fps-median={present_fps_stats['median']} "
-            f"raw-present-fps-5pct-low={present_fps_stats['5pct_low']} "
-            f"raw-present-fps-1pct-low={present_fps_stats['1pct_low']}"
+            f"{fps_tail}"
             f"{stale_text}"
             f"{missing_text}"
         )
@@ -599,11 +746,32 @@ class LatencyTelemetryMeter:
                 if present_fps_value
                 else None
             )
+        framegen_active = _framegen_active_for_overlay(
+            samples,
+            base_fps=present_fps_value,
+            raw_output_fps=raw_present_avg_fps,
+        )
+        latency_proxy_p95, latency_quality = _latency_proxy_p95(samples)
         return {
             "now": float(now),
             "samples": samples,
             "best_quality": best_quality,
-            "latency_proxy_p95_us": _latency_proxy_p95(samples),
+            "latency_proxy_p95_us": latency_proxy_p95,
+            "latency_p95_ms": (
+                None
+                if latency_proxy_p95 is None
+                else float(latency_proxy_p95) / 1000.0
+            ),
+            "latency_quality": latency_quality,
+            "sim_to_present_p95_us": _p95_us(
+                [_int_value(sample.get("sim_to_present_us")) for sample in samples]
+            ),
+            "submit_to_present_p95_us": _p95_us(
+                [
+                    _int_value(sample.get("submit_to_present_us"))
+                    for sample in samples
+                ]
+            ),
             "render_submit_p95_us": _p95_us(
                 [_int_value(sample.get("render_submit_us")) for sample in samples]
             ),
@@ -637,6 +805,7 @@ class LatencyTelemetryMeter:
             "raw_present_fps_stats": present_fps_stats,
             "raw_present_fps_avg": raw_present_avg_fps,
             "raw_present_fps_median": _format_fps(present_median),
+            "framegen_active": framegen_active,
         }
 
     def _stale_driver_report_age_s(self, latest: dict, *, now: float) -> float:
@@ -684,12 +853,10 @@ class LatencyTelemetryMeter:
             return None
 
         inferred_multiplier = self._infer_framegen_multiplier(raw_avg_fps, last_base)
-        if inferred_multiplier is not None:
-            self._last_framegen_multiplier = inferred_multiplier
 
         base_fps = p95_fps
         if last_base is not None and p95_fps > last_base * 1.6 and raw_avg_fps:
-            multiplier = inferred_multiplier or self._last_framegen_multiplier
+            multiplier = inferred_multiplier
             if multiplier is not None:
                 base_fps = raw_avg_fps / multiplier
 

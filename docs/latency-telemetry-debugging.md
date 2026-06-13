@@ -53,7 +53,7 @@ native/latency_layer/build/VkLayer_PENGUINBURNER_latency.json
 For RE9 on this host, use the setup helper:
 
 ```bash
-penguin-burner-steam-re9-patched-setup --wait
+penguin-burner-steam-game-setup --game re9 --wait
 penguin-burner-steam-launch-check --compat-tool 'Proton-CachyOS Latest'
 ```
 

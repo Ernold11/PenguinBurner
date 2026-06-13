@@ -9,6 +9,7 @@ from cli.main_command_routing import (
     route_main_command,
 )
 from penguin_burner_errors import NvmlError
+from penguin_burner_overlay.config import OverlayConfig
 
 
 def _args(**overrides):
@@ -21,6 +22,9 @@ def _args(**overrides):
         "delete_auto_uv_profiles": [],
         "install_q2rtx": False,
         "check_latency_layer": False,
+        "overlay_toggle": False,
+        "overlay_enable": False,
+        "overlay_disable": False,
         "config": "/tmp/config.json",
         "gpu_index": None,
         "stability_test": False,
@@ -51,6 +55,7 @@ def _deps(**overrides):
         "stop_runtime": [],
         "debug_options": [],
         "q2rtx_install": [],
+        "overlay_configs": [],
     }
 
     def load_config(config_path):
@@ -96,6 +101,11 @@ def _deps(**overrides):
         "read_auto_uv_profile_summaries": lambda: [{"id": "profile-a"}],
         "format_profile_table": lambda profiles: f"table:{profiles[0]['id']}",
         "delete_auto_uv_profiles": lambda selectors: [Path("/tmp/profile-a.json")],
+        "load_overlay_config": lambda: OverlayConfig(enabled=False),
+        "save_overlay_config": lambda config: calls["overlay_configs"].append(
+            config
+        )
+        or Path("/tmp/overlay.toml"),
         "log": calls["logs"].append,
         "print_fn": lambda *args, **kwargs: calls["prints"].append(
             (args, kwargs)
@@ -146,6 +156,68 @@ def test_main_command_routing_checks_latency_layer_without_loading_runtime_confi
 
     assert result.handled is True
     assert "PenguinBurner latency layer: found" in calls["prints"][0][0][0]
+
+
+def test_main_command_routing_toggles_overlay_without_loading_runtime_config():
+    deps, calls = _deps(
+        load_config=lambda config_path: (_ for _ in ()).throw(
+            AssertionError("config should not be loaded")
+        ),
+        load_overlay_config=lambda: OverlayConfig(enabled=False),
+    )
+
+    result = route_main_command(
+        args=_args(overlay_toggle=True),
+        argv=["--overlay-toggle"],
+        explicit_cli_args=True,
+        interactive=False,
+        dependencies=deps,
+    )
+
+    assert result.handled is True
+    assert calls["overlay_configs"][0].enabled is True
+    assert calls["prints"][0][0] == ("Overlay enabled: /tmp/overlay.toml",)
+
+
+def test_main_command_routing_overlay_enable_json_payload():
+    deps, calls = _deps(load_overlay_config=lambda: OverlayConfig(enabled=False))
+
+    result = route_main_command(
+        args=_args(overlay_enable=True, json_events=True),
+        argv=["--overlay-enable", "--json-events"],
+        explicit_cli_args=True,
+        interactive=False,
+        dependencies=deps,
+    )
+
+    assert result.handled is True
+    assert calls["overlay_configs"][0].enabled is True
+    payload = calls["prints"][0][0][0]
+    assert '"enabled": true' in payload
+    assert '"config_path": "/tmp/overlay.toml"' in payload
+
+
+def test_main_command_routing_overlay_disable_preserves_items():
+    config = OverlayConfig(
+        enabled=True,
+        enabled_item_ids=("base_fps", "gpu_util_pct"),
+        update_interval_s=5,
+    )
+    deps, calls = _deps(load_overlay_config=lambda: config)
+
+    result = route_main_command(
+        args=_args(overlay_disable=True),
+        argv=["--overlay-disable"],
+        explicit_cli_args=True,
+        interactive=False,
+        dependencies=deps,
+    )
+
+    assert result.handled is True
+    saved = calls["overlay_configs"][0]
+    assert saved.enabled is False
+    assert saved.enabled_item_ids == ("base_fps", "gpu_util_pct")
+    assert saved.update_interval_s == 5
 
 
 def test_main_command_routing_rejects_clear_and_fresh_together():

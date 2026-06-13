@@ -374,22 +374,22 @@ def test_ui_runtime_command_can_prefer_afterburner_curve(monkeypatch) -> None:
     assert command[command.index("--gpu-index") + 1] == "1"
 
 
-def test_ui_runtime_command_adds_adaptive_only_for_persistent_autostart(monkeypatch) -> None:
+def test_ui_runtime_command_adds_adaptive_for_transient_and_persistent(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
 
     persistent = commands.runtime_profile_command(
         "install-systemd",
-        profile_selector="profile-a",
         adaptive_auto_uv=True,
     )
     transient = commands.runtime_profile_command(
         "daemonize",
-        profile_selector="profile-a",
         adaptive_auto_uv=True,
     )
 
     assert "--adaptive-auto-uv" in persistent
-    assert "--adaptive-auto-uv" not in transient
+    assert "--adaptive-auto-uv" in transient
+    assert "--auto-uv-profile" not in persistent
+    assert "--auto-uv-profile" not in transient
 
 
 def test_final_choice_performance_mode_sorts_by_fps() -> None:
@@ -918,6 +918,162 @@ def test_running_status_without_duration_is_static_text() -> None:
     table.add_probe_start(payload)
     assert table.widget.cellWidget(0, table.STATUS_COLUMN) is None
     assert table.widget.item(0, table.STATUS_COLUMN).text() == "Running"
+
+
+def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    from ui.window import MainWindow
+    from penguin_burner_overlay.config import ADVANCED_OVERLAY_ITEM_IDS
+    from ui.components.overlay_config import ITEM_LABELS
+
+    monkeypatch.setattr(MainWindow, "_load_profiles", lambda self: None)
+    qt_modules = (QtCore, QtGui, QtWidgets, pytest.importorskip("pyqtgraph"))
+    window = MainWindow(qt_modules)
+
+    assert not window.table_panel.isHidden()
+    window.tabs.setCurrentIndex(window.overlay_tab_index)
+    assert window.table_panel.isHidden()
+    assert (
+        window.overlay_config.widget.findChild(
+            QtWidgets.QScrollArea,
+            "overlayOptionsScroll",
+        )
+        is not None
+    )
+    basic_group = window.overlay_config.widget.findChild(
+        QtWidgets.QGroupBox,
+        "overlayBasicOptionsGroup",
+    )
+    advanced_group = window.overlay_config.widget.findChild(
+        QtWidgets.QGroupBox,
+        "overlayAdvancedOptionsGroup",
+    )
+    assert basic_group is not None
+    assert advanced_group is not None
+    assert advanced_group.geometry().top() == basic_group.geometry().top()
+    assert advanced_group.geometry().left() > basic_group.geometry().left()
+    advanced_checkboxes = advanced_group.findChildren(QtWidgets.QCheckBox)
+    advanced_labels = [checkbox.text() for checkbox in advanced_checkboxes]
+    assert advanced_labels == [ITEM_LABELS[item] for item in ADVANCED_OVERLAY_ITEM_IDS]
+    assert advanced_group.findChild(
+        QtWidgets.QCheckBox,
+        "overlayItemCheckbox_gpu_util_pct",
+    ).text() == "GPU %"
+    assert advanced_group.findChild(
+        QtWidgets.QCheckBox,
+        "overlayItemCheckbox_cpu_util_pct",
+    ).text() == "CPU %"
+    assert advanced_group.findChild(
+        QtWidgets.QCheckBox,
+        "overlayItemCheckbox_cpu_peak_thread_pct",
+    ).text() == "CPU-T %"
+
+    window.tabs.setCurrentIndex(window.auto_uv_tab_index)
+    assert not window.table_panel.isHidden()
+    window.window.close()
+
+
+def test_overlay_panel_saves_adaptive_target_fps(tmp_path) -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    from adaptive_target_fps import adaptive_target_fps_from_config
+    from ui.components.overlay_config import OverlayConfigPanel
+
+    panel = OverlayConfigPanel(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        config_path=tmp_path / "overlay.toml",
+        runtime_config_path=tmp_path / "penguin_burner.toml",
+    )
+
+    assert panel.widget.layout().contentsMargins().top() >= 16
+    assert panel.target_fps_spin.objectName() == "overlayTargetFpsSpin"
+
+    panel.target_fps_spin.setValue(90)
+
+    assert adaptive_target_fps_from_config(tmp_path / "penguin_burner.toml") == 90.0
+    assert "target_fps = 90" in (tmp_path / "penguin_burner.toml").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    from penguin_burner_overlay.config import load_overlay_config
+    from ui.components.overlay_config import OverlayConfigPanel
+
+    config_path = tmp_path / "overlay.toml"
+    panel = OverlayConfigPanel(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        config_path=config_path,
+        runtime_config_path=tmp_path / "penguin_burner.toml",
+    )
+
+    # Defaults to the adaptive 1x option.
+    assert panel.scale_combo.currentText() == "1x"
+
+    panel.scale_combo.setCurrentIndex(2)
+
+    assert panel.scale_combo.currentText() == "2x"
+    assert load_overlay_config(config_path).scale == 2.0
+    assert "scale = 2.0" in config_path.read_text(encoding="utf-8")
+
+
+def test_overlay_panel_launch_box_enables_overlay_and_latency(tmp_path) -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    from penguin_burner_overlay.config import STEAM_LAUNCH_OPTION_WITH_LATENCY
+    from ui.components.overlay_config import OverlayConfigPanel
+
+    panel = OverlayConfigPanel(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        config_path=tmp_path / "overlay.toml",
+        runtime_config_path=tmp_path / "penguin_burner.toml",
+    )
+
+    # The example string both forces the overlay on and enables the latency meter.
+    assert STEAM_LAUNCH_OPTION_WITH_LATENCY == (
+        "PB_OVERLAY=1 PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%"
+    )
+    assert panel.launch_line.text() == STEAM_LAUNCH_OPTION_WITH_LATENCY
+
+    panel._copy_launch_option()
+    assert (
+        QtWidgets.QApplication.clipboard().text()
+        == STEAM_LAUNCH_OPTION_WITH_LATENCY
+    )
 
 
 def test_running_status_with_duration_uses_seconds_progress() -> None:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 
 from saved_uv_profiles import profile_display_name
 from .. import theme
@@ -27,7 +26,6 @@ class ProfileList:
         "Mem",
         "Tier",
         "Source",
-        "Autostart",
     ]
     DATE_COLUMN = 0
     PROFILE_COLUMN = 1
@@ -40,7 +38,6 @@ class ProfileList:
     MEMORY_OFFSET_COLUMN = 8
     TIER_COLUMN = 9
     SOURCE_COLUMN = 10
-    AUTOSTART_COLUMN = 11
     PROFILE_ID_ROLE = 257
     CANDIDATE_ID_ROLE = 258
     PROFILE_PATH_ROLE = 259
@@ -68,9 +65,9 @@ class ProfileList:
         top = QtWidgets.QHBoxLayout()
         self.silent_fan_checkbox = QtWidgets.QCheckBox("Silent fan curve")
         self.install_button = QtWidgets.QCheckBox("Persist on Startup")
-        self.adaptive_checkbox = QtWidgets.QCheckBox("Adaptive")
-        self.adaptive_checkbox.setToolTip(
-            "Adapt between saved Efficiency, Balanced, and Performance tiers at startup."
+        self.adaptive_button = QtWidgets.QPushButton("Apply Adaptive")
+        self.adaptive_button.setToolTip(
+            "Apply dynamic Auto-UV switching between saved profile tiers."
         )
         self.daemonize_button = QtWidgets.QPushButton("Apply Selected")
         self.delete_button = QtWidgets.QToolButton()
@@ -84,7 +81,7 @@ class ProfileList:
         top.addStretch(1)
         top.addWidget(self.silent_fan_checkbox)
         top.addWidget(self.install_button)
-        top.addWidget(self.adaptive_checkbox)
+        top.addWidget(self.adaptive_button)
         top.addWidget(self.daemonize_button)
         top.addWidget(self.delete_button)
         top.addWidget(self.remove_button)
@@ -109,7 +106,6 @@ class ProfileList:
                 self.FPS_COLUMN: 134,
                 self.POWER_COLUMN: 144,
                 self.SOURCE_COLUMN: 170,
-                self.AUTOSTART_COLUMN: 96,
             },
             QtCore=QtCore,
             padding=34,
@@ -138,19 +134,17 @@ class ProfileList:
         *,
         systemd_selector: str = "",
         has_systemd_entry: bool | None = None,
+        persist_on_startup_checked: bool | None = None,
         preferred_candidate_id: str = "",
         preferred_profile_id: str = "",
         select_preferred: bool = False,
         preserve_persist_toggle: bool = True,
         silent_fan_checked: bool | None = None,
         preserve_silent_fan_toggle: bool = True,
-        adaptive_checked: bool | None = None,
-        preserve_adaptive_toggle: bool = True,
     ) -> None:
         selected_profile_ids = self.selected_profile_ids()
         persist_toggle_checked = self.install_button.isChecked()
         silent_fan_checked_before = self.silent_fan_checkbox.isChecked()
-        adaptive_checked_before = self.adaptive_checkbox.isChecked()
         sort_column = self._active_sort_column()
         sort_order = self._sort_order
         profiles = _promote_preferred_profile(
@@ -221,11 +215,6 @@ class ProfileList:
                     ),
                     _profile_tier_label(profile),
                     _profile_source_label(profile),
-                    (
-                        "installed"
-                        if _profile_matches_selector(profile, systemd_selector)
-                        else ""
-                    ),
                 ]
                 sort_values = _profile_sort_values(profile)
                 for column, value in enumerate(values):
@@ -285,10 +274,6 @@ class ProfileList:
                             label="Power W",
                             lower_is_better=True,
                         )
-                    if column == self.AUTOSTART_COLUMN and value:
-                        item.setForeground(
-                            self.table.palette().highlightedText().color()
-                        )
                     if is_preferred:
                         item.setBackground(self.QtGui.QColor(theme.PROFILE_SELECTED_BG))
                     self.table.setItem(row, column, item)
@@ -314,15 +299,13 @@ class ProfileList:
                 pass
         finally:
             self.table.blockSignals(table_signals_blocked)
-        should_preserve_persist_toggle = preserve_persist_toggle and _should_preserve_persist_toggle(
-            selected_profile_ids,
-            self.selected_profile_ids(),
-        )
-        if should_preserve_persist_toggle:
+        if persist_on_startup_checked is not None:
+            self._set_persist_toggle_checked(bool(persist_on_startup_checked))
+        elif preserve_persist_toggle:
             self._set_persist_toggle_checked(persist_toggle_checked)
         should_preserve_silent_fan_toggle = (
             preserve_silent_fan_toggle
-            and _should_preserve_persist_toggle(
+            and _should_preserve_single_selection_toggle(
                 selected_profile_ids,
                 self.selected_profile_ids(),
             )
@@ -331,18 +314,7 @@ class ProfileList:
             self._set_silent_fan_checked(silent_fan_checked_before)
         elif silent_fan_checked is not None:
             self._set_silent_fan_checked(bool(silent_fan_checked))
-        should_preserve_adaptive_toggle = (
-            preserve_adaptive_toggle
-            and _should_preserve_persist_toggle(
-                selected_profile_ids,
-                self.selected_profile_ids(),
-            )
-        )
-        if should_preserve_adaptive_toggle:
-            self._set_adaptive_checked(adaptive_checked_before)
-        elif adaptive_checked is not None:
-            self._set_adaptive_checked(bool(adaptive_checked))
-        self._sync_action_state(sync_persist_toggle=not should_preserve_persist_toggle)
+        self._sync_action_state(sync_persist_toggle=False)
 
     def _active_sort_column(self) -> int:
         column = int(self._sort_column)
@@ -418,9 +390,6 @@ class ProfileList:
     def persist_on_startup_enabled(self) -> bool:
         return bool(self.install_button.isChecked())
 
-    def adaptive_enabled(self) -> bool:
-        return bool(self.adaptive_checkbox.isChecked() and self.adaptive_checkbox.isEnabled())
-
     def selected_profile_name(self) -> str:
         rows = self._selected_rows()
         if not rows:
@@ -428,14 +397,6 @@ class ProfileList:
         row = rows[-1]
         item = self.table.item(row, 1)
         return "" if item is None else str(item.text())
-
-    def selected_profile_is_persisted(self) -> bool:
-        rows = self._selected_rows()
-        if len(rows) != 1:
-            return False
-        row = rows[-1]
-        item = self.table.item(row, self.AUTOSTART_COLUMN)
-        return bool(item is not None and str(item.text()).strip())
 
     def set_runtime_actions_enabled(self, enabled: bool) -> None:
         self._runtime_actions_available = bool(enabled)
@@ -494,16 +455,12 @@ class ProfileList:
             and all(self._row_is_deletable(row) for row in selected_rows)
         )
         self.daemonize_button.setEnabled(has_apply_selection)
-        self.install_button.setEnabled(has_apply_selection)
-        adaptive_available = has_apply_selection and self.install_button.isChecked()
-        self.adaptive_checkbox.setEnabled(adaptive_available)
-        if not adaptive_available:
-            self._set_adaptive_checked(False)
+        self.adaptive_button.setEnabled(self._runtime_actions_available)
+        self.install_button.setEnabled(
+            self._runtime_actions_available
+            and (has_apply_selection or self.table.rowCount() > 0)
+        )
         self.delete_button.setEnabled(has_delete_selection)
-        if sync_persist_toggle and not self._syncing_persist_toggle:
-            self._set_persist_toggle_checked(
-                self.selected_profile_is_persisted() if has_single_selection else False
-            )
         self.remove_button.setEnabled(
             self._runtime_actions_available and self._has_systemd_service
         )
@@ -523,13 +480,6 @@ class ProfileList:
             self.silent_fan_checkbox.setChecked(bool(checked))
         finally:
             self.silent_fan_checkbox.blockSignals(signals_blocked)
-
-    def _set_adaptive_checked(self, checked: bool) -> None:
-        signals_blocked = self.adaptive_checkbox.blockSignals(True)
-        try:
-            self.adaptive_checkbox.setChecked(bool(checked))
-        finally:
-            self.adaptive_checkbox.blockSignals(signals_blocked)
 
     def _selected_rows(self) -> list[int]:
         selection_model = self.table.selectionModel()
@@ -618,7 +568,7 @@ def _should_preserve_selection(
     return bool(selected_profile_ids)
 
 
-def _should_preserve_persist_toggle(
+def _should_preserve_single_selection_toggle(
     previous_profile_ids: list[str],
     current_profile_ids: list[str],
 ) -> bool:
@@ -855,7 +805,6 @@ def _profile_sort_values(profile: dict) -> list[float | str]:
         "",
         "",
         "",
-        "",
     ]
 
 
@@ -869,6 +818,8 @@ def _profile_source_label(profile: dict) -> str:
 
 
 def _profile_tier_label(profile: dict) -> str:
+    if _truthy(profile.get("profile_tier_disabled")):
+        return ""
     assigned = str(profile.get("assigned_profile_tier") or "").strip()
     if assigned:
         return assigned
@@ -879,29 +830,15 @@ def _profile_tier_label(profile: dict) -> str:
     return generated
 
 
+def _truthy(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _profile_name(profile: dict) -> str:
     display_name = str(profile.get("display_name", "")).strip()
     if display_name:
         return display_name
     return profile_display_name(profile)
-
-
-def _profile_matches_selector(profile: dict, selector: str) -> bool:
-    text = str(selector or "").strip()
-    if not text:
-        return False
-    if text == "__systemd_default__":
-        return False
-    if text == "latest":
-        return False
-    path = str(profile.get("path", "")).strip()
-    names = {Path(path).name, Path(path).stem} if path else set()
-    return text in {
-        str(profile.get("profile_id", "")),
-        str(profile.get("candidate_id", "")),
-        path,
-        *names,
-    }
 
 
 def _profile_matches_preference(

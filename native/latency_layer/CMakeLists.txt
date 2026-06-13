@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(penguinburner_latency_layer LANGUAGES CXX)
 
+enable_testing()
+
 include(GNUInstallDirs)
 
 find_path(VULKAN_INCLUDE_DIR vulkan/vulkan.h REQUIRED)
@@ -15,6 +17,12 @@ target_include_directories(penguinburner_latency_layer PRIVATE
 )
 
 target_compile_features(penguinburner_latency_layer PRIVATE cxx_std_17)
+
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+  set(PB_LAYER_LIBRARY_ARCH "64")
+else()
+  set(PB_LAYER_LIBRARY_ARCH "32")
+endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(penguinburner_latency_layer PRIVATE

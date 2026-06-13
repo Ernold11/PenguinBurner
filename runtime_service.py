@@ -9,6 +9,20 @@ import subprocess
 import sys
 import sysconfig
 
+from adaptive_target_fps import (
+    ADAPTIVE_TARGET_FPS_ENV,
+    adaptive_target_fps_from_env,
+    format_adaptive_target_fps,
+)
+from runtime_gpu_control.adaptive_profile_policy import (
+    ADAPTIVE_COMFORT_WINDOWS_ENV,
+    ADAPTIVE_DEMOTE_DWELL_S_ENV,
+    ADAPTIVE_NEAR_SLOW_WINDOWS_ENV,
+    ADAPTIVE_PERFORMANCE_COMFORT_WINDOWS_ENV,
+    ADAPTIVE_PERFORMANCE_DEMOTE_DWELL_S_ENV,
+    ADAPTIVE_TARGET_SLOW_WINDOWS_ENV,
+    AdaptiveProfilePolicyConfig,
+)
 from subprocess_locale import stable_subprocess_env
 
 
@@ -130,6 +144,38 @@ def runtime_foreground_command(program_file, argv):
     return [python, str(Path(program_file).resolve()), "--foreground", *argv]
 
 
+def adaptive_target_fps_env_assignment(env: dict[str, str] | None = None) -> str:
+    target_fps = adaptive_target_fps_from_env(env)
+    return f"{ADAPTIVE_TARGET_FPS_ENV}={format_adaptive_target_fps(target_fps)}"
+
+
+def adaptive_policy_env_assignments(env: dict[str, str] | None = None) -> list[str]:
+    target_fps = adaptive_target_fps_from_env(env)
+    config = AdaptiveProfilePolicyConfig.for_target_fps(target_fps, env=env)
+    return [
+        f"{ADAPTIVE_TARGET_FPS_ENV}={format_adaptive_target_fps(target_fps)}",
+        f"{ADAPTIVE_TARGET_SLOW_WINDOWS_ENV}={int(config.target_slow_windows)}",
+        f"{ADAPTIVE_NEAR_SLOW_WINDOWS_ENV}={int(config.near_slow_windows)}",
+        f"{ADAPTIVE_COMFORT_WINDOWS_ENV}={int(config.comfort_windows)}",
+        (
+            f"{ADAPTIVE_PERFORMANCE_COMFORT_WINDOWS_ENV}="
+            f"{int(config.performance_comfort_windows)}"
+        ),
+        f"{ADAPTIVE_DEMOTE_DWELL_S_ENV}={_format_env_float(config.demote_dwell_s)}",
+        (
+            f"{ADAPTIVE_PERFORMANCE_DEMOTE_DWELL_S_ENV}="
+            f"{_format_env_float(config.performance_demote_dwell_s)}"
+        ),
+    ]
+
+
+def _format_env_float(value: float) -> str:
+    value = float(value)
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
 def run_checked_subprocess(args):
     result = subprocess.run(
         args,
@@ -159,6 +205,11 @@ def build_systemd_service_unit(program_file, argv):
         "Type=simple\n"
         f"Environment={PENGUIN_BURNER_FOREGROUND_ENV}=1\n"
         f"Environment=SUDO_USER={sudo_user}\n"
+        + "".join(
+            f"Environment={assignment}\n"
+            for assignment in adaptive_policy_env_assignments()
+        )
+        +
         "WorkingDirectory=/\n"
         f"ExecStart={exec_start}\n"
         "Restart=on-failure\n"
@@ -353,6 +404,11 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
             f"{PENGUIN_BURNER_FOREGROUND_ENV}=1",
             "--setenv",
             f"SUDO_USER={sudo_user}",
+            *[
+                item
+                for assignment in adaptive_policy_env_assignments()
+                for item in ("--setenv", assignment)
+            ],
             *runtime_foreground_command(program_file, argv),
         ],
         capture_output=True,

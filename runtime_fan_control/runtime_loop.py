@@ -107,6 +107,10 @@ def run_runtime_fan_control_loop(
     )
     last_vf_reapply_monotonic = 0.0
     vf_reapply_cooldown_s = max(float(settings.poll_interval_s), 10.0)
+    last_overlay_publish_monotonic = None
+
+    def sleep_loop() -> None:
+        deps.time_sleep(_loop_sleep_interval_s(settings, overlay_state_publisher))
 
     fan_count = nvml_session.fan_count()
     if fan_control_enabled and fan_count == 0:
@@ -201,6 +205,10 @@ def run_runtime_fan_control_loop(
         iteration_count += 1
 
         loop_started = deps.time_monotonic()
+        _refresh_overlay_runtime_config(overlay_state_publisher)
+        overlay_update_interval_s = _overlay_update_interval_s(
+            overlay_state_publisher
+        )
         latency_snapshot = None
         if latency_meter is not None:
             try:
@@ -238,9 +246,15 @@ def run_runtime_fan_control_loop(
             power_draw_w=power_draw_w,
             clock_ceiling_controller=clock_ceiling_controller,
         )
-        if overlay_state_publisher is not None:
+        if _overlay_updates_enabled(overlay_state_publisher):
             try:
-                overlay_state_publisher.publish(latency_snapshot=latency_snapshot)
+                if (
+                    last_overlay_publish_monotonic is None
+                    or loop_started - last_overlay_publish_monotonic
+                    >= overlay_update_interval_s
+                ):
+                    overlay_state_publisher.publish(latency_snapshot=latency_snapshot)
+                    last_overlay_publish_monotonic = loop_started
             except Exception as exc:
                 if not overlay_publish_failed:
                     deps.log(f"Overlay state publish unavailable: {exc}")
@@ -274,7 +288,7 @@ def run_runtime_fan_control_loop(
 
         if not fan_control_enabled:
             log_with_timestamp(f"{telemetry_text} fan_control=disabled")
-            deps.time_sleep(settings.poll_interval_s)
+            sleep_loop()
             continue
 
         # Still in emergency override.
@@ -282,7 +296,7 @@ def run_runtime_fan_control_loop(
             log_with_timestamp(
                 f"{telemetry_text} {fan_state_text()} fan_mode=auto reason=emergency-override"
             )
-            deps.time_sleep(settings.poll_interval_s)
+            sleep_loop()
             continue
 
         # Exit emergency override; fall through to normal decisions.
@@ -301,13 +315,13 @@ def run_runtime_fan_control_loop(
                 f"{telemetry_text} {fan_state_text()} "
                 f"event=restoring-auto-mode reason=emergency-override"
             )
-            deps.time_sleep(settings.poll_interval_s)
+            sleep_loop()
             continue
 
         # Still below the manual-takeover threshold.
         if not manual_mode_active and current_temp_c < settings.manual_enable_temp_c:
             log_with_timestamp(f"{telemetry_text} {fan_state_text()} fan_mode=auto")
-            deps.time_sleep(settings.poll_interval_s)
+            sleep_loop()
             continue
 
         # Enter manual mode; fall through to fan computation.
@@ -326,7 +340,7 @@ def run_runtime_fan_control_loop(
             log_with_timestamp(
                 f"{telemetry_text} {fan_state_text()} event=restoring-auto-mode"
             )
-            deps.time_sleep(settings.poll_interval_s)
+            sleep_loop()
             continue
 
         raw_target_speed = clamp(
@@ -367,7 +381,7 @@ def run_runtime_fan_control_loop(
             f"hyst={hysteresis_target_speed:.1f}% fan_mode=manual"
         )
 
-        deps.time_sleep(settings.poll_interval_s)
+        sleep_loop()
 
 
 def _build_runtime_fan_settings(
@@ -417,6 +431,40 @@ def _build_runtime_fan_settings(
     )
     settings.force_update_every_poll = bool(fan_config["force_update_every_poll"])
     return settings
+
+
+def _overlay_updates_enabled(overlay_state_publisher) -> bool:
+    return overlay_state_publisher is not None and bool(
+        getattr(overlay_state_publisher, "enabled", True)
+    )
+
+
+def _overlay_update_interval_s(overlay_state_publisher) -> float:
+    try:
+        value = float(getattr(overlay_state_publisher, "update_interval_s", 2.0))
+    except (TypeError, ValueError):
+        value = 2.0
+    return max(1.0, min(10.0, value))
+
+
+def _loop_sleep_interval_s(
+    settings: RuntimeFanSettings,
+    overlay_state_publisher,
+) -> float:
+    overlay_update_interval_s = _overlay_update_interval_s(overlay_state_publisher)
+    return (
+        min(float(settings.poll_interval_s), overlay_update_interval_s)
+        if _overlay_updates_enabled(overlay_state_publisher)
+        else float(settings.poll_interval_s)
+    )
+
+
+def _refresh_overlay_runtime_config(overlay_state_publisher) -> None:
+    if overlay_state_publisher is None:
+        return
+    refresh_config = getattr(overlay_state_publisher, "refresh_config", None)
+    if callable(refresh_config):
+        refresh_config()
 
 
 def _apply_device_fan_limits(
