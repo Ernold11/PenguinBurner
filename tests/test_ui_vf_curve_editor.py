@@ -14,8 +14,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
+from ui.components.curve_editor import nearest_curve_point
 from ui.components.vf_curve_editor import (
-    _nearest_curve_point,
     open_vf_curve_editor_dialog,
     vf_curve_editor_shortcut_legend_rows,
 )
@@ -50,16 +50,16 @@ def test_shortcut_legend_rows() -> None:
 def test_nearest_curve_point_picks_closest_within_threshold() -> None:
     points = [(800.0, 2000.0), (900.0, 2400.0)]
     view_range = ((800.0, 1000.0), (2000.0, 2800.0))
-    assert _nearest_curve_point(805, 2010, points, view_range) == (800.0, 2000.0)
+    assert nearest_curve_point(805, 2010, points, view_range) == (800.0, 2000.0)
     # Far from any point -> rejected by the normalized distance threshold.
-    assert _nearest_curve_point(950, 2000, points, view_range) is None
-    assert _nearest_curve_point(800, 2000, [], view_range) is None
+    assert nearest_curve_point(950, 2000, points, view_range) is None
+    assert nearest_curve_point(800, 2000, [], view_range) is None
 
 
 def test_nearest_curve_point_handles_bad_view_range() -> None:
     points = [(800.0, 2000.0)]
     # Malformed view range -> spans fall back to 1.0 without raising.
-    assert _nearest_curve_point(800, 2000, points, "bad-range") == (800.0, 2000.0)
+    assert nearest_curve_point(800, 2000, points, "bad-range") == (800.0, 2000.0)
 
 
 # --- dialog -------------------------------------------------------------------

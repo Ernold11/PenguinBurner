@@ -5,10 +5,9 @@ from pathlib import Path
 import pwd
 import shutil
 import sys
-import tomllib
 from typing import Mapping
 
-from penguin_burner_paths import default_runtime_config_path
+from .gpu_selection import runtime_gpu_index
 
 
 def cli_base_command() -> list[str]:
@@ -101,23 +100,6 @@ def _command_value_text(value: object) -> str:
     if isinstance(value, float):
         return f"{value:.6g}"
     return str(value)
-
-
-def runtime_gpu_index(config_path: str | Path | None = None) -> int:
-    path = (
-        default_runtime_config_path()
-        if config_path is None
-        else Path(config_path).expanduser()
-    )
-    try:
-        with path.open("rb") as config_file:
-            config = tomllib.load(config_file)
-    except (OSError, tomllib.TOMLDecodeError):
-        return 0
-    try:
-        return max(0, int(config.get("gpu", {}).get("index", 0)))
-    except (TypeError, ValueError):
-        return 0
 
 
 def scan_command(auto_uv_options: Mapping[str, object] | None = None) -> list[str]:

@@ -63,11 +63,12 @@ def test_relative_profile_path(tmp_path) -> None:
     assert ab.relative_profile_path(root, tmp_path / "other.cfg") == "other.cfg"
 
 
-def test_runtime_gpu_index_and_mtime(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(ab, "load_config", lambda path: {"gpu": {"index": 2}})
-    assert ab.runtime_gpu_index(tmp_path / "c.toml") == 2
-    monkeypatch.setattr(ab, "load_config", lambda path: (_ for _ in ()).throw(RuntimeError()))
-    assert ab.runtime_gpu_index(tmp_path / "c.toml") == 0
+def test_runtime_gpu_index_and_mtime(tmp_path) -> None:
+    # runtime_gpu_index is re-exported from gpu_selection (single shared impl).
+    config = tmp_path / "c.toml"
+    config.write_text("[gpu]\nindex = 2\n", encoding="utf-8")
+    assert ab.runtime_gpu_index(config) == 2
+    assert ab.runtime_gpu_index(tmp_path / "absent.toml") == 0
     f = tmp_path / "f.txt"
     f.write_text("x", encoding="utf-8")
     assert ab.path_mtime_iso(f)  # non-empty iso timestamp

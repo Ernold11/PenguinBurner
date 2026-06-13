@@ -22,6 +22,7 @@ from penguin_burner_paths import (
 )
 
 from .constants import AFTERBURNER_PROFILE_ID
+from .gpu_selection import runtime_gpu_index
 
 
 def configured_afterburner_root() -> str:
@@ -270,18 +271,6 @@ def relative_profile_path(root: str | Path, profile_path: str | Path) -> str:
         return str(path.relative_to(root_path))
     except ValueError:
         return path.name
-
-
-def runtime_gpu_index(config_path: Path) -> int:
-    try:
-        config = load_config(config_path)
-    except Exception:
-        return 0
-    gpu = config.get("gpu", {}) if isinstance(config, dict) else {}
-    try:
-        return max(0, int(gpu.get("index", 0)))
-    except (AttributeError, TypeError, ValueError):
-        return 0
 
 
 def path_mtime_iso(path: str | Path) -> str:

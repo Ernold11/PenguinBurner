@@ -13,8 +13,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
+from ui.components.curve_editor import nearest_curve_point
 from ui.components.fan_curve_editor import (
-    _nearest_curve_point,
     fan_curve_editor_shortcut_legend_rows,
     open_fan_curve_editor_dialog,
 )
@@ -33,9 +33,9 @@ def test_shortcut_legend_rows_present() -> None:
 def test_nearest_curve_point_threshold() -> None:
     points = [(30.0, 20.0), (70.0, 60.0)]
     view_range = ((20.0, 90.0), (0.0, 100.0))
-    assert _nearest_curve_point(31, 21, points, view_range) == (30.0, 20.0)
-    assert _nearest_curve_point(20, 99, points, view_range) is None
-    assert _nearest_curve_point(30, 20, [], view_range) is None
+    assert nearest_curve_point(31, 21, points, view_range) == (30.0, 20.0)
+    assert nearest_curve_point(20, 99, points, view_range) is None
+    assert nearest_curve_point(30, 20, [], view_range) is None
 
 
 def test_pg_none_returns_false(qapp, monkeypatch) -> None:

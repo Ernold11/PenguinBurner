@@ -5,6 +5,43 @@ from typing import Callable
 from ..styles import curve_editor_legend_stylesheet
 
 
+def nearest_curve_point(
+    x_value: float,
+    y_value: float,
+    points: list[tuple[float, float]],
+    view_range,
+    *,
+    max_normalized_distance: float = 0.04,
+) -> tuple[float, float] | None:
+    """Return the curve point closest to (x_value, y_value) in view-normalized space.
+
+    Shared by the VF and fan curve editors. Returns None when no point lies
+    within ``max_normalized_distance`` of the cursor.
+    """
+    if not points:
+        return None
+    try:
+        (x_min, x_max), (y_min, y_max) = view_range
+        x_span = max(1.0, float(x_max) - float(x_min))
+        y_span = max(1.0, float(y_max) - float(y_min))
+    except (TypeError, ValueError):
+        x_span = 1.0
+        y_span = 1.0
+    best_point = None
+    best_distance = None
+    for point in points:
+        distance = (
+            ((float(point[0]) - float(x_value)) / x_span) ** 2
+            + ((float(point[1]) - float(y_value)) / y_span) ** 2
+        ) ** 0.5
+        if best_distance is None or distance < best_distance:
+            best_point = point
+            best_distance = distance
+    if best_distance is None or best_distance > float(max_normalized_distance):
+        return None
+    return best_point
+
+
 def install_curve_editor_shortcut_legend(
     *,
     QtWidgets,

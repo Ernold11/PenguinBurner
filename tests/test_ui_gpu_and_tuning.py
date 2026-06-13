@@ -193,11 +193,7 @@ def test_memory_offset_range_falls_back_on_empty_range(monkeypatch) -> None:
     assert memory_offset_mhz_range() == (0, 2000)
 
 
-def test_runtime_gpu_index_private_helper(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(tuning, "load_config", lambda _p: {"gpu": {"index": 2}})
-    assert tuning._runtime_gpu_index(tmp_path / "c.toml") == 2
-
-    monkeypatch.setattr(
-        tuning, "load_config", lambda _p: (_ for _ in ()).throw(RuntimeError("x"))
-    )
-    assert tuning._runtime_gpu_index(tmp_path / "c.toml") == 0
+def test_tuning_uses_shared_runtime_gpu_index() -> None:
+    # tuning now delegates to the single shared gpu_selection.runtime_gpu_index
+    # (behaviour itself is covered by test_runtime_gpu_index_reads_config_and_defaults).
+    assert tuning.runtime_gpu_index is gpu_selection.runtime_gpu_index

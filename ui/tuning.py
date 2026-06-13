@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
-from afterburner.import_fan_curve import load_config
 from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS
 from auto_uv.scan_mode import AUTO_UV_MODE_EFFICIENCY
 from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE
@@ -15,6 +13,8 @@ from auto_uv.scan_mode.uv_limits import (
     voltage_drop_pct,
 )
 from penguin_burner_paths import default_runtime_config_path
+
+from .gpu_selection import runtime_gpu_index
 
 
 DEFAULT_SHORT_VERIFICATION_BASE_S = 10
@@ -232,7 +232,7 @@ def memory_offset_mhz_range() -> tuple[int, int]:
         from nvml_gpu_policy import NvmlGpuPolicyController
 
         controller = NvmlGpuPolicyController(
-            gpu_index=_runtime_gpu_index(default_runtime_config_path())
+            gpu_index=runtime_gpu_index(default_runtime_config_path())
         )
         driver_range = controller.get_memory_clock_offset_range_mhz()
     except Exception:
@@ -258,7 +258,7 @@ def _query_gpu_name(gpu_index: int | None = None) -> str | None:
     try:
         from nvml_gpu_policy import NvmlGpuPolicyController
 
-        index = int(gpu_index) if gpu_index is not None else _runtime_gpu_index(
+        index = int(gpu_index) if gpu_index is not None else runtime_gpu_index(
             default_runtime_config_path()
         )
         controller = NvmlGpuPolicyController(gpu_index=index)
@@ -274,13 +274,3 @@ def _query_gpu_name(gpu_index: int | None = None) -> str | None:
     return str(name).strip() if name else None
 
 
-def _runtime_gpu_index(config_path: Path) -> int:
-    try:
-        config = load_config(config_path)
-    except Exception:
-        return 0
-    gpu = config.get("gpu", {}) if isinstance(config, dict) else {}
-    try:
-        return max(0, int(gpu.get("index", 0)))
-    except (AttributeError, TypeError, ValueError):
-        return 0

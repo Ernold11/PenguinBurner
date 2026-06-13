@@ -18,6 +18,7 @@ from .. import theme
 from ..curve_profiles import curve_points_from_values
 from .curve_editor import CurveEditHistory
 from .curve_editor import install_curve_editor_shortcut_legend
+from .curve_editor import nearest_curve_point
 from .curve_plot import CurvePlot
 
 
@@ -520,7 +521,7 @@ def open_vf_curve_editor_dialog(
         if not plot.plot.sceneBoundingRect().contains(scene_pos):
             return None
         view_pos = plot.plot.plotItem.vb.mapSceneToView(scene_pos)
-        return _nearest_curve_point(
+        return nearest_curve_point(
             float(view_pos.x()),
             float(view_pos.y()),
             selectable_curve_points(current_edit["value"]),
@@ -690,38 +691,6 @@ def open_vf_curve_editor_dialog(
     finally:
         if app_instance is not None:
             app_instance.removeEventFilter(key_filter)
-
-
-def _nearest_curve_point(
-    x_value: float,
-    y_value: float,
-    points: list[tuple[float, float]],
-    view_range,
-    *,
-    max_normalized_distance: float = 0.04,
-) -> tuple[float, float] | None:
-    if not points:
-        return None
-    try:
-        (x_min, x_max), (y_min, y_max) = view_range
-        x_span = max(1.0, float(x_max) - float(x_min))
-        y_span = max(1.0, float(y_max) - float(y_min))
-    except (TypeError, ValueError):
-        x_span = 1.0
-        y_span = 1.0
-    best_point = None
-    best_distance = None
-    for point in points:
-        distance = (
-            ((float(point[0]) - float(x_value)) / x_span) ** 2
-            + ((float(point[1]) - float(y_value)) / y_span) ** 2
-        ) ** 0.5
-        if best_distance is None or distance < best_distance:
-            best_point = point
-            best_distance = distance
-    if best_distance is None or best_distance > float(max_normalized_distance):
-        return None
-    return best_point
 
 
 def _style_passive_vf_bin_symbols(pg, item, *, color: str, alpha: int) -> None:
