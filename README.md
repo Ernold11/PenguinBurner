@@ -19,7 +19,7 @@
   <img alt="Installs" src="https://img.shields.io/badge/installs-15k%2B-2ea44f?style=flat-square&logo=linux&logoColor=white">
 </p>
 
-**PenguinBurner automatically tunes your NVIDIA GPU on Linux, starting with
+**PenguinBurner tunes your NVIDIA GPU on Linux, starting with
 automatic and adaptive undervolting, plus an optional in-game monitoring overlay
 with a PC latency meter and pre-frame-generation FPS that updates live.**
 

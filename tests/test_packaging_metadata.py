@@ -275,7 +275,7 @@ def test_readme_uses_logo_image_instead_of_emoji_title() -> None:
 
     assert "docs/assets/penguin-burner-logo.png" in first_lines
     assert "NVIDIA GPU Automatic Tuning Tool" in first_lines
-    assert "automatically tunes your NVIDIA GPU on Linux" in readme
+    assert "tunes your NVIDIA GPU on Linux" in readme
     assert "automatic and adaptive undervolting" in readme
     assert "MSI Afterburner" in readme
     assert "LACT" in readme
