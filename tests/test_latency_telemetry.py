@@ -141,6 +141,9 @@ def test_latency_telemetry_meter_suppresses_single_sample_restart_spike() -> Non
 
 
 def test_latency_telemetry_meter_deinterlaces_output_cadence_from_previous_base() -> None:
+    # With a Reflex/nvapi marker stream present, a steady present rate that jumps
+    # to a clean multiple of the established base IS frame generation: the meter
+    # deinterlaces the 120 present cadence back to the 40 base render cadence.
     clock = {"now": 100.0}
     meter = LatencyTelemetryMeter(
         max_sample_age_s=3.0,
@@ -156,6 +159,7 @@ def test_latency_telemetry_meter_deinterlaces_output_cadence_from_previous_base(
                 "pid": 123,
                 "quality": "present-frametime",
                 "present_frametime_us": 25000,
+                "marker_bits": 1,
             }
         )
 
@@ -172,6 +176,7 @@ def test_latency_telemetry_meter_deinterlaces_output_cadence_from_previous_base(
                 "pid": 123,
                 "quality": "present-frametime",
                 "present_frametime_us": 8333,
+                "marker_bits": 1,
             }
         )
 
@@ -181,6 +186,55 @@ def test_latency_telemetry_meter_deinterlaces_output_cadence_from_previous_base(
     assert "present-frametime-p95=8.33ms" in output_summary
     assert "present-fps=40" in output_summary
     assert "raw-present-fps-avg=120" in output_summary
+
+
+def test_latency_telemetry_meter_no_deinterlace_or_framegen_without_marker_stream() -> None:
+    # Regression: Esoteric Ebb (a simple game with no Reflex integration) ran a
+    # 30fps menu then 120fps gameplay. With no marker stream at all, the present
+    # rate jump is a genuine framerate increase, NOT 4x frame generation: the
+    # meter must report the real 120 rate and must not show a phantom 30 base or
+    # frame-gen. Without this gate the stale 30 menu base was divided into the
+    # 120 cadence (120/4) to invent "30 FPS / 120 FG".
+    clock = {"now": 100.0}
+    meter = LatencyTelemetryMeter(
+        max_sample_age_s=3.0,
+        time_monotonic=lambda: clock["now"],
+    )
+
+    for index in range(90):
+        clock["now"] = 100.0 + index / 30.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "present-pacing",
+                "pid": 123,
+                "quality": "present-frametime",
+                "present_frametime_us": 33333,
+            }
+        )
+
+    base_summary = meter.summary(now=103.0)
+    assert base_summary is not None
+    assert "present-fps=30" in base_summary
+
+    for index in range(360):
+        clock["now"] = 104.0 + index / 120.0
+        meter.add_sample(
+            {
+                "type": "timing",
+                "measurement": "present-pacing",
+                "pid": 123,
+                "quality": "present-frametime",
+                "present_frametime_us": 8333,
+            }
+        )
+
+    snapshot = meter.snapshot(now=107.0)
+
+    assert snapshot is not None
+    assert snapshot["present_fps"] == "120"
+    assert snapshot["raw_present_fps_stats"]["avg"] == "120"
+    assert snapshot["framegen_active"] is False
 
 
 def test_latency_telemetry_meter_prefers_base_frame_markers_over_output_presents() -> None:

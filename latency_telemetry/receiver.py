@@ -328,6 +328,7 @@ def _framegen_active_for_overlay(
     *,
     base_fps: float | None,
     raw_output_fps: float | None,
+    cadence_is_independent: bool,
 ) -> bool:
     """Whether to report frame generation on the overlay.
 
@@ -339,10 +340,23 @@ def _framegen_active_for_overlay(
     Source-asserted generated-frame evidence (an explicit ``framegen_active``
     flag, generated-frame markers/counts, or a generated-frame measurement) is
     still trusted.
+
+    The cadence-ratio test only counts when ``cadence_is_independent`` -- i.e. the
+    base FPS came from a real base-render signal (frame markers) or was
+    deinterlaced from a previously established steady base. When the base is just
+    the current window's p95 (the slow-frame tail) of the present stream itself,
+    a high mean-vs-p95 ratio is intra-window frametime variance (a stuttery,
+    uncapped game), NOT generated frames, so it must not trip frame generation.
     """
     base = _safe_float(base_fps)
     output = _safe_float(raw_output_fps)
-    if base and output and base > 0 and output >= base * FRAMEGEN_CADENCE_RATIO:
+    if (
+        cadence_is_independent
+        and base
+        and output
+        and base > 0
+        and output >= base * FRAMEGEN_CADENCE_RATIO
+    ):
         return True
 
     for sample in samples:
@@ -354,6 +368,32 @@ def _framegen_active_for_overlay(
             return True
         measurement = str(sample.get("measurement") or "").strip().lower()
         if measurement in FRAMEGEN_MEASUREMENTS:
+            return True
+    return False
+
+
+def _has_marker_stream(samples: list[dict]) -> bool:
+    """Whether the window carries a Reflex/nvapi marker stream.
+
+    Real frame generation always arrives with the marker stream: the nvapi
+    bridge emits marker-proxy / out-of-band-present samples carrying
+    ``marker_bits`` and a sim->present span, and base-render frames carry
+    ``base_frame_frametime_us``. A title with no Reflex integration (e.g. a
+    simple game) produces only the Vulkan layer's plain present-pacing
+    frametimes -- no markers at all. Without any marker stream a present-rate
+    increase is a genuine framerate change (a 30fps menu -> 120fps gameplay),
+    not generated frames, so it must not be deinterlaced into a phantom base.
+    """
+    for sample in samples:
+        if _int_value(sample.get("marker_bits")):
+            return True
+        if str(sample.get("measurement") or "") == "marker-proxy":
+            return True
+        if _int_value(sample.get("base_frame_frametime_us")) > 0:
+            return True
+        if _positive_us(sample, "sim_to_present_us") or _positive_us(
+            sample, "sim_to_oob_present_us"
+        ):
             return True
     return False
 
@@ -737,10 +777,14 @@ class LatencyTelemetryMeter:
             base_present_frametime_p95 = marker_frametime_p95
             present_fps_value = _fps_from_frametime(marker_frametime_p95)
             self._last_base_present_fps = present_fps_value
+            cadence_is_independent = True
         else:
-            present_fps_value = self._estimate_base_present_fps(
-                p95_fps=_fps_from_frametime(present_frametime_p95),
-                raw_avg_fps=raw_present_avg_fps,
+            present_fps_value, cadence_is_independent = (
+                self._estimate_base_present_fps(
+                    p95_fps=_fps_from_frametime(present_frametime_p95),
+                    raw_avg_fps=raw_present_avg_fps,
+                    marker_stream=_has_marker_stream(samples),
+                )
             )
             base_present_frametime_p95 = (
                 int(round(1_000_000 / present_fps_value))
@@ -751,6 +795,7 @@ class LatencyTelemetryMeter:
             samples,
             base_fps=present_fps_value,
             raw_output_fps=raw_present_avg_fps,
+            cadence_is_independent=cadence_is_independent,
         )
         latency_proxy_p95, latency_quality = _latency_proxy_p95(samples)
         return {
@@ -861,24 +906,42 @@ class LatencyTelemetryMeter:
         *,
         p95_fps: float | None,
         raw_avg_fps: float | None,
-    ) -> float | None:
+        marker_stream: bool,
+    ) -> tuple[float | None, bool]:
+        """Return ``(base_fps, deinterlaced)``.
+
+        ``deinterlaced`` is True only when the base was recovered by dividing a
+        steady high present rate against the previously established base because
+        frame generation turned on. That division is gated on ``marker_stream``:
+        without a Reflex/nvapi marker stream a multiplied present rate is a real
+        framerate increase (e.g. a 30fps menu -> 120fps gameplay), so dividing it
+        down against a stale base would invent a phantom base + frame-gen rate.
+        When the division is not taken the base is just the current window's p95.
+        """
         if p95_fps is None:
-            return None
+            return None, False
 
         last_base = self._last_base_present_fps
         if last_base is None and p95_fps > METER_UNSEEDED_PRESENT_FPS_MAX:
-            return None
+            return None, False
 
         inferred_multiplier = self._infer_framegen_multiplier(raw_avg_fps, last_base)
 
         base_fps = p95_fps
-        if last_base is not None and p95_fps > last_base * 1.6 and raw_avg_fps:
+        deinterlaced = False
+        if (
+            marker_stream
+            and last_base is not None
+            and p95_fps > last_base * 1.6
+            and raw_avg_fps
+        ):
             multiplier = inferred_multiplier
             if multiplier is not None:
                 base_fps = raw_avg_fps / multiplier
+                deinterlaced = True
 
         self._last_base_present_fps = base_fps
-        return base_fps
+        return base_fps, deinterlaced
 
     @staticmethod
     def _infer_framegen_multiplier(
