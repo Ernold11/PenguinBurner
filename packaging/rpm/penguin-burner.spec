@@ -59,8 +59,10 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
     common \
     initial_check \
     lact \
+    latency_telemetry \
     manual_fan_curve_editor \
     manual_uv_curve_editor \
+    overlay \
     runtime_support \
     runtime_fan_control \
     runtime_gpu_control \
@@ -87,6 +89,16 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_bindir}/cuda-bruteforce-stability
 %{_bindir}/penguin-burner-import-afterburner-vf
 %{_bindir}/penguin-burner-import-afterburner-fan
+%{_bindir}/penguin-burner-steam-launch-check
+%{_bindir}/penguin-burner-steam-game-setup
+%{_bindir}/PB_OVERLAY
+%{_bindir}/PENGUIN_BURNER
+%{_bindir}/penguin-burner-overlay
+%{_bindir}/pburn-overlay
+%{_bindir}/pb-overlay
+%{_bindir}/penguin-burner-overlay-text
+%{_bindir}/pburn-overlay-text
+%{_bindir}/pb-overlay-text
 %{_datadir}/applications/io.github.jpietek.PenguinBurner.desktop
 %{_datadir}/icons/hicolor/256x256/apps/penguin-burner.png
 %{_datadir}/icons/hicolor/512x512/apps/penguin-burner.png
@@ -98,6 +110,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 - Package PenguinBurner 0.4.4.
 - Build the native Vulkan latency layer.
 - Add cmake, gcc-c++, and vulkan-headers build dependencies.
+- Package overlay and latency telemetry modules and entry points.
 
 * Mon Jun 01 2026 PenguinBurner contributors <noreply@github.com> - 0.2.6-1
 - Package PenguinBurner 0.2.6.
