@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.4.4
+Version:        0.4.5
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -106,6 +106,10 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Sun Jun 14 2026 PenguinBurner contributors <noreply@github.com> - 0.4.5-1
+- Fix phantom frame generation reported on titles without a marker stream.
+- Mark Beta development status; packaging and license metadata fixes.
+
 * Sun Jun 14 2026 PenguinBurner contributors <noreply@github.com> - 0.4.4-1
 - Package PenguinBurner 0.4.4.
 - Build the native Vulkan latency layer.
