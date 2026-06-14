@@ -5,7 +5,7 @@ Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
 %global debug_package %{nil}
 
-License:        GPL-3.0-or-later
+License:        GPL-3.0-only
 URL:            https://github.com/jpietek/PenguinBurner
 Source0:        %{name}-%{version}.tar.gz
 
@@ -76,7 +76,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 
 %files -f %{pyproject_files}
 %license LICENSE
-%doc README.md readme-cli.md docs/packaging.md
+%doc README.md readme-cli.md docs/dev/packaging.md
 %{_bindir}/penguin-burner
 %{_bindir}/pburn
 %{_bindir}/penguin-burner-ui
@@ -94,6 +94,11 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Sun Jun 14 2026 PenguinBurner contributors <noreply@github.com> - 0.4.4-1
+- Package PenguinBurner 0.4.4.
+- Build the native Vulkan latency layer.
+- Add cmake, gcc-c++, and vulkan-headers build dependencies.
+
 * Mon Jun 01 2026 PenguinBurner contributors <noreply@github.com> - 0.2.6-1
 - Package PenguinBurner 0.2.6.
 - Constrain Fedora Python GUI dependency versions.
