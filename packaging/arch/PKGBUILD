@@ -29,7 +29,7 @@ sha256sums=('SKIP')
 build() {
   cd "PenguinBurner-${pkgver}"
   export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
-  python -m build --wheel --no-isolation
+  python -m build --wheel --no-isolation --skip-dependency-check
 }
 
 package() {
