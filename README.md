@@ -102,7 +102,9 @@ switching. NVIDIA-only comparison, to the best of our knowledge:
 | **Pre-frame-generation FPS counter** (base vs FG FPS) | ✅ | ❌ |
 | Manual V/F curve editor | ✅ | ✅ |
 | Fan curve control | ✅ auto silent curve + editor | ✅ custom curves |
-| Power limit | ✅ | ✅ |
+| Power limit | 🚧 planned | ✅ |
+| Steam library import | 🚧 planned | ❌ |
+| Per-game tuning profiles | 🚧 planned | ❌ |
 | Runtime profile switching | ✅ by present-frame FPS pacing | ✅ by running process / gamemode |
 | MSI Afterburner import | ✅ | ❌ |
 | Historical telemetry charts | 🚧 planned (live overlay today) | ✅ charts + CSV export |
@@ -121,6 +123,7 @@ the resulting curve under LACT if you prefer.
 
 ### Roadmap (planned, not yet shipped)
 
+- **Power limit control** — set the GPU board power cap.
 - **Historical data plotting** — power, clocks, and FPS over time.
 - **Steam library discovery** — find installed games automatically.
 - **Per-game tuning** — save and auto-apply a profile per game.

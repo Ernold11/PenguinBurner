@@ -26,6 +26,7 @@ comparison.
 
 ## Roadmap (planned, not shipped)
 
+- Power limit control (GPU board power cap)
 - Historical data plotting (power / clocks / FPS over time)
 - Steam library discovery
 - Per-game tuning profiles
