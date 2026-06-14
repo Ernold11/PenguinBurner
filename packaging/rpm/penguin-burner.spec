@@ -5,7 +5,7 @@ Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
 %global debug_package %{nil}
 
-License:        GPL-3.0-only
+License:        GPL-3.0-or-later
 URL:            https://github.com/jpietek/PenguinBurner
 Source0:        %{name}-%{version}.tar.gz
 
