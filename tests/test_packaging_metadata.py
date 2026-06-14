@@ -109,12 +109,12 @@ def test_package_installs_desktop_launcher_and_icons() -> None:
 
 
 def test_python_build_requires_native_layer_build_tooling() -> None:
-    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-    build_requires = set(metadata["build-system"]["requires"])
     setup_py = Path("setup.py").read_text(encoding="utf-8")
     manifest = Path("MANIFEST.in").read_text(encoding="utf-8")
 
-    assert "cmake>=3.20" in build_requires
+    # cmake is a system build dependency (provided by the distro / AUR / RPM
+    # specs), not a Python build-system requirement -- see "Fix AUR build: drop
+    # python cmake build requirement".
     assert "PENGUIN_BURNER_REQUIRE_NATIVE_LAYER" in setup_py
     assert "root_is_pure = False" in setup_py
     assert 'return "py3", "none", platform_tag' in setup_py

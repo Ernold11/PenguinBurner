@@ -589,6 +589,108 @@ def test_latency_telemetry_logger_formats_raw_present_timing_events() -> None:
     ]
 
 
+def test_latency_telemetry_logger_logs_present_mode_status_under_dump() -> None:
+    logs: list[str] = []
+    logger = LatencyTelemetryLogger(
+        log=logs.append,
+        dump_latency_data=True,
+        time_strftime=lambda _format: "2026-06-14 13:00:00",
+    )
+
+    logger._maybe_log_status(
+        {
+            "type": "status",
+            "event": "create-swapchain",
+            "pid": 123,
+            "swapchain": "0x2",
+            "present_mode": 2,
+            "present_mode_name": "FIFO",
+            "min_image_count": 3,
+        }
+    )
+
+    assert logs == [
+        "2026-06-14 13:00:00 event=layer-status:create-swapchain pid=123 "
+        "swapchain=0x2 present_mode=2 present_mode_name=FIFO min_image_count=3"
+    ]
+
+
+def test_latency_telemetry_logger_omits_dump_fields_by_default() -> None:
+    # Without --dump-latency-data the present-mode fields and sleep-mode events
+    # are not logged; the base create-swapchain line still logs its base fields.
+    logs: list[str] = []
+    logger = LatencyTelemetryLogger(
+        log=logs.append,
+        dump_latency_data=False,
+        time_strftime=lambda _format: "2026-06-14 13:00:00",
+    )
+
+    logger._maybe_log_status(
+        {
+            "type": "status",
+            "event": "create-swapchain",
+            "pid": 123,
+            "swapchain": "0x2",
+            "present_mode": 2,
+            "present_mode_name": "FIFO",
+            "min_image_count": 3,
+        }
+    )
+    logger._maybe_log_status(
+        {
+            "type": "status",
+            "event": "latency-sleep-mode-set",
+            "pid": 123,
+            "swapchain": "0x2",
+            "low_latency_boost": "true",
+        }
+    )
+
+    assert logs == [
+        "2026-06-14 13:00:00 event=layer-status:create-swapchain pid=123 swapchain=0x2"
+    ]
+    assert "present_mode_name" not in logs[0]
+
+
+def test_latency_telemetry_dump_latency_data_off_by_default() -> None:
+    assert receiver._dump_latency_data_enabled({}) is False
+    assert receiver._dump_latency_data_enabled(
+        {"PENGUIN_BURNER_DUMP_LATENCY_DATA": "1"}
+    ) is True
+
+
+def test_latency_telemetry_logger_throttles_unchanged_sleep_mode() -> None:
+    # vkSetLatencySleepModeNV fires per-frame; only boost/cap *changes* should log.
+    logs: list[str] = []
+    logger = LatencyTelemetryLogger(
+        log=logs.append,
+        dump_latency_data=True,
+        time_strftime=lambda _format: "2026-06-14 13:00:00",
+    )
+
+    def set_event(boost: str) -> dict:
+        return {
+            "type": "status",
+            "event": "latency-sleep-mode-set",
+            "pid": 123,
+            "swapchain": "0x2",
+            "has_latency_sleep_mode": "true",
+            "low_latency_mode": "true",
+            "low_latency_boost": boost,
+            "minimum_interval_us": 0,
+        }
+
+    logger._maybe_log_status(set_event("false"))  # first: logs
+    logger._maybe_log_status(set_event("false"))  # unchanged: throttled
+    logger._maybe_log_status(set_event("false"))  # unchanged: throttled
+    logger._maybe_log_status(set_event("true"))  # boost flips: logs
+    logger._maybe_log_status(set_event("true"))  # unchanged: throttled
+
+    assert len(logs) == 2
+    assert "low_latency_boost=false" in logs[0]
+    assert "low_latency_boost=true" in logs[1]
+
+
 def test_latency_telemetry_raw_logs_are_off_by_default() -> None:
     assert receiver._raw_timing_log_interval({}) is None
 

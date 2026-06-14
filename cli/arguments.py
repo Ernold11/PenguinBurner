@@ -211,6 +211,17 @@ def parse_arguments(argv):
             "telemetry layer and print Steam launch options."
         ),
     )
+    advanced_group.add_argument(
+        "--dump-latency-data",
+        action="store_true",
+        help=(
+            "Runtime/daemon only: dump verbose latency internals to the daemon "
+            "log -- swapchain present mode and queue depth, plus Reflex "
+            "sleep-mode (boost / FPS-cap) and recovery transitions. For "
+            "debugging display/VRR and frame-generation behaviour; off by "
+            "default. Equivalent to PENGUIN_BURNER_DUMP_LATENCY_DATA=1."
+        ),
+    )
     daemon_group.add_argument(
         "--silent-fan-curve",
         action="store_true",

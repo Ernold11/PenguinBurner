@@ -18,6 +18,11 @@ from .layer_check import DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS
 
 MARKER_INPUT_SAMPLE_BIT = 1 << 6
 RAW_TIMING_LOG_ENV = "PENGUIN_BURNER_LATENCY_RAW_TIMING_LOG"
+# Opt-in (via --dump-latency-data or this env) verbose latency dump: present
+# mode / queue depth on swapchain creation plus Reflex sleep-mode (boost / FPS
+# cap) and recovery transitions. Off by default; debugging display/VRR and
+# frame-gen behaviour only.
+DUMP_LATENCY_DATA_ENV = "PENGUIN_BURNER_DUMP_LATENCY_DATA"
 DXVK_NVAPI_VKREFLEX_SOURCE = "dxvk-nvapi-vkreflex"
 
 QUALITY_RANK = {
@@ -403,6 +408,12 @@ def _safe_float(value: object) -> float | None:
         return float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+
+
+def _dump_latency_data_enabled(env: dict[str, str] | None = None) -> bool:
+    env = os.environ if env is None else env
+    value = str(env.get(DUMP_LATENCY_DATA_ENV) or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _raw_timing_log_interval(env: dict[str, str] | None = None) -> float | None:
@@ -968,6 +979,7 @@ class LatencyTelemetryLogger:
         log: Callable[[str], None],
         log_interval_s: float = METER_LOG_INTERVAL_S,
         raw_log_interval_s: float | None = None,
+        dump_latency_data: bool | None = None,
         time_monotonic: Callable[[], float] = time.monotonic,
         time_strftime: Callable[[str], str] = time.strftime,
     ) -> None:
@@ -985,6 +997,11 @@ class LatencyTelemetryLogger:
             if raw_log_interval_s is None
             else raw_log_interval_s
         )
+        self._dump_latency_data = (
+            _dump_latency_data_enabled()
+            if dump_latency_data is None
+            else bool(dump_latency_data)
+        )
         self.time_monotonic = time_monotonic
         self.time_strftime = time_strftime
         self.meter = LatencyTelemetryMeter(time_monotonic=time_monotonic)
@@ -994,6 +1011,9 @@ class LatencyTelemetryLogger:
         self._stop = threading.Event()
         self._last_log_monotonic = 0.0
         self._last_raw_log_monotonic = 0.0
+        # Reflex sleep-mode (boost/cap) is set per-frame; remember the last logged
+        # signature per swapchain so we only log on change instead of every frame.
+        self._last_sleep_mode_sig: dict[object, tuple] = {}
 
     def start(self) -> "LatencyTelemetryLogger":
         for path in self.paths:
@@ -1097,38 +1117,100 @@ class LatencyTelemetryLogger:
         "present-wait-result",
     )
 
+    # Extra events surfaced only under --dump-latency-data: Reflex sleep-mode
+    # (boost / FPS-cap) + recovery transitions. Logged on change only (see
+    # _sleep_mode_is_duplicate) since the set event fires per-frame. These expose
+    # low_latency_boost and minimum_interval_us, the closest readouts to
+    # Reflex-Boost and the VRR frame-rate-cap internals.
+    _DUMP_STATUS_LOG_EVENTS = (
+        "latency-sleep-mode-set",
+        "latency-recovery-unavailable",
+        "latency-recovery-disable-sleep-mode",
+        "latency-recovery-reset-sleep-mode-enter",
+        "latency-recovery-reset-sleep-mode",
+        "latency-recovery-reapply-sleep-mode",
+    )
+
+    _STATUS_LOG_KEYS = (
+        "swapchain",
+        "count",
+        "present_count",
+        "last_vulkan_present_id",
+        "chain_has_present_id",
+        "present_id_at_head",
+        "want_inject",
+        "injected_present_id",
+        "present_id",
+        "result",
+        "display_latency_us",
+        "latest_marker_present_id",
+        "last_present_marker_present_id",
+        "last_oob_present_present_id",
+        "last_input_sample_present_id",
+        "swapchain_latency_mode",
+        "vk_nv_low_latency2_advertised",
+        "vk_nv_low_latency2_requested",
+        "vk_khr_present_wait_advertised",
+        "vk_khr_present_wait_requested",
+        "vk_khr_present_id_advertised",
+        "vk_khr_present_id_requested",
+    )
+
+    # Extra fields surfaced only under --dump-latency-data. Present mode +
+    # queue depth (FIFO/IMMEDIATE/MAILBOX is the vsync/VRR path, min_image_count
+    # the present-queue depth) and the Reflex sleep-mode (boost / FPS-cap)
+    # internals.
+    _DUMP_STATUS_LOG_KEYS = (
+        "present_mode",
+        "present_mode_name",
+        "min_image_count",
+        "image_width",
+        "image_height",
+        "has_latency_sleep_mode",
+        "low_latency_mode",
+        "low_latency_boost",
+        "minimum_interval_us",
+        "vk_nv_low_latency2_functions",
+    )
+
+    # Reflex sleep-mode fields that, when unchanged, make a set event a duplicate.
+    _SLEEP_MODE_SIG_KEYS = (
+        "has_latency_sleep_mode",
+        "low_latency_mode",
+        "low_latency_boost",
+        "minimum_interval_us",
+    )
+
+    def _sleep_mode_is_duplicate(self, sample: dict) -> bool:
+        """True when a per-frame sleep-mode-set repeats the last logged state.
+
+        Keeps the boost/cap transitions in the log without one line per frame.
+        """
+        if str(sample.get("event") or "") != "latency-sleep-mode-set":
+            return False
+        sig = tuple(sample.get(key) for key in self._SLEEP_MODE_SIG_KEYS)
+        key = (sample.get("pid"), sample.get("swapchain"))
+        if self._last_sleep_mode_sig.get(key) == sig:
+            return True
+        self._last_sleep_mode_sig[key] = sig
+        return False
+
     def _maybe_log_status(self, sample: dict) -> None:
         event = str(sample.get("event") or "")
-        if event not in self._STATUS_LOG_EVENTS:
+        events = self._STATUS_LOG_EVENTS
+        keys = self._STATUS_LOG_KEYS
+        if self._dump_latency_data:
+            events = events + self._DUMP_STATUS_LOG_EVENTS
+            keys = keys + self._DUMP_STATUS_LOG_KEYS
+        if event not in events:
+            return
+        if self._sleep_mode_is_duplicate(sample):
             return
         fields = [
             f"event=layer-status:{event}",
             f"pid={sample.get('pid', 'unknown')}",
         ]
-        for key in (
-            "swapchain",
-            "count",
-            "present_count",
-            "last_vulkan_present_id",
-            "chain_has_present_id",
-            "present_id_at_head",
-            "want_inject",
-            "injected_present_id",
-            "present_id",
-            "result",
-            "display_latency_us",
-            "latest_marker_present_id",
-            "last_present_marker_present_id",
-            "last_oob_present_present_id",
-            "last_input_sample_present_id",
-            "swapchain_latency_mode",
-            "vk_nv_low_latency2_advertised",
-            "vk_nv_low_latency2_requested",
-            "vk_khr_present_wait_advertised",
-            "vk_khr_present_wait_requested",
-            "vk_khr_present_id_advertised",
-            "vk_khr_present_id_requested",
-        ):
+        for key in keys:
             if key in sample:
                 fields.append(f"{key}={sample[key]}")
         self.log(f"{self.time_strftime('%Y-%m-%d %H:%M:%S')} {' '.join(fields)}")
@@ -1166,9 +1248,12 @@ def start_latency_telemetry_logger(
     *,
     log: Callable[[str], None],
     path: Path | None = None,
+    dump_latency_data: bool | None = None,
 ) -> LatencyTelemetryLogger | None:
     try:
-        return LatencyTelemetryLogger(path=path, log=log).start()
+        return LatencyTelemetryLogger(
+            path=path, log=log, dump_latency_data=dump_latency_data
+        ).start()
     except Exception as exc:
         log(f"Latency telemetry unavailable: {exc}")
         return None

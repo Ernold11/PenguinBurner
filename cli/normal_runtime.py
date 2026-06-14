@@ -118,7 +118,10 @@ def run_normal_runtime(
         process_cpu_sampler=deps.process_cpu_sampler_factory(),
         config_path=overlay_config_path,
     )
-    latency_logger = deps.start_latency_telemetry_logger(log=deps.log)
+    latency_logger = deps.start_latency_telemetry_logger(
+        log=deps.log,
+        dump_latency_data=(True if getattr(args, "dump_latency_data", False) else None),
+    )
     adaptive_auto_uv_controller = None
     if bool(getattr(args, "adaptive_auto_uv", False)):
         if vf_policy.active_vf_curve_source == "auto-uv-final":

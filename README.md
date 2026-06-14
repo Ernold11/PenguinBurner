@@ -203,6 +203,51 @@ merged April 18, 2026.
 
 The CLI-focused README is archived in [readme-cli.md](readme-cli.md).
 
+## Advanced / hacky flags
+
+Undocumented-by-design knobs for power users and debugging. These are not part
+of the supported surface, can change without notice, and most are only useful
+when chasing latency/overlay behaviour. Off by default.
+
+### Daemon CLI flags (Advanced/debug group)
+
+| Flag | What it does |
+| --- | --- |
+| `--check-latency-layer` | Check Vulkan loader discovery for the opt-in latency layer and print the Steam launch options. |
+| `--dump-latency-data` | Dump verbose latency internals to the daemon log: swapchain **present mode** and **queue depth**, plus Reflex **sleep-mode (boost / FPS-cap)** and recovery transitions. For debugging display/VRR and frame-generation behaviour. Same as `PENGUIN_BURNER_DUMP_LATENCY_DATA=1`. |
+| `--preserve-vf-below-mv <mv>` | Keep the base Linux VF curve at/below this voltage (rescue idle/low-voltage scaling after heavy Afterburner edits). |
+| `--dangerously-skip-validation` | Bypass the flat-tail/undervolt safety checks when selecting the saved profile. Not recommended. |
+| `--debug-log` | Verbose debug logging. |
+
+Read the daemon log with `journalctl -u PenguinBurner.service -f -o cat` (or
+`--user` if you run it per-session).
+
+### Environment variables — latency layer (set in the Steam launch option)
+
+The canonical wrapper line is `PENGUIN_BURNER %command%`. Prepend any of these:
+
+| Var | What it does |
+| --- | --- |
+| `PENGUIN_BURNER_OVERLAY=1 PB_OVERLAY=1` | Enable the in-game overlay (both tokens). |
+| `PB_INGAME_LATENCY=1` | Enable in-game latency (dxvk-nvapi trace + marker bridge). |
+| `PENGUIN_BURNER_LATENCY_DISPLAY=1` | Add the present→scanout (display) latency tail to the LAT number. |
+| `PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID=1` | Force present-id injection (needed for display latency on titles that supply none). |
+| `PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1` | Emit present-flow probe events to the daemon log. |
+| `PENGUIN_BURNER_LATENCY_SOCKET=<path>` | Override the telemetry socket path. |
+
+### Environment variables — daemon-side
+
+| Var | What it does |
+| --- | --- |
+| `PENGUIN_BURNER_DUMP_LATENCY_DATA=1` | Same as `--dump-latency-data`. |
+| `PENGUIN_BURNER_LATENCY_RAW_TIMING_LOG=<sec\|all>` | Log raw per-sample timing rows (a seconds interval, or `all`). Very noisy. |
+| `PENGUIN_BURNER_ADAPTIVE_TARGET_FPS` / `PB_ADAPTIVE_TARGET_FPS` | Adaptive-UV target FPS. |
+| `PENGUIN_BURNER_ADAPTIVE_*` | Adaptive-UV tuning knobs (comfort windows, demote dwell, CPU-bound thresholds). See `runtime_gpu_control/` for the full set. |
+
+Running a game under **gamescope**? See
+[docs/dev/penguin-burner-with-gamescope.md](docs/dev/penguin-burner-with-gamescope.md)
+— the wrapper ordering matters (`gamescope … -- PENGUIN_BURNER %command%`).
+
 ## Start clean
 
 Reset PenguinBurner user state for a fresh run:
