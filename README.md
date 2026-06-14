@@ -4,7 +4,7 @@
   <a href="https://pypi.org/project/penguin-burner/"><img alt="PyPI" src="https://img.shields.io/pypi/v/penguin-burner?style=flat-square&logo=pypi&logoColor=white&color=3775A9"></a>
   <a href="https://pypi.org/project/penguin-burner/"><img alt="Python" src="https://img.shields.io/badge/python-3-3776AB?style=flat-square&logo=python&logoColor=white"></a>
   <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square&logo=cplusplus&logoColor=white">
-  <a href="LICENSE"><img alt="License: GPL v3" src="https://img.shields.io/github/license/jpietek/PenguinBurner?style=flat-square&color=blue"></a>
+  <a href="LICENSE"><img alt="License: GPL v3 or later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue?style=flat-square"></a>
   <a href="https://github.com/jpietek/PenguinBurner/actions"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/jpietek/PenguinBurner/publish-python-package.yml?style=flat-square&logo=github&label=build"></a>
   <img alt="Coverage" src="https://img.shields.io/badge/coverage-81%25-green?style=flat-square">
   <a href="https://github.com/sponsors/jpietek"><img alt="Sponsors" src="https://img.shields.io/badge/sponsors-1-EA4AAA?style=flat-square&logo=githubsponsors&logoColor=white"></a>
