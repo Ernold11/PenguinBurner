@@ -142,6 +142,12 @@ you want. Any tuning change you make is reflected live in the overlay while you
 play, so you see the effect of an undervolt, clock, or fan change in real time
 without leaving the game.
 
+If you want the detailed numbers behind that LAT figure, start the daemon with
+`--dump-latency-data` (advanced; off by default). It dumps the full per-frame
+latency breakdown — present mode, queue depth, Reflex sleep-mode/boost, and the
+display/scanout split — to the daemon log, which you can capture to a file by
+also passing `--debug-log`.
+
 [Read the guide](docs/features/overlay.md)
 
 ## More features
@@ -178,6 +184,22 @@ from the profiles view or the CLI. See
 Auto-UV makes real hardware changes — enabling persistence mode, setting board
 power limits, writing core/memory V/F offsets, and taking over fan control.
 
+The **Balanced** and **Efficiency** Auto-UV profiles are ultra-defensive.
+Balanced at most retains the card's stock clock, probing gently for lower
+voltage. Efficiency just follows the stock curve on the first pass — lowering
+power consumption by reducing clock — then undervolts only very slightly.
+
+**Performance** undervolt mode is the one that pushes past stock. On my RTX 5080,
+during the OC phase I sometimes get a "Vulkan device lost", which PenguinBurner
+catches and then reverts the problematic voltage/frequency point. Worst case is
+a hard system freeze and reboot — after which the blacklisted V/F point is
+persisted to the UV history file in your home directory, so it is not retried.
+
+You can also define, in the Performance UV dialog, exactly which
+voltage/frequency point the card is pushed to over stock limits. The default is
+the suggested point for 30/40/50-tier GPUs, based on experiments with this and
+similar tools on Windows. Performance is optional anyway — OC is not mandatory.
+
 ## Acknowledgements
 
 PenguinBurner was built through agentic AI development, guided by human ideas and
@@ -202,51 +224,6 @@ merged April 18, 2026.
 ## CLI Documentation
 
 The CLI-focused README is archived in [readme-cli.md](readme-cli.md).
-
-## Advanced / hacky flags
-
-Undocumented-by-design knobs for power users and debugging. These are not part
-of the supported surface, can change without notice, and most are only useful
-when chasing latency/overlay behaviour. Off by default.
-
-### Daemon CLI flags (Advanced/debug group)
-
-| Flag | What it does |
-| --- | --- |
-| `--check-latency-layer` | Check Vulkan loader discovery for the opt-in latency layer and print the Steam launch options. |
-| `--dump-latency-data` | Dump verbose latency internals to the daemon log: swapchain **present mode** and **queue depth**, plus Reflex **sleep-mode (boost / FPS-cap)** and recovery transitions. For debugging display/VRR and frame-generation behaviour. Same as `PENGUIN_BURNER_DUMP_LATENCY_DATA=1`. |
-| `--preserve-vf-below-mv <mv>` | Keep the base Linux VF curve at/below this voltage (rescue idle/low-voltage scaling after heavy Afterburner edits). |
-| `--dangerously-skip-validation` | Bypass the flat-tail/undervolt safety checks when selecting the saved profile. Not recommended. |
-| `--debug-log` | Verbose debug logging. |
-
-Read the daemon log with `journalctl -u PenguinBurner.service -f -o cat` (or
-`--user` if you run it per-session).
-
-### Environment variables — latency layer (set in the Steam launch option)
-
-The canonical wrapper line is `PENGUIN_BURNER %command%`. Prepend any of these:
-
-| Var | What it does |
-| --- | --- |
-| `PENGUIN_BURNER_OVERLAY=1 PB_OVERLAY=1` | Enable the in-game overlay (both tokens). |
-| `PB_INGAME_LATENCY=1` | Enable in-game latency (dxvk-nvapi trace + marker bridge). |
-| `PENGUIN_BURNER_LATENCY_DISPLAY=1` | Add the present→scanout (display) latency tail to the LAT number. |
-| `PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID=1` | Force present-id injection (needed for display latency on titles that supply none). |
-| `PENGUIN_BURNER_LATENCY_DEBUG_FLOW=1` | Emit present-flow probe events to the daemon log. |
-| `PENGUIN_BURNER_LATENCY_SOCKET=<path>` | Override the telemetry socket path. |
-
-### Environment variables — daemon-side
-
-| Var | What it does |
-| --- | --- |
-| `PENGUIN_BURNER_DUMP_LATENCY_DATA=1` | Same as `--dump-latency-data`. |
-| `PENGUIN_BURNER_LATENCY_RAW_TIMING_LOG=<sec\|all>` | Log raw per-sample timing rows (a seconds interval, or `all`). Very noisy. |
-| `PENGUIN_BURNER_ADAPTIVE_TARGET_FPS` / `PB_ADAPTIVE_TARGET_FPS` | Adaptive-UV target FPS. |
-| `PENGUIN_BURNER_ADAPTIVE_*` | Adaptive-UV tuning knobs (comfort windows, demote dwell, CPU-bound thresholds). See `runtime_gpu_control/` for the full set. |
-
-Running a game under **gamescope**? See
-[docs/dev/penguin-burner-with-gamescope.md](docs/dev/penguin-burner-with-gamescope.md)
-— the wrapper ordering matters (`gamescope … -- PENGUIN_BURNER %command%`).
 
 ## Start clean
 
