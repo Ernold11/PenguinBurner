@@ -756,6 +756,55 @@ def test_device_lost_output_is_fatal_case_insensitive(tmp_path: Path) -> None:
     assert "device lost" in matches
 
 
+def test_loader_error_output_is_launcher_failure_not_fatal_output(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "q2rtx.log"
+    log_path.write_text(
+        "q2rtx: error while loading shared libraries: "
+        "libssl.so.1.1: cannot open shared object file\n",
+        encoding="utf-8",
+    )
+
+    matches = _scan_output_for_fatal_patterns(log_path)
+
+    assert "error while loading shared libraries" not in matches
+
+
+def test_loader_error_result_is_retryable_and_reclassified(tmp_path: Path) -> None:
+    result = Q2RTXStabilityResult(
+        success=False,
+        reason="timedemo-nonzero-exit",
+        workload_kind="timedemo",
+        workload_name="q2demo1",
+        command=["q2rtx"],
+        executable_path=tmp_path / "q2rtx",
+        workdir=tmp_path,
+        duration_requested_s=30,
+        timedemo_loops_requested=3,
+        duration_observed_s=0.8,
+        demo_path=None,
+        log_path=tmp_path / "q2rtx.log",
+        process_exit_code=127,
+        shutdown_mode="completed",
+        fatal_output_matches=[],
+        xid_messages=[],
+        timedemo_runs=[],
+        telemetry_samples=[],
+        companion_telemetry_samples=[],
+        output_tail=[
+            "q2rtx: error while loading shared libraries: "
+            "libssl.so.1.1: cannot open shared object file",
+        ],
+    )
+
+    assert q2rtx_runtime._result_is_retryable_launcher_failure(result) is True
+    assert (
+        q2rtx_runtime._reclassify_launcher_failure(result).reason
+        == "q2rtx-launcher-error"
+    )
+
+
 def test_report_output_tail_filters_normal_gamescope_shutdown_noise() -> None:
     assert _filter_report_output_tail(
         [

@@ -18,6 +18,9 @@ CONTROLLED_CLOCK_FLOOR_FAILURE_PREFIXES = (
 CONTROLLED_TERMINATION_FAILURE_PREFIXES = (
     "user-stop-requested",
     "cuda-bruteforce-failed exit=-15",
+    # Q2RTX failed to launch (e.g. missing libssl.so.1.1) - an environment error,
+    # not voltage instability. Matches stability.q2rtx Q2RTX_LAUNCHER_ERROR_REASON.
+    "q2rtx-launcher-error",
 )
 
 

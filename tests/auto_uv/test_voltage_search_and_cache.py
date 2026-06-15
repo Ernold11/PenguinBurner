@@ -254,7 +254,16 @@ def test_unsafe_entry_reason_values_drops_empty_and_ignores_non_dict_details() -
 def test_unsafe_entry_blocks_future_search_treats_controlled_detail_as_safe() -> None:
     # A controlled clock-floor exit recorded in details must not block future search.
     assert not unsafe_entry_blocks_future_search(
-        {"reason": "crash", "details": {"result_reason": "core_clock-regression-detected"}}
+        {
+            "reason": "crash",
+            "details": {"result_reason": "core_clock-regression-detected"},
+        }
+    )
+    assert not unsafe_entry_blocks_future_search(
+        {
+            "reason": "stability-probe-failed",
+            "details": {"result_reason": "q2rtx-launcher-error"},
+        }
     )
 
 
@@ -263,5 +272,6 @@ def test_controlled_failure_reason_matches_known_prefixes_only() -> None:
     assert controlled_failure_reason("core_clock-regression-x")
     assert controlled_failure_reason("user-stop-requested")
     assert controlled_failure_reason("cuda-bruteforce-failed exit=-15")
+    assert controlled_failure_reason("q2rtx-launcher-error")
     assert not controlled_failure_reason("timedemo-crash")
     assert not controlled_failure_reason(None)

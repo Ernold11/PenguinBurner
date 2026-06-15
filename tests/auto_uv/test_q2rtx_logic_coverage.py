@@ -180,6 +180,7 @@ def test_core_clock_below_floor_respects_tolerance() -> None:
 
 def test_probe_failure_controlled_reason_does_not_mark_unsafe() -> None:
     assert probe_failure_should_mark_voltage_unsafe("user-stop-requested") is False
+    assert probe_failure_should_mark_voltage_unsafe("q2rtx-launcher-error") is False
 
 
 def test_probe_failure_idle_and_stall_prefixes_do_not_mark_unsafe() -> None:

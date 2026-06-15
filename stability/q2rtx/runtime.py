@@ -11,7 +11,11 @@ import time
 from common.penguin_burner_paths import claim_desktop_user_ownership
 
 from .assets import _validate_demo_name, resolve_q2rtx_executable, resolve_workload
-from .constants import HIDDEN_WINDOW_POSITION
+from .constants import (
+    HIDDEN_WINDOW_POSITION,
+    LAUNCHER_ERROR_PATTERNS,
+    Q2RTX_LAUNCHER_ERROR_REASON,
+)
 from .gpu_binding import (
     _apply_hidden_window_env,
     _apply_nvidia_render_offload_env,
@@ -67,6 +71,37 @@ def _result_looks_like_gamescope_startup_crash(result: Q2RTXStabilityResult) -> 
         "Broken pipe",
     )
     return any(marker in tail for marker in startup_crash_markers)
+
+
+MAX_LAUNCHER_RETRY_ATTEMPTS = 3
+
+
+def _result_has_launcher_error(result: Q2RTXStabilityResult) -> bool:
+    """True when Q2RTX failed in the dynamic loader (e.g. missing libssl.so.1.1)."""
+    tail = "\n".join(str(line) for line in result.output_tail)
+    return any(pattern in tail for pattern in LAUNCHER_ERROR_PATTERNS)
+
+
+def _result_is_retryable_launcher_failure(result: Q2RTXStabilityResult) -> bool:
+    """A launch that died before stable metrics for a non-stability reason.
+
+    Covers a missing shared library and a flaky headless-gamescope startup; both
+    are random and self-clearing, so the same-mode retry is worth a few attempts.
+    """
+    if bool(result.success):
+        return False
+    return _result_has_launcher_error(
+        result
+    ) or _result_looks_like_gamescope_startup_crash(result)
+
+
+def _reclassify_launcher_failure(
+    result: Q2RTXStabilityResult,
+) -> Q2RTXStabilityResult:
+    """Tag an unrecovered loader failure so Auto-UV never blacklists the voltage."""
+    if bool(result.success) or not _result_has_launcher_error(result):
+        return result
+    return replace(result, reason=Q2RTX_LAUNCHER_ERROR_REASON)
 
 
 def _common_q2rtx_args(
@@ -1013,6 +1048,10 @@ def run_q2rtx_stability_test(config: Q2RTXStabilityConfig) -> Q2RTXStabilityResu
     )
     log_path = _prepare_log_path(config.log_dir)
 
+    # A Q2RTX launch can fail before any stable metrics for reasons that are not
+    # GPU instability: a flaky headless-gamescope startup, or the dynamic loader
+    # failing to resolve a shared library (e.g. libssl.so.1.1). These are random
+    # and self-clearing, so retry in the SAME mode a few times before giving up.
     result = _run_timedemo_session(
         config=config,
         executable_path=executable_path,
@@ -1022,29 +1061,53 @@ def run_q2rtx_stability_test(config: Q2RTXStabilityConfig) -> Q2RTXStabilityResu
         log_path=log_path,
         runtime_env=runtime_env,
     )
+    attempt = 1
+    while (
+        attempt < MAX_LAUNCHER_RETRY_ATTEMPTS
+        and _result_is_retryable_launcher_failure(result)
+    ):
+        attempt += 1
+        print(
+            f"Q2RTX failed to launch before stable metrics (reason={result.reason}); "
+            f"retry {attempt}/{MAX_LAUNCHER_RETRY_ATTEMPTS} in the same mode.",
+            flush=True,
+        )
+        result = _run_timedemo_session(
+            config=config,
+            executable_path=executable_path,
+            workdir=workdir,
+            workload_name=workload_name,
+            demo_path=demo_path,
+            log_path=_prepare_log_path(config.log_dir),
+            runtime_env=runtime_env,
+        )
+
+    # Last-resort recovery: if headless gamescope is still crashing at startup
+    # after the same-mode retries, fall back once to the offscreen X11 launcher.
     if (
-        bool(config.hide_window)
+        not result.success
+        and bool(config.hide_window)
         and bool(config.use_headless_gamescope)
         and _result_looks_like_gamescope_startup_crash(result)
     ):
         print(
-            "Q2RTX headless gamescope crashed before timedemo metrics; "
+            "Q2RTX headless gamescope still failing after retries; "
             "retrying with the offscreen X11 fallback.",
             flush=True,
         )
         retry_config = replace(config, use_headless_gamescope=False)
-        retry_log_path = _prepare_log_path(config.log_dir)
         retry_result = _run_timedemo_session(
             config=retry_config,
             executable_path=executable_path,
             workdir=workdir,
             workload_name=workload_name,
             demo_path=demo_path,
-            log_path=retry_log_path,
+            log_path=_prepare_log_path(config.log_dir),
             runtime_env=runtime_env,
         )
-        if retry_result.success:
-            return retry_result
-        if result.duration_observed_s <= 0.0:
-            return retry_result
-    return result
+        if retry_result.success or result.duration_observed_s <= 0.0:
+            result = retry_result
+
+    # A launch failure tells us nothing about voltage stability; tag it so the
+    # Auto-UV layer never records the voltage as unsafe.
+    return _reclassify_launcher_failure(result)

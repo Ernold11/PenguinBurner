@@ -69,8 +69,16 @@ FATAL_OUTPUT_PATTERNS = (
     "Couldn't open demos/",
     "Couldn't open pics/",
     "Couldn't load pics/",
-    "error while loading shared libraries",
 )
+
+# Dynamic-loader / shared-library failures (e.g. a missing libssl.so.1.1) mean
+# Q2RTX never started: these are environment/launch errors, not GPU instability.
+# They are retried in place (see run_q2rtx_stability_test) and must never blacklist
+# a voltage as unsafe.
+LAUNCHER_ERROR_PATTERNS = ("error while loading shared libraries",)
+
+# Reason assigned to a stability result whose Q2RTX process failed to launch.
+Q2RTX_LAUNCHER_ERROR_REASON = "q2rtx-launcher-error"
 
 TIMEDEMO_LINE_RE = re.compile(
     r"(?P<frames>\d+)\s+frames,\s+(?P<seconds>[0-9.]+)\s+seconds:\s+(?P<fps>[0-9.]+)\s+fps"
