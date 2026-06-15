@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.4.6
+Version:        0.4.7
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -106,6 +106,12 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Mon Jun 15 2026 PenguinBurner contributors <noreply@github.com> - 0.4.7-1
+- Fix Q2RTX verification crash on systems without libssl.so.1.1 (e.g. Bazzite):
+  bundle OpenSSL 1.1 next to the binary and use a relocatable $ORIGIN RUNPATH.
+- Retry transient Q2RTX launcher failures instead of failing the run or
+  blacklisting the undervolt.
+
 * Sun Jun 14 2026 PenguinBurner contributors <noreply@github.com> - 0.4.6-1
 - Add the --dump-latency-data advanced flag (verbose present-mode/Reflex dump).
 - Document advanced/hacky flags and the gamescope wrapper ordering.
