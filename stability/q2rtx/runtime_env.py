@@ -77,8 +77,11 @@ def _colocate_runpath_libs(
             return None
         destination = binary_dir / name
         try:
-            if destination.exists() and destination.samefile(source):
-                continue
+            if (
+                destination.is_file()
+                and destination.stat().st_size == source.stat().st_size
+            ):
+                continue  # already staged this run; avoid a redundant copy
             shutil.copy2(source, destination)  # follows symlinks -> real lib
             claim_desktop_user_ownership(destination)
         except OSError:
@@ -101,7 +104,30 @@ def _prepare_q2rtx_runtime_env(
     env.setdefault("SDL_VIDEO_ALLOW_SCREENSAVER", "1")
 
     missing = _detect_missing_shared_libraries(executable_path, env=env)
-    if not missing:
+    remaining_missing = set(missing) - set(OPENSSL_111_REQUIRED_LIBS)
+    if remaining_missing:
+        raise StabilityTestError(
+            "Q2RTX is missing required shared libraries: "
+            + ", ".join(sorted(remaining_missing))
+        )
+    openssl_missing = bool(set(OPENSSL_111_REQUIRED_LIBS) & set(missing))
+
+    # Always bundle our own OpenSSL 1.1 next to the binary and point RUNPATH at
+    # $ORIGIN, so q2rtx resolves libssl/libcrypto from its own directory on every
+    # launch -- independent of the system libraries and of the ldd probe, which
+    # lies for privilege-dropped, gamescope-wrapped launches (AT_SECURE).
+    try:
+        compat_lib_dir = _ensure_openssl_111_compat_libs(
+            show_progress=show_progress,
+            progress_callback=progress_callback,
+            progress_start_pct=progress_start_pct,
+            progress_end_pct=progress_end_pct,
+        )
+    except StabilityTestError:
+        if openssl_missing:
+            raise
+        # System already provides OpenSSL 1.1 and we could not stage our own copy;
+        # the binary still resolves the libraries from the system.
         _emit_dependency_progress(
             progress_callback,
             progress_end_pct,
@@ -110,26 +136,6 @@ def _prepare_q2rtx_runtime_env(
         )
         return env, None
 
-    missing_set = set(missing)
-    openssl_missing = set(OPENSSL_111_REQUIRED_LIBS) & missing_set
-    remaining_missing = missing_set - set(OPENSSL_111_REQUIRED_LIBS)
-    if remaining_missing:
-        raise StabilityTestError(
-            "Q2RTX is missing required shared libraries: "
-            + ", ".join(sorted(remaining_missing))
-        )
-    if not openssl_missing:
-        raise StabilityTestError(
-            "Q2RTX is missing required shared libraries: "
-            + ", ".join(sorted(missing_set))
-        )
-
-    compat_lib_dir = _ensure_openssl_111_compat_libs(
-        show_progress=show_progress,
-        progress_callback=progress_callback,
-        progress_start_pct=progress_start_pct,
-        progress_end_pct=progress_end_pct,
-    )
     previous_runpath = _colocate_runpath_libs(executable_path, compat_lib_dir)
     if previous_runpath is not None and show_progress:
         print(

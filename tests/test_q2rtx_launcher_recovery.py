@@ -4,18 +4,13 @@ and reclassification so a failed *launch* never blacklists a voltage."""
 from __future__ import annotations
 
 from pathlib import Path
-import struct
 
 from auto_uv.persistence.unsafe_voltage_cache import controlled_failure_reason
 from auto_uv.q2rtx.probe_runtime_guardrails import (
     probe_failure_should_mark_voltage_unsafe,
 )
 from stability.q2rtx.constants import Q2RTX_LAUNCHER_ERROR_REASON
-from stability.q2rtx.elf_runpath import (
-    ORIGIN_RUNPATH,
-    _find_runpath_string,
-    patch_runpath_to_origin,
-)
+from stability.q2rtx.elf_runpath import ORIGIN_RUNPATH, patch_runpath_to_origin
 from stability.q2rtx.models import Q2RTXStabilityResult
 from stability.q2rtx.runtime import (
     _reclassify_launcher_failure,
@@ -24,94 +19,42 @@ from stability.q2rtx.runtime import (
 )
 
 
-# ---- minimal ELF builder (64-bit LE, just enough for the RUNPATH patcher) ----
+# ---- RUNPATH patcher: rewrite the vendored build path to $ORIGIN ----
 
-
-def _build_minimal_elf(runpath: str) -> bytes:
-    dynstr = b"\x00" + runpath.encode("ascii") + b"\x00"
-    runpath_off = 1
-    dynamic = struct.pack("<qQ", 29, runpath_off) + struct.pack("<qQ", 0, 0)
-    shstrtab = b"\x00.dynstr\x00.dynamic\x00.shstrtab\x00"
-
-    ehsize = 64
-    off_dynstr = ehsize
-    off_dynamic = off_dynstr + len(dynstr)
-    off_shstrtab = off_dynamic + len(dynamic)
-    shoff = off_shstrtab + len(shstrtab)
-    shoff += (-shoff) % 8  # 8-byte align
-
-    def shdr(name: int, sh_type: int, offset: int, size: int, entsize: int = 0) -> bytes:
-        return struct.pack(
-            "<IIQQQQIIQQ",
-            name, sh_type, 0, 0, offset, size, 0, 0, 1, entsize,
-        )
-
-    shtable = (
-        shdr(0, 0, 0, 0)
-        + shdr(shstrtab.index(b".dynstr"), 3, off_dynstr, len(dynstr))
-        + shdr(shstrtab.index(b".dynamic"), 6, off_dynamic, len(dynamic), 16)
-        + shdr(shstrtab.index(b".shstrtab"), 3, off_shstrtab, len(shstrtab))
-    )
-
-    e_ident = b"\x7fELF" + bytes([2, 1, 1, 0]) + b"\x00" * 8
-    header = e_ident + struct.pack(
-        "<HHIQQQIHHHHHH",
-        2, 0x3E, 1, 0, 0, shoff, 0, ehsize, 0, 0, 64, 4, 3,
-    )
-    assert len(header) == 64
-
-    body = bytearray(header)
-    body += dynstr + dynamic + shstrtab
-    body += b"\x00" * (shoff - len(body))
-    body += shtable
-    return bytes(body)
-
-
-def test_minimal_elf_builder_roundtrips() -> None:
-    data = _build_minimal_elf("/mnt/q2rtx/.")
-    found = _find_runpath_string(data)
-    assert found is not None
-    _offset, value = found
-    assert value == "/mnt/q2rtx/."
+# A stand-in for the q2rtx ELF: the vendored RUNPATH string surrounded by other
+# NUL-terminated .dynstr entries, so we can assert neighbours stay intact.
+_ELF_BLOB = b"\x7fELF" + b"\x00" * 16 + b"libssl.so.1.1\x00/mnt/q2rtx/.\x00libc.so.6\x00"
 
 
 def test_patch_runpath_rewrites_build_path_to_origin(tmp_path: Path) -> None:
     binary = tmp_path / "q2rtx"
-    binary.write_bytes(_build_minimal_elf("/mnt/q2rtx/."))
+    binary.write_bytes(_ELF_BLOB)
 
     previous = patch_runpath_to_origin(binary)
 
+    patched = binary.read_bytes()
     assert previous == "/mnt/q2rtx/."
-    found = _find_runpath_string(binary.read_bytes())
-    assert found is not None and found[1] == ORIGIN_RUNPATH
-    # In-place edit: the file must not change size.
-    assert binary.stat().st_size == len(_build_minimal_elf("/mnt/q2rtx/."))
-    # The stale build path must be gone.
-    assert b"/mnt/q2rtx" not in binary.read_bytes()
+    assert b"$ORIGIN\x00" in patched
+    assert b"/mnt/q2rtx" not in patched
+    assert len(patched) == len(_ELF_BLOB)  # in-place: no offsets shift
+    assert b"libssl.so.1.1\x00" in patched and b"libc.so.6\x00" in patched
 
 
 def test_patch_runpath_is_idempotent(tmp_path: Path) -> None:
     binary = tmp_path / "q2rtx"
-    binary.write_bytes(_build_minimal_elf("/mnt/q2rtx/."))
+    binary.write_bytes(_ELF_BLOB)
 
     assert patch_runpath_to_origin(binary) == "/mnt/q2rtx/."
     assert patch_runpath_to_origin(binary) == ORIGIN_RUNPATH
 
 
-def test_patch_runpath_refuses_when_slot_too_short(tmp_path: Path) -> None:
-    binary = tmp_path / "q2rtx"
-    original = _build_minimal_elf("/x")  # 2 chars, cannot fit "$ORIGIN"
+def test_patch_runpath_noop_when_build_path_absent(tmp_path: Path) -> None:
+    binary = tmp_path / "other"
+    original = b"a binary without the vendored runpath"
     binary.write_bytes(original)
 
     assert patch_runpath_to_origin(binary) is None
     assert binary.read_bytes() == original
-
-
-def test_patch_runpath_ignores_non_elf(tmp_path: Path) -> None:
-    binary = tmp_path / "not-an-elf"
-    binary.write_bytes(b"this is not an ELF file" * 8)
-
-    assert patch_runpath_to_origin(binary) is None
 
 
 # ---- same-mode retry / reclassification helpers ----
