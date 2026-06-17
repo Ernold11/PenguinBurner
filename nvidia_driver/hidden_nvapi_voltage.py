@@ -6,7 +6,7 @@ import ctypes
 
 from .hidden_nvapi_gpu_selection import (
     pci_bus_number_from_bus_id,
-    query_nvidia_smi_pci_bus_id,
+    query_nvml_pci_bus_id,
 )
 
 
@@ -43,7 +43,7 @@ class HiddenNvapiVoltageReader:
         self._gpu_index = int(gpu_index)
         self._requested_pci_bus_id = (
             str(pci_bus_id or "").strip()
-            or query_nvidia_smi_pci_bus_id(self._gpu_index)
+            or query_nvml_pci_bus_id(self._gpu_index)
         )
         self._requested_bus_number = pci_bus_number_from_bus_id(
             self._requested_pci_bus_id

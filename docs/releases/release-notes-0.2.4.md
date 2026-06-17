@@ -10,7 +10,7 @@ NVAPI voltage reader during preflight.
 
 - Hidden NVAPI voltage and V/F readers now match the selected GPU by PCI bus
   ID, following LACT's handle selection approach, instead of assuming NVAPI
-  physical GPU order matches the `nvidia-smi` index.
+  physical GPU order matches the selected NVML index.
 - This avoids reading voltage from the wrong physical GPU on multi-GPU systems
   and systems where NVAPI enumeration order differs from NVML.
 

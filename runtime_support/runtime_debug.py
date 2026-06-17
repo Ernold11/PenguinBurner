@@ -5,8 +5,6 @@ import os
 import platform
 import pwd
 import shlex
-import shutil
-import subprocess
 import sys
 import time
 import traceback
@@ -37,9 +35,8 @@ from common.penguin_burner_paths import (
     resolve_afterburner_root,
     validate_afterburner_export_root,
 )
-from common.subprocess_locale import stable_subprocess_env
+from nvidia_driver.nvml_identity import NvmlIdentitySession
 
-NVIDIA_SMI = shutil.which("nvidia-smi") or "nvidia-smi"
 DEBUG_LOG_ENABLED = False
 DEBUG_LOG_PATH = None
 DEBUG_LOG_FILE = None
@@ -459,59 +456,25 @@ def _debug_log_runtime_environment():
         f"user={pwd.getpwuid(os.getuid()).pw_name} uid={os.getuid()} "
         f"euid={os.geteuid()} sudo-user={os.environ.get('SUDO_USER', '').strip() or '(none)'}"
     )
-    debug_log(
-        f"path-has-nvidia-smi={'yes' if shutil.which('nvidia-smi') else 'no'} "
-        f"path-has-systemctl={'yes' if shutil.which('systemctl') else 'no'}"
-    )
 
     try:
-        version_result = subprocess.run(
-            [NVIDIA_SMI, "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=stable_subprocess_env(),
-            check=False,
-        )
+        identity_session = NvmlIdentitySession()
     except Exception as exc:
-        debug_exception("failed to run nvidia-smi --version", exc)
+        debug_exception("failed to query NVML GPU metadata", exc)
     else:
-        version_text = (
-            (version_result.stdout or version_result.stderr)
-            .strip()
-            .replace("\n", " | ")
-        )
-        debug_log(
-            f"nvidia-smi-version rc={version_result.returncode} "
-            f"text={_debug_render_text_preview(version_text, limit=140)}"
-        )
-
-    try:
-        query_result = subprocess.run(
-            [
-                NVIDIA_SMI,
-                "--query-gpu=index,name,driver_version,pci.bus_id",
-                "--format=csv,noheader",
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=stable_subprocess_env(),
-            check=False,
-        )
-    except Exception as exc:
-        debug_exception("failed to query nvidia-smi gpu metadata", exc)
-    else:
-        lines = [
-            line.strip() for line in query_result.stdout.splitlines() if line.strip()
-        ]
-        debug_log(
-            f"nvidia-smi-gpu-query rc={query_result.returncode} count={len(lines)}"
-        )
-        for line in lines:
-            debug_log(f"nvidia-smi-gpu={line}")
+        try:
+            identities = identity_session.identities()
+            debug_log(f"nvml-gpu-query count={len(identities)}")
+            for identity in identities:
+                debug_log(
+                    "nvml-gpu="
+                    f"index={identity.index} "
+                    f"name={identity.name} "
+                    f"driver={identity.driver_version} "
+                    f"pci_bus_id={identity.pci_bus_id}"
+                )
+        finally:
+            identity_session.close()
 
 
 def debug_effective_runtime_options(

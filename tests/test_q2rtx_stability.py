@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 import sys
 import tarfile
+from types import SimpleNamespace
 
 import stability.q2rtx.downloader as q2rtx_downloader
 import stability.q2rtx.gpu_binding as q2rtx_gpu_binding
@@ -467,24 +468,18 @@ def test_q2rtx_runtime_env_binds_selected_gpu_from_runtime_identity() -> None:
     assert env["MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE"] == "1"
 
 
-def test_q2rtx_selected_gpu_identity_is_derived_from_nvidia_smi(monkeypatch) -> None:
+def test_q2rtx_selected_gpu_identity_is_derived_from_nvml(monkeypatch) -> None:
     monkeypatch.setattr(
-        q2rtx_gpu_binding.shutil, "which", lambda command: f"/bin/{command}"
+        q2rtx_gpu_binding,
+        "query_nvml_gpu_identity",
+        lambda gpu_index: SimpleNamespace(
+            index=int(gpu_index),
+            name="NVIDIA GeForce RTX 5090",
+            pci_bus_id="00000000:03:00.0",
+            pci_device_id="0x2C0210DE",
+            uuid="GPU-test",
+        ),
     )
-
-    def fake_run(command, **kwargs):
-        assert command[-2:] == ["-i", "1"]
-        return q2rtx_gpu_binding.subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=(
-                "1, NVIDIA GeForce RTX 5090, 00000000:03:00.0, "
-                "0x2C0210DE, GPU-test\n"
-            ),
-            stderr="",
-        )
-
-    monkeypatch.setattr(q2rtx_gpu_binding.subprocess, "run", fake_run)
 
     selected_gpu = q2rtx_gpu_binding._query_selected_nvidia_gpu(1)
 

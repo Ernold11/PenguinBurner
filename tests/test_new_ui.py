@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import ui.afterburner_import as afterburner_import
 import ui.fan_profiles as fan_profiles
@@ -11,8 +12,8 @@ from ui.main import parse_gui_launch_options
 from ui.constants import AFTERBURNER_PROFILE_ID
 from ui.fan_profiles import fan_payload_has_silent_runtime_fields
 from ui.gpu_selection import GpuChoice
+from ui.gpu_selection import gpu_choices_from_nvml_identities
 from ui.gpu_selection import gpu_choices_with_fallback
-from ui.gpu_selection import parse_nvidia_smi_gpu_choices
 from ui.gpu_selection import persist_runtime_gpu_index
 from ui.fan_profiles import profile_fan_curve_points
 from ui.fan_profiles import profile_fan_measurement_points
@@ -83,14 +84,22 @@ def test_new_ui_package_is_installed() -> None:
     assert "*.png" in package_data["ui.assets"]
 
 
-def test_gpu_selection_parses_nvidia_smi_choices() -> None:
-    choices = parse_nvidia_smi_gpu_choices(
-        "\n".join(
-            [
-                "0, NVIDIA GeForce RTX 4090, 00000000:01:00.0, GPU-4090",
-                "1, NVIDIA GeForce RTX 5090, 00000000:03:00.0, GPU-5090",
-            ]
-        )
+def test_gpu_selection_builds_nvml_identity_choices() -> None:
+    choices = gpu_choices_from_nvml_identities(
+        [
+            SimpleNamespace(
+                index=0,
+                name="NVIDIA GeForce RTX 4090",
+                pci_bus_id="00000000:01:00.0",
+                uuid="GPU-4090",
+            ),
+            SimpleNamespace(
+                index=1,
+                name="NVIDIA GeForce RTX 5090",
+                pci_bus_id="00000000:03:00.0",
+                uuid="GPU-5090",
+            ),
+        ]
     )
 
     assert [choice.index for choice in choices] == [0, 1]

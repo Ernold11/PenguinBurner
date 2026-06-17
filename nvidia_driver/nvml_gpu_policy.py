@@ -15,6 +15,7 @@ from afterburner.policy import (
 )
 
 NVML_SUCCESS = 0
+NVML_FEATURE_ENABLED = 1
 
 __all__ = [
     "MAX_AFTERBURNER_MEM_OFFSET_MHZ",
@@ -84,6 +85,9 @@ class NvmlGpuPolicyController:
         if hasattr(self._nvml, "nvmlDeviceSetPowerManagementLimit"):
             self._nvml.nvmlDeviceSetPowerManagementLimit.argtypes = [c_void_p, c_uint]
             self._nvml.nvmlDeviceSetPowerManagementLimit.restype = c_int
+        if hasattr(self._nvml, "nvmlDeviceSetPersistenceMode"):
+            self._nvml.nvmlDeviceSetPersistenceMode.argtypes = [c_void_p, c_uint]
+            self._nvml.nvmlDeviceSetPersistenceMode.restype = c_int
         if hasattr(self._nvml, "nvmlDeviceSetGpuLockedClocks"):
             self._nvml.nvmlDeviceSetGpuLockedClocks.argtypes = [
                 c_void_p,
@@ -94,6 +98,9 @@ class NvmlGpuPolicyController:
         if hasattr(self._nvml, "nvmlDeviceResetGpuLockedClocks"):
             self._nvml.nvmlDeviceResetGpuLockedClocks.argtypes = [c_void_p]
             self._nvml.nvmlDeviceResetGpuLockedClocks.restype = c_int
+        if hasattr(self._nvml, "nvmlDeviceResetMemoryLockedClocks"):
+            self._nvml.nvmlDeviceResetMemoryLockedClocks.argtypes = [c_void_p]
+            self._nvml.nvmlDeviceResetMemoryLockedClocks.restype = c_int
         if hasattr(self._nvml, "nvmlDeviceGetSupportedMemoryClocks"):
             self._nvml.nvmlDeviceGetSupportedMemoryClocks.argtypes = [
                 c_void_p,
@@ -238,6 +245,21 @@ class NvmlGpuPolicyController:
                 f"NVML error {rc}: {self.error_text(rc)}"
             )
         return int(power_limit_w)
+
+    def enable_persistence_mode(self):
+        setter = getattr(self._nvml, "nvmlDeviceSetPersistenceMode", None)
+        if setter is None:
+            raise RuntimeError(
+                "nvmlDeviceSetPersistenceMode is not available on this system"
+            )
+
+        rc = int(setter(self._device, ctypes.c_uint(NVML_FEATURE_ENABLED)))
+        if rc != NVML_SUCCESS:
+            raise RuntimeError(
+                "nvmlDeviceSetPersistenceMode failed with "
+                f"NVML error {rc}: {self.error_text(rc)}"
+            )
+        return True
 
     def _read_clock_list(self, getter_name, *getter_args, capacity=512):
         getter = getattr(self._nvml, getter_name, None)
@@ -427,6 +449,21 @@ class NvmlGpuPolicyController:
         if rc != NVML_SUCCESS:
             raise RuntimeError(
                 "nvmlDeviceResetGpuLockedClocks failed with "
+                f"NVML error {rc}: {self.error_text(rc)}"
+            )
+        return True
+
+    def reset_locked_memory_clocks(self):
+        setter = getattr(self._nvml, "nvmlDeviceResetMemoryLockedClocks", None)
+        if setter is None:
+            raise RuntimeError(
+                "nvmlDeviceResetMemoryLockedClocks is not available on this system"
+            )
+
+        rc = int(setter(self._device))
+        if rc != NVML_SUCCESS:
+            raise RuntimeError(
+                "nvmlDeviceResetMemoryLockedClocks failed with "
                 f"NVML error {rc}: {self.error_text(rc)}"
             )
         return True

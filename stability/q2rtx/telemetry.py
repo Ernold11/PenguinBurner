@@ -9,6 +9,7 @@ from nvidia_driver.nvml_perf_cap_reason import NvmlPerfCapReasonReader
 from common.subprocess_locale import stable_subprocess_env
 
 from .models import TelemetrySample
+from .nvml_telemetry import NvmlTelemetrySession, create_nvml_telemetry_session
 
 
 def _xid_message_is_at_or_after(line: str, started_at: datetime) -> bool:
@@ -78,29 +79,24 @@ class _HiddenNvmlVoltageSession:
         self._perf_cap_reader = None
 
 
-def _parse_metric(value: str) -> float | None:
-    cleaned = value.strip()
-    if not cleaned or cleaned.upper() in {"N/A", "[N/A]", "[NOT SUPPORTED]"}:
-        return None
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
-
-
 def query_gpu_metrics(
     gpu_index: int,
     *,
     voltage_session: _HiddenNvmlVoltageSession | None = None,
+    telemetry_session: NvmlTelemetrySession | None = None,
 ) -> TelemetrySample | None:
-    nvidia_smi = shutil.which("nvidia-smi")
     voltage_mv = (
         voltage_session.read_live_voltage_mv() if voltage_session is not None else None
     )
     perf_cap_reason = (
         voltage_session.read_perf_cap_reason() if voltage_session is not None else None
     )
-    if not nvidia_smi:
+    own_session = None
+    session = telemetry_session
+    if session is None:
+        own_session = create_nvml_telemetry_session(int(gpu_index))
+        session = own_session
+    if session is None:
         if voltage_mv is None and perf_cap_reason is None:
             return None
         return TelemetrySample(
@@ -113,25 +109,12 @@ def query_gpu_metrics(
             fan_speed_pct=None,
             perf_cap_reason=perf_cap_reason,
         )
-
-    command = [
-        nvidia_smi,
-        "--query-gpu=utilization.gpu,power.draw,clocks.gr,temperature.gpu,fan.speed",
-        "--format=csv,noheader,nounits",
-        "-i",
-        str(int(gpu_index)),
-    ]
     try:
-        result = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=stable_subprocess_env(),
+        return session.read_sample(
+            voltage_mv=voltage_mv,
+            perf_cap_reason=perf_cap_reason,
         )
-    except (OSError, subprocess.SubprocessError):
+    except Exception:
         if voltage_mv is None and perf_cap_reason is None:
             return None
         return TelemetrySample(
@@ -144,23 +127,9 @@ def query_gpu_metrics(
             fan_speed_pct=None,
             perf_cap_reason=perf_cap_reason,
         )
-
-    line = result.stdout.strip().splitlines()
-    if not line:
-        return None
-    fields = [item.strip() for item in line[0].split(",")]
-    while len(fields) < 5:
-        fields.append("")
-    return TelemetrySample(
-        elapsed_s=0.0,
-        gpu_util_pct=_parse_metric(fields[0]),
-        power_w=_parse_metric(fields[1]),
-        core_clock_mhz=_parse_metric(fields[2]),
-        temperature_c=_parse_metric(fields[3]),
-        voltage_mv=voltage_mv,
-        fan_speed_pct=_parse_metric(fields[4]),
-        perf_cap_reason=perf_cap_reason,
-    )
+    finally:
+        if own_session is not None:
+            own_session.close()
 
 
 def _query_xid_messages_since(started_at: datetime) -> list[str]:

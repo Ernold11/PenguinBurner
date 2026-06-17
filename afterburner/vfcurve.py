@@ -6,17 +6,16 @@ import configparser
 import hashlib
 import re
 import struct
-import subprocess
 from collections import Counter
 from pathlib import Path
 
+from nvidia_driver.nvml_identity import query_nvml_gpu_identities
 from common.penguin_burner_paths import (
     afterburner_global_profile,
     default_afterburner_device_profile,
     discover_afterburner_device_profiles,
     resolve_afterburner_root,
 )
-from common.subprocess_locale import stable_subprocess_env
 
 from .vfcurve_describe import describe_afterburner_flatten_validation
 
@@ -52,40 +51,11 @@ def _parse_afterburner_device_profile_name(path):
 
 
 def _detect_active_nvidia_gpus():
-    try:
-        output = subprocess.check_output(
-            [
-                "nvidia-smi",
-                "--query-gpu=pci.device_id,pci.bus_id",
-                "--format=csv,noheader",
-            ],
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stderr=subprocess.DEVNULL,
-            env=stable_subprocess_env(),
-        )
-    except Exception:
-        return []
-
     detected = []
-    for raw_line in output.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        parts = [part.strip() for part in line.split(",")]
-        if len(parts) < 2:
-            continue
-        try:
-            pci_device_id = int(parts[0], 16)
-        except ValueError:
-            continue
-        bus_segment = parts[1].split(":")
-        if len(bus_segment) < 2:
-            continue
-        try:
-            bus_decimal = int(bus_segment[1], 16)
-        except ValueError:
+    for identity in query_nvml_gpu_identities():
+        pci_device_id = _parse_pci_device_id(identity.pci_device_id)
+        bus_decimal = _bus_decimal_from_pci_bus_id(identity.pci_bus_id)
+        if pci_device_id is None or bus_decimal is None:
             continue
         detected.append(
             {
@@ -95,6 +65,26 @@ def _detect_active_nvidia_gpus():
             }
         )
     return detected
+
+
+def _parse_pci_device_id(value: str) -> int | None:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return None
+    try:
+        return int(cleaned, 16)
+    except ValueError:
+        return None
+
+
+def _bus_decimal_from_pci_bus_id(value: str) -> int | None:
+    parts = str(value or "").strip().split(":")
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[1], 16)
+    except ValueError:
+        return None
 
 
 def parse_vfcurve_blob(hex_blob: str):

@@ -50,6 +50,7 @@ from .telemetry import (
     _query_xid_messages_since,
     query_gpu_metrics,
 )
+from .nvml_telemetry import create_nvml_telemetry_session
 
 
 def _result_looks_like_gamescope_startup_crash(result: Q2RTXStabilityResult) -> bool:
@@ -314,6 +315,7 @@ def _run_companion_process(
     run_start_monotonic: float,
     cuda_telemetry_samples: list[TelemetrySample],
     voltage_session: _HiddenNvmlVoltageSession,
+    telemetry_session,
     section_name: str,
     workload_name: str,
     log_path: Path,
@@ -347,6 +349,7 @@ def _run_companion_process(
                 latest_sample = query_gpu_metrics(
                     config.gpu_index,
                     voltage_session=voltage_session,
+                    telemetry_session=telemetry_session,
                 )
                 if latest_sample is not None:
                     latest_sample.elapsed_s = pass_elapsed_s
@@ -450,6 +453,7 @@ def run_cuda_stability_test(config: Q2RTXStabilityConfig) -> Q2RTXStabilityResul
 
     cuda_telemetry_samples: list[TelemetrySample] = []
     voltage_session = _HiddenNvmlVoltageSession(config.gpu_index)
+    telemetry_session = create_nvml_telemetry_session(config.gpu_index)
     run_start_monotonic = time.monotonic()
     exit_code = None
     abort_reason = None
@@ -462,11 +466,14 @@ def run_cuda_stability_test(config: Q2RTXStabilityConfig) -> Q2RTXStabilityResul
                 run_start_monotonic=run_start_monotonic,
                 cuda_telemetry_samples=cuda_telemetry_samples,
                 voltage_session=voltage_session,
+                telemetry_session=telemetry_session,
                 section_name="cuda-compute",
                 workload_name="CUDA compute",
                 log_path=log_path,
             )
     finally:
+        if telemetry_session is not None:
+            telemetry_session.close()
         voltage_session.close()
     observed_duration_s = time.monotonic() - run_start_monotonic
     fatal_output_matches = _scan_output_for_fatal_patterns(log_path)
@@ -526,6 +533,7 @@ def _run_timedemo_process(
 ) -> tuple[int | None, float, list[TelemetrySample], list[TelemetrySample], str]:
     telemetry_samples: list[TelemetrySample] = []
     voltage_session = _HiddenNvmlVoltageSession(config.gpu_index)
+    telemetry_session = create_nvml_telemetry_session(config.gpu_index)
     gamescope_prefix = _headless_gamescope_prefix(config)
     selected_gpu = _query_selected_nvidia_gpu(config.gpu_index)
     q2rtx_env = _apply_nvidia_render_offload_env(
@@ -636,6 +644,7 @@ def _run_timedemo_process(
                     sample = query_gpu_metrics(
                         config.gpu_index,
                         voltage_session=voltage_session,
+                        telemetry_session=telemetry_session,
                     )
                     if sample is not None:
                         sample.elapsed_s = pass_elapsed_s
@@ -727,6 +736,7 @@ def _run_timedemo_process(
                     run_start_monotonic=run_start_monotonic,
                     cuda_telemetry_samples=cuda_telemetry_samples,
                     voltage_session=voltage_session,
+                    telemetry_session=telemetry_session,
                     section_name=section_name,
                     workload_name=workload_name,
                     log_path=log_path,
@@ -741,6 +751,8 @@ def _run_timedemo_process(
                     )
     finally:
         _terminate_process_group(process)
+        if telemetry_session is not None:
+            telemetry_session.close()
         voltage_session.close()
 
     if companion_abort_reason and exit_reason == "completed":

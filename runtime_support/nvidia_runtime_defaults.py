@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 from typing import Callable
 
 from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
 from afterburner.import_vf_curve import apply_plan
 from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
-from common.subprocess_locale import stable_subprocess_env
 
 
 class NvidiaRuntimeDefaultsError(RuntimeError):
@@ -34,28 +31,6 @@ def build_runtime_default_plan(reader) -> list[dict]:
             }
         )
     return plan
-
-
-def _run_nvidia_smi_reset(args: list[str]) -> tuple[bool, str]:
-    binary = shutil.which("nvidia-smi")
-    if not binary:
-        return False, "nvidia-smi not found"
-    try:
-        completed = subprocess.run(
-            [binary, *args],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=stable_subprocess_env(),
-        )
-    except Exception as exc:
-        return False, str(exc)
-    if completed.returncode == 0:
-        return True, ""
-    stderr = (completed.stderr or completed.stdout or "").strip()
-    return False, stderr or f"exit={completed.returncode}"
 
 
 def _format_clock_offsets(offsets: dict) -> str:
@@ -128,17 +103,17 @@ def reset_nvidia_runtime_defaults(
         except Exception as exc:
             log(f"Reset defaults: locked GPU clock reset skipped: {exc}")
 
-        ok, reason = _run_nvidia_smi_reset(["-i", str(int(gpu_index)), "-rgc"])
-        if ok:
-            log("Reset defaults: cleared locked GPU clocks with nvidia-smi")
-        else:
-            log(f"Reset defaults: nvidia-smi locked GPU clock reset skipped: {reason}")
+        try:
+            policy_controller.reset_locked_core_clocks()
+            log("Reset defaults: cleared locked GPU clocks")
+        except Exception as exc:
+            log(f"Reset defaults: locked GPU clock reset skipped: {exc}")
 
-        ok, reason = _run_nvidia_smi_reset(["-i", str(int(gpu_index)), "-rmc"])
-        if ok:
+        try:
+            policy_controller.reset_locked_memory_clocks()
             log("Reset defaults: cleared locked memory clocks")
-        else:
-            log(f"Reset defaults: locked memory clock reset skipped: {reason}")
+        except Exception as exc:
+            log(f"Reset defaults: locked memory clock reset skipped: {exc}")
 
         try:
             applied_offsets = policy_controller.apply_clock_offsets(

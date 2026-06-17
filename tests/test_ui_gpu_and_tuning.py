@@ -6,12 +6,14 @@ exercised with a fake NvmlGpuPolicyController so no real GPU is required.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import ui.gpu_selection as gpu_selection
 import ui.tuning as tuning
 from ui.gpu_selection import (
     GpuChoice,
     gpu_choices_with_fallback,
-    parse_nvidia_smi_gpu_choices,
+    gpu_choices_from_nvml_identities,
     persist_runtime_gpu_index,
     runtime_gpu_index,
 )
@@ -35,34 +37,45 @@ def test_gpu_choice_label_with_and_without_bus() -> None:
     assert GpuChoice(1, "").label == "GPU 1 - NVIDIA GPU"
 
 
-def test_parse_nvidia_smi_skips_bad_rows_and_dupes() -> None:
-    output = "\n".join(
+def test_gpu_choices_from_nvml_identities_skips_bad_rows_and_dupes() -> None:
+    choices = gpu_choices_from_nvml_identities(
         [
-            "0, RTX 4090, 00000000:01:00.0, GPU-abc",
-            "short",  # < 2 fields -> skipped
-            "x, bad-index",  # non-int index -> skipped
-            "0, duplicate",  # duplicate index -> skipped
-            "1, RTX 4080",  # no bus/uuid columns
+            SimpleNamespace(
+                index=0,
+                name="RTX 4090",
+                pci_bus_id="00000000:01:00.0",
+                uuid="GPU-abc",
+            ),
+            SimpleNamespace(index="x", name="bad-index"),
+            SimpleNamespace(index=0, name="duplicate"),
+            SimpleNamespace(index=1, name="RTX 4080"),
         ]
     )
-    choices = parse_nvidia_smi_gpu_choices(output)
     assert [(c.index, c.name) for c in choices] == [(0, "RTX 4090"), (1, "RTX 4080")]
     assert choices[1].pci_bus_id == ""
 
 
-def test_detected_gpu_choices_empty_without_nvidia_smi(monkeypatch) -> None:
-    monkeypatch.setattr(gpu_selection.shutil, "which", lambda _name: None)
+def test_detected_gpu_choices_empty_without_nvml_identities(monkeypatch) -> None:
+    monkeypatch.setattr(gpu_selection, "query_nvml_gpu_identities", lambda: [])
     assert gpu_selection.detected_gpu_choices() == []
 
 
-def test_detected_gpu_choices_empty_on_subprocess_error(monkeypatch) -> None:
-    monkeypatch.setattr(gpu_selection.shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
-
-    def _boom(*_a, **_k):
-        raise OSError("no smi")
-
-    monkeypatch.setattr(gpu_selection.subprocess, "run", _boom)
-    assert gpu_selection.detected_gpu_choices() == []
+def test_detected_gpu_choices_reads_nvml_identities(monkeypatch) -> None:
+    monkeypatch.setattr(
+        gpu_selection,
+        "query_nvml_gpu_identities",
+        lambda: [
+            SimpleNamespace(
+                index=2,
+                name="RTX 5090",
+                pci_bus_id="00000000:03:00.0",
+                uuid="GPU-test",
+            )
+        ],
+    )
+    assert gpu_selection.detected_gpu_choices() == [
+        GpuChoice(2, "RTX 5090", "00000000:03:00.0", "GPU-test")
+    ]
 
 
 def test_gpu_choices_with_fallback_synthesizes_when_none_detected() -> None:

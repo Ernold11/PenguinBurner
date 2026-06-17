@@ -188,7 +188,7 @@ Example dry-run preview: imported V/F target and fan curve rendered directly in 
 
 PenguinBurner is experimental NVIDIA tuning software. It is intended for modern
 Linux NVIDIA drivers, but GPU generation and driver behavior can differ.
-Requires `nvidia-smi` in `PATH` for the default runtime path, including persistence mode, power-limit setup, and some Afterburner profile auto-selection.
+Requires NVIDIA driver libraries for runtime control, telemetry, and GPU profile auto-selection.
 Reverse engineering, profile parsing, and import support were developed against MSI Afterburner `4.6.6.16757`.
 Other MSI Afterburner versions are not guaranteed to work.
 
@@ -197,7 +197,6 @@ Other MSI Afterburner versions are not guaranteed to work.
 - `python3` must be available in `PATH`, `3.11+` is required
 - no third-party Python packages are required; PenguinBurner uses only the Python standard library
 - NVIDIA driver libraries such as `libnvidia-ml.so.1` and `libnvidia-api.so.1` are required at runtime, but they come from the NVIDIA driver
-- `nvidia-smi` must be available in `PATH`
 
 ## Python Package
 
@@ -319,7 +318,7 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--auto-uv-min-voltage-mv N`: lowest voltage bin Auto-UV may try; overrides the detected GPU table floor.
 - `--auto-uv-tail-rise-bins N`: number of V/F bins above the lock point that may rise after the flattened target; default depends on Auto-UV mode.
 - `--auto-uv-max-drop-pct N`: fallback voltage search depth when no GPU table floor or explicit min voltage is available; default `10.0`.
-- `--gpu-index N`: select the NVIDIA GPU index used for Auto-UV control, telemetry, Q2RTX, CUDA, and runtime actions. Use `nvidia-smi -L` to list indices.
+- `--gpu-index N`: select the NVIDIA GPU index used for Auto-UV control, telemetry, Q2RTX, CUDA, and runtime actions. The Qt GPU dropdown lists detected indices.
 - `--stability-test`: run the Q2RTX plus CUDA stability workload directly and exit.
 - `--stability-seconds N`: duration for `--stability-test`; default `600`.
 - `--stability-width N` and `--stability-height N`: Q2RTX render size; defaults `2560x1440`.
@@ -368,7 +367,7 @@ GPU selection:
   NVML/NVAPI control, telemetry, Q2RTX render launch, CUDA load, profile
   verification, and daemon/runtime actions all use that index. This matters on
   systems with multiple NVIDIA cards, where the display-attached GPU and the
-  first `nvidia-smi` GPU may differ.
+  first NVML GPU may differ.
 - The Qt GUI accepts the same selection at launch with
   `penguin-burner-ui --gpu-index N` or `penguin-burner-ui --index N`. If no GUI
   index is provided, the GUI reads `[gpu].index` from the runtime config. The
@@ -525,7 +524,7 @@ What it does:
 - prefers a ready-made `q2demo1` timedemo from `pak0.pak` when shareware data is installed
 - parses each timedemo pass for exact `frames / seconds / fps` metrics
 - compares frame counts and FPS run-to-run so obvious regressions or unstable performance show up quickly
-- polls lightweight NVIDIA telemetry with `nvidia-smi`
+- polls lightweight NVIDIA telemetry through NVML
 - records the Q2RTX stdout/stderr log to a file
 - marks the run as failed if a pass exits early, if timedemo metrics are missing, if frame counts drift, if FPS drops too far run-to-run, if fatal output patterns appear, or if NVIDIA Xid messages are detected after launch
 

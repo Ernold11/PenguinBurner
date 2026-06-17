@@ -1,38 +1,9 @@
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 
 
-def query_nvidia_smi_pci_bus_id(gpu_index: int) -> str:
-    nvidia_smi = shutil.which("nvidia-smi")
-    if not nvidia_smi:
-        return ""
-    try:
-        result = subprocess.run(
-            [
-                nvidia_smi,
-                "--query-gpu=pci.bus_id",
-                "--format=csv,noheader,nounits",
-                "-i",
-                str(int(gpu_index)),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=3,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    if int(result.returncode) != 0:
-        return ""
-    lines = str(result.stdout or "").strip().splitlines()
-    if not lines:
-        return ""
-    return lines[0].strip()
+from .nvml_identity import query_nvml_pci_bus_id
 
 
 def pci_bus_number_from_bus_id(pci_bus_id: str) -> int | None:

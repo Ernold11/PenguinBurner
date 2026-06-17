@@ -74,6 +74,7 @@ def test_configure_runtime_vf_curve_policy_applies_auto_uv_final_curve_by_defaul
         select_expected_vf_samples=lambda applied_plan: ["expected-sample"],
         log=logs.append,
     )
+    policy_controller = object()
 
     result = configure_runtime_vf_curve_policy(
         gpu_index=0,
@@ -85,17 +86,14 @@ def test_configure_runtime_vf_curve_policy_applies_auto_uv_final_curve_by_defaul
         afterburner_device_profile="",
         afterburner_runtime_options=_runtime_options(),
         vf_curve_reader=reader,
-        gpu_policy_controller=object(),
+        gpu_policy_controller=policy_controller,
         dependencies=deps,
     )
 
-    assert base_policy_calls == [
-        {
-            "gpu_index": 0,
-            "enable_persistence_mode": True,
-            "power_limit_w": None,
-        }
-    ]
+    assert len(base_policy_calls) == 1
+    assert base_policy_calls[0]["gpu_policy_controller"] is policy_controller
+    assert base_policy_calls[0]["enable_persistence_mode"] is True
+    assert base_policy_calls[0]["power_limit_w"] is None
     assert applied_plans == [(reader, plan)]
     assert reader.refresh_count == 1
     assert result.active_vf_curve_source == "auto-uv-final"
@@ -247,13 +245,10 @@ def test_configure_runtime_vf_curve_policy_applies_afterburner_policy_and_curve(
     assert result.afterburner_profile_settings == {"PowerLimit": "90"}
     assert result.translated_gpu_policy == translated_policy
     assert result.startup_power_limit_w == 220
-    assert base_policy_calls == [
-        {
-            "gpu_index": 1,
-            "enable_persistence_mode": True,
-            "power_limit_w": 220,
-        }
-    ]
+    assert len(base_policy_calls) == 1
+    assert base_policy_calls[0]["gpu_policy_controller"] is policy_controller
+    assert base_policy_calls[0]["enable_persistence_mode"] is True
+    assert base_policy_calls[0]["power_limit_w"] == 220
     assert translated_policy_calls == [(policy_controller, translated_policy)]
     assert afterburner_apply_calls == [
         {

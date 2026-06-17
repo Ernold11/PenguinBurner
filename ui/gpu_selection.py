@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
-from io import StringIO
 from pathlib import Path
-import shutil
-import subprocess
 
 from afterburner.import_fan_curve import write_config
 from cli.runtime_config_file import load_raw_runtime_config
 from common.penguin_burner_paths import default_runtime_config_path
+from nvidia_driver.nvml_identity import query_nvml_gpu_identities
 
 
 @dataclass(frozen=True)
@@ -29,39 +26,16 @@ class GpuChoice:
 
 
 def detected_gpu_choices() -> list[GpuChoice]:
-    nvidia_smi = shutil.which("nvidia-smi")
-    if not nvidia_smi:
-        return []
-    try:
-        result = subprocess.run(
-            [
-                nvidia_smi,
-                "--query-gpu=index,name,pci.bus_id,uuid",
-                "--format=csv,noheader,nounits",
-            ],
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=3,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return []
-    if result.returncode != 0:
-        return []
-    return parse_nvidia_smi_gpu_choices(result.stdout)
+    return gpu_choices_from_nvml_identities(query_nvml_gpu_identities())
 
 
-def parse_nvidia_smi_gpu_choices(output: str) -> list[GpuChoice]:
-    choices: list[GpuChoice] = []
+def gpu_choices_from_nvml_identities(identities) -> list[GpuChoice]:
     seen: set[int] = set()
-    for fields in csv.reader(StringIO(str(output or "")), skipinitialspace=True):
-        fields = [part.strip() for part in fields]
-        if len(fields) < 2:
-            continue
+    choices: list[GpuChoice] = []
+    for identity in identities:
         try:
-            index = max(0, int(fields[0]))
-        except ValueError:
+            index = max(0, int(getattr(identity, "index")))
+        except (TypeError, ValueError):
             continue
         if index in seen:
             continue
@@ -69,9 +43,9 @@ def parse_nvidia_smi_gpu_choices(output: str) -> list[GpuChoice]:
         choices.append(
             GpuChoice(
                 index=index,
-                name=fields[1],
-                pci_bus_id=fields[2] if len(fields) >= 3 else "",
-                uuid=fields[3] if len(fields) >= 4 else "",
+                name=str(getattr(identity, "name", "") or ""),
+                pci_bus_id=str(getattr(identity, "pci_bus_id", "") or ""),
+                uuid=str(getattr(identity, "uuid", "") or ""),
             )
         )
     return choices

@@ -25,7 +25,6 @@ from .live_gpu_telemetry_text import (
     get_power_draw_w,
     get_reported_fan_speeds,
 )
-from .nvidia_smi_command import apply_gpu_base_policy, run_nvidia_smi_command
 from .nvml_runtime_session import NvmlRuntimeSession
 from .overlay_state_publisher import OverlayStatePublisher
 from .process_cpu_sampler import ProcessCpuUsage, ProcessCpuUsageSampler
@@ -65,7 +64,6 @@ __all__ = [
     "ProcessCpuUsageSampler",
     "RuntimeVfCurvePolicyDependencies",
     "RuntimeVfCurvePolicyResult",
-    "apply_gpu_base_policy",
     "check_nvml_return_code",
     "configure_runtime_vf_curve_policy",
     "detect_vf_curve_reset",
@@ -80,6 +78,5 @@ __all__ = [
     "get_power_draw_w",
     "get_reported_fan_speeds",
     "khz_to_mhz",
-    "run_nvidia_smi_command",
     "select_expected_vf_samples",
 ]

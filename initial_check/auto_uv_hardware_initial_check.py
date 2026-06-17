@@ -8,8 +8,6 @@ from __future__ import annotations
 import ctypes
 from dataclasses import dataclass
 import re
-import shutil
-import subprocess
 from typing import Callable
 
 from nvidia_driver.hidden_nvapi_vf import (
@@ -21,6 +19,7 @@ from nvidia_driver.hidden_nvapi_voltage import (
     get_hidden_voltage_reader_last_error,
 )
 from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
+from nvidia_driver.nvml_identity import query_nvml_gpu_identities
 
 
 MINIMUM_NVIDIA_DRIVER_VERSION = (580, 0)
@@ -111,38 +110,21 @@ class InitialCheckResult:
 def run_auto_uv_initial_check(
     *,
     gpu_index: int = 0,
-    runner: Callable[..., subprocess.CompletedProcess] | None = None,
     vf_reader_factory: Callable[[int], object | None] = create_hidden_vf_curve_reader,
     gpu_policy_factory: Callable[[int], object] = NvmlGpuPolicyController,
     nvml_library_factory: Callable[[], object] | None = None,
 ) -> InitialCheckResult:
     issues: list[InitialCheckIssue] = []
     gpu = None
-    nvidia_smi = shutil.which("nvidia-smi")
-    if not nvidia_smi:
-        issues.append(
-            InitialCheckIssue(
-                "error",
-                "nvidia-smi-missing",
-                "nvidia-smi was not found",
-                "PenguinBurner could not find the Nvidia driver management tool in PATH.",
-                "Install the proprietary Nvidia driver and confirm `nvidia-smi -L` works.",
-            )
-        )
-        return InitialCheckResult(None, tuple(issues))
-
-    gpu_rows, smi_issue = _query_nvidia_smi(nvidia_smi, runner=runner)
-    if smi_issue is not None:
-        issues.append(smi_issue)
-        return InitialCheckResult(None, tuple(issues))
+    gpu_rows = _query_nvml_gpus()
     if not gpu_rows:
         issues.append(
             InitialCheckIssue(
                 "error",
                 "nvidia-gpu-missing",
                 "No Nvidia GPU was detected",
-                "`nvidia-smi` did not return any physical GPUs.",
-                "Install or fix the Nvidia driver and confirm `nvidia-smi -L` lists the GPU.",
+                "NVML did not return any physical GPUs.",
+                "Install or fix the Nvidia driver and confirm NVML can list the GPU.",
             )
         )
         return InitialCheckResult(None, tuple(issues))
@@ -154,7 +136,7 @@ def run_auto_uv_initial_check(
                 "error",
                 "gpu-index-missing",
                 "Selected GPU index is not available",
-                f"GPU index {int(gpu_index)} was requested, but nvidia-smi returned "
+                f"GPU index {int(gpu_index)} was requested, but NVML returned "
                 f"{len(gpu_rows)} GPU(s).",
                 "Select an available Nvidia GPU index.",
             )
@@ -238,63 +220,19 @@ def require_auto_uv_initial_check(
     raise RuntimeError(message)
 
 
-def _query_nvidia_smi(
-    nvidia_smi: str,
-    *,
-    runner: Callable[..., subprocess.CompletedProcess] | None = None,
-) -> tuple[list[InitialCheckGpuInfo], InitialCheckIssue | None]:
-    run = runner or subprocess.run
-    command = [
-        nvidia_smi,
-        "--query-gpu=index,name,driver_version,pci.device_id,uuid",
-        "--format=csv,noheader,nounits",
-    ]
-    try:
-        result = run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return [], InitialCheckIssue(
-            "error",
-            "nvidia-smi-failed",
-            "nvidia-smi did not respond",
-            str(exc),
-            "Fix the Nvidia driver and confirm `nvidia-smi -L` works.",
-        )
-    if int(result.returncode) != 0:
-        output = (result.stdout or result.stderr or "").strip()
-        return [], InitialCheckIssue(
-            "error",
-            "nvidia-smi-failed",
-            "nvidia-smi returned an error",
-            output or f"exit code {int(result.returncode)}",
-            "Fix the Nvidia driver and confirm `nvidia-smi -L` works.",
-        )
+def _query_nvml_gpus() -> list[InitialCheckGpuInfo]:
     rows = []
-    for line in str(result.stdout or "").splitlines():
-        parts = [part.strip() for part in line.split(",", 4)]
-        if len(parts) < 3:
-            continue
-        try:
-            index = int(parts[0])
-        except ValueError:
-            continue
+    for identity in query_nvml_gpu_identities():
         rows.append(
             InitialCheckGpuInfo(
-                index=index,
-                name=parts[1],
-                driver_version=parts[2],
-                pci_device_id=parts[3] if len(parts) > 3 else "",
-                uuid=parts[4] if len(parts) > 4 else "",
+                index=int(identity.index),
+                name=identity.name,
+                driver_version=identity.driver_version,
+                pci_device_id=identity.pci_device_id,
+                uuid=identity.uuid,
             )
         )
-    return rows, None
+    return rows
 
 
 def _select_gpu(rows: list[InitialCheckGpuInfo], gpu_index: int) -> InitialCheckGpuInfo | None:

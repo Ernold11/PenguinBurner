@@ -1,5 +1,3 @@
-import subprocess
-
 import initial_check.auto_uv_hardware_initial_check as initial_check
 
 
@@ -92,18 +90,27 @@ def _policy_factory(*, steps=None, lock_error=None):
     return factory
 
 
-def _runner(stdout):
-    def run(command, **kwargs):
-        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
-
-    return run
-
-
-def _patch_probe_dependencies(monkeypatch, *, voltage_issues=None, architecture=10):
+def _patch_probe_dependencies(
+    monkeypatch,
+    *,
+    voltage_issues=None,
+    architecture=10,
+    name="NVIDIA GeForce RTX 5080",
+    driver_version="595.58.03",
+    pci_device_id="0x2C0210DE",
+):
     monkeypatch.setattr(
-        initial_check.shutil,
-        "which",
-        lambda command: "/usr/bin/nvidia-smi",
+        initial_check,
+        "_query_nvml_gpus",
+        lambda: [
+            initial_check.InitialCheckGpuInfo(
+                index=0,
+                name=name,
+                driver_version=driver_version,
+                pci_device_id=pci_device_id,
+                uuid="GPU-test",
+            )
+        ],
     )
     monkeypatch.setattr(
         initial_check,
@@ -125,7 +132,6 @@ def test_initial_check_passes_when_driver_and_capability_probes_are_sane(monkeyp
     _patch_probe_dependencies(monkeypatch)
 
     result = initial_check.run_auto_uv_initial_check(
-        runner=_runner("0, NVIDIA GeForce RTX 5080, 595.58.03, 0x2C0210DE, GPU-test\n"),
         vf_reader_factory=lambda gpu_index: FakeVfReader(),
         gpu_policy_factory=_policy_factory(),
     )
@@ -137,7 +143,7 @@ def test_initial_check_passes_when_driver_and_capability_probes_are_sane(monkeyp
 
 
 def test_initial_check_rejects_old_driver_even_when_capability_probes_pass(monkeypatch):
-    _patch_probe_dependencies(monkeypatch)
+    _patch_probe_dependencies(monkeypatch, driver_version="575.64.03")
 
     def fail_if_called(gpu_index):
         raise AssertionError("driver check should stop hidden voltage/VF probes")
@@ -149,7 +155,6 @@ def test_initial_check_rejects_old_driver_even_when_capability_probes_pass(monke
     )
 
     result = initial_check.run_auto_uv_initial_check(
-        runner=_runner("0, NVIDIA GeForce RTX 5080, 575.64.03, 0x2C0210DE, GPU-test\n"),
         vf_reader_factory=fail_if_called,
         gpu_policy_factory=lambda gpu_index: fail_if_called(gpu_index),
     )
@@ -160,12 +165,14 @@ def test_initial_check_rejects_old_driver_even_when_capability_probes_pass(monke
 
 
 def test_initial_check_rejects_old_gpu_by_failed_probes_not_by_name(monkeypatch):
-    _patch_probe_dependencies(monkeypatch, architecture=6)
+    _patch_probe_dependencies(
+        monkeypatch,
+        architecture=6,
+        name="NVIDIA GeForce GTX 1050 Mobile",
+        pci_device_id="0x1C8D10DE",
+    )
 
     result = initial_check.run_auto_uv_initial_check(
-        runner=_runner(
-            "0, NVIDIA GeForce GTX 1050 Mobile, 595.58.03, 0x1C8D10DE, GPU-test\n"
-        ),
         vf_reader_factory=lambda gpu_index: FakeVfReader(_bad_zero_points()),
         gpu_policy_factory=_policy_factory(
             lock_error="nvmlDeviceSetGpuLockedClocks failed with NVML error 3: Not Supported"
@@ -200,7 +207,6 @@ def test_initial_check_rejects_nvapi_voltage_reader_failure(monkeypatch):
     )
 
     result = initial_check.run_auto_uv_initial_check(
-        runner=_runner("0, NVIDIA GeForce RTX 5080, 595.58.03, 0x2C0210DE, GPU-test\n"),
         vf_reader_factory=lambda gpu_index: FakeVfReader(),
         gpu_policy_factory=_policy_factory(),
     )
@@ -242,7 +248,6 @@ def test_initial_check_rejects_nvapi_setter_failure(monkeypatch):
     _patch_probe_dependencies(monkeypatch)
 
     result = initial_check.run_auto_uv_initial_check(
-        runner=_runner("0, NVIDIA GeForce RTX 5080, 595.58.03, 0x2C0210DE, GPU-test\n"),
         vf_reader_factory=lambda gpu_index: FakeVfReader(
             setter_error="ClockClientClkVfPointsSetControl failed"
         ),
@@ -260,7 +265,6 @@ def test_initial_check_rejects_nvapi_reader_factory_exception(monkeypatch):
         raise RuntimeError("nvapi_QueryInterface returned NULL")
 
     result = initial_check.run_auto_uv_initial_check(
-        runner=_runner("0, NVIDIA GeForce RTX 5080, 595.58.03, 0x2C0210DE, GPU-test\n"),
         vf_reader_factory=failing_reader,
         gpu_policy_factory=_policy_factory(),
     )
@@ -273,7 +277,6 @@ def test_initial_check_rejects_too_few_vf_points(monkeypatch):
     _patch_probe_dependencies(monkeypatch)
 
     result = initial_check.run_auto_uv_initial_check(
-        runner=_runner("0, NVIDIA GeForce RTX 5080, 595.58.03, 0x2C0210DE, GPU-test\n"),
         vf_reader_factory=lambda gpu_index: FakeVfReader(_good_points(4)),
         gpu_policy_factory=_policy_factory(),
     )

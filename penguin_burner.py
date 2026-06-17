@@ -37,12 +37,10 @@ from runtime_support.runtime_debug import (
     enable_debug_logging,
     log,
 )
-from runtime_gpu_control import FlattenedClockCeilingController, run_nvidia_smi_command
+from runtime_gpu_control import FlattenedClockCeilingController
 from runtime_support.runtime_service import DEFAULT_JOURNAL_HOURS
 from saved_profile_verification.runner import run_profile_verification
 from stability.q2rtx import StabilityTestError, install_latest_q2rtx
-
-NVIDIA_SMI = shutil.which("nvidia-smi") or "nvidia-smi"
 
 
 atexit.register(close_debug_log)
@@ -90,10 +88,6 @@ def run_q2rtx_install():
     print(f"Executable: {result.executable_path}", flush=True)
     print(f"Archive cache: {result.archive_path}", flush=True)
     print(f"Source: {result.asset_url}", flush=True)
-
-
-def run_nvidia_smi(args):
-    return run_nvidia_smi_command(args, executable=NVIDIA_SMI)
 
 
 def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):

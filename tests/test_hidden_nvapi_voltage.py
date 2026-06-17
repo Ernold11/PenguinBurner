@@ -111,7 +111,7 @@ def _handle_value(handle) -> int:
 def test_hidden_nvapi_voltage_reader_reads_microvolts(monkeypatch) -> None:
     fake_lib = _FakeNvApiLibrary(voltage_uv=912_000)
     monkeypatch.setattr(voltage.ctypes, "CDLL", lambda _name: fake_lib)
-    monkeypatch.setattr(voltage, "query_nvidia_smi_pci_bus_id", lambda _gpu_index: "")
+    monkeypatch.setattr(voltage, "query_nvml_pci_bus_id", lambda _gpu_index: "")
 
     reader = voltage.HiddenNvapiVoltageReader(gpu_index=0)
 
@@ -124,7 +124,7 @@ def test_hidden_nvapi_voltage_reader_reads_microvolts(monkeypatch) -> None:
 def test_hidden_nvapi_voltage_reader_reports_missing_query(monkeypatch) -> None:
     fake_lib = _FakeNvApiLibrary(missing_voltage_query=True)
     monkeypatch.setattr(voltage.ctypes, "CDLL", lambda _name: fake_lib)
-    monkeypatch.setattr(voltage, "query_nvidia_smi_pci_bus_id", lambda _gpu_index: "")
+    monkeypatch.setattr(voltage, "query_nvml_pci_bus_id", lambda _gpu_index: "")
 
     reader = voltage.create_hidden_voltage_reader(gpu_index=0)
 
@@ -145,7 +145,7 @@ def test_hidden_nvapi_voltage_reader_matches_nvapi_handle_by_pci_bus(
     monkeypatch.setattr(voltage.ctypes, "CDLL", lambda _name: fake_lib)
     monkeypatch.setattr(
         voltage,
-        "query_nvidia_smi_pci_bus_id",
+        "query_nvml_pci_bus_id",
         lambda _gpu_index: "00000000:2B:00.0",
     )
 
@@ -159,7 +159,7 @@ def test_hidden_nvapi_voltage_reader_keeps_raw_implausible_sample(
 ) -> None:
     fake_lib = _FakeNvApiLibrary(voltage_uv=0)
     monkeypatch.setattr(voltage.ctypes, "CDLL", lambda _name: fake_lib)
-    monkeypatch.setattr(voltage, "query_nvidia_smi_pci_bus_id", lambda _gpu_index: "")
+    monkeypatch.setattr(voltage, "query_nvml_pci_bus_id", lambda _gpu_index: "")
 
     reader = voltage.HiddenNvapiVoltageReader(gpu_index=0)
 

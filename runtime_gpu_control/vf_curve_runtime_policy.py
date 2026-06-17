@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import shutil
 from typing import Callable
 
 from afterburner.import_vf_curve import (
@@ -25,32 +24,26 @@ from saved_uv_profiles import (
 )
 
 from .flattened_clock_ceiling import FlattenedClockCeilingController
-from .nvidia_smi_command import (
-    apply_gpu_base_policy as _apply_gpu_base_policy_with_nvidia_smi,
-    run_nvidia_smi_command,
-)
 from .vf_curve_reset_guard import select_expected_vf_samples
-
-_NVIDIA_SMI = shutil.which("nvidia-smi") or "nvidia-smi"
-
-
-def _run_nvidia_smi(args):
-    return run_nvidia_smi_command(args, executable=_NVIDIA_SMI)
 
 
 def _default_apply_gpu_base_policy(
     *,
-    gpu_index,
+    gpu_policy_controller,
     enable_persistence_mode,
     power_limit_w,
+    log,
 ):
-    return _apply_gpu_base_policy_with_nvidia_smi(
-        gpu_index,
-        enable_persistence_mode,
-        power_limit_w,
-        run_nvidia_smi_fn=_run_nvidia_smi,
-        log=runtime_log,
-    )
+    if gpu_policy_controller is None:
+        return
+    if enable_persistence_mode:
+        try:
+            gpu_policy_controller.enable_persistence_mode()
+            log("Enabled GPU persistence mode")
+        except Exception as exc:
+            log(f"Skipping GPU persistence mode: error={exc}")
+    if power_limit_w is not None:
+        gpu_policy_controller.apply_power_limit_w(power_limit_w)
 
 
 @dataclass(slots=True)
@@ -130,9 +123,10 @@ def configure_runtime_vf_curve_policy(
     ):
         result.startup_power_limit_w = result.translated_gpu_policy["power_limit_w"]
     deps.apply_gpu_base_policy(
-        gpu_index=gpu_index,
+        gpu_policy_controller=gpu_policy_controller,
         enable_persistence_mode=enable_persistence_mode,
         power_limit_w=result.startup_power_limit_w,
+        log=deps.log,
     )
     _apply_translated_afterburner_policy(
         result,

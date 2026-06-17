@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import shutil
-import subprocess
-
-from common.subprocess_locale import stable_subprocess_env
+from nvidia_driver.nvml_identity import query_nvml_gpu_identity
 
 from .constants import HIDDEN_WINDOW_POSITION
 
@@ -64,45 +61,19 @@ def _nvidia_pci_device_id_selectors(pci_device_id: str) -> tuple[str, str]:
 
 
 def _query_selected_nvidia_gpu(gpu_index: int) -> dict[str, str]:
-    nvidia_smi = shutil.which("nvidia-smi")
-    if not nvidia_smi:
+    identity = query_nvml_gpu_identity(int(gpu_index))
+    if identity is None:
         return {}
-    command = [
-        nvidia_smi,
-        "--query-gpu=index,name,pci.bus_id,pci.device_id,uuid",
-        "--format=csv,noheader,nounits",
-        "-i",
-        str(int(gpu_index)),
-    ]
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=5,
-            env=stable_subprocess_env(),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    if int(result.returncode) != 0:
-        return {}
-    line = (result.stdout or "").strip().splitlines()
-    if not line:
-        return {}
-    parts = [part.strip() for part in line[0].split(",", 4)]
-    while len(parts) < 5:
-        parts.append("")
-    dri_prime = _nvidia_pci_bus_id_to_dri_prime(parts[2])
-    vk_loader_select, mesa_vk_select = _nvidia_pci_device_id_selectors(parts[3])
+    dri_prime = _nvidia_pci_bus_id_to_dri_prime(identity.pci_bus_id)
+    vk_loader_select, mesa_vk_select = _nvidia_pci_device_id_selectors(
+        identity.pci_device_id
+    )
     return {
-        "index": parts[0],
-        "name": parts[1],
-        "pci_bus_id": parts[2],
-        "pci_device_id": parts[3],
-        "uuid": parts[4],
+        "index": str(int(identity.index)),
+        "name": identity.name,
+        "pci_bus_id": identity.pci_bus_id,
+        "pci_device_id": identity.pci_device_id,
+        "uuid": identity.uuid,
         "dri_prime": dri_prime,
         "vk_loader_device_select": vk_loader_select,
         "mesa_vk_device_select": mesa_vk_select,
