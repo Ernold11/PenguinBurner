@@ -18,7 +18,9 @@ from ui.gpu_selection import (
     runtime_gpu_index,
 )
 from ui.tuning import (
+    AutoUvNvmlInfo,
     AutoUvPerformanceTargetDefault,
+    auto_uv_nvml_info_text,
     auto_uv_performance_preset_label,
     auto_uv_performance_preset_tooltip,
     auto_uv_performance_target_default,
@@ -165,6 +167,44 @@ def test_performance_target_default_for_unknown_gpu() -> None:
     assert target.preset_matched is False
     assert target.voltage_mv is None
     assert target.gpu_name == "totally-unknown-gpu-9999"
+
+
+def test_auto_uv_nvml_info_text_is_compact_and_tuning_relevant() -> None:
+    text = auto_uv_nvml_info_text(
+        AutoUvNvmlInfo(
+            power_draw_w=42.25,
+            power_management_enabled=True,
+            power_limit_w=320.0,
+            power_limit_default_w=350.0,
+            power_limit_min_w=200.0,
+            power_limit_max_w=450.0,
+            graphics_clock_mhz=2100,
+            memory_clock_mhz=10501,
+            supported_memory_clocks_mhz=(810, 5001, 10501),
+            supported_graphics_clock_steps_mhz=(210, 3000, 3015),
+        )
+    )
+
+    assert "Power limit: current 320 W | default 350 W | range 200-450 W" in text
+    assert "Current draw: 42.2 W" in text
+    assert "Clocks now: core 2100 MHz | memory 10501 MHz" in text
+    assert "Supported memory clocks: 810, 5001, 10501 MHz" in text
+    assert "Supported core range: 210-3015 MHz (3 steps)" in text
+    assert "Power management: enabled" in text
+    assert "RTX" not in text
+    assert "PCI" not in text
+    assert "thermal" not in text.lower()
+    assert "perf cap" not in text.lower()
+
+
+def test_auto_uv_nvml_info_text_summarizes_long_clock_lists() -> None:
+    text = auto_uv_nvml_info_text(
+        AutoUvNvmlInfo(
+            supported_memory_clocks_mhz=(1000, 2000, 3000, 4000, 5000, 6000),
+        )
+    )
+
+    assert text == "Supported memory clocks: 1000-6000 MHz (6 steps)"
 
 
 class _FakeController:

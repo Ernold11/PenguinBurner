@@ -1498,6 +1498,22 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
         ),
     )
     monkeypatch.setattr(
+        scan_tuning,
+        "read_auto_uv_nvml_info",
+        lambda selected: SimpleNamespace(
+            power_draw_w=42.0,
+            power_management_enabled=True,
+            power_limit_w=320.0,
+            power_limit_default_w=350.0,
+            power_limit_min_w=200.0,
+            power_limit_max_w=450.0,
+            graphics_clock_mhz=2100,
+            memory_clock_mhz=10501,
+            supported_memory_clocks_mhz=(810, 5001, 10501),
+            supported_graphics_clock_steps_mhz=(210, 3015),
+        ),
+    )
+    monkeypatch.setattr(
         QtWidgets.QDialog,
         "exec",
         lambda dialog: dialogs.append(dialog) or QtWidgets.QDialog.DialogCode.Rejected,
@@ -1514,11 +1530,16 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     dialog = dialogs[0]
     stack = dialog.findChild(QtWidgets.QStackedWidget)
     gpu_combo = dialog.findChild(QtWidgets.QComboBox, "gpuSelector")
+    nvml_info = dialog.findChild(QtWidgets.QLabel, "gpuNvmlInfo")
     advanced_group = dialog.findChild(QtWidgets.QGroupBox, "advancedTuningGroup")
     assert dialog.minimumWidth() == 860
     assert gpu_combo is not None
     assert gpu_combo.count() == 2
     assert gpu_combo.currentData() == 1
+    assert nvml_info is not None
+    assert "Power limit: current 320 W" in nvml_info.text()
+    assert "Clocks now: core 2100 MHz | memory 10501 MHz" in nvml_info.text()
+    assert "RTX" not in nvml_info.text()
     assert advanced_group is not None
     advanced_labels = {
         label.text() for label in advanced_group.findChildren(QtWidgets.QLabel)

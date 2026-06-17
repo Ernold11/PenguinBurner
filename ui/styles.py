@@ -32,6 +32,14 @@ QLabel#purposeText {{
     font-weight: 400;
     line-height: 1.25;
 }}
+QLabel#gpuNvmlInfo {{
+    background: {theme.SURFACE_BG};
+    border: 1px solid {theme.BORDER};
+    border-radius: 5px;
+    color: {theme.TEXT_MUTED};
+    font-size: 11px;
+    padding: 7px 9px;
+}}
 QGroupBox#autoUvPresetGroup {{
     margin-top: 6px;
 }}

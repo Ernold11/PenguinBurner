@@ -76,6 +76,20 @@ class AutoUvPreset:
     tail_rise_bins: int
 
 
+@dataclass(frozen=True, slots=True)
+class AutoUvNvmlInfo:
+    power_draw_w: float | None = None
+    power_management_enabled: bool | None = None
+    power_limit_w: float | None = None
+    power_limit_default_w: float | None = None
+    power_limit_min_w: float | None = None
+    power_limit_max_w: float | None = None
+    graphics_clock_mhz: int | None = None
+    memory_clock_mhz: int | None = None
+    supported_memory_clocks_mhz: tuple[int, ...] = ()
+    supported_graphics_clock_steps_mhz: tuple[int, ...] = ()
+
+
 def auto_uv_preset(preset_id: object) -> AutoUvPreset:
     normalized = str(preset_id or DEFAULT_AUTO_UV_PRESET).strip().lower()
     if normalized == AUTO_UV_PRESET_EFFICIENCY:
@@ -225,6 +239,66 @@ def auto_uv_performance_preset_tooltip(_preview=None) -> str:
     )
 
 
+def read_auto_uv_nvml_info(gpu_index: int) -> AutoUvNvmlInfo:
+    power = None
+    clocks = None
+    supported_memory_clocks: list[int] = []
+    supported_graphics_steps: list[int] = []
+
+    try:
+        from nvidia_driver.nvml_power import NvmlPowerSession
+
+        with NvmlPowerSession(int(gpu_index)) as session:
+            power = session.telemetry()
+    except Exception:
+        power = None
+
+    try:
+        from nvidia_driver.nvml_clock import NvmlClockSession
+
+        with NvmlClockSession(int(gpu_index)) as session:
+            clocks = session.current_clocks()
+            supported_memory_clocks = session.supported_memory_clocks_mhz()
+            supported_graphics_steps = session.supported_graphics_clock_steps_mhz()
+    except Exception:
+        clocks = None
+        supported_memory_clocks = []
+        supported_graphics_steps = []
+
+    return AutoUvNvmlInfo(
+        power_draw_w=getattr(power, "power_draw_w", None),
+        power_management_enabled=getattr(power, "power_management_enabled", None),
+        power_limit_w=getattr(power, "power_limit_w", None),
+        power_limit_default_w=getattr(power, "power_limit_default_w", None),
+        power_limit_min_w=getattr(power, "power_limit_min_w", None),
+        power_limit_max_w=getattr(power, "power_limit_max_w", None),
+        graphics_clock_mhz=getattr(clocks, "graphics_clock_mhz", None),
+        memory_clock_mhz=getattr(clocks, "memory_clock_mhz", None),
+        supported_memory_clocks_mhz=tuple(
+            sorted({int(clock) for clock in supported_memory_clocks})
+        ),
+        supported_graphics_clock_steps_mhz=tuple(
+            sorted({int(clock) for clock in supported_graphics_steps})
+        ),
+    )
+
+
+def auto_uv_nvml_info_text(info: AutoUvNvmlInfo | None) -> str:
+    if info is None:
+        return "NVML read-only info unavailable"
+
+    rows = [
+        _power_limit_text(info),
+        _power_draw_text(info.power_draw_w),
+        _current_clocks_text(info),
+        _supported_memory_clocks_text(info.supported_memory_clocks_mhz),
+        _supported_core_range_text(info.supported_graphics_clock_steps_mhz),
+        _power_management_text(info.power_management_enabled),
+    ]
+    text = "\n".join(row for row in rows if row)
+    return text or "NVML read-only info unavailable"
+
+
 def memory_offset_mhz_range() -> tuple[int, int]:
     fallback = (0, 2000)
     controller = None
@@ -274,3 +348,70 @@ def _query_gpu_name(gpu_index: int | None = None) -> str | None:
     return str(name).strip() if name else None
 
 
+def _power_limit_text(info: AutoUvNvmlInfo) -> str:
+    parts = []
+    if info.power_limit_w is not None:
+        parts.append(f"current {_watts_text(info.power_limit_w)}")
+    if info.power_limit_default_w is not None:
+        parts.append(f"default {_watts_text(info.power_limit_default_w)}")
+    if info.power_limit_min_w is not None and info.power_limit_max_w is not None:
+        parts.append(
+            f"range {_watts_number_text(info.power_limit_min_w)}-"
+            f"{_watts_number_text(info.power_limit_max_w)} W"
+        )
+    return f"Power limit: {' | '.join(parts)}" if parts else ""
+
+
+def _power_draw_text(power_draw_w: float | None) -> str:
+    if power_draw_w is None:
+        return ""
+    return f"Current draw: {_watts_text(power_draw_w)}"
+
+
+def _current_clocks_text(info: AutoUvNvmlInfo) -> str:
+    parts = []
+    if info.graphics_clock_mhz is not None:
+        parts.append(f"core {int(info.graphics_clock_mhz)} MHz")
+    if info.memory_clock_mhz is not None:
+        parts.append(f"memory {int(info.memory_clock_mhz)} MHz")
+    return f"Clocks now: {' | '.join(parts)}" if parts else ""
+
+
+def _supported_memory_clocks_text(clocks_mhz: tuple[int, ...]) -> str:
+    text = _clock_list_text(clocks_mhz)
+    return f"Supported memory clocks: {text}" if text else ""
+
+
+def _supported_core_range_text(clocks_mhz: tuple[int, ...]) -> str:
+    if not clocks_mhz:
+        return ""
+    low = min(clocks_mhz)
+    high = max(clocks_mhz)
+    count = len(set(clocks_mhz))
+    return f"Supported core range: {low}-{high} MHz ({count} steps)"
+
+
+def _power_management_text(enabled: bool | None) -> str:
+    if enabled is None:
+        return ""
+    return f"Power management: {'enabled' if enabled else 'disabled'}"
+
+
+def _clock_list_text(clocks_mhz: tuple[int, ...]) -> str:
+    clocks = tuple(sorted({int(clock) for clock in clocks_mhz}))
+    if not clocks:
+        return ""
+    if len(clocks) <= 5:
+        return ", ".join(str(clock) for clock in clocks) + " MHz"
+    return f"{clocks[0]}-{clocks[-1]} MHz ({len(clocks)} steps)"
+
+
+def _watts_text(value: float) -> str:
+    return f"{_watts_number_text(value)} W"
+
+
+def _watts_number_text(value: float) -> str:
+    rounded = round(float(value), 1)
+    if rounded.is_integer():
+        return str(int(rounded))
+    return f"{rounded:.1f}"

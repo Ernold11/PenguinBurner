@@ -13,8 +13,10 @@ from ..tuning import auto_uv_performance_target_default
 from ..tuning import auto_uv_performance_preset_tooltip
 from ..tuning import auto_uv_presets
 from ..tuning import auto_uv_clock_drop_default
+from ..tuning import auto_uv_nvml_info_text
 from ..tuning import auto_uv_voltage_drop_default
 from ..tuning import memory_offset_mhz_range
+from ..tuning import read_auto_uv_nvml_info
 from ..gpu_selection import gpu_choices_with_fallback
 from .error_details import qt_flags
 
@@ -73,6 +75,31 @@ def select_scan_tuning(
             "Select the NVIDIA GPU PenguinBurner should use for the full "
             "Auto-UV scan, Q2RTX stability workload, profile verification, "
             "and runtime profile application."
+        ),
+    )
+    gpu_nvml_info = QtWidgets.QLabel()
+    gpu_nvml_info.setObjectName("gpuNvmlInfo")
+    gpu_nvml_info.setWordWrap(True)
+    gpu_nvml_info.setTextInteractionFlags(
+        qt_flags(QtCore.Qt, "TextInteractionFlag", "TextSelectableByMouse")
+    )
+    gpu_nvml_info.setMinimumWidth(360)
+
+    def sync_gpu_nvml_info() -> None:
+        selected = _selected_gpu_index(gpu_combo, selected_gpu_index)
+        gpu_nvml_info.setText(auto_uv_nvml_info_text(read_auto_uv_nvml_info(selected)))
+
+    gpu_combo.currentIndexChanged.connect(lambda _index: sync_gpu_nvml_info())
+    sync_gpu_nvml_info()
+    _add_form_row(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        form_layout=gpu_layout,
+        text="NVML limits",
+        widget=gpu_nvml_info,
+        tooltip=(
+            "Read-only values detected from public NVML for the selected GPU. "
+            "They are sampled when the dialog opens or the selected GPU changes."
         ),
     )
 
