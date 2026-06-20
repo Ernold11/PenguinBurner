@@ -283,6 +283,7 @@ def test_auto_uv_final_choice_runs_before_final_verification(monkeypatch) -> Non
                 int(settings.tail_rise_bins),
                 int(initial_stable_candidate.voltage_mv),
                 int(initial_stable_candidate.target_mhz),
+                bool(settings.descend_through_low_clock),
             )
         )
         assert (
@@ -390,11 +391,15 @@ def test_auto_uv_final_choice_runs_before_final_verification(monkeypatch) -> Non
     assert captured["choice_called"] is True
     assert captured["final_duration_s"] == 180
     assert captured["direct_probe_calls"] == []
+    # The tail-tune pass raises the tail by two bins beyond the descent tail and
+    # descends through low-clock dips so it can hold the floor clock at lower
+    # voltage and push toward the minimum. The first descent does neither.
     assert captured["sweep_calls"] == [
-        ("efficiency", 0, 1000, 2200),
-        ("efficiency-tail-tune", 0, 950, 2120),
+        ("efficiency", 0, 1000, 2200, False),
+        ("efficiency-tail-tune", 2, 950, 2120, True),
     ]
-    assert captured["final_tail_rise_bins"] == 0
+    # Final verification keeps the chosen tail-tune candidate's raised tail.
+    assert captured["final_tail_rise_bins"] == 2
 
 
 def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:

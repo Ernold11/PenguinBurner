@@ -181,31 +181,60 @@ def test_performance_mode_lower_sweep_uses_plain_lower_voltage_probe() -> None:
     assert "oc-budget" not in probed[0][2]
 
 
-def test_low_clock_failure_stops_without_recovery_probe() -> None:
-    curve = base_curve(900, 1025, 25, 2000, 40)
+def _low_clock_outcome(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
+    return VoltageProbeOutcome(
+        decision=StableRunDecision(
+            passed=False,
+            failure_kind=FailureKind.LOW_CLOCK,
+            severity=FailureSeverity.RECOVERABLE,
+            reason="telemetry-live-core_clock current=1900MHz floor=2000MHz",
+        ),
+        measured_core_clock_mhz=float(candidate.target_mhz - 120),
+        measured_voltage_mv=float(candidate.voltage_mv),
+        raw_probe=probe_summary(
+            candidate.voltage_mv,
+            clock_mhz=float(candidate.target_mhz - 120),
+        ),
+    )
+
+
+def _critical_outcome(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
+    return VoltageProbeOutcome(
+        decision=StableRunDecision(
+            passed=False,
+            failure_kind=FailureKind.Q2RTX_FAILED,
+            severity=FailureSeverity.CRITICAL,
+            reason="benchmark-crashed-signal",
+        ),
+        measured_core_clock_mhz=float(candidate.target_mhz),
+        measured_voltage_mv=float(candidate.voltage_mv),
+        raw_probe=probe_summary(
+            candidate.voltage_mv,
+            clock_mhz=float(candidate.target_mhz),
+        ),
+    )
+
+
+def _run_low_clock_sweep(
+    *,
+    descend_through_low_clock: bool,
+    probe,
+    min_search_voltage_mv: int = 900,
+):
+    curve = base_curve(880, 1025, 20, 2000, 40)
     probed: list[int] = []
     unsafe: list[int] = []
+    written: list[int] = []
 
-    def probe(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
+    def wrapped(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
         probed.append(int(candidate.voltage_mv))
-        return VoltageProbeOutcome(
-            decision=StableRunDecision(
-                passed=False,
-                failure_kind=FailureKind.LOW_CLOCK,
-                severity=FailureSeverity.RECOVERABLE,
-                reason="telemetry-live-core_clock current=1900MHz floor=2000MHz",
-            ),
-            measured_core_clock_mhz=float(candidate.target_mhz - 120),
-            measured_voltage_mv=float(candidate.voltage_mv),
-            raw_probe=probe_summary(
-                candidate.voltage_mv,
-                clock_mhz=float(candidate.target_mhz - 120),
-            ),
-        )
+        return probe(candidate)
 
     hooks = LowerVoltageSweepHooks(
-        probe_candidate=probe,
-        write_verified_candidate=lambda _candidate, _outcome: None,
+        probe_candidate=wrapped,
+        write_verified_candidate=lambda candidate, _outcome: written.append(
+            int(candidate.voltage_mv)
+        ),
         mark_unsafe_candidate=lambda candidate, _outcome: unsafe.append(
             int(candidate.voltage_mv)
         ),
@@ -214,10 +243,11 @@ def test_low_clock_failure_stops_without_recovery_probe() -> None:
         curve,
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
-            min_search_voltage_mv=950,
+            min_search_voltage_mv=min_search_voltage_mv,
             baseline_core_clock_mhz=2160.0,
             auto_uv_mode="performance",
             reference_actual_voltage_mv=1000.0,
+            descend_through_low_clock=descend_through_low_clock,
         ),
         initial_stable_candidate=VfCurveCandidate(
             label="baseline",
@@ -227,8 +257,71 @@ def test_low_clock_failure_stops_without_recovery_probe() -> None:
         ),
         hooks=hooks,
     )
+    return result, probed, unsafe, written
 
-    assert probed == [950]
-    assert unsafe == [950]
+
+def test_low_clock_first_pass_stops_without_marking_unsafe() -> None:
+    # The first descent stops at the natural clock floor, but a low-clock dip is
+    # NOT instability: the voltage must not be cached unsafe, or the raised-tail
+    # tail-tune pass could never retry it.
+    result, probed, unsafe, _written = _run_low_clock_sweep(
+        descend_through_low_clock=False,
+        probe=_low_clock_outcome,
+    )
+
+    assert len(probed) == 1
+    assert unsafe == []
     assert result.stable_candidate.voltage_mv == 1000
     assert [event.name for event in result.events] == ["stop"]
+
+
+def test_low_clock_tail_tune_pass_descends_to_lower_passing_voltage() -> None:
+    # Tail-tune pass: low-clock above 940mV, but a lower voltage holds the floor
+    # with the raised tail. The sweep must skip the low-clock voltages and keep
+    # the lowest one that passes.
+    def probe(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
+        if int(candidate.voltage_mv) > 940:
+            return _low_clock_outcome(candidate)
+        return _passed_outcome(candidate)
+
+    result, probed, unsafe, written = _run_low_clock_sweep(
+        descend_through_low_clock=True,
+        probe=probe,
+    )
+
+    assert unsafe == []
+    # It probed past the first low-clock voltage instead of stopping there.
+    assert len(probed) >= 2
+    assert min(probed) <= 940
+    assert result.stable_candidate.voltage_mv <= 940
+    assert written  # at least one lower-voltage candidate was verified
+
+
+def test_low_clock_tail_tune_descends_to_min_when_never_recovers() -> None:
+    # Even if no lower voltage holds the floor, the tail-tune pass keeps probing
+    # toward the minimum (never marking unsafe) and falls back to the start point.
+    result, probed, unsafe, written = _run_low_clock_sweep(
+        descend_through_low_clock=True,
+        probe=_low_clock_outcome,
+        min_search_voltage_mv=900,
+    )
+
+    assert unsafe == []
+    assert written == []
+    assert len(probed) >= 2
+    assert min(probed) <= 920  # reached deep into the range toward the minimum
+    assert result.stable_candidate.voltage_mv == 1000
+
+
+def test_critical_failure_marks_unsafe_and_stops_even_in_tail_tune() -> None:
+    # A genuine crash is still terminal and still cached unsafe, regardless of
+    # the low-clock descent flag.
+    result, probed, unsafe, _written = _run_low_clock_sweep(
+        descend_through_low_clock=True,
+        probe=_critical_outcome,
+    )
+
+    assert len(probed) == 1
+    assert len(unsafe) == 1
+    assert result.stable_candidate.voltage_mv == 1000
+    assert "stop" in [event.name for event in result.events]

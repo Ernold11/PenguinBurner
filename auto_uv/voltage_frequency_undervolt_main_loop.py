@@ -112,11 +112,11 @@ def run_voltage_frequency_undervolt_main_loop(
             tail_rise_bins=int(tail_rise_bins),
         )
         descent_tail_rise_bins = int(voltage_descent_tail_rise_bins(settings))
-        # The efficiency tail-tune reuses the descent bins so every preset keeps
-        # its own tail shape (efficiency flat at 0, balanced rising at 4). It must
-        # not fall back to a fixed balanced default, or efficiency profiles would
-        # inherit the balanced tail and the two tiers would collapse into one.
-        efficiency_tail_tune_rise_bins = descent_tail_rise_bins
+        # After the first descent stops at the natural clock floor, the tail-tune
+        # pass raises the tail by two more bins. The extra tail gives the GPU the
+        # vdroop headroom to hold the floor clock at lower voltage, letting the
+        # sweep push down toward the card minimum instead of stopping at the floor.
+        efficiency_tail_tune_rise_bins = descent_tail_rise_bins + 2
         enforce_descent_clock_floor = lower_voltage_descent_enforces_clock_floor(
             runtime_options,
             tail_rise_bins=int(descent_tail_rise_bins),
@@ -493,6 +493,7 @@ def run_voltage_frequency_undervolt_main_loop(
                             efficiency_stop_streak=0,
                             min_efficiency_stop_voltage_drop_pct=0.0,
                             tail_rise_bins=int(efficiency_tail_tune_rise_bins),
+                            descend_through_low_clock=True,
                         ),
                         initial_stable_candidate=stable_candidate,
                         hooks=hooks,

@@ -8,7 +8,12 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Callable
 
-from .auto_uv_types import VfCurveCandidate
+from .auto_uv_types import (
+    FailureKind,
+    FailureSeverity,
+    StableRunDecision,
+    VfCurveCandidate,
+)
 from .auto_uv_scan_settings import AutoUvScanSettings
 from .curve.base_vf_curve_validation import validate_base_vf_curve
 from .scan_mode.efficiency_fps_per_w_policy import (
@@ -182,6 +187,31 @@ def run_lower_voltage_sweep_loop(
                 )
                 break
             continue
+
+        if is_recoverable_low_clock(outcome.decision):
+            # The GPU stayed stable; only the core clock dipped below the floor.
+            # This is not an unstable voltage, so it must NOT be cached unsafe --
+            # doing so would also block the tail-tune pass from retrying it.
+            if settings.descend_through_low_clock:
+                events.append(
+                    LowerVoltageSweepEvent(
+                        "low-clock-skip",
+                        f"{candidate.voltage_mv}mV below clock floor; descending further",
+                    )
+                )
+                state = advance_through_low_clock(
+                    base_curve,
+                    settings=settings,
+                    state=state,
+                    candidate=candidate,
+                    outcome=outcome,
+                    min_search_voltage_mv=min_search_voltage_mv,
+                )
+                continue
+            # First pass: the natural clock floor is reached. Stop here and let
+            # the caller launch the raised-tail tail-tune pass to push lower.
+            events.append(LowerVoltageSweepEvent("stop", outcome.decision.reason))
+            break
 
         hooks.mark_unsafe_candidate(candidate, outcome)
         events.append(LowerVoltageSweepEvent("stop", outcome.decision.reason))
@@ -395,6 +425,45 @@ def float_or_none(value: object) -> float | None:
         return None if value is None else float(value)
     except (TypeError, ValueError):
         return None
+
+
+def is_recoverable_low_clock(decision: StableRunDecision) -> bool:
+    return (
+        not decision.passed
+        and decision.failure_kind is FailureKind.LOW_CLOCK
+        and decision.severity is FailureSeverity.RECOVERABLE
+    )
+
+
+def advance_through_low_clock(
+    base_curve: list[dict],
+    *,
+    settings: AutoUvScanSettings,
+    state: VoltageSweepState,
+    candidate: VfCurveCandidate,
+    outcome: VoltageProbeOutcome,
+    min_search_voltage_mv: int | None,
+) -> VoltageSweepState:
+    """Skip a low-clock voltage and keep descending toward the minimum.
+
+    The stable point is left untouched (its measured clock stays the held
+    target), so only the next voltage to probe moves down one step.
+    """
+
+    reference_voltage_mv = (
+        float(outcome.measured_voltage_mv)
+        if outcome.measured_voltage_mv is not None
+        else settings.reference_actual_voltage_mv
+    )
+    next_voltage_mv = select_next_lower_voltage(
+        base_curve,
+        start_voltage_mv=int(settings.start_voltage_mv),
+        stable_voltage_mv=int(candidate.voltage_mv),
+        reference_actual_voltage_mv=reference_voltage_mv,
+        min_search_voltage_mv=min_search_voltage_mv,
+        failed_floor_voltage_mv=state.failed_floor_voltage_mv,
+    )
+    return replace(state, next_voltage_mv=next_voltage_mv)
 
 
 def accept_voltage_probe(
