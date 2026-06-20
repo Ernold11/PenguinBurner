@@ -1,6 +1,6 @@
 """Build long stability-test configs for profile verification and Auto-UV final checks.
 
-The helper splits one user duration between Q2RTX timedemo and CUDA companion load.
+The helper splits one user duration between Q2RTX benchmark and CUDA companion load.
 """
 
 from __future__ import annotations
@@ -64,7 +64,6 @@ def build_long_stability_test_config(
     )
     configured = replace(
         config,
-        timedemo_loops=None,
         duration_s=int(q2rtx_s if include_q2rtx else cuda_s),
         companion_command=companion,
         single_pass_timeout_s=max(

@@ -17,6 +17,7 @@ from .install import install_latest_q2rtx
 from .models import Q2RTXStabilityConfig, StabilityTestError
 from .output import attach_stdout_progress
 from .reporting import print_q2rtx_stability_result
+from .resolution import resolve_q2rtx_render_resolution
 from .runtime import run_q2rtx_stability_test
 
 
@@ -30,14 +31,14 @@ def _default_prog_name() -> str:
 def parse_q2rtx_stability_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog=_default_prog_name(),
-        description="Run a non-interactive Q2RTX timedemo stability workload.",
+        description="Run a non-interactive Q2RTX benchmark stability workload.",
     )
     parser.add_argument(
         "--install-q2rtx",
         action="store_true",
         help=(
-            "Download the latest official Q2RTX Linux tar.gz from GitHub and "
-            "extract everything under ~/.local/share/PenguinBurner/q2rtx/"
+            "Download the PenguinBurner headless Q2RTX binary and shareware "
+            "demo data under ~/.local/share/PenguinBurner/q2rtx/"
         ),
     )
     parser.add_argument(
@@ -45,54 +46,33 @@ def parse_q2rtx_stability_args(argv: list[str] | None = None) -> argparse.Namesp
         type=int,
         default=DEFAULT_DURATION_S,
         help=(
-            "Wall-clock duration in seconds when --stability-loops is not set; "
-            f"default {DEFAULT_DURATION_S}"
+            f"Measured benchmark duration in seconds; default {DEFAULT_DURATION_S}"
         ),
-    )
-    parser.add_argument(
-        "--stability-q2rtx-dir",
-        default="",
-        help="Q2RTX install or source root containing baseq2/ and/or q2rtx",
-    )
-    parser.add_argument(
-        "--stability-q2rtx-binary",
-        default="",
-        help="Explicit q2rtx executable path",
     )
     parser.add_argument(
         "--stability-demo",
         default=DEFAULT_DEMO_NAME,
         help=(
             "Demo name under baseq2/demos or inside pak0.pak, or 'auto' to "
-            f"prefer a built-in timedemo like q2demo1; default {DEFAULT_DEMO_NAME}"
-        ),
-    )
-    parser.add_argument(
-        "--stability-loops",
-        type=int,
-        default=0,
-        help=(
-            "Exact built-in timedemo loop count; when set, skip wall-clock "
-            "calibration and run one timedemo process for this many loops"
+            f"prefer a built-in benchmark demo like q2demo1; default {DEFAULT_DEMO_NAME}"
         ),
     )
     parser.add_argument(
         "--stability-width",
         type=int,
-        default=DEFAULT_WIDTH,
-        help=f"Q2RTX render width; default {DEFAULT_WIDTH}",
+        default=None,
+        help=(
+            "Q2RTX render width; default auto "
+            f"(<=8 GiB VRAM: 2560, >8 GiB/unknown: {DEFAULT_WIDTH})"
+        ),
     )
     parser.add_argument(
         "--stability-height",
         type=int,
-        default=DEFAULT_HEIGHT,
-        help=f"Q2RTX render height; default {DEFAULT_HEIGHT}",
-    )
-    parser.add_argument(
-        "--show-q2rtx-window",
-        action="store_true",
+        default=None,
         help=(
-            "Do not move the Q2RTX Vulkan window off-screen during the stability test"
+            "Q2RTX render height; default auto "
+            f"(<=8 GiB VRAM: 1440, >8 GiB/unknown: {DEFAULT_HEIGHT})"
         ),
     )
     parser.add_argument(
@@ -110,20 +90,20 @@ def parse_q2rtx_stability_args(argv: list[str] | None = None) -> argparse.Namesp
 
 
 def config_from_args(args: argparse.Namespace) -> Q2RTXStabilityConfig:
-    q2rtx_dir = str(args.stability_q2rtx_dir).strip()
-    q2rtx_binary = str(args.stability_q2rtx_binary).strip()
+    try:
+        resolution = resolve_q2rtx_render_resolution(
+            gpu_index=int(args.gpu_index),
+            requested_width=getattr(args, "stability_width", None),
+            requested_height=getattr(args, "stability_height", None),
+        )
+    except ValueError as exc:
+        raise StabilityTestError(str(exc)) from exc
     return Q2RTXStabilityConfig(
         duration_s=int(args.stability_seconds),
-        width=int(args.stability_width),
-        height=int(args.stability_height),
-        hide_window=not bool(args.show_q2rtx_window),
+        width=int(resolution.width),
+        height=int(resolution.height),
         demo_name=_validate_demo_name(args.stability_demo),
-        timedemo_loops=(
-            int(args.stability_loops) if int(args.stability_loops) > 0 else None
-        ),
         gpu_index=int(args.gpu_index),
-        q2rtx_dir=Path(q2rtx_dir).expanduser() if q2rtx_dir else None,
-        q2rtx_binary=Path(q2rtx_binary).expanduser() if q2rtx_binary else None,
         log_dir=Path(args.stability_log_dir).expanduser(),
     )
 

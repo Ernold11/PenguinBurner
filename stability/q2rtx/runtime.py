@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from collections import deque
+from dataclasses import dataclass, replace
 from datetime import datetime
-import math
+import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import time
 
@@ -12,12 +14,12 @@ from common.penguin_burner_paths import claim_desktop_user_ownership
 
 from .assets import _validate_demo_name, resolve_q2rtx_executable, resolve_workload
 from .constants import (
-    HIDDEN_WINDOW_POSITION,
+    FATAL_OUTPUT_REGEXES,
+    FATAL_OUTPUT_PATTERNS,
     LAUNCHER_ERROR_PATTERNS,
     Q2RTX_LAUNCHER_ERROR_REASON,
 )
 from .gpu_binding import (
-    _apply_hidden_window_env,
     _apply_nvidia_render_offload_env,
     _query_selected_nvidia_gpu,
     _selected_gpu_log_lines,
@@ -25,25 +27,22 @@ from .gpu_binding import (
 from .identity import _prepare_q2rtx_subprocess_env, _resolve_q2rtx_run_identity
 from .install import _prepare_q2rtx_runtime_env
 from .models import (
+    Q2RTXBenchmarkSummary,
     Q2RTXStabilityConfig,
     Q2RTXStabilityResult,
     StabilityTestError,
     TelemetrySample,
-    TimedemoRun,
 )
 from .output import (
-    _expected_timedemo_frames,
-    _extract_timedemo_runs,
+    _benchmark_summary_from_events,
     _format_sample_metrics,
     _read_recent_output,
     _scan_output_for_fatal_patterns,
 )
 from .process_harness import (
     _child_process_group_preexec,
-    _headless_gamescope_prefix,
     _terminate_process_group,
     _wrap_command_for_live_output,
-    _wrap_q2rtx_command,
 )
 from .telemetry import (
     _HiddenNvmlVoltageSession,
@@ -51,49 +50,28 @@ from .telemetry import (
     query_gpu_metrics,
 )
 from .nvml_telemetry import create_nvml_telemetry_session
+from .resolution import resolve_q2rtx_render_resolution
 
 
-def _result_looks_like_gamescope_startup_crash(result: Q2RTXStabilityResult) -> bool:
-    if bool(result.success):
-        return False
-    if str(result.reason) not in {
-        "timedemo-metrics-missing",
-        "timedemo-nonzero-exit",
-        "fatal-q2rtx-output",
-    }:
-        return False
-    tail = "\n".join(str(line) for line in result.output_tail)
-    if "gamescope" not in tail.lower() and "Gamescope WSI" not in tail:
-        return False
-    startup_crash_markers = (
-        "Segmentation fault",
-        "Primary child shut down",
-        "failed to read Wayland events",
-        "Broken pipe",
-    )
-    return any(marker in tail for marker in startup_crash_markers)
-
-
-MAX_LAUNCHER_RETRY_ATTEMPTS = 3
+@dataclass(slots=True)
+class _Q2RTXProcessRun:
+    process_exit_code: int | None
+    observed_duration_s: float
+    telemetry_samples: list[TelemetrySample]
+    companion_telemetry_samples: list[TelemetrySample]
+    exit_reason: str
+    benchmark_events: list[dict]
+    benchmark_event_errors: list[str]
+    benchmark_summary: Q2RTXBenchmarkSummary | None
+    benchmark_telemetry_samples: list[TelemetrySample]
+    fatal_output_matches: list[str]
+    output_tail: list[str]
 
 
 def _result_has_launcher_error(result: Q2RTXStabilityResult) -> bool:
-    """True when Q2RTX failed in the dynamic loader (e.g. missing libssl.so.1.1)."""
+    """True when Q2RTX failed in the dynamic loader."""
     tail = "\n".join(str(line) for line in result.output_tail)
     return any(pattern in tail for pattern in LAUNCHER_ERROR_PATTERNS)
-
-
-def _result_is_retryable_launcher_failure(result: Q2RTXStabilityResult) -> bool:
-    """A launch that died before stable metrics for a non-stability reason.
-
-    Covers a missing shared library and a flaky headless-gamescope startup; both
-    are random and self-clearing, so the same-mode retry is worth a few attempts.
-    """
-    if bool(result.success):
-        return False
-    return _result_has_launcher_error(
-        result
-    ) or _result_looks_like_gamescope_startup_crash(result)
 
 
 def _reclassify_launcher_failure(
@@ -109,15 +87,39 @@ def _common_q2rtx_args(
     *,
     width: int,
     height: int,
-    hide_window: bool,
+    demo_name: str,
+    duration_s: float,
 ) -> list[str]:
-    geometry = f"{int(width)}x{int(height)}"
-    if hide_window:
-        geometry = f"{geometry}+{HIDDEN_WINDOW_POSITION.replace(',', '+')}"
-
     return [
         "+set",
         "sys_console",
+        "1",
+        "+set",
+        "bench",
+        "1",
+        "+set",
+        "bench_seconds",
+        f"{float(duration_s):.3f}",
+        "+set",
+        "bench_demo",
+        demo_name,
+        "+set",
+        "bench_headless",
+        "1",
+        "+set",
+        "bench_constant_load",
+        "1",
+        "+set",
+        "bench_min_loops",
+        "1",
+        "+set",
+        "bench_width",
+        str(int(width)),
+        "+set",
+        "bench_height",
+        str(int(height)),
+        "+set",
+        "bench_event_stdout",
         "1",
         "+set",
         "vid_rtx",
@@ -131,12 +133,6 @@ def _common_q2rtx_args(
         "+set",
         "cl_maxfps",
         "1000",
-        "+set",
-        "vid_fullscreen",
-        "0",
-        "+set",
-        "vid_geometry",
-        geometry,
         "+set",
         "vid_vsync",
         "0",
@@ -224,36 +220,36 @@ def _common_q2rtx_args(
     ]
 
 
-def build_timedemo_command(
+def build_benchmark_command(
     executable_path: Path,
     *,
     demo_name: str,
     width: int,
     height: int,
-    hide_window: bool,
-    timedemo_runs: int = 1,
+    duration_s: float = 60.0,
 ) -> list[str]:
     demo_name = _validate_demo_name(demo_name)
-    timedemo_runs = max(1, int(timedemo_runs))
     return [
         str(executable_path),
         *_common_q2rtx_args(
             width=width,
             height=height,
-            hide_window=hide_window,
+            demo_name=demo_name,
+            duration_s=float(duration_s),
         ),
-        "+set",
-        "cl_demowait",
-        "0",
-        "+set",
-        "timedemo",
-        str(timedemo_runs),
-        "+set",
-        "nextserver",
-        "quit",
-        "+demo",
-        demo_name,
     ]
+
+
+def _q2rtx_command_with_event_fd(command: list[str], event_fd: int) -> list[str]:
+    command_with_fd = list(command)
+    for index, value in enumerate(command_with_fd[:-1]):
+        if value == "bench_event_stdout":
+            command_with_fd[index + 1] = "0"
+            break
+    else:
+        command_with_fd.extend(["+set", "bench_event_stdout", "0"])
+    command_with_fd.extend(["+set", "bench_event_fd", str(int(event_fd))])
+    return command_with_fd
 
 
 def _prepare_log_path(log_dir: Path) -> Path:
@@ -264,22 +260,96 @@ def _prepare_log_path(log_dir: Path) -> Path:
     return log_dir / f"q2rtx-stability-{timestamp}.log"
 
 
-def _timedemo_runs_net_seconds(timedemo_runs: list[TimedemoRun]) -> float:
-    return sum(max(0.0, float(run.seconds)) for run in timedemo_runs)
+def _benchmark_window_telemetry_samples(
+    telemetry_samples: list[TelemetrySample],
+    benchmark_summary: Q2RTXBenchmarkSummary | None,
+) -> list[TelemetrySample]:
+    if benchmark_summary is None:
+        return []
+    if benchmark_summary.measure_start_elapsed_s is None:
+        return []
+    if benchmark_summary.measured_s <= 0.0:
+        return []
+    start_s = max(0.0, float(benchmark_summary.measure_start_elapsed_s))
+    end_s = start_s + float(benchmark_summary.measured_s)
+    return [
+        sample
+        for sample in telemetry_samples
+        if float(sample.elapsed_s) >= start_s and float(sample.elapsed_s) <= end_s
+    ]
 
 
-def _timedemo_abort_is_immediate(reason: str) -> bool:
+def _scan_fatal_patterns_in_lines(lines: list[str] | deque[str]) -> list[str]:
+    text = "\n".join(str(line) for line in lines)
+    normalized_text = text.casefold()
+    matches = [
+        pattern
+        for pattern in FATAL_OUTPUT_PATTERNS
+        if str(pattern).casefold() in normalized_text
+    ]
+    for regex in FATAL_OUTPUT_REGEXES:
+        for match in regex.finditer(text):
+            matches.append(match.group(0))
+    return matches
+
+
+def _q2rtx_exit_failure_reason(process_exit_code: int | None) -> str:
+    if process_exit_code is None:
+        return "benchmark-nonzero-exit"
+    if int(process_exit_code) < 0:
+        signal_number = abs(int(process_exit_code))
+        try:
+            signal_name = signal.Signals(signal_number).name
+        except ValueError:
+            signal_name = f"SIG{signal_number}"
+        return f"benchmark-crashed-signal-{signal_name}"
+    return f"benchmark-nonzero-exit-{int(process_exit_code)}"
+
+
+def _drain_text_fd(
+    fd: int,
+    *,
+    buffer: str,
+    on_line,
+) -> tuple[str, bool]:
+    closed = False
+    while True:
+        try:
+            chunk = os.read(fd, 65536)
+        except BlockingIOError:
+            break
+        except OSError:
+            closed = True
+            break
+        if not chunk:
+            closed = True
+            break
+        buffer += chunk.decode("utf-8", errors="replace")
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            on_line(line.rstrip("\r"))
+    return buffer, closed
+
+
+def _benchmark_abort_is_immediate(reason: str) -> bool:
     reason = str(reason or "").strip()
     if not reason:
         return False
     if reason in {
+        "benchmark-duration-short",
+        "benchmark-crashed-signal",
+        "benchmark-event-pipe-closed",
+        "benchmark-event-protocol-error",
+        "benchmark-fatal-event",
+        "benchmark-measure-start-missing",
+        "benchmark-metrics-invalid",
+        "benchmark-nonzero-exit",
+        "benchmark-start-missing",
+        "benchmark-summary-missing",
         "user-stop-requested",
         "fatal-q2rtx-output",
         "fatal-cuda-output",
         "nvidia-xid-detected",
-        "timedemo-metrics-invalid",
-        "timedemo-unexpected-frame-count",
-        "timedemo-frame-count-drift",
     }:
         return True
     if reason.startswith(
@@ -287,8 +357,6 @@ def _timedemo_abort_is_immediate(reason: str) -> bool:
             "profile-verification-voltage-mismatch",
             "q2rtx-selected-nvidia-gpu-idle",
             "telemetry-live-load-lost",
-            "timedemo-live-frame-count",
-            "timedemo-live-stall",
         )
     ):
         return True
@@ -389,11 +457,6 @@ def _run_companion_process(
                         )
                     ),
                     "telemetry_samples": [],
-                    "timedemo_runs": [],
-                    "new_timedemo_runs": [],
-                    "completed_runs": 0,
-                    "completed_frames": 0,
-                    "last_run": None,
                     "running": "cuda",
                     "fatal_output_matches": list(
                         _scan_output_for_fatal_patterns(log_path)
@@ -503,7 +566,6 @@ def run_cuda_stability_test(config: Q2RTXStabilityConfig) -> Q2RTXStabilityResul
         executable_path=Path(str(command[0])),
         workdir=Path.cwd(),
         duration_requested_s=int(config.duration_s),
-        timedemo_loops_requested=None,
         duration_observed_s=float(observed_duration_s),
         demo_path=None,
         log_path=log_path,
@@ -511,14 +573,13 @@ def run_cuda_stability_test(config: Q2RTXStabilityConfig) -> Q2RTXStabilityResul
         shutdown_mode="cuda-complete" if success else reason,
         fatal_output_matches=fatal_output_matches,
         xid_messages=xid_messages,
-        timedemo_runs=[],
         telemetry_samples=list(cuda_telemetry_samples),
         companion_telemetry_samples=list(cuda_telemetry_samples),
         output_tail=output_tail,
     )
 
 
-def _run_timedemo_process(
+def _run_benchmark_process(
     *,
     config: Q2RTXStabilityConfig,
     command: list[str],
@@ -526,26 +587,18 @@ def _run_timedemo_process(
     log_path: Path,
     section_name: str,
     workload_name: str,
-    requested_runs: int | None,
-    expected_frames_per_run: int | None,
     runtime_env: dict[str, str],
-    initial_run_count: int = 0,
-) -> tuple[int | None, float, list[TelemetrySample], list[TelemetrySample], str]:
+) -> _Q2RTXProcessRun:
     telemetry_samples: list[TelemetrySample] = []
     voltage_session = _HiddenNvmlVoltageSession(config.gpu_index)
     telemetry_session = create_nvml_telemetry_session(config.gpu_index)
-    gamescope_prefix = _headless_gamescope_prefix(config)
     selected_gpu = _query_selected_nvidia_gpu(config.gpu_index)
     q2rtx_env = _apply_nvidia_render_offload_env(
         runtime_env,
         selected_gpu=selected_gpu,
     )
     child_env, child_preexec_fn, child_user_name = _prepare_q2rtx_subprocess_env(
-        _apply_hidden_window_env(
-            q2rtx_env,
-            hide_window=bool(config.hide_window),
-            use_headless_gamescope=bool(gamescope_prefix),
-        )
+        q2rtx_env,
     )
     section_started_dt = datetime.now().astimezone()
     section_started_at = section_started_dt.isoformat()
@@ -554,14 +607,65 @@ def _run_timedemo_process(
     next_heartbeat_monotonic = run_start_monotonic
     exit_reason = "completed"
     observed_duration_s = 0.0
-    last_timedemo_run_count = max(0, int(initial_run_count))
     companion_exit_code = None
     companion_abort_reason = None
     cuda_telemetry_samples: list[TelemetrySample] = []
     process = None
+    process_exit_code: int | None = None
+    benchmark_events: list[dict] = []
+    benchmark_event_errors: list[str] = []
+    benchmark_summary: Q2RTXBenchmarkSummary | None = None
+    benchmark_telemetry_samples: list[TelemetrySample] = []
+    output_tail: deque[str] = deque(maxlen=80)
+    fatal_output_matches_seen: set[str] = set()
+    event_read_fd = -1
+    event_write_fd = -1
+    event_buffer = ""
+    output_buffer = ""
+    event_closed = False
+    output_closed = False
 
     try:
         with log_path.open("a", encoding="utf-8", errors="replace") as log_file:
+            event_read_fd, event_write_fd = os.pipe()
+            os.set_blocking(event_read_fd, False)
+            launch_command = _q2rtx_command_with_event_fd(command, event_write_fd)
+
+            def _handle_event_line(line: str) -> None:
+                stripped = str(line).strip()
+                if not stripped:
+                    return
+                log_file.write(f"{stripped}\n")
+                try:
+                    event = json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    benchmark_event_errors.append(
+                        f"invalid-json line={stripped[:200]!r} error={exc.msg}"
+                    )
+                    return
+                if not isinstance(event, dict) or "event" not in event:
+                    benchmark_event_errors.append(
+                        f"invalid-event line={stripped[:200]!r}"
+                    )
+                    return
+                benchmark_events.append(event)
+
+            def _handle_output_line(line: str) -> None:
+                text = str(line).rstrip("\r")
+                output_tail.append(text)
+                log_file.write(f"{text}\n")
+                for match in _scan_fatal_patterns_in_lines([text]):
+                    fatal_output_matches_seen.add(str(match))
+
+            def _refresh_benchmark_state() -> None:
+                nonlocal benchmark_summary
+                nonlocal benchmark_telemetry_samples
+                benchmark_summary = _benchmark_summary_from_events(benchmark_events)
+                benchmark_telemetry_samples = _benchmark_window_telemetry_samples(
+                    telemetry_samples,
+                    benchmark_summary,
+                )
+
             log_file.write(f"\n=== {section_name} start {section_started_at} ===\n")
             if child_user_name is not None:
                 log_file.write(f"# q2rtx_run_user={child_user_name}\n")
@@ -576,46 +680,44 @@ def _run_timedemo_process(
                 child_env=child_env,
             ):
                 log_file.write(f"{line}\n")
-            if gamescope_prefix:
-                log_file.write("# q2rtx_window=gamescope-headless\n")
-                log_file.write(
-                    "# launch_command="
-                    + " ".join(
-                        _wrap_q2rtx_command(command, gamescope_prefix=gamescope_prefix)
-                    )
-                    + "\n"
-                )
-            elif config.hide_window:
-                log_file.write(
-                    "# q2rtx_window=offscreen-x11 "
-                    f"SDL_VIDEO_WINDOW_POS={HIDDEN_WINDOW_POSITION} "
-                    "SDL_VIDEO_X11_FORCE_OVERRIDE_REDIRECT=1\n"
-                )
-                log_file.write(f"# launch_command={' '.join(command)}\n")
-            else:
-                log_file.write(f"# launch_command={' '.join(command)}\n")
+            log_file.write("# q2rtx_window=pb-headless\n")
+            log_file.write(f"# launch_command={' '.join(command)}\n")
             if config.companion_command:
                 log_file.write(
                     f"# companion_command={' '.join(list(config.companion_command))}\n"
                 )
+            log_file.write("# q2rtx_benchmark_events=pipe-fd\n")
             log_file.flush()
             process = subprocess.Popen(
-                _wrap_command_for_live_output(
-                    _wrap_q2rtx_command(
-                        command,
-                        gamescope_prefix=gamescope_prefix,
-                    )
-                ),
+                _wrap_command_for_live_output(launch_command),
                 cwd=workdir,
-                stdout=log_file,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 env=child_env,
                 preexec_fn=_child_process_group_preexec(child_preexec_fn),
+                pass_fds=(event_write_fd,),
             )
+            os.close(event_write_fd)
+            event_write_fd = -1
+            if process.stdout is not None:
+                os.set_blocking(process.stdout.fileno(), False)
 
             while True:
                 now_monotonic = time.monotonic()
                 pass_elapsed_s = now_monotonic - run_start_monotonic
+                if not event_closed:
+                    event_buffer, event_closed = _drain_text_fd(
+                        event_read_fd,
+                        buffer=event_buffer,
+                        on_line=_handle_event_line,
+                    )
+                if process.stdout is not None and not output_closed:
+                    output_buffer, output_closed = _drain_text_fd(
+                        process.stdout.fileno(),
+                        buffer=output_buffer,
+                        on_line=_handle_output_line,
+                    )
+                _refresh_benchmark_state()
                 process_exit_code = process.poll()
                 if now_monotonic >= next_heartbeat_monotonic:
                     latest_metrics = _format_sample_metrics(
@@ -629,6 +731,28 @@ def _run_timedemo_process(
                     )
                     log_file.flush()
                     next_heartbeat_monotonic = now_monotonic + 1.0
+                if benchmark_event_errors:
+                    _terminate_process_group(process)
+                    process_exit_code = process.returncode
+                    observed_duration_s = time.monotonic() - run_start_monotonic
+                    exit_reason = "benchmark-event-protocol-error"
+                    break
+                if any(event.get("event") == "fatal" for event in benchmark_events):
+                    _terminate_process_group(process)
+                    process_exit_code = process.returncode
+                    observed_duration_s = time.monotonic() - run_start_monotonic
+                    exit_reason = "benchmark-fatal-event"
+                    break
+                if (
+                    event_closed
+                    and process_exit_code is None
+                    and not any(event.get("event") == "done" for event in benchmark_events)
+                ):
+                    _terminate_process_group(process)
+                    process_exit_code = process.returncode
+                    observed_duration_s = time.monotonic() - run_start_monotonic
+                    exit_reason = "benchmark-event-pipe-closed"
+                    break
                 if process_exit_code is not None:
                     observed_duration_s = pass_elapsed_s
                     break
@@ -637,7 +761,7 @@ def _run_timedemo_process(
                     _terminate_process_group(process)
                     process_exit_code = process.returncode
                     observed_duration_s = time.monotonic() - run_start_monotonic
-                    exit_reason = "timedemo-timeout"
+                    exit_reason = "benchmark-timeout"
                     break
 
                 if now_monotonic >= next_sample_monotonic:
@@ -649,13 +773,21 @@ def _run_timedemo_process(
                     if sample is not None:
                         sample.elapsed_s = pass_elapsed_s
                         telemetry_samples.append(sample)
-                    all_timedemo_runs = _extract_timedemo_runs(log_path)
-                    timedemo_runs = all_timedemo_runs[max(0, int(initial_run_count)) :]
-                    new_timedemo_runs = all_timedemo_runs[last_timedemo_run_count:]
-                    last_timedemo_run_count = len(all_timedemo_runs)
-                    fatal_output_matches = _scan_output_for_fatal_patterns(log_path)
-                    completed_frames = sum(int(run.frames) for run in timedemo_runs)
-                    net_elapsed_s = _timedemo_runs_net_seconds(timedemo_runs)
+                    benchmark_summary = _benchmark_summary_from_events(
+                        benchmark_events
+                    )
+                    benchmark_telemetry_samples = (
+                        _benchmark_window_telemetry_samples(
+                            telemetry_samples,
+                            benchmark_summary,
+                        )
+                    )
+                    fatal_output_matches = sorted(fatal_output_matches_seen)
+                    net_elapsed_s = (
+                        float(benchmark_summary.measured_s)
+                        if benchmark_summary is not None
+                        else 0.0
+                    )
                     progress_state = {
                         "section_name": section_name,
                         "workload_name": workload_name,
@@ -667,25 +799,15 @@ def _run_timedemo_process(
                         "workdir": workdir,
                         "log_path": log_path,
                         "process_pid": int(process.pid),
-                        "expected_runs": (
-                            int(requested_runs) if requested_runs is not None else None
-                        ),
-                        "expected_frames_per_run": (
-                            int(expected_frames_per_run)
-                            if expected_frames_per_run is not None
-                            else None
-                        ),
                         "latest_sample": telemetry_samples[-1]
                         if telemetry_samples
                         else None,
                         "telemetry_samples": list(telemetry_samples),
-                        "timedemo_runs": list(timedemo_runs),
-                        "new_timedemo_runs": list(new_timedemo_runs),
-                        "completed_runs": int(len(timedemo_runs)),
-                        "completed_frames": int(completed_frames),
-                        "last_run": timedemo_runs[-1] if timedemo_runs else None,
                         "running": "q2rtx",
                         "fatal_output_matches": list(fatal_output_matches),
+                        "benchmark_events": list(benchmark_events),
+                        "benchmark_event_errors": list(benchmark_event_errors),
+                        "benchmark_summary": benchmark_summary,
                     }
                     if config.progress_callback is not None:
                         try:
@@ -707,7 +829,7 @@ def _run_timedemo_process(
                             abort_reason = config.abort_callback(progress_state)
                         except Exception:
                             abort_reason = None
-                        if abort_reason and _timedemo_abort_is_immediate(
+                        if abort_reason and _benchmark_abort_is_immediate(
                             str(abort_reason)
                         ):
                             _terminate_process_group(process)
@@ -721,13 +843,36 @@ def _run_timedemo_process(
 
                 time.sleep(0.1)
 
+            if not event_closed:
+                event_buffer, event_closed = _drain_text_fd(
+                    event_read_fd,
+                    buffer=event_buffer,
+                    on_line=_handle_event_line,
+                )
+            if event_buffer.strip():
+                _handle_event_line(event_buffer.strip())
+                event_buffer = ""
+            if process.stdout is not None and not output_closed:
+                output_buffer, output_closed = _drain_text_fd(
+                    process.stdout.fileno(),
+                    buffer=output_buffer,
+                    on_line=_handle_output_line,
+                )
+            if output_buffer:
+                _handle_output_line(output_buffer)
+                output_buffer = ""
+            _refresh_benchmark_state()
+            log_file.flush()
+
             if (
                 process_exit_code == 0
                 and exit_reason == "completed"
                 and config.companion_command is not None
             ):
-                q2rtx_net_duration_s = _timedemo_runs_net_seconds(
-                    _extract_timedemo_runs(log_path)[max(0, int(initial_run_count)) :]
+                q2rtx_net_duration_s = (
+                    float(benchmark_summary.measured_s)
+                    if benchmark_summary is not None
+                    else 0.0
                 )
                 companion_exit_code, companion_abort_reason = _run_companion_process(
                     config=config,
@@ -750,6 +895,16 @@ def _run_timedemo_process(
                         f"cuda-bruteforce-failed exit={int(companion_exit_code)}"
                     )
     finally:
+        if event_write_fd != -1:
+            try:
+                os.close(event_write_fd)
+            except OSError:
+                pass
+        if event_read_fd != -1:
+            try:
+                os.close(event_read_fd)
+            except OSError:
+                pass
         _terminate_process_group(process)
         if telemetry_session is not None:
             telemetry_session.close()
@@ -760,16 +915,22 @@ def _run_timedemo_process(
     elif companion_exit_code not in (None, 0) and exit_reason == "completed":
         exit_reason = f"cuda-bruteforce-failed exit={int(companion_exit_code)}"
 
-    return (
-        process_exit_code,
-        observed_duration_s,
-        telemetry_samples,
-        cuda_telemetry_samples,
-        exit_reason,
+    return _Q2RTXProcessRun(
+        process_exit_code=process_exit_code,
+        observed_duration_s=float(observed_duration_s),
+        telemetry_samples=list(telemetry_samples),
+        companion_telemetry_samples=list(cuda_telemetry_samples),
+        exit_reason=str(exit_reason),
+        benchmark_events=list(benchmark_events),
+        benchmark_event_errors=list(benchmark_event_errors),
+        benchmark_summary=benchmark_summary,
+        benchmark_telemetry_samples=list(benchmark_telemetry_samples),
+        fatal_output_matches=sorted(fatal_output_matches_seen),
+        output_tail=list(output_tail),
     )
 
 
-def _run_timedemo_session(
+def _run_benchmark_session(
     *,
     config: Q2RTXStabilityConfig,
     executable_path: Path,
@@ -781,7 +942,6 @@ def _run_timedemo_session(
 ) -> Q2RTXStabilityResult:
     started_at = datetime.now().astimezone()
     telemetry_samples: list[TelemetrySample] = []
-    timedemo_runs: list[TimedemoRun] = []
     shutdown_mode = "not-started"
     process_exit_code: int | None = None
     early_failure_reason = ""
@@ -790,20 +950,15 @@ def _run_timedemo_session(
     companion_telemetry_samples: list[TelemetrySample] = []
     fatal_output_matches: list[str] = []
     xid_messages: list[str] = []
-    requested_loops = (
-        int(config.timedemo_loops) if config.timedemo_loops is not None else None
-    )
-    use_headless_gamescope = bool(_headless_gamescope_prefix(config))
-    initial_timedemo_runs = requested_loops if requested_loops is not None else 1
-    command_used = build_timedemo_command(
+    benchmark_summary: Q2RTXBenchmarkSummary | None = None
+    benchmark_telemetry_samples: list[TelemetrySample] = []
+    command_used = build_benchmark_command(
         executable_path,
         demo_name=workload_name,
         width=config.width,
         height=config.height,
-        hide_window=bool(config.hide_window) and not use_headless_gamescope,
-        timedemo_runs=initial_timedemo_runs,
+        duration_s=float(config.duration_s),
     )
-    expected_frames_per_run = _expected_timedemo_frames(workload_name)
 
     log_path.write_text(
         (
@@ -823,201 +978,88 @@ def _run_timedemo_session(
         with log_path.open("a", encoding="utf-8", errors="replace") as log_file:
             log_file.write(f"# q2rtx_target_user={run_identity['user_name']}\n")
 
-    if requested_loops is not None:
-        (
-            process_exit_code,
-            observed_duration_s,
-            telemetry_samples,
-            companion_telemetry_samples,
-            shutdown_mode,
-        ) = _run_timedemo_process(
-            config=config,
-            command=command_used,
-            workdir=workdir,
-            log_path=log_path,
-            section_name=f"timedemo-loop x{requested_loops}",
-            workload_name=workload_name,
-            requested_runs=requested_loops,
-            expected_frames_per_run=expected_frames_per_run,
-            runtime_env=runtime_env,
-        )
-        timedemo_runs = _extract_timedemo_runs(log_path)
-        if shutdown_mode != "completed":
-            early_failure_reason = shutdown_mode
-        elif process_exit_code not in (0, None):
-            early_failure_reason = "timedemo-nonzero-exit"
-        elif len(timedemo_runs) < requested_loops:
-            early_failure_reason = "timedemo-metrics-missing"
-        else:
-            for current_run in timedemo_runs:
-                if (
-                    current_run.frames <= 0
-                    or current_run.seconds <= 0
-                    or current_run.fps <= 0
-                ):
-                    early_failure_reason = "timedemo-metrics-invalid"
-                    break
+    section_name = f"benchmark {float(config.duration_s):.1f}s"
+    process_run = _run_benchmark_process(
+        config=config,
+        command=command_used,
+        workdir=workdir,
+        log_path=log_path,
+        section_name=section_name,
+        workload_name=workload_name,
+        runtime_env=runtime_env,
+    )
+    process_exit_code = process_run.process_exit_code
+    observed_duration_s = process_run.observed_duration_s
+    telemetry_samples = process_run.telemetry_samples
+    companion_telemetry_samples = process_run.companion_telemetry_samples
+    shutdown_mode = process_run.exit_reason
+    benchmark_summary = process_run.benchmark_summary
+    benchmark_telemetry_samples = process_run.benchmark_telemetry_samples
+    benchmark_events = process_run.benchmark_events
+    benchmark_event_errors = process_run.benchmark_event_errors
+    fatal_output_matches = process_run.fatal_output_matches
+    output_tail = process_run.output_tail
+    has_start_event = any(event.get("event") == "start" for event in benchmark_events)
+    has_measure_start_event = any(
+        event.get("event") == "phase" and event.get("name") == "measure_start"
+        for event in benchmark_events
+    )
+    has_fatal_event = any(event.get("event") == "fatal" for event in benchmark_events)
 
-        fatal_output_matches = _scan_output_for_fatal_patterns(log_path)
-        xid_messages = _query_xid_messages_since(started_at)
-        if not early_failure_reason and fatal_output_matches:
-            early_failure_reason = "fatal-q2rtx-output"
-        if not early_failure_reason and xid_messages:
-            early_failure_reason = "nvidia-xid-detected"
-        if not early_failure_reason:
-            shutdown_mode = "timedemo-loop-count-complete"
-    else:
-        calibration_command = command_used
-        (
-            process_exit_code,
-            observed_duration_s,
-            calibration_samples,
-            companion_telemetry_samples,
-            shutdown_mode,
-        ) = _run_timedemo_process(
-            config=config,
-            command=calibration_command,
-            workdir=workdir,
-            log_path=log_path,
-            section_name="timedemo-calibration",
-            workload_name=workload_name,
-            requested_runs=1,
-            expected_frames_per_run=expected_frames_per_run,
-            runtime_env=runtime_env,
-        )
-        calibration_runs = _extract_timedemo_runs(log_path)
-        if shutdown_mode != "completed":
-            early_failure_reason = shutdown_mode
-        elif process_exit_code not in (0, None):
-            early_failure_reason = "timedemo-nonzero-exit"
-        elif not calibration_runs:
-            early_failure_reason = "timedemo-metrics-missing"
-        else:
-            calibration_run = calibration_runs[-1]
-            if (
-                calibration_run.frames <= 0
-                or calibration_run.seconds <= 0
-                or calibration_run.fps <= 0
-            ):
-                early_failure_reason = "timedemo-metrics-invalid"
+    if shutdown_mode != "completed":
+        early_failure_reason = shutdown_mode
+    elif benchmark_event_errors:
+        early_failure_reason = "benchmark-event-protocol-error"
+    elif not has_start_event:
+        early_failure_reason = "benchmark-start-missing"
+    elif has_fatal_event:
+        early_failure_reason = "benchmark-fatal-event"
+    elif process_exit_code not in (0, None):
+        early_failure_reason = _q2rtx_exit_failure_reason(process_exit_code)
+    elif benchmark_summary is None:
+        early_failure_reason = "benchmark-summary-missing"
+    elif (
+        benchmark_summary.measure_start_elapsed_s is None
+        or not has_measure_start_event
+    ):
+        early_failure_reason = "benchmark-measure-start-missing"
+    elif (
+        int(benchmark_summary.render_frames) <= 0
+        or float(benchmark_summary.measured_s) <= 0.0
+        or float(benchmark_summary.fps_avg) <= 0.0
+    ):
+        early_failure_reason = "benchmark-metrics-invalid"
+    elif (
+        benchmark_summary.target_s is not None
+        and float(benchmark_summary.measured_s) + 0.001
+        < float(benchmark_summary.target_s)
+    ):
+        early_failure_reason = "benchmark-duration-short"
 
-        fatal_output_matches = _scan_output_for_fatal_patterns(log_path)
-        xid_messages = _query_xid_messages_since(started_at)
-        if not early_failure_reason and fatal_output_matches:
-            early_failure_reason = "fatal-q2rtx-output"
-        if not early_failure_reason and xid_messages:
-            early_failure_reason = "nvidia-xid-detected"
-
-        if not early_failure_reason:
-            if not calibration_runs:
-                raise StabilityTestError("Q2RTX timedemo calibration produced no runs")
-            calibration_run = calibration_runs[-1]
-            estimated_loop_count = max(
-                1,
-                int(math.ceil(float(config.duration_s) / calibration_run.seconds)),
-            )
-
-            if estimated_loop_count == 1:
-                command_used = calibration_command
-                telemetry_samples = calibration_samples
-                timedemo_runs = calibration_runs
-                shutdown_mode = "timedemo-calibration-complete"
-            else:
-                command_used = build_timedemo_command(
-                    executable_path,
-                    demo_name=workload_name,
-                    width=config.width,
-                    height=config.height,
-                    hide_window=bool(config.hide_window) and not use_headless_gamescope,
-                    timedemo_runs=estimated_loop_count,
-                )
-                runs_before_loop = len(calibration_runs)
-                (
-                    process_exit_code,
-                    observed_duration_s,
-                    telemetry_samples,
-                    companion_telemetry_samples,
-                    shutdown_mode,
-                ) = _run_timedemo_process(
-                    config=config,
-                    command=command_used,
-                    workdir=workdir,
-                    log_path=log_path,
-                    section_name=f"timedemo-loop x{estimated_loop_count}",
-                    workload_name=workload_name,
-                    requested_runs=estimated_loop_count,
-                    expected_frames_per_run=expected_frames_per_run,
-                    runtime_env=runtime_env,
-                    initial_run_count=runs_before_loop,
-                )
-                all_runs = _extract_timedemo_runs(log_path)
-                timedemo_runs = all_runs[runs_before_loop:]
-
-                if shutdown_mode != "completed":
-                    early_failure_reason = shutdown_mode
-                elif process_exit_code not in (0, None):
-                    early_failure_reason = "timedemo-nonzero-exit"
-                elif len(timedemo_runs) < estimated_loop_count:
-                    early_failure_reason = "timedemo-metrics-missing"
-                else:
-                    for current_run in timedemo_runs:
-                        if (
-                            current_run.frames <= 0
-                            or current_run.seconds <= 0
-                            or current_run.fps <= 0
-                        ):
-                            early_failure_reason = "timedemo-metrics-invalid"
-                            break
-
-                fatal_output_matches = _scan_output_for_fatal_patterns(log_path)
-                xid_messages = _query_xid_messages_since(started_at)
-                if not early_failure_reason and fatal_output_matches:
-                    early_failure_reason = "fatal-q2rtx-output"
-                if not early_failure_reason and xid_messages:
-                    early_failure_reason = "nvidia-xid-detected"
-
-                if not early_failure_reason:
-                    shutdown_mode = "timedemo-loop-complete"
-
-    output_tail = _read_recent_output(log_path)
+    xid_messages = _query_xid_messages_since(started_at)
+    if not early_failure_reason and fatal_output_matches:
+        early_failure_reason = "fatal-q2rtx-output"
+    if not early_failure_reason and xid_messages:
+        early_failure_reason = "nvidia-xid-detected"
+    if not early_failure_reason:
+        shutdown_mode = "benchmark-duration-complete"
 
     if early_failure_reason:
         reason = early_failure_reason
         success = False
-    elif not timedemo_runs:
-        reason = "no-timedemo-runs-completed"
-        success = False
     else:
-        expected_frames = _expected_timedemo_frames(workload_name)
-        frame_counts = {run.frames for run in timedemo_runs}
-        if expected_frames is not None and any(
-            run.frames != expected_frames for run in timedemo_runs
-        ):
-            reason = "timedemo-unexpected-frame-count"
-            success = False
-        elif len(frame_counts) > 1:
-            reason = "timedemo-frame-count-drift"
-            success = False
-        elif fatal_output_matches:
-            reason = "fatal-q2rtx-output"
-            success = False
-        elif xid_messages:
-            reason = "nvidia-xid-detected"
-            success = False
-        else:
-            reason = "ok"
-            success = True
+        reason = "ok"
+        success = True
 
     return Q2RTXStabilityResult(
         success=success,
         reason=reason,
-        workload_kind="timedemo",
+        workload_kind="benchmark",
         workload_name=workload_name,
         command=command_used,
         executable_path=executable_path,
         workdir=workdir,
         duration_requested_s=int(config.duration_s),
-        timedemo_loops_requested=requested_loops,
         duration_observed_s=observed_duration_s,
         demo_path=demo_path,
         log_path=log_path,
@@ -1025,32 +1067,47 @@ def _run_timedemo_session(
         shutdown_mode=shutdown_mode,
         fatal_output_matches=fatal_output_matches,
         xid_messages=xid_messages,
-        timedemo_runs=timedemo_runs,
         telemetry_samples=telemetry_samples,
         companion_telemetry_samples=companion_telemetry_samples,
         output_tail=output_tail,
+        benchmark_summary=benchmark_summary,
+        benchmark_measure_start_s=(
+            benchmark_summary.measure_start_elapsed_s
+            if benchmark_summary is not None
+            else None
+        ),
+        benchmark_telemetry_samples=benchmark_telemetry_samples,
     )
 
 
 def run_q2rtx_stability_test(config: Q2RTXStabilityConfig) -> Q2RTXStabilityResult:
-    if config.timedemo_loops is None and int(config.duration_s) <= 0:
+    if int(config.width) <= 0 or int(config.height) <= 0:
+        try:
+            resolution = resolve_q2rtx_render_resolution(
+                gpu_index=int(config.gpu_index),
+                requested_width=int(config.width),
+                requested_height=int(config.height),
+            )
+        except ValueError as exc:
+            raise StabilityTestError(str(exc)) from exc
+        config = replace(
+            config,
+            width=int(resolution.width),
+            height=int(resolution.height),
+        )
+    if int(config.duration_s) <= 0:
         raise StabilityTestError("stability duration must be greater than zero")
-    if config.timedemo_loops is not None and int(config.timedemo_loops) <= 0:
-        raise StabilityTestError("timedemo loop count must be greater than zero")
     if int(config.width) <= 0 or int(config.height) <= 0:
         raise StabilityTestError("stability window size must be positive")
     if float(config.poll_interval_s) <= 0:
         raise StabilityTestError("stability poll interval must be greater than zero")
     if float(config.single_pass_timeout_s) <= 0:
         raise StabilityTestError(
-            "single timedemo pass timeout must be greater than zero"
+            "single benchmark pass timeout must be greater than zero"
         )
 
-    executable_path, workdir = resolve_q2rtx_executable(
-        q2rtx_dir=config.q2rtx_dir,
-        q2rtx_binary=config.q2rtx_binary,
-    )
-    runtime_env, _compat_lib_dir = _prepare_q2rtx_runtime_env(
+    executable_path, workdir = resolve_q2rtx_executable()
+    runtime_env = _prepare_q2rtx_runtime_env(
         executable_path,
         show_progress=False,
     )
@@ -1060,11 +1117,7 @@ def run_q2rtx_stability_test(config: Q2RTXStabilityConfig) -> Q2RTXStabilityResu
     )
     log_path = _prepare_log_path(config.log_dir)
 
-    # A Q2RTX launch can fail before any stable metrics for reasons that are not
-    # GPU instability: a flaky headless-gamescope startup, or the dynamic loader
-    # failing to resolve a shared library (e.g. libssl.so.1.1). These are random
-    # and self-clearing, so retry in the SAME mode a few times before giving up.
-    result = _run_timedemo_session(
+    result = _run_benchmark_session(
         config=config,
         executable_path=executable_path,
         workdir=workdir,
@@ -1073,52 +1126,6 @@ def run_q2rtx_stability_test(config: Q2RTXStabilityConfig) -> Q2RTXStabilityResu
         log_path=log_path,
         runtime_env=runtime_env,
     )
-    attempt = 1
-    while (
-        attempt < MAX_LAUNCHER_RETRY_ATTEMPTS
-        and _result_is_retryable_launcher_failure(result)
-    ):
-        attempt += 1
-        print(
-            f"Q2RTX failed to launch before stable metrics (reason={result.reason}); "
-            f"retry {attempt}/{MAX_LAUNCHER_RETRY_ATTEMPTS} in the same mode.",
-            flush=True,
-        )
-        result = _run_timedemo_session(
-            config=config,
-            executable_path=executable_path,
-            workdir=workdir,
-            workload_name=workload_name,
-            demo_path=demo_path,
-            log_path=_prepare_log_path(config.log_dir),
-            runtime_env=runtime_env,
-        )
-
-    # Last-resort recovery: if headless gamescope is still crashing at startup
-    # after the same-mode retries, fall back once to the offscreen X11 launcher.
-    if (
-        not result.success
-        and bool(config.hide_window)
-        and bool(config.use_headless_gamescope)
-        and _result_looks_like_gamescope_startup_crash(result)
-    ):
-        print(
-            "Q2RTX headless gamescope still failing after retries; "
-            "retrying with the offscreen X11 fallback.",
-            flush=True,
-        )
-        retry_config = replace(config, use_headless_gamescope=False)
-        retry_result = _run_timedemo_session(
-            config=retry_config,
-            executable_path=executable_path,
-            workdir=workdir,
-            workload_name=workload_name,
-            demo_path=demo_path,
-            log_path=_prepare_log_path(config.log_dir),
-            runtime_env=runtime_env,
-        )
-        if retry_result.success or result.duration_observed_s <= 0.0:
-            result = retry_result
 
     # A launch failure tells us nothing about voltage stability; tag it so the
     # Auto-UV layer never records the voltage as unsafe.

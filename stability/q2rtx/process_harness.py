@@ -12,42 +12,6 @@ from .assets import resolve_q2rtx_executable
 from .models import Q2RTXStabilityConfig
 
 
-def _headless_gamescope_prefix(config: Q2RTXStabilityConfig) -> list[str]:
-    if not config.hide_window:
-        return []
-    if not config.use_headless_gamescope:
-        return []
-    gamescope = shutil.which("gamescope")
-    if not gamescope:
-        return []
-    return [
-        gamescope,
-        "--backend",
-        "headless",
-        "-W",
-        str(int(config.width)),
-        "-H",
-        str(int(config.height)),
-        "-w",
-        str(int(config.width)),
-        "-h",
-        str(int(config.height)),
-        "-r",
-        "0",
-        "--",
-    ]
-
-
-def _wrap_q2rtx_command(
-    command: list[str],
-    *,
-    gamescope_prefix: list[str],
-) -> list[str]:
-    if not gamescope_prefix:
-        return list(command)
-    return [*gamescope_prefix, *command]
-
-
 def _wrap_command_for_live_output(command: list[str]) -> list[str]:
     stdbuf = shutil.which("stdbuf")
     if not stdbuf:
@@ -99,10 +63,7 @@ def _terminate_process_group(
 
 def _managed_q2rtx_process_groups(config: Q2RTXStabilityConfig) -> set[int]:
     try:
-        executable_path, _workdir = resolve_q2rtx_executable(
-            q2rtx_dir=config.q2rtx_dir,
-            q2rtx_binary=config.q2rtx_binary,
-        )
+        executable_path, _workdir = resolve_q2rtx_executable()
     except Exception:
         return set()
     executable_text = str(executable_path)

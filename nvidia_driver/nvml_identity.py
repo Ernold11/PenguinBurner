@@ -26,6 +26,14 @@ class NvmlPciInfo(ctypes.Structure):
     ]
 
 
+class NvmlMemoryInfoStruct(ctypes.Structure):
+    _fields_ = [
+        ("total", ctypes.c_ulonglong),
+        ("free", ctypes.c_ulonglong),
+        ("used", ctypes.c_ulonglong),
+    ]
+
+
 @dataclass(frozen=True, slots=True)
 class NvmlGpuIdentity:
     index: int
@@ -34,6 +42,14 @@ class NvmlGpuIdentity:
     pci_bus_id: str = ""
     pci_device_id: str = ""
     uuid: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class NvmlGpuMemoryInfo:
+    index: int
+    total_bytes: int
+    free_bytes: int
+    used_bytes: int
 
 
 class NvmlIdentitySession:
@@ -80,6 +96,12 @@ class NvmlIdentitySession:
             if getter is not None:
                 getter.argtypes = [c_void_p, ctypes.POINTER(NvmlPciInfo)]
                 getter.restype = ctypes.c_int
+        if hasattr(self._nvml, "nvmlDeviceGetMemoryInfo"):
+            self._nvml.nvmlDeviceGetMemoryInfo.argtypes = [
+                c_void_p,
+                ctypes.POINTER(NvmlMemoryInfoStruct),
+            ]
+            self._nvml.nvmlDeviceGetMemoryInfo.restype = ctypes.c_int
 
     def _initialize_session(self) -> None:
         rc = int(self._nvml.nvmlInit_v2())
@@ -118,6 +140,23 @@ class NvmlIdentitySession:
 
     def identities(self) -> list[NvmlGpuIdentity]:
         return [self.identity(index) for index in range(self.gpu_count())]
+
+    def memory_info(self, gpu_index: int) -> NvmlGpuMemoryInfo | None:
+        getter = getattr(self._nvml, "nvmlDeviceGetMemoryInfo", None)
+        if getter is None:
+            return None
+        index = int(gpu_index)
+        device = self._device_handle(index)
+        info = NvmlMemoryInfoStruct()
+        rc = int(getter(device, ctypes.byref(info)))
+        if rc != NVML_SUCCESS:
+            return None
+        return NvmlGpuMemoryInfo(
+            index=index,
+            total_bytes=int(info.total),
+            free_bytes=int(info.free),
+            used_bytes=int(info.used),
+        )
 
     def driver_version(self) -> str:
         getter = getattr(self._nvml, "nvmlSystemGetDriverVersion", None)
@@ -206,6 +245,19 @@ def query_nvml_gpu_identities() -> list[NvmlGpuIdentity]:
         return session.identities()
     except Exception:
         return []
+    finally:
+        session.close()
+
+
+def query_nvml_gpu_memory_info(gpu_index: int) -> NvmlGpuMemoryInfo | None:
+    try:
+        session = NvmlIdentitySession()
+    except Exception:
+        return None
+    try:
+        return session.memory_info(int(gpu_index))
+    except Exception:
+        return None
     finally:
         session.close()
 

@@ -1,68 +1,15 @@
 from __future__ import annotations
 
-import bz2
-import gzip
 import io
-import lzma
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import tarfile
 import tempfile
 
 from common.penguin_burner_paths import claim_desktop_user_ownership
-from common.subprocess_locale import stable_subprocess_env
 
 from .models import StabilityTestError
-
-
-def _subprocess_c_locale_env() -> dict[str, str]:
-    return stable_subprocess_env()
-
-
-def _payload_starts_with_cpio_header(payload: bytes) -> bool:
-    return payload.startswith((b"070701", b"070702", b"070707", b"\xc7q", b"q\xc7"))
-
-
-def _payload_format_hint(payload: bytes) -> str:
-    if not payload:
-        return "empty payload"
-    if payload.startswith(b"\x1f\x8b"):
-        return "gzip-compressed payload"
-    if payload.startswith(b"\xfd7zXZ\x00"):
-        return "xz-compressed payload"
-    if payload.startswith(b"BZh"):
-        return "bzip2-compressed payload"
-    if payload.startswith(b"\x28\xb5\x2f\xfd"):
-        return "zstd-compressed payload"
-    if _payload_starts_with_cpio_header(payload):
-        return "cpio payload"
-    return f"unrecognized payload starting with {payload[:8].hex()}"
-
-
-def _decompress_rpm_payload(payload: bytes) -> bytes | None:
-    if payload.startswith(b"\x1f\x8b"):
-        return gzip.decompress(payload)
-    if payload.startswith(b"\xfd7zXZ\x00"):
-        return lzma.decompress(payload)
-    if payload.startswith(b"BZh"):
-        return bz2.decompress(payload)
-    if payload.startswith(b"\x28\xb5\x2f\xfd"):
-        zstd_path = shutil.which("zstd")
-        if not zstd_path:
-            return None
-        result = subprocess.run(
-            [zstd_path, "-dc"],
-            input=payload,
-            capture_output=True,
-            env=_subprocess_c_locale_env(),
-            check=False,
-        )
-        if result.returncode != 0:
-            return None
-        return bytes(result.stdout or b"")
-    return None
 
 
 def _safe_extract_tar_payload(payload: bytes, destination: Path, *, label: str) -> None:
@@ -108,51 +55,6 @@ def _safe_extract_tar_payload(payload: bytes, destination: Path, *, label: str) 
         raise StabilityTestError(
             f"failed to extract {label} tar payload: {exc}"
         ) from exc
-
-
-def _extract_cpio_payload(payload: bytes, destination: Path, *, label: str) -> None:
-    cpio_path = shutil.which("cpio")
-    if not cpio_path:
-        raise StabilityTestError(
-            f"{label} produced a cpio payload, but cpio is not installed"
-        )
-    cpio_result = subprocess.run(
-        [cpio_path, "-idm", "--quiet"],
-        cwd=destination,
-        input=payload,
-        capture_output=True,
-        env=_subprocess_c_locale_env(),
-        check=False,
-    )
-    if cpio_result.returncode != 0:
-        detail = (
-            cpio_result.stderr.decode("utf-8", errors="replace").strip()
-            or f"exit code {cpio_result.returncode}"
-        )
-        raise StabilityTestError(f"cpio failed while extracting {label}: {detail}")
-
-
-def _extract_rpm2cpio_payload(payload: bytes, destination: Path, *, label: str) -> bool:
-    if _payload_starts_with_cpio_header(payload):
-        _extract_cpio_payload(payload, destination, label=label)
-        return True
-
-    decompressed_payload = _decompress_rpm_payload(payload)
-    if decompressed_payload is not None:
-        if _payload_starts_with_cpio_header(decompressed_payload):
-            _extract_cpio_payload(decompressed_payload, destination, label=label)
-            return True
-        try:
-            _safe_extract_tar_payload(decompressed_payload, destination, label=label)
-            return True
-        except StabilityTestError:
-            return False
-
-    try:
-        _safe_extract_tar_payload(payload, destination, label=label)
-        return True
-    except StabilityTestError:
-        return False
 
 
 def _extract_q2rtx_archive(archive_path: Path, install_dir: Path) -> None:
@@ -213,3 +115,67 @@ def _extract_q2rtx_archive(archive_path: Path, install_dir: Path) -> None:
                     destination.unlink()
             shutil.move(str(item), str(destination))
     claim_desktop_user_ownership(install_dir, recursive=True)
+
+
+def _archive_member_baseq2_relative_name(member_name: str) -> str | None:
+    parts = Path(member_name).parts
+    try:
+        baseq2_index = parts.index("baseq2")
+    except ValueError:
+        return None
+    relative_parts = parts[baseq2_index:]
+    if len(relative_parts) < 2:
+        return None
+    return "/".join(relative_parts)
+
+
+def _extract_q2rtx_data_files(
+    archive_path: Path,
+    install_dir: Path,
+    *,
+    required_files: tuple[str, ...],
+) -> None:
+    required = set(required_files)
+    found: set[str] = set()
+    baseq2_dir = install_dir / "baseq2"
+    baseq2_dir.mkdir(parents=True, exist_ok=True)
+    claim_desktop_user_ownership(baseq2_dir, include_parents=True)
+
+    try:
+        with tarfile.open(archive_path, "r:gz") as archive:
+            for member in archive.getmembers():
+                if not member.isfile():
+                    continue
+                relative_name = _archive_member_baseq2_relative_name(member.name)
+                if relative_name not in required:
+                    continue
+                member_path = (install_dir / relative_name).resolve()
+                if (
+                    install_dir.resolve() not in member_path.parents
+                    and member_path != install_dir.resolve()
+                ):
+                    raise StabilityTestError(
+                        f"refusing to extract suspicious data member: {member.name}"
+                    )
+                source = archive.extractfile(member)
+                if source is None:
+                    raise StabilityTestError(
+                        f"failed to read data member: {member.name}"
+                    )
+                member_path.parent.mkdir(parents=True, exist_ok=True)
+                with source, member_path.open("wb") as destination:
+                    shutil.copyfileobj(source, destination)
+                member_path.chmod(member.mode & 0o777)
+                found.add(relative_name)
+    except (tarfile.TarError, OSError) as exc:
+        raise StabilityTestError(
+            f"failed to extract Q2RTX shareware data from {archive_path}: {exc}"
+        ) from exc
+
+    missing = sorted(required - found)
+    if missing:
+        raise StabilityTestError(
+            "Q2RTX shareware data archive is missing required files: "
+            + ", ".join(missing)
+        )
+    claim_desktop_user_ownership(baseq2_dir, recursive=True)

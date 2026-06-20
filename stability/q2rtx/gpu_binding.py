@@ -2,31 +2,6 @@ from __future__ import annotations
 
 from nvidia_driver.nvml_identity import query_nvml_gpu_identity
 
-from .constants import HIDDEN_WINDOW_POSITION
-
-
-def _apply_hidden_window_env(
-    env: dict[str, str],
-    *,
-    hide_window: bool,
-    use_headless_gamescope: bool,
-) -> dict[str, str]:
-    if not hide_window:
-        return env
-    if use_headless_gamescope:
-        return env
-
-    hidden_env = dict(env)
-    # SDL's offscreen backend cannot create a Vulkan surface for Q2RTX. Use a
-    # real X11 Vulkan window, but place it outside the visible desktop. Force
-    # X11 even on Wayland-only sessions so hidden mode fails closed instead of
-    # creating a visible Wayland window.
-    hidden_env["SDL_VIDEODRIVER"] = "x11"
-    hidden_env["SDL_VIDEO_WINDOW_POS"] = HIDDEN_WINDOW_POSITION
-    hidden_env["SDL_VIDEO_X11_FORCE_OVERRIDE_REDIRECT"] = "1"
-    hidden_env["SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS"] = "0"
-    return hidden_env
-
 
 def _nvidia_pci_bus_id_to_dri_prime(bus_id: str) -> str:
     cleaned = str(bus_id or "").strip()

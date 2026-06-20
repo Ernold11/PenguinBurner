@@ -107,10 +107,11 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 
 %changelog
 * Mon Jun 15 2026 PenguinBurner contributors <noreply@github.com> - 0.4.7-1
-- Fix Q2RTX verification crash on systems without libssl.so.1.1 (e.g. Bazzite):
-  bundle OpenSSL 1.1 next to the binary and use a relocatable $ORIGIN RUNPATH.
-- Retry transient Q2RTX launcher failures instead of failing the run or
-  blacklisting the undervolt.
+- Use PenguinBurner's headless Q2RTX benchmark binary and shareware data.
+- Remove Q2RTX OpenSSL compatibility staging, RUNPATH patching, RPM payload
+  extraction, gamescope, Xvfb, and off-screen window workarounds.
+- Read hot benchmark metrics from the Q2RTX event pipe instead of loop log
+  parsing.
 
 * Sun Jun 14 2026 PenguinBurner contributors <noreply@github.com> - 0.4.6-1
 - Add the --dump-latency-data advanced flag (verbose present-mode/Reflex dump).

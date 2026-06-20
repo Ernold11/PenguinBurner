@@ -5,10 +5,8 @@ import re
 
 
 DEFAULT_DURATION_S = 60
-DEFAULT_WIDTH = 2560
-DEFAULT_HEIGHT = 1440
-DEFAULT_HIDE_WINDOW = True
-HIDDEN_WINDOW_POSITION = "32000,32000"
+DEFAULT_WIDTH = 3840
+DEFAULT_HEIGHT = 2160
 DEFAULT_DEMO_NAME = "auto"
 DEFAULT_POLL_INTERVAL_S = 1.0
 DEFAULT_SINGLE_PASS_TIMEOUT_S = 120.0
@@ -16,23 +14,25 @@ DEFAULT_LOG_DIR = Path.home() / ".config" / "PenguinBurner" / "stability-logs"
 DEFAULT_INSTALL_DATA_DIR = Path.home() / ".local" / "share" / "PenguinBurner" / "q2rtx"
 DEFAULT_INSTALL_CACHE_DIR = Path.home() / ".cache" / "PenguinBurner" / "q2rtx"
 
-Q2RTX_RELEASES_API_URL = "https://api.github.com/repos/NVIDIA/Q2RTX/releases/latest"
-Q2RTX_RELEASES_LATEST_URL = "https://github.com/NVIDIA/Q2RTX/releases/latest"
-Q2RTX_GITHUB_RELEASES_URL = "https://github.com/NVIDIA/Q2RTX/releases"
-Q2RTX_RELEASE_DOWNLOAD_BASE_URLS = (
-    "https://github.com/NVIDIA/Q2RTX/releases/download",
+PB_Q2RTX_REPOSITORY = "jpietek/Q2RTX-headless"
+PB_Q2RTX_LATEST_RELEASE_API_URL = (
+    f"https://api.github.com/repos/{PB_Q2RTX_REPOSITORY}/releases/latest"
 )
-OPENSSL_111_VERSION = "1.1.1w"
-OPENSSL_111_COMPAT_RPM_INDEX_URL = (
-    "https://mirror.stream.centos.org/9-stream/AppStream/x86_64/os/Packages/"
+PB_Q2RTX_ASSET_PREFIX = "q2rtx-penguinburner-"
+PB_Q2RTX_ASSET_SUFFIX = "-linux-x86_64.tar.gz"
+
+Q2RTX_SHAREWARE_DATA_VERSION = "1.8.1-shareware-data"
+Q2RTX_SHAREWARE_DATA_ASSET_NAME = "q2rtx-1.8.1-linux.tar.gz"
+Q2RTX_SHAREWARE_DATA_ASSET_URL = (
+    "https://github.com/NVIDIA/Q2RTX/releases/download/"
+    f"v1.8.1/{Q2RTX_SHAREWARE_DATA_ASSET_NAME}"
 )
-OPENSSL_111_COMPAT_RPM_INDEX_URLS = (
-    OPENSSL_111_COMPAT_RPM_INDEX_URL,
-    "https://mirror.rackspace.com/centos-stream/9-stream/AppStream/x86_64/os/Packages/",
-    "https://mirrors.dotsrc.org/pub/centos-stream/9-stream/AppStream/x86_64/os/Packages/",
-    "https://ftp2.osuosl.org/pub/centos-stream/9-stream/AppStream/x86_64/os/Packages/",
+Q2RTX_REQUIRED_DATA_FILES = (
+    "baseq2/pak0.pak",
+    "baseq2/blue_noise.pkz",
+    "baseq2/q2rtx_media.pkz",
+    "baseq2/shaders.pkz",
 )
-OPENSSL_111_REQUIRED_LIBS = ("libssl.so.1.1", "libcrypto.so.1.1")
 PAK_ENTRY_SIZE = 64
 PREFERRED_AUTO_DEMO_NAMES = (
     "q2demo1",
@@ -60,9 +60,23 @@ Q2RTX_BINARY_CANDIDATES = (
 FATAL_OUTPUT_PATTERNS = (
     "ERR_FATAL",
     "device lost",
-    "VK_ERROR_DEVICE_LOST",
-    "VK_ERROR_OUT_OF_DEVICE_MEMORY",
-    "VK_ERROR_OUT_OF_HOST_MEMORY",
+    "Error during initialization",
+    "Server fatal crashed",
+    "recursive error after",
+    "Segmentation fault",
+    "Aborted",
+    "core dumped",
+    "Illegal instruction",
+    "Bus error",
+    "Floating point exception",
+    "Trace/breakpoint trap",
+    "assertion",
+    "malloc() failed",
+    "couldn't allocate",
+    "out of memory",
+    "failed to create Vulkan instance",
+    "failed to create Vulkan device",
+    "failed to create swapchain",
     "No game data files detected",
     "Couldn't read demo",
     "Couldn't load maps/",
@@ -70,11 +84,13 @@ FATAL_OUTPUT_PATTERNS = (
     "Couldn't open pics/",
     "Couldn't load pics/",
 )
+FATAL_OUTPUT_REGEXES = (
+    re.compile(r"\bVK_ERROR_[A-Z0-9_]+\b", re.IGNORECASE),
+    re.compile(r"\bSIG(?:SEGV|ABRT|BUS|ILL|FPE|TRAP|KILL)\b", re.IGNORECASE),
+)
 
-# Dynamic-loader / shared-library failures (e.g. a missing libssl.so.1.1) mean
-# Q2RTX never started: these are environment/launch errors, not GPU instability.
-# They are retried in place (see run_q2rtx_stability_test) and must never blacklist
-# a voltage as unsafe.
+# Dynamic-loader failures mean Q2RTX never started: these are environment/launch
+# errors, not GPU instability, and must never blacklist a voltage as unsafe.
 LAUNCHER_ERROR_PATTERNS = ("error while loading shared libraries",)
 
 # Reason assigned to a stability result whose Q2RTX process failed to launch.

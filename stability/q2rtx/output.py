@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 from collections import deque
+import json
 from pathlib import Path
 
 from .constants import (
+    FATAL_OUTPUT_REGEXES,
     FATAL_OUTPUT_PATTERNS,
-    KNOWN_TIMEDEMO_FRAME_COUNTS,
-    TIMEDEMO_LINE_RE,
 )
-from .models import Q2RTXStabilityConfig, TelemetrySample, TimedemoRun
+from .models import (
+    Q2RTXBenchmarkSummary,
+    Q2RTXStabilityConfig,
+    TelemetrySample,
+)
 
 
 def _format_live_progress_state(state: dict, *, prefix: str) -> str:
     elapsed_s = float(state.get("elapsed_s", 0.0))
     workload_name = str(state.get("workload_name") or "?")
-    last_run = state.get("last_run")
     latest_sample = state.get("latest_sample")
     running = str(state.get("running") or "q2rtx").strip().lower()
 
@@ -28,10 +31,6 @@ def _format_live_progress_state(state: dict, *, prefix: str) -> str:
         f"running={running}",
         f"elapsed={elapsed_s:.1f}s",
     ]
-    if last_run is not None:
-        parts.append(
-            f"last={int(last_run.frames)}f@{float(last_run.fps):.1f}fps/{float(last_run.seconds):.2f}s"
-        )
     if latest_sample is not None and latest_sample.power_w is not None:
         parts.append(f"power={float(latest_sample.power_w):.1f}W")
     if latest_sample is not None and latest_sample.core_clock_mhz is not None:
@@ -106,26 +105,116 @@ def _scan_output_for_fatal_patterns(log_path: Path) -> list[str]:
     for pattern in FATAL_OUTPUT_PATTERNS:
         if str(pattern).casefold() in normalized_text:
             matches.append(pattern)
+    for regex in FATAL_OUTPUT_REGEXES:
+        for match in regex.finditer(text):
+            matches.append(match.group(0))
     return matches
 
 
-def _extract_timedemo_runs(log_path: Path) -> list[TimedemoRun]:
+def _benchmark_events(log_path: Path) -> list[dict]:
     if not log_path.exists():
         return []
 
     text = log_path.read_text(encoding="utf-8", errors="replace")
-    runs: list[TimedemoRun] = []
-    for index, match in enumerate(TIMEDEMO_LINE_RE.finditer(text), start=1):
-        runs.append(
-            TimedemoRun(
-                run_index=index,
-                frames=int(match.group("frames")),
-                seconds=float(match.group("seconds")),
-                fps=float(match.group("fps")),
-            )
-        )
-    return runs
+    return _benchmark_events_from_text(text)
 
 
-def _expected_timedemo_frames(workload_name: str) -> int | None:
-    return KNOWN_TIMEDEMO_FRAME_COUNTS.get(str(workload_name).strip().lower())
+def _benchmark_events_from_text(text: str) -> list[dict]:
+    events: list[dict] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or "event" not in event:
+            continue
+        events.append(event)
+    return events
+
+
+def _extract_benchmark_measure_start_s(log_path: Path) -> float | None:
+    for event in _benchmark_events(log_path):
+        if event.get("event") != "phase" or event.get("name") != "measure_start":
+            continue
+        try:
+            return float(event["elapsed_ms"]) / 1000.0
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _optional_float(event: dict, key: str) -> float | None:
+    value = event.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(event: dict, key: str) -> int | None:
+    value = event.get(key)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_ms_s(event: dict, key: str) -> float | None:
+    value = _optional_float(event, key)
+    if value is None:
+        return None
+    return float(value) / 1000.0
+
+
+def _extract_benchmark_summary(log_path: Path) -> Q2RTXBenchmarkSummary | None:
+    return _benchmark_summary_from_events(_benchmark_events(log_path))
+
+
+def _benchmark_summary_from_events(
+    events: list[dict],
+) -> Q2RTXBenchmarkSummary | None:
+    measure_start_s = None
+    done_event = None
+    for event in events:
+        if event.get("event") == "phase" and event.get("name") == "measure_start":
+            measure_start_s = _optional_ms_s(event, "elapsed_ms")
+        elif event.get("event") == "done":
+            done_event = event
+
+    if done_event is None:
+        return None
+
+    try:
+        render_frames = int(done_event["render_frames"])
+        measured_s = float(done_event["measured_ms"]) / 1000.0
+        fps_avg = float(done_event["fps_avg"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    return Q2RTXBenchmarkSummary(
+        reason=str(done_event.get("reason") or ""),
+        loops=int(done_event.get("loops") or 0),
+        loops_started=_optional_int(done_event, "loops_started"),
+        demo_frames=_optional_int(done_event, "demo_frames"),
+        render_frames=render_frames,
+        target_s=_optional_ms_s(done_event, "target_ms"),
+        measured_s=measured_s,
+        render_s=_optional_ms_s(done_event, "render_ms"),
+        drain_s=_optional_ms_s(done_event, "drain_ms"),
+        loop_fps_mean=_optional_float(done_event, "loop_fps_mean"),
+        fps_avg=fps_avg,
+        fps_min=_optional_float(done_event, "fps_min"),
+        fps_max=_optional_float(done_event, "fps_max"),
+        fps_mean=_optional_float(done_event, "fps_mean"),
+        frame_ms_min=_optional_float(done_event, "frame_ms_min"),
+        frame_ms_max=_optional_float(done_event, "frame_ms_max"),
+        frame_ms_mean=_optional_float(done_event, "frame_ms_mean"),
+        measure_start_elapsed_s=measure_start_s,
+    )

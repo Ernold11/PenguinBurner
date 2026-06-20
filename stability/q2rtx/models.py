@@ -7,7 +7,6 @@ from typing import Callable
 from .constants import (
     DEFAULT_DEMO_NAME,
     DEFAULT_DURATION_S,
-    DEFAULT_HIDE_WINDOW,
     DEFAULT_HEIGHT,
     DEFAULT_LOG_DIR,
     DEFAULT_POLL_INTERVAL_S,
@@ -33,11 +32,25 @@ class TelemetrySample:
 
 
 @dataclass(slots=True)
-class TimedemoRun:
-    run_index: int
-    frames: int
-    seconds: float
-    fps: float
+class Q2RTXBenchmarkSummary:
+    reason: str
+    loops: int
+    loops_started: int | None
+    demo_frames: int | None
+    render_frames: int
+    target_s: float | None
+    measured_s: float
+    render_s: float | None
+    drain_s: float | None
+    loop_fps_mean: float | None
+    fps_avg: float
+    fps_min: float | None
+    fps_max: float | None
+    fps_mean: float | None
+    frame_ms_min: float | None
+    frame_ms_max: float | None
+    frame_ms_mean: float | None
+    measure_start_elapsed_s: float | None = None
 
 
 @dataclass(slots=True)
@@ -45,19 +58,14 @@ class Q2RTXStabilityConfig:
     duration_s: int = DEFAULT_DURATION_S
     width: int = DEFAULT_WIDTH
     height: int = DEFAULT_HEIGHT
-    hide_window: bool = DEFAULT_HIDE_WINDOW
     demo_name: str = DEFAULT_DEMO_NAME
-    timedemo_loops: int | None = None
     gpu_index: int = 0
-    q2rtx_dir: Path | None = None
-    q2rtx_binary: Path | None = None
     log_dir: Path = DEFAULT_LOG_DIR
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S
     single_pass_timeout_s: float = DEFAULT_SINGLE_PASS_TIMEOUT_S
     progress_callback: Callable[[dict], None] | None = None
     abort_callback: Callable[[dict], str | None] | None = None
     companion_command: tuple[str, ...] | None = None
-    use_headless_gamescope: bool = True
 
 
 @dataclass(slots=True)
@@ -70,7 +78,6 @@ class Q2RTXStabilityResult:
     executable_path: Path
     workdir: Path
     duration_requested_s: int
-    timedemo_loops_requested: int | None
     duration_observed_s: float
     demo_path: Path | None
     log_path: Path
@@ -78,13 +85,20 @@ class Q2RTXStabilityResult:
     shutdown_mode: str
     fatal_output_matches: list[str]
     xid_messages: list[str]
-    timedemo_runs: list[TimedemoRun]
     telemetry_samples: list[TelemetrySample]
     companion_telemetry_samples: list[TelemetrySample]
     output_tail: list[str]
+    benchmark_summary: Q2RTXBenchmarkSummary | None = None
+    benchmark_measure_start_s: float | None = None
+    benchmark_telemetry_samples: list[TelemetrySample] | None = None
+
+    def measurement_telemetry_samples(self) -> list[TelemetrySample]:
+        if self.benchmark_telemetry_samples is not None:
+            return self.benchmark_telemetry_samples
+        return self.telemetry_samples
 
     def telemetry_summary(self) -> dict[str, float | int]:
-        samples = self.telemetry_samples
+        samples = self.measurement_telemetry_samples()
         summary: dict[str, float | int] = {
             "sample_count": len(samples),
         }

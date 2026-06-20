@@ -79,6 +79,13 @@ DONE:
 }
 """
 
+DEFAULT_STRESS_ELEMENTS = 4 * 1024 * 1024
+DEFAULT_VERIFY_ELEMENTS = 4096
+DEFAULT_STRESS_ROUNDS = 8192
+DEFAULT_VERIFY_ROUNDS = 256
+DEFAULT_STRESS_BATCH_LAUNCHES = 8
+MAX_VERIFY_INTERVAL_S = 5.0
+
 
 def _u32(value: int) -> int:
     return int(value) & 0xFFFFFFFF
@@ -95,6 +102,41 @@ def _cpu_reference(index: int, rounds: int, seed0: int, seed1: int) -> tuple[int
         x = _u32(x ^ ((y << 7) & 0xFFFFFFFF))
         y = _u32(y ^ (x >> 17))
     return x, y
+
+
+def _stress_seed(base_seed: int, launch_index: int, stream_seed: int) -> int:
+    return _u32(int(base_seed) + int(launch_index) * 0x9E3779B9 + int(stream_seed))
+
+
+def _verification_sample_indices(element_count: int) -> list[int]:
+    count = int(element_count)
+    candidates = [
+        0,
+        1,
+        2,
+        7,
+        31,
+        255,
+        1023,
+        4095,
+        count // 4,
+        count // 2,
+        (count * 3) // 4,
+        count - 1,
+    ]
+    seen = set()
+    indices = []
+    for index in candidates:
+        if index < 0 or index >= count or index in seen:
+            continue
+        seen.add(index)
+        indices.append(index)
+    return indices
+
+
+def _verify_interval_s(duration_seconds: float) -> float:
+    duration_s = max(1.0, float(duration_seconds))
+    return max(1.0, min(MAX_VERIFY_INTERVAL_S, duration_s / 3.0))
 
 
 class CudaDriverError(RuntimeError):
@@ -194,39 +236,51 @@ def _verify_outputs(
     dev_x: ctypes.c_uint64,
     dev_y: ctypes.c_uint64,
     *,
-    verify_elements: int,
-    verify_rounds: int,
+    element_count: int,
+    rounds: int,
     seed0: int,
     seed1: int,
+    label: str,
 ) -> None:
-    host_x = (ctypes.c_uint32 * int(verify_elements))()
-    host_y = (ctypes.c_uint32 * int(verify_elements))()
-    driver.check(
-        driver.lib.cuMemcpyDtoH_v2(host_x, dev_x, ctypes.sizeof(host_x)),
-        "cuMemcpyDtoH_v2(x)",
-    )
-    driver.check(
-        driver.lib.cuMemcpyDtoH_v2(host_y, dev_y, ctypes.sizeof(host_y)),
-        "cuMemcpyDtoH_v2(y)",
-    )
-    sample_indices = [0, 1, 2, 7, 31, 255, 1023, int(verify_elements) - 1]
+    if int(element_count) <= 0:
+        raise CudaDriverError(f"{label} verification needs positive element count")
+    if dev_x.value is None or dev_y.value is None:
+        raise CudaDriverError(f"{label} verification received null device pointer")
+    host_x = ctypes.c_uint32()
+    host_y = ctypes.c_uint32()
+    sample_indices = _verification_sample_indices(int(element_count))
     checked = []
     for index in sample_indices:
-        if index < 0 or index >= int(verify_elements):
-            continue
-        expected_x, expected_y = _cpu_reference(
-            index, int(verify_rounds), int(seed0), int(seed1)
+        offset = int(index) * ctypes.sizeof(ctypes.c_uint32)
+        driver.check(
+            driver.lib.cuMemcpyDtoH_v2(
+                ctypes.byref(host_x),
+                ctypes.c_uint64(int(dev_x.value) + offset),
+                ctypes.sizeof(host_x),
+            ),
+            f"cuMemcpyDtoH_v2({label}.x[{index}])",
         )
-        actual_x = int(host_x[index])
-        actual_y = int(host_y[index])
+        driver.check(
+            driver.lib.cuMemcpyDtoH_v2(
+                ctypes.byref(host_y),
+                ctypes.c_uint64(int(dev_y.value) + offset),
+                ctypes.sizeof(host_y),
+            ),
+            f"cuMemcpyDtoH_v2({label}.y[{index}])",
+        )
+        expected_x, expected_y = _cpu_reference(
+            index, int(rounds), int(seed0), int(seed1)
+        )
+        actual_x = int(host_x.value)
+        actual_y = int(host_y.value)
         if actual_x != expected_x or actual_y != expected_y:
             raise CudaDriverError(
-                f"verification mismatch idx={index} "
+                f"{label} verification mismatch idx={index} "
                 f"x={actual_x} expected_x={expected_x} "
                 f"y={actual_y} expected_y={expected_y}"
             )
         checked.append(index)
-    _log(f"verified indices={checked}")
+    _log(f"verified {label} indices={checked}")
 
 
 def _launch_kernel(
@@ -283,10 +337,10 @@ def run_cuda_bruteforce_test(*, gpu_index: int, duration_seconds: float) -> None
     stress_y = ctypes.c_uint64()
     verify_x = ctypes.c_uint64()
     verify_y = ctypes.c_uint64()
-    stress_elements = 4 * 1024 * 1024
-    verify_elements = 4096
-    stress_rounds = 4096
-    verify_rounds = 128
+    stress_elements = DEFAULT_STRESS_ELEMENTS
+    verify_elements = DEFAULT_VERIFY_ELEMENTS
+    stress_rounds = DEFAULT_STRESS_ROUNDS
+    verify_rounds = DEFAULT_VERIFY_ROUNDS
     seed0 = 0x13579BDF
     seed1 = 0x2468ACE1
     grid_dim = 256
@@ -294,6 +348,8 @@ def run_cuda_bruteforce_test(*, gpu_index: int, duration_seconds: float) -> None
     launches = 0
     verification_passes = 0
     ptx_buffer = ctypes.create_string_buffer(PTX_SOURCE)
+    last_stress_seed0 = seed0
+    last_stress_seed1 = seed1
 
     driver.check(driver.lib.cuInit(0), "cuInit")
     device = ctypes.c_int()
@@ -356,18 +412,22 @@ def run_cuda_bruteforce_test(*, gpu_index: int, duration_seconds: float) -> None
             driver,
             verify_x,
             verify_y,
-            verify_elements=verify_elements,
-            verify_rounds=verify_rounds,
+            element_count=verify_elements,
+            rounds=verify_rounds,
             seed0=seed0,
             seed1=seed1,
+            label="sanity",
         )
         verification_passes += 1
 
         start_monotonic = time.monotonic()
-        next_verify_monotonic = start_monotonic + 5.0
+        verify_interval_s = _verify_interval_s(float(duration_seconds))
+        next_verify_monotonic = start_monotonic + verify_interval_s
         deadline = start_monotonic + max(1.0, float(duration_seconds))
         while time.monotonic() < deadline:
-            for _ in range(8):
+            for _ in range(DEFAULT_STRESS_BATCH_LAUNCHES):
+                launch_seed0 = _stress_seed(seed0, launches, 0xA5A5A5A5)
+                launch_seed1 = _stress_seed(seed1, launches, 0x5A5A5A5A)
                 _launch_kernel(
                     driver,
                     function,
@@ -375,15 +435,28 @@ def run_cuda_bruteforce_test(*, gpu_index: int, duration_seconds: float) -> None
                     out_y=stress_y,
                     element_count=stress_elements,
                     rounds=stress_rounds,
-                    seed0=seed0,
-                    seed1=seed1,
+                    seed0=launch_seed0,
+                    seed1=launch_seed1,
                     grid_dim=grid_dim,
                     block_dim=block_dim,
                 )
+                last_stress_seed0 = launch_seed0
+                last_stress_seed1 = launch_seed1
                 launches += 1
             driver.check(driver.lib.cuCtxSynchronize(), "cuCtxSynchronize(stress)")
             now_monotonic = time.monotonic()
             if now_monotonic >= next_verify_monotonic:
+                _verify_outputs(
+                    driver,
+                    stress_x,
+                    stress_y,
+                    element_count=stress_elements,
+                    rounds=stress_rounds,
+                    seed0=last_stress_seed0,
+                    seed1=last_stress_seed1,
+                    label="stress",
+                )
+                verification_passes += 1
                 _launch_kernel(
                     driver,
                     function,
@@ -403,14 +476,27 @@ def run_cuda_bruteforce_test(*, gpu_index: int, duration_seconds: float) -> None
                     driver,
                     verify_x,
                     verify_y,
-                    verify_elements=verify_elements,
-                    verify_rounds=verify_rounds,
+                    element_count=verify_elements,
+                    rounds=verify_rounds,
                     seed0=seed0,
                     seed1=seed1,
+                    label="sanity",
                 )
                 verification_passes += 1
-                next_verify_monotonic = now_monotonic + 5.0
+                next_verify_monotonic = now_monotonic + verify_interval_s
 
+        if launches > 0:
+            _verify_outputs(
+                driver,
+                stress_x,
+                stress_y,
+                element_count=stress_elements,
+                rounds=stress_rounds,
+                seed0=last_stress_seed0,
+                seed1=last_stress_seed1,
+                label="stress",
+            )
+            verification_passes += 1
         _launch_kernel(
             driver,
             function,
@@ -428,10 +514,11 @@ def run_cuda_bruteforce_test(*, gpu_index: int, duration_seconds: float) -> None
             driver,
             verify_x,
             verify_y,
-            verify_elements=verify_elements,
-            verify_rounds=verify_rounds,
+            element_count=verify_elements,
+            rounds=verify_rounds,
             seed0=seed0,
             seed1=seed1,
+            label="sanity",
         )
         verification_passes += 1
         _log(

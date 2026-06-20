@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import pwd
-import shutil
 import struct
 
 from .constants import (
@@ -180,7 +179,7 @@ def resolve_workload(
         return chosen_name, discovered[chosen_name]
 
     raise StabilityTestError(
-        "no timedemo .dm2 assets were found under the detected Q2RTX data directories"
+        "no .dm2 demo assets were found under the detected Q2RTX data directories"
     )
 
 
@@ -202,78 +201,41 @@ def _default_q2rtx_roots() -> list[Path]:
         )
         roots.extend(versioned_roots)
 
-    roots.extend(
-        [
-            home
-            / ".local"
-            / "share"
-            / "Steam"
-            / "steamapps"
-            / "common"
-            / "Quake II RTX",
-            home / ".steam" / "steam" / "steamapps" / "common" / "Quake II RTX",
-            home / "Games" / "Quake II RTX",
-        ]
-    )
     return roots
 
 
-def resolve_q2rtx_executable(
-    *,
-    q2rtx_dir: Path | None,
-    q2rtx_binary: Path | None,
-) -> tuple[Path, Path]:
-    if q2rtx_binary is not None:
-        candidate = q2rtx_binary.expanduser().resolve()
-        if not candidate.is_file():
-            raise StabilityTestError(f"Q2RTX binary not found: {candidate}")
-        workdir = resolve_q2rtx_workdir(candidate, q2rtx_dir=q2rtx_dir)
-        return candidate, workdir
-
-    if q2rtx_dir is not None:
-        root = q2rtx_dir.expanduser().resolve()
+def resolve_q2rtx_executable(*, root: Path | None = None) -> tuple[Path, Path]:
+    roots = [root.expanduser().resolve()] if root is not None else _default_q2rtx_roots()
+    for candidate_root in roots:
+        root = candidate_root.expanduser().resolve()
+        if root is None:
+            continue
         if not root.exists():
-            raise StabilityTestError(f"Q2RTX directory not found: {root}")
-        for relative in Q2RTX_BINARY_CANDIDATES:
-            candidate = root / relative
-            if candidate.is_file():
-                return candidate, resolve_q2rtx_workdir(candidate, q2rtx_dir=root)
-        raise StabilityTestError(f"Could not find a q2rtx executable under {root}")
-
-    path_binary = shutil.which("q2rtx")
-    if path_binary:
-        candidate = Path(path_binary).resolve()
-        return candidate, resolve_q2rtx_workdir(candidate, q2rtx_dir=None)
-
-    for root in _default_q2rtx_roots():
-        if not root.exists():
+            if candidate_root == roots[0] and len(roots) == 1:
+                raise StabilityTestError(f"Managed Q2RTX directory not found: {root}")
             continue
         for relative in Q2RTX_BINARY_CANDIDATES:
             candidate = root / relative
             if candidate.is_file():
-                return candidate, resolve_q2rtx_workdir(candidate, q2rtx_dir=root)
+                return candidate, resolve_q2rtx_workdir(candidate, root=root)
 
     raise StabilityTestError(
-        "Could not auto-detect Q2RTX. Pass --stability-q2rtx-dir or "
-        "--stability-q2rtx-binary."
+        "Managed Q2RTX is not installed. Run `python -m stability.q2rtx "
+        "--install-q2rtx` or start an Auto-UV/stability run with auto-install enabled."
     )
 
 
 def resolve_q2rtx_workdir(
     executable_path: Path,
     *,
-    q2rtx_dir: Path | None,
+    root: Path,
 ) -> Path:
-    candidates: list[Path] = []
-    if q2rtx_dir is not None:
-        candidates.append(q2rtx_dir.expanduser().resolve())
-    candidates.extend(
-        [
-            executable_path.parent,
-            executable_path.parent.parent,
-            executable_path.parent.parent.parent,
-        ]
-    )
+    candidates = [
+        root.expanduser().resolve(),
+        executable_path.parent,
+        executable_path.parent.parent,
+        executable_path.parent.parent.parent,
+    ]
     seen: set[Path] = set()
     for candidate in candidates:
         if candidate in seen:
@@ -281,6 +243,4 @@ def resolve_q2rtx_workdir(
         seen.add(candidate)
         if (candidate / "baseq2").exists():
             return candidate
-    if q2rtx_dir is not None:
-        return q2rtx_dir.expanduser().resolve()
-    return executable_path.parent
+    return root.expanduser().resolve()

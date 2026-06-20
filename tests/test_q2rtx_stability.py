@@ -6,40 +6,41 @@ import sys
 import tarfile
 from types import SimpleNamespace
 
+import pytest
+
 import stability.q2rtx.downloader as q2rtx_downloader
 import stability.q2rtx.gpu_binding as q2rtx_gpu_binding
 import stability.q2rtx.install as q2rtx_install
-import stability.q2rtx.openssl_compat as q2rtx_openssl_compat
 import stability.q2rtx.runtime as q2rtx_runtime
+import runtime_stability_test.q2rtx_cuda_workload_config as q2rtx_workload_config
+from stability.q2rtx.constants import (
+    PB_Q2RTX_ASSET_PREFIX,
+    PB_Q2RTX_ASSET_SUFFIX,
+    Q2RTX_REQUIRED_DATA_FILES,
+)
 from stability.q2rtx.install import (
+    clear_q2rtx_stability_logs,
     _download_file_from_urls,
     _emit_dependency_progress,
     _extract_q2rtx_archive,
+    _extract_q2rtx_data_files,
     _q2rtx_release_asset_urls,
-    _require_https_url,
     fetch_latest_q2rtx_release_metadata,
-)
-from stability.q2rtx.openssl_compat import (
-    _copy_system_openssl_111_libs,
-    _extract_compat_openssl_rpm,
-    _fetch_latest_openssl_compat_rpm_metadata,
 )
 from stability.q2rtx.progress import _progress_range_value
 from stability.q2rtx.models import (
+    Q2RTXBenchmarkSummary,
     Q2RTXStabilityConfig,
     Q2RTXStabilityResult,
     StabilityTestError,
-    TimedemoRun,
 )
 from stability.q2rtx.output import (
+    _benchmark_summary_from_events,
     _format_live_progress_state,
     _scan_output_for_fatal_patterns,
 )
 from stability.q2rtx.reporting import _filter_report_output_tail
-from stability.q2rtx.runtime import (
-    _result_looks_like_gamescope_startup_crash,
-    build_timedemo_command,
-)
+from stability.q2rtx.runtime import build_benchmark_command
 from stability.q2rtx.telemetry import _xid_message_is_at_or_after
 
 
@@ -49,20 +50,6 @@ def _write_tar(path: Path, members: dict[str, bytes]) -> None:
             source = path.parent / name.replace("/", "_")
             source.write_bytes(payload)
             archive.add(source, arcname=name)
-
-
-def test_q2rtx_download_urls_must_be_https() -> None:
-    assert _require_https_url("https://example.test/file.tar.gz") == (
-        "https://example.test/file.tar.gz"
-    )
-
-    for url in ["http://example.test/file.tar.gz", "file:///tmp/file.tar.gz"]:
-        try:
-            _require_https_url(url)
-        except StabilityTestError as exc:
-            assert "non-HTTPS" in str(exc)
-        else:
-            raise AssertionError(f"expected rejection for {url}")
 
 
 def test_dependency_progress_payload_is_clamped_and_labeled() -> None:
@@ -80,6 +67,22 @@ def test_dependency_progress_payload_is_clamped_and_labeled() -> None:
     ]
 
 
+def test_clear_q2rtx_stability_logs_removes_only_generated_logs(tmp_path: Path) -> None:
+    old_log = tmp_path / "q2rtx-stability-20260620-123456.log"
+    other_log = tmp_path / "other.log"
+    nested_log = tmp_path / "q2rtx-stability-nested.log"
+    old_log.write_text("old q2rtx output\n", encoding="utf-8")
+    other_log.write_text("keep\n", encoding="utf-8")
+    nested_log.mkdir()
+
+    removed = clear_q2rtx_stability_logs(tmp_path, show_progress=False)
+
+    assert removed == 1
+    assert not old_log.exists()
+    assert other_log.read_text(encoding="utf-8") == "keep\n"
+    assert nested_log.is_dir()
+
+
 def test_dependency_download_progress_maps_to_overall_range() -> None:
     assert _progress_range_value(10.0, 70.0, 0.0) == 10.0
     assert _progress_range_value(10.0, 70.0, 50.0) == 40.0
@@ -90,7 +93,7 @@ def test_download_file_from_urls_retries_next_source(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    destination = tmp_path / "payload.rpm"
+    destination = tmp_path / "payload.tar.gz"
     calls: list[str] = []
 
     def fake_download_file(url: str, destination: Path, **_kwargs) -> None:
@@ -103,94 +106,154 @@ def test_download_file_from_urls_retries_next_source(
 
     selected_url = _download_file_from_urls(
         (
-            "https://primary.example/payload.rpm",
-            "https://mirror.example/payload.rpm",
+            "https://primary.example/payload.tar.gz",
+            "https://mirror.example/payload.tar.gz",
         ),
         destination,
         label="test payload",
         show_progress=False,
     )
 
-    assert selected_url == "https://mirror.example/payload.rpm"
+    assert selected_url == "https://mirror.example/payload.tar.gz"
     assert calls == [
-        "https://primary.example/payload.rpm",
-        "https://mirror.example/payload.rpm",
+        "https://primary.example/payload.tar.gz",
+        "https://mirror.example/payload.tar.gz",
     ]
     assert destination.read_bytes() == b"ok"
 
 
-def test_q2rtx_release_metadata_falls_back_to_release_page(monkeypatch) -> None:
-    def fail_github_json(_url: str) -> dict:
-        raise StabilityTestError("api timeout")
+def test_q2rtx_release_metadata_uses_latest_penguinburner_binary(monkeypatch) -> None:
+    tag_name = "pb-benchmark-v0.1.1"
+    asset_name = f"{PB_Q2RTX_ASSET_PREFIX}{tag_name}{PB_Q2RTX_ASSET_SUFFIX}"
+    asset_url = (
+        "https://github.com/jpietek/Q2RTX-headless/releases/download/"
+        f"{tag_name}/{asset_name}"
+    )
 
-    def fake_download_text_from_urls(urls: tuple[str, ...], *, label: str):
-        assert label == "Q2RTX release page"
-        return urls[0], '<a href="/NVIDIA/Q2RTX/releases/tag/v1.8.1">latest</a>'
-
-    monkeypatch.setattr(q2rtx_install, "_github_json", fail_github_json)
     monkeypatch.setattr(
         q2rtx_install,
-        "_download_text_from_urls",
-        fake_download_text_from_urls,
+        "_github_json",
+        lambda _url: {
+            "tag_name": tag_name,
+            "draft": False,
+            "prerelease": False,
+            "assets": [
+                {
+                    "name": f"{asset_name}.sha256",
+                    "browser_download_url": f"{asset_url}.sha256",
+                },
+                {
+                    "name": asset_name,
+                    "browser_download_url": asset_url,
+                },
+            ],
+        },
     )
 
     tag_name, asset_name, asset_url = fetch_latest_q2rtx_release_metadata()
 
-    assert tag_name == "v1.8.1"
-    assert asset_name == "q2rtx-1.8.1-linux.tar.gz"
-    assert asset_url == (
-        "https://github.com/NVIDIA/Q2RTX/releases/download/"
-        "v1.8.1/q2rtx-1.8.1-linux.tar.gz"
+    assert tag_name == "pb-benchmark-v0.1.1"
+    assert asset_name == "q2rtx-penguinburner-pb-benchmark-v0.1.1-linux-x86_64.tar.gz"
+    assert (
+        asset_url
+        == "https://github.com/jpietek/Q2RTX-headless/releases/download/"
+        "pb-benchmark-v0.1.1/"
+        "q2rtx-penguinburner-pb-benchmark-v0.1.1-linux-x86_64.tar.gz"
     )
 
 
-def test_q2rtx_asset_urls_include_primary_and_release_base_mirrors() -> None:
+def test_q2rtx_asset_urls_use_latest_primary_asset() -> None:
+    tag_name = "pb-benchmark-v0.1.1"
+    asset_name = f"{PB_Q2RTX_ASSET_PREFIX}{tag_name}{PB_Q2RTX_ASSET_SUFFIX}"
+    asset_url = (
+        "https://github.com/jpietek/Q2RTX-headless/releases/download/"
+        f"{tag_name}/{asset_name}"
+    )
     urls = _q2rtx_release_asset_urls(
-        "v1.8.1",
-        "q2rtx-1.8.1-linux.tar.gz",
-        "https://download.example/q2rtx-1.8.1-linux.tar.gz",
+        tag_name,
+        asset_name,
+        asset_url,
     )
 
-    assert urls == (
-        "https://download.example/q2rtx-1.8.1-linux.tar.gz",
-        "https://github.com/NVIDIA/Q2RTX/releases/download/v1.8.1/q2rtx-1.8.1-linux.tar.gz",
-    )
+    assert urls == (asset_url,)
 
 
-def test_openssl_compat_rpm_metadata_tries_mirror_indexes(monkeypatch) -> None:
-    calls: list[str] = []
-    rpm_name = "compat-openssl11-1.1.1k-5.el9.3.x86_64.rpm"
+def test_managed_q2rtx_source_version_reads_version_dir(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    managed_root = tmp_path / "q2rtx"
+    version_dir = managed_root / "pb-benchmark-v0.1.0"
+    binary = version_dir / "q2rtx"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"")
 
     monkeypatch.setattr(
-        q2rtx_openssl_compat,
-        "OPENSSL_111_COMPAT_RPM_INDEX_URLS",
-        (
-            "https://primary.example/Packages/",
-            "https://mirror.example/Packages/",
-            "https://backup.example/Packages/",
+        q2rtx_workload_config,
+        "default_q2rtx_install_data_dir",
+        lambda: managed_root,
+    )
+
+    assert (
+        q2rtx_workload_config._managed_q2rtx_source_version(str(version_dir))
+        == "pb-benchmark-v0.1.0"
+    )
+    assert (
+        q2rtx_workload_config._managed_q2rtx_source_version(str(binary))
+        == "pb-benchmark-v0.1.0"
+    )
+    assert q2rtx_workload_config._managed_q2rtx_source_version("/opt/q2rtx") is None
+
+
+def test_refresh_stale_managed_q2rtx_installs_latest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    managed_root = tmp_path / "q2rtx"
+    old_dir = managed_root / "pb-benchmark-v0.1.0"
+    latest_dir = managed_root / "pb-benchmark-v0.1.1"
+    calls = []
+
+    monkeypatch.setattr(
+        q2rtx_workload_config,
+        "default_q2rtx_install_data_dir",
+        lambda: managed_root,
+    )
+    monkeypatch.setattr(
+        q2rtx_workload_config,
+        "fetch_latest_q2rtx_release_metadata",
+        lambda: ("pb-benchmark-v0.1.1", "asset.tar.gz", "https://example.test/asset"),
+    )
+
+    def fake_install_latest_q2rtx(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(version="pb-benchmark-v0.1.1", install_dir=latest_dir)
+
+    monkeypatch.setattr(
+        q2rtx_workload_config,
+        "install_latest_q2rtx",
+        fake_install_latest_q2rtx,
+    )
+    progress_events = []
+
+    q2rtx_dir = q2rtx_workload_config._refresh_stale_managed_q2rtx_source(
+        "Q2RTX stability",
+        q2rtx_dir=str(old_dir),
+        dependency_text_progress=False,
+        dependency_progress_callback=None,
+        emit_dependency_progress=lambda *args, **kwargs: progress_events.append(
+            (args, kwargs)
         ),
     )
 
-    def fake_download_text(url: str) -> str:
-        calls.append(url)
-        if "primary.example" in url:
-            raise StabilityTestError("read timeout")
-        return f'<a href="{rpm_name}">{rpm_name}</a>'
-
-    monkeypatch.setattr(q2rtx_openssl_compat, "_download_text", fake_download_text)
-
-    resolved_name, rpm_urls = _fetch_latest_openssl_compat_rpm_metadata()
-
-    assert resolved_name == rpm_name
+    assert q2rtx_dir == str(latest_dir)
     assert calls == [
-        "https://primary.example/Packages/",
-        "https://mirror.example/Packages/",
+        {
+            "show_progress": False,
+            "progress_callback": None,
+        }
     ]
-    assert rpm_urls == (
-        f"https://mirror.example/Packages/{rpm_name}",
-        f"https://primary.example/Packages/{rpm_name}",
-        f"https://backup.example/Packages/{rpm_name}",
-    )
+    assert progress_events
 
 
 def test_q2rtx_archive_extracts_regular_payload(tmp_path: Path) -> None:
@@ -225,218 +288,138 @@ def test_q2rtx_archive_rejects_path_traversal(tmp_path: Path) -> None:
     assert not (tmp_path / "escape.txt").exists()
 
 
-def test_compat_openssl_accepts_rpm2cpio_tar_payload(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    payload_tar = tmp_path / "payload.tar.gz"
+def test_q2rtx_data_extracts_only_required_shareware_files(tmp_path: Path) -> None:
+    archive_path = tmp_path / "q2rtx-data.tar.gz"
+    install_dir = tmp_path / "install"
     _write_tar(
-        payload_tar,
+        archive_path,
         {
-            "usr/lib64/libssl.so.1.1": b"ssl",
-            "usr/lib64/libcrypto.so.1.1": b"crypto",
+            "q2rtx/baseq2/pak0.pak": b"pak",
+            "q2rtx/baseq2/blue_noise.pkz": b"blue",
+            "q2rtx/baseq2/q2rtx_media.pkz": b"media",
+            "q2rtx/baseq2/shaders.pkz": b"shaders",
+            "q2rtx/q2rtx": b"official binary ignored",
+            "q2rtx/official-helper.so": b"helper ignored",
         },
     )
-    fake_rpm2cpio = tmp_path / "rpm2cpio"
-    fake_rpm2cpio.write_text(
-        '#!/bin/sh\n/bin/cat "$PAYLOAD_TAR"\n',
-        encoding="utf-8",
+
+    _extract_q2rtx_data_files(
+        archive_path,
+        install_dir,
+        required_files=Q2RTX_REQUIRED_DATA_FILES,
     )
-    fake_rpm2cpio.chmod(0o755)
-    fake_cpio = tmp_path / "cpio"
-    fake_cpio.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
-    fake_cpio.chmod(0o755)
-    fake_rpm = tmp_path / "compat-openssl11.rpm"
-    fake_rpm.write_bytes(b"not used by fake rpm2cpio")
 
-    monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setenv("PAYLOAD_TAR", str(payload_tar))
-
-    lib_dir = _extract_compat_openssl_rpm(fake_rpm, tmp_path / "compat")
-
-    assert (lib_dir / "libssl.so.1.1").read_bytes() == b"ssl"
-    assert (lib_dir / "libcrypto.so.1.1").read_bytes() == b"crypto"
+    assert (install_dir / "baseq2" / "pak0.pak").read_bytes() == b"pak"
+    assert (install_dir / "baseq2" / "blue_noise.pkz").read_bytes() == b"blue"
+    assert (install_dir / "baseq2" / "q2rtx_media.pkz").read_bytes() == b"media"
+    assert (install_dir / "baseq2" / "shaders.pkz").read_bytes() == b"shaders"
+    assert not (install_dir / "q2rtx").exists()
+    assert not (install_dir / "official-helper.so").exists()
 
 
-def test_compat_openssl_does_not_feed_compressed_payload_to_cpio(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    fake_rpm2cpio = tmp_path / "rpm2cpio"
-    fake_rpm2cpio.write_text(
-        "#!/bin/sh\nprintf '\\050\\265\\057\\375not-a-raw-cpio'\n",
-        encoding="utf-8",
-    )
-    fake_rpm2cpio.chmod(0o755)
-    fake_cpio = tmp_path / "cpio"
-    cpio_marker = tmp_path / "cpio-was-called"
-    fake_cpio.write_text(
-        f"#!/bin/sh\ntouch {cpio_marker}\nexit 0\n",
-        encoding="utf-8",
-    )
-    fake_cpio.chmod(0o755)
-    fake_rpm = tmp_path / "compat-openssl11.rpm"
-    fake_rpm.write_bytes(b"not used by fake rpm2cpio")
-
-    monkeypatch.setenv("PATH", str(tmp_path))
-
+def test_q2rtx_data_extraction_requires_all_shareware_files(tmp_path: Path) -> None:
+    archive_path = tmp_path / "q2rtx-data.tar.gz"
+    install_dir = tmp_path / "install"
+    _write_tar(archive_path, {"q2rtx/baseq2/pak0.pak": b"pak"})
     try:
-        _extract_compat_openssl_rpm(fake_rpm, tmp_path / "compat")
+        _extract_q2rtx_data_files(
+            archive_path,
+            install_dir,
+            required_files=Q2RTX_REQUIRED_DATA_FILES,
+        )
     except StabilityTestError as exc:
-        assert "zstd-compressed payload" in str(exc)
+        assert "missing required files" in str(exc)
     else:
-        raise AssertionError("expected compressed non-cpio payload rejection")
-
-    assert not cpio_marker.exists()
+        raise AssertionError("expected missing shareware data rejection")
 
 
-def test_compat_openssl_accepts_zstd_compressed_rpm2cpio_payload(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    payload_tar = tmp_path / "payload.tar.gz"
-    _write_tar(
-        payload_tar,
-        {
-            "usr/lib64/libssl.so.1.1": b"ssl",
-            "usr/lib64/libcrypto.so.1.1": b"crypto",
-        },
-    )
-    fake_rpm2cpio = tmp_path / "rpm2cpio"
-    fake_rpm2cpio.write_text(
-        "#!/bin/sh\nprintf '\\050\\265\\057\\375compressed-cpio-placeholder'\n",
-        encoding="utf-8",
-    )
-    fake_rpm2cpio.chmod(0o755)
-    fake_zstd = tmp_path / "zstd"
-    fake_zstd.write_text(
-        '#!/bin/sh\n/bin/cat "$PAYLOAD_TAR"\n',
-        encoding="utf-8",
-    )
-    fake_zstd.chmod(0o755)
-    fake_rpm = tmp_path / "compat-openssl11.rpm"
-    fake_rpm.write_bytes(b"not used by fake rpm2cpio")
-
-    monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setenv("PAYLOAD_TAR", str(payload_tar))
-
-    lib_dir = _extract_compat_openssl_rpm(fake_rpm, tmp_path / "compat")
-
-    assert (lib_dir / "libssl.so.1.1").read_bytes() == b"ssl"
-    assert (lib_dir / "libcrypto.so.1.1").read_bytes() == b"crypto"
-
-
-def test_compat_openssl_tools_run_with_c_locale(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    env_marker = tmp_path / "locale-env"
-    fake_rpm2cpio = tmp_path / "rpm2cpio"
-    fake_rpm2cpio.write_text(
-        f"#!/bin/sh\nprintf '%s/%s' \"$LC_ALL\" \"$LANG\" > {env_marker}\nprintf '\\050\\265\\057\\375'\n",
-        encoding="utf-8",
-    )
-    fake_rpm2cpio.chmod(0o755)
-    fake_rpm = tmp_path / "compat-openssl11.rpm"
-    fake_rpm.write_bytes(b"not used by fake rpm2cpio")
-
-    monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
-    monkeypatch.setenv("LANG", "de_DE.UTF-8")
-
-    try:
-        _extract_compat_openssl_rpm(fake_rpm, tmp_path / "compat")
-    except StabilityTestError:
-        pass
-    else:
-        raise AssertionError("expected compressed non-cpio payload rejection")
-
-    assert env_marker.read_text(encoding="utf-8") == "C/C"
-
-
-def test_system_openssl_111_libs_can_be_found_with_ldconfig(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    system_lib = tmp_path / "multiarch"
-    system_lib.mkdir()
-    (system_lib / "libssl.so.1.1").write_bytes(b"ssl")
-    (system_lib / "libcrypto.so.1.1").write_bytes(b"crypto")
-    fake_ldconfig = tmp_path / "ldconfig"
-    fake_ldconfig.write_text(
-        "#!/bin/sh\n"
-        f"printf 'libssl.so.1.1 (libc6,x86-64) => {system_lib / 'libssl.so.1.1'}\\n'\n"
-        f"printf 'libcrypto.so.1.1 (libc6,x86-64) => {system_lib / 'libcrypto.so.1.1'}\\n'\n",
-        encoding="utf-8",
-    )
-    fake_ldconfig.chmod(0o755)
-
-    monkeypatch.setenv("PATH", str(tmp_path))
-
-    lib_dir = _copy_system_openssl_111_libs(tmp_path / "compat")
-
-    assert lib_dir is not None
-    assert (lib_dir / "libssl.so.1.1").read_bytes() == b"ssl"
-    assert (lib_dir / "libcrypto.so.1.1").read_bytes() == b"crypto"
-
-
-def test_system_openssl_111_libs_can_seed_compat_dir(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    system_lib = tmp_path / "usr" / "lib"
-    system_lib.mkdir(parents=True)
-    (system_lib / "libssl.so.1.1").write_bytes(b"ssl")
-    (system_lib / "libcrypto.so.1.1").write_bytes(b"crypto")
-
-    monkeypatch.setattr(
-        "stability.q2rtx.openssl_compat.Path",
-        lambda value="": system_lib if str(value) == "/usr/lib" else Path(value),
-    )
-
-    lib_dir = _copy_system_openssl_111_libs(tmp_path / "compat")
-
-    assert lib_dir is not None
-    assert (lib_dir / "libssl.so.1.1").read_bytes() == b"ssl"
-    assert (lib_dir / "libcrypto.so.1.1").read_bytes() == b"crypto"
-
-
-def test_timedemo_command_uses_requested_resolution_and_run_count(
+def test_benchmark_command_uses_requested_resolution(
     tmp_path: Path,
 ) -> None:
     executable = tmp_path / "q2rtx"
-    command = build_timedemo_command(
+    command = build_benchmark_command(
         executable,
         demo_name="demo1",
         width=2560,
         height=1440,
-        hide_window=True,
-        timedemo_runs=3,
     )
 
     assert command[0] == str(executable)
-    geometry = command[command.index("vid_geometry") + 1]
-    assert geometry.startswith("2560x1440")
+    assert command[command.index("bench") + 1] == "1"
+    assert command[command.index("bench_demo") + 1] == "demo1"
+    assert command[command.index("bench_headless") + 1] == "1"
+    assert command[command.index("bench_width") + 1] == "2560"
+    assert command[command.index("bench_height") + 1] == "1440"
+    assert command[command.index("bench_min_loops") + 1] == "1"
+    assert command[command.index("bench_constant_load") + 1] == "1"
+    assert command[command.index("bench_event_stdout") + 1] == "1"
     assert command[command.index("drs_enable") + 1] == "0"
     assert command[command.index("drs_minscale") + 1] == "100"
     assert command[command.index("drs_maxscale") + 1] == "100"
     assert command[command.index("flt_fsr_enable") + 1] == "0"
     assert command[command.index("pt_num_bounce_rays") + 1] == "2"
     assert command[command.index("pt_reflect_refract") + 1] == "8"
-    assert command[command.index("timedemo") + 1] == "3"
-    assert command[-2:] == ["+demo", "demo1"]
 
 
-def test_hidden_window_env_forces_offscreen_x11_without_display() -> None:
-    hidden_env = q2rtx_runtime._apply_hidden_window_env(
-        {"WAYLAND_DISPLAY": "wayland-0"},
-        hide_window=True,
-        use_headless_gamescope=False,
+def test_benchmark_command_event_fd_disables_stdout_events(tmp_path: Path) -> None:
+    executable = tmp_path / "q2rtx"
+    command = build_benchmark_command(
+        executable,
+        demo_name="demo1",
+        width=3840,
+        height=2160,
     )
 
-    assert hidden_env["SDL_VIDEODRIVER"] == "x11"
-    assert hidden_env["SDL_VIDEO_WINDOW_POS"] == "32000,32000"
-    assert hidden_env["SDL_VIDEO_X11_FORCE_OVERRIDE_REDIRECT"] == "1"
+    command_with_fd = q2rtx_runtime._q2rtx_command_with_event_fd(command, 42)
+
+    assert command_with_fd[command_with_fd.index("bench_event_stdout") + 1] == "0"
+    assert command_with_fd[command_with_fd.index("bench_event_fd") + 1] == "42"
+
+
+def test_benchmark_events_parse_hot_run_summary() -> None:
+    events = [
+        {"event": "start"},
+        {
+            "event": "phase",
+            "name": "measure_start",
+            "elapsed_ms": 1234.0,
+        },
+        {
+            "event": "loop_done",
+            "loop": 1,
+            "frames": 631,
+            "duration_ms": 25000.0,
+            "fps": 25.24,
+        },
+        {
+            "event": "done",
+            "reason": "target",
+            "loops": 1,
+            "loops_started": 2,
+            "demo_frames": 631,
+            "render_frames": 756,
+            "target_ms": 30000.0,
+            "measured_ms": 30000.0,
+            "render_ms": 29900.0,
+            "drain_ms": 100.0,
+            "loop_fps_mean": 25.24,
+            "fps_avg": 25.2,
+            "fps_min": 20.0,
+            "fps_max": 30.0,
+            "fps_mean": 25.1,
+            "frame_ms_min": 33.0,
+            "frame_ms_max": 50.0,
+            "frame_ms_mean": 39.6,
+        },
+    ]
+
+    summary = _benchmark_summary_from_events(events)
+
+    assert summary is not None
+    assert summary.measure_start_elapsed_s == pytest.approx(1.234)
+    assert summary.measured_s == pytest.approx(30.0)
+    assert summary.render_frames == 756
+    assert summary.fps_avg == pytest.approx(25.2)
 
 
 def test_q2rtx_runtime_env_forces_nvidia_prime_vulkan_offload() -> None:
@@ -490,52 +473,66 @@ def test_q2rtx_selected_gpu_identity_is_derived_from_nvml(monkeypatch) -> None:
     assert selected_gpu["mesa_vk_device_select"] == "10de:2c02"
 
 
-def test_duration_based_timedemo_uses_calibrated_complete_loop_count(
+def test_duration_based_benchmark_uses_single_exact_duration(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     process_calls = []
+    summary = Q2RTXBenchmarkSummary(
+        reason="target",
+        loops=1,
+        loops_started=1,
+        demo_frames=631,
+        render_frames=631,
+        target_s=25.0,
+        measured_s=25.0,
+        render_s=25.0,
+        drain_s=0.0,
+        loop_fps_mean=25.24,
+        fps_avg=25.24,
+        fps_min=24.0,
+        fps_max=26.0,
+        fps_mean=25.24,
+        frame_ms_min=38.0,
+        frame_ms_max=42.0,
+        frame_ms_mean=39.6,
+        measure_start_elapsed_s=1.0,
+    )
 
-    def fake_run_timedemo_process(**kwargs):
+    def fake_run_benchmark_process(**kwargs):
         process_calls.append(kwargs)
-        requested_runs = int(kwargs["requested_runs"])
-        return 0, float(requested_runs) * 10.0, [], [], "completed"
+        return q2rtx_runtime._Q2RTXProcessRun(
+            process_exit_code=0,
+            observed_duration_s=26.0,
+            telemetry_samples=[],
+            companion_telemetry_samples=[],
+            exit_reason="completed",
+            benchmark_events=[
+                {"event": "start"},
+                {"event": "phase", "name": "measure_start", "elapsed_ms": 1000.0},
+                {"event": "done"},
+            ],
+            benchmark_event_errors=[],
+            benchmark_summary=summary,
+            benchmark_telemetry_samples=[],
+            fatal_output_matches=[],
+            output_tail=[],
+        )
 
-    def fake_extract_timedemo_runs(_log_path: Path):
-        calibration = [TimedemoRun(run_index=1, frames=631, seconds=10.0, fps=63.1)]
-        if len(process_calls) <= 1:
-            return calibration
-        return calibration + [
-            TimedemoRun(run_index=index + 2, frames=631, seconds=10.0, fps=63.1)
-            for index in range(3)
-        ]
-
     monkeypatch.setattr(
         q2rtx_runtime,
-        "_run_timedemo_process",
-        fake_run_timedemo_process,
-    )
-    monkeypatch.setattr(
-        q2rtx_runtime,
-        "_extract_timedemo_runs",
-        fake_extract_timedemo_runs,
-    )
-    monkeypatch.setattr(
-        q2rtx_runtime,
-        "_scan_output_for_fatal_patterns",
-        lambda _path: [],
+        "_run_benchmark_process",
+        fake_run_benchmark_process,
     )
     monkeypatch.setattr(
         q2rtx_runtime,
         "_query_xid_messages_since",
         lambda _start: [],
     )
-    monkeypatch.setattr(q2rtx_runtime, "_read_recent_output", lambda _path: [])
 
-    result = q2rtx_runtime._run_timedemo_session(
+    result = q2rtx_runtime._run_benchmark_session(
         config=Q2RTXStabilityConfig(
             duration_s=25,
-            timedemo_loops=None,
             log_dir=tmp_path,
         ),
         executable_path=tmp_path / "q2rtx",
@@ -546,44 +543,82 @@ def test_duration_based_timedemo_uses_calibrated_complete_loop_count(
         runtime_env={},
     )
 
-    assert [call["requested_runs"] for call in process_calls] == [1, 3]
-    assert process_calls[1]["section_name"] == "timedemo-loop x3"
+    assert process_calls[0]["section_name"] == "benchmark 25.0s"
     assert result.success is True
     assert result.reason == "ok"
-    assert result.timedemo_loops_requested is None
     assert result.duration_requested_s == 25
-    assert len(result.timedemo_runs) == 3
+    assert result.workload_kind == "benchmark"
+    assert result.benchmark_summary is summary
+    assert result.benchmark_measure_start_s == pytest.approx(1.0)
+    assert result.benchmark_summary.fps_avg == pytest.approx(25.24)
 
 
-def test_gamescope_startup_crash_is_detected_for_fallback(tmp_path: Path) -> None:
-    result = Q2RTXStabilityResult(
-        success=False,
-        reason="timedemo-metrics-missing",
-        workload_kind="timedemo",
-        workload_name="q2demo1",
-        command=["q2rtx"],
-        executable_path=tmp_path / "q2rtx",
-        workdir=tmp_path,
-        duration_requested_s=30,
-        timedemo_loops_requested=3,
-        duration_observed_s=2.0,
-        demo_path=None,
-        log_path=tmp_path / "q2rtx.log",
-        process_exit_code=139,
-        shutdown_mode="completed",
-        fatal_output_matches=[],
-        xid_messages=[],
-        timedemo_runs=[],
-        telemetry_samples=[],
-        companion_telemetry_samples=[],
-        output_tail=[
-            "[Gamescope WSI] Creating swapchain",
-            "Segmentation fault",
-            "[gamescope] [Info]  launch: Primary child shut down!",
-        ],
+def test_benchmark_fails_when_measure_start_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    summary = Q2RTXBenchmarkSummary(
+        reason="target",
+        loops=1,
+        loops_started=1,
+        demo_frames=631,
+        render_frames=631,
+        target_s=30.0,
+        measured_s=30.0,
+        render_s=30.0,
+        drain_s=0.0,
+        loop_fps_mean=21.0,
+        fps_avg=21.0,
+        fps_min=20.0,
+        fps_max=22.0,
+        fps_mean=21.0,
+        frame_ms_min=45.0,
+        frame_ms_max=50.0,
+        frame_ms_mean=47.6,
+        measure_start_elapsed_s=None,
     )
 
-    assert _result_looks_like_gamescope_startup_crash(result) is True
+    def fake_run_benchmark_process(**_kwargs):
+        return q2rtx_runtime._Q2RTXProcessRun(
+            process_exit_code=0,
+            observed_duration_s=30.0,
+            telemetry_samples=[],
+            companion_telemetry_samples=[],
+            exit_reason="completed",
+            benchmark_events=[
+                {"event": "start"},
+                {"event": "done"},
+            ],
+            benchmark_event_errors=[],
+            benchmark_summary=summary,
+            benchmark_telemetry_samples=[],
+            fatal_output_matches=[],
+            output_tail=[],
+        )
+
+    monkeypatch.setattr(
+        q2rtx_runtime,
+        "_run_benchmark_process",
+        fake_run_benchmark_process,
+    )
+    monkeypatch.setattr(
+        q2rtx_runtime,
+        "_query_xid_messages_since",
+        lambda _start: [],
+    )
+
+    result = q2rtx_runtime._run_benchmark_session(
+        config=Q2RTXStabilityConfig(duration_s=30, log_dir=tmp_path),
+        executable_path=tmp_path / "q2rtx",
+        workdir=tmp_path,
+        workload_name="q2demo1",
+        demo_path=None,
+        log_path=tmp_path / "q2rtx.log",
+        runtime_env={},
+    )
+
+    assert result.success is False
+    assert result.reason == "benchmark-measure-start-missing"
 
 
 def test_cuda_companion_abort_preserves_abort_reason(
@@ -697,46 +732,30 @@ def test_cuda_stability_aborts_immediately_on_fatal_output(
     assert result.duration_observed_s < 5.0
 
 
-def test_timedemo_abort_policy_only_kills_immediate_failures() -> None:
-    assert q2rtx_runtime._timedemo_abort_is_immediate("user-stop-requested") is True
-    assert q2rtx_runtime._timedemo_abort_is_immediate("fatal-q2rtx-output") is True
+def test_benchmark_abort_policy_only_kills_immediate_failures() -> None:
+    assert q2rtx_runtime._benchmark_abort_is_immediate("user-stop-requested") is True
+    assert q2rtx_runtime._benchmark_abort_is_immediate("fatal-q2rtx-output") is True
     assert (
-        q2rtx_runtime._timedemo_abort_is_immediate(
+        q2rtx_runtime._benchmark_abort_is_immediate(
             "profile-verification-voltage-mismatch current=1025mV target=870mV"
         )
         is True
     )
     assert (
-        q2rtx_runtime._timedemo_abort_is_immediate(
+        q2rtx_runtime._benchmark_abort_is_immediate(
             "telemetry-live-load-lost current=45.0W"
         )
         is True
     )
     assert (
-        q2rtx_runtime._timedemo_abort_is_immediate(
+        q2rtx_runtime._benchmark_abort_is_immediate(
             "q2rtx-selected-nvidia-gpu-idle max_util=0.0%"
         )
         is True
     )
     assert (
-        q2rtx_runtime._timedemo_abort_is_immediate(
-            "timedemo-live-frame-count current=0 expected=631"
-        )
-        is True
-    )
-    assert (
-        q2rtx_runtime._timedemo_abort_is_immediate("timedemo-live-stall idle=20.0s")
-        is True
-    )
-    assert (
-        q2rtx_runtime._timedemo_abort_is_immediate(
+        q2rtx_runtime._benchmark_abort_is_immediate(
             "telemetry-live-core_clock current=2400.0MHz"
-        )
-        is False
-    )
-    assert (
-        q2rtx_runtime._timedemo_abort_is_immediate(
-            "timedemo-live-fps-regression current=75.0"
         )
         is False
     )
@@ -751,13 +770,35 @@ def test_device_lost_output_is_fatal_case_insensitive(tmp_path: Path) -> None:
     assert "device lost" in matches
 
 
+def test_any_vulkan_error_output_is_fatal(tmp_path: Path) -> None:
+    log_path = tmp_path / "q2rtx.log"
+    log_path.write_text(
+        "vkQueueSubmit failed: VK_ERROR_MEMORY_MAP_FAILED\n"
+        "extension path failed: VK_ERROR_UNKNOWN_VENDOR_THING\n",
+        encoding="utf-8",
+    )
+
+    matches = _scan_output_for_fatal_patterns(log_path)
+
+    assert "VK_ERROR_MEMORY_MAP_FAILED" in matches
+    assert "VK_ERROR_UNKNOWN_VENDOR_THING" in matches
+
+
+def test_signal_exit_reason_is_explicit() -> None:
+    assert (
+        q2rtx_runtime._q2rtx_exit_failure_reason(-11)
+        == "benchmark-crashed-signal-SIGSEGV"
+    )
+    assert q2rtx_runtime._q2rtx_exit_failure_reason(2) == "benchmark-nonzero-exit-2"
+
+
 def test_loader_error_output_is_launcher_failure_not_fatal_output(
     tmp_path: Path,
 ) -> None:
     log_path = tmp_path / "q2rtx.log"
     log_path.write_text(
         "q2rtx: error while loading shared libraries: "
-        "libssl.so.1.1: cannot open shared object file\n",
+        "libvulkan.so.1: cannot open shared object file\n",
         encoding="utf-8",
     )
 
@@ -766,17 +807,16 @@ def test_loader_error_output_is_launcher_failure_not_fatal_output(
     assert "error while loading shared libraries" not in matches
 
 
-def test_loader_error_result_is_retryable_and_reclassified(tmp_path: Path) -> None:
+def test_loader_error_result_is_reclassified(tmp_path: Path) -> None:
     result = Q2RTXStabilityResult(
         success=False,
-        reason="timedemo-nonzero-exit",
-        workload_kind="timedemo",
+        reason="benchmark-nonzero-exit-127",
+        workload_kind="benchmark",
         workload_name="q2demo1",
         command=["q2rtx"],
         executable_path=tmp_path / "q2rtx",
         workdir=tmp_path,
         duration_requested_s=30,
-        timedemo_loops_requested=3,
         duration_observed_s=0.8,
         demo_path=None,
         log_path=tmp_path / "q2rtx.log",
@@ -784,31 +824,25 @@ def test_loader_error_result_is_retryable_and_reclassified(tmp_path: Path) -> No
         shutdown_mode="completed",
         fatal_output_matches=[],
         xid_messages=[],
-        timedemo_runs=[],
         telemetry_samples=[],
         companion_telemetry_samples=[],
         output_tail=[
             "q2rtx: error while loading shared libraries: "
-            "libssl.so.1.1: cannot open shared object file",
+            "libvulkan.so.1: cannot open shared object file",
         ],
     )
 
-    assert q2rtx_runtime._result_is_retryable_launcher_failure(result) is True
     assert (
         q2rtx_runtime._reclassify_launcher_failure(result).reason
         == "q2rtx-launcher-error"
     )
 
 
-def test_report_output_tail_filters_normal_gamescope_shutdown_noise() -> None:
+def test_report_output_tail_filters_console_shutdown_noise() -> None:
     assert _filter_report_output_tail(
         [
             "631 frames, 3.84 seconds: 164.365707 fps",
-            "[Gamescope WSI] Destroying swapchain: 0x2dbc6790",
-            "[Gamescope WSI] Destroyed swapchain: 0x2dbc6790",
             "Closing console log.",
-            "[gamescope] [Info]  launch: Primary child shut down!",
-            "(EE) failed to read Wayland events: Broken pipe",
             "Segmentation fault",
         ]
     ) == [

@@ -3,12 +3,7 @@ from __future__ import annotations
 from .models import Q2RTXStabilityResult, TelemetrySample
 
 
-_QUIET_OUTPUT_TAIL_PREFIXES = (
-    "[Gamescope WSI] Destroying swapchain:",
-    "[Gamescope WSI] Destroyed swapchain:",
-    "[gamescope] [Info]  launch: Primary child shut down!",
-    "(EE) failed to read Wayland events: Broken pipe",
-)
+_QUIET_OUTPUT_TAIL_PREFIXES: tuple[str, ...] = ()
 _QUIET_OUTPUT_TAIL_LINES = frozenset(
     {
         "Closing console log.",
@@ -92,14 +87,10 @@ def _telemetry_summary_text(summary: dict[str, float | int]) -> str:
 
 def print_q2rtx_stability_result(result: Q2RTXStabilityResult) -> None:
     status = "PASS" if result.success else "FAIL"
-    if result.timedemo_loops_requested is not None:
-        requested_target = f"{result.timedemo_loops_requested} loops"
-    else:
-        requested_target = f"{result.duration_requested_s}s"
     print(f"Stability test: {status}", flush=True)
     print(
         f"Reason: {result.reason} | workload={result.workload_name} ({result.workload_kind}) | "
-        f"requested={requested_target} | observed={result.duration_observed_s:.1f}s",
+        f"requested={result.duration_requested_s}s | observed={result.duration_observed_s:.1f}s",
         flush=True,
     )
     print(
@@ -109,24 +100,39 @@ def print_q2rtx_stability_result(result: Q2RTXStabilityResult) -> None:
     print(f"Log: {result.log_path}", flush=True)
     if result.demo_path is not None:
         print(f"Demo file: {result.demo_path}", flush=True)
-    elif result.workload_kind == "timedemo":
+    elif result.workload_kind == "benchmark":
         print(f"Demo asset: {result.workload_name} (found in game data)", flush=True)
     print(
         f"Shutdown: {result.shutdown_mode} | exit_code={result.process_exit_code}",
         flush=True,
     )
 
-    if result.timedemo_runs:
-        fps_values = [run.fps for run in result.timedemo_runs]
-        frame_values = [run.frames for run in result.timedemo_runs]
-        total_frames = sum(frame_values)
+    if result.benchmark_summary is not None:
+        benchmark = result.benchmark_summary
+        fps_min = (
+            f"{float(benchmark.fps_min):.1f}"
+            if benchmark.fps_min is not None
+            else "n/a"
+        )
+        fps_max = (
+            f"{float(benchmark.fps_max):.1f}"
+            if benchmark.fps_max is not None
+            else "n/a"
+        )
+        fps_mean = (
+            f"{float(benchmark.fps_mean):.1f}"
+            if benchmark.fps_mean is not None
+            else "n/a"
+        )
         print(
-            "Timedemo: "
-            f"runs={len(result.timedemo_runs)} | "
-            f"frames/run={min(frame_values)}-{max(frame_values)} | "
-            f"fps={min(fps_values):.1f}/{sum(fps_values) / len(fps_values):.1f}/{max(fps_values):.1f} "
-            "(min/avg/max) | "
-            f"total_frames={total_frames}",
+            "Benchmark: "
+            f"reason={benchmark.reason or 'done'} | "
+            f"loops={int(benchmark.loops)} | "
+            f"render_frames={int(benchmark.render_frames)} | "
+            f"demo_frames={benchmark.demo_frames if benchmark.demo_frames is not None else 'n/a'} | "
+            f"measured={float(benchmark.measured_s):.3f}s | "
+            f"fps={fps_min}/{float(benchmark.fps_avg):.1f}/{fps_max}/{fps_mean} "
+            "(min/avg/max/mean)",
             flush=True,
         )
     else:
