@@ -977,12 +977,12 @@ def test_auto_uv_voltage_drop_default_uses_detected_gpu_table_floor() -> None:
     assert preview.value_pct == pytest.approx(15.0)
 
 
-def test_auto_uv_clock_drop_default_uses_gpu_table_eco_to_max_ratio() -> None:
+def test_auto_uv_clock_drop_default_uses_gpu_table_efficiency_to_performance_ratio() -> None:
     preview = _auto_uv_clock_drop_default(gpu_name="NVIDIA GeForce RTX 5080")
 
     assert preview.preset_matched is True
     assert preview.gpu_family == "RTX 5080"
-    assert preview.value_pct == pytest.approx(11.111111111111116)
+    assert preview.value_pct == pytest.approx(6.040268456375841)
 
 
 def test_auto_uv_clock_drop_default_falls_back_to_generic_when_unmatched() -> None:
@@ -1676,7 +1676,8 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
     assert "Max voltage drop" not in source
     assert "Base verification length" not in source
     assert '"auto_uv_short_seconds"' not in source
-    assert "Eco-to-Max clock ratio" in source
+    assert "Efficiency-to-Performance" in source
+    assert "clock ratio when detected" in source
     assert "Min voltage" in source
     assert "sync_voltage_floor_from_drop" not in source
     assert "sync_voltage_drop_from_floor" not in source

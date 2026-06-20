@@ -89,11 +89,11 @@ def test_uv_limit_profile_target_unknown_profile_returns_none() -> None:
 
 
 def test_uv_limit_profile_target_unknown_gpu_returns_none() -> None:
-    assert uv_limit_profile_target_for_gpu("Totally Unknown GPU", "eco") is None
+    assert uv_limit_profile_target_for_gpu("Totally Unknown GPU", "efficiency") is None
 
 
 def test_uv_limit_profile_target_known() -> None:
-    target = uv_limit_profile_target_for_gpu("RTX 4070 Ti Super", "eco")
+    target = uv_limit_profile_target_for_gpu("RTX 4070 Ti Super", "efficiency")
     assert target is not None
     assert target.voltage_mv == 925
     assert target.clock_mhz == 2550

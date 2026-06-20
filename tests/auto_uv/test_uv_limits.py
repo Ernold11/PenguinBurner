@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from auto_uv.scan_mode.uv_limits import (
-    uv_limit_eco_to_max_clock_drop_pct_for_gpu,
+    uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu,
     uv_limit_profile_target_for_gpu,
     uv_limit_voltage_floor_target_for_gpu,
     voltage_drop_pct,
@@ -29,16 +29,21 @@ def test_5080_voltage_table_exposes_efficiency_floor_and_performance_ceiling() -
 def test_unlisted_gpu_has_no_voltage_table_match() -> None:
     assert uv_limit_voltage_floor_target_for_gpu("NVIDIA GeForce GTX 1080") is None
     assert uv_limit_profile_target_for_gpu("NVIDIA GeForce GTX 1080", "performance") is None
-    assert uv_limit_eco_to_max_clock_drop_pct_for_gpu("NVIDIA GeForce GTX 1080") is None
+    assert (
+        uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu(
+            "NVIDIA GeForce GTX 1080"
+        )
+        is None
+    )
 
 
-def test_eco_to_max_clock_drop_uses_gpu_table_ratio() -> None:
-    assert uv_limit_eco_to_max_clock_drop_pct_for_gpu(
+def test_efficiency_to_performance_clock_drop_uses_gpu_table_ratio() -> None:
+    assert uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu(
         "NVIDIA GeForce RTX 5080"
-    ) == pytest.approx(11.111111111111116)
-    assert uv_limit_eco_to_max_clock_drop_pct_for_gpu(
+    ) == pytest.approx(6.040268456375841)
+    assert uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu(
         "NVIDIA GeForce RTX 5090"
-    ) == pytest.approx(12.903225806451612)
+    ) == pytest.approx(10.0)
 
 
 def test_target_matching_keeps_ti_super_before_base_4070() -> None:
@@ -80,10 +85,14 @@ def test_3080_uses_ampere_table_values() -> None:
 def test_3080_12gb_matches_before_base_3080() -> None:
     target = uv_limit_profile_target_for_gpu(
         "NVIDIA GeForce RTX 3080 12GB",
-        "max",
+        "performance",
     )
 
     assert target is not None
     assert target.gpu_family == "RTX 3080 12GB"
-    assert target.voltage_mv == 950
-    assert target.clock_mhz == 2000
+    assert target.voltage_mv == 900
+    assert target.clock_mhz == 1920
+    assert (
+        uv_limit_profile_target_for_gpu("NVIDIA GeForce RTX 3080 12GB", "max")
+        is None
+    )

@@ -107,7 +107,7 @@ so the benchmark and the curve writer target the same physical GPU.
 | --- | --- |
 | `--auto-uv-max-drop-pct N` | voltage search depth below start (default `10`) |
 | `--auto-uv-min-voltage-mv N` | explicit lowest voltage bin |
-| `--auto-uv-max-clock-drop-pct N` | allowed loaded-clock loss (default: GPU Eco-to-Max ratio, else `12.5`) |
+| `--auto-uv-max-clock-drop-pct N` | allowed loaded-clock loss (default: GPU Efficiency-to-Performance ratio, else `12.5`) |
 | `--auto-uv-tail-rise-bins N` | bins above lock point that may rise (`0` = flat) |
 | `--auto-oc-target-voltage-mv N` / `--auto-oc-target-clock-mhz N` | Performance Auto-OC ceilings |
 | `--gpu-index N` | select one NVIDIA GPU on multi-GPU systems |

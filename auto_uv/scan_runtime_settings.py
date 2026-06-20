@@ -10,7 +10,9 @@ from .auto_uv_user_options import (
     AUTO_UV_DEFAULTS,
     AUTO_UV_METRIC_TUNING,
 )
-from .scan_mode.uv_limits import uv_limit_eco_to_max_clock_drop_pct_for_gpu
+from .scan_mode.uv_limits import (
+    uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +73,7 @@ def clock_drop_margin_pct(
 ) -> float:
     value = runtime_options.get("auto_uv_max_clock_drop_pct")
     if value is None:
-        value = uv_limit_eco_to_max_clock_drop_pct_for_gpu(gpu_name)
+        value = uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu(gpu_name)
     if value is None:
         value = AUTO_UV_DEFAULTS.max_core_clock_drop_pct
     return max(0.0, min(100.0, float(value)))

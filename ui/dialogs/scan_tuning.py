@@ -296,8 +296,8 @@ def select_scan_tuning(
         widget=max_clock_drop_spin,
         tooltip=(
             "How much loaded core-clock degradation Auto-UV may accept. The "
-            "default comes from the GPU table's Eco-to-Max clock ratio when "
-            "detected; unknown GPUs use a generic fallback."
+            "default comes from the GPU table's Efficiency-to-Performance "
+            "clock ratio when detected; unknown GPUs use a generic fallback."
         ),
     )
     _add_form_row(

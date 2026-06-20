@@ -20,186 +20,163 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
     {
         "family": "RTX 5090",
         "patterns": ("5090",),
-        "eco": (900, 2700),
+        "efficiency": (900, 2700),
         "balanced": (950, 2900),
         "performance": (975, 3000),
-        "max": (975, 3100),
     },
     {
         "family": "RTX 5080",
         "patterns": ("5080",),
-        "eco": (850, 2800),
+        "efficiency": (850, 2800),
         "balanced": (900, 2800),
         "performance": (925, 2980),
-        "max": (975, 3150),
     },
     {
         "family": "RTX 5070 Ti",
         "patterns": ("5070 TI", "5070TI"),
-        "eco": (850, 2500),
+        "efficiency": (850, 2500),
         "balanced": (900, 2800),
         "performance": (925, 2950),
-        "max": (950, 3000),
     },
     {
         "family": "RTX 5070",
         "patterns": ("5070",),
-        "eco": (850, 2600),
+        "efficiency": (850, 2600),
         "balanced": (900, 2750),
         "performance": (940, 3000),
-        "max": (975, 3150),
     },
     {
         "family": "RTX 5060 Ti",
         "patterns": ("5060 TI", "5060TI"),
-        "eco": (800, 2500),
+        "efficiency": (800, 2500),
         "balanced": (875, 2700),
         "performance": (925, 2900),
-        "max": (975, 3000),
     },
     {
         "family": "RTX 5060",
         "patterns": ("5060",),
-        "eco": (875, 2300),
+        "efficiency": (875, 2300),
         "balanced": (900, 2450),
         "performance": (925, 2600),
-        "max": (950, 2730),
     },
     {
         "family": "RTX 4070 Ti Super",
         "patterns": ("4070 TI SUPER", "4070TI SUPER"),
-        "eco": (925, 2550),
+        "efficiency": (925, 2550),
         "balanced": (940, 2640),
         "performance": (950, 2730),
-        "max": (975, 2820),
     },
     {
         "family": "RTX 4070 Ti",
         "patterns": ("4070 TI", "4070TI"),
-        "eco": (925, 2550),
+        "efficiency": (925, 2550),
         "balanced": (940, 2640),
         "performance": (950, 2685),
-        "max": (975, 2820),
     },
     {
         "family": "RTX 4070 Super",
         "patterns": ("4070 SUPER",),
-        "eco": (900, 2400),
+        "efficiency": (900, 2400),
         "balanced": (925, 2550),
         "performance": (940, 2670),
-        "max": (975, 2790),
     },
     {
         "family": "RTX 4070",
         "patterns": ("4070",),
-        "eco": (900, 2400),
+        "efficiency": (900, 2400),
         "balanced": (925, 2550),
         "performance": (940, 2670),
-        "max": (975, 2790),
     },
     {
         "family": "RTX 4060 Ti",
         "patterns": ("4060 TI", "4060TI"),
-        "eco": (900, 2400),
+        "efficiency": (900, 2400),
         "balanced": (925, 2550),
         "performance": (950, 2650),
-        "max": (975, 2750),
     },
     {
         "family": "RTX 4060",
         "patterns": ("4060",),
-        "eco": (875, 2300),
+        "efficiency": (875, 2300),
         "balanced": (900, 2450),
         "performance": (925, 2600),
-        "max": (950, 2730),
     },
     {
         "family": "RTX 4090",
         "patterns": ("4090",),
-        "eco": (875, 2400),
+        "efficiency": (875, 2400),
         "balanced": (900, 2550),
         "performance": (925, 2670),
-        "max": (950, 2745),
     },
     {
         "family": "RTX 4080",
         "patterns": ("4080",),
-        "eco": (875, 2400),
+        "efficiency": (875, 2400),
         "balanced": (900, 2520),
         "performance": (925, 2640),
-        "max": (950, 2700),
     },
     {
         "family": "RTX 3090 Ti",
         "patterns": ("3090 TI", "3090TI"),
-        "eco": (825, 1700),
+        "efficiency": (825, 1700),
         "balanced": (875, 1830),
         "performance": (925, 1950),
-        "max": (975, 2025),
     },
     {
         "family": "RTX 3090",
         "patterns": ("3090",),
-        "eco": (800, 1700),
+        "efficiency": (800, 1700),
         "balanced": (875, 1830),
         "performance": (900, 1900),
-        "max": (950, 1965),
     },
     {
         "family": "RTX 3080 Ti",
         "patterns": ("3080 TI", "3080TI"),
-        "eco": (800, 1710),
+        "efficiency": (800, 1710),
         "balanced": (875, 1870),
         "performance": (900, 1920),
-        "max": (950, 1980),
     },
     {
         "family": "RTX 3080 12GB",
         "patterns": ("3080 12GB", "3080 12 GB", "3080-12"),
-        "eco": (800, 1700),
+        "efficiency": (800, 1700),
         "balanced": (875, 1860),
         "performance": (900, 1920),
-        "max": (950, 2000),
     },
     {
         "family": "RTX 3080",
         "patterns": ("3080",),
-        "eco": (800, 1750),
+        "efficiency": (800, 1750),
         "balanced": (875, 1890),
         "performance": (900, 1950),
-        "max": (950, 2010),
     },
     {
         "family": "RTX 3070 Ti",
         "patterns": ("3070 TI", "3070TI"),
-        "eco": (825, 1770),
+        "efficiency": (825, 1770),
         "balanced": (875, 1905),
         "performance": (900, 1950),
-        "max": (950, 1995),
     },
     {
         "family": "RTX 3070",
         "patterns": ("3070",),
-        "eco": (775, 1700),
+        "efficiency": (775, 1700),
         "balanced": (875, 1900),
         "performance": (925, 1950),
-        "max": (950, 2010),
     },
     {
         "family": "RTX 3060 Ti",
         "patterns": ("3060 TI", "3060TI"),
-        "eco": (800, 1750),
+        "efficiency": (800, 1750),
         "balanced": (875, 1875),
         "performance": (925, 1935),
-        "max": (975, 1980),
     },
     {
         "family": "RTX 3060",
         "patterns": ("3060",),
-        "eco": (800, 1750),
+        "efficiency": (800, 1750),
         "balanced": (850, 1840),
         "performance": (900, 1900),
-        "max": (950, 1950),
     },
 )
 
@@ -209,17 +186,17 @@ def uv_limit_voltage_floor_target_for_gpu(
     auto_uv_mode: object | None = None,
 ) -> UvTierTarget | None:
     _ = auto_uv_mode
-    return uv_limit_profile_target_for_gpu(gpu_name, "eco")
+    return uv_limit_profile_target_for_gpu(gpu_name, "efficiency")
 
 
-def uv_limit_eco_to_max_clock_drop_pct_for_gpu(
+def uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu(
     gpu_name: object | None,
 ) -> float | None:
-    eco = uv_limit_profile_target_for_gpu(gpu_name, "eco")
-    max_target = uv_limit_profile_target_for_gpu(gpu_name, "max")
-    if eco is None or max_target is None or int(max_target.clock_mhz) <= 0:
+    efficiency = uv_limit_profile_target_for_gpu(gpu_name, "efficiency")
+    performance = uv_limit_profile_target_for_gpu(gpu_name, "performance")
+    if efficiency is None or performance is None or int(performance.clock_mhz) <= 0:
         return None
-    drop_pct = 1.0 - (float(eco.clock_mhz) / float(max_target.clock_mhz))
+    drop_pct = 1.0 - (float(efficiency.clock_mhz) / float(performance.clock_mhz))
     return max(0.0, drop_pct * 100.0)
 
 

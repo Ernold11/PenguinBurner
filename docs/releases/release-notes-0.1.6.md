@@ -8,8 +8,9 @@ selection, and safer performance-mode limits.
 ### Highlights
 
 - Added a borrowed GPU voltage/frequency table for RTX 50 and RTX 40 families.
-- Auto-filled minimum voltage now uses the detected GPU's Eco table voltage as
-  the lower sweep boundary, with a generic 10% fallback for unsupported GPUs.
+- Auto-filled minimum voltage now uses the detected GPU's Efficiency table
+  voltage as the lower sweep boundary, with a generic 10% fallback for
+  unsupported GPUs.
 - Performance-mode limits now use the GPU's Performance table voltage as the
   ceiling. For RTX 5080, performance probing is capped at 925 mV.
 - Final candidate choice now follows the selected mode: Efficiency sorts by

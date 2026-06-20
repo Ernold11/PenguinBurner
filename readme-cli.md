@@ -83,8 +83,8 @@ What Auto-UV does:
 9. Run a final long verification, `300s` by default. If you stop the scan after stable checkpoints exist, PenguinBurner can offer those previously stable candidates so you can choose which target gets final verification. If the long check fails, Auto-UV backs off to a safer voltage/curve and reruns the long verification; the final result is published only after the long verification completes.
 10. Return the GPU to the driver/default curve before the scan exits. The saved curve is applied later by runtime or daemon mode.
 
-By default Auto-UV uses the GPU table's Eco-to-Max clock ratio as the loaded
-core-clock drop allowance. Unknown GPUs use `12.5%`. To force a `12%`
+By default Auto-UV uses the GPU table's Efficiency-to-Performance clock ratio
+as the loaded core-clock drop allowance. Unknown GPUs use `12.5%`. To force a `12%`
 clock-drop allowance:
 
 ```bash
@@ -317,7 +317,7 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--lact-max-vf-offset-mhz N`: maximum positive Nvidia V/F offset to emit for LACT; default `1000`, with exported clocks clamped to `base_mhz + N`.
 - `--auto-uv-final-seconds N`: final verification duration after the best curve is selected; default `300`.
 - `--auto-uv-short-seconds N`: base Q2RTX verification length; default `10` seconds, allowed range `10..60`. Medium and deep voltage tiers use 2x and 2.5x this value; the CUDA companion uses a longer slot in the deep tier.
-- `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default is the detected GPU table's Eco-to-Max clock ratio, or `12.5` for unknown GPUs.
+- `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default is the detected GPU table's Efficiency-to-Performance clock ratio, or `12.5` for unknown GPUs.
 - `--auto-oc-target-voltage-mv N`: Performance Auto-OC voltage ceiling.
 - `--auto-oc-target-clock-mhz N`: Performance Auto-OC clock ceiling.
 - `--auto-uv-min-voltage-mv N`: lowest voltage bin Auto-UV may try; overrides the detected GPU table floor.
@@ -348,7 +348,7 @@ loaded-clock drop allowance, and Performance Auto-OC targets.
   also spend more time near crash-prone voltage bins.
 - `--auto-uv-max-clock-drop-pct N` controls how much loaded core clock Auto-UV
   may sacrifice while lowering voltage. By default, known GPUs use the table
-  Eco-to-Max clock ratio and unknown GPUs use `12.5%`. Lower values preserve
+  Efficiency-to-Performance clock ratio and unknown GPUs use `12.5%`. Lower values preserve
   more performance; higher values search deeper.
 - `--auto-uv-tail-rise-bins N` controls the rising tail after the flattened
   lock point. Higher values preserve more upper-curve headroom; `0` keeps the
