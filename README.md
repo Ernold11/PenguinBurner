@@ -63,8 +63,11 @@ CUDA first.
 ## Automatic Tuning
 
 Tests your card under real load and finds the most efficient stable undervolt
-curve for you. The sweep runs a path-tracing game scene ([Q2RTX](https://github.com/NVIDIA/Q2RTX))
+curve for you. The sweep runs PenguinBurner's managed
+[headless Q2RTX benchmark](https://github.com/jpietek/Q2RTX-headless)
 plus a **CUDA** compute test, with stability and performance checks built in.
+If a scan crashes mid-probe, the next run records that voltage/clock band as
+unsafe and can resume from saved candidates for the same tier.
 
 ![Auto-UV candidate sweep](docs/assets/auto-uv-scan.png)
 

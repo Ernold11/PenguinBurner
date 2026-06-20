@@ -6,7 +6,7 @@
 
 Auto-UV is the core PenguinBurner feature. It tests your GPU under real load,
 finds the most efficient stable voltage/frequency curve, and saves it for later
-foreground or daemon use.
+terminal or daemon use.
 
 ![Auto-UV candidate sweep](../assets/auto-uv-scan.png)
 
@@ -29,15 +29,53 @@ sudo ./penguin_burner.sh --fresh-auto-uv-scan     # forget previous results, sta
 ## What happens
 
 - Resets clocks, offsets, power policy, and fan control before measuring.
-- Runs **Q2RTX** (Quake II RTX timedemo) plus a **CUDA** companion load for a
-  real, GPU-bound workload. Q2RTX is downloaded automatically if missing.
+- Runs **Q2RTX** (PenguinBurner's headless Quake II RTX benchmark) plus a
+  **CUDA** companion load for a real, GPU-bound workload. Q2RTX is downloaded
+  automatically if missing.
 - Walks voltage down step by step, verifying each candidate before accepting it.
 - Stops before unsafe points, excessive clock loss, crashes, or NVIDIA Xid errors.
 - Saves stable checkpoints as it goes, then runs a longer final verification
-  (default `600s`) before publishing the curve.
+  (default `300s`) before publishing the curve.
+- If you stop the scan after stable checkpoints exist, PenguinBurner offers those
+  previously stable candidates for final verification instead of throwing the
+  work away.
 
-By default Q2RTX renders hidden via `gamescope --backend headless` (falls back
-to an off-screen window). Use `--show-q2rtx-window` to watch it.
+By default Q2RTX runs through PenguinBurner's managed
+[headless benchmark binary](https://github.com/jpietek/Q2RTX-headless), so no
+desktop display server or compositor wrapper is needed. Render resolution is
+selected from the chosen GPU's NVML VRAM total: `2560x1440` for GPUs with
+`<=8 GiB`, otherwise `3840x2160` when VRAM is larger or unavailable. Use
+`--stability-width` / `--stability-height` to override it. Custom Q2RTX debug
+switches are kept in the CLI advanced compatibility section.
+
+## Stop, choose, or resume
+
+You can stop Auto-UV from the GUI while it is scanning. After at least one stable
+candidate exists, the stop request is handled as a controlled stop: PenguinBurner
+opens the final-choice dialog with the already-passed candidates, and you can
+choose which voltage/clock target should receive final verification. This does
+not mark the current voltage unsafe. It only turns the completed checkpoints
+into final-verification options.
+
+If you stop before any stable checkpoint exists, there is no candidate to
+verify, so the scan just stops.
+
+Auto-UV writes an active-probe marker before each risky candidate or final
+verification run. Normal exits, Ctrl-C, and SIGTERM remove that marker. If the
+machine hangs, reboots, loses power, or the process is killed during a probe,
+the next Auto-UV run consumes the stale marker, records that voltage/clock band
+in `uv-result/auto-uv-unsafe-voltages.json`, and avoids repeating it.
+
+When stable checkpoints exist for the same requested tier, the GUI shows a
+previous-crash recovery dialog before starting discovery again. The default
+choice is the next safer saved candidate above the failed voltage. Accepting a
+candidate resumes from the saved baseline and candidate metrics, skips the
+completed lower-voltage sweep, and goes straight to any remaining Performance
+Auto-OC work plus final verification. Choosing **Start From Scratch** runs a new
+scan instead, but the unsafe-voltage cache still applies.
+
+Use `--fresh-auto-uv-scan` only when you deliberately want to forget the saved
+Auto-UV state, including unsafe-voltage history and recovery candidates.
 
 ## Presets / tiers
 
@@ -51,6 +89,17 @@ directly to [adaptive UV tiers](./adaptive-uv.md):
 | Efficiency | `0` (flat) | lowest power |
 | Balanced | `4` | moderate clock tail |
 | Performance | `6` | adds an Auto-OC ladder (raises V+clock to targets) |
+
+## GPU selection and telemetry
+
+PenguinBurner reads GPU identity, PCI bus id, driver version, and VRAM directly
+through NVML (`libnvidia-ml.so.1`). It does not shell out to `nvidia-smi` for the
+GPU picker or Q2RTX resolution choice.
+
+The selected `--gpu-index` is used consistently for NVML/NVAPI control,
+telemetry, Q2RTX, CUDA, profile verification, and runtime profile application.
+On multi-GPU systems, pick the card in the tuning dialog or pass `--gpu-index N`
+so the benchmark and the curve writer target the same physical GPU.
 
 ## Useful flags
 
@@ -90,9 +139,6 @@ sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
 sudo install -m 0644 lact-config.yaml /etc/lact/config.yaml
 sudo systemctl restart lactd
 ```
-
-To run an imported Afterburner curve instead:
-`--daemonize --prefer-afterburner-curve`.
 
 ## State and logs
 

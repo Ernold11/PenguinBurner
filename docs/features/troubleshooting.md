@@ -13,22 +13,24 @@ clean:
 sudo ./penguin_burner.sh --fresh-auto-uv-scan
 ```
 
+### I stopped Auto-UV before it finished
+
+If at least one stable checkpoint exists, a controlled stop opens the final
+choice dialog. Pick one of the previously stable voltage/clock candidates to run
+final verification, or discard it and start over. A controlled stop is not added
+to the unsafe-voltage cache.
+
 ### A Q2RTX window appears
 
-The scan runs Q2RTX hidden via `gamescope --backend headless`. Without
-gamescope it falls back to an off-screen window, which can still show on some
-Wayland desktops. Install gamescope to keep it hidden. To watch it on purpose,
-add `--show-q2rtx-window`.
+The managed Q2RTX benchmark binary is headless and should not create an X11 or
+Wayland window. If a window appears, check that the managed PenguinBurner Q2RTX
+install is being used.
 
 ### Running on a headless server (no display)
 
-Install `gamescope` first. It is the only path that runs Q2RTX with no display
-server at all (`gamescope --backend headless` uses its own private offscreen
-compositor). The off-screen X11 fallback is not headless — it needs a live
-`$DISPLAY`, so on a display-less server the run fails to create a Vulkan
-surface. `gamescope` does pull in Wayland/wlroots/Xwayland libraries, but they
-are inert files and start no desktop or window. A lighter Wayland-free Xvfb
-path is planned; see `docs/dev/q2rtx-headless-xvfb-plan.md`.
+Install the normal NVIDIA Vulkan driver stack. The managed Q2RTX benchmark path
+uses the [headless Q2RTX fork](https://github.com/jpietek/Q2RTX-headless), so it
+does not need Steam, a desktop display server, or a compositor wrapper.
 
 ### I have more than one GPU
 

@@ -3,6 +3,12 @@
 Install the NVIDIA proprietary driver and CUDA first. PenguinBurner supports
 RTX 30 (Ampere), RTX 40 (Ada), and RTX 50 (Blackwell) cards.
 
+The driver must provide `libnvidia-ml.so.1` for NVML telemetry/GPU discovery,
+`libnvidia-api.so.1` for NVIDIA V/F curve control, the Vulkan runtime for Q2RTX,
+and `libcuda.so.1` for the CUDA companion test. PenguinBurner reads GPU identity
+and VRAM through NVML directly; the `nvidia-smi` command is useful for manual
+debugging but is not the GPU picker backend.
+
 ## pip (any distro)
 
 ```bash

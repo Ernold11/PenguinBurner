@@ -8,7 +8,7 @@ PenguinBurner is an NVIDIA GPU automatic undervolting tool. It helps you visuali
 
 The main mode is **Auto-UV**:
 PenguinBurner tests your Nvidia GPU under load, finds a stable undervolt, and
-saves it for normal foreground or daemon runtime. MSI Afterburner import is
+saves it for normal terminal or daemon runtime. MSI Afterburner import is
 still available as an optional fallback path.
 
 GPU undervolting is meant to make your graphics card consume significantly less
@@ -61,7 +61,7 @@ sudo ./penguin_burner.sh
 ```
 
 If no saved Auto-UV curve exists, PenguinBurner automatically starts the
-foreground Auto-UV scan. Keep it in the foreground while it searches; this is
+terminal Auto-UV scan. Keep it attached while it searches; this is
 intentional because it is testing voltage stability.
 
 ![Auto-UV result summary](docs/assets/auto_uv_result_summary_terminal.png)
@@ -71,7 +71,7 @@ Example Auto-UV result summary: before/after power draw, core clock, and efficie
 What Auto-UV does:
 
 1. Reset previous GPU tuning so the scan starts from the driver/default curve.
-2. Install the managed Q2RTX test workload automatically if it is missing. Q2RTX uses the freely available Quake II shareware timedemo with NVIDIA's Vulkan ray tracing renderer.
+2. Install the managed Q2RTX test workload automatically if it is missing. Q2RTX uses the freely available Quake II shareware demo data with PenguinBurner's headless Vulkan ray tracing benchmark binary.
 3. Measure the base loaded behavior: clock, voltage, power, temperature, fan speed, and FPS/W.
 4. Pick a safe target core clock and start lowering voltage one real V/F bin at a time.
 5. Test each candidate with Q2RTX plus CUDA load.
@@ -80,8 +80,8 @@ What Auto-UV does:
    keeps FPS within a `10%` floor of the previous stable probe, and does not
    collapse into idle or low-load telemetry.
 8. Keep scanning lower while power/efficiency still makes sense; stop when lower voltage no longer helps, a guardrail fails, or an unsafe point is reached.
-9. Run a final long verification, `600s` by default. If that long check fails, Auto-UV backs off to a safer voltage/curve and reruns the long verification; the final result is published only after the long verification completes.
-10. Return the GPU to the driver/default curve before the foreground scan exits. The saved curve is applied later by runtime or daemon mode.
+9. Run a final long verification, `300s` by default. If you stop the scan after stable checkpoints exist, PenguinBurner can offer those previously stable candidates so you can choose which target gets final verification. If the long check fails, Auto-UV backs off to a safer voltage/curve and reruns the long verification; the final result is published only after the long verification completes.
+10. Return the GPU to the driver/default curve before the scan exits. The saved curve is applied later by runtime or daemon mode.
 
 By default Auto-UV uses the GPU table's Eco-to-Max clock ratio as the loaded
 core-clock drop allowance. Unknown GPUs use `12.5%`. To force a `12%`
@@ -95,6 +95,11 @@ Undervolting can hang the GPU, crash the driver, freeze the display, or force a
 reboot. If the system crashes during an Auto-UV probe, PenguinBurner records the
 in-progress voltage as unsafe on the next run and will not test that voltage or
 lower voltages again unless you deliberately clear Auto-UV state.
+
+Stopping Auto-UV normally is different from crashing. After at least one stable
+checkpoint exists, a controlled stop can open the final-choice dialog and let you
+select one of the already-passed candidates for final verification. It does not
+mark the current voltage unsafe.
 
 After the scan, daemonize normal runtime:
 
@@ -115,7 +120,7 @@ Saved Auto-UV files are written under PenguinBurner's user config directory:
 - suggested fan curve
 - debug logs
 
-More details: [Auto-UV quick guide](docs/auto-uv.md).
+More details: [Auto-UV quick guide](docs/features/auto-uv.md).
 
 To export the saved Auto-UV V/F and fan curves as a complete Nvidia-only LACT
 config:
@@ -310,22 +315,19 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan
 - `--fan-curve-export`: with `--export-lact-config`, export only fan settings and omit LACT's `gpu_vf_curve`.
 - `--lact-gpu-id ID`: LACT GPU id for `--export-lact-config`; get it from `lact cli list-gpus`.
 - `--lact-max-vf-offset-mhz N`: maximum positive Nvidia V/F offset to emit for LACT; default `1000`, with exported clocks clamped to `base_mhz + N`.
-- `--auto-uv-final-seconds N`: final verification duration after the best curve is selected; default `600`.
-- `--auto-uv-short-seconds N`: base Q2RTX verification length; default `10` seconds, allowed range `10..60`. Deeper voltage tiers use 2x and 3x this value, with a shorter CUDA companion check after Q2RTX.
+- `--auto-uv-final-seconds N`: final verification duration after the best curve is selected; default `300`.
+- `--auto-uv-short-seconds N`: base Q2RTX verification length; default `10` seconds, allowed range `10..60`. Medium and deep voltage tiers use 2x and 2.5x this value; the CUDA companion uses a longer slot in the deep tier.
 - `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed during scan; default is the detected GPU table's Eco-to-Max clock ratio, or `12.5` for unknown GPUs.
 - `--auto-oc-target-voltage-mv N`: Performance Auto-OC voltage ceiling.
 - `--auto-oc-target-clock-mhz N`: Performance Auto-OC clock ceiling.
 - `--auto-uv-min-voltage-mv N`: lowest voltage bin Auto-UV may try; overrides the detected GPU table floor.
 - `--auto-uv-tail-rise-bins N`: number of V/F bins above the lock point that may rise after the flattened target; default depends on Auto-UV mode.
 - `--auto-uv-max-drop-pct N`: fallback voltage search depth when no GPU table floor or explicit min voltage is available; default `10.0`.
-- `--gpu-index N`: select the NVIDIA GPU index used for Auto-UV control, telemetry, Q2RTX, CUDA, and runtime actions. The Qt GPU dropdown lists detected indices.
+- `--gpu-index N`: select the NVIDIA GPU index used for Auto-UV control, telemetry, Q2RTX, CUDA, and runtime actions. The Qt GPU dropdown lists detected indices from NVML directly; `nvidia-smi` is not used as the picker backend.
 - `--stability-test`: run the Q2RTX plus CUDA stability workload directly and exit.
-- `--stability-seconds N`: duration for `--stability-test`; default `600`.
-- `--stability-width N` and `--stability-height N`: Q2RTX render size; defaults `2560x1440`.
-- `--show-q2rtx-window`: show the Q2RTX window instead of using hidden/headless mode.
+- `--stability-seconds N`: duration for `--stability-test`; default `300`.
+- `--stability-width N` and `--stability-height N`: Q2RTX render size; defaults to VRAM-based auto selection (`2560x1440` for GPUs with `<=8 GiB`, `3840x2160` above that or when VRAM cannot be read).
 - `--stability-log-dir PATH`: write `--stability-test` logs to a specific directory.
-- `--stability-q2rtx-dir PATH`: use an existing Q2RTX install/source directory instead of the managed install.
-- `--stability-q2rtx-binary PATH`: use an explicit Q2RTX executable path instead of the managed install.
 - `--check-latency-layer`: check Vulkan loader discovery for the opt-in PenguinBurner latency telemetry layer and print Steam launch options.
 
 The normal runtime also opens a latency telemetry socket at
@@ -380,8 +382,8 @@ Verification duration knobs:
   runs finish faster; longer runs are more trustworthy.
 - `--auto-uv-short-seconds N` controls the base verification length.
   The default `10` means shallow, medium, and deep candidate probes use
-  `10`, `20`, and `30` seconds of Q2RTX respectively. The CUDA companion
-  check is shorter than the Q2RTX run.
+  `10`, `20`, and `25` seconds of Q2RTX respectively. CUDA is skipped for
+  shallow probes, then uses `5` seconds for medium and `10` seconds for deep.
 
 Efficiency profile:
 
@@ -422,10 +424,6 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan \
 - `--afterburner-dir PATH`: path to the MSI Afterburner directory.
 - `--section NAME`: choose a saved Afterburner profile section, such as `Profile1`.
 - `--afterburner-device-profile PATH`: choose the exact Afterburner `Profiles/*.cfg` device file.
-- `--power-limit-override-w N`: cap the translated Afterburner power target in watts.
-- `--preserve-vf-below-mv N`: keep the base Linux V/F curve at this voltage and below while importing the tuned curve above it.
-- `--dangerously-skip-validation`: bypass normal Afterburner profile validation; advanced use only.
-- `--restore-defaults-from-config`: apply the imported Afterburner `Defaults` V/F curve and GPU policy, then exit.
 
 Example dry run:
 
@@ -436,11 +434,9 @@ Example dry run:
 ### Runtime And Daemon Options
 
 - `--daemonize`: start PenguinBurner as a transient `systemd` service.
-- `--foreground`: run the normal runtime in the foreground.
 - `--install-systemd-service`: install the boot-time systemd service.
 - `--uninstall-systemd-service`: remove the boot-time systemd service.
 - `--silent-fan-curve`: opt into PenguinBurner manual fan-curve control during runtime/daemon mode.
-- `--prefer-afterburner-curve`: prefer the imported Afterburner V/F curve over the saved Auto-UV curve during runtime/daemon mode.
 - `--config PATH`: use a specific runtime config path.
 - `--gpu-index N`: select a specific NVIDIA GPU.
 - `--debug-log`: write a verbose diagnostic log for the current operation.
@@ -452,30 +448,26 @@ Default Afterburner profile validation:
 - By default, the selected preset must contain a flattened tail that can be turned into a lock point.
 - That flattened lock point must be a real undervolt versus `Defaults` or `Startup` at the same clock, with at least `5mV` of margin.
 - If no saved preset passes those checks, PenguinBurner stops instead of guessing.
-- `--dangerously-skip-validation` bypasses the flat-tail and undervolt-margin checks and widens selection back to any saved manual preset.
-- This override is for advanced cases where you intentionally want a non-undervolt or otherwise unusual curve. It does not make the imported curve safe.
 
 ## Runtime launch
 
 - Use `penguin_burner.sh` as the single user entrypoint. It resolves the repo path itself, so you do not need to `cd` into the repository first.
-- Running `penguin_burner.sh` directly stays in the foreground by default.
+- Running `penguin_burner.sh` directly stays attached to the terminal by default.
 - On a clean first run, `sudo ./penguin_burner.sh` starts Auto-UV automatically. After a final Auto-UV curve exists, the same command runs normal foreground runtime using that saved curve.
 - The checked-in `PenguinBurner.service` file is only an example. The preferred path is `sudo ./penguin_burner.sh --install-systemd-service`, which writes a unit with the real absolute script path for the current checkout.
-- On the first interactive run with a newly configured Afterburner root, PenguinBurner automatically imports that root into its managed config, runs a dry-run preview, then prompts you to continue in foreground mode or daemonize later.
+- On the first interactive run with a newly configured Afterburner root, PenguinBurner automatically imports that root into its managed config, runs a dry-run preview, then prompts you to continue in the terminal or daemonize later.
 - `--dry-run` is the recommended first step. It parses the selected Afterburner root directory, prints concise summaries, and draws console charts for the V/F curve and fan curve without attempting GPU writes. It does not require sudo.
-- `--dangerously-skip-validation` can be combined with `--dry-run` when you want to inspect an unusual saved curve before allowing any GPU writes.
-- `--debug-log` can be combined with `--dry-run`, a first-time import, or foreground runtime testing when you need the full profile-discovery and parsing trail for an incompatible or otherwise unexpected MSI Afterburner export.
-- the extra debug payload is written to the debug log file only; it does not spam stdout in foreground mode and it does not add extra noise to the `systemd` journal
+- `--debug-log` can be combined with `--dry-run`, a first-time import, or terminal runtime testing when you need the full profile-discovery and parsing trail for an incompatible or otherwise unexpected MSI Afterburner export.
+- the extra debug payload is written to the debug log file only; it does not spam stdout during terminal runs and it does not add extra noise to the `systemd` journal
 - Actual runtime control and any real V/F, power-limit, persistence-mode, or optional fan changes should be treated as privileged operations and run with `sudo`.
 - Normal runtime and daemon mode do not control fans unless `--silent-fan-curve` is present.
 - Use `--daemonize` only when you explicitly want PenguinBurner to launch as a transient `systemd` service.
 - Use `--install-systemd-service` only when you explicitly want a persistent boot-time `systemd` service.
 - Use `--uninstall-systemd-service` to remove that persistent service again.
 - If `systemd` is unavailable, `--daemonize` exits with a clear error instead of pretending to background itself.
-- In foreground mode, logs go to stdout.
+- During direct terminal runs, logs go to stdout.
 - In daemonized mode, logs go to the `systemd` journal, not to a hardcoded file in the repository.
 - `--journal-hours N` changes the suggested `journalctl --since` window shown after daemonizing. The default view window is `4` hours.
-- Use `--foreground` only to force the current process path if you are already wrapping PenguinBurner in another launcher.
 
 Examples:
 
@@ -501,7 +493,7 @@ sudo ./penguin_burner.sh --install-systemd-service
 
 ```bash
 ./penguin_burner.sh --install-q2rtx
-./penguin_burner.sh --stability-test --stability-seconds 600
+./penguin_burner.sh --stability-test --stability-seconds 300
 ```
 
 ```bash
@@ -510,92 +502,48 @@ sudo journalctl -u PenguinBurner.service --since "-4 hours" -f
 
 ## Q2RTX Stability Test
 
-`--stability-test` runs a non-interactive Q2RTX timedemo workload and then exits.
+`--stability-test` runs a non-interactive Q2RTX benchmark workload and then exits.
 It is intentionally isolated from the normal fan-control runtime path.
 
 What it does:
 
-- uses fixed `2560x1440` render settings by default to keep the workload GPU-bound
-- uses `gamescope --backend headless` by default when available, which gives Q2RTX a real nested Vulkan target without a visible desktop window
-- falls back to moving the real Vulkan window off-screen when gamescope is unavailable; pass `--show-q2rtx-window` if you want to see it
+- uses VRAM-based render settings by default: `2560x1440` for GPUs with `<=8 GiB`, `3840x2160` above that or when VRAM cannot be read
+- launches PenguinBurner's [headless Q2RTX benchmark binary](https://github.com/jpietek/Q2RTX-headless) by default, so no desktop display server or compositor wrapper is needed
 - disables V-Sync and dynamic resolution scaling, pins the dynamic-resolution min/max scale to `100%`, disables FSR upscaling, leaves the render loop uncapped, and keeps sound off
 - forces heavy real-time RTX features on, including `pt_num_bounce_rays=2`, `pt_reflect_refract=8`, `pt_thick_glass=2`, `pt_caustics=1`, bloom, volumetric lighting, and the particle/beam/sprite paths
-- runs one short timedemo calibration pass, then repeats the built-in timedemo workload for the requested wall-clock duration
-- prefers a ready-made `q2demo1` timedemo from `pak0.pak` when shareware data is installed
-- parses each timedemo pass for exact `frames / seconds / fps` metrics
-- compares frame counts and FPS run-to-run so obvious regressions or unstable performance show up quickly
+- asks the benchmark binary for the requested measured duration; measurement starts when the demo actually begins
+- prefers a ready-made `q2demo1` demo from `pak0.pak` when shareware data is installed
+- reads benchmark events through the event pipe for exact hot-window `frames / seconds / fps` metrics
+- compares hot-window average FPS against the previous stable baseline so regressions above the configured floor fail the run
 - polls lightweight NVIDIA telemetry through NVML
 - records the Q2RTX stdout/stderr log to a file
-- marks the run as failed if a pass exits early, if timedemo metrics are missing, if frame counts drift, if FPS drops too far run-to-run, if fatal output patterns appear, or if NVIDIA Xid messages are detected after launch
+- marks the run as failed if the benchmark exits early, if benchmark metrics are missing or invalid, if hot-window FPS drops too far versus baseline, if fatal output patterns appear, if the selected GPU is idle, or if NVIDIA Xid messages are detected after launch
 
 ### Headless Q2RTX
 
-By default, Auto-UV and `--stability-test` try to run Q2RTX without showing a
-desktop window. PenguinBurner does this by launching Q2RTX inside:
+By default, Auto-UV and `--stability-test` run PenguinBurner's headless Q2RTX
+benchmark binary. This is not a fake low-resolution render: it still creates
+the configured Vulkan render target and runs the RTX workload, but it uses the
+[headless Q2RTX fork](https://github.com/jpietek/Q2RTX-headless) and does not
+need a desktop display server or compositor wrapper.
 
-```text
-gamescope --backend headless
-```
-
-This is not a fake low-resolution render. Q2RTX still creates a real Vulkan
-render target at the configured size, so the GPU workload remains useful for
-undervolt testing. The difference is that the window belongs to gamescope's
-private headless compositor, not to KDE, GNOME, X11, or Wayland on your desktop.
-
-If `gamescope` is not installed or cannot start, PenguinBurner falls back to a
-best-effort off-screen X11 window. That fallback may still be visible on some
-Wayland desktops because the compositor can clamp windows to the visible
-desktop.
-
-**Headless servers (no display):** install `gamescope` before running Auto-UV
-or `--stability-test` on a box with no X11/Wayland display. `gamescope
---backend headless` is the only path that runs Q2RTX without *any* display
-server — it renders into its own private offscreen compositor and shows
-nothing. The off-screen X11 fallback is **not** headless: it needs a live
-`$DISPLAY`, so on a display-less server it cannot create a Vulkan surface and
-the run fails. So on servers, treat `gamescope` as required:
-
-```bash
-sudo dnf install gamescope      # Fedora
-sudo pacman -S gamescope        # Arch
-```
-
-Note that `gamescope` pulls in a Wayland/wlroots stack (wlroots, libwayland,
-Xwayland, and X client libraries) as inert libraries — installing them does not
-start any desktop, session, or visible window. A lighter, Wayland-free Xvfb
-path is planned; see `docs/dev/q2rtx-headless-xvfb-plan.md`.
-
-To force a normal visible Q2RTX window for debugging:
-
-```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan --show-q2rtx-window
-```
+On a headless server, install the normal NVIDIA Vulkan driver stack and run the
+same command. There is no compositor package to install for the Q2RTX benchmark
+path.
 
 What it does not do yet:
 
 - it does not verify rendered pixels or detect subtle visual corruption
 - it does not score image quality or compare frame hashes
-- it is currently a practical "did repeated heavy timedemo passes complete with sane FPS behavior and without obvious driver faults" check
+- it is currently a practical "did the measured heavy benchmark window complete with sane FPS behavior and without obvious driver faults" check
 
-If Q2RTX is not installed yet, run `./penguin_burner.sh --install-q2rtx`. That downloads the latest official Linux tar.gz from the NVIDIA GitHub releases into PenguinBurner's managed user cache/data directories, which PenguinBurner auto-detects first. The Auto-UV path also performs this install automatically when the managed Q2RTX install is missing, printing the lookup, download, extraction, and runtime-library progress to stdout. The current official Linux tarball already includes the freely available Quake II shareware data, NVIDIA's Vulkan ray tracing renderer, and the ready-made `q2demo1` timedemo.
+If Q2RTX is not installed yet, run `./penguin_burner.sh --install-q2rtx`. That downloads PenguinBurner's latest headless Q2RTX release from GitHub, then downloads the official NVIDIA Q2RTX shareware archive only as a data source. PenguinBurner extracts the required `baseq2` demo data (`pak0.pak`, `blue_noise.pkz`, `q2rtx_media.pkz`, and `shaders.pkz`) and ignores NVIDIA's bundled executable and compatibility libraries. The Auto-UV path also performs this install automatically when the managed Q2RTX install is missing or older than the latest managed release, printing the download, extraction, and runtime-library progress to stdout. Steam is not used.
 
-To use your own Q2RTX install instead:
-
-```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan --stability-q2rtx-dir /path/to/q2rtx
-```
-
-or point directly at the executable:
-
-```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan --stability-q2rtx-binary /path/to/q2rtx
-```
-
-By default PenguinBurner auto-selects a ready-made timedemo, first looking for demos on disk and then inside `pak0.pak`, preferring demos like `q2demo1`.
+By default PenguinBurner auto-selects a ready-made demo, first looking for demos on disk and then inside `pak0.pak`, preferring demos like `q2demo1`.
 
 ## Auto-UV Voltage Scan
 
-Auto-UV is foreground-only while scanning. Start it, let it finish, then
+Auto-UV stays attached to the terminal while scanning. Start it, let it finish, then
 daemonize normal runtime.
 
 ```bash
@@ -603,8 +551,10 @@ sudo ./penguin_burner.sh
 ```
 
 The scan resets old clock offsets, measures real loaded behavior, tests lower
-voltages one by one, and writes a final curve only after verification. It also
-remembers unsafe voltages so a later run does not repeat a bad point.
+voltages one by one, and writes a final curve only after verification. It saves
+stable checkpoints as it goes, so a controlled stop can still offer those
+previously stable targets for final verification. It also remembers unsafe
+voltages so a later run does not repeat a bad point.
 
 After the scan, run normal runtime:
 
@@ -618,7 +568,7 @@ If you also want PenguinBurner to apply the saved fan curve during runtime:
 sudo ./penguin_burner.sh --daemonize --silent-fan-curve
 ```
 
-Detailed user guide: [Auto-UV quick guide](docs/auto-uv.md).
+Detailed user guide: [Auto-UV quick guide](docs/features/auto-uv.md).
 
 ## Dry Run First
 
@@ -644,8 +594,8 @@ What dry-run does not do:
 Suggested workflow:
 
 1. Run `--dry-run` until the preview matches what you expect.
-2. Try different saved sections, device profiles, or a different preserve threshold if needed.
-3. Only then run the real foreground or `systemd` path with `sudo`.
+2. Try different saved sections or device profiles if needed.
+3. Only then run the real terminal or `systemd` path with `sudo`.
 
 If parsing fails, import behaves unexpectedly, or the wrong Afterburner profile is being selected, re-run with
 `--debug-log`. That writes a timestamped file under
@@ -653,7 +603,7 @@ If parsing fails, import behaves unexpectedly, or the wrong Afterburner profile 
 the selected config file under `debug-logs/`. The log includes the discovered device
 profiles, per-section validation results, raw section key dumps, V/F blob and
 fan-curve blob metadata, per-point Linux V/F translation details, chosen fan
-profile, foreground runtime diagnostics, and traceback details for parsing errors.
+profile, terminal runtime diagnostics, and traceback details for parsing errors.
 
 If something does not work with your MSI Afterburner export, please open an issue at:
 
@@ -674,14 +624,6 @@ Examples:
 
 ```bash
 ./penguin_burner.sh --dry-run --afterburner-dir "$AFTERBURNER_ROOT" --section <saved-section>
-```
-
-```bash
-./penguin_burner.sh --dry-run --afterburner-dir "$AFTERBURNER_ROOT" --preserve-vf-below-mv 800
-```
-
-```bash
-./penguin_burner.sh --dry-run --afterburner-dir "$AFTERBURNER_ROOT" --section <saved-section> --dangerously-skip-validation
 ```
 
 ```bash
@@ -732,7 +674,7 @@ Once you leave `--dry-run`, PenguinBurner can perform operations such as:
 Those paths can hang the GPU, crash the driver, freeze the display, or require a
 reboot. Treat them as experimental tuning operations.
 
-Auto-UV intentionally runs in the foreground while scanning because it is testing
+Auto-UV intentionally stays attached while scanning because it is testing
 crash-prone voltage points. During each risky voltage probe it writes an
 active-probe marker and removes it during normal cleanup, including Ctrl-C and
 SIGTERM. If the machine hangs, reboots, loses power, or the process is forcibly
@@ -741,6 +683,9 @@ treated as an abrupt previous probe end, that voltage is marked unsafe, and
 future scans avoid that voltage and lower voltages unless Auto-UV state is
 cleared.
 
-For actual fan or V/F curve changes, use `sudo`. If the preview is not exactly what you want, go back to `--dry-run` and keep iterating there.
+The GUI Stop button is a controlled stop. Once Auto-UV has at least one stable
+checkpoint, stopping opens the same final-choice path and lets you final-verify
+one of the already-passed candidates. Controlled stops are not written as unsafe
+voltage entries.
 
-`--dangerously-skip-validation` only removes the saved-profile validation gate. It does not make an unusual or aggressive curve safe to apply.
+For actual fan or V/F curve changes, use `sudo`. If the preview is not exactly what you want, go back to `--dry-run` and keep iterating there.

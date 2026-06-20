@@ -6,8 +6,9 @@ comparison.
 
 ## Core
 
-1. **[Automatic Tuning](./auto-uv.md)** — the Q2RTX + CUDA undervolt sweep that
-   finds and verifies a stable, efficient V/F curve.
+1. **[Automatic Tuning](./auto-uv.md)** — the managed headless Q2RTX + CUDA
+   undervolt sweep that can stop/resume and final-verify a stable, efficient
+   V/F curve.
 2. **[Adaptive Undervolting](./adaptive-uv.md)** — switch between tiered profiles
    at runtime based on frame-rate pacing.
 3. **[Performance Overlay](./overlay.md)** — in-game FPS, pre-frame-gen FPS,
