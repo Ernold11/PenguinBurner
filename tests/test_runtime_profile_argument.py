@@ -18,7 +18,7 @@ def test_selector_reads_space_separated_value() -> None:
 
 
 def test_selector_reads_equals_form() -> None:
-    argv = ["--auto-uv-profile=active", "--foreground"]
+    argv = ["--auto-uv-profile=active", "--daemonize"]
     assert runtime_profile_selector_from_argv(argv) == "active"
 
 
@@ -28,7 +28,7 @@ def test_selector_trailing_flag_without_value_is_empty() -> None:
 
 
 def test_selector_absent_returns_empty() -> None:
-    assert runtime_profile_selector_from_argv(["--foreground"]) == ""
+    assert runtime_profile_selector_from_argv(["--daemonize"]) == ""
 
 
 def test_allows_unverified_only_with_stability_test() -> None:

@@ -12,8 +12,6 @@ def _args(**overrides):
         "afterburner_dir": "",
         "profile_section": "",
         "afterburner_device_profile": "",
-        "power_limit_override_w": None,
-        "preserve_base_below_mv": None,
         "auto_uv_min_voltage_mv": None,
         "auto_uv_max_drop_pct": None,
         "auto_uv_final_seconds": None,
@@ -27,7 +25,6 @@ def _args(**overrides):
         "auto_uv_max_clock_drop_pct": None,
         "auto_uv_mode": None,
         "auto_uv_require_final_choice": False,
-        "dangerously_skip_validation": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -51,8 +48,6 @@ def test_effective_runtime_options_apply_cli_overrides_and_clamps(tmp_path) -> N
             afterburner_dir=str(tmp_path),
             profile_section=" Profile1 ",
             afterburner_device_profile="GPU0.cfg",
-            power_limit_override_w=0,
-            preserve_base_below_mv=825,
             auto_uv_min_voltage_mv=850,
             auto_uv_max_drop_pct=-1.0,
             auto_uv_final_seconds=0,
@@ -66,7 +61,6 @@ def test_effective_runtime_options_apply_cli_overrides_and_clamps(tmp_path) -> N
             auto_uv_max_clock_drop_pct=-4.0,
             auto_uv_mode="performance",
             auto_uv_require_final_choice=True,
-            dangerously_skip_validation=True,
         ),
         {},
     )
@@ -74,8 +68,6 @@ def test_effective_runtime_options_apply_cli_overrides_and_clamps(tmp_path) -> N
     assert effective["afterburner_root"] == str(tmp_path)
     assert effective["afterburner_profile"] == "Profile1"
     assert effective["afterburner_device_profile"] == "GPU0.cfg"
-    assert effective["power_limit_override_w"] is None
-    assert effective["preserve_base_below_mv"] == 825
     assert effective["auto_uv_min_voltage_mv"] == 850
     assert effective["auto_uv_max_drop_pct"] is None
     assert effective["auto_uv_final_seconds"] is None
@@ -92,7 +84,6 @@ def test_effective_runtime_options_apply_cli_overrides_and_clamps(tmp_path) -> N
     assert effective["auto_uv_max_clock_drop_pct"] == 0.0
     assert effective["auto_uv_mode"] == "performance"
     assert effective["auto_uv_require_final_choice"] is True
-    assert effective["dangerously_skip_validation"] is True
 
 
 def test_effective_runtime_options_balanced_mode_uses_balanced_tail_default() -> None:

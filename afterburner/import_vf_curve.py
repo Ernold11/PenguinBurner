@@ -117,15 +117,6 @@ def load_afterburner_runtime_options(config_path):
         "afterburner_device_profile": str(
             gpu.get("afterburner_device_profile", "")
         ).strip(),
-        "power_limit_override_w": _coerce_optional_positive_int(
-            gpu.get("afterburner_power_limit_override_w")
-        ),
-        "preserve_base_below_mv": _coerce_optional_positive_int(
-            gpu.get(
-                "afterburner_preserve_base_below_mv",
-                gpu.get("afterburner_preserve_vanilla_below_mv"),
-            )
-        ),
         "auto_uv_max_drop_pct": _coerce_optional_positive_float(
             gpu.get("afterburner_auto_uv_max_drop_pct")
         ),
@@ -134,9 +125,6 @@ def load_afterburner_runtime_options(config_path):
         ),
         "auto_uv_efficiency_stop_streak": _coerce_optional_nonnegative_int(
             gpu.get("auto_uv_efficiency_stop_streak")
-        ),
-        "dangerously_skip_validation": _coerce_optional_bool(
-            gpu.get("afterburner_dangerously_skip_validation")
         ),
     }
 
@@ -169,21 +157,12 @@ def load_offsets_payload(payload_path):
     return json.loads(Path(payload_path).read_text(encoding="utf-8", errors="replace"))
 
 
-def translated_linux_profile_is_current(
-    payload, *, curve_sha256, preserve_base_below_mv=None
-):
+def translated_linux_profile_is_current(payload, *, curve_sha256):
     if int(payload.get("schema_version", 0)) != TRANSLATED_LINUX_PROFILE_SCHEMA_VERSION:
         return False
     if (
         str(payload.get("curve_sha256", "")).strip().lower()
         != str(curve_sha256).lower()
-    ):
-        return False
-    payload_preserve_base_below_mv = _coerce_optional_positive_int(
-        payload.get("preserve_base_below_mv", payload.get("preserve_vanilla_below_mv"))
-    )
-    if payload_preserve_base_below_mv != _coerce_optional_positive_int(
-        preserve_base_below_mv
     ):
         return False
     return isinstance(payload.get("points"), list) and bool(payload["points"])
@@ -255,7 +234,6 @@ def write_translated_linux_profile(
     curve_sha256,
     translation_mode,
     plan,
-    preserve_base_below_mv=None,
     materialization=None,
     gpu_policy=None,
     source_profile_path=None,
@@ -273,9 +251,6 @@ def write_translated_linux_profile(
         "source_section": str(section),
         "curve_sha256": str(curve_sha256),
         "translation_mode": str(translation_mode),
-        "preserve_base_below_mv": _coerce_optional_positive_int(
-            preserve_base_below_mv
-        ),
         "source_linux_profile_path": (
             str(Path(source_profile_path)) if source_profile_path is not None else ""
         ),
@@ -309,12 +284,10 @@ def write_translated_linux_profile(
     return output_path
 
 
-def build_plan(reader, afterburner_points, *, preserve_base_below_mv=None):
+def build_plan(reader, afterburner_points):
     ab_by_voltage = point_map_by_voltage(afterburner_points)
     plan = []
     missing_in_afterburner = []
-    preserve_base_below_mv = _coerce_optional_positive_int(preserve_base_below_mv)
-
     for point in reader.editable_core_points():
         voltage_mv = point["voltage_uv"] // 1000
         base_mhz = point["base_freq_khz"] // 1000
@@ -324,12 +297,7 @@ def build_plan(reader, afterburner_points, *, preserve_base_below_mv=None):
             missing_in_afterburner.append(voltage_mv)
             continue
 
-        preserve_base = preserve_base_below_mv is not None and int(
-            voltage_mv
-        ) <= int(preserve_base_below_mv)
-        target_mhz = (
-            int(base_mhz) if preserve_base else int(round(ab_point["frequency_mhz"]))
-        )
+        target_mhz = int(round(ab_point["frequency_mhz"]))
         new_offset_mhz = target_mhz - base_mhz
         plan.append(
             {
@@ -339,7 +307,7 @@ def build_plan(reader, afterburner_points, *, preserve_base_below_mv=None):
                 "target_mhz": int(target_mhz),
                 "current_offset_mhz": int(current_offset_mhz),
                 "new_offset_mhz": int(new_offset_mhz),
-                "preserve_base": bool(preserve_base),
+                "preserve_base": False,
             }
         )
 
@@ -361,7 +329,6 @@ def resolve_afterburner_curve_translation(
     section,
     allow_unsafe_curve=False,
     gpu_policy=None,
-    preserve_base_below_mv=None,
 ):
     profile_path = Path(profile_path)
     curve_hex = load_afterburner_vfcurve_hex(profile_path=profile_path, section=section)
@@ -381,8 +348,6 @@ def resolve_afterburner_curve_translation(
         allow_unsafe=allow_unsafe_curve,
     )
     materialization = materialize_afterburner_vfcurve(afterburner_points)
-    preserve_base_below_mv = _coerce_optional_positive_int(preserve_base_below_mv)
-
     translation_mode = ""
     translation_origin = ""
     missing_in_afterburner = []
@@ -396,7 +361,6 @@ def resolve_afterburner_curve_translation(
         if translated_linux_profile_is_current(
             payload,
             curve_sha256=curve_sha256,
-            preserve_base_below_mv=preserve_base_below_mv,
         ):
             plan, missing_indices, voltage_mismatches = build_plan_from_offsets_payload(
                 reader, payload
@@ -432,7 +396,6 @@ def resolve_afterburner_curve_translation(
         plan, missing_in_afterburner = build_plan(
             reader,
             materialization["points"],
-            preserve_base_below_mv=preserve_base_below_mv,
         )
         if materialization["mode"] == "adjusted-anchor-cap":
             translation_mode = "adjusted-anchor-cap"
@@ -452,7 +415,6 @@ def resolve_afterburner_curve_translation(
             curve_sha256=curve_sha256,
             translation_mode=translation_mode,
             plan=plan,
-            preserve_base_below_mv=preserve_base_below_mv,
             materialization=materialization,
             gpu_policy=gpu_policy,
             source_profile_path=source_payload_path,
@@ -486,7 +448,6 @@ def resolve_afterburner_curve_translation(
         "voltage_mismatches": voltage_mismatches,
         "materialization": materialization,
         "gpu_policy": gpu_policy,
-        "preserve_base_below_mv": preserve_base_below_mv,
     }
 
 
@@ -496,7 +457,6 @@ def apply_afterburner_curve_to_reader(
     section,
     allow_unsafe_curve=False,
     gpu_policy=None,
-    preserve_base_below_mv=None,
 ):
     result = resolve_afterburner_curve_translation(
         reader,
@@ -504,7 +464,6 @@ def apply_afterburner_curve_to_reader(
         section=section,
         allow_unsafe_curve=allow_unsafe_curve,
         gpu_policy=gpu_policy,
-        preserve_base_below_mv=preserve_base_below_mv,
     )
 
     if result["changed_points"]:
@@ -619,24 +578,12 @@ def _persist_afterburner_runtime_state(
 
     for key in LEGACY_GPU_CONFIG_KEYS:
         gpu.pop(key, None)
+    gpu.pop("afterburner_power_limit_override_w", None)
+    gpu.pop("afterburner_preserve_base_below_mv", None)
+    gpu.pop("afterburner_preserve_vanilla_below_mv", None)
+    gpu.pop("afterburner_dangerously_skip_validation", None)
 
     if runtime_options is not None:
-        power_limit_override_w = runtime_options.get("power_limit_override_w")
-        if power_limit_override_w is not None:
-            gpu["afterburner_power_limit_override_w"] = int(power_limit_override_w)
-        else:
-            gpu.pop("afterburner_power_limit_override_w", None)
-        preserve_base_below_mv = runtime_options.get(
-            "preserve_base_below_mv", runtime_options.get("preserve_vanilla_below_mv")
-        )
-        if preserve_base_below_mv is not None:
-            gpu["afterburner_preserve_base_below_mv"] = int(
-                preserve_base_below_mv
-            )
-            gpu.pop("afterburner_preserve_vanilla_below_mv", None)
-        else:
-            gpu.pop("afterburner_preserve_base_below_mv", None)
-            gpu.pop("afterburner_preserve_vanilla_below_mv", None)
         auto_uv_max_drop_pct = _coerce_optional_positive_float(
             runtime_options.get("auto_uv_max_drop_pct")
         )
@@ -662,13 +609,6 @@ def _persist_afterburner_runtime_state(
         gpu.pop("auto_uv_oc_budget_ratio", None)
         gpu.pop("auto_uv_overclock_budget_ratio", None)
         gpu.pop("auto_uv_clock_bump_budget_ratio", None)
-        dangerously_skip_validation = _coerce_optional_bool(
-            runtime_options.get("dangerously_skip_validation")
-        )
-        if dangerously_skip_validation:
-            gpu["afterburner_dangerously_skip_validation"] = True
-        else:
-            gpu.pop("afterburner_dangerously_skip_validation", None)
 
     write_config(
         Path(config_path),
@@ -793,38 +733,6 @@ def main() -> int:
         action="store_true",
         help="Do not persist the Afterburner VF source into the runtime config",
     )
-    parser.add_argument(
-        "--power-limit-override-w",
-        type=int,
-        default=None,
-        help="Optional manual power-limit cap in watts; defaults to the translated Afterburner target",
-    )
-    parser.add_argument(
-        "--preserve-vf-below-mv",
-        "--preserve-base-vf-below-mv",
-        dest="preserve_base_below_mv",
-        type=int,
-        default=None,
-        help=(
-            "Keep the base Linux VF curve at and below this inclusive "
-            "voltage; useful if repeated Afterburner curve edits disturbed "
-            "idle or low-voltage scaling"
-        ),
-    )
-    parser.add_argument(
-        "--preserve-vanilla-vf-below-mv",
-        dest="preserve_base_below_mv",
-        type=int,
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--dangerously-skip-validation",
-        action="store_true",
-        help=(
-            "Bypass the default flat-tail and undervolt checks when selecting "
-            "the saved Afterburner profile; advanced and not recommended"
-        ),
-    )
     args = parser.parse_args()
 
     reader = create_hidden_vf_curve_reader(gpu_index=args.gpu_index)
@@ -838,20 +746,6 @@ def main() -> int:
         )
     if args.profile_section.strip():
         runtime_options["afterburner_profile"] = str(args.profile_section).strip()
-    if args.power_limit_override_w is not None:
-        runtime_options["power_limit_override_w"] = (
-            int(args.power_limit_override_w)
-            if int(args.power_limit_override_w) > 0
-            else None
-        )
-    if args.preserve_base_below_mv is not None:
-        runtime_options["preserve_base_below_mv"] = (
-            int(args.preserve_base_below_mv)
-            if int(args.preserve_base_below_mv) > 0
-            else None
-        )
-    if args.dangerously_skip_validation:
-        runtime_options["dangerously_skip_validation"] = True
 
     try:
         if args.restore_file:
@@ -877,9 +771,6 @@ def main() -> int:
             section=runtime_options.get("afterburner_profile") or None,
             device_profile_hint=runtime_options.get("afterburner_device_profile")
             or None,
-            dangerously_skip_validation=bool(
-                runtime_options.get("dangerously_skip_validation")
-            ),
         )
         profile_settings = load_afterburner_profile_settings(
             profile_path=source["profile_path"],
@@ -888,7 +779,6 @@ def main() -> int:
         translated_gpu_policy = translate_afterburner_gpu_policy(
             profile_settings,
             power_limits=policy_controller.query_power_limits(),
-            power_limit_cap_w=runtime_options["power_limit_override_w"],
         )
 
         result = resolve_afterburner_curve_translation(
@@ -897,7 +787,6 @@ def main() -> int:
             section=source["section"],
             allow_unsafe_curve=args.allow_unsafe_curve,
             gpu_policy=translated_gpu_policy,
-            preserve_base_below_mv=runtime_options["preserve_base_below_mv"],
         )
         flatten_target = derive_afterburner_dynamic_lock(
             result["materialization"]["points"]
@@ -924,11 +813,6 @@ def main() -> int:
             "Flatten validation: "
             f"{describe_afterburner_flatten_validation(source['section_info'].get('flatten_validation'))}"
         )
-        if source.get("dangerously_skip_validation"):
-            print(
-                "Profile validation override: enabled; skipping the default flat-tail "
-                "and undervolt checks against Defaults/Startup."
-            )
         print(
             f"Curve analysis: {describe_afterburner_vfcurve_analysis(result['analysis'])}"
         )
@@ -947,11 +831,6 @@ def main() -> int:
             f"Linux editable core points={reader.summary()['editable_core_points']} "
             f"matched={len(result['plan'])}"
         )
-        if result["preserve_base_below_mv"] is not None:
-            print(
-                "Base preserve: "
-                f"base curve kept at and below {int(result['preserve_base_below_mv'])}mV (inclusive)"
-            )
         if result["missing_in_afterburner"]:
             print(
                 "Missing voltage bins in Afterburner curve: "
@@ -989,7 +868,6 @@ def main() -> int:
             section=source["section"],
             allow_unsafe_curve=args.allow_unsafe_curve,
             gpu_policy=result["gpu_policy"],
-            preserve_base_below_mv=result["preserve_base_below_mv"],
         )
         print(
             f"Applied GPU policy: {describe_translated_gpu_policy(result['gpu_policy'])}"

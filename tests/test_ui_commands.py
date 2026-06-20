@@ -21,6 +21,7 @@ from ui.dialogs.final_choice import (
     FINAL_CHOICE_FPSW_SORT_COLUMN,
     best_final_choice_candidate_id as _best_final_choice_candidate_id,
     create_final_choice_table as _create_final_choice_table,
+    final_choice_shows_oc_column as _final_choice_shows_oc_column,
     final_choice_sort_column_for_mode as _final_choice_sort_column_for_mode,
     final_choice_intro_text as _final_choice_intro_text,
     sort_candidates_for_final_choice as _sort_candidates_for_final_choice,
@@ -159,6 +160,7 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert command[command.index("--auto-oc-target-voltage-mv") + 1] == "925"
     assert "--auto-oc-target-clock-mhz" in command
     assert command[command.index("--auto-oc-target-clock-mhz") + 1] == "2670"
+    assert "--power-limit-override-w" not in command
     assert "--yolo" not in command
     assert "--auto-uv-efficiency-stop-streak" not in command
     assert "--auto-uv-min-efficiency-stop-drop-pct" not in command
@@ -213,19 +215,19 @@ def test_probe_failure_labels_distinguish_recoverable_and_fatal_reasons() -> Non
             "failure_kind": "low-clock",
             "reason": "average busy core clock below floor",
         }
-    ) == "Clock too low"
+    ) == "Failed"
     assert _probe_failure_label(
         {
             "decision": "fail",
             "failure_kind": "fps-regression",
-            "reason": "timedemo single-run FPS below floor current=79 floor=80",
+            "reason": "single-run FPS below floor current=79 floor=80",
         }
     ) == "Single run FPS low"
     assert _probe_failure_label(
         {
             "decision": "fail",
             "failure_kind": "fps-regression",
-            "reason": "timedemo average FPS below floor current=89 floor=90",
+            "reason": "benchmark average FPS below floor current=89 floor=90",
         }
     ) == "Average FPS low"
     assert _probe_failure_label(
@@ -357,20 +359,20 @@ def test_ui_profile_delete_command_uses_privileged_launcher(monkeypatch) -> None
     assert "/home/user/profile.json" in command
 
 
-def test_ui_runtime_command_can_prefer_afterburner_curve(monkeypatch) -> None:
+def test_ui_runtime_command_uses_auto_uv_profile_without_afterburner_flag(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
 
     command = commands.runtime_profile_command(
         "daemonize",
-        prefer_afterburner_curve=True,
+        profile_selector="profile-a",
         silent_fan_curve=True,
         gpu_index=1,
     )
 
     assert "--daemonize" in command
-    assert "--prefer-afterburner-curve" in command
+    assert "--prefer-afterburner-curve" not in command
     assert "--silent-fan-curve" in command
-    assert "--auto-uv-profile" not in command
+    assert command[command.index("--auto-uv-profile") + 1] == "profile-a"
     assert command[command.index("--gpu-index") + 1] == "1"
 
 
@@ -472,6 +474,22 @@ def test_final_choice_user_stop_intro_mentions_previous_stable_metric() -> None:
     assert "highest FPS" in performance_text
 
 
+def test_final_choice_previous_crash_intro_includes_prior_decision() -> None:
+    text = _final_choice_intro_text(
+        "performance",
+        request_reason="previous-crash",
+        recovery_decision={
+            "candidate_voltage_mv": 875,
+            "lock_clock_mhz": 2910,
+            "decision": "Device lost!",
+        },
+    )
+
+    assert "resume from a safer voltage bin" in text
+    assert "875mV@2910MHz" in text
+    assert "Device lost!" in text
+
+
 def test_backend_final_choice_performance_mode_sorts_by_fps() -> None:
     candidates = [
         {
@@ -545,12 +563,34 @@ def test_backend_final_choice_summary_includes_baseline_delta_metrics() -> None:
         },
         base_probe=SimpleNamespace(
             avg_fps=150.0,
+            avg_power_w=300.0,
             efficiency_fps_per_w=0.50,
         ),
     )
 
     assert summary["base_avg_fps"] == 150.0
+    assert summary["base_avg_power_w"] == 300.0
     assert summary["base_efficiency_fps_per_w"] == 0.50
+
+
+def test_backend_final_choice_summary_includes_core_oc_above_baseline() -> None:
+    summary = _candidate_selection_summary(
+        {
+            "candidate_id": "resume",
+            "candidate_voltage_mv": 885,
+            "lock_clock_mhz": 2910,
+            "avg_fps": 160.0,
+            "efficiency_fps_per_w": 0.75,
+        },
+        base_probe=SimpleNamespace(
+            avg_fps=150.0,
+            avg_core_clock_mhz=2700.0,
+            efficiency_fps_per_w=0.50,
+        ),
+    )
+
+    assert summary["base_avg_core_clock_mhz"] == 2700.0
+    assert summary["core_oc_mhz"] == 210
 
 
 def test_final_choice_table_default_sort_and_header_toggles() -> None:
@@ -612,6 +652,100 @@ def test_final_choice_table_default_sort_and_header_toggles() -> None:
     assert row_ids() == ["fast", "efficient"]
 
 
+def test_previous_crash_table_preserves_failed_run_order() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    candidates = [
+        {
+            "candidate_id": "875mv-2897mhz",
+            "candidate_voltage_mv": 875,
+            "lock_clock_mhz": 2897,
+            "avg_fps": 150.0,
+        },
+        {
+            "candidate_id": "885mv-2873mhz",
+            "candidate_voltage_mv": 885,
+            "lock_clock_mhz": 2873,
+            "avg_fps": 180.0,
+        },
+        {
+            "candidate_id": "900mv-2786mhz",
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2786,
+            "avg_fps": 170.0,
+        },
+    ]
+
+    table = _create_final_choice_table(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        candidates=candidates,
+        default_candidate_id="885mv-2873mhz",
+        default_sort_column=None,
+        auto_uv_mode="performance",
+        request_reason="previous-crash",
+    )
+
+    row_ids = [
+        str(table.item(row, 0).data(QtCore.Qt.UserRole))
+        for row in range(table.rowCount())
+    ]
+
+    assert row_ids == ["875mv-2897mhz", "885mv-2873mhz", "900mv-2786mhz"]
+    assert table.horizontalHeader().isSortIndicatorShown() is False
+
+
+def test_final_choice_oc_column_only_visible_for_performance() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    candidates = [
+        {
+            "candidate_id": "resume",
+            "candidate_voltage_mv": 885,
+            "lock_clock_mhz": 2910,
+            "core_oc_mhz": 210,
+            "base_avg_core_clock_mhz": 2700.0,
+            "avg_core_clock_mhz": 2890.0,
+            "avg_fps": 160.0,
+            "efficiency_fps_per_w": 0.75,
+            "avg_power_w": 200.0,
+        }
+    ]
+
+    performance_table = _create_final_choice_table(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        candidates=candidates,
+        default_candidate_id="resume",
+        auto_uv_mode="performance",
+    )
+    efficiency_table = _create_final_choice_table(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        candidates=candidates,
+        default_candidate_id="resume",
+        auto_uv_mode="efficiency",
+    )
+
+    assert _final_choice_shows_oc_column("performance") is True
+    assert _final_choice_shows_oc_column("efficiency") is False
+    assert performance_table.isColumnHidden(2) is False
+    assert performance_table.item(0, 2).text() == "+210"
+    assert efficiency_table.isColumnHidden(2) is True
+
+
 def test_final_choice_table_uses_profile_delta_rendering_for_fps_columns() -> None:
     import os
 
@@ -632,6 +766,7 @@ def test_final_choice_table_uses_profile_delta_rendering_for_fps_columns() -> No
             "efficiency_fps_per_w": 0.75,
             "base_efficiency_fps_per_w": 0.50,
             "avg_power_w": 200.0,
+            "base_avg_power_w": 250.0,
         },
         {
             "candidate_id": "regressed",
@@ -642,7 +777,8 @@ def test_final_choice_table_uses_profile_delta_rendering_for_fps_columns() -> No
             "base_avg_fps": 150.0,
             "efficiency_fps_per_w": 0.45,
             "base_efficiency_fps_per_w": 0.50,
-            "avg_power_w": 246.0,
+            "avg_power_w": 270.0,
+            "base_avg_power_w": 250.0,
         },
     ]
 
@@ -665,17 +801,23 @@ def test_final_choice_table_uses_profile_delta_rendering_for_fps_columns() -> No
 
     efficient_fpsw = item_for("efficient", FINAL_CHOICE_FPSW_SORT_COLUMN)
     efficient_fps = item_for("efficient", FINAL_CHOICE_FPS_SORT_COLUMN)
+    efficient_power = item_for("efficient", 6)
     regressed_fpsw = item_for("regressed", FINAL_CHOICE_FPSW_SORT_COLUMN)
     regressed_fps = item_for("regressed", FINAL_CHOICE_FPS_SORT_COLUMN)
+    regressed_power = item_for("regressed", 6)
 
     assert efficient_fpsw.text() == "0.75 (+50.00%)"
     assert efficient_fps.text() == "160.00 (+6.67%)"
+    assert efficient_power.text() == "200.00 (-20.00%)"
     assert regressed_fpsw.text() == "0.45 (-10.00%)"
     assert regressed_fps.text() == "140.00 (-6.67%)"
+    assert regressed_power.text() == "270.00 (+8.00%)"
     assert efficient_fpsw.foreground().color().name() == "#55d27a"
     assert efficient_fps.foreground().color().name() == "#55d27a"
+    assert efficient_power.foreground().color().name() == "#55d27a"
     assert regressed_fpsw.foreground().color().name() == "#ff6b6b"
     assert regressed_fps.foreground().color().name() == "#ff6b6b"
+    assert regressed_power.foreground().color().name() == "#ff6b6b"
 
 
 def test_start_auto_uv_button_uses_orange_without_changing_primary_green() -> None:
@@ -738,21 +880,6 @@ def test_ui_profile_verify_command_can_override_runtime_gpu_index(monkeypatch) -
     )
 
     assert command[command.index("--gpu-index") + 1] == "1"
-
-
-def test_ui_profile_verify_command_can_use_afterburner_profile(monkeypatch) -> None:
-    monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
-
-    command = commands.profile_verify_command(
-        profile_selector="ignored",
-        duration_s=900,
-        prefer_afterburner_curve=True,
-    )
-
-    assert "--stability-test" in command
-    assert command[command.index("--stability-seconds") + 1] == "900"
-    assert "--prefer-afterburner-curve" in command
-    assert "--auto-uv-profile" not in command
 
 
 def test_ui_profile_verify_command_can_run_q2rtx_only(monkeypatch) -> None:
@@ -1116,7 +1243,7 @@ def test_running_status_with_duration_uses_seconds_progress() -> None:
 
     assert widget is not None
     assert widget.format() == "0s / 32s"
-    assert table.widget.item(0, table.DECISION_COLUMN).text() == "running"
+    assert table.widget.item(0, table.DECISION_COLUMN).text() == "Running"
     assert table.widget.item(0, table.STATUS_COLUMN).text() == ""
 
     table.update_probe_progress(
@@ -1174,6 +1301,36 @@ def test_probe_result_reuses_running_row_and_keeps_seconds_progress() -> None:
     assert widget.format() == "32s / 32s"
 
 
+def test_probe_failure_result_is_generic_while_status_keeps_detail() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    from ui.components.runs_table import RunsTable
+
+    table = RunsTable(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    table.add_probe_result(
+        {
+            "stage": "candidate",
+            "voltage_mv": 875,
+            "clock_mhz": 2880,
+            "decision": "fail",
+            "failure_kind": "fatal-output",
+            "fatal_output_matches": ["VK_ERROR_DEVICE_LOST"],
+        }
+    )
+    widget = table.widget.cellWidget(0, table.STATUS_COLUMN)
+
+    assert table.widget.item(0, table.DECISION_COLUMN).text() == "Failed"
+    assert widget is not None
+    assert widget.format() == "Vulkan device lost 100%"
+
+
 def test_auto_oc_target_mhz_stays_in_target_column() -> None:
     import os
 
@@ -1192,6 +1349,7 @@ def test_auto_oc_target_mhz_stays_in_target_column() -> None:
             "voltage_mv": 950,
             "clock_mhz": 2745,
             "auto_oc": True,
+            "auto_oc_baseline_clock_mhz": 2565,
             "auto_oc_applied_mhz": 180,
             "auto_oc_limit_mhz": 180,
             "points": [
@@ -1226,7 +1384,7 @@ def test_auto_oc_target_mhz_stays_in_target_column() -> None:
 
     assert table.widget.rowCount() == 1
     assert table.widget.item(0, table.TARGET_MHZ_COLUMN).text() == "2745"
-    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "180/180 MHz"
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "+180 MHz"
     assert table.widget.item(0, table.MEASURED_MHZ_COLUMN).text() == "2733.50"
     assert table.widget.item(0, table.DECISION_COLUMN).text() == "Pass"
 
@@ -1252,7 +1410,7 @@ def test_candidate_curve_updates_oc_column_for_existing_run_row() -> None:
         }
     )
 
-    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "—"
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == ""
 
     table.record_candidate_curve(
         {
@@ -1260,8 +1418,7 @@ def test_candidate_curve_updates_oc_column_for_existing_run_row() -> None:
             "voltage_mv": 910,
             "clock_mhz": 2890,
             "auto_oc": True,
-            "auto_oc_applied_mhz": 90,
-            "auto_oc_limit_mhz": 150,
+            "auto_oc_baseline_clock_mhz": 2730,
             "points": [
                 {
                     "voltage_mv": 910,
@@ -1272,10 +1429,56 @@ def test_candidate_curve_updates_oc_column_for_existing_run_row() -> None:
         }
     )
 
-    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "90/150 MHz"
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "+160 MHz"
 
 
-def test_non_auto_oc_run_shows_dash_oc_progress() -> None:
+def test_oc_column_ignores_auto_oc_budget_without_measured_baseline() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    table = RunsTable(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    table.add_probe_start(
+        {
+            "stage": "candidate",
+            "voltage_mv": 885,
+            "clock_mhz": 2880,
+            "elapsed_s": 0,
+            "target_duration_s": 32,
+        }
+    )
+    table.record_candidate_curve(
+        {
+            "stage": "candidate",
+            "voltage_mv": 885,
+            "clock_mhz": 2880,
+            "auto_oc": True,
+            "auto_oc_applied_mhz": 7,
+            "auto_oc_limit_mhz": 107,
+        }
+    )
+
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == ""
+
+    table.add_probe_result(
+        {
+            "stage": "candidate",
+            "voltage_mv": 885,
+            "clock_mhz": 2880,
+            "base_avg_core_clock_mhz": 2730,
+            "decision": "pass",
+        }
+    )
+
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "+150 MHz"
+
+
+def test_non_auto_oc_run_leaves_oc_progress_empty() -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1295,8 +1498,56 @@ def test_non_auto_oc_run_shows_dash_oc_progress() -> None:
         }
     )
 
-    # A row with no Auto-OC stage reads as a neutral dash, not "0/0".
-    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "—"
+    # A row with no measured baseline leaves OC blank, not "0/0".
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == ""
+
+
+def test_run_with_measured_baseline_shows_signed_oc_progress() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    table = RunsTable(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    table.add_probe_result(
+        {
+            "stage": "candidate",
+            "voltage_mv": 885,
+            "clock_mhz": 2880,
+            "base_avg_core_clock_mhz": 2730,
+            "decision": "pass",
+        }
+    )
+
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "+150 MHz"
+
+
+def test_run_with_measured_baseline_shows_negative_oc_progress() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    table = RunsTable(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    table.add_probe_result(
+        {
+            "stage": "candidate",
+            "voltage_mv": 875,
+            "clock_mhz": 2600,
+            "measured_baseline_clock_mhz": 2730,
+            "decision": "fail",
+        }
+    )
+
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "-130 MHz"
 
 
 def test_runs_table_row_click_toggles_single_candidate_selection() -> None:
@@ -1433,6 +1684,8 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
     assert "auto_uv_performance_target_text" not in source
     assert '"auto_oc_target_voltage_mv"' in source
     assert '"auto_oc_target_clock_mhz"' in source
+    assert '"power_limit_override_w"' not in source
+    assert "powerLimitSlider" not in source
     assert '"auto_uv_min_voltage_mv"' in source
     assert '"auto_uv_max_drop_pct"' not in source
     assert 'options["auto_uv_tail_rise_bins"] = int(preset.tail_rise_bins)' in source
@@ -1532,19 +1785,27 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     gpu_combo = dialog.findChild(QtWidgets.QComboBox, "gpuSelector")
     nvml_info = dialog.findChild(QtWidgets.QLabel, "gpuNvmlInfo")
     advanced_group = dialog.findChild(QtWidgets.QGroupBox, "advancedTuningGroup")
+    power_limit_slider = dialog.findChild(QtWidgets.QSlider, "powerLimitSlider")
+    power_limit_spin = dialog.findChild(QtWidgets.QSpinBox, "powerLimitSpin")
     assert dialog.minimumWidth() == 860
     assert gpu_combo is not None
     assert gpu_combo.count() == 2
     assert gpu_combo.currentData() == 1
     assert nvml_info is not None
     assert "Power limit: current 320 W" in nvml_info.text()
+    assert "Current draw" not in nvml_info.text()
+    assert "42 W" not in nvml_info.text()
     assert "Clocks now: core 2100 MHz | memory 10501 MHz" in nvml_info.text()
     assert "RTX" not in nvml_info.text()
     assert advanced_group is not None
+    assert power_limit_slider is None
+    assert power_limit_spin is None
     advanced_labels = {
         label.text() for label in advanced_group.findChildren(QtWidgets.QLabel)
     }
     assert "Max loaded clock drop" in advanced_labels
+    assert "Memory Offset MHz" in advanced_labels
+    assert "Power limit" not in advanced_labels
     assert stack is not None
     assert stack.count() == 3
     assert stack.minimumHeight() >= max(

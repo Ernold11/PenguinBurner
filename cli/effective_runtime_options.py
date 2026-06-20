@@ -32,8 +32,6 @@ _FLOAT_NONNEG = lambda v: max(0.0, float(v))
 
 # (arg_name, runtime_key, transform). transform is called only when args.<arg_name> is not None.
 _NULLABLE_NUMERIC_OPTIONS = [
-    ("power_limit_override_w", "power_limit_override_w", _INT_POS),
-    ("preserve_base_below_mv", "preserve_base_below_mv", _INT_POS),
     ("auto_uv_min_voltage_mv", "auto_uv_min_voltage_mv", _INT_POS),
     ("auto_uv_max_drop_pct", "auto_uv_max_drop_pct", _FLOAT_POS),
     ("auto_uv_final_seconds", "auto_uv_final_seconds", _INT_POS),
@@ -99,7 +97,4 @@ def build_effective_afterburner_runtime_options(args, stored_options: dict) -> d
             )
     if args.auto_uv_require_final_choice:
         runtime_options["auto_uv_require_final_choice"] = True
-    if args.dangerously_skip_validation:
-        runtime_options["dangerously_skip_validation"] = True
-
     return runtime_options

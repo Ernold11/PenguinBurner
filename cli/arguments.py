@@ -25,6 +25,7 @@ def default_cli_config_path() -> str:
 def parse_arguments(argv):
     parser = argparse.ArgumentParser(
         prog="penguin_burner.py",
+        usage="penguin_burner.py [options]",
         description=(
             "PenguinBurner Auto-UV runtime, stability, and optional "
             "Afterburner import utility."
@@ -135,7 +136,8 @@ def parse_arguments(argv):
         metavar="SECONDS",
         help=(
             "Final Auto-UV verification duration in seconds after the best curve "
-            "is selected; default 600. Candidate probes remain tiered short tests."
+            "is selected; default "
+            f"{AUTO_UV_DEFAULTS.final_duration_s}. Candidate probes remain tiered short tests."
         ),
     )
     auto_uv_group.add_argument(
@@ -146,7 +148,7 @@ def parse_arguments(argv):
         help=(
             "Base Auto-UV verification length in seconds; default "
             f"{AUTO_UV_DEFAULTS.probe_duration_s}. Allowed range 10..60. "
-            "Deeper voltage tiers use 2x and 3x this value."
+            "Medium and deep voltage tiers use 2x and 2.5x this value."
         ),
     )
     auto_uv_group.add_argument(
@@ -255,14 +257,6 @@ def parse_arguments(argv):
         help="Stop and remove the persistent PenguinBurner systemd service.",
     )
     daemon_group.add_argument(
-        "--foreground",
-        action="store_true",
-        help=(
-            "Force normal runtime to stay in the current foreground process; "
-            "this is the default when not daemonizing."
-        ),
-    )
-    daemon_group.add_argument(
         "--auto-uv-profile",
         default="",
         help=(
@@ -301,12 +295,6 @@ def parse_arguments(argv):
         type=int,
         default=None,
         help="Override the configured GPU index",
-    )
-    runtime_group.add_argument(
-        "--power-limit-override-w",
-        type=int,
-        default=None,
-        help="Optional manual power-limit cap in watts for translation preview",
     )
     overlay_action_group = overlay_group.add_mutually_exclusive_group()
     overlay_action_group.add_argument(
@@ -376,14 +364,14 @@ def parse_arguments(argv):
     stability_group.add_argument(
         "--stability-test",
         action="store_true",
-        help=("Run a non-interactive Q2RTX timedemo stability workload and exit"),
+        help=("Run a non-interactive Q2RTX benchmark stability workload and exit"),
     )
     stability_group.add_argument(
         "--install-q2rtx",
         action="store_true",
         help=(
-            "Download the latest official Q2RTX Linux tar.gz to "
-            "~/.cache/PenguinBurner/q2rtx and extract everything under "
+            "Download PenguinBurner's latest headless Q2RTX benchmark release "
+            "and install the required shareware data under "
             "~/.local/share/PenguinBurner/q2rtx"
         ),
     )
@@ -394,7 +382,7 @@ def parse_arguments(argv):
         help=(
             "Wall-clock duration budget for --stability-test; uses the same "
             "Q2RTX + CUDA companion load as auto-UV final verification; "
-            "default 600"
+            f"default {DEFAULT_AUTO_UV_FINAL_DURATION_S}"
         ),
     )
     stability_group.add_argument(
@@ -403,28 +391,26 @@ def parse_arguments(argv):
         default="q2rtx-cuda",
         help=(
             "Workload selection for --stability-test; q2rtx-cuda keeps the "
-            "standard Q2RTX timedemo plus CUDA compute split, q2rtx or cuda "
+            "standard Q2RTX benchmark plus CUDA compute split, q2rtx or cuda "
             "runs only that workload for the full duration."
         ),
     )
     stability_group.add_argument(
         "--stability-width",
         type=int,
-        default=DEFAULT_WIDTH,
-        help=f"Q2RTX render width used by --stability-test; default {DEFAULT_WIDTH}",
+        default=None,
+        help=(
+            "Q2RTX render width used by --stability-test; default auto "
+            f"(<=8 GiB VRAM: 2560, >8 GiB/unknown: {DEFAULT_WIDTH})"
+        ),
     )
     stability_group.add_argument(
         "--stability-height",
         type=int,
-        default=DEFAULT_HEIGHT,
-        help=f"Q2RTX render height used by --stability-test; default {DEFAULT_HEIGHT}",
-    )
-    stability_group.add_argument(
-        "--show-q2rtx-window",
-        action="store_true",
+        default=None,
         help=(
-            "Do not move the Q2RTX Vulkan window off-screen during stability "
-            "tests and Auto-UV scans"
+            "Q2RTX render height used by --stability-test; default auto "
+            f"(<=8 GiB VRAM: 1440, >8 GiB/unknown: {DEFAULT_HEIGHT})"
         ),
     )
     stability_group.add_argument(
@@ -439,16 +425,6 @@ def parse_arguments(argv):
         "--stability-stop-request-file",
         default="",
         help=argparse.SUPPRESS,
-    )
-    stability_group.add_argument(
-        "--stability-q2rtx-dir",
-        default="",
-        help="Q2RTX install/source root containing q2rtx and baseq2/",
-    )
-    stability_group.add_argument(
-        "--stability-q2rtx-binary",
-        default="",
-        help="Explicit q2rtx executable path",
     )
     afterburner_group.add_argument(
         "--afterburner-dir",
@@ -473,51 +449,6 @@ def parse_arguments(argv):
         help=(
             "Inspect Afterburner fan/VF data and draw dry-run previews without "
             "touching GPU state; recommended first step and does not require sudo"
-        ),
-    )
-    afterburner_group.add_argument(
-        "--prefer-afterburner-curve",
-        action="store_true",
-        help=(
-            "Runtime/daemon only: apply the imported Afterburner V/F curve before "
-            "the saved Auto-UV final curve. Auto-UV remains the fallback if "
-            "Afterburner is missing or cannot be applied."
-        ),
-    )
-    afterburner_group.add_argument(
-        "--restore-defaults-from-config",
-        "--restore-afterburner-defaults",
-        dest="restore_defaults_from_config",
-        action="store_true",
-        help=(
-            "Apply the Defaults V/F curve and translated GPU policy from the "
-            "Afterburner device profile saved in config, then exit"
-        ),
-    )
-    advanced_group.add_argument(
-        "--preserve-vf-below-mv",
-        "--preserve-base-vf-below-mv",
-        dest="preserve_base_below_mv",
-        type=int,
-        default=None,
-        help=(
-            "Keep the base Linux VF curve at and below this inclusive "
-            "voltage; useful if repeated Afterburner curve edits disturbed "
-            "idle or low-voltage scaling"
-        ),
-    )
-    advanced_group.add_argument(
-        "--preserve-vanilla-vf-below-mv",
-        dest="preserve_base_below_mv",
-        type=int,
-        help=argparse.SUPPRESS,
-    )
-    advanced_group.add_argument(
-        "--dangerously-skip-validation",
-        action="store_true",
-        help=(
-            "Bypass the default flat-tail and undervolt checks when selecting "
-            "the saved Afterburner profile; advanced and not recommended"
         ),
     )
     advanced_group.add_argument(

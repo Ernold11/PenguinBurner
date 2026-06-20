@@ -69,7 +69,6 @@ class MainCommandRoutingResult:
     fan_config: dict | None = None
     gpu_index: int | None = None
     afterburner_runtime_options: dict | None = None
-    prefer_afterburner_curve: bool = False
     auto_uv_profile_selector: str = ""
     auto_uv_final_curve_available: bool = False
     had_persisted_afterburner_root: bool = False
@@ -125,9 +124,7 @@ def route_main_command(
         gpu_config["index"] = int(args.gpu_index)
     gpu_index = int(gpu_config["index"])
 
-    if args.stability_test and not (
-        str(args.auto_uv_profile or "").strip() or bool(args.prefer_afterburner_curve)
-    ):
+    if args.stability_test and not str(args.auto_uv_profile or "").strip():
         deps.run_stability_test(args, gpu_index=gpu_index, config_path=config_path)
         return MainCommandRoutingResult(handled=True)
 
@@ -176,7 +173,6 @@ def route_main_command(
         args,
         stored_options,
     )
-    prefer_afterburner_curve = bool(args.prefer_afterburner_curve)
     deps.debug_effective_runtime_options(
         config_path=config_path,
         gpu_index=gpu_index,
@@ -204,7 +200,7 @@ def route_main_command(
         )
         return MainCommandRoutingResult(handled=True)
 
-    if args.restore_defaults_from_config or args.auto_uv_voltage_scan:
+    if args.auto_uv_voltage_scan:
         if deps.run_auto_uv_foreground_command is None:
             raise RuntimeError("run_auto_uv_foreground_command dependency is required")
         deps.run_auto_uv_foreground_command(
@@ -232,7 +228,6 @@ def route_main_command(
         fan_config=fan_config,
         gpu_index=gpu_index,
         afterburner_runtime_options=afterburner_runtime_options,
-        prefer_afterburner_curve=prefer_afterburner_curve,
         auto_uv_profile_selector=auto_uv_profile_selector,
         auto_uv_final_curve_available=auto_uv_final_curve_available,
         had_persisted_afterburner_root=had_persisted_afterburner_root,
@@ -315,10 +310,6 @@ def _auto_uv_final_curve_available(
 def _validate_auto_uv_foreground_args(args, *, deps: MainCommandRoutingDependencies):
     if args.auto_uv_require_final_choice and not args.json_events:
         raise NvmlError("--auto-uv-require-final-choice requires --json-events")
-    if args.auto_uv_voltage_scan and args.restore_defaults_from_config:
-        raise NvmlError(
-            "choose only one of --auto-uv-voltage-scan or --restore-defaults-from-config"
-        )
     if args.auto_uv_voltage_scan and deps.running_under_systemd_service():
         raise NvmlError(
             "Auto-UV scans are foreground-only; run the scan directly first, "

@@ -87,10 +87,10 @@ def select_scan_tuning(
 
     def sync_gpu_nvml_info() -> None:
         selected = _selected_gpu_index(gpu_combo, selected_gpu_index)
-        gpu_nvml_info.setText(auto_uv_nvml_info_text(read_auto_uv_nvml_info(selected)))
+        info = read_auto_uv_nvml_info(selected)
+        gpu_nvml_info.setText(auto_uv_nvml_info_text(info))
 
     gpu_combo.currentIndexChanged.connect(lambda _index: sync_gpu_nvml_info())
-    sync_gpu_nvml_info()
     _add_form_row(
         QtCore=QtCore,
         QtWidgets=QtWidgets,
@@ -196,6 +196,7 @@ def select_scan_tuning(
     memory_offset_spin.setSuffix(" MHz")
     memory_offset_spin.setSingleStep(50)
     memory_offset_spin.setFixedWidth(136)
+
     efficiency_page = QtWidgets.QWidget()
     efficiency_form = _advanced_form_layout(QtCore=QtCore, QtWidgets=QtWidgets)
     efficiency_page.setLayout(efficiency_form)
@@ -286,7 +287,6 @@ def select_scan_tuning(
             "rejected by the Nvidia driver; modify with care."
         ),
     )
-
     advanced_layout.addWidget(preset_advanced_stack)
     advanced_layout.addWidget(common_advanced)
 
@@ -303,6 +303,7 @@ def select_scan_tuning(
 
     preset_button_group.buttonClicked.connect(lambda _button: sync_preset_specific_fields())
     sync_preset_specific_fields()
+    sync_gpu_nvml_info()
 
     buttons = QtWidgets.QDialogButtonBox()
     role_enum = getattr(QtWidgets.QDialogButtonBox, "ButtonRole", QtWidgets.QDialogButtonBox)
@@ -474,4 +475,11 @@ def _transform_mode(QtCore):
     return getattr(
         getattr(QtCore.Qt, "TransformationMode", QtCore.Qt),
         "SmoothTransformation",
+    )
+
+
+def _horizontal_orientation(QtCore):
+    return getattr(
+        getattr(QtCore.Qt, "Orientation", QtCore.Qt),
+        "Horizontal",
     )

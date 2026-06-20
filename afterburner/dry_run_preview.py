@@ -92,15 +92,6 @@ def run_afterburner_dry_run(
     afterburner_device_profile = str(
         afterburner_runtime_options.get("afterburner_device_profile", "")
     ).strip()
-    power_limit_override_w = afterburner_runtime_options.get("power_limit_override_w")
-    preserve_base_below_mv = afterburner_runtime_options.get(
-        "preserve_base_below_mv",
-        afterburner_runtime_options.get("preserve_vanilla_below_mv"),
-    )
-    dangerously_skip_validation = bool(
-        afterburner_runtime_options.get("dangerously_skip_validation")
-    )
-
     if not afterburner_root:
         raise RuntimeError(
             "--dry-run requires --afterburner-dir or a configured afterburner_root in the runtime config"
@@ -115,7 +106,6 @@ def run_afterburner_dry_run(
         afterburner_root=afterburner_root,
         requested_section=afterburner_profile,
         device_profile_hint=afterburner_device_profile,
-        dangerously_skip_validation=dangerously_skip_validation,
     )
 
     policy_controller = None
@@ -125,13 +115,11 @@ def run_afterburner_dry_run(
             afterburner_root=afterburner_root,
             section=afterburner_profile or None,
             device_profile_hint=afterburner_device_profile or None,
-            dangerously_skip_validation=dangerously_skip_validation,
         )
         debug_log(
             "dry-run-selected-source="
             f"profile={source['profile_path']} "
             f"section={source['section']} "
-            f"skip-validation={source.get('dangerously_skip_validation')}"
         )
         section_info = source["section_info"]
         profile_settings = load_afterburner_profile_settings(
@@ -174,7 +162,6 @@ def run_afterburner_dry_run(
         translated_gpu_policy = translate_afterburner_gpu_policy(
             profile_settings,
             power_limits=power_limits,
-            power_limit_cap_w=power_limit_override_w,
         )
         try:
             policy_controller = NvmlGpuPolicyController(gpu_index=gpu_index)
@@ -187,7 +174,6 @@ def run_afterburner_dry_run(
             translated_gpu_policy = translate_afterburner_gpu_policy(
                 profile_settings,
                 power_limits=power_limits,
-                power_limit_cap_w=power_limit_override_w,
             )
             debug_log(
                 "dry-run-translated-policy="
@@ -208,7 +194,6 @@ def run_afterburner_dry_run(
             vf_plan, missing_voltage_bins = build_plan(
                 vf_curve_reader,
                 section_info["materialization"]["points"],
-                preserve_base_below_mv=preserve_base_below_mv,
             )
             debug_log(
                 f"linux-vf-plan matched={len(vf_plan)} "
@@ -251,11 +236,6 @@ def run_afterburner_dry_run(
         source_label = f"{source['section']} in {source['profile_path'].name}"
         log(f"Dry run: {source_label}")
         log(f"Power and offsets: {format_dry_run_power_summary(translated_gpu_policy)}")
-        if source.get("dangerously_skip_validation"):
-            log(
-                "Validation override: enabled. Skipping the usual flat-tail and "
-                "undervolt checks against Defaults/Startup for profile selection."
-            )
         if (
             flatten_target
             and lock_voltage_mv is not None
@@ -271,12 +251,6 @@ def run_afterburner_dry_run(
                 "VF target: "
                 f"{describe_afterburner_vfcurve_analysis(section_info['analysis'])}"
             )
-        if preserve_base_below_mv is not None:
-            log(
-                "VF preserve: "
-                f"keep the base curve at and below {int(preserve_base_below_mv)}mV"
-            )
-
         validation = section_info.get("flatten_validation")
         if validation and validation.get("valid"):
             log(
@@ -287,15 +261,7 @@ def run_afterburner_dry_run(
                 f"{validation['baseline_section']} at the same clock"
             )
         elif validation:
-            if source.get("dangerously_skip_validation"):
-                log(
-                    "Undervolt check: skipped by user request; "
-                    f"{describe_afterburner_flatten_validation(validation)}"
-                )
-            else:
-                log(
-                    f"Undervolt check: {describe_afterburner_flatten_validation(validation)}"
-                )
+            log(f"Undervolt check: {describe_afterburner_flatten_validation(validation)}")
 
         if imported_fan_config is None:
             log(f"Fan behavior: unavailable ({imported_fan_error})")
@@ -335,11 +301,6 @@ def run_afterburner_dry_run(
                 log(f"Linux power/memory readback note: {policy_error}")
             if vf_summary is None:
                 log("Linux VF readback note: hidden NVAPI VF helper is unavailable")
-                if preserve_base_below_mv is not None:
-                    log(
-                        "Linux VF preserve note: "
-                        "preserve-below-voltage needs Linux VF point data for an exact target preview"
-                    )
             elif missing_voltage_bins:
                 preview = ", ".join(
                     str(int(voltage_mv)) + "mV"

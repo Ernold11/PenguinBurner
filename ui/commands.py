@@ -7,6 +7,7 @@ import shutil
 import sys
 from typing import Mapping
 
+from .constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
 from .gpu_selection import runtime_gpu_index
 
 
@@ -153,7 +154,6 @@ def runtime_profile_command(
     *,
     profile_selector: str = "",
     silent_fan_curve: bool = False,
-    prefer_afterburner_curve: bool = False,
     adaptive_auto_uv: bool = False,
     gpu_index: int | None = None,
 ) -> list[str]:
@@ -168,8 +168,6 @@ def runtime_profile_command(
         raise ValueError(f"unknown runtime profile action: {action}")
     if profile_selector and action != "uninstall-systemd":
         command.extend(["--auto-uv-profile", str(profile_selector)])
-    if prefer_afterburner_curve and action != "uninstall-systemd":
-        command.append("--prefer-afterburner-curve")
     if silent_fan_curve and action != "uninstall-systemd":
         command.append("--silent-fan-curve")
     if adaptive_auto_uv and action != "uninstall-systemd":
@@ -182,8 +180,7 @@ def runtime_profile_command(
 def profile_verify_command(
     *,
     profile_selector: str = "",
-    duration_s: int = 600,
-    prefer_afterburner_curve: bool = False,
+    duration_s: int = DEFAULT_FINAL_VERIFICATION_DURATION_S,
     stop_request_path: str | Path = "",
     q2rtx_enabled: bool = True,
     cuda_enabled: bool = True,
@@ -204,10 +201,8 @@ def profile_verify_command(
     ]
     if workload != "q2rtx-cuda":
         command.extend(["--stability-workload", workload])
-    if profile_selector and not prefer_afterburner_curve:
+    if profile_selector:
         command.extend(["--auto-uv-profile", str(profile_selector)])
-    if prefer_afterburner_curve:
-        command.append("--prefer-afterburner-curve")
     if str(stop_request_path).strip():
         command.extend(["--stability-stop-request-file", str(stop_request_path)])
     return privileged_command(command)

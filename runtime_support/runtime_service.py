@@ -141,7 +141,7 @@ def _format_systemd_exec(args):
 
 def runtime_foreground_command(program_file, argv):
     python = sys.executable or shutil.which("python3") or "python3"
-    return [python, str(Path(program_file).resolve()), "--foreground", *argv]
+    return [python, str(Path(program_file).resolve()), *argv]
 
 
 def adaptive_target_fps_env_assignment(env: dict[str, str] | None = None) -> str:
@@ -373,7 +373,7 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
     if not systemd_is_available():
         raise RuntimeError(
             "systemd background mode is unavailable on this system. "
-            "Run PenguinBurner with --foreground or use a systemd-based system."
+            "Run PenguinBurner directly or use a systemd-based system."
         )
     if os.geteuid() != 0:
         raise RuntimeError(

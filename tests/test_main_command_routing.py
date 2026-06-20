@@ -29,10 +29,8 @@ def _args(**overrides):
         "gpu_index": None,
         "stability_test": False,
         "auto_uv_profile": "",
-        "prefer_afterburner_curve": False,
         "auto_uv_require_final_choice": False,
         "auto_uv_voltage_scan": False,
-        "restore_defaults_from_config": False,
         "silent_fan_curve": False,
         "export_lact_config": "",
         "lact_source": "auto-uv",
@@ -240,10 +238,7 @@ def test_main_command_routing_returns_runtime_inputs_for_normal_runtime():
             "afterburner_profile": "startup",
             "afterburner_device_profile": "VEN.cfg",
         },
-        build_effective_afterburner_runtime_options=lambda args, stored: {
-            **stored,
-            "preserve_base_below_mv": 800,
-        },
+        build_effective_afterburner_runtime_options=lambda args, stored: dict(stored),
     )
     args = _args(gpu_index=2)
 
@@ -260,7 +255,6 @@ def test_main_command_routing_returns_runtime_inputs_for_normal_runtime():
     assert result.gpu_config["index"] == 2
     assert result.config_path == Path("/tmp/config.json")
     assert result.afterburner_runtime_options["afterburner_root"] == "/afterburner"
-    assert result.afterburner_runtime_options["preserve_base_below_mv"] == 800
     assert result.auto_uv_final_curve_available is True
     assert result.had_persisted_afterburner_root is True
     assert calls["debug_options"][0]["gpu_index"] == 2

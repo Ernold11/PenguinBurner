@@ -8,7 +8,7 @@ Type=simple
 #   sudo ./penguin_burner.sh --install-systemd-service
 Environment=PENGUIN_BURNER_FOREGROUND=1
 WorkingDirectory=/
-ExecStart=/usr/bin/bash /path/to/penguin_burner.sh --foreground
+ExecStart=/usr/bin/bash /path/to/penguin_burner.sh
 Restart=on-failure
 RestartSec=2
 StandardOutput=journal

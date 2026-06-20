@@ -136,7 +136,6 @@ def afterburner_import_profile_summary() -> dict | None:
             afterburner_root=root,
             section=section,
             device_profile_hint=device_profile or None,
-            dangerously_skip_validation=bool(options.get("dangerously_skip_validation")),
         )
     except Exception:
         return None

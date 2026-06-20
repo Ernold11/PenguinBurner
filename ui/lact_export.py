@@ -82,8 +82,6 @@ def write_lact_profile_config(
             device_profile_hint=profile.get("afterburner_device_profile")
             or options.get("afterburner_device_profile")
             or None,
-            dangerously_skip_validation=bool(options.get("dangerously_skip_validation")),
-            preserve_base_below_mv=options.get("preserve_base_below_mv"),
             include_vf_curve=True,
             include_fan_curve=include_fan_curve,
         )

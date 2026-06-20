@@ -52,12 +52,6 @@ def export_lact_config(
                     "afterburner_device_profile"
                 )
                 or None,
-                dangerously_skip_validation=bool(
-                    afterburner_runtime_options.get("dangerously_skip_validation")
-                ),
-                preserve_base_below_mv=afterburner_runtime_options.get(
-                    "preserve_base_below_mv"
-                ),
                 include_vf_curve=include_vf_curve,
                 include_fan_curve=include_fan_curve,
                 max_vf_offset_mhz=max_vf_offset_mhz,

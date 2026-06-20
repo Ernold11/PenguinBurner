@@ -188,7 +188,7 @@ def test_new_ui_profile_and_tuning_helpers_cover_moved_workflows() -> None:
     assert auto_uv_preset("performance").tail_rise_bins == 6
     assert auto_uv_performance_preset_label() == "Performance"
     assert profile_verify_selector({"path": "/tmp/profile.json"}) == "/tmp/profile.json"
-    assert workload_label(q2rtx_enabled=True, cuda_enabled=False) == "Q2RTX timedemo"
+    assert workload_label(q2rtx_enabled=True, cuda_enabled=False) == "Q2RTX benchmark"
     assert elapsed_from_line("Stability progress elapsed=150.0s") == 150.0
     assert progress_percent(150, 600) == 25
 
@@ -216,11 +216,6 @@ def test_new_ui_afterburner_profile_helpers_cover_moved_workflow(monkeypatch) ->
     assert profile_can_verify(profile)
     assert profile_verify_selector(profile) == ""
     assert afterburner_import.entry_curve_points(profile) == [(1200.0, 3300.0)]
-    assert profile_info_from_command_text("--prefer-afterburner-curve") == {
-        "selector": AFTERBURNER_PROFILE_ID,
-        "silent_fan_curve": False,
-        "adaptive_auto_uv": False,
-    }
 
 
 def test_new_ui_fan_and_lact_helpers_cover_moved_workflows(tmp_path, monkeypatch) -> None:

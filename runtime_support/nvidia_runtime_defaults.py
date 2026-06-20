@@ -62,7 +62,6 @@ def _assert_zero_readable_clock_offsets(offsets: dict) -> None:
 def reset_nvidia_runtime_defaults(
     *,
     gpu_index: int,
-    power_limit_override_w: int | None = None,
     log: Callable[[str], None] = print,
 ) -> dict:
     reader = create_hidden_vf_curve_reader(gpu_index=gpu_index)
@@ -161,13 +160,7 @@ def reset_nvidia_runtime_defaults(
         )
 
         target_power_limit_w = (
-            int(power_limit_override_w)
-            if power_limit_override_w is not None and int(power_limit_override_w) > 0
-            else (
-                int(default_power_limit_w)
-                if default_power_limit_w is not None
-                else None
-            )
+            int(default_power_limit_w) if default_power_limit_w is not None else None
         )
         if target_power_limit_w is not None:
             try:

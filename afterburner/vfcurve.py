@@ -371,13 +371,7 @@ def discover_afterburner_vf_sections(profile_path=DEFAULT_PROFILE):
     return _discover_afterburner_vf_sections_for_profile(Path(profile_path))
 
 
-def _section_passes_profile_selection_validation(
-    section_info,
-    *,
-    dangerously_skip_validation=False,
-):
-    if dangerously_skip_validation:
-        return bool(section_info.get("is_manual_candidate"))
+def _section_passes_profile_selection_validation(section_info):
     return bool(section_info.get("is_valid_manual_candidate"))
 
 
@@ -385,7 +379,6 @@ def resolve_afterburner_device_profile(
     afterburner_root=None,
     *,
     device_profile_hint=None,
-    dangerously_skip_validation=False,
 ):
     if device_profile_hint:
         candidate = Path(device_profile_hint).expanduser()
@@ -424,10 +417,7 @@ def resolve_afterburner_device_profile(
     for candidate in device_profiles:
         sections = _discover_afterburner_vf_sections_for_profile(candidate)
         if any(
-            _section_passes_profile_selection_validation(
-                section,
-                dangerously_skip_validation=dangerously_skip_validation,
-            )
+            _section_passes_profile_selection_validation(section)
             for section in sections
         ):
             manual_candidate_profiles.append(candidate)
@@ -471,7 +461,6 @@ def resolve_afterburner_vf_source(
     profile_path=None,
     section=None,
     device_profile_hint=None,
-    dangerously_skip_validation=False,
 ):
     root = resolve_afterburner_root(afterburner_root)
     requested_section = str(section).strip() if section is not None else ""
@@ -486,10 +475,7 @@ def resolve_afterburner_vf_source(
             valid_section_matches = [
                 match
                 for match in section_profile_matches
-                if _section_passes_profile_selection_validation(
-                    match["section_info"],
-                    dangerously_skip_validation=dangerously_skip_validation,
-                )
+                if _section_passes_profile_selection_validation(match["section_info"])
             ]
             unique_valid_profiles = {
                 str(match["profile_path"]): match["profile_path"]
@@ -513,7 +499,6 @@ def resolve_afterburner_vf_source(
             else resolve_afterburner_device_profile(
                 root,
                 device_profile_hint=device_profile_hint,
-                dangerously_skip_validation=dangerously_skip_validation,
             )
         )
     )
@@ -542,10 +527,7 @@ def resolve_afterburner_vf_source(
         manual_candidates = [
             candidate
             for candidate in sections
-            if _section_passes_profile_selection_validation(
-                candidate,
-                dangerously_skip_validation=dangerously_skip_validation,
-            )
+            if _section_passes_profile_selection_validation(candidate)
         ]
         if not manual_candidates:
             invalid_manual_candidates = [
@@ -557,15 +539,9 @@ def resolve_afterburner_vf_source(
                     f"{describe_afterburner_flatten_validation(candidate.get('flatten_validation'))}"
                     for candidate in invalid_manual_candidates
                 )
-                guidance = ""
-                if not dangerously_skip_validation:
-                    guidance = (
-                        ". Re-run with --dangerously-skip-validation if you intentionally "
-                        "want to import one anyway."
-                    )
                 raise AfterburnerProfileSelectionError(
                     "Saved Afterburner V/F presets were found, but none contain a valid undervolt "
-                    f"flatten target: {invalid_preview}{guidance}"
+                    f"flatten target: {invalid_preview}"
                 )
             raise AfterburnerProfileSelectionError(
                 "No saved non-default Afterburner V/F preset was found. "
@@ -585,19 +561,18 @@ def resolve_afterburner_vf_source(
             "manual V/F preset."
         )
 
-    if not dangerously_skip_validation:
-        if selected["flatten_target"] is None:
-            raise AfterburnerProfileSelectionError(
-                f"Afterburner profile {selected['section']} does not contain a flattened V/F tail. "
-                "Save the manual curve with a flat target point before importing it."
-            )
+    if selected["flatten_target"] is None:
+        raise AfterburnerProfileSelectionError(
+            f"Afterburner profile {selected['section']} does not contain a flattened V/F tail. "
+            "Save the manual curve with a flat target point before importing it."
+        )
 
-        flatten_validation = selected.get("flatten_validation")
-        if not flatten_validation or not flatten_validation.get("valid"):
-            raise AfterburnerProfileSelectionError(
-                f"Afterburner profile {selected['section']} does not contain a valid undervolt "
-                f"flatten target: {describe_afterburner_flatten_validation(flatten_validation)}"
-            )
+    flatten_validation = selected.get("flatten_validation")
+    if not flatten_validation or not flatten_validation.get("valid"):
+        raise AfterburnerProfileSelectionError(
+            f"Afterburner profile {selected['section']} does not contain a valid undervolt "
+            f"flatten target: {describe_afterburner_flatten_validation(flatten_validation)}"
+        )
 
     try:
         device_profile_relative_path = str(device_profile.relative_to(root))
@@ -612,7 +587,6 @@ def resolve_afterburner_vf_source(
         "section": str(selected["section"]),
         "section_info": selected,
         "available_sections": sections,
-        "dangerously_skip_validation": bool(dangerously_skip_validation),
     }
 
 

@@ -58,10 +58,7 @@ def default_runtime_config() -> dict:
                 [80, 45],
             ],
         },
-        "stability": {
-            "q2rtx_dir": "",
-            "q2rtx_binary": "",
-        },
+        "stability": {},
         "adaptive": {
             "target_fps": DEFAULT_ADAPTIVE_TARGET_FPS,
         },
@@ -91,27 +88,6 @@ def load_raw_runtime_config(config_path):
         return {}
     with path.open("rb") as config_file:
         return tomllib.load(config_file)
-
-
-def persist_q2rtx_source_to_runtime_config(
-    config_path,
-    *,
-    q2rtx_dir,
-    q2rtx_binary,
-    progress_context,
-) -> None:
-    path = Path(config_path).expanduser()
-    config = load_raw_runtime_config(path)
-    gpu = dict(config.get("gpu", {}))
-    fan = dict(config.get("fan", {}))
-    stability = dict(config.get("stability", {}))
-    stability["q2rtx_dir"] = str(q2rtx_dir) if q2rtx_dir else ""
-    stability["q2rtx_binary"] = str(q2rtx_binary) if q2rtx_binary else ""
-    config["gpu"] = gpu
-    config["fan"] = fan
-    config["stability"] = stability
-    write_runtime_config(path, config)
-    print(f"{progress_context}: saved Q2RTX source to {path}", flush=True)
 
 
 def persist_adaptive_target_fps_to_runtime_config(

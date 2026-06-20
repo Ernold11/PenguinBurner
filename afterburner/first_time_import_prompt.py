@@ -134,9 +134,6 @@ def _persist_afterburner_dry_run_source(
                 "afterburner_device_profile"
             )
             or None,
-            dangerously_skip_validation=bool(
-                afterburner_runtime_options.get("dangerously_skip_validation")
-            ),
         )
     except Exception as exc:
         log(

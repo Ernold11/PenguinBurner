@@ -333,8 +333,6 @@ def build_lact_nvidia_config_from_afterburner(
     afterburner_root: str,
     section: str | None = None,
     device_profile_hint: str | None = None,
-    dangerously_skip_validation: bool = False,
-    preserve_base_below_mv: int | None = None,
     include_vf_curve: bool = True,
     include_fan_curve: bool = False,
     max_vf_offset_mhz: int | None = LACT_NVIDIA_DEFAULT_MAX_VF_OFFSET_MHZ,
@@ -362,7 +360,6 @@ def build_lact_nvidia_config_from_afterburner(
             afterburner_root=afterburner_root,
             section=section or None,
             device_profile_hint=device_profile_hint or None,
-            dangerously_skip_validation=bool(dangerously_skip_validation),
         )
         reader = create_hidden_vf_curve_reader(gpu_index=gpu_index)
         if reader is None:
@@ -371,7 +368,6 @@ def build_lact_nvidia_config_from_afterburner(
             vf_plan, missing_voltage_bins = build_plan(
                 reader,
                 source["section_info"]["materialization"]["points"],
-                preserve_base_below_mv=preserve_base_below_mv,
             )
         finally:
             reader.close()
@@ -407,8 +403,6 @@ def write_lact_nvidia_config_from_afterburner(
     afterburner_root: str,
     section: str | None = None,
     device_profile_hint: str | None = None,
-    dangerously_skip_validation: bool = False,
-    preserve_base_below_mv: int | None = None,
     include_vf_curve: bool = True,
     include_fan_curve: bool = False,
     max_vf_offset_mhz: int | None = LACT_NVIDIA_DEFAULT_MAX_VF_OFFSET_MHZ,
@@ -420,8 +414,6 @@ def write_lact_nvidia_config_from_afterburner(
         afterburner_root=afterburner_root,
         section=section,
         device_profile_hint=device_profile_hint,
-        dangerously_skip_validation=dangerously_skip_validation,
-        preserve_base_below_mv=preserve_base_below_mv,
         include_vf_curve=include_vf_curve,
         include_fan_curve=include_fan_curve,
         max_vf_offset_mhz=max_vf_offset_mhz,

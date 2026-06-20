@@ -8,11 +8,6 @@ from dataclasses import dataclass
 from typing import Callable
 
 from afterburner.import_vf_curve import apply_plan
-from afterburner.vfcurve_describe import (
-    describe_afterburner_dynamic_lock,
-    describe_afterburner_flatten_validation,
-    describe_afterburner_profile_settings,
-)
 from nvidia_driver.nvml_gpu_policy import describe_translated_gpu_policy
 from saved_uv_profiles.profile_tiers import profile_tier_label
 from common.penguin_burner_errors import NvmlError
@@ -90,7 +85,6 @@ def run_runtime_fan_control_loop(
     fan_config: dict,
     fan_control_enabled: bool,
     enable_persistence_mode,
-    prefer_afterburner_curve,
     nvml_session,
     voltage_reader,
     vf_curve_reader,
@@ -186,7 +180,6 @@ def run_runtime_fan_control_loop(
         settings=settings,
         enable_persistence_mode=enable_persistence_mode,
         vf_policy=vf_policy,
-        prefer_afterburner_curve=prefer_afterburner_curve,
         vf_curve_reader=vf_curve_reader,
         deps=deps,
     )
@@ -518,17 +511,12 @@ def _log_runtime_startup(
     settings: RuntimeFanSettings,
     enable_persistence_mode,
     vf_policy: RuntimeVfCurvePolicyResult,
-    prefer_afterburner_curve,
     vf_curve_reader,
     deps: RuntimeFanLoopDependencies,
 ) -> None:
-    translated_gpu_policy = vf_policy.translated_gpu_policy
     auto_uv_profile_gpu_policy = vf_policy.auto_uv_profile_gpu_policy
-    startup_power_limit_w = vf_policy.startup_power_limit_w
     active_vf_curve_source = vf_policy.active_vf_curve_source
     auto_uv_final_curve = vf_policy.auto_uv_final_curve
-    afterburner_source = vf_policy.afterburner_source
-    afterburner_profile_settings = vf_policy.afterburner_profile_settings
     clock_ceiling_controller = vf_policy.clock_ceiling_controller
     if fan_control_enabled:
         deps.print_fn(
@@ -547,9 +535,7 @@ def _log_runtime_startup(
             flush=True,
         )
 
-    startup_gpu_policy = translated_gpu_policy or auto_uv_profile_gpu_policy or {
-        "power_limit_w": startup_power_limit_w
-    }
+    startup_gpu_policy = auto_uv_profile_gpu_policy or {}
     deps.log(
         f"GPU policy: persistence={'on' if enable_persistence_mode else 'off'}, "
         f"{deps.describe_translated_gpu_policy(startup_gpu_policy)}."
@@ -563,33 +549,6 @@ def _log_runtime_startup(
             f"{auto_uv_final_curve['candidate_voltage_mv']}mV; "
             "Afterburner V/F import skipped."
         )
-    elif active_vf_curve_source == "afterburner" and prefer_afterburner_curve:
-        deps.log(
-            "Active VF curve source: Afterburner import requested by --prefer-afterburner-curve."
-        )
-    if afterburner_source is not None:
-        flatten_target = afterburner_source["section_info"].get("flatten_target")
-        flatten_text = (
-            describe_afterburner_dynamic_lock(flatten_target)
-            if flatten_target is not None
-            else "none"
-        )
-        deps.log(
-            "Afterburner import: "
-            f"root={afterburner_source['afterburner_root']} "
-            f"device_profile={afterburner_source['profile_path'].name} "
-            f"profile={afterburner_source['section']} "
-            f"flatten-target={flatten_text}."
-        )
-        deps.log(
-            "Afterburner flatten validation: "
-            f"{describe_afterburner_flatten_validation(afterburner_source['section_info'].get('flatten_validation'))}."
-        )
-        if afterburner_profile_settings is not None:
-            deps.log(
-                "Afterburner parsed settings: "
-                f"{describe_afterburner_profile_settings(afterburner_profile_settings)}."
-            )
     if vf_curve_reader is not None:
         vf_summary = vf_curve_reader.summary()
         deps.log(

@@ -14,7 +14,6 @@ def _command_route(**overrides):
             "afterburner_profile": "",
             "afterburner_device_profile": "",
         },
-        "prefer_afterburner_curve": False,
         "auto_uv_profile_selector": "",
         "auto_uv_final_curve_available": False,
         "had_persisted_afterburner_root": False,
@@ -63,16 +62,15 @@ def test_normal_runtime_wires_startup_vf_policy_and_fan_loop():
     vf_curve_reader = object()
     gpu_policy_controller = object()
     vf_policy = SimpleNamespace(
-        translated_gpu_policy={"power_limit_w": 240},
-        afterburner_source={"section": "startup"},
-        afterburner_profile_settings={"PowerLimit": "90"},
         auto_uv_final_curve={"path": "/tmp/final.json"},
         vf_apply_result={"plan": []},
         active_vf_curve_source="auto-uv-final",
         auto_uv_profile_gpu_policy={"mem_clk_vf_offset_mhz": 500},
         clock_ceiling_controller=object(),
         vf_expected_samples=["sample"],
-        startup_power_limit_w=240,
+        active_profile_tier="",
+        active_profile_tier_key="",
+        active_profile_id="",
     )
 
     def prepare(**kwargs):
@@ -113,7 +111,6 @@ def test_normal_runtime_wires_startup_vf_policy_and_fan_loop():
         command_route=_command_route(
             gpu_index=2,
             gpu_config={"index": 2, "enable_persistence_mode": False},
-            prefer_afterburner_curve=True,
             auto_uv_profile_selector="latest",
             auto_uv_final_curve_available=True,
             had_persisted_afterburner_root=True,
@@ -130,10 +127,6 @@ def test_normal_runtime_wires_startup_vf_policy_and_fan_loop():
     assert configure_call["gpu_index"] == 2
     assert configure_call["enable_persistence_mode"] is False
     assert configure_call["auto_uv_profile_selector"] == "latest"
-    assert configure_call["prefer_afterburner_curve"] is True
-    assert configure_call["afterburner_root"] == "/ab"
-    assert configure_call["afterburner_profile"] == "profile1"
-    assert configure_call["afterburner_device_profile"] == "VEN.cfg"
     assert configure_call["vf_curve_reader"] is vf_curve_reader
     assert configure_call["gpu_policy_controller"] is gpu_policy_controller
     assert configure_call["dependencies"] == "vf-deps"
@@ -154,16 +147,15 @@ def test_normal_runtime_wires_startup_vf_policy_and_fan_loop():
 def test_normal_runtime_logs_gpu_policy_helper_failure_and_continues():
     logs = []
     vf_policy = SimpleNamespace(
-        translated_gpu_policy=None,
-        afterburner_source=None,
-        afterburner_profile_settings=None,
         auto_uv_final_curve=None,
         vf_apply_result=None,
         active_vf_curve_source=None,
         auto_uv_profile_gpu_policy=None,
         clock_ceiling_controller=None,
         vf_expected_samples=[],
-        startup_power_limit_w=None,
+        active_profile_tier="",
+        active_profile_tier_key="",
+        active_profile_id="",
     )
     loop_calls = []
     configure_calls = []

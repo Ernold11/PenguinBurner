@@ -74,7 +74,6 @@ def open_live_gpu_vf_curve_applier(
     live_voltage_reader = LiveNvmlVoltageReader(gpu_index=int(gpu_index))
     runtime_reset = reset_nvidia_runtime_defaults(
         gpu_index=int(gpu_index),
-        power_limit_override_w=runtime_options.get("power_limit_override_w"),
         log=log,
     )
     runtime_default_plan = list(runtime_reset["plan"])

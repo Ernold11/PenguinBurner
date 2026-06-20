@@ -52,7 +52,7 @@ def test_systemd_unit_uses_running_python_and_program_without_launcher(
     )
 
     assert (
-        f"ExecStart=/opt/python/bin/python {program} --foreground "
+        f"ExecStart=/opt/python/bin/python {program} "
         "--auto-uv-profile profile-a --silent-fan-curve"
     ) in unit
     assert "Environment=PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=60" in unit

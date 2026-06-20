@@ -165,9 +165,6 @@ def test_profile_info_from_command_text() -> None:
     )
     assert info == {"selector": "p1", "silent_fan_curve": True, "adaptive_auto_uv": True}
     assert profiles.profile_info_from_command_text("pburn --auto-uv-profile=p2")["selector"] == "p2"
-    assert profiles.profile_info_from_command_text("pburn --prefer-afterburner-curve")[
-        "selector"
-    ] == "afterburner-import"
     assert profiles.profile_info_from_command_text("pburn run", default_if_present=True)[
         "selector"
     ] == "__systemd_default__"

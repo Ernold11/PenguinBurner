@@ -379,8 +379,6 @@ def _profile_selectors_match(
 
 
 def _profile_selector_from_command_parts(parts: list[str]) -> str:
-    if "--prefer-afterburner-curve" in parts:
-        return "afterburner-import"
     for index, part in enumerate(parts):
         if part == "--auto-uv-profile" and index + 1 < len(parts):
             return str(parts[index + 1])

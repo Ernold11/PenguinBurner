@@ -489,10 +489,7 @@ def debug_effective_runtime_options(
         f"afterburner-root={afterburner_runtime_options.get('afterburner_root') or '(none)'} "
         f"section={afterburner_runtime_options.get('afterburner_profile') or '(auto)'} "
         f"device-profile={afterburner_runtime_options.get('afterburner_device_profile') or '(auto)'} "
-        f"power-limit-override={afterburner_runtime_options.get('power_limit_override_w')} "
-        f"preserve-vf-below-mv={afterburner_runtime_options.get('preserve_base_below_mv')} "
-        f"auto-uv-max-drop-pct={afterburner_runtime_options.get('auto_uv_max_drop_pct')} "
-        f"dangerously-skip-validation={bool(afterburner_runtime_options.get('dangerously_skip_validation'))}"
+        f"auto-uv-max-drop-pct={afterburner_runtime_options.get('auto_uv_max_drop_pct')}"
     )
 
 
@@ -545,7 +542,6 @@ def emit_afterburner_debug_snapshot(
     afterburner_root,
     requested_section,
     device_profile_hint,
-    dangerously_skip_validation=False,
 ):
     if not DEBUG_LOG_ENABLED:
         return
@@ -554,14 +550,7 @@ def emit_afterburner_debug_snapshot(
     debug_log(f"requested-root={afterburner_root}")
     debug_log(f"requested-section={requested_section or '(auto)'}")
     debug_log(f"device-profile-hint={device_profile_hint or '(auto)'}")
-    debug_log(
-        "selection-mode="
-        + (
-            "dangerously-skip-validation"
-            if dangerously_skip_validation
-            else "default-validation"
-        )
-    )
+    debug_log("selection-mode=default-validation")
 
     try:
         resolved_root = resolve_afterburner_root(afterburner_root)

@@ -289,7 +289,6 @@ def auto_uv_nvml_info_text(info: AutoUvNvmlInfo | None) -> str:
 
     rows = [
         _power_limit_text(info),
-        _power_draw_text(info.power_draw_w),
         _current_clocks_text(info),
         _supported_memory_clocks_text(info.supported_memory_clocks_mhz),
         _supported_core_range_text(info.supported_graphics_clock_steps_mhz),
@@ -360,12 +359,6 @@ def _power_limit_text(info: AutoUvNvmlInfo) -> str:
             f"{_watts_number_text(info.power_limit_max_w)} W"
         )
     return f"Power limit: {' | '.join(parts)}" if parts else ""
-
-
-def _power_draw_text(power_draw_w: float | None) -> str:
-    if power_draw_w is None:
-        return ""
-    return f"Current draw: {_watts_text(power_draw_w)}"
 
 
 def _current_clocks_text(info: AutoUvNvmlInfo) -> str:
