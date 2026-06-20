@@ -17,6 +17,7 @@ def _args(**overrides):
         "auto_uv_final_seconds": None,
         "auto_uv_short_seconds": None,
         "auto_uv_memory_offset_mhz": None,
+        "auto_uv_power_limit_w": None,
         "auto_uv_tail_rise_bins": None,
         "auto_oc_target_voltage_mv": None,
         "auto_oc_target_clock_mhz": None,
@@ -53,6 +54,7 @@ def test_effective_runtime_options_apply_cli_overrides_and_clamps(tmp_path) -> N
             auto_uv_final_seconds=0,
             auto_uv_short_seconds=999,
             auto_uv_memory_offset_mhz=99999,
+            auto_uv_power_limit_w=390,
             auto_uv_tail_rise_bins=999,
             auto_oc_target_voltage_mv=925,
             auto_oc_target_clock_mhz=2670,
@@ -73,6 +75,7 @@ def test_effective_runtime_options_apply_cli_overrides_and_clamps(tmp_path) -> N
     assert effective["auto_uv_final_seconds"] is None
     assert effective["auto_uv_short_seconds"] == 60
     assert effective["auto_uv_memory_offset_mhz"] == MAX_AFTERBURNER_MEM_OFFSET_MHZ
+    assert effective["auto_uv_power_limit_w"] == 390
     assert effective["auto_uv_min_voltage_mv_explicit"] is True
     assert effective["auto_uv_tail_rise_bins"] == AUTO_UV_DEFAULTS.max_tail_rise_bins
     assert effective["auto_uv_tail_rise_bins_explicit"] is True

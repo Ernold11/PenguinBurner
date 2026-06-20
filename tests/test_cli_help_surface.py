@@ -16,6 +16,7 @@ def test_main_cli_help_hides_default_and_unclear_compat_flags(capsys):
 
     assert "--foreground" not in help_text
     assert "--power-limit-override-w" not in help_text
+    assert "--auto-uv-power-limit-w" in help_text
 
 
 def test_main_cli_help_removes_old_compat_flags(capsys):
@@ -62,6 +63,12 @@ def test_removed_main_cli_flags_are_rejected(argv):
     with pytest.raises(SystemExit) as exc:
         parse_arguments(argv)
     assert exc.value.code == 2
+
+
+def test_auto_uv_power_limit_flag_is_accepted():
+    args = parse_arguments(["--auto-uv-power-limit-w", "390"])
+
+    assert args.auto_uv_power_limit_w == 390
 
 
 @pytest.mark.parametrize(

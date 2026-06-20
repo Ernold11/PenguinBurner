@@ -162,6 +162,17 @@ def parse_arguments(argv):
         ),
     )
     auto_uv_group.add_argument(
+        "--auto-uv-power-limit-w",
+        type=int,
+        default=None,
+        metavar="W",
+        help=(
+            "Power limit in watts to apply during Auto-UV and save with the "
+            "final profile. The UI clamps this to the selected GPU's NVML "
+            "minimum and maximum power-limit range."
+        ),
+    )
+    auto_uv_group.add_argument(
         "--auto-uv-tail-rise-bins",
         type=int,
         default=None,

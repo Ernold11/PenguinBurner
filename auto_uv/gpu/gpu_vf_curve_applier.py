@@ -84,6 +84,17 @@ def open_live_gpu_vf_curve_applier(
         "gpu_name": runtime_reset.get("gpu_name"),
         "power_limit_w": runtime_reset.get("power_limit_w"),
     }
+    power_limit_w = _auto_uv_power_limit_w(runtime_options)
+    if power_limit_w is not None:
+        try:
+            applied_power_limit_w = policy_controller.apply_power_limit_w(power_limit_w)
+        except Exception as exc:
+            raise AutoUvError(
+                f"failed to apply Auto-UV power limit {int(power_limit_w)}W: {exc}"
+            ) from exc
+        translated_gpu_policy["power_limit_w"] = int(applied_power_limit_w)
+        log(f"Auto-UV power limit: applied {int(applied_power_limit_w)}W")
+
     memory_offset_mhz, memory_offset_limit_mhz = auto_uv_memory_offset_mhz(
         runtime_options,
         policy_controller=policy_controller,
@@ -106,3 +117,14 @@ def open_live_gpu_vf_curve_applier(
         runtime_default_plan=runtime_default_plan,
         translated_gpu_policy=translated_gpu_policy,
     )
+
+
+def _auto_uv_power_limit_w(runtime_options: dict) -> int | None:
+    value = runtime_options.get("auto_uv_power_limit_w")
+    if value in (None, ""):
+        return None
+    try:
+        power_limit_w = int(round(float(value)))
+    except (TypeError, ValueError) as exc:
+        raise AutoUvError(f"invalid Auto-UV power limit: {value!r}") from exc
+    return power_limit_w if power_limit_w > 0 else None

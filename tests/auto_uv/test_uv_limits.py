@@ -27,9 +27,9 @@ def test_5080_voltage_table_exposes_efficiency_floor_and_performance_ceiling() -
 
 
 def test_unlisted_gpu_has_no_voltage_table_match() -> None:
-    assert uv_limit_voltage_floor_target_for_gpu("NVIDIA GeForce RTX 3080") is None
-    assert uv_limit_profile_target_for_gpu("NVIDIA GeForce RTX 3080", "performance") is None
-    assert uv_limit_eco_to_max_clock_drop_pct_for_gpu("NVIDIA GeForce RTX 3080") is None
+    assert uv_limit_voltage_floor_target_for_gpu("NVIDIA GeForce GTX 1080") is None
+    assert uv_limit_profile_target_for_gpu("NVIDIA GeForce GTX 1080", "performance") is None
+    assert uv_limit_eco_to_max_clock_drop_pct_for_gpu("NVIDIA GeForce GTX 1080") is None
 
 
 def test_eco_to_max_clock_drop_uses_gpu_table_ratio() -> None:
@@ -61,4 +61,29 @@ def test_4070_ti_performance_target_matches_reference_table() -> None:
     assert target is not None
     assert target.gpu_family == "RTX 4070 Ti"
     assert target.voltage_mv == 950
-    assert target.clock_mhz == 2730
+    assert target.clock_mhz == 2685
+
+
+def test_3080_uses_ampere_table_values() -> None:
+    floor = uv_limit_voltage_floor_target_for_gpu("NVIDIA GeForce RTX 3080")
+    ceiling = uv_limit_profile_target_for_gpu("NVIDIA GeForce RTX 3080", "performance")
+
+    assert floor is not None
+    assert ceiling is not None
+    assert floor.gpu_family == "RTX 3080"
+    assert floor.voltage_mv == 800
+    assert floor.clock_mhz == 1750
+    assert ceiling.voltage_mv == 900
+    assert ceiling.clock_mhz == 1950
+
+
+def test_3080_12gb_matches_before_base_3080() -> None:
+    target = uv_limit_profile_target_for_gpu(
+        "NVIDIA GeForce RTX 3080 12GB",
+        "max",
+    )
+
+    assert target is not None
+    assert target.gpu_family == "RTX 3080 12GB"
+    assert target.voltage_mv == 950
+    assert target.clock_mhz == 2000

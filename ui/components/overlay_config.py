@@ -178,9 +178,10 @@ class OverlayConfigPanel:
             MIN_ADAPTIVE_TARGET_FPS,
             MAX_ADAPTIVE_TARGET_FPS,
         )
-        self.target_fps_spin.setDecimals(2)
+        self.target_fps_spin.setDecimals(0)
         self.target_fps_spin.setSingleStep(1.0)
         self.target_fps_spin.setSuffix(" FPS")
+        self.target_fps_spin.setFixedWidth(_target_fps_spin_width(self.target_fps_spin))
         self.target_fps_spin.setToolTip(target_fps_tooltip)
         enable_row.addSpacing(14)
         enable_row.addWidget(target_fps_label)
@@ -456,6 +457,13 @@ def _sample_text(item_id: str) -> str:
 
 def _scale_option_label(option: float) -> str:
     return f"{float(option):g}x"
+
+
+def _target_fps_spin_width(spin) -> int:
+    max_text_width = spin.fontMetrics().horizontalAdvance(
+        f"{int(MAX_ADAPTIVE_TARGET_FPS)} FPS"
+    )
+    return max(84, max_text_width + 36)
 
 
 def _wrapped_tooltip(text: str) -> str:

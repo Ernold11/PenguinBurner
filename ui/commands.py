@@ -120,6 +120,7 @@ def scan_command(auto_uv_options: Mapping[str, object] | None = None) -> list[st
         "auto_uv_max_clock_drop_pct": "--auto-uv-max-clock-drop-pct",
         "auto_uv_short_seconds": "--auto-uv-short-seconds",
         "auto_uv_memory_offset_mhz": "--auto-uv-memory-offset-mhz",
+        "auto_uv_power_limit_w": "--auto-uv-power-limit-w",
         "auto_uv_tail_rise_bins": "--auto-uv-tail-rise-bins",
         "auto_oc_target_voltage_mv": "--auto-oc-target-voltage-mv",
         "auto_oc_target_clock_mhz": "--auto-oc-target-clock-mhz",

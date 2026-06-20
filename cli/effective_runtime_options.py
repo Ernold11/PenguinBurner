@@ -37,6 +37,7 @@ _NULLABLE_NUMERIC_OPTIONS = [
     ("auto_uv_final_seconds", "auto_uv_final_seconds", _INT_POS),
     ("auto_uv_short_seconds", "auto_uv_short_seconds", _short_seconds),
     ("auto_uv_memory_offset_mhz", "auto_uv_memory_offset_mhz", _memory_offset),
+    ("auto_uv_power_limit_w", "auto_uv_power_limit_w", _INT_POS),
     (
         "auto_uv_tail_rise_bins",
         "auto_uv_tail_rise_bins",

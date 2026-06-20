@@ -140,6 +140,7 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
             "auto_uv_max_drop_pct": 16.0,
             "auto_uv_max_clock_drop_pct": 10.0,
             "auto_uv_memory_offset_mhz": 500,
+            "auto_uv_power_limit_w": 390,
             "auto_uv_tail_rise_bins": 2,
             "auto_oc_target_voltage_mv": 925,
             "auto_oc_target_clock_mhz": 2670,
@@ -161,6 +162,8 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert "--auto-oc-target-clock-mhz" in command
     assert command[command.index("--auto-oc-target-clock-mhz") + 1] == "2670"
     assert "--power-limit-override-w" not in command
+    assert "--auto-uv-power-limit-w" in command
+    assert command[command.index("--auto-uv-power-limit-w") + 1] == "390"
     assert "--yolo" not in command
     assert "--auto-uv-efficiency-stop-streak" not in command
     assert "--auto-uv-min-efficiency-stop-drop-pct" not in command
@@ -997,13 +1000,13 @@ def test_auto_uv_voltage_drop_default_falls_back_to_generic_when_unmatched() -> 
     assert preview.floor_voltage_mv == 900
 
 
-def test_auto_uv_voltage_drop_default_uses_generic_for_unlisted_3080() -> None:
+def test_auto_uv_voltage_drop_default_uses_ampere_table_for_3080() -> None:
     preview = _auto_uv_voltage_drop_default(gpu_name="NVIDIA GeForce RTX 3080")
 
-    assert preview.preset_matched is False
-    assert preview.gpu_family is None
-    assert preview.floor_voltage_mv == 900
-    assert preview.value_pct == pytest.approx(10.0)
+    assert preview.preset_matched is True
+    assert preview.gpu_family == "RTX 3080"
+    assert preview.floor_voltage_mv == 800
+    assert preview.value_pct == pytest.approx(20.0)
 
 
 def test_progress_text_stays_light_until_bar_is_full() -> None:
@@ -1130,6 +1133,12 @@ def test_overlay_panel_saves_adaptive_target_fps(tmp_path) -> None:
 
     assert panel.widget.layout().contentsMargins().top() >= 16
     assert panel.target_fps_spin.objectName() == "overlayTargetFpsSpin"
+    assert panel.target_fps_spin.decimals() == 0
+    assert panel.target_fps_spin.text() == "60 FPS"
+    assert panel.target_fps_spin.maximumWidth() == panel.target_fps_spin.minimumWidth()
+    assert panel.target_fps_spin.maximumWidth() <= (
+        panel.target_fps_spin.fontMetrics().horizontalAdvance("1000 FPS") + 40
+    )
 
     panel.target_fps_spin.setValue(90)
 
@@ -1685,7 +1694,8 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
     assert '"auto_oc_target_voltage_mv"' in source
     assert '"auto_oc_target_clock_mhz"' in source
     assert '"power_limit_override_w"' not in source
-    assert "powerLimitSlider" not in source
+    assert '"auto_uv_power_limit_w"' in source
+    assert "powerLimitSlider" in source
     assert '"auto_uv_min_voltage_mv"' in source
     assert '"auto_uv_max_drop_pct"' not in source
     assert 'options["auto_uv_tail_rise_bins"] = int(preset.tail_rise_bins)' in source
@@ -1798,14 +1808,22 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     assert "Clocks now: core 2100 MHz | memory 10501 MHz" in nvml_info.text()
     assert "RTX" not in nvml_info.text()
     assert advanced_group is not None
-    assert power_limit_slider is None
-    assert power_limit_spin is None
+    assert power_limit_slider is not None
+    assert power_limit_spin is not None
+    assert power_limit_slider.minimum() == 200
+    assert power_limit_slider.maximum() == 450
+    assert power_limit_slider.value() == 350
+    assert power_limit_spin.minimum() == 200
+    assert power_limit_spin.maximum() == 450
+    assert power_limit_spin.value() == 350
+    power_limit_slider.setValue(390)
+    assert power_limit_spin.value() == 390
     advanced_labels = {
         label.text() for label in advanced_group.findChildren(QtWidgets.QLabel)
     }
     assert "Max loaded clock drop" in advanced_labels
     assert "Memory Offset MHz" in advanced_labels
-    assert "Power limit" not in advanced_labels
+    assert "Power limit" in advanced_labels
     assert stack is not None
     assert stack.count() == 3
     assert stack.minimumHeight() >= max(
@@ -1822,6 +1840,79 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     assert dialog.size() == initial_size
     buttons[AUTO_UV_PRESET_EFFICIENCY].click()
     assert dialog.size() == initial_size
+
+
+def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    import ui.dialogs.scan_tuning as scan_tuning
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_voltage_drop_default",
+        lambda gpu_index=None: SimpleNamespace(
+            gpu_name="NVIDIA GeForce RTX 5080",
+            value_pct=15.0,
+            floor_voltage_mv=850,
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_clock_drop_default",
+        lambda gpu_index=None: SimpleNamespace(value_pct=11.1),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "gpu_choices_with_fallback",
+        lambda selected_index=None: (
+            [SimpleNamespace(index=0, label="GPU 0 - NVIDIA GeForce RTX 5080")],
+            0,
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "read_auto_uv_nvml_info",
+        lambda selected: SimpleNamespace(
+            power_draw_w=42.0,
+            power_management_enabled=True,
+            power_limit_w=360.0,
+            power_limit_default_w=360.0,
+            power_limit_min_w=330.0,
+            power_limit_max_w=390.0,
+            graphics_clock_mhz=2100,
+            memory_clock_mhz=10501,
+            supported_memory_clocks_mhz=(),
+            supported_graphics_clock_steps_mhz=(),
+        ),
+    )
+
+    def accept_with_power_limit(dialog):
+        spin = dialog.findChild(QtWidgets.QSpinBox, "powerLimitSpin")
+        assert spin is not None
+        assert spin.minimum() == 330
+        assert spin.maximum() == 390
+        assert spin.value() == 360
+        spin.setValue(390)
+        return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QtWidgets.QDialog, "exec", accept_with_power_limit)
+
+    options = scan_tuning.select_scan_tuning(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgets,
+        parent=None,
+        gpu_index=0,
+    )
+
+    assert options is not None
+    assert options["auto_uv_power_limit_w"] == 390
 
 
 def test_about_dialog_preserves_project_links() -> None:

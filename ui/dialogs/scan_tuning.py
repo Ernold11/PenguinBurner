@@ -84,11 +84,13 @@ def select_scan_tuning(
         qt_flags(QtCore.Qt, "TextInteractionFlag", "TextSelectableByMouse")
     )
     gpu_nvml_info.setMinimumWidth(360)
+    power_limit_controls = {}
 
     def sync_gpu_nvml_info() -> None:
         selected = _selected_gpu_index(gpu_combo, selected_gpu_index)
         info = read_auto_uv_nvml_info(selected)
         gpu_nvml_info.setText(auto_uv_nvml_info_text(info))
+        _sync_power_limit_controls(power_limit_controls, info)
 
     gpu_combo.currentIndexChanged.connect(lambda _index: sync_gpu_nvml_info())
     _add_form_row(
@@ -196,6 +198,30 @@ def select_scan_tuning(
     memory_offset_spin.setSuffix(" MHz")
     memory_offset_spin.setSingleStep(50)
     memory_offset_spin.setFixedWidth(136)
+    power_limit_slider = QtWidgets.QSlider(_horizontal_orientation(QtCore))
+    power_limit_slider.setObjectName("powerLimitSlider")
+    power_limit_slider.setMinimumWidth(220)
+    power_limit_slider.setSingleStep(1)
+    power_limit_spin = QtWidgets.QSpinBox()
+    power_limit_spin.setObjectName("powerLimitSpin")
+    power_limit_spin.setSuffix(" W")
+    power_limit_spin.setSingleStep(1)
+    power_limit_spin.setFixedWidth(116)
+    power_limit_widget = QtWidgets.QWidget()
+    power_limit_widget.setMinimumWidth(360)
+    power_limit_layout = QtWidgets.QHBoxLayout(power_limit_widget)
+    power_limit_layout.setContentsMargins(0, 0, 0, 0)
+    power_limit_layout.setSpacing(10)
+    power_limit_layout.addWidget(power_limit_slider, 1)
+    power_limit_layout.addWidget(power_limit_spin)
+    power_limit_slider.valueChanged.connect(power_limit_spin.setValue)
+    power_limit_spin.valueChanged.connect(power_limit_slider.setValue)
+    power_limit_controls.update(
+        {
+            "slider": power_limit_slider,
+            "spin": power_limit_spin,
+        }
+    )
 
     efficiency_page = QtWidgets.QWidget()
     efficiency_form = _advanced_form_layout(QtCore=QtCore, QtWidgets=QtWidgets)
@@ -287,6 +313,18 @@ def select_scan_tuning(
             "rejected by the Nvidia driver; modify with care."
         ),
     )
+    _add_form_row(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        form_layout=common_form,
+        text="Power limit",
+        widget=power_limit_widget,
+        tooltip=(
+            "Power limit in watts applied during this Auto-UV scan and saved "
+            "with the final profile. The range comes from NVML for the selected "
+            "GPU; the default position is the card's NVML default limit."
+        ),
+    )
     advanced_layout.addWidget(preset_advanced_stack)
     advanced_layout.addWidget(common_advanced)
 
@@ -344,6 +382,8 @@ def select_scan_tuning(
         "auto_uv_max_clock_drop_pct": float(max_clock_drop_spin.value()),
         "auto_uv_memory_offset_mhz": int(memory_offset_spin.value()),
     }
+    if power_limit_spin.isEnabled() and int(power_limit_spin.value()) > 0:
+        options["auto_uv_power_limit_w"] = int(power_limit_spin.value())
     if int(preset.tail_rise_bins) > 0:
         options["auto_uv_tail_rise_bins"] = int(preset.tail_rise_bins)
     if preset.preset_id == AUTO_UV_PRESET_EFFICIENCY:
@@ -483,3 +523,65 @@ def _horizontal_orientation(QtCore):
         getattr(QtCore.Qt, "Orientation", QtCore.Qt),
         "Horizontal",
     )
+
+
+def _sync_power_limit_controls(controls: dict, info) -> None:
+    slider = controls.get("slider")
+    spin = controls.get("spin")
+    if slider is None or spin is None:
+        return
+
+    values = _power_limit_control_values(info)
+    if values is None:
+        slider.blockSignals(True)
+        spin.blockSignals(True)
+        slider.setRange(0, 0)
+        spin.setRange(0, 0)
+        slider.setValue(0)
+        spin.setValue(0)
+        slider.setEnabled(False)
+        spin.setEnabled(False)
+        spin.blockSignals(False)
+        slider.blockSignals(False)
+        return
+
+    min_w, max_w, default_w = values
+    page_step = max(1, int(round((max_w - min_w) / 6.0)))
+    slider.blockSignals(True)
+    spin.blockSignals(True)
+    slider.setRange(min_w, max_w)
+    spin.setRange(min_w, max_w)
+    slider.setPageStep(page_step)
+    spin.setSingleStep(1)
+    slider.setValue(default_w)
+    spin.setValue(default_w)
+    slider.setEnabled(True)
+    spin.setEnabled(True)
+    spin.blockSignals(False)
+    slider.blockSignals(False)
+
+
+def _power_limit_control_values(info) -> tuple[int, int, int] | None:
+    if info is None:
+        return None
+    min_w = _positive_rounded_int(getattr(info, "power_limit_min_w", None))
+    max_w = _positive_rounded_int(getattr(info, "power_limit_max_w", None))
+    if min_w is None or max_w is None or max_w < min_w:
+        return None
+    default_w = _positive_rounded_int(getattr(info, "power_limit_default_w", None))
+    if default_w is None:
+        default_w = _positive_rounded_int(getattr(info, "power_limit_w", None))
+    if default_w is None:
+        default_w = int(round((min_w + max_w) / 2.0))
+    default_w = max(min_w, min(max_w, default_w))
+    return min_w, max_w, default_w
+
+
+def _positive_rounded_int(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        rounded = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return rounded if rounded > 0 else None
