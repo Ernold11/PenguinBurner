@@ -29,14 +29,9 @@ from .probe_runtime_guardrails import (
 )
 from .q2rtx_live_abort_rules import (
     telemetry_live_abort_reason,
-    timedemo_live_abort_reason,
-    timedemo_stall_abort_reason,
 )
-from .q2rtx_cuda_probe_config import timedemo_seconds_hint
 from .q2rtx_probe_summary import (
-    decision_timedemo_runs,
     history_average,
-    mean,
     saturated_probe_tail_samples,
     summarize_q2rtx_cuda_probe,
 )
@@ -71,14 +66,8 @@ def probe_voltage_candidate(
     marker_details: dict | None = None,
     suppress_unsafe_recording: bool = False,
     expected_total_duration_s: int | None = None,
-    timedemo_warmup_runs: int = 0,
     event_callback: AutoUvEventCallback | None = None,
 ) -> tuple[AutoUvProbeSummary, Q2RTXStabilityResult]:
-    frame_reference = (
-        int(stable_history[0].frames_per_run)
-        if stable_history and stable_history[0].frames_per_run is not None
-        else None
-    )
     if min_performance_core_clock_pct is None:
         min_performance_core_clock_pct = (
             AUTO_UV_METRIC_TUNING.min_performance_core_clock_pct
@@ -92,19 +81,10 @@ def probe_voltage_candidate(
 
     latest_stable_probe = stable_history[-1] if stable_history else None
     progress_state = {
-        "last_completed_runs": 0,
-        "last_progress_elapsed_s": 0.0,
-        "expected_loop_s": (
-            latest_stable_probe.avg_seconds_per_run
-            if latest_stable_probe is not None
-            else history_average(stable_history, "avg_seconds_per_run")
-        )
-        or timedemo_seconds_hint(q2rtx_config),
-        "low_fps_streak": 0,
         "low_core_clock_streak": 0,
         "low_power_streak": 0,
     }
-    busy_power_floor_w, proper_run_fps_floor, proper_run_power_floor_w = (
+    busy_power_floor_w, proper_run_power_floor_w = (
         live_probe_reference_floors(
             latest_stable_probe,
             power_limit_w=power_limit_w,
@@ -118,7 +98,6 @@ def probe_voltage_candidate(
         return progress_target_duration_s(
             q2rtx_config=q2rtx_config,
             companion_duration_s=float(companion_duration_s),
-            expected_loop_s=progress_state.get("expected_loop_s"),
             state=state,
             expected_total_duration_s=expected_total_duration_s,
         )
@@ -164,22 +143,7 @@ def probe_voltage_candidate(
         return " ".join(parts)
 
     def progress_callback(state: dict) -> None:
-        completed_runs = int(state.get("completed_runs", 0))
-        wall_elapsed_s = float(state.get("elapsed_s", 0.0))
         progress_elapsed_s = progress_elapsed_s_for_ui(state)
-        timedemo_runs = list(state.get("timedemo_runs") or [])
-        if completed_runs > int(progress_state["last_completed_runs"]):
-            progress_state["last_completed_runs"] = completed_runs
-            progress_state["last_progress_elapsed_s"] = wall_elapsed_s
-            current_loop_s = mean([float(run.seconds) for run in timedemo_runs])
-            if current_loop_s is not None:
-                progress_state["expected_loop_s"] = current_loop_s
-            log_completed_timedemo_run(
-                log,
-                phase_label=phase_label,
-                log_context=log_context,
-                state=state,
-            )
         live_status = format_live_status(state)
         if log_context is not None and str(log_context).strip():
             live_status = f"{str(log_context).strip()} {live_status}"
@@ -200,14 +164,6 @@ def probe_voltage_candidate(
         fatal_output_matches = list(state.get("fatal_output_matches") or [])
         if fatal_output_matches:
             return "fatal-q2rtx-output"
-        timedemo_abort = timedemo_live_abort_reason(
-            state,
-            frame_reference=frame_reference,
-            proper_run_fps_floor=proper_run_fps_floor,
-            progress_state=progress_state,
-        )
-        if timedemo_abort is not None:
-            return timedemo_abort
         telemetry_abort = telemetry_live_abort_reason(
             state,
             busy_power_floor_w=busy_power_floor_w,
@@ -217,12 +173,7 @@ def probe_voltage_candidate(
         )
         if telemetry_abort is not None:
             return telemetry_abort
-        return timedemo_stall_abort_reason(
-            state,
-            busy_power_floor_w=busy_power_floor_w,
-            expected_loop_s=progress_state.get("expected_loop_s"),
-            last_progress_elapsed_s=float(progress_state["last_progress_elapsed_s"]),
-        )
+        return None
 
     mark_in_progress = probe_phase_writes_crash_marker(str(phase_label))
     unsafe_clock_bindings = unsafe_clock_bindings_from_plan(
@@ -245,13 +196,14 @@ def probe_voltage_candidate(
     def record_probe_unsafe(reason: str, details: dict | None = None) -> None:
         if not mark_in_progress:
             return
+        unsafe_details = probe_unsafe_details(crash_marker_details, details)
         try:
             blacklist_path, _unsafe_entry = record_unsafe_voltage(
                 candidate_voltage_mv=int(candidate_voltage_mv),
                 lock_clock_mhz=int(lock_clock_mhz),
                 reason=str(reason),
                 phase=str(phase_label),
-                details=details,
+                details=unsafe_details,
                 blocked_lock_clock_mhz=unsafe_clock_bindings,
             )
         except Exception as exc:
@@ -262,7 +214,7 @@ def probe_voltage_candidate(
                 f"target={int(lock_clock_mhz)}MHz reason={reason} error={exc}",
             )
             return
-        detail_text = unsafe_detail_text(details)
+        detail_text = unsafe_detail_text(unsafe_details)
         log_phase(
             log,
             "blacklist",
@@ -332,8 +284,13 @@ def probe_voltage_candidate(
             used_companion_load=bool(q2rtx_config.companion_command),
         )
         live_voltage_after_mv = nvml_session.read_live_voltage_mv()
+        measurement_samples = (
+            list(result.measurement_telemetry_samples())
+            if hasattr(result, "measurement_telemetry_samples")
+            else list(result.telemetry_samples)
+        )
         summary_samples = (
-            saturated_probe_tail_samples(result.telemetry_samples)
+            saturated_probe_tail_samples(measurement_samples)
             if summarize_saturated_tail
             else None
         )
@@ -342,19 +299,7 @@ def probe_voltage_candidate(
                 log,
                 phase_label,
                 f"using saturated telemetry tail samples={len(summary_samples)}/"
-                f"{len(result.telemetry_samples)} for base-load measurement",
-            )
-        decision_runs = decision_timedemo_runs(
-            result.timedemo_runs,
-            timedemo_warmup_runs=int(timedemo_warmup_runs),
-        )
-        if len(decision_runs) < len(result.timedemo_runs):
-            log_phase(
-                log,
-                phase_label,
-                f"timedemo-warmup-ignored="
-                f"{len(result.timedemo_runs) - len(decision_runs)}/"
-                f"{len(result.timedemo_runs)} runs for decision FPS",
+                f"{len(measurement_samples)} for base-load measurement",
             )
         return (
             summarize_q2rtx_cuda_probe(
@@ -367,7 +312,6 @@ def probe_voltage_candidate(
                 result=result,
                 telemetry_samples=summary_samples,
                 use_power_limit_floor=use_power_limit_floor,
-                timedemo_warmup_runs=int(timedemo_warmup_runs),
             ),
             result,
         )
@@ -380,14 +324,9 @@ def live_probe_reference_floors(
     reference_probe: AutoUvProbeSummary | None,
     *,
     power_limit_w: int | None,
-) -> tuple[float | None, float | None, float | None]:
-    proper_run_fps_floor = None
+) -> tuple[float | None, float | None]:
     proper_run_power_floor_w = None
     busy_power_floor_w = None
-    if reference_probe is not None and reference_probe.avg_fps is not None:
-        proper_run_fps_floor = float(reference_probe.avg_fps) * percent(
-            AUTO_UV_METRIC_TUNING.min_proper_run_fps_pct
-        )
     if reference_probe is not None and reference_probe.avg_power_w is not None:
         proper_run_power_floor_w = float(reference_probe.avg_power_w) * percent(
             AUTO_UV_METRIC_TUNING.min_proper_run_power_pct
@@ -399,7 +338,16 @@ def live_probe_reference_floors(
         busy_power_floor_w = float(power_limit_w) * percent(
             AUTO_UV_STALL_TUNING.busy_power_limit_pct
         )
-    return busy_power_floor_w, proper_run_fps_floor, proper_run_power_floor_w
+    return busy_power_floor_w, proper_run_power_floor_w
+
+
+def probe_unsafe_details(
+    crash_marker_details: dict | None,
+    details: dict | None,
+) -> dict:
+    unsafe_details = dict(crash_marker_details or {})
+    unsafe_details.update(dict(details or {}))
+    return unsafe_details
 
 
 def handle_probe_result_logging_and_blacklist(
@@ -441,45 +389,6 @@ def handle_probe_result_logging_and_blacklist(
             f"target={int(lock_clock_mhz)}MHz result={result.reason}",
         )
     print_q2rtx_stability_result(result)
-
-
-def log_completed_timedemo_run(
-    log: Callable[[str], None],
-    *,
-    phase_label: str,
-    log_context: str | None,
-    state: dict,
-) -> None:
-    last_run = state.get("last_run")
-    if last_run is None:
-        return
-    latest_sample = state.get("latest_sample")
-    sample_parts = []
-    if latest_sample is not None and latest_sample.power_w is not None:
-        sample_parts.append(f"power={float(latest_sample.power_w):.1f}W")
-    if latest_sample is not None and latest_sample.temperature_c is not None:
-        sample_parts.append(f"temp={float(latest_sample.temperature_c):.0f}C")
-    else:
-        sample_parts.append("temp=n/a")
-    if latest_sample is not None and latest_sample.fan_speed_pct is not None:
-        sample_parts.append(f"fan={float(latest_sample.fan_speed_pct):.0f}%")
-    else:
-        sample_parts.append("fan=n/a")
-    prefix = (
-        f"{str(log_context).strip()} "
-        if log_context is not None and str(log_context).strip()
-        else ""
-    )
-    log_phase(
-        log,
-        f"{phase_label}-pass",
-        prefix
-        + f"run={int(last_run.run_index)} "
-        f"frames={int(last_run.frames)} "
-        f"fps={float(last_run.fps):.1f} "
-        f"seconds={float(last_run.seconds):.2f} "
-        + " ".join(sample_parts),
-    )
 
 
 def emit_live_telemetry_event(
@@ -553,7 +462,6 @@ def progress_target_duration_s(
     *,
     q2rtx_config: Q2RTXStabilityConfig,
     companion_duration_s: float,
-    expected_loop_s: float | None,
     state: dict,
     expected_total_duration_s: int | float | None = None,
 ) -> float | None:
@@ -562,14 +470,9 @@ def progress_target_duration_s(
             return max(1.0, float(expected_total_duration_s))
         except (TypeError, ValueError):
             pass
-    expected_runs = state.get("expected_runs")
-    if expected_runs is None and q2rtx_config.timedemo_loops is not None:
-        expected_runs = int(q2rtx_config.timedemo_loops)
     q2rtx_duration_s = (
         float(q2rtx_config.duration_s) if int(q2rtx_config.duration_s) > 0 else None
     )
-    if expected_runs is not None and expected_loop_s is not None:
-        q2rtx_duration_s = float(expected_runs) * float(expected_loop_s)
     if q2rtx_duration_s is None:
         return None
     return max(1.0, float(q2rtx_duration_s) + float(companion_duration_s))

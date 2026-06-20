@@ -12,7 +12,6 @@ from dataclasses import dataclass
 class AutoUvScanSettings:
     start_voltage_mv: int
     min_search_voltage_mv: int | None
-    preserve_base_below_mv: int | None
     baseline_core_clock_mhz: float | None
     auto_uv_mode: str = "efficiency"
     min_core_clock_pct: float = 85.0

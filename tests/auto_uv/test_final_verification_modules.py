@@ -51,25 +51,24 @@ def _summary(
 
 
 def test_final_probe_duration_split_keeps_cuda_inside_total_budget() -> None:
-    q2rtx_s, cuda_s = final_q2rtx_cuda_duration_s(600)
+    q2rtx_s, cuda_s = final_q2rtx_cuda_duration_s(300)
 
-    assert (q2rtx_s, cuda_s) == (450, 150)
+    assert (q2rtx_s, cuda_s) == (225, 75)
 
 
 def test_final_probe_config_adds_cuda_and_long_timeout() -> None:
     config = final_q2rtx_cuda_probe_config(
         Q2RTXStabilityConfig(gpu_index=2, single_pass_timeout_s=9999.0),
-        total_duration_s=600,
+        total_duration_s=300,
     )
 
     assert config.companion_command is not None
     assert "--gpu-index" in config.companion_command
     assert "2" in config.companion_command
     assert "--duration-seconds" in config.companion_command
-    assert "150" in config.companion_command
-    assert config.timedemo_loops is None
-    assert config.duration_s == 450
-    assert config.single_pass_timeout_s == 660.0
+    assert "75" in config.companion_command
+    assert config.duration_s == 225
+    assert config.single_pass_timeout_s == 360.0
 
 
 def test_final_verification_candidate_uses_plain_label() -> None:
@@ -140,6 +139,7 @@ def test_final_verified_profile_contains_fan_payload_and_memory_offset(
         base_probe=_summary(voltage_mv=1025, clock_mhz=2754),
         fan_curve_payload={"fan": {"curve": [[45.0, 0.0], [90.0, 100.0]]}},
         memory_offset_mhz=500,
+        power_limit_w=360,
         tail_rise_bins=2,
     )
     payload = json.loads(profile_path.read_text(encoding="utf-8"))
@@ -147,6 +147,7 @@ def test_final_verified_profile_contains_fan_payload_and_memory_offset(
     assert profile_path.parent == tmp_path / "auto-uv-profiles"
     assert payload["final_verified"] is True
     assert payload["memory_offset_mhz"] == 500
+    assert payload["power_limit_w"] == 360
     assert payload["tail_rise_bins"] == 2
     assert payload["flatten_target"]["tail_rise_bins"] == 2
     assert payload["fan_curve_payload"]["fan"]["curve"][-1] == [90.0, 100.0]

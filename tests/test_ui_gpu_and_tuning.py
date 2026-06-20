@@ -186,7 +186,8 @@ def test_auto_uv_nvml_info_text_is_compact_and_tuning_relevant() -> None:
     )
 
     assert "Power limit: current 320 W | default 350 W | range 200-450 W" in text
-    assert "Current draw: 42.2 W" in text
+    assert "Current draw" not in text
+    assert "42.2 W" not in text
     assert "Clocks now: core 2100 MHz | memory 10501 MHz" in text
     assert "Supported memory clocks: 810, 5001, 10501 MHz" in text
     assert "Supported core range: 210-3015 MHz (3 steps)" in text

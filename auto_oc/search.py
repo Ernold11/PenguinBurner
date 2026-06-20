@@ -54,6 +54,7 @@ def run_auto_oc_candidate_search(
     max_interpolation_steps: int = AUTO_OC_DEFAULT_MAX_INTERPOLATION_STEPS,
     target_voltage_mv: int | None = None,
     target_clock_mhz: int | None = None,
+    measured_baseline_clock_mhz: float | int | None = None,
 ) -> AutoOcSearchResult:
     endpoint = auto_oc_endpoint(
         gpu_name,
@@ -109,6 +110,7 @@ def run_auto_oc_candidate_search(
             tail_rise_bins=int(tail_rise_bins),
             start_clock_mhz=int(start_candidate.target_mhz),
             endpoint_clock_mhz=int(endpoint.clock_mhz),
+            measured_baseline_clock_mhz=measured_baseline_clock_mhz,
         )
         retarget_clock_ceiling(
             clock_ceiling,
@@ -211,25 +213,32 @@ def auto_oc_candidate(
     tail_rise_bins: int,
     start_clock_mhz: int | None = None,
     endpoint_clock_mhz: int | None = None,
+    measured_baseline_clock_mhz: float | int | None = None,
 ) -> VfCurveCandidate:
     metadata = {
         "auto_oc": True,
         "auto_oc_step": int(step.index),
         "auto_oc_steps": int(total_steps),
     }
-    if start_clock_mhz is not None and endpoint_clock_mhz is not None:
-        start_clock = int(start_clock_mhz)
-        endpoint_clock = int(endpoint_clock_mhz)
-        limit_mhz = max(0, endpoint_clock - start_clock)
-        applied_mhz = max(0, min(limit_mhz, int(step.target_mhz) - start_clock))
+    if measured_baseline_clock_mhz is not None:
+        baseline_clock = float(measured_baseline_clock_mhz)
+        endpoint_clock = (
+            int(endpoint_clock_mhz)
+            if endpoint_clock_mhz is not None
+            else int(step.target_mhz)
+        )
+        limit_mhz = int(round(float(endpoint_clock) - baseline_clock))
+        applied_mhz = int(round(float(step.target_mhz) - baseline_clock))
         metadata.update(
             {
-                "auto_oc_start_clock_mhz": start_clock,
+                "auto_oc_baseline_clock_mhz": round(baseline_clock, 2),
                 "auto_oc_target_clock_mhz": endpoint_clock,
                 "auto_oc_applied_mhz": applied_mhz,
                 "auto_oc_limit_mhz": limit_mhz,
             }
         )
+    if start_clock_mhz is not None:
+        metadata["auto_oc_start_clock_mhz"] = int(start_clock_mhz)
     return build_flattened_voltage_probe_curve(
         base_curve,
         candidate_voltage_mv=int(step.voltage_mv),

@@ -6,7 +6,10 @@ from types import SimpleNamespace
 from stability.q2rtx import Q2RTXStabilityConfig
 
 from auto_uv.auto_uv_types import AutoUvProbeSummary, FailureKind, VfCurveCandidate
-from auto_uv.q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
+from auto_uv.q2rtx.q2rtx_cuda_probe_runner import (
+    Q2RtxCudaProbeRunner,
+    probe_runner_marker_details,
+)
 from auto_uv_test_data import base_curve
 
 
@@ -41,8 +44,11 @@ def test_probe_runner_emits_candidate_table_start_and_result(monkeypatch) -> Non
     )
     result = {
         "success": True,
-        "timedemo_runs": [{"frames": 1000, "seconds": 10.0, "fps": 100.0}],
+        "benchmark_summary": _benchmark_summary(1000, 10.0, 100.0),
         "telemetry_samples": [
+            {"power_w": 180.0, "core_clock_mhz": 2400.0, "gpu_util_pct": 99.0}
+        ],
+        "benchmark_telemetry_samples": [
             {"power_w": 180.0, "core_clock_mhz": 2400.0, "gpu_util_pct": 99.0}
         ],
     }
@@ -67,7 +73,6 @@ def test_probe_runner_emits_candidate_table_start_and_result(monkeypatch) -> Non
         baseline_clock_mhz=None,
         min_performance_core_clock_pct=90.0,
         short_probe_base_duration_s=10,
-        timedemo_warmup_runs=0,
         log=lambda _message: None,
         event_callback=lambda name, payload: events.append((name, payload)),
     )
@@ -90,6 +95,22 @@ def test_probe_runner_emits_candidate_table_start_and_result(monkeypatch) -> Non
     assert events[1][1]["voltage_mv"] == 950
     assert events[2][1]["fps"] == 100.0
     assert events[2][1]["measured_clock_mhz"] == 2400.0
+
+
+def test_probe_runner_marker_details_add_candidate_tier_metadata() -> None:
+    candidate = VfCurveCandidate(
+        label="candidate",
+        voltage_mv=885,
+        target_mhz=2880,
+        flattened_plan=[],
+        metadata={"tail_rise_bins": 6, "generated_profile_tier": "performance"},
+    )
+
+    details = probe_runner_marker_details({"auto_uv_mode": "performance"}, candidate)
+
+    assert details["auto_uv_mode"] == "performance"
+    assert details["generated_profile_tier"] == "performance"
+    assert details["tail_rise_bins"] == 6
 
 
 def test_probe_runner_discovery_doubles_q2rtx_and_skips_cuda(monkeypatch) -> None:
@@ -180,8 +201,11 @@ def test_probe_runner_evaluates_cuda_from_per_voltage_config() -> None:
     )
     result = {
         "success": True,
-        "timedemo_runs": [{"frames": 1000, "seconds": 10.0, "fps": 100.0}],
+        "benchmark_summary": _benchmark_summary(1000, 10.0, 100.0),
         "telemetry_samples": [
+            {"power_w": 180.0, "core_clock_mhz": 2400.0, "gpu_util_pct": 99.0}
+        ],
+        "benchmark_telemetry_samples": [
             {"power_w": 180.0, "core_clock_mhz": 2400.0, "gpu_util_pct": 99.0}
         ],
     }
@@ -195,7 +219,6 @@ def test_probe_runner_evaluates_cuda_from_per_voltage_config() -> None:
         baseline_clock_mhz=None,
         min_performance_core_clock_pct=90.0,
         short_probe_base_duration_s=10,
-        timedemo_warmup_runs=0,
         log=lambda _message: None,
     )
 
@@ -215,8 +238,11 @@ def test_probe_runner_uses_original_baseline_clock_for_final_clock_floor() -> No
     current_summary = _summary(1020, 2425, used_companion_load=False)
     result = {
         "success": True,
-        "timedemo_runs": [{"frames": 1000, "seconds": 10.0, "fps": 100.0}],
+        "benchmark_summary": _benchmark_summary(1000, 10.0, 100.0),
         "telemetry_samples": [
+            {"power_w": 180.0, "core_clock_mhz": 2425.0, "gpu_util_pct": 99.0}
+        ],
+        "benchmark_telemetry_samples": [
             {"power_w": 180.0, "core_clock_mhz": 2425.0, "gpu_util_pct": 99.0}
         ],
     }
@@ -230,7 +256,6 @@ def test_probe_runner_uses_original_baseline_clock_for_final_clock_floor() -> No
         baseline_clock_mhz=2745.0,
         min_performance_core_clock_pct=90.0,
         short_probe_base_duration_s=10,
-        timedemo_warmup_runs=0,
         log=lambda _message: None,
     )
 
@@ -250,8 +275,11 @@ def test_probe_runner_can_disable_clock_floor_for_voltage_descent() -> None:
     current_summary = _summary(950, 2325, used_companion_load=False)
     result = {
         "success": True,
-        "timedemo_runs": [{"frames": 1000, "seconds": 10.0, "fps": 100.0}],
+        "benchmark_summary": _benchmark_summary(1000, 10.0, 100.0),
         "telemetry_samples": [
+            {"power_w": 180.0, "core_clock_mhz": 2325.0, "gpu_util_pct": 99.0}
+        ],
+        "benchmark_telemetry_samples": [
             {"power_w": 180.0, "core_clock_mhz": 2325.0, "gpu_util_pct": 99.0}
         ],
     }
@@ -265,7 +293,6 @@ def test_probe_runner_can_disable_clock_floor_for_voltage_descent() -> None:
         baseline_clock_mhz=2745.0,
         min_performance_core_clock_pct=90.0,
         short_probe_base_duration_s=10,
-        timedemo_warmup_runs=0,
         log=lambda _message: None,
     )
 
@@ -285,8 +312,11 @@ def test_probe_sweep_candidate_can_run_without_live_clock_floor(monkeypatch) -> 
     summary = _summary(965, 2325, used_companion_load=True)
     result = {
         "success": True,
-        "timedemo_runs": [{"frames": 1000, "seconds": 10.0, "fps": 100.0}],
+        "benchmark_summary": _benchmark_summary(1000, 10.0, 100.0),
         "telemetry_samples": [
+            {"power_w": 180.0, "core_clock_mhz": 2325.0, "gpu_util_pct": 99.0}
+        ],
+        "benchmark_telemetry_samples": [
             {"power_w": 180.0, "core_clock_mhz": 2325.0, "gpu_util_pct": 99.0}
         ],
     }
@@ -307,7 +337,6 @@ def test_probe_sweep_candidate_can_run_without_live_clock_floor(monkeypatch) -> 
         q2rtx_config=Q2RTXStabilityConfig(
             companion_command=("cuda",),
             duration_s=10,
-            timedemo_loops=1,
         ),
         runtime_default_plan=[],
         power_limit_w=360,
@@ -315,7 +344,6 @@ def test_probe_sweep_candidate_can_run_without_live_clock_floor(monkeypatch) -> 
         baseline_clock_mhz=2745.0,
         min_performance_core_clock_pct=90.0,
         short_probe_base_duration_s=10,
-        timedemo_warmup_runs=0,
         log=lambda _message: None,
     )
 
@@ -363,12 +391,14 @@ def _summary(
 
 
 def _stable_result() -> dict:
+    telemetry_samples = [
+        {"power_w": 180.0, "core_clock_mhz": 2400.0, "gpu_util_pct": 99.0}
+    ]
     return {
         "success": True,
-        "timedemo_runs": [{"frames": 1000, "seconds": 10.0, "fps": 100.0}],
-        "telemetry_samples": [
-            {"power_w": 180.0, "core_clock_mhz": 2400.0, "gpu_util_pct": 99.0}
-        ],
+        "benchmark_summary": _benchmark_summary(1000, 10.0, 100.0),
+        "telemetry_samples": telemetry_samples,
+        "benchmark_telemetry_samples": telemetry_samples,
     }
 
 
@@ -388,6 +418,17 @@ def _runner(
         baseline_clock_mhz=None,
         min_performance_core_clock_pct=90.0,
         short_probe_base_duration_s=int(short_probe_base_duration_s),
-        timedemo_warmup_runs=0,
         log=lambda _message: None,
     )
+
+
+def _benchmark_summary(frames: int, seconds: float, fps: float) -> dict:
+    return {
+        "render_frames": int(frames),
+        "measured_s": float(seconds),
+        "fps_avg": float(fps),
+        "fps_min": float(fps),
+        "fps_max": float(fps),
+        "fps_mean": float(fps),
+        "loops": 1,
+    }

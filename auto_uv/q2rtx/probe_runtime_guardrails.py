@@ -1,6 +1,7 @@
 """Live abort rules for a running Q2RTX/CUDA voltage probe.
 
-These checks stop probes early on hard evidence: lost load, invalid timedemo output, stalls, or clocks below floor.
+These checks stop probes early on hard evidence: lost load, idle selected GPU,
+or clocks below floor.
 """
 
 from __future__ import annotations
@@ -57,7 +58,6 @@ def probe_failure_should_mark_voltage_unsafe(reason: str) -> bool:
     if str(reason).startswith(
         (
             "q2rtx-selected-nvidia-gpu-idle",
-            "timedemo-live-stall",
             "user-stop-requested",
         )
     ):

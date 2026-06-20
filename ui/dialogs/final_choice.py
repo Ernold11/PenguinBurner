@@ -13,14 +13,15 @@ from ..components.table_sizing import set_header_fit_column_widths
 
 
 FINAL_CHOICE_SORT_ROLE = 261
-FINAL_CHOICE_FPSW_SORT_COLUMN = 3
-FINAL_CHOICE_FPS_SORT_COLUMN = 4
+FINAL_CHOICE_FPSW_SORT_COLUMN = 4
+FINAL_CHOICE_FPS_SORT_COLUMN = 5
 FINAL_CHOICE_DEFAULT_SORT_COLUMN = FINAL_CHOICE_FPSW_SORT_COLUMN
-FINAL_CHOICE_SORTABLE_COLUMNS = frozenset({2, 3, 4, 5})
-FINAL_CHOICE_HIGHER_FIRST_COLUMNS = frozenset({2, 3, 4})
+FINAL_CHOICE_SORTABLE_COLUMNS = frozenset({2, 3, 4, 5, 6})
+FINAL_CHOICE_HIGHER_FIRST_COLUMNS = frozenset({2, 3, 4, 5})
 FINAL_CHOICE_COLUMNS = [
     "mV",
     "Target MHz",
+    "OC MHz",
     "Effective MHz",
     "FPS/W",
     "FPS",
@@ -35,14 +36,18 @@ def candidate_status_text(
     is_default: bool,
     *,
     auto_uv_mode: object = "",
+    request_reason: object = "",
 ) -> str:
     parts = []
     if is_default:
-        parts.append(
-            "Highest FPS"
-            if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE
-            else "Best FPS/W"
-        )
+        if str(request_reason or "").strip().lower() == "previous-crash":
+            parts.append("Resume from here")
+        else:
+            parts.append(
+                "Highest FPS"
+                if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE
+                else "Best FPS/W"
+            )
     parts.append(
         "Final stability verified"
         if bool(candidate.get("final_verified"))
@@ -63,9 +68,11 @@ def candidate_number(value, *, precision: int) -> str:
 
 
 def final_choice_sort_values(candidate: dict) -> list[float | str]:
+    oc_mhz = candidate_oc_mhz(candidate)
     return [
         numeric_sort_value(candidate.get("candidate_voltage_mv")),
         numeric_sort_value(candidate.get("lock_clock_mhz")),
+        "" if oc_mhz is None else float(oc_mhz),
         numeric_sort_value(candidate.get("avg_core_clock_mhz")),
         numeric_sort_value(candidate.get("efficiency_fps_per_w")),
         numeric_sort_value(candidate.get("avg_fps")),
@@ -79,6 +86,10 @@ def final_choice_sort_column_for_mode(auto_uv_mode: object) -> int:
     if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE:
         return FINAL_CHOICE_FPS_SORT_COLUMN
     return FINAL_CHOICE_FPSW_SORT_COLUMN
+
+
+def final_choice_shows_oc_column(auto_uv_mode: object) -> bool:
+    return normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE
 
 
 def sort_candidates_for_final_choice(
@@ -167,20 +178,34 @@ def select_final_candidate(
     default_sort_column: int | None = None,
     auto_uv_mode: object = "",
     request_reason: object = "",
-) -> tuple[dict | None, int, bool]:
+    recovery_decision: dict | None = None,
+) -> tuple[dict | None, int, str]:
     if not candidates:
-        return None, int(default_duration_s), True
+        return None, int(default_duration_s), "discard"
 
-    candidates = sort_candidates_for_final_choice(list(candidates), auto_uv_mode)
-    default_candidate_id = (
-        best_final_choice_candidate_id(candidates, auto_uv_mode)
-        or str(default_candidate_id or "").strip()
+    previous_crash = str(request_reason or "").strip().lower() == "previous-crash"
+    requested_default_id = str(default_candidate_id or "").strip()
+    candidates = (
+        list(candidates)
+        if previous_crash
+        else sort_candidates_for_final_choice(list(candidates), auto_uv_mode)
     )
     by_id = {
         str(candidate.get("candidate_id", "")): candidate for candidate in candidates
     }
+    if previous_crash and requested_default_id in by_id:
+        default_candidate_id = requested_default_id
+    else:
+        default_candidate_id = (
+            best_final_choice_candidate_id(candidates, auto_uv_mode)
+            or requested_default_id
+        )
     dialog = QtWidgets.QDialog(parent)
-    dialog.setWindowTitle("Choose Final verification candidate")
+    dialog.setWindowTitle(
+        "Resume Auto-UV Candidate"
+        if previous_crash
+        else "Choose Final verification candidate"
+    )
     dialog.setMinimumWidth(900)
     dialog.setMinimumHeight(360)
     layout = QtWidgets.QVBoxLayout(dialog)
@@ -188,6 +213,7 @@ def select_final_candidate(
     label_text = final_choice_intro_text(
         auto_uv_mode,
         request_reason=request_reason,
+        recovery_decision=recovery_decision,
     )
     label = QtWidgets.QLabel(label_text)
     label.setWordWrap(True)
@@ -200,11 +226,14 @@ def select_final_candidate(
         candidates=candidates,
         default_candidate_id=default_candidate_id,
         default_sort_column=(
-            final_choice_sort_column_for_mode(auto_uv_mode)
+            None
+            if previous_crash and default_sort_column is None
+            else final_choice_sort_column_for_mode(auto_uv_mode)
             if default_sort_column is None
             else int(default_sort_column)
         ),
         auto_uv_mode=auto_uv_mode,
+        request_reason=request_reason,
     )
     table.doubleClicked.connect(dialog.accept)
     layout.addWidget(table)
@@ -229,21 +258,36 @@ def select_final_candidate(
     duration_spin.setRange(1, max(1, _minutes(max_duration_s)))
     duration_spin.setSuffix(" min")
     duration_spin.setValue(_minutes(default_duration_s))
-    duration_layout = QtWidgets.QHBoxLayout()
-    duration_layout.addWidget(QtWidgets.QLabel("Final verification duration"))
-    duration_layout.addWidget(duration_spin)
-    duration_layout.addStretch(1)
-    layout.addLayout(duration_layout)
+    if not previous_crash:
+        duration_layout = QtWidgets.QHBoxLayout()
+        duration_layout.addWidget(QtWidgets.QLabel("Final verification duration"))
+        duration_layout.addWidget(duration_spin)
+        duration_layout.addStretch(1)
+        layout.addLayout(duration_layout)
 
     buttons = QtWidgets.QDialogButtonBox()
     discard_button = buttons.addButton(
-        "Discard",
+        "Start From Scratch" if previous_crash else "Discard",
         QtWidgets.QDialogButtonBox.DestructiveRole,
     )
-    use_button = buttons.addButton("Use Selected", QtWidgets.QDialogButtonBox.AcceptRole)
+    abort_button = None
+    if previous_crash:
+        abort_button = buttons.addButton(
+            "Abort",
+            QtWidgets.QDialogButtonBox.RejectRole,
+        )
+    use_button = buttons.addButton(
+        "Resume Selected" if previous_crash else "Use Selected",
+        QtWidgets.QDialogButtonBox.AcceptRole,
+    )
+    rejected_action = {"value": "abort" if previous_crash else "discard"}
 
     def handle_button(button) -> None:
         if button is discard_button:
+            rejected_action["value"] = "discard"
+            dialog.reject()
+        elif button is abort_button:
+            rejected_action["value"] = "abort"
             dialog.reject()
         elif button is use_button:
             dialog.accept()
@@ -253,23 +297,39 @@ def select_final_candidate(
     use_button.setDefault(True)
 
     if dialog.exec() != QtWidgets.QDialog.Accepted:
-        return None, _seconds(duration_spin.value()), True
+        return None, _seconds(duration_spin.value()), rejected_action["value"]
     selected_rows = table.selectionModel().selectedRows(0)
     selected_row = int(selected_rows[-1].row()) if selected_rows else table.currentRow()
     if selected_row < 0:
         selected_row = 0
     item = table.item(selected_row, 0)
     selected_id = str(item.data(QtCore.Qt.UserRole) or "") if item is not None else ""
-    return by_id.get(selected_id), _seconds(duration_spin.value()), False
+    return by_id.get(selected_id), _seconds(duration_spin.value()), "select"
 
 
-def final_choice_intro_text(auto_uv_mode: object, *, request_reason: object = "") -> str:
-    stopped = str(request_reason or "").strip().lower() == "user-stop"
+def final_choice_intro_text(
+    auto_uv_mode: object,
+    *,
+    request_reason: object = "",
+    recovery_decision: dict | None = None,
+) -> str:
+    reason = str(request_reason or "").strip().lower()
+    stopped = reason == "user-stop"
+    previous_crash = reason == "previous-crash"
     metric_text = (
         "highest FPS"
         if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE
         else "best FPS/W"
     )
+    if previous_crash:
+        detail = recovery_decision_text(recovery_decision)
+        suffix = f" Previous decision: {detail}" if detail else ""
+        return (
+            "A previous Auto-UV run ended during a GPU probe. "
+            "Choose a saved candidate to resume from a safer voltage bin, "
+            "or start a new scan from scratch."
+            f"{suffix}"
+        )
     if stopped:
         return (
             "Auto-UV was stopped. Choose one of the previously stable candidates. "
@@ -288,8 +348,9 @@ def create_final_choice_table(
     QtWidgets,
     candidates: list[dict],
     default_candidate_id: str,
-    default_sort_column: int = FINAL_CHOICE_DEFAULT_SORT_COLUMN,
+    default_sort_column: int | None = FINAL_CHOICE_DEFAULT_SORT_COLUMN,
     auto_uv_mode: object = "",
+    request_reason: object = "",
 ):
     item_class = _sortable_table_item_class(QtWidgets, FINAL_CHOICE_SORT_ROLE)
     table = QtWidgets.QTableWidget(len(candidates), len(FINAL_CHOICE_COLUMNS))
@@ -307,16 +368,19 @@ def create_final_choice_table(
         {
             0: 62,
             1: 108,
-            2: 128,
-            3: 134,
+            2: 88,
+            3: 128,
             4: 134,
-            5: 92,
-            6: 104,
-            7: 110,
+            5: 134,
+            6: 92,
+            7: 104,
+            8: 128,
         },
         QtCore=QtCore,
         padding=34,
     )
+    if not final_choice_shows_oc_column(auto_uv_mode):
+        table.setColumnHidden(2, True)
     header.setStretchLastSection(True)
 
     for row, candidate in enumerate(candidates):
@@ -324,6 +388,7 @@ def create_final_choice_table(
         values = [
             candidate_number(candidate.get("candidate_voltage_mv"), precision=0),
             candidate_number(candidate.get("lock_clock_mhz"), precision=0),
+            candidate_oc_text(candidate),
             candidate_number(candidate.get("avg_core_clock_mhz"), precision=2),
             _candidate_metric_text(
                 candidate,
@@ -331,12 +396,18 @@ def create_final_choice_table(
                 precision=2,
             ),
             _candidate_metric_text(candidate, "avg_fps", precision=2),
-            candidate_number(candidate.get("avg_power_w"), precision=2),
+            _candidate_metric_text(
+                candidate,
+                "avg_power_w",
+                precision=2,
+                lower_is_better=True,
+            ),
             _duration_label(candidate_short_duration_s(candidate)),
             candidate_status_text(
                 candidate,
                 candidate_id == default_candidate_id,
                 auto_uv_mode=auto_uv_mode,
+                request_reason=request_reason,
             ),
         ]
         sort_values = final_choice_sort_values(candidate)
@@ -344,7 +415,7 @@ def create_final_choice_table(
             item = item_class(str(value))
             item.setData(QtCore.Qt.UserRole, candidate_id)
             item.setData(FINAL_CHOICE_SORT_ROLE, sort_values[column])
-            if column < 6:
+            if column < 7:
                 item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
             if QtGui is not None and column == FINAL_CHOICE_FPSW_SORT_COLUMN:
                 _paint_profile_delta_item(
@@ -362,23 +433,72 @@ def create_final_choice_table(
                     _profile_base_metric(candidate, "avg_fps"),
                     label="FPS",
                 )
+            if QtGui is not None and column == 6:
+                _paint_profile_delta_item(
+                    item,
+                    QtGui,
+                    candidate.get("avg_power_w"),
+                    _profile_base_metric(candidate, "avg_power_w"),
+                    label="Power W",
+                    lower_is_better=True,
+                )
             table.setItem(row, column, item)
 
     _connect_final_choice_sorting(
         QtCore=QtCore,
         table=table,
         item_class=item_class,
-        default_sort_column=int(default_sort_column),
+        default_sort_column=default_sort_column,
     )
     return table
 
 
-def _candidate_metric_text(candidate: dict, metric: str, *, precision: int) -> str:
+def _candidate_metric_text(
+    candidate: dict,
+    metric: str,
+    *,
+    precision: int,
+    lower_is_better: bool = False,
+) -> str:
     return _format_profile_metric_with_delta(
         candidate.get(metric),
         _profile_base_metric(candidate, metric),
         precision=precision,
+        lower_is_better=lower_is_better,
     )
+
+
+def candidate_oc_text(candidate: dict) -> str:
+    rounded = candidate_oc_mhz(candidate)
+    if rounded is None:
+        return ""
+    return f"{rounded:+d}"
+
+
+def candidate_oc_mhz(candidate: dict) -> int | None:
+    target_clock = numeric_sort_value(candidate.get("lock_clock_mhz"))
+    baseline_clock = numeric_sort_value(
+        candidate.get("base_avg_core_clock_mhz")
+        or candidate.get("measured_baseline_clock_mhz")
+        or candidate.get("baseline_core_clock_mhz")
+        or candidate.get("baseline_clock_mhz")
+        or candidate.get("auto_oc_baseline_clock_mhz")
+    )
+    if target_clock != "" and baseline_clock != "":
+        return int(round(float(target_clock) - float(baseline_clock)))
+    return None
+
+
+def recovery_decision_text(recovery_decision: dict | None) -> str:
+    if not isinstance(recovery_decision, dict):
+        return ""
+    voltage = candidate_number(recovery_decision.get("candidate_voltage_mv"), precision=0)
+    clock = candidate_number(recovery_decision.get("lock_clock_mhz"), precision=0)
+    decision = str(recovery_decision.get("decision") or "").strip()
+    prefix = f"{voltage}mV@{clock}MHz" if voltage and clock else ""
+    if prefix and decision:
+        return f"{prefix} - {decision}"
+    return decision or prefix
 
 
 def _connect_final_choice_sorting(
@@ -386,17 +506,20 @@ def _connect_final_choice_sorting(
     QtCore,
     table,
     item_class,
-    default_sort_column: int,
+    default_sort_column: int | None,
 ) -> None:
     header = table.horizontalHeader()
-    sort_column = int(default_sort_column)
+    sort_column = int(default_sort_column) if default_sort_column is not None else None
     sort_order = QtCore.Qt.DescendingOrder
 
-    def apply_sort_indicator(column: int, order) -> None:
+    def apply_sort_indicator(column: int | None, order) -> None:
         signals_blocked = header.blockSignals(True)
         try:
-            header.setSortIndicatorShown(True)
-            header.setSortIndicator(int(column), order)
+            if column is None:
+                header.setSortIndicatorShown(False)
+            else:
+                header.setSortIndicatorShown(True)
+                header.setSortIndicator(int(column), order)
         finally:
             header.blockSignals(signals_blocked)
 
@@ -432,7 +555,8 @@ def _connect_final_choice_sorting(
         sort_table(column, order)
 
     header.sectionClicked.connect(sort_by_header_column)
-    sort_table(sort_column, sort_order)
+    if default_sort_column is not None:
+        sort_table(sort_column, sort_order)
 
 
 def _sortable_table_item_class(QtWidgets, sort_role: int):

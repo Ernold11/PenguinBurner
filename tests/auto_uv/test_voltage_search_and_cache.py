@@ -23,7 +23,6 @@ def test_lower_voltage_search_keeps_final_low_bin_testable() -> None:
         start_voltage_mv=1000,
         stable_voltage_mv=1000,
         reference_actual_voltage_mv=1000.0,
-        preserve_base_below_mv=None,
         min_search_voltage_mv=900,
     )
     filtered = filter_effective_voltage_candidates(
@@ -78,7 +77,7 @@ def test_unsafe_cache_raises_min_search_above_legacy_unsafe_floor() -> None:
     unsafe_floor_mv, min_search_mv = unsafe_min_search_voltage(
         base_curve(850, 1025, 25),
         start_voltage_mv=1000,
-        unsafe_entries=[{"candidate_voltage_mv": 925, "reason": "timedemo-crash"}],
+        unsafe_entries=[{"candidate_voltage_mv": 925, "reason": "benchmark-crash"}],
     )
 
     assert unsafe_floor_mv == 925
@@ -273,5 +272,5 @@ def test_controlled_failure_reason_matches_known_prefixes_only() -> None:
     assert controlled_failure_reason("user-stop-requested")
     assert controlled_failure_reason("cuda-bruteforce-failed exit=-15")
     assert controlled_failure_reason("q2rtx-launcher-error")
-    assert not controlled_failure_reason("timedemo-crash")
+    assert not controlled_failure_reason("benchmark-crash")
     assert not controlled_failure_reason(None)

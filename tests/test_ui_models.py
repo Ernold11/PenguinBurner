@@ -79,11 +79,11 @@ def test_top_status_text_rounds_embedded_decimals() -> None:
 def test_probe_decision_label_branches() -> None:
     assert probe_decision_label({"decision": "accepted"}) == "Pass"
     assert probe_decision_label({"decision": "running"}) == "Running"
-    assert probe_decision_label({"decision": "queued"}) == "queued"
-    # fail decisions defer to the detailed failure label.
-    assert probe_decision_label({"decision": "fail", "failure_kind": "timed-out"}) == (
-        "Timed out"
-    )
+    assert probe_decision_label({"decision": "stopping"}) == "Stopping"
+    assert probe_decision_label({"decision": "stopped"}) == "Failed"
+    assert probe_decision_label({"decision": "queued"}) == "Failed"
+    assert probe_decision_label({"decision": "fail", "failure_kind": "timed-out"}) == "Failed"
+    assert probe_decision_label({}) == ""
 
 
 def test_probe_failure_label_covers_each_kind() -> None:

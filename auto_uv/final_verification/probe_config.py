@@ -1,6 +1,6 @@
 """Build the long Q2RTX+CUDA workload used only for final verification.
 
-The total user-selected duration is split between Q2RTX timedemo load and CUDA companion load.
+The total user-selected duration is split between Q2RTX benchmark and CUDA companion load.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ def final_q2rtx_cuda_probe_config(
     q2rtx_s, cuda_s = final_q2rtx_cuda_duration_s(int(total_duration_s))
     return replace(
         config,
-        timedemo_loops=None,
         duration_s=int(q2rtx_s),
         companion_command=cuda_bruteforce_companion_command(
             gpu_index=int(config.gpu_index),

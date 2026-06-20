@@ -402,7 +402,10 @@ class MainWindow:
             MAX_FINAL_VERIFICATION_DURATION_S,
         )
         request_reason = str(payload.get("request_reason", "")).strip()
-        selected, duration_s, discarded = select_final_candidate(
+        recovery_decision = payload.get("recovery_decision")
+        if not isinstance(recovery_decision, dict):
+            recovery_decision = None
+        selected, duration_s, action = select_final_candidate(
             QtCore=self.QtCore,
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
@@ -413,11 +416,29 @@ class MainWindow:
             max_duration_s=max_duration_s,
             auto_uv_mode=auto_uv_mode,
             request_reason=request_reason,
+            recovery_decision=recovery_decision,
         )
+        if action is True:
+            action = "discard"
+        elif action is False:
+            action = "select"
+        action = str(action or "select").strip().lower()
         response_path = str(payload.get("response_path", "")).strip()
         if not response_path:
             return
-        if discarded:
+        if action == "abort":
+            self.final_choice_discarded = True
+            self.scan_controller.write_json_response(response_path, {"action": "abort"})
+            self.log_view.append("Auto-UV recovery aborted by user.\n")
+            return
+        if action == "discard":
+            if request_reason == "previous-crash":
+                self.scan_controller.write_json_response(
+                    response_path,
+                    {"action": "discard"},
+                )
+                self.log_view.append("Starting a new Auto-UV scan from scratch.\n")
+                return
             self.final_choice_discarded = True
             self.scan_controller.write_json_response(response_path, {"action": "discard"})
             self.log_view.append("Final verification discarded by user.\n")
@@ -500,7 +521,6 @@ class MainWindow:
             return
         profile_id = str(profile_selector or "").strip()
         selected_profile = None
-        prefer_afterburner_curve = False
         if action != "uninstall-systemd" and adaptive_auto_uv:
             tiers = adaptive_profile_tier_labels(self.profile_summaries)
             if len(tiers) < 2:
@@ -518,14 +538,16 @@ class MainWindow:
                 self.log_view.append("\nNo profile selected.\n")
                 return
             selected_profile = profile_for_selector(self.profile_summaries, profile_id)
+            if selected_profile and profile_is_afterburner(selected_profile):
+                message = "Imported Afterburner profiles are not runtime targets."
+                self.controls.set_status_text(message)
+                self.log_view.append(f"\n{message}\n")
+                return
             if not profile_can_apply(selected_profile or {}):
                 message = "This edited profile must be verified before it can be applied."
                 self.controls.set_status_text(message)
                 self.log_view.append(f"\n{message}\n")
                 return
-            prefer_afterburner_curve = bool(
-                selected_profile and profile_is_afterburner(selected_profile)
-            )
         if (
             action != "uninstall-systemd"
             and selected_profile
@@ -539,11 +561,8 @@ class MainWindow:
             return
         command = runtime_profile_command(
             action,
-            profile_selector=(
-                "" if action == "uninstall-systemd" or prefer_afterburner_curve else profile_id
-            ),
+            profile_selector="" if action == "uninstall-systemd" else profile_id,
             silent_fan_curve=self.profile_list.silent_fan_enabled(),
-            prefer_afterburner_curve=prefer_afterburner_curve,
             adaptive_auto_uv=adaptive_auto_uv,
             gpu_index=self.gpu_index,
         )
@@ -725,12 +744,14 @@ class MainWindow:
         duration_s = int(options["duration_s"])
         q2rtx_enabled = bool(options["q2rtx_enabled"])
         cuda_enabled = bool(options["cuda_enabled"])
-        # The UI says verify; the backend flag name is kept for compatibility.
-        prefer_afterburner_curve = profile_is_afterburner(profile)
+        if profile_is_afterburner(profile):
+            message = "Imported Afterburner profiles are not verification targets."
+            self.controls.set_status_text(message)
+            self.log_view.append(f"\n{message}\n")
+            return
         command = profile_verify_command(
-            profile_selector="" if prefer_afterburner_curve else profile_verify_selector(profile),
+            profile_selector=profile_verify_selector(profile),
             duration_s=duration_s,
-            prefer_afterburner_curve=prefer_afterburner_curve,
             stop_request_path=verify_stop_request_path(),
             q2rtx_enabled=q2rtx_enabled,
             cuda_enabled=cuda_enabled,

@@ -130,12 +130,58 @@ def test_window_final_choice_request_without_response_path(main_window, monkeypa
     monkeypatch.setattr(
         window_mod,
         "select_final_candidate",
-        lambda **kwargs: (None, 600, False),
+        lambda **kwargs: (None, 600, "select"),
     )
     # No response_path -> handler returns after running the dialog selection.
     main_window._handle_scan_event(
         {"event": "final_choice_request", "candidates": [{"candidate_id": "c1"}]}
     )
+
+
+def test_window_previous_crash_close_writes_abort(main_window, monkeypatch, tmp_path) -> None:
+    response_path = tmp_path / "choice.json"
+    monkeypatch.setattr(
+        window_mod,
+        "select_final_candidate",
+        lambda **kwargs: (None, 600, "abort"),
+    )
+
+    main_window._handle_scan_event(
+        {
+            "event": "final_choice_request",
+            "request_reason": "previous-crash",
+            "response_path": str(response_path),
+            "candidates": [{"candidate_id": "885mv-2873mhz"}],
+        }
+    )
+
+    assert '"action": "abort"' in response_path.read_text(encoding="utf-8")
+    assert main_window.final_choice_discarded is True
+
+
+def test_window_previous_crash_start_over_writes_discard(
+    main_window,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    response_path = tmp_path / "choice.json"
+    monkeypatch.setattr(
+        window_mod,
+        "select_final_candidate",
+        lambda **kwargs: (None, 600, "discard"),
+    )
+
+    main_window._handle_scan_event(
+        {
+            "event": "final_choice_request",
+            "request_reason": "previous-crash",
+            "response_path": str(response_path),
+            "candidates": [{"candidate_id": "885mv-2873mhz"}],
+        }
+    )
+
+    assert '"action": "discard"' in response_path.read_text(encoding="utf-8")
+    assert main_window.final_choice_discarded is False
 
 
 def test_window_human_lines(main_window) -> None:

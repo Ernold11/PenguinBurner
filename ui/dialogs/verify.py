@@ -10,7 +10,7 @@ def select_verify_options(*, QtWidgets, parent, profile_label: str) -> dict | No
     layout = QtWidgets.QVBoxLayout(dialog)
     intro = QtWidgets.QLabel(f"Verify {profile_label or 'the selected profile'}.")
     intro.setWordWrap(True)
-    q2rtx_checkbox = QtWidgets.QCheckBox("Q2RTX timedemo")
+    q2rtx_checkbox = QtWidgets.QCheckBox("Q2RTX benchmark")
     q2rtx_checkbox.setChecked(True)
     cuda_checkbox = QtWidgets.QCheckBox("CUDA compute test")
     cuda_checkbox.setChecked(True)

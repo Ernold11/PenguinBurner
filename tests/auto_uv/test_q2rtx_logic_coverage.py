@@ -11,8 +11,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from stability.q2rtx import Q2RTXStabilityConfig
-
 from auto_uv.auto_uv_user_options import (
     AUTO_UV_CURVE_TUNING,
     AUTO_UV_DEFAULTS,
@@ -22,7 +20,6 @@ from auto_uv.q2rtx.q2rtx_cuda_probe_config import (
     base_q2rtx_probe_duration_s,
     cuda_companion_enabled_for_voltage_band,
     tiered_q2rtx_probe_duration_s,
-    timedemo_seconds_hint,
 )
 from auto_uv.q2rtx.probe_runtime_guardrails import (
     core_clock_below_floor,
@@ -32,7 +29,6 @@ from auto_uv.q2rtx.probe_runtime_guardrails import (
     telemetry_sample_is_busy,
 )
 from auto_uv.q2rtx.q2rtx_probe_summary import (
-    decision_timedemo_runs,
     history_average,
     loaded_telemetry_diagnostics,
     loaded_telemetry_means,
@@ -47,16 +43,6 @@ from auto_uv.q2rtx.q2rtx_probe_summary import (
 # --------------------------------------------------------------------------- #
 # q2rtx_cuda_probe_config.py
 # --------------------------------------------------------------------------- #
-
-
-def test_timedemo_seconds_hint_returns_none_for_unknown_demo() -> None:
-    config = Q2RTXStabilityConfig(demo_name="no-such-demo")
-    assert timedemo_seconds_hint(config) is None
-
-
-def test_timedemo_seconds_hint_returns_float_for_known_demo() -> None:
-    config = Q2RTXStabilityConfig(demo_name="q2demo1")
-    assert timedemo_seconds_hint(config) == pytest.approx(4.45)
 
 
 def test_cuda_companion_enabled_returns_true_on_non_numeric_voltage() -> None:
@@ -183,13 +169,9 @@ def test_probe_failure_controlled_reason_does_not_mark_unsafe() -> None:
     assert probe_failure_should_mark_voltage_unsafe("q2rtx-launcher-error") is False
 
 
-def test_probe_failure_idle_and_stall_prefixes_do_not_mark_unsafe() -> None:
+def test_probe_failure_idle_prefix_does_not_mark_unsafe() -> None:
     assert (
         probe_failure_should_mark_voltage_unsafe("q2rtx-selected-nvidia-gpu-idle-12s")
-        is False
-    )
-    assert (
-        probe_failure_should_mark_voltage_unsafe("timedemo-live-stall-no-frames")
         is False
     )
 
@@ -225,18 +207,6 @@ def test_summarize_perf_cap_reason_skips_blank_tokens() -> None:
 
 def test_summarize_perf_cap_reason_returns_none_when_empty() -> None:
     assert summarize_perf_cap_reason([{"perf_cap_reason": None}]) is None
-
-
-def test_decision_timedemo_runs_drops_warmup_when_enough_remain() -> None:
-    runs = list(range(6))
-    # 1 warmup dropped leaves 5 >= min_remaining(3), so warmup is stripped.
-    assert decision_timedemo_runs(runs, timedemo_warmup_runs=1) == [1, 2, 3, 4, 5]
-
-
-def test_decision_timedemo_runs_keeps_all_when_too_few_remain() -> None:
-    runs = list(range(3))
-    # Dropping 1 warmup would leave 2 < min_remaining(3): keep everything.
-    assert decision_timedemo_runs(runs, timedemo_warmup_runs=1) == runs
 
 
 def test_history_average_means_attribute_across_history() -> None:
@@ -323,7 +293,6 @@ def test_summarize_uses_override_samples_for_telemetry_summary() -> None:
         },
     ]
     result = SimpleNamespace(
-        timedemo_runs=[SimpleNamespace(frames=1000, seconds=10.0, fps=100.0)],
         telemetry_samples=[{"elapsed_s": 6.0, "power_w": 1.0}],
         companion_telemetry_samples=[],
         telemetry_summary=lambda: {"power_max": 9999.0},

@@ -96,24 +96,59 @@ def test_duration_and_progress_text() -> None:
 
 
 def test_oc_progress_and_cap_helpers() -> None:
-    assert rt._format_oc_progress((1, 4)) == "1/4 MHz"
-    # Non-OC rows (UV sweep, Efficiency/Balanced) read as a neutral dash, not
-    # an "0/0" that looks like Auto-OC ran and gained nothing.
-    assert rt._format_oc_progress(None) == "—"
-    assert rt._format_oc_progress((2, 0)) == "—"  # zero limit -> no OC component
-    assert rt._payload_oc_progress(
-        {"auto_oc": True, "auto_oc_applied_mhz": 30, "auto_oc_limit_mhz": 90}
-    ) == (30, 90)
+    assert rt._format_oc_progress((1, 4)) == "+1 MHz"
+    assert rt._format_oc_progress((-10, 4)) == "-10 MHz"
+    # Non-OC rows (UV sweep, Efficiency/Balanced) leave OC blank, not
+    # a signed zero that looks like Auto-OC ran and gained nothing.
+    assert rt._format_oc_progress(None) == ""
+    assert rt._format_oc_progress((2, 0)) == "+2 MHz"
+    assert (
+        rt._payload_oc_progress(
+            {"auto_oc": True, "auto_oc_applied_mhz": 30, "auto_oc_limit_mhz": 90}
+        )
+        is None
+    )
     assert rt._payload_oc_progress({}) is None
-    # Auto-OC ran against a target but held no extra clock: applied 0, limit > 0.
-    # The row must show the configured headroom, not the ambiguous 0/0.
+    # OC reports target minus measured baseline, including zero and negative deltas.
+    assert (
+        rt._payload_oc_progress(
+            {"auto_oc": True, "auto_oc_applied_mhz": 0, "auto_oc_limit_mhz": 380}
+        )
+        is None
+    )
+    assert rt._format_oc_progress((0, 380)) == "+0 MHz"
     assert rt._payload_oc_progress(
-        {"auto_oc": True, "auto_oc_applied_mhz": 0, "auto_oc_limit_mhz": 380}
-    ) == (0, 380)
-    assert rt._format_oc_progress((0, 380)) == "0/380 MHz"
-    assert rt._payload_curve_oc_progress(
-        {"auto_oc_applied_mhz": 15, "auto_oc_limit_mhz": 90}
-    ) == (15, 90)
+        {
+            "auto_oc": True,
+            "clock_mhz": 2880,
+            "auto_oc_baseline_clock_mhz": 2730,
+        }
+    ) == (150, 150)
+    assert rt._payload_oc_progress(
+        {
+            "auto_oc": True,
+            "clock_mhz": 2600,
+            "auto_oc_baseline_clock_mhz": 2730,
+        }
+    ) == (-130, -130)
+    assert rt._payload_oc_progress(
+        {
+            "clock_mhz": 2880,
+            "base_avg_core_clock_mhz": 2730,
+        }
+    ) == (150, 150)
+    assert rt._payload_oc_progress(
+        {
+            "clock_mhz": 2600,
+            "base_avg_core_clock_mhz": 2730,
+        }
+    ) == (-130, -130)
+    assert (
+        rt._payload_curve_oc_progress(
+            {"auto_oc_applied_mhz": 15, "auto_oc_limit_mhz": 90}
+        )
+        is None
+    )
     assert isinstance(rt._perf_cap_reason_text("sw_power_cap"), str)
     assert isinstance(rt._perf_cap_reason_tooltip("sw_power_cap"), str)
 

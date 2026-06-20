@@ -93,7 +93,6 @@ def run_lower_voltage_sweep_loop(
             start_voltage_mv=int(settings.start_voltage_mv),
             stable_voltage_mv=int(initial_stable_candidate.voltage_mv),
             reference_actual_voltage_mv=settings.reference_actual_voltage_mv,
-            preserve_base_below_mv=settings.preserve_base_below_mv,
             min_search_voltage_mv=min_search_voltage_mv,
             failed_floor_voltage_mv=unsafe_floor_mv,
         ),
@@ -418,7 +417,6 @@ def accept_voltage_probe(
         start_voltage_mv=int(settings.start_voltage_mv),
         stable_voltage_mv=int(candidate.voltage_mv),
         reference_actual_voltage_mv=reference_voltage_mv,
-        preserve_base_below_mv=settings.preserve_base_below_mv,
         min_search_voltage_mv=min_search_voltage_mv,
         failed_floor_voltage_mv=state.failed_floor_voltage_mv,
     )

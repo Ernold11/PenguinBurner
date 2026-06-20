@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from auto_uv.q2rtx.q2rtx_cuda_voltage_probe import probe_crash_marker_details
+from auto_uv.q2rtx.q2rtx_cuda_voltage_probe import (
+    probe_crash_marker_details,
+    probe_unsafe_details,
+)
 
 
 def test_probe_crash_marker_details_describe_normal_candidate_context() -> None:
@@ -28,3 +31,21 @@ def test_probe_crash_marker_details_describe_normal_candidate_context() -> None:
     assert details["min_performance_core_clock_pct"] == 90.0
     assert details["used_companion_load"] is True
     assert details["custom"] == "kept"
+
+
+def test_probe_unsafe_details_keep_marker_tier_context() -> None:
+    details = probe_unsafe_details(
+        {
+            "generated_profile_tier": "performance",
+            "tail_rise_bins": 6,
+            "phase_label": "candidate",
+        },
+        {
+            "result_reason": "fatal-q2rtx-output",
+            "phase_label": "candidate",
+        },
+    )
+
+    assert details["generated_profile_tier"] == "performance"
+    assert details["tail_rise_bins"] == 6
+    assert details["result_reason"] == "fatal-q2rtx-output"

@@ -29,7 +29,6 @@ def select_next_lower_voltage(
     start_voltage_mv: int,
     stable_voltage_mv: int,
     reference_actual_voltage_mv: float | None,
-    preserve_base_below_mv: int | None,
     min_search_voltage_mv: int | None,
     failed_floor_voltage_mv: int | None = None,
     rules: LowerVoltageSearchRules = LowerVoltageSearchRules(),
@@ -37,7 +36,6 @@ def select_next_lower_voltage(
     bins = lower_editable_voltage_bins(
         base_curve,
         int(stable_voltage_mv),
-        preserve_base_below_mv=preserve_base_below_mv,
         min_search_voltage_mv=min_search_voltage_mv,
     )
     if failed_floor_voltage_mv is not None:

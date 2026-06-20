@@ -42,8 +42,10 @@ from .profile_tiers import (
 )
 from .runtime_auto_uv_profile import (
     apply_auto_uv_profile_memory_offset,
+    apply_auto_uv_profile_power_limit,
     load_auto_uv_final_curve,
     profile_memory_offset_mhz,
+    profile_power_limit_w,
 )
 
 __all__ = [
@@ -80,7 +82,9 @@ __all__ = [
     "save_profile_tier_none_assignment",
     "normalize_profile_tier",
     "apply_auto_uv_profile_memory_offset",
+    "apply_auto_uv_profile_power_limit",
     "load_auto_uv_final_curve",
     "profile_memory_offset_mhz",
+    "profile_power_limit_w",
     "wait_for_new_profile",
 ]

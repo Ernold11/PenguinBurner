@@ -11,6 +11,7 @@ from auto_uv.q2rtx.q2rtx_probe_summary import (
     summarize_q2rtx_cuda_probe,
 )
 from auto_uv.ui.probe_summary_ui_payload import probe_summary_ui_payload
+from stability.q2rtx import Q2RTXBenchmarkSummary
 
 
 def test_probe_summary_records_loaded_median_and_p90_diagnostics() -> None:
@@ -56,7 +57,6 @@ def test_probe_summary_records_loaded_median_and_p90_diagnostics() -> None:
         },
     ]
     result = SimpleNamespace(
-        timedemo_runs=[SimpleNamespace(frames=1000, seconds=10.0, fps=100.0)],
         telemetry_samples=telemetry_samples,
         companion_telemetry_samples=[],
         telemetry_summary=lambda: {},
@@ -94,13 +94,8 @@ def test_probe_summary_records_loaded_median_and_p90_diagnostics() -> None:
     assert metrics["perf_cap_reason"] == "sw-power+hw-thermal"
 
 
-def test_probe_summary_records_run_to_run_fps_variance() -> None:
+def test_probe_summary_without_benchmark_summary_has_no_fps_metrics() -> None:
     result = SimpleNamespace(
-        timedemo_runs=[
-            SimpleNamespace(frames=1000, seconds=10.0, fps=100.0),
-            SimpleNamespace(frames=1020, seconds=10.0, fps=102.0),
-            SimpleNamespace(frames=980, seconds=10.0, fps=98.0),
-        ],
         telemetry_samples=[
             {"elapsed_s": 6.0, "power_w": 180.0, "core_clock_mhz": 2200.0}
         ],
@@ -120,12 +115,83 @@ def test_probe_summary_records_run_to_run_fps_variance() -> None:
         result=result,
     )
 
-    assert summary.fps_stddev == pytest.approx(1.632993161855452)
-    assert summary.fps_variance_pct == pytest.approx(1.632993161855452)
-    assert probe_summary_ui_payload(summary, stage="probe")["fps_variance_pct"] == 1.63
-    assert probe_metrics(summary)["fps_variance_pct"] == pytest.approx(
-        1.632993161855452
+    assert summary.avg_fps is None
+    assert summary.min_fps is None
+    assert summary.max_fps is None
+    assert summary.fps_stddev is None
+    assert summary.fps_variance_pct is None
+
+
+def test_probe_summary_prefers_benchmark_summary_and_hot_telemetry() -> None:
+    hot_samples = [
+        {
+            "elapsed_s": 2.0,
+            "power_w": 120.0,
+            "core_clock_mhz": 2300.0,
+            "voltage_mv": 840.0,
+            "temperature_c": 61.0,
+            "fan_speed_pct": 52.0,
+        },
+        {
+            "elapsed_s": 3.0,
+            "power_w": 140.0,
+            "core_clock_mhz": 2400.0,
+            "voltage_mv": 850.0,
+            "temperature_c": 63.0,
+            "fan_speed_pct": 54.0,
+        },
+    ]
+    result = SimpleNamespace(
+        benchmark_summary=Q2RTXBenchmarkSummary(
+            reason="target",
+            loops=4,
+            loops_started=5,
+            demo_frames=2524,
+            render_frames=1500,
+            target_s=30.0,
+            measured_s=30.0,
+            render_s=29.9,
+            drain_s=0.1,
+            loop_fps_mean=10.0,
+            fps_avg=50.0,
+            fps_min=44.0,
+            fps_max=55.0,
+            fps_mean=49.5,
+            frame_ms_min=18.0,
+            frame_ms_max=23.0,
+            frame_ms_mean=20.2,
+            measure_start_elapsed_s=2.0,
+        ),
+        telemetry_samples=[
+            {"elapsed_s": 0.5, "power_w": 500.0, "core_clock_mhz": 1000.0},
+            *hot_samples,
+        ],
+        benchmark_telemetry_samples=hot_samples,
+        companion_telemetry_samples=[],
+        telemetry_summary=lambda: {"power_max": 999.0, "core_clock_avg": 1.0},
+        measurement_telemetry_samples=lambda: hot_samples,
+        reason="ok",
+        log_path=Path("/tmp/q2rtx.log"),
     )
+
+    summary = summarize_q2rtx_cuda_probe(
+        candidate_voltage_mv=850,
+        lock_clock_mhz=2400,
+        live_voltage_before_mv=850,
+        live_voltage_after_mv=848,
+        used_companion_load=False,
+        power_limit_w=None,
+        result=result,
+    )
+
+    assert summary.frames_per_run == 1500
+    assert summary.avg_seconds_per_run == pytest.approx(30.0)
+    assert summary.avg_fps == pytest.approx(50.0)
+    assert summary.min_fps == pytest.approx(44.0)
+    assert summary.max_fps == pytest.approx(55.0)
+    assert summary.fps_stddev is None
+    assert summary.max_power_w == pytest.approx(140.0)
+    assert summary.avg_core_clock_mhz == pytest.approx(2350.0)
 
 
 def test_loaded_perf_cap_reason_suppresses_idle_as_none() -> None:
@@ -142,4 +208,51 @@ def test_loaded_perf_cap_reason_suppresses_idle_as_none() -> None:
             use_power_limit_floor=False,
         )
         == "none"
+    )
+
+
+def test_loaded_perf_cap_reason_hides_minority_sw_power() -> None:
+    loaded_samples = [
+        *[
+            {"elapsed_s": 6.0 + index, "power_w": 290.0, "perf_cap_reason": "idle"}
+            for index in range(116)
+        ],
+        *[
+            {
+                "elapsed_s": 122.0 + index,
+                "power_w": 292.0,
+                "perf_cap_reason": "sw-power",
+            }
+            for index in range(17)
+        ],
+    ]
+
+    assert (
+        summarize_loaded_perf_cap_reason(
+            loaded_samples,
+            [],
+            power_limit_w=360,
+            use_power_limit_floor=True,
+        )
+        == "none"
+    )
+
+
+def test_loaded_perf_cap_reason_reports_dominant_sw_power() -> None:
+    loaded_samples = [
+        {"elapsed_s": 6.0, "power_w": 290.0, "perf_cap_reason": "sw-power"},
+        {"elapsed_s": 7.0, "power_w": 291.0, "perf_cap_reason": "sw-power"},
+        {"elapsed_s": 8.0, "power_w": 292.0, "perf_cap_reason": "sw-power"},
+        {"elapsed_s": 9.0, "power_w": 293.0, "perf_cap_reason": "idle"},
+        {"elapsed_s": 10.0, "power_w": 294.0, "perf_cap_reason": "none"},
+    ]
+
+    assert (
+        summarize_loaded_perf_cap_reason(
+            loaded_samples,
+            [],
+            power_limit_w=360,
+            use_power_limit_floor=True,
+        )
+        == "sw-power"
     )

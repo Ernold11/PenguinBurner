@@ -69,6 +69,141 @@ def choose_final_verification_candidate(
     default_id = (
         str(candidates[0].get("candidate_id", "")) if candidates else current_stable_id
     )
+    selected, selected_final_duration_s = request_final_choice_candidate(
+        log=log,
+        event_callback=event_callback,
+        auto_uv_mode=normalized_mode,
+        base_probe=base_probe,
+        candidates=candidates,
+        default_candidate_id=default_id,
+        sort_label=sort_label,
+        final_verification_duration_s=int(final_verification_duration_s),
+        initial_target_voltage_mv=int(initial_target_voltage_mv),
+        short_probe_base_duration_s=int(short_probe_base_duration_s),
+        request_reason=str(request_reason or "sweep-complete"),
+        discard_returns_none=False,
+    )
+
+    selected_plan = candidate_plan_from_record(selected) or stable_plan
+    selected_voltage_mv = int(selected.get("candidate_voltage_mv") or 0)
+    selected_lock_clock_mhz = int(selected.get("lock_clock_mhz") or 0)
+    selected_probe = matching_probe_for_candidate(
+        stable_history,
+        voltage_mv=int(selected_voltage_mv),
+        lock_clock_mhz=int(selected_lock_clock_mhz),
+    )
+    return (
+        selected_plan,
+        selected_voltage_mv,
+        selected_lock_clock_mhz,
+        selected_probe,
+        selected_final_duration_s,
+    )
+
+
+def choose_recovery_final_verification_candidate(
+    *,
+    log: Callable[[str], None],
+    event_callback: AutoUvEventCallback | None,
+    auto_uv_mode: str,
+    base_probe: AutoUvProbeSummary | None,
+    candidate_records: list[dict],
+    default_candidate_id: str,
+    final_verification_duration_s: int,
+    initial_target_voltage_mv: int,
+    short_probe_base_duration_s: int,
+    recovery_decision: dict | None = None,
+) -> tuple[list[dict], int, int, AutoUvProbeSummary | None, int, int, dict] | None:
+    normalized_mode = normalize_auto_uv_mode(auto_uv_mode)
+    candidates_by_id = {}
+    for record in candidate_records:
+        if not isinstance(record, dict):
+            continue
+        candidate_id = str(record.get("candidate_id", "")).strip()
+        if not candidate_id:
+            continue
+        try:
+            voltage_mv = int(record.get("candidate_voltage_mv"))
+            lock_clock_mhz = int(record.get("lock_clock_mhz"))
+        except (TypeError, ValueError):
+            continue
+        if voltage_mv <= 0 or lock_clock_mhz <= 0:
+            continue
+        plan = candidate_plan_from_record(record)
+        if not plan:
+            continue
+        existing = candidates_by_id.get(candidate_id)
+        if existing is not None and bool(existing.get("final_verified")):
+            continue
+        candidates_by_id[candidate_id] = dict(record)
+
+    candidates = list(candidates_by_id.values())
+    sort_label = "last-failed-run"
+    if not candidates:
+        return None
+    default_id = str(default_candidate_id or "").strip()
+    candidate_ids = {
+        str(candidate.get("candidate_id", "")) for candidate in candidates
+    }
+    if default_id not in candidate_ids:
+        default_id = str(candidates[0].get("candidate_id", ""))
+
+    selected, selected_final_duration_s = request_final_choice_candidate(
+        log=log,
+        event_callback=event_callback,
+        auto_uv_mode=normalized_mode,
+        base_probe=base_probe,
+        candidates=candidates,
+        default_candidate_id=default_id,
+        sort_label=sort_label,
+        final_verification_duration_s=int(final_verification_duration_s),
+        initial_target_voltage_mv=int(initial_target_voltage_mv),
+        short_probe_base_duration_s=int(short_probe_base_duration_s),
+        request_reason="previous-crash",
+        recovery_decision=recovery_decision,
+        discard_returns_none=True,
+    )
+    if selected is None:
+        return None
+
+    selected_plan = candidate_plan_from_record(selected)
+    if not selected_plan:
+        return None
+    selected_voltage_mv = int(selected.get("candidate_voltage_mv"))
+    selected_lock_clock_mhz = int(selected.get("lock_clock_mhz"))
+    try:
+        tail_rise_bins = int(selected.get("tail_rise_bins", 0) or 0)
+    except (TypeError, ValueError):
+        tail_rise_bins = 0
+    return (
+        selected_plan,
+        selected_voltage_mv,
+        selected_lock_clock_mhz,
+        None,
+        selected_final_duration_s,
+        tail_rise_bins,
+        dict(selected),
+    )
+
+
+def request_final_choice_candidate(
+    *,
+    log: Callable[[str], None],
+    event_callback: AutoUvEventCallback | None,
+    auto_uv_mode: str,
+    base_probe: AutoUvProbeSummary | None,
+    candidates: list[dict],
+    default_candidate_id: str,
+    sort_label: str,
+    final_verification_duration_s: int,
+    initial_target_voltage_mv: int,
+    short_probe_base_duration_s: int,
+    request_reason: str,
+    recovery_decision: dict | None = None,
+    discard_returns_none: bool = False,
+) -> tuple[dict | None, int]:
+    normalized_mode = normalize_auto_uv_mode(auto_uv_mode)
+    default_id = str(default_candidate_id or "").strip()
     request_path = final_choice_request_path()
     response_path = final_choice_response_path()
     try:
@@ -103,6 +238,8 @@ def choose_final_verification_candidate(
             for candidate in candidates
         ],
     }
+    if isinstance(recovery_decision, dict) and recovery_decision:
+        request_payload["recovery_decision"] = dict(recovery_decision)
     safe_json_write(request_path, request_payload)
     emit_ui_json_event(event_callback, "final_choice_request", **request_payload)
     log(
@@ -112,9 +249,25 @@ def choose_final_verification_candidate(
     )
 
     response = wait_for_final_choice_response(response_path)
+    if final_choice_aborted(response):
+        log("Auto-UV phase=final-choice aborted-by-user")
+        emit_ui_json_event(
+            event_callback,
+            "final_choice_discarded",
+            reason="user-aborted",
+        )
+        raise AutoUvFinalChoiceDiscarded("Auto-UV recovery aborted by user.")
+
     if final_choice_discarded(response):
+        if discard_returns_none:
+            log("Auto-UV phase=final-choice discarded-by-user; starting new scan")
+            return None, int(final_verification_duration_s)
         log("Auto-UV phase=final-choice discarded-by-user; final verification skipped")
-        emit_ui_json_event(event_callback, "final_choice_discarded", reason="user-discarded")
+        emit_ui_json_event(
+            event_callback,
+            "final_choice_discarded",
+            reason="user-discarded",
+        )
         raise AutoUvFinalChoiceDiscarded(
             "Final verification discarded by user; no profile was saved."
         )
@@ -139,11 +292,8 @@ def choose_final_verification_candidate(
             if str(candidate.get("candidate_id", "")) == default_id
         )
 
-    selected_plan = candidate_plan_from_record(selected) or stable_plan
-    selected_voltage_mv = int(selected.get("candidate_voltage_mv", stable_voltage_mv))
-    selected_lock_clock_mhz = int(
-        selected.get("lock_clock_mhz", stable_lock_clock_mhz)
-    )
+    selected_voltage_mv = int(selected.get("candidate_voltage_mv") or 0)
+    selected_lock_clock_mhz = int(selected.get("lock_clock_mhz") or 0)
     selected_short_duration_s = candidate_short_verification_duration_s(
         selected,
         initial_target_voltage_mv=int(initial_target_voltage_mv),
@@ -156,24 +306,13 @@ def choose_final_verification_candidate(
         min_s=int(selected_short_duration_s),
         max_s=3600,
     )
-    selected_probe = matching_probe_for_candidate(
-        stable_history,
-        voltage_mv=int(selected_voltage_mv),
-        lock_clock_mhz=int(selected_lock_clock_mhz),
-    )
     log(
         "Auto-UV phase=final-choice "
         f"selected={selected_id} {selected_voltage_mv}mV@{selected_lock_clock_mhz}MHz "
         f"duration={selected_final_duration_s}s "
         f"min-duration={selected_short_duration_s}s max-duration=3600s"
     )
-    return (
-        selected_plan,
-        selected_voltage_mv,
-        selected_lock_clock_mhz,
-        selected_probe,
-        selected_final_duration_s,
-    )
+    return selected, selected_final_duration_s
 
 
 def candidate_records_from_history(
@@ -312,6 +451,28 @@ def candidate_selection_summary(
     )
     if base_avg_fps is not None:
         summary["base_avg_fps"] = base_avg_fps
+    base_avg_core_clock_mhz = _candidate_or_probe_base_metric(
+        candidate,
+        "base_avg_core_clock_mhz",
+        base_probe,
+        "avg_core_clock_mhz",
+    )
+    if base_avg_core_clock_mhz is not None:
+        summary["base_avg_core_clock_mhz"] = base_avg_core_clock_mhz
+    base_avg_power_w = _candidate_or_probe_base_metric(
+        candidate,
+        "base_avg_power_w",
+        base_probe,
+        "avg_power_w",
+    )
+    if base_avg_power_w is not None:
+        summary["base_avg_power_w"] = base_avg_power_w
+    core_oc_mhz = candidate_core_oc_mhz(
+        candidate,
+        base_core_clock_mhz=base_avg_core_clock_mhz,
+    )
+    if core_oc_mhz is not None:
+        summary["core_oc_mhz"] = core_oc_mhz
     base_efficiency_fps_per_w = _candidate_or_probe_base_metric(
         candidate,
         "base_efficiency_fps_per_w",
@@ -359,6 +520,25 @@ def candidate_plan_from_record(candidate: dict) -> list[dict] | None:
             item["new_offset_mhz"] = int(item["target_mhz"]) - int(item["base_mhz"])
         converted.append(item)
     return converted or None
+
+
+def candidate_core_oc_mhz(
+    candidate: dict,
+    *,
+    base_core_clock_mhz: float | None = None,
+) -> int | None:
+    existing = float_or_none(candidate.get("core_oc_mhz"))
+    if existing is not None:
+        return int(round(existing))
+    baseline = (
+        float(base_core_clock_mhz)
+        if base_core_clock_mhz is not None
+        else float_or_none(candidate.get("base_avg_core_clock_mhz"))
+    )
+    lock_clock = float_or_none(candidate.get("lock_clock_mhz"))
+    if baseline is None or lock_clock is None:
+        return None
+    return int(round(float(lock_clock) - float(baseline)))
 
 
 def matching_probe_for_candidate(
@@ -433,6 +613,11 @@ def final_choice_discarded(response: dict) -> bool:
     )
 
 
+def final_choice_aborted(response: dict) -> bool:
+    response_action = str(response.get("action", "")).strip().lower()
+    return response_action in {"abort", "aborted"}
+
+
 def coerce_final_choice_duration_s(
     value,
     *,
@@ -476,7 +661,7 @@ def candidate_fps_sort_key(candidate: dict) -> tuple[bool, float, int, int]:
 def probe_float(probe: AutoUvProbeSummary | None, field_name: str) -> float | None:
     if probe is None:
         return None
-    return float_or_none(getattr(probe, field_name))
+    return float_or_none(getattr(probe, field_name, None))
 
 
 def float_or_none(value: object) -> float | None:

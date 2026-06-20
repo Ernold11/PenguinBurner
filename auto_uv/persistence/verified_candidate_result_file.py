@@ -106,6 +106,10 @@ def verified_candidate_payload(
         "lock_clock_mhz": int(lock_clock_mhz),
         "candidate_voltage_mv": int(voltage_mv),
         "tail_rise_bins": int(tail_rise_bins),
+        "core_oc_mhz": core_oc_mhz(
+            lock_clock_mhz=int(lock_clock_mhz),
+            base_probe=base_probe,
+        ),
         **probe_metrics(probe),
         **base_probe_metrics(base_probe),
         "flatten_target": flatten_target,
@@ -178,6 +182,16 @@ def base_probe_metrics(probe: AutoUvProbeSummary | None) -> dict:
         "base_lock_clock_mhz": int(probe.lock_clock_mhz),
         "base_avg_voltage_mv": float_or_none(probe.avg_voltage_mv),
     }
+
+
+def core_oc_mhz(
+    *,
+    lock_clock_mhz: int,
+    base_probe: AutoUvProbeSummary | None,
+) -> int | None:
+    if base_probe is None or base_probe.avg_core_clock_mhz is None:
+        return None
+    return int(round(float(lock_clock_mhz) - float(base_probe.avg_core_clock_mhz)))
 
 
 def artifact_points(plan: list[dict]) -> list[dict]:

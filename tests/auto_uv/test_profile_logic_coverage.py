@@ -50,8 +50,8 @@ def test_snap_target_clock_rejects_non_positive() -> None:
 
 
 # --- scan_runtime_settings ---
-def test_read_scan_runtime_settings_requires_loops_or_duration() -> None:
-    cfg = SimpleNamespace(timedemo_loops=None, duration_s=0)
+def test_read_scan_runtime_settings_requires_positive_duration() -> None:
+    cfg = SimpleNamespace(duration_s=0)
     with pytest.raises(AutoUvError):
         read_scan_runtime_settings({}, cfg)
 

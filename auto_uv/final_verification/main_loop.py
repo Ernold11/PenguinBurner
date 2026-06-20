@@ -69,7 +69,6 @@ def run_final_verification_and_save(
     min_performance_core_clock_pct,
     runtime_default_plan,
     final_clock_drop_margin_pct,
-    timedemo_warmup_runs: int = 0,
     tail_rise_bins: int = 0,
     auto_uv_mode: str = "",
     generated_profile_tier: str = "",
@@ -136,6 +135,18 @@ def run_final_verification_and_save(
             ),
         )
         log_phase(log, "ceiling", clock_ceiling.describe())
+    marker_details = final_probe_crash_marker_details(
+        start_voltage_mv=int(start_voltage_mv),
+        candidate_voltage_mv=int(final_voltage_mv),
+        translated_gpu_policy=gpu_policy,
+    )
+    marker_details.update(
+        {
+            "auto_uv_mode": str(auto_uv_mode or ""),
+            "generated_profile_tier": str(generated_profile_tier or ""),
+            "tail_rise_bins": int(tail_rise_bins),
+        }
+    )
     final_probe, raw_result = probe_voltage_candidate(
         reader=reader,
         candidate_plan=final_plan,
@@ -152,13 +163,8 @@ def run_final_verification_and_save(
         min_performance_core_clock_pct=float(min_performance_core_clock_pct),
         enforce_target_core_clock_floor=False,
         reset_plan=runtime_default_plan,
-        marker_details=final_probe_crash_marker_details(
-            start_voltage_mv=int(start_voltage_mv),
-            candidate_voltage_mv=int(final_voltage_mv),
-            translated_gpu_policy=gpu_policy,
-        ),
+        marker_details=marker_details,
         expected_total_duration_s=int(final_verification_duration_s),
-        timedemo_warmup_runs=int(timedemo_warmup_runs),
         event_callback=event_callback,
     )
     probe_history.append(final_probe)
@@ -221,6 +227,7 @@ def run_final_verification_and_save(
         probe=final_comparison_probe,
         verification_duration_s=int(final_verification_duration_s),
         tail_rise_bins=int(tail_rise_bins),
+        power_limit_w=gpu_policy.get("power_limit_w"),
     )
     log_phase(log, "final", f"stable-config-saved={stable_path}")
     fan_result = write_final_verification_fan_curve_payload(
@@ -236,6 +243,7 @@ def run_final_verification_and_save(
         base_probe=discovery_summary,
         fan_curve_payload=fan_result.payload if fan_result is not None else None,
         memory_offset_mhz=memory_offset_from_gpu_policy(gpu_policy),
+        power_limit_w=gpu_policy.get("power_limit_w"),
         tail_rise_bins=int(tail_rise_bins),
         auto_uv_mode=str(auto_uv_mode or ""),
         generated_profile_tier=str(generated_profile_tier or ""),
@@ -276,7 +284,6 @@ def final_probe_stability_decision(
     baseline = stable_history[0] if stable_history else None
     return evaluate_stable_run(
         result,
-        baseline_frames=baseline.frames_per_run if baseline is not None else None,
         baseline_fps=baseline.avg_fps if baseline is not None else None,
         baseline_power_w=baseline.avg_power_w if baseline is not None else None,
         baseline_core_clock_mhz=(

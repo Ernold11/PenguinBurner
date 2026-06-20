@@ -5,14 +5,14 @@ from .rules import _float_or_none
 
 def profile_verification_metrics_from_result(result) -> dict:
     metrics = {}
-    timedemo_runs = list(getattr(result, "timedemo_runs", []) or [])
-    fps_values = [
-        fps
-        for fps in (_float_or_none(getattr(run, "fps", None)) for run in timedemo_runs)
-        if fps is not None and fps > 0.0
-    ]
-    if fps_values:
-        metrics["avg_fps"] = sum(fps_values) / len(fps_values)
+    benchmark_summary = getattr(result, "benchmark_summary", None)
+    if benchmark_summary is not None:
+        if isinstance(benchmark_summary, dict):
+            avg_fps = _float_or_none(benchmark_summary.get("fps_avg"))
+        else:
+            avg_fps = _float_or_none(getattr(benchmark_summary, "fps_avg", None))
+        if avg_fps is not None and avg_fps > 0.0:
+            metrics["avg_fps"] = avg_fps
 
     summary = _telemetry_summary(result)
     field_map = {

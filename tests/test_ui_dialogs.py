@@ -147,11 +147,11 @@ def test_select_verify_options_rejected_returns_none(qt) -> None:
 def test_select_final_candidate_paths(qt) -> None:
     qtcore, qtgui, qtwidgets, _pg = qt
     # No candidates -> discarded.
-    selected, duration, discarded = fc.select_final_candidate(
+    selected, duration, action = fc.select_final_candidate(
         QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets, parent=None,
         candidates=[], default_candidate_id="",
     )
-    assert selected is None and discarded is True
+    assert selected is None and action == "discard"
     # With candidates + rejected exec -> still returns a 3-tuple.
     result = fc.select_final_candidate(
         QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets, parent=None,

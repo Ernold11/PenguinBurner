@@ -45,7 +45,6 @@ def test_voltage_descent_policy_keeps_clock_and_uses_configured_tail_shape() -> 
         settings=AutoUvScanSettings(
             start_voltage_mv=1025,
             min_search_voltage_mv=850,
-            preserve_base_below_mv=None,
             baseline_core_clock_mhz=2700.0,
             tail_rise_bins=0,
         ),

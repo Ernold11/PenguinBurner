@@ -116,7 +116,6 @@ def test_select_next_lower_voltage_filters_failed_floor() -> None:
         start_voltage_mv=1000,
         stable_voltage_mv=1000,
         reference_actual_voltage_mv=1000.0,
-        preserve_base_below_mv=None,
         min_search_voltage_mv=900,
         failed_floor_voltage_mv=920,
     )
@@ -131,7 +130,6 @@ def test_select_next_lower_voltage_none_when_floor_clears_all_bins() -> None:
         start_voltage_mv=1000,
         stable_voltage_mv=925,
         reference_actual_voltage_mv=None,
-        preserve_base_below_mv=None,
         min_search_voltage_mv=None,
         failed_floor_voltage_mv=924,
     )
@@ -251,7 +249,6 @@ def test_decide_efficiency_acceptance_records_without_stopping() -> None:
     settings = AutoUvScanSettings(
         start_voltage_mv=1000,
         min_search_voltage_mv=900,
-        preserve_base_below_mv=None,
         baseline_core_clock_mhz=2160.0,
         reference_actual_voltage_mv=1000.0,
         efficiency_stop_streak=2,
@@ -338,7 +335,6 @@ def test_sweep_loop_stops_when_cached_unsafe_blocks_first_candidate() -> None:
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
             min_search_voltage_mv=900,
-            preserve_base_below_mv=None,
             baseline_core_clock_mhz=2160.0,
             auto_uv_mode="performance",
             reference_actual_voltage_mv=1000.0,
@@ -388,7 +384,6 @@ def test_sweep_loop_efficiency_records_pending_curve_then_finishes() -> None:
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
             min_search_voltage_mv=950,
-            preserve_base_below_mv=None,
             baseline_core_clock_mhz=2160.0,
             reference_actual_voltage_mv=1000.0,
             # high voltage-drop requirement so stop never arms; only one bin (950)
@@ -437,7 +432,6 @@ def test_sweep_loop_efficiency_stop_uses_current_curve() -> None:
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
             min_search_voltage_mv=875,
-            preserve_base_below_mv=None,
             baseline_core_clock_mhz=2160.0,
             reference_actual_voltage_mv=1000.0,
             efficiency_stop_streak=0,  # arm + confirm quickly

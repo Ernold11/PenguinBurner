@@ -53,7 +53,6 @@ def test_lower_voltage_sweep_loop_accepts_next_lower_voltage_through_hooks() -> 
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
             min_search_voltage_mv=950,
-            preserve_base_below_mv=None,
             baseline_core_clock_mhz=2160.0,
             reference_actual_voltage_mv=1000.0,
         ),
@@ -110,7 +109,6 @@ def test_efficiency_lower_voltage_sweep_targets_previous_measured_clock() -> Non
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
             min_search_voltage_mv=900,
-            preserve_base_below_mv=None,
             baseline_core_clock_mhz=2160.0,
             reference_actual_voltage_mv=1000.0,
             tail_rise_bins=0,
@@ -164,7 +162,6 @@ def test_performance_mode_lower_sweep_uses_plain_lower_voltage_probe() -> None:
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
             min_search_voltage_mv=950,
-            preserve_base_below_mv=None,
             baseline_core_clock_mhz=2160.0,
             auto_uv_mode="performance",
             reference_actual_voltage_mv=1000.0,
@@ -218,7 +215,6 @@ def test_low_clock_failure_stops_without_recovery_probe() -> None:
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
             min_search_voltage_mv=950,
-            preserve_base_below_mv=None,
             baseline_core_clock_mhz=2160.0,
             auto_uv_mode="performance",
             reference_actual_voltage_mv=1000.0,

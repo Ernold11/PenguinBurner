@@ -7,7 +7,7 @@ from dataclasses import dataclass
 class AutoUvDefaults:
     probe_duration_s: int = 10
     shape_probe_duration_s: int = 10
-    final_duration_s: int = 600
+    final_duration_s: int = 300
     max_drop_pct: float = 10.0
     max_core_clock_drop_pct: float = 12.5
     efficiency_stop_streak: int = 2
@@ -38,14 +38,10 @@ class AutoUvMetricTuning:
     temperature_normalization_power_pct_per_c: float = 0.5
     temperature_normalization_max_delta_c: float = 10.0
     loaded_sample_warmup_s: float = 5.0
-    performance_timedemo_warmup_runs: int = 1
-    timedemo_warmup_min_remaining_runs: int = 3
     saturated_tail_power_pct: float = 90.0
     saturated_tail_core_clock_pct: float = 98.0
     saturated_tail_min_samples: int = 2
     min_performance_core_clock_pct: float = 85.0
-    min_proper_run_fps_pct: float = 90.0
-    min_proper_run_fps_regression_streak: int = 2
     min_proper_run_power_pct: float = 50.0
     efficiency_stop_high_fps_variance_pct: float = 2.0
     efficiency_stop_low_variance_streak: int = 2

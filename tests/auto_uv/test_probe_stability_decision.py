@@ -11,7 +11,6 @@ from auto_uv.q2rtx.probe_stability_decision import (
     evaluate_cuda_companion,
     evaluate_loaded_telemetry,
     evaluate_stable_run,
-    evaluate_timedemo_runs,
     sample_is_busy,
 )
 from auto_uv.q2rtx.probe_stability_decision import StabilityThresholds
@@ -26,10 +25,9 @@ def test_cuda_companion_command_points_to_repo_stability_script() -> None:
     assert Path(command[1]).is_file()
 
 
-def test_stability_pass_requires_timedemo_telemetry_and_cuda_when_enabled() -> None:
+def test_stability_pass_requires_benchmark_telemetry_and_cuda_when_enabled() -> None:
     decision = evaluate_stable_run(
         stable_probe_result(),
-        baseline_frames=1000,
         baseline_fps=100.0,
         baseline_power_w=180.0,
         baseline_core_clock_mhz=2100.0,
@@ -42,13 +40,12 @@ def test_stability_pass_requires_timedemo_telemetry_and_cuda_when_enabled() -> N
     assert decision.failure_kind is FailureKind.NONE
 
 
-def test_stability_fails_closed_when_timedemo_metrics_are_missing() -> None:
+def test_stability_fails_closed_when_benchmark_summary_is_missing() -> None:
     result = stable_probe_result()
-    result["timedemo_runs"] = []
+    result.pop("benchmark_summary")
 
     decision = evaluate_stable_run(
         result,
-        baseline_frames=1000,
         baseline_fps=100.0,
         baseline_power_w=180.0,
         baseline_core_clock_mhz=2100.0,
@@ -61,33 +58,21 @@ def test_stability_fails_closed_when_timedemo_metrics_are_missing() -> None:
     assert decision.severity is FailureSeverity.CRITICAL
 
 
-def test_stability_treats_frame_count_drift_as_critical() -> None:
-    decision = evaluate_stable_run(
-        stable_probe_result(frames=999),
-        baseline_frames=1000,
-        baseline_fps=100.0,
-        baseline_power_w=180.0,
-        baseline_core_clock_mhz=2100.0,
-        power_limit_w=220,
-        cuda_required=False,
-    )
-
-    assert not decision.passed
-    assert decision.failure_kind is FailureKind.FRAME_COUNT_REGRESSION
-    assert decision.severity is FailureSeverity.CRITICAL
-
-
-def test_stability_allows_one_slow_timedemo_run_inside_single_run_tolerance() -> None:
-    result = stable_probe_result()
-    result["timedemo_runs"] = [
-        {"frames": 1000, "seconds": 11.24, "fps": 89.0, "run_index": 1},
-        {"frames": 1000, "seconds": 10.99, "fps": 91.0, "run_index": 2},
-        {"frames": 1000, "seconds": 10.53, "fps": 95.0, "run_index": 3},
-    ]
+def test_stability_uses_benchmark_summary_without_frame_count_check() -> None:
+    result = stable_probe_result(frames=1234)
+    result["benchmark_summary"] = {
+        "render_frames": 1234,
+        "demo_frames": 631,
+        "measured_s": 30.0,
+        "fps_avg": 100.0,
+        "fps_min": 92.0,
+        "fps_max": 108.0,
+        "loops": 4,
+    }
+    result["benchmark_telemetry_samples"] = result["telemetry_samples"]
 
     decision = evaluate_stable_run(
         result,
-        baseline_frames=1000,
         baseline_fps=100.0,
         baseline_power_w=180.0,
         baseline_core_clock_mhz=2100.0,
@@ -96,18 +81,23 @@ def test_stability_allows_one_slow_timedemo_run_inside_single_run_tolerance() ->
     )
 
     assert decision.passed
+    assert decision.reason == "stable run"
 
 
-def test_stability_reports_average_timedemo_fps_regression() -> None:
+def test_stability_reports_benchmark_average_fps_regression() -> None:
     result = stable_probe_result()
-    result["timedemo_runs"] = [
-        {"frames": 1000, "seconds": 11.36, "fps": 88.0},
-        {"frames": 1000, "seconds": 11.11, "fps": 90.0},
-    ]
+    result["benchmark_summary"] = {
+        "render_frames": 1234,
+        "measured_s": 30.0,
+        "fps_avg": 89.0,
+        "fps_min": 80.0,
+        "fps_max": 95.0,
+        "loops": 4,
+    }
+    result["benchmark_telemetry_samples"] = result["telemetry_samples"]
 
     decision = evaluate_stable_run(
         result,
-        baseline_frames=1000,
         baseline_fps=100.0,
         baseline_power_w=180.0,
         baseline_core_clock_mhz=2100.0,
@@ -117,13 +107,19 @@ def test_stability_reports_average_timedemo_fps_regression() -> None:
 
     assert not decision.passed
     assert decision.failure_kind is FailureKind.FPS_REGRESSION
-    assert decision.reason == "timedemo average FPS below floor current=89.00 floor=90.00 runs=2"
+    assert decision.reason == "benchmark average FPS below floor current=89.00 floor=90.00"
 
 
-def test_stability_reports_the_timedemo_run_that_missed_single_run_floor() -> None:
+def test_stability_fails_benchmark_summary_with_invalid_metrics() -> None:
+    result = stable_probe_result()
+    result["benchmark_summary"] = {
+        "render_frames": 0,
+        "measured_s": 30.0,
+        "fps_avg": 100.0,
+    }
+
     decision = evaluate_stable_run(
-        stable_probe_result(fps=79.0),
-        baseline_frames=1000,
+        result,
         baseline_fps=100.0,
         baseline_power_w=180.0,
         baseline_core_clock_mhz=2100.0,
@@ -132,16 +128,12 @@ def test_stability_reports_the_timedemo_run_that_missed_single_run_floor() -> No
     )
 
     assert not decision.passed
-    assert decision.failure_kind is FailureKind.FPS_REGRESSION
-    assert decision.reason == (
-        "timedemo single-run FPS below floor current=79.00 floor=80.00 run=1"
-    )
-
+    assert decision.failure_kind is FailureKind.METRICS_INVALID
+    assert decision.severity is FailureSeverity.CRITICAL
 
 def test_stability_treats_loaded_low_clock_as_recoverable() -> None:
     decision = evaluate_stable_run(
         stable_probe_result(clock_mhz=1750.0),
-        baseline_frames=1000,
         baseline_fps=100.0,
         baseline_power_w=180.0,
         baseline_core_clock_mhz=2100.0,
@@ -157,7 +149,6 @@ def test_stability_treats_loaded_low_clock_as_recoverable() -> None:
 def test_stability_fails_when_required_cuda_result_is_missing() -> None:
     decision = evaluate_stable_run(
         stable_probe_result(),
-        baseline_frames=1000,
         baseline_fps=100.0,
         baseline_power_w=180.0,
         baseline_core_clock_mhz=2100.0,
@@ -174,7 +165,6 @@ def test_stability_fails_when_required_cuda_result_is_missing() -> None:
 def test_stability_treats_nvidia_xid_as_critical() -> None:
     decision = evaluate_stable_run(
         stable_probe_result(),
-        baseline_frames=1000,
         baseline_fps=100.0,
         baseline_power_w=180.0,
         baseline_core_clock_mhz=2100.0,
@@ -194,7 +184,6 @@ def test_stability_treats_nvidia_xid_as_critical() -> None:
 def test_stability_user_stop_is_recoverable() -> None:
     decision = evaluate_stable_run(
         stable_probe_result(),
-        baseline_frames=1000,
         baseline_fps=100.0,
         baseline_power_w=180.0,
         baseline_core_clock_mhz=2100.0,
@@ -212,7 +201,6 @@ def test_stability_user_stop_is_recoverable() -> None:
 def test_stability_fatal_output_is_critical() -> None:
     decision = evaluate_stable_run(
         stable_probe_result(),
-        baseline_frames=1000,
         baseline_fps=100.0,
         baseline_power_w=180.0,
         baseline_core_clock_mhz=2100.0,
@@ -230,12 +218,11 @@ def test_stability_fatal_output_is_critical() -> None:
 def test_stability_failed_q2rtx_result_is_classified() -> None:
     result = stable_probe_result()
     result["success"] = False
-    result["reason"] = "timedemo-timeout"
+    result["reason"] = "benchmark-timeout"
     result["log_path"] = "/tmp/probe.log"
 
     decision = evaluate_stable_run(
         result,
-        baseline_frames=1000,
         baseline_fps=100.0,
         baseline_power_w=180.0,
         baseline_core_clock_mhz=2100.0,
@@ -295,38 +282,6 @@ def test_classify_unknown_reason_is_recoverable_q2rtx() -> None:
     assert decision.failure_kind is FailureKind.Q2RTX_FAILED
     assert decision.severity is FailureSeverity.RECOVERABLE
     assert decision.reason == "Q2RTX probe failed"
-
-
-# --- coverage: evaluate_timedemo_runs invalid-metric branches ---
-
-
-def test_timedemo_run_missing_field_is_metrics_invalid() -> None:
-    decision = evaluate_timedemo_runs(
-        [{"frames": 1000, "seconds": None, "fps": 100.0, "run_index": 2}],
-        baseline_frames=None,
-        baseline_fps=None,
-        thresholds=StabilityThresholds(),
-        log_path=None,
-    )
-
-    assert not decision.passed
-    assert decision.failure_kind is FailureKind.METRICS_INVALID
-    assert decision.severity is FailureSeverity.CRITICAL
-    assert decision.evidence["run"]["run_index"] == 2
-
-
-def test_timedemo_run_non_positive_metric_is_metrics_invalid() -> None:
-    decision = evaluate_timedemo_runs(
-        [{"frames": 1000, "seconds": 0.0, "fps": 100.0}],
-        baseline_frames=None,
-        baseline_fps=None,
-        thresholds=StabilityThresholds(),
-        log_path=None,
-    )
-
-    assert not decision.passed
-    assert decision.failure_kind is FailureKind.METRICS_INVALID
-    assert decision.reason == "timedemo run has non-positive metrics"
 
 
 # --- coverage: evaluate_loaded_telemetry failure branches ---

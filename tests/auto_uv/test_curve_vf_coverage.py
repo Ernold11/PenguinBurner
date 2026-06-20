@@ -123,7 +123,6 @@ def test_lower_editable_voltage_bins_respects_min_search_floor() -> None:
     bins = lower_editable_voltage_bins(
         curve,
         start_voltage_mv=975,
-        preserve_base_below_mv=None,
         min_search_voltage_mv=850,
     )
 
@@ -131,18 +130,16 @@ def test_lower_editable_voltage_bins_respects_min_search_floor() -> None:
     assert bins == [950, 925, 900, 875, 850]
 
 
-def test_lower_editable_voltage_bins_respects_preserve_base_floor() -> None:
+def test_lower_editable_voltage_bins_without_min_floor_returns_all_lower_bins() -> None:
     curve = base_curve(800, 1000, 25, 2000, 30)
 
     bins = lower_editable_voltage_bins(
         curve,
         start_voltage_mv=975,
-        preserve_base_below_mv=875,
         min_search_voltage_mv=None,
     )
 
-    # 800, 825, 850, 875 are at or below the preserve floor and are dropped.
-    assert bins == [950, 925, 900]
+    assert bins == [950, 925, 900, 875, 850, 825, 800]
 
 
 def test_next_higher_editable_voltage_bin_returns_min_above() -> None:

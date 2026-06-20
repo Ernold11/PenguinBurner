@@ -6,9 +6,7 @@ from pathlib import Path
 import sys
 
 from stability.q2rtx import (
-    DEFAULT_DEMO_NAME,
     DEFAULT_SINGLE_PASS_TIMEOUT_S,
-    KNOWN_TIMEDEMO_RUN_SECONDS_HINTS,
     Q2RTXStabilityConfig,
 )
 
@@ -16,6 +14,8 @@ from ..auto_uv_user_options import AUTO_UV_DEFAULTS, AUTO_UV_PROBE_TUNING
 from ..shared.probe_data_fields import percent
 
 REFERENCE_DISCOVERY_Q2RTX_DURATION_MULTIPLIER = 2
+DEEP_VOLTAGE_Q2RTX_DURATION_MULTIPLIER = 2.5
+DEEP_VOLTAGE_CUDA_DURATION_MULTIPLIER = 2
 
 
 def short_q2rtx_probe_config(
@@ -26,7 +26,6 @@ def short_q2rtx_probe_config(
     probe_duration_s = max(1, int(target_duration_s))
     return replace(
         config,
-        timedemo_loops=None,
         duration_s=int(probe_duration_s),
         single_pass_timeout_s=max(
             float(DEFAULT_SINGLE_PASS_TIMEOUT_S),
@@ -100,7 +99,11 @@ def q2rtx_cuda_probe_config_for_voltage_band(
         candidate_voltage_mv=int(candidate_voltage_mv),
     ):
         return replace(probe_config, companion_command=None)
-    cuda_duration_s = tiered_cuda_probe_duration_s(base_duration_s)
+    cuda_duration_s = tiered_cuda_probe_duration_s(
+        initial_target_voltage_mv=int(initial_target_voltage_mv),
+        candidate_voltage_mv=int(candidate_voltage_mv),
+        base_duration_s=base_duration_s,
+    )
     return replace(
         probe_config,
         companion_command=cuda_bruteforce_companion_command(
@@ -143,17 +146,29 @@ def tiered_q2rtx_probe_duration_s(
 
     voltage_ratio = float(candidate_voltage) / float(initial_voltage)
     if voltage_ratio >= percent(AUTO_UV_PROBE_TUNING.high_voltage_pct):
-        multiplier = 1
+        return int(base_probe_duration_s)
     elif voltage_ratio >= percent(AUTO_UV_PROBE_TUNING.medium_voltage_pct):
-        multiplier = 2
+        return int(base_probe_duration_s) * 2
     else:
-        multiplier = 3
-    return max(1, int(base_probe_duration_s) * int(multiplier))
+        return max(
+            1,
+            int(
+                math.ceil(
+                    float(base_probe_duration_s)
+                    * float(DEEP_VOLTAGE_Q2RTX_DURATION_MULTIPLIER)
+                )
+            ),
+        )
 
 
-def tiered_cuda_probe_duration_s(base_duration_s: int | None = None) -> int:
+def tiered_cuda_probe_duration_s(
+    *,
+    initial_target_voltage_mv: int | None = None,
+    candidate_voltage_mv: int | None = None,
+    base_duration_s: int | None = None,
+) -> int:
     base_probe_duration_s = base_q2rtx_probe_duration_s(base_duration_s)
-    return max(
+    cuda_duration_s = max(
         1,
         int(
             math.ceil(
@@ -163,6 +178,20 @@ def tiered_cuda_probe_duration_s(base_duration_s: int | None = None) -> int:
             )
         ),
     )
+    try:
+        initial_voltage = int(initial_target_voltage_mv)
+        candidate_voltage = int(candidate_voltage_mv)
+    except (TypeError, ValueError):
+        return int(cuda_duration_s)
+    if initial_voltage <= 0:
+        return int(cuda_duration_s)
+    voltage_ratio = float(candidate_voltage) / float(initial_voltage)
+    if voltage_ratio < percent(AUTO_UV_PROBE_TUNING.medium_voltage_pct):
+        return max(
+            1,
+            int(cuda_duration_s) * int(DEEP_VOLTAGE_CUDA_DURATION_MULTIPLIER),
+        )
+    return int(cuda_duration_s)
 
 
 def base_q2rtx_probe_duration_s(base_duration_s: int | None = None) -> int:
@@ -189,15 +218,3 @@ def cuda_bruteforce_companion_command(
 
 def cuda_bruteforce_script_path() -> Path:
     return Path(__file__).resolve().parents[2] / "stability" / "cuda_bruteforce.py"
-
-
-def timedemo_seconds_hint(config: Q2RTXStabilityConfig) -> float | None:
-    demo_name = str(config.demo_name).strip().lower()
-    hinted_demo_name = (
-        "q2demo1" if demo_name == str(DEFAULT_DEMO_NAME).lower() else demo_name
-    )
-    hinted_seconds = KNOWN_TIMEDEMO_RUN_SECONDS_HINTS.get(hinted_demo_name)
-    if hinted_seconds is None or float(hinted_seconds) <= 0.0:
-        return None
-    return float(hinted_seconds)
-

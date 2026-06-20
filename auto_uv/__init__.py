@@ -4,7 +4,6 @@ from .auto_uv_types import (
     FailureSeverity,
     StableRunDecision,
     TelemetrySample,
-    TimedemoRun,
 )
 from .auto_uv_scan_settings import AutoUvScanSettings
 from .voltage_frequency_undervolt_main_loop import (
@@ -26,7 +25,6 @@ __all__ = [
     "LowerVoltageSweepHooks",
     "StableRunDecision",
     "TelemetrySample",
-    "TimedemoRun",
     "choose_base_load_flatten_target",
     "evaluate_stable_run",
     "plan_base_load_curve_from_telemetry",

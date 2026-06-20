@@ -127,6 +127,7 @@ def _ui_candidate_metadata(candidate: VfCurveCandidate) -> dict:
             "auto_oc",
             "auto_oc_step",
             "auto_oc_steps",
+            "auto_oc_baseline_clock_mhz",
             "auto_oc_start_clock_mhz",
             "auto_oc_target_clock_mhz",
             "auto_oc_applied_mhz",

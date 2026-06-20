@@ -87,45 +87,8 @@ def test_auto_uv_voltage_scan_wires_json_events_and_final_result() -> None:
     assert logs[-1].startswith("Auto-UV final state: 2700MHz@875mV")
 
 
-def test_restore_defaults_command_ensures_afterburner_root_before_restore() -> None:
-    calls = []
-    args = SimpleNamespace(
-        restore_defaults_from_config=True,
-        auto_uv_voltage_scan=False,
-    )
-
-    def fake_ensure(config_path, runtime_options, **kwargs):
-        calls.append(("ensure", config_path, runtime_options, kwargs))
-        return {"afterburner_root": "/configured"}
-
-    def fake_restore(**kwargs):
-        calls.append(("restore", kwargs))
-
-    run_auto_uv_foreground_command(
-        args,
-        gpu_index=0,
-        config_path="/tmp/config.toml",
-        afterburner_runtime_options={},
-        interactive=True,
-        dependencies=AutoUvForegroundDependencies(
-            ensure_afterburner_root_configured=fake_ensure,
-            restore_afterburner_defaults_from_config=fake_restore,
-        ),
-    )
-
-    assert calls[0] == (
-        "ensure",
-        "/tmp/config.toml",
-        {},
-        {"gpu_index": 0, "interactive": True},
-    )
-    assert calls[1][0] == "restore"
-    assert calls[1][1]["runtime_options"] == {"afterburner_root": "/configured"}
-
-
 def test_auto_uv_foreground_command_translates_auto_uv_error() -> None:
     args = SimpleNamespace(
-        restore_defaults_from_config=False,
         auto_uv_voltage_scan=True,
         json_events=False,
     )
@@ -150,7 +113,6 @@ def test_auto_uv_foreground_command_translates_auto_uv_error() -> None:
 
 def test_auto_uv_foreground_command_logs_discarded_final_choice() -> None:
     args = SimpleNamespace(
-        restore_defaults_from_config=False,
         auto_uv_voltage_scan=True,
         json_events=False,
     )

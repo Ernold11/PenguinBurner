@@ -24,16 +24,11 @@ def lower_editable_voltage_bins(
     base_curve: list[dict],
     start_voltage_mv: int,
     *,
-    preserve_base_below_mv: int | None,
     min_search_voltage_mv: int | None = None,
 ) -> list[int]:
     bins = []
     for voltage_mv in editable_voltage_bins(base_curve):
         if int(voltage_mv) >= int(start_voltage_mv):
-            continue
-        if preserve_base_below_mv is not None and int(voltage_mv) <= int(
-            preserve_base_below_mv
-        ):
             continue
         if min_search_voltage_mv is not None and int(voltage_mv) < int(
             min_search_voltage_mv

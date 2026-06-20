@@ -38,8 +38,8 @@ class Q2RtxCudaProbeRunner:
     baseline_clock_mhz: float | None
     min_performance_core_clock_pct: float
     short_probe_base_duration_s: int
-    timedemo_warmup_runs: int
     log: Callable[[str], None]
+    marker_details: dict | None = None
     event_callback: AutoUvEventCallback | None = None
 
     def probe_default_curve(
@@ -69,7 +69,7 @@ class Q2RtxCudaProbeRunner:
             summarize_saturated_tail=True,
             use_power_limit_floor=True,
             reset_plan=self.runtime_default_plan,
-            timedemo_warmup_runs=int(self.timedemo_warmup_runs),
+            marker_details=self.marker_details,
             event_callback=self.event_callback,
         )
 
@@ -152,7 +152,7 @@ class Q2RtxCudaProbeRunner:
             use_power_limit_floor=bool(use_power_limit_floor),
             min_performance_core_clock_pct=float(self.min_performance_core_clock_pct),
             reset_plan=self.runtime_default_plan,
-            timedemo_warmup_runs=int(self.timedemo_warmup_runs),
+            marker_details=probe_runner_marker_details(self.marker_details, candidate),
             event_callback=self.event_callback,
         )
         outcome = self.outcome_from_probe_result(
@@ -192,12 +192,6 @@ class Q2RtxCudaProbeRunner:
         cuda_required = bool(getattr(effective_config, "companion_command", None))
         decision = evaluate_stable_run(
             result,
-            baseline_frames=(
-                int(baseline_probe.frames_per_run)
-                if baseline_probe is not None
-                and baseline_probe.frames_per_run is not None
-                else None
-            ),
             baseline_fps=(
                 float(baseline_probe.avg_fps)
                 if baseline_probe is not None and baseline_probe.avg_fps is not None
@@ -249,3 +243,21 @@ def probe_ui_target_duration_s(config: Q2RTXStabilityConfig) -> float | None:
         float(q2rtx_duration_s)
         + companion_duration_s_from_command(getattr(config, "companion_command", None)),
     )
+
+
+def probe_runner_marker_details(
+    base_details: dict | None,
+    candidate: VfCurveCandidate,
+) -> dict:
+    details = dict(base_details or {})
+    metadata = getattr(candidate, "metadata", {}) or {}
+    if isinstance(metadata, dict):
+        for key in (
+            "tail_rise_bins",
+            "auto_uv_mode",
+            "auto_uv_requested_mode",
+            "generated_profile_tier",
+        ):
+            if key in metadata and key not in details:
+                details[key] = metadata[key]
+    return details

@@ -86,7 +86,6 @@ class FailureKind(str, Enum):
     NONE = "none"
     LOW_CLOCK = "low-clock"
     FPS_REGRESSION = "fps-regression"
-    FRAME_COUNT_REGRESSION = "frame-count-regression"
     LOAD_LOST = "load-lost"
     TIMED_OUT = "timed-out"
     FATAL_OUTPUT = "fatal-output"
@@ -103,14 +102,6 @@ class FailureSeverity(str, Enum):
     RECOVERABLE = "recoverable"
     UNSAFE = "unsafe"
     CRITICAL = "critical"
-
-
-@dataclass(frozen=True, slots=True)
-class TimedemoRun:
-    frames: int
-    seconds: float
-    fps: float
-    run_index: int = 0
 
 
 @dataclass(frozen=True, slots=True)

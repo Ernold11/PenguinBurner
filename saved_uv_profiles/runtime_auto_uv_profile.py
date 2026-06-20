@@ -59,6 +59,7 @@ def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = Fa
     if lock_clock_mhz <= 0 or candidate_voltage_mv <= 0:
         raise NvmlError(f"auto-UV final curve is missing lock clock or voltage: {path}")
     memory_offset_mhz = profile_memory_offset_mhz(payload)
+    power_limit_w = profile_power_limit_w(payload)
 
     voltage_bins = sorted({int(item["voltage_mv"]) for item in plan})
     tail_point_count = sum(
@@ -103,6 +104,7 @@ def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = Fa
         "lock_clock_mhz": int(lock_clock_mhz),
         "candidate_voltage_mv": int(candidate_voltage_mv),
         "memory_offset_mhz": memory_offset_mhz,
+        "power_limit_w": power_limit_w,
         "flatten_target": flatten_target,
     }
 
@@ -117,6 +119,43 @@ def profile_memory_offset_mhz(payload):
         except (TypeError, ValueError):
             return None
     return None
+
+
+def profile_power_limit_w(payload):
+    value = payload.get("power_limit_w") if isinstance(payload, dict) else None
+    if value in (None, ""):
+        return None
+    try:
+        power_limit = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return power_limit if power_limit > 0 else None
+
+
+def apply_auto_uv_profile_power_limit(
+    *,
+    profile_label: str,
+    power_limit_w,
+    gpu_policy_controller,
+) -> dict:
+    power_limit = profile_power_limit_w({"power_limit_w": power_limit_w})
+    if power_limit is None:
+        return {}
+    if gpu_policy_controller is None:
+        raise NvmlError(
+            "failed to apply saved profile power limit "
+            f"{int(power_limit)} W for {profile_label}: "
+            "Linux GPU policy helper is unavailable"
+        )
+    try:
+        gpu_policy_controller.apply_power_limit_w(int(power_limit))
+    except Exception as exc:
+        raise NvmlError(
+            "failed to apply saved profile power limit "
+            f"{int(power_limit)} W for {profile_label}: "
+            f"driver rejected nvmlDeviceSetPowerManagementLimit: {exc}"
+        ) from exc
+    return {"power_limit_w": int(power_limit)}
 
 
 def apply_auto_uv_profile_memory_offset(

@@ -44,6 +44,7 @@ from ui.curve_profiles import (
 from ui.dialogs.error_details import error_dialog_copy_text as _error_dialog_copy_text
 from ui.dialogs.error_details import process_failure_details as _process_failure_details
 from ui.dialogs.final_choice import candidate_number as _candidate_number
+from ui.dialogs.final_choice import candidate_oc_text as _candidate_oc_text
 from ui.dialogs.final_choice import candidate_status_text as _candidate_status_text
 from ui.dialogs.final_choice import (
     duration_minutes_for_control as _duration_minutes_for_control,
@@ -162,6 +163,7 @@ def test_profile_summary_keeps_base_metrics_for_profile_table_delta() -> None:
             "candidate_voltage_mv": 875,
             "lock_clock_mhz": 2610,
             "memory_offset_mhz": 750,
+            "power_limit_w": 360,
             "avg_core_clock_mhz": 2605.0,
             "avg_power_w": 240.0,
             "efficiency_fps_per_w": 0.70,
@@ -178,6 +180,7 @@ def test_profile_summary_keeps_base_metrics_for_profile_table_delta() -> None:
     assert summary["base_candidate_voltage_mv"] == 1000
     assert summary["base_lock_clock_mhz"] == 2700
     assert summary["memory_offset_mhz"] == 750
+    assert summary["power_limit_w"] == 360
     assert summary["base_avg_core_clock_mhz"] == 2650.0
     assert summary["base_avg_fps"] == 150.0
     assert summary["base_avg_power_w"] == 300.0
@@ -723,7 +726,7 @@ def test_mark_auto_uv_profile_verified_promotes_user_edited_draft(
 
     marked_path = mark_auto_uv_profile_verified(
         str(stored_path),
-        verification={"workload": "Q2RTX timedemo", "result_reason": "ok"},
+        verification={"workload": "Q2RTX benchmark", "result_reason": "ok"},
         metrics={
             "avg_core_clock_mhz": 2580.0,
             "avg_fps": 121.5,
@@ -740,7 +743,7 @@ def test_mark_auto_uv_profile_verified_promotes_user_edited_draft(
     assert payload["final_verified"] is True
     assert payload["requires_verification"] is False
     assert payload["verification_status"] == "verified"
-    assert payload["verification"]["workload"] == "Q2RTX timedemo"
+    assert payload["verification"]["workload"] == "Q2RTX benchmark"
     assert payload["verification"]["result_reason"] == "ok"
     assert payload["avg_core_clock_mhz"] == 2580.0
     assert payload["avg_fps"] == 121.5
@@ -1037,10 +1040,7 @@ def test_runtime_clock_ceiling_uses_saved_rising_tail_ceiling() -> None:
 
 def test_profile_verification_metrics_from_q2rtx_result() -> None:
     result = SimpleNamespace(
-        timedemo_runs=[
-            SimpleNamespace(fps=120.0),
-            SimpleNamespace(fps=126.0),
-        ],
+        benchmark_summary=SimpleNamespace(fps_avg=123.0),
         telemetry_summary=lambda: {
             "core_clock_avg": 2580.0,
             "power_avg": 240.0,
@@ -1211,7 +1211,7 @@ def test_profile_verification_promotes_verified_profile(
         success=True,
         reason="ok",
         log_path=tmp_path / "verify.log",
-        timedemo_runs=[SimpleNamespace(fps=120.0)],
+        benchmark_summary=SimpleNamespace(fps_avg=120.0),
         telemetry_summary=lambda: {
             "core_clock_avg": 2580.0,
             "power_avg": 240.0,
@@ -1264,7 +1264,6 @@ def test_profile_verification_promotes_verified_profile(
     profile_verification_runner.run_profile_verification(
         SimpleNamespace(
             auto_uv_profile=str(stored_path),
-            prefer_afterburner_curve=False,
             stability_seconds=600,
             stability_stop_request_file="",
         ),
@@ -1952,27 +1951,13 @@ def test_cached_base_curve_points_roundtrip_for_current_gpu(
 
 def test_profile_info_from_command_text_parses_selector_and_silent_fan_flag() -> None:
     info = _profile_info_from_command_text(
-        "/usr/bin/bash /opt/penguin_burner.sh --foreground "
+        "/usr/bin/bash /opt/penguin_burner.sh "
         "--auto-uv-profile profile-a --silent-fan-curve",
         default_if_present=True,
     )
 
     assert info == {
         "selector": "profile-a",
-        "silent_fan_curve": True,
-        "adaptive_auto_uv": False,
-    }
-
-
-def test_profile_info_from_command_text_parses_afterburner_preference() -> None:
-    info = _profile_info_from_command_text(
-        "/usr/bin/bash /opt/penguin_burner.sh --foreground "
-        "--prefer-afterburner-curve --silent-fan-curve",
-        default_if_present=True,
-    )
-
-    assert info == {
-        "selector": AFTERBURNER_PROFILE_ID,
         "silent_fan_curve": True,
         "adaptive_auto_uv": False,
     }
@@ -2013,15 +1998,44 @@ def test_final_choice_candidate_sort_values_use_numeric_metrics() -> None:
         "short_verification_duration_s": "45",
     }
 
-    assert _final_choice_sort_values(candidate)[:7] == [
+    assert _final_choice_sort_values(candidate)[:8] == [
         850.0,
         2805.0,
+        "",
         2647.67,
         0.6427,
         158.21,
         246.16,
         45.0,
     ]
+
+
+def test_final_choice_oc_uses_target_minus_measured_baseline() -> None:
+    candidate = {
+        "candidate_voltage_mv": "885",
+        "lock_clock_mhz": "2880",
+        "core_oc_mhz": "7",
+        "base_avg_core_clock_mhz": "2730",
+        "avg_core_clock_mhz": "2868.0",
+        "efficiency_fps_per_w": "0.6427",
+        "avg_fps": "158.21",
+        "avg_power_w": "246.16",
+        "short_verification_duration_s": "45",
+    }
+
+    assert _candidate_oc_text(candidate) == "+150"
+    assert _final_choice_sort_values(candidate)[:3] == [885.0, 2880.0, 150.0]
+
+
+def test_final_choice_oc_can_be_negative_against_measured_baseline() -> None:
+    candidate = {
+        "candidate_voltage_mv": "875",
+        "lock_clock_mhz": "2600",
+        "measured_baseline_clock_mhz": "2730",
+    }
+
+    assert _candidate_oc_text(candidate) == "-130"
+    assert _final_choice_sort_values(candidate)[:3] == [875.0, 2600.0, -130.0]
 
 
 def test_top_status_text_rounds_gui_decimals_to_two_places() -> None:

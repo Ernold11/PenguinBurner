@@ -1,12 +1,10 @@
-"""Foreground CLI orchestration for Auto-UV scans and default restores."""
+"""Foreground CLI orchestration for Auto-UV scans."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable
 
-from afterburner.default_profile_restore import restore_afterburner_defaults_from_config
-from afterburner.import_vf_curve import ensure_afterburner_root_configured
 from auto_uv.auto_uv_types import AutoUvError, AutoUvFinalChoiceDiscarded
 from auto_uv.voltage_frequency_undervolt_main_loop import (
     run_voltage_frequency_undervolt_main_loop,
@@ -23,10 +21,6 @@ def _noop_emit_json_event(_enabled: bool, _event: str, **_payload) -> None:
 
 @dataclass(slots=True)
 class AutoUvForegroundDependencies:
-    ensure_afterburner_root_configured: Callable = ensure_afterburner_root_configured
-    restore_afterburner_defaults_from_config: Callable = (
-        restore_afterburner_defaults_from_config
-    )
     require_auto_uv_initial_check: Callable = require_auto_uv_initial_check
     build_stability_config: Callable = build_stability_config
     run_voltage_frequency_undervolt_main_loop: Callable = (
@@ -47,21 +41,8 @@ def run_auto_uv_foreground_command(
 ) -> None:
     deps = dependencies or AutoUvForegroundDependencies()
     runtime_options = afterburner_runtime_options
-    if args.restore_defaults_from_config:
-        runtime_options = deps.ensure_afterburner_root_configured(
-            config_path,
-            runtime_options,
-            gpu_index=gpu_index,
-            interactive=interactive,
-        )
     try:
-        if args.restore_defaults_from_config:
-            deps.restore_afterburner_defaults_from_config(
-                gpu_index=gpu_index,
-                runtime_options=runtime_options,
-                log=deps.log,
-            )
-        elif args.auto_uv_voltage_scan:
+        if args.auto_uv_voltage_scan:
             run_auto_uv_voltage_scan(
                 args,
                 gpu_index=gpu_index,

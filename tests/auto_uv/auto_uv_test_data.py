@@ -69,17 +69,28 @@ def stable_probe_result(
     clock_mhz: float = 2100.0,
     power_w: float = 180.0,
 ) -> dict:
+    telemetry_samples = [
+        {
+            "elapsed_s": 6.0,
+            "power_w": power_w,
+            "core_clock_mhz": clock_mhz,
+            "gpu_util_pct": 99.0,
+        }
+    ]
     return {
         "success": True,
-        "timedemo_runs": [{"frames": frames, "seconds": 10.0, "fps": fps}],
-        "telemetry_samples": [
-            {
-                "elapsed_s": 6.0,
-                "power_w": power_w,
-                "core_clock_mhz": clock_mhz,
-                "gpu_util_pct": 99.0,
-            }
-        ],
+        "benchmark_summary": {
+            "render_frames": frames,
+            "demo_frames": 631,
+            "measured_s": 10.0,
+            "fps_avg": fps,
+            "fps_min": fps,
+            "fps_max": fps,
+            "fps_mean": fps,
+            "loops": 1,
+        },
+        "telemetry_samples": telemetry_samples,
+        "benchmark_telemetry_samples": telemetry_samples,
     }
 
 

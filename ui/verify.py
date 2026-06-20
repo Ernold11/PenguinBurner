@@ -4,9 +4,10 @@ from pathlib import Path
 import re
 
 from common.penguin_burner_paths import default_user_config_dir
+from .constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
 
 
-DEFAULT_VERIFY_DURATION_S = 600
+DEFAULT_VERIFY_DURATION_S = DEFAULT_FINAL_VERIFICATION_DURATION_S
 MAX_VERIFY_DURATION_S = 3600
 _ELAPSED_RE = re.compile(r"elapsed=([0-9]+(?:\.[0-9]+)?)s")
 
@@ -34,9 +35,9 @@ def progress_percent(elapsed_s, target_s) -> int:
 
 def workload_label(*, q2rtx_enabled: bool = True, cuda_enabled: bool = True) -> str:
     if q2rtx_enabled and cuda_enabled:
-        return "Q2RTX timedemo and CUDA compute test"
+        return "Q2RTX benchmark and CUDA compute test"
     if q2rtx_enabled:
-        return "Q2RTX timedemo"
+        return "Q2RTX benchmark"
     if cuda_enabled:
         return "CUDA compute test"
     return "No workload"

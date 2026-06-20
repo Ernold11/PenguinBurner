@@ -1,6 +1,6 @@
 """Abort a live Q2RTX/CUDA probe only on strong instability evidence.
 
-Rules cover invalid timedemo output, FPS collapse, lost load, low clocks, and stalled progress.
+Rules cover lost load, low clocks, and selected-GPU idle conditions.
 """
 
 from __future__ import annotations
@@ -12,45 +12,6 @@ from ..auto_uv_user_options import (
 )
 from .probe_runtime_guardrails import core_clock_below_floor, telemetry_sample_is_busy
 from .q2rtx_probe_summary import mean
-
-
-def timedemo_live_abort_reason(
-    state: dict,
-    *,
-    frame_reference: int | None,
-    proper_run_fps_floor: float | None,
-    progress_state: dict,
-) -> str | None:
-    frame_ref = frame_reference or state.get("expected_frames_per_run")
-    for run in list(state.get("new_timedemo_runs") or []):
-        frames, seconds, fps = int(run.frames), float(run.seconds), float(run.fps)
-        if frames <= 0 or seconds <= 0.0 or fps <= 0.0:
-            return "timedemo-metrics-invalid"
-        if frame_ref is not None and frames != int(frame_ref):
-            return (
-                f"timedemo-live-frame-count current={frames} "
-                f"expected={int(frame_ref)} run={int(run.run_index)}"
-            )
-        if proper_run_fps_floor is None or int(run.run_index) <= 1:
-            progress_state["low_fps_streak"] = 0
-            continue
-        progress_state["low_fps_streak"] = (
-            int(progress_state.get("low_fps_streak", 0)) + 1
-            if fps < float(proper_run_fps_floor)
-            else 0
-        )
-        if (
-            int(progress_state["low_fps_streak"])
-            >= AUTO_UV_METRIC_TUNING.min_proper_run_fps_regression_streak
-        ):
-            return (
-                f"timedemo-live-fps-regression current={fps:.1f} "
-                f"floor={float(proper_run_fps_floor):.1f} "
-                f"margin={AUTO_UV_METRIC_TUNING.min_proper_run_fps_pct:.1f}% "
-                f"streak={int(progress_state['low_fps_streak'])} "
-                f"run={int(run.run_index)}"
-            )
-    return None
 
 
 def telemetry_live_abort_reason(
@@ -239,38 +200,4 @@ def low_live_clock_abort_reason(
         f"telemetry-live-core_clock current={live_core_clock_mhz:.1f}MHz "
         f"floor={target_core_clock_floor_mhz:.1f}MHz "
         f"tolerance={AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz:.1f}MHz"
-    )
-
-
-def timedemo_stall_abort_reason(
-    state: dict,
-    *,
-    busy_power_floor_w: float | None,
-    expected_loop_s: float | None,
-    last_progress_elapsed_s: float,
-) -> str | None:
-    if expected_loop_s is None or int(state.get("completed_runs", 0)) <= 0:
-        return None
-    idle_s = float(state.get("elapsed_s", 0.0)) - float(last_progress_elapsed_s)
-    stall_s = max(
-        AUTO_UV_STALL_TUNING.timeout_min_s,
-        float(expected_loop_s) * AUTO_UV_STALL_TUNING.timeout_multiplier,
-    )
-    if idle_s <= stall_s:
-        return None
-    latest = state.get("latest_sample")
-    gpu_util = getattr(latest, "gpu_util_pct", None) if latest is not None else None
-    power_w = getattr(latest, "power_w", None) if latest is not None else None
-    gpu_busy = (
-        gpu_util is not None and float(gpu_util) >= AUTO_UV_STALL_TUNING.busy_gpu_util_pct
-    ) or (
-        power_w is not None
-        and busy_power_floor_w is not None
-        and float(power_w) >= float(busy_power_floor_w)
-    )
-    if gpu_busy:
-        return None
-    return (
-        f"timedemo-live-stall idle={idle_s:.1f}s "
-        f"stall={stall_s:.1f}s completed={int(state.get('completed_runs', 0))}"
     )

@@ -12,6 +12,7 @@ from runtime_support.adaptive_target_fps import (
 )
 from runtime_support.runtime_debug import log as runtime_log
 from saved_uv_profiles import (
+    apply_auto_uv_profile_power_limit,
     available_adaptive_tiers,
     load_auto_uv_final_curve,
     read_auto_uv_profiles,
@@ -32,6 +33,7 @@ class AdaptiveAutoUvRuntimeDependencies:
     available_adaptive_tiers: Callable = available_adaptive_tiers
     load_auto_uv_final_curve: Callable = load_auto_uv_final_curve
     apply_plan: Callable | None = None
+    apply_power_limit: Callable = apply_auto_uv_profile_power_limit
     apply_memory_offset: Callable = apply_auto_uv_profile_memory_offset
     select_expected_vf_samples: Callable = select_expected_vf_samples
     adaptive_target_fps_from_config: Callable = adaptive_target_fps_from_config
@@ -45,6 +47,7 @@ class AdaptiveAutoUvSwitchResult:
     reason: str
     vf_apply_result: dict | None = None
     vf_expected_samples: list = field(default_factory=list)
+    power_limit_w: int | None = None
     memory_offset_mhz: int | None = None
 
 
@@ -267,6 +270,11 @@ class AdaptiveAutoUvRuntimeController:
             apply_plan = default_apply_plan
         apply_plan(self.vf_curve_reader, curve["plan"])
         self.vf_curve_reader.refresh_points()
+        power_policy = self.deps.apply_power_limit(
+            profile_label=f"adaptive {profile_tier_label(tier)} profile",
+            power_limit_w=curve.get("power_limit_w"),
+            gpu_policy_controller=self.gpu_policy_controller,
+        )
         memory_policy = self.deps.apply_memory_offset(
             profile_label=f"adaptive {profile_tier_label(tier)} profile",
             memory_offset_mhz=curve.get("memory_offset_mhz"),
@@ -301,6 +309,11 @@ class AdaptiveAutoUvRuntimeController:
             reason=reason,
             vf_apply_result=vf_apply_result,
             vf_expected_samples=self.deps.select_expected_vf_samples(curve["plan"]),
+            power_limit_w=(
+                power_policy.get("power_limit_w")
+                if isinstance(power_policy, dict)
+                else None
+            ),
             memory_offset_mhz=(
                 memory_policy.get("mem_clk_vf_offset_mhz")
                 if isinstance(memory_policy, dict)

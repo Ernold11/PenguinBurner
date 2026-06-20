@@ -19,7 +19,6 @@ class ScanRuntimeSettings:
     auto_uv_mode: str
     final_clock_drop_margin_pct: float
     min_performance_core_clock_pct: float
-    preserve_base_below_mv: int | None
     configured_min_voltage_mv: int | None
     configured_max_drop_pct: float
     final_verification_duration_s: int
@@ -28,7 +27,6 @@ class ScanRuntimeSettings:
     derive_efficiency_stop_streak: bool
     min_efficiency_stop_voltage_drop_pct: float
     tail_rise_bins: int
-    timedemo_warmup_runs: int
 
 
 def read_scan_runtime_settings(
@@ -36,10 +34,8 @@ def read_scan_runtime_settings(
     q2rtx_config: Q2RTXStabilityConfig,
     gpu_name: object | None = None,
 ) -> ScanRuntimeSettings:
-    if q2rtx_config.timedemo_loops is None and int(q2rtx_config.duration_s) <= 0:
-        raise AutoUvError(
-            "auto-UV voltage scan needs either timedemo loops or positive duration"
-        )
+    if int(q2rtx_config.duration_s) <= 0:
+        raise AutoUvError("auto-UV voltage scan needs positive benchmark duration")
 
     auto_uv_mode = normalize_auto_uv_mode(runtime_options.get("auto_uv_mode"))
     final_clock_drop_margin_pct = clock_drop_margin_pct(
@@ -47,19 +43,12 @@ def read_scan_runtime_settings(
         gpu_name=gpu_name,
     )
     min_performance_core_clock_pct = max(0.0, 100.0 - final_clock_drop_margin_pct)
-    preserve_base_below_mv = optional_int(
-        runtime_options.get(
-            "preserve_base_below_mv",
-            runtime_options.get("preserve_vanilla_below_mv"),
-        )
-    )
     configured_max_drop_pct = max_drop_pct(runtime_options)
     return ScanRuntimeSettings(
         q2rtx_config=q2rtx_config,
         auto_uv_mode=auto_uv_mode,
         final_clock_drop_margin_pct=float(final_clock_drop_margin_pct),
         min_performance_core_clock_pct=float(min_performance_core_clock_pct),
-        preserve_base_below_mv=preserve_base_below_mv,
         configured_min_voltage_mv=optional_int(
             runtime_options.get("auto_uv_min_voltage_mv")
         ),
@@ -72,7 +61,6 @@ def read_scan_runtime_settings(
             runtime_options
         ),
         tail_rise_bins=tail_rise_bins(runtime_options, auto_uv_mode=auto_uv_mode),
-        timedemo_warmup_runs=timedemo_warmup_runs_for_mode(),
     )
 
 
@@ -147,10 +135,6 @@ def tail_rise_bins(runtime_options: dict, *, auto_uv_mode: str) -> int:
             else AUTO_UV_DEFAULTS.tail_rise_bins
         )
     return max(0, min(int(AUTO_UV_DEFAULTS.max_tail_rise_bins), int(value)))
-
-
-def timedemo_warmup_runs_for_mode() -> int:
-    return 0
 
 
 def optional_int(value: object) -> int | None:

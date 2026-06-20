@@ -38,9 +38,9 @@ def test_progress_percent_returns_zero_on_bad_input() -> None:
 
 def test_workload_label_covers_every_combination() -> None:
     assert workload_label(q2rtx_enabled=True, cuda_enabled=True) == (
-        "Q2RTX timedemo and CUDA compute test"
+        "Q2RTX benchmark and CUDA compute test"
     )
-    assert workload_label(q2rtx_enabled=True, cuda_enabled=False) == "Q2RTX timedemo"
+    assert workload_label(q2rtx_enabled=True, cuda_enabled=False) == "Q2RTX benchmark"
     assert workload_label(q2rtx_enabled=False, cuda_enabled=True) == "CUDA compute test"
     assert workload_label(q2rtx_enabled=False, cuda_enabled=False) == "No workload"
 

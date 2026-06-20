@@ -12,13 +12,12 @@ from auto_uv.q2rtx.q2rtx_cuda_probe_config import tiered_q2rtx_probe_duration_s
 from auto_uv.scan_runtime_settings import read_scan_runtime_settings
 
 
-def test_short_probe_config_uses_duration_for_runtime_loop_calibration() -> None:
+def test_short_probe_config_uses_exact_duration_benchmark() -> None:
     config = short_q2rtx_probe_config(
-        Q2RTXStabilityConfig(timedemo_loops=99, single_pass_timeout_s=999.0),
+        Q2RTXStabilityConfig(duration_s=60, single_pass_timeout_s=999.0),
         target_duration_s=20,
     )
 
-    assert config.timedemo_loops is None
     assert config.duration_s == 20
     assert config.single_pass_timeout_s == 120.0
 
@@ -30,7 +29,6 @@ def test_reference_discovery_probe_runs_double_q2rtx_without_cuda() -> None:
     )
 
     assert config.duration_s == 20
-    assert config.timedemo_loops is None
     assert config.companion_command is None
 
 
@@ -88,16 +86,24 @@ def test_voltage_band_probe_adds_cuda_after_five_percent_drop() -> None:
     assert _companion_duration_s(config.companion_command) == 5
 
 
-def test_deeper_voltage_probe_extends_q2rtx_not_cuda() -> None:
-    cuda_s = tiered_cuda_probe_duration_s(base_duration_s=10)
-
+def test_deeper_voltage_probe_shifts_time_from_q2rtx_to_cuda() -> None:
+    medium_cuda_s = tiered_cuda_probe_duration_s(
+        initial_target_voltage_mv=1000,
+        candidate_voltage_mv=920,
+        base_duration_s=10,
+    )
+    deep_cuda_s = tiered_cuda_probe_duration_s(
+        initial_target_voltage_mv=1000,
+        candidate_voltage_mv=850,
+        base_duration_s=10,
+    )
     assert (
         tiered_q2rtx_probe_duration_s(
             initial_target_voltage_mv=1000,
             candidate_voltage_mv=920,
             base_duration_s=10,
         ),
-        cuda_s,
+        medium_cuda_s,
     ) == (20, 5)
     assert (
         tiered_q2rtx_probe_duration_s(
@@ -105,11 +111,21 @@ def test_deeper_voltage_probe_extends_q2rtx_not_cuda() -> None:
             candidate_voltage_mv=850,
             base_duration_s=10,
         ),
-        cuda_s,
-    ) == (30, 5)
+        deep_cuda_s,
+    ) == (25, 10)
+
+    config = q2rtx_cuda_probe_config_for_voltage_band(
+        Q2RTXStabilityConfig(gpu_index=2),
+        initial_target_voltage_mv=1000,
+        candidate_voltage_mv=850,
+        base_duration_s=10,
+    )
+
+    assert config.duration_s == 25
+    assert _companion_duration_s(config.companion_command) == 10
 
 
-def test_scan_runtime_settings_do_not_precompute_timedemo_loops() -> None:
+def test_scan_runtime_settings_keep_duration_config() -> None:
     source_config = Q2RTXStabilityConfig(duration_s=600, single_pass_timeout_s=999.0)
 
     settings = read_scan_runtime_settings(
@@ -119,9 +135,9 @@ def test_scan_runtime_settings_do_not_precompute_timedemo_loops() -> None:
     )
 
     assert settings.q2rtx_config is source_config
-    assert settings.q2rtx_config.timedemo_loops is None
     assert settings.q2rtx_config.duration_s == 600
     assert settings.q2rtx_config.single_pass_timeout_s == 999.0
+    assert settings.final_verification_duration_s == 300
     assert round(settings.final_clock_drop_margin_pct, 4) == 11.1111
     assert round(settings.min_performance_core_clock_pct, 4) == 88.8889
     assert settings.derive_efficiency_stop_streak is True

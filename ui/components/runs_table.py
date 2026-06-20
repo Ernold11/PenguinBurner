@@ -91,7 +91,12 @@ class RunsTable:
         self._write_row(row, payload, running=True)
 
     def record_candidate_curve(self, payload: dict) -> None:
-        oc_progress = _payload_curve_oc_progress(payload)
+        oc_progress = _payload_oc_from_measured_baseline(
+            payload,
+            self.base_baseline,
+        )
+        if oc_progress is None:
+            oc_progress = _payload_curve_oc_progress(payload)
         if oc_progress is None:
             return
         key = _probe_key(payload)
@@ -125,7 +130,7 @@ class RunsTable:
 
     def mark_running_rows_stopping(self) -> None:
         for row in self._active_rows():
-            self._set_decision_cell(row, "stopping", row_state="warning")
+            self._set_decision_cell(row, "Stopping", row_state="warning")
             self._apply_row_state(row, "warning")
             self._set_status_progress_cell(
                 row,
@@ -136,7 +141,7 @@ class RunsTable:
 
     def mark_running_rows_stopped(self, *, label: str = "Stopped") -> None:
         for row in self._active_rows():
-            self._set_decision_cell(row, "stopped", row_state="error")
+            self._set_decision_cell(row, "Failed", row_state="error")
             self._apply_row_state(row, "error")
             self._set_status_progress_cell(
                 row,
@@ -202,7 +207,7 @@ class RunsTable:
         self._scroll_to_latest(row)
 
     def _row_values(self, row: int, payload: dict, *, running: bool) -> list[str]:
-        decision = "running" if running else probe_decision_label(payload)
+        decision = "Running" if running else probe_decision_label(payload)
         return [
             f"{int(row) + 1}.",
             _format_int(payload.get("voltage_mv")),
@@ -237,10 +242,16 @@ class RunsTable:
         return progress
 
     def _oc_progress_for_payload(self, payload: dict) -> tuple[int, int] | None:
+        measured_oc = _payload_oc_from_measured_baseline(payload, self.base_baseline)
+        if measured_oc is not None:
+            return measured_oc
+        cached_oc = self._oc_progress_by_probe.get(_probe_key(payload))
+        if cached_oc is not None:
+            return cached_oc
         payload_oc = _payload_oc_progress(payload)
         if payload_oc is not None:
             return payload_oc
-        return self._oc_progress_by_probe.get(_probe_key(payload))
+        return _payload_oc_from_measured_baseline(payload, self.base_baseline)
 
     def _metric_text_with_delta(self, value, baseline_key: str) -> str:
         value_text = _format_float(value)
@@ -548,10 +559,10 @@ class RunsTable:
             column=self.OC_MHZ_COLUMN,
         )
         if oc_progress is not None:
-            applied_mhz, limit_mhz = oc_progress
+            oc_mhz, _limit_mhz = oc_progress
             item.setToolTip(
-                "Auto-OC applied clock gain: "
-                f"{int(applied_mhz)} of {int(limit_mhz)} MHz"
+                "Target clock delta from measured baseline: "
+                f"{_format_signed_mhz(int(oc_mhz))}"
             )
         self.widget.setItem(row, self.OC_MHZ_COLUMN, item)
 
@@ -734,14 +745,50 @@ def _payload_curve_oc_progress(payload: dict) -> tuple[int, int] | None:
 
 
 def _payload_oc_progress(payload: dict) -> tuple[int, int] | None:
-    auto_oc = _payload_bool(payload.get("auto_oc"))
-    applied = _payload_number(payload, "auto_oc_applied_mhz")
-    limit = _payload_number(payload, "auto_oc_limit_mhz")
-    if not auto_oc and applied is None and limit is None:
+    return _payload_oc_from_measured_baseline(payload, None)
+
+
+def _payload_oc_from_measured_baseline(
+    payload: dict,
+    baseline_payload: dict | None,
+) -> tuple[int, int] | None:
+    target_clock_mhz = _payload_number(
+        payload,
+        "lock_clock_mhz",
+        "clock_mhz",
+        "target_clock_mhz",
+        "auto_oc_target_clock_mhz",
+    )
+    baseline_clock_mhz = _payload_measured_baseline_clock_mhz(
+        payload,
+        baseline_payload,
+    )
+    if target_clock_mhz is None or baseline_clock_mhz is None:
         return None
-    return (
-        max(0, int(round(float(applied or 0)))),
-        max(0, int(round(float(limit or 0)))),
+    delta_mhz = int(round(float(target_clock_mhz) - float(baseline_clock_mhz)))
+    return (delta_mhz, delta_mhz)
+
+
+def _payload_measured_baseline_clock_mhz(
+    payload: dict,
+    baseline_payload: dict | None,
+) -> float | None:
+    baseline_clock_mhz = _payload_number(
+        payload,
+        "auto_oc_baseline_clock_mhz",
+        "measured_baseline_clock_mhz",
+        "baseline_core_clock_mhz",
+        "baseline_clock_mhz",
+        "base_avg_core_clock_mhz",
+    )
+    if baseline_clock_mhz is not None:
+        return baseline_clock_mhz
+    if baseline_payload is None:
+        return None
+    return _payload_number(
+        baseline_payload,
+        "measured_clock_mhz",
+        "avg_core_clock_mhz",
     )
 
 
@@ -838,17 +885,15 @@ def _format_int(value) -> str:
 def _format_oc_progress(value: tuple[int, int] | None) -> str:
     # Auto-OC runs only as a late stage of a Performance scan, so most rows
     # (the whole UV sweep, and every Efficiency/Balanced row) have no OC data.
-    # Show a neutral dash there rather than a literal "0/0", which reads as
-    # "Auto-OC ran and gained nothing". A real OC result with no held gain is
-    # still shown as "0/<limit> MHz" because its limit is non-zero.
+    # Leave those cells blank rather than showing a zero-like placeholder.
     if value is None:
-        return "—"
-    applied_mhz, limit_mhz = value
-    applied = max(0, int(round(float(applied_mhz))))
-    limit = max(0, int(round(float(limit_mhz))))
-    if limit == 0:
-        return "—"
-    return f"{applied}/{limit} MHz"
+        return ""
+    oc_mhz, _limit_mhz = value
+    return _format_signed_mhz(int(round(float(oc_mhz))))
+
+
+def _format_signed_mhz(value: int) -> str:
+    return f"{int(value):+d} MHz"
 
 
 def _format_float(value) -> str:

@@ -49,6 +49,7 @@ def test_ui_probe_start_events_include_auto_oc_progress_metadata() -> None:
         flattened_plan=base_curve(900, 1000, 25, 2200, 20),
         metadata={
             "auto_oc": True,
+            "auto_oc_baseline_clock_mhz": 2670,
             "auto_oc_applied_mhz": 45,
             "auto_oc_limit_mhz": 75,
         },
@@ -61,9 +62,11 @@ def test_ui_probe_start_events_include_auto_oc_progress_metadata() -> None:
     )
 
     assert events[0][1]["auto_oc"] is True
+    assert events[0][1]["auto_oc_baseline_clock_mhz"] == 2670
     assert events[0][1]["auto_oc_applied_mhz"] == 45
     assert events[0][1]["auto_oc_limit_mhz"] == 75
     assert events[1][1]["auto_oc"] is True
+    assert events[1][1]["auto_oc_baseline_clock_mhz"] == 2670
     assert events[1][1]["auto_oc_applied_mhz"] == 45
     assert events[1][1]["auto_oc_limit_mhz"] == 75
 

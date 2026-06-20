@@ -164,6 +164,7 @@ def test_auto_oc_search_keeps_exploring_after_measured_clock_regression() -> Non
         max_interpolation_steps=2,
         target_voltage_mv=950,
         target_clock_mhz=2745,
+        measured_baseline_clock_mhz=2670,
     )
 
     assert tried == [(935, 2715), (950, 2745)]

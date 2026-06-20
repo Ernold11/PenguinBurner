@@ -347,6 +347,7 @@ def profile_summary(
         "candidate_voltage_mv": profile.get("candidate_voltage_mv"),
         "lock_clock_mhz": profile.get("lock_clock_mhz"),
         "memory_offset_mhz": profile.get("memory_offset_mhz"),
+        "power_limit_w": profile.get("power_limit_w"),
         "avg_core_clock_mhz": profile.get("avg_core_clock_mhz"),
         "avg_fps": profile.get("avg_fps"),
         "avg_power_w": profile.get("avg_power_w"),

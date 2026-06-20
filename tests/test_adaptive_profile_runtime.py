@@ -128,6 +128,60 @@ def test_adaptive_runtime_switch_applies_target_tier_profile() -> None:
     assert overlay.profile_id == "perf"
 
 
+def test_adaptive_runtime_switch_applies_profile_power_limit() -> None:
+    reader = FakeReader()
+    applied = []
+    power_limits = []
+    profiles = [
+        {"profile_id": "eff", "final_verified": True},
+        {"profile_id": "perf", "final_verified": True},
+    ]
+    curves = {
+        "eff": _curve("eff", PROFILE_TIER_EFFICIENCY, [{"index": 1}]),
+        "perf": {
+            **_curve("perf", PROFILE_TIER_PERFORMANCE, [{"index": 2}]),
+            "power_limit_w": 390,
+        },
+    }
+    deps = AdaptiveAutoUvRuntimeDependencies(
+        read_auto_uv_profiles=lambda: profiles,
+        resolve_profile_tier_profiles=lambda _profiles: {
+            PROFILE_TIER_EFFICIENCY: profiles[0],
+            PROFILE_TIER_PERFORMANCE: profiles[1],
+        },
+        load_auto_uv_final_curve=lambda profile_id: curves[profile_id],
+        apply_plan=lambda target_reader, plan: applied.append((target_reader, plan)),
+        apply_power_limit=lambda **kwargs: (
+            power_limits.append(kwargs) or {"power_limit_w": kwargs["power_limit_w"]}
+        ),
+        apply_memory_offset=lambda **_kwargs: {},
+        select_expected_vf_samples=lambda _plan: [],
+        log=lambda _message: None,
+    )
+    policy_controller = object()
+    controller = AdaptiveAutoUvRuntimeController(
+        current_tier=PROFILE_TIER_EFFICIENCY,
+        vf_curve_reader=reader,
+        gpu_policy_controller=policy_controller,
+        dependencies=deps,
+    )
+
+    result = controller.update(
+        latency_snapshot={"base_present_frametime_p95_ms": 24.0},
+        now_monotonic=10.0,
+    )
+
+    assert result is not None
+    assert result.power_limit_w == 390
+    assert power_limits == [
+        {
+            "profile_label": "adaptive Performance profile",
+            "power_limit_w": 390,
+            "gpu_policy_controller": policy_controller,
+        }
+    ]
+
+
 def test_adaptive_runtime_ignores_raw_framegen_present_pacing() -> None:
     reader = FakeReader()
     applied = []

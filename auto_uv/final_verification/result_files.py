@@ -56,6 +56,7 @@ def write_final_stable_result(
     probe: AutoUvProbeSummary | None,
     verification_duration_s: int | None = None,
     tail_rise_bins: int = 0,
+    power_limit_w: int | None = None,
 ) -> Path:
     payload = verified_candidate_payload(
         plan=plan,
@@ -76,6 +77,8 @@ def write_final_stable_result(
             ),
         }
     )
+    if power_limit_w is not None:
+        payload["power_limit_w"] = int(power_limit_w)
     return safe_json_write(
         auto_uv_user_config_dir() / "uv-result" / "auto-uv-final-stable.json",
         payload,
@@ -91,6 +94,7 @@ def write_final_verified_profile(
     base_probe: AutoUvProbeSummary | None,
     fan_curve_payload: dict | None = None,
     memory_offset_mhz: int | None = None,
+    power_limit_w: int | None = None,
     tail_rise_bins: int = 0,
     auto_uv_mode: str = "",
     generated_profile_tier: str = "",
@@ -110,6 +114,8 @@ def write_final_verified_profile(
         payload["fan_curve_payload"] = dict(fan_curve_payload)
     if memory_offset_mhz is not None:
         payload["memory_offset_mhz"] = int(memory_offset_mhz)
+    if power_limit_w is not None:
+        payload["power_limit_w"] = int(power_limit_w)
     if str(auto_uv_mode or "").strip():
         payload["auto_uv_mode"] = str(auto_uv_mode).strip()
     if str(generated_profile_tier or "").strip():

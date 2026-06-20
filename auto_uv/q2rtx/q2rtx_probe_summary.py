@@ -19,6 +19,9 @@ from ..curve.base_load_telemetry import (
 from ..shared.probe_data_fields import read_field
 
 
+_SW_POWER_DOMINANT_SAMPLE_FRACTION = 0.5
+
+
 def mean(values: Sequence[float | int | None]) -> float | None:
     usable = [float(value) for value in values if value is not None]
     if not usable:
@@ -50,11 +53,25 @@ def stddev_pct_or_none(values: Sequence[float | int | None]) -> float | None:
     return float(stddev) / float(average) * 100.0
 
 
-def sample_mean(samples: list, attr: str) -> float | None:
+def _probe_decision_samples(samples: list, *, skip_elapsed_warmup: bool) -> list:
+    if skip_elapsed_warmup:
+        return list(samples)
+    return decision_samples(samples, rules=AUTO_UV_METRIC_TUNING)
+
+
+def sample_mean(
+    samples: list,
+    attr: str,
+    *,
+    skip_elapsed_warmup: bool = False,
+) -> float | None:
     return mean(
         [
             read_field(sample, attr)
-            for sample in decision_samples(samples, rules=AUTO_UV_METRIC_TUNING)
+            for sample in _probe_decision_samples(
+                samples,
+                skip_elapsed_warmup=skip_elapsed_warmup,
+            )
             if sample is not None and read_field(sample, attr) is not None
         ]
     )
@@ -74,25 +91,38 @@ def summarize_perf_cap_reason(
     samples: Sequence,
     *,
     suppress_idle: bool = False,
+    require_sw_power_dominant: bool = False,
 ) -> str | None:
-    reasons: list[str] = []
+    counts: Counter[str] = Counter()
+    reason_sample_count = 0
     saw_none = False
     for sample in samples:
         reason_text = read_field(sample, "perf_cap_reason")
         if reason_text in (None, ""):
             continue
+        sample_reasons: set[str] = set()
         for token in str(reason_text).replace(",", "+").split("+"):
             reason = token.strip()
             if not reason:
                 continue
+            sample_reasons.add(reason)
             if reason == "none" or (suppress_idle and reason == "idle"):
                 saw_none = True
                 continue
-            reasons.append(reason)
-    if not reasons:
+            counts[reason] += 1
+        if sample_reasons:
+            reason_sample_count += 1
+    if (
+        require_sw_power_dominant
+        and reason_sample_count > 0
+        and counts.get("sw-power", 0) / reason_sample_count
+        <= _SW_POWER_DOMINANT_SAMPLE_FRACTION
+    ):
+        counts.pop("sw-power", None)
+        saw_none = True
+    if not counts:
         return "none" if saw_none else None
 
-    counts = Counter(reasons)
     ordered_reasons = sorted(counts, key=lambda reason: (-counts[reason], reason))
     return "+".join(ordered_reasons[:3])
 
@@ -103,11 +133,13 @@ def summarize_loaded_perf_cap_reason(
     *,
     power_limit_w: int | None,
     use_power_limit_floor: bool,
+    skip_elapsed_warmup: bool = False,
 ) -> str | None:
     q2rtx_loaded, _q2rtx_power_floor_w = loaded_telemetry_samples(
         q2rtx_samples,
         power_limit_w=power_limit_w,
         use_power_limit_floor=use_power_limit_floor,
+        skip_elapsed_warmup=skip_elapsed_warmup,
     )
     companion_loaded, _companion_power_floor_w = loaded_telemetry_samples(
         companion_samples,
@@ -117,23 +149,11 @@ def summarize_loaded_perf_cap_reason(
     return summarize_perf_cap_reason(
         [*q2rtx_loaded, *companion_loaded],
         suppress_idle=True,
-    ) or summarize_perf_cap_reason([*q2rtx_samples, *companion_samples])
-
-
-def decision_timedemo_runs(
-    timedemo_runs: Sequence,
-    *,
-    timedemo_warmup_runs: int = 0,
-) -> list:
-    runs = list(timedemo_runs or [])
-    warmup_runs = max(0, int(timedemo_warmup_runs or 0))
-    min_remaining_runs = max(
-        1,
-        int(AUTO_UV_METRIC_TUNING.timedemo_warmup_min_remaining_runs),
+        require_sw_power_dominant=True,
+    ) or summarize_perf_cap_reason(
+        [*q2rtx_samples, *companion_samples],
+        require_sw_power_dominant=True,
     )
-    if warmup_runs <= 0 or len(runs) < warmup_runs + min_remaining_runs:
-        return runs
-    return runs[warmup_runs:]
 
 
 def history_average(history: list[AutoUvProbeSummary], attr: str) -> float | None:
@@ -145,8 +165,12 @@ def loaded_telemetry_samples(
     *,
     power_limit_w: int | None,
     use_power_limit_floor: bool = False,
+    skip_elapsed_warmup: bool = False,
 ) -> tuple[list, float | None]:
-    samples = decision_samples(telemetry_samples, rules=AUTO_UV_METRIC_TUNING)
+    samples = _probe_decision_samples(
+        telemetry_samples,
+        skip_elapsed_warmup=skip_elapsed_warmup,
+    )
     active_power_floor_w = derive_active_power_floor_w(
         samples,
         power_limit_w=power_limit_w,
@@ -171,6 +195,7 @@ def loaded_telemetry_means(
     *,
     power_limit_w: int | None,
     use_power_limit_floor: bool = False,
+    skip_elapsed_warmup: bool = False,
 ) -> tuple[
     float | None,
     float | None,
@@ -184,6 +209,7 @@ def loaded_telemetry_means(
         telemetry_samples,
         power_limit_w=power_limit_w,
         use_power_limit_floor=use_power_limit_floor,
+        skip_elapsed_warmup=skip_elapsed_warmup,
     )
     if active_power_floor_w is None:
         return None, None, None, None, None, 0, None
@@ -207,11 +233,13 @@ def loaded_telemetry_diagnostics(
     *,
     power_limit_w: int | None,
     use_power_limit_floor: bool = False,
+    skip_elapsed_warmup: bool = False,
 ) -> tuple[float | None, float | None, float | None, int]:
     active_samples, _active_power_floor_w = loaded_telemetry_samples(
         telemetry_samples,
         power_limit_w=power_limit_w,
         use_power_limit_floor=use_power_limit_floor,
+        skip_elapsed_warmup=skip_elapsed_warmup,
     )
     if not active_samples:
         return None, None, None, 0
@@ -265,21 +293,54 @@ def summarize_q2rtx_cuda_probe(
     result,
     telemetry_samples: list | None = None,
     use_power_limit_floor: bool = False,
-    timedemo_warmup_runs: int = 0,
 ) -> AutoUvProbeSummary:
-    timedemo_runs = decision_timedemo_runs(
-        result.timedemo_runs,
-        timedemo_warmup_runs=int(timedemo_warmup_runs),
-    )
-    fps_values = [float(run.fps) for run in timedemo_runs]
-    frame_values = [int(run.frames) for run in timedemo_runs]
-    q2rtx_samples = (
-        list(telemetry_samples)
-        if telemetry_samples is not None
-        else list(result.telemetry_samples)
-    )
-    telemetry = result.telemetry_summary()
+    benchmark_summary = getattr(result, "benchmark_summary", None)
+    if benchmark_summary is not None:
+        avg_fps = float(benchmark_summary.fps_avg)
+        min_fps = (
+            float(benchmark_summary.fps_min)
+            if benchmark_summary.fps_min is not None
+            else avg_fps
+        )
+        max_fps = (
+            float(benchmark_summary.fps_max)
+            if benchmark_summary.fps_max is not None
+            else avg_fps
+        )
+        frames_per_run = int(benchmark_summary.render_frames)
+        avg_seconds_per_run = float(benchmark_summary.measured_s)
+        fps_values: list[float] = []
+        fps_stddev = None
+        fps_variance_pct = None
+    else:
+        fps_values = []
+        avg_fps = None
+        min_fps = None
+        max_fps = None
+        frames_per_run = None
+        avg_seconds_per_run = None
+        fps_stddev = stddev_or_none(fps_values)
+        fps_variance_pct = stddev_pct_or_none(fps_values)
     if telemetry_samples is not None:
+        q2rtx_samples = list(telemetry_samples)
+        skip_elapsed_warmup = benchmark_summary is not None
+        rebuild_telemetry_summary = True
+    elif hasattr(result, "measurement_telemetry_samples"):
+        q2rtx_samples = list(result.measurement_telemetry_samples())
+        skip_elapsed_warmup = (
+            getattr(result, "benchmark_telemetry_samples", None) is not None
+        )
+        rebuild_telemetry_summary = skip_elapsed_warmup
+    elif getattr(result, "benchmark_telemetry_samples", None) is not None:
+        q2rtx_samples = list(result.benchmark_telemetry_samples)
+        skip_elapsed_warmup = True
+        rebuild_telemetry_summary = True
+    else:
+        q2rtx_samples = list(result.telemetry_samples)
+        skip_elapsed_warmup = False
+        rebuild_telemetry_summary = False
+    telemetry = result.telemetry_summary()
+    if rebuild_telemetry_summary:
         telemetry = {
             "sample_count": len(q2rtx_samples),
             "power_max": sample_max(q2rtx_samples, "power_w"),
@@ -292,6 +353,7 @@ def summarize_q2rtx_cuda_probe(
         companion_samples,
         power_limit_w=power_limit_w,
         use_power_limit_floor=use_power_limit_floor,
+        skip_elapsed_warmup=skip_elapsed_warmup,
     )
     max_power_w = max_or_none(
         [telemetry.get("power_max"), sample_max(companion_samples, "power_w")]
@@ -309,11 +371,13 @@ def summarize_q2rtx_cuda_probe(
         q2rtx_samples,
         power_limit_w=power_limit_w,
         use_power_limit_floor=use_power_limit_floor,
+        skip_elapsed_warmup=skip_elapsed_warmup,
     )
     loaded_diagnostics = loaded_telemetry_diagnostics(
         q2rtx_samples,
         power_limit_w=power_limit_w,
         use_power_limit_floor=use_power_limit_floor,
+        skip_elapsed_warmup=skip_elapsed_warmup,
     )
     cuda_loaded = loaded_telemetry_means(
         companion_samples,
@@ -332,10 +396,12 @@ def summarize_q2rtx_cuda_probe(
     q2rtx_summary_clock_mhz = loaded_clock_mhz or sample_mean(
         q2rtx_samples,
         "core_clock_mhz",
+        skip_elapsed_warmup=skip_elapsed_warmup,
     )
     q2rtx_summary_voltage_mv = loaded_voltage_mv or sample_mean(
         q2rtx_samples,
         "voltage_mv",
+        skip_elapsed_warmup=skip_elapsed_warmup,
     )
     cuda_summary_clock_mhz = cuda_loaded_clock_mhz or sample_mean(
         companion_samples,
@@ -345,9 +411,6 @@ def summarize_q2rtx_cuda_probe(
         companion_samples,
         "voltage_mv",
     )
-    avg_fps = mean(fps_values)
-    fps_stddev = stddev_or_none(fps_values)
-    fps_variance_pct = stddev_pct_or_none(fps_values)
     summary_power_w = loaded_power_w or telemetry.get("power_avg")
     summary_clock_mhz = loaded_clock_mhz or telemetry.get("core_clock_avg")
     observed_vdroop_mv = (
@@ -361,11 +424,11 @@ def summarize_q2rtx_cuda_probe(
         live_voltage_before_mv=live_voltage_before_mv,
         live_voltage_after_mv=live_voltage_after_mv,
         avg_voltage_mv=loaded_voltage_mv or telemetry.get("voltage_avg"),
-        frames_per_run=frame_values[0] if frame_values else None,
-        avg_seconds_per_run=mean([float(run.seconds) for run in timedemo_runs]),
+        frames_per_run=frames_per_run,
+        avg_seconds_per_run=avg_seconds_per_run,
         avg_fps=avg_fps,
-        min_fps=min(fps_values) if fps_values else None,
-        max_fps=max(fps_values) if fps_values else None,
+        min_fps=min_fps,
+        max_fps=max_fps,
         avg_power_w=summary_power_w,
         max_power_w=float(max_power_w) if max_power_w is not None else None,
         avg_temperature_c=loaded_temperature_c or telemetry.get("temperature_avg"),
@@ -381,7 +444,6 @@ def summarize_q2rtx_cuda_probe(
             avg_fps / float(summary_power_w)
             if avg_fps is not None
             and summary_power_w not in (None, 0, 0.0)
-            and fps_values
             else None
         ),
         efficiency_mhz_per_w=(

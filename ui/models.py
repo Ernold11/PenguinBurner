@@ -83,11 +83,15 @@ def probe_decision_label(payload: dict) -> str:
     decision = str(payload.get("decision", payload.get("status", ""))).strip().lower()
     if decision in {"pass", "accept", "accepted"}:
         return "Pass"
-    if decision in {"running", "stopping", "stopped"}:
-        return decision.title()
-    if decision not in {"fail", "failed", "error"}:
-        return str(payload.get("decision", "") or payload.get("status", ""))
-    return probe_failure_label(payload)
+    if decision == "running":
+        return "Running"
+    if decision == "stopping":
+        return "Stopping"
+    if decision in {"fail", "failed", "error", "stopped"}:
+        return "Failed"
+    if not decision:
+        return ""
+    return "Failed"
 
 
 def probe_failure_label(payload: dict) -> str:

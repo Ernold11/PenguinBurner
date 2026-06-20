@@ -13,7 +13,6 @@ from ..shared.probe_data_fields import read_field
 @dataclass(frozen=True, slots=True)
 class StabilityThresholds:
     min_average_fps_pct: float = 90.0
-    min_single_run_fps_pct: float = 80.0
     min_power_pct: float = 50.0
     min_core_clock_pct: float = 85.0
     clock_tolerance_mhz: float = 5.0
@@ -21,16 +20,21 @@ class StabilityThresholds:
 
 
 FATAL_REASON_PREFIXES = (
+    "benchmark-crashed-signal",
+    "benchmark-duration-short",
+    "benchmark-event-pipe-closed",
+    "benchmark-event-protocol-error",
+    "benchmark-fatal-event",
+    "benchmark-measure-start-missing",
+    "benchmark-metrics-invalid",
+    "benchmark-nonzero-exit",
+    "benchmark-start-missing",
+    "benchmark-summary-missing",
+    "benchmark-timeout",
     "fatal-cuda-output",
     "fatal-q2rtx-output",
     "nvidia-xid-detected",
     "q2rtx-selected-nvidia-gpu-idle",
-    "timedemo-timeout",
-    "timedemo-metrics-invalid",
-    "timedemo-metrics-missing",
-    "timedemo-nonzero-exit",
-    "timedemo-unexpected-frame-count",
-    "timedemo-frame-count-drift",
 )
 
 LOW_CLOCK_PREFIXES = (
@@ -43,7 +47,6 @@ LOW_CLOCK_PREFIXES = (
 def evaluate_stable_run(
     result: Any,
     *,
-    baseline_frames: int | None,
     baseline_fps: float | None,
     baseline_power_w: float | None,
     baseline_core_clock_mhz: float | None,
@@ -83,21 +86,27 @@ def evaluate_stable_run(
     if not bool(read_field(result, "success")):
         return classify_failed_result(reason, log_path=log_path)
 
-    # Timedemo metrics prove the FPS result; missing or invalid metrics fail closed.
-    timedemo_runs = list(read_field(result, "timedemo_runs") or [])
-    timedemo_decision = evaluate_timedemo_runs(
-        timedemo_runs,
-        baseline_frames=baseline_frames,
-        baseline_fps=baseline_fps,
-        thresholds=thresholds,
-        log_path=log_path,
-    )
-    if not timedemo_decision.passed:
-        return timedemo_decision
+    benchmark_summary = read_field(result, "benchmark_summary")
+    if benchmark_summary is not None:
+        metrics_decision = evaluate_benchmark_summary(
+            benchmark_summary,
+            baseline_fps=baseline_fps,
+            thresholds=thresholds,
+            log_path=log_path,
+        )
+    else:
+        metrics_decision = _fail(
+            FailureKind.METRICS_MISSING,
+            FailureSeverity.CRITICAL,
+            "benchmark summary missing",
+            log_path=log_path,
+        )
+    if not metrics_decision.passed:
+        return metrics_decision
 
     # Telemetry proves Q2RTX was under real load and held the requested clock.
     telemetry_decision = evaluate_loaded_telemetry(
-        list(read_field(result, "telemetry_samples") or []),
+        _measurement_telemetry_samples(result),
         baseline_power_w=baseline_power_w,
         baseline_core_clock_mhz=baseline_core_clock_mhz,
         power_limit_w=power_limit_w,
@@ -122,11 +131,11 @@ def evaluate_stable_run(
         severity=FailureSeverity.PASS,
         reason="stable run",
         evidence={
-            "timedemo_runs": len(timedemo_runs),
             "telemetry_samples": len(
-                list(read_field(result, "telemetry_samples") or [])
+                _measurement_telemetry_samples(result)
             ),
             "cuda_required": bool(cuda_required),
+            "benchmark_summary": bool(benchmark_summary is not None),
         },
         log_path=log_path,
     )
@@ -172,102 +181,75 @@ def classify_failed_result(
     )
 
 
-def evaluate_timedemo_runs(
-    timedemo_runs: list[Any],
+def evaluate_benchmark_summary(
+    benchmark_summary: Any,
     *,
-    baseline_frames: int | None,
     baseline_fps: float | None,
     thresholds: StabilityThresholds,
     log_path: Path | None,
 ) -> StableRunDecision:
-    if not timedemo_runs:
+    render_frames = read_field(benchmark_summary, "render_frames")
+    measured_s = read_field(benchmark_summary, "measured_s")
+    fps_avg = read_field(benchmark_summary, "fps_avg")
+    fps_min = read_field(benchmark_summary, "fps_min")
+    fps_max = read_field(benchmark_summary, "fps_max")
+    fps_mean = read_field(benchmark_summary, "fps_mean")
+    if render_frames is None or measured_s is None or fps_avg is None:
         return _fail(
             FailureKind.METRICS_MISSING,
             FailureSeverity.CRITICAL,
-            "timedemo metrics missing",
+            "benchmark summary missing render_frames/measured_s/fps_avg",
+            evidence=_benchmark_evidence(benchmark_summary),
             log_path=log_path,
         )
+    if (
+        int(render_frames) <= 0
+        or float(measured_s) <= 0.0
+        or float(fps_avg) <= 0.0
+    ):
+        return _fail(
+            FailureKind.METRICS_INVALID,
+            FailureSeverity.CRITICAL,
+            "benchmark summary has non-positive metrics",
+            evidence=_benchmark_evidence(benchmark_summary),
+            log_path=log_path,
+        )
+    for optional_name, optional_value in (
+        ("fps_min", fps_min),
+        ("fps_max", fps_max),
+        ("fps_mean", fps_mean),
+    ):
+        if optional_value is not None and float(optional_value) <= 0.0:
+            return _fail(
+                FailureKind.METRICS_INVALID,
+                FailureSeverity.CRITICAL,
+                f"benchmark summary has non-positive {optional_name}",
+                evidence=_benchmark_evidence(benchmark_summary),
+                log_path=log_path,
+            )
+
     average_fps_floor = (
         float(baseline_fps) * _percent(thresholds.min_average_fps_pct)
         if baseline_fps is not None
         else None
     )
-    single_run_fps_floor = (
-        float(baseline_fps) * _percent(thresholds.min_single_run_fps_pct)
-        if baseline_fps is not None
-        else None
-    )
-    # One slow timedemo loop is noise; sustained average loss is a real regression.
-    fps_values: list[float] = []
-    for run_number, run in enumerate(timedemo_runs, start=1):
-        frames = read_field(run, "frames")
-        seconds = read_field(run, "seconds")
-        fps = read_field(run, "fps")
-        if frames is None or seconds is None or fps is None:
-            return _fail(
-                FailureKind.METRICS_INVALID,
-                FailureSeverity.CRITICAL,
-                "timedemo run has missing frames/seconds/fps",
-                evidence={"run": _run_evidence(run)},
-                log_path=log_path,
-            )
-        if int(frames) <= 0 or float(seconds) <= 0.0 or float(fps) <= 0.0:
-            return _fail(
-                FailureKind.METRICS_INVALID,
-                FailureSeverity.CRITICAL,
-                "timedemo run has non-positive metrics",
-                evidence={"run": _run_evidence(run)},
-                log_path=log_path,
-            )
-        if baseline_frames is not None and int(frames) != int(baseline_frames):
-            return _fail(
-                FailureKind.FRAME_COUNT_REGRESSION,
-                FailureSeverity.CRITICAL,
-                "timedemo frame count changed",
-                evidence={
-                    "current_frames": int(frames),
-                    "baseline_frames": int(baseline_frames),
-                },
-                log_path=log_path,
-            )
-        fps_values.append(float(fps))
-        if (
-            single_run_fps_floor is not None
-            and float(fps) < float(single_run_fps_floor)
-        ):
-            run_index = read_field(run, "run_index") or run_number
-            return _fail(
-                FailureKind.FPS_REGRESSION,
-                FailureSeverity.RECOVERABLE,
-                (
-                    f"timedemo single-run FPS below floor "
-                    f"current={float(fps):.2f} "
-                    f"floor={float(single_run_fps_floor):.2f} run={int(run_index)}"
-                ),
-                evidence={
-                    "current_fps": float(fps),
-                    "floor_fps": float(single_run_fps_floor),
-                    "run_index": int(run_index),
-                },
-                log_path=log_path,
-            )
-    average_fps = sum(fps_values) / len(fps_values)
-    if average_fps_floor is not None and average_fps < float(average_fps_floor):
+    if average_fps_floor is not None and float(fps_avg) < float(average_fps_floor):
         return _fail(
             FailureKind.FPS_REGRESSION,
             FailureSeverity.RECOVERABLE,
             (
-                f"timedemo average FPS below floor current={average_fps:.2f} "
-                f"floor={float(average_fps_floor):.2f} runs={len(fps_values)}"
+                f"benchmark average FPS below floor current={float(fps_avg):.2f} "
+                f"floor={float(average_fps_floor):.2f}"
             ),
             evidence={
-                "average_fps": float(average_fps),
+                "average_fps": float(fps_avg),
                 "floor_fps": float(average_fps_floor),
-                "runs": len(fps_values),
+                "render_frames": int(render_frames),
+                "measured_s": float(measured_s),
             },
             log_path=log_path,
         )
-    return _pass("timedemo metrics stable", log_path=log_path)
+    return _pass("benchmark metrics stable", log_path=log_path)
 
 
 def evaluate_loaded_telemetry(
@@ -413,13 +395,28 @@ def _fail(
     )
 
 
-def _run_evidence(run: Any) -> dict[str, Any]:
+def _benchmark_evidence(benchmark_summary: Any) -> dict[str, Any]:
     return {
-        "frames": read_field(run, "frames"),
-        "seconds": read_field(run, "seconds"),
-        "fps": read_field(run, "fps"),
-        "run_index": read_field(run, "run_index"),
+        "render_frames": read_field(benchmark_summary, "render_frames"),
+        "demo_frames": read_field(benchmark_summary, "demo_frames"),
+        "measured_s": read_field(benchmark_summary, "measured_s"),
+        "target_s": read_field(benchmark_summary, "target_s"),
+        "fps_avg": read_field(benchmark_summary, "fps_avg"),
+        "fps_min": read_field(benchmark_summary, "fps_min"),
+        "fps_max": read_field(benchmark_summary, "fps_max"),
+        "fps_mean": read_field(benchmark_summary, "fps_mean"),
+        "loops": read_field(benchmark_summary, "loops"),
     }
+
+
+def _measurement_telemetry_samples(result: Any) -> list[Any]:
+    getter = getattr(result, "measurement_telemetry_samples", None)
+    if callable(getter):
+        return list(getter())
+    benchmark_samples = read_field(result, "benchmark_telemetry_samples")
+    if benchmark_samples is not None:
+        return list(benchmark_samples)
+    return list(read_field(result, "telemetry_samples") or [])
 
 
 def _path_or_none(value: Any) -> Path | None:
