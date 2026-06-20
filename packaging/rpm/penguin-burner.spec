@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.4.7
+Version:        0.5
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -106,6 +106,11 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Sat Jun 20 2026 PenguinBurner contributors <noreply@github.com> - 0.5-1
+- Remove nvidia-smi shell calls in favor of NVML API helpers.
+- Use true headless Q2RTX tuned for PenguinBurner benchmarking.
+- Include multiple minor Auto-UV, UI, fan, profile, and cleanup fixes.
+
 * Mon Jun 15 2026 PenguinBurner contributors <noreply@github.com> - 0.4.7-1
 - Use PenguinBurner's headless Q2RTX benchmark binary and shareware data.
 - Remove Q2RTX OpenSSL compatibility staging, RUNPATH patching, RPM payload
