@@ -13,9 +13,9 @@ class RunsTable:
     COLUMNS = [
         "Run",
         "mV",
-        "Target MHz",
+        "Tgt MHz",
         "OC MHz",
-        "Measured MHz",
+        "Meas MHz",
         "FPS",
         "Power W",
         "Temp C",
@@ -56,22 +56,37 @@ class RunsTable:
         self.widget.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.widget.setSortingEnabled(False)
         self.widget.cellClicked.connect(self._handle_cell_clicked)
+        # Floors are deliberately small: real column widths come from the wider
+        # of each header label and its widest expected value (samples below), so
+        # every column fits its contents instead of reserving fixed dead space.
         set_header_fit_column_widths(
             self.widget,
             {
-                0: 38,
-                1: 48,
-                self.TARGET_MHZ_COLUMN: 86,
-                self.OC_MHZ_COLUMN: 88,
-                self.MEASURED_MHZ_COLUMN: 96,
-                self.FPS_COLUMN: 118,
-                self.POWER_COLUMN: 120,
-                self.TEMP_COLUMN: 62,
-                self.FAN_COLUMN: 58,
-                self.PERF_CAP_COLUMN: 92,
-                self.FPSW_COLUMN: 110,
-                self.DECISION_COLUMN: 88,
+                0: 34,
+                1: 44,
+                self.TARGET_MHZ_COLUMN: 52,
+                self.OC_MHZ_COLUMN: 52,
+                self.MEASURED_MHZ_COLUMN: 56,
+                self.FPS_COLUMN: 56,
+                self.POWER_COLUMN: 64,
+                self.TEMP_COLUMN: 52,
+                self.FAN_COLUMN: 48,
+                self.PERF_CAP_COLUMN: 60,
+                self.FPSW_COLUMN: 64,
+                self.DECISION_COLUMN: 64,
                 self.STATUS_COLUMN: 150,
+            },
+            samples={
+                self.TARGET_MHZ_COLUMN: "3180",
+                self.OC_MHZ_COLUMN: "-389",
+                self.MEASURED_MHZ_COLUMN: "2760.24",
+                self.FPS_COLUMN: "120.00 (-12.34%)",
+                self.POWER_COLUMN: "390.00 (-29.66%)",
+                self.TEMP_COLUMN: "100.00",
+                self.FAN_COLUMN: "100.00",
+                self.PERF_CAP_COLUMN: "sw-power",
+                self.FPSW_COLUMN: "0.25 (+28.34%)",
+                self.DECISION_COLUMN: "discarded",
             },
             QtCore=QtCore,
             padding=18,
