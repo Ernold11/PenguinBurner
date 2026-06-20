@@ -16,7 +16,6 @@
   <img alt="Vulkan" src="https://img.shields.io/badge/Vulkan-AC162C?style=flat-square&logo=vulkan&logoColor=white">
   <img alt="Proton" src="https://img.shields.io/badge/Proton-1A9FFF?style=flat-square&logo=steam&logoColor=white">
   <a href="https://pepy.tech/project/penguin-burner"><img alt="PyPI downloads" src="https://img.shields.io/pepy/dt/penguin-burner?style=flat-square&logo=pypi&logoColor=white&label=PyPI%20downloads"></a>
-  <img alt="Installs" src="https://img.shields.io/badge/installs-15k%2B-2ea44f?style=flat-square&logo=linux&logoColor=white">
 </p>
 
 **PenguinBurner tunes your NVIDIA GPU on Linux, starting with
