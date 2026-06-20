@@ -87,6 +87,8 @@ def main_window(qapp, monkeypatch):
     monkeypatch.setattr(
         window_mod, "persist_on_startup_from_runtime_config", lambda default=False: default
     )
+    monkeypatch.setattr(window_mod, "silent_fan_curve_from_runtime_config", lambda: False)
+    monkeypatch.setattr(window_mod, "silent_fan_curve_to_runtime_config", lambda v: v)
     qt_modules = import_qt()
     if qt_modules[3] is None:
         pytest.skip("pyqtgraph not available")
@@ -231,7 +233,7 @@ def test_window_tab_order_and_bins_visibility(main_window) -> None:
     win = main_window
     # Tabs are Auto-UV, Profiles, Overlay (no separate fan-curve tab).
     labels = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-    assert labels == ["Auto-UV", "Profiles", "Overlay"]
+    assert labels == ["Auto-UV", "Profiles", "Ingame Overlay"]
     assert not hasattr(win, "fan_plot")
 
     # The undervolting-runs panel shows only on the Auto-UV tab.

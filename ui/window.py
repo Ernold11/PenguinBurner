@@ -6,6 +6,8 @@ import shlex
 from cli.runtime_config_file import (
     persist_on_startup_from_runtime_config,
     persist_on_startup_to_runtime_config,
+    silent_fan_curve_from_runtime_config,
+    silent_fan_curve_to_runtime_config,
 )
 from manual_uv_curve_editor import editable_anchor_from_profile
 from saved_uv_profiles import delete_auto_uv_profile_paths
@@ -95,6 +97,8 @@ class MainWindow:
         self.profile_summaries: list[dict] = []
         self.pending_final_result_payload: dict | None = None
         self.final_choice_discarded = False
+        self.final_choice_aborted = False
+        self._pre_scan_autostart: dict | None = None
         self.last_auto_uv_candidate_id = ""
         self._delete_remove_systemd = False
         self._delete_switch_systemd_profile_id = ""
@@ -178,7 +182,7 @@ class MainWindow:
         self.profiles_tab_index = self.tabs.addTab(self.profile_list.widget, "Profiles")
         self.overlay_tab_index = self.tabs.addTab(
             self.overlay_config.widget,
-            "Overlay",
+            "Ingame Overlay",
         )
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self._close_dynamic_tab)
@@ -233,6 +237,9 @@ class MainWindow:
         self.profile_list.delete_button.clicked.connect(self._delete_selected_profiles)
         self.profile_list.install_button.toggled.connect(
             self._persist_startup_preference
+        )
+        self.profile_list.silent_fan_checkbox.toggled.connect(
+            self._persist_silent_fan_preference
         )
         self.profile_list.remove_button.clicked.connect(
             lambda: self._run_runtime_action("uninstall-systemd")
@@ -296,7 +303,17 @@ class MainWindow:
         self.vf_plot.clear()
         self.pending_final_result_payload = None
         self.final_choice_discarded = False
+        self.final_choice_aborted = False
         self.last_auto_uv_candidate_id = ""
+        # Snapshot the autostart that the scan is about to disable so an aborted
+        # run can restore it (profile + silent fan curve + adaptive setting). An
+        # empty selector means nothing was autostarting -> nothing to restore.
+        autostart_info = systemd_autostart_profile_info()
+        self._pre_scan_autostart = (
+            dict(autostart_info)
+            if str(autostart_info.get("selector", "")).strip()
+            else None
+        )
         self.controls.hide_dependency_progress()
         self.log_view.append("$ " + " ".join(shlex.quote(part) for part in command) + "\n")
         self.header.set_stage("Starting")
@@ -428,6 +445,7 @@ class MainWindow:
             return
         if action == "abort":
             self.final_choice_discarded = True
+            self.final_choice_aborted = True
             self.scan_controller.write_json_response(response_path, {"action": "abort"})
             self.log_view.append("Auto-UV recovery aborted by user.\n")
             return
@@ -465,7 +483,15 @@ class MainWindow:
         status_name = "finished" if int(exit_code) == 0 else "stopped"
         self.log_view.append(f"\nAuto-UV process {status_name}: exit_code={exit_code}\n")
         failed = int(exit_code) != 0 and not stopped_by_user
-        if failed:
+        if self.final_choice_aborted:
+            # A user-requested abort is not a failure even though the scan
+            # process exits non-zero: label the run "Aborted", never "Failed".
+            self.header.set_stage("Aborted")
+            self.runs_table.mark_running_rows_stopped(
+                label="Aborted", row_state="warning"
+            )
+            self.controls.set_status_text("Auto-UV aborted by user.")
+        elif failed:
             self.header.set_stage("Error")
             self.runs_table.mark_running_rows_stopped(label="Failed")
             self.controls.set_status_text("Auto-UV failed.")
@@ -490,9 +516,54 @@ class MainWindow:
         self.controls.set_running(False)
         self.controls.hide_dependency_progress()
         self.profile_list.set_runtime_actions_enabled(False)
+        was_aborted = self.final_choice_aborted
         self.pending_final_result_payload = None
         self.final_choice_discarded = False
+        self.final_choice_aborted = False
         self._load_profiles()
+        if was_aborted:
+            self._restore_pre_scan_autostart()
+
+    def _restore_pre_scan_autostart(self) -> None:
+        # On abort, bring back the autostart profile the scan disabled, including
+        # its silent fan curve and adaptive setting. If nothing was autostarting
+        # before the scan there is nothing to restore.
+        snapshot = self._pre_scan_autostart
+        self._pre_scan_autostart = None
+        if not snapshot:
+            return
+        selector = str(snapshot.get("selector", "")).strip()
+        if not selector:
+            return
+        adaptive = bool(snapshot.get("adaptive_auto_uv"))
+        silent_fan = bool(snapshot.get("silent_fan_curve"))
+        # "__systemd_default__" means the unit pinned no explicit profile (it ran
+        # the latest profile); restore that by passing an empty selector so the
+        # CLI falls back to its default again.
+        restore_selector = "" if selector == "__systemd_default__" else selector
+        if silent_fan and not adaptive:
+            profile = profile_for_selector(self.profile_summaries, selector)
+            if profile and not profile_is_afterburner(profile):
+                # The daemon needs the fan payload on disk before it starts.
+                sync_profile_fan_payload(profile)
+        command = runtime_profile_command(
+            "install-systemd",
+            profile_selector=restore_selector,
+            silent_fan_curve=silent_fan,
+            adaptive_auto_uv=adaptive,
+            gpu_index=self.gpu_index,
+        )
+        self._persist_silent_fan_preference(silent_fan)
+        self._persist_startup_preference(True)
+        self.log_view.append(
+            "\nRestoring the previous autostart profile (incl. fan curve) after abort.\n"
+        )
+        self._set_profile_actions_enabled(False)
+        self.command_controller.start(
+            "adaptive-install-systemd" if adaptive else "install-systemd",
+            command,
+            fail_text="Failed to restore the previous autostart profile.",
+        )
 
     def _run_selected_profile(self) -> None:
         action = (
@@ -566,6 +637,10 @@ class MainWindow:
             adaptive_auto_uv=adaptive_auto_uv,
             gpu_index=self.gpu_index,
         )
+        if action != "uninstall-systemd":
+            # Keep the durable silent-fan preference in step with what we apply,
+            # so the tick survives a later discarded/aborted Auto-UV run.
+            self._persist_silent_fan_preference(self.profile_list.silent_fan_enabled())
         if action == "install-systemd":
             self._persist_startup_preference(True)
         elif action == "uninstall-systemd":
@@ -1071,10 +1146,15 @@ class MainWindow:
             ),
             preferred_candidate_id=self.last_auto_uv_candidate_id,
             select_preferred=bool(self.last_auto_uv_candidate_id),
+            # The silent-fan tick is sticky: the user's persisted choice is
+            # authoritative and survives discarded/aborted Auto-UV runs and
+            # reloads. We OR in the live runtime / autostart flag only so an
+            # already-applied silent-fan profile still shows checked on a fresh
+            # install where nothing has been toggled yet.
             silent_fan_checked=(
-                bool(running_info["silent_fan_curve"])
-                if str(running_info["selector"]).strip()
-                else bool(autostart_info["silent_fan_curve"])
+                silent_fan_curve_from_runtime_config()
+                or bool(running_info["silent_fan_curve"])
+                or bool(autostart_info["silent_fan_curve"])
             ),
         )
         self._set_profile_actions_enabled(not self._workflow_running())
@@ -1090,6 +1170,11 @@ class MainWindow:
 
     def _persist_startup_preference(self, checked: bool) -> None:
         persist_on_startup_to_runtime_config(bool(checked))
+
+    def _persist_silent_fan_preference(self, checked: bool) -> None:
+        # Remember the silent-fan choice durably so the "latest profile setup"
+        # restores it after an aborted Auto-UV run, profile reload, or restart.
+        silent_fan_curve_to_runtime_config(bool(checked))
 
     def _workflow_running(self) -> bool:
         return (

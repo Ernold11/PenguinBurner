@@ -8,7 +8,6 @@ include native/latency_layer/CMakeLists.txt
 include native/latency_layer/VkLayer_PENGUINBURNER_latency.json.in
 recursive-include docs *.md *.png *.svg
 exclude docs/dev/penguin-burner-with-gamescope.md
-exclude docs/dev/q2rtx-headless-xvfb-plan.md
 recursive-include packaging/icons *.png *.svg
 recursive-include ui/assets *.png
 recursive-include tests *.py

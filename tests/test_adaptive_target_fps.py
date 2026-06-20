@@ -12,6 +12,8 @@ from runtime_support.adaptive_target_fps import (
 from cli.runtime_config_file import persist_adaptive_target_fps_to_runtime_config
 from cli.runtime_config_file import persist_on_startup_from_runtime_config
 from cli.runtime_config_file import persist_on_startup_to_runtime_config
+from cli.runtime_config_file import silent_fan_curve_from_runtime_config
+from cli.runtime_config_file import silent_fan_curve_to_runtime_config
 
 
 def test_adaptive_target_fps_defaults_to_60() -> None:
@@ -68,6 +70,23 @@ def test_persist_on_startup_preference_round_trips_runtime_config(tmp_path) -> N
     assert "target_fps = 72" in text
     assert "[ui]" in text
     assert "persist_on_startup = true" in text
+
+
+def test_silent_fan_curve_preference_round_trips_runtime_config(tmp_path) -> None:
+    # The silent-fan choice must survive durably so the latest profile setup
+    # (e.g. after an aborted Auto-UV run) restores it.
+    path = tmp_path / "penguin_burner.toml"
+    path.write_text("[adaptive]\ntarget_fps = 72\n", encoding="utf-8")
+
+    assert silent_fan_curve_from_runtime_config(path, default=False) is False
+    assert silent_fan_curve_to_runtime_config(True, path) is True
+    assert silent_fan_curve_from_runtime_config(path, default=False) is True
+    assert silent_fan_curve_to_runtime_config(False, path) is False
+    assert silent_fan_curve_from_runtime_config(path, default=True) is False
+    text = path.read_text(encoding="utf-8")
+    assert "target_fps = 72" in text
+    assert "[ui]" in text
+    assert "silent_fan_curve = false" in text
 
 
 def test_adaptive_target_fps_rejects_invalid_values() -> None:

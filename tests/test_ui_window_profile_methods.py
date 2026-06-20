@@ -47,6 +47,8 @@ def win(qapp, monkeypatch):
     )
     monkeypatch.setattr(window_mod, "penguin_burner_runtime_is_active", lambda: False)
     monkeypatch.setattr(window_mod, "persist_on_startup_from_runtime_config", lambda default=False: default)
+    monkeypatch.setattr(window_mod, "silent_fan_curve_from_runtime_config", lambda: False)
+    monkeypatch.setattr(window_mod, "silent_fan_curve_to_runtime_config", lambda v: v)
     modules = import_qt()
     if modules[3] is None:
         pytest.skip("pyqtgraph not available")
@@ -190,3 +192,128 @@ def test_delete_selected_profiles(win) -> None:
     monkeypatch.setattr(window.profile_list, "selected_profile_paths", lambda: [])
     monkeypatch.setattr(window.profile_list, "selected_profile_ids", lambda: [])
     window._delete_selected_profiles()
+
+
+def test_silent_fan_tick_survives_discarded_run(win, monkeypatch) -> None:
+    # Regression: after a discarded/aborted Auto-UV run the runtime/autostart no
+    # longer carry the silent-fan flag, but the user's persisted choice must keep
+    # the tick checked. (The win fixture already reports both as False.)
+    window, _mp = win
+    monkeypatch.setattr(window_mod, "silent_fan_curve_from_runtime_config", lambda: True)
+    monkeypatch.setattr(window_mod, "silent_fan_curve_to_runtime_config", lambda v: v)
+
+    window.profile_list.silent_fan_checkbox.setChecked(False)
+    window._load_profiles()
+
+    assert window.profile_list.silent_fan_enabled() is True
+
+
+def test_silent_fan_tick_stays_unchecked_when_not_persisted(win, monkeypatch) -> None:
+    window, _mp = win
+    monkeypatch.setattr(window_mod, "silent_fan_curve_from_runtime_config", lambda: False)
+    monkeypatch.setattr(window_mod, "silent_fan_curve_to_runtime_config", lambda v: v)
+
+    window.profile_list.silent_fan_checkbox.setChecked(True)
+    window._load_profiles()
+
+    assert window.profile_list.silent_fan_enabled() is False
+
+
+def test_apply_profile_persists_silent_fan_choice(win, monkeypatch) -> None:
+    # Applying a profile with the tick on must seed the durable preference so it
+    # survives a later discarded Auto-UV run even without a manual toggle.
+    window, _mp = win
+    saved: list[bool] = []
+    monkeypatch.setattr(window_mod, "silent_fan_curve_to_runtime_config", lambda v: saved.append(bool(v)))
+    monkeypatch.setattr(window_mod, "persist_on_startup_to_runtime_config", lambda v: v)
+    monkeypatch.setattr(window_mod, "profile_for_selector", lambda summaries, pid: dict(PROFILE))
+    monkeypatch.setattr(window_mod, "profile_is_afterburner", lambda p: False)
+    monkeypatch.setattr(window_mod, "profile_can_apply", lambda p: True)
+    monkeypatch.setattr(window_mod, "sync_profile_fan_payload", lambda p: True)
+    monkeypatch.setattr(window_mod, "runtime_profile_command", lambda *a, **k: ["pb"])
+    monkeypatch.setattr(window.profile_list, "selected_profile_id", lambda: "p1")
+    monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: True)
+    window.profile_summaries = [PROFILE]
+
+    window._run_runtime_action("daemonize")
+
+    assert saved and saved[-1] is True
+
+
+def test_restore_pre_scan_autostart_reinstalls_previous_profile(win, monkeypatch) -> None:
+    # On abort, the autostart the scan disabled is restored (profile + fan curve).
+    window, _mp = win
+    started: list = []
+    monkeypatch.setattr(
+        window.command_controller, "start",
+        lambda *a, **k: started.append((a, k)) or True,
+    )
+    monkeypatch.setattr(window_mod, "persist_on_startup_to_runtime_config", lambda v: v)
+    saved_fan: list = []
+    monkeypatch.setattr(
+        window_mod, "silent_fan_curve_to_runtime_config",
+        lambda v: saved_fan.append(v),
+    )
+    monkeypatch.setattr(window_mod, "runtime_profile_command", lambda *a, **k: ["pb"])
+    monkeypatch.setattr(
+        window_mod, "profile_for_selector", lambda summaries, sel: {"profile_id": sel}
+    )
+    monkeypatch.setattr(window_mod, "profile_is_afterburner", lambda p: False)
+    synced: list = []
+    monkeypatch.setattr(
+        window_mod, "sync_profile_fan_payload", lambda p: synced.append(p) or True
+    )
+
+    window._pre_scan_autostart = {
+        "selector": "profile-x",
+        "silent_fan_curve": True,
+        "adaptive_auto_uv": False,
+    }
+    window._restore_pre_scan_autostart()
+
+    assert started
+    assert started[0][0][0] == "install-systemd"
+    assert saved_fan == [True]
+    assert synced  # fan payload written before the daemon starts
+    assert window._pre_scan_autostart is None  # snapshot consumed
+
+
+def test_restore_pre_scan_autostart_noop_when_nothing_was_present(win, monkeypatch) -> None:
+    # "if it was not present we cant do anything"
+    window, _mp = win
+    started: list = []
+    monkeypatch.setattr(
+        window.command_controller, "start",
+        lambda *a, **k: started.append((a, k)) or True,
+    )
+
+    window._pre_scan_autostart = None
+    window._restore_pre_scan_autostart()
+
+    assert started == []
+
+
+def test_restore_pre_scan_autostart_default_selector_restores_latest(win, monkeypatch) -> None:
+    window, _mp = win
+    monkeypatch.setattr(window.command_controller, "start", lambda *a, **k: True)
+    monkeypatch.setattr(window_mod, "persist_on_startup_to_runtime_config", lambda v: v)
+    monkeypatch.setattr(window_mod, "silent_fan_curve_to_runtime_config", lambda v: v)
+    captured: dict = {}
+
+    def fake_cmd(action, *, profile_selector="", silent_fan_curve=False,
+                 adaptive_auto_uv=False, gpu_index=None):
+        captured["selector"] = profile_selector
+        captured["adaptive"] = adaptive_auto_uv
+        return ["pb"]
+
+    monkeypatch.setattr(window_mod, "runtime_profile_command", fake_cmd)
+
+    window._pre_scan_autostart = {
+        "selector": "__systemd_default__",
+        "silent_fan_curve": False,
+        "adaptive_auto_uv": True,
+    }
+    window._restore_pre_scan_autostart()
+
+    assert captured["selector"] == ""  # default profile, not a literal sentinel
+    assert captured["adaptive"] is True

@@ -48,6 +48,8 @@ def win(qapp, monkeypatch):
     )
     monkeypatch.setattr(window_mod, "penguin_burner_runtime_is_active", lambda: False)
     monkeypatch.setattr(window_mod, "persist_on_startup_from_runtime_config", lambda default=False: default)
+    monkeypatch.setattr(window_mod, "silent_fan_curve_from_runtime_config", lambda: False)
+    monkeypatch.setattr(window_mod, "silent_fan_curve_to_runtime_config", lambda v: v)
     modules = import_qt()
     if modules[3] is None:
         pytest.skip("pyqtgraph not available")

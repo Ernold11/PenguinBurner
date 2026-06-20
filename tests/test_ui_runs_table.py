@@ -65,6 +65,32 @@ def test_runs_table_row_lifecycle(qapp) -> None:
     assert table.widget.rowCount() == 0
 
 
+def test_aborted_run_decision_cell_is_not_failed(qapp) -> None:
+    # A user-aborted run must read "Aborted" in the Decision column, never the
+    # hardcoded "Failed" that genuine failures get.
+    qtcore, qtgui, qtwidgets, _pg = import_qt()
+    table = RunsTable(QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets)
+
+    table.add_probe_start(_result_payload())
+    table.mark_running_rows_stopped(label="Aborted", row_state="warning")
+
+    decision = table.widget.item(0, table.DECISION_COLUMN)
+    assert decision is not None
+    assert decision.text() == "Aborted"
+
+
+def test_failed_run_decision_cell_still_reads_failed(qapp) -> None:
+    qtcore, qtgui, qtwidgets, _pg = import_qt()
+    table = RunsTable(QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets)
+
+    table.add_probe_start(_result_payload())
+    table.mark_running_rows_stopped(label="Failed")
+
+    decision = table.widget.item(0, table.DECISION_COLUMN)
+    assert decision is not None
+    assert decision.text() == "Failed"
+
+
 # --- pure helpers -------------------------------------------------------------
 
 

@@ -154,15 +154,24 @@ class RunsTable:
                 row_state="warning",
             )
 
-    def mark_running_rows_stopped(self, *, label: str = "Stopped") -> None:
+    def mark_running_rows_stopped(
+        self,
+        *,
+        label: str = "Stopped",
+        decision: str | None = None,
+        row_state: str = "error",
+    ) -> None:
+        # The Decision cell follows ``decision`` (default: ``label``) so an
+        # aborted/stopped run is not mislabelled "Failed".
+        decision_text = decision if decision is not None else label
         for row in self._active_rows():
-            self._set_decision_cell(row, "Failed", row_state="error")
-            self._apply_row_state(row, "error")
+            self._set_decision_cell(row, decision_text, row_state=row_state)
+            self._apply_row_state(row, row_state)
             self._set_status_progress_cell(
                 row,
                 progress=self._row_progress(row, label=label),
                 running=False,
-                row_state="error",
+                row_state=row_state,
             )
 
     def add_probe_result(self, payload: dict) -> None:

@@ -54,6 +54,7 @@ def _deps(**overrides):
         "debug_options": [],
         "q2rtx_install": [],
         "overlay_configs": [],
+        "release_fans": [],
     }
 
     def load_config(config_path):
@@ -84,6 +85,9 @@ def _deps(**overrides):
         "stop_existing_penguin_burner_runtime": lambda **kwargs: calls[
             "stop_runtime"
         ].append(kwargs),
+        "release_fans_to_hardware_auto": lambda *args, **kwargs: calls[
+            "release_fans"
+        ].append((args, kwargs)),
         "build_effective_afterburner_runtime_options": lambda args, stored: dict(
             stored
         ),
@@ -321,6 +325,35 @@ def test_main_command_routing_accepts_parsed_auto_uv_scan_args_without_legacy_fl
 
     assert result.handled is True
     assert calls["foreground"]
+
+
+def test_main_command_routing_releases_fans_to_hardware_auto_on_scan():
+    # PenguinBurner must not run its own fan control during a scan: the scan
+    # stops the runtime and hands fans back to the GPU hardware-auto curve.
+    deps, calls = _deps(
+        enable_stdio_capture=lambda *args, **kwargs: Path("/tmp/auto-uv.log"),
+    )
+    args = parse_arguments(
+        [
+            "--auto-uv-voltage-scan",
+            "--json-events",
+            "--auto-uv-require-final-choice",
+        ]
+    )
+
+    route_main_command(
+        args=args,
+        argv=["--auto-uv-voltage-scan"],
+        explicit_cli_args=True,
+        interactive=False,
+        dependencies=deps,
+    )
+
+    assert calls["stop_runtime"]
+    assert calls["release_fans"]
+    # Released for the configured GPU index.
+    release_args, release_kwargs = calls["release_fans"][0]
+    assert release_args[0] == 0
 
 
 def test_main_command_routing_runs_plain_stability_test_before_profile_setup():

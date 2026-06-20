@@ -20,6 +20,7 @@ from common.penguin_burner_paths import default_runtime_config_path
 
 UI_CONFIG_SECTION = "ui"
 PERSIST_ON_STARTUP_CONFIG_KEY = "persist_on_startup"
+SILENT_FAN_CURVE_CONFIG_KEY = "silent_fan_curve"
 
 
 def default_config_path():
@@ -64,6 +65,7 @@ def default_runtime_config() -> dict:
         },
         UI_CONFIG_SECTION: {
             PERSIST_ON_STARTUP_CONFIG_KEY: False,
+            SILENT_FAN_CURVE_CONFIG_KEY: False,
         },
     }
 
@@ -143,6 +145,45 @@ def persist_on_startup_to_runtime_config(
     ui = dict(raw_ui) if isinstance(raw_ui, dict) else {}
     normalized = bool(enabled)
     ui[PERSIST_ON_STARTUP_CONFIG_KEY] = normalized
+    config[UI_CONFIG_SECTION] = ui
+    write_runtime_config(path, config)
+    return normalized
+
+
+def silent_fan_curve_from_runtime_config(
+    config_path=None,
+    *,
+    default: bool = False,
+) -> bool:
+    path = (
+        default_config_path()
+        if config_path is None
+        else Path(config_path).expanduser()
+    )
+    config = load_raw_runtime_config(path)
+    raw_ui = config.get(UI_CONFIG_SECTION, {})
+    if not isinstance(raw_ui, dict):
+        return bool(default)
+    value = raw_ui.get(SILENT_FAN_CURVE_CONFIG_KEY)
+    if value is None:
+        return bool(default)
+    return _config_bool(value, default=default)
+
+
+def silent_fan_curve_to_runtime_config(
+    enabled,
+    config_path=None,
+) -> bool:
+    path = (
+        default_config_path()
+        if config_path is None
+        else Path(config_path).expanduser()
+    )
+    config = load_raw_runtime_config(path)
+    raw_ui = config.get(UI_CONFIG_SECTION, {})
+    ui = dict(raw_ui) if isinstance(raw_ui, dict) else {}
+    normalized = bool(enabled)
+    ui[SILENT_FAN_CURVE_CONFIG_KEY] = normalized
     config[UI_CONFIG_SECTION] = ui
     write_runtime_config(path, config)
     return normalized

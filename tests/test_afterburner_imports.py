@@ -290,3 +290,28 @@ def test_gui_afterburner_import_delete_clears_profile_entry(
     assert "afterburner_profile" not in rendered
     assert "afterburner_device_profile" not in rendered
     assert f'afterburner_root = "{managed_root}"' in rendered
+
+
+def test_persist_drops_q2rtx_override_keys(tmp_path: Path) -> None:
+    # PenguinBurner must always use its own managed headless Q2RTX fork: a
+    # user-supplied [stability] q2rtx_dir/q2rtx_binary override must never be
+    # carried forward into the generated runtime config.
+    import tomllib
+
+    from afterburner.import_vf_curve import _persist_afterburner_runtime_state
+
+    config_path = tmp_path / "penguin_burner.toml"
+    config_path.write_text(
+        "[gpu]\nindex = 0\n\n"
+        "[stability]\n"
+        'q2rtx_dir = "/opt/evil/q2rtx"\n'
+        'q2rtx_binary = "/opt/evil/q2rtx/q2rtx"\n',
+        encoding="utf-8",
+    )
+
+    _persist_afterburner_runtime_state(config_path, 0)
+
+    written = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    stability = written.get("stability", {})
+    assert "q2rtx_dir" not in stability
+    assert "q2rtx_binary" not in stability

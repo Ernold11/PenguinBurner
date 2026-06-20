@@ -21,6 +21,7 @@ from runtime_support.runtime_debug import (
     log as runtime_log,
 )
 from runtime_support.runtime_service import running_under_systemd_service, stop_existing_penguin_burner_runtime
+from runtime_gpu_control.fan_release import release_fans_to_hardware_auto
 from runtime_stability_test import run_stability_test
 from saved_uv_profiles import (
     delete_auto_uv_profiles,
@@ -42,6 +43,7 @@ class MainCommandRoutingDependencies:
     running_under_systemd_service: Callable = running_under_systemd_service
     enable_stdio_capture: Callable = enable_stdio_capture
     stop_existing_penguin_burner_runtime: Callable = stop_existing_penguin_burner_runtime
+    release_fans_to_hardware_auto: Callable = release_fans_to_hardware_auto
     build_effective_afterburner_runtime_options: Callable = (
         build_effective_afterburner_runtime_options
     )
@@ -163,11 +165,17 @@ def route_main_command(
         )
         if args.silent_fan_curve:
             deps.log(
-                "Auto-UV note: --silent-fan-curve is a normal runtime/daemon option. "
-                "The scan will still save a suggested fan curve automatically when safe, "
-                "but it will not take over fan control during the scan."
+                "Auto-UV note: fan control is released to the GPU hardware-auto curve "
+                "during the scan; a suggested silent fan curve is still saved "
+                "automatically when safe."
             )
         deps.stop_existing_penguin_burner_runtime(log=deps.log)
+        # PenguinBurner does not run its own fan control during a scan: the probe
+        # drives clocks/voltage erratically, so curve-based fan control would be
+        # meaningless and could fight the probe. Release fans to the GPU's
+        # hardware-auto controller, clearing any leftover manual fan state from a
+        # previously applied profile.
+        deps.release_fans_to_hardware_auto(gpu_index, log=deps.log)
 
     afterburner_runtime_options = deps.build_effective_afterburner_runtime_options(
         args,

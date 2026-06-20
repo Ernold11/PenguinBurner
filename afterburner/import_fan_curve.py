@@ -69,10 +69,9 @@ SECTION_ORDERS = {
         "curve2_points",
         "curve",
     ],
-    "stability": [
-        "q2rtx_dir",
-        "q2rtx_binary",
-    ],
+    # PenguinBurner always uses its own managed, headless Q2RTX fork; there is
+    # deliberately no configurable Q2RTX directory/binary override here.
+    "stability": [],
 }
 
 

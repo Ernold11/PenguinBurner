@@ -568,6 +568,11 @@ def _persist_afterburner_runtime_state(
     gpu = dict(config.get("gpu", {}))
     fan = dict(config.get("fan", {}))
     stability = dict(config.get("stability", {}))
+    # PenguinBurner always uses its own managed, headless Q2RTX fork. A custom
+    # Q2RTX directory/binary is never honoured, so drop any stale override keys
+    # rather than carrying them forward into the generated config.
+    stability.pop("q2rtx_dir", None)
+    stability.pop("q2rtx_binary", None)
     gpu["index"] = int(gpu.get("index", gpu_index))
     if afterburner_root is not None:
         gpu["afterburner_root"] = str(Path(afterburner_root))
