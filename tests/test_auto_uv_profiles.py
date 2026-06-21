@@ -66,7 +66,6 @@ from ui.models import top_status_text as _top_status_text
 from ui.features.profiles.profiles import delete_confirmation_text as _profile_delete_confirmation_text
 from ui.features.profiles.profiles import adaptive_profile_tier_labels as _adaptive_profile_tier_labels
 from ui.features.profiles.profiles import profile_info_from_command_text as _profile_info_from_command_text
-from ui.features.profiles.profiles import profile_is_deletable as _profile_is_deletable
 from ui.features.profiles.profiles import profile_delete_autostart_action as _profile_delete_autostart_action
 from ui.features.profiles.profiles import profile_verify_selector as _profile_verify_selector
 from ui.features.profiles.profiles import runner_status_text as _runner_status_text
@@ -2364,26 +2363,3 @@ def test_display_signed_number_returns_text_when_value_non_numeric(
             raise ValueError("not a number")
 
     assert profile_store._display_signed_number(_Weird(), precision=0) == "7"
-
-
-def test_wait_for_new_profile_returns_matching_profile(tmp_path, monkeypatch) -> None:
-    _archive_in(
-        tmp_path,
-        monkeypatch,
-        {
-            "candidate_voltage_mv": 900,
-            "lock_clock_mhz": 2600,
-            "final_verified": True,
-            "profile_created_at": "2026-06-13T10:00:00+00:00",
-            "points": [{"voltage_mv": 900, "target_mhz": 2600}],
-        },
-    )
-    result = profile_store.wait_for_new_profile(0.0, timeout_s=1.0)
-    assert result is not None
-    assert result["lock_clock_mhz"] == 2600
-
-
-def test_wait_for_new_profile_times_out(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
-    # Far-future after_timestamp means no profile qualifies before the timeout.
-    assert profile_store.wait_for_new_profile(9.9e18, timeout_s=0.05) is None

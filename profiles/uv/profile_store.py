@@ -4,7 +4,6 @@ from datetime import datetime
 import json
 from pathlib import Path
 import re
-import time
 
 from common.penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
 
@@ -567,14 +566,3 @@ def _display_signed_number(value, *, precision: int) -> str:
     if abs(number) < 0.5:
         return "0"
     return f"+{text}" if number > 0 else text
-
-
-def wait_for_new_profile(after_timestamp: float, *, timeout_s: float = 3.0) -> dict | None:
-    deadline = time.monotonic() + max(0.0, float(timeout_s))
-    while time.monotonic() <= deadline:
-        profiles = read_auto_uv_profiles()
-        for profile in profiles:
-            if _profile_sort_time(profile) >= float(after_timestamp):
-                return profile
-        time.sleep(0.1)
-    return None

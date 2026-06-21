@@ -7,7 +7,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import sysconfig
 
 from .adaptive_target_fps import (
     ADAPTIVE_TARGET_FPS_ENV,
@@ -28,7 +27,6 @@ from common.subprocess_locale import stable_subprocess_env
 
 SYSTEMD_RUN = shutil.which("systemd-run") or "systemd-run"
 SYSTEMCTL = shutil.which("systemctl") or "systemctl"
-BASH = shutil.which("bash") or "/usr/bin/bash"
 PENGUIN_BURNER_UNIT_NAME = "PenguinBurner"
 PENGUIN_BURNER_FOREGROUND_ENV = "PENGUIN_BURNER_FOREGROUND"
 DEFAULT_JOURNAL_HOURS = 4
@@ -114,23 +112,6 @@ def _invoking_user_name():
     return pwd.getpwuid(os.getuid()).pw_name
 
 
-def launcher_script_path(program_file):
-    candidates = _launcher_script_candidates(program_file)
-    for path in candidates:
-        if path.is_file():
-            return path
-    rendered = ", ".join(str(path) for path in candidates)
-    raise RuntimeError(f"launcher script not found; checked: {rendered}")
-
-
-def _launcher_script_candidates(program_file):
-    candidates = [Path(program_file).resolve().with_name("penguin_burner.sh")]
-    data_root = sysconfig.get_path("data")
-    if data_root:
-        candidates.append(Path(data_root) / "share" / "penguin-burner" / "penguin_burner.sh")
-    return candidates
-
-
 def _format_systemd_exec(args):
     rendered = []
     for arg in args:
@@ -142,11 +123,6 @@ def _format_systemd_exec(args):
 def runtime_foreground_command(program_file, argv):
     python = sys.executable or shutil.which("python3") or "python3"
     return [python, str(Path(program_file).resolve()), *argv]
-
-
-def adaptive_target_fps_env_assignment(env: dict[str, str] | None = None) -> str:
-    target_fps = adaptive_target_fps_from_env(env)
-    return f"{ADAPTIVE_TARGET_FPS_ENV}={format_adaptive_target_fps(target_fps)}"
 
 
 def adaptive_policy_env_assignments(env: dict[str, str] | None = None) -> list[str]:
