@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from auto_oc.ladder import AutoOcStep, build_auto_oc_ladder
-from auto_oc.scoring import auto_oc_probe_key
-from auto_oc.search import AutoOcAttempt, run_auto_oc_candidate_search
+from auto_uv.auto_oc.ladder import AutoOcStep, build_auto_oc_ladder
+from auto_uv.auto_oc.scoring import auto_oc_probe_key
+from auto_uv.auto_oc.search import AutoOcAttempt, run_auto_oc_candidate_search
 from auto_uv.auto_uv_types import (
     AutoUvProbeSummary,
     FailureKind,

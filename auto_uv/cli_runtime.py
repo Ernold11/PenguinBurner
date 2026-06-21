@@ -9,7 +9,7 @@ from auto_uv.auto_uv_types import AutoUvError, AutoUvFinalChoiceDiscarded
 from auto_uv.voltage_frequency_undervolt_main_loop import (
     run_voltage_frequency_undervolt_main_loop,
 )
-from initial_check import require_auto_uv_initial_check
+from auto_uv.initial_check import require_auto_uv_initial_check
 from common.penguin_burner_errors import NvmlError
 from runtime.support.runtime_debug import log as runtime_log
 from runtime.stability_test import build_stability_config

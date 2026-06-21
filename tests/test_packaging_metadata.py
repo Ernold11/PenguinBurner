@@ -208,7 +208,7 @@ def test_package_installs_shared_subprocess_locale_helper() -> None:
         "drivers.nvidia",
         "common",
         "integrations",
-        "stability",
+        "auto_uv.stability",
     } <= packages
 
 
@@ -241,12 +241,14 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     packages = set(metadata["tool"]["setuptools"]["packages"])
 
     assert "auto_uv" in packages
-    assert "auto_oc" in packages
+    assert "auto_uv.auto_oc" in packages
     assert "cli" in packages
-    assert "initial_check" in packages
+    assert "auto_uv.initial_check" in packages
     assert "auto_uv.efficiency_tune" in packages
     assert "auto_uv.scan_mode" in packages
     assert "auto_uv.final_verification" in packages
+    assert "auto_uv.stability" in packages
+    assert "auto_uv.stability.q2rtx" in packages
     assert "curve_editors" in packages
     assert "curve_editors.fan" in packages
     assert "curve_editors.uv" in packages

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from stability.q2rtx import Q2RTXStabilityConfig
+from auto_uv.stability.q2rtx import Q2RTXStabilityConfig
 
 from .auto_uv_types import AutoUvError, AutoUvProbeSummary, VfCurveCandidate
 from .auto_uv_console_log import log_benchmark, log_phase

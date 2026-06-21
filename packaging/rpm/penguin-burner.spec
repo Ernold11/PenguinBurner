@@ -52,17 +52,14 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
 %install
 %pyproject_install
 %pyproject_save_files \
-    auto_oc \
     auto_uv \
     cli \
     common \
     curve_editors \
-    initial_check \
     integrations \
     overlay \
     profiles \
     runtime \
-    stability \
     ui \
     drivers \
     penguin_burner

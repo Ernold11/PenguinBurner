@@ -20,8 +20,8 @@ from auto_uv_test_data import stable_probe_result
 def test_cuda_companion_command_points_to_repo_stability_script() -> None:
     command = cuda_bruteforce_companion_command(gpu_index=0, duration_s=5)
 
-    assert command[1].endswith("/stability/cuda_bruteforce.py")
-    assert "/auto_uv/stability/" not in command[1]
+    assert command[1].endswith("/auto_uv/stability/cuda_bruteforce.py")
+    assert "/auto_uv/auto_uv/stability/" not in command[1]
     assert Path(command[1]).is_file()
 
 

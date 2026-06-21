@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from stability import cuda_bruteforce
+from auto_uv.stability import cuda_bruteforce
 
 
 def test_cuda_stress_seed_varies_each_launch_and_stays_u32() -> None:

@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 import sys
 
-from stability.q2rtx import (
+from auto_uv.stability.q2rtx import (
     DEFAULT_SINGLE_PASS_TIMEOUT_S,
     Q2RTXStabilityConfig,
 )
@@ -217,4 +217,4 @@ def cuda_bruteforce_companion_command(
 
 
 def cuda_bruteforce_script_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "stability" / "cuda_bruteforce.py"
+    return Path(__file__).resolve().parents[1] / "stability" / "cuda_bruteforce.py"

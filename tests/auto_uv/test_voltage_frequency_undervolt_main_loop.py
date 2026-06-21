@@ -1152,7 +1152,7 @@ def test_require_probe_summary_raises_without_probe() -> None:
 
 
 def test_run_auto_oc_candidate_search_delegates_to_auto_oc(monkeypatch) -> None:
-    import auto_oc
+    import auto_uv.auto_oc as auto_oc
 
     captured: dict[str, object] = {}
 

@@ -4,7 +4,7 @@ from dataclasses import replace
 from typing import Callable
 
 from runtime.support.vf_curve_plan import apply_plan
-from stability.q2rtx import (
+from auto_uv.stability.q2rtx import (
     Q2RTXStabilityConfig,
     Q2RTXStabilityResult,
     StabilityTestError,

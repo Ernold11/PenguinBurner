@@ -4,7 +4,7 @@
 # CUDA or Q2RTX subprocess, network downloads, or an X11/Wayland display. We do
 # not mock hardware, so those integration entry points are excluded and the
 # reported number reflects coverage of testable logic. Directories that mix
-# testable logic with hardware (stability/, runtime/gpu_control/) are omitted at
+# testable logic with hardware (auto_uv/stability/, runtime/gpu_control/) are omitted at
 # the file level so their tested modules still count.
 [run]
 source =
@@ -17,9 +17,6 @@ source =
     profiles
     overlay
     runtime
-    stability
-    auto_oc
-    initial_check
 
 omit =
     */tests/*
@@ -34,16 +31,16 @@ omit =
     runtime/gpu_control/nvml_runtime_session.py
     runtime/gpu_control/live_gpu_telemetry_text.py
     runtime/fan_control/runtime_loop.py
-    initial_check/auto_uv_hardware_initial_check.py
+    auto_uv/initial_check/auto_uv_hardware_initial_check.py
     overlay/telemetry/nvapi_marker_bridge.py
     # --- External-process workload runners (Q2RTX, CUDA) + downloads ---
-    stability/q2rtx/runtime.py
-    stability/q2rtx/process_harness.py
-    stability/q2rtx/downloader.py
-    stability/q2rtx/assets.py
-    stability/q2rtx/install.py
-    stability/q2rtx/telemetry.py
-    stability/cuda_bruteforce.py
+    auto_uv/stability/q2rtx/runtime.py
+    auto_uv/stability/q2rtx/process_harness.py
+    auto_uv/stability/q2rtx/downloader.py
+    auto_uv/stability/q2rtx/assets.py
+    auto_uv/stability/q2rtx/install.py
+    auto_uv/stability/q2rtx/telemetry.py
+    auto_uv/stability/cuda_bruteforce.py
     runtime/stability_test/q2rtx_cuda_workload_config.py
     auto_uv/q2rtx/q2rtx_cuda_voltage_probe.py
     auto_uv/q2rtx/q2rtx_cuda_probe_runner.py

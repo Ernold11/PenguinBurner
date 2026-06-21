@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from stability.q2rtx import cli as q2rtx_cli
-from stability.q2rtx import resolution as q2rtx_resolution
+from auto_uv.stability.q2rtx import cli as q2rtx_cli
+from auto_uv.stability.q2rtx import resolution as q2rtx_resolution
 
 
 def _memory(total_bytes: int):

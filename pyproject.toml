@@ -65,20 +65,22 @@ py-modules = [
   "penguin_burner",
 ]
 packages = [
-  "auto_oc",
   "auto_uv",
+  "auto_uv.auto_oc",
   "auto_uv.curve",
   "auto_uv.efficiency_tune",
   "auto_uv.final_verification",
   "auto_uv.gpu",
+  "auto_uv.initial_check",
   "auto_uv.persistence",
   "auto_uv.q2rtx",
   "auto_uv.scan_mode",
   "auto_uv.shared",
+  "auto_uv.stability",
+  "auto_uv.stability.q2rtx",
   "auto_uv.ui",
   "cli",
   "common",
-  "initial_check",
   "curve_editors",
   "curve_editors.fan",
   "curve_editors.uv",
@@ -102,8 +104,6 @@ packages = [
   "ui.components",
   "ui.controllers",
   "ui.dialogs",
-  "stability",
-  "stability.q2rtx",
 ]
 
 [tool.setuptools.package-data]

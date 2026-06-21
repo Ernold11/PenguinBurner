@@ -12,7 +12,7 @@ from .scan_mode import AUTO_UV_MODE_PERFORMANCE
 
 
 def run_auto_oc_candidate_search(**kwargs):
-    from auto_oc import run_auto_oc_candidate_search as run_search
+    from auto_uv.auto_oc import run_auto_oc_candidate_search as run_search
 
     return run_search(**kwargs)
 

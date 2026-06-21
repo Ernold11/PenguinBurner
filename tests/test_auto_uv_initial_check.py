@@ -1,4 +1,4 @@
-import initial_check.auto_uv_hardware_initial_check as initial_check
+import auto_uv.initial_check.auto_uv_hardware_initial_check as initial_check
 
 
 def _good_points(count=16):

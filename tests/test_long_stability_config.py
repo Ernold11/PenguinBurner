@@ -1,5 +1,5 @@
-from stability.q2rtx import Q2RTXStabilityConfig
-from stability.q2rtx.long_stability_config import (
+from auto_uv.stability.q2rtx import Q2RTXStabilityConfig
+from auto_uv.stability.q2rtx.long_stability_config import (
     build_long_stability_test_config,
     long_stability_workload_durations,
 )

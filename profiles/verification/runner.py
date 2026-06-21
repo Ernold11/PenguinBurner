@@ -28,7 +28,7 @@ from profiles.uv import (
     mark_auto_uv_profile_verification_failed,
     mark_auto_uv_profile_verified,
 )
-from stability.q2rtx import (
+from auto_uv.stability.q2rtx import (
     StabilityTestError,
     attach_stdout_progress,
     build_long_stability_test_config,

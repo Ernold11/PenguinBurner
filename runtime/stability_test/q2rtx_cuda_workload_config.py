@@ -4,7 +4,7 @@ from pathlib import Path
 
 from common.penguin_burner_errors import NvmlError
 from runtime.support.runtime_debug import log
-from stability.q2rtx import (
+from auto_uv.stability.q2rtx import (
     DEFAULT_DEMO_NAME,
     Q2RTXStabilityConfig,
     StabilityTestError,
@@ -17,7 +17,7 @@ from stability.q2rtx import (
     print_q2rtx_stability_result,
     run_q2rtx_stability_test,
 )
-from stability.q2rtx.resolution import (
+from auto_uv.stability.q2rtx.resolution import (
     format_q2rtx_resolution_choice,
     resolve_q2rtx_render_resolution,
 )

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Callable
 
-from stability.q2rtx import Q2RTXStabilityConfig, cleanup_managed_q2rtx_processes
+from auto_uv.stability.q2rtx import Q2RTXStabilityConfig, cleanup_managed_q2rtx_processes
 
 from .auto_uv_types import (
     AutoUvError,
