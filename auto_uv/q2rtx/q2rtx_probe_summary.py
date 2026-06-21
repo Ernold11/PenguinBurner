@@ -156,10 +156,6 @@ def summarize_loaded_perf_cap_reason(
     )
 
 
-def history_average(history: list[AutoUvProbeSummary], attr: str) -> float | None:
-    return mean([getattr(item, attr) for item in history])
-
-
 def loaded_telemetry_samples(
     telemetry_samples: list,
     *,

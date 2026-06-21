@@ -57,7 +57,6 @@ class ProfileList:
         self._runtime_actions_available = True
         self._has_systemd_service = False
         self._systemd_selector = ""
-        self._syncing_persist_toggle = False
         self._sort_column = self.DATE_COLUMN
         self._sort_order = QtCore.Qt.DescendingOrder
         self.widget = QtWidgets.QWidget()
@@ -122,9 +121,7 @@ class ProfileList:
         layout.addLayout(top)
         layout.addWidget(self.table, 1)
         self.table.itemSelectionChanged.connect(self._sync_action_state)
-        self.install_button.toggled.connect(
-            lambda _checked: self._sync_action_state(sync_persist_toggle=False)
-        )
+        self.install_button.toggled.connect(lambda _checked: self._sync_action_state())
         self._sync_action_state()
 
     def set_profiles(
@@ -314,7 +311,7 @@ class ProfileList:
             self._set_silent_fan_checked(silent_fan_checked_before)
         elif silent_fan_checked is not None:
             self._set_silent_fan_checked(bool(silent_fan_checked))
-        self._sync_action_state(sync_persist_toggle=False)
+        self._sync_action_state()
 
     def _active_sort_column(self) -> int:
         column = int(self._sort_column)
@@ -343,7 +340,7 @@ class ProfileList:
         self._sort_order = order
         self._apply_sort_indicator(column, order)
         self._sort_table(column, order)
-        self._sync_action_state(sync_persist_toggle=False)
+        self._sync_action_state()
 
     def _apply_sort_indicator(self, column: int, order) -> None:
         header = self.table.horizontalHeader()
@@ -400,7 +397,7 @@ class ProfileList:
 
     def set_runtime_actions_enabled(self, enabled: bool) -> None:
         self._runtime_actions_available = bool(enabled)
-        self._sync_action_state(sync_persist_toggle=False)
+        self._sync_action_state()
 
     def select_profile(self, profile_id: str) -> None:
         self.select_profiles([profile_id])
@@ -438,7 +435,7 @@ class ProfileList:
                 return True
         return False
 
-    def _sync_action_state(self, *, sync_persist_toggle: bool = True) -> None:
+    def _sync_action_state(self) -> None:
         selected_ids = self.selected_profile_ids()
         has_single_selection = self._runtime_actions_available and len(
             selected_ids
@@ -466,13 +463,11 @@ class ProfileList:
         )
 
     def _set_persist_toggle_checked(self, checked: bool) -> None:
-        self._syncing_persist_toggle = True
         signals_blocked = self.install_button.blockSignals(True)
         try:
             self.install_button.setChecked(bool(checked))
         finally:
             self.install_button.blockSignals(signals_blocked)
-            self._syncing_persist_toggle = False
 
     def _set_silent_fan_checked(self, checked: bool) -> None:
         signals_blocked = self.silent_fan_checkbox.blockSignals(True)

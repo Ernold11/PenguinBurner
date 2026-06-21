@@ -31,7 +31,6 @@ from .q2rtx_live_abort_rules import (
     telemetry_live_abort_reason,
 )
 from .q2rtx_probe_summary import (
-    history_average,
     saturated_probe_tail_samples,
     summarize_q2rtx_cuda_probe,
 )

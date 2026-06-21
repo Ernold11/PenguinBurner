@@ -29,7 +29,6 @@ from auto_uv.q2rtx.probe_runtime_guardrails import (
     telemetry_sample_is_busy,
 )
 from auto_uv.q2rtx.q2rtx_probe_summary import (
-    history_average,
     loaded_telemetry_diagnostics,
     loaded_telemetry_means,
     saturated_probe_tail_samples,
@@ -207,18 +206,6 @@ def test_summarize_perf_cap_reason_skips_blank_tokens() -> None:
 
 def test_summarize_perf_cap_reason_returns_none_when_empty() -> None:
     assert summarize_perf_cap_reason([{"perf_cap_reason": None}]) is None
-
-
-def test_history_average_means_attribute_across_history() -> None:
-    history = [
-        SimpleNamespace(avg_fps=100.0),
-        SimpleNamespace(avg_fps=200.0),
-    ]
-    assert history_average(history, "avg_fps") == pytest.approx(150.0)
-
-
-def test_history_average_none_for_empty_history() -> None:
-    assert history_average([], "avg_fps") is None
 
 
 def test_loaded_telemetry_means_empty_active_samples_branch() -> None:
