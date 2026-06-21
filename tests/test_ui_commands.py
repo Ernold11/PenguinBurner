@@ -909,12 +909,25 @@ def test_auto_uv_voltage_drop_default_uses_detected_gpu_table_floor() -> None:
     assert preview.value_pct == pytest.approx(15.0)
 
 
-def test_auto_uv_clock_drop_default_uses_gpu_table_efficiency_to_performance_ratio() -> None:
-    preview = _auto_uv_clock_drop_default(gpu_name="NVIDIA GeForce RTX 5080")
+def test_auto_uv_clock_drop_default_uses_preset_aware_gpu_table_ratio() -> None:
+    efficiency = _auto_uv_clock_drop_default(
+        gpu_name="NVIDIA GeForce RTX 5080",
+        preset_id=AUTO_UV_PRESET_EFFICIENCY,
+    )
+    balanced = _auto_uv_clock_drop_default(
+        gpu_name="NVIDIA GeForce RTX 5080",
+        preset_id=AUTO_UV_PRESET_BALANCED,
+    )
+    performance = _auto_uv_clock_drop_default(
+        gpu_name="NVIDIA GeForce RTX 5080",
+        preset_id=AUTO_UV_PRESET_PERFORMANCE,
+    )
 
-    assert preview.preset_matched is True
-    assert preview.gpu_family == "RTX 5080"
-    assert preview.value_pct == pytest.approx(6.040268456375841)
+    assert efficiency.preset_matched is True
+    assert efficiency.gpu_family == "RTX 5080"
+    assert efficiency.value_pct == pytest.approx(11.111111111111116)
+    assert balanced.value_pct == pytest.approx(6.040268456375841)
+    assert performance.value_pct == pytest.approx(5.3968253968254)
 
 
 def test_auto_uv_clock_drop_default_falls_back_to_generic_when_unmatched() -> None:
@@ -1608,8 +1621,7 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
     assert "Max voltage drop" not in source
     assert "Base verification length" not in source
     assert '"auto_uv_short_seconds"' not in source
-    assert "Efficiency-to-Performance" in source
-    assert "clock ratio when detected" in source
+    assert "preset-aware from the GPU table" in source
     assert "Min voltage" in source
     assert "sync_voltage_floor_from_drop" not in source
     assert "sync_voltage_drop_from_floor" not in source
@@ -1679,7 +1691,13 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_clock_drop_default",
-        lambda gpu_index=None: SimpleNamespace(value_pct=11.1),
+        lambda gpu_index=None, preset_id=None: SimpleNamespace(
+            value_pct={
+                AUTO_UV_PRESET_EFFICIENCY: 11.1,
+                AUTO_UV_PRESET_BALANCED: 6.0,
+                AUTO_UV_PRESET_PERFORMANCE: 5.4,
+            }.get(preset_id, 11.1)
+        ),
     )
     monkeypatch.setattr(
         scan_tuning,
@@ -1729,6 +1747,7 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     advanced_group = dialog.findChild(QtWidgets.QGroupBox, "advancedTuningGroup")
     power_limit_slider = dialog.findChild(QtWidgets.QSlider, "powerLimitSlider")
     power_limit_spin = dialog.findChild(QtWidgets.QSpinBox, "powerLimitSpin")
+    max_clock_drop_spin = dialog.findChild(QtWidgets.QDoubleSpinBox, "maxClockDropSpin")
     assert dialog.minimumWidth() == 860
     assert gpu_combo is not None
     assert gpu_combo.count() == 2
@@ -1742,6 +1761,8 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     assert advanced_group is not None
     assert power_limit_slider is not None
     assert power_limit_spin is not None
+    assert max_clock_drop_spin is not None
+    assert max_clock_drop_spin.value() == pytest.approx(6.0)
     assert power_limit_slider.minimum() == 200
     assert power_limit_slider.maximum() == 450
     assert power_limit_slider.value() == 350
@@ -1770,8 +1791,10 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
 
     buttons[AUTO_UV_PRESET_PERFORMANCE].click()
     assert dialog.size() == initial_size
+    assert max_clock_drop_spin.value() == pytest.approx(5.4)
     buttons[AUTO_UV_PRESET_EFFICIENCY].click()
     assert dialog.size() == initial_size
+    assert max_clock_drop_spin.value() == pytest.approx(11.1)
 
 
 def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None:
@@ -1797,7 +1820,7 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_clock_drop_default",
-        lambda gpu_index=None: SimpleNamespace(value_pct=11.1),
+        lambda gpu_index=None, preset_id=None: SimpleNamespace(value_pct=6.0),
     )
     monkeypatch.setattr(
         scan_tuning,

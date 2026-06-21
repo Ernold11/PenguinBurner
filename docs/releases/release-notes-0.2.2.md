@@ -16,9 +16,9 @@ and makes the loaded-clock guardrail less brittle on newer NVIDIA cards.
 
 ### Auto-UV Defaults
 
-- The default `--auto-uv-max-clock-drop-pct` is now derived from the detected
-  GPU table's Efficiency-to-Performance clock ratio when available. Unknown
-  GPUs use a generic fallback.
+- The default `--auto-uv-max-clock-drop-pct` is now derived from the selected
+  preset and detected GPU table when available. Unknown GPUs use a generic
+  fallback.
 - The derived loaded-clock floor is applied to the selected GPU's measured
   baseline clock, so multi-GPU systems and different GPU families get a more
   appropriate default guardrail.

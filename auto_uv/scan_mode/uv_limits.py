@@ -23,6 +23,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (900, 2700),
         "balanced": (950, 2900),
         "performance": (975, 3000),
+        "clock_drop_ceiling_mhz": 3100,
     },
     {
         "family": "RTX 5080",
@@ -30,6 +31,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (850, 2800),
         "balanced": (900, 2800),
         "performance": (925, 2980),
+        "clock_drop_ceiling_mhz": 3150,
     },
     {
         "family": "RTX 5070 Ti",
@@ -37,6 +39,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (850, 2500),
         "balanced": (900, 2800),
         "performance": (925, 2950),
+        "clock_drop_ceiling_mhz": 3000,
     },
     {
         "family": "RTX 5070",
@@ -44,6 +47,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (850, 2600),
         "balanced": (900, 2750),
         "performance": (940, 3000),
+        "clock_drop_ceiling_mhz": 3150,
     },
     {
         "family": "RTX 5060 Ti",
@@ -51,6 +55,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (800, 2500),
         "balanced": (875, 2700),
         "performance": (925, 2900),
+        "clock_drop_ceiling_mhz": 3000,
     },
     {
         "family": "RTX 5060",
@@ -58,6 +63,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (875, 2300),
         "balanced": (900, 2450),
         "performance": (925, 2600),
+        "clock_drop_ceiling_mhz": 2730,
     },
     {
         "family": "RTX 4070 Ti Super",
@@ -65,6 +71,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (925, 2550),
         "balanced": (940, 2640),
         "performance": (950, 2730),
+        "clock_drop_ceiling_mhz": 2820,
     },
     {
         "family": "RTX 4070 Ti",
@@ -72,6 +79,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (925, 2550),
         "balanced": (940, 2640),
         "performance": (950, 2685),
+        "clock_drop_ceiling_mhz": 2820,
     },
     {
         "family": "RTX 4070 Super",
@@ -79,6 +87,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (900, 2400),
         "balanced": (925, 2550),
         "performance": (940, 2670),
+        "clock_drop_ceiling_mhz": 2790,
     },
     {
         "family": "RTX 4070",
@@ -86,6 +95,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (900, 2400),
         "balanced": (925, 2550),
         "performance": (940, 2670),
+        "clock_drop_ceiling_mhz": 2790,
     },
     {
         "family": "RTX 4060 Ti",
@@ -93,6 +103,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (900, 2400),
         "balanced": (925, 2550),
         "performance": (950, 2650),
+        "clock_drop_ceiling_mhz": 2750,
     },
     {
         "family": "RTX 4060",
@@ -100,6 +111,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (875, 2300),
         "balanced": (900, 2450),
         "performance": (925, 2600),
+        "clock_drop_ceiling_mhz": 2730,
     },
     {
         "family": "RTX 4090",
@@ -107,6 +119,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (875, 2400),
         "balanced": (900, 2550),
         "performance": (925, 2670),
+        "clock_drop_ceiling_mhz": 2745,
     },
     {
         "family": "RTX 4080",
@@ -114,6 +127,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (875, 2400),
         "balanced": (900, 2520),
         "performance": (925, 2640),
+        "clock_drop_ceiling_mhz": 2700,
     },
     {
         "family": "RTX 3090 Ti",
@@ -121,6 +135,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (825, 1700),
         "balanced": (875, 1830),
         "performance": (925, 1950),
+        "clock_drop_ceiling_mhz": 2025,
     },
     {
         "family": "RTX 3090",
@@ -128,6 +143,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (800, 1700),
         "balanced": (875, 1830),
         "performance": (900, 1900),
+        "clock_drop_ceiling_mhz": 1965,
     },
     {
         "family": "RTX 3080 Ti",
@@ -135,6 +151,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (800, 1710),
         "balanced": (875, 1870),
         "performance": (900, 1920),
+        "clock_drop_ceiling_mhz": 1980,
     },
     {
         "family": "RTX 3080 12GB",
@@ -142,6 +159,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (800, 1700),
         "balanced": (875, 1860),
         "performance": (900, 1920),
+        "clock_drop_ceiling_mhz": 2000,
     },
     {
         "family": "RTX 3080",
@@ -149,6 +167,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (800, 1750),
         "balanced": (875, 1890),
         "performance": (900, 1950),
+        "clock_drop_ceiling_mhz": 2010,
     },
     {
         "family": "RTX 3070 Ti",
@@ -156,6 +175,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (825, 1770),
         "balanced": (875, 1905),
         "performance": (900, 1950),
+        "clock_drop_ceiling_mhz": 1995,
     },
     {
         "family": "RTX 3070",
@@ -163,6 +183,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (775, 1700),
         "balanced": (875, 1900),
         "performance": (925, 1950),
+        "clock_drop_ceiling_mhz": 2010,
     },
     {
         "family": "RTX 3060 Ti",
@@ -170,6 +191,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (800, 1750),
         "balanced": (875, 1875),
         "performance": (925, 1935),
+        "clock_drop_ceiling_mhz": 1980,
     },
     {
         "family": "RTX 3060",
@@ -177,6 +199,7 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency": (800, 1750),
         "balanced": (850, 1840),
         "performance": (900, 1900),
+        "clock_drop_ceiling_mhz": 1950,
     },
 )
 
@@ -189,14 +212,20 @@ def uv_limit_voltage_floor_target_for_gpu(
     return uv_limit_profile_target_for_gpu(gpu_name, "efficiency")
 
 
-def uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu(
+def uv_limit_clock_drop_pct_for_gpu(
     gpu_name: object | None,
+    profile_id: object | None = "efficiency",
 ) -> float | None:
-    efficiency = uv_limit_profile_target_for_gpu(gpu_name, "efficiency")
-    performance = uv_limit_profile_target_for_gpu(gpu_name, "performance")
-    if efficiency is None or performance is None or int(performance.clock_mhz) <= 0:
+    entry = _uv_limit_entry_for_gpu(gpu_name)
+    if entry is None:
         return None
-    drop_pct = 1.0 - (float(efficiency.clock_mhz) / float(performance.clock_mhz))
+    lower_clock_mhz, upper_clock_mhz = _uv_limit_clock_drop_bounds_mhz_from_entry(
+        entry,
+        profile_id,
+    )
+    if int(lower_clock_mhz) <= 0 or int(upper_clock_mhz) <= 0:
+        return None
+    drop_pct = 1.0 - (float(lower_clock_mhz) / float(upper_clock_mhz))
     return max(0.0, drop_pct * 100.0)
 
 
@@ -204,24 +233,66 @@ def uv_limit_profile_target_for_gpu(
     gpu_name: object | None,
     profile_id: str,
 ) -> UvTierTarget | None:
+    entry = _uv_limit_entry_for_gpu(gpu_name)
+    if entry is None:
+        return None
+    return _uv_limit_profile_target_from_entry(entry, profile_id)
+
+
+def _uv_limit_entry_for_gpu(gpu_name: object | None) -> dict[str, object] | None:
     normalized_name = str(gpu_name or "").upper()
     if not normalized_name:
         return None
 
-    normalized_profile = str(profile_id or "").strip().lower()
     for entry in _UV_LIMIT_TARGETS:
         patterns = tuple(str(pattern) for pattern in entry["patterns"])
         if any(pattern in normalized_name for pattern in patterns):
-            if normalized_profile not in entry:
-                return None
-            voltage_mv, clock_mhz = entry[normalized_profile]
-            return UvTierTarget(
-                gpu_family=str(entry["family"]),
-                profile_id=normalized_profile,
-                voltage_mv=int(voltage_mv),
-                clock_mhz=int(clock_mhz),
-            )
+            return entry
     return None
+
+
+def _uv_limit_profile_target_from_entry(
+    entry: dict[str, object],
+    profile_id: str,
+) -> UvTierTarget | None:
+    normalized_profile = str(profile_id or "").strip().lower()
+    value = entry.get(normalized_profile)
+    if not isinstance(value, tuple) or len(value) != 2:
+        return None
+    voltage_mv, clock_mhz = value
+    return UvTierTarget(
+        gpu_family=str(entry["family"]),
+        profile_id=normalized_profile,
+        voltage_mv=int(voltage_mv),
+        clock_mhz=int(clock_mhz),
+    )
+
+
+def _uv_limit_clock_drop_ceiling_mhz_from_entry(entry: dict[str, object]) -> int:
+    value = entry.get("clock_drop_ceiling_mhz")
+    if value is not None:
+        return int(value)
+    performance = _uv_limit_profile_target_from_entry(entry, "performance")
+    if performance is None:
+        return 0
+    return int(performance.clock_mhz)
+
+
+def _uv_limit_clock_drop_bounds_mhz_from_entry(
+    entry: dict[str, object],
+    profile_id: object | None,
+) -> tuple[int, int]:
+    profile = str(profile_id or "efficiency").strip().lower()
+    efficiency = _uv_limit_profile_target_from_entry(entry, "efficiency")
+    performance = _uv_limit_profile_target_from_entry(entry, "performance")
+    ceiling_clock_mhz = _uv_limit_clock_drop_ceiling_mhz_from_entry(entry)
+    if efficiency is None:
+        return 0, 0
+    if profile == "performance" and performance is not None:
+        return int(performance.clock_mhz), int(ceiling_clock_mhz)
+    if profile == "balanced" and performance is not None:
+        return int(efficiency.clock_mhz), int(performance.clock_mhz)
+    return int(efficiency.clock_mhz), int(ceiling_clock_mhz)
 
 
 def voltage_drop_pct(*, start_voltage_mv: int, floor_voltage_mv: int) -> float:

@@ -106,7 +106,7 @@ so the benchmark and the curve writer target the same physical GPU.
 | `--auto-uv-mode efficiency\|balanced\|performance` | select the same preset family as the GUI |
 | `--gpu-index N` | select one NVIDIA GPU on multi-GPU systems |
 | `--auto-uv-min-voltage-mv N` | explicit lowest voltage bin |
-| `--auto-uv-max-clock-drop-pct N` | allowed loaded-clock loss (default: GPU Efficiency-to-Performance ratio, else `12.5`) |
+| `--auto-uv-max-clock-drop-pct N` | allowed loaded-clock loss (preset-aware GPU table default, else `12.5`) |
 | `--auto-uv-memory-offset-mhz N` | memory clock V/F offset saved with the profile |
 | `--auto-uv-power-limit-w N` | power limit applied during the scan and saved with the profile |
 | `--auto-uv-tail-rise-bins N` | bins above lock point that may rise (`0` = flat) |

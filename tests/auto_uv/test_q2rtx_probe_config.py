@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from auto_uv.stability.q2rtx import Q2RTXStabilityConfig
+from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.q2rtx.q2rtx_cuda_probe_config import cuda_companion_enabled_for_voltage_band
 from auto_uv.q2rtx.q2rtx_cuda_probe_config import q2rtx_cuda_probe_config_for_voltage_band
@@ -138,9 +138,50 @@ def test_scan_runtime_settings_keep_duration_config() -> None:
     assert settings.q2rtx_config.duration_s == 600
     assert settings.q2rtx_config.single_pass_timeout_s == 999.0
     assert settings.final_verification_duration_s == 300
-    assert round(settings.final_clock_drop_margin_pct, 4) == 6.0403
-    assert round(settings.min_performance_core_clock_pct, 4) == 93.9597
+    assert round(settings.final_clock_drop_margin_pct, 4) == 11.1111
+    assert round(settings.min_performance_core_clock_pct, 4) == 88.8889
     assert settings.derive_efficiency_stop_streak is True
+
+
+def test_scan_runtime_settings_use_preset_aware_clock_drop_defaults() -> None:
+    source_config = Q2RTXStabilityConfig(duration_s=600, single_pass_timeout_s=999.0)
+
+    balanced = read_scan_runtime_settings(
+        {
+            "auto_uv_mode": "efficiency",
+            "auto_uv_tail_rise_bins": 4,
+        },
+        source_config,
+        gpu_name="NVIDIA GeForce RTX 5080",
+    )
+    performance = read_scan_runtime_settings(
+        {"auto_uv_mode": "performance"},
+        source_config,
+        gpu_name="NVIDIA GeForce RTX 5080",
+    )
+    cli_balanced = read_scan_runtime_settings(
+        {
+            "auto_uv_requested_mode": "balanced",
+            "auto_uv_mode": "efficiency",
+        },
+        source_config,
+        gpu_name="NVIDIA GeForce RTX 5080",
+    )
+    explicit = read_scan_runtime_settings(
+        {
+            "auto_uv_mode": "performance",
+            "auto_uv_max_clock_drop_pct": 9.0,
+        },
+        source_config,
+        gpu_name="NVIDIA GeForce RTX 5080",
+    )
+
+    assert round(balanced.final_clock_drop_margin_pct, 4) == 6.0403
+    assert round(balanced.min_performance_core_clock_pct, 4) == 93.9597
+    assert round(cli_balanced.final_clock_drop_margin_pct, 4) == 6.0403
+    assert round(performance.final_clock_drop_margin_pct, 4) == 5.3968
+    assert round(performance.min_performance_core_clock_pct, 4) == 94.6032
+    assert explicit.final_clock_drop_margin_pct == 9.0
 
 
 def test_scan_runtime_settings_use_generic_clock_drop_for_unknown_gpu() -> None:

@@ -41,17 +41,33 @@ Scans are explicit because they make hardware changes. Start one with:
 sudo ./penguin_burner.sh --auto-uv-voltage-scan
 ```
 
-The CLI scan options mirror the GUI Auto-UV tuning dialog:
+The CLI scan options mirror the GUI Auto-UV tuning dialog. Start with
+`--auto-uv-voltage-scan`, then choose the same preset family shown in the GUI
+with `--auto-uv-mode efficiency|balanced|performance`.
+
+Common scan controls, shown for every GUI preset:
 
 - `--gpu-index N`: select the NVIDIA GPU used for scan, verification, and runtime.
-- `--auto-uv-mode efficiency|balanced|performance`: select the same preset family as the GUI.
-- `--auto-uv-min-voltage-mv N`: Efficiency min-voltage floor.
-- `--auto-uv-max-clock-drop-pct N`: max loaded core-clock drop allowed.
-- `--auto-uv-memory-offset-mhz N`: memory clock V/F offset saved with the profile.
-- `--auto-uv-power-limit-w N`: power limit applied during the scan and saved with the profile.
-- `--auto-uv-tail-rise-bins N`: preset tail-rise value passed by the GUI.
+- `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed. For known GPUs the default follows the selected preset; unknown GPUs use `12.5`. On RTX 5080 the defaults are about `11.1` for Efficiency, `6.0` for Balanced, and `5.4` for Performance.
+- `--auto-uv-memory-offset-mhz N`: memory clock V/F offset applied during the scan and saved with the final profile.
+- `--auto-uv-power-limit-w N`: power limit applied during the scan and saved with the final profile.
+
+Efficiency preset controls:
+
+- `--auto-uv-mode efficiency`: use the GUI Efficiency preset path.
+- `--auto-uv-min-voltage-mv N`: lowest voltage bin Auto-UV may try in Efficiency.
+
+Balanced preset controls:
+
+- `--auto-uv-mode balanced`: use the GUI Balanced preset path.
+- `--auto-uv-tail-rise-bins 4`: the GUI Balanced preset shape. The CLI fills this in automatically when omitted.
+
+Performance preset controls:
+
+- `--auto-uv-mode performance`: use the GUI Performance preset path.
 - `--auto-oc-target-voltage-mv N`: Performance Auto-OC voltage target.
 - `--auto-oc-target-clock-mhz N`: Performance Auto-OC clock target.
+- `--auto-uv-tail-rise-bins 6`: the GUI Performance preset shape. The runtime fills this in automatically when omitted.
 
 Examples:
 
@@ -61,7 +77,17 @@ Balanced with GUI defaults:
 sudo ./penguin_burner.sh --auto-uv-voltage-scan --auto-uv-mode balanced
 ```
 
-Balanced with the default tail-rise value made explicit:
+Balanced with all common GUI knobs made explicit:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+  --auto-uv-mode balanced \
+  --auto-uv-max-clock-drop-pct 6.0 \
+  --auto-uv-memory-offset-mhz 500 \
+  --auto-uv-power-limit-w 390
+```
+
+Balanced with the preset shape made explicit:
 
 ```bash
 sudo ./penguin_burner.sh --auto-uv-voltage-scan \
@@ -95,6 +121,18 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-oc-target-voltage-mv 910 \
   --auto-oc-target-clock-mhz 2950 \
   --auto-uv-tail-rise-bins 6
+```
+
+Performance with common scan limits too:
+
+```bash
+sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+  --auto-uv-mode performance \
+  --auto-oc-target-voltage-mv 910 \
+  --auto-oc-target-clock-mhz 2950 \
+  --auto-uv-max-clock-drop-pct 5.4 \
+  --auto-uv-memory-offset-mhz 500 \
+  --auto-uv-power-limit-w 390
 ```
 
 If only one Performance Auto-OC target flag is supplied, the missing voltage or

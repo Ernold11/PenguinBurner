@@ -45,7 +45,10 @@ def select_scan_tuning(
         selected_index=gpu_index
     )
     voltage_drop_default = auto_uv_voltage_drop_default(gpu_index=selected_gpu_index)
-    clock_drop_default = auto_uv_clock_drop_default(gpu_index=selected_gpu_index)
+    clock_drop_default = auto_uv_clock_drop_default(
+        gpu_index=selected_gpu_index,
+        preset_id=DEFAULT_AUTO_UV_PRESET,
+    )
     gpu_combo = QtWidgets.QComboBox()
     gpu_combo.setObjectName("gpuSelector")
     gpu_combo.setMinimumWidth(360)
@@ -184,6 +187,7 @@ def select_scan_tuning(
         float(clock_drop_default.value_pct),
         "%",
     )
+    max_clock_drop_spin.setObjectName("maxClockDropSpin")
     voltage_floor_spin = QtWidgets.QSpinBox()
     voltage_floor_spin.setRange(700, 1250)
     voltage_floor_spin.setSuffix(" mV")
@@ -296,8 +300,8 @@ def select_scan_tuning(
         widget=max_clock_drop_spin,
         tooltip=(
             "How much loaded core-clock degradation Auto-UV may accept. The "
-            "default comes from the GPU table's Efficiency-to-Performance "
-            "clock ratio when detected; unknown GPUs use a generic fallback."
+            "default is preset-aware from the GPU table when detected; unknown "
+            "GPUs use a generic fallback."
         ),
     )
     _add_form_row(
@@ -339,7 +343,32 @@ def select_scan_tuning(
             advanced_pages.get(checked_preset_id(), balanced_page)
         )
 
-    preset_button_group.buttonClicked.connect(lambda _button: sync_preset_specific_fields())
+    clock_drop_syncing = {"active": False}
+    clock_drop_manual_override = {"active": False}
+
+    def mark_clock_drop_manual_override(_value) -> None:
+        if not bool(clock_drop_syncing["active"]):
+            clock_drop_manual_override["active"] = True
+
+    def sync_clock_drop_default() -> None:
+        if bool(clock_drop_manual_override["active"]):
+            return
+        selected = _selected_gpu_index(gpu_combo, selected_gpu_index)
+        default = auto_uv_clock_drop_default(
+            gpu_index=selected,
+            preset_id=checked_preset_id(),
+        )
+        clock_drop_syncing["active"] = True
+        max_clock_drop_spin.setValue(float(default.value_pct))
+        clock_drop_syncing["active"] = False
+
+    def sync_preset_defaults() -> None:
+        sync_preset_specific_fields()
+        sync_clock_drop_default()
+
+    max_clock_drop_spin.valueChanged.connect(mark_clock_drop_manual_override)
+    gpu_combo.currentIndexChanged.connect(lambda _index: sync_clock_drop_default())
+    preset_button_group.buttonClicked.connect(lambda _button: sync_preset_defaults())
     sync_preset_specific_fields()
     sync_gpu_nvml_info()
 

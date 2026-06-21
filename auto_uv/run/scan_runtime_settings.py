@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from auto_uv.stability.q2rtx import Q2RTXStabilityConfig
+from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE, normalize_auto_uv_mode
 from auto_uv.domain.types import AutoUvError
@@ -10,9 +10,7 @@ from auto_uv.domain.user_options import (
     AUTO_UV_DEFAULTS,
     AUTO_UV_METRIC_TUNING,
 )
-from auto_uv.scan_mode.uv_limits import (
-    uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu,
-)
+from auto_uv.scan_mode.uv_limits import uv_limit_clock_drop_pct_for_gpu
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +40,7 @@ def read_scan_runtime_settings(
     auto_uv_mode = normalize_auto_uv_mode(runtime_options.get("auto_uv_mode"))
     final_clock_drop_margin_pct = clock_drop_margin_pct(
         runtime_options,
+        auto_uv_mode=auto_uv_mode,
         gpu_name=gpu_name,
     )
     min_performance_core_clock_pct = max(0.0, 100.0 - final_clock_drop_margin_pct)
@@ -66,14 +65,43 @@ def read_scan_runtime_settings(
 def clock_drop_margin_pct(
     runtime_options: dict,
     *,
+    auto_uv_mode: str | None = None,
     gpu_name: object | None = None,
 ) -> float:
     value = runtime_options.get("auto_uv_max_clock_drop_pct")
     if value is None:
-        value = uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu(gpu_name)
+        value = uv_limit_clock_drop_pct_for_gpu(
+            gpu_name,
+            profile_id=clock_drop_profile_id(runtime_options, auto_uv_mode=auto_uv_mode),
+        )
     if value is None:
         value = AUTO_UV_DEFAULTS.max_core_clock_drop_pct
     return max(0.0, min(100.0, float(value)))
+
+
+def clock_drop_profile_id(
+    runtime_options: dict,
+    *,
+    auto_uv_mode: str | None = None,
+) -> str:
+    requested = str(runtime_options.get("auto_uv_requested_mode") or "").strip().lower()
+    if requested in {"efficiency", "balanced", "performance"}:
+        return requested
+
+    raw_mode = str(runtime_options.get("auto_uv_mode") or "").strip().lower()
+    if raw_mode == "balanced":
+        return "balanced"
+    if raw_mode == "performance" or auto_uv_mode == AUTO_UV_MODE_PERFORMANCE:
+        return "performance"
+
+    value = runtime_options.get("auto_uv_tail_rise_bins")
+    if value is not None:
+        tail_bins = int(value)
+        if tail_bins >= int(AUTO_UV_DEFAULTS.performance_tail_rise_bins):
+            return "performance"
+        if tail_bins >= int(AUTO_UV_DEFAULTS.balanced_tail_rise_bins):
+            return "balanced"
+    return "efficiency"
 
 
 def max_drop_pct() -> float:

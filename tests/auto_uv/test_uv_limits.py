@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from auto_uv.scan_mode.uv_limits import (
-    uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu,
+    uv_limit_clock_drop_pct_for_gpu,
     uv_limit_profile_target_for_gpu,
     uv_limit_voltage_floor_target_for_gpu,
     voltage_drop_pct,
@@ -29,21 +29,24 @@ def test_5080_voltage_table_exposes_efficiency_floor_and_performance_ceiling() -
 def test_unlisted_gpu_has_no_voltage_table_match() -> None:
     assert uv_limit_voltage_floor_target_for_gpu("NVIDIA GeForce GTX 1080") is None
     assert uv_limit_profile_target_for_gpu("NVIDIA GeForce GTX 1080", "performance") is None
-    assert (
-        uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu(
-            "NVIDIA GeForce GTX 1080"
-        )
-        is None
-    )
+    assert uv_limit_clock_drop_pct_for_gpu("NVIDIA GeForce GTX 1080") is None
 
 
-def test_efficiency_to_performance_clock_drop_uses_gpu_table_ratio() -> None:
-    assert uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu(
+def test_clock_drop_uses_preset_aware_gpu_table_ratio() -> None:
+    assert uv_limit_clock_drop_pct_for_gpu(
         "NVIDIA GeForce RTX 5080"
+    ) == pytest.approx(11.111111111111116)
+    assert uv_limit_clock_drop_pct_for_gpu(
+        "NVIDIA GeForce RTX 5080",
+        profile_id="balanced",
     ) == pytest.approx(6.040268456375841)
-    assert uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu(
+    assert uv_limit_clock_drop_pct_for_gpu(
+        "NVIDIA GeForce RTX 5080",
+        profile_id="performance",
+    ) == pytest.approx(5.3968253968254)
+    assert uv_limit_clock_drop_pct_for_gpu(
         "NVIDIA GeForce RTX 5090"
-    ) == pytest.approx(10.0)
+    ) == pytest.approx(12.903225806451612)
 
 
 def test_target_matching_keeps_ti_super_before_base_4070() -> None:

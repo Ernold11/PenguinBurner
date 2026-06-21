@@ -7,7 +7,7 @@ from auto_uv.scan_mode import AUTO_UV_MODE_EFFICIENCY
 from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE
 from auto_uv.scan_mode.uv_limits import (
     AUTO_UV_PERFORMANCE_OC_PROFILE_ID,
-    uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu,
+    uv_limit_clock_drop_pct_for_gpu,
     uv_limit_profile_target_for_gpu,
     uv_limit_voltage_floor_target_for_gpu,
     voltage_drop_pct,
@@ -163,10 +163,13 @@ def auto_uv_clock_drop_default(
     *,
     gpu_name: object | None = None,
     gpu_index: int | None = None,
+    preset_id: object | None = AUTO_UV_PRESET_EFFICIENCY,
 ) -> AutoUvClockDropDefault:
     detected_name = str(gpu_name).strip() if gpu_name else _query_gpu_name(gpu_index)
-    value_pct = uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu(
-        detected_name
+    preset = auto_uv_preset(preset_id)
+    value_pct = uv_limit_clock_drop_pct_for_gpu(
+        detected_name,
+        profile_id=preset.preset_id,
     )
     target = uv_limit_profile_target_for_gpu(detected_name, "efficiency")
     if value_pct is None:
