@@ -265,7 +265,7 @@ class AdaptiveAutoUvRuntimeController:
     ) -> AdaptiveAutoUvSwitchResult:
         apply_plan = self.deps.apply_plan
         if apply_plan is None:
-            from afterburner.import_vf_curve import apply_plan as default_apply_plan
+            from runtime_support.vf_curve_plan import apply_plan as default_apply_plan
 
             apply_plan = default_apply_plan
         apply_plan(self.vf_curve_reader, curve["plan"])

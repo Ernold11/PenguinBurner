@@ -15,7 +15,6 @@ from .window import MainWindow
 class GuiLaunchOptions:
     qt_argv: list[str]
     gpu_index: int | None = None
-    auto_uv_options: dict[str, object] | None = None
 
 
 def parse_gui_launch_options(argv: list[str] | None = None) -> GuiLaunchOptions:
@@ -24,7 +23,6 @@ def parse_gui_launch_options(argv: list[str] | None = None) -> GuiLaunchOptions:
         raw = ["penguin-burner-ui"]
     qt_argv = [raw[0]]
     gpu_index = None
-    auto_uv_options: dict[str, object] = {}
     index = 1
     while index < len(raw):
         arg = raw[index]
@@ -40,16 +38,6 @@ def parse_gui_launch_options(argv: list[str] | None = None) -> GuiLaunchOptions:
                 raise ValueError(f"{arg} requires an integer value") from exc
             index += 2
             continue
-        if arg == "--auto-uv-tail-rise-bins":
-            if index + 1 >= len(raw):
-                raise ValueError(f"{arg} requires an integer value")
-            try:
-                auto_uv_options["auto_uv_tail_rise_bins"] = max(0, int(raw[index + 1]))
-                auto_uv_options["auto_uv_tail_rise_bins_explicit"] = True
-            except ValueError as exc:
-                raise ValueError(f"{arg} requires an integer value") from exc
-            index += 2
-            continue
         for prefix in ("--gpu-index=", "--index="):
             if arg.startswith(prefix):
                 try:
@@ -58,25 +46,11 @@ def parse_gui_launch_options(argv: list[str] | None = None) -> GuiLaunchOptions:
                     raise ValueError(f"{prefix[:-1]} requires an integer value") from exc
                 break
         else:
-            if arg.startswith("--auto-uv-tail-rise-bins="):
-                try:
-                    auto_uv_options["auto_uv_tail_rise_bins"] = max(
-                        0,
-                        int(arg.split("=", 1)[1]),
-                    )
-                    auto_uv_options["auto_uv_tail_rise_bins_explicit"] = True
-                except ValueError as exc:
-                    raise ValueError(
-                        "--auto-uv-tail-rise-bins requires an integer value"
-                    ) from exc
-                index += 1
-                continue
             qt_argv.append(arg)
         index += 1
     return GuiLaunchOptions(
         qt_argv=qt_argv,
         gpu_index=gpu_index,
-        auto_uv_options=auto_uv_options or None,
     )
 
 
@@ -111,7 +85,6 @@ def run(argv: list[str] | None = None) -> int:
     window = MainWindow(
         qt_modules,
         gpu_index=launch_options.gpu_index,
-        auto_uv_options=launch_options.auto_uv_options,
     )
     icon = application_icon(QtGui)
     if not icon.isNull():

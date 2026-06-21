@@ -138,8 +138,8 @@ def test_scan_runtime_settings_keep_duration_config() -> None:
     assert settings.q2rtx_config.duration_s == 600
     assert settings.q2rtx_config.single_pass_timeout_s == 999.0
     assert settings.final_verification_duration_s == 300
-    assert round(settings.final_clock_drop_margin_pct, 4) == 11.1111
-    assert round(settings.min_performance_core_clock_pct, 4) == 88.8889
+    assert round(settings.final_clock_drop_margin_pct, 4) == 6.0403
+    assert round(settings.min_performance_core_clock_pct, 4) == 93.9597
     assert settings.derive_efficiency_stop_streak is True
 
 
@@ -152,7 +152,7 @@ def test_scan_runtime_settings_use_generic_clock_drop_for_unknown_gpu() -> None:
     assert settings.min_performance_core_clock_pct == 87.5
 
 
-def test_scan_runtime_settings_preserve_non_default_efficiency_stop_streak() -> None:
+def test_scan_runtime_settings_ignores_removed_efficiency_stop_override() -> None:
     source_config = Q2RTXStabilityConfig(duration_s=600)
 
     settings = read_scan_runtime_settings(
@@ -160,8 +160,8 @@ def test_scan_runtime_settings_preserve_non_default_efficiency_stop_streak() -> 
         source_config,
     )
 
-    assert settings.efficiency_stop_streak == 4
-    assert settings.derive_efficiency_stop_streak is False
+    assert settings.efficiency_stop_streak == 2
+    assert settings.derive_efficiency_stop_streak is True
 
 
 def test_scan_runtime_tail_rise_defaults_follow_auto_uv_mode() -> None:

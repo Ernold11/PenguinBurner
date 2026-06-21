@@ -5,11 +5,7 @@ The supported path uses stock Proton/DXVK-NVAPI with
 in-memory FIFO, so dxvk-nvapi's ``NvAPI_D3D_SetLatencyMarker`` trace lines are
 drained by this bridge without compiling or replacing a custom DLL.
 
-The parser also accepts optional ``LAT`` marker-trace lines from development
-builds, but the Steam setup helper does not require that custom path. The same
-matcher also accepts the legacy ``PBLAT`` prefix.
-
-This bridge tails that log, pairs SIMULATION_START (NV marker 0) with
+This bridge tails that trace, pairs SIMULATION_START (NV marker 0) with
 PRESENT_END (NV marker 5) by frame id, and sends the resulting
 ``sim_to_present_us`` span to the PenguinBurner latency socket as a
 ``marker-proxy`` timing sample. When the title also emits INPUT_SAMPLE
@@ -30,8 +26,6 @@ occurs at or after that frame's PRESENT_END, and emits the wider
 software-measurable proxy to click-to-photon: it spans real timestamps from
 input/simulation up to the actual hand-off to the display, omitting only the
 two unmeasurable ends (peripheral input and physical scanout/panel).
-
-Experimental and opt-in.
 """
 
 from __future__ import annotations
@@ -47,7 +41,7 @@ from pathlib import Path
 
 from .receiver import latency_socket_path, latency_socket_paths
 
-# NV_LATENCY_MARKER_TYPE values emitted by dxvk-nvapi trace / optional tap.
+# NV_LATENCY_MARKER_TYPE values emitted by dxvk-nvapi trace.
 NV_MARKER_SIMULATION_START = 0
 NV_MARKER_PRESENT_END = 5
 NV_MARKER_INPUT_SAMPLE = 6
@@ -57,11 +51,6 @@ NV_FRAMEGEN_MARKERS = {
     NV_MARKER_OUT_OF_BAND_PRESENT_START,
     NV_MARKER_OUT_OF_BAND_PRESENT_END,
 }
-
-# Optional markers-only tap: "LAT frame=<id> marker=<nv_int> t_us=<qpc_us>"
-# (DXVK_NVAPI_LATENCY_MARKER_TRACE). The search also matches the legacy
-# "PBLAT ..." prefix, so both forms are accepted.
-_MARKER_TAP_RE = re.compile(r"LAT frame=(\d+) marker=(\d+) t_us=(\d+)")
 
 # Stock dxvk-nvapi trace (DXVK_NVAPI_LOG_LEVEL=trace), no custom DLL needed.
 # The regular Reflex path logs NvAPI_D3D_SetLatencyMarker, while async/adaptive
@@ -82,10 +71,7 @@ _TRACE_MARKER_NAMES = {
 
 
 def _parse_line(line: str):
-    """Return (frame, nv_marker, t_us) for a tap or trace line, else None."""
-    m = _MARKER_TAP_RE.search(line)
-    if m:
-        return int(m.group(1)), int(m.group(2)), int(m.group(3))
+    """Return (frame, nv_marker, t_us) for a trace line, else None."""
     m = _TRACE_RE.match(line)
     if m:
         marker = _TRACE_MARKER_NAMES.get(m.group(4))

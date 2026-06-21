@@ -3,6 +3,21 @@ from __future__ import annotations
 import math
 
 from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE, normalize_auto_uv_mode
+from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_DEFAULT_SORT_COLUMN
+from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_FPS_SORT_COLUMN
+from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_FPSW_SORT_COLUMN
+from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_HIGHER_FIRST_COLUMNS
+from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_SORTABLE_COLUMNS
+from auto_uv.ui.final_choice_ranking import best_final_choice_candidate_id
+from auto_uv.ui.final_choice_ranking import candidate_fps
+from auto_uv.ui.final_choice_ranking import candidate_fpsw
+from auto_uv.ui.final_choice_ranking import candidate_oc_mhz
+from auto_uv.ui.final_choice_ranking import candidate_short_duration_s
+from auto_uv.ui.final_choice_ranking import final_choice_shows_oc_column
+from auto_uv.ui.final_choice_ranking import final_choice_sort_column_for_mode
+from auto_uv.ui.final_choice_ranking import final_choice_sort_values
+from auto_uv.ui.final_choice_ranking import numeric_sort_value
+from auto_uv.ui.final_choice_ranking import sort_candidates_for_final_choice
 
 from ..constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
 from ..constants import MAX_FINAL_VERIFICATION_DURATION_S
@@ -13,11 +28,6 @@ from ..components.table_sizing import set_header_fit_column_widths
 
 
 FINAL_CHOICE_SORT_ROLE = 261
-FINAL_CHOICE_FPSW_SORT_COLUMN = 4
-FINAL_CHOICE_FPS_SORT_COLUMN = 5
-FINAL_CHOICE_DEFAULT_SORT_COLUMN = FINAL_CHOICE_FPSW_SORT_COLUMN
-FINAL_CHOICE_SORTABLE_COLUMNS = frozenset({2, 3, 4, 5, 6})
-FINAL_CHOICE_HIGHER_FIRST_COLUMNS = frozenset({2, 3, 4, 5})
 FINAL_CHOICE_COLUMNS = [
     "mV",
     "Target MHz",
@@ -67,102 +77,12 @@ def candidate_number(value, *, precision: int) -> str:
     return str(int(round(number))) if precision <= 0 else f"{number:.{precision}f}"
 
 
-def final_choice_sort_values(candidate: dict) -> list[float | str]:
-    oc_mhz = candidate_oc_mhz(candidate)
-    return [
-        numeric_sort_value(candidate.get("candidate_voltage_mv")),
-        numeric_sort_value(candidate.get("lock_clock_mhz")),
-        "" if oc_mhz is None else float(oc_mhz),
-        numeric_sort_value(candidate.get("avg_core_clock_mhz")),
-        numeric_sort_value(candidate.get("efficiency_fps_per_w")),
-        numeric_sort_value(candidate.get("avg_fps")),
-        numeric_sort_value(candidate.get("avg_power_w")),
-        float(candidate_short_duration_s(candidate)),
-        str(candidate_status_text(candidate, False)).casefold(),
-    ]
-
-
-def final_choice_sort_column_for_mode(auto_uv_mode: object) -> int:
-    if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE:
-        return FINAL_CHOICE_FPS_SORT_COLUMN
-    return FINAL_CHOICE_FPSW_SORT_COLUMN
-
-
-def final_choice_shows_oc_column(auto_uv_mode: object) -> bool:
-    return normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE
-
-
-def sort_candidates_for_final_choice(
-    candidates: list[dict],
-    auto_uv_mode: object,
-) -> list[dict]:
-    if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE:
-        return sorted(
-            candidates,
-            key=lambda candidate: (
-                candidate_fps(candidate) is None,
-                -float(candidate_fps(candidate) or 0.0),
-                -int(candidate.get("lock_clock_mhz") or 0),
-                int(candidate.get("candidate_voltage_mv") or 99999),
-            ),
-        )
-    return sorted(
-        candidates,
-        key=lambda candidate: (
-            candidate_fpsw(candidate) is None,
-            -float(candidate_fpsw(candidate) or 0.0),
-            int(candidate.get("candidate_voltage_mv") or 99999),
-            -int(candidate.get("lock_clock_mhz") or 0),
-        ),
-    )
-
-
-def best_final_choice_candidate_id(candidates: list[dict], auto_uv_mode: object) -> str:
-    if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE:
-        for candidate in candidates:
-            if candidate_fps(candidate) is not None:
-                return str(candidate.get("candidate_id", ""))
-        return str(candidates[0].get("candidate_id", "")) if candidates else ""
-    for candidate in candidates:
-        if candidate_fpsw(candidate) is not None:
-            return str(candidate.get("candidate_id", ""))
-    return str(candidates[0].get("candidate_id", "")) if candidates else ""
-
-
 def duration_minutes_for_control(seconds) -> int:
     try:
         duration_s = max(1, int(round(float(seconds))))
     except (TypeError, ValueError):
         duration_s = DEFAULT_FINAL_VERIFICATION_DURATION_S
     return max(1, min(MAX_FINAL_VERIFICATION_DURATION_S // 60, int(math.ceil(duration_s / 60.0))))
-
-
-def candidate_short_duration_s(candidate: dict) -> int:
-    try:
-        duration_s = int(round(float(candidate.get("short_verification_duration_s"))))
-    except (TypeError, ValueError):
-        duration_s = 30
-    return max(1, min(MAX_FINAL_VERIFICATION_DURATION_S, duration_s))
-
-
-def numeric_sort_value(value) -> float | str:
-    if value in (None, ""):
-        return ""
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return ""
-    return float(number) if math.isfinite(number) else ""
-
-
-def candidate_fpsw(candidate: dict) -> float | None:
-    value = numeric_sort_value(candidate.get("efficiency_fps_per_w"))
-    return None if value == "" else float(value)
-
-
-def candidate_fps(candidate: dict) -> float | None:
-    value = numeric_sort_value(candidate.get("avg_fps"))
-    return None if value == "" else float(value)
 
 
 def select_final_candidate(
@@ -473,20 +393,6 @@ def candidate_oc_text(candidate: dict) -> str:
     if rounded is None:
         return ""
     return f"{rounded:+d}"
-
-
-def candidate_oc_mhz(candidate: dict) -> int | None:
-    target_clock = numeric_sort_value(candidate.get("lock_clock_mhz"))
-    baseline_clock = numeric_sort_value(
-        candidate.get("base_avg_core_clock_mhz")
-        or candidate.get("measured_baseline_clock_mhz")
-        or candidate.get("baseline_core_clock_mhz")
-        or candidate.get("baseline_clock_mhz")
-        or candidate.get("auto_oc_baseline_clock_mhz")
-    )
-    if target_clock != "" and baseline_clock != "":
-        return int(round(float(target_clock) - float(baseline_clock)))
-    return None
 
 
 def recovery_decision_text(recovery_decision: dict | None) -> str:

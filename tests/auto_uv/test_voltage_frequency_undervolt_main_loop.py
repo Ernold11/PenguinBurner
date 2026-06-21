@@ -14,6 +14,9 @@ from auto_uv.auto_uv_types import (
     StableRunDecision,
     VfCurveCandidate,
 )
+from auto_uv import baseline_probe
+from auto_uv import crash_recovery
+from auto_uv import performance_auto_oc_selection
 from auto_uv import voltage_frequency_undervolt_main_loop as undervolt_main_loop
 from auto_uv.final_verification.main_loop import (
     run_final_verification_and_save as real_run_final_verification_and_save,
@@ -61,38 +64,16 @@ def _assert_final_verification_kwargs_match_real_signature(kwargs: dict) -> None
     assert unexpected == set()
 
 
-def test_explicit_zero_tail_descent_does_not_enforce_clock_floor() -> None:
+def test_zero_tail_descent_does_not_enforce_clock_floor() -> None:
     assert (
         undervolt_main_loop.lower_voltage_descent_enforces_clock_floor(
-            {
-                "auto_uv_tail_rise_bins_explicit": True,
-                "auto_uv_min_voltage_mv_explicit": True,
-            },
             tail_rise_bins=0,
         )
         is False
     )
     assert (
         undervolt_main_loop.lower_voltage_descent_enforces_clock_floor(
-            {
-                "auto_uv_tail_rise_bins_explicit": True,
-                "auto_uv_min_voltage_mv_explicit": True,
-            },
             tail_rise_bins=2,
-        )
-        is True
-    )
-    assert (
-        undervolt_main_loop.lower_voltage_descent_enforces_clock_floor(
-            {},
-            tail_rise_bins=0,
-        )
-        is True
-    )
-    assert (
-        undervolt_main_loop.lower_voltage_descent_enforces_clock_floor(
-            {"auto_uv_tail_rise_bins_explicit": True},
-            tail_rise_bins=0,
         )
         is True
     )
@@ -119,20 +100,20 @@ def test_discovery_probe_runner_uses_live_voltage_reader_keyword(monkeypatch) ->
             captured["label_clock_mhz"] = label_clock_mhz
             return object(), type("Result", (), {"success": True, "reason": "ok"})()
 
-    monkeypatch.setattr(undervolt_main_loop, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(baseline_probe, "Q2RtxCudaProbeRunner", FakeRunner)
     monkeypatch.setattr(
-        undervolt_main_loop,
+        baseline_probe,
         "emit_ui_json_event",
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
-        undervolt_main_loop,
+        baseline_probe,
         "probe_summary_ui_payload",
         lambda *args, **kwargs: {},
     )
-    monkeypatch.setattr(undervolt_main_loop, "log_benchmark", lambda *args, **kwargs: None)
+    monkeypatch.setattr(baseline_probe, "log_benchmark", lambda *args, **kwargs: None)
 
-    undervolt_main_loop.run_discovery_probe(
+    baseline_probe.run_discovery_probe(
         base_curve(900, 1025, 25, 2000, 40),
         gpu=FakeGpu(),
         q2rtx_config=object(),
@@ -182,19 +163,19 @@ def test_discovery_probe_logs_selected_gpu_light_load_diagnostic(monkeypatch) ->
                 ),
             )
 
-    monkeypatch.setattr(undervolt_main_loop, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(baseline_probe, "Q2RtxCudaProbeRunner", FakeRunner)
     monkeypatch.setattr(
-        undervolt_main_loop,
+        baseline_probe,
         "emit_ui_json_event",
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
-        undervolt_main_loop,
+        baseline_probe,
         "probe_summary_ui_payload",
         lambda *args, **kwargs: {},
     )
 
-    undervolt_main_loop.run_discovery_probe(
+    baseline_probe.run_discovery_probe(
         base_curve(900, 1025, 25, 2000, 40),
         gpu=FakeGpu(),
         q2rtx_config=object(),
@@ -572,7 +553,7 @@ def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
     )
     monkeypatch.setattr(undervolt_main_loop, "run_lower_voltage_sweep_loop", fake_sweep_loop)
     monkeypatch.setattr(
-        undervolt_main_loop,
+        performance_auto_oc_selection,
         "run_auto_oc_candidate_search",
         fake_auto_oc_search,
     )
@@ -788,7 +769,7 @@ def test_previous_crash_resume_starts_auto_oc_from_next_saved_voltage(
     monkeypatch.setattr(
         undervolt_main_loop,
         "consume_crash_cache",
-        lambda **_kwargs: undervolt_main_loop.CrashCacheEntries(
+        lambda **_kwargs: crash_recovery.CrashCacheEntries(
             [unsafe_entry],
             interrupted_entry=unsafe_entry,
         ),
@@ -1043,13 +1024,13 @@ def test_performance_auto_oc_selection_runs_before_final_verification(monkeypatc
         )
 
     monkeypatch.setattr(
-        undervolt_main_loop,
+        performance_auto_oc_selection,
         "run_auto_oc_candidate_search",
         fake_auto_oc_search,
     )
 
     plan, voltage_mv, clock_mhz, probe, _oc_metadata = (
-        undervolt_main_loop.select_performance_auto_oc_candidate(
+        performance_auto_oc_selection.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="performance",
             stable_plan=curve,
@@ -1087,13 +1068,13 @@ def test_non_performance_mode_skips_auto_oc_selection(monkeypatch) -> None:
         raise AssertionError("auto-oc should not run outside performance mode")
 
     monkeypatch.setattr(
-        undervolt_main_loop,
+        performance_auto_oc_selection,
         "run_auto_oc_candidate_search",
         fail_auto_oc_search,
     )
 
     plan, voltage_mv, clock_mhz, probe, _oc_metadata = (
-        undervolt_main_loop.select_performance_auto_oc_candidate(
+        performance_auto_oc_selection.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="efficiency",
             stable_plan=curve,
@@ -1181,7 +1162,7 @@ def test_run_auto_oc_candidate_search_delegates_to_auto_oc(monkeypatch) -> None:
 
     monkeypatch.setattr(auto_oc, "run_auto_oc_candidate_search", fake_search)
 
-    result = undervolt_main_loop.run_auto_oc_candidate_search(foo=1, bar="baz")
+    result = performance_auto_oc_selection.run_auto_oc_candidate_search(foo=1, bar="baz")
 
     assert result == "auto-oc-result"
     assert captured == {"foo": 1, "bar": "baz"}
@@ -1192,18 +1173,18 @@ def test_run_auto_oc_candidate_search_delegates_to_auto_oc(monkeypatch) -> None:
 
 def test_consume_crash_cache_without_interrupted_marker(monkeypatch) -> None:
     monkeypatch.setattr(
-        undervolt_main_loop,
+        crash_recovery,
         "consume_interrupted_probe_crash_marker",
         lambda: None,
     )
     monkeypatch.setattr(
-        undervolt_main_loop,
+        crash_recovery,
         "load_unsafe_voltage_blacklist",
         lambda: ["blacklist-entry"],
     )
     log_messages: list[str] = []
 
-    entries = undervolt_main_loop.consume_crash_cache(log=log_messages.append)
+    entries = crash_recovery.consume_crash_cache(log=log_messages.append)
 
     assert entries == ["blacklist-entry"]
     assert log_messages == []
@@ -1211,7 +1192,7 @@ def test_consume_crash_cache_without_interrupted_marker(monkeypatch) -> None:
 
 def test_consume_crash_cache_logs_interrupted_marker(monkeypatch) -> None:
     monkeypatch.setattr(
-        undervolt_main_loop,
+        crash_recovery,
         "consume_interrupted_probe_crash_marker",
         lambda: (
             "/tmp/crash.json",
@@ -1219,13 +1200,13 @@ def test_consume_crash_cache_logs_interrupted_marker(monkeypatch) -> None:
         ),
     )
     monkeypatch.setattr(
-        undervolt_main_loop,
+        crash_recovery,
         "load_unsafe_voltage_blacklist",
         lambda: ["entry"],
     )
     log_messages: list[str] = []
 
-    entries = undervolt_main_loop.consume_crash_cache(log=log_messages.append)
+    entries = crash_recovery.consume_crash_cache(log=log_messages.append)
 
     assert entries == ["entry"]
     assert any("blacklisted=880mV" in message for message in log_messages)
@@ -1340,12 +1321,12 @@ def test_crash_recovery_uses_only_interrupted_marker_entry() -> None:
         "lock_clock_mhz": 2910,
         "reason": "stability-probe-failed",
     }
-    entries = undervolt_main_loop.CrashCacheEntries(
+    entries = crash_recovery.CrashCacheEntries(
         [old_unsafe_entry],
         interrupted_entry=None,
     )
 
-    assert undervolt_main_loop.crash_recovery_entry_from_cache(entries) is None
+    assert crash_recovery.crash_recovery_entry_from_cache(entries) is None
 
 
 def test_crash_recovery_entry_profile_tier_reads_nested_marker_details() -> None:
@@ -1501,7 +1482,7 @@ def test_retarget_clock_ceiling_forwards_tail_ceiling() -> None:
 def test_write_verified_candidate_prefers_metadata_tail_rise_bins(monkeypatch) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        undervolt_main_loop,
+        baseline_probe,
         "write_latest_verified_candidate",
         lambda **kwargs: captured.update(kwargs),
     )
@@ -1510,7 +1491,7 @@ def test_write_verified_candidate_prefers_metadata_tail_rise_bins(monkeypatch) -
         "c", 950, 2120, curve, metadata={"tail_rise_bins": 3}
     )
 
-    undervolt_main_loop.write_verified_candidate(
+    baseline_probe.write_verified_candidate(
         candidate,
         _summary(950, 2120),
         discovery_summary=_summary(1000, 2200),
@@ -1528,14 +1509,14 @@ def test_write_verified_candidate_falls_back_to_argument_tail_rise_bins(
 ) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        undervolt_main_loop,
+        baseline_probe,
         "write_latest_verified_candidate",
         lambda **kwargs: captured.update(kwargs),
     )
     curve = base_curve(900, 1025, 25, 2000, 40)
     candidate = VfCurveCandidate("c", 950, 2120, curve)
 
-    undervolt_main_loop.write_verified_candidate(
+    baseline_probe.write_verified_candidate(
         candidate,
         _summary(950, 2120),
         discovery_summary=_summary(1000, 2200),
@@ -1675,7 +1656,7 @@ def test_select_performance_auto_oc_logs_performance_sweep_profile(
     log_messages: list[str] = []
 
     monkeypatch.setattr(
-        undervolt_main_loop,
+        performance_auto_oc_selection,
         "run_auto_oc_candidate_search",
         lambda **_kwargs: SimpleNamespace(
             selected_candidate=VfCurveCandidate("oc", 950, 2745, curve),
@@ -1695,13 +1676,13 @@ def test_select_performance_auto_oc_logs_performance_sweep_profile(
         },
     )
     monkeypatch.setattr(
-        undervolt_main_loop,
+        performance_auto_oc_selection,
         "build_performance_sweep_profile_candidate",
         lambda *_args, **_kwargs: swept,
     )
 
     plan, voltage_mv, clock_mhz, probe, _oc_metadata = (
-        undervolt_main_loop.select_performance_auto_oc_candidate(
+        performance_auto_oc_selection.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="performance",
             stable_plan=curve,
@@ -1735,7 +1716,7 @@ def test_select_performance_auto_oc_keeps_probe_when_selection_unchanged(
     start_probe = _summary(925, 2600)
 
     monkeypatch.setattr(
-        undervolt_main_loop,
+        performance_auto_oc_selection,
         "run_auto_oc_candidate_search",
         lambda **_kwargs: SimpleNamespace(
             selected_candidate=VfCurveCandidate("oc", 925, 2600, curve),
@@ -1744,13 +1725,13 @@ def test_select_performance_auto_oc_keeps_probe_when_selection_unchanged(
     )
     # Plain selected candidate (no performance-sweep metadata).
     monkeypatch.setattr(
-        undervolt_main_loop,
+        performance_auto_oc_selection,
         "build_performance_sweep_profile_candidate",
         lambda *_args, **_kwargs: VfCurveCandidate("oc", 925, 2600, curve),
     )
 
     _plan, voltage_mv, clock_mhz, probe, _oc_metadata = (
-        undervolt_main_loop.select_performance_auto_oc_candidate(
+        performance_auto_oc_selection.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="performance",
             stable_plan=curve,
@@ -1772,7 +1753,7 @@ def test_select_performance_auto_oc_keeps_probe_when_selection_unchanged(
 
 
 def test_performance_auto_oc_progress_metadata_reports_applied_and_limit() -> None:
-    metadata = undervolt_main_loop.performance_auto_oc_progress_metadata(
+    metadata = performance_auto_oc_selection.performance_auto_oc_progress_metadata(
         endpoint=SimpleNamespace(clock_mhz=2980),
         measured_baseline_clock_mhz=2600,
         selected_clock_mhz=2745,
@@ -1787,7 +1768,7 @@ def test_performance_auto_oc_progress_metadata_reports_applied_and_limit() -> No
 
 def test_performance_auto_oc_progress_metadata_keeps_limit_when_no_gain() -> None:
     # Auto-OC reports target minus measured baseline, including a zero delta.
-    metadata = undervolt_main_loop.performance_auto_oc_progress_metadata(
+    metadata = performance_auto_oc_selection.performance_auto_oc_progress_metadata(
         endpoint=SimpleNamespace(clock_mhz=2980),
         measured_baseline_clock_mhz=2600,
         selected_clock_mhz=2600,
@@ -1798,7 +1779,7 @@ def test_performance_auto_oc_progress_metadata_keeps_limit_when_no_gain() -> Non
 
 
 def test_performance_auto_oc_progress_metadata_keeps_signed_delta_above_limit() -> None:
-    metadata = undervolt_main_loop.performance_auto_oc_progress_metadata(
+    metadata = performance_auto_oc_selection.performance_auto_oc_progress_metadata(
         endpoint=SimpleNamespace(clock_mhz=2980),
         measured_baseline_clock_mhz=2600,
         selected_clock_mhz=3100,
@@ -1809,7 +1790,7 @@ def test_performance_auto_oc_progress_metadata_keeps_signed_delta_above_limit() 
 
 
 def test_performance_auto_oc_progress_metadata_keeps_negative_delta() -> None:
-    metadata = undervolt_main_loop.performance_auto_oc_progress_metadata(
+    metadata = performance_auto_oc_selection.performance_auto_oc_progress_metadata(
         endpoint=SimpleNamespace(clock_mhz=2980),
         measured_baseline_clock_mhz=2730,
         selected_clock_mhz=2600,
@@ -1821,7 +1802,7 @@ def test_performance_auto_oc_progress_metadata_keeps_negative_delta() -> None:
 
 def test_performance_auto_oc_progress_metadata_empty_without_target() -> None:
     assert (
-        undervolt_main_loop.performance_auto_oc_progress_metadata(
+        performance_auto_oc_selection.performance_auto_oc_progress_metadata(
             endpoint=None,
             measured_baseline_clock_mhz=2600,
             selected_clock_mhz=2700,
@@ -1834,7 +1815,7 @@ def test_select_performance_auto_oc_candidate_returns_oc_metadata(monkeypatch) -
     curve = base_curve(900, 1025, 25, 2000, 40)
 
     monkeypatch.setattr(
-        undervolt_main_loop,
+        performance_auto_oc_selection,
         "run_auto_oc_candidate_search",
         lambda **_kwargs: SimpleNamespace(
             selected_candidate=VfCurveCandidate("oc", 950, 2745, curve),
@@ -1843,12 +1824,12 @@ def test_select_performance_auto_oc_candidate_returns_oc_metadata(monkeypatch) -
         ),
     )
     monkeypatch.setattr(
-        undervolt_main_loop,
+        performance_auto_oc_selection,
         "build_performance_sweep_profile_candidate",
         lambda *_args, **_kwargs: VfCurveCandidate("oc", 950, 2745, curve),
     )
 
-    *_unused, oc_metadata = undervolt_main_loop.select_performance_auto_oc_candidate(
+    *_unused, oc_metadata = performance_auto_oc_selection.select_performance_auto_oc_candidate(
         curve,
         auto_uv_mode="performance",
         stable_plan=curve,
@@ -2206,12 +2187,7 @@ def test_orchestration_sweep_hooks_probe_and_record_candidates(monkeypatch) -> N
 
     result = undervolt_main_loop.run_voltage_frequency_undervolt_main_loop(
         gpu_index=0,
-        runtime_options={
-            # Explicit flags + tail_rise_bins=0 disable the clock floor, so
-            # probe_kwargs carries enforce_target_core_clock_floor=False.
-            "auto_uv_tail_rise_bins_explicit": True,
-            "auto_uv_min_voltage_mv_explicit": True,
-        },
+        runtime_options={},
         q2rtx_config=object(),
         log=lambda _message: None,
     )

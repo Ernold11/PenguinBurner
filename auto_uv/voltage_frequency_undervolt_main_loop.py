@@ -6,7 +6,7 @@ user final choice, final verification, and cleanup.
 
 from __future__ import annotations
 
-from pathlib import Path
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Callable
 
@@ -19,23 +19,38 @@ from .auto_uv_types import (
     VfCurveCandidate,
 )
 from .auto_uv_scan_settings import AutoUvScanSettings
-from .auto_uv_console_log import log_benchmark, log_phase, log_user_stage
+from .auto_uv_console_log import log_phase, log_user_stage
 from .auto_uv_scan_result import build_voltage_scan_result
 from .auto_uv_user_options import AUTO_UV_DEFAULTS, AUTO_UV_METRIC_TUNING
 from .shared.positive_int import positive_int
-from .curve.base_load_flatten_target import (
-    choose_base_load_flatten_target,
-    selected_nvidia_light_load_diagnostic,
+from .baseline_probe import (
+    adjust_baseline_to_measured_clock,
+    build_loaded_baseline_candidate,
+    lower_voltage_descent_enforces_clock_floor,
+    require_probe_summary,
+    retarget_clock_ceiling_for_candidate,
+    run_discovery_probe,
+    tail_ceiling_for_plan,
+    write_verified_candidate,
 )
-from .curve.base_load_voltage import derive_loaded_voltage_band
-from .curve.base_vf_curve import editable_base_vf_points
+from .crash_recovery import (
+    _float_or_none,
+    append_unique_probe_summary,
+    auto_uv_run_marker_details,
+    auto_uv_run_profile_tier,
+    base_probe_summary_from_candidate_record,
+    consume_crash_cache,
+    crash_recovery_decision,
+    crash_recovery_entry_from_cache,
+    crash_recovery_entry_profile_tier,
+    next_safer_recovery_candidate_id,
+    probe_summary_from_candidate_record,
+    recovery_candidate_records_for_failed_run,
+    recovery_initial_target_voltage_mv,
+    replay_recovered_resume_probe_rows,
+)
 from .curve.base_vf_curve_validation import validate_base_vf_curve
-from .curve.base_vf_curve_voltage_bins import (
-    lock_voltage_for_target_clock,
-    nearest_editable_voltage_bin,
-)
 from .ui.candidate_choice import (
-    candidate_plan_from_record,
     choose_final_verification_candidate,
     choose_recovery_final_verification_candidate,
 )
@@ -49,37 +64,37 @@ from .lower_voltage_sweep_loop import (
     LowerVoltageSweepHooks,
     run_lower_voltage_sweep_loop,
 )
-from .curve.measured_probe_lock_clock import lock_clock_from_probe_loaded_clock
-from .ui.probe_summary_ui_payload import probe_summary_ui_payload
 from .q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
 from .q2rtx.q2rtx_cuda_voltage_probe import probe_voltage_candidate
-from .q2rtx.q2rtx_cuda_probe_config import reference_discovery_q2rtx_duration_s
 from .scan_runtime_settings import read_scan_runtime_settings
 from .scan_mode.efficiency_fps_per_w_policy import (
     derive_efficiency_stop_streak_from_fps_variance,
 )
 from .ui.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
-from .persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
 from .persistence.verified_candidate_result_file import (
     read_verified_candidates,
-    write_latest_verified_candidate,
 )
 from .persistence.auto_uv_persisted_json_files import clear_auto_uv_stop_request
-from .curve.vf_curve_flattening import (
-    build_flatten_target_for_plan,
-    build_flattened_plan,
-)
-from .curve.performance_sweep_profile import (
-    build_performance_sweep_profile_candidate,
+from .curve.vf_curve_flattening import build_flatten_target_for_plan
+from .performance_auto_oc_selection import (
+    performance_auto_oc_progress_metadata,
+    run_auto_oc_candidate_search,
+    select_performance_auto_oc_candidate,
 )
 from .ui.vf_curve_ui_points import vf_curve_ui_points
 from .voltage_sweep_state import VoltageProbeOutcome
 from .final_verification import run_final_verification_and_save
-from .scan_mode import AUTO_UV_MODE_EFFICIENCY, AUTO_UV_MODE_PERFORMANCE
-from saved_uv_profiles.profile_tiers import (
-    generated_profile_tier,
-    normalize_profile_tier,
-)
+from .scan_mode import AUTO_UV_MODE_EFFICIENCY
+
+
+@dataclass(frozen=True, slots=True)
+class FinalScanCandidate:
+    plan: list[dict]
+    voltage_mv: int
+    lock_clock_mhz: int
+    probe: AutoUvProbeSummary | None
+    verification_duration_s: int
+    auto_oc_metadata: dict
 
 
 def run_voltage_frequency_undervolt_main_loop(
@@ -118,7 +133,6 @@ def run_voltage_frequency_undervolt_main_loop(
         # sweep push down toward the card minimum instead of stopping at the floor.
         efficiency_tail_tune_rise_bins = descent_tail_rise_bins + 2
         enforce_descent_clock_floor = lower_voltage_descent_enforces_clock_floor(
-            runtime_options,
             tail_rise_bins=int(descent_tail_rise_bins),
         )
         cleanup_managed_q2rtx_processes(q2rtx_config, log=log)
@@ -393,6 +407,7 @@ def run_voltage_frequency_undervolt_main_loop(
             final_stable_voltage_mv: int,
             final_stable_lock_clock_mhz: int,
             final_stable_probe: AutoUvProbeSummary | None,
+            selected_final_verification_duration_s: int,
             final_tail_rise_bins: int,
             final_auto_oc_metadata: dict | None = None,
         ):
@@ -408,7 +423,9 @@ def run_voltage_frequency_undervolt_main_loop(
                 stable_history=stable_history,
                 probe_history=probe_history,
                 q2rtx_config=q2rtx_config,
-                final_verification_duration_s=int(final_verification_duration_s),
+                final_verification_duration_s=int(
+                    selected_final_verification_duration_s
+                ),
                 start_voltage_mv=int(baseline_candidate.voltage_mv),
                 measured_clock_mhz=float(baseline_target.measured_clock_mhz),
                 nvml_session=gpu.live_voltage_reader,
@@ -517,117 +534,145 @@ def run_voltage_frequency_undervolt_main_loop(
                 "auto-uv",
                 "user stop requested; offering past stable candidates for final verification",
             )
-        final_stable_plan = stable_candidate.flattened_plan
-        final_stable_voltage_mv = int(stable_candidate.voltage_mv)
-        final_stable_lock_clock_mhz = int(stable_candidate.target_mhz)
-        final_stable_probe = stable_probe
         final_tail_rise_bins = int(
             stable_candidate.metadata.get("tail_rise_bins", descent_tail_rise_bins)
         )
-        if bool(runtime_options.get("auto_uv_require_final_choice")) and bool(
-            user_stop_final_choice
-        ):
-            (
-                final_stable_plan,
-                final_stable_voltage_mv,
-                final_stable_lock_clock_mhz,
-                selected_stable_probe,
-                selected_final_verification_duration_s,
-            ) = choose_final_verification_candidate(
-                log=log,
-                event_callback=event_callback,
-                auto_uv_mode=settings.auto_uv_mode,
-                base_probe=discovery_summary,
-                stable_plan=final_stable_plan,
-                stable_voltage_mv=int(final_stable_voltage_mv),
-                stable_lock_clock_mhz=int(final_stable_lock_clock_mhz),
-                stable_probe=final_stable_probe,
-                stable_history=stable_history,
-                base_curve=base_curve,
-                final_verification_duration_s=int(final_verification_duration_s),
-                initial_target_voltage_mv=int(baseline_candidate.voltage_mv),
-                short_probe_base_duration_s=int(settings.short_probe_base_duration_s),
-                tail_rise_bins=int(final_tail_rise_bins),
-                request_reason=(
-                    "user-stop" if bool(user_stop_final_choice) else "sweep-complete"
-                ),
-            )
-            final_verification_duration_s = int(selected_final_verification_duration_s)
-            if selected_stable_probe is not None:
-                final_stable_probe = selected_stable_probe
-
-        final_auto_oc_metadata: dict = {}
-        if not bool(user_stop_final_choice):
-            (
-                final_stable_plan,
-                final_stable_voltage_mv,
-                final_stable_lock_clock_mhz,
-                final_stable_probe,
-                final_auto_oc_metadata,
-            ) = select_performance_auto_oc_candidate(
-                base_curve,
-                auto_uv_mode=settings.auto_uv_mode,
-                stable_plan=final_stable_plan,
-                stable_voltage_mv=int(final_stable_voltage_mv),
-                stable_lock_clock_mhz=int(final_stable_lock_clock_mhz),
-                stable_probe=final_stable_probe,
-                stable_history=stable_history,
-                runner=runner,
-                gpu_name=gpu.translated_gpu_policy.get("gpu_name"),
-                clock_ceiling=gpu.clock_ceiling,
-                probe_history=probe_history,
-                log=log,
-                tail_rise_bins=int(final_tail_rise_bins),
-                target_voltage_mv=positive_int(
-                    runtime_options.get("auto_oc_target_voltage_mv")
-                ),
-                target_clock_mhz=positive_int(
-                    runtime_options.get("auto_oc_target_clock_mhz")
-                ),
-                measured_baseline_clock_mhz=float(baseline_target.measured_clock_mhz),
-            )
-
-        if bool(runtime_options.get("auto_uv_require_final_choice")) and not bool(
-            user_stop_final_choice
-        ):
-            (
-                final_stable_plan,
-                final_stable_voltage_mv,
-                final_stable_lock_clock_mhz,
-                selected_stable_probe,
-                selected_final_verification_duration_s,
-            ) = choose_final_verification_candidate(
-                log=log,
-                event_callback=event_callback,
-                auto_uv_mode=settings.auto_uv_mode,
-                base_probe=discovery_summary,
-                stable_plan=final_stable_plan,
-                stable_voltage_mv=int(final_stable_voltage_mv),
-                stable_lock_clock_mhz=int(final_stable_lock_clock_mhz),
-                stable_probe=final_stable_probe,
-                stable_history=stable_history,
-                base_curve=base_curve,
-                final_verification_duration_s=int(final_verification_duration_s),
-                initial_target_voltage_mv=int(baseline_candidate.voltage_mv),
-                short_probe_base_duration_s=int(settings.short_probe_base_duration_s),
-                tail_rise_bins=int(final_tail_rise_bins),
-                request_reason="sweep-complete",
-            )
-            final_verification_duration_s = int(selected_final_verification_duration_s)
-            if selected_stable_probe is not None:
-                final_stable_probe = selected_stable_probe
+        final_selection = select_final_scan_candidate(
+            base_curve=base_curve,
+            settings=settings,
+            runtime_options=runtime_options,
+            stable_plan=stable_candidate.flattened_plan,
+            stable_voltage_mv=int(stable_candidate.voltage_mv),
+            stable_lock_clock_mhz=int(stable_candidate.target_mhz),
+            stable_probe=stable_probe,
+            stable_history=stable_history,
+            runner=runner,
+            gpu=gpu,
+            probe_history=probe_history,
+            log=log,
+            tail_rise_bins=int(final_tail_rise_bins),
+            measured_baseline_clock_mhz=float(baseline_target.measured_clock_mhz),
+            discovery_summary=discovery_summary,
+            baseline_candidate=baseline_candidate,
+            final_verification_duration_s=int(final_verification_duration_s),
+            event_callback=event_callback,
+            run_performance_auto_oc=not bool(user_stop_final_choice),
+            request_reason=(
+                "user-stop" if bool(user_stop_final_choice) else "sweep-complete"
+            ),
+        )
 
         return finish_with_final_verification(
-            final_stable_plan=final_stable_plan,
-            final_stable_voltage_mv=int(final_stable_voltage_mv),
-            final_stable_lock_clock_mhz=int(final_stable_lock_clock_mhz),
-            final_stable_probe=final_stable_probe,
+            final_stable_plan=final_selection.plan,
+            final_stable_voltage_mv=int(final_selection.voltage_mv),
+            final_stable_lock_clock_mhz=int(final_selection.lock_clock_mhz),
+            final_stable_probe=final_selection.probe,
+            selected_final_verification_duration_s=int(
+                final_selection.verification_duration_s
+            ),
             final_tail_rise_bins=int(final_tail_rise_bins),
-            final_auto_oc_metadata=final_auto_oc_metadata,
+            final_auto_oc_metadata=final_selection.auto_oc_metadata,
         )
     finally:
         cleanup_managed_q2rtx_processes(q2rtx_config, log=log)
         gpu.close()
+
+
+def select_final_scan_candidate(
+    *,
+    base_curve: list[dict],
+    settings,
+    runtime_options: dict,
+    stable_plan: list[dict],
+    stable_voltage_mv: int,
+    stable_lock_clock_mhz: int,
+    stable_probe: AutoUvProbeSummary | None,
+    stable_history: list[AutoUvProbeSummary],
+    runner,
+    gpu,
+    probe_history: list[AutoUvProbeSummary],
+    log: Callable[[str], None],
+    tail_rise_bins: int,
+    measured_baseline_clock_mhz: float,
+    discovery_summary: AutoUvProbeSummary,
+    baseline_candidate: VfCurveCandidate,
+    final_verification_duration_s: int,
+    event_callback: AutoUvEventCallback | None,
+    run_performance_auto_oc: bool,
+    request_reason: str,
+) -> FinalScanCandidate:
+    final_plan = stable_plan
+    final_voltage_mv = int(stable_voltage_mv)
+    final_lock_clock_mhz = int(stable_lock_clock_mhz)
+    final_probe = stable_probe
+    final_auto_oc_metadata: dict = {}
+
+    if bool(run_performance_auto_oc):
+        (
+            final_plan,
+            final_voltage_mv,
+            final_lock_clock_mhz,
+            final_probe,
+            final_auto_oc_metadata,
+        ) = select_performance_auto_oc_candidate(
+            base_curve,
+            auto_uv_mode=settings.auto_uv_mode,
+            stable_plan=final_plan,
+            stable_voltage_mv=int(final_voltage_mv),
+            stable_lock_clock_mhz=int(final_lock_clock_mhz),
+            stable_probe=final_probe,
+            stable_history=stable_history,
+            runner=runner,
+            gpu_name=gpu.translated_gpu_policy.get("gpu_name"),
+            clock_ceiling=gpu.clock_ceiling,
+            probe_history=probe_history,
+            log=log,
+            tail_rise_bins=int(tail_rise_bins),
+            target_voltage_mv=positive_int(
+                runtime_options.get("auto_oc_target_voltage_mv")
+            ),
+            target_clock_mhz=positive_int(
+                runtime_options.get("auto_oc_target_clock_mhz")
+            ),
+            measured_baseline_clock_mhz=float(measured_baseline_clock_mhz),
+        )
+
+    if bool(runtime_options.get("auto_uv_require_final_choice")):
+        (
+            final_plan,
+            final_voltage_mv,
+            final_lock_clock_mhz,
+            selected_stable_probe,
+            selected_final_verification_duration_s,
+        ) = choose_final_verification_candidate(
+            log=log,
+            event_callback=event_callback,
+            auto_uv_mode=settings.auto_uv_mode,
+            base_probe=discovery_summary,
+            stable_plan=final_plan,
+            stable_voltage_mv=int(final_voltage_mv),
+            stable_lock_clock_mhz=int(final_lock_clock_mhz),
+            stable_probe=final_probe,
+            stable_history=stable_history,
+            base_curve=base_curve,
+            final_verification_duration_s=int(final_verification_duration_s),
+            initial_target_voltage_mv=int(baseline_candidate.voltage_mv),
+            short_probe_base_duration_s=int(settings.short_probe_base_duration_s),
+            tail_rise_bins=int(tail_rise_bins),
+            request_reason=str(request_reason or "sweep-complete"),
+        )
+        final_verification_duration_s = int(selected_final_verification_duration_s)
+        if selected_stable_probe is not None:
+            final_probe = selected_stable_probe
+
+    return FinalScanCandidate(
+        plan=final_plan,
+        voltage_mv=int(final_voltage_mv),
+        lock_clock_mhz=int(final_lock_clock_mhz),
+        probe=final_probe,
+        verification_duration_s=int(final_verification_duration_s),
+        auto_oc_metadata=dict(final_auto_oc_metadata or {}),
+    )
 
 
 def run_recovered_previous_crash_selection(
@@ -736,72 +781,42 @@ def run_recovered_previous_crash_selection(
         stable_probe=stable_probe,
     )
 
-    (
-        final_stable_plan,
-        final_stable_voltage_mv,
-        final_stable_lock_clock_mhz,
-        final_stable_probe,
-        final_auto_oc_metadata,
-    ) = select_performance_auto_oc_candidate(
-        base_curve,
-        auto_uv_mode=settings.auto_uv_mode,
+    final_selection = select_final_scan_candidate(
+        base_curve=base_curve,
+        settings=settings,
+        runtime_options=runtime_options,
         stable_plan=stable_candidate.flattened_plan,
         stable_voltage_mv=int(stable_candidate.voltage_mv),
         stable_lock_clock_mhz=int(stable_candidate.target_mhz),
         stable_probe=stable_probe,
         stable_history=stable_history,
         runner=runner,
-        gpu_name=gpu.translated_gpu_policy.get("gpu_name"),
-        clock_ceiling=gpu.clock_ceiling,
+        gpu=gpu,
         probe_history=probe_history,
         log=log,
         tail_rise_bins=int(final_tail_rise_bins),
-        target_voltage_mv=positive_int(runtime_options.get("auto_oc_target_voltage_mv")),
-        target_clock_mhz=positive_int(runtime_options.get("auto_oc_target_clock_mhz")),
         measured_baseline_clock_mhz=float(baseline_target.measured_clock_mhz),
+        discovery_summary=discovery_summary,
+        baseline_candidate=baseline_candidate,
+        final_verification_duration_s=int(final_verification_duration_s),
+        event_callback=event_callback,
+        run_performance_auto_oc=True,
+        request_reason="sweep-complete",
     )
-
-    if bool(runtime_options.get("auto_uv_require_final_choice")):
-        (
-            final_stable_plan,
-            final_stable_voltage_mv,
-            final_stable_lock_clock_mhz,
-            selected_stable_probe,
-            selected_final_verification_duration_s,
-        ) = choose_final_verification_candidate(
-            log=log,
-            event_callback=event_callback,
-            auto_uv_mode=settings.auto_uv_mode,
-            base_probe=discovery_summary,
-            stable_plan=final_stable_plan,
-            stable_voltage_mv=int(final_stable_voltage_mv),
-            stable_lock_clock_mhz=int(final_stable_lock_clock_mhz),
-            stable_probe=final_stable_probe,
-            stable_history=stable_history,
-            base_curve=base_curve,
-            final_verification_duration_s=int(final_verification_duration_s),
-            initial_target_voltage_mv=int(baseline_candidate.voltage_mv),
-            short_probe_base_duration_s=int(settings.short_probe_base_duration_s),
-            tail_rise_bins=int(final_tail_rise_bins),
-            request_reason="sweep-complete",
-        )
-        final_verification_duration_s = int(selected_final_verification_duration_s)
-        if selected_stable_probe is not None:
-            final_stable_probe = selected_stable_probe
 
     return run_final_verification_and_save(
         probe_voltage_candidate=probe_voltage_candidate,
         build_voltage_scan_result=build_voltage_scan_result,
         log=log,
         reader=gpu.reader,
-        stable_plan=final_stable_plan,
-        stable_voltage_mv=int(final_stable_voltage_mv),
-        stable_lock_clock_mhz=int(final_stable_lock_clock_mhz),
-        stable_probe=final_stable_probe,
+        stable_plan=final_selection.plan,
+        stable_voltage_mv=int(final_selection.voltage_mv),
+        stable_lock_clock_mhz=int(final_selection.lock_clock_mhz),
+        stable_probe=final_selection.probe,
         stable_history=stable_history,
         probe_history=probe_history,
         q2rtx_config=q2rtx_config,
-        final_verification_duration_s=int(final_verification_duration_s),
+        final_verification_duration_s=int(final_selection.verification_duration_s),
         start_voltage_mv=int(baseline_candidate.voltage_mv),
         measured_clock_mhz=float(baseline_target.measured_clock_mhz),
         nvml_session=gpu.live_voltage_reader,
@@ -818,806 +833,14 @@ def run_recovered_previous_crash_selection(
             settings,
             tail_rise_bins=int(final_tail_rise_bins),
         ),
-        auto_oc_metadata=dict(final_auto_oc_metadata or {}),
+        auto_oc_metadata=dict(final_selection.auto_oc_metadata or {}),
         event_callback=event_callback,
     )
 
 
-class CrashCacheEntries(list):
-    def __init__(
-        self,
-        entries=(),
-        *,
-        interrupted_entry: dict | None = None,
-    ) -> None:
-        super().__init__(entries)
-        self.interrupted_entry = interrupted_entry
-
-
-def consume_crash_cache(*, log: Callable[[str], None]) -> list[dict]:
-    interrupted = consume_interrupted_probe_crash_marker()
-    interrupted_entry = None
-    if interrupted is not None:
-        _path, unsafe_entry = interrupted
-        interrupted_entry = dict(unsafe_entry)
-        log_phase(
-            log,
-            "crash-cache",
-            "previous auto-UV probe ended abruptly; "
-            f"blacklisted={int(unsafe_entry['candidate_voltage_mv'])}mV "
-            f"target={int(unsafe_entry['lock_clock_mhz'])}MHz",
-        )
-    return CrashCacheEntries(
-        load_unsafe_voltage_blacklist(),
-        interrupted_entry=interrupted_entry,
-    )
-
-
-def crash_recovery_entry_from_cache(unsafe_entries: list[dict]) -> dict | None:
-    interrupted_entry = getattr(unsafe_entries, "interrupted_entry", None)
-    if isinstance(interrupted_entry, dict):
-        return dict(interrupted_entry)
-    return None
-
-
-def next_safer_recovery_candidate_id(
-    candidate_records: list[dict],
-    *,
-    failed_voltage_mv: int | None,
-    auto_uv_mode: str,
-) -> str:
-    if failed_voltage_mv is None:
-        return ""
-    candidates = []
-    for record in candidate_records:
-        if not isinstance(record, dict) or not candidate_plan_from_record(record):
-            continue
-        voltage_mv = positive_int(record.get("candidate_voltage_mv"))
-        candidate_id = str(record.get("candidate_id", "")).strip()
-        if voltage_mv is None or not candidate_id:
-            continue
-        if int(voltage_mv) <= int(failed_voltage_mv):
-            continue
-        candidates.append(dict(record))
-    if not candidates:
-        return ""
-    next_voltage_mv = min(
-        int(candidate["candidate_voltage_mv"]) for candidate in candidates
-    )
-    same_bin = [
-        candidate
-        for candidate in candidates
-        if int(candidate.get("candidate_voltage_mv") or 0) == int(next_voltage_mv)
-    ]
-    metric_name = (
-        "avg_fps"
-        if str(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE
-        else "efficiency_fps_per_w"
-    )
-    return str(
-        max(
-            same_bin,
-            key=lambda candidate: (
-                _float_or_negative_infinity(candidate.get(metric_name)),
-                _float_or_negative_infinity(candidate.get("avg_fps")),
-                int(candidate.get("lock_clock_mhz") or 0),
-            ),
-        ).get("candidate_id", "")
-    )
-
-
-def recovery_candidate_records_for_failed_run(
-    candidate_records: list[dict],
-    *,
-    crash_recovery_entry: dict | None,
-    target_profile_tier: object | None = None,
-) -> list[dict]:
-    target_tier = normalize_profile_tier(target_profile_tier)
-    if isinstance(crash_recovery_entry, dict) and target_tier:
-        crash_tier = crash_recovery_entry_profile_tier(crash_recovery_entry)
-        if crash_tier and crash_tier != target_tier:
-            return []
-
-    records = [
-        dict(record)
-        for record in candidate_records
-        if isinstance(record, dict)
-        and positive_int(record.get("candidate_voltage_mv")) is not None
-        and candidate_plan_from_record(record)
-    ]
-    if target_tier:
-        records = [
-            record for record in records if generated_profile_tier(record) == target_tier
-        ]
-    if not records or not isinstance(crash_recovery_entry, dict):
-        return records
-
-    failed_voltage_mv = positive_int(crash_recovery_entry.get("candidate_voltage_mv"))
-    if failed_voltage_mv is None:
-        return records
-
-    start_index = None
-    for index in range(len(records) - 1, -1, -1):
-        voltage_mv = positive_int(records[index].get("candidate_voltage_mv"))
-        if voltage_mv is not None and int(voltage_mv) >= int(failed_voltage_mv):
-            start_index = index
-            break
-    if start_index is None:
-        return records
-
-    crashed_run = []
-    previous_voltage_mv = None
-    for index in range(start_index, -1, -1):
-        record = records[index]
-        voltage_mv = positive_int(record.get("candidate_voltage_mv"))
-        if voltage_mv is None:
-            break
-        if (
-            previous_voltage_mv is not None
-            and int(voltage_mv) <= int(previous_voltage_mv)
-        ):
-            break
-        crashed_run.append(record)
-        previous_voltage_mv = int(voltage_mv)
-
-    crashed_run = crashed_run or records
-    return crashed_run
-
-
-def crash_recovery_entry_profile_tier(entry: dict) -> str:
-    for payload in crash_recovery_entry_tier_payloads(entry):
-        tier = explicit_profile_tier(payload)
-        if tier:
-            return tier
-    return ""
-
-
-def crash_recovery_entry_tier_payloads(entry: dict):
-    if isinstance(entry, dict):
-        yield entry
-        details = entry.get("details")
-        if isinstance(details, dict):
-            yield details
-            marker_details = details.get("marker_details")
-            if isinstance(marker_details, dict):
-                yield marker_details
-
-
-def explicit_profile_tier(payload: dict) -> str:
-    for key in (
-        "generated_profile_tier",
-        "profile_generated_tier",
-        "auto_uv_requested_mode",
-        "auto_uv_profile_tier",
-        "profile_tier",
-    ):
-        tier = normalize_profile_tier(payload.get(key))
-        if tier:
-            return tier
-    mode = normalize_profile_tier(payload.get("auto_uv_mode"))
-    if mode == AUTO_UV_MODE_PERFORMANCE:
-        return AUTO_UV_MODE_PERFORMANCE
-    tail_rise_bins = _int_or_none(payload.get("tail_rise_bins"))
-    if tail_rise_bins is not None:
-        return generated_profile_tier({"tail_rise_bins": int(tail_rise_bins)})
-    return ""
-
-
-def _int_or_none(value: object) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def auto_uv_run_profile_tier(
-    runtime_options: dict,
-    settings,
-    *,
-    tail_rise_bins: int,
-) -> str:
-    options = runtime_options if isinstance(runtime_options, dict) else {}
-    requested = normalize_profile_tier(
-        options.get("auto_uv_requested_mode")
-        or getattr(settings, "auto_uv_requested_mode", None)
-    )
-    if requested:
-        return requested
-    runtime_mode = normalize_profile_tier(options.get("auto_uv_mode"))
-    if runtime_mode == AUTO_UV_MODE_PERFORMANCE:
-        return AUTO_UV_MODE_PERFORMANCE
-    settings_mode = normalize_profile_tier(getattr(settings, "auto_uv_mode", None))
-    if settings_mode == AUTO_UV_MODE_PERFORMANCE:
-        return AUTO_UV_MODE_PERFORMANCE
-    runtime_tail_rise_bins = _int_or_none(options.get("auto_uv_tail_rise_bins"))
-    if runtime_tail_rise_bins is not None:
-        return generated_profile_tier({"tail_rise_bins": int(runtime_tail_rise_bins)})
-    return generated_profile_tier(
-        {
-            "auto_uv_mode": settings_mode or runtime_mode,
-            "tail_rise_bins": int(tail_rise_bins),
-        }
-    )
-
-
-def auto_uv_run_marker_details(
-    runtime_options: dict,
-    settings,
-    *,
-    tail_rise_bins: int,
-    profile_tier: str,
-) -> dict:
-    details = {
-        "auto_uv_mode": str(getattr(settings, "auto_uv_mode", "") or ""),
-        "generated_profile_tier": str(profile_tier or ""),
-        "tail_rise_bins": int(tail_rise_bins),
-    }
-    requested_mode = str(runtime_options.get("auto_uv_requested_mode") or "").strip()
-    if requested_mode:
-        details["auto_uv_requested_mode"] = requested_mode
-    return details
-
-
-def recovery_initial_target_voltage_mv(
-    candidate_records: list[dict],
-    *,
-    fallback_voltage_mv: int | None,
-) -> int:
-    voltages = []
-    for record in candidate_records:
-        if not isinstance(record, dict):
-            continue
-        voltage_mv = positive_int(record.get("candidate_voltage_mv"))
-        if voltage_mv is not None:
-            voltages.append(int(voltage_mv))
-    if voltages:
-        return max(voltages)
-    return int(fallback_voltage_mv or 1)
-
-
-def crash_recovery_decision(entry: dict) -> dict:
-    details = entry.get("details")
-    details = details if isinstance(details, dict) else {}
-    log_path = str(details.get("log_path") or "").strip()
-    error_excerpt = previous_run_error_excerpt(log_path)
-    result_reason = str(details.get("result_reason") or "").strip()
-    shutdown_mode = str(details.get("shutdown_mode") or "").strip()
-    decision = error_excerpt or result_reason or shutdown_mode or str(
-        entry.get("reason") or "previous unsafe point"
-    )
-    return {
-        "candidate_voltage_mv": positive_int(entry.get("candidate_voltage_mv")),
-        "lock_clock_mhz": positive_int(entry.get("lock_clock_mhz")),
-        "recorded_at": str(entry.get("recorded_at") or ""),
-        "reason": str(entry.get("reason") or ""),
-        "phase": str(entry.get("phase") or ""),
-        "decision": decision,
-        "result_reason": result_reason,
-        "shutdown_mode": shutdown_mode,
-        "process_exit_code": details.get("process_exit_code"),
-        "log_path": log_path,
-    }
-
-
-def previous_run_error_excerpt(log_path: str) -> str:
-    path_text = str(log_path or "").strip()
-    if not path_text:
-        return ""
-    path = Path(path_text)
-    if not path.is_file():
-        return ""
-    patterns = ("Device lost", "device lost", "Xid", "ERROR", "Error", "fatal")
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                stripped = " ".join(str(line).strip().split())
-                if not stripped:
-                    continue
-                if any(pattern in stripped for pattern in patterns):
-                    return stripped[:240]
-    except OSError:
-        return ""
-    return ""
-
-
-def append_unique_probe_summary(
-    history: list[AutoUvProbeSummary],
-    probe: AutoUvProbeSummary | None,
-) -> None:
-    if probe is None:
-        return
-    for existing in history:
-        if int(existing.candidate_voltage_mv) == int(probe.candidate_voltage_mv) and int(
-            existing.lock_clock_mhz
-        ) == int(probe.lock_clock_mhz):
-            return
-    history.append(probe)
-
-
-def probe_summary_from_candidate_record(record: dict) -> AutoUvProbeSummary | None:
-    voltage_mv = positive_int(record.get("candidate_voltage_mv"))
-    lock_clock_mhz = positive_int(record.get("lock_clock_mhz"))
-    if voltage_mv is None or lock_clock_mhz is None:
-        return None
-    avg_voltage_mv = _float_or_none(
-        record.get("avg_voltage_mv"),
-        record.get("loaded_median_voltage_mv"),
-        voltage_mv,
-    )
-    log_path_text = str(record.get("log_path") or "/dev/null")
-    return AutoUvProbeSummary(
-        candidate_voltage_mv=int(voltage_mv),
-        lock_clock_mhz=int(lock_clock_mhz),
-        live_voltage_before_mv=int(voltage_mv),
-        live_voltage_after_mv=int(voltage_mv),
-        avg_voltage_mv=avg_voltage_mv,
-        frames_per_run=None,
-        avg_seconds_per_run=None,
-        avg_fps=_float_or_none(record.get("avg_fps")),
-        min_fps=_float_or_none(record.get("min_fps")),
-        max_fps=_float_or_none(record.get("max_fps")),
-        avg_power_w=_float_or_none(record.get("avg_power_w")),
-        max_power_w=_float_or_none(record.get("max_power_w")),
-        avg_temperature_c=_float_or_none(record.get("avg_temperature_c")),
-        max_temperature_c=_float_or_none(record.get("max_temperature_c")),
-        avg_fan_speed_pct=_float_or_none(record.get("avg_fan_speed_pct")),
-        max_fan_speed_pct=_float_or_none(record.get("max_fan_speed_pct")),
-        avg_core_clock_mhz=_float_or_none(record.get("avg_core_clock_mhz")),
-        efficiency_fps_per_w=_float_or_none(record.get("efficiency_fps_per_w")),
-        efficiency_mhz_per_w=_float_or_none(record.get("efficiency_mhz_per_w")),
-        watts_per_mhz=_float_or_none(record.get("watts_per_mhz")),
-        used_companion_load=bool(record.get("used_companion_load", True)),
-        result_reason=str(record.get("reason") or "recovered saved candidate"),
-        log_path=Path(log_path_text),
-        loaded_median_voltage_mv=_float_or_none(
-            record.get("loaded_median_voltage_mv")
-        ),
-        loaded_median_core_clock_mhz=_float_or_none(
-            record.get("loaded_median_core_clock_mhz")
-        ),
-        loaded_p90_core_clock_mhz=_float_or_none(
-            record.get("loaded_p90_core_clock_mhz")
-        ),
-        loaded_qualified_sample_count=int(
-            record.get("loaded_qualified_sample_count") or 0
-        ),
-        observed_vdroop_mv=_float_or_none(record.get("observed_vdroop_mv")),
-        perf_cap_reason=str(record.get("perf_cap_reason") or "") or None,
-        fps_stddev=_float_or_none(record.get("fps_stddev")),
-        fps_variance_pct=_float_or_none(record.get("fps_variance_pct")),
-    )
-
-
-def base_probe_summary_from_candidate_record(record: dict) -> AutoUvProbeSummary | None:
-    voltage_mv = positive_int(record.get("base_candidate_voltage_mv"))
-    lock_clock_mhz = positive_int(record.get("base_lock_clock_mhz"))
-    avg_core_clock_mhz = _float_or_none(record.get("base_avg_core_clock_mhz"))
-    if voltage_mv is None or lock_clock_mhz is None or avg_core_clock_mhz is None:
-        return None
-    avg_voltage_mv = _float_or_none(record.get("base_avg_voltage_mv"), voltage_mv)
-    return AutoUvProbeSummary(
-        candidate_voltage_mv=int(voltage_mv),
-        lock_clock_mhz=int(lock_clock_mhz),
-        live_voltage_before_mv=int(voltage_mv),
-        live_voltage_after_mv=int(voltage_mv),
-        avg_voltage_mv=avg_voltage_mv,
-        frames_per_run=None,
-        avg_seconds_per_run=None,
-        avg_fps=_float_or_none(record.get("base_avg_fps")),
-        min_fps=_float_or_none(record.get("base_min_fps")),
-        max_fps=_float_or_none(record.get("base_max_fps")),
-        avg_power_w=_float_or_none(record.get("base_avg_power_w")),
-        max_power_w=_float_or_none(record.get("base_max_power_w")),
-        avg_temperature_c=_float_or_none(record.get("base_avg_temperature_c")),
-        max_temperature_c=_float_or_none(record.get("base_max_temperature_c")),
-        avg_fan_speed_pct=_float_or_none(record.get("base_avg_fan_speed_pct")),
-        max_fan_speed_pct=_float_or_none(record.get("base_max_fan_speed_pct")),
-        avg_core_clock_mhz=float(avg_core_clock_mhz),
-        efficiency_fps_per_w=_float_or_none(record.get("base_efficiency_fps_per_w")),
-        efficiency_mhz_per_w=_float_or_none(record.get("base_efficiency_mhz_per_w")),
-        watts_per_mhz=_float_or_none(record.get("base_watts_per_mhz")),
-        used_companion_load=bool(record.get("base_used_companion_load", True)),
-        result_reason=str(record.get("base_reason") or "recovered baseline"),
-        log_path=Path(str(record.get("base_log_path") or "/dev/null")),
-        loaded_median_voltage_mv=_float_or_none(
-            record.get("base_loaded_median_voltage_mv")
-        ),
-        loaded_median_core_clock_mhz=_float_or_none(
-            record.get("base_loaded_median_core_clock_mhz")
-        ),
-        loaded_p90_core_clock_mhz=_float_or_none(
-            record.get("base_loaded_p90_core_clock_mhz")
-        ),
-        loaded_qualified_sample_count=int(
-            record.get("base_loaded_qualified_sample_count") or 0
-        ),
-        observed_vdroop_mv=_float_or_none(record.get("base_observed_vdroop_mv")),
-        perf_cap_reason=str(record.get("base_perf_cap_reason") or "") or None,
-        fps_stddev=_float_or_none(record.get("base_fps_stddev")),
-        fps_variance_pct=_float_or_none(record.get("base_fps_variance_pct")),
-    )
-
-
-def replay_recovered_resume_probe_rows(
-    *,
-    event_callback: AutoUvEventCallback | None,
-    base_probe: AutoUvProbeSummary | None,
-    stable_probe: AutoUvProbeSummary | None,
-) -> None:
-    if base_probe is not None:
-        emit_ui_json_event(
-            event_callback,
-            "probe_result",
-            **probe_summary_ui_payload(
-                base_probe,
-                stage="base-baseline",
-                decision="pass",
-                reason=str(base_probe.result_reason or "recovered baseline"),
-            ),
-        )
-    if stable_probe is not None:
-        emit_ui_json_event(
-            event_callback,
-            "probe_result",
-            **probe_summary_ui_payload(
-                stable_probe,
-                stage="candidate",
-                decision="pass",
-                reason=str(stable_probe.result_reason or "recovered saved candidate"),
-            ),
-        )
-
-
-def _float_or_negative_infinity(value: object) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float("-inf")
-
-
-def _float_or_none(*values: object) -> float | None:
-    for value in values:
-        if value in (None, ""):
-            continue
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            continue
-    return None
-
-
-def retarget_clock_ceiling_for_candidate(
-    clock_ceiling,
-    candidate: VfCurveCandidate,
-) -> None:
-    if clock_ceiling is None:
-        return
-    clock_ceiling.retarget(
-        lock_clock_mhz=int(candidate.target_mhz),
-        lock_voltage_mv=int(candidate.voltage_mv),
-        ceiling_clock_mhz=tail_ceiling_for_plan(
-            candidate.flattened_plan,
-            lock_clock_mhz=int(candidate.target_mhz),
-            lock_voltage_mv=int(candidate.voltage_mv),
-        ),
-    )
-
-
-def run_auto_oc_candidate_search(**kwargs):
-    from auto_oc import run_auto_oc_candidate_search as run_search
-
-    return run_search(**kwargs)
-
-
-def select_performance_auto_oc_candidate(
-    base_curve: list[dict],
-    *,
-    auto_uv_mode: str,
-    stable_plan: list[dict],
-    stable_voltage_mv: int,
-    stable_lock_clock_mhz: int,
-    stable_probe: AutoUvProbeSummary | None,
-    stable_history: list[AutoUvProbeSummary] | None,
-    runner: Q2RtxCudaProbeRunner,
-    gpu_name: object | None,
-    clock_ceiling,
-    probe_history: list[AutoUvProbeSummary],
-    log: Callable[[str], None],
-    tail_rise_bins: int = 0,
-    target_voltage_mv: int | None = None,
-    target_clock_mhz: int | None = None,
-    measured_baseline_clock_mhz: float | int | None = None,
-) -> tuple[list[dict], int, int, AutoUvProbeSummary | None]:
-    if str(auto_uv_mode) != AUTO_UV_MODE_PERFORMANCE:
-        return (
-            stable_plan,
-            int(stable_voltage_mv),
-            int(stable_lock_clock_mhz),
-            stable_probe,
-            {},
-        )
-    start_candidate = VfCurveCandidate(
-        label="performance-auto-oc-start",
-        voltage_mv=int(stable_voltage_mv),
-        target_mhz=int(stable_lock_clock_mhz),
-        flattened_plan=stable_plan,
-    )
-    result = run_auto_oc_candidate_search(
-        base_curve=base_curve,
-        start_candidate=start_candidate,
-        start_probe=stable_probe,
-        runner=runner,
-        gpu_name=gpu_name,
-        clock_ceiling=clock_ceiling,
-        probe_history=probe_history,
-        log=log,
-        tail_rise_bins=int(tail_rise_bins),
-        target_voltage_mv=target_voltage_mv,
-        target_clock_mhz=target_clock_mhz,
-        measured_baseline_clock_mhz=measured_baseline_clock_mhz,
-    )
-    if stable_history is not None:
-        for attempt in getattr(result, "attempts", ()) or ():
-            if (
-                attempt.outcome.decision.passed
-                and attempt.outcome.raw_probe is not None
-            ):
-                stable_history.append(attempt.outcome.raw_probe)
-    selected = build_performance_sweep_profile_candidate(
-        base_curve,
-        selected_candidate=result.selected_candidate,
-        stable_history=stable_history,
-        auto_oc_attempts=getattr(result, "attempts", ()) or (),
-    )
-    if selected.metadata.get("profile_curve") == "performance-sweep":
-        log_phase(
-            log,
-            "auto-oc",
-            "profile-curve=performance-sweep "
-            f"start={int(selected.metadata['profile_curve_start_voltage_mv'])}mV "
-            f"anchors={int(selected.metadata['profile_curve_anchor_count'])}",
-        )
-    selected_changed = (
-        int(selected.voltage_mv) != int(stable_voltage_mv)
-        or int(selected.target_mhz) != int(stable_lock_clock_mhz)
-    )
-    auto_oc_metadata = performance_auto_oc_progress_metadata(
-        endpoint=getattr(result, "endpoint", None),
-        measured_baseline_clock_mhz=measured_baseline_clock_mhz,
-        selected_clock_mhz=int(selected.target_mhz),
-    )
-    return (
-        selected.flattened_plan,
-        int(selected.voltage_mv),
-        int(selected.target_mhz),
-        None if selected_changed else stable_probe,
-        auto_oc_metadata,
-    )
-
-
-def performance_auto_oc_progress_metadata(
-    *,
-    endpoint,
-    measured_baseline_clock_mhz: float | int | None,
-    selected_clock_mhz: int,
-) -> dict:
-    """Auto-OC offset metadata relative to the measured baseline clock."""
-    if endpoint is None or measured_baseline_clock_mhz is None:
-        return {}
-    baseline_clock = float(measured_baseline_clock_mhz)
-    endpoint_clock = int(endpoint.clock_mhz)
-    limit_mhz = int(round(float(endpoint_clock) - baseline_clock))
-    applied_mhz = int(round(float(selected_clock_mhz) - baseline_clock))
-    return {
-        "auto_oc": True,
-        "auto_oc_baseline_clock_mhz": round(baseline_clock, 2),
-        "auto_oc_target_clock_mhz": endpoint_clock,
-        "auto_oc_applied_mhz": applied_mhz,
-        "auto_oc_limit_mhz": limit_mhz,
-    }
-
-
-def lower_voltage_descent_enforces_clock_floor(
-    runtime_options: dict,
-    *,
-    tail_rise_bins: int,
-) -> bool:
-    if (
-        bool(runtime_options.get("auto_uv_tail_rise_bins_explicit"))
-        and bool(runtime_options.get("auto_uv_min_voltage_mv_explicit"))
-        and int(tail_rise_bins) == 0
-    ):
-        return False
-    return True
-
-
-def run_discovery_probe(
-    base_curve: list[dict],
-    *,
-    gpu,
-    q2rtx_config: Q2RTXStabilityConfig,
-    short_probe_base_duration_s: int,
-    log: Callable[[str], None],
-    event_callback: AutoUvEventCallback | None,
-    marker_details: dict | None = None,
-) -> tuple[AutoUvProbeSummary, object]:
-    point = max(editable_base_vf_points(base_curve), key=lambda item: item.target_mhz)
-    runner = Q2RtxCudaProbeRunner(
-        reader=gpu.reader,
-        live_voltage_reader=gpu.live_voltage_reader,
-        q2rtx_config=q2rtx_config,
-        runtime_default_plan=gpu.runtime_default_plan,
-        power_limit_w=gpu.power_limit_w,
-        start_voltage_mv=int(point.voltage_mv),
-        baseline_clock_mhz=None,
-        min_performance_core_clock_pct=90.0,
-        short_probe_base_duration_s=int(short_probe_base_duration_s),
-        log=log,
-        marker_details=marker_details,
-        event_callback=event_callback,
-    )
-    emit_ui_json_event(
-        event_callback,
-        "probe_start",
-        stage="base-baseline",
-        voltage_mv=int(point.voltage_mv),
-        clock_mhz=int(point.target_mhz),
-        label="base default curve",
-        elapsed_s=0.0,
-        target_duration_s=reference_discovery_q2rtx_duration_s(
-            int(short_probe_base_duration_s)
-        ),
-    )
-    summary, result = runner.probe_default_curve(
-        base_curve=base_curve,
-        label_voltage_mv=int(point.voltage_mv),
-        label_clock_mhz=int(point.target_mhz),
-    )
-    emit_ui_json_event(
-        event_callback,
-        "probe_result",
-        **probe_summary_ui_payload(
-            summary,
-            stage="base-baseline",
-            decision="pass" if getattr(result, "success", False) else "fail",
-            reason=str(getattr(result, "reason", "")),
-        ),
-    )
-    log_benchmark(log, phase="discover", probe=summary)
-    light_load_diagnostic = selected_nvidia_light_load_diagnostic(
-        list(getattr(result, "telemetry_samples", []) or []),
-        power_limit_w=gpu.power_limit_w,
-    )
-    if light_load_diagnostic is not None:
-        log_phase(log, "discover", light_load_diagnostic)
-    return summary, result
-
-
-def build_loaded_baseline_candidate(
-    base_curve: list[dict],
-    *,
-    discovery_summary: AutoUvProbeSummary,
-    discovery_result: object,
-    power_limit_w: int | None,
-    tail_rise_bins: int = 0,
-) -> tuple[VfCurveCandidate, object]:
-    target = choose_base_load_flatten_target(
-        base_curve,
-        list(getattr(discovery_result, "telemetry_samples", []) or []),
-        power_limit_w=power_limit_w,
-        fallback_clock_mhz=discovery_summary.avg_core_clock_mhz,
-    )
-    voltage_band = derive_loaded_voltage_band(
-        list(getattr(discovery_result, "telemetry_samples", []) or []),
-        power_limit_w=power_limit_w,
-        use_power_limit_floor=True,
-    )
-    fallback_voltage_mv = lock_voltage_for_target_clock(
-        base_curve,
-        int(target.target_clock_mhz),
-    )
-    start_voltage_mv = nearest_editable_voltage_bin(
-        base_curve,
-        int(voltage_band.average_mv or fallback_voltage_mv),
-    )
-    plan = build_flattened_plan(
-        base_curve,
-        lock_clock_mhz=int(target.target_clock_mhz),
-        candidate_voltage_mv=int(start_voltage_mv),
-        tail_rise_bins=int(tail_rise_bins),
-    )
-    return (
-        VfCurveCandidate(
-            label="baseline-loaded-flattened-curve",
-            voltage_mv=int(start_voltage_mv),
-            target_mhz=int(target.target_clock_mhz),
-            flattened_plan=plan,
-        ),
-        target,
-    )
-
-
-def adjust_baseline_to_measured_clock(
-    base_curve: list[dict],
-    *,
-    candidate: VfCurveCandidate,
-    stable_probe: AutoUvProbeSummary,
-    gpu,
-    tail_rise_bins: int = 0,
-) -> VfCurveCandidate:
-    measured_target_mhz = lock_clock_from_probe_loaded_clock(
-        base_curve,
-        probe=stable_probe,
-        previous_lock_clock_mhz=int(candidate.target_mhz),
-    )
-    if int(measured_target_mhz) == int(candidate.target_mhz):
-        return candidate
-    plan = build_flattened_plan(
-        base_curve,
-        lock_clock_mhz=int(measured_target_mhz),
-        candidate_voltage_mv=int(candidate.voltage_mv),
-        tail_rise_bins=int(tail_rise_bins),
-    )
-    if gpu.clock_ceiling is not None:
-        gpu.clock_ceiling.retarget(
-            lock_clock_mhz=int(measured_target_mhz),
-            lock_voltage_mv=int(candidate.voltage_mv),
-            ceiling_clock_mhz=tail_ceiling_for_plan(
-                plan,
-                lock_clock_mhz=int(measured_target_mhz),
-                lock_voltage_mv=int(candidate.voltage_mv),
-            ),
-        )
-    return VfCurveCandidate(
-        label="baseline-measured-clock-adjusted",
-        voltage_mv=int(candidate.voltage_mv),
-        target_mhz=int(measured_target_mhz),
-        flattened_plan=plan,
-    )
-
-
-def write_verified_candidate(
-    candidate: VfCurveCandidate,
-    probe: AutoUvProbeSummary,
-    *,
-    discovery_summary: AutoUvProbeSummary,
-    tail_rise_bins: int = 0,
-) -> None:
-    effective_tail_rise_bins = int(
-        candidate.metadata.get("tail_rise_bins", tail_rise_bins)
-    )
-    write_latest_verified_candidate(
-        plan=candidate.flattened_plan,
-        lock_clock_mhz=int(candidate.target_mhz),
-        voltage_mv=int(candidate.voltage_mv),
-        probe=probe,
-        base_probe=discovery_summary,
-        tail_rise_bins=int(effective_tail_rise_bins),
-    )
-
-
-def require_probe_summary(outcome: VoltageProbeOutcome) -> AutoUvProbeSummary:
-    if outcome.raw_probe is None:
-        raise AutoUvError("Auto-UV probe outcome did not include a probe summary")
-    return outcome.raw_probe
 
 
 def _format_optional_pct(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{float(value):.2f}%"
-
-
-def tail_ceiling_for_plan(
-    plan: list[dict],
-    *,
-    lock_clock_mhz: int,
-    lock_voltage_mv: int,
-) -> int:
-    target = build_flatten_target_for_plan(
-        plan,
-        plan,
-        lock_clock_mhz=int(lock_clock_mhz),
-        lock_voltage_mv=int(lock_voltage_mv),
-    )
-    return int(target.get("ceiling_clock_mhz", target["lock_clock_mhz"]))

@@ -1,0 +1,574 @@
+from __future__ import annotations
+
+import shlex
+
+from common.penguin_burner_paths import default_user_config_dir
+from manual_uv_curve_editor import editable_anchor_from_profile
+from saved_uv_profiles import delete_auto_uv_profile_paths
+from saved_uv_profiles import save_profile_tier_assignment
+from saved_uv_profiles import save_profile_tier_none_assignment
+
+from .commands import delete_profiles_command
+from .commands import profile_verify_command
+from .commands import runtime_profile_command
+from .components.fan_curve_editor import open_fan_curve_editor_dialog
+from .components.vf_curve_editor import open_vf_curve_editor_dialog
+from .curve_profiles import profile_base_curve_points
+from .curve_profiles import profile_curve_plan
+from .curve_profiles import save_edited_curve_profile
+from .dialogs import select_verify_options
+from .fan_profiles import profile_fan_curve_points
+from .fan_profiles import profile_fan_curve_target_point
+from .fan_profiles import profile_fan_measurement_points
+from .fan_profiles import profile_id_from_archive_path
+from .fan_profiles import save_edited_fan_profile
+from .fan_profiles import sync_profile_fan_payload
+from .lact_export import detect_lact_gpu_id
+from .lact_export import lact_export_output_path
+from .lact_export import write_lact_profile_config
+from .profiles import adaptive_profile_tier_labels
+from .profiles import delete_confirmation_text
+from .profiles import profile_can_apply
+from .profiles import profile_can_verify
+from .profiles import profile_delete_autostart_action
+from .profiles import profile_for_selector
+from .profiles import profile_is_deletable
+from .profiles import profile_status_label
+from .profiles import profile_verify_selector
+from .profiles import profiles_for_selectors
+from .profiles import systemd_autostart_profile_info
+from .verify import stop_request_path as verify_stop_request_path
+from .verify import workload_label
+
+
+class ProfileActionsMixin:
+    def _run_selected_profile(self) -> None:
+        action = (
+            "install-systemd"
+            if self.profile_list.persist_on_startup_enabled()
+            else "daemonize"
+        )
+        self._run_runtime_action(action)
+
+    def _run_adaptive_profiles(self) -> None:
+        action = (
+            "install-systemd"
+            if self.profile_list.persist_on_startup_enabled()
+            else "daemonize"
+        )
+        self._run_runtime_action(action, adaptive_auto_uv=True)
+
+    def _run_runtime_action(
+        self,
+        action: str,
+        *,
+        adaptive_auto_uv: bool = False,
+        profile_selector: str = "",
+    ) -> None:
+        if self._workflow_running():
+            return
+        profile_id = str(profile_selector or "").strip()
+        selected_profile = None
+        if action != "uninstall-systemd" and adaptive_auto_uv:
+            tiers = adaptive_profile_tier_labels(self.profile_summaries)
+            if len(tiers) < 2:
+                available = ", ".join(tiers) if tiers else "none"
+                self.errors.show(
+                    "Adaptive Auto-UV unavailable",
+                    "Adaptive Auto-UV requires at least two verified Auto-UV "
+                    f"profile tiers. Available tiers: {available}.",
+                )
+                return
+            selected_profile = profile_for_selector(self.profile_summaries, "latest")
+        elif action != "uninstall-systemd":
+            profile_id = profile_id or self.profile_list.selected_profile_id()
+            if not profile_id:
+                self.log_view.append("\nNo profile selected.\n")
+                return
+            selected_profile = profile_for_selector(self.profile_summaries, profile_id)
+            if not profile_can_apply(selected_profile or {}):
+                message = "This edited profile must be verified before it can be applied."
+                self.controls.set_status_text(message)
+                self.log_view.append(f"\n{message}\n")
+                return
+        if (
+            action != "uninstall-systemd"
+            and selected_profile
+            and self.profile_list.silent_fan_enabled()
+            and not sync_profile_fan_payload(selected_profile)
+        ):
+            self.controls.set_status_text("No runtime-ready silent fan curve is available.")
+            self.log_view.append("\nNo runtime-ready silent fan curve is available.\n")
+            return
+        command = runtime_profile_command(
+            action,
+            profile_selector="" if action == "uninstall-systemd" else profile_id,
+            silent_fan_curve=self.profile_list.silent_fan_enabled(),
+            adaptive_auto_uv=adaptive_auto_uv,
+            gpu_index=self.gpu_index,
+        )
+        if action != "uninstall-systemd":
+            self._persist_silent_fan_preference(self.profile_list.silent_fan_enabled())
+        if action == "install-systemd":
+            self._persist_startup_preference(True)
+        elif action == "uninstall-systemd":
+            self._persist_startup_preference(False)
+        self.controls.set_status_text(
+            self._runtime_action_start_text(action, adaptive_auto_uv=adaptive_auto_uv)
+        )
+        self._set_profile_actions_enabled(False)
+        self.controls.start_button.setEnabled(False)
+        self.command_controller.start(
+            f"adaptive-{action}" if adaptive_auto_uv else action,
+            command,
+            fail_text="Failed to start runtime profile action.",
+        )
+
+    def _run_delete_autostart_followup(
+        self,
+        *,
+        remove_systemd: bool,
+        switch_systemd_profile_id: str = "",
+    ) -> bool:
+        switch_profile_id = str(switch_systemd_profile_id or "").strip()
+        self._delete_remove_systemd = False
+        self._delete_switch_systemd_profile_id = ""
+        if switch_profile_id:
+            profile = profile_for_selector(self.profile_summaries, switch_profile_id)
+            if profile_can_apply(profile or {}):
+                self.log_view.append(
+                    "\nAdaptive Auto-UV now has fewer than two usable tiers; "
+                    "switching Systemd autostart to the remaining profile.\n"
+                )
+                self._run_runtime_action(
+                    "install-systemd",
+                    profile_selector=switch_profile_id,
+                )
+                return True
+            remove_systemd = True
+        if remove_systemd:
+            self._run_runtime_action("uninstall-systemd")
+            return True
+        return False
+
+    def _edit_profile_fan_curve(self, profile: dict) -> None:
+        curve_points = profile_fan_curve_points(profile)
+        if self.pg is None or not curve_points:
+            self.QtWidgets.QMessageBox.information(
+                self.window,
+                "Edit Fan Curve",
+                "No editable fan curve is available for this profile.",
+            )
+            return
+
+        def save_edit(edit) -> str:
+            path, _payload = save_edited_fan_profile(
+                profile,
+                edit,
+                original_points=curve_points,
+            )
+            profile_id = profile_id_from_archive_path(path)
+            if profile_id:
+                self.profile_list.select_profile(profile_id)
+            self._load_profiles()
+            return f"Saved edited fan curve: {path.name}."
+
+        open_fan_curve_editor_dialog(
+            QtCore=self.QtCore,
+            QtGui=self.QtGui,
+            QtWidgets=self.QtWidgets,
+            pg=self.pg,
+            parent=self.window,
+            curve_points=curve_points,
+            measured_points=profile_fan_measurement_points(profile),
+            target_point=profile_fan_curve_target_point(profile),
+            save_callback=save_edit,
+        )
+
+    def _edit_profile_vf_curve(self, profile: dict) -> None:
+        plan = profile_curve_plan(profile)
+        anchor = editable_anchor_from_profile(profile)
+        if not plan or anchor is None:
+            self.QtWidgets.QMessageBox.information(
+                self.window,
+                "Edit VF Curve",
+                "No editable V/F curve is available for this profile.",
+            )
+            return
+        manual_edit = profile.get("manual_edit")
+        control_voltage_mvs = _manual_curve_control_voltage_mvs(manual_edit)
+
+        def save_edit(edit) -> str:
+            path, payload = save_edited_curve_profile(
+                profile,
+                edit,
+                original_anchor_voltage_mv=int(anchor[0]),
+                original_anchor_clock_mhz=int(anchor[1]),
+            )
+            self.last_auto_uv_candidate_id = str(payload.get("candidate_id", "")).strip()
+            profile_id = profile_id_from_archive_path(path)
+            self.controls.set_status_text(
+                f"Saved edited curve draft: {path.name}. Verify it before Apply."
+            )
+            self._load_profiles()
+            if profile_id:
+                self.profile_list.select_profile(profile_id)
+            return f"Saved edited curve draft: {path.name}. Verify it before Apply."
+
+        open_vf_curve_editor_dialog(
+            QtCore=self.QtCore,
+            QtGui=self.QtGui,
+            QtWidgets=self.QtWidgets,
+            pg=self.pg,
+            parent=self.window,
+            plan=plan,
+            base_points=profile_base_curve_points(profile)
+            or self.curve_tabs.base_curve_points,
+            anchor=anchor,
+            save_callback=save_edit,
+            control_voltage_mvs=control_voltage_mvs,
+        )
+
+    def _export_lact_profile(self, profile: dict) -> None:
+        directory = self.QtWidgets.QFileDialog.getExistingDirectory(
+            self.window,
+            "Choose LACT Export Directory",
+            str(default_user_config_dir()),
+        )
+        if not directory:
+            return
+        output_path = lact_export_output_path(directory)
+        gpu_id = detect_lact_gpu_id(output_path.parent)
+        if not gpu_id:
+            self.errors.show(
+                "Export LACT",
+                "Could not detect the LACT GPU id. Start LACT once, or choose a "
+                "directory that already contains config.yaml.",
+            )
+            return
+        include_fan_curve = self.profile_list.silent_fan_enabled()
+        if include_fan_curve and not sync_profile_fan_payload(profile):
+            self.errors.show(
+                "Export LACT",
+                "No runtime-ready silent fan curve is available for this profile.",
+            )
+            return
+        try:
+            written_path, warnings = write_lact_profile_config(
+                profile,
+                output_path=output_path,
+                gpu_id=gpu_id,
+                include_fan_curve=include_fan_curve,
+            )
+        except Exception as exc:
+            self.errors.show("Export LACT", f"LACT export failed:\n{exc}")
+            return
+        message = f"LACT profile successfully written:\n{written_path}"
+        if warnings:
+            message += "\n\nWarnings:\n" + "\n".join(str(item) for item in warnings)
+        self.controls.set_status_text(f"LACT profile written: {written_path}")
+        self.log_view.append("\n" + message + "\n")
+        self.QtWidgets.QMessageBox.information(self.window, "Export LACT", message)
+
+    def _verify_profile(self, profile: dict) -> None:
+        if self._workflow_running() or not profile_can_verify(profile):
+            return
+        label = profile_status_label(
+            self.profile_summaries,
+            str(profile.get("profile_id", "")),
+        )
+        options = select_verify_options(
+            QtWidgets=self.QtWidgets,
+            parent=self.window,
+            profile_label=label,
+        )
+        if options is None:
+            return
+        duration_s = int(options["duration_s"])
+        command = profile_verify_command(
+            profile_selector=profile_verify_selector(profile),
+            duration_s=duration_s,
+            stop_request_path=verify_stop_request_path(),
+            gpu_index=self.gpu_index,
+        )
+        workload = workload_label()
+        self.header.set_stage("Profile verification")
+        self.header.set_candidate(label)
+        self.controls.set_status_text(f"Verifying {label} with {workload}.")
+        self.tabs.setCurrentIndex(self.auto_uv_tab_index)
+        self.controls.set_verify_progress(
+            0,
+            elapsed_s=0,
+            target_s=duration_s,
+            detail=f"Verifying {label} with {workload}.",
+        )
+        self.log_view.append(
+            "\n$ " + " ".join(shlex.quote(part) for part in command) + "\n"
+        )
+        self.controls.set_running(True)
+        self._set_profile_actions_enabled(False)
+        self.verify_controller.start(command, duration_s=duration_s)
+
+    def _delete_selected_profiles(self) -> None:
+        if self._workflow_running():
+            return
+        selected_ids = set(self.profile_list.selected_profile_ids())
+        selected_profiles = profiles_for_selectors(
+            self.profile_summaries,
+            list(selected_ids),
+        )
+        selected_paths = self.profile_list.selected_profile_paths()
+        if not selected_paths:
+            return
+        autostart_info = systemd_autostart_profile_info()
+        autostart_action = profile_delete_autostart_action(
+            self.profile_summaries,
+            list(selected_ids),
+            autostart_info,
+        )
+        remove_systemd = autostart_action.get("action") == "remove-systemd"
+        switch_systemd_profile_id = (
+            str(autostart_action.get("profile_id", "")).strip()
+            if autostart_action.get("action") == "switch-profile"
+            else ""
+        )
+        if not self._confirm_profile_delete(
+            remove_systemd=remove_systemd,
+            removes_last_usable_adaptive_profile=(
+                autostart_action.get("reason") == "last-usable-adaptive-profile"
+            ),
+            switch_systemd_profile_id=switch_systemd_profile_id,
+        ):
+            return
+        try:
+            deleted = delete_auto_uv_profile_paths(selected_paths) if selected_paths else []
+        except PermissionError:
+            self._run_privileged_profile_delete(
+                selected_paths,
+                selected_ids,
+                remove_systemd=remove_systemd,
+                switch_systemd_profile_id=switch_systemd_profile_id,
+            )
+            return
+        count = len(deleted)
+        label = "profile" if count == 1 else "profiles"
+        self.log_view.append(f"\nDeleted {count} saved {label}.\n")
+        self.controls.set_status_text(f"Deleted {count} saved {label}.")
+        self._load_profiles()
+        self._run_delete_autostart_followup(
+            remove_systemd=remove_systemd,
+            switch_systemd_profile_id=switch_systemd_profile_id,
+        )
+
+    def _run_privileged_profile_delete(
+        self,
+        selected_paths: list[str],
+        selected_ids: set[str],
+        *,
+        remove_systemd: bool,
+        switch_systemd_profile_id: str = "",
+    ) -> None:
+        self._delete_selected_ids = set(selected_ids)
+        self._delete_remove_systemd = bool(remove_systemd)
+        self._delete_switch_systemd_profile_id = str(switch_systemd_profile_id)
+        self._set_profile_actions_enabled(False)
+        self.controls.start_button.setEnabled(False)
+        self.controls.set_status_text("Deleting selected Auto-UV profiles.")
+        self.command_controller.start(
+            "delete-profiles",
+            delete_profiles_command(selected_paths),
+            fail_text="Failed to start Auto-UV profile delete action.",
+        )
+
+    def _command_finished(self, kind: str, exit_code, exit_status) -> None:
+        label = _runtime_action_label(kind)
+        self.log_view.append(f"\n{label} finished: exit_code={exit_code}\n")
+        success = int(exit_code) == 0
+        self.controls.start_button.setEnabled(not self.scan_controller.is_running())
+        self._set_profile_actions_enabled(not self.scan_controller.is_running())
+        if kind == "delete-profiles":
+            if success:
+                self.controls.set_status_text("Selected Auto-UV profiles deleted.")
+                self._load_profiles()
+                if self._run_delete_autostart_followup(
+                    remove_systemd=self._delete_remove_systemd,
+                    switch_systemd_profile_id=self._delete_switch_systemd_profile_id,
+                ):
+                    return
+            else:
+                self.controls.set_status_text("Auto-UV profile deletion failed.")
+                self.errors.show_process(
+                    title="Profile deletion failed",
+                    action_label="Delete selected profiles",
+                    exit_code=exit_code,
+                    exit_status=exit_status,
+                )
+            self._delete_selected_ids = set()
+            self._delete_remove_systemd = False
+            self._delete_switch_systemd_profile_id = ""
+            self._load_profiles()
+            return
+        if success:
+            self.controls.set_status_text(f"{label} complete.")
+        else:
+            self.controls.set_status_text(f"{label} failed.")
+            self.errors.show_process(
+                title=f"{label} failed",
+                action_label=label,
+                exit_code=exit_code,
+                exit_status=exit_status,
+            )
+        self._load_profiles()
+
+    def _confirm_profile_delete(
+        self,
+        *,
+        remove_systemd: bool,
+        removes_last_usable_adaptive_profile: bool = False,
+        switch_systemd_profile_id: str = "",
+    ) -> bool:
+        buttons = (
+            self.QtWidgets.QMessageBox.StandardButton.Yes
+            | self.QtWidgets.QMessageBox.StandardButton.No
+        )
+        answer = self.QtWidgets.QMessageBox.question(
+            self.window,
+            "Delete Profiles",
+            delete_confirmation_text(
+                self.profile_list.selected_profile_names(),
+                removes_systemd=remove_systemd,
+                removes_last_usable_adaptive_profile=(
+                    removes_last_usable_adaptive_profile
+                ),
+                switches_systemd_to_profile=(
+                    profile_status_label(self.profile_summaries, switch_systemd_profile_id)
+                    if str(switch_systemd_profile_id).strip()
+                    else ""
+                ),
+            ),
+            buttons,
+            self.QtWidgets.QMessageBox.StandardButton.No,
+        )
+        return answer == self.QtWidgets.QMessageBox.StandardButton.Yes
+
+    def _show_profile_context_menu(self, position) -> None:
+        table = self.profile_list.table
+        index = table.indexAt(position)
+        if not index.isValid():
+            return
+        table.selectRow(int(index.row()))
+        profile = self._profile_from_row(int(index.row()))
+        if profile is None:
+            return
+        menu = self.QtWidgets.QMenu(table)
+        edit_curve_action = menu.addAction("Edit VF Curve")
+        edit_curve_action.setEnabled(bool(profile_curve_plan(profile)))
+        fan_action = menu.addAction("Edit Fan Curve")
+        fan_action.setEnabled(bool(profile_fan_curve_points(profile)))
+        apply_action = menu.addAction("Apply")
+        apply_action.setEnabled(not self._workflow_running() and profile_can_apply(profile))
+        verify_action = menu.addAction("Verify")
+        verify_action.setEnabled(
+            not self._workflow_running() and profile_can_verify(profile)
+        )
+        export_action = menu.addAction("Export LACT")
+        export_action.setEnabled(not self._workflow_running() and profile_can_apply(profile))
+        tier_menu = menu.addMenu("Assign Tier")
+        tier_actions = {
+            "efficiency": tier_menu.addAction("Efficiency"),
+            "balanced": tier_menu.addAction("Balanced"),
+            "performance": tier_menu.addAction("Performance"),
+        }
+        tier_menu.addSeparator()
+        none_tier_action = tier_menu.addAction("None")
+        can_assign_tier = (
+            not self._workflow_running()
+            and profile_can_apply(profile)
+            and bool(str(profile.get("profile_id") or "").strip())
+        )
+        tier_menu.setEnabled(can_assign_tier)
+        menu.addSeparator()
+        delete_action = menu.addAction("Delete")
+        delete_action.setEnabled(
+            not self._workflow_running() and profile_is_deletable(profile)
+        )
+        chosen = menu.exec(table.viewport().mapToGlobal(position))
+        if chosen == edit_curve_action:
+            self._edit_profile_vf_curve(profile)
+        elif chosen == fan_action:
+            self._edit_profile_fan_curve(profile)
+        elif chosen == apply_action:
+            self.profile_list.install_button.setChecked(True)
+            self._run_runtime_action("install-systemd")
+        elif chosen == verify_action:
+            self._verify_profile(profile)
+        elif chosen == export_action:
+            self._export_lact_profile(profile)
+        elif chosen in set(tier_actions.values()):
+            profile_id = str(profile.get("profile_id") or "").strip()
+            for tier, action in tier_actions.items():
+                if chosen == action:
+                    save_profile_tier_assignment(profile_id, tier)
+                    self._load_profiles()
+                    break
+        elif chosen == none_tier_action:
+            save_profile_tier_none_assignment(str(profile.get("profile_id") or ""))
+            self._load_profiles()
+        elif chosen == delete_action:
+            self._delete_selected_profiles()
+
+    def _profile_from_row(self, row: int) -> dict | None:
+        item = self.profile_list.table.item(int(row), 0)
+        if item is None:
+            return None
+        profile_id = str(item.data(self.profile_list.PROFILE_ID_ROLE) or "")
+        return profile_for_selector(self.profile_summaries, profile_id)
+
+    def _runtime_action_start_text(
+        self,
+        action: str,
+        *,
+        adaptive_auto_uv: bool = False,
+    ) -> str:
+        if adaptive_auto_uv:
+            if action == "install-systemd":
+                return "Starting adaptive Auto-UV; Systemd autostart: Yes."
+            return "Starting adaptive Auto-UV; Systemd autostart: No."
+        selected = self.profile_list.selected_profile_name() or "none"
+        if action == "install-systemd":
+            return f"Starting profile: {selected}; Systemd autostart: Yes."
+        if action == "uninstall-systemd":
+            return "Removing Systemd autostart entry."
+        return f"Starting profile: {selected}; Systemd autostart: No."
+
+
+def _manual_curve_control_voltage_mvs(manual_edit) -> tuple[int, ...]:
+    if not isinstance(manual_edit, dict):
+        return ()
+    raw_values = manual_edit.get("control_voltage_mvs")
+    if not isinstance(raw_values, (list, tuple)):
+        return ()
+    values = []
+    seen = set()
+    for raw_value in raw_values:
+        try:
+            value = int(round(float(raw_value)))
+        except (TypeError, ValueError):
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        values.append(value)
+    return tuple(values)
+
+
+def _runtime_action_label(action: str) -> str:
+    labels = {
+        "daemonize": "Apply selected profile",
+        "adaptive-daemonize": "Apply adaptive Auto-UV",
+        "install-systemd": "Install startup profile",
+        "adaptive-install-systemd": "Install adaptive startup profile",
+        "uninstall-systemd": "Remove autostart entry",
+        "delete-profiles": "Delete selected profiles",
+    }
+    return labels.get(str(action), str(action) or "Profile action")

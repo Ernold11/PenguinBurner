@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
+import ui.profile_actions as actions_mod
 import ui.window as window_mod
 from ui.qt import import_qt
 from ui.window import MainWindow
@@ -148,7 +149,7 @@ def test_run_runtime_action_launches(win) -> None:
     monkeypatch.setattr(window.profile_list, "selected_profile_id", lambda: "p1")
     monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: False)
     monkeypatch.setattr(window.profile_list, "set_runtime_actions_enabled", lambda enabled: None)
-    monkeypatch.setattr(window_mod, "runtime_profile_command", lambda *a, **k: ["echo", "run"])
+    monkeypatch.setattr(actions_mod, "runtime_profile_command", lambda *a, **k: ["echo", "run"])
     fake = _FakeController()
     window.command_controller = fake
     window._run_runtime_action("daemonize")
@@ -167,7 +168,7 @@ def test_run_runtime_action_blocked_when_busy(win) -> None:
 
 def test_run_adaptive_insufficient_tiers(win) -> None:
     window, monkeypatch = win
-    monkeypatch.setattr(window_mod, "adaptive_profile_tier_labels", lambda profs: ["Efficiency"])
+    monkeypatch.setattr(actions_mod, "adaptive_profile_tier_labels", lambda profs: ["Efficiency"])
     shown: list = []
     monkeypatch.setattr(window.errors, "show", lambda title, msg: shown.append(title))
     fake = _FakeController()

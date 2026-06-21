@@ -9,7 +9,9 @@ import json
 import time
 from typing import Callable
 
-from ..scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE, normalize_auto_uv_mode
+from ..scan_mode.auto_uv_mode import normalize_auto_uv_mode
+from .final_choice_ranking import final_choice_sort_label
+from .final_choice_ranking import sort_candidates_for_final_choice
 from ..persistence.auto_uv_persisted_json_files import (
     auto_uv_stop_requested,
     final_choice_request_path,
@@ -420,9 +422,12 @@ def sorted_final_choice_candidates(
     auto_uv_mode: str,
     base_probe: AutoUvProbeSummary | None,
 ) -> tuple[list[dict], str]:
-    if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE:
-        return sorted(candidates, key=candidate_fps_sort_key), "fps"
-    return sorted(candidates, key=candidate_fps_per_w_sort_key), "fps-per-w"
+    _ = base_probe
+    normalized_mode = normalize_auto_uv_mode(auto_uv_mode)
+    return (
+        sort_candidates_for_final_choice(candidates, normalized_mode),
+        final_choice_sort_label(normalized_mode),
+    )
 
 
 def candidate_selection_summary(
@@ -636,26 +641,6 @@ def coerce_final_choice_duration_s(
 
 def selection_candidate_id(*, voltage_mv: int, lock_clock_mhz: int) -> str:
     return f"{int(voltage_mv)}mv-{int(lock_clock_mhz)}mhz"
-
-
-def candidate_fps_per_w_sort_key(candidate: dict) -> tuple[bool, float, int, int]:
-    efficiency = float_or_none(candidate.get("efficiency_fps_per_w"))
-    return (
-        efficiency is None,
-        -float(efficiency or 0.0),
-        int(candidate.get("candidate_voltage_mv") or 99999),
-        -int(candidate.get("lock_clock_mhz") or 0),
-    )
-
-
-def candidate_fps_sort_key(candidate: dict) -> tuple[bool, float, int, int]:
-    fps = float_or_none(candidate.get("avg_fps"))
-    return (
-        fps is None,
-        -float(fps or 0.0),
-        -int(candidate.get("lock_clock_mhz") or 0),
-        int(candidate.get("candidate_voltage_mv") or 99999),
-    )
 
 
 def probe_float(probe: AutoUvProbeSummary | None, field_name: str) -> float | None:
