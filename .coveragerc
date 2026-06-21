@@ -26,7 +26,6 @@ omit =
     common/penguin_burner_errors.py
     common/subprocess_locale.py
     common/cli_output.py
-    common/ascii_chart.py
     # --- Live NVIDIA GPU / NVML / NVAPI ---
     runtime/gpu_control/nvml_runtime_session.py
     runtime/gpu_control/live_gpu_telemetry_text.py
