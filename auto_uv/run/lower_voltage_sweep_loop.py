@@ -23,7 +23,6 @@ from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
 )
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_EFFICIENCY
 from auto_uv.curve.flattened_voltage_probe_curve import build_flattened_voltage_probe_curve
-from auto_uv.efficiency_tune.voltage_descent import voltage_descent_candidate_policy
 from auto_uv.run.lower_voltage_probe_target import (
     base_curve_target_for_lower_voltage,
     lower_voltage_phase,
@@ -242,15 +241,12 @@ def build_next_lower_voltage_candidate(
     probe_history: list[VoltageProbeOutcome],
 ) -> tuple[VfCurveCandidate, VoltageSweepState]:
     assert state.next_voltage_mv is not None
-    policy = voltage_descent_candidate_policy(
-        settings=settings,
-        stable_target_mhz=int(state.stable_target_mhz),
-    )
     _ = probe_history
+    tail_rise_bins = max(0, int(settings.tail_rise_bins))
     target_mhz = base_curve_target_for_lower_voltage(
         base_curve,
         candidate_voltage_mv=int(state.next_voltage_mv),
-        stable_target_mhz=int(policy.target_mhz),
+        stable_target_mhz=int(state.stable_target_mhz),
         stable_measured_target_mhz=state.stable_measured_target_mhz,
     )
     phase = lower_voltage_phase(
@@ -265,9 +261,9 @@ def build_next_lower_voltage_candidate(
             f"lower-voltage {int(state.next_voltage_mv)}mV "
             f"phase={phase}"
         ),
-        tail_rise_bins=int(policy.tail_rise_bins),
+        tail_rise_bins=int(tail_rise_bins),
         metadata={
-            "tail_rise_bins": int(policy.tail_rise_bins),
+            "tail_rise_bins": int(tail_rise_bins),
             "target_policy": "hold-required-clock",
         },
     )

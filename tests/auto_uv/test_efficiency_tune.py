@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from auto_uv.domain.scan_settings import AutoUvScanSettings
-from auto_uv.efficiency_tune.voltage_descent import voltage_descent_candidate_policy
 from auto_uv.efficiency_tune.voltage_floor import min_search_voltage_mv
 
 
@@ -36,18 +34,3 @@ def test_voltage_floor_uses_configured_percent_when_gpu_unknown() -> None:
     )
 
     assert floor == 922
-
-
-def test_voltage_descent_policy_keeps_clock_and_uses_configured_tail_shape() -> None:
-    policy = voltage_descent_candidate_policy(
-        settings=AutoUvScanSettings(
-            start_voltage_mv=1025,
-            min_search_voltage_mv=850,
-            baseline_core_clock_mhz=2700.0,
-            tail_rise_bins=0,
-        ),
-        stable_target_mhz=2700,
-    )
-
-    assert policy.target_mhz == 2700
-    assert policy.tail_rise_bins == 0
