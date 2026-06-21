@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 import shutil
 import subprocess
 
-from nvidia_driver.hidden_nvapi_voltage import create_hidden_voltage_reader
-from nvidia_driver.nvml_perf_cap_reason import NvmlPerfCapReasonReader
+from drivers.nvidia.hidden_nvapi_voltage import create_hidden_voltage_reader
+from drivers.nvidia.nvml_perf_cap_reason import NvmlPerfCapReasonReader
 from common.subprocess_locale import stable_subprocess_env
 
 from .models import TelemetrySample

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from nvidia_driver.nvml_identity import query_nvml_gpu_memory_info
+from drivers.nvidia.nvml_identity import query_nvml_gpu_memory_info
 
 from .constants import DEFAULT_HEIGHT, DEFAULT_WIDTH
 

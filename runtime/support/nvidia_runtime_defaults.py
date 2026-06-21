@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Callable
 
-from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
-from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
+from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
+from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
 from runtime.support.vf_curve_plan import apply_plan
 
 

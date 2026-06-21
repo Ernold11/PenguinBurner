@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from nvidia_driver.nvml_identity import NvmlIdentitySession
+from drivers.nvidia.nvml_identity import NvmlIdentitySession
 
 
 class FakeNvmlFunction:

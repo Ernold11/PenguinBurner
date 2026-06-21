@@ -5,7 +5,7 @@ The reader owns the hidden NVAPI voltage session so the rest of Auto-UV can trea
 
 from __future__ import annotations
 
-from nvidia_driver.hidden_nvapi_voltage import create_hidden_voltage_reader
+from drivers.nvidia.hidden_nvapi_voltage import create_hidden_voltage_reader
 
 
 class LiveNvmlVoltageReader:

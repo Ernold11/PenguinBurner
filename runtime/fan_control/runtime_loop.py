@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from nvidia_driver.nvml_gpu_policy import describe_translated_gpu_policy
+from drivers.nvidia.nvml_gpu_policy import describe_translated_gpu_policy
 from profiles.uv.profile_tiers import profile_tier_label
 from common.penguin_burner_errors import NvmlError
 from runtime.support.vf_curve_plan import apply_plan

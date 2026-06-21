@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Callable
 import tempfile
 
-from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
-from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
+from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
+from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
 from common.penguin_burner_errors import NvmlError
 from runtime.support.vf_curve_plan import (
     apply_plan,

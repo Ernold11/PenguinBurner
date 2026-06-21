@@ -9,7 +9,7 @@ import struct
 from collections import Counter
 from pathlib import Path
 
-from nvidia_driver.nvml_identity import query_nvml_gpu_identities
+from drivers.nvidia.nvml_identity import query_nvml_gpu_identities
 from common.penguin_burner_paths import (
     afterburner_global_profile,
     default_afterburner_device_profile,

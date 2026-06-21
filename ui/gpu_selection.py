@@ -6,7 +6,7 @@ from pathlib import Path
 from integrations.afterburner.import_fan_curve import write_config
 from cli.runtime_config_file import load_raw_runtime_config
 from common.penguin_burner_paths import default_runtime_config_path
-from nvidia_driver.nvml_identity import query_nvml_gpu_identities
+from drivers.nvidia.nvml_identity import query_nvml_gpu_identities
 
 
 @dataclass(frozen=True)

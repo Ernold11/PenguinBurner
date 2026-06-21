@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS
 from auto_uv.scan_mode import AUTO_UV_MODE_BALANCED, normalize_auto_uv_mode
-from nvidia_driver.nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
+from drivers.nvidia.nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 
 
 def _positive_or_none(coerce):

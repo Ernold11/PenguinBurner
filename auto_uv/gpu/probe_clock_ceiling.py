@@ -6,7 +6,7 @@ The ceiling keeps the driver from boosting past the flattened target clock.
 from __future__ import annotations
 
 from integrations.afterburner.vfcurve_describe import describe_afterburner_dynamic_lock
-from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
+from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
 
 
 class ProbeClockCeilingController:

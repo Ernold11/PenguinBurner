@@ -10,16 +10,16 @@ from dataclasses import dataclass
 import re
 from typing import Callable
 
-from nvidia_driver.hidden_nvapi_vf import (
+from drivers.nvidia.hidden_nvapi_vf import (
     create_hidden_vf_curve_reader,
     get_hidden_vf_curve_reader_last_error,
 )
-from nvidia_driver.hidden_nvapi_voltage import (
+from drivers.nvidia.hidden_nvapi_voltage import (
     create_hidden_voltage_reader,
     get_hidden_voltage_reader_last_error,
 )
-from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
-from nvidia_driver.nvml_identity import query_nvml_gpu_identities
+from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
+from drivers.nvidia.nvml_identity import query_nvml_gpu_identities
 
 
 MINIMUM_NVIDIA_DRIVER_VERSION = (580, 0)

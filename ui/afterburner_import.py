@@ -21,7 +21,7 @@ from common.penguin_burner_paths import (
     resolve_afterburner_root,
     sync_afterburner_export_tree,
 )
-from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
+from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
 from profiles.uv import archive_auto_uv_profile
 
 from .gpu_selection import runtime_gpu_index

@@ -64,7 +64,7 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
     runtime \
     stability \
     ui \
-    nvidia_driver \
+    drivers \
     penguin_burner
 
 desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.PenguinBurner.desktop

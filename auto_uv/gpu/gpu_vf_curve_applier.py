@@ -8,11 +8,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from nvidia_driver.hidden_nvapi_vf import (
+from drivers.nvidia.hidden_nvapi_vf import (
     create_hidden_vf_curve_reader,
     get_hidden_vf_curve_reader_last_error,
 )
-from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
+from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
 from runtime.support.vf_curve_plan import apply_plan
 from runtime.support.nvidia_runtime_defaults import reset_nvidia_runtime_defaults
 

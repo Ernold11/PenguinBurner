@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from nvidia_driver.nvml_clock import (
+from drivers.nvidia.nvml_clock import (
     NVML_CLOCK_GRAPHICS,
     NVML_CLOCK_MEM,
     NVML_CLOCK_SM,
     NVML_CLOCK_VIDEO,
     NvmlClockSession,
 )
-from nvidia_driver.nvml_power import NvmlPowerSession
+from drivers.nvidia.nvml_power import NvmlPowerSession
 
 
 class FakeNvmlFunction:

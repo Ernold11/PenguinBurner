@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from nvidia_driver.nvml_identity import query_nvml_gpu_identity
+from drivers.nvidia.nvml_identity import query_nvml_gpu_identity
 
 
 def _nvidia_pci_bus_id_to_dri_prime(bus_id: str) -> str:

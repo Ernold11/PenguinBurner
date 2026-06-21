@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from common.penguin_burner_paths import claim_desktop_user_ownership
-from nvidia_driver.nvml_gpu_policy import apply_translated_gpu_policy
+from drivers.nvidia.nvml_gpu_policy import apply_translated_gpu_policy
 
 
 def apply_plan(reader, plan: list[dict]) -> None:

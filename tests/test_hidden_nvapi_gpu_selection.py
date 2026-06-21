@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from nvidia_driver import hidden_nvapi_gpu_selection as selection
+from drivers.nvidia import hidden_nvapi_gpu_selection as selection
 
 
 def test_pci_bus_number_from_full_nvml_bus_id() -> None:

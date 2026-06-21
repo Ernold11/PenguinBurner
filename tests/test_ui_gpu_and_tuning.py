@@ -225,7 +225,7 @@ class _FakeController:
 
 def test_memory_offset_range_clamps_driver_max(monkeypatch) -> None:
     monkeypatch.setattr(
-        "nvidia_driver.nvml_gpu_policy.NvmlGpuPolicyController",
+        "drivers.nvidia.nvml_gpu_policy.NvmlGpuPolicyController",
         lambda *, gpu_index: _FakeController(gpu_index=gpu_index, driver_range=(0, 1500)),
     )
     assert memory_offset_mhz_range() == (0, 1500)
@@ -233,7 +233,7 @@ def test_memory_offset_range_clamps_driver_max(monkeypatch) -> None:
 
 def test_memory_offset_range_falls_back_on_error(monkeypatch) -> None:
     monkeypatch.setattr(
-        "nvidia_driver.nvml_gpu_policy.NvmlGpuPolicyController",
+        "drivers.nvidia.nvml_gpu_policy.NvmlGpuPolicyController",
         lambda *, gpu_index: _FakeController(gpu_index=gpu_index, raise_on_query=True),
     )
     assert memory_offset_mhz_range() == (0, 2000)
@@ -241,7 +241,7 @@ def test_memory_offset_range_falls_back_on_error(monkeypatch) -> None:
 
 def test_memory_offset_range_falls_back_on_empty_range(monkeypatch) -> None:
     monkeypatch.setattr(
-        "nvidia_driver.nvml_gpu_policy.NvmlGpuPolicyController",
+        "drivers.nvidia.nvml_gpu_policy.NvmlGpuPolicyController",
         lambda *, gpu_index: _FakeController(gpu_index=gpu_index, driver_range=()),
     )
     assert memory_offset_mhz_range() == (0, 2000)

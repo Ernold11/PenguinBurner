@@ -9,7 +9,7 @@ import time
 import traceback
 from pathlib import Path
 
-from nvidia_driver.nvml_identity import NvmlIdentitySession
+from drivers.nvidia.nvml_identity import NvmlIdentitySession
 
 DEBUG_LOG_ENABLED = False
 DEBUG_LOG_PATH = None

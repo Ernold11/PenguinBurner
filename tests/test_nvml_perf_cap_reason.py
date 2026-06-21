@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from nvidia_driver.nvml_perf_cap_reason import (
+from drivers.nvidia.nvml_perf_cap_reason import (
     NVML_CLOCKS_THROTTLE_REASON_HW_POWER_BRAKE_SLOWDOWN,
     NVML_CLOCKS_THROTTLE_REASON_SW_POWER_CAP,
     NvmlPerfCapReasonReader,

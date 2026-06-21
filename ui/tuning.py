@@ -248,7 +248,7 @@ def read_auto_uv_nvml_info(gpu_index: int) -> AutoUvNvmlInfo:
     supported_graphics_steps: list[int] = []
 
     try:
-        from nvidia_driver.nvml_power import NvmlPowerSession
+        from drivers.nvidia.nvml_power import NvmlPowerSession
 
         with NvmlPowerSession(int(gpu_index)) as session:
             power = session.telemetry()
@@ -256,7 +256,7 @@ def read_auto_uv_nvml_info(gpu_index: int) -> AutoUvNvmlInfo:
         power = None
 
     try:
-        from nvidia_driver.nvml_clock import NvmlClockSession
+        from drivers.nvidia.nvml_clock import NvmlClockSession
 
         with NvmlClockSession(int(gpu_index)) as session:
             clocks = session.current_clocks()
@@ -304,7 +304,7 @@ def memory_offset_mhz_range() -> tuple[int, int]:
     fallback = (0, 2000)
     controller = None
     try:
-        from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
+        from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
 
         controller = NvmlGpuPolicyController(
             gpu_index=runtime_gpu_index(default_runtime_config_path())
@@ -331,7 +331,7 @@ def memory_offset_mhz_range() -> tuple[int, int]:
 def _query_gpu_name(gpu_index: int | None = None) -> str | None:
     controller = None
     try:
-        from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
+        from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
 
         index = int(gpu_index) if gpu_index is not None else runtime_gpu_index(
             default_runtime_config_path()

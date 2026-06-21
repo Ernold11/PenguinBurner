@@ -198,12 +198,18 @@ def test_package_installs_shared_subprocess_locale_helper() -> None:
     # top-level module; everything else lives in a package.
     assert py_modules == {"penguin_burner"}
 
-    # Low-level NVIDIA driver readers -> nvidia_driver; shared cross-cutting
+    # Low-level NVIDIA driver readers -> drivers.nvidia; shared cross-cutting
     # helpers (paths, errors, subprocess locale, CLI output, ascii chart) ->
     # common; Afterburner/LACT import/export helpers -> integrations.
     # The redundant run-from-checkout shims were dropped (the package modules
     # carry their own __main__ / console-script entry points).
-    assert {"nvidia_driver", "common", "integrations", "stability"} <= packages
+    assert {
+        "drivers",
+        "drivers.nvidia",
+        "common",
+        "integrations",
+        "stability",
+    } <= packages
 
 
 def test_fedora_rpm_does_not_hard_require_distro_nvidia_drivers() -> None:
