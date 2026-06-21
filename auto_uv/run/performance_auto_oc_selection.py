@@ -8,11 +8,11 @@ from auto_uv.curve.performance_sweep_profile import (
     build_performance_sweep_profile_candidate,
 )
 from auto_uv.q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
-from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
 
 
 def run_auto_oc_candidate_search(**kwargs):
-    from auto_uv.auto_oc import run_auto_oc_candidate_search as run_search
+    from auto_uv.auto_oc.search import run_auto_oc_candidate_search as run_search
 
     return run_search(**kwargs)
 

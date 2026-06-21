@@ -21,9 +21,9 @@ from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
     decide_efficiency_stop,
     power_increased_while_efficiency_flat,
 )
-from auto_uv.scan_mode import AUTO_UV_MODE_EFFICIENCY
+from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_EFFICIENCY
 from auto_uv.curve.flattened_voltage_probe_curve import build_flattened_voltage_probe_curve
-from auto_uv.efficiency_tune import voltage_descent_candidate_policy
+from auto_uv.efficiency_tune.voltage_descent import voltage_descent_candidate_policy
 from auto_uv.run.lower_voltage_probe_target import (
     base_curve_target_for_lower_voltage,
     lower_voltage_phase,

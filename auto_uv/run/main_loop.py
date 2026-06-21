@@ -53,10 +53,8 @@ from auto_uv.ui.candidate_choice import (
     choose_final_verification_candidate,
     choose_recovery_final_verification_candidate,
 )
-from auto_uv.efficiency_tune import (
-    min_search_voltage_mv,
-    voltage_descent_tail_rise_bins,
-)
+from auto_uv.efficiency_tune.voltage_descent import voltage_descent_tail_rise_bins
+from auto_uv.efficiency_tune.voltage_floor import min_search_voltage_mv
 from auto_uv.gpu.gpu_vf_curve_applier import open_live_gpu_vf_curve_applier
 from auto_uv.run.lower_voltage_sweep_loop import (
     LowerVoltageSweepHooks,
@@ -80,7 +78,7 @@ from auto_uv.run.performance_auto_oc_selection import (
 from auto_uv.ui.vf_curve_ui_points import vf_curve_ui_points
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from auto_uv.final_verification import run_final_verification_and_save
-from auto_uv.scan_mode import AUTO_UV_MODE_EFFICIENCY
+from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_EFFICIENCY
 
 
 @dataclass(frozen=True, slots=True)

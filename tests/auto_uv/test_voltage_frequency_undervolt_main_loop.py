@@ -1152,7 +1152,7 @@ def test_require_probe_summary_raises_without_probe() -> None:
 
 
 def test_run_auto_oc_candidate_search_delegates_to_auto_oc(monkeypatch) -> None:
-    import auto_uv.auto_oc as auto_oc
+    import auto_uv.auto_oc.search as auto_oc_search
 
     captured: dict[str, object] = {}
 
@@ -1160,7 +1160,7 @@ def test_run_auto_oc_candidate_search_delegates_to_auto_oc(monkeypatch) -> None:
         captured.update(kwargs)
         return "auto-oc-result"
 
-    monkeypatch.setattr(auto_oc, "run_auto_oc_candidate_search", fake_search)
+    monkeypatch.setattr(auto_oc_search, "run_auto_oc_candidate_search", fake_search)
 
     result = performance_auto_oc_selection.run_auto_oc_candidate_search(foo=1, bar="baz")
 

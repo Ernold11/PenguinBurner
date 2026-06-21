@@ -9,10 +9,12 @@ from auto_uv.domain.types import AutoUvError, AutoUvFinalChoiceDiscarded
 from auto_uv.run.main_loop import (
     run_voltage_frequency_undervolt_main_loop,
 )
-from auto_uv.initial_check import require_auto_uv_initial_check
+from auto_uv.initial_check.auto_uv_hardware_initial_check import (
+    require_auto_uv_initial_check,
+)
 from common.penguin_burner_errors import NvmlError
 from runtime.support.runtime_debug import log as runtime_log
-from runtime.stability_test import build_stability_config
+from runtime.stability_test.q2rtx_cuda_workload_config import build_stability_config
 
 
 def _noop_emit_json_event(_enabled: bool, _event: str, **_payload) -> None:

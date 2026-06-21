@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
-from auto_uv.scan_mode import AUTO_UV_MODES
+from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODES
 from drivers.nvidia.nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from common.penguin_burner_paths import default_runtime_config_path
 from runtime.support.runtime_service import DEFAULT_JOURNAL_HOURS

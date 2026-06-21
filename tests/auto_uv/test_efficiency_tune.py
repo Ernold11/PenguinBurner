@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from auto_uv.domain.scan_settings import AutoUvScanSettings
-from auto_uv.efficiency_tune import (
-    min_search_voltage_mv,
-    voltage_descent_candidate_policy,
-)
+from auto_uv.efficiency_tune.voltage_descent import voltage_descent_candidate_policy
+from auto_uv.efficiency_tune.voltage_floor import min_search_voltage_mv
 
 
 def test_voltage_floor_uses_explicit_user_value_first() -> None:

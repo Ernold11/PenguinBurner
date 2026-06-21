@@ -11,7 +11,7 @@ from auto_uv.persistence.interrupted_probe_crash_cache import (
     consume_interrupted_probe_crash_marker,
 )
 from auto_uv.persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
-from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
 from auto_uv.shared.positive_int import positive_int
 from auto_uv.ui.candidate_choice import candidate_plan_from_record
 from auto_uv.ui.probe_summary_ui_payload import probe_summary_ui_payload

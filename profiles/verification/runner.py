@@ -17,7 +17,7 @@ from runtime.support.vf_curve_plan import (
 from runtime.support.runtime_debug import log as runtime_log
 from runtime.gpu_control.flattened_clock_ceiling import FlattenedClockCeilingController
 from runtime.support.runtime_service import stop_existing_penguin_burner_runtime
-from runtime.stability_test import (
+from runtime.stability_test.q2rtx_cuda_workload_config import (
     build_stability_config,
     stability_workload_label,
     stability_workload_split_label,
