@@ -8,19 +8,19 @@ from types import SimpleNamespace
 
 import pytest
 
-import auto_uv.stability.q2rtx.downloader as q2rtx_downloader
-import auto_uv.stability.q2rtx.gpu_binding as q2rtx_gpu_binding
-import auto_uv.stability.q2rtx.install as q2rtx_install
-import auto_uv.stability.q2rtx.runtime as q2rtx_runtime
-import auto_uv.stability.q2rtx.assets as q2rtx_assets
-from auto_uv.stability.q2rtx.assets import resolve_q2rtx_executable
+import stability.q2rtx.downloader as q2rtx_downloader
+import stability.q2rtx.gpu_binding as q2rtx_gpu_binding
+import stability.q2rtx.install as q2rtx_install
+import stability.q2rtx.runtime as q2rtx_runtime
+import stability.q2rtx.assets as q2rtx_assets
+from stability.q2rtx.assets import resolve_q2rtx_executable
 import runtime.stability_test.q2rtx_cuda_workload_config as q2rtx_workload_config
-from auto_uv.stability.q2rtx.constants import (
+from stability.q2rtx.constants import (
     PB_Q2RTX_ASSET_PREFIX,
     PB_Q2RTX_ASSET_SUFFIX,
     Q2RTX_REQUIRED_DATA_FILES,
 )
-from auto_uv.stability.q2rtx.install import (
+from stability.q2rtx.install import (
     clear_q2rtx_stability_logs,
     _download_file_from_urls,
     _emit_dependency_progress,
@@ -29,21 +29,21 @@ from auto_uv.stability.q2rtx.install import (
     _q2rtx_release_asset_urls,
     fetch_latest_q2rtx_release_metadata,
 )
-from auto_uv.stability.q2rtx.progress import _progress_range_value
-from auto_uv.stability.q2rtx.models import (
+from stability.q2rtx.progress import _progress_range_value
+from stability.q2rtx.models import (
     Q2RTXBenchmarkSummary,
     Q2RTXStabilityConfig,
     Q2RTXStabilityResult,
     StabilityTestError,
 )
-from auto_uv.stability.q2rtx.output import (
+from stability.q2rtx.output import (
     _benchmark_summary_from_events,
     _format_live_progress_state,
     _scan_output_for_fatal_patterns,
 )
-from auto_uv.stability.q2rtx.reporting import _filter_report_output_tail
-from auto_uv.stability.q2rtx.runtime import build_benchmark_command
-from auto_uv.stability.q2rtx.telemetry import _xid_message_is_at_or_after
+from stability.q2rtx.reporting import _filter_report_output_tail
+from stability.q2rtx.runtime import build_benchmark_command
+from stability.q2rtx.telemetry import _xid_message_is_at_or_after
 
 
 def _write_tar(path: Path, members: dict[str, bytes]) -> None:
@@ -98,8 +98,8 @@ def test_missing_q2rtx_install_message_uses_moved_module_path(monkeypatch) -> No
         resolve_q2rtx_executable()
 
     message = str(exc.value)
-    assert "python -m auto_uv.stability.q2rtx --install-q2rtx" in message
-    assert "python -m stability.q2rtx" not in message
+    assert "python -m stability.q2rtx --install-q2rtx" in message
+    assert "python -m auto_uv.stability.q2rtx" not in message
 
 
 def test_download_file_from_urls_retries_next_source(

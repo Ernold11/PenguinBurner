@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import math
 
-from ..scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
-from ..scan_mode.auto_uv_mode import normalize_auto_uv_mode
+from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.scan_mode.auto_uv_mode import normalize_auto_uv_mode
 
 
 FINAL_CHOICE_FPSW_SORT_COLUMN = 4

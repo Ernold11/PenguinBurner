@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Callable
 
-from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
-from auto_uv.stability.q2rtx.process_harness import cleanup_managed_q2rtx_processes
+from stability.q2rtx.models import Q2RTXStabilityConfig
+from stability.q2rtx.process_harness import cleanup_managed_q2rtx_processes
 
 from auto_uv.domain.types import (
     AutoUvError,
@@ -49,7 +49,7 @@ from auto_uv.run.crash_recovery import (
     replay_recovered_resume_probe_rows,
 )
 from auto_uv.curve.base_vf_curve_validation import validate_base_vf_curve
-from auto_uv.ui.candidate_choice import (
+from ui.features.auto_uv.candidate_choice import (
     choose_final_verification_candidate,
     choose_recovery_final_verification_candidate,
 )
@@ -66,7 +66,7 @@ from auto_uv.run.scan_runtime_settings import read_scan_runtime_settings
 from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
     derive_efficiency_stop_streak_from_fps_variance,
 )
-from auto_uv.ui.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
+from ui.features.auto_uv.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
 from auto_uv.persistence.verified_candidate_result_file import (
     read_verified_candidates,
 )
@@ -75,7 +75,7 @@ from auto_uv.curve.vf_curve_flattening import build_flatten_target_for_plan
 from auto_uv.run.performance_auto_oc_selection import (
     select_performance_auto_oc_candidate,
 )
-from auto_uv.ui.vf_curve_ui_points import vf_curve_ui_points
+from ui.features.auto_uv.vf_curve_ui_points import vf_curve_ui_points
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from auto_uv.final_verification.main_loop import run_final_verification_and_save
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_EFFICIENCY

@@ -19,7 +19,7 @@ import ui.dialogs.error_details as error_details
 import ui.dialogs.final_choice as fc
 import ui.dialogs.scan_tuning as scan_tuning_dialog
 import ui.dialogs.verify as verify_dialog
-from auto_uv.ui.final_choice_ranking import candidate_fps, candidate_fpsw
+from ui.features.auto_uv.final_choice_ranking import candidate_fps, candidate_fpsw
 from ui.qt import import_qt
 
 

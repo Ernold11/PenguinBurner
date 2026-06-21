@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..shared.probe_data_fields import read_field
+from auto_uv.shared.probe_data_fields import read_field
 
 
 def probe_summary_ui_payload(

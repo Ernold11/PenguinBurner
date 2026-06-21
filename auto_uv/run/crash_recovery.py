@@ -13,9 +13,9 @@ from auto_uv.persistence.interrupted_probe_crash_cache import (
 from auto_uv.persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
 from auto_uv.shared.positive_int import positive_int
-from auto_uv.ui.candidate_choice import candidate_plan_from_record
-from auto_uv.ui.probe_summary_ui_payload import probe_summary_ui_payload
-from auto_uv.ui.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
+from ui.features.auto_uv.candidate_choice import candidate_plan_from_record
+from ui.features.auto_uv.probe_summary_ui_payload import probe_summary_ui_payload
+from ui.features.auto_uv.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
 
 
 class CrashCacheEntries(list):

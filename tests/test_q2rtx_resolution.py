@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import auto_uv.stability.q2rtx.cli as q2rtx_cli
-import auto_uv.stability.q2rtx.resolution as q2rtx_resolution
+import stability.q2rtx.cli as q2rtx_cli
+import stability.q2rtx.resolution as q2rtx_resolution
 
 
 def _memory(total_bytes: int):
@@ -98,8 +98,8 @@ def test_standalone_q2rtx_cli_help_uses_moved_module_path(monkeypatch, capsys) -
 
     assert exc.value.code == 0
     help_text = capsys.readouterr().out
-    assert "python -m auto_uv.stability.q2rtx" in help_text
-    assert "python -m stability.q2rtx" not in help_text
+    assert "python -m stability.q2rtx" in help_text
+    assert "python -m auto_uv.stability.q2rtx" not in help_text
 
 
 def test_negative_resolution_is_rejected() -> None:

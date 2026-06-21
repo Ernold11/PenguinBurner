@@ -10,7 +10,7 @@ from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
 from auto_uv.run.scan_runtime_settings import (
     short_probe_base_duration_s as _short_probe_base_duration_s,
 )
-from auto_uv.ui.candidate_choice import (
+from ui.features.auto_uv.candidate_choice import (
     candidate_selection_summary as _candidate_selection_summary,
     sorted_final_choice_candidates as _sorted_backend_final_choice_candidates,
 )

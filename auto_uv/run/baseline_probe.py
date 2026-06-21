@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
+from stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.domain.types import AutoUvError, AutoUvProbeSummary, VfCurveCandidate
 from auto_uv.domain.console_log import log_benchmark, log_phase
@@ -24,8 +24,8 @@ from auto_uv.curve.vf_curve_flattening import (
 from auto_uv.persistence.verified_candidate_result_file import write_latest_verified_candidate
 from auto_uv.q2rtx.q2rtx_cuda_probe_config import reference_discovery_q2rtx_duration_s
 from auto_uv.q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
-from auto_uv.ui.probe_summary_ui_payload import probe_summary_ui_payload
-from auto_uv.ui.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
+from ui.features.auto_uv.probe_summary_ui_payload import probe_summary_ui_payload
+from ui.features.auto_uv.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 
 

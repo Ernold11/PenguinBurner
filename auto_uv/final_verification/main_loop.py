@@ -19,12 +19,15 @@ from ..q2rtx.probe_stability_decision import (
     StabilityThresholds,
     evaluate_stable_run,
 )
-from ..ui.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
-from ..ui.ui_voltage_probe_events import (
+from ui.features.auto_uv.ui_json_event_writer import (
+    AutoUvEventCallback,
+    emit_ui_json_event,
+)
+from ui.features.auto_uv.ui_voltage_probe_events import (
     emit_ui_voltage_probe_finished,
     emit_ui_voltage_probe_started,
 )
-from ..ui.vf_curve_ui_points import vf_curve_ui_points
+from ui.features.auto_uv.vf_curve_ui_points import vf_curve_ui_points
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from .crash_marker import (
     final_probe_crash_marker_details,

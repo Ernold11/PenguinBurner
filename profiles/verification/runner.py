@@ -30,11 +30,11 @@ from profiles.uv.runtime_auto_uv_profile import (
     apply_auto_uv_profile_memory_offset,
     load_auto_uv_final_curve,
 )
-from auto_uv.stability.q2rtx.long_stability_config import build_long_stability_test_config
-from auto_uv.stability.q2rtx.models import StabilityTestError
-from auto_uv.stability.q2rtx.output import attach_stdout_progress
-from auto_uv.stability.q2rtx.reporting import print_q2rtx_stability_result
-from auto_uv.stability.q2rtx.runtime import run_q2rtx_stability_test
+from stability.q2rtx.long_stability_config import build_long_stability_test_config
+from stability.q2rtx.models import StabilityTestError
+from stability.q2rtx.output import attach_stdout_progress
+from stability.q2rtx.reporting import print_q2rtx_stability_result
+from stability.q2rtx.runtime import run_q2rtx_stability_test
 
 from .metrics import profile_verification_metrics_from_result
 from .rules import (

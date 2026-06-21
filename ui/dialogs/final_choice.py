@@ -4,19 +4,19 @@ from auto_uv.scan_mode.auto_uv_mode import (
     AUTO_UV_MODE_PERFORMANCE,
     normalize_auto_uv_mode,
 )
-from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_DEFAULT_SORT_COLUMN
-from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_FPS_SORT_COLUMN
-from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_FPSW_SORT_COLUMN
-from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_HIGHER_FIRST_COLUMNS
-from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_SORTABLE_COLUMNS
-from auto_uv.ui.final_choice_ranking import best_final_choice_candidate_id
-from auto_uv.ui.final_choice_ranking import candidate_oc_mhz
-from auto_uv.ui.final_choice_ranking import candidate_short_duration_s
-from auto_uv.ui.final_choice_ranking import final_choice_shows_oc_column
-from auto_uv.ui.final_choice_ranking import final_choice_sort_column_for_mode
-from auto_uv.ui.final_choice_ranking import final_choice_sort_values
-from auto_uv.ui.final_choice_ranking import numeric_sort_value
-from auto_uv.ui.final_choice_ranking import sort_candidates_for_final_choice
+from ui.features.auto_uv.final_choice_ranking import FINAL_CHOICE_DEFAULT_SORT_COLUMN
+from ui.features.auto_uv.final_choice_ranking import FINAL_CHOICE_FPS_SORT_COLUMN
+from ui.features.auto_uv.final_choice_ranking import FINAL_CHOICE_FPSW_SORT_COLUMN
+from ui.features.auto_uv.final_choice_ranking import FINAL_CHOICE_HIGHER_FIRST_COLUMNS
+from ui.features.auto_uv.final_choice_ranking import FINAL_CHOICE_SORTABLE_COLUMNS
+from ui.features.auto_uv.final_choice_ranking import best_final_choice_candidate_id
+from ui.features.auto_uv.final_choice_ranking import candidate_oc_mhz
+from ui.features.auto_uv.final_choice_ranking import candidate_short_duration_s
+from ui.features.auto_uv.final_choice_ranking import final_choice_shows_oc_column
+from ui.features.auto_uv.final_choice_ranking import final_choice_sort_column_for_mode
+from ui.features.auto_uv.final_choice_ranking import final_choice_sort_values
+from ui.features.auto_uv.final_choice_ranking import numeric_sort_value
+from ui.features.auto_uv.final_choice_ranking import sort_candidates_for_final_choice
 
 from ..constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
 from ..constants import MAX_FINAL_VERIFICATION_DURATION_S

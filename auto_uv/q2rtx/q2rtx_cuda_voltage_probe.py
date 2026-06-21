@@ -4,14 +4,14 @@ from dataclasses import replace
 from typing import Callable
 
 from runtime.support.vf_curve_plan import apply_plan
-from auto_uv.stability.q2rtx.models import (
+from stability.q2rtx.models import (
     Q2RTXStabilityConfig,
     Q2RTXStabilityResult,
     StabilityTestError,
 )
-from auto_uv.stability.q2rtx.reporting import print_q2rtx_stability_result
-from auto_uv.stability.q2rtx.runtime import run_q2rtx_stability_test
-from auto_uv.stability.q2rtx.telemetry import query_gpu_metrics
+from stability.q2rtx.reporting import print_q2rtx_stability_result
+from stability.q2rtx.runtime import run_q2rtx_stability_test
+from stability.q2rtx.telemetry import query_gpu_metrics
 
 from auto_uv.domain.console_log import log_phase
 from ..persistence.auto_uv_persisted_json_files import auto_uv_stop_requested
@@ -34,7 +34,10 @@ from .q2rtx_probe_summary import (
     saturated_probe_tail_samples,
     summarize_q2rtx_cuda_probe,
 )
-from ..ui.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
+from ui.features.auto_uv.ui_json_event_writer import (
+    AutoUvEventCallback,
+    emit_ui_json_event,
+)
 from ..persistence.unsafe_voltage_blacklist_file import record_unsafe_voltage
 
 

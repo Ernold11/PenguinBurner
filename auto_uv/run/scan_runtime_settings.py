@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
+from stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE, normalize_auto_uv_mode
 from auto_uv.domain.types import AutoUvError

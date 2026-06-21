@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
+from stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.domain.types import AutoUvProbeSummary, FailureKind, VfCurveCandidate
 from auto_uv.q2rtx.q2rtx_cuda_probe_runner import (

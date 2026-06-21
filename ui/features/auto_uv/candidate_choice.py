@@ -9,10 +9,10 @@ import json
 import time
 from typing import Callable
 
-from ..scan_mode.auto_uv_mode import normalize_auto_uv_mode
+from auto_uv.scan_mode.auto_uv_mode import normalize_auto_uv_mode
 from .final_choice_ranking import final_choice_sort_label
 from .final_choice_ranking import sort_candidates_for_final_choice
-from ..persistence.auto_uv_persisted_json_files import (
+from auto_uv.persistence.auto_uv_persisted_json_files import (
     auto_uv_stop_requested,
     final_choice_request_path,
     final_choice_response_path,
@@ -20,7 +20,7 @@ from ..persistence.auto_uv_persisted_json_files import (
 )
 from auto_uv.domain.types import AutoUvFinalChoiceDiscarded, AutoUvProbeSummary
 from .ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
-from ..curve.vf_curve_flattening import build_flattened_plan
+from auto_uv.curve.vf_curve_flattening import build_flattened_plan
 
 
 def choose_final_verification_candidate(

@@ -6,8 +6,10 @@ that boundary unless there is a clear shared contract.
 
 ## Current Boundaries
 
-- `auto_uv/`: Auto-UV scan logic, Q2RTX/CUDA probe orchestration, scan modes,
-  candidate selection, final verification, and Auto-UV persistence helpers.
+- `auto_uv/`: Auto-UV scan/search logic, scan modes, candidate selection,
+  final verification orchestration, and Auto-UV persistence helpers.
+- `stability/`: managed stability workloads and their install/runtime helpers,
+  currently Q2RTX plus the CUDA companion load.
 - `runtime/`: long-running daemon behavior that applies saved profiles, fan
   control, adaptive tier switching, and live GPU policy enforcement.
 - `profiles/`: saved Auto-UV profile storage, verification, tier assignment, and
@@ -66,7 +68,8 @@ Directory structure:
   - Afterburner and LACT moved under `integrations/`
   - NVML/NvAPI helpers moved under `drivers/nvidia/`
   - manual curve editors moved under `curve_editors/`
-  - Auto-UV domain/run/support modules moved under `auto_uv/`
+  - Auto-UV algorithm/run/support modules moved under `auto_uv/`
+  - Q2RTX/CUDA stability workloads moved under `stability/`
   - Qt workflow logic moved under `ui/features/`
 - When moving a directory, update all four surfaces in the same commit: imports,
   package metadata, tests, and docs/help/error strings.
@@ -75,7 +78,7 @@ Imports and public surface:
 
 - Avoid package-root compatibility facades. The cleanup removed lazy re-export
   maps from roots such as `profiles.uv`, `runtime.gpu_control`, and
-  `auto_uv.stability.q2rtx`. Do not add them back.
+  `stability.q2rtx`. Do not add them back.
 - An import that looks unused may be an accidental re-export. Do not preserve
   that pattern. Move consumers to the real owner module, then remove the
   re-export.
@@ -84,8 +87,8 @@ Imports and public surface:
   `runtime.gpu_control.flattened_clock_ceiling`; if it needs socket helpers,
   import from `overlay.telemetry.sockets`.
 - After any move, scan for stale module paths in source, tests, CLI help, docs,
-  and user-facing error messages. The Q2RTX move left stale
-  `python -m stability.q2rtx` text; that kind of drift is a real regression.
+  and user-facing error messages. A move is incomplete if old command text such
+  as `python -m auto_uv.stability.q2rtx` survives in help or error output.
 
 Runtime and daemon behavior:
 
@@ -172,6 +175,8 @@ Known regression patterns from the cleanup:
    - New tuning behavior should be generic.
    - Q2RTX is allowed as the managed stability workload for Auto-UV/final
      verification, not as a template for hardcoded game behavior.
+   - Do not bury workload UI or runner code inside `auto_uv/`; keep the
+     algorithm package focused on choosing and verifying voltage candidates.
 
 5. Keep writes explicit.
    - Do not make automatic writes the default behavior unless the user chose an
@@ -200,11 +205,19 @@ Known regression patterns from the cleanup:
    - Target FPS comes from overlay/runtime config with env override support.
 
 9. Keep stability testing scoped.
-   - Stability workloads belong inside Auto-UV scans and final verification.
+   - Stability workloads live in `stability/` and are invoked by Auto-UV scans
+     and final verification.
    - Do not add a separate product surface for standalone stress testing unless
      the user explicitly asks for it.
 
-10. Update all user surfaces together.
+10. Preserve preset-specific Auto-UV behavior.
+    - Efficiency has a low-voltage descent stage and a later tail-tune pass;
+      do not flatten that into the Balanced/Performance defaults. The tail-tune
+      pass intentionally raises the allowed tail-rise bins by 2.
+    - Balanced and Performance can share sweep machinery, but keep their
+      user-visible defaults and Performance Auto-OC behavior distinct.
+
+11. Update all user surfaces together.
     - Code, GUI labels, CLI help, `readme-cli.md`, feature docs, release notes,
       and targeted tests should agree.
     - A rename is not complete while stale names remain in docs, errors, help
@@ -311,7 +324,7 @@ Import structure:
 - Use concrete module imports. Example:
   `from profiles.uv.profile_store import resolve_auto_uv_profile`.
 - Do not import from convenience package roots such as `profiles.uv`,
-  `runtime.gpu_control`, or `auto_uv.stability.q2rtx`.
+  `runtime.gpu_control`, or `stability.q2rtx`.
 - Do not add `__init__.py` re-export barrels or lazy `__getattr__` maps.
 - After moving code, run the facade import scan from the static routine.
 

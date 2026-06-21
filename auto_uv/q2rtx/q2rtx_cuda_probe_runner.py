@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
+from stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.domain.types import AutoUvProbeSummary, VfCurveCandidate
 from .probe_stability_decision import StabilityThresholds, evaluate_stable_run
@@ -19,8 +19,8 @@ from .q2rtx_cuda_probe_config import (
     q2rtx_only_probe_config_for_voltage_band,
     reference_discovery_q2rtx_probe_config,
 )
-from ..ui.ui_json_event_writer import AutoUvEventCallback
-from ..ui.ui_voltage_probe_events import (
+from ui.features.auto_uv.ui_json_event_writer import AutoUvEventCallback
+from ui.features.auto_uv.ui_voltage_probe_events import (
     emit_ui_voltage_probe_finished,
     emit_ui_voltage_probe_started,
 )

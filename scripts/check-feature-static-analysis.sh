@@ -18,6 +18,7 @@ python_paths=(
     overlay
     profiles
     runtime
+    stability
     ui
     penguin_burner.py
 )
@@ -32,6 +33,7 @@ count_paths=(
     overlay
     profiles
     runtime
+    stability
     ui
     penguin_burner.py
 )
@@ -66,7 +68,7 @@ run git diff --check
 echo
 echo "==> stale moved-package import scan"
 if rg -n \
-    '^(from|import) (auto_oc|stability|initial_check|runtime_support|runtime_gpu_control|runtime_fan_control|runtime_stability_test|nvidia_driver|saved_uv_profiles|saved_profile_verification|latency_telemetry|manual_uv_curve_editor|manual_fan_curve_editor|afterburner|lact)(\b|\.)' \
+    '^(from|import) (auto_oc|initial_check|runtime_support|runtime_gpu_control|runtime_fan_control|runtime_stability_test|nvidia_driver|saved_uv_profiles|saved_profile_verification|latency_telemetry|manual_uv_curve_editor|manual_fan_curve_editor|afterburner|lact)(\b|\.)' \
     --glob '*.py'
 then
     echo "stale moved-package imports found" >&2
@@ -76,7 +78,7 @@ fi
 echo
 echo "==> package-root facade import scan"
 if rg -n \
-    '^from (auto_uv\.stability\.q2rtx|runtime\.gpu_control|profiles\.uv) import|^import (auto_uv\.stability\.q2rtx|runtime\.gpu_control|profiles\.uv)(\s|$| as)' \
+    '^from (stability\.q2rtx|runtime\.gpu_control|profiles\.uv) import|^import (stability\.q2rtx|runtime\.gpu_control|profiles\.uv)(\s|$| as)' \
     --glob '*.py'
 then
     echo "package-root facade imports found; import concrete modules instead" >&2

@@ -6,7 +6,7 @@ from auto_uv.domain.types import (
     StableRunDecision,
     VfCurveCandidate,
 )
-from auto_uv.ui.ui_voltage_probe_events import (
+from ui.features.auto_uv.ui_voltage_probe_events import (
     emit_ui_voltage_probe_finished,
     emit_ui_voltage_probe_started,
 )

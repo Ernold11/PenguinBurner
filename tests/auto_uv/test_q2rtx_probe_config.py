@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
+from stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.q2rtx.q2rtx_cuda_probe_config import cuda_companion_enabled_for_voltage_band
 from auto_uv.q2rtx.q2rtx_cuda_probe_config import q2rtx_cuda_probe_config_for_voltage_band

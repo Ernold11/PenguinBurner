@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from auto_uv.stability.q2rtx.constants import DEFAULT_DEMO_NAME
-from auto_uv.stability.q2rtx.install import (
+from stability.q2rtx.constants import DEFAULT_DEMO_NAME
+from stability.q2rtx.install import (
     default_q2rtx_install_data_dir,
     fetch_latest_q2rtx_release_metadata,
     install_latest_q2rtx,
 )
-from auto_uv.stability.q2rtx.long_stability_config import long_stability_workload_durations
-from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig, StabilityTestError
-from auto_uv.stability.q2rtx.resolution import (
+from stability.q2rtx.long_stability_config import long_stability_workload_durations
+from stability.q2rtx.models import Q2RTXStabilityConfig, StabilityTestError
+from stability.q2rtx.resolution import (
     format_q2rtx_resolution_choice,
     resolve_q2rtx_render_resolution,
 )

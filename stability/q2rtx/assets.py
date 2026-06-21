@@ -220,7 +220,7 @@ def resolve_q2rtx_executable(*, root: Path | None = None) -> tuple[Path, Path]:
                 return candidate, resolve_q2rtx_workdir(candidate, root=root)
 
     raise StabilityTestError(
-        "Managed Q2RTX is not installed. Run `python -m auto_uv.stability.q2rtx "
+        "Managed Q2RTX is not installed. Run `python -m stability.q2rtx "
         "--install-q2rtx` or start an Auto-UV/stability run with auto-install enabled."
     )
 
