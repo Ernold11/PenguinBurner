@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from afterburner.import_fan_curve import write_config
+from integrations.afterburner.import_fan_curve import write_config
 from cli.runtime_config_file import load_raw_runtime_config
 from common.penguin_burner_paths import default_runtime_config_path
 from nvidia_driver.nvml_identity import query_nvml_gpu_identities

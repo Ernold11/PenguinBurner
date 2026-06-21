@@ -1,7 +1,7 @@
 """Unit tests for the pure Afterburner -> Linux GPU-policy translation helpers."""
 from __future__ import annotations
 
-from afterburner.policy import (
+from integrations.afterburner.policy import (
     MAX_AFTERBURNER_MEM_OFFSET_MHZ,
     _resolve_power_limit_cap,
     afterburner_offset_khz_to_mhz,

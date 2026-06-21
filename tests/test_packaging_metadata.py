@@ -200,10 +200,10 @@ def test_package_installs_shared_subprocess_locale_helper() -> None:
 
     # Low-level NVIDIA driver readers -> nvidia_driver; shared cross-cutting
     # helpers (paths, errors, subprocess locale, CLI output, ascii chart) ->
-    # common; Afterburner import/policy helpers -> the afterburner package.
+    # common; Afterburner/LACT import/export helpers -> integrations.
     # The redundant run-from-checkout shims were dropped (the package modules
     # carry their own __main__ / console-script entry points).
-    assert {"nvidia_driver", "common", "afterburner", "stability"} <= packages
+    assert {"nvidia_driver", "common", "integrations", "stability"} <= packages
 
 
 def test_fedora_rpm_does_not_hard_require_distro_nvidia_drivers() -> None:
@@ -244,6 +244,8 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     assert "curve_editors" in packages
     assert "curve_editors.fan" in packages
     assert "curve_editors.uv" in packages
+    assert "integrations.afterburner" in packages
+    assert "integrations.lact" in packages
     assert "runtime" in packages
     assert "runtime.fan_control" in packages
     assert "runtime.gpu_control" in packages

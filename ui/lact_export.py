@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from afterburner.import_fan_curve import load_config
-from lact import LactExportError
-from lact import write_lact_nvidia_config
+from integrations.afterburner.import_fan_curve import load_config
+from integrations.lact import LactExportError
+from integrations.lact import write_lact_nvidia_config
 from common.penguin_burner_paths import default_runtime_config_path
 
 LACT_CONFIG_FILENAME = "config.yaml"

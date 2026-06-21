@@ -1,7 +1,7 @@
 """Unit tests for the Afterburner VF-curve description (presentation) helpers."""
 from __future__ import annotations
 
-from afterburner.vfcurve_describe import (
+from integrations.afterburner.vfcurve_describe import (
     _format_curve_float,
     describe_afterburner_dynamic_lock,
     describe_afterburner_flatten_validation,

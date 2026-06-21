@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import struct
 
-from afterburner.fan_curve import (
+from integrations.afterburner.fan_curve import (
     decode_sw_auto_fan_flags,
     load_afterburner_fan_settings,
     parse_sw_auto_fan_curve,
@@ -12,7 +12,7 @@ from afterburner.fan_curve import (
     temperature_for_speed,
     validate_afterburner_fan_settings,
 )
-from afterburner.vfcurve import (
+from integrations.afterburner.vfcurve import (
     load_afterburner_profile_settings,
     parse_vfcurve_blob,
     point_map_by_voltage,
@@ -346,7 +346,7 @@ def test_persist_drops_q2rtx_override_keys(tmp_path: Path) -> None:
     # carried forward into the generated runtime config.
     import tomllib
 
-    from afterburner.import_vf_curve import _persist_afterburner_runtime_state
+    from integrations.afterburner.import_vf_curve import _persist_afterburner_runtime_state
 
     config_path = tmp_path / "penguin_burner.toml"
     config_path.write_text(

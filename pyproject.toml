@@ -65,7 +65,6 @@ py-modules = [
   "penguin_burner",
 ]
 packages = [
-  "afterburner",
   "auto_oc",
   "auto_uv",
   "auto_uv.curve",
@@ -80,10 +79,12 @@ packages = [
   "cli",
   "common",
   "initial_check",
-  "lact",
   "curve_editors",
   "curve_editors.fan",
   "curve_editors.uv",
+  "integrations",
+  "integrations.afterburner",
+  "integrations.lact",
   "nvidia_driver",
   "overlay",
   "overlay.telemetry",

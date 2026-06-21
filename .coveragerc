@@ -12,9 +12,8 @@ source =
     cli
     common
     ui
-    afterburner
     curve_editors
-    lact
+    integrations
     profiles
     overlay
     runtime
@@ -52,9 +51,6 @@ omit =
     profiles/verification/runner.py
     # --- Overlay native/display integration ---
     overlay/display.py
-    # Afterburner dry-run preview: large presentation module, exercised via the
-    # CLI/import paths rather than unit tests (unmeasured before the root move).
-    afterburner/dry_run_preview.py
 
 [report]
 exclude_also =

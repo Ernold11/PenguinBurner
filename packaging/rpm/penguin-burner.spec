@@ -52,14 +52,13 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
 %install
 %pyproject_install
 %pyproject_save_files \
-    afterburner \
     auto_oc \
     auto_uv \
     cli \
     common \
     curve_editors \
     initial_check \
-    lact \
+    integrations \
     overlay \
     profiles \
     runtime \

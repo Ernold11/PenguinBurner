@@ -4,13 +4,13 @@ from datetime import datetime
 import json
 from pathlib import Path
 
-from afterburner.fan_curve import (
+from integrations.afterburner.fan_curve import (
     load_afterburner_fan_settings,
     resolve_afterburner_fan_profile,
 )
-from afterburner.import_fan_curve import build_imported_fan_section
-from afterburner.import_vf_curve import build_plan
-from afterburner.vfcurve import resolve_afterburner_vf_source
+from integrations.afterburner.import_fan_curve import build_imported_fan_section
+from integrations.afterburner.import_vf_curve import build_plan
+from integrations.afterburner.vfcurve import resolve_afterburner_vf_source
 from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
 from profiles.uv import resolve_auto_uv_profile
 from common.penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ctypes
 
-from afterburner.policy import (
+from integrations.afterburner.policy import (
     MAX_AFTERBURNER_MEM_OFFSET_MHZ,
     afterburner_offset_khz_to_mhz,
     apply_translated_gpu_policy,

@@ -3,17 +3,17 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from afterburner.fan_curve import load_afterburner_fan_settings
-from afterburner.import_vf_curve import (
+from integrations.afterburner.fan_curve import load_afterburner_fan_settings
+from integrations.afterburner.import_vf_curve import (
     build_plan,
     load_afterburner_runtime_options,
     persist_afterburner_import,
 )
-from afterburner.vfcurve import (
+from integrations.afterburner.vfcurve import (
     discover_afterburner_vf_sections,
     resolve_afterburner_vf_source,
 )
-from afterburner.vfcurve_describe import describe_afterburner_flatten_validation
+from integrations.afterburner.vfcurve_describe import describe_afterburner_flatten_validation
 from common.penguin_burner_paths import (
     default_runtime_config_path,
     discover_afterburner_device_profiles,
