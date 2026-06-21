@@ -19,7 +19,6 @@ class ProcessCpuUsage:
     process_util_pct: int | None = None
     peak_thread_util_pct: int | None = None
     peak_thread_id: int | None = None
-    peak_thread_name: str = ""
 
 
 class ProcessCpuUsageSampler:

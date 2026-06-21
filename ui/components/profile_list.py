@@ -39,7 +39,6 @@ class ProfileList:
     FPS_COLUMN = 6
     POWER_COLUMN = 7
     MEMORY_OFFSET_COLUMN = 8
-    TIER_COLUMN = 9
     SOURCE_COLUMN = 10
     PROFILE_ID_ROLE = 257
     CANDIDATE_ID_ROLE = 258
@@ -56,7 +55,6 @@ class ProfileList:
         self._item_class = _sortable_item_class(QtWidgets, self.SORT_VALUE_ROLE)
         self._runtime_actions_available = True
         self._has_systemd_service = False
-        self._systemd_selector = ""
         self._sort_column = self.DATE_COLUMN
         self._sort_order = QtCore.Qt.DescendingOrder
         self.widget = QtWidgets.QWidget()
@@ -153,7 +151,6 @@ class ProfileList:
             if has_systemd_entry is not None
             else bool(str(systemd_selector).strip())
         )
-        self._systemd_selector = str(systemd_selector or "").strip()
         table_signals_blocked = self.table.blockSignals(True)
         try:
             self.table.setRowCount(0)
@@ -649,23 +646,6 @@ def _format_profile_metric_with_delta(
     if delta is None:
         return value_text
     return f"{value_text} ({delta:+.2f}%)"
-
-
-def _format_profile_metric_delta(
-    current,
-    baseline,
-    *,
-    lower_is_better: bool = False,
-) -> str:
-    delta = _metric_delta_percent(
-        current,
-        baseline,
-    )
-    if delta is None:
-        return ""
-    if abs(delta) < 0.005:
-        return "ref"
-    return f"{delta:+.2f}%"
 
 
 def _profile_metric_delta_color(

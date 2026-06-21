@@ -159,21 +159,6 @@ class NvmlPowerSession:
         return int(out.value)
 
 
-def query_nvml_power_telemetry(gpu_index: int) -> NvmlPowerTelemetry | None:
-    try:
-        with NvmlPowerSession(int(gpu_index)) as session:
-            return session.telemetry()
-    except Exception:
-        return None
-
-
-def query_nvml_power_draw_w(gpu_index: int) -> float | None:
-    telemetry = query_nvml_power_telemetry(int(gpu_index))
-    if telemetry is None:
-        return None
-    return telemetry.power_draw_w
-
-
 def _check(rc, name: str) -> None:
     if int(rc) != NVML_SUCCESS:
         raise RuntimeError(f"{name} failed with NVML error {int(rc)}")

@@ -346,21 +346,6 @@ class HiddenNvapiVfCurveReader:
             ),
         )
 
-    def find_point_by_index(self, index):
-        for point in self._points:
-            if point["index"] == index:
-                return point
-        return None
-
-    def find_nearest_voltage_point(self, voltage_mv):
-        points = self.editable_core_points()
-        if not points:
-            return None
-        target_voltage_uv = int(voltage_mv) * 1000
-        return min(
-            points, key=lambda point: abs(point["voltage_uv"] - target_voltage_uv)
-        )
-
     def refresh_points(self):
         self._points = self._read_points()
         return self._points

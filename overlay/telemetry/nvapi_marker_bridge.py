@@ -270,7 +270,6 @@ def run(
     # Base frames awaiting their out-of-band (frame-generation) display present,
     # in present order: (frame, input_us, sim_us, present_end_us).
     awaiting_oob: list[tuple[int, int, int, int]] = []
-    sent = 0
     for line in _follow(log_path, poll_interval_s=poll_interval_s, from_start=from_start):
         parsed = _parse_line(line)
         if parsed is None:
@@ -284,9 +283,7 @@ def run(
             while len(framegen_order) > _MAX_PENDING:
                 framegen_marker_frames.pop(framegen_order.pop(0), None)
             if marker == NV_MARKER_OUT_OF_BAND_PRESENT_END:
-                sent += _resolve_oob_present(
-                    sock, targets, awaiting_oob, t_us, pid
-                )
+                _resolve_oob_present(sock, targets, awaiting_oob, t_us, pid)
             continue
         if marker == NV_MARKER_INPUT_SAMPLE:
             # Emitted by titles with full Reflex PCL markers, right before
@@ -334,7 +331,6 @@ def run(
                 # Full Reflex input lag: input sample -> application present.
                 sample["input_to_present_us"] = t_us - input_us
             _send_sample(sock, targets, sample)
-            sent += 1
             if oob_present_recent:
                 # Wait for the displayed (out-of-band) present to emit the wider
                 # sim_to_oob_present_us span for the click-to-photon proxy.

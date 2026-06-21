@@ -86,7 +86,6 @@ from ui.components.profile_list import (
     PROFILE_SORTABLE_COLUMNS,
     ProfileList,
     _format_number,
-    _format_profile_metric_delta,
     _format_profile_metric_with_delta,
     _metric_delta_percent,
     _profile_base_metric,
@@ -263,17 +262,6 @@ def test_profile_non_sort_columns_have_no_sort_keys() -> None:
     assert sort_values[8] == ""
     assert sort_values[9] == ""
     assert sort_values[10] == ""
-
-
-def test_profile_metric_delta_text_is_separate_from_absolute_value() -> None:
-    assert _format_profile_metric_delta(0.75, 0.50) == "+50.00%"
-    assert _format_profile_metric_delta(0.50, 0.50) == "ref"
-    assert _format_profile_metric_delta(0.45, 0.50) == "-10.00%"
-    assert _format_profile_metric_delta(
-        240.0,
-        300.0,
-        lower_is_better=True,
-    ) == "-20.00%"
 
 
 def test_profile_table_keeps_regular_font_for_highlight_and_deltas() -> None:

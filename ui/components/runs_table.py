@@ -722,9 +722,6 @@ def _clickable_progress_bar_class(QtWidgets):
             super().__init__()
             self._on_row_click = on_row_click
 
-        def set_row_click_callback(self, on_row_click) -> None:
-            self._on_row_click = on_row_click
-
         def mousePressEvent(self, event) -> None:
             if self._on_row_click is not None:
                 self._on_row_click()
@@ -866,14 +863,6 @@ def _payload_number(payload: dict, *keys: str):
         if value is not None:
             return value
     return None
-
-
-def _payload_bool(value) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _perf_cap_reason_text(value) -> str:

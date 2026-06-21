@@ -109,8 +109,6 @@ def test_number_and_bool_helpers() -> None:
     assert rt._format_int(None) == ""
     assert rt._format_float(12.34) == "12.34" or rt._format_float(12.34)
     assert rt._payload_number({"a": 1, "b": 2}, "missing", "b") == 2.0
-    assert rt._payload_bool("true") is True
-    assert rt._payload_bool(0) is False
 
 
 def test_duration_and_progress_text() -> None:

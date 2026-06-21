@@ -45,7 +45,6 @@ class CurvePlot:
         self._candidate_points: list[tuple[float, float]] = []
         self._last_candidate_points: list[tuple[float, float]] = []
         self._curve_points_by_id: dict[str, list[tuple[float, float]]] = {}
-        self._candidate_curve_id = ""
         self._last_candidate_curve_id = ""
         self._highlighted_curve_id = ""
         self._last_live_probe_values: tuple[float, float] | None = None
@@ -189,7 +188,6 @@ class CurvePlot:
         self._candidate_points = []
         self._last_candidate_points = []
         self._curve_points_by_id = {}
-        self._candidate_curve_id = ""
         self._last_candidate_curve_id = ""
         self._highlighted_curve_id = ""
         if self.source_curve is not None:
@@ -233,7 +231,6 @@ class CurvePlot:
                 self._last_candidate_points,
                 curve_id=self._last_candidate_curve_id,
             )
-        self._candidate_curve_id = normalized_curve_id
         self._last_candidate_points = normalized
         self._last_candidate_curve_id = normalized_curve_id
         self.candidate_curve.setData(
