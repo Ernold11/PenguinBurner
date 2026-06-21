@@ -326,27 +326,6 @@ def stop_existing_penguin_burner_runtime(*, log):
     if os.geteuid() != 0:
         return
     unit_name = f"{PENGUIN_BURNER_UNIT_NAME}.service"
-    disable_result = subprocess.run(
-        [SYSTEMCTL, "disable", "--now", unit_name],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=stable_subprocess_env(),
-        check=False,
-    )
-    if disable_result.returncode == 0:
-        log("Profile disabled during the auto undervolting sweep")
-        subprocess.run(
-            [SYSTEMCTL, "reset-failed", unit_name],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=stable_subprocess_env(),
-            check=False,
-        )
-        return
     result = subprocess.run(
         [SYSTEMCTL, "stop", unit_name],
         capture_output=True,

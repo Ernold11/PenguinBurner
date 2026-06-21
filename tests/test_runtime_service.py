@@ -129,6 +129,26 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
     assert any("persistent service install" in message for message in logs)
 
 
+def test_stop_existing_runtime_does_not_disable_persistent_service(monkeypatch) -> None:
+    calls = []
+    logs = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
+    monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
+    monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(runtime_service.subprocess, "run", fake_run)
+
+    runtime_service.stop_existing_penguin_burner_runtime(log=logs.append)
+
+    assert ["/bin/systemctl", "stop", "PenguinBurner.service"] in calls
+    assert ["/bin/systemctl", "disable", "--now", "PenguinBurner.service"] not in calls
+    assert any("before foreground Auto-UV scan" in message for message in logs)
+
+
 def test_daemonize_sets_adaptive_target_fps_env(monkeypatch) -> None:
     calls = []
     logs = []
