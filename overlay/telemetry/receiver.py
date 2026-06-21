@@ -4,7 +4,6 @@ from collections import deque
 import json
 import math
 import os
-import pwd
 from pathlib import Path
 import select
 import socket
@@ -14,7 +13,15 @@ from typing import Callable
 
 from common.penguin_burner_paths import claim_desktop_user_ownership
 
+from .framegen import _explicit_framegen_active
+from .framegen import _framegen_active_for_overlay
+from .framegen import _has_marker_stream
 from .layer_check import DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS
+from .samples import _int_value
+from .samples import _positive_us
+from .samples import normalize_timing_sample
+from .sockets import latency_socket_path
+from .sockets import latency_socket_paths
 
 MARKER_INPUT_SAMPLE_BIT = 1 << 6
 RAW_TIMING_LOG_ENV = "PENGUIN_BURNER_LATENCY_RAW_TIMING_LOG"
@@ -23,8 +30,6 @@ RAW_TIMING_LOG_ENV = "PENGUIN_BURNER_LATENCY_RAW_TIMING_LOG"
 # cap) and recovery transitions. Off by default; debugging display/VRR and
 # frame-gen behaviour only.
 DUMP_LATENCY_DATA_ENV = "PENGUIN_BURNER_DUMP_LATENCY_DATA"
-DXVK_NVAPI_VKREFLEX_SOURCE = "dxvk-nvapi-vkreflex"
-
 QUALITY_RANK = {
     "none": 0,
     "present-frametime": 1,
@@ -68,110 +73,6 @@ BASE_FRAME_MARKER_PRIORITY = (
     "present-start",
     "rendersubmit-start",
 )
-FRAMEGEN_ACTIVE_KEYS = ("framegen_active", "frame_generation_active", "fg_active")
-FRAMEGEN_MARKER_KEYS = ("framegen_frame", "generated_frame", "fg_frame")
-FRAMEGEN_COUNT_KEYS = (
-    "framegen_frame_count",
-    "generated_frame_count",
-    "fg_frame_count",
-)
-FRAMEGEN_MEASUREMENTS = {"framegen-marker", "framegen-frame", "generated-frame"}
-# Output (present) cadence must exceed the base render cadence by at least this
-# ratio before the overlay reports frame generation. Out-of-band present markers
-# and the sim->displayed-present span are emitted by Reflex low-latency mode with
-# frame generation OFF, so marker presence alone is not evidence of generated
-# frames -- only a multiplied display rate is.
-FRAMEGEN_CADENCE_RATIO = 1.5
-FRAMEGEN_MARKER_NAMES = {
-    "oob-present-start",
-    "oob-present-end",
-    "out-of-band-present-start",
-    "out-of-band-present-end",
-    "out_of_band_present_start",
-    "out_of_band_present_end",
-}
-
-
-def latency_socket_path(env: dict[str, str] | None = None) -> Path:
-    env = os.environ if env is None else env
-    explicit = str(env.get("PENGUIN_BURNER_LATENCY_SOCKET") or "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    runtime_dir = str(env.get("XDG_RUNTIME_DIR") or "").strip()
-    if runtime_dir:
-        return Path(runtime_dir) / "penguin-burner" / "latency.sock"
-    if os.getuid() == 0:
-        sudo_uid = str(env.get("SUDO_UID") or "").strip()
-        if sudo_uid.isdigit():
-            candidate = Path("/run/user") / sudo_uid
-            if candidate.exists():
-                return candidate / "penguin-burner" / "latency.sock"
-        sudo_user = str(env.get("SUDO_USER") or "").strip()
-        if sudo_user:
-            try:
-                candidate = Path("/run/user") / str(pwd.getpwnam(sudo_user).pw_uid)
-            except KeyError:
-                candidate = Path()
-            if candidate.exists():
-                return candidate / "penguin-burner" / "latency.sock"
-    return Path(f"/tmp/penguin-burner-latency-{os.getuid()}.sock")
-
-
-def _home_latency_socket_path(env: dict[str, str]) -> Path | None:
-    home = str(env.get("HOME") or "").strip()
-    if home and home != "/root":
-        return Path(home).expanduser() / ".cache" / "penguin-burner" / "latency.sock"
-
-    sudo_uid = str(env.get("SUDO_UID") or "").strip()
-    if sudo_uid.isdigit():
-        try:
-            user_home = pwd.getpwuid(int(sudo_uid)).pw_dir
-        except KeyError:
-            user_home = ""
-        if user_home:
-            return Path(user_home) / ".cache" / "penguin-burner" / "latency.sock"
-
-    sudo_user = str(env.get("SUDO_USER") or "").strip()
-    if sudo_user:
-        try:
-            user_home = pwd.getpwnam(sudo_user).pw_dir
-        except KeyError:
-            user_home = ""
-        if user_home:
-            return Path(user_home) / ".cache" / "penguin-burner" / "latency.sock"
-
-    candidates: list[Path] = []
-    try:
-        candidates.append(Path.cwd())
-    except OSError:
-        pass
-    try:
-        candidates.append(Path(__file__).resolve())
-    except OSError:
-        pass
-    for base in candidates:
-        for candidate in (base, *base.parents):
-            if candidate.parent == Path("/home"):
-                return candidate / ".cache" / "penguin-burner" / "latency.sock"
-    return None
-
-
-def latency_socket_paths(env: dict[str, str] | None = None) -> list[Path]:
-    env = os.environ if env is None else env
-    paths = [latency_socket_path(env)]
-    if not str(env.get("PENGUIN_BURNER_LATENCY_SOCKET") or "").strip():
-        home_path = _home_latency_socket_path(env)
-        if home_path is not None:
-            paths.append(home_path)
-
-    unique_paths: list[Path] = []
-    seen: set[str] = set()
-    for path in paths:
-        key = str(path)
-        if key not in seen:
-            unique_paths.append(path)
-            seen.add(key)
-    return unique_paths
 
 
 def _p95_us(values: list[int]) -> int | None:
@@ -295,121 +196,6 @@ def _select_base_marker_frametime_p95(
     return eligible_sources[0][2]
 
 
-def _int_value(value: object) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _truthy_value(value: object) -> bool:
-    text = str(value or "").strip().lower()
-    return text in {"1", "true", "yes", "on", "active"}
-
-
-def _explicit_framegen_active(samples: list[dict]) -> bool:
-    for sample in samples:
-        if any(_truthy_value(sample.get(key)) for key in FRAMEGEN_ACTIVE_KEYS):
-            return True
-        if any(_truthy_value(sample.get(key)) for key in FRAMEGEN_MARKER_KEYS):
-            return True
-        if any(_int_value(sample.get(key)) > 0 for key in FRAMEGEN_COUNT_KEYS):
-            return True
-        marker_name = str(sample.get("marker_name") or "").strip().lower()
-        if marker_name in FRAMEGEN_MARKER_NAMES:
-            return True
-        if _positive_us(sample, "sim_to_oob_present_us") or _positive_us(
-            sample, "input_to_oob_present_us"
-        ):
-            return True
-        measurement = str(sample.get("measurement") or "").strip().lower()
-        if measurement in FRAMEGEN_MEASUREMENTS:
-            return True
-    return False
-
-
-def _framegen_active_for_overlay(
-    samples: list[dict],
-    *,
-    base_fps: float | None,
-    raw_output_fps: float | None,
-    cadence_is_independent: bool,
-) -> bool:
-    """Whether to report frame generation on the overlay.
-
-    Frame generation is confirmed only when the displayed (present) cadence
-    clearly exceeds the base render cadence -- i.e. extra frames really are being
-    produced. Reflex out-of-band present markers and the sim->displayed-present
-    span are deliberately NOT treated as evidence here: they are emitted with
-    frame generation off, which is what made the overlay show a phantom "FG" rate.
-    Source-asserted generated-frame evidence (an explicit ``framegen_active``
-    flag, generated-frame markers/counts, or a generated-frame measurement) is
-    still trusted.
-
-    The cadence-ratio test only counts when ``cadence_is_independent`` -- i.e. the
-    base FPS came from a real base-render signal (frame markers) or was
-    deinterlaced from a previously established steady base. When the base is just
-    the current window's p95 (the slow-frame tail) of the present stream itself,
-    a high mean-vs-p95 ratio is intra-window frametime variance (a stuttery,
-    uncapped game), NOT generated frames, so it must not trip frame generation.
-    """
-    base = _safe_float(base_fps)
-    output = _safe_float(raw_output_fps)
-    if (
-        cadence_is_independent
-        and base
-        and output
-        and base > 0
-        and output >= base * FRAMEGEN_CADENCE_RATIO
-    ):
-        return True
-
-    for sample in samples:
-        if any(_truthy_value(sample.get(key)) for key in FRAMEGEN_ACTIVE_KEYS):
-            return True
-        if any(_truthy_value(sample.get(key)) for key in FRAMEGEN_MARKER_KEYS):
-            return True
-        if any(_int_value(sample.get(key)) > 0 for key in FRAMEGEN_COUNT_KEYS):
-            return True
-        measurement = str(sample.get("measurement") or "").strip().lower()
-        if measurement in FRAMEGEN_MEASUREMENTS:
-            return True
-    return False
-
-
-def _has_marker_stream(samples: list[dict]) -> bool:
-    """Whether the window carries a Reflex/nvapi marker stream.
-
-    Real frame generation always arrives with the marker stream: the nvapi
-    bridge emits marker-proxy / out-of-band-present samples carrying
-    ``marker_bits`` and a sim->present span, and base-render frames carry
-    ``base_frame_frametime_us``. A title with no Reflex integration (e.g. a
-    simple game) produces only the Vulkan layer's plain present-pacing
-    frametimes -- no markers at all. Without any marker stream a present-rate
-    increase is a genuine framerate change (a 30fps menu -> 120fps gameplay),
-    not generated frames, so it must not be deinterlaced into a phantom base.
-    """
-    for sample in samples:
-        if _int_value(sample.get("marker_bits")):
-            return True
-        if str(sample.get("measurement") or "") == "marker-proxy":
-            return True
-        if _int_value(sample.get("base_frame_frametime_us")) > 0:
-            return True
-        if _positive_us(sample, "sim_to_present_us") or _positive_us(
-            sample, "sim_to_oob_present_us"
-        ):
-            return True
-    return False
-
-
-def _safe_float(value: object) -> float | None:
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-
-
 def _dump_latency_data_enabled(env: dict[str, str] | None = None) -> bool:
     env = os.environ if env is None else env
     value = str(env.get(DUMP_LATENCY_DATA_ENV) or "").strip().lower()
@@ -429,61 +215,6 @@ def _raw_timing_log_interval(env: dict[str, str] | None = None) -> float | None:
         return max(0.0, float(value))
     except ValueError:
         return 1.0
-
-
-def _positive_us(sample: dict, key: str) -> bool:
-    return _int_value(sample.get(key)) > 0
-
-
-def _elapsed_us_from_sample(sample: dict, start_key: str, end_key: str) -> int:
-    start_us = _int_value(sample.get(start_key))
-    end_us = _int_value(sample.get(end_key))
-    if not start_us or not end_us or end_us <= start_us:
-        return 0
-    return end_us - start_us
-
-
-def _looks_like_driver_timing_report(sample: dict) -> bool:
-    if _positive_us(sample, "timing_count"):
-        return True
-    return any(
-        _positive_us(sample, key)
-        for key in (
-            "driver_start_us",
-            "driver_end_us",
-            "gpu_render_start_us",
-            "gpu_render_end_us",
-        )
-    )
-
-
-def normalize_timing_sample(sample: dict) -> dict:
-    if sample.get("type") != "timing":
-        return sample
-
-    normalized = dict(sample)
-    if (
-        not str(normalized.get("measurement") or "")
-        and normalized.get("source") == DXVK_NVAPI_VKREFLEX_SOURCE
-        and _looks_like_driver_timing_report(normalized)
-    ):
-        normalized["measurement"] = "driver-report"
-
-    if not _positive_us(normalized, "gpu_render_us"):
-        gpu_render_us = _elapsed_us_from_sample(
-            normalized, "gpu_render_start_us", "gpu_render_end_us"
-        )
-        if gpu_render_us:
-            normalized["gpu_render_us"] = gpu_render_us
-
-    if not _positive_us(normalized, "render_present_us"):
-        render_present_us = _elapsed_us_from_sample(
-            normalized, "present_start_us", "gpu_render_end_us"
-        )
-        if render_present_us:
-            normalized["render_present_us"] = render_present_us
-
-    return normalized
 
 
 def _quality_for_sample(sample: dict) -> str:

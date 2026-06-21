@@ -3,6 +3,7 @@ from pathlib import Path
 
 import overlay.telemetry.nvapi_marker_bridge as marker_bridge
 import overlay.telemetry.receiver as receiver
+import overlay.telemetry.sockets as telemetry_sockets
 from overlay.telemetry.receiver import (
     LatencyTelemetryLogger,
     LatencyTelemetryMeter,
@@ -700,15 +701,15 @@ def test_latency_socket_path_uses_sudo_user_runtime_for_root_service(
 ) -> None:
     run_user = tmp_path / "run" / "user" / "1000"
     run_user.mkdir(parents=True)
-    real_path = receiver.Path
+    real_path = telemetry_sockets.Path
 
     def fake_path(*parts):
         if parts == ("/run/user",):
             return tmp_path / "run" / "user"
         return real_path(*parts)
 
-    monkeypatch.setattr(receiver.os, "getuid", lambda: 0)
-    monkeypatch.setattr(receiver, "Path", fake_path)
+    monkeypatch.setattr(telemetry_sockets.os, "getuid", lambda: 0)
+    monkeypatch.setattr(telemetry_sockets, "Path", fake_path)
 
     path = latency_socket_path({"SUDO_UID": "1000"})
 
