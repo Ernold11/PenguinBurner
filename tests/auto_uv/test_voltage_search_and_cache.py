@@ -6,10 +6,12 @@ from auto_uv.run.lower_voltage_search import (
     select_next_lower_voltage,
 )
 from auto_uv.persistence.unsafe_voltage_cache import (
+    cache_profile_tier,
     controlled_failure_reason,
     unsafe_entry_blocks_future_search,
     unsafe_entry_blocks_voltage_candidate,
     unsafe_entry_clock_floor_mhz,
+    unsafe_entry_profile_tier,
     unsafe_entry_reason_values,
     unsafe_min_search_voltage,
     unsafe_voltage_block_reason,
@@ -70,6 +72,40 @@ def test_unsafe_cache_blocks_only_the_recorded_clock_band_when_clock_aware() -> 
         entry,
         candidate_voltage_mv=875,
         lock_clock_mhz=2050,
+    )
+
+
+def test_unsafe_cache_scopes_tiered_entries_to_matching_profile() -> None:
+    entry = {
+        "candidate_voltage_mv": 970,
+        "lock_clock_mhz": 2734,
+        "blocked_lock_clock_mhz": [2734, 2707, 2692],
+        "reason": "stability-probe-failed",
+        "details": {"generated_profile_tier": "performance"},
+    }
+
+    assert unsafe_entry_blocks_voltage_candidate(
+        entry,
+        candidate_voltage_mv=920,
+        lock_clock_mhz=2712,
+        profile_tier="performance",
+    )
+    assert not unsafe_entry_blocks_voltage_candidate(
+        entry,
+        candidate_voltage_mv=920,
+        lock_clock_mhz=2712,
+        profile_tier="balanced",
+    )
+
+
+def test_unsafe_cache_keeps_legacy_entries_global_when_profile_is_missing() -> None:
+    entry = {"candidate_voltage_mv": 970, "lock_clock_mhz": 2734, "reason": "crash"}
+
+    assert unsafe_entry_blocks_voltage_candidate(
+        entry,
+        candidate_voltage_mv=920,
+        lock_clock_mhz=2734,
+        profile_tier="balanced",
     )
 
 
@@ -190,6 +226,25 @@ def test_unsafe_voltage_block_reason_uses_blocked_band_floor() -> None:
     assert reason == "cached unsafe point 900mV@2300MHz band>=2100MHz"
 
 
+def test_unsafe_voltage_block_reason_ignores_other_profile_tier() -> None:
+    reason = unsafe_voltage_block_reason(
+        [
+            {
+                "candidate_voltage_mv": 970,
+                "lock_clock_mhz": 2734,
+                "blocked_lock_clock_mhz": [2734, 2707, 2692],
+                "reason": "stability-probe-failed",
+                "details": {"generated_profile_tier": "performance"},
+            }
+        ],
+        candidate_voltage_mv=920,
+        lock_clock_mhz=2712,
+        profile_tier="balanced",
+    )
+
+    assert reason == ""
+
+
 def test_unsafe_voltage_block_reason_returns_empty_when_nothing_blocks() -> None:
     assert (
         unsafe_voltage_block_reason(
@@ -264,6 +319,28 @@ def test_unsafe_entry_blocks_future_search_treats_controlled_detail_as_safe() ->
             "details": {"result_reason": "q2rtx-launcher-error"},
         }
     )
+
+
+def test_unsafe_entry_profile_tier_reads_nested_details() -> None:
+    assert (
+        unsafe_entry_profile_tier(
+            {
+                "reason": "previous-run-abruptly-ended",
+                "details": {
+                    "marker_details": {"generated_profile_tier": "performance"}
+                },
+            }
+        )
+        == "performance"
+    )
+
+
+def test_unsafe_entry_profile_tier_reads_zero_tail_as_efficiency() -> None:
+    assert unsafe_entry_profile_tier({"details": {"tail_rise_bins": 0}}) == "efficiency"
+
+
+def test_cache_profile_tier_normalizes_efficiency_tail_tune() -> None:
+    assert cache_profile_tier("efficiency-tail-tune") == "efficiency"
 
 
 def test_controlled_failure_reason_matches_known_prefixes_only() -> None:

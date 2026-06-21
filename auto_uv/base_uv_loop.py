@@ -107,6 +107,7 @@ def run_base_uv_loop(
         base_curve,
         start_voltage_mv=int(settings.start_voltage_mv),
         unsafe_entries=list(unsafe_entries or []),
+        profile_tier=settings.auto_uv_mode,
     )
     min_search_voltage_mv = higher_min_search_voltage(
         configured_min_search_mv=settings.min_search_voltage_mv,
@@ -141,6 +142,7 @@ def run_base_uv_loop(
             list(unsafe_entries or []),
             candidate_voltage_mv=int(state.next_voltage_mv),
             lock_clock_mhz=int(state.stable_target_mhz),
+            profile_tier=settings.auto_uv_mode,
         )
         if block_reason:
             events.append(LowerVoltageSweepEvent("stop", block_reason))

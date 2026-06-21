@@ -75,7 +75,11 @@ from auto_uv.persistence.verified_candidate_result_file import (
 from auto_uv.persistence.auto_uv_persisted_json_files import clear_auto_uv_stop_request
 from auto_uv.curve.vf_curve_flattening import build_flatten_target_for_plan
 from ui.features.auto_uv.vf_curve_ui_points import vf_curve_ui_points
-from auto_uv.run.voltage_sweep_state import LowerVoltageSweepResult, VoltageProbeOutcome
+from auto_uv.run.voltage_sweep_state import (
+    LowerVoltageSweepEvent,
+    LowerVoltageSweepResult,
+    VoltageProbeOutcome,
+)
 from auto_uv.final_verification.main_loop import run_final_verification_and_save
 from auto_uv.scan_mode.auto_uv_mode import (
     AUTO_UV_MODE_EFFICIENCY,
@@ -473,6 +477,7 @@ def run_voltage_frequency_undervolt_main_loop(
                     initial_tail_rise_bins=int(descent_tail_rise_bins),
                     log=log,
                 )
+                log_lower_voltage_sweep_events(log, loop_result.events)
                 stable_candidate = loop_result.stable_candidate
                 selected_probe = (
                     loop_result.stable_outcome.raw_probe
@@ -579,6 +584,16 @@ def run_preset_uv_loop(
         unsafe_entries=unsafe_entries,
         initial_stable_outcome=initial_stable_outcome,
     )
+
+
+def log_lower_voltage_sweep_events(
+    log: Callable[[str], None],
+    events: list[LowerVoltageSweepEvent],
+) -> None:
+    for event in events:
+        if event.name not in {"stop", "low-clock-skip"}:
+            continue
+        log_phase(log, "auto-uv", f"sweep-{event.name} {event.message}")
 
 
 def select_final_scan_candidate(
