@@ -73,7 +73,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 
 %files -f %{pyproject_files}
 %license LICENSE
-%doc README.md readme-cli.md docs/dev/packaging.md
+%doc README.md readme-cli.md
 %{_bindir}/penguin-burner
 %{_bindir}/pburn
 %{_bindir}/penguin-burner-ui

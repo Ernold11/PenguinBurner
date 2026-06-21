@@ -27,7 +27,7 @@ python -m pytest tests/test_docs_cli_flags.py
 
 - Match the surrounding code; keep functions small and readable.
 - Lint with `ruff` before opening a PR.
-- Keep user docs in `docs/features/` concise; internal notes go in `docs/dev/`.
+- Keep user docs in `docs/features/` concise; internal notes stay outside the tracked repo.
 
 ## Pull requests
 

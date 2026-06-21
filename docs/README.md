@@ -12,6 +12,4 @@ comparison.
 
 ## Reference
 
-- **[releases/](releases/)** — release notes and the release process.
-- **[dev/](dev/)** — internal maintenance notes. Not needed to use
-  PenguinBurner.
+- **[releases/](releases/)** — older release notes.
