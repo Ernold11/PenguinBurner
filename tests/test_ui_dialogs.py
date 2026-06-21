@@ -13,12 +13,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from ui.dialogs import about as about_dialog
-from ui.dialogs import afterburner_import as ab_dialog
-from ui.dialogs import error_details
-from ui.dialogs import final_choice as fc
-from ui.dialogs import scan_tuning as scan_tuning_dialog
-from ui.dialogs import verify as verify_dialog
+import ui.dialogs.about as about_dialog
+import ui.dialogs.afterburner_import as ab_dialog
+import ui.dialogs.error_details as error_details
+import ui.dialogs.final_choice as fc
+import ui.dialogs.scan_tuning as scan_tuning_dialog
+import ui.dialogs.verify as verify_dialog
 from auto_uv.ui.final_choice_ranking import candidate_fps, candidate_fpsw
 from ui.qt import import_qt
 

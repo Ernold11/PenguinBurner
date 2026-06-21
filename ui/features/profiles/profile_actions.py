@@ -3,7 +3,7 @@ from __future__ import annotations
 import shlex
 
 from common.penguin_burner_paths import default_user_config_dir
-from curve_editors.uv import editable_anchor_from_profile
+from curve_editors.uv.vf_curve_manual_editor import editable_anchor_from_profile
 from profiles.uv.profile_store import delete_auto_uv_profile_paths
 from profiles.uv.profile_tiers import save_profile_tier_assignment
 from profiles.uv.profile_tiers import save_profile_tier_none_assignment
@@ -16,7 +16,7 @@ from ui.components.vf_curve_editor import open_vf_curve_editor_dialog
 from ui.features.curves.curve_profiles import profile_base_curve_points
 from ui.features.curves.curve_profiles import profile_curve_plan
 from ui.features.curves.curve_profiles import save_edited_curve_profile
-from ui.dialogs import select_verify_options
+from ui.dialogs.verify import select_verify_options
 from ui.features.curves.fan_profiles import profile_fan_curve_points
 from ui.features.curves.fan_profiles import profile_fan_curve_target_point
 from ui.features.curves.fan_profiles import profile_fan_measurement_points

@@ -6,7 +6,7 @@ from typing import Callable
 from common.penguin_burner_errors import FanCurveBlockedError
 from common.penguin_burner_paths import default_user_config_dir
 from runtime.support.runtime_debug import log as runtime_log
-from runtime.fan_control import load_auto_uv_fan_curve
+from runtime.fan_control.auto_uv_saved_fan_curve import load_auto_uv_fan_curve
 
 
 @dataclass(slots=True)

@@ -10,7 +10,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from ui.components import runs_table as rt
+import ui.components.runs_table as rt
 from ui.components.runs_table import RunsTable
 from ui.qt import import_qt
 

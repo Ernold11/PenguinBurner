@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from curve_editors.fan import (
+from curve_editors.fan.fan_curve_manual_editor import (
     FAN_MAX_POINTS,
     manual_add_fan_point_edit,
     manual_drag_fan_point_edit,

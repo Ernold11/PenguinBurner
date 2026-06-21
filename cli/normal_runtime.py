@@ -6,11 +6,11 @@ from typing import Callable
 from cli.runtime_startup_preparation import prepare_runtime_startup
 from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
 from drivers.nvidia.hidden_nvapi_voltage import create_hidden_voltage_reader
-from overlay.telemetry import start_latency_telemetry_logger
+from overlay.telemetry.receiver import start_latency_telemetry_logger
 from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
 from overlay.config import default_overlay_config_path, load_overlay_config
 from runtime.support.runtime_debug import log as runtime_log
-from runtime.fan_control import run_runtime_fan_control_loop
+from runtime.fan_control.runtime_loop import run_runtime_fan_control_loop
 from runtime.gpu_control.adaptive_profile_runtime import AdaptiveAutoUvRuntimeController
 from runtime.gpu_control.nvml_runtime_session import NvmlRuntimeSession
 from runtime.gpu_control.overlay_state_publisher import OverlayStatePublisher

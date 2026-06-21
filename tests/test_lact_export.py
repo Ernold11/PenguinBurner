@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 import profiles.uv.profile_store as profile_store
 import integrations.lact.export as lact_export
 from profiles.uv.profile_store import archive_auto_uv_profile
-from integrations.lact import (
+from integrations.lact.export import (
     build_lact_nvidia_config,
     build_lact_nvidia_config_from_plan,
     write_lact_nvidia_config,

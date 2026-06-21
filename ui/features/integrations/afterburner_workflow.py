@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ui.features.integrations.afterburner_import import persist_afterburner_import_selection
-from ui.dialogs import select_afterburner_import
+from ui.dialogs.afterburner_import import select_afterburner_import
 
 
 class AfterburnerImportWorkflow:

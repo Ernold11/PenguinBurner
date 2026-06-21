@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 
-from overlay.telemetry import layer_check
+import overlay.telemetry.layer_check as layer_check
 from overlay.native_layer import NATIVE_LAYER_LIBRARY
 from overlay.native_layer import NATIVE_LAYER_MANIFEST
 

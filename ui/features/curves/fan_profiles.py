@@ -4,7 +4,9 @@ from pathlib import Path
 import json
 import math
 
-from curve_editors.fan import user_edited_fan_curve_profile_payload
+from curve_editors.fan.fan_curve_manual_editor import (
+    user_edited_fan_curve_profile_payload,
+)
 from profiles.uv.profile_store import archive_auto_uv_profile
 from common.penguin_burner_paths import claim_desktop_user_ownership
 from common.penguin_burner_paths import default_user_config_dir

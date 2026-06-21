@@ -8,7 +8,8 @@ import pytest
 
 import profiles.uv.profile_store as profile_store
 import penguin_burner
-import profiles.verification as profile_verification_rules
+import profiles.verification.metrics as profile_verification_metrics
+import profiles.verification.rules as profile_verification_rules
 import profiles.verification.runner as profile_verification_runner
 from cli.runtime_profile_argument import (
     runtime_profile_selector_allows_unverified_from_argv as allow_unverified_from_argv,
@@ -1035,7 +1036,9 @@ def test_profile_verification_metrics_from_q2rtx_result() -> None:
         },
     )
 
-    metrics = profile_verification_rules.profile_verification_metrics_from_result(result)
+    metrics = profile_verification_metrics.profile_verification_metrics_from_result(
+        result
+    )
 
     assert metrics["avg_fps"] == 123.0
     assert metrics["avg_core_clock_mhz"] == 2580.0

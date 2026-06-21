@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from curve_editors.uv import (
+from curve_editors.uv.vf_curve_manual_editor import (
     ManualCurveEdit,
     manual_add_curve_point_edit,
     manual_drag_anchor_edit,

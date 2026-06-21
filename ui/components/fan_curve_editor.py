@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from curve_editors.fan import (
+from curve_editors.fan.fan_curve_manual_editor import (
     ManualFanCurveEdit,
     manual_add_fan_point_edit,
     manual_drag_fan_point_edit,
@@ -484,5 +484,4 @@ def open_fan_curve_editor_dialog(
     finally:
         if app_instance is not None:
             app_instance.removeEventFilter(key_filter)
-
 
