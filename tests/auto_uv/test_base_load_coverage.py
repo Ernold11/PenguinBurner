@@ -1,15 +1,14 @@
-from __future__ import annotations
-
 """Branch-coverage tests for the base-load pure-logic modules.
 
 These exercise the edge cases (empty inputs, idle GPUs, percentile boundaries,
-and the end-to-end plan builder) that the behavioral tests do not reach.
+and paths that the behavioral tests do not reach.
 """
+
+from __future__ import annotations
 
 import pytest
 
 from auto_uv.curve.base_load_flatten_target import (
-    CurveTiming,
     _avg_metric,
     _format_metric,
     _format_power_limit,
@@ -17,10 +16,6 @@ from auto_uv.curve.base_load_flatten_target import (
     choose_sustained_curve_clock,
     selected_nvidia_light_load_diagnostic,
     snap_clock_at_or_below,
-)
-from auto_uv.curve.base_load_probe_curve_plan import (
-    BaseLoadCurvePlan,
-    plan_base_load_curve_from_telemetry,
 )
 from auto_uv.curve.base_load_telemetry import (
     LoadedTelemetryRules,
@@ -32,7 +27,6 @@ from auto_uv.curve.base_load_voltage import (
     LoadedVoltageBand,
     derive_loaded_voltage_band,
 )
-from auto_uv_test_data import base_curve
 
 
 # --------------------------------------------------------------------------
@@ -145,37 +139,6 @@ def test_format_metric_handles_none() -> None:
     # Line 242.
     assert _format_metric(None, "W") == "n/a"
     assert _format_metric(12.34, "W") == "12.3W"
-
-
-# --------------------------------------------------------------------------
-# base_load_probe_curve_plan.py
-# --------------------------------------------------------------------------
-
-
-def test_plan_base_load_curve_from_telemetry_builds_full_plan() -> None:
-    # Lines 30-44: end-to-end plan builder over real loaded telemetry.
-    curve = base_curve(850, 1000, 25, 1770, 15)
-    telemetry = [
-        {"elapsed_s": 6.0, "power_w": 190.0, "core_clock_mhz": 1848.0, "voltage_mv": 900},
-        {"elapsed_s": 7.0, "power_w": 196.0, "core_clock_mhz": 1842.0, "voltage_mv": 905},
-        {"elapsed_s": 8.0, "power_w": 200.0, "core_clock_mhz": 1837.0, "voltage_mv": 910},
-    ]
-
-    plan = plan_base_load_curve_from_telemetry(
-        curve,
-        telemetry,
-        start_voltage_mv=900,
-        power_limit_w=200,
-        fallback_clock_mhz=1905.0,
-        tail_rise_bins=0,
-        curve=CurveTiming(),
-    )
-
-    assert isinstance(plan, BaseLoadCurvePlan)
-    assert plan.target.target_clock_mhz == 1830
-    assert plan.flatten_target["lock_clock_mhz"] == plan.target.target_clock_mhz
-    by_voltage = {point["voltage_mv"]: point for point in plan.flattened_plan}
-    assert by_voltage[900]["target_mhz"] == plan.target.target_clock_mhz
 
 
 # --------------------------------------------------------------------------

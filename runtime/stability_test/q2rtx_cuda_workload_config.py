@@ -2,22 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from common.penguin_burner_errors import NvmlError
-from runtime.support.runtime_debug import log
 from auto_uv.stability.q2rtx.constants import DEFAULT_DEMO_NAME
 from auto_uv.stability.q2rtx.install import (
     default_q2rtx_install_data_dir,
     fetch_latest_q2rtx_release_metadata,
     install_latest_q2rtx,
 )
-from auto_uv.stability.q2rtx.long_stability_config import (
-    build_long_stability_test_config,
-    long_stability_workload_durations,
-)
+from auto_uv.stability.q2rtx.long_stability_config import long_stability_workload_durations
 from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig, StabilityTestError
-from auto_uv.stability.q2rtx.output import attach_stdout_progress
-from auto_uv.stability.q2rtx.reporting import print_q2rtx_stability_result
-from auto_uv.stability.q2rtx.runtime import run_q2rtx_stability_test
 from auto_uv.stability.q2rtx.resolution import (
     format_q2rtx_resolution_choice,
     resolve_q2rtx_render_resolution,
@@ -239,29 +231,3 @@ def stability_workload_split_label(total_duration_s: int) -> str:
         int(total_duration_s),
     )
     return f"q2rtx={int(q2rtx_duration_s)}s cuda={int(cuda_duration_s)}s"
-
-
-def run_stability_test(args, *, gpu_index, config_path):
-    total_duration_s = int(args.stability_seconds)
-    split_label = stability_workload_split_label(total_duration_s)
-    log(f"Stability workload split: {split_label}.")
-    stability_config = build_stability_config(
-        args,
-        gpu_index=gpu_index,
-        config_path=config_path,
-    )
-    stability_config = build_long_stability_test_config(
-        stability_config,
-        total_duration_s=total_duration_s,
-    )
-    attach_stdout_progress(stability_config)
-    try:
-        result = run_q2rtx_stability_test(stability_config)
-    except StabilityTestError as exc:
-        raise NvmlError(f"stability test configuration error: {exc}") from exc
-
-    print_q2rtx_stability_result(result)
-    if not result.success:
-        raise NvmlError(
-            f"stability test failed: {result.reason}; log={result.log_path}"
-        )

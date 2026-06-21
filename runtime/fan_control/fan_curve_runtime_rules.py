@@ -33,12 +33,6 @@ def format_curve_points(curve):
     return ", ".join(f"{temp_c:.0f}C->{speed_pct:.0f}%" for temp_c, speed_pct in curve)
 
 
-def format_curve_temp(temp_c):
-    if abs(temp_c - round(temp_c)) < 0.01:
-        return f"{int(round(temp_c))}C"
-    return f"{temp_c:.2f}C"
-
-
 def build_effective_manual_curve(
     curve,
     manual_enable_temp_c,
@@ -67,51 +61,6 @@ def build_effective_manual_curve(
         effective_curve.append((float(temp_c), float(clamped_speed_pct)))
 
     return effective_curve
-
-
-def describe_fan_curve_state(
-    current_temp_c,
-    effective_curve,
-    manual_mode_active,
-    emergency_auto_mode_active,
-    emergency_auto_resume_temp_c,
-):
-    if emergency_auto_mode_active:
-        return (
-            "fan_curve_state=emergency-auto "
-            f"next_fan_step={format_curve_temp(emergency_auto_resume_temp_c)}->resume-custom"
-        )
-
-    if not manual_mode_active:
-        takeover_temp_c, takeover_speed_pct = effective_curve[0]
-        return (
-            "fan_curve_state=hardware-auto "
-            f"next_fan_step={format_curve_temp(takeover_temp_c)}->{takeover_speed_pct:.0f}%"
-        )
-
-    if len(effective_curve) == 1:
-        temp_c, speed_pct = effective_curve[0]
-        return (
-            f"fan_curve_state={format_curve_temp(temp_c)}+:{speed_pct:.0f}% "
-            "next_fan_step=none"
-        )
-
-    for index in range(len(effective_curve) - 1):
-        left_temp_c, left_speed_pct = effective_curve[index]
-        right_temp_c, right_speed_pct = effective_curve[index + 1]
-        if current_temp_c < right_temp_c:
-            return (
-                f"fan_curve_state={format_curve_temp(left_temp_c)}-"
-                f"{format_curve_temp(right_temp_c)}:"
-                f"{left_speed_pct:.0f}-{right_speed_pct:.0f}% "
-                f"next_fan_step={format_curve_temp(right_temp_c)}->{right_speed_pct:.0f}%"
-            )
-
-    last_temp_c, last_speed_pct = effective_curve[-1]
-    return (
-        f"fan_curve_state={format_curve_temp(last_temp_c)}+:{last_speed_pct:.0f}% "
-        "next_fan_step=none"
-    )
 
 
 def speed_for_temp(temp_c, curve, mode):
@@ -168,4 +117,3 @@ def limit_speed_change(
         limited_speed = max(limited_speed, last_speed - max_down)
 
     return limited_speed
-
