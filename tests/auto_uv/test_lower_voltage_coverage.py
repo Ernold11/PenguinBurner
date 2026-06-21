@@ -3,10 +3,10 @@
 These exercise the reachable decision branches in:
 - auto_uv/lower_voltage_probe_target.py
 - auto_uv/lower_voltage_search.py
-- auto_uv/lower_voltage_sweep_loop.py
+- auto_uv/base_uv_loop.py
 
-They follow the stubbing conventions of test_lower_voltage_sweep_loop.py and
-test_voltage_search_and_cache.py (hooks + base_curve/probe_summary builders).
+They follow the stubbing conventions of test_base_uv_loop.py and
+test_voltage_search_and_cache.py (io + base_curve/probe_summary builders).
 """
 
 from __future__ import annotations
@@ -24,12 +24,12 @@ from auto_uv.run.lower_voltage_search import (
     select_aggressive_voltage_bins,
     select_next_lower_voltage,
 )
-from auto_uv.run.lower_voltage_sweep_loop import (
-    EfficiencySelection,
-    LowerVoltageSweepHooks,
-    decide_efficiency_acceptance,
+from auto_uv.base_uv_loop import (
+    SweepSelection,
+    BaseUvLoopIO,
+    decide_passed_probe,
     float_or_none,
-    run_lower_voltage_sweep_loop,
+    run_base_uv_loop,
     state_for_selected_candidate,
     voltage_drop_from_start_pct,
 )
@@ -196,7 +196,7 @@ def test_filter_effective_uses_lower_voltage_gaps_and_appends_final() -> None:
 
 
 # ---------------------------------------------------------------------------
-# lower_voltage_sweep_loop.py -- module-level helpers
+# base_uv_loop.py -- module-level helpers
 # ---------------------------------------------------------------------------
 
 
@@ -241,7 +241,7 @@ def test_state_for_selected_candidate_uses_candidate_target_without_outcome() ->
     assert new_state.next_voltage_mv is None
 
 
-def test_decide_efficiency_acceptance_records_without_stopping() -> None:
+def test_decide_passed_probe_records_without_stopping() -> None:
     """Efficiency declines but stop is not yet armed: record-not-write path.
 
     Covers lines 292-311 + the non-stop return (323-332).
@@ -283,7 +283,7 @@ def test_decide_efficiency_acceptance_records_without_stopping() -> None:
         # same fps, more power -> worse fps/W -> improved False
         raw_probe=probe_summary(975, clock_mhz=2100.0, fps=100.0, power_w=200.0),
     )
-    selection = EfficiencySelection(
+    selection = SweepSelection(
         selected_candidate=VfCurveCandidate(
             label="prev", voltage_mv=1000, target_mhz=2100, flattened_plan=[]
         ),
@@ -291,7 +291,7 @@ def test_decide_efficiency_acceptance_records_without_stopping() -> None:
         no_gain_streak=0,
         pending_previous_curve=False,
     )
-    decision = decide_efficiency_acceptance(
+    decision = decide_passed_probe(
         settings=settings,
         state=state,
         selection=selection,
@@ -309,7 +309,7 @@ def test_decide_efficiency_acceptance_records_without_stopping() -> None:
 
 
 # ---------------------------------------------------------------------------
-# lower_voltage_sweep_loop.py -- full-loop branches
+# base_uv_loop.py -- full-loop branches
 # ---------------------------------------------------------------------------
 
 
@@ -325,12 +325,12 @@ def test_sweep_loop_stops_when_cached_unsafe_blocks_first_candidate() -> None:
         probed.append(int(candidate.voltage_mv))
         return _passed_outcome(candidate)
 
-    hooks = LowerVoltageSweepHooks(
+    io = BaseUvLoopIO(
         probe_candidate=probe,
         write_verified_candidate=lambda _c, _o: None,
         mark_unsafe_candidate=lambda _c, _o: None,
     )
-    result = run_lower_voltage_sweep_loop(
+    result = run_base_uv_loop(
         curve,
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
@@ -340,7 +340,7 @@ def test_sweep_loop_stops_when_cached_unsafe_blocks_first_candidate() -> None:
             reference_actual_voltage_mv=1000.0,
         ),
         initial_stable_candidate=_baseline_candidate(curve),
-        hooks=hooks,
+        io=io,
         # Clock-aware unsafe entry at the first candidate (950mV): it does NOT
         # raise the min-search floor (so 950 stays the first candidate) but it
         # blocks that candidate's clock band, tripping block_reason.
@@ -373,13 +373,13 @@ def test_sweep_loop_efficiency_records_pending_curve_then_finishes() -> None:
         power = 180.0 + (1000 - int(candidate.voltage_mv))
         return _passed_outcome(candidate, fps=100.0, power_w=power)
 
-    hooks = LowerVoltageSweepHooks(
+    io = BaseUvLoopIO(
         probe_candidate=probe,
         write_verified_candidate=lambda c, _o: written.append(int(c.voltage_mv)),
         mark_unsafe_candidate=lambda _c, _o: None,
         record_passed_candidate=lambda c, _o: recorded.append(int(c.voltage_mv)),
     )
-    result = run_lower_voltage_sweep_loop(
+    result = run_base_uv_loop(
         curve,
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
@@ -390,7 +390,7 @@ def test_sweep_loop_efficiency_records_pending_curve_then_finishes() -> None:
             min_efficiency_stop_voltage_drop_pct=99.0,
         ),
         initial_stable_candidate=_baseline_candidate(curve),
-        hooks=hooks,
+        io=io,
         initial_stable_outcome=_passed_outcome(
             _baseline_candidate(curve), fps=100.0, power_w=180.0
         ),
@@ -421,13 +421,13 @@ def test_sweep_loop_efficiency_stop_uses_current_curve() -> None:
         # identical fps and power at every bin -> delta_pct exactly 0
         return _passed_outcome(candidate, fps=100.0, power_w=180.0)
 
-    hooks = LowerVoltageSweepHooks(
+    io = BaseUvLoopIO(
         probe_candidate=probe,
         write_verified_candidate=lambda c, _o: written.append(int(c.voltage_mv)),
         mark_unsafe_candidate=lambda _c, _o: None,
         record_passed_candidate=lambda _c, _o: None,
     )
-    result = run_lower_voltage_sweep_loop(
+    result = run_base_uv_loop(
         curve,
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
@@ -438,7 +438,7 @@ def test_sweep_loop_efficiency_stop_uses_current_curve() -> None:
             min_efficiency_stop_voltage_drop_pct=0.0,
         ),
         initial_stable_candidate=_baseline_candidate(curve),
-        hooks=hooks,
+        io=io,
         initial_stable_outcome=_passed_outcome(
             _baseline_candidate(curve), fps=100.0, power_w=180.0
         ),

@@ -7,9 +7,9 @@ from auto_uv.domain.types import (
     StableRunDecision,
     VfCurveCandidate,
 )
-from auto_uv.run.lower_voltage_sweep_loop import (
-    LowerVoltageSweepHooks,
-    run_lower_voltage_sweep_loop,
+from auto_uv.base_uv_loop import (
+    BaseUvLoopIO,
+    run_base_uv_loop,
 )
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from auto_uv_test_data import base_curve, probe_summary
@@ -32,7 +32,7 @@ def _passed_outcome(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
     )
 
 
-def test_lower_voltage_sweep_loop_accepts_next_lower_voltage_through_hooks() -> None:
+def test_base_uv_loop_accepts_next_lower_voltage_through_io() -> None:
     curve = base_curve(900, 1025, 25, 2000, 40)
     probed: list[int] = []
     written: list[int] = []
@@ -41,14 +41,14 @@ def test_lower_voltage_sweep_loop_accepts_next_lower_voltage_through_hooks() -> 
         probed.append(int(candidate.voltage_mv))
         return _passed_outcome(candidate)
 
-    hooks = LowerVoltageSweepHooks(
+    io = BaseUvLoopIO(
         probe_candidate=probe,
         write_verified_candidate=lambda candidate, _outcome: written.append(
             int(candidate.voltage_mv)
         ),
         mark_unsafe_candidate=lambda _candidate, _outcome: None,
     )
-    result = run_lower_voltage_sweep_loop(
+    result = run_base_uv_loop(
         curve,
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
@@ -62,7 +62,7 @@ def test_lower_voltage_sweep_loop_accepts_next_lower_voltage_through_hooks() -> 
             target_mhz=2160,
             flattened_plan=curve,
         ),
-        hooks=hooks,
+        io=io,
     )
 
     assert probed == [950]
@@ -99,12 +99,12 @@ def test_efficiency_lower_voltage_sweep_targets_previous_measured_clock() -> Non
             ),
         )
 
-    hooks = LowerVoltageSweepHooks(
+    io = BaseUvLoopIO(
         probe_candidate=probe,
         write_verified_candidate=lambda _candidate, _outcome: None,
         mark_unsafe_candidate=lambda _candidate, _outcome: None,
     )
-    result = run_lower_voltage_sweep_loop(
+    result = run_base_uv_loop(
         curve,
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
@@ -119,7 +119,7 @@ def test_efficiency_lower_voltage_sweep_targets_previous_measured_clock() -> Non
             target_mhz=2160,
             flattened_plan=curve,
         ),
-        hooks=hooks,
+        io=io,
         initial_stable_outcome=VoltageProbeOutcome(
             decision=StableRunDecision(
                 passed=True,
@@ -152,12 +152,12 @@ def test_performance_mode_lower_sweep_uses_plain_lower_voltage_probe() -> None:
         )
         return _passed_outcome(candidate)
 
-    hooks = LowerVoltageSweepHooks(
+    io = BaseUvLoopIO(
         probe_candidate=probe,
         write_verified_candidate=lambda _candidate, _outcome: None,
         mark_unsafe_candidate=lambda _candidate, _outcome: None,
     )
-    result = run_lower_voltage_sweep_loop(
+    result = run_base_uv_loop(
         curve,
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
@@ -173,7 +173,7 @@ def test_performance_mode_lower_sweep_uses_plain_lower_voltage_probe() -> None:
             target_mhz=2160,
             flattened_plan=curve,
         ),
-        hooks=hooks,
+        io=io,
     )
 
     assert len(probed) == 1
@@ -230,7 +230,7 @@ def _run_low_clock_sweep(
         probed.append(int(candidate.voltage_mv))
         return probe(candidate)
 
-    hooks = LowerVoltageSweepHooks(
+    io = BaseUvLoopIO(
         probe_candidate=wrapped,
         write_verified_candidate=lambda candidate, _outcome: written.append(
             int(candidate.voltage_mv)
@@ -239,7 +239,7 @@ def _run_low_clock_sweep(
             int(candidate.voltage_mv)
         ),
     )
-    result = run_lower_voltage_sweep_loop(
+    result = run_base_uv_loop(
         curve,
         settings=AutoUvScanSettings(
             start_voltage_mv=1000,
@@ -255,7 +255,7 @@ def _run_low_clock_sweep(
             target_mhz=2160,
             flattened_plan=curve,
         ),
-        hooks=hooks,
+        io=io,
     )
     return result, probed, unsafe, written
 

@@ -16,8 +16,9 @@ from auto_uv.domain.types import (
 )
 from auto_uv.run import baseline_probe
 from auto_uv.run import crash_recovery
-from auto_uv.run import main_loop as undervolt_main_loop
-from auto_uv.run import performance_auto_oc_selection
+from auto_uv import main_loop as undervolt_main_loop
+from auto_uv import efficiency_uv_loop
+from auto_uv import performance_uv_loop
 from auto_uv.final_verification.main_loop import (
     run_final_verification_and_save as real_run_final_verification_and_save,
 )
@@ -253,9 +254,10 @@ def test_auto_uv_final_choice_runs_before_final_verification(monkeypatch) -> Non
         *,
         settings,
         initial_stable_candidate,
-        hooks,
+        io,
         unsafe_entries,
         initial_stable_outcome=None,
+        **_kwargs,
     ):
         _ = unsafe_entries, initial_stable_outcome
         captured["sweep_calls"].append(
@@ -288,9 +290,10 @@ def test_auto_uv_final_choice_runs_before_final_verification(monkeypatch) -> Non
             measured_voltage_mv=950.0,
             raw_probe=_summary(950, 2120),
         )
-        hooks.write_verified_candidate(candidate, outcome)
+        io.write_verified_candidate(candidate, outcome)
         return LowerVoltageSweepResult(
             stable_candidate=candidate,
+            stable_outcome=outcome,
             state=VoltageSweepState(
                 stable_voltage_mv=950,
                 stable_target_mhz=2120,
@@ -356,7 +359,7 @@ def test_auto_uv_final_choice_runs_before_final_verification(monkeypatch) -> Non
         lambda _base_curve, *, candidate, **_kwargs: candidate,
     )
     monkeypatch.setattr(undervolt_main_loop, "write_verified_candidate", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(undervolt_main_loop, "run_lower_voltage_sweep_loop", fake_sweep_loop)
+    monkeypatch.setattr(efficiency_uv_loop, "run_base_uv_loop", fake_sweep_loop)
     monkeypatch.setattr(undervolt_main_loop, "choose_final_verification_candidate", fake_choice)
     monkeypatch.setattr(undervolt_main_loop, "run_final_verification_and_save", fake_final)
 
@@ -423,9 +426,10 @@ def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
         *,
         settings,
         initial_stable_candidate,
-        hooks,
+        io,
         unsafe_entries,
         initial_stable_outcome=None,
+        **_kwargs,
     ):
         _ = settings, initial_stable_candidate, unsafe_entries, initial_stable_outcome
         candidate = VfCurveCandidate("balanced-result", 870, 2741, curve)
@@ -440,9 +444,10 @@ def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
             measured_voltage_mv=870.0,
             raw_probe=_summary(870, 2741),
         )
-        hooks.write_verified_candidate(candidate, outcome)
+        io.write_verified_candidate(candidate, outcome)
         return LowerVoltageSweepResult(
             stable_candidate=candidate,
+            stable_outcome=outcome,
             state=VoltageSweepState(
                 stable_voltage_mv=870,
                 stable_target_mhz=2741,
@@ -551,9 +556,9 @@ def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
         "write_verified_candidate",
         lambda *_args, **_kwargs: None,
     )
-    monkeypatch.setattr(undervolt_main_loop, "run_lower_voltage_sweep_loop", fake_sweep_loop)
+    monkeypatch.setattr(undervolt_main_loop, "run_preset_uv_loop", fake_sweep_loop)
     monkeypatch.setattr(
-        performance_auto_oc_selection,
+        performance_uv_loop,
         "run_auto_oc_candidate_search",
         fake_auto_oc_search,
     )
@@ -809,7 +814,7 @@ def test_previous_crash_resume_starts_auto_oc_from_next_saved_voltage(
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(undervolt_main_loop, "read_verified_candidates", lambda: recovery_records)
-    monkeypatch.setattr(undervolt_main_loop, "run_lower_voltage_sweep_loop", fail_sweep)
+    monkeypatch.setattr(undervolt_main_loop, "run_preset_uv_loop", fail_sweep)
     monkeypatch.setattr(
         undervolt_main_loop,
         "choose_recovery_final_verification_candidate",
@@ -983,7 +988,7 @@ def test_auto_uv_user_stop_offers_stable_history_for_final_choice(monkeypatch) -
         "write_verified_candidate",
         lambda *_args, **_kwargs: None,
     )
-    monkeypatch.setattr(undervolt_main_loop, "run_lower_voltage_sweep_loop", fake_sweep_loop)
+    monkeypatch.setattr(undervolt_main_loop, "run_preset_uv_loop", fake_sweep_loop)
     monkeypatch.setattr(undervolt_main_loop, "choose_final_verification_candidate", fake_choice)
     monkeypatch.setattr(undervolt_main_loop, "run_final_verification_and_save", fake_final)
     monkeypatch.setattr(
@@ -1007,7 +1012,7 @@ def test_auto_uv_user_stop_offers_stable_history_for_final_choice(monkeypatch) -
     assert captured["final_duration_s"] == 240
 
 
-def test_performance_auto_oc_selection_runs_before_final_verification(monkeypatch) -> None:
+def test_performance_uv_loop_runs_before_final_verification(monkeypatch) -> None:
     curve = base_curve(900, 1000, 25, 2000, 40)
     start_probe = _summary(925, 2600)
     captured = {}
@@ -1024,13 +1029,13 @@ def test_performance_auto_oc_selection_runs_before_final_verification(monkeypatc
         )
 
     monkeypatch.setattr(
-        performance_auto_oc_selection,
+        performance_uv_loop,
         "run_auto_oc_candidate_search",
         fake_auto_oc_search,
     )
 
     plan, voltage_mv, clock_mhz, probe, _oc_metadata = (
-        performance_auto_oc_selection.select_performance_auto_oc_candidate(
+        performance_uv_loop.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="performance",
             stable_plan=curve,
@@ -1068,13 +1073,13 @@ def test_non_performance_mode_skips_auto_oc_selection(monkeypatch) -> None:
         raise AssertionError("auto-oc should not run outside performance mode")
 
     monkeypatch.setattr(
-        performance_auto_oc_selection,
+        performance_uv_loop,
         "run_auto_oc_candidate_search",
         fail_auto_oc_search,
     )
 
     plan, voltage_mv, clock_mhz, probe, _oc_metadata = (
-        performance_auto_oc_selection.select_performance_auto_oc_candidate(
+        performance_uv_loop.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="efficiency",
             stable_plan=curve,
@@ -1162,7 +1167,7 @@ def test_run_auto_oc_candidate_search_delegates_to_auto_oc(monkeypatch) -> None:
 
     monkeypatch.setattr(auto_oc_search, "run_auto_oc_candidate_search", fake_search)
 
-    result = performance_auto_oc_selection.run_auto_oc_candidate_search(foo=1, bar="baz")
+    result = performance_uv_loop.run_auto_oc_candidate_search(foo=1, bar="baz")
 
     assert result == "auto-oc-result"
     assert captured == {"foo": 1, "bar": "baz"}
@@ -1656,7 +1661,7 @@ def test_select_performance_auto_oc_logs_performance_sweep_profile(
     log_messages: list[str] = []
 
     monkeypatch.setattr(
-        performance_auto_oc_selection,
+        performance_uv_loop,
         "run_auto_oc_candidate_search",
         lambda **_kwargs: SimpleNamespace(
             selected_candidate=VfCurveCandidate("oc", 950, 2745, curve),
@@ -1676,13 +1681,13 @@ def test_select_performance_auto_oc_logs_performance_sweep_profile(
         },
     )
     monkeypatch.setattr(
-        performance_auto_oc_selection,
+        performance_uv_loop,
         "build_performance_sweep_profile_candidate",
         lambda *_args, **_kwargs: swept,
     )
 
     plan, voltage_mv, clock_mhz, probe, _oc_metadata = (
-        performance_auto_oc_selection.select_performance_auto_oc_candidate(
+        performance_uv_loop.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="performance",
             stable_plan=curve,
@@ -1716,7 +1721,7 @@ def test_select_performance_auto_oc_keeps_probe_when_selection_unchanged(
     start_probe = _summary(925, 2600)
 
     monkeypatch.setattr(
-        performance_auto_oc_selection,
+        performance_uv_loop,
         "run_auto_oc_candidate_search",
         lambda **_kwargs: SimpleNamespace(
             selected_candidate=VfCurveCandidate("oc", 925, 2600, curve),
@@ -1725,13 +1730,13 @@ def test_select_performance_auto_oc_keeps_probe_when_selection_unchanged(
     )
     # Plain selected candidate (no performance-sweep metadata).
     monkeypatch.setattr(
-        performance_auto_oc_selection,
+        performance_uv_loop,
         "build_performance_sweep_profile_candidate",
         lambda *_args, **_kwargs: VfCurveCandidate("oc", 925, 2600, curve),
     )
 
     _plan, voltage_mv, clock_mhz, probe, _oc_metadata = (
-        performance_auto_oc_selection.select_performance_auto_oc_candidate(
+        performance_uv_loop.select_performance_auto_oc_candidate(
             curve,
             auto_uv_mode="performance",
             stable_plan=curve,
@@ -1753,7 +1758,7 @@ def test_select_performance_auto_oc_keeps_probe_when_selection_unchanged(
 
 
 def test_performance_auto_oc_progress_metadata_reports_applied_and_limit() -> None:
-    metadata = performance_auto_oc_selection.performance_auto_oc_progress_metadata(
+    metadata = performance_uv_loop.performance_auto_oc_progress_metadata(
         endpoint=SimpleNamespace(clock_mhz=2980),
         measured_baseline_clock_mhz=2600,
         selected_clock_mhz=2745,
@@ -1768,7 +1773,7 @@ def test_performance_auto_oc_progress_metadata_reports_applied_and_limit() -> No
 
 def test_performance_auto_oc_progress_metadata_keeps_limit_when_no_gain() -> None:
     # Auto-OC reports target minus measured baseline, including a zero delta.
-    metadata = performance_auto_oc_selection.performance_auto_oc_progress_metadata(
+    metadata = performance_uv_loop.performance_auto_oc_progress_metadata(
         endpoint=SimpleNamespace(clock_mhz=2980),
         measured_baseline_clock_mhz=2600,
         selected_clock_mhz=2600,
@@ -1779,7 +1784,7 @@ def test_performance_auto_oc_progress_metadata_keeps_limit_when_no_gain() -> Non
 
 
 def test_performance_auto_oc_progress_metadata_keeps_signed_delta_above_limit() -> None:
-    metadata = performance_auto_oc_selection.performance_auto_oc_progress_metadata(
+    metadata = performance_uv_loop.performance_auto_oc_progress_metadata(
         endpoint=SimpleNamespace(clock_mhz=2980),
         measured_baseline_clock_mhz=2600,
         selected_clock_mhz=3100,
@@ -1790,7 +1795,7 @@ def test_performance_auto_oc_progress_metadata_keeps_signed_delta_above_limit() 
 
 
 def test_performance_auto_oc_progress_metadata_keeps_negative_delta() -> None:
-    metadata = performance_auto_oc_selection.performance_auto_oc_progress_metadata(
+    metadata = performance_uv_loop.performance_auto_oc_progress_metadata(
         endpoint=SimpleNamespace(clock_mhz=2980),
         measured_baseline_clock_mhz=2730,
         selected_clock_mhz=2600,
@@ -1802,7 +1807,7 @@ def test_performance_auto_oc_progress_metadata_keeps_negative_delta() -> None:
 
 def test_performance_auto_oc_progress_metadata_empty_without_target() -> None:
     assert (
-        performance_auto_oc_selection.performance_auto_oc_progress_metadata(
+        performance_uv_loop.performance_auto_oc_progress_metadata(
             endpoint=None,
             measured_baseline_clock_mhz=2600,
             selected_clock_mhz=2700,
@@ -1815,7 +1820,7 @@ def test_select_performance_auto_oc_candidate_returns_oc_metadata(monkeypatch) -
     curve = base_curve(900, 1025, 25, 2000, 40)
 
     monkeypatch.setattr(
-        performance_auto_oc_selection,
+        performance_uv_loop,
         "run_auto_oc_candidate_search",
         lambda **_kwargs: SimpleNamespace(
             selected_candidate=VfCurveCandidate("oc", 950, 2745, curve),
@@ -1824,12 +1829,12 @@ def test_select_performance_auto_oc_candidate_returns_oc_metadata(monkeypatch) -
         ),
     )
     monkeypatch.setattr(
-        performance_auto_oc_selection,
+        performance_uv_loop,
         "build_performance_sweep_profile_candidate",
         lambda *_args, **_kwargs: VfCurveCandidate("oc", 950, 2745, curve),
     )
 
-    *_unused, oc_metadata = performance_auto_oc_selection.select_performance_auto_oc_candidate(
+    *_unused, oc_metadata = performance_uv_loop.select_performance_auto_oc_candidate(
         curve,
         auto_uv_mode="performance",
         stable_plan=curve,
@@ -2054,7 +2059,7 @@ def test_orchestration_keyboard_interrupt_reraises_without_final_choice(
         raise KeyboardInterrupt()
 
     monkeypatch.setattr(
-        undervolt_main_loop, "run_lower_voltage_sweep_loop", fake_sweep_loop
+        undervolt_main_loop, "run_preset_uv_loop", fake_sweep_loop
     )
 
     with pytest.raises(KeyboardInterrupt):
@@ -2110,21 +2115,23 @@ def test_orchestration_sweep_hooks_probe_and_record_candidates(monkeypatch) -> N
         *,
         settings,
         initial_stable_candidate,
-        hooks,
+        io,
         unsafe_entries,
         initial_stable_outcome=None,
+        **_kwargs,
     ):
         _ = settings, unsafe_entries, initial_stable_outcome
         sweep_candidate = VfCurveCandidate("sweep", 925, 2080, curve)
         # Drive the probe_candidate closure (lines 246-256).
-        outcome = hooks.probe_candidate(sweep_candidate)
+        outcome = io.probe_candidate(sweep_candidate)
         assert outcome.decision.passed is True
         # Drive the record_passed_candidate closure (lines 278-279).
-        hooks.record_passed_candidate(sweep_candidate, outcome)
+        io.record_passed_candidate(sweep_candidate, outcome)
         # Drive the accept path so stable history advances.
-        hooks.write_verified_candidate(sweep_candidate, outcome)
+        io.write_verified_candidate(sweep_candidate, outcome)
         return LowerVoltageSweepResult(
             stable_candidate=sweep_candidate,
+            stable_outcome=outcome,
             state=VoltageSweepState(
                 stable_voltage_mv=925,
                 stable_target_mhz=2080,
@@ -2169,7 +2176,7 @@ def test_orchestration_sweep_hooks_probe_and_record_candidates(monkeypatch) -> N
         undervolt_main_loop, "write_verified_candidate", lambda *_a, **_k: None
     )
     monkeypatch.setattr(
-        undervolt_main_loop, "run_lower_voltage_sweep_loop", fake_sweep_loop
+        undervolt_main_loop, "run_preset_uv_loop", fake_sweep_loop
     )
     monkeypatch.setattr(
         undervolt_main_loop,

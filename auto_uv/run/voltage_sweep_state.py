@@ -39,5 +39,6 @@ class LowerVoltageSweepEvent:
 class LowerVoltageSweepResult:
     stable_candidate: VfCurveCandidate
     state: VoltageSweepState
+    stable_outcome: VoltageProbeOutcome | None = None
     probe_history: list[VoltageProbeOutcome] = field(default_factory=list)
     events: list[LowerVoltageSweepEvent] = field(default_factory=list)

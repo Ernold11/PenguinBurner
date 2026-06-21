@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from auto_uv.domain.types import AutoUvError, AutoUvFinalChoiceDiscarded
-from auto_uv.run.main_loop import (
+from auto_uv.main_loop import (
     run_voltage_frequency_undervolt_main_loop,
 )
 from auto_uv.initial_check.auto_uv_hardware_initial_check import (
