@@ -77,7 +77,7 @@ from auto_uv.run.performance_auto_oc_selection import (
 )
 from auto_uv.ui.vf_curve_ui_points import vf_curve_ui_points
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
-from auto_uv.final_verification import run_final_verification_and_save
+from auto_uv.final_verification.main_loop import run_final_verification_and_save
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_EFFICIENCY
 
 
