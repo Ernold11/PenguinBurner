@@ -14,7 +14,7 @@ from auto_uv.scan_mode.uv_limits import (
 )
 from common.penguin_burner_paths import default_runtime_config_path
 
-from .gpu_selection import runtime_gpu_index
+from ui.features.tuning.gpu_selection import runtime_gpu_index
 
 
 DEFAULT_SHORT_VERIFICATION_BASE_S = 10

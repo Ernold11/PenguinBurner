@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 
 from common.penguin_burner_paths import default_user_config_dir
-from .constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
+from ui.constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
 
 
 DEFAULT_VERIFY_DURATION_S = DEFAULT_FINAL_VERIFICATION_DURATION_S

@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from .constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
-from .constants import MAX_FINAL_VERIFICATION_DURATION_S
+from ui.constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
+from ui.constants import MAX_FINAL_VERIFICATION_DURATION_S
 
 
 @dataclass(slots=True)

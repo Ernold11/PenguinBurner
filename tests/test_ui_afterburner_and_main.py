@@ -11,9 +11,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import importlib
 
-import ui.afterburner_import as ab
-import ui.afterburner_workflow as workflow_mod
-from ui.afterburner_workflow import AfterburnerImportWorkflow
+import ui.features.integrations.afterburner_import as ab
+import ui.features.integrations.afterburner_workflow as workflow_mod
+from ui.features.integrations.afterburner_workflow import AfterburnerImportWorkflow
 from ui.qt import import_qt
 
 # `ui.main` the attribute is shadowed by the re-exported `main` function, so

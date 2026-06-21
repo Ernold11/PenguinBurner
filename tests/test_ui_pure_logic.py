@@ -7,8 +7,8 @@ Covers ui/verify.py, the ui/lact_export.py config parsers, and ui/error_reportin
 from __future__ import annotations
 
 import ui.error_reporting as error_reporting
-import ui.lact_export as lact_export
-from ui.verify import elapsed_from_line, progress_percent, workload_label
+import ui.features.integrations.lact_export as lact_export
+from ui.features.tuning.verify import elapsed_from_line, progress_percent, workload_label
 
 
 # --- ui/verify.py -------------------------------------------------------------

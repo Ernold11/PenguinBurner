@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import ui.profiles as profiles
+import ui.features.profiles.profiles as profiles
 
 
 _P1 = {"profile_id": "p1", "candidate_id": "c1", "path": "/tmp/p1.json", "display_name": "P1"}

@@ -8,37 +8,37 @@ from profiles.uv import delete_auto_uv_profile_paths
 from profiles.uv import save_profile_tier_assignment
 from profiles.uv import save_profile_tier_none_assignment
 
-from .commands import delete_profiles_command
-from .commands import profile_verify_command
-from .commands import runtime_profile_command
-from .components.fan_curve_editor import open_fan_curve_editor_dialog
-from .components.vf_curve_editor import open_vf_curve_editor_dialog
-from .curve_profiles import profile_base_curve_points
-from .curve_profiles import profile_curve_plan
-from .curve_profiles import save_edited_curve_profile
-from .dialogs import select_verify_options
-from .fan_profiles import profile_fan_curve_points
-from .fan_profiles import profile_fan_curve_target_point
-from .fan_profiles import profile_fan_measurement_points
-from .fan_profiles import profile_id_from_archive_path
-from .fan_profiles import save_edited_fan_profile
-from .fan_profiles import sync_profile_fan_payload
-from .lact_export import detect_lact_gpu_id
-from .lact_export import lact_export_output_path
-from .lact_export import write_lact_profile_config
-from .profiles import adaptive_profile_tier_labels
-from .profiles import delete_confirmation_text
-from .profiles import profile_can_apply
-from .profiles import profile_can_verify
-from .profiles import profile_delete_autostart_action
-from .profiles import profile_for_selector
-from .profiles import profile_is_deletable
-from .profiles import profile_status_label
-from .profiles import profile_verify_selector
-from .profiles import profiles_for_selectors
-from .profiles import systemd_autostart_profile_info
-from .verify import stop_request_path as verify_stop_request_path
-from .verify import workload_label
+from ui.commands import delete_profiles_command
+from ui.commands import profile_verify_command
+from ui.commands import runtime_profile_command
+from ui.components.fan_curve_editor import open_fan_curve_editor_dialog
+from ui.components.vf_curve_editor import open_vf_curve_editor_dialog
+from ui.features.curves.curve_profiles import profile_base_curve_points
+from ui.features.curves.curve_profiles import profile_curve_plan
+from ui.features.curves.curve_profiles import save_edited_curve_profile
+from ui.dialogs import select_verify_options
+from ui.features.curves.fan_profiles import profile_fan_curve_points
+from ui.features.curves.fan_profiles import profile_fan_curve_target_point
+from ui.features.curves.fan_profiles import profile_fan_measurement_points
+from ui.features.curves.fan_profiles import profile_id_from_archive_path
+from ui.features.curves.fan_profiles import save_edited_fan_profile
+from ui.features.curves.fan_profiles import sync_profile_fan_payload
+from ui.features.integrations.lact_export import detect_lact_gpu_id
+from ui.features.integrations.lact_export import lact_export_output_path
+from ui.features.integrations.lact_export import write_lact_profile_config
+from ui.features.profiles.profiles import adaptive_profile_tier_labels
+from ui.features.profiles.profiles import delete_confirmation_text
+from ui.features.profiles.profiles import profile_can_apply
+from ui.features.profiles.profiles import profile_can_verify
+from ui.features.profiles.profiles import profile_delete_autostart_action
+from ui.features.profiles.profiles import profile_for_selector
+from ui.features.profiles.profiles import profile_is_deletable
+from ui.features.profiles.profiles import profile_status_label
+from ui.features.profiles.profiles import profile_verify_selector
+from ui.features.profiles.profiles import profiles_for_selectors
+from ui.features.profiles.profiles import systemd_autostart_profile_info
+from ui.features.tuning.verify import stop_request_path as verify_stop_request_path
+from ui.features.tuning.verify import workload_label
 
 
 class ProfileActionsMixin:

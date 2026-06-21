@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-import ui.curve_profiles as cp
+import ui.features.curves.curve_profiles as cp
 
 
 # --- low-level value parsing --------------------------------------------------

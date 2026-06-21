@@ -13,8 +13,8 @@ import profiles.verification.runner as profile_verification_runner
 from cli.runtime_profile_argument import (
     runtime_profile_selector_allows_unverified_from_argv as allow_unverified_from_argv,
 )
-import ui.curve_profiles as curve_profiles
-import ui.fan_profiles as ui_app
+import ui.features.curves.curve_profiles as curve_profiles
+import ui.features.curves.fan_profiles as ui_app
 from profiles.uv import (
     archive_auto_uv_profile,
     delete_auto_uv_profile_paths,
@@ -33,7 +33,7 @@ from ui.components.fan_curve_editor import (
 from ui.components.vf_curve_editor import (
     vf_curve_editor_shortcut_legend_rows as _curve_editor_shortcut_legend_rows,
 )
-from ui.curve_profiles import (
+from ui.features.curves.curve_profiles import (
     load_cached_base_curve_points as _load_cached_base_curve_points,
     profile_base_curve_points as _profile_base_curve_points,
     profile_curve_points as _profile_curve_points,
@@ -49,7 +49,7 @@ from ui.dialogs.final_choice import (
     duration_minutes_for_control as _duration_minutes_for_control,
 )
 from ui.dialogs.final_choice import final_choice_sort_values as _final_choice_sort_values
-from ui.fan_profiles import (
+from ui.features.curves.fan_profiles import (
     fan_curve_target_point_from_payload as _fan_curve_target_point_from_payload,
     fan_measurement_point as _fan_measurement_point,
     fan_measurement_points as _fan_measurement_points,
@@ -61,27 +61,27 @@ from ui.fan_profiles import (
     profile_id_from_archive_path as _profile_id_from_archive_path,
     sorted_unique_fan_points as _sorted_unique_fan_points,
 )
-from ui.lact_export import lact_export_output_path as _lact_export_output_path
-from ui.lact_export import lact_gpu_id_from_config as _lact_gpu_id_from_config
+from ui.features.integrations.lact_export import lact_export_output_path as _lact_export_output_path
+from ui.features.integrations.lact_export import lact_gpu_id_from_config as _lact_gpu_id_from_config
 from ui.models import candidate_id_from_payload as _candidate_id_from_result
 from ui.models import event_base_points as _event_base_points
 from ui.models import stage_title as _stage_title
 from ui.models import status_value as _status_value
 from ui.models import top_status_text as _top_status_text
-from ui.profiles import delete_confirmation_text as _profile_delete_confirmation_text
-from ui.profiles import adaptive_profile_tier_labels as _adaptive_profile_tier_labels
-from ui.profiles import final_profile_notice_text as _final_profile_notice_text
-from ui.profiles import profile_info_from_command_text as _profile_info_from_command_text
-from ui.profiles import profile_is_deletable as _profile_is_deletable
-from ui.profiles import profile_delete_autostart_action as _profile_delete_autostart_action
-from ui.profiles import profile_delete_removes_systemd as _profile_delete_removes_systemd
-from ui.profiles import profile_verify_selector as _profile_verify_selector
-from ui.profiles import runner_status_text as _runner_status_text
-from ui.profiles import (
+from ui.features.profiles.profiles import delete_confirmation_text as _profile_delete_confirmation_text
+from ui.features.profiles.profiles import adaptive_profile_tier_labels as _adaptive_profile_tier_labels
+from ui.features.profiles.profiles import final_profile_notice_text as _final_profile_notice_text
+from ui.features.profiles.profiles import profile_info_from_command_text as _profile_info_from_command_text
+from ui.features.profiles.profiles import profile_is_deletable as _profile_is_deletable
+from ui.features.profiles.profiles import profile_delete_autostart_action as _profile_delete_autostart_action
+from ui.features.profiles.profiles import profile_delete_removes_systemd as _profile_delete_removes_systemd
+from ui.features.profiles.profiles import profile_verify_selector as _profile_verify_selector
+from ui.features.profiles.profiles import runner_status_text as _runner_status_text
+from ui.features.profiles.profiles import (
     selected_profile_ids_include_selector as _selected_profile_ids_include_selector,
 )
-from ui.verify import elapsed_from_line as _verify_elapsed_from_line
-from ui.verify import progress_percent as _verify_progress_percent
+from ui.features.tuning.verify import elapsed_from_line as _verify_elapsed_from_line
+from ui.features.tuning.verify import progress_percent as _verify_progress_percent
 from ui.components.profile_list import (
     PROFILE_SORTABLE_COLUMNS,
     ProfileList,

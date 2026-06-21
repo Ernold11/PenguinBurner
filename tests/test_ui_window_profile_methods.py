@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-import ui.profile_actions as actions_mod
+import ui.features.profiles.profile_actions as actions_mod
 import ui.window as window_mod
 from ui.qt import import_qt
 from ui.window import MainWindow

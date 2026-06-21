@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..afterburner_import import afterburner_profile_entries
-from ..afterburner_import import configured_afterburner_root
-from ..afterburner_import import entry_curve_points
+from ui.features.integrations.afterburner_import import afterburner_profile_entries
+from ui.features.integrations.afterburner_import import configured_afterburner_root
+from ui.features.integrations.afterburner_import import entry_curve_points
 from ..components import CurvePlot
 from ..components.table_sizing import set_header_fit_column_widths
 

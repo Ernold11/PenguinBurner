@@ -3,7 +3,7 @@ from __future__ import annotations
 from ..assets import application_version
 from ..assets import asset_image_path
 from ..constants import APP_DISPLAY_NAME
-from ..tuning import GPU_UNDERVOLTING_PURPOSE_TEXT
+from ui.features.tuning.tuning import GPU_UNDERVOLTING_PURPOSE_TEXT
 from .error_details import qt_flags
 from .error_details import selectable_text_flags
 

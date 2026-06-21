@@ -11,8 +11,8 @@ from profiles.uv import profile_display_name
 from common.penguin_burner_paths import default_runtime_config_path
 from common.penguin_burner_paths import default_user_config_dir
 
-from .afterburner_import import runtime_gpu_index
-from .fan_profiles import profile_payload_from_path
+from ui.features.integrations.afterburner_import import runtime_gpu_index
+from ui.features.curves.fan_profiles import profile_payload_from_path
 
 
 def profile_curve_points(profile: dict) -> list[tuple[float, float]]:

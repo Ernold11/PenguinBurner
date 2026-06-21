@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-import ui.fan_profiles as fp
+import ui.features.curves.fan_profiles as fp
 
 
 # --- low-level point parsing --------------------------------------------------

@@ -15,7 +15,7 @@ from curve_editors.uv import manual_select_range_to_right
 from curve_editors.uv import manual_tune_single_point_edit
 
 from .. import theme
-from ..curve_profiles import curve_points_from_values
+from ui.features.curves.curve_profiles import curve_points_from_values
 from .curve_editor import CurveEditHistory
 from .curve_editor import install_curve_editor_shortcut_legend
 from .curve_editor import nearest_curve_point

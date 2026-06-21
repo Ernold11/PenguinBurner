@@ -7,8 +7,8 @@ import shutil
 import sys
 from typing import Mapping
 
-from .constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
-from .gpu_selection import runtime_gpu_index
+from ui.constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
+from ui.features.tuning.gpu_selection import runtime_gpu_index
 
 
 def cli_base_command() -> list[str]:

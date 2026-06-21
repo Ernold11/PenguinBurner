@@ -8,16 +8,16 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import ui.gpu_selection as gpu_selection
-import ui.tuning as tuning
-from ui.gpu_selection import (
+import ui.features.tuning.gpu_selection as gpu_selection
+import ui.features.tuning.tuning as tuning
+from ui.features.tuning.gpu_selection import (
     GpuChoice,
     gpu_choices_with_fallback,
     gpu_choices_from_nvml_identities,
     persist_runtime_gpu_index,
     runtime_gpu_index,
 )
-from ui.tuning import (
+from ui.features.tuning.tuning import (
     AutoUvNvmlInfo,
     AutoUvPerformanceTargetDefault,
     auto_uv_nvml_info_text,

@@ -24,7 +24,7 @@ from common.penguin_burner_paths import (
 from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
 from profiles.uv import archive_auto_uv_profile
 
-from .gpu_selection import runtime_gpu_index
+from ui.features.tuning.gpu_selection import runtime_gpu_index
 
 
 def configured_afterburner_root() -> str:

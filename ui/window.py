@@ -11,46 +11,46 @@ from cli.runtime_config_file import (
 )
 from common.penguin_burner_paths import default_user_config_dir
 
-from .afterburner_workflow import AfterburnerImportWorkflow
-from .commands import runtime_profile_command
-from .commands import scan_command
-from .components import CurvePlot
-from .components import LogView
-from .components import OverlayConfigPanel
-from .components import ProfileList
-from .components import RunsTable
-from .components import ScanControls
-from .components import StatusHeader
-from .constants import APP_DISPLAY_NAME
+from ui.features.integrations.afterburner_workflow import AfterburnerImportWorkflow
+from ui.commands import runtime_profile_command
+from ui.commands import scan_command
+from ui.components import CurvePlot
+from ui.components import LogView
+from ui.components import OverlayConfigPanel
+from ui.components import ProfileList
+from ui.components import RunsTable
+from ui.components import ScanControls
+from ui.components import StatusHeader
+from ui.constants import APP_DISPLAY_NAME
 from .controllers import CommandController
 from .controllers import VerifyController
 from .controllers import ScanController
-from .curve_tabs import CurveTabs
-from .dialogs import select_final_candidate
-from .dialogs import select_scan_tuning
-from .dialogs import show_about_dialog
+from ui.features.curves.curve_tabs import CurveTabs
+from ui.dialogs import select_final_candidate
+from ui.dialogs import select_scan_tuning
+from ui.dialogs import show_about_dialog
 from .error_reporting import ErrorReporter
-from .gpu_selection import persist_runtime_gpu_index
-from .fan_profiles import sync_profile_fan_payload
-from .final_choice_controller import handle_final_choice_request
+from ui.features.tuning.gpu_selection import persist_runtime_gpu_index
+from ui.features.curves.fan_profiles import sync_profile_fan_payload
+from ui.features.tuning.final_choice_controller import handle_final_choice_request
 from .models import candidate_id_from_payload
 from .models import event_base_points
 from .models import event_points
 from .models import stage_title
 from .models import status_value
 from .models import top_status_text
-from .profiles import load_profile_summaries
-from .profiles import penguin_burner_runtime_is_active
-from .profiles import profile_can_apply
-from .profiles import profile_for_selector
-from .profiles import runner_status_text
-from .profiles import running_auto_uv_profile_info
-from .profiles import systemd_autostart_profile_info
-from .profiles import systemd_unit_entry_exists
-from .verify import stop_request_path as verify_stop_request_path
-from .profile_actions import ProfileActionsMixin
-from .profile_actions import _manual_curve_control_voltage_mvs
-from .profile_actions import _runtime_action_label
+from ui.features.profiles.profiles import load_profile_summaries
+from ui.features.profiles.profiles import penguin_burner_runtime_is_active
+from ui.features.profiles.profiles import profile_can_apply
+from ui.features.profiles.profiles import profile_for_selector
+from ui.features.profiles.profiles import runner_status_text
+from ui.features.profiles.profiles import running_auto_uv_profile_info
+from ui.features.profiles.profiles import systemd_autostart_profile_info
+from ui.features.profiles.profiles import systemd_unit_entry_exists
+from ui.features.tuning.verify import stop_request_path as verify_stop_request_path
+from ui.features.profiles.profile_actions import ProfileActionsMixin
+from ui.features.profiles.profile_actions import _manual_curve_control_voltage_mvs
+from ui.features.profiles.profile_actions import _runtime_action_label
 from .styles import STYLESHEET
 
 
@@ -582,5 +582,4 @@ def _probe_text(payload: dict) -> str:
 
 def _stop_request_path() -> Path:
     return default_user_config_dir() / "auto-uv-stop-requested"
-
 

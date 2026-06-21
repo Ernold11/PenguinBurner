@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from ..verify import DEFAULT_VERIFY_DURATION_S
-from ..verify import MAX_VERIFY_DURATION_S
+from ui.features.tuning.verify import DEFAULT_VERIFY_DURATION_S
+from ui.features.tuning.verify import MAX_VERIFY_DURATION_S
 
 
 def select_verify_options(*, QtWidgets, parent, profile_label: str) -> dict | None:

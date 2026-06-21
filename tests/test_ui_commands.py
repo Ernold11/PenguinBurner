@@ -31,7 +31,7 @@ from ui.models import top_status_text as _top_status_text
 from ui.models import probe_decision_label as _probe_decision_label
 from ui.models import probe_failure_label as _probe_failure_label
 from ui.styles import STYLESHEET
-from ui.tuning import (
+from ui.features.tuning.tuning import (
     AUTO_UV_PRESET_BALANCED,
     AUTO_UV_PRESET_EFFICIENCY,
     AUTO_UV_PRESET_PERFORMANCE,

@@ -4,8 +4,8 @@ from pathlib import Path
 import os
 import signal
 
-from ..verify import elapsed_from_line
-from ..verify import progress_percent
+from ui.features.tuning.verify import elapsed_from_line
+from ui.features.tuning.verify import progress_percent
 
 
 class VerifyController:

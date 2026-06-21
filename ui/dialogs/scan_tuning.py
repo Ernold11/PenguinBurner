@@ -3,21 +3,21 @@ from __future__ import annotations
 import html
 
 from ..assets import asset_image_path
-from ..tuning import AUTO_UV_PRESET_EFFICIENCY
-from ..tuning import AUTO_UV_PRESET_PERFORMANCE
-from ..tuning import DEFAULT_AUTO_UV_PRESET
-from ..tuning import GPU_UNDERVOLTING_PURPOSE_TEXT
-from ..tuning import auto_uv_preset
-from ..tuning import auto_uv_performance_preset_label
-from ..tuning import auto_uv_performance_target_default
-from ..tuning import auto_uv_performance_preset_tooltip
-from ..tuning import auto_uv_presets
-from ..tuning import auto_uv_clock_drop_default
-from ..tuning import auto_uv_nvml_info_text
-from ..tuning import auto_uv_voltage_drop_default
-from ..tuning import memory_offset_mhz_range
-from ..tuning import read_auto_uv_nvml_info
-from ..gpu_selection import gpu_choices_with_fallback
+from ui.features.tuning.gpu_selection import gpu_choices_with_fallback
+from ui.features.tuning.tuning import AUTO_UV_PRESET_EFFICIENCY
+from ui.features.tuning.tuning import AUTO_UV_PRESET_PERFORMANCE
+from ui.features.tuning.tuning import DEFAULT_AUTO_UV_PRESET
+from ui.features.tuning.tuning import GPU_UNDERVOLTING_PURPOSE_TEXT
+from ui.features.tuning.tuning import auto_uv_clock_drop_default
+from ui.features.tuning.tuning import auto_uv_nvml_info_text
+from ui.features.tuning.tuning import auto_uv_performance_preset_label
+from ui.features.tuning.tuning import auto_uv_performance_preset_tooltip
+from ui.features.tuning.tuning import auto_uv_performance_target_default
+from ui.features.tuning.tuning import auto_uv_preset
+from ui.features.tuning.tuning import auto_uv_presets
+from ui.features.tuning.tuning import auto_uv_voltage_drop_default
+from ui.features.tuning.tuning import memory_offset_mhz_range
+from ui.features.tuning.tuning import read_auto_uv_nvml_info
 from .error_details import qt_flags
 
 
