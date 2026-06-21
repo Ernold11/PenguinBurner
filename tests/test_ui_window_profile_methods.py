@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
+import ui.profile_actions as actions_mod
 import ui.window as window_mod
 from ui.qt import import_qt
 from ui.window import MainWindow
@@ -64,7 +65,7 @@ PROFILE = {"profile_id": "p1", "path": "/tmp/p1.json", "final_verified": True}
 
 def test_edit_fan_curve_no_curve_shows_info(win) -> None:
     window, monkeypatch = win
-    monkeypatch.setattr(window_mod, "profile_fan_curve_points", lambda profile: [])
+    monkeypatch.setattr(actions_mod, "profile_fan_curve_points", lambda profile: [])
     shown: list = []
     monkeypatch.setattr(window.QtWidgets.QMessageBox, "information", lambda *a, **k: shown.append(a))
     window._edit_profile_fan_curve(PROFILE)
@@ -73,11 +74,11 @@ def test_edit_fan_curve_no_curve_shows_info(win) -> None:
 
 def test_edit_fan_curve_opens_and_saves(win) -> None:
     window, monkeypatch = win
-    monkeypatch.setattr(window_mod, "profile_fan_curve_points", lambda profile: [(30, 20)])
-    monkeypatch.setattr(window_mod, "profile_fan_measurement_points", lambda profile: [])
-    monkeypatch.setattr(window_mod, "profile_fan_curve_target_point", lambda profile: None)
+    monkeypatch.setattr(actions_mod, "profile_fan_curve_points", lambda profile: [(30, 20)])
+    monkeypatch.setattr(actions_mod, "profile_fan_measurement_points", lambda profile: [])
+    monkeypatch.setattr(actions_mod, "profile_fan_curve_target_point", lambda profile: None)
     monkeypatch.setattr(
-        window_mod,
+        actions_mod,
         "save_edited_fan_profile",
         lambda profile, edit, original_points: (
             Path("/tmp/auto-uv-profile-x.json"),
@@ -86,15 +87,15 @@ def test_edit_fan_curve_opens_and_saves(win) -> None:
     )
     # The editor stub fires the save callback to exercise the closure.
     monkeypatch.setattr(
-        window_mod, "open_fan_curve_editor_dialog", lambda **k: k["save_callback"](object())
+        actions_mod, "open_fan_curve_editor_dialog", lambda **k: k["save_callback"](object())
     )
     window._edit_profile_fan_curve(PROFILE)
 
 
 def test_edit_vf_curve_no_plan_shows_info(win) -> None:
     window, monkeypatch = win
-    monkeypatch.setattr(window_mod, "profile_curve_plan", lambda profile: [])
-    monkeypatch.setattr(window_mod, "editable_anchor_from_profile", lambda profile: None)
+    monkeypatch.setattr(actions_mod, "profile_curve_plan", lambda profile: [])
+    monkeypatch.setattr(actions_mod, "editable_anchor_from_profile", lambda profile: None)
     shown: list = []
     monkeypatch.setattr(window.QtWidgets.QMessageBox, "information", lambda *a, **k: shown.append(a))
     window._edit_profile_vf_curve(PROFILE)
@@ -104,18 +105,18 @@ def test_edit_vf_curve_no_plan_shows_info(win) -> None:
 def test_edit_vf_curve_opens_and_saves(win) -> None:
     window, monkeypatch = win
     monkeypatch.setattr(
-        window_mod, "profile_curve_plan",
+        actions_mod, "profile_curve_plan",
         lambda profile: [{"index": 0, "voltage_mv": 900, "base_mhz": 2400, "target_mhz": 2500}],
     )
-    monkeypatch.setattr(window_mod, "editable_anchor_from_profile", lambda profile: (900, 2500))
-    monkeypatch.setattr(window_mod, "profile_base_curve_points", lambda profile: [(900, 2400)])
-    monkeypatch.setattr(window_mod, "_manual_curve_control_voltage_mvs", lambda manual: ())
+    monkeypatch.setattr(actions_mod, "editable_anchor_from_profile", lambda profile: (900, 2500))
+    monkeypatch.setattr(actions_mod, "profile_base_curve_points", lambda profile: [(900, 2400)])
+    monkeypatch.setattr(actions_mod, "_manual_curve_control_voltage_mvs", lambda manual: ())
     monkeypatch.setattr(
-        window_mod, "save_edited_curve_profile",
+        actions_mod, "save_edited_curve_profile",
         lambda profile, edit, **kw: (Path("/tmp/auto-uv-profile-y.json"), {"candidate_id": "c9"}),
     )
     monkeypatch.setattr(
-        window_mod, "open_vf_curve_editor_dialog", lambda **k: k["save_callback"](object())
+        actions_mod, "open_vf_curve_editor_dialog", lambda **k: k["save_callback"](object())
     )
     window._edit_profile_vf_curve(PROFILE)
     assert window.last_auto_uv_candidate_id == "c9"
@@ -131,7 +132,7 @@ def test_export_lact_cancelled_and_no_gpu(win) -> None:
     monkeypatch.setattr(
         window.QtWidgets.QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: "/tmp/lact")
     )
-    monkeypatch.setattr(window_mod, "detect_lact_gpu_id", lambda directory: "")
+    monkeypatch.setattr(actions_mod, "detect_lact_gpu_id", lambda directory: "")
     shown: list = []
     monkeypatch.setattr(window.errors, "show", lambda title, msg: shown.append(title))
     window._export_lact_profile(PROFILE)
@@ -143,10 +144,10 @@ def test_export_lact_writes(win) -> None:
     monkeypatch.setattr(
         window.QtWidgets.QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: "/tmp/lact")
     )
-    monkeypatch.setattr(window_mod, "detect_lact_gpu_id", lambda directory: "1002:abcd")
+    monkeypatch.setattr(actions_mod, "detect_lact_gpu_id", lambda directory: "1002:abcd")
     monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: False)
     monkeypatch.setattr(
-        window_mod, "write_lact_profile_config",
+        actions_mod, "write_lact_profile_config",
         lambda profile, **kw: (Path("/tmp/lact/config.yaml"), ["a warning"]),
     )
     monkeypatch.setattr(window.QtWidgets.QMessageBox, "information", lambda *a, **k: None)
@@ -158,14 +159,14 @@ def test_verify_profile_guards_and_runs(win) -> None:
     # Cannot verify (no path / not afterburner) -> early return.
     window._verify_profile({"profile_id": "x"})
 
-    monkeypatch.setattr(window_mod, "select_verify_options", lambda **k: None)
+    monkeypatch.setattr(actions_mod, "select_verify_options", lambda **k: None)
     window._verify_profile(PROFILE)  # dialog cancelled -> return
 
     monkeypatch.setattr(
-        window_mod, "select_verify_options",
-        lambda **k: {"duration_s": 60, "q2rtx_enabled": True, "cuda_enabled": True},
+        actions_mod, "select_verify_options",
+        lambda **k: {"duration_s": 60},
     )
-    monkeypatch.setattr(window_mod, "profile_verify_command", lambda **k: ["echo", "verify"])
+    monkeypatch.setattr(actions_mod, "profile_verify_command", lambda **k: ["echo", "verify"])
     fake = _FakeController()
     window.verify_controller = fake
     window._verify_profile(PROFILE)
@@ -178,12 +179,12 @@ def test_delete_selected_profiles(win) -> None:
     monkeypatch.setattr(window.profile_list, "selected_profile_ids", lambda: ["p1"])
     monkeypatch.setattr(window.profile_list, "selected_profile_paths", lambda: ["/tmp/p1.json"])
     monkeypatch.setattr(
-        window_mod, "profile_delete_autostart_action", lambda *a: {"action": "keep"}
+        actions_mod, "profile_delete_autostart_action", lambda *a: {"action": "keep"}
     )
     monkeypatch.setattr(MainWindow, "_confirm_profile_delete", lambda self, **k: True)
     deleted = []
     monkeypatch.setattr(
-        window_mod, "delete_auto_uv_profile_paths", lambda paths: deleted.extend(paths) or list(paths)
+        actions_mod, "delete_auto_uv_profile_paths", lambda paths: deleted.extend(paths) or list(paths)
     )
     window._delete_selected_profiles()
     assert deleted == ["/tmp/p1.json"]
@@ -226,11 +227,10 @@ def test_apply_profile_persists_silent_fan_choice(win, monkeypatch) -> None:
     saved: list[bool] = []
     monkeypatch.setattr(window_mod, "silent_fan_curve_to_runtime_config", lambda v: saved.append(bool(v)))
     monkeypatch.setattr(window_mod, "persist_on_startup_to_runtime_config", lambda v: v)
-    monkeypatch.setattr(window_mod, "profile_for_selector", lambda summaries, pid: dict(PROFILE))
-    monkeypatch.setattr(window_mod, "profile_is_afterburner", lambda p: False)
-    monkeypatch.setattr(window_mod, "profile_can_apply", lambda p: True)
-    monkeypatch.setattr(window_mod, "sync_profile_fan_payload", lambda p: True)
-    monkeypatch.setattr(window_mod, "runtime_profile_command", lambda *a, **k: ["pb"])
+    monkeypatch.setattr(actions_mod, "profile_for_selector", lambda summaries, pid: dict(PROFILE))
+    monkeypatch.setattr(actions_mod, "profile_can_apply", lambda p: True)
+    monkeypatch.setattr(actions_mod, "sync_profile_fan_payload", lambda p: True)
+    monkeypatch.setattr(actions_mod, "runtime_profile_command", lambda *a, **k: ["pb"])
     monkeypatch.setattr(window.profile_list, "selected_profile_id", lambda: "p1")
     monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: True)
     window.profile_summaries = [PROFILE]
@@ -258,7 +258,6 @@ def test_restore_pre_scan_autostart_reinstalls_previous_profile(win, monkeypatch
     monkeypatch.setattr(
         window_mod, "profile_for_selector", lambda summaries, sel: {"profile_id": sel}
     )
-    monkeypatch.setattr(window_mod, "profile_is_afterburner", lambda p: False)
     synced: list = []
     monkeypatch.setattr(
         window_mod, "sync_profile_fan_payload", lambda p: synced.append(p) or True

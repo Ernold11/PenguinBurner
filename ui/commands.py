@@ -116,9 +116,7 @@ def scan_command(auto_uv_options: Mapping[str, object] | None = None) -> list[st
     option_flags = {
         "auto_uv_mode": "--auto-uv-mode",
         "auto_uv_min_voltage_mv": "--auto-uv-min-voltage-mv",
-        "auto_uv_max_drop_pct": "--auto-uv-max-drop-pct",
         "auto_uv_max_clock_drop_pct": "--auto-uv-max-clock-drop-pct",
-        "auto_uv_short_seconds": "--auto-uv-short-seconds",
         "auto_uv_memory_offset_mhz": "--auto-uv-memory-offset-mhz",
         "auto_uv_power_limit_w": "--auto-uv-power-limit-w",
         "auto_uv_tail_rise_bins": "--auto-uv-tail-rise-bins",
@@ -183,15 +181,9 @@ def profile_verify_command(
     profile_selector: str = "",
     duration_s: int = DEFAULT_FINAL_VERIFICATION_DURATION_S,
     stop_request_path: str | Path = "",
-    q2rtx_enabled: bool = True,
-    cuda_enabled: bool = True,
     gpu_index: int | None = None,
 ) -> list[str]:
     duration_s = max(1, int(duration_s))
-    workload = _stability_workload_value(
-        q2rtx_enabled=q2rtx_enabled,
-        cuda_enabled=cuda_enabled,
-    )
     command = [
         *cli_base_command(),
         "--stability-test",
@@ -200,27 +192,11 @@ def profile_verify_command(
         "--gpu-index",
         str(runtime_gpu_index() if gpu_index is None else max(0, int(gpu_index))),
     ]
-    if workload != "q2rtx-cuda":
-        command.extend(["--stability-workload", workload])
     if profile_selector:
         command.extend(["--auto-uv-profile", str(profile_selector)])
     if str(stop_request_path).strip():
         command.extend(["--stability-stop-request-file", str(stop_request_path)])
     return privileged_command(command)
-
-
-def _stability_workload_value(
-    *,
-    q2rtx_enabled: bool = True,
-    cuda_enabled: bool = True,
-) -> str:
-    if q2rtx_enabled and cuda_enabled:
-        return "q2rtx-cuda"
-    if q2rtx_enabled:
-        return "q2rtx"
-    if cuda_enabled:
-        return "cuda"
-    raise ValueError("at least one stability workload must be enabled")
 
 
 def delete_profiles_command(profile_paths: list[str]) -> list[str]:

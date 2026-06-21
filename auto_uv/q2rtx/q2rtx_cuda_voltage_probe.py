@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Callable
 
-from afterburner.import_vf_curve import apply_plan
+from runtime_support.vf_curve_plan import apply_plan
 from stability.q2rtx import (
     Q2RTXStabilityConfig,
     Q2RTXStabilityResult,

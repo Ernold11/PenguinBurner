@@ -23,27 +23,23 @@ from ui.window import MainWindow
 # --- ui/main.py launch-option parsing (pure) ----------------------------------
 
 
-def test_parse_gui_launch_options_gpu_and_tail_bins() -> None:
+def test_parse_gui_launch_options_gpu_index() -> None:
     opts = parse_gui_launch_options(
-        ["pburn", "--new-ui", "--gpu-index", "2", "--auto-uv-tail-rise-bins", "4", "extra"]
+        ["pburn", "--new-ui", "--gpu-index", "2", "extra"]
     )
     assert opts.gpu_index == 2
-    assert opts.auto_uv_options["auto_uv_tail_rise_bins"] == 4
-    assert opts.auto_uv_options["auto_uv_tail_rise_bins_explicit"] is True
     assert "extra" in opts.qt_argv
 
 
 def test_parse_gui_launch_options_equals_forms() -> None:
-    opts = parse_gui_launch_options(["pburn", "--index=3", "--auto-uv-tail-rise-bins=6"])
+    opts = parse_gui_launch_options(["pburn", "--index=3"])
     assert opts.gpu_index == 3
-    assert opts.auto_uv_options["auto_uv_tail_rise_bins"] == 6
 
 
 def test_parse_gui_launch_options_empty_argv_defaults() -> None:
     opts = parse_gui_launch_options([])
     assert opts.qt_argv == ["penguin-burner-ui"]
     assert opts.gpu_index is None
-    assert opts.auto_uv_options is None
 
 
 def test_parse_gui_launch_options_rejects_bad_values() -> None:
@@ -51,8 +47,6 @@ def test_parse_gui_launch_options_rejects_bad_values() -> None:
         parse_gui_launch_options(["pburn", "--gpu-index", "x"])
     with pytest.raises(ValueError):
         parse_gui_launch_options(["pburn", "--gpu-index"])
-    with pytest.raises(ValueError):
-        parse_gui_launch_options(["pburn", "--auto-uv-tail-rise-bins=nope"])
 
 
 def test_parse_gui_args_returns_qt_argv() -> None:

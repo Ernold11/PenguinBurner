@@ -6,23 +6,20 @@ from pathlib import Path
 from typing import Callable
 import tempfile
 
-from afterburner.import_vf_curve import (
+from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
+from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
+from common.penguin_burner_errors import NvmlError
+from runtime_support.vf_curve_plan import (
     apply_plan,
     backup_current_offsets,
     restore_offsets,
 )
-from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
-from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
-from common.penguin_burner_errors import NvmlError
 from runtime_support.runtime_debug import log as runtime_log
 from runtime_gpu_control import FlattenedClockCeilingController
 from runtime_support.runtime_service import stop_existing_penguin_burner_runtime
 from runtime_stability_test import (
-    build_cuda_stability_config,
     build_stability_config,
-    run_stability_test,
     stability_workload_label,
-    stability_workload_selection,
     stability_workload_split_label,
 )
 from saved_uv_profiles import (
@@ -36,7 +33,6 @@ from stability.q2rtx import (
     attach_stdout_progress,
     build_long_stability_test_config,
     print_q2rtx_stability_result,
-    run_cuda_stability_test,
     run_q2rtx_stability_test,
 )
 
@@ -77,14 +73,14 @@ def run_profile_verification(
     *,
     gpu_index,
     config_path,
-    afterburner_runtime_options,
+    auto_uv_runtime_options,
     dependencies: ProfileVerificationDependencies | None = None,
 ):
+    _ = auto_uv_runtime_options
     deps = dependencies or ProfileVerificationDependencies()
     selector = str(args.auto_uv_profile or "").strip()
     if not selector:
-        run_stability_test(args, gpu_index=gpu_index, config_path=config_path)
-        return
+        raise NvmlError("profile verification requires --auto-uv-profile")
 
     deps.stop_existing_penguin_burner_runtime(log=deps.log)
     vf_curve_reader = deps.create_hidden_vf_curve_reader(gpu_index=gpu_index)
@@ -164,40 +160,22 @@ def run_profile_verification(
                 )
 
         duration_s = int(args.stability_seconds)
-        include_q2rtx, include_cuda = stability_workload_selection(args)
-        workload_label = stability_workload_label(
-            include_q2rtx=include_q2rtx,
-            include_cuda=include_cuda,
-        )
-        split_label = stability_workload_split_label(
-            duration_s,
-            include_q2rtx=include_q2rtx,
-            include_cuda=include_cuda,
-        )
+        workload_label = stability_workload_label()
+        split_label = stability_workload_split_label(duration_s)
         deps.log(f"Profile verification workload split: {split_label}.")
         deps.log(
             "Profile verification starting: "
             f"profile={label} duration={duration_s}s workload={workload_label}."
         )
-        stability_config = (
-            deps.build_stability_config(
-                args,
-                gpu_index=gpu_index,
-                config_path=config_path,
-                progress_context="Profile verification",
-            )
-            if include_q2rtx
-            else build_cuda_stability_config(
-                args,
-                gpu_index=gpu_index,
-                config_path=config_path,
-            )
+        stability_config = deps.build_stability_config(
+            args,
+            gpu_index=gpu_index,
+            config_path=config_path,
+            progress_context="Profile verification",
         )
         stability_config = deps.build_long_stability_test_config(
             stability_config,
             total_duration_s=duration_s,
-            include_q2rtx=include_q2rtx,
-            include_cuda=include_cuda,
         )
         if flatten_target is not None:
             stability_config.abort_callback = profile_verification_voltage_abort_callback(
@@ -212,11 +190,7 @@ def run_profile_verification(
             )
         deps.attach_stdout_progress(stability_config)
         try:
-            result = (
-                deps.run_q2rtx_stability_test(stability_config)
-                if include_q2rtx
-                else run_cuda_stability_test(stability_config)
-            )
+            result = deps.run_q2rtx_stability_test(stability_config)
         except StabilityTestError as exc:
             raise NvmlError(f"stability test configuration error: {exc}") from exc
         deps.print_q2rtx_stability_result(result)
@@ -259,8 +233,6 @@ def run_profile_verification(
                     base_plan=base_plan,
                     gpu_policy_controller=gpu_policy_controller,
                     duration_s=profile_verification_baseline_duration_s(duration_s),
-                    include_q2rtx=include_q2rtx,
-                    include_cuda=include_cuda,
                     dependencies=deps,
                 )
         verified_path = mark_auto_uv_profile_verified(
@@ -377,8 +349,6 @@ def run_profile_verification_baseline_probe(
     base_plan: list[dict],
     gpu_policy_controller,
     duration_s: int,
-    include_q2rtx: bool,
-    include_cuda: bool,
     dependencies: ProfileVerificationDependencies | None = None,
 ) -> dict | None:
     deps = dependencies or ProfileVerificationDependencies()
@@ -386,7 +356,7 @@ def run_profile_verification_baseline_probe(
         deps.log(
             "Profile verification baseline probe starting: "
             f"duration={int(duration_s)}s "
-            f"{stability_workload_split_label(duration_s, include_q2rtx=include_q2rtx, include_cuda=include_cuda)}."
+            f"{stability_workload_split_label(duration_s)}."
         )
         baseline_reader = deps.create_hidden_vf_curve_reader(gpu_index=gpu_index)
         if baseline_reader is None:
@@ -405,26 +375,16 @@ def run_profile_verification_baseline_probe(
                 gpu_policy_controller.apply_clock_offsets(mem_clk_vf_offset_mhz=0)
             except Exception as exc:
                 deps.log(f"Warning: failed to reset memory offset for baseline probe: {exc}")
-        stability_config = (
-            deps.build_stability_config(
-                args,
-                gpu_index=gpu_index,
-                config_path=config_path,
-                duration_override=int(duration_s),
-                progress_context="Profile baseline",
-            )
-            if include_q2rtx
-            else build_cuda_stability_config(
-                args,
-                gpu_index=gpu_index,
-                config_path=config_path,
-            )
+        stability_config = deps.build_stability_config(
+            args,
+            gpu_index=gpu_index,
+            config_path=config_path,
+            duration_override=int(duration_s),
+            progress_context="Profile baseline",
         )
         stability_config = deps.build_long_stability_test_config(
             stability_config,
             total_duration_s=int(duration_s),
-            include_q2rtx=include_q2rtx,
-            include_cuda=include_cuda,
         )
         stop_request_path = stability_stop_request_path(args)
         if stop_request_path is not None:
@@ -433,11 +393,7 @@ def run_profile_verification_baseline_probe(
                 previous_callback=stability_config.abort_callback,
             )
         deps.attach_stdout_progress(stability_config)
-        result = (
-            deps.run_q2rtx_stability_test(stability_config)
-            if include_q2rtx
-            else run_cuda_stability_test(stability_config)
-        )
+        result = deps.run_q2rtx_stability_test(stability_config)
         deps.print_q2rtx_stability_result(result)
         if not result.success:
             deps.log(

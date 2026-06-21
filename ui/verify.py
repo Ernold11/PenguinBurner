@@ -33,11 +33,5 @@ def progress_percent(elapsed_s, target_s) -> int:
     return max(0, min(100, int(round((elapsed / target) * 100.0))))
 
 
-def workload_label(*, q2rtx_enabled: bool = True, cuda_enabled: bool = True) -> str:
-    if q2rtx_enabled and cuda_enabled:
-        return "Q2RTX benchmark and CUDA compute test"
-    if q2rtx_enabled:
-        return "Q2RTX benchmark"
-    if cuda_enabled:
-        return "CUDA compute test"
-    return "No workload"
+def workload_label() -> str:
+    return "Q2RTX benchmark and CUDA compute test"

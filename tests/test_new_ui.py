@@ -9,7 +9,6 @@ import ui.fan_profiles as fan_profiles
 import ui.profiles as profiles_module
 from ui.main import parse_gui_args
 from ui.main import parse_gui_launch_options
-from ui.constants import AFTERBURNER_PROFILE_ID
 from ui.fan_profiles import fan_payload_has_silent_runtime_fields
 from ui.gpu_selection import GpuChoice
 from ui.gpu_selection import gpu_choices_from_nvml_identities
@@ -63,16 +62,17 @@ def test_ui_launcher_accepts_index_alias() -> None:
     assert options.gpu_index == 1
 
 
-def test_ui_launcher_accepts_auto_uv_tail_rise_bins() -> None:
+def test_ui_launcher_passes_through_non_gui_options() -> None:
     options = parse_gui_launch_options(
         ["pburn-ui", "--auto-uv-tail-rise-bins=5", "--style", "Fusion"]
     )
 
-    assert options.qt_argv == ["pburn-ui", "--style", "Fusion"]
-    assert options.auto_uv_options == {
-        "auto_uv_tail_rise_bins": 5,
-        "auto_uv_tail_rise_bins_explicit": True,
-    }
+    assert options.qt_argv == [
+        "pburn-ui",
+        "--auto-uv-tail-rise-bins=5",
+        "--style",
+        "Fusion",
+    ]
 
 
 def test_new_ui_package_is_installed() -> None:
@@ -188,33 +188,26 @@ def test_new_ui_profile_and_tuning_helpers_cover_moved_workflows() -> None:
     assert auto_uv_preset("performance").tail_rise_bins == 6
     assert auto_uv_performance_preset_label() == "Performance"
     assert profile_verify_selector({"path": "/tmp/profile.json"}) == "/tmp/profile.json"
-    assert workload_label(q2rtx_enabled=True, cuda_enabled=False) == "Q2RTX benchmark"
+    assert workload_label() == "Q2RTX benchmark and CUDA compute test"
     assert elapsed_from_line("Stability progress elapsed=150.0s") == 150.0
     assert progress_percent(150, 600) == 25
 
 
-def test_new_ui_afterburner_profile_helpers_cover_moved_workflow(monkeypatch) -> None:
+def test_new_ui_afterburner_import_points_helper_covers_moved_workflow() -> None:
     profile = {
-        "profile_id": AFTERBURNER_PROFILE_ID,
-        "candidate_id": AFTERBURNER_PROFILE_ID,
-        "runtime_source": "afterburner",
+        "profile_id": "afterburner-imported",
+        "candidate_id": "afterburner-imported",
         "profile_source": "MSI Afterburner",
+        "final_verified": True,
+        "path": "/tmp/afterburner-imported.json",
         "curve_points": [(1200.0, 3300.0)],
     }
-    monkeypatch.setattr(profiles_module, "read_auto_uv_profile_summaries", lambda: [])
-    monkeypatch.setattr(
-        profiles_module,
-        "afterburner_import_profile_summary",
-        lambda: profile,
-    )
+    profiles = [profile]
 
-    profiles = load_profile_summaries()
-
-    assert profiles == [profile]
-    assert profile_for_selector(profiles, AFTERBURNER_PROFILE_ID) == profile
+    assert profile_for_selector(profiles, "afterburner-imported") == profile
     assert profile_can_apply(profile)
     assert profile_can_verify(profile)
-    assert profile_verify_selector(profile) == ""
+    assert profile_verify_selector(profile) == "/tmp/afterburner-imported.json"
     assert afterburner_import.entry_curve_points(profile) == [(1200.0, 3300.0)]
 
 

@@ -15,7 +15,6 @@ from stability.q2rtx import (
     install_latest_q2rtx,
     long_stability_workload_durations,
     print_q2rtx_stability_result,
-    run_cuda_stability_test,
     run_q2rtx_stability_test,
 )
 from stability.q2rtx.resolution import (
@@ -98,8 +97,8 @@ def build_stability_config(
         )
     resolution = resolve_q2rtx_render_resolution(
         gpu_index=int(gpu_index),
-        requested_width=getattr(args, "stability_width", None),
-        requested_height=getattr(args, "stability_height", None),
+        requested_width=None,
+        requested_height=None,
     )
     print(
         f"{progress_context}: Q2RTX render resolution "
@@ -116,9 +115,7 @@ def build_stability_config(
         height=int(resolution.height),
         demo_name=str(DEFAULT_DEMO_NAME).strip(),
         gpu_index=int(gpu_index),
-        log_dir=Path(args.stability_log_dir).expanduser()
-        if str(args.stability_log_dir).strip()
-        else default_log_dir,
+        log_dir=default_log_dir,
     )
 
 
@@ -232,104 +229,33 @@ def _refresh_stale_managed_q2rtx_source(
     return str(install_result.install_dir)
 
 
-def build_cuda_stability_config(
-    args,
-    *,
-    gpu_index,
-    config_path,
-):
-    config_dir = Path(config_path).expanduser().parent
-    default_log_dir = config_dir / "stability-logs"
-    resolution = resolve_q2rtx_render_resolution(
-        gpu_index=int(gpu_index),
-        requested_width=getattr(args, "stability_width", None),
-        requested_height=getattr(args, "stability_height", None),
-    )
-    return Q2RTXStabilityConfig(
-        duration_s=int(args.stability_seconds),
-        width=int(resolution.width),
-        height=int(resolution.height),
-        demo_name=str(DEFAULT_DEMO_NAME).strip(),
-        gpu_index=int(gpu_index),
-        log_dir=Path(args.stability_log_dir).expanduser()
-        if str(args.stability_log_dir).strip()
-        else default_log_dir,
-    )
+def stability_workload_label() -> str:
+    return "Q2RTX benchmark + CUDA compute"
 
 
-def stability_workload_selection(args) -> tuple[bool, bool]:
-    workload = str(getattr(args, "stability_workload", "q2rtx-cuda") or "").strip()
-    if workload == "q2rtx":
-        return True, False
-    if workload == "cuda":
-        return False, True
-    return True, True
-
-
-def stability_workload_label(*, include_q2rtx: bool, include_cuda: bool) -> str:
-    if include_q2rtx and include_cuda:
-        return "Q2RTX benchmark + CUDA compute"
-    if include_q2rtx:
-        return "Q2RTX benchmark"
-    if include_cuda:
-        return "CUDA compute"
-    return "none"
-
-
-def stability_workload_split_label(
-    total_duration_s: int,
-    *,
-    include_q2rtx: bool,
-    include_cuda: bool,
-) -> str:
+def stability_workload_split_label(total_duration_s: int) -> str:
     q2rtx_duration_s, cuda_duration_s = long_stability_workload_durations(
         int(total_duration_s),
-        include_q2rtx=bool(include_q2rtx),
-        include_cuda=bool(include_cuda),
     )
-    parts = []
-    if include_q2rtx:
-        parts.append(f"q2rtx={int(q2rtx_duration_s)}s")
-    if include_cuda:
-        parts.append(f"cuda={int(cuda_duration_s)}s")
-    return " ".join(parts)
+    return f"q2rtx={int(q2rtx_duration_s)}s cuda={int(cuda_duration_s)}s"
 
 
 def run_stability_test(args, *, gpu_index, config_path):
-    include_q2rtx, include_cuda = stability_workload_selection(args)
     total_duration_s = int(args.stability_seconds)
-    split_label = stability_workload_split_label(
-        total_duration_s,
-        include_q2rtx=include_q2rtx,
-        include_cuda=include_cuda,
-    )
+    split_label = stability_workload_split_label(total_duration_s)
     log(f"Stability workload split: {split_label}.")
-    stability_config = (
-        build_stability_config(
-            args,
-            gpu_index=gpu_index,
-            config_path=config_path,
-        )
-        if include_q2rtx
-        else build_cuda_stability_config(
-            args,
-            gpu_index=gpu_index,
-            config_path=config_path,
-        )
+    stability_config = build_stability_config(
+        args,
+        gpu_index=gpu_index,
+        config_path=config_path,
     )
     stability_config = build_long_stability_test_config(
         stability_config,
         total_duration_s=total_duration_s,
-        include_q2rtx=include_q2rtx,
-        include_cuda=include_cuda,
     )
     attach_stdout_progress(stability_config)
     try:
-        result = (
-            run_q2rtx_stability_test(stability_config)
-            if include_q2rtx
-            else run_cuda_stability_test(stability_config)
-        )
+        result = run_q2rtx_stability_test(stability_config)
     except StabilityTestError as exc:
         raise NvmlError(f"stability test configuration error: {exc}") from exc
 

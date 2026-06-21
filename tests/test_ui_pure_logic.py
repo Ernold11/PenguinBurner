@@ -36,13 +36,8 @@ def test_progress_percent_returns_zero_on_bad_input() -> None:
     assert progress_percent("x", "y") == 0
 
 
-def test_workload_label_covers_every_combination() -> None:
-    assert workload_label(q2rtx_enabled=True, cuda_enabled=True) == (
-        "Q2RTX benchmark and CUDA compute test"
-    )
-    assert workload_label(q2rtx_enabled=True, cuda_enabled=False) == "Q2RTX benchmark"
-    assert workload_label(q2rtx_enabled=False, cuda_enabled=True) == "CUDA compute test"
-    assert workload_label(q2rtx_enabled=False, cuda_enabled=False) == "No workload"
+def test_workload_label_is_fixed_combined_workload() -> None:
+    assert workload_label() == "Q2RTX benchmark and CUDA compute test"
 
 
 # --- ui/lact_export.py parsers ------------------------------------------------
@@ -98,12 +93,6 @@ def test_detect_lact_gpu_id_empty_when_nothing_found(tmp_path, monkeypatch) -> N
 
 def test_lact_export_output_path_appends_filename(tmp_path) -> None:
     assert lact_export.lact_export_output_path(tmp_path) == tmp_path / "config.yaml"
-
-
-def test_profile_is_afterburner_flag() -> None:
-    assert lact_export._profile_is_afterburner({"runtime_source": "afterburner"}) is True
-    assert lact_export._profile_is_afterburner({"runtime_source": "auto-uv"}) is False
-    assert lact_export._profile_is_afterburner({}) is False
 
 
 def test_current_fan_config_returns_empty_on_load_error(monkeypatch) -> None:

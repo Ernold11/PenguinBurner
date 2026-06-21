@@ -137,7 +137,6 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
         {
             "auto_uv_mode": "performance",
             "auto_uv_min_voltage_mv": 850,
-            "auto_uv_max_drop_pct": 16.0,
             "auto_uv_max_clock_drop_pct": 10.0,
             "auto_uv_memory_offset_mhz": 500,
             "auto_uv_power_limit_w": 390,
@@ -153,8 +152,6 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert command[command.index("--auto-uv-mode") + 1] == "performance"
     assert "--auto-uv-min-voltage-mv" in command
     assert command[command.index("--auto-uv-min-voltage-mv") + 1] == "850"
-    assert "--auto-uv-max-drop-pct" in command
-    assert command[command.index("--auto-uv-max-drop-pct") + 1] == "16"
     assert "--auto-uv-max-clock-drop-pct" in command
     assert command[command.index("--auto-uv-max-clock-drop-pct") + 1] == "10"
     assert "--auto-oc-target-voltage-mv" in command
@@ -173,23 +170,6 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert command[command.index("--auto-uv-tail-rise-bins") + 1] == "2"
 
 
-def test_ui_scan_command_includes_auto_filled_auto_uv_max_drop(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
-
-    command = commands.scan_command(
-        {
-            "auto_uv_mode": "efficiency",
-            "auto_uv_max_drop_pct": 15.0,
-            "auto_uv_max_clock_drop_pct": 10.0,
-        }
-    )
-
-    assert "--auto-uv-max-drop-pct" in command
-    assert command[command.index("--auto-uv-max-drop-pct") + 1] == "15"
-
-
 def test_ui_scan_command_can_override_runtime_gpu_index(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
     monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 2)
@@ -202,7 +182,7 @@ def test_ui_scan_command_can_override_runtime_gpu_index(monkeypatch) -> None:
 def test_auto_uv_short_verification_defaults_to_10_seconds() -> None:
     assert AUTO_UV_DEFAULTS.probe_duration_s == 10
     assert DEFAULT_SHORT_VERIFICATION_BASE_S == 10
-    assert _short_probe_base_duration_s({}) == 10
+    assert _short_probe_base_duration_s() == 10
 
 
 def test_gui_new_ui_argument_is_hidden_from_qt_args() -> None:
@@ -857,16 +837,12 @@ def test_ui_profile_verify_command_uses_selected_auto_uv_profile(monkeypatch) ->
     assert "--prefer-afterburner-curve" not in command
 
 
-def test_ui_profile_verify_command_keeps_q2rtx_cuda_default_when_both_checked(
-    monkeypatch,
-) -> None:
+def test_ui_profile_verify_command_uses_fixed_q2rtx_cuda_workload(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
 
     command = commands.profile_verify_command(
         profile_selector="profile-a",
         duration_s=600,
-        q2rtx_enabled=True,
-        cuda_enabled=True,
     )
 
     assert "--stability-workload" not in command
@@ -883,44 +859,6 @@ def test_ui_profile_verify_command_can_override_runtime_gpu_index(monkeypatch) -
     )
 
     assert command[command.index("--gpu-index") + 1] == "1"
-
-
-def test_ui_profile_verify_command_can_run_q2rtx_only(monkeypatch) -> None:
-    monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
-
-    command = commands.profile_verify_command(
-        profile_selector="profile-a",
-        duration_s=600,
-        q2rtx_enabled=True,
-        cuda_enabled=False,
-    )
-
-    assert command[command.index("--stability-workload") + 1] == "q2rtx"
-
-
-def test_ui_profile_verify_command_can_run_cuda_only(monkeypatch) -> None:
-    monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
-
-    command = commands.profile_verify_command(
-        profile_selector="profile-a",
-        duration_s=600,
-        q2rtx_enabled=False,
-        cuda_enabled=True,
-    )
-
-    assert command[command.index("--stability-workload") + 1] == "cuda"
-
-
-def test_ui_profile_verify_command_rejects_empty_workload(monkeypatch) -> None:
-    monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
-
-    with pytest.raises(ValueError):
-        commands.profile_verify_command(
-            profile_selector="profile-a",
-            duration_s=600,
-            q2rtx_enabled=False,
-            cuda_enabled=False,
-        )
 
 
 def test_auto_uv_preset_defaults_and_gpu_table_default() -> None:
@@ -1698,7 +1636,6 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
     assert '"auto_uv_power_limit_w"' in source
     assert "powerLimitSlider" in source
     assert '"auto_uv_min_voltage_mv"' in source
-    assert '"auto_uv_max_drop_pct"' not in source
     assert 'options["auto_uv_tail_rise_bins"] = int(preset.tail_rise_bins)' in source
     assert "Core ceiling MHz" not in source
     assert "Voltage ceiling mV" not in source

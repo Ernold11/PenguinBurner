@@ -17,18 +17,9 @@ LONG_STABILITY_CUDA_RATIO_REFERENCE_S = 30
 
 def long_stability_workload_durations(
     total_duration_s: int,
-    *,
-    include_q2rtx: bool = True,
-    include_cuda: bool = True,
 ) -> tuple[int, int]:
-    if not include_q2rtx and not include_cuda:
-        raise ValueError("at least one stability workload must be enabled")
     total_s = max(1, int(total_duration_s))
-    if include_q2rtx and include_cuda:
-        return _q2rtx_cuda_duration_s(int(total_s))
-    if include_q2rtx:
-        return int(total_s), 0
-    return 0, int(total_s)
+    return _q2rtx_cuda_duration_s(int(total_s))
 
 
 def _q2rtx_cuda_duration_s(total_duration_s: int) -> tuple[int, int]:
@@ -44,27 +35,15 @@ def build_long_stability_test_config(
     config: Q2RTXStabilityConfig,
     *,
     total_duration_s: int,
-    include_q2rtx: bool = True,
-    include_cuda: bool = True,
 ) -> Q2RTXStabilityConfig:
-    if not include_q2rtx and not include_cuda:
-        raise ValueError("at least one stability workload must be enabled")
-    q2rtx_s, cuda_s = long_stability_workload_durations(
-        int(total_duration_s),
-        include_q2rtx=bool(include_q2rtx),
-        include_cuda=bool(include_cuda),
-    )
-    companion = (
-        cuda_bruteforce_companion_command(
-            gpu_index=int(config.gpu_index),
-            duration_s=int(cuda_s),
-        )
-        if include_cuda
-        else None
+    q2rtx_s, cuda_s = long_stability_workload_durations(int(total_duration_s))
+    companion = cuda_bruteforce_companion_command(
+        gpu_index=int(config.gpu_index),
+        duration_s=int(cuda_s),
     )
     configured = replace(
         config,
-        duration_s=int(q2rtx_s if include_q2rtx else cuda_s),
+        duration_s=int(q2rtx_s),
         companion_command=companion,
         single_pass_timeout_s=max(
             float(DEFAULT_SINGLE_PASS_TIMEOUT_S),
