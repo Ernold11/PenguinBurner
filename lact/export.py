@@ -12,7 +12,7 @@ from afterburner.import_fan_curve import build_imported_fan_section
 from afterburner.import_vf_curve import build_plan
 from afterburner.vfcurve import resolve_afterburner_vf_source
 from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
-from saved_uv_profiles import resolve_auto_uv_profile
+from profiles.uv import resolve_auto_uv_profile
 from common.penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
 
 

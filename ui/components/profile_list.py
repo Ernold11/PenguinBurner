@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from saved_uv_profiles import (
+from profiles.uv import (
     normalize_profile_tier,
     profile_display_name,
     resolve_profile_tier_profiles,

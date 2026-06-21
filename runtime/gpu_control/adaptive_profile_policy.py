@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 import os
 
 from runtime.support.adaptive_target_fps import adaptive_target_ms_from_fps
-from saved_uv_profiles.profile_tiers import (
+from profiles.uv.profile_tiers import (
     PROFILE_TIER_BALANCED,
     PROFILE_TIER_PERFORMANCE,
     PROFILE_TIERS,

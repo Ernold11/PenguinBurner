@@ -9,16 +9,15 @@
 [run]
 source =
     auto_uv
-    saved_uv_profiles
     cli
     common
     ui
     afterburner
     lact
+    profiles
     overlay
     runtime
     stability
-    saved_profile_verification
     manual_fan_curve_editor
     manual_uv_curve_editor
     auto_oc
@@ -51,7 +50,7 @@ omit =
     auto_uv/q2rtx/q2rtx_cuda_voltage_probe.py
     auto_uv/q2rtx/q2rtx_cuda_probe_runner.py
     auto_uv/final_verification/main_loop.py
-    saved_profile_verification/runner.py
+    profiles/verification/runner.py
     # --- Overlay native/display integration ---
     overlay/display.py
     # Afterburner dry-run preview: large presentation module, exercised via the

@@ -1,4 +1,4 @@
-"""Coverage-focused tests for saved_uv_profiles.runtime_auto_uv_profile.
+"""Coverage-focused tests for profiles.uv.runtime_auto_uv_profile.
 
 These exercise the error paths, fallbacks, and edge inputs of the runtime
 Auto-UV profile loader and memory-offset applier. The loader is driven by
@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import saved_uv_profiles.runtime_auto_uv_profile as runtime
+import profiles.uv.runtime_auto_uv_profile as runtime
 from common.penguin_burner_errors import NvmlError
 
 

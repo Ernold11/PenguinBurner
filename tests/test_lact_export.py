@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-import saved_uv_profiles.profile_store as profile_store
+import profiles.uv.profile_store as profile_store
 import lact.export as lact_export
-from saved_uv_profiles import archive_auto_uv_profile
+from profiles.uv import archive_auto_uv_profile
 from lact import (
     build_lact_nvidia_config,
     build_lact_nvidia_config_from_plan,

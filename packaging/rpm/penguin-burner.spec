@@ -62,9 +62,8 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
     manual_fan_curve_editor \
     manual_uv_curve_editor \
     overlay \
+    profiles \
     runtime \
-    saved_profile_verification \
-    saved_uv_profiles \
     stability \
     ui \
     nvidia_driver \

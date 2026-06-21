@@ -22,7 +22,7 @@ from runtime.stability_test import (
     stability_workload_label,
     stability_workload_split_label,
 )
-from saved_uv_profiles import (
+from profiles.uv import (
     apply_auto_uv_profile_memory_offset,
     load_auto_uv_final_curve,
     mark_auto_uv_profile_verification_failed,

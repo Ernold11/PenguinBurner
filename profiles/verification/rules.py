@@ -8,7 +8,7 @@ from runtime.gpu_control import (
     format_vf_curve_mismatch_preview,
     select_expected_vf_samples,
 )
-from saved_uv_profiles import resolve_auto_uv_profile
+from profiles.uv import resolve_auto_uv_profile
 
 
 PROFILE_VERIFY_VOLTAGE_TOLERANCE_MV = 50

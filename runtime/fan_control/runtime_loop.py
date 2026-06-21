@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from nvidia_driver.nvml_gpu_policy import describe_translated_gpu_policy
-from saved_uv_profiles.profile_tiers import profile_tier_label
+from profiles.uv.profile_tiers import profile_tier_label
 from common.penguin_burner_errors import NvmlError
 from runtime.support.vf_curve_plan import apply_plan
 from runtime.support.runtime_debug import debug_log as runtime_debug_log

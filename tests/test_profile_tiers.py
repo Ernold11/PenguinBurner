@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from saved_uv_profiles.profile_tiers import (
+from profiles.uv.profile_tiers import (
     PROFILE_TIER_BALANCED,
     PROFILE_TIER_EFFICIENCY,
     PROFILE_TIER_PERFORMANCE,

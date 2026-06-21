@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from saved_uv_profiles.profile_tiers import generated_profile_tier, normalize_profile_tier
+from profiles.uv.profile_tiers import generated_profile_tier, normalize_profile_tier
 
 from .auto_uv_types import AutoUvProbeSummary
 from .auto_uv_console_log import log_phase

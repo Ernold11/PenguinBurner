@@ -7,7 +7,7 @@ from runtime.gpu_control.adaptive_profile_runtime import (
     AdaptiveAutoUvRuntimeController,
     AdaptiveAutoUvRuntimeDependencies,
 )
-from saved_uv_profiles.profile_tiers import (
+from profiles.uv.profile_tiers import (
     PROFILE_TIER_EFFICIENCY,
     PROFILE_TIER_PERFORMANCE,
 )

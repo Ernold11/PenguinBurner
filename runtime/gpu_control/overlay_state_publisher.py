@@ -10,7 +10,7 @@ from overlay.config import MAX_OVERLAY_UPDATE_INTERVAL_S
 from overlay.config import MIN_OVERLAY_UPDATE_INTERVAL_S
 from overlay.config import load_overlay_config
 from overlay.state import OverlayState, write_overlay_state
-from saved_uv_profiles.profile_tiers import profile_tier_label
+from profiles.uv.profile_tiers import profile_tier_label
 
 from .live_gpu_telemetry_text import get_core_clock_mhz
 from .live_gpu_telemetry_text import get_gpu_utilization_pct

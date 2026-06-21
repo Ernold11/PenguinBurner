@@ -9,7 +9,7 @@ Generated from the local test suite (1209 passing). Measured with:
 |-------|----------|
 | **Project-wide (all first-party source)** | **74%** (20058 stmts, 5179 missed) |
 | UI package (`ui/`) | 86% |
-| Core Auto-UV / profile logic (`auto_uv`, `saved_uv_profiles`) | ~100% |
+| Core Auto-UV / profile logic (`auto_uv`, `profiles.uv`) | ~100% |
 
 ## Ready-to-paste badge (shields static)
 

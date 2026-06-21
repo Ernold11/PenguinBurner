@@ -247,8 +247,9 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     assert "runtime.fan_control" in packages
     assert "runtime.gpu_control" in packages
     assert "runtime.stability_test" in packages
-    assert "saved_profile_verification" in packages
-    assert "saved_uv_profiles" in packages
+    assert "profiles" in packages
+    assert "profiles.verification" in packages
+    assert "profiles.uv" in packages
     assert "overlay" in packages
 
 

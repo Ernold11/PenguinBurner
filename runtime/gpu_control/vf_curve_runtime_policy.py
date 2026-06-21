@@ -5,7 +5,7 @@ from typing import Callable
 
 from runtime.support.runtime_debug import log as runtime_log
 from runtime.support.vf_curve_plan import apply_plan
-from saved_uv_profiles import (
+from profiles.uv import (
     apply_auto_uv_profile_memory_offset,
     apply_auto_uv_profile_power_limit,
     load_auto_uv_final_curve,

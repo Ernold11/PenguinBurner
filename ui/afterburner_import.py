@@ -22,7 +22,7 @@ from common.penguin_burner_paths import (
     sync_afterburner_export_tree,
 )
 from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
-from saved_uv_profiles import archive_auto_uv_profile
+from profiles.uv import archive_auto_uv_profile
 
 from .gpu_selection import runtime_gpu_index
 
