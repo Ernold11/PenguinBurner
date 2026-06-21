@@ -95,14 +95,6 @@ def test_curve_plan_from_payload_and_base_points_payload() -> None:
 # --- profile-level helpers (with payload fallback) ----------------------------
 
 
-def test_profile_curve_points_uses_path_fallback(monkeypatch) -> None:
-    monkeypatch.setattr(
-        cp, "profile_payload_from_path", lambda profile: {"points": [[900, 2500]]}
-    )
-    # Empty inline profile -> falls back to the path payload.
-    assert cp.profile_curve_points({}) == [(900.0, 2500.0)]
-
-
 def test_profile_curve_plan_and_base_points_fallback(monkeypatch) -> None:
     payload = {"plan": [{"index": 0, "voltage_mv": 900, "base_mhz": 2400, "target_mhz": 2500}],
                "points": [{"voltage_mv": 900, "base_mhz": 2400}]}
@@ -111,37 +103,9 @@ def test_profile_curve_plan_and_base_points_fallback(monkeypatch) -> None:
     assert cp.profile_base_curve_points({}) == [(900.0, 2400.0)]
 
 
-def test_profile_curve_points_empty_when_no_payload(monkeypatch) -> None:
-    monkeypatch.setattr(cp, "profile_payload_from_path", lambda profile: None)
-    assert cp.profile_curve_points({}) == []
-
-
-def test_profile_curve_target_point() -> None:
-    assert cp.profile_curve_target_point(
-        {"candidate_voltage_mv": 900, "lock_clock_mhz": 2500}
-    ) == (900.0, 2500.0)
-    assert cp.profile_curve_target_point({"voltage_mv": "x", "clock_mhz": 1}) is None
-    assert cp.profile_curve_target_point(
-        {"voltage_mv": float("nan"), "clock_mhz": 1}
-    ) is None
-
-
 def test_profile_curve_tab_key_variants() -> None:
     assert cp.profile_curve_tab_key({"profile_id": "p1"}) == "p1"
     assert cp.profile_curve_tab_key({}) == "profile-curve"
-
-
-def test_profile_curve_tab_label(monkeypatch) -> None:
-    assert cp.profile_curve_tab_label({"display_name": "My Profile"}) == "My Profile"
-    monkeypatch.setattr(cp, "profile_display_name", lambda profile: "")
-    assert cp.profile_curve_tab_label({"profile_id": "p1"}) == "p1"
-
-
-def test_profile_curve_legend_label() -> None:
-    assert cp.profile_curve_legend_label({"profile_source": "MSI Afterburner"}) == "MSI Afterburner"
-    assert cp.profile_curve_legend_label({"profile_source": "auto-uv-final"}) == "Auto-UV"
-    assert cp.profile_curve_legend_label({"profile_source": "manual"}) == "manual"
-    assert cp.profile_curve_legend_label({}) == "Curve"
 
 
 # --- cache + save -------------------------------------------------------------

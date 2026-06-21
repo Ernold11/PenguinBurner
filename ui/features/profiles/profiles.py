@@ -64,19 +64,6 @@ def selected_profile_ids_include_selector(
     return bool(profile and str(profile.get("profile_id", "")) in selected)
 
 
-def profile_delete_removes_systemd(
-    profiles: list[dict],
-    selected_ids: list[str],
-    autostart_info: dict[str, object],
-) -> bool:
-    return (
-        profile_delete_autostart_action(profiles, selected_ids, autostart_info).get(
-            "action"
-        )
-        == "remove-systemd"
-    )
-
-
 def profile_delete_autostart_action(
     profiles: list[dict],
     selected_ids: list[str],
@@ -179,27 +166,6 @@ def profile_frequency_voltage(profile: dict) -> str:
     if clock and voltage:
         return f"{clock} MHz {voltage} mV"
     return f"{clock} MHz" if clock else (f"{voltage} mV" if voltage else "")
-
-
-def final_profile_notice_text(
-    profiles: list[dict],
-    *,
-    profile_id: str = "",
-    candidate_id: str = "",
-    result_payload: dict | None = None,
-) -> str:
-    profile = profile_for_selector(profiles, profile_id) or profile_for_selector(
-        profiles,
-        candidate_id,
-    )
-    label = profile_frequency_voltage(profile) if profile is not None else ""
-    label = label or final_result_frequency_voltage(result_payload or {})
-    if label:
-        return (
-            f"Final verification complete. Profile {label} is saved and "
-            "highlighted in Profiles."
-        )
-    return "Final verification complete. The saved profile is highlighted in Profiles."
 
 
 def final_result_frequency_voltage(payload: dict) -> str:

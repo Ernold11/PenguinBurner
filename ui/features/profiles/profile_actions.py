@@ -35,7 +35,6 @@ from ui.features.profiles.profiles import profile_for_selector
 from ui.features.profiles.profiles import profile_is_deletable
 from ui.features.profiles.profiles import profile_status_label
 from ui.features.profiles.profiles import profile_verify_selector
-from ui.features.profiles.profiles import profiles_for_selectors
 from ui.features.profiles.profiles import systemd_autostart_profile_info
 from ui.features.tuning.verify import stop_request_path as verify_stop_request_path
 from ui.features.tuning.verify import workload_label
@@ -313,10 +312,6 @@ class ProfileActionsMixin:
         if self._workflow_running():
             return
         selected_ids = set(self.profile_list.selected_profile_ids())
-        selected_profiles = profiles_for_selectors(
-            self.profile_summaries,
-            list(selected_ids),
-        )
         selected_paths = self.profile_list.selected_profile_paths()
         if not selected_paths:
             return
@@ -368,7 +363,6 @@ class ProfileActionsMixin:
         remove_systemd: bool,
         switch_systemd_profile_id: str = "",
     ) -> None:
-        self._delete_selected_ids = set(selected_ids)
         self._delete_remove_systemd = bool(remove_systemd)
         self._delete_switch_systemd_profile_id = str(switch_systemd_profile_id)
         self._set_profile_actions_enabled(False)
@@ -403,7 +397,6 @@ class ProfileActionsMixin:
                     exit_code=exit_code,
                     exit_status=exit_status,
                 )
-            self._delete_selected_ids = set()
             self._delete_remove_systemd = False
             self._delete_switch_systemd_profile_id = ""
             self._load_profiles()

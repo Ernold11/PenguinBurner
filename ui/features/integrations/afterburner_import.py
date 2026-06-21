@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
 from integrations.afterburner.fan_curve import load_afterburner_fan_settings
@@ -290,10 +289,3 @@ def relative_profile_path(root: str | Path, profile_path: str | Path) -> str:
         return str(path.relative_to(root_path))
     except ValueError:
         return path.name
-
-
-def path_mtime_iso(path: str | Path) -> str:
-    try:
-        return datetime.fromtimestamp(Path(path).stat().st_mtime).astimezone().isoformat()
-    except OSError:
-        return ""

@@ -19,12 +19,10 @@ from ui.features.tuning.gpu_selection import (
 )
 from ui.features.tuning.tuning import (
     AutoUvNvmlInfo,
-    AutoUvPerformanceTargetDefault,
     auto_uv_nvml_info_text,
     auto_uv_performance_preset_label,
     auto_uv_performance_preset_tooltip,
     auto_uv_performance_target_default,
-    auto_uv_performance_target_text,
     memory_offset_mhz_range,
 )
 
@@ -138,28 +136,6 @@ def test_persist_runtime_gpu_index_handles_load_failure(tmp_path, monkeypatch) -
 def test_performance_preset_label_and_tooltip() -> None:
     assert auto_uv_performance_preset_label() == "Performance"
     assert "6 V/F bins" in auto_uv_performance_preset_tooltip()
-
-
-def test_performance_target_text_both_branches() -> None:
-    matched = AutoUvPerformanceTargetDefault(
-        gpu_name="RTX 4090",
-        gpu_family="Ada",
-        voltage_mv=950,
-        clock_mhz=2700,
-        profile_id="perf-oc",
-        preset_matched=True,
-    )
-    assert auto_uv_performance_target_text(matched) == "950 mV / 2700 MHz (Ada perf-oc)"
-
-    unmatched = AutoUvPerformanceTargetDefault(
-        gpu_name=None,
-        gpu_family=None,
-        voltage_mv=None,
-        clock_mhz=None,
-        profile_id="perf-oc",
-        preset_matched=False,
-    )
-    assert auto_uv_performance_target_text(unmatched) == "No GPU table target detected"
 
 
 def test_performance_target_default_for_unknown_gpu() -> None:

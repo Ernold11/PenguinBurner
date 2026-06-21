@@ -62,8 +62,6 @@ def test_sort_and_best_candidate() -> None:
 
 
 def test_duration_helpers_and_fps() -> None:
-    assert fc.duration_minutes_for_control(120) == 2
-    assert fc.duration_minutes_for_control("bad") >= 1
     assert fc.candidate_short_duration_s({"short_verification_duration_s": 45}) == 45
     assert fc.candidate_short_duration_s({}) == 30
     assert fc.candidate_fpsw({"efficiency_fps_per_w": 0.6}) == 0.6

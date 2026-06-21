@@ -1,5 +1,5 @@
 """Coverage for ui/profiles.py: profile selection, delete/autostart logic,
-status/notice text, and the systemd query wrappers (subprocess monkeypatched).
+status text, and the systemd query wrappers (subprocess monkeypatched).
 """
 
 from __future__ import annotations
@@ -49,7 +49,6 @@ def test_delete_autostart_action_non_adaptive() -> None:
     assert profiles.profile_delete_autostart_action([_P1], ["p1"], info) == {
         "action": "remove-systemd"
     }
-    assert profiles.profile_delete_removes_systemd([_P1], ["p1"], info) is True
     assert profiles.profile_delete_autostart_action([_P1, _P2], ["p2"], info) == {
         "action": "keep"
     }
@@ -119,17 +118,11 @@ def test_status_label_and_frequency_voltage() -> None:
     assert profiles.profile_frequency_voltage({}) == ""
 
 
-def test_final_notice_and_result_voltage() -> None:
-    notice = profiles.final_profile_notice_text(
-        [{"profile_id": "p1", "lock_clock_mhz": 2500, "candidate_voltage_mv": 900}],
-        profile_id="p1",
+def test_final_result_voltage() -> None:
+    assert (
+        profiles.final_result_frequency_voltage({"clock_mhz": 2400, "voltage_mv": 880})
+        == "2400 MHz 880 mV"
     )
-    assert "2500 MHz 900 mV" in notice
-    payload_notice = profiles.final_profile_notice_text(
-        [], result_payload={"clock_mhz": 2400, "voltage_mv": 880}
-    )
-    assert "2400 MHz 880 mV" in payload_notice
-    assert "highlighted" in profiles.final_profile_notice_text([])
     assert profiles.final_result_frequency_voltage({"clock_mhz": 2400}) == "2400 MHz"
     assert profiles.final_result_frequency_voltage({}) == ""
 

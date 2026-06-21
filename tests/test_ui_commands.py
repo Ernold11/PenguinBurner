@@ -40,8 +40,6 @@ from ui.features.tuning.tuning import (
     DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT,
     DEFAULT_AUTO_UV_MAX_DROP_PCT,
     DEFAULT_AUTO_UV_PRESET,
-    DEFAULT_SHORT_VERIFICATION_BASE_S,
-    GENERIC_AUTO_UV_MAX_DROP_PCT,
     GPU_UNDERVOLTING_PURPOSE_TEXT,
     DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS,
     DEFAULT_AUTO_UV_TAIL_RISE_BINS,
@@ -49,7 +47,6 @@ from ui.features.tuning.tuning import (
     auto_uv_clock_drop_default as _auto_uv_clock_drop_default,
     auto_uv_performance_preset_label as _auto_uv_performance_preset_label,
     auto_uv_performance_target_default as _auto_uv_performance_target_default,
-    auto_uv_performance_target_text as _auto_uv_performance_target_text,
     auto_uv_performance_preset_tooltip as _auto_uv_performance_preset_tooltip,
     auto_uv_voltage_drop_default as _auto_uv_voltage_drop_default,
 )
@@ -181,7 +178,6 @@ def test_ui_scan_command_can_override_runtime_gpu_index(monkeypatch) -> None:
 
 def test_auto_uv_short_verification_defaults_to_10_seconds() -> None:
     assert AUTO_UV_DEFAULTS.probe_duration_s == 10
-    assert DEFAULT_SHORT_VERIFICATION_BASE_S == 10
     assert _short_probe_base_duration_s() == 10
 
 
@@ -864,7 +860,6 @@ def test_ui_profile_verify_command_can_override_runtime_gpu_index(monkeypatch) -
 def test_auto_uv_preset_defaults_and_gpu_table_default() -> None:
     assert DEFAULT_AUTO_UV_PRESET == AUTO_UV_PRESET_BALANCED
     assert DEFAULT_AUTO_UV_MAX_DROP_PCT == 10.0
-    assert GENERIC_AUTO_UV_MAX_DROP_PCT == 10.0
     assert AUTO_UV_DROP_REFERENCE_VOLTAGE_MV == 1000
     assert DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT == 12.5
     assert DEFAULT_AUTO_UV_TAIL_RISE_BINS == 0
@@ -903,7 +898,6 @@ def test_auto_uv_performance_target_default_uses_gpu_table_target() -> None:
     assert target.gpu_family == "RTX 4090"
     assert target.voltage_mv == 925
     assert target.clock_mhz == 2670
-    assert "925 mV / 2670 MHz" in _auto_uv_performance_target_text(target)
 
 
 def test_auto_uv_voltage_drop_default_uses_detected_gpu_table_floor() -> None:

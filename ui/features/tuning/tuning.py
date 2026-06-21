@@ -17,15 +17,12 @@ from common.penguin_burner_paths import default_runtime_config_path
 from ui.features.tuning.gpu_selection import runtime_gpu_index
 
 
-DEFAULT_SHORT_VERIFICATION_BASE_S = 10
 DEFAULT_AUTO_UV_MAX_DROP_PCT = AUTO_UV_DEFAULTS.max_drop_pct
-GENERIC_AUTO_UV_MAX_DROP_PCT = DEFAULT_AUTO_UV_MAX_DROP_PCT
 AUTO_UV_DROP_REFERENCE_VOLTAGE_MV = 1000
 DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT = AUTO_UV_DEFAULTS.max_core_clock_drop_pct
 DEFAULT_AUTO_UV_TAIL_RISE_BINS = 0
 DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.balanced_tail_rise_bins
 DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.performance_tail_rise_bins
-MAX_AUTO_UV_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.max_tail_rise_bins
 AUTO_UV_PRESET_EFFICIENCY = "efficiency"
 AUTO_UV_PRESET_BALANCED = "balanced"
 AUTO_UV_PRESET_PERFORMANCE = "performance"
@@ -212,22 +209,6 @@ def auto_uv_performance_target_default(
         profile_id=str(target.profile_id),
         preset_matched=True,
     )
-
-
-def auto_uv_performance_target_text(
-    target: AutoUvPerformanceTargetDefault,
-) -> str:
-    if (
-        target.preset_matched
-        and target.voltage_mv is not None
-        and target.clock_mhz is not None
-    ):
-        family = target.gpu_family or "GPU table"
-        return (
-            f"{int(target.voltage_mv)} mV / {int(target.clock_mhz)} MHz "
-            f"({family} {target.profile_id})"
-        )
-    return "No GPU table target detected"
 
 
 def auto_uv_performance_preset_label(_preview=None) -> str:

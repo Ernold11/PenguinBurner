@@ -6,7 +6,6 @@ import math
 
 from curve_editors.fan import user_edited_fan_curve_profile_payload
 from profiles.uv import archive_auto_uv_profile
-from profiles.uv import profile_display_name
 from common.penguin_burner_paths import claim_desktop_user_ownership
 from common.penguin_burner_paths import default_user_config_dir
 
@@ -24,16 +23,6 @@ def profile_fan_measurement_points(profile: dict) -> list[tuple[float, float]]:
 def profile_fan_curve_target_point(profile: dict) -> tuple[float, float] | None:
     payload = profile_fan_payload(profile)
     return None if payload is None else fan_curve_target_point_from_payload(payload)
-
-
-def profile_fan_curve_tab_label(profile: dict) -> str:
-    display_name = str(profile.get("display_name", "")).strip()
-    base_label = display_name or profile_display_name(profile)
-    if not base_label:
-        base_label = str(
-            profile.get("profile_id") or profile.get("candidate_id") or "Profile"
-        )
-    return f"{base_label} Fan Curve"
 
 
 def profile_fan_payload(profile: dict) -> dict | None:

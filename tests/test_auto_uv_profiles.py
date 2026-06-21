@@ -36,8 +36,6 @@ from ui.components.vf_curve_editor import (
 from ui.features.curves.curve_profiles import (
     load_cached_base_curve_points as _load_cached_base_curve_points,
     profile_base_curve_points as _profile_base_curve_points,
-    profile_curve_points as _profile_curve_points,
-    profile_curve_tab_label as _profile_curve_tab_label,
     save_cached_base_curve_points as _save_cached_base_curve_points,
 )
 from ui.dialogs.error_details import error_dialog_copy_text as _error_dialog_copy_text
@@ -45,9 +43,6 @@ from ui.dialogs.error_details import process_failure_details as _process_failure
 from ui.dialogs.final_choice import candidate_number as _candidate_number
 from ui.dialogs.final_choice import candidate_oc_text as _candidate_oc_text
 from ui.dialogs.final_choice import candidate_status_text as _candidate_status_text
-from ui.dialogs.final_choice import (
-    duration_minutes_for_control as _duration_minutes_for_control,
-)
 from ui.dialogs.final_choice import final_choice_sort_values as _final_choice_sort_values
 from ui.features.curves.fan_profiles import (
     fan_curve_target_point_from_payload as _fan_curve_target_point_from_payload,
@@ -55,7 +50,6 @@ from ui.features.curves.fan_profiles import (
     fan_measurement_points as _fan_measurement_points,
     fan_payload_has_silent_runtime_fields as _fan_payload_has_silent_runtime_fields,
     profile_fan_curve_points as _profile_fan_curve_points,
-    profile_fan_curve_tab_label as _profile_fan_curve_tab_label,
     profile_fan_curve_target_point as _profile_fan_curve_target_point,
     profile_fan_measurement_points as _profile_fan_measurement_points,
     profile_id_from_archive_path as _profile_id_from_archive_path,
@@ -70,11 +64,9 @@ from ui.models import status_value as _status_value
 from ui.models import top_status_text as _top_status_text
 from ui.features.profiles.profiles import delete_confirmation_text as _profile_delete_confirmation_text
 from ui.features.profiles.profiles import adaptive_profile_tier_labels as _adaptive_profile_tier_labels
-from ui.features.profiles.profiles import final_profile_notice_text as _final_profile_notice_text
 from ui.features.profiles.profiles import profile_info_from_command_text as _profile_info_from_command_text
 from ui.features.profiles.profiles import profile_is_deletable as _profile_is_deletable
 from ui.features.profiles.profiles import profile_delete_autostart_action as _profile_delete_autostart_action
-from ui.features.profiles.profiles import profile_delete_removes_systemd as _profile_delete_removes_systemd
 from ui.features.profiles.profiles import profile_verify_selector as _profile_verify_selector
 from ui.features.profiles.profiles import runner_status_text as _runner_status_text
 from ui.features.profiles.profiles import (
@@ -1516,7 +1508,6 @@ def test_adaptive_profile_delete_keeps_systemd_when_two_tiers_remain() -> None:
     assert _profile_delete_autostart_action(profiles, ["bal"], autostart_info) == {
         "action": "keep",
     }
-    assert not _profile_delete_removes_systemd(profiles, ["bal"], autostart_info)
 
 
 def test_adaptive_profile_delete_switches_systemd_when_one_profile_remains() -> None:
@@ -1550,11 +1541,6 @@ def test_adaptive_profile_delete_switches_systemd_when_one_profile_remains() -> 
         "action": "switch-profile",
         "profile_id": "eff",
     }
-    assert not _profile_delete_removes_systemd(
-        profiles,
-        ["bal", "perf"],
-        autostart_info,
-    )
 
 
 def test_adaptive_profile_delete_switches_when_remaining_profiles_share_one_tier() -> None:
@@ -1614,7 +1600,6 @@ def test_adaptive_profile_delete_removes_systemd_when_no_profile_remains() -> No
         "action": "remove-systemd",
         "reason": "last-usable-adaptive-profile",
     }
-    assert _profile_delete_removes_systemd(profiles, ["eff", "perf"], autostart_info)
 
 
 def test_non_adaptive_profile_delete_removes_systemd_for_selected_startup_profile() -> None:
@@ -1623,16 +1608,16 @@ def test_non_adaptive_profile_delete_removes_systemd_for_selected_startup_profil
         {"profile_id": "profile-b", "candidate_id": "865mv-2625mhz"},
     ]
 
-    assert _profile_delete_removes_systemd(
+    assert _profile_delete_autostart_action(
         profiles,
         ["profile-b"],
         {"selector": "865mv-2625mhz", "adaptive_auto_uv": False},
-    )
-    assert not _profile_delete_removes_systemd(
+    ) == {"action": "remove-systemd"}
+    assert _profile_delete_autostart_action(
         profiles,
         ["profile-a"],
         {"selector": "865mv-2625mhz", "adaptive_auto_uv": False},
-    )
+    ) == {"action": "keep"}
 
 
 def test_profile_delete_confirmation_warns_when_systemd_entry_is_removed() -> None:
@@ -1736,63 +1721,6 @@ def test_runner_status_text_has_clear_empty_state() -> None:
     )
 
 
-def test_final_profile_notice_names_saved_profile_and_profiles_tab() -> None:
-    profiles = [
-        {
-            "profile_id": "profile-a",
-            "candidate_id": "865mv-2625mhz",
-            "candidate_voltage_mv": 865,
-            "lock_clock_mhz": 2625,
-        }
-    ]
-
-    assert (
-        _final_profile_notice_text(
-            profiles,
-            profile_id="profile-a",
-            candidate_id="865mv-2625mhz",
-            result_payload={"voltage_mv": 865, "clock_mhz": 2625},
-        )
-        == "Final verification complete. Profile 2625 MHz 865 mV is saved and "
-        "highlighted in Profiles."
-    )
-
-
-def test_profile_curve_points_use_embedded_afterburner_points() -> None:
-    profile = {
-        "profile_id": "afterburner-imported",
-        "display_name": "MSI Afterburner Profile1 2100 MHz 900 mV",
-        "curve_points": [[900, 2100], [925, 2115]],
-    }
-
-    assert _profile_curve_points(profile) == [(900.0, 2100.0), (925.0, 2115.0)]
-    assert _profile_curve_tab_label(profile) == (
-        "MSI Afterburner Profile1 2100 MHz 900 mV"
-    )
-
-
-def test_profile_curve_points_read_saved_auto_uv_profile_path(tmp_path) -> None:
-    profile_path = tmp_path / "auto-uv-profile.json"
-    profile_path.write_text(
-        json.dumps(
-            {
-                "candidate_voltage_mv": 875,
-                "lock_clock_mhz": 2610,
-                "points": [
-                    {"voltage_mv": 875, "target_mhz": 2610},
-                    {"voltage_mv": 900, "target_mhz": 2625},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    assert _profile_curve_points({"path": str(profile_path)}) == [
-        (875.0, 2610.0),
-        (900.0, 2625.0),
-    ]
-
-
 def test_profile_base_curve_points_read_saved_auto_uv_profile_path(tmp_path) -> None:
     profile_path = tmp_path / "auto-uv-profile.json"
     profile_path.write_text(
@@ -1840,7 +1768,6 @@ def test_profile_fan_curve_points_use_embedded_auto_uv_payload() -> None:
     ]
     assert _profile_fan_measurement_points(profile) == [(58.0, 34.0)]
     assert _profile_fan_curve_target_point(profile) == (75.0, 42.7)
-    assert _profile_fan_curve_tab_label(profile) == "2715 MHz 850 mV Fan Curve"
 
 
 def test_saved_fan_curve_payload_helpers_detect_runtime_ready_payload() -> None:
@@ -2021,8 +1948,6 @@ def test_top_status_text_rounds_gui_decimals_to_two_places() -> None:
 def test_final_verification_duration_control_uses_minutes() -> None:
     assert _format_duration_for_user(600) == "10 min"
     assert _format_duration_for_user(90) == "1 min 30 sec"
-    assert _duration_minutes_for_control(90) == 2
-    assert _duration_minutes_for_control(3600) == 60
 
 
 def test_stage_title_simplifies_base_baseline() -> None:

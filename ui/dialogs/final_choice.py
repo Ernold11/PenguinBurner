@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE, normalize_auto_uv_mode
 from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_DEFAULT_SORT_COLUMN
 from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_FPS_SORT_COLUMN
@@ -75,14 +73,6 @@ def candidate_number(value, *, precision: int) -> str:
         return ""
     precision = max(0, min(int(precision), 2))
     return str(int(round(number))) if precision <= 0 else f"{number:.{precision}f}"
-
-
-def duration_minutes_for_control(seconds) -> int:
-    try:
-        duration_s = max(1, int(round(float(seconds))))
-    except (TypeError, ValueError):
-        duration_s = DEFAULT_FINAL_VERIFICATION_DURATION_S
-    return max(1, min(MAX_FINAL_VERIFICATION_DURATION_S // 60, int(math.ceil(duration_s / 60.0))))
 
 
 def select_final_candidate(

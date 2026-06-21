@@ -126,11 +126,6 @@ def test_profile_fan_curve_accessors(monkeypatch) -> None:
     assert fp.profile_fan_curve_target_point({}) is None
 
 
-def test_profile_fan_curve_tab_label() -> None:
-    assert fp.profile_fan_curve_tab_label({"display_name": "My"}) == "My Fan Curve"
-    assert fp.profile_fan_curve_tab_label({"profile_id": "p1"}).endswith("Fan Curve")
-
-
 # --- file IO + matching -------------------------------------------------------
 
 

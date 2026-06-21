@@ -69,10 +69,6 @@ def test_runtime_gpu_index_and_mtime(tmp_path) -> None:
     config.write_text("[gpu]\nindex = 2\n", encoding="utf-8")
     assert ab.runtime_gpu_index(config) == 2
     assert ab.runtime_gpu_index(tmp_path / "absent.toml") == 0
-    f = tmp_path / "f.txt"
-    f.write_text("x", encoding="utf-8")
-    assert ab.path_mtime_iso(f)  # non-empty iso timestamp
-    assert ab.path_mtime_iso(tmp_path / "absent") == ""
 
 
 # --- afterburner workflow -----------------------------------------------------

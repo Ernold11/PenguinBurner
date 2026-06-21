@@ -7,20 +7,11 @@ from pathlib import Path
 
 from curve_editors.uv import user_edited_profile_payload
 from profiles.uv import archive_auto_uv_profile
-from profiles.uv import profile_display_name
 from common.penguin_burner_paths import default_runtime_config_path
 from common.penguin_burner_paths import default_user_config_dir
 
 from ui.features.integrations.afterburner_import import runtime_gpu_index
 from ui.features.curves.fan_profiles import profile_payload_from_path
-
-
-def profile_curve_points(profile: dict) -> list[tuple[float, float]]:
-    points = curve_points_from_payload(profile)
-    if points:
-        return points
-    payload = profile_payload_from_path(profile)
-    return [] if payload is None else curve_points_from_payload(payload)
 
 
 def profile_curve_plan(profile: dict) -> list[dict]:
@@ -39,39 +30,12 @@ def profile_base_curve_points(profile: dict) -> list[tuple[float, float]]:
     return [] if payload is None else base_curve_points_from_payload(payload)
 
 
-def profile_curve_target_point(profile: dict) -> tuple[float, float] | None:
-    voltage = profile.get("candidate_voltage_mv", profile.get("voltage_mv"))
-    clock = profile.get("lock_clock_mhz", profile.get("clock_mhz"))
-    try:
-        voltage_value = float(voltage)
-        clock_value = float(clock)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(voltage_value) or not math.isfinite(clock_value):
-        return None
-    return voltage_value, clock_value
-
-
 def profile_curve_tab_key(profile: dict) -> str:
     for key in ("profile_id", "candidate_id", "path", "display_name"):
         value = str(profile.get(key, "")).strip()
         if value:
             return value
     return "profile-curve"
-
-
-def profile_curve_tab_label(profile: dict) -> str:
-    display_name = str(profile.get("display_name", "")).strip()
-    if display_name:
-        return display_name
-    return profile_display_name(profile) or profile_curve_tab_key(profile)
-
-
-def profile_curve_legend_label(profile: dict) -> str:
-    source = str(profile.get("profile_source", "")).strip()
-    if source in {"auto-uv-final", "profile-store"}:
-        return "Auto-UV"
-    return source or "Curve"
 
 
 def curve_points_from_payload(payload: dict) -> list[tuple[float, float]]:

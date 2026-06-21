@@ -71,7 +71,6 @@ class MainWindow(ProfileActionsMixin):
         self.last_auto_uv_candidate_id = ""
         self._delete_remove_systemd = False
         self._delete_switch_systemd_profile_id = ""
-        self._delete_selected_ids: set[str] = set()
 
         self.window = self.QtWidgets.QMainWindow()
         self.window.setWindowTitle(APP_DISPLAY_NAME)
@@ -582,4 +581,3 @@ def _probe_text(payload: dict) -> str:
 
 def _stop_request_path() -> Path:
     return default_user_config_dir() / "auto-uv-stop-requested"
-
