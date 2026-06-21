@@ -95,7 +95,3 @@ LAUNCHER_ERROR_PATTERNS = ("error while loading shared libraries",)
 
 # Reason assigned to a stability result whose Q2RTX process failed to launch.
 Q2RTX_LAUNCHER_ERROR_REASON = "q2rtx-launcher-error"
-
-TIMEDEMO_LINE_RE = re.compile(
-    r"(?P<frames>\d+)\s+frames,\s+(?P<seconds>[0-9.]+)\s+seconds:\s+(?P<fps>[0-9.]+)\s+fps"
-)

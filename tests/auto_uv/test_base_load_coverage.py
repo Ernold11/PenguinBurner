@@ -31,7 +31,6 @@ from auto_uv.curve.base_load_telemetry import (
 from auto_uv.curve.base_load_voltage import (
     LoadedVoltageBand,
     derive_loaded_voltage_band,
-    pick_voltage_percentile,
 )
 from auto_uv_test_data import base_curve
 
@@ -245,7 +244,7 @@ def test_loaded_voltage_band_empty_when_no_power_floor() -> None:
         power_limit_w=None,
         use_power_limit_floor=False,
     )
-    assert band == LoadedVoltageBand(None, None, None, 0)
+    assert band == LoadedVoltageBand(None)
 
 
 def test_loaded_voltage_band_empty_when_no_voltages_pass_floor() -> None:
@@ -256,7 +255,7 @@ def test_loaded_voltage_band_empty_when_no_voltages_pass_floor() -> None:
         power_limit_w=200,
         use_power_limit_floor=True,
     )
-    assert band == LoadedVoltageBand(None, None, None, 0)
+    assert band == LoadedVoltageBand(None)
 
 
 def test_loaded_voltage_band_summarizes_passing_samples() -> None:
@@ -269,13 +268,4 @@ def test_loaded_voltage_band_summarizes_passing_samples() -> None:
         power_limit_w=200,
         use_power_limit_floor=True,
     )
-    assert band.sample_count == 3
     assert band.average_mv == 910
-
-
-def test_pick_voltage_percentile_requires_values_and_handles_single() -> None:
-    # Line 71: empty raises.
-    with pytest.raises(ValueError, match="needs at least one value"):
-        pick_voltage_percentile([], 0.5)
-    # Line 74: single value returned directly.
-    assert pick_voltage_percentile([850], 0.9) == 850

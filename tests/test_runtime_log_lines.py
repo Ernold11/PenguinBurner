@@ -7,7 +7,6 @@ from common.runtime_log_lines import (
     fan_event_line,
     format_clock_voltage,
     format_fan_section,
-    start_line,
     status_line,
     status_signature,
     tier_switch_line,
@@ -77,9 +76,3 @@ def test_event_and_warn_lines() -> None:
         "warn   | overlay publish unavailable | socket gone"
     )
     assert warn_line("latency telemetry unavailable") == "warn   | latency telemetry unavailable"
-
-
-def test_start_line() -> None:
-    assert start_line("GPU0", "persistence on", "power cap 257W") == (
-        "start  | GPU0 | persistence on | power cap 257W"
-    )

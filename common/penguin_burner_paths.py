@@ -8,10 +8,6 @@ import pwd
 import shutil
 
 
-def repo_root() -> Path:
-    return Path(__file__).resolve().parent
-
-
 def _effective_home() -> Path:
     override_home = os.environ.get("PENGUIN_BURNER_HOME", "").strip()
     if override_home:
@@ -150,17 +146,6 @@ def default_saved_uv_dir() -> Path:
 
 def default_runtime_config_path() -> Path:
     return default_user_config_dir() / "penguin_burner.toml"
-
-
-def default_cache_root() -> Path:
-    xdg_cache_home = os.environ.get("XDG_CACHE_HOME", "").strip()
-    if xdg_cache_home:
-        return Path(xdg_cache_home).expanduser()
-    return _effective_home() / ".cache"
-
-
-def default_linux_vf_profiles_dir() -> Path:
-    return default_user_config_dir() / "linux-vf-profiles"
 
 
 def default_afterburner_root() -> Path:

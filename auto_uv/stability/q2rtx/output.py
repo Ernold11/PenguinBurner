@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import deque
-import json
 from pathlib import Path
 
 from .constants import (
@@ -111,41 +110,6 @@ def _scan_output_for_fatal_patterns(log_path: Path) -> list[str]:
     return matches
 
 
-def _benchmark_events(log_path: Path) -> list[dict]:
-    if not log_path.exists():
-        return []
-
-    text = log_path.read_text(encoding="utf-8", errors="replace")
-    return _benchmark_events_from_text(text)
-
-
-def _benchmark_events_from_text(text: str) -> list[dict]:
-    events: list[dict] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("{"):
-            continue
-        try:
-            event = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict) or "event" not in event:
-            continue
-        events.append(event)
-    return events
-
-
-def _extract_benchmark_measure_start_s(log_path: Path) -> float | None:
-    for event in _benchmark_events(log_path):
-        if event.get("event") != "phase" or event.get("name") != "measure_start":
-            continue
-        try:
-            return float(event["elapsed_ms"]) / 1000.0
-        except (KeyError, TypeError, ValueError):
-            continue
-    return None
-
-
 def _optional_float(event: dict, key: str) -> float | None:
     value = event.get(key)
     if value is None:
@@ -171,10 +135,6 @@ def _optional_ms_s(event: dict, key: str) -> float | None:
     if value is None:
         return None
     return float(value) / 1000.0
-
-
-def _extract_benchmark_summary(log_path: Path) -> Q2RTXBenchmarkSummary | None:
-    return _benchmark_summary_from_events(_benchmark_events(log_path))
 
 
 def _benchmark_summary_from_events(

@@ -46,62 +46,8 @@ def _unique_https_urls(urls: list[str] | tuple[str, ...]) -> tuple[str, ...]:
     return tuple(unique)
 
 
-def _join_mirror_url(base_url: str, filename: str) -> str:
-    base = _require_https_url(base_url)
-    if not base.endswith("/"):
-        base += "/"
-    return _require_https_url(urllib_parse.urljoin(base, filename))
-
-
 def _format_attempt_errors(errors: list[tuple[str, str]]) -> str:
     return "; ".join(f"{url}: {detail}" for url, detail in errors)
-
-
-def _download_text(url: str) -> str:
-    url = _require_https_url(url)
-    request = urllib_request.Request(
-        url,
-        headers={
-            "Accept": "text/plain",
-            "User-Agent": "PenguinBurner-Q2RTX-Installer",
-        },
-    )
-    try:
-        with urllib_request.urlopen(request, timeout=30.0) as response:  # nosec B310
-            return response.read().decode("utf-8", errors="replace")
-    except urllib_error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace").strip()
-        if detail:
-            raise StabilityTestError(
-                f"download failed from {url} ({exc.code}): {detail}"
-            ) from exc
-        raise StabilityTestError(
-            f"download failed from {url} with status {exc.code}"
-        ) from exc
-    except urllib_error.URLError as exc:
-        raise StabilityTestError(f"download failed from {url}: {exc}") from exc
-    except TimeoutError as exc:
-        raise StabilityTestError(
-            f"download timed out while reading {url}: {exc}"
-        ) from exc
-    except OSError as exc:
-        raise StabilityTestError(f"download failed from {url}: {exc}") from exc
-
-
-def _download_text_from_urls(
-    urls: tuple[str, ...],
-    *,
-    label: str,
-) -> tuple[str, str]:
-    errors: list[tuple[str, str]] = []
-    for url in _unique_https_urls(urls):
-        try:
-            return url, _download_text(url)
-        except StabilityTestError as exc:
-            errors.append((url, str(exc)))
-    raise StabilityTestError(
-        f"failed to fetch {label}; tried {_format_attempt_errors(errors)}"
-    )
 
 
 def _github_json(url: str) -> dict:

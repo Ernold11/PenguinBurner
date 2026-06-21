@@ -109,7 +109,3 @@ def emergency_line(event, temp_c=None, fan_pct=None, fan_mode="auto") -> str:
 
 def warn_line(what, detail=None) -> str:
     return format_log_line("warn", what, detail)
-
-
-def start_line(*sections) -> str:
-    return format_log_line("start", *sections)

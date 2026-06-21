@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import io
-import os
 from pathlib import Path
 import shutil
 import tarfile
@@ -10,51 +8,6 @@ import tempfile
 from common.penguin_burner_paths import claim_desktop_user_ownership
 
 from .models import StabilityTestError
-
-
-def _safe_extract_tar_payload(payload: bytes, destination: Path, *, label: str) -> None:
-    try:
-        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as archive:
-            for member in archive.getmembers():
-                member_path = (destination / member.name).resolve()
-                if (
-                    destination.resolve() not in member_path.parents
-                    and member_path != destination.resolve()
-                ):
-                    raise StabilityTestError(
-                        f"refusing to extract suspicious {label} member: {member.name}"
-                    )
-                if member.isdir():
-                    member_path.mkdir(parents=True, exist_ok=True)
-                    continue
-                if member.issym():
-                    link_target = member.linkname
-                    if os.path.isabs(link_target) or ".." in Path(link_target).parts:
-                        raise StabilityTestError(
-                            f"refusing to extract suspicious {label} symlink: {member.name}"
-                        )
-                    member_path.parent.mkdir(parents=True, exist_ok=True)
-                    if member_path.exists() or member_path.is_symlink():
-                        member_path.unlink()
-                    member_path.symlink_to(link_target)
-                    continue
-                if not member.isfile():
-                    raise StabilityTestError(
-                        f"refusing to extract unsupported {label} member: {member.name}"
-                    )
-                source = archive.extractfile(member)
-                if source is None:
-                    raise StabilityTestError(
-                        f"failed to read {label} member: {member.name}"
-                    )
-                member_path.parent.mkdir(parents=True, exist_ok=True)
-                with source, member_path.open("wb") as output:
-                    shutil.copyfileobj(source, output)
-                member_path.chmod(member.mode & 0o777)
-    except tarfile.TarError as exc:
-        raise StabilityTestError(
-            f"failed to extract {label} tar payload: {exc}"
-        ) from exc
 
 
 def _extract_q2rtx_archive(archive_path: Path, install_dir: Path) -> None:

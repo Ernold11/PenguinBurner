@@ -37,7 +37,6 @@ class AutoOcSearchResult:
     selected_probe: AutoUvProbeSummary | None
     endpoint: UvTierTarget | None = None
     attempts: tuple[AutoOcAttempt, ...] = ()
-    skipped_reason: str | None = None
 
 
 def run_auto_oc_candidate_search(
@@ -84,7 +83,6 @@ def run_auto_oc_candidate_search(
             selected_candidate=start_candidate,
             selected_probe=start_probe,
             endpoint=endpoint,
-            skipped_reason="no-legal-step",
         )
 
     log_phase(
@@ -280,12 +278,11 @@ def auto_oc_should_stop(outcome: VoltageProbeOutcome) -> bool:
 def _skip(
     candidate: VfCurveCandidate,
     probe: AutoUvProbeSummary | None,
-    reason: str,
+    _reason: str,
 ) -> AutoOcSearchResult:
     return AutoOcSearchResult(
         selected_candidate=candidate,
         selected_probe=probe,
-        skipped_reason=str(reason),
     )
 
 

@@ -146,30 +146,6 @@ class NvmlClockSession:
         return [int(values[index]) for index in range(min(int(count.value), capacity))]
 
 
-def query_nvml_current_clocks(gpu_index: int) -> NvmlClockTelemetry | None:
-    try:
-        with NvmlClockSession(int(gpu_index)) as session:
-            return session.current_clocks()
-    except Exception:
-        return None
-
-
-def query_nvml_supported_memory_clocks(gpu_index: int) -> list[int]:
-    try:
-        with NvmlClockSession(int(gpu_index)) as session:
-            return session.supported_memory_clocks_mhz()
-    except Exception:
-        return []
-
-
-def query_nvml_supported_graphics_clock_steps(gpu_index: int) -> list[int]:
-    try:
-        with NvmlClockSession(int(gpu_index)) as session:
-            return session.supported_graphics_clock_steps_mhz()
-    except Exception:
-        return []
-
-
 def _check(rc, name: str) -> None:
     if int(rc) != NVML_SUCCESS:
         raise RuntimeError(f"{name} failed with NVML error {int(rc)}")
