@@ -9,9 +9,9 @@ from saved_uv_profiles import profile_display_name
 from saved_uv_profiles import profile_tier_label
 from saved_uv_profiles import read_auto_uv_profile_summaries
 from saved_uv_profiles import resolve_profile_tier_profiles
-from runtime_support.runtime_service import PENGUIN_BURNER_UNIT_NAME
-from runtime_support.runtime_service import SYSTEMCTL
-from runtime_support.runtime_service import systemd_service_unit_path
+from runtime.support.runtime_service import PENGUIN_BURNER_UNIT_NAME
+from runtime.support.runtime_service import SYSTEMCTL
+from runtime.support.runtime_service import systemd_service_unit_path
 
 
 def load_profile_summaries() -> list[dict]:

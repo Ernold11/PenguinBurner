@@ -9,7 +9,7 @@ from pathlib import Path
 import tomllib
 
 from afterburner.import_fan_curve import write_config as write_runtime_config
-from runtime_support.adaptive_target_fps import (
+from runtime.support.adaptive_target_fps import (
     ADAPTIVE_TARGET_FPS_CONFIG_KEY,
     ADAPTIVE_TARGET_FPS_CONFIG_SECTION,
     DEFAULT_ADAPTIVE_TARGET_FPS,

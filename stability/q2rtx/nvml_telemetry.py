@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ctypes
 
-from runtime_gpu_control.nvml_return_code import (
+from runtime.gpu_control.nvml_return_code import (
     NVML_CLOCK_GRAPHICS,
     NVML_SUCCESS,
     NVML_TEMPERATURE_GPU,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import os
 
-from runtime_support.adaptive_target_fps import adaptive_target_ms_from_fps
+from runtime.support.adaptive_target_fps import adaptive_target_ms_from_fps
 from saved_uv_profiles.profile_tiers import (
     PROFILE_TIER_BALANCED,
     PROFILE_TIER_PERFORMANCE,

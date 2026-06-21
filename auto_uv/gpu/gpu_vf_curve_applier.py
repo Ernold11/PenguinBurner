@@ -13,8 +13,8 @@ from nvidia_driver.hidden_nvapi_vf import (
     get_hidden_vf_curve_reader_last_error,
 )
 from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
-from runtime_support.vf_curve_plan import apply_plan
-from runtime_support.nvidia_runtime_defaults import reset_nvidia_runtime_defaults
+from runtime.support.vf_curve_plan import apply_plan
+from runtime.support.nvidia_runtime_defaults import reset_nvidia_runtime_defaults
 
 from ..auto_uv_types import AutoUvError
 from .live_nvml_voltage_reader import LiveNvmlVoltageReader

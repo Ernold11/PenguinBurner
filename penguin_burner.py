@@ -29,15 +29,15 @@ from common.penguin_burner_paths import (
     default_saved_uv_dir,
     default_user_config_dir,
 )
-from runtime_support.runtime_debug import (
+from runtime.support.runtime_debug import (
     close_debug_log,
     close_stdio_capture,
     debug_log,
     enable_debug_logging,
     log,
 )
-from runtime_gpu_control import FlattenedClockCeilingController
-from runtime_support.runtime_service import DEFAULT_JOURNAL_HOURS
+from runtime.gpu_control import FlattenedClockCeilingController
+from runtime.support.runtime_service import DEFAULT_JOURNAL_HOURS
 from saved_profile_verification.runner import run_profile_verification
 
 

@@ -5,7 +5,7 @@ The loop either proves the selected curve or raises voltage to the next stable b
 
 from __future__ import annotations
 
-from runtime_support.vf_curve_plan import apply_plan
+from runtime.support.vf_curve_plan import apply_plan
 
 from ..auto_uv_console_log import log_benchmark, log_phase, log_user_stage
 from ..auto_uv_types import (

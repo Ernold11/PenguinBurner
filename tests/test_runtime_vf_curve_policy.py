@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from runtime_gpu_control.vf_curve_runtime_policy import (
+from runtime.gpu_control.vf_curve_runtime_policy import (
     RuntimeVfCurvePolicyDependencies,
     configure_runtime_vf_curve_policy,
 )

@@ -9,15 +9,15 @@ import tempfile
 from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
 from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
 from common.penguin_burner_errors import NvmlError
-from runtime_support.vf_curve_plan import (
+from runtime.support.vf_curve_plan import (
     apply_plan,
     backup_current_offsets,
     restore_offsets,
 )
-from runtime_support.runtime_debug import log as runtime_log
-from runtime_gpu_control import FlattenedClockCeilingController
-from runtime_support.runtime_service import stop_existing_penguin_burner_runtime
-from runtime_stability_test import (
+from runtime.support.runtime_debug import log as runtime_log
+from runtime.gpu_control import FlattenedClockCeilingController
+from runtime.support.runtime_service import stop_existing_penguin_burner_runtime
+from runtime.stability_test import (
     build_stability_config,
     stability_workload_label,
     stability_workload_split_label,

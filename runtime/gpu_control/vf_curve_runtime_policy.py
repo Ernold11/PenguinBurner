@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from runtime_support.runtime_debug import log as runtime_log
-from runtime_support.vf_curve_plan import apply_plan
+from runtime.support.runtime_debug import log as runtime_log
+from runtime.support.vf_curve_plan import apply_plan
 from saved_uv_profiles import (
     apply_auto_uv_profile_memory_offset,
     apply_auto_uv_profile_power_limit,

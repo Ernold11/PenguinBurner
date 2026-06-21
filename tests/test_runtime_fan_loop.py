@@ -1,8 +1,8 @@
-from runtime_fan_control.runtime_loop import (
+from runtime.fan_control.runtime_loop import (
     RuntimeFanLoopDependencies,
     run_runtime_fan_control_loop,
 )
-from runtime_gpu_control import RuntimeVfCurvePolicyResult
+from runtime.gpu_control import RuntimeVfCurvePolicyResult
 
 
 class FakeNvmlSession:

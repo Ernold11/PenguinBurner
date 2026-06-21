@@ -62,10 +62,7 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
     manual_fan_curve_editor \
     manual_uv_curve_editor \
     overlay \
-    runtime_support \
-    runtime_fan_control \
-    runtime_gpu_control \
-    runtime_stability_test \
+    runtime \
     saved_profile_verification \
     saved_uv_profiles \
     stability \

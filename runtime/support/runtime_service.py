@@ -14,7 +14,7 @@ from .adaptive_target_fps import (
     adaptive_target_fps_from_env,
     format_adaptive_target_fps,
 )
-from runtime_gpu_control.adaptive_profile_policy import (
+from runtime.gpu_control.adaptive_profile_policy import (
     ADAPTIVE_COMFORT_WINDOWS_ENV,
     ADAPTIVE_DEMOTE_DWELL_S_ENV,
     ADAPTIVE_NEAR_SLOW_WINDOWS_ENV,

@@ -6,13 +6,13 @@ from typing import Callable
 
 from cli.effective_runtime_options import build_effective_auto_uv_runtime_options
 from common.penguin_burner_errors import NvmlError
-from runtime_support.runtime_debug import (
+from runtime.support.runtime_debug import (
     debug_effective_runtime_options,
     enable_stdio_capture,
     log as runtime_log,
 )
-from runtime_support.runtime_service import running_under_systemd_service, stop_existing_penguin_burner_runtime
-from runtime_gpu_control.fan_release import release_fans_to_hardware_auto
+from runtime.support.runtime_service import running_under_systemd_service, stop_existing_penguin_burner_runtime
+from runtime.gpu_control.fan_release import release_fans_to_hardware_auto
 from saved_uv_profiles import (
     delete_auto_uv_profiles,
     format_profile_table,

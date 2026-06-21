@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from runtime_gpu_control.adaptive_profile_policy import (
+from runtime.gpu_control.adaptive_profile_policy import (
     AdaptiveProfileController,
     AdaptiveProfilePolicyConfig,
 )

@@ -243,9 +243,10 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     assert "auto_uv.final_verification" in packages
     assert "manual_fan_curve_editor" in packages
     assert "manual_uv_curve_editor" in packages
-    assert "runtime_fan_control" in packages
-    assert "runtime_gpu_control" in packages
-    assert "runtime_stability_test" in packages
+    assert "runtime" in packages
+    assert "runtime.fan_control" in packages
+    assert "runtime.gpu_control" in packages
+    assert "runtime.stability_test" in packages
     assert "saved_profile_verification" in packages
     assert "saved_uv_profiles" in packages
     assert "overlay" in packages

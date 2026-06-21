@@ -10,10 +10,10 @@ from typing import Callable
 from nvidia_driver.nvml_gpu_policy import describe_translated_gpu_policy
 from saved_uv_profiles.profile_tiers import profile_tier_label
 from common.penguin_burner_errors import NvmlError
-from runtime_support.vf_curve_plan import apply_plan
-from runtime_support.runtime_debug import debug_log as runtime_debug_log
-from runtime_support.runtime_debug import log as runtime_log
-from runtime_gpu_control import (
+from runtime.support.vf_curve_plan import apply_plan
+from runtime.support.runtime_debug import debug_log as runtime_debug_log
+from runtime.support.runtime_debug import log as runtime_log
+from runtime.gpu_control import (
     RuntimeVfCurvePolicyResult,
     detect_vf_curve_reset,
     format_vf_curve_mismatch_preview,

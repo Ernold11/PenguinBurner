@@ -10,8 +10,8 @@ import sys
 from typing import Callable
 
 from common.cli_output import enable_cli_output_wrapping
-from runtime_support.runtime_debug import debug_exception, log
-from runtime_support.runtime_service import (
+from runtime.support.runtime_debug import debug_exception, log
+from runtime.support.runtime_service import (
     daemonize_with_systemd,
     install_systemd_service,
     parse_runtime_flags,

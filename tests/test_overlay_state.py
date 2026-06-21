@@ -93,7 +93,7 @@ def test_overlay_state_path_prefers_container_visible_home(tmp_path) -> None:
 
 
 def test_overlay_state_publisher_passes_latency_p95_ms(tmp_path, monkeypatch) -> None:
-    import runtime_gpu_control.overlay_state_publisher as overlay_state_publisher
+    import runtime.gpu_control.overlay_state_publisher as overlay_state_publisher
 
     monkeypatch.setattr(
         overlay_state_publisher, "get_power_draw_w", lambda _nvml, _device: 219.6
@@ -135,7 +135,7 @@ def test_overlay_state_publisher_writes_fan_temperature_and_uv_offset(
     tmp_path,
     monkeypatch,
 ) -> None:
-    import runtime_gpu_control.overlay_state_publisher as overlay_state_publisher
+    import runtime.gpu_control.overlay_state_publisher as overlay_state_publisher
 
     monkeypatch.setattr(
         overlay_state_publisher, "get_core_clock_mhz", lambda _nvml, _device: 2500
@@ -194,7 +194,7 @@ def test_overlay_state_publisher_writes_cpu_util_from_latency_pid(
     tmp_path,
     monkeypatch,
 ) -> None:
-    import runtime_gpu_control.overlay_state_publisher as overlay_state_publisher
+    import runtime.gpu_control.overlay_state_publisher as overlay_state_publisher
 
     monkeypatch.setattr(
         overlay_state_publisher,
@@ -254,7 +254,7 @@ def test_overlay_state_publisher_writes_cpu_util_from_latency_pid(
 def test_overlay_state_publisher_keeps_cpu_util_sticky_through_sample_gap(
     tmp_path,
 ) -> None:
-    import runtime_gpu_control.overlay_state_publisher as overlay_state_publisher
+    import runtime.gpu_control.overlay_state_publisher as overlay_state_publisher
 
     class _NvmlSession:
         nvml = None
@@ -318,7 +318,7 @@ def test_overlay_state_publisher_keeps_cpu_util_sticky_through_sample_gap(
 
 
 def test_overlay_state_publisher_refreshes_live_overlay_config(tmp_path) -> None:
-    import runtime_gpu_control.overlay_state_publisher as overlay_state_publisher
+    import runtime.gpu_control.overlay_state_publisher as overlay_state_publisher
     from overlay.config import OverlayConfig
 
     class _NvmlSession:

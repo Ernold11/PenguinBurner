@@ -4,13 +4,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from runtime_support.adaptive_target_fps import (
+from runtime.support.adaptive_target_fps import (
     adaptive_target_fps_from_config,
     adaptive_target_fps_from_env,
     format_adaptive_target_fps,
     parse_adaptive_target_fps,
 )
-from runtime_support.runtime_debug import log as runtime_log
+from runtime.support.runtime_debug import log as runtime_log
 from saved_uv_profiles import (
     apply_auto_uv_profile_power_limit,
     available_adaptive_tiers,
@@ -265,7 +265,7 @@ class AdaptiveAutoUvRuntimeController:
     ) -> AdaptiveAutoUvSwitchResult:
         apply_plan = self.deps.apply_plan
         if apply_plan is None:
-            from runtime_support.vf_curve_plan import apply_plan as default_apply_plan
+            from runtime.support.vf_curve_plan import apply_plan as default_apply_plan
 
             apply_plan = default_apply_plan
         apply_plan(self.vf_curve_reader, curve["plan"])

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from runtime_gpu_control.process_cpu_sampler import ProcessCpuUsageSampler
+from runtime.gpu_control.process_cpu_sampler import ProcessCpuUsageSampler
 
 
 def test_process_cpu_usage_sampler_returns_none_until_second_sample() -> None:

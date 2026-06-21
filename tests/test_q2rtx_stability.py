@@ -12,7 +12,7 @@ import stability.q2rtx.downloader as q2rtx_downloader
 import stability.q2rtx.gpu_binding as q2rtx_gpu_binding
 import stability.q2rtx.install as q2rtx_install
 import stability.q2rtx.runtime as q2rtx_runtime
-import runtime_stability_test.q2rtx_cuda_workload_config as q2rtx_workload_config
+import runtime.stability_test.q2rtx_cuda_workload_config as q2rtx_workload_config
 from stability.q2rtx.constants import (
     PB_Q2RTX_ASSET_PREFIX,
     PB_Q2RTX_ASSET_SUFFIX,
