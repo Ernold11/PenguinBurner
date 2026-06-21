@@ -21,8 +21,7 @@ FPS, power, temp, fan, FPS/W).
 ## Run a scan
 
 ```bash
-sudo ./penguin_burner.sh                      # auto-starts a scan if no curve exists
-sudo ./penguin_burner.sh --auto-uv-voltage-scan   # request it explicitly
+sudo ./penguin_burner.sh --auto-uv-voltage-scan   # start a scan explicitly
 sudo ./penguin_burner.sh --fresh-auto-uv-scan     # forget previous results, start clean
 ```
 
@@ -44,9 +43,7 @@ By default Q2RTX runs through PenguinBurner's managed
 [headless benchmark binary](https://github.com/jpietek/Q2RTX-headless), so no
 desktop display server or compositor wrapper is needed. Render resolution is
 selected from the chosen GPU's NVML VRAM total: `2560x1440` for GPUs with
-`<=8 GiB`, otherwise `3840x2160` when VRAM is larger or unavailable. Use
-`--stability-width` / `--stability-height` to override it. Custom Q2RTX debug
-switches are kept in the CLI advanced compatibility section.
+`<=8 GiB`, otherwise `3840x2160` when VRAM is larger or unavailable.
 
 ## Stop, choose, or resume
 
@@ -105,35 +102,38 @@ so the benchmark and the curve writer target the same physical GPU.
 
 | Flag | Purpose |
 | --- | --- |
-| `--auto-uv-max-drop-pct N` | voltage search depth below start (default `10`) |
+| `--auto-uv-voltage-scan` | start the Auto-UV scan explicitly |
+| `--auto-uv-mode efficiency\|balanced\|performance` | select the same preset family as the GUI |
+| `--gpu-index N` | select one NVIDIA GPU on multi-GPU systems |
 | `--auto-uv-min-voltage-mv N` | explicit lowest voltage bin |
 | `--auto-uv-max-clock-drop-pct N` | allowed loaded-clock loss (default: GPU Efficiency-to-Performance ratio, else `12.5`) |
+| `--auto-uv-memory-offset-mhz N` | memory clock V/F offset saved with the profile |
+| `--auto-uv-power-limit-w N` | power limit applied during the scan and saved with the profile |
 | `--auto-uv-tail-rise-bins N` | bins above lock point that may rise (`0` = flat) |
 | `--auto-oc-target-voltage-mv N` / `--auto-oc-target-clock-mhz N` | Performance Auto-OC ceilings |
-| `--gpu-index N` | select one NVIDIA GPU on multi-GPU systems |
-| `--auto-uv-final-seconds N` | final verification duration |
 
-The GUI exposes the GPU choice and Auto-OC targets in the tuning modal.
+The CLI Auto-UV scan flags mirror the options exposed by the GUI tuning modal.
 
 ## After the scan
 
 Runtime and daemon mode prefer the saved curve automatically:
 
 ```bash
-sudo ./penguin_burner.sh --daemonize                  # apply saved curve
-sudo ./penguin_burner.sh --daemonize --silent-fan-curve   # also apply quiet fan curve
+sudo ./penguin_burner.sh --daemonize --auto-uv-profile latest
+sudo ./penguin_burner.sh --daemonize --auto-uv-profile latest --silent-fan-curve
 ```
 
-Export a saved curve to [LACT](https://github.com/ilya-zlobintsev/LACT):
+For boot autostart, install the latest verified profile into the persistent
+systemd service:
 
 ```bash
-sudo ./penguin_burner.sh --export-lact-config lact-config.yaml \
-  --auto-uv-profile latest \
-  --lact-gpu-id "10DE:2704-1462:5110-0000:09:00.0"
+sudo ./penguin_burner.sh --install-systemd-service --auto-uv-profile latest
+sudo ./penguin_burner.sh --install-systemd-service --auto-uv-profile latest --silent-fan-curve
 ```
 
-`--auto-uv-profile` accepts a profile id, JSON path, `active`, or `latest`. Add
-`--silent-fan-curve` to include fan settings. Review the file, then:
+Export a saved curve to [LACT](https://github.com/ilya-zlobintsev/LACT) from the
+GUI Profiles view. Add the silent fan curve in the export dialog when you want
+LACT to manage fan settings too. Review the generated file, then:
 
 ```bash
 sudo install -m 0644 lact-config.yaml /etc/lact/config.yaml
@@ -152,7 +152,7 @@ Under the PenguinBurner user config directory:
 
 If a scan stops early, read the latest log in `debug-logs/` first — common
 causes are an unsafe-voltage history entry, a clock guardrail, a Q2RTX/CUDA
-failure, or a short `--auto-uv-final-seconds`. To wipe history and rerun clean:
+failure, or interrupted final verification. To wipe history and rerun clean:
 
 ```bash
 sudo ./penguin_burner.sh --fresh-auto-uv-scan

@@ -55,15 +55,14 @@ def run_normal_runtime(
     gpu_config = command_route.gpu_config
     fan_config = command_route.fan_config
     gpu_index = command_route.gpu_index
-    afterburner_runtime_options = command_route.afterburner_runtime_options
+    auto_uv_runtime_options = command_route.auto_uv_runtime_options
 
     runtime_startup = deps.prepare_runtime_startup(
         config_path=config_path,
         fan_config=fan_config,
         gpu_index=gpu_index,
-        afterburner_runtime_options=afterburner_runtime_options,
+        auto_uv_runtime_options=auto_uv_runtime_options,
         fan_control_enabled=bool(args.silent_fan_curve),
-        had_persisted_afterburner_root=command_route.had_persisted_afterburner_root,
         auto_uv_final_curve_available=command_route.auto_uv_final_curve_available,
         argv=argv,
         journal_hours=journal_hours,
@@ -75,7 +74,6 @@ def run_normal_runtime(
     if runtime_startup.should_exit:
         return
 
-    afterburner_runtime_options = runtime_startup.afterburner_runtime_options
     enable_persistence_mode = gpu_config["enable_persistence_mode"]
 
     nvml_session = deps.nvml_session_factory(gpu_index=gpu_index)
@@ -115,7 +113,7 @@ def run_normal_runtime(
     )
     latency_logger = deps.start_latency_telemetry_logger(
         log=deps.log,
-        dump_latency_data=(True if getattr(args, "dump_latency_data", False) else None),
+        dump_latency_data=None,
     )
     adaptive_auto_uv_controller = None
     if bool(getattr(args, "adaptive_auto_uv", False)):

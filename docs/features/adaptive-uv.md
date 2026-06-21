@@ -13,7 +13,7 @@ between tiers automatically based on how the game is actually pacing frames.
 ## Tiers
 
 Every saved profile can be tagged with one of three tiers from the **Profiles**
-tab (right-click a profile → **Assign Tier**):
+tab (right-click a profile → **Assign Tier**) or from the CLI:
 
 | Tier | Intent | Auto-UV tail-rise bins |
 | --- | --- | --- |
@@ -25,6 +25,15 @@ Choose **None** to remove a tier assignment. The tier of a freshly generated
 profile is inferred from the scan's performance-bias preset, so a normal
 Efficiency / Balanced / Performance scan already lands in the matching tier.
 
+CLI tier assignment uses profile ids from `--list-auto-uv-profiles`:
+
+```bash
+./penguin_burner.sh --assign-auto-uv-tier <eff-profile-id> efficiency
+./penguin_burner.sh --assign-auto-uv-tier <bal-profile-id> balanced
+./penguin_burner.sh --assign-auto-uv-tier <perf-profile-id> performance
+./penguin_burner.sh --assign-auto-uv-tier <profile-id> none
+```
+
 ## How runtime switching works
 
 Enable it from the Profiles tab with **Apply Adaptive**, or on the command line
@@ -32,6 +41,12 @@ with `--adaptive-auto-uv` in runtime/daemon mode:
 
 ```bash
 sudo ./penguin_burner.sh --daemonize --adaptive-auto-uv
+```
+
+For persistent boot autostart:
+
+```bash
+sudo ./penguin_burner.sh --install-systemd-service --adaptive-auto-uv
 ```
 
 PenguinBurner watches the **base present-frame p95 pacing** and compares it to a

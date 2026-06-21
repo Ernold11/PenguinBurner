@@ -35,19 +35,19 @@ def run_auto_uv_foreground_command(
     *,
     gpu_index,
     config_path,
-    afterburner_runtime_options: dict,
+    auto_uv_runtime_options: dict,
     interactive: bool,
     dependencies: AutoUvForegroundDependencies | None = None,
 ) -> None:
     deps = dependencies or AutoUvForegroundDependencies()
-    runtime_options = afterburner_runtime_options
+    runtime_options = auto_uv_runtime_options
     try:
         if args.auto_uv_voltage_scan:
             run_auto_uv_voltage_scan(
                 args,
                 gpu_index=gpu_index,
                 config_path=config_path,
-                afterburner_runtime_options=runtime_options,
+                auto_uv_runtime_options=runtime_options,
                 dependencies=deps,
             )
     except AutoUvFinalChoiceDiscarded as exc:
@@ -61,7 +61,7 @@ def run_auto_uv_voltage_scan(
     *,
     gpu_index,
     config_path,
-    afterburner_runtime_options: dict,
+    auto_uv_runtime_options: dict,
     dependencies: AutoUvForegroundDependencies | None = None,
 ) -> None:
     deps = dependencies or AutoUvForegroundDependencies()
@@ -91,7 +91,7 @@ def run_auto_uv_voltage_scan(
     deps.log("Auto-UV: running the voltage-frequency undervolt main loop.")
     result = deps.run_voltage_frequency_undervolt_main_loop(
         gpu_index=gpu_index,
-        runtime_options=afterburner_runtime_options,
+        runtime_options=auto_uv_runtime_options,
         q2rtx_config=deps.build_stability_config(
             args,
             gpu_index=gpu_index,

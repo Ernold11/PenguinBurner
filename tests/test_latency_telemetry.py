@@ -616,7 +616,7 @@ def test_latency_telemetry_logger_logs_present_mode_status_under_dump() -> None:
 
 
 def test_latency_telemetry_logger_omits_dump_fields_by_default() -> None:
-    # Without --dump-latency-data the present-mode fields and sleep-mode events
+    # Without PENGUIN_BURNER_DUMP_LATENCY_DATA the present-mode fields and sleep-mode events
     # are not logged; the base create-swapchain line still logs its base fields.
     logs: list[str] = []
     logger = LatencyTelemetryLogger(

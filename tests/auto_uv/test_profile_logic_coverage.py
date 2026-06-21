@@ -56,30 +56,12 @@ def test_read_scan_runtime_settings_requires_positive_duration() -> None:
         read_scan_runtime_settings({}, cfg)
 
 
-def test_derive_efficiency_stop_streak_branches() -> None:
-    # explicit flag -> not derived (False)
-    assert derive_efficiency_stop_streak(
-        {"auto_uv_efficiency_stop_streak_explicit": True}
-    ) is False
-    # absent value -> derived default (True)
-    assert derive_efficiency_stop_streak({}) is True
-    # value equal to default -> True
-    assert derive_efficiency_stop_streak(
-        {"auto_uv_efficiency_stop_streak": AUTO_UV_DEFAULTS.efficiency_stop_streak}
-    ) is True
-    # value differs from default -> False
-    assert derive_efficiency_stop_streak(
-        {"auto_uv_efficiency_stop_streak": AUTO_UV_DEFAULTS.efficiency_stop_streak + 1}
-    ) is False
-    # garbage value -> True (except branch)
-    assert derive_efficiency_stop_streak(
-        {"auto_uv_efficiency_stop_streak": "x"}
-    ) is True
+def test_derive_efficiency_stop_streak_is_always_enabled() -> None:
+    assert derive_efficiency_stop_streak() is True
 
 
-def test_efficiency_stop_streak_clamps_value() -> None:
-    assert efficiency_stop_streak({"auto_uv_efficiency_stop_streak": 5}) == 5
-    assert efficiency_stop_streak({"auto_uv_efficiency_stop_streak": -2}) == 0
+def test_efficiency_stop_streak_uses_default() -> None:
+    assert efficiency_stop_streak() == AUTO_UV_DEFAULTS.efficiency_stop_streak
 
 
 # --- uv_limits ---

@@ -9,7 +9,6 @@ from cli.main_command_routing import (
     route_main_command,
 )
 from common.penguin_burner_errors import NvmlError
-from overlay.config import OverlayConfig
 
 
 def _args(**overrides):
@@ -20,11 +19,7 @@ def _args(**overrides):
         "list_auto_uv_profiles": False,
         "json_events": False,
         "delete_auto_uv_profiles": [],
-        "install_q2rtx": False,
-        "check_latency_layer": False,
-        "overlay_toggle": False,
-        "overlay_enable": False,
-        "overlay_disable": False,
+        "assign_auto_uv_tier": None,
         "config": "/tmp/config.json",
         "gpu_index": None,
         "stability_test": False,
@@ -32,12 +27,7 @@ def _args(**overrides):
         "auto_uv_require_final_choice": False,
         "auto_uv_voltage_scan": False,
         "silent_fan_curve": False,
-        "export_lact_config": "",
-        "lact_source": "auto-uv",
-        "lact_gpu_id": "",
-        "fan_curve_export": False,
-        "lact_max_vf_offset_mhz": 1000,
-        "dry_run": False,
+        "auto_uv_mode": None,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -48,13 +38,12 @@ def _deps(**overrides):
         "logs": [],
         "prints": [],
         "clear": [],
-        "stability": [],
+        "profile_verification": [],
         "foreground": [],
         "stop_runtime": [],
         "debug_options": [],
-        "q2rtx_install": [],
-        "overlay_configs": [],
         "release_fans": [],
+        "tier_assignments": [],
     }
 
     def load_config(config_path):
@@ -69,16 +58,6 @@ def _deps(**overrides):
     defaults = {
         "clear_auto_uv_state": lambda **kwargs: calls["clear"].append(kwargs),
         "load_config": load_config,
-        "afterburner_root_has_imported_profiles": lambda root: bool(root),
-        "run_q2rtx_install": lambda: calls["q2rtx_install"].append(True),
-        "run_stability_test": lambda *args, **kwargs: calls["stability"].append(
-            (args, kwargs)
-        ),
-        "load_afterburner_runtime_options": lambda config_path: {
-            "afterburner_root": "",
-            "afterburner_profile": "",
-            "afterburner_device_profile": "",
-        },
         "load_auto_uv_final_curve": lambda selector: {"path": "/tmp/final.json"},
         "running_under_systemd_service": lambda: False,
         "enable_stdio_capture": lambda *args, **kwargs: None,
@@ -88,26 +67,27 @@ def _deps(**overrides):
         "release_fans_to_hardware_auto": lambda *args, **kwargs: calls[
             "release_fans"
         ].append((args, kwargs)),
-        "build_effective_afterburner_runtime_options": lambda args, stored: dict(
-            stored
-        ),
+        "build_effective_auto_uv_runtime_options": lambda args: {},
         "debug_effective_runtime_options": lambda **kwargs: calls[
             "debug_options"
         ].append(kwargs),
-        "export_lact_config": lambda **kwargs: None,
-        "run_profile_verification": lambda *args, **kwargs: None,
+        "run_profile_verification": lambda *args, **kwargs: calls[
+            "profile_verification"
+        ].append((args, kwargs)),
         "run_auto_uv_foreground_command": lambda *args, **kwargs: calls[
             "foreground"
         ].append((args, kwargs)),
-        "run_afterburner_dry_run": lambda **kwargs: None,
         "read_auto_uv_profile_summaries": lambda: [{"id": "profile-a"}],
         "format_profile_table": lambda profiles: f"table:{profiles[0]['id']}",
         "delete_auto_uv_profiles": lambda selectors: [Path("/tmp/profile-a.json")],
-        "load_overlay_config": lambda: OverlayConfig(enabled=False),
-        "save_overlay_config": lambda config: calls["overlay_configs"].append(
-            config
-        )
-        or Path("/tmp/overlay.toml"),
+        "resolve_auto_uv_profile": lambda selector, **kwargs: (
+            Path("/tmp/profile-a.json"),
+            {"profile_id": "profile-a", "final_verified": True},
+        ),
+        "save_profile_tier_assignment": lambda profile_id, tier: calls[
+            "tier_assignments"
+        ].append((profile_id, tier))
+        or {"balanced": profile_id},
         "log": calls["logs"].append,
         "print_fn": lambda *args, **kwargs: calls["prints"].append(
             (args, kwargs)
@@ -136,90 +116,70 @@ def test_main_command_routing_lists_profiles_without_loading_runtime_config():
     assert calls["prints"][0][0] == ("table:profile-a",)
 
 
-def test_main_command_routing_checks_latency_layer_without_loading_runtime_config():
+def test_main_command_routing_assigns_profile_tier_without_loading_runtime_config():
     deps, calls = _deps(
         load_config=lambda config_path: (_ for _ in ()).throw(
             AssertionError("config should not be loaded")
-        ),
-        check_latency_layer=lambda: {
-            "ok": True,
-            "layer_name": "VK_LAYER_PENGUINBURNER_latency",
-            "launch_options": "PENGUIN_BURNER_LATENCY_LAYER=1 %command%",
-        },
+        )
     )
 
     result = route_main_command(
-        args=_args(check_latency_layer=True),
-        argv=["--check-latency-layer"],
+        args=_args(assign_auto_uv_tier=["profile-a", "balanced"]),
+        argv=["--assign-auto-uv-tier", "profile-a", "balanced"],
         explicit_cli_args=True,
         interactive=False,
         dependencies=deps,
     )
 
     assert result.handled is True
-    assert "PenguinBurner latency layer: found" in calls["prints"][0][0][0]
-
-
-def test_main_command_routing_toggles_overlay_without_loading_runtime_config():
-    deps, calls = _deps(
-        load_config=lambda config_path: (_ for _ in ()).throw(
-            AssertionError("config should not be loaded")
-        ),
-        load_overlay_config=lambda: OverlayConfig(enabled=False),
+    assert calls["tier_assignments"] == [("profile-a", "balanced")]
+    assert calls["prints"][0][0] == (
+        "Assigned Auto-UV profile profile-a to Balanced tier.",
     )
 
+
+def test_main_command_routing_assigns_profile_tier_none():
+    deps, calls = _deps()
+
     result = route_main_command(
-        args=_args(overlay_toggle=True),
-        argv=["--overlay-toggle"],
+        args=_args(assign_auto_uv_tier=["profile-a", "none"]),
+        argv=["--assign-auto-uv-tier", "profile-a", "none"],
         explicit_cli_args=True,
         interactive=False,
         dependencies=deps,
     )
 
     assert result.handled is True
-    assert calls["overlay_configs"][0].enabled is True
-    assert calls["prints"][0][0] == ("Overlay enabled: /tmp/overlay.toml",)
-
-
-def test_main_command_routing_overlay_enable_json_payload():
-    deps, calls = _deps(load_overlay_config=lambda: OverlayConfig(enabled=False))
-
-    result = route_main_command(
-        args=_args(overlay_enable=True, json_events=True),
-        argv=["--overlay-enable", "--json-events"],
-        explicit_cli_args=True,
-        interactive=False,
-        dependencies=deps,
+    assert calls["tier_assignments"] == [("profile-a", "none")]
+    assert calls["prints"][0][0] == (
+        "Removed adaptive tier assignment for Auto-UV profile profile-a.",
     )
 
-    assert result.handled is True
-    assert calls["overlay_configs"][0].enabled is True
-    payload = calls["prints"][0][0][0]
-    assert '"enabled": true' in payload
-    assert '"config_path": "/tmp/overlay.toml"' in payload
+
+def test_main_command_routing_rejects_unknown_profile_tier():
+    deps, _calls = _deps()
+
+    with pytest.raises(NvmlError, match="profile tier must be"):
+        route_main_command(
+            args=_args(assign_auto_uv_tier=["profile-a", "quiet"]),
+            argv=["--assign-auto-uv-tier", "profile-a", "quiet"],
+            explicit_cli_args=True,
+            interactive=False,
+            dependencies=deps,
+        )
 
 
-def test_main_command_routing_overlay_disable_preserves_items():
-    config = OverlayConfig(
-        enabled=True,
-        enabled_item_ids=("base_fps", "gpu_util_pct"),
-        update_interval_s=5,
-    )
-    deps, calls = _deps(load_overlay_config=lambda: config)
+def test_main_command_routing_rejects_missing_profile_for_tier_assignment():
+    deps, _calls = _deps(resolve_auto_uv_profile=lambda selector, **kwargs: None)
 
-    result = route_main_command(
-        args=_args(overlay_disable=True),
-        argv=["--overlay-disable"],
-        explicit_cli_args=True,
-        interactive=False,
-        dependencies=deps,
-    )
-
-    assert result.handled is True
-    saved = calls["overlay_configs"][0]
-    assert saved.enabled is False
-    assert saved.enabled_item_ids == ("base_fps", "gpu_util_pct")
-    assert saved.update_interval_s == 5
+    with pytest.raises(NvmlError, match="not found or not final-verified"):
+        route_main_command(
+            args=_args(assign_auto_uv_tier=["missing", "balanced"]),
+            argv=["--assign-auto-uv-tier", "missing", "balanced"],
+            explicit_cli_args=True,
+            interactive=False,
+            dependencies=deps,
+        )
 
 
 def test_main_command_routing_rejects_clear_and_fresh_together():
@@ -237,12 +197,9 @@ def test_main_command_routing_rejects_clear_and_fresh_together():
 
 def test_main_command_routing_returns_runtime_inputs_for_normal_runtime():
     deps, calls = _deps(
-        load_afterburner_runtime_options=lambda config_path: {
-            "afterburner_root": "/afterburner",
-            "afterburner_profile": "startup",
-            "afterburner_device_profile": "VEN.cfg",
+        build_effective_auto_uv_runtime_options=lambda args: {
+            "auto_uv_mode": "performance"
         },
-        build_effective_afterburner_runtime_options=lambda args, stored: dict(stored),
     )
     args = _args(gpu_index=2)
 
@@ -258,20 +215,35 @@ def test_main_command_routing_returns_runtime_inputs_for_normal_runtime():
     assert result.gpu_index == 2
     assert result.gpu_config["index"] == 2
     assert result.config_path == Path("/tmp/config.json")
-    assert result.afterburner_runtime_options["afterburner_root"] == "/afterburner"
+    assert result.auto_uv_runtime_options["auto_uv_mode"] == "performance"
     assert result.auto_uv_final_curve_available is True
-    assert result.had_persisted_afterburner_root is True
     assert calls["debug_options"][0]["gpu_index"] == 2
 
 
-def test_main_command_routing_starts_default_auto_uv_foreground_when_no_runtime_profile():
-    logs = []
-
+def test_main_command_routing_rejects_no_arg_cli_without_implicit_scan_or_runtime():
     deps, calls = _deps(
         load_auto_uv_final_curve=lambda selector: None,
-        afterburner_root_has_imported_profiles=lambda root: False,
-        enable_stdio_capture=lambda *args, **kwargs: Path("/tmp/auto-uv.log"),
-        log=logs.append,
+    )
+    args = _args()
+
+    with pytest.raises(NvmlError, match="no CLI action selected"):
+        route_main_command(
+            args=args,
+            argv=[],
+            explicit_cli_args=False,
+            interactive=True,
+            dependencies=deps,
+        )
+
+    assert args.auto_uv_voltage_scan is False
+    assert calls["foreground"] == []
+    assert calls["stop_runtime"] == []
+
+
+def test_main_command_routing_allows_no_arg_systemd_runtime():
+    deps, calls = _deps(
+        load_auto_uv_final_curve=lambda selector: {"path": "/tmp/final.json"},
+        running_under_systemd_service=lambda: True,
     )
     args = _args()
 
@@ -279,16 +251,13 @@ def test_main_command_routing_starts_default_auto_uv_foreground_when_no_runtime_
         args=args,
         argv=[],
         explicit_cli_args=False,
-        interactive=True,
+        interactive=False,
         dependencies=deps,
     )
 
-    assert result.handled is True
-    assert args.auto_uv_voltage_scan is True
-    assert calls["stop_runtime"] == [{"log": logs.append}]
-    assert calls["foreground"][0][1]["interactive"] is True
-    assert any("Auto-UV stdout/stderr log" in message for message in logs)
-    assert any("starting the default foreground Auto-UV scan" in message for message in logs)
+    assert result.handled is False
+    assert result.auto_uv_final_curve_available is True
+    assert calls["foreground"] == []
 
 
 def test_main_command_routing_accepts_parsed_auto_uv_scan_args_without_legacy_flag():
@@ -302,11 +271,7 @@ def test_main_command_routing_accepts_parsed_auto_uv_scan_args_without_legacy_fl
             "--auto-uv-require-final-choice",
             "--auto-uv-mode",
             "efficiency",
-            "--auto-uv-max-drop-pct",
-            "15",
             "--auto-uv-max-clock-drop-pct",
-            "10",
-            "--auto-uv-short-seconds",
             "10",
             "--auto-uv-memory-offset-mhz",
             "0",
@@ -356,21 +321,36 @@ def test_main_command_routing_releases_fans_to_hardware_auto_on_scan():
     assert release_args[0] == 0
 
 
-def test_main_command_routing_runs_plain_stability_test_before_profile_setup():
+def test_main_command_routing_rejects_plain_stability_test_without_profile():
     deps, calls = _deps(
-        load_afterburner_runtime_options=lambda config_path: (_ for _ in ()).throw(
-            AssertionError("afterburner runtime options should not be loaded")
+        build_effective_auto_uv_runtime_options=lambda args: (_ for _ in ()).throw(
+            AssertionError("auto-uv runtime options should not be built")
         )
     )
 
+    with pytest.raises(NvmlError, match="requires --auto-uv-profile"):
+        route_main_command(
+            args=_args(stability_test=True),
+            argv=["--stability-test"],
+            explicit_cli_args=True,
+            interactive=False,
+            dependencies=deps,
+        )
+
+    assert calls["profile_verification"] == []
+
+
+def test_main_command_routing_runs_profile_verification_with_profile_selector():
+    deps, calls = _deps()
+
     result = route_main_command(
-        args=_args(stability_test=True),
-        argv=["--stability-test"],
+        args=_args(stability_test=True, auto_uv_profile="latest"),
+        argv=["--stability-test", "--auto-uv-profile", "latest"],
         explicit_cli_args=True,
         interactive=False,
         dependencies=deps,
     )
 
     assert result.handled is True
-    assert calls["stability"][0][1]["gpu_index"] == 0
-    assert calls["stability"][0][1]["config_path"] == Path("/tmp/config.json")
+    assert calls["profile_verification"][0][1]["gpu_index"] == 0
+    assert calls["profile_verification"][0][1]["config_path"] == Path("/tmp/config.json")

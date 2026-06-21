@@ -9,14 +9,9 @@ def _command_route(**overrides):
         "gpu_config": {"index": 0, "enable_persistence_mode": True},
         "fan_config": {"poll_interval_s": 1.0},
         "gpu_index": 0,
-        "afterburner_runtime_options": {
-            "afterburner_root": "",
-            "afterburner_profile": "",
-            "afterburner_device_profile": "",
-        },
+        "auto_uv_runtime_options": {},
         "auto_uv_profile_selector": "",
         "auto_uv_final_curve_available": False,
-        "had_persisted_afterburner_root": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -77,12 +72,9 @@ def test_normal_runtime_wires_startup_vf_policy_and_fan_loop():
         calls.append(("prepare", kwargs))
         return SimpleNamespace(
             should_exit=False,
-            afterburner_runtime_options={"afterburner_root": "/ab"},
+            auto_uv_runtime_options={"auto_uv_mode": "performance"},
             fan_config={"poll_interval_s": 0.5},
             fan_control_enabled=True,
-            afterburner_root="/ab",
-            afterburner_profile="profile1",
-            afterburner_device_profile="VEN.cfg",
         )
 
     def configure(**kwargs):
@@ -113,7 +105,6 @@ def test_normal_runtime_wires_startup_vf_policy_and_fan_loop():
             gpu_config={"index": 2, "enable_persistence_mode": False},
             auto_uv_profile_selector="latest",
             auto_uv_final_curve_available=True,
-            had_persisted_afterburner_root=True,
         ),
         prompt_yes_no=lambda *args, **kwargs: False,
         interactive=False,
@@ -163,12 +154,9 @@ def test_normal_runtime_logs_gpu_policy_helper_failure_and_continues():
     def prepare(**kwargs):
         return SimpleNamespace(
             should_exit=False,
-            afterburner_runtime_options={},
+            auto_uv_runtime_options={},
             fan_config={},
             fan_control_enabled=False,
-            afterburner_root="",
-            afterburner_profile="",
-            afterburner_device_profile="",
         )
 
     def configure(**kwargs):

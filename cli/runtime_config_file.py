@@ -15,7 +15,6 @@ from runtime_support.adaptive_target_fps import (
     DEFAULT_ADAPTIVE_TARGET_FPS,
     parse_adaptive_target_fps,
 )
-from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS, AUTO_UV_METRIC_TUNING
 from common.penguin_burner_paths import default_runtime_config_path
 
 UI_CONFIG_SECTION = "ui"
@@ -32,12 +31,6 @@ def default_runtime_config() -> dict:
         "gpu": {
             "index": 0,
             "enable_persistence_mode": True,
-            "afterburner_auto_uv_max_drop_pct": 16.0,
-            "auto_uv_final_seconds": AUTO_UV_DEFAULTS.final_duration_s,
-            "auto_uv_efficiency_stop_streak": AUTO_UV_DEFAULTS.efficiency_stop_streak,
-            "auto_uv_min_efficiency_stop_drop_pct": (
-                AUTO_UV_METRIC_TUNING.min_efficiency_stop_voltage_drop_pct
-            ),
         },
         "fan": {
             "poll_interval_s": 2,
@@ -187,14 +180,6 @@ def silent_fan_curve_to_runtime_config(
     config[UI_CONFIG_SECTION] = ui
     write_runtime_config(path, config)
     return normalized
-
-
-def afterburner_root_has_imported_profiles(afterburner_root) -> bool:
-    root_text = str(afterburner_root or "").strip()
-    if not root_text:
-        return False
-    root = Path(root_text).expanduser()
-    return (root / "MSIAfterburner.cfg").is_file() and (root / "Profiles").is_dir()
 
 
 def _config_bool(value, *, default: bool = False) -> bool:

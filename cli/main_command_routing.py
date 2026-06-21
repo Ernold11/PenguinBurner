@@ -4,17 +4,8 @@ from dataclasses import dataclass
 import json
 from typing import Callable
 
-from afterburner.import_vf_curve import load_afterburner_runtime_options
-from cli.effective_runtime_options import build_effective_afterburner_runtime_options
-from afterburner.dry_run_preview import run_afterburner_dry_run
-from lact import export_lact_config
-from latency_telemetry import check_latency_layer, format_latency_layer_check
+from cli.effective_runtime_options import build_effective_auto_uv_runtime_options
 from common.penguin_burner_errors import NvmlError
-from overlay.config import (
-    load_overlay_config,
-    save_overlay_config,
-    set_overlay_enabled,
-)
 from runtime_support.runtime_debug import (
     debug_effective_runtime_options,
     enable_stdio_capture,
@@ -22,12 +13,16 @@ from runtime_support.runtime_debug import (
 )
 from runtime_support.runtime_service import running_under_systemd_service, stop_existing_penguin_burner_runtime
 from runtime_gpu_control.fan_release import release_fans_to_hardware_auto
-from runtime_stability_test import run_stability_test
 from saved_uv_profiles import (
     delete_auto_uv_profiles,
     format_profile_table,
     load_auto_uv_final_curve,
+    normalize_profile_tier,
+    profile_tier_is_none,
+    profile_tier_label,
     read_auto_uv_profile_summaries,
+    resolve_auto_uv_profile,
+    save_profile_tier_assignment,
 )
 
 
@@ -35,30 +30,25 @@ from saved_uv_profiles import (
 class MainCommandRoutingDependencies:
     clear_auto_uv_state: Callable
     load_config: Callable
-    afterburner_root_has_imported_profiles: Callable
-    run_q2rtx_install: Callable
-    run_stability_test: Callable = run_stability_test
-    load_afterburner_runtime_options: Callable = load_afterburner_runtime_options
     load_auto_uv_final_curve: Callable = load_auto_uv_final_curve
     running_under_systemd_service: Callable = running_under_systemd_service
     enable_stdio_capture: Callable = enable_stdio_capture
     stop_existing_penguin_burner_runtime: Callable = stop_existing_penguin_burner_runtime
     release_fans_to_hardware_auto: Callable = release_fans_to_hardware_auto
-    build_effective_afterburner_runtime_options: Callable = (
-        build_effective_afterburner_runtime_options
+    build_effective_auto_uv_runtime_options: Callable = (
+        build_effective_auto_uv_runtime_options
     )
     debug_effective_runtime_options: Callable = debug_effective_runtime_options
-    export_lact_config: Callable = export_lact_config
     run_profile_verification: Callable | None = None
     run_auto_uv_foreground_command: Callable | None = None
-    run_afterburner_dry_run: Callable = run_afterburner_dry_run
     read_auto_uv_profile_summaries: Callable = read_auto_uv_profile_summaries
     format_profile_table: Callable = format_profile_table
     delete_auto_uv_profiles: Callable = delete_auto_uv_profiles
-    check_latency_layer: Callable = check_latency_layer
-    load_overlay_config: Callable = load_overlay_config
-    save_overlay_config: Callable = save_overlay_config
-    set_overlay_enabled: Callable = set_overlay_enabled
+    resolve_auto_uv_profile: Callable = resolve_auto_uv_profile
+    save_profile_tier_assignment: Callable = save_profile_tier_assignment
+    normalize_profile_tier: Callable = normalize_profile_tier
+    profile_tier_is_none: Callable = profile_tier_is_none
+    profile_tier_label: Callable = profile_tier_label
     log: Callable[[str], None] = runtime_log
     print_fn: Callable = print
 
@@ -70,10 +60,9 @@ class MainCommandRoutingResult:
     gpu_config: dict | None = None
     fan_config: dict | None = None
     gpu_index: int | None = None
-    afterburner_runtime_options: dict | None = None
+    auto_uv_runtime_options: dict | None = None
     auto_uv_profile_selector: str = ""
     auto_uv_final_curve_available: bool = False
-    had_persisted_afterburner_root: bool = False
 
 
 def route_main_command(
@@ -99,14 +88,6 @@ def route_main_command(
     if getattr(args, "auto_uv", False):
         args.auto_uv_voltage_scan = True
 
-    if _overlay_action_requested(args):
-        _handle_overlay_action(args, deps=deps)
-        return MainCommandRoutingResult(handled=True)
-
-    if getattr(args, "check_latency_layer", False):
-        _check_latency_layer(args, deps=deps)
-        return MainCommandRoutingResult(handled=True)
-
     if args.list_auto_uv_profiles:
         _print_profile_list(args, deps=deps)
         return MainCommandRoutingResult(handled=True)
@@ -115,9 +96,16 @@ def route_main_command(
         _delete_profiles(args, deps=deps)
         return MainCommandRoutingResult(handled=True)
 
-    if args.install_q2rtx:
-        deps.run_q2rtx_install()
+    if args.assign_auto_uv_tier:
+        _assign_profile_tier(args, deps=deps)
         return MainCommandRoutingResult(handled=True)
+
+    if not explicit_cli_args and not deps.running_under_systemd_service():
+        raise NvmlError(
+            "no CLI action selected; use --auto-uv-voltage-scan to scan, "
+            "--daemonize --auto-uv-profile latest to apply a saved profile, "
+            "or --help to list commands"
+        )
 
     config, config_path = deps.load_config(args.config)
     gpu_config = config["gpu"]
@@ -127,40 +115,19 @@ def route_main_command(
     gpu_index = int(gpu_config["index"])
 
     if args.stability_test and not str(args.auto_uv_profile or "").strip():
-        deps.run_stability_test(args, gpu_index=gpu_index, config_path=config_path)
-        return MainCommandRoutingResult(handled=True)
+        raise NvmlError("profile verification requires --auto-uv-profile")
 
-    stored_options = deps.load_afterburner_runtime_options(config_path)
-    had_persisted_afterburner_root = bool(
-        str(stored_options.get("afterburner_root", "")).strip()
-    )
-    has_usable_persisted_afterburner_import = (
-        deps.afterburner_root_has_imported_profiles(
-            stored_options.get("afterburner_root", "")
-        )
-    )
     auto_uv_profile_selector = str(args.auto_uv_profile or "").strip()
     auto_uv_final_curve_available = _auto_uv_final_curve_available(
         auto_uv_profile_selector,
         deps=deps,
     )
 
-    default_auto_uv_started = False
-    if (
-        not explicit_cli_args
-        and not deps.running_under_systemd_service()
-        and not auto_uv_final_curve_available
-        and not has_usable_persisted_afterburner_import
-    ):
-        args.auto_uv_voltage_scan = True
-        default_auto_uv_started = True
-
     _validate_auto_uv_foreground_args(args, deps=deps)
     if args.auto_uv_voltage_scan:
         _prepare_auto_uv_stdout_capture(
             config_path=config_path,
             argv=argv,
-            default_auto_uv_started=default_auto_uv_started,
             deps=deps,
         )
         if args.silent_fan_curve:
@@ -177,25 +144,12 @@ def route_main_command(
         # previously applied profile.
         deps.release_fans_to_hardware_auto(gpu_index, log=deps.log)
 
-    afterburner_runtime_options = deps.build_effective_afterburner_runtime_options(
-        args,
-        stored_options,
-    )
+    auto_uv_runtime_options = deps.build_effective_auto_uv_runtime_options(args)
     deps.debug_effective_runtime_options(
         config_path=config_path,
         gpu_index=gpu_index,
-        afterburner_runtime_options=afterburner_runtime_options,
+        auto_uv_runtime_options=auto_uv_runtime_options,
     )
-
-    if str(args.export_lact_config).strip():
-        deps.export_lact_config(
-            args=args,
-            fan_config=fan_config,
-            gpu_index=gpu_index,
-            afterburner_runtime_options=afterburner_runtime_options,
-            log=deps.log,
-        )
-        return MainCommandRoutingResult(handled=True)
 
     if args.stability_test:
         if deps.run_profile_verification is None:
@@ -204,7 +158,7 @@ def route_main_command(
             args,
             gpu_index=gpu_index,
             config_path=config_path,
-            afterburner_runtime_options=afterburner_runtime_options,
+            auto_uv_runtime_options=auto_uv_runtime_options,
         )
         return MainCommandRoutingResult(handled=True)
 
@@ -215,17 +169,8 @@ def route_main_command(
             args,
             gpu_index=gpu_index,
             config_path=config_path,
-            afterburner_runtime_options=afterburner_runtime_options,
+            auto_uv_runtime_options=auto_uv_runtime_options,
             interactive=interactive,
-        )
-        return MainCommandRoutingResult(handled=True)
-
-    if args.dry_run:
-        deps.run_afterburner_dry_run(
-            config_path=config_path,
-            fan_config=fan_config,
-            gpu_index=gpu_index,
-            afterburner_runtime_options=afterburner_runtime_options,
         )
         return MainCommandRoutingResult(handled=True)
 
@@ -235,10 +180,9 @@ def route_main_command(
         gpu_config=gpu_config,
         fan_config=fan_config,
         gpu_index=gpu_index,
-        afterburner_runtime_options=afterburner_runtime_options,
+        auto_uv_runtime_options=auto_uv_runtime_options,
         auto_uv_profile_selector=auto_uv_profile_selector,
         auto_uv_final_curve_available=auto_uv_final_curve_available,
-        had_persisted_afterburner_root=had_persisted_afterburner_root,
     )
 
 
@@ -263,45 +207,47 @@ def _delete_profiles(args, *, deps: MainCommandRoutingDependencies) -> None:
         deps.print_fn(f"Deleted {len(deleted)} Auto-UV {label}.", flush=True)
 
 
-def _check_latency_layer(args, *, deps: MainCommandRoutingDependencies) -> None:
-    result = deps.check_latency_layer()
-    if args.json_events:
-        deps.print_fn(json.dumps({"latency_layer": result}, indent=2), flush=True)
-    else:
-        deps.print_fn(format_latency_layer_check(result), flush=True)
+def _assign_profile_tier(args, *, deps: MainCommandRoutingDependencies) -> None:
+    selector, raw_tier = args.assign_auto_uv_tier
+    if not deps.profile_tier_is_none(raw_tier) and not deps.normalize_profile_tier(raw_tier):
+        raise NvmlError(
+            "profile tier must be efficiency, balanced, performance, or none"
+        )
+    resolved = deps.resolve_auto_uv_profile(str(selector), allow_unverified=False)
+    if resolved is None:
+        raise NvmlError(
+            f"Auto-UV profile not found or not final-verified: {selector}"
+        )
+    _path, profile = resolved
+    profile_id = str(profile.get("profile_id") or "").strip()
+    if not profile_id:
+        raise NvmlError(f"Auto-UV profile has no profile_id: {selector}")
 
-
-def _overlay_action_requested(args) -> bool:
-    return bool(
-        getattr(args, "overlay_toggle", False)
-        or getattr(args, "overlay_enable", False)
-        or getattr(args, "overlay_disable", False)
-    )
-
-
-def _handle_overlay_action(args, *, deps: MainCommandRoutingDependencies) -> None:
-    config = deps.load_overlay_config()
-    if getattr(args, "overlay_toggle", False):
-        enabled = not bool(config.enabled)
-        action = "toggle"
-    elif getattr(args, "overlay_enable", False):
-        enabled = True
-        action = "enable"
-    else:
-        enabled = False
-        action = "disable"
-    updated = deps.set_overlay_enabled(config, enabled)
-    path = deps.save_overlay_config(updated)
+    assignments = deps.save_profile_tier_assignment(profile_id, raw_tier)
+    tier = deps.normalize_profile_tier(raw_tier)
+    tier_label = deps.profile_tier_label(tier)
+    disabled = bool(deps.profile_tier_is_none(raw_tier))
     payload = {
-        "action": action,
-        "enabled": bool(updated.enabled),
-        "config_path": str(path),
+        "profile_id": profile_id,
+        "selector": str(selector),
+        "tier": "" if disabled else tier,
+        "tier_label": "" if disabled else tier_label,
+        "disabled": disabled,
+        "assignments": assignments,
     }
     if args.json_events:
-        deps.print_fn(json.dumps({"overlay": payload}, indent=2), flush=True)
+        deps.print_fn(json.dumps({"profile_tier_assignment": payload}, indent=2), flush=True)
         return
-    state = "enabled" if updated.enabled else "disabled"
-    deps.print_fn(f"Overlay {state}: {path}", flush=True)
+    if disabled:
+        deps.print_fn(
+            f"Removed adaptive tier assignment for Auto-UV profile {profile_id}.",
+            flush=True,
+        )
+        return
+    deps.print_fn(
+        f"Assigned Auto-UV profile {profile_id} to {tier_label} tier.",
+        flush=True,
+    )
 
 
 def _auto_uv_final_curve_available(
@@ -329,7 +275,6 @@ def _prepare_auto_uv_stdout_capture(
     *,
     config_path,
     argv,
-    default_auto_uv_started: bool,
     deps: MainCommandRoutingDependencies,
 ):
     capture_path = deps.enable_stdio_capture(
@@ -339,8 +284,3 @@ def _prepare_auto_uv_stdout_capture(
     )
     if capture_path is not None:
         deps.log(f"Auto-UV stdout/stderr log: {capture_path}")
-    if default_auto_uv_started:
-        deps.log(
-            "No saved Auto-UV curve or usable Afterburner import found; "
-            "starting the default foreground Auto-UV scan."
-        )

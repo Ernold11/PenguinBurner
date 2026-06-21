@@ -217,7 +217,7 @@ def test_voltage_scan_wraps_initial_check_runtime_error_as_nvml_error() -> None:
             args,
             gpu_index=0,
             config_path="/tmp/config.toml",
-            afterburner_runtime_options={},
+            auto_uv_runtime_options={},
             dependencies=AutoUvForegroundDependencies(
                 require_auto_uv_initial_check=failing_initial_check,
                 log=lambda *_a, **_k: None,

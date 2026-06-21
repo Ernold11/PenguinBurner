@@ -47,7 +47,7 @@ def test_auto_uv_voltage_scan_wires_json_events_and_final_result() -> None:
         args,
         gpu_index=1,
         config_path="/tmp/config.toml",
-        afterburner_runtime_options={"auto_uv_mode": "performance"},
+        auto_uv_runtime_options={"auto_uv_mode": "performance"},
         dependencies=AutoUvForegroundDependencies(
             require_auto_uv_initial_check=lambda **kwargs: checks.append(kwargs),
             build_stability_config=fake_build_stability_config,
@@ -101,7 +101,7 @@ def test_auto_uv_foreground_command_translates_auto_uv_error() -> None:
             args,
             gpu_index=0,
             config_path="/tmp/config.toml",
-            afterburner_runtime_options={},
+            auto_uv_runtime_options={},
             interactive=False,
             dependencies=AutoUvForegroundDependencies(
                 require_auto_uv_initial_check=lambda **_kwargs: None,
@@ -125,7 +125,7 @@ def test_auto_uv_foreground_command_logs_discarded_final_choice() -> None:
         args,
         gpu_index=0,
         config_path="/tmp/config.toml",
-        afterburner_runtime_options={},
+        auto_uv_runtime_options={},
         interactive=False,
         dependencies=AutoUvForegroundDependencies(
             require_auto_uv_initial_check=lambda **_kwargs: None,

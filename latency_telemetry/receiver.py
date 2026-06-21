@@ -18,7 +18,7 @@ from .layer_check import DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS
 
 MARKER_INPUT_SAMPLE_BIT = 1 << 6
 RAW_TIMING_LOG_ENV = "PENGUIN_BURNER_LATENCY_RAW_TIMING_LOG"
-# Opt-in (via --dump-latency-data or this env) verbose latency dump: present
+# Opt-in (via this env) verbose latency dump: present
 # mode / queue depth on swapchain creation plus Reflex sleep-mode (boost / FPS
 # cap) and recovery transitions. Off by default; debugging display/VRR and
 # frame-gen behaviour only.
@@ -1117,7 +1117,7 @@ class LatencyTelemetryLogger:
         "present-wait-result",
     )
 
-    # Extra events surfaced only under --dump-latency-data: Reflex sleep-mode
+    # Extra events surfaced only under PENGUIN_BURNER_DUMP_LATENCY_DATA:
     # (boost / FPS-cap) + recovery transitions. Logged on change only (see
     # _sleep_mode_is_duplicate) since the set event fires per-frame. These expose
     # low_latency_boost and minimum_interval_us, the closest readouts to
@@ -1156,7 +1156,7 @@ class LatencyTelemetryLogger:
         "vk_khr_present_id_requested",
     )
 
-    # Extra fields surfaced only under --dump-latency-data. Present mode +
+    # Extra fields surfaced only under PENGUIN_BURNER_DUMP_LATENCY_DATA. Present mode +
     # queue depth (FIFO/IMMEDIATE/MAILBOX is the vsync/VRR path, min_image_count
     # the present-queue depth) and the Reflex sleep-mode (boost / FPS-cap)
     # internals.

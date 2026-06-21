@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import Callable
 
 from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
-from afterburner.import_vf_curve import apply_plan
 from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
+from runtime_support.vf_curve_plan import apply_plan
 
 
 class NvidiaRuntimeDefaultsError(RuntimeError):

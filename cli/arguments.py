@@ -12,10 +12,8 @@ from auto_uv.scan_mode import AUTO_UV_MODES
 from nvidia_driver.nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from common.penguin_burner_paths import default_runtime_config_path
 from runtime_support.runtime_service import DEFAULT_JOURNAL_HOURS
-from stability.q2rtx import DEFAULT_HEIGHT, DEFAULT_WIDTH
 
 DEFAULT_AUTO_UV_FINAL_DURATION_S = AUTO_UV_DEFAULTS.final_duration_s
-DEFAULT_LACT_NVIDIA_MAX_VF_OFFSET_MHZ = 1000
 
 
 def default_cli_config_path() -> str:
@@ -27,8 +25,7 @@ def parse_arguments(argv):
         prog="penguin_burner.py",
         usage="penguin_burner.py [options]",
         description=(
-            "PenguinBurner Auto-UV runtime, stability, and optional "
-            "Afterburner import utility."
+            "PenguinBurner Auto-UV scan and runtime profile utility."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -36,10 +33,6 @@ def parse_arguments(argv):
     auto_uv_group = parser.add_argument_group("Auto-UV")
     daemon_group = parser.add_argument_group("Runtime and daemon essentials")
     runtime_group = parser.add_argument_group("Runtime tuning")
-    overlay_group = parser.add_argument_group("Overlay")
-    lact_group = parser.add_argument_group("LACT export")
-    stability_group = parser.add_argument_group("Stability workload")
-    afterburner_group = parser.add_argument_group("Afterburner import")
     advanced_group = parser.add_argument_group("Advanced/debug")
 
     auto_uv_group.add_argument(
@@ -75,6 +68,16 @@ def parse_arguments(argv):
         default=[],
         metavar="PROFILE",
         help=argparse.SUPPRESS,
+    )
+    auto_uv_group.add_argument(
+        "--assign-auto-uv-tier",
+        nargs=2,
+        metavar=("PROFILE", "TIER"),
+        help=(
+            "Assign a saved verified Auto-UV profile to an adaptive tier and "
+            "exit. PROFILE accepts the same selectors as --auto-uv-profile; "
+            "TIER is efficiency, balanced, performance, or none."
+        ),
     )
     auto_uv_group.add_argument(
         "--fresh-auto-uv-scan",
@@ -116,39 +119,6 @@ def parse_arguments(argv):
         help=(
             "Lowest voltage bin Auto-UV may try. Overrides the detected GPU "
             "table floor and the percentage-drop fallback."
-        ),
-    )
-    auto_uv_group.add_argument(
-        "--auto-uv-max-drop-pct",
-        type=float,
-        default=None,
-        metavar="N",
-        help=(
-            "Maximum percentage drop below the first discovered auto-UV start "
-            "voltage allowed during candidate search when no GPU table floor "
-            "or explicit min voltage is available; default 10.0."
-        ),
-    )
-    auto_uv_group.add_argument(
-        "--auto-uv-final-seconds",
-        type=int,
-        default=None,
-        metavar="SECONDS",
-        help=(
-            "Final Auto-UV verification duration in seconds after the best curve "
-            "is selected; default "
-            f"{AUTO_UV_DEFAULTS.final_duration_s}. Candidate probes remain tiered short tests."
-        ),
-    )
-    auto_uv_group.add_argument(
-        "--auto-uv-short-seconds",
-        type=int,
-        default=None,
-        metavar="SECONDS",
-        help=(
-            "Base Auto-UV verification length in seconds; default "
-            f"{AUTO_UV_DEFAULTS.probe_duration_s}. Allowed range 10..60. "
-            "Medium and deep voltage tiers use 2x and 2.5x this value."
         ),
     )
     auto_uv_group.add_argument(
@@ -202,39 +172,6 @@ def parse_arguments(argv):
             "GPU table target."
         ),
     )
-    auto_uv_group.add_argument(
-        "--auto-uv-efficiency-stop-streak",
-        type=int,
-        default=None,
-        metavar="N",
-        help=argparse.SUPPRESS,
-    )
-    auto_uv_group.add_argument(
-        "--auto-uv-min-efficiency-stop-drop-pct",
-        type=float,
-        default=None,
-        metavar="N",
-        help=argparse.SUPPRESS,
-    )
-    advanced_group.add_argument(
-        "--check-latency-layer",
-        action="store_true",
-        help=(
-            "Check Vulkan loader discovery for PenguinBurner's opt-in latency "
-            "telemetry layer and print Steam launch options."
-        ),
-    )
-    advanced_group.add_argument(
-        "--dump-latency-data",
-        action="store_true",
-        help=(
-            "Runtime/daemon only: dump verbose latency internals to the daemon "
-            "log -- swapchain present mode and queue depth, plus Reflex "
-            "sleep-mode (boost / FPS-cap) and recovery transitions. For "
-            "debugging display/VRR and frame-generation behaviour; off by "
-            "default. Equivalent to PENGUIN_BURNER_DUMP_LATENCY_DATA=1."
-        ),
-    )
     daemon_group.add_argument(
         "--silent-fan-curve",
         action="store_true",
@@ -272,7 +209,8 @@ def parse_arguments(argv):
         default="",
         help=(
             "Use an Auto-UV profile by profile id, candidate id, JSON path, "
-            "'active', or 'latest' for runtime, daemon, stability, and LACT export."
+            "'active', or 'latest' for daemon runtime, systemd service runtime, "
+            "and internal final verification."
         ),
     )
     daemon_group.add_argument(
@@ -307,168 +245,29 @@ def parse_arguments(argv):
         default=None,
         help="Override the configured GPU index",
     )
-    overlay_action_group = overlay_group.add_mutually_exclusive_group()
-    overlay_action_group.add_argument(
-        "--overlay-toggle",
-        action="store_true",
-        help=(
-            "Toggle PenguinBurner's native in-game overlay and exit. The running "
-            "overlay reloads this setting live, so this is suitable for a desktop "
-            "global shortcut."
-        ),
-    )
-    overlay_action_group.add_argument(
-        "--overlay-enable",
-        action="store_true",
-        help=(
-            "Enable PenguinBurner's native in-game overlay and exit. The running "
-            "overlay reloads this setting live."
-        ),
-    )
-    overlay_action_group.add_argument(
-        "--overlay-disable",
-        action="store_true",
-        help=(
-            "Disable PenguinBurner's native in-game overlay and exit. The running "
-            "overlay reloads this setting live."
-        ),
-    )
-    lact_group.add_argument(
-        "--export-lact-config",
-        default="",
-        help=(
-            "Write a complete Nvidia-only LACT config.yaml from the saved "
-            "Auto-UV or Afterburner V/F curve. Add --silent-fan-curve to "
-            "include fan settings. Use --lact-gpu-id with the id from `lact cli list-gpus`."
-        ),
-    )
-    lact_group.add_argument(
-        "--lact-source",
-        choices=("auto-uv", "afterburner"),
-        default="auto-uv",
-        help="Source for --export-lact-config; default auto-uv.",
-    )
-    lact_group.add_argument(
-        "--fan-curve-export",
-        action="store_true",
-        help=(
-            "With --export-lact-config, export only the fan curve to LACT and "
-            "omit gpu_vf_curve."
-        ),
-    )
-    lact_group.add_argument(
-        "--lact-gpu-id",
-        default="",
-        help="LACT GPU id to use in --export-lact-config output.",
-    )
-    lact_group.add_argument(
-        "--lact-max-vf-offset-mhz",
-        type=int,
-        default=DEFAULT_LACT_NVIDIA_MAX_VF_OFFSET_MHZ,
-        metavar="MHz",
-        help=(
-            "Maximum positive per-point Nvidia V/F offset to emit for LACT; "
-            f"default {DEFAULT_LACT_NVIDIA_MAX_VF_OFFSET_MHZ}. Exported "
-            "clocks are clamped to base_mhz plus this value."
-        ),
-    )
-    stability_group.add_argument(
+    advanced_group.add_argument(
         "--stability-test",
         action="store_true",
-        help=("Run a non-interactive Q2RTX benchmark stability workload and exit"),
+        help=argparse.SUPPRESS,
     )
-    stability_group.add_argument(
-        "--install-q2rtx",
-        action="store_true",
-        help=(
-            "Download PenguinBurner's latest headless Q2RTX benchmark release "
-            "and install the required shareware data under "
-            "~/.local/share/PenguinBurner/q2rtx"
-        ),
-    )
-    stability_group.add_argument(
+    advanced_group.add_argument(
         "--stability-seconds",
         type=int,
         default=DEFAULT_AUTO_UV_FINAL_DURATION_S,
-        help=(
-            "Wall-clock duration budget for --stability-test; uses the same "
-            "Q2RTX + CUDA companion load as auto-UV final verification; "
-            f"default {DEFAULT_AUTO_UV_FINAL_DURATION_S}"
-        ),
+        help=argparse.SUPPRESS,
     )
-    stability_group.add_argument(
-        "--stability-workload",
-        choices=("q2rtx-cuda", "q2rtx", "cuda"),
-        default="q2rtx-cuda",
-        help=(
-            "Workload selection for --stability-test; q2rtx-cuda keeps the "
-            "standard Q2RTX benchmark plus CUDA compute split, q2rtx or cuda "
-            "runs only that workload for the full duration."
-        ),
-    )
-    stability_group.add_argument(
-        "--stability-width",
-        type=int,
-        default=None,
-        help=(
-            "Q2RTX render width used by --stability-test; default auto "
-            f"(<=8 GiB VRAM: 2560, >8 GiB/unknown: {DEFAULT_WIDTH})"
-        ),
-    )
-    stability_group.add_argument(
-        "--stability-height",
-        type=int,
-        default=None,
-        help=(
-            "Q2RTX render height used by --stability-test; default auto "
-            f"(<=8 GiB VRAM: 1440, >8 GiB/unknown: {DEFAULT_HEIGHT})"
-        ),
-    )
-    stability_group.add_argument(
-        "--stability-log-dir",
-        default="",
-        help=(
-            "Optional log directory for --stability-test; defaults to "
-            "~/.config/PenguinBurner/stability-logs"
-        ),
-    )
-    stability_group.add_argument(
+    advanced_group.add_argument(
         "--stability-stop-request-file",
         default="",
         help=argparse.SUPPRESS,
-    )
-    afterburner_group.add_argument(
-        "--afterburner-dir",
-        default="",
-        help="Path to the MSI Afterburner root directory",
-    )
-    afterburner_group.add_argument(
-        "--profile-section",
-        "--section",
-        dest="profile_section",
-        default="",
-        help="Optional saved Afterburner profile section such as profile2",
-    )
-    afterburner_group.add_argument(
-        "--afterburner-device-profile",
-        default="",
-        help="Optional device profile file under Profiles/ to inspect or use",
-    )
-    afterburner_group.add_argument(
-        "--dry-run",
-        action="store_true",
-        help=(
-            "Inspect Afterburner fan/VF data and draw dry-run previews without "
-            "touching GPU state; recommended first step and does not require sudo"
-        ),
     )
     advanced_group.add_argument(
         "--debug-log",
         action="store_true",
         help=(
-            "Write a verbose dry-run and first-import diagnostic log next to "
-            "the selected config file under debug-logs/; with the default "
-            "config this is ~/.config/PenguinBurner/debug-logs"
+            "Write a verbose diagnostic log next to the selected config file "
+            "under debug-logs/; with the default config this is "
+            "~/.config/PenguinBurner/debug-logs"
         ),
     )
     return parser.parse_args(argv)
