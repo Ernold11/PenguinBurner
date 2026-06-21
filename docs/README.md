@@ -13,5 +13,5 @@ comparison.
 ## Reference
 
 - **[releases/](releases/)** — release notes and the release process.
-- **[dev/](dev/)** — internal engineering notes (latency pipeline, telemetry,
-  experiments). Not needed to use PenguinBurner.
+- **[dev/](dev/)** — internal maintenance notes. Not needed to use
+  PenguinBurner.

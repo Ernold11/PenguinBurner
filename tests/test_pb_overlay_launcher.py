@@ -17,7 +17,6 @@ from overlay.state import (
 
 def test_pb_overlay_launcher_execs_with_layer_environment(monkeypatch, tmp_path) -> None:
     calls = []
-    popen_calls = []
     state_path = tmp_path / "overlay-state.txt"
     text_path = tmp_path / "overlay-text.txt"
     monkeypatch.setenv(OVERLAY_STATE_ENV, str(state_path))
@@ -35,11 +34,6 @@ def test_pb_overlay_launcher_execs_with_layer_environment(monkeypatch, tmp_path)
         raise RuntimeError("stop")
 
     monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
-    monkeypatch.setattr(
-        launcher.subprocess,
-        "Popen",
-        lambda *args, **kwargs: popen_calls.append((args, kwargs)),
-    )
 
     try:
         launcher.main(["game", "--arg"])
@@ -68,7 +62,6 @@ def test_pb_overlay_launcher_execs_with_layer_environment(monkeypatch, tmp_path)
     assert "third_party/dxvk-nvapi/build.layer" in env["VK_ADD_IMPLICIT_LAYER_PATH"]
     assert env[OVERLAY_STATE_ENV] == str(state_path)
     assert env[OVERLAY_TEXT_ENV] == str(text_path)
-    assert not popen_calls
 
 
 def test_configure_environment_arms_live_overlay_config_by_default(tmp_path) -> None:
@@ -198,60 +191,6 @@ def test_pb_overlay_launcher_strips_mangohud_preload(monkeypatch, tmp_path) -> N
 def test_trace_fifo_path_is_in_cache_dir() -> None:
     p = launcher.trace_fifo_path({"HOME": "/home/jp"})
     assert str(p) == "/home/jp/.cache/penguin-burner/nvapi-trace.fifo"
-
-
-def test_pb_overlay_launcher_can_start_debug_overlay_window(monkeypatch, tmp_path) -> None:
-    calls = []
-    popen_calls = []
-    state_path = tmp_path / "overlay-state.txt"
-    text_path = tmp_path / "overlay-text.txt"
-    monkeypatch.setenv(OVERLAY_STATE_ENV, str(state_path))
-    monkeypatch.setenv(OVERLAY_TEXT_ENV, str(text_path))
-    monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
-    monkeypatch.setenv("PENGUIN_BURNER_OVERLAY_WINDOW", "1")
-    monkeypatch.setenv("DISPLAY", ":0")
-    monkeypatch.setenv("LD_PRELOAD", "steam-overlay.so")
-    monkeypatch.setenv("LD_LIBRARY_PATH", "/steam/runtime")
-    monkeypatch.setenv("PRESSURE_VESSEL_RUNTIME", "steamrt")
-    # Control the platform input so the wrapper's DISPLAY->xcb default applies
-    # (other tests / the host may leave QT_QPA_PLATFORM set in os.environ).
-    monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
-
-    def fake_execvpe(file, args, env):
-        calls.append((file, args, env))
-        raise RuntimeError("stop")
-
-    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
-    monkeypatch.setattr(
-        launcher.subprocess,
-        "Popen",
-        lambda *args, **kwargs: popen_calls.append((args, kwargs)),
-    )
-
-    try:
-        launcher.main(["game", "--arg"])
-    except RuntimeError:
-        pass
-
-    assert calls
-    assert popen_calls
-    display_env = popen_calls[0][1]["env"]
-    assert display_env["QT_QPA_PLATFORM"] == "xcb"
-    assert "LD_PRELOAD" not in display_env
-    assert "LD_LIBRARY_PATH" not in display_env
-    assert "PRESSURE_VESSEL_RUNTIME" not in display_env
-
-
-def test_pb_overlay_display_env_uses_wayland_without_x11() -> None:
-    display_env = launcher._display_process_env(
-        {
-            "WAYLAND_DISPLAY": "wayland-0",
-            "LD_PRELOAD": "steam-overlay.so",
-        }
-    )
-
-    assert display_env["QT_QPA_PLATFORM"] == "wayland"
-    assert "LD_PRELOAD" not in display_env
 
 
 def _fake_native_layer_dir(tmp_path):

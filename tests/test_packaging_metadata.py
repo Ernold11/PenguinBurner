@@ -71,19 +71,20 @@ def test_console_scripts_use_gui_default_and_explicit_cli_names() -> None:
     assert "pburn-yolo" not in scripts
     assert scripts["penguin-burner-cli"] == "penguin_burner:cli_main"
     assert scripts["pburn-cli"] == "penguin_burner:cli_main"
-    assert scripts["penguin-burner-steam-game-setup"] == (
-        "latency_telemetry.steam_game_setup:main"
-    )
-    assert "penguin-burner-steam-re9-patched-setup" not in scripts
-    assert scripts["PB_OVERLAY"] == "overlay.launcher:main"
+    assert "penguin-burner-steam-launch-check" not in scripts
+    assert "penguin-burner-steam-game-setup" not in scripts
     assert scripts["PENGUIN_BURNER"] == "overlay.launcher:main"
-    assert scripts["pb-overlay"] == "overlay.launcher:main"
-    assert (
-        scripts["penguin-burner-overlay-text"]
-        == "overlay.overlay_text:main"
-    )
-    assert scripts["pburn-overlay-text"] == "overlay.overlay_text:main"
-    assert scripts["pb-overlay-text"] == "overlay.overlay_text:main"
+    assert "PB_OVERLAY" not in scripts
+    assert "penguin-burner-overlay" not in scripts
+    assert "pburn-overlay" not in scripts
+    assert "pb-overlay" not in scripts
+    assert "penguin-burner-overlay-text" not in scripts
+    assert "pburn-overlay-text" not in scripts
+    assert "pb-overlay-text" not in scripts
+    assert "q2rtx-stability" not in scripts
+    assert "cuda-bruteforce-stability" not in scripts
+    assert "penguin-burner-import-afterburner-vf" not in scripts
+    assert "penguin-burner-import-afterburner-fan" not in scripts
     assert "penguin_burner" not in scripts
 
 
@@ -199,7 +200,7 @@ def test_package_installs_shared_subprocess_locale_helper() -> None:
 
     # Low-level NVIDIA driver readers -> nvidia_driver; shared cross-cutting
     # helpers (paths, errors, subprocess locale, CLI output, ascii chart) ->
-    # common; Afterburner policy + dry-run preview -> the afterburner package.
+    # common; Afterburner import/policy helpers -> the afterburner package.
     # The redundant run-from-checkout shims were dropped (the package modules
     # carry their own __main__ / console-script entry points).
     assert {"nvidia_driver", "common", "afterburner", "stability"} <= packages

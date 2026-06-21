@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import argparse
-from pathlib import Path
-
 from .config import OverlayConfig
 from .config import default_overlay_config
-from .config import load_overlay_config
 from .config import normalize_overlay_config
-from .state import read_overlay_state
 
 
 SAMPLE_OVERLAY_VALUES = {
@@ -232,20 +227,3 @@ def _compact_tier(value: object) -> str:
     if lower == "performance":
         return "PERF"
     return text[:6].upper()
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="pb-overlay-text")
-    parser.add_argument("--state", type=Path, default=None)
-    args = parser.parse_args(argv)
-
-    values = read_overlay_state(args.state)
-    if not values:
-        print("PB waiting")
-    else:
-        print(format_overlay_text(values, config=load_overlay_config()))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

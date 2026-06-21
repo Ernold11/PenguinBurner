@@ -24,22 +24,6 @@ def test_parse_line_accepts_stock_dxvk_nvapi_trace_marker() -> None:
     ) == (42, NV_MARKER_SIMULATION_START, 123456000)
 
 
-def test_parse_line_accepts_lat_marker_tap() -> None:
-    assert _parse_line("LAT frame=42 marker=5 t_us=123456789") == (
-        42,
-        NV_MARKER_PRESENT_END,
-        123456789,
-    )
-
-
-def test_parse_line_accepts_legacy_pblat_marker() -> None:
-    assert _parse_line("PBLAT frame=42 marker=5 t_us=123456789") == (
-        42,
-        NV_MARKER_PRESENT_END,
-        123456789,
-    )
-
-
 def test_parse_line_accepts_stock_dxvk_nvapi_oob_present_marker() -> None:
     assert _parse_line(
         "123.456:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
@@ -53,14 +37,6 @@ def test_parse_line_accepts_stock_dxvk_nvapi_async_frame_marker() -> None:
         "({version=1,frameID=42,markerType=OUT_OF_BAND_PRESENT_END,"
         "presentFrameID=77,rsvd})"
     ) == (42, NV_MARKER_OUT_OF_BAND_PRESENT_END, 123456000)
-
-
-def test_parse_line_accepts_oob_present_marker_tap() -> None:
-    assert _parse_line("LAT frame=42 marker=12 t_us=123456789") == (
-        42,
-        NV_MARKER_OUT_OF_BAND_PRESENT_END,
-        123456789,
-    )
 
 
 def test_bridge_does_not_mark_framegen_from_oob_present_trace(monkeypatch, tmp_path) -> None:

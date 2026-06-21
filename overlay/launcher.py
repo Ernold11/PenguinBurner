@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import re
-import subprocess
 import sys
 
 from .config import OVERLAY_CONFIG_ENV, default_overlay_config_path, load_overlay_config
@@ -23,9 +22,8 @@ LATENCY_ENABLE_ENV = "PENGUIN_BURNER_LATENCY_LAYER"
 LATENCY_SOCKET_ENV = "PENGUIN_BURNER_LATENCY_SOCKET"
 # User-facing toggle for in-game (under frame generation) latency. When unset,
 # the wrapper does NOT enable dxvk-nvapi trace logging, so a plain launch keeps
-# the overlay's present-FPS/clocks/voltage with zero trace overhead. The setup
-# script's --experimental-ingame-latency flag sets this so the wrapper turns on
-# trace and the marker-bridge feed.
+# the overlay's present-FPS/clocks/voltage with zero trace overhead. Add
+# PB_INGAME_LATENCY=1 to a launch line to turn on trace and the marker feed.
 INGAME_LATENCY_ENV = "PENGUIN_BURNER_INGAME_LATENCY"
 # Short alias for the toggle, used in the Steam launch line.
 INGAME_LATENCY_ENV_ALIAS = "PB_INGAME_LATENCY"
@@ -67,7 +65,6 @@ def main(argv: list[str] | None = None) -> int:
     configure_penguin_burner_environment(env)
     _remove_mangohud_environment(env)
     _prepare_overlay_paths(env)
-    _start_overlay_window(env)
     if ingame_latency_enabled(env):
         _route_trace_to_fifo(env)
     os.execvpe(args[0], args, env)
@@ -218,69 +215,3 @@ def _prepare_overlay_paths(env: dict[str, str]) -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
         except OSError:
             continue
-
-
-def _start_overlay_window(env: dict[str, str]) -> None:
-    if str(env.get("PENGUIN_BURNER_OVERLAY_WINDOW") or "").lower() not in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        return
-    command = [
-        sys.executable,
-        "-m",
-        "overlay.display",
-        "--text-file",
-        str(env[OVERLAY_TEXT_ENV]),
-        "--parent-pid",
-        str(os.getpid()),
-    ]
-    try:
-        log_file = None
-        try:
-            log_path = Path(str(env[OVERLAY_TEXT_ENV])).expanduser().with_name(
-                "overlay-display.log"
-            )
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_file = log_path.open("ab")
-        except OSError:
-            pass
-        try:
-            subprocess.Popen(
-                command,
-                env=_display_process_env(env),
-                stdin=subprocess.DEVNULL,
-                stdout=log_file if log_file is not None else subprocess.DEVNULL,
-                stderr=log_file if log_file is not None else subprocess.DEVNULL,
-                start_new_session=True,
-            )
-        finally:
-            if log_file is not None:
-                log_file.close()
-    except Exception:
-        return
-
-
-def _display_process_env(env: dict[str, str]) -> dict[str, str]:
-    display_env = dict(env)
-    for key in (
-        "LD_PRELOAD",
-        "LD_LIBRARY_PATH",
-        "ORIG_LD_LIBRARY_PATH",
-        "SYSTEM_LD_LIBRARY_PATH",
-        "WINE_LD_PRELOAD",
-        "STEAM_RUNTIME",
-        "STEAM_RUNTIME_LIBRARY_PATH",
-    ):
-        display_env.pop(key, None)
-    for key in tuple(display_env):
-        if key.startswith("PRESSURE_VESSEL_"):
-            display_env.pop(key, None)
-    if not display_env.get("QT_QPA_PLATFORM"):
-        if display_env.get("DISPLAY"):
-            display_env["QT_QPA_PLATFORM"] = "xcb"
-        elif display_env.get("WAYLAND_DISPLAY"):
-            display_env["QT_QPA_PLATFORM"] = "wayland"
-    return display_env

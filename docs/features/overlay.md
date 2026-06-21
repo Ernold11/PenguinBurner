@@ -63,4 +63,5 @@ you get the complete meter wherever the stack supports it. Where the display tai
 isn't available, it falls back to render latency alone.
 
 - Set `PENGUIN_BURNER_LATENCY_DISPLAY=0` to show render latency only.
-- In-game latency is experimental on stock Proton (`--experimental-ingame-latency`).
+- Add `PB_INGAME_LATENCY=1` before `PENGUIN_BURNER` to opt into stock Proton
+  in-game latency tracing.

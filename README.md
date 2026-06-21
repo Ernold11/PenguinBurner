@@ -145,10 +145,10 @@ play, so you see the effect of an undervolt, clock, or fan change in real time
 without leaving the game.
 
 If you want the detailed numbers behind that LAT figure, start the daemon with
-`--dump-latency-data` (advanced; off by default). It dumps the full per-frame
-latency breakdown — present mode, queue depth, Reflex sleep-mode/boost, and the
-display/scanout split — to the daemon log, which you can capture to a file by
-also passing `--debug-log`.
+`PENGUIN_BURNER_DUMP_LATENCY_DATA=1` in its environment. It dumps the full
+per-frame latency breakdown — present mode, queue depth, Reflex sleep-mode/boost,
+and the display/scanout split — to the daemon log, which you can capture to a
+file by also passing `--debug-log`.
 
 [Read the guide](docs/features/overlay.md)
 
@@ -178,8 +178,8 @@ C:\Program Files (x86)\MSI Afterburner
 ## LACT Export
 
 Export any saved V/F (and optionally fan) curve as a complete Nvidia LACT config
-from the profiles view or the CLI. See
-[the Auto-UV guide](docs/features/auto-uv.md#after-the-scan) for the commands.
+from the Profiles view. See
+[the Auto-UV guide](docs/features/auto-uv.md#after-the-scan) for the workflow.
 
 ## Run At Your Own Risk
 

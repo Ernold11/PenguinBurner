@@ -6,8 +6,7 @@
 
 Open the latest log in the PenguinBurner config directory's `debug-logs/`.
 Common causes: an unsafe-voltage history entry, a clock guardrail, a Q2RTX or
-CUDA failure, or a short `--auto-uv-final-seconds`. To wipe history and rerun
-clean:
+CUDA failure, or interrupted final verification. To wipe history and rerun clean:
 
 ```bash
 sudo ./penguin_burner.sh --fresh-auto-uv-scan
@@ -39,7 +38,8 @@ Select the card with `--gpu-index N`, or pick it in the Auto-UV tuning dialog.
 ### Adaptive switching isn't doing anything
 
 Adaptive needs at least two profiles with different tiers assigned. With one
-tier it just runs that profile. Assign tiers from the Profiles tab.
+tier it just runs that profile. Assign tiers from the Profiles tab or with
+`--assign-auto-uv-tier`.
 
 ### The `penguin-burner` command isn't found
 

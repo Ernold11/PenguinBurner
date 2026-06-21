@@ -57,13 +57,11 @@ constexpr const char* kQueryTimingsEnv = "PENGUIN_BURNER_LATENCY_QUERY_TIMINGS";
 // Read-only -- only ever waits on present IDs the app/DXVK already supplied; it
 // never injects present IDs or enables extensions the app did not request.
 constexpr const char* kDisplayLatencyEnv = "PENGUIN_BURNER_LATENCY_DISPLAY";
-// EXPERIMENTAL, default off, separate opt-in: when the app enabled
-// VK_KHR_present_id but does not stamp a present ID itself (e.g. vkd3d-proton),
-// prepend our own VkPresentIdKHR so vkWaitForPresentKHR has something to key on.
-// This MUTATES the present chain -- the previously-removed inject path crashed on
-// the dxvk-nvapi/vkd3d/NVIDIA stack -- so it is deliberately the narrowest form:
-// present-chain only (never amends device creation) and only when the app has not
-// already chained a VkPresentIdKHR. Requires PENGUIN_BURNER_LATENCY_DISPLAY too.
+// Narrow opt-in: when the app enabled VK_KHR_present_id but does not stamp a
+// present ID itself, prepend our own VkPresentIdKHR so vkWaitForPresentKHR has
+// something to key on. This deliberately mutates only the present chain (never
+// device creation) and only when the app has not already chained a
+// VkPresentIdKHR. Requires PENGUIN_BURNER_LATENCY_DISPLAY too.
 constexpr const char* kInjectPresentIdEnv =
     "PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID";
 constexpr uint64_t kStaleRecoveryDuplicateThreshold = 240;

@@ -21,7 +21,6 @@ from cli.normal_runtime import run_normal_runtime
 from cli.arguments import parse_arguments
 from cli.entry import dispatch_cli
 from cli.runtime_config_file import (
-    afterburner_root_has_imported_profiles,
     load_runtime_config,
 )
 from common.penguin_burner_errors import NvmlError
@@ -40,7 +39,6 @@ from runtime_support.runtime_debug import (
 from runtime_gpu_control import FlattenedClockCeilingController
 from runtime_support.runtime_service import DEFAULT_JOURNAL_HOURS
 from saved_profile_verification.runner import run_profile_verification
-from stability.q2rtx import StabilityTestError, install_latest_q2rtx
 
 
 atexit.register(close_debug_log)
@@ -74,20 +72,8 @@ def clear_auto_uv_state(*, log=print) -> None:
             ) from exc
         log(f"Auto-UV clear: removed {path}")
     log(
-        "Auto-UV clear: complete. Afterburner imports and Q2RTX downloads were left untouched."
+        "Auto-UV clear: complete. Q2RTX downloads were left untouched."
     )
-
-
-def run_q2rtx_install():
-    try:
-        result = install_latest_q2rtx()
-    except StabilityTestError as exc:
-        raise NvmlError(f"Q2RTX install failed: {exc}") from exc
-
-    print(f"Installed Q2RTX {result.version} to {result.install_dir}", flush=True)
-    print(f"Executable: {result.executable_path}", flush=True)
-    print(f"Archive cache: {result.archive_path}", flush=True)
-    print(f"Source: {result.asset_url}", flush=True)
 
 
 def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
@@ -116,8 +102,6 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
         dependencies=MainCommandRoutingDependencies(
             clear_auto_uv_state=clear_auto_uv_state,
             load_config=load_runtime_config,
-            afterburner_root_has_imported_profiles=afterburner_root_has_imported_profiles,
-            run_q2rtx_install=run_q2rtx_install,
             run_profile_verification=run_profile_verification,
             run_auto_uv_foreground_command=functools.partial(
                 run_auto_uv_foreground_command,

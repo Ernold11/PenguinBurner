@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.5
+Version:        0.5.1
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -35,8 +35,8 @@ improvements for recent cards. MSI Afterburner imports and LACT exports are
 also supported.
 
 It provides a Qt desktop UI, command-line tools, automatic voltage/frequency
-scanning, Q2RTX/CUDA stability testing, and optional runtime profile service
-installation.
+scanning with Q2RTX/CUDA-backed verification, and optional runtime profile
+service installation.
 
 This package is intended for Fedora systems using the proprietary NVIDIA driver,
 version 580 or newer, from either Fedora's NVIDIA driver repository or RPM
@@ -85,20 +85,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_bindir}/pburn-ui
 %{_bindir}/penguin-burner-cli
 %{_bindir}/pburn-cli
-%{_bindir}/q2rtx-stability
-%{_bindir}/cuda-bruteforce-stability
-%{_bindir}/penguin-burner-import-afterburner-vf
-%{_bindir}/penguin-burner-import-afterburner-fan
-%{_bindir}/penguin-burner-steam-launch-check
-%{_bindir}/penguin-burner-steam-game-setup
-%{_bindir}/PB_OVERLAY
 %{_bindir}/PENGUIN_BURNER
-%{_bindir}/penguin-burner-overlay
-%{_bindir}/pburn-overlay
-%{_bindir}/pb-overlay
-%{_bindir}/penguin-burner-overlay-text
-%{_bindir}/pburn-overlay-text
-%{_bindir}/pb-overlay-text
 %{_datadir}/applications/io.github.jpietek.PenguinBurner.desktop
 %{_datadir}/icons/hicolor/256x256/apps/penguin-burner.png
 %{_datadir}/icons/hicolor/512x512/apps/penguin-burner.png
@@ -119,8 +106,8 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
   parsing.
 
 * Sun Jun 14 2026 PenguinBurner contributors <noreply@github.com> - 0.4.6-1
-- Add the --dump-latency-data advanced flag (verbose present-mode/Reflex dump).
-- Document advanced/hacky flags and the gamescope wrapper ordering.
+- Add the PENGUIN_BURNER_DUMP_LATENCY_DATA advanced diagnostic environment.
+- Document advanced latency diagnostics.
 
 * Sun Jun 14 2026 PenguinBurner contributors <noreply@github.com> - 0.4.5-1
 - Fix phantom frame generation reported on titles without a marker stream.

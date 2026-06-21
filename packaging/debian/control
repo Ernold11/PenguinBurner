@@ -34,5 +34,5 @@ Description: NVIDIA GPU automatic undervolting and fine tuning tool
  leading into +33% and higher improvements for recent cards.
  .
  MSI Afterburner imports and LACT exports are supported. PenguinBurner also
- provides automatic voltage/frequency scanning, Q2RTX/CUDA stability testing,
- and optional runtime profile service installation.
+ provides automatic voltage/frequency scanning with Q2RTX/CUDA-backed
+ verification, and optional runtime profile service installation.

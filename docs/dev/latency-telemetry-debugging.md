@@ -16,8 +16,8 @@ each swapchain and emits the delta from the previous app-visible present:
 measurement=present-pacing quality=present-frametime present_frametime_us=<delta>
 ```
 
-For RE9 with NVIDIA frame generation x3, static scenes can make this stream look
-like base-frame cadence. Mouse/camera motion showed the important caveat:
+With NVIDIA frame generation, static scenes can make this stream look like
+base-frame cadence. Mouse/camera motion can expose the important caveat:
 generated/output cadence can appear in the same present stream. The headline
 `present-fps` is therefore a base-cadence estimate:
 
@@ -50,21 +50,12 @@ native/latency_layer/build/VkLayer_PENGUINBURNER_latency.json
 
 ## Steam Launch Options
 
-For RE9 on this host, use the setup helper:
-
-```bash
-penguin-burner-steam-game-setup --game re9 --wait
-penguin-burner-steam-launch-check --compat-tool 'Proton-CachyOS Latest'
-```
-
-The launch line should be present-only:
+Use the wrapper launch line directly in Steam. Keep the default present-only
+line unless you are explicitly debugging in-game marker latency:
 
 ```text
-PENGUIN_BURNER_LATENCY_SOCKET=/run/user/1000/penguin-burner/latency.sock
-VK_ADD_IMPLICIT_LAYER_PATH=/home/jp/PenguinBurner/native/latency_layer/build
-VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency
-PENGUIN_BURNER_LATENCY_LAYER=1
-gamemoderun %command% /WineDetectionEnabled:False
+PENGUIN_BURNER %command%
+PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%
 ```
 
 ## Journal Output
