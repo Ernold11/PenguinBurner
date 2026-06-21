@@ -14,7 +14,7 @@ from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 
 
 ROOT = Path(__file__).resolve().parent
-NATIVE_LAYER_SOURCE_DIR = ROOT / "native" / "latency_layer"
+NATIVE_LAYER_SOURCE_DIR = ROOT / "overlay" / "native" / "latency_layer"
 NATIVE_LAYER_LIBRARY = "libVkLayer_penguinburner_latency.so"
 NATIVE_LAYER_MANIFEST = "VkLayer_PENGUINBURNER_latency.json"
 

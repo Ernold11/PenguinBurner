@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from latency_telemetry.steam_launch_check import (
+from overlay.telemetry.steam_launch_check import (
     DEFAULT_REQUIRED_TOKENS,
     check_launch_options,
     default_localconfig_paths,

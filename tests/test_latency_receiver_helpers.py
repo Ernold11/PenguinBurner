@@ -1,4 +1,4 @@
-"""Coverage for the pure helpers in latency_telemetry/receiver.py.
+"""Coverage for the pure helpers in overlay/telemetry/receiver.py.
 
 Socket-path resolution is env-driven and timing-sample normalization is pure,
 so both are tested without sockets or hardware.
@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from latency_telemetry.receiver import (
+from overlay.telemetry.receiver import (
     latency_socket_path,
     latency_socket_paths,
     normalize_timing_sample,

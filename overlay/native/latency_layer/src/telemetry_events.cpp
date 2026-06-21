@@ -397,7 +397,7 @@ uint32_t marker_timing_metric_bits(const MarkerTiming& timing) {
 }
 
 // Mirrored by the Python receiver's quality ladder; see
-// latency_telemetry/receiver.py MARKER_TIMING_QUALITIES.
+// overlay/telemetry/receiver.py MARKER_TIMING_QUALITIES.
 const char* marker_timing_quality(const MarkerTiming& timing) {
     if (elapsed_us(timing.input_sample_us, timing.present_end_us)) {
         return "reflex-input-present";

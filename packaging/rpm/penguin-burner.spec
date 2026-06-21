@@ -59,7 +59,6 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
     common \
     initial_check \
     lact \
-    latency_telemetry \
     manual_fan_curve_editor \
     manual_uv_curve_editor \
     overlay \

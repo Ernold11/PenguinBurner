@@ -6,7 +6,7 @@ from typing import Callable
 from cli.runtime_startup_preparation import prepare_runtime_startup
 from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
 from nvidia_driver.hidden_nvapi_voltage import create_hidden_voltage_reader
-from latency_telemetry import start_latency_telemetry_logger
+from overlay.telemetry import start_latency_telemetry_logger
 from nvidia_driver.nvml_gpu_policy import NvmlGpuPolicyController
 from overlay.config import default_overlay_config_path, load_overlay_config
 from runtime_support.runtime_debug import log as runtime_log

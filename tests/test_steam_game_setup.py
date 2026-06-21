@@ -1,7 +1,7 @@
-from latency_telemetry.steam_launch_check import (
+from overlay.telemetry.steam_launch_check import (
     PENGUIN_BURNER_WRAPPER,
 )
-from latency_telemetry.steam_game_setup import (
+from overlay.telemetry.steam_game_setup import (
     build_game_launch_options,
     default_steamapps_dirs,
     game_preset,

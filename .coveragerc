@@ -25,7 +25,6 @@ source =
     manual_uv_curve_editor
     auto_oc
     initial_check
-    latency_telemetry
 
 omit =
     */tests/*
@@ -41,7 +40,7 @@ omit =
     runtime_gpu_control/live_gpu_telemetry_text.py
     runtime_fan_control/runtime_loop.py
     initial_check/auto_uv_hardware_initial_check.py
-    latency_telemetry/nvapi_marker_bridge.py
+    overlay/telemetry/nvapi_marker_bridge.py
     # --- External-process workload runners (Q2RTX, CUDA) + downloads ---
     stability/q2rtx/runtime.py
     stability/q2rtx/process_harness.py

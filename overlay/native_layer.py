@@ -9,8 +9,9 @@ NATIVE_LAYER_LIBRARY = "libVkLayer_penguinburner_latency.so"
 NATIVE_LAYER_MANIFEST = "VkLayer_PENGUINBURNER_latency.json"
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_OVERLAY_ROOT = Path(__file__).resolve().parent
 _SOURCE_PROJECT_FILE = _REPO_ROOT / "pyproject.toml"
-_SOURCE_NATIVE_LAYER_DIR = _REPO_ROOT / "native" / "latency_layer"
+_SOURCE_NATIVE_LAYER_DIR = _OVERLAY_ROOT / "native" / "latency_layer"
 _SOURCE_BUILD_LAYER_DIR = _SOURCE_NATIVE_LAYER_DIR / "build"
 
 

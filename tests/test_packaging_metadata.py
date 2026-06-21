@@ -123,8 +123,8 @@ def test_python_build_requires_native_layer_build_tooling() -> None:
     assert "has_ext_modules" in setup_py
     assert "shutil.rmtree(build_root)" in setup_py
     assert "include README.md" in manifest
-    assert "native/latency_layer/CMakeLists.txt" in manifest
-    assert "native/latency_layer/src" in manifest
+    assert "overlay/native/latency_layer/CMakeLists.txt" in manifest
+    assert "overlay/native/latency_layer/src" in manifest
 
 
 def test_native_packages_require_native_layer_build_dependencies() -> None:

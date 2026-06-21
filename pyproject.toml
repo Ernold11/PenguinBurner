@@ -81,7 +81,7 @@ packages = [
   "common",
   "initial_check",
   "lact",
-  "latency_telemetry",
+  "overlay.telemetry",
   "manual_fan_curve_editor",
   "manual_uv_curve_editor",
   "nvidia_driver",

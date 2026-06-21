@@ -4,11 +4,11 @@ include readme-cli.md
 include PenguinBurner.service
 include penguin_burner.sh
 include packaging/linux/*.desktop
-include native/latency_layer/CMakeLists.txt
-include native/latency_layer/VkLayer_PENGUINBURNER_latency.json.in
+include overlay/native/latency_layer/CMakeLists.txt
+include overlay/native/latency_layer/VkLayer_PENGUINBURNER_latency.json.in
 recursive-include docs *.md *.png *.svg
 exclude docs/dev/penguin-burner-with-gamescope.md
 recursive-include packaging/icons *.png *.svg
 recursive-include ui/assets *.png
 recursive-include tests *.py
-recursive-include native/latency_layer/src *.cpp *.h *.hpp
+recursive-include overlay/native/latency_layer/src *.cpp *.h *.hpp

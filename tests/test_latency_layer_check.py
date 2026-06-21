@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import subprocess
 
-from latency_telemetry import layer_check
+from overlay.telemetry import layer_check
 from overlay.native_layer import NATIVE_LAYER_LIBRARY
 from overlay.native_layer import NATIVE_LAYER_MANIFEST
 
 
 def test_latency_layer_check_uses_build_tree_layer_path(monkeypatch, tmp_path) -> None:
-    build_dir = tmp_path / "native/latency_layer/build"
+    build_dir = tmp_path / "overlay/native/latency_layer/build"
     build_dir.mkdir(parents=True)
     (build_dir / NATIVE_LAYER_MANIFEST).write_text("{}", encoding="utf-8")
     (build_dir / NATIVE_LAYER_LIBRARY).write_bytes(b"")

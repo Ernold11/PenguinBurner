@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from latency_telemetry.nvapi_marker_bridge import (
+from overlay.telemetry.nvapi_marker_bridge import (
     NV_MARKER_INPUT_SAMPLE,
     NV_MARKER_OUT_OF_BAND_PRESENT_END,
     NV_MARKER_PRESENT_END,
@@ -43,7 +43,7 @@ def test_bridge_does_not_mark_framegen_from_oob_present_trace(monkeypatch, tmp_p
     # Reflex out-of-band present markers are emitted with frame generation OFF, so
     # the bridge must never assert frame generation from them -- it emits the span
     # only and leaves the on/off decision to the receiver's cadence check.
-    import latency_telemetry.nvapi_marker_bridge as bridge
+    import overlay.telemetry.nvapi_marker_bridge as bridge
 
     lines = iter(
         (
@@ -82,7 +82,7 @@ def test_bridge_emits_oob_present_span_in_present_order(monkeypatch, tmp_path) -
     # primes the expectation so the base frame is paired with its later display
     # present, yielding the wider sim_to_oob_present_us span (still not flagged as
     # frame generation -- the receiver decides that from cadence).
-    import latency_telemetry.nvapi_marker_bridge as bridge
+    import overlay.telemetry.nvapi_marker_bridge as bridge
 
     lines = iter(
         (
@@ -122,7 +122,7 @@ def test_bridge_emits_oob_present_span_in_present_order(monkeypatch, tmp_path) -
 def test_bridge_reports_input_to_present_when_input_marker_present(monkeypatch, tmp_path) -> None:
     # Title with full Reflex PCL markers (e.g. Quake II RTX): INPUT_SAMPLE pairs
     # with PRESENT_END to give the true input-to-present Reflex lag.
-    import latency_telemetry.nvapi_marker_bridge as bridge
+    import overlay.telemetry.nvapi_marker_bridge as bridge
 
     lines = iter(
         (

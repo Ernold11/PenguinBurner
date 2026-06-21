@@ -37,15 +37,15 @@ Reflex/VKD3D markers.
 ## Build
 
 ```bash
-cmake -S native/latency_layer -B native/latency_layer/build -DCMAKE_BUILD_TYPE=Release
-cmake --build native/latency_layer/build
+cmake -S overlay/native/latency_layer -B overlay/native/latency_layer/build -DCMAKE_BUILD_TYPE=Release
+cmake --build overlay/native/latency_layer/build
 ```
 
 The build produces:
 
 ```text
-native/latency_layer/build/libVkLayer_penguinburner_latency.so
-native/latency_layer/build/VkLayer_PENGUINBURNER_latency.json
+overlay/native/latency_layer/build/libVkLayer_penguinburner_latency.so
+overlay/native/latency_layer/build/VkLayer_PENGUINBURNER_latency.json
 ```
 
 ## Steam Launch Options
@@ -91,7 +91,7 @@ present samples from a foreground receiver:
 ```bash
 PENGUIN_BURNER_LATENCY_RAW_TIMING_LOG=all python - <<'PY'
 import time
-from latency_telemetry import start_latency_telemetry_logger
+from overlay.telemetry import start_latency_telemetry_logger
 
 logger = start_latency_telemetry_logger(log=print)
 print("listening on:", [str(path) for path in logger.paths])

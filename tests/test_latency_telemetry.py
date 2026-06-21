@@ -1,9 +1,9 @@
 import json
 from pathlib import Path
 
-import latency_telemetry.nvapi_marker_bridge as marker_bridge
-import latency_telemetry.receiver as receiver
-from latency_telemetry.receiver import (
+import overlay.telemetry.nvapi_marker_bridge as marker_bridge
+import overlay.telemetry.receiver as receiver
+from overlay.telemetry.receiver import (
     LatencyTelemetryLogger,
     LatencyTelemetryMeter,
     latency_socket_path,
