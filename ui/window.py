@@ -22,9 +22,9 @@ from ui.components.runs_table import RunsTable
 from ui.components.scan_controls import ScanControls
 from ui.components.status_header import StatusHeader
 from ui.constants import APP_DISPLAY_NAME
-from .controllers import CommandController
-from .controllers import VerifyController
-from .controllers import ScanController
+from .controllers.command import CommandController
+from .controllers.scan import ScanController
+from .controllers.verify import VerifyController
 from ui.features.curves.curve_tabs import CurveTabs
 from ui.dialogs.about import show_about_dialog
 from ui.dialogs.final_choice import select_final_candidate

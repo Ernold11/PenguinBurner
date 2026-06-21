@@ -63,10 +63,10 @@ def test_console_scripts_use_gui_default_and_explicit_cli_names() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     scripts = metadata["project"]["scripts"]
 
-    assert scripts["penguin-burner"] == "ui:main"
-    assert scripts["pburn"] == "ui:main"
-    assert scripts["penguin-burner-ui"] == "ui:main"
-    assert scripts["pburn-ui"] == "ui:main"
+    assert scripts["penguin-burner"] == "ui.main:main"
+    assert scripts["pburn"] == "ui.main:main"
+    assert scripts["penguin-burner-ui"] == "ui.main:main"
+    assert scripts["pburn-ui"] == "ui.main:main"
     assert "penguin-burner-yolo" not in scripts
     assert "pburn-yolo" not in scripts
     assert scripts["penguin-burner-cli"] == "penguin_burner:cli_main"
