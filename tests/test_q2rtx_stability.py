@@ -12,6 +12,8 @@ import auto_uv.stability.q2rtx.downloader as q2rtx_downloader
 import auto_uv.stability.q2rtx.gpu_binding as q2rtx_gpu_binding
 import auto_uv.stability.q2rtx.install as q2rtx_install
 import auto_uv.stability.q2rtx.runtime as q2rtx_runtime
+import auto_uv.stability.q2rtx.assets as q2rtx_assets
+from auto_uv.stability.q2rtx.assets import resolve_q2rtx_executable
 import runtime.stability_test.q2rtx_cuda_workload_config as q2rtx_workload_config
 from auto_uv.stability.q2rtx.constants import (
     PB_Q2RTX_ASSET_PREFIX,
@@ -87,6 +89,17 @@ def test_dependency_download_progress_maps_to_overall_range() -> None:
     assert _progress_range_value(10.0, 70.0, 0.0) == 10.0
     assert _progress_range_value(10.0, 70.0, 50.0) == 40.0
     assert _progress_range_value(10.0, 70.0, 100.0) == 70.0
+
+
+def test_missing_q2rtx_install_message_uses_moved_module_path(monkeypatch) -> None:
+    monkeypatch.setattr(q2rtx_assets, "_default_q2rtx_roots", lambda: [])
+
+    with pytest.raises(StabilityTestError) as exc:
+        resolve_q2rtx_executable()
+
+    message = str(exc.value)
+    assert "python -m auto_uv.stability.q2rtx --install-q2rtx" in message
+    assert "python -m stability.q2rtx" not in message
 
 
 def test_download_file_from_urls_retries_next_source(

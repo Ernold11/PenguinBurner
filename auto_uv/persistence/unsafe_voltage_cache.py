@@ -19,7 +19,7 @@ CONTROLLED_TERMINATION_FAILURE_PREFIXES = (
     "user-stop-requested",
     "cuda-bruteforce-failed exit=-15",
     # Q2RTX failed to launch because of a missing runtime library - an environment error,
-    # not voltage instability. Matches stability.q2rtx Q2RTX_LAUNCHER_ERROR_REASON.
+    # not voltage instability. Matches auto_uv.stability.q2rtx Q2RTX_LAUNCHER_ERROR_REASON.
     "q2rtx-launcher-error",
 )
 

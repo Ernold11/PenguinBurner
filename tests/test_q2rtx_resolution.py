@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from auto_uv.stability.q2rtx import cli as q2rtx_cli
-from auto_uv.stability.q2rtx import resolution as q2rtx_resolution
+import auto_uv.stability.q2rtx.cli as q2rtx_cli
+import auto_uv.stability.q2rtx.resolution as q2rtx_resolution
 
 
 def _memory(total_bytes: int):
@@ -88,6 +88,18 @@ def test_standalone_q2rtx_cli_defaults_to_vram_auto(monkeypatch) -> None:
 
     assert config.width == 2560
     assert config.height == 1440
+
+
+def test_standalone_q2rtx_cli_help_uses_moved_module_path(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(q2rtx_cli.sys, "argv", ["/tmp/__main__.py"])
+
+    with pytest.raises(SystemExit) as exc:
+        q2rtx_cli.parse_q2rtx_stability_args(["--help"])
+
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "python -m auto_uv.stability.q2rtx" in help_text
+    assert "python -m stability.q2rtx" not in help_text
 
 
 def test_negative_resolution_is_rejected() -> None:

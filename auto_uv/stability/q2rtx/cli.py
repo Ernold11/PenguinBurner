@@ -24,7 +24,7 @@ from .runtime import run_q2rtx_stability_test
 def _default_prog_name() -> str:
     invoked_name = Path(sys.argv[0]).name
     if invoked_name == "__main__.py":
-        return "python -m stability.q2rtx"
+        return "python -m auto_uv.stability.q2rtx"
     return invoked_name or "q2rtx_stability.py"
 
 
