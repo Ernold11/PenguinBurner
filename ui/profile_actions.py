@@ -3,7 +3,7 @@ from __future__ import annotations
 import shlex
 
 from common.penguin_burner_paths import default_user_config_dir
-from manual_uv_curve_editor import editable_anchor_from_profile
+from curve_editors.uv import editable_anchor_from_profile
 from profiles.uv import delete_auto_uv_profile_paths
 from profiles.uv import save_profile_tier_assignment
 from profiles.uv import save_profile_tier_none_assignment

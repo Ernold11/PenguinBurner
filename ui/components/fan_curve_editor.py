@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from manual_fan_curve_editor import (
+from curve_editors.fan import (
     ManualFanCurveEdit,
     manual_add_fan_point_edit,
     manual_drag_fan_point_edit,

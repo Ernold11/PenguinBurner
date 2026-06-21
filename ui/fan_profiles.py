@@ -4,7 +4,7 @@ from pathlib import Path
 import json
 import math
 
-from manual_fan_curve_editor import user_edited_fan_curve_profile_payload
+from curve_editors.fan import user_edited_fan_curve_profile_payload
 from profiles.uv import archive_auto_uv_profile
 from profiles.uv import profile_display_name
 from common.penguin_burner_paths import claim_desktop_user_ownership

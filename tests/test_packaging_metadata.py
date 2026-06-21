@@ -241,8 +241,9 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     assert "auto_uv.efficiency_tune" in packages
     assert "auto_uv.scan_mode" in packages
     assert "auto_uv.final_verification" in packages
-    assert "manual_fan_curve_editor" in packages
-    assert "manual_uv_curve_editor" in packages
+    assert "curve_editors" in packages
+    assert "curve_editors.fan" in packages
+    assert "curve_editors.uv" in packages
     assert "runtime" in packages
     assert "runtime.fan_control" in packages
     assert "runtime.gpu_control" in packages

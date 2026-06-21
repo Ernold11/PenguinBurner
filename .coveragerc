@@ -13,13 +13,12 @@ source =
     common
     ui
     afterburner
+    curve_editors
     lact
     profiles
     overlay
     runtime
     stability
-    manual_fan_curve_editor
-    manual_uv_curve_editor
     auto_oc
     initial_check
 
