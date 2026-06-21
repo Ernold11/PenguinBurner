@@ -4,7 +4,11 @@ from dataclasses import dataclass
 
 from stability.q2rtx.models import Q2RTXStabilityConfig
 
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE, normalize_auto_uv_mode
+from auto_uv.scan_mode.auto_uv_mode import (
+    AUTO_UV_MODE_BALANCED,
+    AUTO_UV_MODE_PERFORMANCE,
+    normalize_auto_uv_mode,
+)
 from auto_uv.domain.types import AutoUvError
 from auto_uv.domain.user_options import (
     AUTO_UV_DEFAULTS,
@@ -131,11 +135,12 @@ def min_efficiency_stop_voltage_drop_pct() -> float:
 def tail_rise_bins(runtime_options: dict, *, auto_uv_mode: str) -> int:
     value = runtime_options.get("auto_uv_tail_rise_bins")
     if value is None:
-        value = (
-            AUTO_UV_DEFAULTS.performance_tail_rise_bins
-            if auto_uv_mode == AUTO_UV_MODE_PERFORMANCE
-            else AUTO_UV_DEFAULTS.tail_rise_bins
-        )
+        if auto_uv_mode == AUTO_UV_MODE_PERFORMANCE:
+            value = AUTO_UV_DEFAULTS.performance_tail_rise_bins
+        elif auto_uv_mode == AUTO_UV_MODE_BALANCED:
+            value = AUTO_UV_DEFAULTS.balanced_tail_rise_bins
+        else:
+            value = AUTO_UV_DEFAULTS.tail_rise_bins
     return max(0, min(int(AUTO_UV_DEFAULTS.max_tail_rise_bins), int(value)))
 
 

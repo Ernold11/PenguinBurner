@@ -1,7 +1,4 @@
-"""Normalize the user-visible Auto-UV mode name.
-
-Performance currently keeps the same sweep policy and differs only by curve-tail preset.
-"""
+"""Normalize the user-visible Auto-UV preset/mode name."""
 
 from __future__ import annotations
 
@@ -17,7 +14,7 @@ AUTO_UV_MODES = (
 
 _AUTO_UV_MODE_ALIASES = {
     "": AUTO_UV_MODE_EFFICIENCY,
-    "balanced": AUTO_UV_MODE_EFFICIENCY,
+    "balanced": AUTO_UV_MODE_BALANCED,
     "efficiency": AUTO_UV_MODE_EFFICIENCY,
     "aggressive": AUTO_UV_MODE_PERFORMANCE,
     "performance": AUTO_UV_MODE_PERFORMANCE,

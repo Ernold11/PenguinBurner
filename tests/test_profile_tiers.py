@@ -50,7 +50,7 @@ def _measured_profile(
 def test_runtime_options_preserve_user_facing_balanced_tier() -> None:
     assert (
         generated_profile_tier_from_runtime_options(
-            {"auto_uv_requested_mode": "balanced", "auto_uv_mode": "efficiency"}
+            {"auto_uv_requested_mode": "balanced", "auto_uv_mode": "balanced"}
         )
         == PROFILE_TIER_BALANCED
     )

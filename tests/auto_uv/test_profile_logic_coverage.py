@@ -14,6 +14,7 @@ from auto_uv.domain.types import AutoUvError
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS, AutoUvMetricTuning
 from auto_uv.curve.rising_tail import normalize_tail_rise_bins
 from auto_uv.curve.vf_curve_flattening import FlatteningRules, snap_target_clock
+from auto_uv.scan_mode.auto_uv_mode import normalize_auto_uv_mode
 from auto_uv.scan_mode.uv_limits import (
     uv_limit_profile_target_for_gpu,
     voltage_drop_pct,
@@ -62,6 +63,11 @@ def test_derive_efficiency_stop_streak_is_always_enabled() -> None:
 
 def test_efficiency_stop_streak_uses_default() -> None:
     assert efficiency_stop_streak() == AUTO_UV_DEFAULTS.efficiency_stop_streak
+
+
+# --- auto_uv_mode ---
+def test_auto_uv_mode_keeps_balanced_distinct() -> None:
+    assert normalize_auto_uv_mode("balanced") == "balanced"
 
 
 # --- uv_limits ---

@@ -106,9 +106,9 @@ def parse_arguments(argv):
         default=None,
         metavar="MODE",
         help=(
-            "Auto-UV tuning behavior. efficiency keeps the current FPS/W-first "
-            "search behavior; performance disables efficiency-wall stopping so "
-            "performance-specific behavior can evolve separately."
+            "Auto-UV preset path. efficiency uses a flat base sweep plus a "
+            "low-voltage tail-tune pass; balanced uses the 4-bin tail sweep; "
+            "performance uses the 6-bin tail sweep plus Auto-OC."
         ),
     )
     auto_uv_group.add_argument(

@@ -148,8 +148,7 @@ def test_scan_runtime_settings_use_preset_aware_clock_drop_defaults() -> None:
 
     balanced = read_scan_runtime_settings(
         {
-            "auto_uv_mode": "efficiency",
-            "auto_uv_tail_rise_bins": 4,
+            "auto_uv_mode": "balanced",
         },
         source_config,
         gpu_name="NVIDIA GeForce RTX 5080",
@@ -162,7 +161,7 @@ def test_scan_runtime_settings_use_preset_aware_clock_drop_defaults() -> None:
     cli_balanced = read_scan_runtime_settings(
         {
             "auto_uv_requested_mode": "balanced",
-            "auto_uv_mode": "efficiency",
+            "auto_uv_mode": "balanced",
         },
         source_config,
         gpu_name="NVIDIA GeForce RTX 5080",
@@ -178,6 +177,7 @@ def test_scan_runtime_settings_use_preset_aware_clock_drop_defaults() -> None:
 
     assert round(balanced.final_clock_drop_margin_pct, 4) == 6.0403
     assert round(balanced.min_performance_core_clock_pct, 4) == 93.9597
+    assert balanced.tail_rise_bins == 4
     assert round(cli_balanced.final_clock_drop_margin_pct, 4) == 6.0403
     assert round(performance.final_clock_drop_margin_pct, 4) == 5.3968
     assert round(performance.min_performance_core_clock_pct, 4) == 94.6032
@@ -209,6 +209,7 @@ def test_scan_runtime_tail_rise_defaults_follow_auto_uv_mode() -> None:
     source_config = Q2RTXStabilityConfig(duration_s=600)
 
     efficiency = read_scan_runtime_settings({"auto_uv_mode": "efficiency"}, source_config)
+    balanced = read_scan_runtime_settings({"auto_uv_mode": "balanced"}, source_config)
     performance = read_scan_runtime_settings({"auto_uv_mode": "performance"}, source_config)
     overridden = read_scan_runtime_settings(
         {"auto_uv_mode": "performance", "auto_uv_tail_rise_bins": 4},
@@ -216,6 +217,7 @@ def test_scan_runtime_tail_rise_defaults_follow_auto_uv_mode() -> None:
     )
 
     assert efficiency.tail_rise_bins == 0
+    assert balanced.tail_rise_bins == 4
     assert performance.tail_rise_bins == 6
     assert overridden.tail_rise_bins == 4
 

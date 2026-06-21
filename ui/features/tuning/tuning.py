@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
+from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_BALANCED
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_EFFICIENCY
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
 from auto_uv.scan_mode.uv_limits import (
@@ -106,7 +107,7 @@ def auto_uv_preset(preset_id: object) -> AutoUvPreset:
     return AutoUvPreset(
         preset_id=AUTO_UV_PRESET_BALANCED,
         label="Balanced",
-        auto_uv_mode=AUTO_UV_MODE_EFFICIENCY,
+        auto_uv_mode=AUTO_UV_MODE_BALANCED,
         tail_rise_bins=DEFAULT_AUTO_UV_BALANCED_TAIL_RISE_BINS,
     )
 
@@ -220,8 +221,8 @@ def auto_uv_performance_preset_label(_preview=None) -> str:
 
 def auto_uv_performance_preset_tooltip(_preview=None) -> str:
     return (
-        "Use the same undervolt search as Balanced, but let the tail of the "
-        "curve rise 6 V/F bins up from the locked point."
+        "Use the 6-bin tail curve, then run the Performance Auto-OC ladder "
+        "toward the configured voltage and clock targets."
     )
 
 

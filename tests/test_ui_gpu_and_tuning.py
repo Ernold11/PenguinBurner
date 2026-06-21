@@ -135,7 +135,8 @@ def test_persist_runtime_gpu_index_handles_load_failure(tmp_path, monkeypatch) -
 
 def test_performance_preset_label_and_tooltip() -> None:
     assert auto_uv_performance_preset_label() == "Performance"
-    assert "6 V/F bins" in auto_uv_performance_preset_tooltip()
+    assert "6-bin tail curve" in auto_uv_performance_preset_tooltip()
+    assert "Performance Auto-OC ladder" in auto_uv_performance_preset_tooltip()
 
 
 def test_performance_target_default_for_unknown_gpu() -> None:

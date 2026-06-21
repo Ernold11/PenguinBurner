@@ -873,7 +873,7 @@ def test_auto_uv_preset_defaults_and_gpu_table_default() -> None:
         0,
     )
     assert (balanced.auto_uv_mode, balanced.tail_rise_bins) == (
-        "efficiency",
+        "balanced",
         4,
     )
     assert (performance.auto_uv_mode, performance.tail_rise_bins) == (
@@ -882,11 +882,11 @@ def test_auto_uv_preset_defaults_and_gpu_table_default() -> None:
     )
 
 
-def test_auto_uv_performance_preset_is_tail_shape_only() -> None:
+def test_auto_uv_performance_preset_describes_auto_oc() -> None:
     assert _auto_uv_performance_preset_label() == "Performance"
     tooltip = _auto_uv_performance_preset_tooltip()
-    assert "same undervolt search as Balanced" in tooltip
-    assert "6 V/F bins up" in tooltip
+    assert "6-bin tail curve" in tooltip
+    assert "Performance Auto-OC ladder" in tooltip
 
 
 def test_auto_uv_performance_target_default_uses_gpu_table_target() -> None:

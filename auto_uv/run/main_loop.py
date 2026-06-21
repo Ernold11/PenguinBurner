@@ -53,7 +53,6 @@ from ui.features.auto_uv.candidate_choice import (
     choose_final_verification_candidate,
     choose_recovery_final_verification_candidate,
 )
-from auto_uv.efficiency_tune.voltage_descent import voltage_descent_tail_rise_bins
 from auto_uv.efficiency_tune.voltage_floor import min_search_voltage_mv
 from auto_uv.gpu.gpu_vf_curve_applier import open_live_gpu_vf_curve_applier
 from auto_uv.run.lower_voltage_sweep_loop import (
@@ -78,7 +77,10 @@ from auto_uv.run.performance_auto_oc_selection import (
 from ui.features.auto_uv.vf_curve_ui_points import vf_curve_ui_points
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from auto_uv.final_verification.main_loop import run_final_verification_and_save
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_EFFICIENCY
+from auto_uv.scan_mode.auto_uv_mode import (
+    AUTO_UV_MODE_EFFICIENCY,
+    AUTO_UV_MODE_PERFORMANCE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,12 +122,8 @@ def run_voltage_frequency_undervolt_main_loop(
             settings,
             tail_rise_bins=int(tail_rise_bins),
         )
-        descent_tail_rise_bins = int(voltage_descent_tail_rise_bins(settings))
-        # After the first descent stops at the natural clock floor, the tail-tune
-        # pass raises the tail by two more bins. The extra tail gives the GPU the
-        # vdroop headroom to hold the floor clock at lower voltage, letting the
-        # sweep push down toward the card minimum instead of stopping at the floor.
-        efficiency_tail_tune_rise_bins = descent_tail_rise_bins + 2
+        descent_tail_rise_bins = int(tail_rise_bins)
+        efficiency_tail_tune_rise_bins = int(descent_tail_rise_bins) + 2
         enforce_descent_clock_floor = lower_voltage_descent_enforces_clock_floor(
             tail_rise_bins=int(descent_tail_rise_bins),
         )
@@ -550,7 +548,10 @@ def run_voltage_frequency_undervolt_main_loop(
             baseline_candidate=baseline_candidate,
             final_verification_duration_s=int(final_verification_duration_s),
             event_callback=event_callback,
-            run_performance_auto_oc=not bool(user_stop_final_choice),
+            run_performance_auto_oc=(
+                settings.auto_uv_mode == AUTO_UV_MODE_PERFORMANCE
+                and not user_stop_final_choice
+            ),
             request_reason=(
                 "user-stop" if bool(user_stop_final_choice) else "sweep-complete"
             ),
@@ -763,7 +764,8 @@ def run_recovered_previous_crash_selection(
     log_phase(
         log,
         "crash-recovery",
-        "resuming performance Auto-UV from saved candidate without baseline probe "
+        f"resuming {str(settings.auto_uv_mode)} Auto-UV from saved candidate "
+        "without baseline probe "
         f"candidate={int(recovery_voltage_mv)}mV@"
         f"{int(recovery_lock_clock_mhz)}MHz "
         f"base={int(baseline_voltage_mv)}mV@"
@@ -794,7 +796,7 @@ def run_recovered_previous_crash_selection(
         baseline_candidate=baseline_candidate,
         final_verification_duration_s=int(final_verification_duration_s),
         event_callback=event_callback,
-        run_performance_auto_oc=True,
+        run_performance_auto_oc=settings.auto_uv_mode == AUTO_UV_MODE_PERFORMANCE,
         request_reason="sweep-complete",
     )
 
