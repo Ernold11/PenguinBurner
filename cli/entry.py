@@ -18,7 +18,7 @@ from runtime.support.runtime_service import (
     running_under_systemd_service,
     uninstall_systemd_service,
 )
-from profiles.uv import resolve_auto_uv_profile
+from profiles.uv.profile_store import resolve_auto_uv_profile
 
 from .runtime_profile_argument import (
     runtime_profile_selector_allows_unverified_from_argv,

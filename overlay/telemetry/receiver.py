@@ -20,7 +20,6 @@ from .layer_check import DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS
 from .samples import _int_value
 from .samples import _positive_us
 from .samples import normalize_timing_sample
-from .sockets import latency_socket_path
 from .sockets import latency_socket_paths
 
 MARKER_INPUT_SAMPLE_BIT = 1 << 6

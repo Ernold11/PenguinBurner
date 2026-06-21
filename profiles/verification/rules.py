@@ -3,12 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from common.penguin_burner_errors import NvmlError
-from runtime.gpu_control import (
+from runtime.gpu_control.vf_curve_reset_guard import (
     detect_vf_curve_reset,
     format_vf_curve_mismatch_preview,
     select_expected_vf_samples,
 )
-from profiles.uv import resolve_auto_uv_profile
+from profiles.uv.profile_store import resolve_auto_uv_profile
 
 
 PROFILE_VERIFY_VOLTAGE_TOLERANCE_MV = 50

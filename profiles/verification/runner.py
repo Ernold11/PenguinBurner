@@ -15,26 +15,26 @@ from runtime.support.vf_curve_plan import (
     restore_offsets,
 )
 from runtime.support.runtime_debug import log as runtime_log
-from runtime.gpu_control import FlattenedClockCeilingController
+from runtime.gpu_control.flattened_clock_ceiling import FlattenedClockCeilingController
 from runtime.support.runtime_service import stop_existing_penguin_burner_runtime
 from runtime.stability_test import (
     build_stability_config,
     stability_workload_label,
     stability_workload_split_label,
 )
-from profiles.uv import (
-    apply_auto_uv_profile_memory_offset,
-    load_auto_uv_final_curve,
+from profiles.uv.profile_store import (
     mark_auto_uv_profile_verification_failed,
     mark_auto_uv_profile_verified,
 )
-from auto_uv.stability.q2rtx import (
-    StabilityTestError,
-    attach_stdout_progress,
-    build_long_stability_test_config,
-    print_q2rtx_stability_result,
-    run_q2rtx_stability_test,
+from profiles.uv.runtime_auto_uv_profile import (
+    apply_auto_uv_profile_memory_offset,
+    load_auto_uv_final_curve,
 )
+from auto_uv.stability.q2rtx.long_stability_config import build_long_stability_test_config
+from auto_uv.stability.q2rtx.models import StabilityTestError
+from auto_uv.stability.q2rtx.output import attach_stdout_progress
+from auto_uv.stability.q2rtx.reporting import print_q2rtx_stability_result
+from auto_uv.stability.q2rtx.runtime import run_q2rtx_stability_test
 
 from .metrics import profile_verification_metrics_from_result
 from .rules import (

@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from auto_uv.stability.q2rtx import DEFAULT_SINGLE_PASS_TIMEOUT_S, Q2RTXStabilityConfig
+from auto_uv.stability.q2rtx.constants import DEFAULT_SINGLE_PASS_TIMEOUT_S
+from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.domain.user_options import AUTO_UV_PROBE_TUNING
 from ..q2rtx.q2rtx_cuda_probe_config import cuda_bruteforce_companion_command

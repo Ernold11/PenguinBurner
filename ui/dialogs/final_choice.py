@@ -7,8 +7,6 @@ from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_FPSW_SORT_COLUMN
 from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_HIGHER_FIRST_COLUMNS
 from auto_uv.ui.final_choice_ranking import FINAL_CHOICE_SORTABLE_COLUMNS
 from auto_uv.ui.final_choice_ranking import best_final_choice_candidate_id
-from auto_uv.ui.final_choice_ranking import candidate_fps
-from auto_uv.ui.final_choice_ranking import candidate_fpsw
 from auto_uv.ui.final_choice_ranking import candidate_oc_mhz
 from auto_uv.ui.final_choice_ranking import candidate_short_duration_s
 from auto_uv.ui.final_choice_ranking import final_choice_shows_oc_column

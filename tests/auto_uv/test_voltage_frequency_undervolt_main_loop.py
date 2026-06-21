@@ -1340,7 +1340,7 @@ def test_crash_recovery_entry_profile_tier_reads_nested_marker_details() -> None
         },
     }
 
-    assert undervolt_main_loop.crash_recovery_entry_profile_tier(entry) == "performance"
+    assert crash_recovery.crash_recovery_entry_profile_tier(entry) == "performance"
 
 
 def test_recovery_candidate_records_filter_tier_before_last_run_block() -> None:
@@ -2175,11 +2175,6 @@ def test_orchestration_sweep_hooks_probe_and_record_candidates(monkeypatch) -> N
         undervolt_main_loop,
         "build_flatten_target_for_plan",
         lambda *_a, **_k: {"lock_clock_mhz": 2200, "ceiling_clock_mhz": 2230},
-    )
-    monkeypatch.setattr(
-        undervolt_main_loop,
-        "tail_ceiling_for_plan",
-        lambda *_a, **_k: 2110,
     )
     monkeypatch.setattr(
         undervolt_main_loop, "run_final_verification_and_save", lambda **_k: "done"

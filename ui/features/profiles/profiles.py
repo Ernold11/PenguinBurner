@@ -4,11 +4,11 @@ from pathlib import Path
 import shlex
 import subprocess
 
-from profiles.uv import available_adaptive_tiers
-from profiles.uv import profile_display_name
-from profiles.uv import profile_tier_label
-from profiles.uv import read_auto_uv_profile_summaries
-from profiles.uv import resolve_profile_tier_profiles
+from profiles.uv.profile_store import profile_display_name
+from profiles.uv.profile_store import read_auto_uv_profile_summaries
+from profiles.uv.profile_tiers import available_adaptive_tiers
+from profiles.uv.profile_tiers import profile_tier_label
+from profiles.uv.profile_tiers import resolve_profile_tier_profiles
 from runtime.support.runtime_service import PENGUIN_BURNER_UNIT_NAME
 from runtime.support.runtime_service import SYSTEMCTL
 from runtime.support.runtime_service import systemd_service_unit_path

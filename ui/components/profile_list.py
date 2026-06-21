@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from profiles.uv import (
+from profiles.uv.profile_store import profile_display_name
+from profiles.uv.profile_tiers import (
     normalize_profile_tier,
-    profile_display_name,
     resolve_profile_tier_profiles,
 )
 from .. import theme

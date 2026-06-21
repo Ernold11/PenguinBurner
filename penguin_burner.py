@@ -10,7 +10,7 @@ from auto_uv.run.cli_runtime import (
     AutoUvForegroundDependencies,
     run_auto_uv_foreground_command,
 )
-from profiles.uv import auto_uv_profiles_dir, load_auto_uv_final_curve
+from profiles.uv.profile_store import auto_uv_profiles_dir
 from cli.interactive_terminal_prompt import prompt_yes_no as cli_prompt_yes_no
 from cli.json_event_output import emit_cli_json_event
 from cli.main_command_routing import (
@@ -34,9 +34,7 @@ from runtime.support.runtime_debug import (
     close_stdio_capture,
     debug_log,
     enable_debug_logging,
-    log,
 )
-from runtime.gpu_control import FlattenedClockCeilingController
 from runtime.support.runtime_service import DEFAULT_JOURNAL_HOURS
 from profiles.verification.runner import run_profile_verification
 

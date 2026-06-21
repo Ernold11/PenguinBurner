@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 
 
-from .nvml_identity import query_nvml_pci_bus_id
 
 
 def pci_bus_number_from_bus_id(pci_bus_id: str) -> int | None:

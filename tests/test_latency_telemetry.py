@@ -7,9 +7,8 @@ import overlay.telemetry.sockets as telemetry_sockets
 from overlay.telemetry.receiver import (
     LatencyTelemetryLogger,
     LatencyTelemetryMeter,
-    latency_socket_path,
-    latency_socket_paths,
 )
+from overlay.telemetry.sockets import latency_socket_path, latency_socket_paths
 
 
 def test_latency_telemetry_meter_reports_present_pacing() -> None:

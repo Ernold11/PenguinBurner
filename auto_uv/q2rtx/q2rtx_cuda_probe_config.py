@@ -5,10 +5,8 @@ import math
 from pathlib import Path
 import sys
 
-from auto_uv.stability.q2rtx import (
-    DEFAULT_SINGLE_PASS_TIMEOUT_S,
-    Q2RTXStabilityConfig,
-)
+from auto_uv.stability.q2rtx.constants import DEFAULT_SINGLE_PASS_TIMEOUT_S
+from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS, AUTO_UV_PROBE_TUNING
 from ..shared.probe_data_fields import percent

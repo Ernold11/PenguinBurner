@@ -39,7 +39,7 @@ import stat
 import time
 from pathlib import Path
 
-from .receiver import latency_socket_path, latency_socket_paths
+from .sockets import latency_socket_path, latency_socket_paths
 
 # NV_LATENCY_MARKER_TYPE values emitted by dxvk-nvapi trace.
 NV_MARKER_SIMULATION_START = 0

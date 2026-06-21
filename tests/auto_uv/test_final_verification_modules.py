@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from auto_uv.stability.q2rtx import Q2RTXStabilityConfig
+from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.domain.types import AutoUvProbeSummary
 from auto_uv.final_verification import fan_curve, result_files

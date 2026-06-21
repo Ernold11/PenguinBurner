@@ -15,7 +15,8 @@ from cli.runtime_profile_argument import (
 )
 import ui.features.curves.curve_profiles as curve_profiles
 import ui.features.curves.fan_profiles as ui_app
-from profiles.uv import (
+from runtime.gpu_control.flattened_clock_ceiling import FlattenedClockCeilingController
+from profiles.uv.profile_store import (
     archive_auto_uv_profile,
     delete_auto_uv_profile_paths,
     delete_auto_uv_profiles,
@@ -951,7 +952,7 @@ def test_profile_verification_can_reapply_curve_after_clock_lock(monkeypatch) ->
     )
     assert reader.offset_mhz == 623
 
-    controller = penguin_burner.FlattenedClockCeilingController(
+    controller = FlattenedClockCeilingController(
         {
             "source": "auto-uv-final",
             "lock_clock_mhz": 2865,
@@ -1003,7 +1004,7 @@ def test_runtime_clock_ceiling_uses_saved_rising_tail_ceiling() -> None:
             pass
 
     policy = RangePolicy()
-    controller = penguin_burner.FlattenedClockCeilingController(
+    controller = FlattenedClockCeilingController(
         {
             "source": "auto-uv-final",
             "lock_clock_mhz": 2600,

@@ -6,8 +6,8 @@ import ctypes
 
 from .hidden_nvapi_gpu_selection import (
     pci_bus_number_from_bus_id,
-    query_nvml_pci_bus_id,
 )
+from .nvml_identity import query_nvml_pci_bus_id
 
 
 NvAPI_Status = ctypes.c_int32

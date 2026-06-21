@@ -11,11 +11,11 @@ from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
 from overlay.config import default_overlay_config_path, load_overlay_config
 from runtime.support.runtime_debug import log as runtime_log
 from runtime.fan_control import run_runtime_fan_control_loop
-from runtime.gpu_control import (
-    AdaptiveAutoUvRuntimeController,
-    NvmlRuntimeSession,
-    OverlayStatePublisher,
-    ProcessCpuUsageSampler,
+from runtime.gpu_control.adaptive_profile_runtime import AdaptiveAutoUvRuntimeController
+from runtime.gpu_control.nvml_runtime_session import NvmlRuntimeSession
+from runtime.gpu_control.overlay_state_publisher import OverlayStatePublisher
+from runtime.gpu_control.process_cpu_sampler import ProcessCpuUsageSampler
+from runtime.gpu_control.vf_curve_runtime_policy import (
     configure_runtime_vf_curve_policy,
 )
 

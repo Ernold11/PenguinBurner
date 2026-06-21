@@ -9,10 +9,9 @@ from .layer_check import (
 from .receiver import (
     LatencyTelemetryLogger,
     LatencyTelemetryMeter,
-    latency_socket_path,
-    latency_socket_paths,
     start_latency_telemetry_logger,
 )
+from .sockets import latency_socket_path, latency_socket_paths
 
 __all__ = [
     "DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS",

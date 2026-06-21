@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from auto_uv.stability.q2rtx import Q2RTXStabilityConfig
+from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.domain.types import AutoUvProbeSummary, VfCurveCandidate
 from .probe_stability_decision import StabilityThresholds, evaluate_stable_run

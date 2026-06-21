@@ -19,6 +19,7 @@ from ui.dialogs import error_details
 from ui.dialogs import final_choice as fc
 from ui.dialogs import scan_tuning as scan_tuning_dialog
 from ui.dialogs import verify as verify_dialog
+from auto_uv.ui.final_choice_ranking import candidate_fps, candidate_fpsw
 from ui.qt import import_qt
 
 
@@ -64,9 +65,9 @@ def test_sort_and_best_candidate() -> None:
 def test_duration_helpers_and_fps() -> None:
     assert fc.candidate_short_duration_s({"short_verification_duration_s": 45}) == 45
     assert fc.candidate_short_duration_s({}) == 30
-    assert fc.candidate_fpsw({"efficiency_fps_per_w": 0.6}) == 0.6
-    assert fc.candidate_fpsw({}) is None
-    assert fc.candidate_fps({"avg_fps": 120}) == 120.0
+    assert candidate_fpsw({"efficiency_fps_per_w": 0.6}) == 0.6
+    assert candidate_fpsw({}) is None
+    assert candidate_fps({"avg_fps": 120}) == 120.0
 
 
 def test_final_choice_intro_text() -> None:

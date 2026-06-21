@@ -1,8 +1,8 @@
-from auto_uv.stability.q2rtx import Q2RTXStabilityConfig
 from auto_uv.stability.q2rtx.long_stability_config import (
     build_long_stability_test_config,
     long_stability_workload_durations,
 )
+from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
 
 
 def test_long_stability_duration_split_keeps_cuda_inside_total_budget() -> None:

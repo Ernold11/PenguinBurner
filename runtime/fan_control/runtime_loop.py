@@ -13,11 +13,11 @@ from common.penguin_burner_errors import NvmlError
 from runtime.support.vf_curve_plan import apply_plan
 from runtime.support.runtime_debug import debug_log as runtime_debug_log
 from runtime.support.runtime_debug import log as runtime_log
-from runtime.gpu_control import (
-    RuntimeVfCurvePolicyResult,
+from runtime.gpu_control.vf_curve_reset_guard import (
     detect_vf_curve_reset,
     format_vf_curve_mismatch_preview,
 )
+from runtime.gpu_control.vf_curve_runtime_policy import RuntimeVfCurvePolicyResult
 
 from .fan_curve_runtime_rules import (
     apply_hysteresis,

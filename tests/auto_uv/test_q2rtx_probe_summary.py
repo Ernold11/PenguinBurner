@@ -11,7 +11,7 @@ from auto_uv.q2rtx.q2rtx_probe_summary import (
     summarize_q2rtx_cuda_probe,
 )
 from auto_uv.ui.probe_summary_ui_payload import probe_summary_ui_payload
-from auto_uv.stability.q2rtx import Q2RTXBenchmarkSummary
+from auto_uv.stability.q2rtx.models import Q2RTXBenchmarkSummary
 
 
 def test_probe_summary_records_loaded_median_and_p90_diagnostics() -> None:

@@ -4,9 +4,9 @@ import shlex
 
 from common.penguin_burner_paths import default_user_config_dir
 from curve_editors.uv import editable_anchor_from_profile
-from profiles.uv import delete_auto_uv_profile_paths
-from profiles.uv import save_profile_tier_assignment
-from profiles.uv import save_profile_tier_none_assignment
+from profiles.uv.profile_store import delete_auto_uv_profile_paths
+from profiles.uv.profile_tiers import save_profile_tier_assignment
+from profiles.uv.profile_tiers import save_profile_tier_none_assignment
 
 from ui.commands import delete_profiles_command
 from ui.commands import profile_verify_command

@@ -13,17 +13,19 @@ from runtime.support.runtime_debug import (
 )
 from runtime.support.runtime_service import running_under_systemd_service, stop_existing_penguin_burner_runtime
 from runtime.gpu_control.fan_release import release_fans_to_hardware_auto
-from profiles.uv import (
+from profiles.uv.profile_store import (
     delete_auto_uv_profiles,
     format_profile_table,
-    load_auto_uv_final_curve,
+    read_auto_uv_profile_summaries,
+    resolve_auto_uv_profile,
+)
+from profiles.uv.profile_tiers import (
     normalize_profile_tier,
     profile_tier_is_none,
     profile_tier_label,
-    read_auto_uv_profile_summaries,
-    resolve_auto_uv_profile,
     save_profile_tier_assignment,
 )
+from profiles.uv.runtime_auto_uv_profile import load_auto_uv_final_curve
 
 
 @dataclass(slots=True)

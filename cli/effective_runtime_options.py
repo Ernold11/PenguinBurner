@@ -19,7 +19,8 @@ def _memory_offset(value):
     return max(0, min(MAX_AFTERBURNER_MEM_OFFSET_MHZ, int(value)))
 
 
-_FLOAT_NONNEG = lambda v: max(0.0, float(v))
+def _float_nonnegative(value):
+    return max(0.0, float(value))
 
 
 # (arg_name, runtime_key, transform). transform is called only when args.<arg_name> is not None.
@@ -34,7 +35,7 @@ _AUTO_UV_NUMERIC_OPTIONS = [
     ),
     ("auto_oc_target_voltage_mv", "auto_oc_target_voltage_mv", _INT_POS),
     ("auto_oc_target_clock_mhz", "auto_oc_target_clock_mhz", _INT_POS),
-    ("auto_uv_max_clock_drop_pct", "auto_uv_max_clock_drop_pct", _FLOAT_NONNEG),
+    ("auto_uv_max_clock_drop_pct", "auto_uv_max_clock_drop_pct", _float_nonnegative),
 ]
 
 

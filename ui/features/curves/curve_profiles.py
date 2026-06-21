@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 
 from curve_editors.uv import user_edited_profile_payload
-from profiles.uv import archive_auto_uv_profile
+from profiles.uv.profile_store import archive_auto_uv_profile
 from common.penguin_burner_paths import default_runtime_config_path
 from common.penguin_burner_paths import default_user_config_dir
 

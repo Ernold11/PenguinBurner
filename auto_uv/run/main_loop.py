@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Callable
 
-from auto_uv.stability.q2rtx import Q2RTXStabilityConfig, cleanup_managed_q2rtx_processes
+from auto_uv.stability.q2rtx.models import Q2RTXStabilityConfig
+from auto_uv.stability.q2rtx.process_harness import cleanup_managed_q2rtx_processes
 
 from auto_uv.domain.types import (
     AutoUvError,
@@ -30,7 +31,6 @@ from auto_uv.run.baseline_probe import (
     require_probe_summary,
     retarget_clock_ceiling_for_candidate,
     run_discovery_probe,
-    tail_ceiling_for_plan,
     write_verified_candidate,
 )
 from auto_uv.run.crash_recovery import (
@@ -42,7 +42,6 @@ from auto_uv.run.crash_recovery import (
     consume_crash_cache,
     crash_recovery_decision,
     crash_recovery_entry_from_cache,
-    crash_recovery_entry_profile_tier,
     next_safer_recovery_candidate_id,
     probe_summary_from_candidate_record,
     recovery_candidate_records_for_failed_run,
@@ -59,7 +58,6 @@ from auto_uv.efficiency_tune import (
     voltage_descent_tail_rise_bins,
 )
 from auto_uv.gpu.gpu_vf_curve_applier import open_live_gpu_vf_curve_applier
-from auto_uv.persistence.interrupted_probe_crash_cache import consume_interrupted_probe_crash_marker
 from auto_uv.run.lower_voltage_sweep_loop import (
     LowerVoltageSweepHooks,
     run_lower_voltage_sweep_loop,
@@ -77,8 +75,6 @@ from auto_uv.persistence.verified_candidate_result_file import (
 from auto_uv.persistence.auto_uv_persisted_json_files import clear_auto_uv_stop_request
 from auto_uv.curve.vf_curve_flattening import build_flatten_target_for_plan
 from auto_uv.run.performance_auto_oc_selection import (
-    performance_auto_oc_progress_metadata,
-    run_auto_oc_candidate_search,
     select_performance_auto_oc_candidate,
 )
 from auto_uv.ui.vf_curve_ui_points import vf_curve_ui_points

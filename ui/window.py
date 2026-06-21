@@ -41,7 +41,6 @@ from .models import status_value
 from .models import top_status_text
 from ui.features.profiles.profiles import load_profile_summaries
 from ui.features.profiles.profiles import penguin_burner_runtime_is_active
-from ui.features.profiles.profiles import profile_can_apply
 from ui.features.profiles.profiles import profile_for_selector
 from ui.features.profiles.profiles import runner_status_text
 from ui.features.profiles.profiles import running_auto_uv_profile_info
@@ -49,8 +48,6 @@ from ui.features.profiles.profiles import systemd_autostart_profile_info
 from ui.features.profiles.profiles import systemd_unit_entry_exists
 from ui.features.tuning.verify import stop_request_path as verify_stop_request_path
 from ui.features.profiles.profile_actions import ProfileActionsMixin
-from ui.features.profiles.profile_actions import _manual_curve_control_voltage_mvs
-from ui.features.profiles.profile_actions import _runtime_action_label
 from .styles import STYLESHEET
 
 

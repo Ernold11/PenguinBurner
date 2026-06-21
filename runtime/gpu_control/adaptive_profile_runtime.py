@@ -11,16 +11,18 @@ from runtime.support.adaptive_target_fps import (
     parse_adaptive_target_fps,
 )
 from runtime.support.runtime_debug import log as runtime_log
-from profiles.uv import (
-    apply_auto_uv_profile_power_limit,
+from profiles.uv.profile_store import read_auto_uv_profiles
+from profiles.uv.profile_tiers import (
     available_adaptive_tiers,
-    load_auto_uv_final_curve,
-    read_auto_uv_profiles,
+    profile_tier_label,
     resolve_profile_tier_profiles,
 )
-from profiles.uv.profile_tiers import profile_tier_label
 from common.runtime_log_lines import tier_switch_line
-from profiles.uv.runtime_auto_uv_profile import apply_auto_uv_profile_memory_offset
+from profiles.uv.runtime_auto_uv_profile import (
+    apply_auto_uv_profile_memory_offset,
+    apply_auto_uv_profile_power_limit,
+    load_auto_uv_final_curve,
+)
 
 from .adaptive_profile_policy import AdaptiveProfileController, AdaptiveProfilePolicyConfig
 from .vf_curve_reset_guard import select_expected_vf_samples
