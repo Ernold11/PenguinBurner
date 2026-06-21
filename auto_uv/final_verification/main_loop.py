@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from runtime.support.vf_curve_plan import apply_plan
 
-from ..auto_uv_console_log import log_benchmark, log_phase, log_user_stage
-from ..auto_uv_types import (
+from auto_uv.domain.console_log import log_benchmark, log_phase, log_user_stage
+from auto_uv.domain.types import (
     AutoUvError,
     AutoUvProbeSummary,
     StableRunDecision,
@@ -25,7 +25,7 @@ from ..ui.ui_voltage_probe_events import (
     emit_ui_voltage_probe_started,
 )
 from ..ui.vf_curve_ui_points import vf_curve_ui_points
-from ..voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from .crash_marker import (
     final_probe_crash_marker_details,
     memory_offset_from_gpu_policy,

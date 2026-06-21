@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .curve.base_vf_curve_voltage_bins import lower_editable_voltage_bins
-from .shared.probe_data_fields import percent
+from auto_uv.curve.base_vf_curve_voltage_bins import lower_editable_voltage_bins
+from auto_uv.shared.probe_data_fields import percent
 
 
 @dataclass(frozen=True, slots=True)

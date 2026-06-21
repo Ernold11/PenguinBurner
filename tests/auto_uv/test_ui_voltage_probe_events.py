@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from auto_uv.auto_uv_types import (
+from auto_uv.domain.types import (
     FailureKind,
     FailureSeverity,
     StableRunDecision,
@@ -10,7 +10,7 @@ from auto_uv.ui.ui_voltage_probe_events import (
     emit_ui_voltage_probe_finished,
     emit_ui_voltage_probe_started,
 )
-from auto_uv.voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from auto_uv_test_data import base_curve
 
 

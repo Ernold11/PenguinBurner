@@ -10,15 +10,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from auto_uv.auto_uv_types import AutoUvError
-from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS, AutoUvMetricTuning
+from auto_uv.domain.types import AutoUvError
+from auto_uv.domain.user_options import AUTO_UV_DEFAULTS, AutoUvMetricTuning
 from auto_uv.curve.rising_tail import normalize_tail_rise_bins
 from auto_uv.curve.vf_curve_flattening import FlatteningRules, snap_target_clock
 from auto_uv.scan_mode.uv_limits import (
     uv_limit_profile_target_for_gpu,
     voltage_drop_pct,
 )
-from auto_uv.scan_runtime_settings import (
+from auto_uv.run.scan_runtime_settings import (
     derive_efficiency_stop_streak,
     efficiency_stop_streak,
     read_scan_runtime_settings,

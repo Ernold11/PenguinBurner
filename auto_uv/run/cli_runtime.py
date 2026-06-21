@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from auto_uv.auto_uv_types import AutoUvError, AutoUvFinalChoiceDiscarded
-from auto_uv.voltage_frequency_undervolt_main_loop import (
+from auto_uv.domain.types import AutoUvError, AutoUvFinalChoiceDiscarded
+from auto_uv.run.main_loop import (
     run_voltage_frequency_undervolt_main_loop,
 )
 from auto_uv.initial_check import require_auto_uv_initial_check

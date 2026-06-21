@@ -5,7 +5,7 @@ It compares the final verified probe with the initial loaded baseline probe.
 
 from __future__ import annotations
 
-from .auto_uv_types import AutoUvProbeSummary, AutoUvVoltageScanResult
+from auto_uv.domain.types import AutoUvProbeSummary, AutoUvVoltageScanResult
 
 
 def build_voltage_scan_result(

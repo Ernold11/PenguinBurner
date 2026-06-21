@@ -1,4 +1,4 @@
-from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS
+from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
 
 APP_DESKTOP_ID = "io.github.jpietek.PenguinBurner"
 APP_DISPLAY_NAME = "NVIDIA GPU Automatic Tuning Tool"

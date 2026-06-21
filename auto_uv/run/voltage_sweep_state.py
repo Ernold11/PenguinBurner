@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .auto_uv_types import StableRunDecision, VfCurveCandidate
+from auto_uv.domain.types import StableRunDecision, VfCurveCandidate
 
 
 @dataclass(frozen=True, slots=True)

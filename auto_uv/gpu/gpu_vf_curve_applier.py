@@ -16,7 +16,7 @@ from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
 from runtime.support.vf_curve_plan import apply_plan
 from runtime.support.nvidia_runtime_defaults import reset_nvidia_runtime_defaults
 
-from ..auto_uv_types import AutoUvError
+from auto_uv.domain.types import AutoUvError
 from .live_nvml_voltage_reader import LiveNvmlVoltageReader
 from .memory_clock_offset_user_option import auto_uv_memory_offset_mhz
 from .probe_clock_ceiling import ProbeClockCeilingController

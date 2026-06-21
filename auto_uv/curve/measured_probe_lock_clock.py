@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..auto_uv_types import AutoUvProbeSummary
+from auto_uv.domain.types import AutoUvProbeSummary
 from .base_load_flatten_target import choose_sustained_curve_clock
 
 

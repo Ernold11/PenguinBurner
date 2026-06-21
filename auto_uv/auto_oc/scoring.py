@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from auto_uv.auto_uv_types import AutoUvProbeSummary
+from auto_uv.domain.types import AutoUvProbeSummary
 
 
 def effective_q2rtx_clock_mhz(probe: AutoUvProbeSummary | None) -> float | None:

@@ -18,7 +18,7 @@ from ..persistence.auto_uv_persisted_json_files import (
     final_choice_response_path,
     safe_json_write,
 )
-from ..auto_uv_types import AutoUvFinalChoiceDiscarded, AutoUvProbeSummary
+from auto_uv.domain.types import AutoUvFinalChoiceDiscarded, AutoUvProbeSummary
 from .ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
 from ..curve.vf_curve_flattening import build_flattened_plan
 

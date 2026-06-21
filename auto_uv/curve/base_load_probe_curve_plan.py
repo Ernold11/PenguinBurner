@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..auto_uv_types import BaseLoadTarget
+from auto_uv.domain.types import BaseLoadTarget
 from .base_load_flatten_target import CurveTiming, choose_base_load_flatten_target
 from .base_load_telemetry import LoadedTelemetryRules
 from .vf_curve_flattening import build_flatten_target_for_plan, build_flattened_plan

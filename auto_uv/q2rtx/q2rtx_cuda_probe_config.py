@@ -10,7 +10,7 @@ from auto_uv.stability.q2rtx import (
     Q2RTXStabilityConfig,
 )
 
-from ..auto_uv_user_options import AUTO_UV_DEFAULTS, AUTO_UV_PROBE_TUNING
+from auto_uv.domain.user_options import AUTO_UV_DEFAULTS, AUTO_UV_PROBE_TUNING
 from ..shared.probe_data_fields import percent
 
 REFERENCE_DISCOVERY_Q2RTX_DURATION_MULTIPLIER = 2

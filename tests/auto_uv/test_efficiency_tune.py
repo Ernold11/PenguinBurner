@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from auto_uv.auto_uv_scan_settings import AutoUvScanSettings
+from auto_uv.domain.scan_settings import AutoUvScanSettings
 from auto_uv.efficiency_tune import (
     min_search_voltage_mv,
     voltage_descent_candidate_policy,

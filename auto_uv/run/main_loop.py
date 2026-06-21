@@ -12,18 +12,18 @@ from typing import Callable
 
 from auto_uv.stability.q2rtx import Q2RTXStabilityConfig, cleanup_managed_q2rtx_processes
 
-from .auto_uv_types import (
+from auto_uv.domain.types import (
     AutoUvError,
     AutoUvProbeSummary,
     AutoUvVoltageScanResult,
     VfCurveCandidate,
 )
-from .auto_uv_scan_settings import AutoUvScanSettings
-from .auto_uv_console_log import log_phase, log_user_stage
-from .auto_uv_scan_result import build_voltage_scan_result
-from .auto_uv_user_options import AUTO_UV_DEFAULTS, AUTO_UV_METRIC_TUNING
-from .shared.positive_int import positive_int
-from .baseline_probe import (
+from auto_uv.domain.scan_settings import AutoUvScanSettings
+from auto_uv.domain.console_log import log_phase, log_user_stage
+from auto_uv.domain.scan_result import build_voltage_scan_result
+from auto_uv.domain.user_options import AUTO_UV_DEFAULTS, AUTO_UV_METRIC_TUNING
+from auto_uv.shared.positive_int import positive_int
+from auto_uv.run.baseline_probe import (
     adjust_baseline_to_measured_clock,
     build_loaded_baseline_candidate,
     lower_voltage_descent_enforces_clock_floor,
@@ -33,7 +33,7 @@ from .baseline_probe import (
     tail_ceiling_for_plan,
     write_verified_candidate,
 )
-from .crash_recovery import (
+from auto_uv.run.crash_recovery import (
     _float_or_none,
     append_unique_probe_summary,
     auto_uv_run_marker_details,
@@ -49,42 +49,42 @@ from .crash_recovery import (
     recovery_initial_target_voltage_mv,
     replay_recovered_resume_probe_rows,
 )
-from .curve.base_vf_curve_validation import validate_base_vf_curve
-from .ui.candidate_choice import (
+from auto_uv.curve.base_vf_curve_validation import validate_base_vf_curve
+from auto_uv.ui.candidate_choice import (
     choose_final_verification_candidate,
     choose_recovery_final_verification_candidate,
 )
-from .efficiency_tune import (
+from auto_uv.efficiency_tune import (
     min_search_voltage_mv,
     voltage_descent_tail_rise_bins,
 )
-from .gpu.gpu_vf_curve_applier import open_live_gpu_vf_curve_applier
-from .persistence.interrupted_probe_crash_cache import consume_interrupted_probe_crash_marker
-from .lower_voltage_sweep_loop import (
+from auto_uv.gpu.gpu_vf_curve_applier import open_live_gpu_vf_curve_applier
+from auto_uv.persistence.interrupted_probe_crash_cache import consume_interrupted_probe_crash_marker
+from auto_uv.run.lower_voltage_sweep_loop import (
     LowerVoltageSweepHooks,
     run_lower_voltage_sweep_loop,
 )
-from .q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
-from .q2rtx.q2rtx_cuda_voltage_probe import probe_voltage_candidate
-from .scan_runtime_settings import read_scan_runtime_settings
-from .scan_mode.efficiency_fps_per_w_policy import (
+from auto_uv.q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
+from auto_uv.q2rtx.q2rtx_cuda_voltage_probe import probe_voltage_candidate
+from auto_uv.run.scan_runtime_settings import read_scan_runtime_settings
+from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
     derive_efficiency_stop_streak_from_fps_variance,
 )
-from .ui.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
-from .persistence.verified_candidate_result_file import (
+from auto_uv.ui.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
+from auto_uv.persistence.verified_candidate_result_file import (
     read_verified_candidates,
 )
-from .persistence.auto_uv_persisted_json_files import clear_auto_uv_stop_request
-from .curve.vf_curve_flattening import build_flatten_target_for_plan
-from .performance_auto_oc_selection import (
+from auto_uv.persistence.auto_uv_persisted_json_files import clear_auto_uv_stop_request
+from auto_uv.curve.vf_curve_flattening import build_flatten_target_for_plan
+from auto_uv.run.performance_auto_oc_selection import (
     performance_auto_oc_progress_metadata,
     run_auto_oc_candidate_search,
     select_performance_auto_oc_candidate,
 )
-from .ui.vf_curve_ui_points import vf_curve_ui_points
-from .voltage_sweep_state import VoltageProbeOutcome
-from .final_verification import run_final_verification_and_save
-from .scan_mode import AUTO_UV_MODE_EFFICIENCY
+from auto_uv.ui.vf_curve_ui_points import vf_curve_ui_points
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.final_verification import run_final_verification_and_save
+from auto_uv.scan_mode import AUTO_UV_MODE_EFFICIENCY
 
 
 @dataclass(frozen=True, slots=True)

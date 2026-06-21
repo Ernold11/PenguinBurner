@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from auto_uv.auto_uv_types import AutoUvError, AutoUvProbeSummary
+from auto_uv.domain.types import AutoUvError, AutoUvProbeSummary
 from auto_uv.curve.base_vf_curve_validation import validate_base_vf_curve
 from auto_uv.curve.base_vf_curve_voltage_bins import (
     base_target_clock_at_voltage,

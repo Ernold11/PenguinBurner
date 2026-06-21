@@ -6,11 +6,11 @@ stream live telemetry into it, then replace it with the final measured result.
 
 from __future__ import annotations
 
-from ..auto_uv_types import VfCurveCandidate
+from auto_uv.domain.types import VfCurveCandidate
 from .probe_summary_ui_payload import probe_summary_ui_payload
 from .ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
 from .vf_curve_ui_points import vf_curve_ui_points
-from ..voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 
 
 def emit_ui_voltage_probe_started(

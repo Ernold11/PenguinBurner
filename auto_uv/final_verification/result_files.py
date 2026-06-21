@@ -9,7 +9,7 @@ from datetime import datetime
 import re
 from pathlib import Path
 
-from ..auto_uv_types import AutoUvProbeSummary
+from auto_uv.domain.types import AutoUvProbeSummary
 from ..persistence.auto_uv_persisted_json_files import (
     auto_uv_user_config_dir,
     safe_json_write,

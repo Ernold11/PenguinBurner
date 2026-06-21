@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from auto_uv.auto_uv_scan_settings import AutoUvScanSettings
-from auto_uv.auto_uv_types import (
+from auto_uv.domain.scan_settings import AutoUvScanSettings
+from auto_uv.domain.types import (
     FailureKind,
     FailureSeverity,
     StableRunDecision,
     VfCurveCandidate,
 )
-from auto_uv.lower_voltage_sweep_loop import (
+from auto_uv.run.lower_voltage_sweep_loop import (
     LowerVoltageSweepHooks,
     run_lower_voltage_sweep_loop,
 )
-from auto_uv.voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from auto_uv_test_data import base_curve, probe_summary
 
 

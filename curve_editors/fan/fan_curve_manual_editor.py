@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import math
 
-from auto_uv.auto_uv_user_options import AUTO_UV_FAN_TUNING
+from auto_uv.domain.user_options import AUTO_UV_FAN_TUNING
 
 
 FAN_TEMP_STEP_C = 1.0

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from typing import Callable
 
-from .auto_uv_console_log import log_phase
-from .auto_uv_types import AutoUvProbeSummary, VfCurveCandidate
-from .curve.performance_sweep_profile import (
+from auto_uv.domain.console_log import log_phase
+from auto_uv.domain.types import AutoUvProbeSummary, VfCurveCandidate
+from auto_uv.curve.performance_sweep_profile import (
     build_performance_sweep_profile_candidate,
 )
-from .q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
-from .scan_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
+from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE
 
 
 def run_auto_oc_candidate_search(**kwargs):

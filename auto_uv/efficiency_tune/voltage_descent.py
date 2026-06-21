@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..auto_uv_scan_settings import AutoUvScanSettings
+from auto_uv.domain.scan_settings import AutoUvScanSettings
 
 
 @dataclass(frozen=True, slots=True)

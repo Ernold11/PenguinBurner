@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from ..auto_uv_types import AutoUvProbeSummary, VfCurveCandidate
-from ..voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.domain.types import AutoUvProbeSummary, VfCurveCandidate
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from .vf_curve_flattening import FlatteningRules, snap_target_clock
 
 

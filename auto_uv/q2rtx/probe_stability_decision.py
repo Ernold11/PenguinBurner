@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..auto_uv_types import FailureKind, FailureSeverity, StableRunDecision
+from auto_uv.domain.types import FailureKind, FailureSeverity, StableRunDecision
 from ..curve.base_load_telemetry import derive_active_power_floor_w
 from ..shared.probe_data_fields import percent as _percent
 from ..shared.probe_data_fields import read_field

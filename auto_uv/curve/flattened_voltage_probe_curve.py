@@ -5,7 +5,7 @@ It names the probe and delegates the actual plateau/ramp math to vf_curve_flatte
 
 from __future__ import annotations
 
-from ..auto_uv_types import VfCurveCandidate
+from auto_uv.domain.types import VfCurveCandidate
 from .vf_curve_flattening import FlatteningRules, build_flattened_plan
 
 

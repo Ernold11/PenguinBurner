@@ -10,7 +10,7 @@ from typing import Callable
 
 from auto_uv.stability.q2rtx import Q2RTXStabilityConfig
 
-from ..auto_uv_types import AutoUvProbeSummary, VfCurveCandidate
+from auto_uv.domain.types import AutoUvProbeSummary, VfCurveCandidate
 from .probe_stability_decision import StabilityThresholds, evaluate_stable_run
 from .q2rtx_cuda_voltage_probe import probe_voltage_candidate
 from .q2rtx_cuda_voltage_probe import companion_duration_s_from_command
@@ -24,7 +24,7 @@ from ..ui.ui_voltage_probe_events import (
     emit_ui_voltage_probe_finished,
     emit_ui_voltage_probe_started,
 )
-from ..voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 
 
 @dataclass(frozen=True, slots=True)

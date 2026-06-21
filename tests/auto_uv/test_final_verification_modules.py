@@ -5,7 +5,7 @@ from pathlib import Path
 
 from auto_uv.stability.q2rtx import Q2RTXStabilityConfig
 
-from auto_uv.auto_uv_types import AutoUvProbeSummary
+from auto_uv.domain.types import AutoUvProbeSummary
 from auto_uv.final_verification import fan_curve, result_files
 from auto_uv.final_verification.main_loop import final_candidate
 from auto_uv.final_verification.probe_config import (

@@ -10,8 +10,8 @@ from datetime import datetime
 import math
 from pathlib import Path
 
-from ..auto_uv_types import AutoUvProbeSummary
-from ..auto_uv_user_options import AUTO_UV_FAN_TUNING
+from auto_uv.domain.types import AutoUvProbeSummary
+from auto_uv.domain.user_options import AUTO_UV_FAN_TUNING
 from ..persistence.auto_uv_persisted_json_files import (
     auto_uv_user_config_dir,
     safe_json_write,

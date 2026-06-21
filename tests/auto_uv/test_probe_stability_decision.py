@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from auto_uv.auto_uv_types import FailureKind, FailureSeverity
+from auto_uv.domain.types import FailureKind, FailureSeverity
 from auto_uv.q2rtx.q2rtx_cuda_probe_config import (
     cuda_bruteforce_companion_command,
 )

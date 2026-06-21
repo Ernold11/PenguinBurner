@@ -11,20 +11,20 @@ test_voltage_search_and_cache.py (hooks + base_curve/probe_summary builders).
 
 from __future__ import annotations
 
-from auto_uv.auto_uv_scan_settings import AutoUvScanSettings
-from auto_uv.auto_uv_types import (
+from auto_uv.domain.scan_settings import AutoUvScanSettings
+from auto_uv.domain.types import (
     FailureKind,
     FailureSeverity,
     StableRunDecision,
     VfCurveCandidate,
 )
-from auto_uv.lower_voltage_probe_target import lower_voltage_phase
-from auto_uv.lower_voltage_search import (
+from auto_uv.run.lower_voltage_probe_target import lower_voltage_phase
+from auto_uv.run.lower_voltage_search import (
     filter_effective_voltage_candidates,
     select_aggressive_voltage_bins,
     select_next_lower_voltage,
 )
-from auto_uv.lower_voltage_sweep_loop import (
+from auto_uv.run.lower_voltage_sweep_loop import (
     EfficiencySelection,
     LowerVoltageSweepHooks,
     decide_efficiency_acceptance,
@@ -33,7 +33,7 @@ from auto_uv.lower_voltage_sweep_loop import (
     state_for_selected_candidate,
     voltage_drop_from_start_pct,
 )
-from auto_uv.voltage_sweep_state import VoltageProbeOutcome, VoltageSweepState
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome, VoltageSweepState
 from auto_uv_test_data import base_curve, probe_summary
 
 

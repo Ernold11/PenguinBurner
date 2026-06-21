@@ -13,10 +13,10 @@ from auto_uv.stability.q2rtx import (
     run_q2rtx_stability_test,
 )
 
-from ..auto_uv_console_log import log_phase
+from auto_uv.domain.console_log import log_phase
 from ..persistence.auto_uv_persisted_json_files import auto_uv_stop_requested
-from ..auto_uv_types import AutoUvProbeSummary
-from ..auto_uv_user_options import AUTO_UV_METRIC_TUNING, AUTO_UV_STALL_TUNING
+from auto_uv.domain.types import AutoUvProbeSummary
+from auto_uv.domain.user_options import AUTO_UV_METRIC_TUNING, AUTO_UV_STALL_TUNING
 from ..persistence.probe_in_progress_marker_file import (
     clear_probe_in_progress_marker,
     write_probe_in_progress_marker,

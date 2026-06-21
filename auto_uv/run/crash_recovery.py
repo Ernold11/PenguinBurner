@@ -5,17 +5,17 @@ from typing import Callable
 
 from profiles.uv.profile_tiers import generated_profile_tier, normalize_profile_tier
 
-from .auto_uv_types import AutoUvProbeSummary
-from .auto_uv_console_log import log_phase
-from .persistence.interrupted_probe_crash_cache import (
+from auto_uv.domain.types import AutoUvProbeSummary
+from auto_uv.domain.console_log import log_phase
+from auto_uv.persistence.interrupted_probe_crash_cache import (
     consume_interrupted_probe_crash_marker,
 )
-from .persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
-from .scan_mode import AUTO_UV_MODE_PERFORMANCE
-from .shared.positive_int import positive_int
-from .ui.candidate_choice import candidate_plan_from_record
-from .ui.probe_summary_ui_payload import probe_summary_ui_payload
-from .ui.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
+from auto_uv.persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
+from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.shared.positive_int import positive_int
+from auto_uv.ui.candidate_choice import candidate_plan_from_record
+from auto_uv.ui.probe_summary_ui_payload import probe_summary_ui_payload
+from auto_uv.ui.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
 
 
 class CrashCacheEntries(list):

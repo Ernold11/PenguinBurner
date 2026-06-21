@@ -5,7 +5,7 @@ Keeping these helpers together prevents every sweep rule from inventing its own 
 
 from __future__ import annotations
 
-from ..auto_uv_types import AutoUvError
+from auto_uv.domain.types import AutoUvError
 from .base_vf_curve import editable_base_vf_points, read_base_vf_points
 
 

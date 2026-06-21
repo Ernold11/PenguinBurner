@@ -9,7 +9,7 @@ from dataclasses import replace
 
 from .constants import DEFAULT_SINGLE_PASS_TIMEOUT_S
 from .models import Q2RTXStabilityConfig
-from auto_uv.auto_uv_user_options import AUTO_UV_PROBE_TUNING
+from auto_uv.domain.user_options import AUTO_UV_PROBE_TUNING
 from auto_uv.q2rtx.q2rtx_cuda_probe_config import cuda_bruteforce_companion_command
 
 LONG_STABILITY_CUDA_RATIO_REFERENCE_S = 30

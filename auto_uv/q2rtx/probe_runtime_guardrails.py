@@ -6,7 +6,7 @@ or clocks below floor.
 
 from __future__ import annotations
 
-from ..auto_uv_user_options import AUTO_UV_CURVE_TUNING, AUTO_UV_STALL_TUNING
+from auto_uv.domain.user_options import AUTO_UV_CURVE_TUNING, AUTO_UV_STALL_TUNING
 from ..persistence.unsafe_voltage_cache import controlled_failure_reason
 from ..shared.probe_data_fields import percent
 

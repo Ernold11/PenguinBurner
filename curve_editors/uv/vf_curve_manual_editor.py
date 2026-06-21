@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from auto_uv.auto_uv_user_options import AUTO_UV_CURVE_TUNING
+from auto_uv.domain.user_options import AUTO_UV_CURVE_TUNING
 from auto_uv.persistence.verified_candidate_result_file import artifact_points
 
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..auto_uv_types import BaseLoadTarget
+from auto_uv.domain.types import BaseLoadTarget
 from .base_load_telemetry import (
     LoadedTelemetryRules,
     decision_samples,

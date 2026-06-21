@@ -4,13 +4,13 @@ from dataclasses import dataclass
 
 from auto_uv.stability.q2rtx import Q2RTXStabilityConfig
 
-from .scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE, normalize_auto_uv_mode
-from .auto_uv_types import AutoUvError
-from .auto_uv_user_options import (
+from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE, normalize_auto_uv_mode
+from auto_uv.domain.types import AutoUvError
+from auto_uv.domain.user_options import (
     AUTO_UV_DEFAULTS,
     AUTO_UV_METRIC_TUNING,
 )
-from .scan_mode.uv_limits import (
+from auto_uv.scan_mode.uv_limits import (
     uv_limit_efficiency_to_performance_clock_drop_pct_for_gpu,
 )
 

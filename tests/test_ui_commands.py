@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 import ui.commands as commands
-from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS
-from auto_uv.scan_runtime_settings import (
+from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
+from auto_uv.run.scan_runtime_settings import (
     short_probe_base_duration_s as _short_probe_base_duration_s,
 )
 from auto_uv.ui.candidate_choice import (

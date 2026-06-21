@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from auto_uv.auto_uv_scan_result import build_voltage_scan_result
-from auto_uv.auto_uv_types import AutoUvProbeSummary
+from auto_uv.domain.scan_result import build_voltage_scan_result
+from auto_uv.domain.types import AutoUvProbeSummary
 
 
 def _probe(

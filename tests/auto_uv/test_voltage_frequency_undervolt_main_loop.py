@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from auto_uv.auto_uv_types import (
+from auto_uv.domain.types import (
     AutoUvError,
     AutoUvProbeSummary,
     FailureKind,
@@ -14,14 +14,14 @@ from auto_uv.auto_uv_types import (
     StableRunDecision,
     VfCurveCandidate,
 )
-from auto_uv import baseline_probe
-from auto_uv import crash_recovery
-from auto_uv import performance_auto_oc_selection
-from auto_uv import voltage_frequency_undervolt_main_loop as undervolt_main_loop
+from auto_uv.run import baseline_probe
+from auto_uv.run import crash_recovery
+from auto_uv.run import main_loop as undervolt_main_loop
+from auto_uv.run import performance_auto_oc_selection
 from auto_uv.final_verification.main_loop import (
     run_final_verification_and_save as real_run_final_verification_and_save,
 )
-from auto_uv.voltage_sweep_state import (
+from auto_uv.run.voltage_sweep_state import (
     LowerVoltageSweepResult,
     VoltageProbeOutcome,
     VoltageSweepState,

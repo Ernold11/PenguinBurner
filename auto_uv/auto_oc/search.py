@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from auto_uv.auto_uv_console_log import log_phase
-from auto_uv.auto_uv_types import (
+from auto_uv.domain.console_log import log_phase
+from auto_uv.domain.types import (
     AutoUvProbeSummary,
     FailureKind,
     VfCurveCandidate,
@@ -15,7 +15,7 @@ from auto_uv.curve.flattened_voltage_probe_curve import build_flattened_voltage_
 from auto_uv.curve.rising_tail import tail_ceiling_clock_mhz
 from auto_uv.q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
 from auto_uv.scan_mode.uv_limits import UvTierTarget, uv_limit_profile_target_for_gpu
-from auto_uv.voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from .ladder import AutoOcStep, build_auto_oc_ladder
 from .scoring import auto_oc_probe_key, effective_q2rtx_clock_mhz
 from .settings import (

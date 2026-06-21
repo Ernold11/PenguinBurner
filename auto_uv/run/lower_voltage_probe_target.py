@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .curve.base_vf_curve_voltage_bins import base_target_clock_at_voltage
-from .shared.probe_data_fields import percent
+from auto_uv.curve.base_vf_curve_voltage_bins import base_target_clock_at_voltage
+from auto_uv.shared.probe_data_fields import percent
 
 
 @dataclass(frozen=True, slots=True)

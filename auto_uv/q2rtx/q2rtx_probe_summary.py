@@ -9,8 +9,8 @@ from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 
-from ..auto_uv_types import AutoUvProbeSummary
-from ..auto_uv_user_options import AUTO_UV_METRIC_TUNING
+from auto_uv.domain.types import AutoUvProbeSummary
+from auto_uv.domain.user_options import AUTO_UV_METRIC_TUNING
 from ..curve.base_load_telemetry import (
     derive_active_power_floor_w,
     decision_samples,

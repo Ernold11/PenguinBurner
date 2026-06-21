@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from auto_uv.auto_uv_types import TelemetrySample
-from auto_uv.auto_uv_user_options import (
+from auto_uv.domain.types import TelemetrySample
+from auto_uv.domain.user_options import (
     AUTO_UV_METRIC_TUNING,
     AUTO_UV_STALL_TUNING,
 )

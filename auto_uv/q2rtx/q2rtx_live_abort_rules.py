@@ -5,7 +5,7 @@ Rules cover lost load, low clocks, and selected-GPU idle conditions.
 
 from __future__ import annotations
 
-from ..auto_uv_user_options import (
+from auto_uv.domain.user_options import (
     AUTO_UV_CURVE_TUNING,
     AUTO_UV_METRIC_TUNING,
     AUTO_UV_STALL_TUNING,

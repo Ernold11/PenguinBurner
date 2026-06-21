@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from auto_uv.auto_uv_user_options import (
+from auto_uv.domain.user_options import (
     AUTO_UV_CURVE_TUNING,
     AUTO_UV_DEFAULTS,
     AUTO_UV_STALL_TUNING,

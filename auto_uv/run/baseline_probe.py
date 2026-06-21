@@ -4,29 +4,29 @@ from typing import Callable
 
 from auto_uv.stability.q2rtx import Q2RTXStabilityConfig
 
-from .auto_uv_types import AutoUvError, AutoUvProbeSummary, VfCurveCandidate
-from .auto_uv_console_log import log_benchmark, log_phase
-from .curve.base_load_flatten_target import (
+from auto_uv.domain.types import AutoUvError, AutoUvProbeSummary, VfCurveCandidate
+from auto_uv.domain.console_log import log_benchmark, log_phase
+from auto_uv.curve.base_load_flatten_target import (
     choose_base_load_flatten_target,
     selected_nvidia_light_load_diagnostic,
 )
-from .curve.base_load_voltage import derive_loaded_voltage_band
-from .curve.base_vf_curve import editable_base_vf_points
-from .curve.base_vf_curve_voltage_bins import (
+from auto_uv.curve.base_load_voltage import derive_loaded_voltage_band
+from auto_uv.curve.base_vf_curve import editable_base_vf_points
+from auto_uv.curve.base_vf_curve_voltage_bins import (
     lock_voltage_for_target_clock,
     nearest_editable_voltage_bin,
 )
-from .curve.measured_probe_lock_clock import lock_clock_from_probe_loaded_clock
-from .curve.vf_curve_flattening import (
+from auto_uv.curve.measured_probe_lock_clock import lock_clock_from_probe_loaded_clock
+from auto_uv.curve.vf_curve_flattening import (
     build_flatten_target_for_plan,
     build_flattened_plan,
 )
-from .persistence.verified_candidate_result_file import write_latest_verified_candidate
-from .q2rtx.q2rtx_cuda_probe_config import reference_discovery_q2rtx_duration_s
-from .q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
-from .ui.probe_summary_ui_payload import probe_summary_ui_payload
-from .ui.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
-from .voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.persistence.verified_candidate_result_file import write_latest_verified_candidate
+from auto_uv.q2rtx.q2rtx_cuda_probe_config import reference_discovery_q2rtx_duration_s
+from auto_uv.q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
+from auto_uv.ui.probe_summary_ui_payload import probe_summary_ui_payload
+from auto_uv.ui.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 
 
 def retarget_clock_ceiling_for_candidate(

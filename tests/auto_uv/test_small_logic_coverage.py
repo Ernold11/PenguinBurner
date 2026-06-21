@@ -14,13 +14,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from auto_uv.auto_uv_types import (
+from auto_uv.domain.types import (
     AutoUvProbeSummary,
     FailureKind,
     FailureSeverity,
     StableRunDecision,
 )
-from auto_uv.cli_runtime import (
+from auto_uv.run.cli_runtime import (
     AutoUvForegroundDependencies,
     run_auto_uv_voltage_scan,
 )
@@ -34,7 +34,7 @@ from auto_uv.curve.performance_sweep_profile import (
 from auto_uv.curve.vf_curve_flattening import FlatteningRules
 from auto_uv.shared.probe_data_fields import numeric_values, percent, read_field
 from auto_uv.ui.probe_summary_ui_payload import probe_summary_ui_payload
-from auto_uv.voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from common.penguin_burner_errors import NvmlError
 
 

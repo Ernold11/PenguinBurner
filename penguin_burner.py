@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import sys
 
-from auto_uv.cli_runtime import (
+from auto_uv.run.cli_runtime import (
     AutoUvForegroundDependencies,
     run_auto_uv_foreground_command,
 )

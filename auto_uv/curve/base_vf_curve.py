@@ -5,7 +5,7 @@ This module owns shape conversion only; search, flattening, and safety rules liv
 
 from __future__ import annotations
 
-from ..auto_uv_types import BaseVfPoint
+from auto_uv.domain.types import BaseVfPoint
 
 
 def read_base_vf_points(base_curve: list[dict]) -> list[BaseVfPoint]:

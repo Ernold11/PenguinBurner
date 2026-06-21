@@ -5,7 +5,7 @@ from pathlib import Path
 from auto_uv.auto_oc.ladder import AutoOcStep, build_auto_oc_ladder
 from auto_uv.auto_oc.scoring import auto_oc_probe_key
 from auto_uv.auto_oc.search import AutoOcAttempt, run_auto_oc_candidate_search
-from auto_uv.auto_uv_types import (
+from auto_uv.domain.types import (
     AutoUvProbeSummary,
     FailureKind,
     FailureSeverity,
@@ -18,7 +18,7 @@ from auto_uv.curve.flattened_voltage_probe_curve import (
 from auto_uv.curve.performance_sweep_profile import (
     build_performance_sweep_profile_candidate,
 )
-from auto_uv.voltage_sweep_state import VoltageProbeOutcome
+from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from auto_uv_test_data import base_curve
 
 

@@ -5,7 +5,7 @@ Starting from non-zero offsets would make the measured curve impossible to expla
 
 from __future__ import annotations
 
-from ..auto_uv_types import AutoUvError
+from auto_uv.domain.types import AutoUvError
 
 
 def assert_zero_runtime_vf_offsets(reader) -> None:

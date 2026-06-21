@@ -9,7 +9,7 @@ from auto_uv.q2rtx.q2rtx_cuda_probe_config import reference_discovery_q2rtx_prob
 from auto_uv.q2rtx.q2rtx_cuda_probe_config import short_q2rtx_probe_config
 from auto_uv.q2rtx.q2rtx_cuda_probe_config import tiered_cuda_probe_duration_s
 from auto_uv.q2rtx.q2rtx_cuda_probe_config import tiered_q2rtx_probe_duration_s
-from auto_uv.scan_runtime_settings import read_scan_runtime_settings
+from auto_uv.run.scan_runtime_settings import read_scan_runtime_settings
 
 
 def test_short_probe_config_uses_exact_duration_benchmark() -> None:

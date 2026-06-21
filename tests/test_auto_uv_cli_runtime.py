@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from auto_uv.auto_uv_types import AutoUvError, AutoUvFinalChoiceDiscarded
-from auto_uv.cli_runtime import (
+from auto_uv.domain.types import AutoUvError, AutoUvFinalChoiceDiscarded
+from auto_uv.run.cli_runtime import (
     AutoUvForegroundDependencies,
     format_auto_uv_final_state,
     run_auto_uv_foreground_command,

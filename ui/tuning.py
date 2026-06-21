@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from auto_uv.auto_uv_user_options import AUTO_UV_DEFAULTS
+from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
 from auto_uv.scan_mode import AUTO_UV_MODE_EFFICIENCY
 from auto_uv.scan_mode import AUTO_UV_MODE_PERFORMANCE
 from auto_uv.scan_mode.uv_limits import (
