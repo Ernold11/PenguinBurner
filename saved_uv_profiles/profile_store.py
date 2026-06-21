@@ -506,6 +506,8 @@ def format_profile_table(profiles: list[dict]) -> str:
     rows = [
         (
             "created",
+            "id",
+            "tier",
             "profile",
             "mV",
             "target MHz",
@@ -522,6 +524,8 @@ def format_profile_table(profiles: list[dict]) -> str:
         rows.append(
             (
                 created,
+                str(profile.get("profile_id", "")),
+                str(profile.get("profile_tier", "")),
                 profile_display_name(profile),
                 _display_number(profile.get("candidate_voltage_mv"), precision=0),
                 _display_number(profile.get("lock_clock_mhz"), precision=0),

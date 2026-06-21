@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from .afterburner_import import persist_afterburner_import_selection
-from .constants import AFTERBURNER_PROFILE_ID
 from .dialogs import select_afterburner_import
 
 
@@ -72,10 +71,10 @@ class AfterburnerImportWorkflow:
         self.log_view.append(
             "\n"
             + message
-            + f"\nManaged Afterburner directory: {result['afterburner_root']}\n"
+            + f"\nSaved profile: {result['profile_path']}\n"
         )
         self.load_profiles()
         self.tabs.setCurrentIndex(self.profiles_tab_index)
-        self.profile_list.select_profile(AFTERBURNER_PROFILE_ID)
+        self.profile_list.select_profile(str(result.get("profile_id", "")))
         self.profile_list.table.setFocus()
         self.QtWidgets.QMessageBox.information(self.parent, "Import Afterburner", message)

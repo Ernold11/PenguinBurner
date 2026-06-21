@@ -11,7 +11,6 @@ import ui.profiles as profiles
 
 _P1 = {"profile_id": "p1", "candidate_id": "c1", "path": "/tmp/p1.json", "display_name": "P1"}
 _P2 = {"profile_id": "p2", "candidate_id": "c2", "path": "/tmp/p2.json"}
-_AB = {"profile_id": "ab", "runtime_source": "afterburner"}
 
 
 # --- selection ----------------------------------------------------------------
@@ -89,13 +88,11 @@ def test_delete_autostart_action_adaptive_branches(monkeypatch) -> None:
 
 def test_capability_helpers() -> None:
     assert profiles.profile_can_apply({"final_verified": True}) is True
-    assert profiles.profile_can_apply(_AB) is True
     assert profiles.profile_can_apply({}) is False
     assert profiles.profile_can_verify(_P1) is True
     assert profiles.profile_can_verify({}) is False
     assert profiles.profile_is_deletable(_P1) is True
     assert profiles.profile_is_deletable({}) is False
-    assert profiles.profile_verify_selector(_AB) == ""
     assert profiles.profile_verify_selector(_P1) == "/tmp/p1.json"
     assert profiles.profile_verify_selector({"profile_id": "p9"}) == "p9"
 
@@ -177,7 +174,6 @@ def test_profile_info_from_command_text() -> None:
 def test_delete_confirmation_text_variants() -> None:
     assert "the selected profiles" in profiles.delete_confirmation_text([])
     assert "Auto-UV profile P1" in profiles.delete_confirmation_text(["P1"])
-    assert "profile AB" in profiles.delete_confirmation_text(["AB"], includes_afterburner=True)
     assert "2 selected profiles" in profiles.delete_confirmation_text(["A", "B"])
     assert "remove the Systemd autostart" in profiles.delete_confirmation_text(
         ["P1"], removes_systemd=True

@@ -127,11 +127,6 @@ def test_profile_curve_target_point() -> None:
 
 
 def test_profile_curve_tab_key_variants() -> None:
-    afterburner = cp.profile_curve_tab_key(
-        {"runtime_source": "afterburner", "afterburner_profile": "profile2",
-         "profile_created_at": "2026"}
-    )
-    assert "profile2" in afterburner
     assert cp.profile_curve_tab_key({"profile_id": "p1"}) == "p1"
     assert cp.profile_curve_tab_key({}) == "profile-curve"
 
@@ -143,9 +138,7 @@ def test_profile_curve_tab_label(monkeypatch) -> None:
 
 
 def test_profile_curve_legend_label() -> None:
-    assert cp.profile_curve_legend_label({"runtime_source": "afterburner"}) == (
-        "MSI Afterburner"
-    )
+    assert cp.profile_curve_legend_label({"profile_source": "MSI Afterburner"}) == "MSI Afterburner"
     assert cp.profile_curve_legend_label({"profile_source": "auto-uv-final"}) == "Auto-UV"
     assert cp.profile_curve_legend_label({"profile_source": "manual"}) == "manual"
     assert cp.profile_curve_legend_label({}) == "Curve"

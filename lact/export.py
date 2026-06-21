@@ -340,7 +340,7 @@ def build_lact_nvidia_config_from_afterburner(
     afterburner_root = str(afterburner_root).strip()
     if not afterburner_root:
         raise LactExportError(
-            "--lact-source afterburner requires --afterburner-dir or a configured Afterburner root"
+            "Afterburner LACT export requires a configured Afterburner root"
         )
 
     warnings: list[str] = []

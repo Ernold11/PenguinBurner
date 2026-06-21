@@ -105,36 +105,11 @@ def test_silent_runtime_fields_and_embedded_payload() -> None:
 # --- profile-level helpers ----------------------------------------------------
 
 
-def test_profile_fan_payload_afterburner(monkeypatch) -> None:
-    monkeypatch.setattr(fp, "afterburner_fan_payload", lambda profile: {"source": "AB"})
-    assert fp.profile_fan_payload({"runtime_source": "afterburner"}) == {"source": "AB"}
-
-
 def test_profile_fan_payload_embedded(monkeypatch) -> None:
     monkeypatch.setattr(fp, "profile_payload_from_path", lambda profile: None)
     monkeypatch.setattr(fp, "matching_current_auto_uv_fan_payload", lambda profile: None)
     payload = fp.profile_fan_payload({"fan": {"curve": [[30, 20]]}})
     assert payload == {"fan": {"curve": [[30, 20]]}}
-
-
-def test_afterburner_fan_payload(monkeypatch) -> None:
-    assert fp.afterburner_fan_payload({}) is None  # no root
-
-    def _boom(_root):
-        raise RuntimeError("bad root")
-
-    monkeypatch.setattr(fp, "load_afterburner_fan_settings", _boom)
-    assert fp.afterburner_fan_payload({"afterburner_root": "/x"}) is None
-
-    monkeypatch.setattr(
-        fp,
-        "load_afterburner_fan_settings",
-        lambda root: {"curve": {"points": [[30, 20], [70, 60]]}, "profile_path": "/p"},
-    )
-    payload = fp.afterburner_fan_payload({"afterburner_root": "/x"})
-    assert payload["source"] == "MSI Afterburner"
-    assert payload["fan"]["curve"] == [(30.0, 20.0), (70.0, 60.0)]
-
 
 def test_profile_fan_curve_accessors(monkeypatch) -> None:
     monkeypatch.setattr(

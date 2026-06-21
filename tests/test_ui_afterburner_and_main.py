@@ -134,6 +134,8 @@ def test_workflow_success(monkeypatch) -> None:
             "section": "profile2",
             "device_profile_relative_path": "Profiles/p.cfg",
             "afterburner_root": "/ab",
+            "profile_path": "/tmp/auto-uv-afterburner-profile2.json",
+            "profile_id": "afterburner-profile2",
         },
     )
     wf.run()
@@ -173,7 +175,7 @@ def test_main_run_launches_app(monkeypatch) -> None:
     created = {}
 
     class _FakeWindow:
-        def __init__(self, qt_modules, *, gpu_index=None, auto_uv_options=None):
+        def __init__(self, qt_modules, *, gpu_index=None):
             created["gpu_index"] = gpu_index
             self.window = SimpleNamespace(setWindowIcon=lambda i: None)
 

@@ -33,7 +33,6 @@ from ui.components.fan_curve_editor import (
 from ui.components.vf_curve_editor import (
     vf_curve_editor_shortcut_legend_rows as _curve_editor_shortcut_legend_rows,
 )
-from ui.constants import AFTERBURNER_PROFILE_ID
 from ui.curve_profiles import (
     load_cached_base_curve_points as _load_cached_base_curve_points,
     profile_base_curve_points as _profile_base_curve_points,
@@ -113,10 +112,11 @@ def test_profile_display_name_uses_clock_then_voltage() -> None:
     assert profile_display_name(profile) == "2610 MHz 875 mV"
 
 
-def test_profile_table_keeps_date_separate_from_profile_name() -> None:
+def test_profile_table_shows_copyable_id_and_keeps_date_separate_from_name() -> None:
     profile = {
         "profile_id": "20260427-120000-000000-875mv-2610mhz",
         "profile_created_at": "2026-04-27T12:00:00+02:00",
+        "profile_tier": "Balanced",
         "candidate_voltage_mv": 875,
         "lock_clock_mhz": 2610,
         "memory_offset_mhz": 500,
@@ -128,9 +128,10 @@ def test_profile_table_keeps_date_separate_from_profile_name() -> None:
     rendered = format_profile_table([profile])
 
     assert "2026-04-27 12:00:00" in rendered
+    assert "20260427-120000-000000-875mv-2610mhz" in rendered
+    assert "Balanced" in rendered
     assert "2610 MHz 875 mV" in rendered
     assert "+500" in rendered
-    assert "20260427-120000-000000-875mv-2610mhz" not in rendered
 
 
 def test_curve_editor_shortcut_legend_mentions_core_actions() -> None:
@@ -475,8 +476,8 @@ def test_adaptive_profile_tier_labels_need_distinct_verified_tiers() -> None:
             "profile_tier": "Performance",
         },
         {
-            "profile_id": "afterburner",
-            "runtime_source": "afterburner",
+            "profile_id": "unverified-import",
+            "final_verified": False,
             "profile_tier": "Performance",
         },
     ]
@@ -1269,7 +1270,7 @@ def test_profile_verification_promotes_verified_profile(
         ),
         gpu_index=0,
         config_path=tmp_path / "runtime.ini",
-        afterburner_runtime_options={},
+        auto_uv_runtime_options={},
         dependencies=deps,
     )
 
@@ -1681,16 +1682,6 @@ def test_profile_delete_confirmation_describes_adaptive_startup_fallback() -> No
     assert "remove the Systemd autostart entry" not in message
 
 
-def test_afterburner_profile_is_deletable_without_profile_path() -> None:
-    assert _profile_is_deletable(
-        {
-            "profile_id": AFTERBURNER_PROFILE_ID,
-            "runtime_source": "afterburner",
-            "path": "",
-        }
-    )
-
-
 def test_lact_export_output_uses_lact_config_filename(tmp_path) -> None:
     assert _lact_export_output_path(tmp_path) == tmp_path / "config.yaml"
 
@@ -1713,16 +1704,6 @@ def test_lact_gpu_id_parser_reads_first_gpu_key(tmp_path) -> None:
     )
 
     assert _lact_gpu_id_from_config(path) == "10DE:2C02-10DE:2095-0000:2b:00.0"
-
-
-def test_profile_delete_confirmation_describes_afterburner_config_entry() -> None:
-    message = _profile_delete_confirmation_text(
-        ["MSI Afterburner Profile1"],
-        includes_afterburner=True,
-    )
-
-    assert "Delete profile MSI Afterburner Profile1?" in message
-    assert "Afterburner import entries are removed" in message
 
 
 def test_verify_progress_parses_stability_live_elapsed() -> None:
@@ -1791,7 +1772,7 @@ def test_final_profile_notice_names_saved_profile_and_profiles_tab() -> None:
 
 def test_profile_curve_points_use_embedded_afterburner_points() -> None:
     profile = {
-        "profile_id": AFTERBURNER_PROFILE_ID,
+        "profile_id": "afterburner-imported",
         "display_name": "MSI Afterburner Profile1 2100 MHz 900 mV",
         "curve_points": [[900, 2100], [925, 2115]],
     }

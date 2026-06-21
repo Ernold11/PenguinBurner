@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 import saved_uv_profiles.profile_store as profile_store
 import lact.export as lact_export
-import lact.runtime_lact_export as runtime_lact_export
 from saved_uv_profiles import archive_auto_uv_profile
 from lact import (
     build_lact_nvidia_config,
@@ -243,50 +241,6 @@ def test_lact_nvidia_export_clamps_offsets_to_lact_limit() -> None:
     assert warnings == [
         "LACT V/F offsets were clamped to +1000MHz over each point's base clock: "
         "index=4 voltage=900mV offset=+1300->+1000MHz"
-    ]
-
-
-def test_runtime_lact_export_passes_profile_selector_and_offset_limit(
-    tmp_path, monkeypatch
-) -> None:
-    calls: list[dict] = []
-
-    def fake_write_lact_nvidia_config(**kwargs):
-        calls.append(kwargs)
-        return Path(kwargs["output_path"]), []
-
-    monkeypatch.setattr(
-        runtime_lact_export,
-        "write_lact_nvidia_config",
-        fake_write_lact_nvidia_config,
-    )
-    args = SimpleNamespace(
-        export_lact_config=str(tmp_path / "lact-config.yaml"),
-        fan_curve_export=False,
-        silent_fan_curve=False,
-        lact_source="auto-uv",
-        lact_gpu_id="gpu0",
-        auto_uv_profile="selected",
-        lact_max_vf_offset_mhz=777,
-    )
-
-    runtime_lact_export.export_lact_config(
-        args=args,
-        fan_config={},
-        gpu_index=0,
-        afterburner_runtime_options={},
-        log=lambda _message: None,
-    )
-
-    assert calls == [
-        {
-            "output_path": tmp_path / "lact-config.yaml",
-            "gpu_id": "gpu0",
-            "profile_selector": "selected",
-            "include_vf_curve": True,
-            "include_fan_curve": False,
-            "max_vf_offset_mhz": 777,
-        }
     ]
 
 

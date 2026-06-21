@@ -12,7 +12,6 @@ from common.penguin_burner_paths import default_runtime_config_path
 from common.penguin_burner_paths import default_user_config_dir
 
 from .afterburner_import import runtime_gpu_index
-from .constants import AFTERBURNER_PROFILE_ID
 from .fan_profiles import profile_payload_from_path
 
 
@@ -54,14 +53,6 @@ def profile_curve_target_point(profile: dict) -> tuple[float, float] | None:
 
 
 def profile_curve_tab_key(profile: dict) -> str:
-    if str(profile.get("runtime_source", "")).strip() == "afterburner":
-        parts = [
-            AFTERBURNER_PROFILE_ID,
-            str(profile.get("afterburner_device_profile", "")).strip(),
-            str(profile.get("afterburner_profile", "")).strip(),
-            str(profile.get("profile_created_at", "")).strip(),
-        ]
-        return ":".join(part for part in parts if part)
     for key in ("profile_id", "candidate_id", "path", "display_name"):
         value = str(profile.get(key, "")).strip()
         if value:
@@ -77,8 +68,6 @@ def profile_curve_tab_label(profile: dict) -> str:
 
 
 def profile_curve_legend_label(profile: dict) -> str:
-    if str(profile.get("runtime_source", "")).strip() == "afterburner":
-        return "MSI Afterburner"
     source = str(profile.get("profile_source", "")).strip()
     if source in {"auto-uv-final", "profile-store"}:
         return "Auto-UV"

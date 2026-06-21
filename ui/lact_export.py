@@ -3,14 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from afterburner.import_fan_curve import load_config
-from afterburner.import_vf_curve import load_afterburner_runtime_options
 from lact import LactExportError
 from lact import write_lact_nvidia_config
-from lact import write_lact_nvidia_config_from_afterburner
 from common.penguin_burner_paths import default_runtime_config_path
-
-from .afterburner_import import runtime_gpu_index
-
 
 LACT_CONFIG_FILENAME = "config.yaml"
 
@@ -63,28 +58,6 @@ def write_lact_profile_config(
     gpu_id: str,
     include_fan_curve: bool = False,
 ) -> tuple[Path, list[str]]:
-    if _profile_is_afterburner(profile):
-        options = load_afterburner_runtime_options(default_runtime_config_path())
-        afterburner_root = str(
-            profile.get("afterburner_root") or options.get("afterburner_root") or ""
-        ).strip()
-        if not afterburner_root:
-            raise LactExportError("Afterburner root is not configured for this profile")
-        return write_lact_nvidia_config_from_afterburner(
-            output_path=output_path,
-            gpu_id=gpu_id,
-            current_fan_config=current_fan_config(),
-            gpu_index=runtime_gpu_index(default_runtime_config_path()),
-            afterburner_root=afterburner_root,
-            section=profile.get("afterburner_profile")
-            or options.get("afterburner_profile")
-            or None,
-            device_profile_hint=profile.get("afterburner_device_profile")
-            or options.get("afterburner_device_profile")
-            or None,
-            include_vf_curve=True,
-            include_fan_curve=include_fan_curve,
-        )
     profile_path = Path(str(profile.get("path", "")).strip()).expanduser()
     if not profile_path.is_file():
         raise LactExportError("Selected Auto-UV profile file was not found")
@@ -104,7 +77,3 @@ def current_fan_config() -> dict:
         return {}
     fan = config.get("fan", {}) if isinstance(config, dict) else {}
     return dict(fan) if isinstance(fan, dict) else {}
-
-
-def _profile_is_afterburner(profile: dict) -> bool:
-    return str(profile.get("runtime_source", "")).strip() == "afterburner"

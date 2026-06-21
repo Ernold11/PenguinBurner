@@ -4,7 +4,6 @@ from pathlib import Path
 import json
 import math
 
-from afterburner.fan_curve import load_afterburner_fan_settings
 from manual_fan_curve_editor import user_edited_fan_curve_profile_payload
 from saved_uv_profiles import archive_auto_uv_profile
 from saved_uv_profiles import profile_display_name
@@ -38,8 +37,6 @@ def profile_fan_curve_tab_label(profile: dict) -> str:
 
 
 def profile_fan_payload(profile: dict) -> dict | None:
-    if str(profile.get("runtime_source", "")).strip() == "afterburner":
-        return afterburner_fan_payload(profile)
     for payload in (
         profile,
         profile_payload_from_path(profile),
@@ -49,28 +46,6 @@ def profile_fan_payload(profile: dict) -> dict | None:
         if fan_payload is not None:
             return fan_payload
     return None
-
-
-def afterburner_fan_payload(profile: dict) -> dict | None:
-    root = str(profile.get("afterburner_root", "")).strip()
-    if not root:
-        return None
-    try:
-        settings = load_afterburner_fan_settings(root)
-    except Exception:
-        return None
-    curve_points = fan_curve_points_from_values(settings.get("curve", {}).get("points"))
-    if not curve_points:
-        return None
-    reference_points = fan_curve_points_from_values(
-        settings.get("curve2", {}).get("points")
-    )
-    return {
-        "source": "MSI Afterburner",
-        "fan": {"curve": curve_points},
-        "reference_curve": reference_points,
-        "profile_path": str(settings.get("profile_path", "")),
-    }
 
 
 def save_edited_fan_profile(profile: dict, edit, original_points) -> tuple[Path, dict]:

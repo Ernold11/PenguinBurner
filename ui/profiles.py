@@ -13,15 +13,9 @@ from runtime_support.runtime_service import PENGUIN_BURNER_UNIT_NAME
 from runtime_support.runtime_service import SYSTEMCTL
 from runtime_support.runtime_service import systemd_service_unit_path
 
-from .afterburner_import import afterburner_import_profile_summary
-
 
 def load_profile_summaries() -> list[dict]:
-    profiles = list(read_auto_uv_profile_summaries())
-    afterburner_profile = afterburner_import_profile_summary()
-    if afterburner_profile is not None:
-        profiles.append(afterburner_profile)
-    return profiles
+    return list(read_auto_uv_profile_summaries())
 
 
 def profile_for_selector(profiles: list[dict], selector: str) -> dict | None:
@@ -123,7 +117,7 @@ def profile_delete_autostart_action(
 
 
 def profile_can_apply(profile: dict) -> bool:
-    return profile_is_afterburner(profile) or bool(profile.get("final_verified", False))
+    return bool(profile.get("final_verified", False))
 
 
 def adaptive_profile_tier_keys(
@@ -151,24 +145,18 @@ def adaptive_profile_tier_labels(
 
 
 def profile_can_verify(profile: dict) -> bool:
-    return profile_is_afterburner(profile) or bool(str(profile.get("path", "")).strip())
+    return bool(str(profile.get("path", "")).strip())
 
 
 def profile_verify_selector(profile: dict) -> str:
-    if profile_is_afterburner(profile):
-        return ""
     path = str(profile.get("path", "")).strip()
     if path:
         return path
     return str(profile.get("profile_id", "")).strip()
 
 
-def profile_is_afterburner(profile: dict) -> bool:
-    return str(profile.get("runtime_source", "")).strip() == "afterburner"
-
-
 def profile_is_deletable(profile: dict) -> bool:
-    return bool(str(profile.get("path", "")).strip()) or profile_is_afterburner(profile)
+    return bool(str(profile.get("path", "")).strip())
 
 
 def profile_status_label(profiles: list[dict], selector: str) -> str:
@@ -316,22 +304,15 @@ def delete_confirmation_text(
     removes_systemd: bool = False,
     removes_last_usable_adaptive_profile: bool = False,
     switches_systemd_to_profile: str = "",
-    includes_afterburner: bool = False,
 ) -> str:
     clean_names = [str(name).strip() for name in names if str(name).strip()]
     if not clean_names:
         subject = "the selected profiles"
     elif len(clean_names) == 1:
-        label = "profile " if includes_afterburner else "Auto-UV profile "
-        subject = f"{label}{clean_names[0]}"
+        subject = f"Auto-UV profile {clean_names[0]}"
     else:
         subject = f"{len(clean_names)} selected profiles"
     message = f"Delete {subject}?"
-    if includes_afterburner:
-        message += (
-            "\n\nAuto-UV profile files are removed from disk. "
-            "Afterburner import entries are removed from PenguinBurner's config."
-        )
     if removes_systemd and removes_last_usable_adaptive_profile:
         if len(clean_names) == 1:
             message += (

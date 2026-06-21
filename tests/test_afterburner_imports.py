@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import struct
 
@@ -18,12 +19,9 @@ from afterburner.vfcurve import (
 )
 import ui.afterburner_import as ui_app
 from ui.afterburner_import import (
-    afterburner_import_profile_summary as _afterburner_import_profile_summary,
     afterburner_profile_entries as _afterburner_profile_entries,
-    delete_afterburner_import_config as _delete_afterburner_import_config,
     persist_afterburner_import_selection as _persist_afterburner_import_selection,
 )
-from ui.constants import AFTERBURNER_PROFILE_ID
 
 
 def _fan_curve_hex(points: list[tuple[float, float]], *, flags: int = 0) -> str:
@@ -86,6 +84,50 @@ def _write_afterburner_export(root: Path) -> Path:
         encoding="utf-8",
     )
     return device_profile
+
+
+class _FakeVfCurveReader:
+    def editable_core_points(self) -> list[dict]:
+        return [
+            {
+                "index": index,
+                "voltage_uv": voltage_mv * 1000,
+                "base_freq_khz": base_mhz * 1000,
+                "current_offset_khz": 0,
+            }
+            for index, (voltage_mv, base_mhz) in enumerate(
+                [
+                    (800, 1800),
+                    (850, 1900),
+                    (900, 2000),
+                    (950, 2100),
+                    (1000, 2200),
+                    (1050, 2300),
+                ]
+            )
+        ]
+
+    def close(self) -> None:
+        pass
+
+
+def _patch_afterburner_import_io(monkeypatch, tmp_path: Path) -> tuple[dict, Path]:
+    captured_payload: dict = {}
+    profile_path = tmp_path / "profiles" / "auto-uv-profile-imported.json"
+
+    def archive(payload: dict) -> Path:
+        captured_payload.update(payload)
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.write_text(json.dumps(payload), encoding="utf-8")
+        return profile_path
+
+    monkeypatch.setattr(
+        ui_app,
+        "create_hidden_vf_curve_reader",
+        lambda **_kwargs: _FakeVfCurveReader(),
+    )
+    monkeypatch.setattr(ui_app, "archive_auto_uv_profile", archive)
+    return captured_payload, profile_path
 
 
 def test_parse_afterburner_fan_curve_blob_and_interpolate() -> None:
@@ -222,6 +264,7 @@ def test_gui_afterburner_import_persists_selected_profile(
     managed_root = tmp_path / "managed-afterburner"
     monkeypatch.setattr(ui_app, "default_runtime_config_path", lambda: config_path)
     monkeypatch.setattr(ui_app, "managed_afterburner_root", lambda: managed_root)
+    captured_payload, profile_path = _patch_afterburner_import_io(monkeypatch, tmp_path)
     entry = next(
         entry
         for entry in _afterburner_profile_entries(source_root)
@@ -232,13 +275,22 @@ def test_gui_afterburner_import_persists_selected_profile(
 
     assert result["afterburner_root"] == str(managed_root)
     assert result["section"] == "Profile1"
+    assert result["profile_path"] == str(profile_path)
     assert (managed_root / result["device_profile_relative_path"]).is_file()
+    assert captured_payload["profile_source"] == "MSI Afterburner"
+    assert captured_payload["final_verified"] is True
+    assert captured_payload["display_name"] == "MSI Afterburner Profile1 2100 MHz 900 mV"
+    assert captured_payload["candidate_voltage_mv"] == 900
+    assert captured_payload["lock_clock_mhz"] == 2100
+    assert captured_payload["plan"][2]["new_offset_mhz"] == 100
+    assert (900.0, 2100.0) in captured_payload["curve_points"]
     rendered = config_path.read_text(encoding="utf-8")
-    assert 'afterburner_profile = "Profile1"' in rendered
+    assert "afterburner_profile" not in rendered
+    assert "afterburner_device_profile" not in rendered
     assert f'afterburner_root = "{managed_root}"' in rendered
 
 
-def test_gui_afterburner_import_summary_adds_profile_list_row(
+def test_gui_afterburner_import_profile_file_is_runtime_ready(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -248,24 +300,23 @@ def test_gui_afterburner_import_summary_adds_profile_list_row(
     managed_root = tmp_path / "managed-afterburner"
     monkeypatch.setattr(ui_app, "default_runtime_config_path", lambda: config_path)
     monkeypatch.setattr(ui_app, "managed_afterburner_root", lambda: managed_root)
+    _captured_payload, profile_path = _patch_afterburner_import_io(monkeypatch, tmp_path)
     entry = next(
         entry
         for entry in _afterburner_profile_entries(source_root)
         if entry["importable"]
     )
-    _persist_afterburner_import_selection(entry)
+    result = _persist_afterburner_import_selection(entry)
 
-    summary = _afterburner_import_profile_summary()
-
-    assert summary is not None
-    assert summary["profile_id"] == AFTERBURNER_PROFILE_ID
-    assert summary["profile_source"] == "MSI Afterburner"
-    assert summary["runtime_source"] == "afterburner"
-    assert summary["display_name"] == "MSI Afterburner Profile1 2100 MHz 900 mV"
-    assert (900.0, 2100.0) in summary["curve_points"]
+    payload = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert result["profile_path"] == str(profile_path)
+    assert payload["profile_source"] == "MSI Afterburner"
+    assert "runtime_source" not in payload
+    assert payload["points"] == payload["plan"]
+    assert payload["afterburner_import"]["section"] == "Profile1"
 
 
-def test_gui_afterburner_import_delete_clears_profile_entry(
+def test_gui_afterburner_import_clears_stale_runtime_selection_keys(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -275,6 +326,7 @@ def test_gui_afterburner_import_delete_clears_profile_entry(
     managed_root = tmp_path / "managed-afterburner"
     monkeypatch.setattr(ui_app, "default_runtime_config_path", lambda: config_path)
     monkeypatch.setattr(ui_app, "managed_afterburner_root", lambda: managed_root)
+    _patch_afterburner_import_io(monkeypatch, tmp_path)
     entry = next(
         entry
         for entry in _afterburner_profile_entries(source_root)
@@ -282,10 +334,6 @@ def test_gui_afterburner_import_delete_clears_profile_entry(
     )
     _persist_afterburner_import_selection(entry)
 
-    assert _afterburner_import_profile_summary() is not None
-    assert _delete_afterburner_import_config()
-
-    assert _afterburner_import_profile_summary() is None
     rendered = config_path.read_text(encoding="utf-8")
     assert "afterburner_profile" not in rendered
     assert "afterburner_device_profile" not in rendered

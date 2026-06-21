@@ -2,32 +2,22 @@
 
 from __future__ import annotations
 
-import argparse
 import ctypes
 import math
 from pathlib import Path
-import sys
 import tomllib
 
 from common.penguin_burner_paths import (
     claim_desktop_user_ownership,
-    default_runtime_config_path,
-    managed_afterburner_root,
-    resolve_afterburner_root,
-    sync_afterburner_export_tree,
 )
 from .fan_curve import (
-    format_curve_points,
     highest_point_temperature_at_or_below_speed,
     highest_zero_speed_temperature,
-    load_afterburner_fan_settings,
-    resolve_afterburner_fan_profile,
     temperature_for_speed,
     validate_afterburner_fan_settings,
 )
 
 
-DEFAULT_CONFIG_PATH = default_runtime_config_path()
 DEFAULT_EMERGENCY_AUTO_OVERRIDE_TEMP_C = 80.0
 DEFAULT_EMERGENCY_AUTO_RESUME_TEMP_C = 75.0
 SECTION_ORDERS = {
@@ -289,131 +279,3 @@ def build_imported_fan_section(current_fan: dict, settings: dict, gpu_index: int
         }
     )
     return fan
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
-    parser.add_argument(
-        "--afterburner-dir",
-        type=Path,
-        default=None,
-        help="Path to the exported MSI Afterburner directory",
-    )
-    args = parser.parse_args()
-
-    current = load_config(args.config)
-    gpu = dict(current.get("gpu", {}))
-    for legacy_key in (
-        "enable_dynamic_performance_mode",
-        "performance_mode_enter_power_w",
-        "performance_mode_exit_power_w",
-        "force_locked_graphics_clock",
-        "locked_graphics_clock_mhz",
-        "locked_graphics_clock_mode",
-        "reset_locked_graphics_clock_on_exit",
-        "power_limit_w",
-        "gpc_clk_vf_offset",
-        "mem_clk_vf_offset",
-        "vf_curve_source",
-        "vf_curve_source_path",
-        "vf_curve_source_section",
-        "afterburner_power_limit_cap_w",
-        "afterburner_power_limit_pct",
-        "afterburner_core_clk_boost_khz",
-        "afterburner_mem_clk_boost_khz",
-        "afterburner_thermal_limit",
-        "afterburner_dynamic_lock_enabled",
-        "afterburner_dynamic_lock_enter_power_w",
-        "afterburner_dynamic_lock_exit_power_w",
-        "afterburner_flatten_at_voltage_mv",
-        "afterburner_flatten_to_mhz",
-    ):
-        gpu.pop(legacy_key, None)
-    fan = dict(current.get("fan", {}))
-    gpu_index = int(gpu.get("index", 0))
-
-    configured_afterburner_root = str(gpu.get("afterburner_root", "")).strip()
-    source_root = None
-    afterburner_root = None
-    if args.afterburner_dir is not None:
-        source_root = resolve_afterburner_root(args.afterburner_dir)
-    elif configured_afterburner_root:
-        source_root = resolve_afterburner_root(configured_afterburner_root)
-    elif sys.stdin.isatty():
-        while True:
-            entered = input(
-                "Paste the exported MSI Afterburner directory path: "
-            ).strip()
-            if not entered:
-                print("Afterburner directory is required.")
-                continue
-            source_root = resolve_afterburner_root(entered)
-            try:
-                afterburner_root = sync_afterburner_export_tree(
-                    source_root,
-                    managed_afterburner_root(),
-                )
-            except FileNotFoundError as exc:
-                print(str(exc))
-                continue
-            break
-    else:
-        raise SystemExit(
-            "No Afterburner directory is configured. Re-run interactively and paste the "
-            "exported MSI Afterburner directory path."
-        )
-
-    if source_root is not None:
-        afterburner_root = sync_afterburner_export_tree(
-            source_root,
-            managed_afterburner_root(),
-        )
-    if afterburner_root is None:
-        raise SystemExit("No Afterburner directory was imported.")
-
-    gpu["afterburner_root"] = str(afterburner_root)
-    settings = load_afterburner_fan_settings(
-        resolve_afterburner_fan_profile(afterburner_root=afterburner_root)
-    )
-    settings["afterburner_root"] = afterburner_root
-    if not settings["sw_auto_enabled"]:
-        raise SystemExit(
-            "Afterburner software auto fan control is disabled in the source profile"
-        )
-
-    fan = build_imported_fan_section(fan, settings, gpu_index=gpu_index)
-    config = {"gpu": gpu, "fan": {}}
-    write_config(args.config, config)
-
-    print(f"Imported Afterburner export into {afterburner_root}")
-    print(f"Validated Afterburner fan curve and updated {args.config}")
-    print("Primary curve: " + format_curve_points(settings["curve"]["points"]))
-    print("Secondary curve: " + format_curve_points(settings["curve2"]["points"]))
-    print(
-        f"Flags=0x{settings['flags_u32']:08x} "
-        f"force-update={'on' if settings['flags']['force_update_each_period'] else 'off'} "
-        f"override-zero={'on' if settings['flags']['override_zero_with_hardware_curve'] else 'off'}"
-    )
-    print(
-        f"Update period={settings['period_ms']}ms "
-        f"manual-takeover={fan['curve_manual_takeover_temp_c']:.2f}C "
-        f"auto-restore={fan['curve_auto_restore_temp_c']:.2f}C "
-        f"device-min={fan['curve_device_min_fan_speed_pct']:.0f}%"
-    )
-    print(
-        f"Silent fan curve guardrail: hardware auto above "
-        f"{fan['emergency_auto_override_temp_c']:.0f}C, "
-        f"resume manual below {fan['emergency_auto_resume_temp_c']:.0f}C."
-    )
-
-
-if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except KeyboardInterrupt:
-        print("Interrupted by user.", file=sys.stderr)
-        raise SystemExit(130)
-    except Exception as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(1)

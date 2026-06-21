@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from afterburner.import_fan_curve import load_config, write_config
+from afterburner.fan_curve import load_afterburner_fan_settings
 from afterburner.import_vf_curve import (
+    build_plan,
     load_afterburner_runtime_options,
     persist_afterburner_import,
 )
@@ -20,8 +21,9 @@ from common.penguin_burner_paths import (
     resolve_afterburner_root,
     sync_afterburner_export_tree,
 )
+from nvidia_driver.hidden_nvapi_vf import create_hidden_vf_curve_reader
+from saved_uv_profiles import archive_auto_uv_profile
 
-from .constants import AFTERBURNER_PROFILE_ID
 from .gpu_selection import runtime_gpu_index
 
 
@@ -100,16 +102,66 @@ def persist_afterburner_import_selection(entry: dict) -> dict:
         raise FileNotFoundError(f"Afterburner profile file not found: {source_profile_path}")
     device_profile_relative_path = relative_profile_path(source_root, source_profile_path)
     managed_root = sync_afterburner_export_tree(source_root, managed_afterburner_root())
+    source = resolve_afterburner_vf_source(
+        afterburner_root=managed_root,
+        section=section,
+        device_profile_hint=device_profile_relative_path,
+    )
+    section_info = source.get("section_info", {})
+    reader = create_hidden_vf_curve_reader(gpu_index=runtime_gpu_index(config_path))
+    if reader is None:
+        raise RuntimeError("could not open the live Nvidia V/F curve reader")
+    try:
+        plan, missing_voltage_bins = build_plan(
+            reader,
+            section_info["materialization"]["points"],
+        )
+    finally:
+        reader.close()
+    if missing_voltage_bins:
+        raise ValueError(
+            "Afterburner profile did not cover Linux voltage bins: "
+            + ", ".join(str(item) for item in missing_voltage_bins[:16])
+            + (" ..." if len(missing_voltage_bins) > 16 else "")
+        )
+    clock, voltage = afterburner_profile_target_pair(section_info)
+    if clock is None or voltage is None:
+        raise ValueError("selected Afterburner profile has no lock clock/voltage")
+    display_name = f"MSI Afterburner {section} {clock} MHz {voltage} mV"
+    profile_payload = {
+        "profile_source": "MSI Afterburner",
+        "display_name": display_name,
+        "candidate_id": (
+            f"afterburner-{Path(device_profile_relative_path).stem}-"
+            f"{section}-{voltage}mv-{clock}mhz"
+        ),
+        "candidate_voltage_mv": int(voltage),
+        "lock_clock_mhz": int(clock),
+        "final_verified": True,
+        "verification_status": "imported",
+        "plan": plan,
+        "points": plan,
+        "flatten_target": dict(section_info.get("flatten_target") or {}),
+        "curve_points": afterburner_section_curve_points(section_info),
+        "afterburner_import": {
+            "root": str(managed_root),
+            "device_profile": str(device_profile_relative_path),
+            "section": str(section),
+            "source_profile_path": str(source_profile_path),
+        },
+    }
+    fan_payload = afterburner_fan_curve_payload(managed_root)
+    if fan_payload is not None:
+        profile_payload["fan_curve_payload"] = fan_payload
+    profile_path = archive_auto_uv_profile(profile_payload)
     runtime_options = load_afterburner_runtime_options(config_path)
     runtime_options["afterburner_root"] = str(managed_root)
-    runtime_options["afterburner_profile"] = str(section)
-    runtime_options["afterburner_device_profile"] = str(device_profile_relative_path)
     persist_afterburner_import(
         config_path,
         runtime_gpu_index(config_path),
         managed_root,
-        device_profile_relative_path,
-        section,
+        None,
+        None,
         runtime_options=runtime_options,
     )
     return {
@@ -117,72 +169,26 @@ def persist_afterburner_import_selection(entry: dict) -> dict:
         "device_profile_relative_path": str(device_profile_relative_path),
         "section": str(section),
         "config_path": str(config_path),
+        "profile_path": str(profile_path),
+        "profile_id": profile_path.stem.removeprefix("auto-uv-profile-"),
+        "display_name": display_name,
     }
 
 
-def afterburner_import_profile_summary() -> dict | None:
-    config_path = default_runtime_config_path()
+def afterburner_fan_curve_payload(afterburner_root: str | Path) -> dict | None:
     try:
-        options = load_afterburner_runtime_options(config_path)
+        settings = load_afterburner_fan_settings(afterburner_root)
     except Exception:
         return None
-    root = str(options.get("afterburner_root", "")).strip()
-    section = str(options.get("afterburner_profile", "")).strip()
-    device_profile = str(options.get("afterburner_device_profile", "")).strip()
-    if not root or not section:
+    curve_points = fan_curve_points(settings.get("curve", {}).get("points"))
+    if not curve_points:
         return None
-    try:
-        source = resolve_afterburner_vf_source(
-            afterburner_root=root,
-            section=section,
-            device_profile_hint=device_profile or None,
-        )
-    except Exception:
-        return None
-    section_info = source.get("section_info", {})
-    clock, voltage = afterburner_profile_target_pair(section_info)
-    label = f"MSI Afterburner {source['section']}"
-    if clock is not None and voltage is not None:
-        label += f" {clock} MHz {voltage} mV"
     return {
-        "profile_id": AFTERBURNER_PROFILE_ID,
-        "candidate_id": AFTERBURNER_PROFILE_ID,
-        "profile_created_at": path_mtime_iso(config_path),
-        "profile_source": "MSI Afterburner",
-        "runtime_source": "afterburner",
-        "path": "",
-        "display_name": label,
-        "candidate_voltage_mv": voltage,
-        "lock_clock_mhz": clock,
-        "avg_core_clock_mhz": None,
-        "avg_fps": None,
-        "avg_power_w": None,
-        "efficiency_fps_per_w": None,
-        "final_verified": False,
-        "afterburner_root": str(source["afterburner_root"]),
-        "afterburner_device_profile": str(source["device_profile_relative_path"]),
-        "afterburner_profile": str(source["section"]),
-        "curve_points": afterburner_section_curve_points(section_info),
+        "source": "MSI Afterburner",
+        "fan": {"curve": curve_points},
+        "reference_curve": fan_curve_points(settings.get("curve2", {}).get("points")),
+        "profile_path": str(settings.get("profile_path", "")),
     }
-
-
-def delete_afterburner_import_config() -> bool:
-    config_path = default_runtime_config_path()
-    config = load_config(config_path)
-    gpu = dict(config.get("gpu", {})) if isinstance(config, dict) else {}
-    removed = any(
-        str(gpu.get(key, "")).strip()
-        for key in ("afterburner_profile", "afterburner_device_profile")
-    )
-    gpu.pop("afterburner_profile", None)
-    gpu.pop("afterburner_device_profile", None)
-    updated = dict(config) if isinstance(config, dict) else {}
-    if gpu:
-        updated["gpu"] = gpu
-    else:
-        updated.pop("gpu", None)
-    write_config(config_path, updated)
-    return bool(removed)
 
 
 def afterburner_profile_status(section: dict) -> tuple[str, bool]:
@@ -259,6 +265,20 @@ def entry_curve_points(entry: dict) -> list[tuple[float, float]]:
         try:
             points.append((float(point[0]), float(point[1])))
         except (IndexError, TypeError, ValueError):
+            continue
+    return points
+
+
+def fan_curve_points(raw_points) -> list[list[float]]:
+    if not isinstance(raw_points, list):
+        return []
+    points = []
+    for point in raw_points:
+        if not isinstance(point, dict):
+            continue
+        try:
+            points.append([float(point["temperature_c"]), float(point["speed_pct"])])
+        except (KeyError, TypeError, ValueError):
             continue
     return points
 
