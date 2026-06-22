@@ -405,6 +405,45 @@ def test_sweep_loop_efficiency_records_pending_curve_then_finishes() -> None:
     assert result.state.stable_voltage_mv == 1000
 
 
+def test_sweep_loop_balanced_uses_fps_per_w_selection_wall() -> None:
+    curve = base_curve(900, 1025, 25, 2000, 40)
+    written: list[int] = []
+    recorded: list[int] = []
+
+    def probe(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
+        power = 180.0 + (1000 - int(candidate.voltage_mv))
+        return _passed_outcome(candidate, fps=100.0, power_w=power)
+
+    io = BaseUvLoopIO(
+        probe_candidate=probe,
+        write_verified_candidate=lambda c, _o: written.append(int(c.voltage_mv)),
+        mark_unsafe_candidate=lambda _c, _o: None,
+        record_passed_candidate=lambda c, _o: recorded.append(int(c.voltage_mv)),
+    )
+    result = run_base_uv_loop(
+        curve,
+        settings=AutoUvScanSettings(
+            start_voltage_mv=1000,
+            min_search_voltage_mv=950,
+            baseline_core_clock_mhz=2160.0,
+            auto_uv_mode="balanced",
+            reference_actual_voltage_mv=1000.0,
+            min_efficiency_stop_voltage_drop_pct=99.0,
+            tail_rise_bins=4,
+        ),
+        initial_stable_candidate=_baseline_candidate(curve),
+        io=io,
+        initial_stable_outcome=_passed_outcome(
+            _baseline_candidate(curve), fps=100.0, power_w=180.0
+        ),
+    )
+
+    assert recorded == [950]
+    assert written == []
+    assert result.stable_candidate.voltage_mv == 1000
+    assert result.state.stable_voltage_mv == 1000
+
+
 def test_sweep_loop_efficiency_stop_uses_current_curve() -> None:
     """Efficiency wall reached with use_current_curve -> stop on current curve.
 

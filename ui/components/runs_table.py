@@ -106,6 +106,16 @@ class RunsTable:
         self._write_row(row, payload, running=True)
 
     def record_candidate_curve(self, payload: dict) -> None:
+        if _is_base_baseline(payload):
+            row = self._find_row_by_probe_key(_probe_key(payload))
+            if row is not None:
+                row_state = (
+                    "running"
+                    if _is_active_decision(self._cell_text(row, self.DECISION_COLUMN))
+                    else _row_state(payload, running=False)
+                )
+                self._set_base_baseline_oc_cell(row, row_state=row_state)
+            return
         oc_progress = _payload_oc_from_measured_baseline(
             payload,
             self.base_baseline,
@@ -236,7 +246,10 @@ class RunsTable:
             f"{int(row) + 1}.",
             _format_int(payload.get("voltage_mv")),
             _format_int(payload.get("clock_mhz")),
-            _format_oc_progress(self._oc_progress_for_payload(payload)),
+            _format_oc_progress_for_payload(
+                payload,
+                self._oc_progress_for_payload(payload),
+            ),
             _format_float(_measured_clock_value(payload)),
             self._metric_text_with_delta(payload.get("fps"), "fps"),
             self._metric_text_with_delta(payload.get("power_w"), "power_w"),
@@ -590,6 +603,15 @@ class RunsTable:
             )
         self.widget.setItem(row, self.OC_MHZ_COLUMN, item)
 
+    def _set_base_baseline_oc_cell(self, row: int, *, row_state: str) -> None:
+        item = self.widget_item(
+            "-",
+            row_state=row_state,
+            column=self.OC_MHZ_COLUMN,
+        )
+        item.setToolTip("Baseline reference run; OC offset starts after this row.")
+        self.widget.setItem(row, self.OC_MHZ_COLUMN, item)
+
     def widget_item(self, text: str, *, row_state: str, column: int):
         item = self.QtWidgets.QTableWidgetItem(text)
         if column in {
@@ -903,6 +925,15 @@ def _format_oc_progress(value: tuple[int, int] | None) -> str:
         return ""
     oc_mhz, _limit_mhz = value
     return _format_signed_mhz(int(round(float(oc_mhz))))
+
+
+def _format_oc_progress_for_payload(
+    payload: dict,
+    value: tuple[int, int] | None,
+) -> str:
+    if _is_base_baseline(payload):
+        return "-"
+    return _format_oc_progress(value)
 
 
 def _format_signed_mhz(value: int) -> str:

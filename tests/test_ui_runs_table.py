@@ -65,6 +65,54 @@ def test_runs_table_row_lifecycle(qapp) -> None:
     assert table.widget.rowCount() == 0
 
 
+def test_base_baseline_oc_column_is_dash_then_candidates_use_signed_offsets(qapp) -> None:
+    qtcore, qtgui, qtwidgets, _pg = import_qt()
+    table = RunsTable(QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets)
+
+    table.add_probe_start(
+        {
+            "stage": "base-baseline",
+            "voltage_mv": 1100,
+            "clock_mhz": 3030,
+            "elapsed_s": 0,
+            "target_duration_s": 32,
+        }
+    )
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "-"
+
+    table.add_probe_result(
+        {
+            "stage": "base-baseline",
+            "voltage_mv": 1100,
+            "clock_mhz": 3030,
+            "measured_clock_mhz": 2730,
+            "avg_core_clock_mhz": 2730,
+            "decision": "pass",
+        }
+    )
+    assert table.widget.item(0, table.OC_MHZ_COLUMN).text() == "-"
+
+    table.add_probe_result(
+        {
+            "stage": "candidate",
+            "voltage_mv": 900,
+            "clock_mhz": 2880,
+            "decision": "pass",
+        }
+    )
+    assert table.widget.item(1, table.OC_MHZ_COLUMN).text() == "+150 MHz"
+
+    table.add_probe_result(
+        {
+            "stage": "candidate",
+            "voltage_mv": 875,
+            "clock_mhz": 2600,
+            "decision": "fail",
+        }
+    )
+    assert table.widget.item(2, table.OC_MHZ_COLUMN).text() == "-130 MHz"
+
+
 def test_aborted_run_decision_cell_is_not_failed(qapp) -> None:
     # A user-aborted run must read "Aborted" in the Decision column, never the
     # hardcoded "Failed" that genuine failures get.
