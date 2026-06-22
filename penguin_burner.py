@@ -106,6 +106,12 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
                 dependencies=AutoUvForegroundDependencies(
                     emit_json_event=emit_cli_json_event,
                 ),
+                program_file=__file__,
+                journal_hours=journal_hours,
+                prompt_yes_no=functools.partial(
+                    cli_prompt_yes_no,
+                    debug_log=debug_log,
+                ),
             ),
         ),
     )

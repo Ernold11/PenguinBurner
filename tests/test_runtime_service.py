@@ -146,3 +146,37 @@ def test_daemonize_sets_adaptive_target_fps_env(monkeypatch) -> None:
     command = calls[0]
     assert "--setenv" in command
     assert "PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=120" in command
+
+
+def test_daemonize_preserves_pkexec_desktop_user_env(monkeypatch) -> None:
+    calls = []
+    logs = []
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    monkeypatch.setenv("PENGUIN_BURNER_HOME", "/home/jp")
+    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_USER", "jp")
+    monkeypatch.setattr(runtime_service, "SYSTEMD_RUN", "/bin/systemd-run")
+    monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
+    monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        runtime_service,
+        "clear_existing_penguin_burner_unit_for_daemonize",
+        lambda **_kwargs: None,
+    )
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return SimpleNamespace(returncode=0, stdout="started\n", stderr="")
+
+    monkeypatch.setattr(runtime_service.subprocess, "run", fake_run)
+
+    runtime_service.daemonize_with_systemd(
+        "/tmp/penguin_burner.py",
+        ["--auto-uv-profile", "850mv-2762mhz"],
+        journal_hours=4,
+        log=logs.append,
+    )
+
+    command = calls[0]
+    assert "SUDO_USER=jp" in command
+    assert "PENGUIN_BURNER_HOME=/home/jp" in command
+    assert "PENGUIN_BURNER_Q2RTX_USER=jp" in command

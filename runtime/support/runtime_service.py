@@ -30,6 +30,12 @@ SYSTEMCTL = shutil.which("systemctl") or "systemctl"
 PENGUIN_BURNER_UNIT_NAME = "PenguinBurner"
 PENGUIN_BURNER_FOREGROUND_ENV = "PENGUIN_BURNER_FOREGROUND"
 DEFAULT_JOURNAL_HOURS = 4
+DESKTOP_RUNTIME_ENV_NAMES = (
+    "PENGUIN_BURNER_HOME",
+    "PENGUIN_BURNER_Q2RTX_USER",
+    "PENGUIN_BURNER_Q2RTX_UID",
+    "PENGUIN_BURNER_Q2RTX_GID",
+)
 
 
 def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
@@ -112,6 +118,15 @@ def _invoking_user_name():
     return pwd.getpwuid(os.getuid()).pw_name
 
 
+def desktop_runtime_env_assignments() -> list[str]:
+    assignments = [f"SUDO_USER={_invoking_user_name()}"]
+    for env_name in DESKTOP_RUNTIME_ENV_NAMES:
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            assignments.append(f"{env_name}={value}")
+    return assignments
+
+
 def _format_systemd_exec(args):
     rendered = []
     for arg in args:
@@ -170,7 +185,6 @@ def run_checked_subprocess(args):
 
 
 def build_systemd_service_unit(program_file, argv):
-    sudo_user = _invoking_user_name()
     exec_start = _format_systemd_exec(runtime_foreground_command(program_file, argv))
     return (
         "[Unit]\n"
@@ -180,7 +194,10 @@ def build_systemd_service_unit(program_file, argv):
         "[Service]\n"
         "Type=simple\n"
         f"Environment={PENGUIN_BURNER_FOREGROUND_ENV}=1\n"
-        f"Environment=SUDO_USER={sudo_user}\n"
+        + "".join(
+            f"Environment={assignment}\n"
+            for assignment in desktop_runtime_env_assignments()
+        )
         + "".join(
             f"Environment={assignment}\n"
             for assignment in adaptive_policy_env_assignments()
@@ -336,8 +353,6 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
             "Re-run PenguinBurner with sudo."
         )
 
-    sudo_user = os.environ.get("SUDO_USER", "").strip()
-
     clear_existing_penguin_burner_unit_for_daemonize(log=log)
 
     result = subprocess.run(
@@ -357,8 +372,11 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
             "--property=SyslogIdentifier=PenguinBurner",
             "--setenv",
             f"{PENGUIN_BURNER_FOREGROUND_ENV}=1",
-            "--setenv",
-            f"SUDO_USER={sudo_user}",
+            *[
+                item
+                for assignment in desktop_runtime_env_assignments()
+                for item in ("--setenv", assignment)
+            ],
             *[
                 item
                 for assignment in adaptive_policy_env_assignments()
