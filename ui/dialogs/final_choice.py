@@ -49,8 +49,11 @@ def candidate_status_text(
 ) -> str:
     parts = []
     if is_default:
-        if str(request_reason or "").strip().lower() == "previous-crash":
+        reason = str(request_reason or "").strip().lower()
+        if reason == "previous-crash":
             parts.append("Resume from here")
+        elif reason == "final-verification-failed":
+            parts.append("Next safer pick")
         else:
             parts.append(
                 "Highest FPS"
@@ -94,7 +97,10 @@ def select_final_candidate(
     if not candidates:
         return None, int(default_duration_s), "discard"
 
-    previous_crash = str(request_reason or "").strip().lower() == "previous-crash"
+    reason = str(request_reason or "").strip().lower()
+    previous_crash = reason == "previous-crash"
+    final_verification_failed = reason == "final-verification-failed"
+    recovery_prompt = previous_crash or final_verification_failed
     requested_default_id = str(default_candidate_id or "").strip()
     candidates = (
         list(candidates)
@@ -115,6 +121,8 @@ def select_final_candidate(
     dialog.setWindowTitle(
         "Resume Auto-UV Candidate"
         if previous_crash
+        else "Choose Safer Auto-UV Candidate"
+        if final_verification_failed
         else "Choose Final verification candidate"
     )
     dialog.setMinimumWidth(900)
@@ -169,7 +177,7 @@ def select_final_candidate(
     duration_spin.setRange(1, max(1, _minutes(max_duration_s)))
     duration_spin.setSuffix(" min")
     duration_spin.setValue(_minutes(default_duration_s))
-    if not previous_crash:
+    if not recovery_prompt:
         duration_layout = QtWidgets.QHBoxLayout()
         duration_layout.addWidget(QtWidgets.QLabel("Final verification duration"))
         duration_layout.addWidget(duration_spin)
@@ -178,20 +186,26 @@ def select_final_candidate(
 
     buttons = QtWidgets.QDialogButtonBox()
     discard_button = buttons.addButton(
-        "Start From Scratch" if previous_crash else "Discard",
+        "Start From Scratch" if recovery_prompt else "Discard",
         QtWidgets.QDialogButtonBox.DestructiveRole,
     )
     abort_button = None
-    if previous_crash:
+    if recovery_prompt:
         abort_button = buttons.addButton(
             "Abort",
             QtWidgets.QDialogButtonBox.RejectRole,
         )
+    if final_verification_failed:
+        use_label = "Verify Selected"
+    elif previous_crash:
+        use_label = "Resume Selected"
+    else:
+        use_label = "Use Selected"
     use_button = buttons.addButton(
-        "Resume Selected" if previous_crash else "Use Selected",
+        use_label,
         QtWidgets.QDialogButtonBox.AcceptRole,
     )
-    rejected_action = {"value": "abort" if previous_crash else "discard"}
+    rejected_action = {"value": "abort" if recovery_prompt else "discard"}
 
     def handle_button(button) -> None:
         if button is discard_button:
@@ -227,6 +241,7 @@ def final_choice_intro_text(
     reason = str(request_reason or "").strip().lower()
     stopped = reason == "user-stop"
     previous_crash = reason == "previous-crash"
+    final_verification_failed = reason == "final-verification-failed"
     metric_text = (
         "highest FPS"
         if normalize_auto_uv_mode(auto_uv_mode) == AUTO_UV_MODE_PERFORMANCE
@@ -239,6 +254,15 @@ def final_choice_intro_text(
             "A previous Auto-UV run ended during a GPU probe. "
             "Choose a saved candidate to resume from a safer voltage bin, "
             "or start a new scan from scratch."
+            f"{suffix}"
+        )
+    if final_verification_failed:
+        detail = recovery_decision_text(recovery_decision)
+        suffix = f" Failed candidate: {detail}." if detail else ""
+        return (
+            "Final verification failed. Choose another passed short-probe "
+            "candidate at a safer voltage, or start a new scan from scratch. "
+            f"The {metric_text} remaining candidate is selected by default."
             f"{suffix}"
         )
     if stopped:

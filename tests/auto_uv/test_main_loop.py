@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +28,7 @@ from auto_uv.run.voltage_sweep_state import (
     VoltageProbeOutcome,
     VoltageSweepState,
 )
+from ui.features.auto_uv import candidate_choice as candidate_choice_module
 from auto_uv_test_data import base_curve
 
 
@@ -216,6 +218,9 @@ def test_auto_uv_final_choice_runs_before_final_verification(monkeypatch) -> Non
             return None
 
         def probe_baseline_candidate(self, candidate):
+            summary = _summary(candidate.voltage_mv, candidate.target_mhz)
+            summary.avg_fps = 65.0
+            summary.efficiency_fps_per_w = 65.0 / 300.0
             return VoltageProbeOutcome(
                 decision=StableRunDecision(
                     True,
@@ -225,7 +230,7 @@ def test_auto_uv_final_choice_runs_before_final_verification(monkeypatch) -> Non
                 ),
                 measured_core_clock_mhz=float(candidate.target_mhz),
                 measured_voltage_mv=float(candidate.voltage_mv),
-                raw_probe=_summary(candidate.voltage_mv, candidate.target_mhz),
+                raw_probe=summary,
             )
 
         def probe_sweep_candidate(self, candidate, *, stable_history, phase_label):
@@ -384,6 +389,236 @@ def test_auto_uv_final_choice_runs_before_final_verification(monkeypatch) -> Non
     ]
     # Final verification keeps the chosen tail-tune candidate's raised tail.
     assert captured["final_tail_rise_bins"] == 2
+
+
+def test_final_verification_failure_offers_safer_sorted_candidates(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    curve = base_curve(875, 1025, 5, 2600, 10)
+    captured: dict[str, object] = {"final_calls": []}
+    request_path = tmp_path / "final-choice-request.json"
+    response_path = tmp_path / "final-choice-response.json"
+
+    class FakeGpu:
+        reader = object()
+        live_voltage_reader = object()
+        runtime_default_plan = curve
+        power_limit_w = 320
+        clock_ceiling = None
+        translated_gpu_policy = {}
+
+        def start_clock_ceiling(self, _target) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class FakeRunner:
+        def __init__(self, **_kwargs):
+            return None
+
+        def probe_baseline_candidate(self, candidate):
+            summary = _summary(candidate.voltage_mv, candidate.target_mhz)
+            summary.avg_fps = 65.0
+            summary.efficiency_fps_per_w = 65.0 / 300.0
+            return VoltageProbeOutcome(
+                decision=StableRunDecision(
+                    True,
+                    FailureKind.NONE,
+                    FailureSeverity.PASS,
+                    "stable run",
+                ),
+                measured_core_clock_mhz=float(candidate.target_mhz),
+                measured_voltage_mv=float(candidate.voltage_mv),
+                raw_probe=summary,
+            )
+
+    def probe(voltage_mv: int, clock_mhz: int, fps: float):
+        summary = _summary(voltage_mv, clock_mhz)
+        summary.avg_fps = float(fps)
+        summary.efficiency_fps_per_w = float(fps) / 300.0
+        return summary
+
+    def fake_sweep_loop(
+        _base_curve,
+        *,
+        settings,
+        io,
+        **_kwargs,
+    ):
+        selected_candidate = None
+        selected_outcome = None
+        for voltage_mv, clock_mhz, fps in (
+            (900, 2940, 68.387),
+            (895, 2925, 68.563),
+            (890, 2910, 68.472),
+            (885, 2895, 68.270),
+            (875, 2895, 68.770),
+        ):
+            candidate = VfCurveCandidate(
+                label=f"{voltage_mv}mv",
+                voltage_mv=voltage_mv,
+                target_mhz=clock_mhz,
+                flattened_plan=curve,
+                metadata={"tail_rise_bins": int(settings.tail_rise_bins)},
+            )
+            outcome = VoltageProbeOutcome(
+                decision=StableRunDecision(
+                    True,
+                    FailureKind.NONE,
+                    FailureSeverity.PASS,
+                    "ok",
+                ),
+                measured_core_clock_mhz=float(clock_mhz),
+                measured_voltage_mv=float(voltage_mv),
+                raw_probe=probe(voltage_mv, clock_mhz, fps),
+            )
+            io.write_verified_candidate(candidate, outcome)
+            selected_candidate = candidate
+            selected_outcome = outcome
+        return LowerVoltageSweepResult(
+            stable_candidate=selected_candidate,
+            stable_outcome=selected_outcome,
+            state=VoltageSweepState(
+                stable_voltage_mv=875,
+                stable_target_mhz=2895,
+                next_voltage_mv=None,
+            ),
+        )
+
+    def fake_choice(**kwargs):
+        return (
+            kwargs["stable_plan"],
+            kwargs["stable_voltage_mv"],
+            kwargs["stable_lock_clock_mhz"],
+            kwargs["stable_probe"],
+            300,
+        )
+
+    def fake_final(**kwargs):
+        _assert_final_verification_kwargs_match_real_signature(kwargs)
+        captured["final_calls"].append(
+            (kwargs["stable_voltage_mv"], kwargs["stable_lock_clock_mhz"])
+        )
+        if kwargs["stable_voltage_mv"] == 875:
+            raise AutoUvError("final long verification failed: fatal-q2rtx-output")
+        return "final-result"
+
+    def handle_event(event: str, payload: dict) -> None:
+        if event != "final_choice_request":
+            return
+        captured["retry_request"] = dict(payload)
+        response_path.write_text(
+            json.dumps(
+                {
+                    "candidate_id": payload["default_candidate_id"],
+                    "final_verification_duration_s": payload[
+                        "final_verification_duration_s"
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        candidate_choice_module,
+        "final_choice_request_path",
+        lambda: request_path,
+    )
+    monkeypatch.setattr(
+        candidate_choice_module,
+        "final_choice_response_path",
+        lambda: response_path,
+    )
+    monkeypatch.setattr(
+        undervolt_main_loop,
+        "read_scan_runtime_settings",
+        lambda runtime_options, q2rtx_config, gpu_name=None: SimpleNamespace(
+            q2rtx_config=q2rtx_config,
+            auto_uv_mode="performance",
+            short_probe_base_duration_s=10,
+            configured_min_voltage_mv=None,
+            configured_max_drop_pct=15.0,
+            min_performance_core_clock_pct=90.0,
+            final_verification_duration_s=300,
+            final_clock_drop_margin_pct=10.0,
+            tail_rise_bins=6,
+        ),
+    )
+    monkeypatch.setattr(undervolt_main_loop, "consume_crash_cache", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        undervolt_main_loop,
+        "cleanup_managed_q2rtx_processes",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        undervolt_main_loop,
+        "open_live_gpu_vf_curve_applier",
+        lambda **_kwargs: FakeGpu(),
+    )
+    monkeypatch.setattr(
+        undervolt_main_loop,
+        "run_discovery_probe",
+        lambda *_args, **_kwargs: (_summary(1000, 2753), SimpleNamespace(success=True)),
+    )
+    monkeypatch.setattr(
+        undervolt_main_loop,
+        "build_loaded_baseline_candidate",
+        lambda *_args, **_kwargs: (
+            VfCurveCandidate("baseline", 1000, 2753, curve),
+            SimpleNamespace(measured_clock_mhz=2753.0),
+        ),
+    )
+    monkeypatch.setattr(undervolt_main_loop, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(
+        undervolt_main_loop,
+        "adjust_baseline_to_measured_clock",
+        lambda _base_curve, *, candidate, **_kwargs: candidate,
+    )
+    monkeypatch.setattr(undervolt_main_loop, "write_verified_candidate", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(undervolt_main_loop, "run_preset_uv_loop", fake_sweep_loop)
+    monkeypatch.setattr(
+        undervolt_main_loop,
+        "select_performance_auto_oc_candidate",
+        lambda _base_curve, **kwargs: (
+            kwargs["stable_plan"],
+            kwargs["stable_voltage_mv"],
+            kwargs["stable_lock_clock_mhz"],
+            kwargs["stable_probe"],
+            {},
+        ),
+    )
+    monkeypatch.setattr(undervolt_main_loop, "choose_final_verification_candidate", fake_choice)
+    monkeypatch.setattr(undervolt_main_loop, "run_final_verification_and_save", fake_final)
+
+    result = undervolt_main_loop.run_voltage_frequency_undervolt_main_loop(
+        gpu_index=0,
+        runtime_options={"auto_uv_require_final_choice": True},
+        q2rtx_config=object(),
+        log=lambda _message: None,
+        event_callback=handle_event,
+    )
+
+    assert result == "final-result"
+    assert captured["final_calls"] == [(875, 2895), (895, 2925)]
+    retry_request = captured["retry_request"]
+    assert retry_request["request_reason"] == "final-verification-failed"
+    assert retry_request["default_sort_metric"] == "fps"
+    assert retry_request["default_candidate_id"] == "895mv-2925mhz"
+    assert [
+        candidate["candidate_id"] for candidate in retry_request["candidates"]
+    ] == [
+        "895mv-2925mhz",
+        "890mv-2910mhz",
+        "900mv-2940mhz",
+        "885mv-2895mhz",
+        "1000mv-2753mhz",
+    ]
+    assert all(
+        int(candidate["candidate_voltage_mv"]) > 875
+        for candidate in retry_request["candidates"]
+    )
 
 
 def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
@@ -1318,6 +1553,56 @@ def test_recovery_candidate_records_use_last_failed_scan_block() -> None:
         )
         == "885mv-2873mhz"
     )
+
+
+def test_final_choice_request_recovery_records_rebuild_plans(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    request_path = tmp_path / "auto-uv-final-choice-request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "auto_uv_mode": "performance",
+                "candidates": [
+                    {
+                        "candidate_id": "875mv-2895mhz",
+                        "candidate_voltage_mv": 875,
+                        "lock_clock_mhz": 2895,
+                        "avg_fps": 68.77,
+                    },
+                    {
+                        "candidate_id": "895mv-2925mhz",
+                        "candidate_voltage_mv": 895,
+                        "lock_clock_mhz": 2925,
+                        "avg_fps": 68.563,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        crash_recovery,
+        "final_choice_request_path",
+        lambda: request_path,
+    )
+
+    records = crash_recovery.final_choice_request_recovery_records(
+        base_curve(875, 1025, 5, 2600, 10),
+        fallback_records=[],
+        failed_voltage_mv=875,
+        failed_lock_clock_mhz=2895,
+        auto_uv_mode="performance",
+        tail_rise_bins=6,
+    )
+
+    assert [record["candidate_id"] for record in records] == [
+        "875mv-2895mhz",
+        "895mv-2925mhz",
+    ]
+    assert records[1]["tail_rise_bins"] == 6
+    assert records[1]["plan"]
 
 
 def test_crash_recovery_uses_only_interrupted_marker_entry() -> None:

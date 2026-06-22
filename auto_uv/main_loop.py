@@ -42,6 +42,7 @@ from auto_uv.run.crash_recovery import (
     consume_crash_cache,
     crash_recovery_decision,
     crash_recovery_entry_from_cache,
+    final_choice_request_recovery_records,
     next_safer_recovery_candidate_id,
     probe_summary_from_candidate_record,
     recovery_candidate_records_for_failed_run,
@@ -50,6 +51,8 @@ from auto_uv.run.crash_recovery import (
 )
 from auto_uv.curve.base_vf_curve_validation import validate_base_vf_curve
 from ui.features.auto_uv.candidate_choice import (
+    candidate_records_from_history,
+    choose_next_final_verification_candidate_after_failure,
     choose_final_verification_candidate,
     choose_recovery_final_verification_candidate,
 )
@@ -95,6 +98,7 @@ class FinalScanCandidate:
     probe: AutoUvProbeSummary | None
     verification_duration_s: int
     auto_oc_metadata: dict
+    tail_rise_bins: int
 
 
 def run_voltage_frequency_undervolt_main_loop(
@@ -148,41 +152,45 @@ def run_voltage_frequency_undervolt_main_loop(
                 crash_recovery_entry=crash_recovery_entry,
                 target_profile_tier=run_profile_tier,
             )
-            recovery_default_id = next_safer_recovery_candidate_id(
-                recovery_candidates,
-                failed_voltage_mv=positive_int(
-                    crash_recovery_entry.get("candidate_voltage_mv")
-                ),
-                auto_uv_mode=settings.auto_uv_mode,
+            failed_recovery_voltage_mv = positive_int(
+                crash_recovery_entry.get("candidate_voltage_mv")
             )
-            if recovery_default_id:
-                recovery_decision = crash_recovery_decision(crash_recovery_entry)
+            recovery_decision = crash_recovery_decision(crash_recovery_entry)
+            if str(crash_recovery_entry.get("phase") or "") == "final-verify":
+                recovery_candidates = final_choice_request_recovery_records(
+                    base_curve,
+                    fallback_records=recovery_candidates,
+                    failed_voltage_mv=failed_recovery_voltage_mv,
+                    failed_lock_clock_mhz=positive_int(
+                        crash_recovery_entry.get("lock_clock_mhz")
+                    ),
+                    auto_uv_mode=settings.auto_uv_mode,
+                    tail_rise_bins=int(tail_rise_bins),
+                )
                 log_phase(
                     log,
                     "crash-recovery",
-                    "offering saved candidates before discovery "
+                    "offering saved candidates after failed final verification "
                     f"failed={recovery_decision.get('candidate_voltage_mv')}mV@"
                     f"{recovery_decision.get('lock_clock_mhz')}MHz "
                     f"tier={run_profile_tier or 'unknown'} "
-                    f"default={recovery_default_id} "
                     f"decision={recovery_decision.get('decision')}",
                 )
                 pending_recovery_selection = (
-                    choose_recovery_final_verification_candidate(
+                    choose_next_final_verification_candidate_after_failure(
                         log=log,
                         event_callback=event_callback,
                         auto_uv_mode=settings.auto_uv_mode,
                         base_probe=None,
                         candidate_records=recovery_candidates,
-                        default_candidate_id=recovery_default_id,
+                        stable_history=None,
+                        failed_voltage_mv=int(failed_recovery_voltage_mv or 0),
                         final_verification_duration_s=int(
                             final_verification_duration_s
                         ),
                         initial_target_voltage_mv=recovery_initial_target_voltage_mv(
                             recovery_candidates,
-                            fallback_voltage_mv=positive_int(
-                                crash_recovery_entry.get("candidate_voltage_mv")
-                            ),
+                            fallback_voltage_mv=failed_recovery_voltage_mv,
                         ),
                         short_probe_base_duration_s=int(
                             settings.short_probe_base_duration_s
@@ -190,12 +198,56 @@ def run_voltage_frequency_undervolt_main_loop(
                         recovery_decision=recovery_decision,
                     )
                 )
-                if pending_recovery_selection is None:
+            else:
+                recovery_default_id = next_safer_recovery_candidate_id(
+                    recovery_candidates,
+                    failed_voltage_mv=failed_recovery_voltage_mv,
+                    auto_uv_mode=settings.auto_uv_mode,
+                )
+                if recovery_default_id:
                     log_phase(
                         log,
                         "crash-recovery",
-                        "user chose to start a new scan from scratch",
+                        "offering saved candidates before discovery "
+                        f"failed={recovery_decision.get('candidate_voltage_mv')}mV@"
+                        f"{recovery_decision.get('lock_clock_mhz')}MHz "
+                        f"tier={run_profile_tier or 'unknown'} "
+                        f"default={recovery_default_id} "
+                        f"decision={recovery_decision.get('decision')}",
                     )
+                    pending_recovery_selection = (
+                        choose_recovery_final_verification_candidate(
+                            log=log,
+                            event_callback=event_callback,
+                            auto_uv_mode=settings.auto_uv_mode,
+                            base_probe=None,
+                            candidate_records=recovery_candidates,
+                            default_candidate_id=recovery_default_id,
+                            final_verification_duration_s=int(
+                                final_verification_duration_s
+                            ),
+                            initial_target_voltage_mv=recovery_initial_target_voltage_mv(
+                                recovery_candidates,
+                                fallback_voltage_mv=failed_recovery_voltage_mv,
+                            ),
+                            short_probe_base_duration_s=int(
+                                settings.short_probe_base_duration_s
+                            ),
+                            recovery_decision=recovery_decision,
+                        )
+                    )
+            if pending_recovery_selection is not None:
+                log_phase(
+                    log,
+                    "crash-recovery",
+                    "saved candidate selected for recovery",
+                )
+            else:
+                log_phase(
+                    log,
+                    "crash-recovery",
+                    "no saved recovery candidate selected; starting a new scan",
+                )
         log_phase(
             log,
             "auto-uv",
@@ -527,17 +579,57 @@ def run_voltage_frequency_undervolt_main_loop(
             ),
         )
 
-        return finish_with_final_verification(
-            final_stable_plan=final_selection.plan,
-            final_stable_voltage_mv=int(final_selection.voltage_mv),
-            final_stable_lock_clock_mhz=int(final_selection.lock_clock_mhz),
-            final_stable_probe=final_selection.probe,
-            selected_final_verification_duration_s=int(
-                final_selection.verification_duration_s
-            ),
-            final_tail_rise_bins=int(final_tail_rise_bins),
-            final_auto_oc_metadata=final_selection.auto_oc_metadata,
-        )
+        final_tail_rise_bins = int(final_selection.tail_rise_bins)
+        failed_final_voltages: set[int] = set()
+        while True:
+            try:
+                return finish_with_final_verification(
+                    final_stable_plan=final_selection.plan,
+                    final_stable_voltage_mv=int(final_selection.voltage_mv),
+                    final_stable_lock_clock_mhz=int(final_selection.lock_clock_mhz),
+                    final_stable_probe=final_selection.probe,
+                    selected_final_verification_duration_s=int(
+                        final_selection.verification_duration_s
+                    ),
+                    final_tail_rise_bins=int(final_tail_rise_bins),
+                    final_auto_oc_metadata=final_selection.auto_oc_metadata,
+                )
+            except AutoUvError as exc:
+                if not final_verification_failure_can_offer_retry(
+                    exc,
+                    runtime_options=runtime_options,
+                ):
+                    raise
+                failed_voltage_mv = int(final_selection.voltage_mv)
+                if failed_voltage_mv in failed_final_voltages:
+                    raise
+                failed_final_voltages.add(failed_voltage_mv)
+                retry_selection = choose_next_candidate_after_final_failure(
+                    base_curve=base_curve,
+                    settings=settings,
+                    stable_plan=final_selection.plan,
+                    stable_voltage_mv=int(final_selection.voltage_mv),
+                    stable_lock_clock_mhz=int(final_selection.lock_clock_mhz),
+                    stable_history=stable_history,
+                    discovery_summary=discovery_summary,
+                    baseline_candidate=baseline_candidate,
+                    final_verification_duration_s=int(
+                        final_selection.verification_duration_s
+                    ),
+                    short_probe_base_duration_s=int(
+                        settings.short_probe_base_duration_s
+                    ),
+                    failed_error=exc,
+                    failed_selection=final_selection,
+                    run_profile_tier=run_profile_tier,
+                    log=log,
+                    event_callback=event_callback,
+                    tail_rise_bins=int(final_tail_rise_bins),
+                )
+                if retry_selection is None:
+                    raise
+                final_selection = retry_selection
+                final_tail_rise_bins = int(final_selection.tail_rise_bins)
     finally:
         cleanup_managed_q2rtx_processes(q2rtx_config, log=log)
         gpu.close()
@@ -690,7 +782,134 @@ def select_final_scan_candidate(
         probe=final_probe,
         verification_duration_s=int(final_verification_duration_s),
         auto_oc_metadata=dict(final_auto_oc_metadata or {}),
+        tail_rise_bins=int(tail_rise_bins),
     )
+
+
+def final_verification_failure_can_offer_retry(
+    exc: AutoUvError,
+    *,
+    runtime_options: dict,
+) -> bool:
+    if not bool(runtime_options.get("auto_uv_require_final_choice")):
+        return False
+    return str(exc).startswith("final long verification failed:")
+
+
+def choose_next_candidate_after_final_failure(
+    *,
+    base_curve: list[dict],
+    settings,
+    stable_plan: list[dict],
+    stable_voltage_mv: int,
+    stable_lock_clock_mhz: int,
+    stable_history: list[AutoUvProbeSummary],
+    discovery_summary: AutoUvProbeSummary,
+    baseline_candidate: VfCurveCandidate,
+    final_verification_duration_s: int,
+    short_probe_base_duration_s: int,
+    failed_error: AutoUvError,
+    failed_selection: FinalScanCandidate,
+    run_profile_tier: str,
+    log: Callable[[str], None],
+    event_callback: AutoUvEventCallback | None,
+    tail_rise_bins: int,
+) -> FinalScanCandidate | None:
+    failed_voltage_mv = int(failed_selection.voltage_mv)
+    recovery_decision = final_verification_failure_recovery_decision(
+        failed_error,
+        failed_selection=failed_selection,
+        run_profile_tier=run_profile_tier,
+        tail_rise_bins=int(tail_rise_bins),
+    )
+    candidate_records = list(
+        candidate_records_from_history(
+            stable_history,
+            base_curve=base_curve,
+            stable_plan=stable_plan,
+            stable_voltage_mv=int(stable_voltage_mv),
+            stable_lock_clock_mhz=int(stable_lock_clock_mhz),
+            tail_rise_bins=int(tail_rise_bins),
+        ).values()
+    )
+    log_phase(
+        log,
+        "final-verify",
+        "failed; offering saved candidates above "
+        f"{failed_voltage_mv}mV without restarting scan",
+    )
+    selection = choose_next_final_verification_candidate_after_failure(
+        log=log,
+        event_callback=event_callback,
+        auto_uv_mode=settings.auto_uv_mode,
+        base_probe=discovery_summary,
+        candidate_records=candidate_records,
+        stable_history=stable_history,
+        failed_voltage_mv=int(failed_voltage_mv),
+        final_verification_duration_s=int(final_verification_duration_s),
+        initial_target_voltage_mv=int(baseline_candidate.voltage_mv),
+        short_probe_base_duration_s=int(short_probe_base_duration_s),
+        recovery_decision=recovery_decision,
+    )
+    if selection is None:
+        log_phase(
+            log,
+            "final-verify",
+            "no safer saved candidate remained after final verification failure",
+        )
+        return None
+
+    (
+        selected_plan,
+        selected_voltage_mv,
+        selected_lock_clock_mhz,
+        selected_probe,
+        selected_final_duration_s,
+        selected_tail_rise_bins,
+        selected_record,
+    ) = selection
+    log_phase(
+        log,
+        "final-verify",
+        "retrying saved candidate "
+        f"{int(selected_voltage_mv)}mV@{int(selected_lock_clock_mhz)}MHz",
+    )
+    return FinalScanCandidate(
+        plan=selected_plan,
+        voltage_mv=int(selected_voltage_mv),
+        lock_clock_mhz=int(selected_lock_clock_mhz),
+        probe=selected_probe,
+        verification_duration_s=int(selected_final_duration_s),
+        auto_oc_metadata={
+            key: value
+            for key, value in dict(selected_record).items()
+            if str(key).startswith("auto_oc")
+        },
+        tail_rise_bins=int(selected_tail_rise_bins or tail_rise_bins),
+    )
+
+
+def final_verification_failure_recovery_decision(
+    exc: AutoUvError,
+    *,
+    failed_selection: FinalScanCandidate,
+    run_profile_tier: str,
+    tail_rise_bins: int,
+) -> dict:
+    decision = str(exc)
+    prefix = "final long verification failed:"
+    if decision.startswith(prefix):
+        decision = decision[len(prefix) :].strip()
+    return {
+        "candidate_voltage_mv": int(failed_selection.voltage_mv),
+        "lock_clock_mhz": int(failed_selection.lock_clock_mhz),
+        "reason": "final-verification-failed",
+        "phase": "final-verify",
+        "decision": decision or str(exc),
+        "result_reason": decision or str(exc),
+        "generated_profile_tier": str(run_profile_tier or ""),
+        "tail_rise_bins": int(tail_rise_bins),
+    }
 
 
 def run_recovered_previous_crash_selection(

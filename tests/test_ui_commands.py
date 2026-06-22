@@ -469,6 +469,23 @@ def test_final_choice_previous_crash_intro_includes_prior_decision() -> None:
     assert "Device lost!" in text
 
 
+def test_final_choice_failed_final_verify_intro_mentions_safer_candidate() -> None:
+    text = _final_choice_intro_text(
+        "performance",
+        request_reason="final-verification-failed",
+        recovery_decision={
+            "candidate_voltage_mv": 875,
+            "lock_clock_mhz": 2895,
+            "decision": "fatal-q2rtx-output",
+        },
+    )
+
+    assert "Final verification failed" in text
+    assert "safer voltage" in text
+    assert "875mV@2895MHz" in text
+    assert "highest FPS" in text
+
+
 def test_backend_final_choice_performance_mode_sorts_by_fps() -> None:
     candidates = [
         {
@@ -678,6 +695,56 @@ def test_previous_crash_table_preserves_failed_run_order() -> None:
 
     assert row_ids == ["875mv-2897mhz", "885mv-2873mhz", "900mv-2786mhz"]
     assert table.horizontalHeader().isSortIndicatorShown() is False
+
+
+def test_failed_final_verify_table_uses_normal_mode_sorting() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    candidates = [
+        {
+            "candidate_id": "885mv-2895mhz",
+            "candidate_voltage_mv": 885,
+            "lock_clock_mhz": 2895,
+            "avg_fps": 68.270,
+        },
+        {
+            "candidate_id": "895mv-2925mhz",
+            "candidate_voltage_mv": 895,
+            "lock_clock_mhz": 2925,
+            "avg_fps": 68.563,
+        },
+        {
+            "candidate_id": "890mv-2910mhz",
+            "candidate_voltage_mv": 890,
+            "lock_clock_mhz": 2910,
+            "avg_fps": 68.472,
+        },
+    ]
+
+    table = _create_final_choice_table(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        candidates=candidates,
+        default_candidate_id="895mv-2925mhz",
+        default_sort_column=FINAL_CHOICE_FPS_SORT_COLUMN,
+        auto_uv_mode="performance",
+        request_reason="final-verification-failed",
+    )
+
+    row_ids = [
+        str(table.item(row, 0).data(QtCore.Qt.UserRole))
+        for row in range(table.rowCount())
+    ]
+
+    assert row_ids == ["895mv-2925mhz", "890mv-2910mhz", "885mv-2895mhz"]
+    assert table.horizontalHeader().isSortIndicatorShown() is True
+    assert table.item(0, 8).text().startswith("Next safer pick")
 
 
 def test_final_choice_oc_column_only_visible_for_performance() -> None:

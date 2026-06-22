@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Callable
 
@@ -7,6 +8,8 @@ from profiles.uv.profile_tiers import generated_profile_tier, normalize_profile_
 
 from auto_uv.domain.types import AutoUvProbeSummary
 from auto_uv.domain.console_log import log_phase
+from auto_uv.curve.vf_curve_flattening import build_flattened_plan
+from auto_uv.persistence.auto_uv_persisted_json_files import final_choice_request_path
 from auto_uv.persistence.interrupted_probe_crash_cache import (
     consume_interrupted_probe_crash_marker,
 )
@@ -157,6 +160,94 @@ def recovery_candidate_records_for_failed_run(
 
     crashed_run = crashed_run or records
     return crashed_run
+
+
+def final_choice_request_recovery_records(
+    base_curve: list[dict],
+    *,
+    fallback_records: list[dict],
+    failed_voltage_mv: int | None,
+    failed_lock_clock_mhz: int | None,
+    auto_uv_mode: str,
+    tail_rise_bins: int,
+) -> list[dict]:
+    path = final_choice_request_path()
+    if not path.is_file():
+        return fallback_records
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return fallback_records
+    if not isinstance(payload, dict):
+        return fallback_records
+    if normalize_profile_tier(payload.get("auto_uv_mode")) != normalize_profile_tier(
+        auto_uv_mode
+    ):
+        return fallback_records
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        return fallback_records
+
+    failed_voltage = positive_int(failed_voltage_mv)
+    failed_clock = positive_int(failed_lock_clock_mhz)
+    if failed_voltage is not None and not final_choice_request_matches_failed_candidate(
+        candidates,
+        failed_voltage_mv=int(failed_voltage),
+        failed_lock_clock_mhz=failed_clock,
+    ):
+        return fallback_records
+
+    records = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        voltage_mv = positive_int(candidate.get("candidate_voltage_mv"))
+        lock_clock_mhz = positive_int(candidate.get("lock_clock_mhz"))
+        if voltage_mv is None or lock_clock_mhz is None:
+            continue
+        record = dict(candidate)
+        record["candidate_id"] = str(
+            record.get("candidate_id") or f"{voltage_mv}mv-{lock_clock_mhz}mhz"
+        )
+        record["candidate_voltage_mv"] = int(voltage_mv)
+        record["lock_clock_mhz"] = int(lock_clock_mhz)
+        record["tail_rise_bins"] = int(tail_rise_bins)
+        if not candidate_plan_from_record(record):
+            try:
+                record["plan"] = build_flattened_plan(
+                    base_curve,
+                    lock_clock_mhz=int(lock_clock_mhz),
+                    candidate_voltage_mv=int(voltage_mv),
+                    tail_rise_bins=int(tail_rise_bins),
+                )
+            except ValueError:
+                continue
+        records.append(record)
+    return records or fallback_records
+
+
+def final_choice_request_matches_failed_candidate(
+    candidates: list,
+    *,
+    failed_voltage_mv: int,
+    failed_lock_clock_mhz: int | None,
+) -> bool:
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        voltage_mv = positive_int(candidate.get("candidate_voltage_mv"))
+        lock_clock_mhz = positive_int(candidate.get("lock_clock_mhz"))
+        if voltage_mv is None:
+            continue
+        if int(voltage_mv) != int(failed_voltage_mv):
+            continue
+        if failed_lock_clock_mhz is None:
+            return True
+        if lock_clock_mhz is not None and int(lock_clock_mhz) == int(
+            failed_lock_clock_mhz
+        ):
+            return True
+    return False
 
 
 def crash_recovery_entry_profile_tier(entry: dict) -> str:

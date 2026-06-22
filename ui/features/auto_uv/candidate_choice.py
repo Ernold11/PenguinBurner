@@ -12,6 +12,7 @@ from typing import Callable
 from auto_uv.scan_mode.auto_uv_mode import normalize_auto_uv_mode
 from .final_choice_ranking import final_choice_sort_label
 from .final_choice_ranking import sort_candidates_for_final_choice
+from .final_choice_ranking import best_final_choice_candidate_id
 from auto_uv.persistence.auto_uv_persisted_json_files import (
     auto_uv_stop_requested,
     final_choice_request_path,
@@ -182,6 +183,93 @@ def choose_recovery_final_verification_candidate(
         selected_voltage_mv,
         selected_lock_clock_mhz,
         None,
+        selected_final_duration_s,
+        tail_rise_bins,
+        dict(selected),
+    )
+
+
+def choose_next_final_verification_candidate_after_failure(
+    *,
+    log: Callable[[str], None],
+    event_callback: AutoUvEventCallback | None,
+    auto_uv_mode: str,
+    base_probe: AutoUvProbeSummary | None,
+    candidate_records: list[dict],
+    stable_history: list[AutoUvProbeSummary] | None,
+    failed_voltage_mv: int,
+    final_verification_duration_s: int,
+    initial_target_voltage_mv: int,
+    short_probe_base_duration_s: int,
+    recovery_decision: dict | None = None,
+) -> tuple[list[dict], int, int, AutoUvProbeSummary | None, int, int, dict] | None:
+    normalized_mode = normalize_auto_uv_mode(auto_uv_mode)
+    candidates_by_id = {}
+    for record in candidate_records:
+        if not isinstance(record, dict):
+            continue
+        candidate_id = str(record.get("candidate_id", "")).strip()
+        if not candidate_id:
+            continue
+        try:
+            voltage_mv = int(record.get("candidate_voltage_mv"))
+            lock_clock_mhz = int(record.get("lock_clock_mhz"))
+        except (TypeError, ValueError):
+            continue
+        if voltage_mv <= int(failed_voltage_mv) or lock_clock_mhz <= 0:
+            continue
+        plan = candidate_plan_from_record(record)
+        if not plan:
+            continue
+        candidates_by_id[candidate_id] = dict(record)
+
+    candidates, sort_label = sorted_final_choice_candidates(
+        list(candidates_by_id.values()),
+        auto_uv_mode=normalized_mode,
+        base_probe=base_probe,
+    )
+    if not candidates:
+        return None
+    default_id = best_final_choice_candidate_id(candidates, normalized_mode) or str(
+        candidates[0].get("candidate_id", "")
+    )
+    selected, selected_final_duration_s = request_final_choice_candidate(
+        log=log,
+        event_callback=event_callback,
+        auto_uv_mode=normalized_mode,
+        base_probe=base_probe,
+        candidates=candidates,
+        default_candidate_id=default_id,
+        sort_label=sort_label,
+        final_verification_duration_s=int(final_verification_duration_s),
+        initial_target_voltage_mv=int(initial_target_voltage_mv),
+        short_probe_base_duration_s=int(short_probe_base_duration_s),
+        request_reason="final-verification-failed",
+        recovery_decision=recovery_decision,
+        discard_returns_none=True,
+    )
+    if selected is None:
+        return None
+
+    selected_plan = candidate_plan_from_record(selected)
+    if not selected_plan:
+        return None
+    selected_voltage_mv = int(selected.get("candidate_voltage_mv"))
+    selected_lock_clock_mhz = int(selected.get("lock_clock_mhz"))
+    try:
+        tail_rise_bins = int(selected.get("tail_rise_bins", 0) or 0)
+    except (TypeError, ValueError):
+        tail_rise_bins = 0
+    selected_probe = matching_probe_for_candidate(
+        stable_history or [],
+        voltage_mv=int(selected_voltage_mv),
+        lock_clock_mhz=int(selected_lock_clock_mhz),
+    )
+    return (
+        selected_plan,
+        selected_voltage_mv,
+        selected_lock_clock_mhz,
+        selected_probe,
         selected_final_duration_s,
         tail_rise_bins,
         dict(selected),
@@ -376,6 +464,7 @@ def candidate_record_from_probe(
         "final_verified": False,
         "candidate_voltage_mv": int(voltage_mv),
         "lock_clock_mhz": int(lock_clock_mhz),
+        "tail_rise_bins": int(tail_rise_bins),
         "avg_core_clock_mhz": float_or_none(probe.avg_core_clock_mhz),
         "avg_fps": float_or_none(probe.avg_fps),
         "avg_power_w": float_or_none(probe.avg_power_w),
