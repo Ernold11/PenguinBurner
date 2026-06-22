@@ -292,6 +292,45 @@ def test_main_command_routing_accepts_parsed_auto_uv_scan_args_without_legacy_fl
     assert calls["foreground"]
 
 
+def test_main_command_routing_interactive_text_scan_enables_final_choice():
+    deps, calls = _deps(
+        build_effective_auto_uv_runtime_options=lambda args: {
+            "auto_uv_require_final_choice": bool(args.auto_uv_require_final_choice),
+        },
+    )
+    args = parse_arguments(["--auto-uv-voltage-scan"])
+
+    result = route_main_command(
+        args=args,
+        argv=["--auto-uv-voltage-scan"],
+        explicit_cli_args=True,
+        interactive=True,
+        dependencies=deps,
+    )
+
+    assert result.handled is True
+    assert args.auto_uv_require_final_choice is True
+    assert calls["foreground"][0][1]["auto_uv_runtime_options"] == {
+        "auto_uv_require_final_choice": True,
+    }
+
+
+def test_main_command_routing_rejects_noninteractive_text_final_choice():
+    deps, _calls = _deps()
+    args = parse_arguments(
+        ["--auto-uv-voltage-scan", "--auto-uv-require-final-choice"]
+    )
+
+    with pytest.raises(NvmlError, match="interactive terminal"):
+        route_main_command(
+            args=args,
+            argv=["--auto-uv-voltage-scan"],
+            explicit_cli_args=True,
+            interactive=False,
+            dependencies=deps,
+        )
+
+
 def test_main_command_routing_releases_fans_to_hardware_auto_on_scan():
     # PenguinBurner must not run its own fan control during a scan: the scan
     # stops the runtime and hands fans back to the GPU hardware-auto curve.

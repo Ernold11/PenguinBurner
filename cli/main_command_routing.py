@@ -125,7 +125,8 @@ def route_main_command(
         deps=deps,
     )
 
-    _validate_auto_uv_foreground_args(args, deps=deps)
+    _enable_interactive_text_final_choice(args, interactive=interactive)
+    _validate_auto_uv_foreground_args(args, interactive=interactive, deps=deps)
     if args.auto_uv_voltage_scan:
         _prepare_auto_uv_stdout_capture(
             config_path=config_path,
@@ -263,9 +264,30 @@ def _auto_uv_final_curve_available(
         return False
 
 
-def _validate_auto_uv_foreground_args(args, *, deps: MainCommandRoutingDependencies):
-    if args.auto_uv_require_final_choice and not args.json_events:
-        raise NvmlError("--auto-uv-require-final-choice requires --json-events")
+def _enable_interactive_text_final_choice(args, *, interactive: bool) -> None:
+    if (
+        args.auto_uv_voltage_scan
+        and interactive
+        and not bool(args.json_events)
+    ):
+        args.auto_uv_require_final_choice = True
+
+
+def _validate_auto_uv_foreground_args(
+    args,
+    *,
+    interactive: bool,
+    deps: MainCommandRoutingDependencies,
+):
+    if (
+        args.auto_uv_require_final_choice
+        and not args.json_events
+        and not interactive
+    ):
+        raise NvmlError(
+            "--auto-uv-require-final-choice requires --json-events "
+            "or an interactive terminal"
+        )
     if args.auto_uv_voltage_scan and deps.running_under_systemd_service():
         raise NvmlError(
             "Auto-UV scans are foreground-only; run the scan directly first, "

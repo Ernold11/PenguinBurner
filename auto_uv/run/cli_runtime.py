@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
+from pathlib import Path
+import shlex
+import sys
 from typing import Callable
 
 from auto_uv.domain.types import AutoUvError, AutoUvFinalChoiceDiscarded
@@ -12,13 +16,33 @@ from auto_uv.main_loop import (
 from auto_uv.initial_check.auto_uv_hardware_initial_check import (
     require_auto_uv_initial_check,
 )
+from cli.final_choice_text import handle_cli_final_choice_request
 from common.penguin_burner_errors import NvmlError
+from overlay.config import STEAM_LAUNCH_OPTION
+from profiles.uv.profile_store import read_auto_uv_profiles
+from profiles.uv.profile_tiers import (
+    available_adaptive_tiers,
+    profile_tier_label,
+    resolve_profile_tier_profiles,
+)
 from runtime.support.runtime_debug import log as runtime_log
+from runtime.support.runtime_service import (
+    DEFAULT_JOURNAL_HOURS,
+    daemonize_with_systemd,
+    install_systemd_service,
+)
 from runtime.stability_test.q2rtx_cuda_workload_config import build_stability_config
 
 
 def _noop_emit_json_event(_enabled: bool, _event: str, **_payload) -> None:
     return None
+
+
+def _process_is_root() -> bool:
+    try:
+        return os.geteuid() == 0
+    except AttributeError:
+        return False
 
 
 @dataclass(slots=True)
@@ -29,6 +53,14 @@ class AutoUvForegroundDependencies:
         run_voltage_frequency_undervolt_main_loop
     )
     emit_json_event: Callable[..., None] = _noop_emit_json_event
+    final_choice_input: Callable[[str], str] = input
+    daemonize_with_systemd: Callable = daemonize_with_systemd
+    install_systemd_service: Callable = install_systemd_service
+    read_auto_uv_profiles: Callable = read_auto_uv_profiles
+    resolve_profile_tier_profiles: Callable = resolve_profile_tier_profiles
+    available_adaptive_tiers: Callable = available_adaptive_tiers
+    profile_tier_label: Callable = profile_tier_label
+    is_root: Callable[[], bool] = _process_is_root
     log: Callable[[str], None] = runtime_log
 
 
@@ -39,17 +71,30 @@ def run_auto_uv_foreground_command(
     config_path,
     auto_uv_runtime_options: dict,
     interactive: bool,
+    program_file: str | Path | None = None,
+    journal_hours: int | float = DEFAULT_JOURNAL_HOURS,
+    prompt_yes_no: Callable[..., bool] | None = None,
     dependencies: AutoUvForegroundDependencies | None = None,
 ) -> None:
     deps = dependencies or AutoUvForegroundDependencies()
     runtime_options = auto_uv_runtime_options
     try:
         if args.auto_uv_voltage_scan:
-            run_auto_uv_voltage_scan(
+            result = run_auto_uv_voltage_scan(
                 args,
                 gpu_index=gpu_index,
                 config_path=config_path,
                 auto_uv_runtime_options=runtime_options,
+                interactive=interactive,
+                dependencies=deps,
+            )
+            maybe_prompt_post_scan_runtime_actions(
+                result,
+                args=args,
+                interactive=interactive,
+                program_file=program_file,
+                journal_hours=journal_hours,
+                prompt_yes_no=prompt_yes_no,
                 dependencies=deps,
             )
     except AutoUvFinalChoiceDiscarded as exc:
@@ -64,8 +109,9 @@ def run_auto_uv_voltage_scan(
     gpu_index,
     config_path,
     auto_uv_runtime_options: dict,
+    interactive: bool = False,
     dependencies: AutoUvForegroundDependencies | None = None,
-) -> None:
+):
     deps = dependencies or AutoUvForegroundDependencies()
     json_events = bool(args.json_events)
     deps.emit_json_event(
@@ -75,8 +121,17 @@ def run_auto_uv_voltage_scan(
         algorithm="auto_uv",
     )
 
-    def _auto_uv_json_event(event, payload):
-        deps.emit_json_event(json_events, event, **dict(payload))
+    def _auto_uv_event(event, payload):
+        payload = dict(payload)
+        if json_events:
+            deps.emit_json_event(True, event, **payload)
+            return
+        if interactive and event == "final_choice_request":
+            handle_cli_final_choice_request(
+                payload,
+                input_fn=deps.final_choice_input,
+                log=deps.log,
+            )
 
     def _dependency_json_event(payload):
         deps.emit_json_event(
@@ -106,9 +161,177 @@ def run_auto_uv_voltage_scan(
             dependency_text_progress=not json_events,
         ),
         log=deps.log,
-        event_callback=_auto_uv_json_event if json_events else None,
+        event_callback=(
+            _auto_uv_event
+            if json_events or interactive
+            else None
+        ),
     )
     emit_auto_uv_final_result(result, json_events=json_events, dependencies=deps)
+    return result
+
+
+def maybe_prompt_post_scan_runtime_actions(
+    result,
+    *,
+    args,
+    interactive: bool,
+    program_file: str | Path | None,
+    journal_hours: int | float,
+    prompt_yes_no: Callable[..., bool] | None,
+    dependencies: AutoUvForegroundDependencies | None = None,
+) -> None:
+    deps = dependencies or AutoUvForegroundDependencies()
+    if (
+        not interactive
+        or bool(getattr(args, "json_events", False))
+        or prompt_yes_no is None
+        or program_file is None
+        or not bool(getattr(result, "success", True))
+    ):
+        return
+
+    selector = auto_uv_result_profile_selector(result)
+    if not selector:
+        return
+
+    runtime_argv = ["--auto-uv-profile", selector]
+    mode_label = f"single profile {selector}"
+
+    adaptive_tiers = _available_adaptive_tier_labels(deps)
+    if len(adaptive_tiers) >= 2:
+        deps.log(
+            "Adaptive Auto-UV is also available from saved verified tiers: "
+            + ", ".join(adaptive_tiers)
+            + "."
+        )
+        deps.log(
+            "For Steam games, launch the game through PenguinBurner so adaptive "
+            f"runtime can see frame pacing: {STEAM_LAUNCH_OPTION}"
+        )
+        if prompt_yes_no(
+            "Use adaptive Auto-UV instead of the single discovered profile "
+            "for runtime/autostart?",
+            default=False,
+        ):
+            runtime_argv = ["--adaptive-auto-uv"]
+            mode_label = "adaptive Auto-UV"
+
+    if prompt_yes_no(
+        f"Start PenguinBurner runtime now with {mode_label}?",
+        default=True,
+    ):
+        _run_optional_systemd_action(
+            "daemonize",
+            program_file=program_file,
+            runtime_argv=runtime_argv,
+            journal_hours=journal_hours,
+            deps=deps,
+        )
+
+    if prompt_yes_no(
+        f"Install {mode_label} as systemd autostart?",
+        default=False,
+    ):
+        _run_optional_systemd_action(
+            "install",
+            program_file=program_file,
+            runtime_argv=runtime_argv,
+            journal_hours=journal_hours,
+            deps=deps,
+        )
+
+
+def auto_uv_result_profile_selector(result) -> str:
+    try:
+        voltage_mv = int(getattr(result, "final_voltage_mv"))
+        clock_mhz = int(getattr(result, "lock_clock_mhz"))
+    except (TypeError, ValueError):
+        return ""
+    if voltage_mv <= 0 or clock_mhz <= 0:
+        return ""
+    return f"{voltage_mv}mv-{clock_mhz}mhz"
+
+
+def _available_adaptive_tier_labels(deps: AutoUvForegroundDependencies) -> list[str]:
+    try:
+        profiles = deps.read_auto_uv_profiles()
+        resolved = deps.resolve_profile_tier_profiles(profiles)
+        tiers = deps.available_adaptive_tiers(resolved)
+    except Exception as exc:
+        deps.log(f"Adaptive Auto-UV availability check failed: {exc}")
+        return []
+    labels = []
+    for tier in tiers:
+        label = str(deps.profile_tier_label(tier) or tier).strip()
+        if label:
+            labels.append(label)
+    return labels
+
+
+def _run_optional_systemd_action(
+    action: str,
+    *,
+    program_file: str | Path,
+    runtime_argv: list[str],
+    journal_hours: int | float,
+    deps: AutoUvForegroundDependencies,
+) -> None:
+    action_flag = "--daemonize" if action == "daemonize" else "--install-systemd-service"
+    command = format_privileged_runtime_command(
+        program_file,
+        [action_flag, *runtime_argv, "--journal-hours", str(int(float(journal_hours)))],
+    )
+    if not deps.is_root():
+        deps.log(
+            "Root privileges are required for systemd runtime changes. Run:\n"
+            f"  {command}"
+        )
+        return
+    try:
+        if action == "daemonize":
+            deps.daemonize_with_systemd(
+                program_file,
+                runtime_argv,
+                journal_hours=journal_hours,
+                log=deps.log,
+            )
+        else:
+            deps.install_systemd_service(
+                program_file,
+                runtime_argv,
+                journal_hours=journal_hours,
+                log=deps.log,
+            )
+    except Exception as exc:
+        deps.log(f"Could not apply optional systemd action: {exc}")
+        deps.log(f"Equivalent command:\n  {command}")
+
+
+def format_privileged_runtime_command(
+    program_file: str | Path,
+    argv: list[str],
+) -> str:
+    python = sys.executable or "python3"
+    env = [
+        f"PENGUIN_BURNER_HOME={Path.home()}",
+    ]
+    user = (
+        os.environ.get("SUDO_USER", "").strip()
+        or os.environ.get("PENGUIN_BURNER_Q2RTX_USER", "").strip()
+        or os.environ.get("USER", "").strip()
+    )
+    if user:
+        env.append(f"PENGUIN_BURNER_Q2RTX_USER={user}")
+    command = [
+        "pkexec",
+        "env",
+        *env,
+        python,
+        str(Path(program_file).resolve()),
+        *argv,
+    ]
+    return " ".join(shlex.quote(str(part)) for part in command)
 
 
 def emit_auto_uv_final_result(
