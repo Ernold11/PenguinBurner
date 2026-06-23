@@ -72,6 +72,9 @@ unsafe and can resume from saved candidates for the same tier.
 
 Pick a bias (Efficiency, Balanced, or Performance) and it finds the matching
 sweet spot, then verifies it before saving.
+You can also set a GPU board power limit for the scan; PenguinBurner reads the
+selected card's NVML power-limit range, applies the cap during Auto-UV, and
+saves it with the final profile so runtime/profile application restores it.
 
 ![Auto-UV setup: GPU, preset, and Auto-OC targets](docs/assets/auto-uv-setup.png)
 
@@ -104,7 +107,7 @@ switching. NVIDIA-only comparison, to the best of our knowledge:
 | **Pre-frame-generation FPS counter** (base vs FG FPS) | ✅ | ❌ |
 | Manual V/F curve editor | ✅ | ✅ |
 | Fan curve control | ✅ auto silent curve + editor | ✅ custom curves |
-| Power limit | 🚧 planned | ✅ |
+| Power limit | ✅ Auto-UV + saved profiles | ✅ |
 | Steam library import | 🚧 planned | ❌ |
 | Per-game tuning profiles | 🚧 planned | ❌ |
 | Runtime profile switching | ✅ by present-frame FPS pacing | ✅ by running process / gamemode |
@@ -125,7 +128,6 @@ the resulting curve under LACT if you prefer.
 
 ### Roadmap (planned, not yet shipped)
 
-- **Power limit control** — set the GPU board power cap.
 - **Historical data plotting** — power, clocks, and FPS over time.
 - **Steam library discovery** — find installed games automatically.
 - **Per-game tuning** — save and auto-apply a profile per game.
