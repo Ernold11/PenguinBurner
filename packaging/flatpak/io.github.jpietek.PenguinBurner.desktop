@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=NVIDIA GPU Automatic Tuning Tool
+GenericName=NVIDIA GPU Automatic Tuning Tool
+Comment=Tune your NVIDIA GPU with PenguinBurner
+Exec=penguin-burner
+Icon=io.github.jpietek.PenguinBurner
+Terminal=false
+Categories=Settings;HardwareSettings;Qt;
+Keywords=Penguin;Burner;Penguin Burner;PenguinBurner;penguin-burner;pburn;Nvidia;NVIDIA;GPU;Tuning;Undervolt;Undervolting;Adaptive;Overlay;Auto-UV;Q2RTX;CUDA;
+StartupNotify=true
+StartupWMClass=io.github.jpietek.PenguinBurner

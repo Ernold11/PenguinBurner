@@ -3,11 +3,21 @@
 import os
 from pathlib import Path
 import pwd
+import base64
+import json
 import shlex
 import shutil
 import subprocess
 import sys
+import time
 
+from runtime.daemon_api import (
+    ALLOWED_UID_ENV,
+    AUTOSTART_ARGV_B64_ENV,
+    AUTOSTART_PROGRAM_FILE_ENV,
+    DEFAULT_DAEMON_SOCKET,
+)
+from runtime.daemon_client import daemon_status
 from .adaptive_target_fps import (
     ADAPTIVE_TARGET_FPS_ENV,
     adaptive_target_fps_from_env,
@@ -28,6 +38,7 @@ from common.subprocess_locale import stable_subprocess_env
 SYSTEMD_RUN = shutil.which("systemd-run") or "systemd-run"
 SYSTEMCTL = shutil.which("systemctl") or "systemctl"
 PENGUIN_BURNER_UNIT_NAME = "PenguinBurner"
+PENGUIN_BURNER_DAEMON_UNIT_NAME = "penguin-burnerd"
 PENGUIN_BURNER_FOREGROUND_ENV = "PENGUIN_BURNER_FOREGROUND"
 DEFAULT_JOURNAL_HOURS = 4
 DESKTOP_RUNTIME_ENV_NAMES = (
@@ -43,6 +54,9 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
     daemonize = False
     install_systemd_service = False
     uninstall_systemd_service = False
+    migrate_to_daemon = False
+    daemon_status_requested = False
+    daemon_api_socket = ""
     journal_hours = default_journal_hours
     passthrough = []
     index = 0
@@ -62,6 +76,27 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
             continue
         if arg in ("--uninstall-systemd-service", "--deinstall-systemd-service"):
             uninstall_systemd_service = True
+            index += 1
+            continue
+        if arg == "--migrate-to-daemon-service":
+            migrate_to_daemon = True
+            index += 1
+            continue
+        if arg == "--daemon-status":
+            daemon_status_requested = True
+            index += 1
+            continue
+        if arg == "--daemon-api":
+            if index + 1 >= len(argv):
+                raise RuntimeError("--daemon-api requires a socket path")
+            index += 1
+            daemon_api_socket = str(argv[index]).strip()
+            index += 1
+            continue
+        if arg.startswith("--daemon-api="):
+            daemon_api_socket = arg.split("=", 1)[1].strip()
+            if not daemon_api_socket:
+                raise RuntimeError("--daemon-api requires a socket path")
             index += 1
             continue
         if arg == "--journal-hours":
@@ -87,6 +122,9 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
         "daemonize": daemonize,
         "install_systemd_service": install_systemd_service,
         "uninstall_systemd_service": uninstall_systemd_service,
+        "migrate_to_daemon": migrate_to_daemon,
+        "daemon_status": daemon_status_requested,
+        "daemon_api_socket": daemon_api_socket,
         "journal_hours": journal_hours,
         "passthrough": passthrough,
     }
@@ -110,6 +148,10 @@ def systemd_service_unit_path():
     return Path("/etc/systemd/system") / f"{PENGUIN_BURNER_UNIT_NAME}.service"
 
 
+def daemon_systemd_service_unit_path():
+    return Path("/etc/systemd/system") / f"{PENGUIN_BURNER_DAEMON_UNIT_NAME}.service"
+
+
 def _invoking_user_name():
     for env_name in ("SUDO_USER", "PENGUIN_BURNER_Q2RTX_USER"):
         user = os.environ.get(env_name, "").strip()
@@ -125,6 +167,14 @@ def desktop_runtime_env_assignments() -> list[str]:
         if value:
             assignments.append(f"{env_name}={value}")
     return assignments
+
+
+def daemon_allowed_uid_assignment() -> str:
+    uid = (
+        os.environ.get("PENGUIN_BURNER_Q2RTX_UID", "").strip()
+        or os.environ.get("SUDO_UID", "").strip()
+    )
+    return f"{ALLOWED_UID_ENV}={uid}" if uid else ""
 
 
 def _format_systemd_exec(args):
@@ -216,6 +266,49 @@ def build_systemd_service_unit(program_file, argv):
     )
 
 
+def build_daemon_api_service_unit(
+    program_file,
+    *,
+    socket_path=DEFAULT_DAEMON_SOCKET,
+    autostart_argv: list[str] | None = None,
+) -> str:
+    exec_start = _format_systemd_exec(
+        runtime_foreground_command(program_file, ["--daemon-api", str(socket_path)])
+    )
+    autostart_argv = list(autostart_argv or [])
+    autostart_env = ""
+    if autostart_argv:
+        encoded = base64.b64encode(json.dumps(autostart_argv).encode("utf-8")).decode(
+            "ascii"
+        )
+        autostart_env = (
+            f"Environment={AUTOSTART_PROGRAM_FILE_ENV}={Path(program_file).resolve()}\n"
+            f"Environment={AUTOSTART_ARGV_B64_ENV}={encoded}\n"
+        )
+    allowed_uid = daemon_allowed_uid_assignment()
+    allowed_uid_env = f"Environment={allowed_uid}\n" if allowed_uid else ""
+    return (
+        "[Unit]\n"
+        "Description=PenguinBurner root hardware daemon\n"
+        "After=multi-user.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        "WorkingDirectory=/\n"
+        f"{allowed_uid_env}"
+        f"{autostart_env}"
+        f"ExecStart={exec_start}\n"
+        "Restart=on-failure\n"
+        "RestartSec=2\n"
+        "StandardOutput=journal\n"
+        "StandardError=journal\n"
+        f"SyslogIdentifier={PENGUIN_BURNER_DAEMON_UNIT_NAME}\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
+
+
 def install_systemd_service(program_file, argv, *, journal_hours, log):
     if not systemd_is_available():
         raise RuntimeError("systemd service install is unavailable on this system.")
@@ -240,6 +333,161 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
     run_checked_subprocess([SYSTEMCTL, "enable", "--now", unit_path.name])
     log(f"Installed and enabled {unit_path.name} at {unit_path}.")
     log(f"Follow the journal with: {journalctl_follow_command(journal_hours)}")
+
+
+def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET, log):
+    if not systemd_is_available():
+        raise RuntimeError(
+            "PenguinBurner daemon service install is unavailable on this system."
+        )
+    if os.geteuid() != 0:
+        raise RuntimeError(
+            "PenguinBurner daemon service migration requires root privileges. "
+            "Re-run with sudo."
+        )
+
+    legacy_state = read_legacy_service_state()
+    autostart_argv = (
+        legacy_state["runtime_argv"]
+        if legacy_state["exists"] and legacy_state["enabled"]
+        else []
+    )
+    if legacy_state["exists"] and legacy_state["enabled"] and not autostart_argv:
+        raise RuntimeError(
+            "existing enabled PenguinBurner.service could not be parsed; "
+            "leaving the legacy service unchanged"
+        )
+    unit_path = daemon_systemd_service_unit_path()
+    unit_path.write_text(
+        build_daemon_api_service_unit(
+            program_file,
+            socket_path=socket_path,
+            autostart_argv=autostart_argv,
+        ),
+        encoding="utf-8",
+    )
+    run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
+    subprocess.run(
+        [SYSTEMCTL, "reset-failed", unit_path.name],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=stable_subprocess_env(),
+        check=False,
+    )
+    run_checked_subprocess([SYSTEMCTL, "enable", "--now", unit_path.name])
+    _wait_for_daemon_status(socket_path)
+    log(f"Installed and started {unit_path.name} at {unit_path}.")
+
+    if legacy_state["exists"]:
+        _disable_legacy_service_after_daemon_migration(log=log)
+        if legacy_state["enabled"] and autostart_argv:
+            log(
+                "Migrated enabled PenguinBurner.service autostart intent to "
+                f"{unit_path.name}: {shlex.join(autostart_argv)}"
+            )
+        else:
+            log("Migrated existing PenguinBurner.service to penguin-burnerd.service.")
+    else:
+        log("No existing PenguinBurner.service found; daemon service is ready.")
+
+
+def read_legacy_service_state() -> dict[str, object]:
+    unit_path = systemd_service_unit_path()
+    text = ""
+    exists = unit_path.is_file()
+    if exists:
+        text = unit_path.read_text(encoding="utf-8", errors="replace")
+    return {
+        "exists": exists,
+        "enabled": _systemd_unit_is_enabled(unit_path.name) if exists else False,
+        "active": _systemd_unit_is_active(unit_path.name) if exists else False,
+        "runtime_argv": parse_runtime_argv_from_unit_text(text),
+    }
+
+
+def parse_runtime_argv_from_unit_text(text: str) -> list[str]:
+    exec_start = ""
+    for line in str(text).splitlines():
+        line = line.strip()
+        if line.startswith("ExecStart="):
+            exec_start = line.split("=", 1)[1].strip()
+            break
+    if not exec_start:
+        return []
+    try:
+        parts = shlex.split(exec_start.replace("%%", "%"))
+    except ValueError:
+        return []
+    for index, part in enumerate(parts):
+        if Path(part).name == "penguin_burner.py":
+            return parts[index + 1 :]
+        if Path(part).name == "penguin_burner.sh":
+            return parts[index + 1 :]
+    return []
+
+
+def _systemd_unit_is_enabled(unit_name: str) -> bool:
+    result = subprocess.run(
+        [SYSTEMCTL, "is-enabled", unit_name],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=stable_subprocess_env(),
+        check=False,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "enabled"
+
+
+def _systemd_unit_is_active(unit_name: str) -> bool:
+    result = subprocess.run(
+        [SYSTEMCTL, "is-active", unit_name],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=stable_subprocess_env(),
+        check=False,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "active"
+
+
+def _wait_for_daemon_status(socket_path) -> None:
+    last_error = None
+    for _attempt in range(30):
+        try:
+            daemon_status(socket_path=socket_path, timeout_s=1)
+            return
+        except Exception as exc:
+            last_error = exc
+            time.sleep(0.1)
+    raise RuntimeError(f"PenguinBurner daemon did not become reachable: {last_error}")
+
+
+def _disable_legacy_service_after_daemon_migration(*, log) -> None:
+    unit_name = f"{PENGUIN_BURNER_UNIT_NAME}.service"
+    result = subprocess.run(
+        [SYSTEMCTL, "disable", "--now", unit_name],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=stable_subprocess_env(),
+        check=False,
+    )
+    if result.returncode == 0:
+        log(f"Stopped and disabled legacy {unit_name} after daemon migration.")
+    subprocess.run(
+        [SYSTEMCTL, "reset-failed", unit_name],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=stable_subprocess_env(),
+        check=False,
+    )
 
 
 def uninstall_systemd_service(*, log):

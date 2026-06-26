@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.jpietek.PenguinBurner</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>PenguinBurner</name>
+  <summary>NVIDIA GPU automatic undervolting and tuning tool</summary>
+  <description>
+    <p>
+      PenguinBurner helps tune NVIDIA GPUs with automatic undervolting,
+      runtime profiles, curve editing, MSI Afterburner imports, LACT exports,
+      and an in-game monitoring overlay.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.jpietek.PenguinBurner.desktop</launchable>
+  <url type="homepage">https://github.com/jpietek/PenguinBurner</url>
+  <url type="bugtracker">https://github.com/jpietek/PenguinBurner/issues</url>
+  <developer id="io.github.jpietek">
+    <name>PenguinBurner contributors</name>
+  </developer>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.5.2" date="2026-06-23" />
+  </releases>
+</component>

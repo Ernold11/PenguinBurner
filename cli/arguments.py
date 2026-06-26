@@ -205,6 +205,24 @@ def parse_arguments(argv):
         help="Stop and remove the persistent PenguinBurner systemd service.",
     )
     daemon_group.add_argument(
+        "--migrate-to-daemon-service",
+        action="store_true",
+        help=(
+            "Install penguin-burnerd.service and migrate an existing "
+            "PenguinBurner.service when possible."
+        ),
+    )
+    daemon_group.add_argument(
+        "--daemon-status",
+        action="store_true",
+        help="Print PenguinBurner root daemon status and exit.",
+    )
+    daemon_group.add_argument(
+        "--daemon-api",
+        metavar="SOCKET",
+        help=argparse.SUPPRESS,
+    )
+    daemon_group.add_argument(
         "--auto-uv-profile",
         default="",
         help=(

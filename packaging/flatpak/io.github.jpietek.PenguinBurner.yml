@@ -1,0 +1,32 @@
+app-id: io.github.jpietek.PenguinBurner
+runtime: org.freedesktop.Platform
+runtime-version: "25.08"
+sdk: org.freedesktop.Sdk
+command: penguin-burner
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=home
+
+modules:
+  - name: penguin-burner
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+      env:
+        PENGUIN_BURNER_BUILD_NATIVE_LAYER: "0"
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    sources:
+      - type: dir
+        path: ../..
+    build-commands:
+      - python3 -m pip install --prefix=/app --no-build-isolation --no-cache-dir .
+      - install -Dm644 packaging/flatpak/io.github.jpietek.PenguinBurner.desktop /app/share/applications/io.github.jpietek.PenguinBurner.desktop
+      - install -Dm644 packaging/flatpak/io.github.jpietek.PenguinBurner.metainfo.xml /app/share/metainfo/io.github.jpietek.PenguinBurner.metainfo.xml
+      - install -Dm644 packaging/icons/hicolor/256x256/apps/penguin-burner.png /app/share/icons/hicolor/256x256/apps/io.github.jpietek.PenguinBurner.png
+      - install -Dm644 packaging/icons/hicolor/512x512/apps/penguin-burner.png /app/share/icons/hicolor/512x512/apps/io.github.jpietek.PenguinBurner.png

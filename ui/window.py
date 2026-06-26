@@ -31,6 +31,7 @@ from ui.dialogs.final_choice import select_final_candidate
 from ui.dialogs.scan_tuning import select_scan_tuning
 from .error_reporting import ErrorReporter
 from ui.features.tuning.gpu_selection import persist_runtime_gpu_index
+from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
 from ui.features.curves.fan_profiles import sync_profile_fan_payload
 from ui.features.tuning.final_choice_controller import handle_final_choice_request
 from .models import candidate_id_from_payload
@@ -257,6 +258,13 @@ class MainWindow(ProfileActionsMixin):
                 "GPU selection",
                 f"Could not save selected GPU index: {exc}",
             )
+            return
+        if not ensure_daemon_ready_for_privileged_action(
+            QtWidgets=self.QtWidgets,
+            parent=self.window,
+            log=self.log_view.append,
+            action_label="Starting Auto-UV",
+        ):
             return
         options = {**options, "gpu_index": int(self.gpu_index)}
         # Bring the scan into view: the live runs/curve are on the Auto-UV tab.

@@ -105,6 +105,23 @@ def test_ui_scan_command_passes_desktop_user_through_pkexec(monkeypatch) -> None
     assert "--auto-uv-require-final-choice" in command
 
 
+def test_daemon_migration_command_uses_privileged_cli(monkeypatch) -> None:
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+
+    def fake_which(name: str) -> str | None:
+        return {
+            "pkexec": "/usr/bin/pkexec",
+            "env": "/usr/bin/env",
+        }.get(name)
+
+    monkeypatch.setattr(commands.shutil, "which", fake_which)
+
+    command = commands.daemon_migration_command()
+
+    assert command[:2] == ["/usr/bin/pkexec", "/usr/bin/env"]
+    assert "--migrate-to-daemon-service" in command
+
+
 def test_desktop_session_env_infers_xauthority_for_x11_forwarding(
     monkeypatch,
     tmp_path,

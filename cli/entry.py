@@ -6,18 +6,23 @@ This module handles daemon flags and early profile validation before running the
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import sys
 from typing import Callable
 
 from common.cli_output import enable_cli_output_wrapping
 from runtime.support.runtime_debug import debug_exception, log
 from runtime.support.runtime_service import (
+    DEFAULT_DAEMON_SOCKET,
     daemonize_with_systemd,
     install_systemd_service,
+    migrate_to_daemon_service,
     parse_runtime_flags,
     running_under_systemd_service,
     uninstall_systemd_service,
 )
+from runtime.daemon_api import serve_daemon_api
+from runtime.daemon_client import daemon_status
 from profiles.uv.profile_store import read_auto_uv_profiles, resolve_auto_uv_profile
 from profiles.uv.profile_tiers import (
     available_adaptive_tiers,
@@ -42,6 +47,20 @@ def dispatch_cli(
         raw_argv = list(sys.argv[1:] if argv is None else argv)
         runtime_flags = parse_runtime_flags(raw_argv)
         runtime_argv = runtime_flags["passthrough"]
+        if runtime_flags["daemon_api_socket"]:
+            serve_daemon_api(runtime_flags["daemon_api_socket"])
+            return 0
+        if runtime_flags["daemon_status"]:
+            status = daemon_status(socket_path=DEFAULT_DAEMON_SOCKET)
+            print(json.dumps(status, indent=2), flush=True)
+            return 0
+        if runtime_flags["migrate_to_daemon"]:
+            migrate_to_daemon_service(
+                program_file,
+                socket_path=DEFAULT_DAEMON_SOCKET,
+                log=log,
+            )
+            return 0
         _require_selected_profile_exists(runtime_argv)
         _require_adaptive_profiles_available(runtime_flags, runtime_argv)
         _reject_auto_uv_scan_in_background(runtime_flags, runtime_argv)

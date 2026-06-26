@@ -148,6 +148,10 @@ def privileged_command(command: list[str]) -> list[str]:
     return [escalator, env, *desktop_user_env(), *desktop_session_env(), *command]
 
 
+def daemon_migration_command() -> list[str]:
+    return privileged_command([*cli_base_command(), "--migrate-to-daemon-service"])
+
+
 def runtime_profile_command(
     action: str,
     *,
