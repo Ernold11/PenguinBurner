@@ -8,6 +8,8 @@ comparison.
 - **[Install guide](install.md)** — pip, Fedora COPR, Arch AUR, Ubuntu PPA.
 - **[Feature guides](features/README.md)** — automatic tuning, adaptive
   undervolting, the overlay, profiles, curve editors, the silent fan curve.
+- **[Latency and frame-generation FPS](features/latency-fg.md)** — how the
+  overlay's LAT, base FPS, output FPS, and FG fields are measured.
 - **[Troubleshooting & FAQ](features/troubleshooting.md)**
 
 ## Reference

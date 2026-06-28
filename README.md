@@ -172,6 +172,12 @@ full trace. With stock dxvk-nvapi it falls back to `DXVK_NVAPI_LOG_LEVEL=trace`,
 but only for games launched with `PB_INGAME_LATENCY=1`; the main runtime handles
 the data path without a separate helper service.
 
+Some games do not expose usable latency markers at all. PenguinBurner can load
+the telemetry layer and parse marker streams when they exist, but it cannot
+force a game engine to emit real input/simulation/present markers. See
+[Latency and frame-generation FPS](docs/features/latency-fg.md) for the full
+source and fallback model.
+
 Any tuning change you make is reflected live in the overlay while you play, so
 you see the effect of an undervolt, clock, or fan change in real time without
 leaving the game.
@@ -182,7 +188,8 @@ per-frame latency breakdown — present mode, queue depth, Reflex sleep-mode/boo
 and the display/scanout split — to the daemon log, which you can capture to a
 file by also passing `--debug-log`.
 
-[Read the guide](docs/features/overlay.md)
+[Read the guide](docs/features/overlay.md) or the
+[latency/FG details](docs/features/latency-fg.md).
 
 ## More features
 

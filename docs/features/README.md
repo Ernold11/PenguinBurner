@@ -13,6 +13,8 @@ comparison.
    at runtime based on frame-rate pacing.
 3. **[Performance Overlay](./overlay.md)** — in-game FPS, pre-frame-gen FPS,
    PC latency meter, clocks, power, and active tier.
+4. **[Latency & Frame-Generation FPS](./latency-fg.md)** — how LAT, base FPS,
+   output FPS, and frame-generation detection are measured.
 
 ## Secondary
 

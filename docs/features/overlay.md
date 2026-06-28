@@ -55,6 +55,9 @@ The overlay shows two frame-rate numbers:
 Having both makes it obvious how much of the displayed rate comes from generated
 frames versus rendered ones.
 
+See [Latency and frame-generation FPS](./latency-fg.md) for the exact p95,
+raw-output, and frame-generation detection rules.
+
 ## PC latency meter
 
 The **LAT** field shows PC latency in milliseconds from the native Vulkan marker
@@ -67,3 +70,8 @@ alone.
   the dxvk-nvapi marker path. New dxvk-nvapi builds use marker-only logging;
   stock builds automatically fall back to full trace so public installs still
   work.
+
+Some games do not expose usable latency markers. In those games PenguinBurner
+keeps showing FPS and GPU telemetry, but omits `LAT` instead of inventing a
+fake PC-latency value. The detailed source and fallback model is documented in
+[Latency and frame-generation FPS](./latency-fg.md).
