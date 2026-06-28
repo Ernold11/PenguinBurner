@@ -7,6 +7,7 @@ APP_ID="${PENGUIN_BURNER_FLATPAK_APP_ID:-io.github.jpietek.PenguinBurner}"
 MANIFEST="${PENGUIN_BURNER_FLATPAK_MANIFEST:-$ROOT/packaging/flatpak/$APP_ID.yml}"
 OUT_DIR="${PENGUIN_BURNER_FLATPAK_OUT_DIR:-$ROOT/public-flatpak}"
 BUILD_DIR="${PENGUIN_BURNER_FLATPAK_BUILD_DIR:-$ROOT/.flatpak-build/public/$APP_ID}"
+STATE_DIR="${PENGUIN_BURNER_FLATPAK_STATE_DIR:-$(dirname "$BUILD_DIR")/.flatpak-builder-state}"
 REPO_DIR="$OUT_DIR/repo"
 KEY_FILE="$OUT_DIR/penguin-burner-flatpak.gpg"
 FLATPAKREPO_FILE="$OUT_DIR/penguin-burner.flatpakrepo"
@@ -45,6 +46,7 @@ flatpak install -y flathub \
 
 flatpak-builder \
     --force-clean \
+    --state-dir="$STATE_DIR" \
     --repo="$REPO_DIR" \
     --gpg-sign="$GPG_KEY" \
     "$BUILD_DIR" \
