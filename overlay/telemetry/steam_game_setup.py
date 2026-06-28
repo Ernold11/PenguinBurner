@@ -46,7 +46,7 @@ def build_game_launch_options(
     overlay: bool = False,
 ) -> str:
     # The wrapper expands to the native Vulkan layer. The optional in-game
-    # latency token enables the dxvk-nvapi trace fallback for explicit tests.
+    # latency token enables dxvk-nvapi marker parsing for explicit tests.
     tokens: list[str] = []
     if overlay:
         tokens.extend(OVERLAY_TOKENS)

@@ -79,7 +79,7 @@ ITEM_TOOLTIPS = {
         "see mouse/USB latency before input sampling or final panel pixel "
         "response, so it is close to but not exactly click-to-photon. This is the "
         "default latency field. The copyable Steam launch string uses the "
-        "native Vulkan marker path; dxvk-nvapi trace fallback is only for "
+        "native Vulkan marker path; dxvk-nvapi marker parsing is only for "
         "explicit testing."
     ),
     "uv_offset_mv": (
@@ -218,7 +218,7 @@ class OverlayConfigPanel:
         self.launch_line.setObjectName("overlaySteamLaunchLine")
         self.launch_line.setToolTip(
             "Steam launch options. Latency uses the native Vulkan marker path "
-            "by default; PB_INGAME_LATENCY=1 is only an explicit trace test."
+            "by default; PB_INGAME_LATENCY=1 is only an explicit marker test."
         )
         # Size to the default launch string so the field never reflows.
         launch_width = self.launch_line.fontMetrics().horizontalAdvance(
@@ -414,7 +414,7 @@ class OverlayConfigPanel:
 
     def _launch_option_text(self) -> str:
         # The copied Steam line stays native-only. Overlay item visibility only
-        # changes what is rendered, not whether the trace fallback runs.
+        # changes what is rendered, not whether dxvk-nvapi marker parsing runs.
         return steam_launch_option()
 
     def _copy_launch_option(self) -> None:

@@ -13,15 +13,16 @@ OVERLAY_CONFIG_ENV = "PENGUIN_BURNER_OVERLAY_CONFIG"
 STEAM_LAUNCH_OPTION = "PENGUIN_BURNER %command%"
 
 
-def steam_launch_option(*, trace_fallback_enabled: bool = False) -> str:
+def steam_launch_option(*, ingame_latency_enabled: bool = False) -> str:
     """Steam launch string for the overlay.
 
     ``PB_OVERLAY=1`` turns the overlay on. Native Vulkan marker latency is wired
-    by the wrapper. ``PB_INGAME_LATENCY=1`` explicitly enables the dxvk-nvapi
-    trace fallback for testing titles where native markers are not enough.
+    by the wrapper. ``PB_INGAME_LATENCY=1`` enables dxvk-nvapi marker parsing
+    for titles where native Vulkan markers are not enough; patched dxvk-nvapi
+    builds use marker-only logging, and stock builds fall back to trace.
     """
     tokens = ["PB_OVERLAY=1"]
-    if trace_fallback_enabled:
+    if ingame_latency_enabled:
         tokens.append("PB_INGAME_LATENCY=1")
     tokens.append(STEAM_LAUNCH_OPTION)
     return " ".join(tokens)
@@ -31,10 +32,12 @@ def steam_launch_option(*, trace_fallback_enabled: bool = False) -> str:
 STEAM_LAUNCH_OPTION_OVERLAY = steam_launch_option()
 # Backwards-compatible name.
 STEAM_LAUNCH_OPTION_WITH_LATENCY = STEAM_LAUNCH_OPTION_OVERLAY
-# Explicit heavy fallback for stock dxvk-nvapi trace testing.
-STEAM_LAUNCH_OPTION_WITH_TRACE_FALLBACK = steam_launch_option(
-    trace_fallback_enabled=True
+# Explicit dxvk-nvapi marker latency path.
+STEAM_LAUNCH_OPTION_WITH_INGAME_LATENCY = steam_launch_option(
+    ingame_latency_enabled=True
 )
+# Backwards-compatible name.
+STEAM_LAUNCH_OPTION_WITH_TRACE_FALLBACK = STEAM_LAUNCH_OPTION_WITH_INGAME_LATENCY
 
 BASIC_OVERLAY_ITEM_IDS = (
     "base_fps",

@@ -17,6 +17,7 @@ from .framegen import _explicit_framegen_active
 from .framegen import _framegen_active_for_overlay
 from .framegen import _has_marker_stream
 from .layer_check import DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS
+from .nvapi_marker_bridge import NvapiMarkerBridge
 from .samples import _int_value
 from .samples import _positive_us
 from .samples import normalize_timing_sample
@@ -721,6 +722,8 @@ class LatencyTelemetryLogger:
         log_interval_s: float = METER_LOG_INTERVAL_S,
         raw_log_interval_s: float | None = None,
         dump_latency_data: bool | None = None,
+        start_nvapi_marker_bridge: bool = True,
+        nvapi_marker_log_path: Path | None = None,
         time_monotonic: Callable[[], float] = time.monotonic,
         time_strftime: Callable[[str], str] = time.strftime,
     ) -> None:
@@ -746,6 +749,9 @@ class LatencyTelemetryLogger:
         self.time_monotonic = time_monotonic
         self.time_strftime = time_strftime
         self.meter = LatencyTelemetryMeter(time_monotonic=time_monotonic)
+        self._start_nvapi_marker_bridge = bool(start_nvapi_marker_bridge)
+        self._nvapi_marker_log_path = nvapi_marker_log_path
+        self._nvapi_marker_bridge: NvapiMarkerBridge | None = None
         self._socket: socket.socket | None = None
         self._sockets: list[tuple[socket.socket, Path]] = []
         self._thread: threading.Thread | None = None
@@ -784,9 +790,20 @@ class LatencyTelemetryLogger:
             daemon=True,
         )
         self._thread.start()
+        if self._start_nvapi_marker_bridge:
+            log_path = self._nvapi_marker_log_path or self.paths[-1].with_name(
+                "nvapi-trace.fifo"
+            )
+            self._nvapi_marker_bridge = NvapiMarkerBridge(
+                log_path=log_path,
+                log=self.log,
+            ).start()
         return self
 
     def close(self) -> None:
+        if self._nvapi_marker_bridge is not None:
+            self._nvapi_marker_bridge.close()
+            self._nvapi_marker_bridge = None
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)

@@ -20,9 +20,10 @@ from .state import (
 MASTER_ENABLE_ENV = "PENGUIN_BURNER"
 LATENCY_ENABLE_ENV = "PENGUIN_BURNER_LATENCY_LAYER"
 LATENCY_SOCKET_ENV = "PENGUIN_BURNER_LATENCY_SOCKET"
-# User-facing toggle for the stock dxvk-nvapi trace fallback. Native Vulkan
-# marker latency stays enabled by the wrapper; this toggle is only for the trace
-# path.
+# User-facing toggle for extra in-game Reflex marker telemetry. Native Vulkan
+# marker latency stays enabled by the wrapper; this toggle asks dxvk-nvapi to
+# emit marker records too. New dxvk-nvapi builds use a marker-only log flag;
+# full trace remains an explicit/manual fallback.
 INGAME_LATENCY_ENV = "PENGUIN_BURNER_INGAME_LATENCY"
 INGAME_LATENCY_ENV_ALIAS = "PB_INGAME_LATENCY"
 # Display (present->scanout) latency is folded into the single in-game latency
@@ -32,6 +33,8 @@ INGAME_LATENCY_ENV_ALIAS = "PB_INGAME_LATENCY"
 DISPLAY_LATENCY_ENV = "PENGUIN_BURNER_LATENCY_DISPLAY"
 INJECT_PRESENT_ID_ENV = "PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID"
 DXVK_NVAPI_ENABLE_ENV = "DXVK_NVAPI_VKREFLEX"
+DXVK_NVAPI_MARKER_LOG_ENV = "DXVK_NVAPI_LATENCY_MARKER_LOG"
+DXVK_NVAPI_TRACE_ENV = "DXVK_NVAPI_LOG_LEVEL"
 VK_LAYER_PATH_ENV = "VK_ADD_IMPLICIT_LAYER_PATH"
 VK_LAYER_ENABLE_ENV = "VK_LOADER_LAYERS_ENABLE"
 
@@ -64,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     env = dict(os.environ)
-    configure_penguin_burner_environment(env)
+    configure_penguin_burner_environment(env, command_args=args)
     _remove_mangohud_environment(env)
     _prepare_overlay_paths(env)
     if ingame_latency_enabled(env):
@@ -78,13 +81,13 @@ def trace_fifo_path(env: dict[str, str]) -> Path:
 
 
 def _route_trace_to_fifo(env: dict[str, str]) -> None:
-    """Send dxvk-nvapi trace into an in-memory FIFO instead of an on-disk log.
+    """Send dxvk-nvapi marker output into an in-memory FIFO.
 
-    dxvk-nvapi (with DXVK_NVAPI_LOG_LEVEL=trace, no PROTON_LOG) writes its
-    marker lines to wine's debug output, i.e. the process stderr. We point
-    stderr at a host FIFO that the marker bridge drains, so the trace stream
-    lives in the kernel pipe buffer (RAM) and never touches disk. Redirecting
-    the inherited fd (not a path) also avoids any wine path translation.
+    dxvk-nvapi marker-only logging and the older full-trace fallback both write
+    to wine's debug output, i.e. the process stderr. We point stderr at a host
+    FIFO that the marker bridge drains, so the marker stream lives in the
+    kernel pipe buffer (RAM) and never touches disk. Redirecting the inherited
+    fd (not a path) also avoids any wine path translation.
     """
     fifo = trace_fifo_path(env)
     try:
@@ -104,7 +107,11 @@ def _route_trace_to_fifo(env: dict[str, str]) -> None:
         return
 
 
-def configure_penguin_burner_environment(env: dict[str, str]) -> None:
+def configure_penguin_burner_environment(
+    env: dict[str, str],
+    *,
+    command_args: list[str] | tuple[str, ...] | None = None,
+) -> None:
     overlay_config_path = default_overlay_config_path(env)
     env.setdefault(OVERLAY_CONFIG_ENV, str(overlay_config_path))
     env.setdefault(MASTER_ENABLE_ENV, "1")
@@ -114,12 +121,8 @@ def configure_penguin_burner_environment(env: dict[str, str]) -> None:
     env.setdefault(DXVK_NVAPI_ENABLE_ENV, "1")
     env.setdefault("PROTON_ENABLE_NVAPI", "1")
     env.setdefault("PROTON_HIDE_NVIDIA_GPU", "0")
-    # Trace logging makes stock dxvk-nvapi emit a line per Reflex marker. It is
-    # off by default; PB_INGAME_LATENCY=1 explicitly opts into this fallback for
-    # games where the native Vulkan marker path is not enough. The trace goes to
-    # stderr routed to an in-memory FIFO, not to an on-disk Proton log.
     if ingame_latency_enabled(env):
-        env.setdefault("DXVK_NVAPI_LOG_LEVEL", "trace")
+        _configure_dxvk_nvapi_marker_output(env, command_args=command_args)
         # Fold the present->scanout display tail into the same opt-in. Both are
         # read-only/gated in the layer and inert where unsupported.
         env.setdefault(DISPLAY_LATENCY_ENV, "1")
@@ -129,6 +132,133 @@ def configure_penguin_burner_environment(env: dict[str, str]) -> None:
     env.setdefault(OVERLAY_TEXT_ENV, str(overlay_text_path(env)))
     _prepend_layer_paths(env)
     _prepend_enabled_layers(env)
+
+
+def _configure_dxvk_nvapi_marker_output(
+    env: dict[str, str],
+    *,
+    command_args: list[str] | tuple[str, ...] | None = None,
+) -> None:
+    # If the user already forced full trace, honor it and avoid enabling
+    # marker-only logging too; emitting both formats would duplicate samples.
+    if str(env.get(DXVK_NVAPI_TRACE_ENV) or "").strip().lower() == "trace":
+        return
+
+    if str(env.get(DXVK_NVAPI_MARKER_LOG_ENV) or "").strip().lower() in _TRUTHY:
+        return
+
+    if dxvk_nvapi_marker_log_supported(env, command_args=command_args):
+        env.setdefault(DXVK_NVAPI_MARKER_LOG_ENV, "1")
+    else:
+        env.setdefault(DXVK_NVAPI_TRACE_ENV, "trace")
+
+
+def dxvk_nvapi_marker_log_supported(
+    env: dict[str, str],
+    *,
+    command_args: list[str] | tuple[str, ...] | None = None,
+) -> bool:
+    prefix_candidates = list(_prefix_nvapi_dll_candidates(env))
+    if prefix_candidates:
+        return any(_dll_contains_marker_log_flag(path) for path in prefix_candidates)
+
+    return any(
+        _dll_contains_marker_log_flag(path)
+        for path in _proton_nvapi_dll_candidates(env, command_args=command_args)
+    )
+
+
+def _prefix_nvapi_dll_candidates(env: dict[str, str]):
+    data_path = str(env.get("STEAM_COMPAT_DATA_PATH") or "").strip()
+    if not data_path:
+        return
+    windows = Path(data_path).expanduser() / "pfx" / "drive_c" / "windows"
+    yield from _existing_paths(
+        (
+            windows / "system32" / "nvapi64.dll",
+            windows / "syswow64" / "nvapi.dll",
+        )
+    )
+
+
+def _proton_nvapi_dll_candidates(
+    env: dict[str, str],
+    *,
+    command_args: list[str] | tuple[str, ...] | None = None,
+):
+    roots: list[Path] = []
+    for key in ("STEAM_COMPAT_TOOL_PATHS", "STEAM_COMPAT_TOOL_PATH"):
+        value = str(env.get(key) or "").strip()
+        if not value:
+            continue
+        for item in value.split(os.pathsep):
+            if item:
+                roots.append(Path(item).expanduser())
+
+    for arg in command_args or ():
+        try:
+            path = Path(str(arg)).expanduser()
+        except OSError:
+            continue
+        if path.name == "proton":
+            roots.append(path.parent)
+
+    seen: set[Path] = set()
+    for root in roots:
+        try:
+            root = root.resolve()
+        except OSError:
+            pass
+        if root in seen:
+            continue
+        seen.add(root)
+        yield from _nvapi_dlls_under_proton_root(root)
+
+
+def _nvapi_dlls_under_proton_root(root: Path):
+    yield from _existing_paths(
+        (
+            root / "files" / "lib" / "wine" / "nvapi" / "x86_64-windows" / "nvapi64.dll",
+            root / "files" / "lib" / "wine" / "nvapi" / "i386-windows" / "nvapi.dll",
+            root
+            / "files"
+            / "lib"
+            / "wine"
+            / "nvidia-libs"
+            / "nvapi"
+            / "x86_64-windows"
+            / "nvapi64.dll",
+            root
+            / "files"
+            / "lib"
+            / "wine"
+            / "nvidia-libs"
+            / "nvapi"
+            / "i386-windows"
+            / "nvapi.dll",
+        )
+    )
+
+
+def _existing_paths(paths):
+    for path in paths:
+        try:
+            if path.is_file():
+                yield path
+        except OSError:
+            continue
+
+
+def _dll_contains_marker_log_flag(path: Path) -> bool:
+    needle = DXVK_NVAPI_MARKER_LOG_ENV.encode("ascii")
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                if needle in chunk:
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 def _apply_overlay_enable_alias(env: dict[str, str]) -> None:

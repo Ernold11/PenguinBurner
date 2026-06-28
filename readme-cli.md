@@ -226,7 +226,7 @@ Enable the native in-game overlay for games launched through the wrapper:
 PENGUIN_BURNER_OVERLAY=1 PENGUIN_BURNER %command%
 ```
 
-Enable optional in-game latency marker parsing:
+Enable optional dxvk-nvapi in-game latency marker parsing:
 
 ```text
 PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%

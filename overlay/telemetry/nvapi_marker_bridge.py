@@ -1,9 +1,10 @@
-"""Bridge dxvk-nvapi Reflex marker trace lines into the latency receiver.
+"""Bridge dxvk-nvapi Reflex marker log lines into the latency receiver.
 
-The supported path uses stock Proton/DXVK-NVAPI with
-``DXVK_NVAPI_LOG_LEVEL=trace``. The PenguinBurner wrapper routes stderr into an
-in-memory FIFO, so dxvk-nvapi's ``NvAPI_D3D_SetLatencyMarker`` trace lines are
-drained by this bridge without compiling or replacing a custom DLL.
+The preferred path uses dxvk-nvapi's marker-only
+``DXVK_NVAPI_LATENCY_MARKER_LOG=1`` output. The older full
+``DXVK_NVAPI_LOG_LEVEL=trace`` output is still parsed as a last-resort fallback.
+The PenguinBurner wrapper routes stderr into an in-memory FIFO, so dxvk-nvapi's
+marker lines are drained by this bridge without writing a Proton log to disk.
 
 This bridge tails that trace, pairs SIMULATION_START (NV marker 0) with
 PRESENT_END (NV marker 5) by frame id, and sends the resulting
@@ -34,8 +35,10 @@ import argparse
 import json
 import os
 import re
+import select
 import socket
 import stat
+import threading
 import time
 from pathlib import Path
 
@@ -52,7 +55,14 @@ NV_FRAMEGEN_MARKERS = {
     NV_MARKER_OUT_OF_BAND_PRESENT_END,
 }
 
-# Stock dxvk-nvapi trace (DXVK_NVAPI_LOG_LEVEL=trace), no custom DLL needed.
+# Marker-only dxvk-nvapi output (DXVK_NVAPI_LATENCY_MARKER_LOG=1).
+_MARKER_LOG_RE = re.compile(
+    r"^\d+\.\d+:([0-9a-fA-F]+):[0-9a-fA-F]+:"
+    r"latency-marker:[^:]+:qpcUs=(\d+)\s+.*\bframeID=(\d+)\s+"
+    r"markerType=(\w+)(?:\s+markerValue=(\d+))?"
+)
+
+# Stock dxvk-nvapi trace fallback (DXVK_NVAPI_LOG_LEVEL=trace).
 # The regular Reflex path logs NvAPI_D3D_SetLatencyMarker, while async/adaptive
 # frame generation can log NvAPI_D3D12_SetAsyncFrameMarker with the same
 # frameID/markerType fields plus presentFrameID. Timestamp is the log line's
@@ -71,14 +81,30 @@ _TRACE_MARKER_NAMES = {
 
 
 def _parse_line(line: str):
-    """Return (frame, nv_marker, t_us) for a trace line, else None."""
+    """Return (frame, nv_marker, t_us) for a marker line, else None."""
+    parsed = _parse_line_with_pid(line)
+    if parsed is None:
+        return None
+    frame, marker, t_us, _source_pid = parsed
+    return frame, marker, t_us
+
+
+def _parse_line_with_pid(line: str):
+    """Return (frame, nv_marker, t_us, source_pid) for a marker line."""
+    m = _MARKER_LOG_RE.search(line)
+    if m:
+        marker = _TRACE_MARKER_NAMES.get(m.group(4))
+        if marker is None:
+            return None
+        return int(m.group(3)), marker, int(m.group(2)), int(m.group(1), 16)
+
     m = _TRACE_RE.match(line)
     if m:
         marker = _TRACE_MARKER_NAMES.get(m.group(4))
         if marker is None:
             return None
         t_us = (int(m.group(1)) * 1000 + int(m.group(2))) * 1000
-        return int(m.group(3)), marker, t_us
+        return int(m.group(3)), marker, t_us, None
     return None
 
 # A frame id whose PRESENT_END never arrives must not leak forever; keep only a
@@ -111,6 +137,25 @@ def _send_sample(sock: socket.socket, targets: list[Path], sample: dict) -> None
             return
         except OSError:
             continue
+
+
+def default_log_path(env: dict[str, str] | None = None) -> Path:
+    paths = latency_socket_paths(env)
+    return paths[-1].with_name("nvapi-trace.fifo")
+
+
+def _stop_requested(stop_event: threading.Event | None) -> bool:
+    return stop_event is not None and stop_event.is_set()
+
+
+def _wait_or_stopped(
+    stop_event: threading.Event | None,
+    poll_interval_s: float,
+) -> bool:
+    if stop_event is not None:
+        return stop_event.wait(poll_interval_s)
+    time.sleep(poll_interval_s)
+    return False
 
 
 def _resolve_oob_present(
@@ -166,43 +211,63 @@ def _resolve_oob_present(
     return 0
 
 
-def _follow_fifo(path: Path, *, poll_interval_s: float):
+def _follow_fifo(
+    path: Path,
+    *,
+    poll_interval_s: float,
+    stop_event: threading.Event | None = None,
+):
     """Yield lines from a named pipe (in-memory trace stream).
 
     Opened read-only/non-blocking so the bridge never blocks waiting for a
     writer; lines are drained as the game produces them. On writer close
     (game exit) readline returns EOF and we reopen.
     """
-    import io
-
-    while True:
+    while not _stop_requested(stop_event):
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         except OSError:
-            time.sleep(poll_interval_s)
+            _wait_or_stopped(stop_event, poll_interval_s)
             continue
-        os.set_blocking(fd, True)
-        handle = io.TextIOWrapper(
-            io.FileIO(fd, "r", closefd=True), encoding="utf-8", errors="replace"
-        )
+        pending = ""
         try:
-            while True:
-                line = handle.readline()
-                if line:
-                    yield line
+            while not _stop_requested(stop_event):
+                readable, _writable, _errors = select.select(
+                    [fd], [], [], poll_interval_s
+                )
+                if not readable:
                     continue
-                # Writer closed (game exited): reopen and wait for the next run.
-                break
+                try:
+                    chunk = os.read(fd, 65536)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    # Writer closed (game exited): reopen and wait for the next run.
+                    break
+                pending += chunk.decode("utf-8", errors="replace")
+                while "\n" in pending:
+                    line, pending = pending.split("\n", 1)
+                    yield line + "\n"
         finally:
-            handle.close()
-        time.sleep(poll_interval_s)
+            os.close(fd)
+        _wait_or_stopped(stop_event, poll_interval_s)
 
 
-def _follow(path: Path, *, poll_interval_s: float, from_start: bool):
+def _follow(
+    path: Path,
+    *,
+    poll_interval_s: float,
+    from_start: bool,
+    stop_event: threading.Event | None = None,
+):
     """Yield lines from a FIFO (in-memory) or a growing/rotating file."""
     try:
         if path.exists() and stat.S_ISFIFO(path.stat().st_mode):
-            yield from _follow_fifo(path, poll_interval_s=poll_interval_s)
+            yield from _follow_fifo(
+                path,
+                poll_interval_s=poll_interval_s,
+                stop_event=stop_event,
+            )
             return
     except OSError:
         pass
@@ -213,7 +278,7 @@ def _follow(path: Path, *, poll_interval_s: float, from_start: bool):
     # through stale backlog -- the overlay only needs *current* latency, so a
     # gap is fine and staying current is what prevents the fallback stall.
     max_lag_bytes = 4 * 1024 * 1024
-    while True:
+    while not _stop_requested(stop_event):
         try:
             if handle is None:
                 handle = path.open("r", encoding="utf-8", errors="replace")
@@ -239,12 +304,14 @@ def _follow(path: Path, *, poll_interval_s: float, from_start: bool):
                 handle.close()
                 handle = None
                 continue
-            time.sleep(poll_interval_s)
+            _wait_or_stopped(stop_event, poll_interval_s)
         except OSError:
             if handle is not None:
                 handle.close()
             handle = None
-            time.sleep(poll_interval_s)
+            _wait_or_stopped(stop_event, poll_interval_s)
+    if handle is not None:
+        handle.close()
 
 
 def run(
@@ -254,99 +321,164 @@ def run(
     from_start: bool = False,
     env: dict[str, str] | None = None,
     pid: int | None = None,
+    stop_event: threading.Event | None = None,
 ) -> None:
     env = os.environ if env is None else env
     targets = _socket_targets(env)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     pid = os.getpid() if pid is None else pid
 
-    pending_sim: dict[int, int] = {}
-    pending_input: dict[int, int] = {}
-    framegen_marker_frames: dict[int, int] = {}
-    order: list[int] = []
-    input_order: list[int] = []
-    framegen_order: list[int] = []
-    framegen_active_until_us = 0
-    # Base frames awaiting their out-of-band (frame-generation) display present,
-    # in present order: (frame, input_us, sim_us, present_end_us).
-    awaiting_oob: list[tuple[int, int, int, int]] = []
-    for line in _follow(log_path, poll_interval_s=poll_interval_s, from_start=from_start):
-        parsed = _parse_line(line)
-        if parsed is None:
-            continue
-        frame, marker, t_us = parsed
-        if marker in NV_FRAMEGEN_MARKERS:
-            if frame not in framegen_marker_frames:
-                framegen_order.append(frame)
-            framegen_marker_frames[frame] = t_us
-            framegen_active_until_us = max(framegen_active_until_us, t_us + 3_000_000)
-            while len(framegen_order) > _MAX_PENDING:
-                framegen_marker_frames.pop(framegen_order.pop(0), None)
-            if marker == NV_MARKER_OUT_OF_BAND_PRESENT_END:
-                _resolve_oob_present(sock, targets, awaiting_oob, t_us, pid)
-            continue
-        if marker == NV_MARKER_INPUT_SAMPLE:
-            # Emitted by titles with full Reflex PCL markers, right before
-            # SIMULATION_START. Anchors the true input-to-present lag.
-            if frame not in pending_input:
-                input_order.append(frame)
-            pending_input[frame] = t_us
-            while len(input_order) > _MAX_PENDING:
-                pending_input.pop(input_order.pop(0), None)
-        elif marker == NV_MARKER_SIMULATION_START:
-            if frame not in pending_sim:
-                order.append(frame)
-            pending_sim[frame] = t_us
-            while len(order) > _MAX_PENDING:
-                pending_sim.pop(order.pop(0), None)
-        elif marker == NV_MARKER_PRESENT_END:
-            sim_us = pending_sim.pop(frame, None)
-            if sim_us is None or t_us <= sim_us:
-                pending_input.pop(frame, None)
+    try:
+        pending_sim: dict[int, int] = {}
+        pending_input: dict[int, int] = {}
+        framegen_marker_frames: dict[int, int] = {}
+        order: list[int] = []
+        input_order: list[int] = []
+        framegen_order: list[int] = []
+        framegen_active_until_us = 0
+        # Base frames awaiting their out-of-band (frame-generation) display present,
+        # in present order: (frame, input_us, sim_us, present_end_us).
+        awaiting_oob: list[tuple[int, int, int, int]] = []
+        for line in _follow(
+            log_path,
+            poll_interval_s=poll_interval_s,
+            from_start=from_start,
+            stop_event=stop_event,
+        ):
+            parsed = _parse_line_with_pid(line)
+            if parsed is None:
                 continue
-            input_us = pending_input.pop(frame, 0)
-            span_us = t_us - sim_us
-            framegen_marker_us = framegen_marker_frames.pop(frame, 0)
-            # Recent out-of-band present activity means a displayed-present marker
-            # is expected for this frame. It is NOT evidence of frame generation:
-            # Reflex emits out-of-band presents with frame gen off, so the bridge
-            # never asserts framegen_active. The receiver decides frame generation
-            # from the displayed-vs-base cadence ratio instead.
-            oob_present_recent = (
-                bool(framegen_marker_us) or t_us <= framegen_active_until_us
+            frame, marker, t_us, source_pid = parsed
+            sample_pid = source_pid if source_pid is not None else pid
+            if marker in NV_FRAMEGEN_MARKERS:
+                if frame not in framegen_marker_frames:
+                    framegen_order.append(frame)
+                framegen_marker_frames[frame] = t_us
+                framegen_active_until_us = max(
+                    framegen_active_until_us, t_us + 3_000_000
+                )
+                while len(framegen_order) > _MAX_PENDING:
+                    framegen_marker_frames.pop(framegen_order.pop(0), None)
+                if marker == NV_MARKER_OUT_OF_BAND_PRESENT_END:
+                    _resolve_oob_present(sock, targets, awaiting_oob, t_us, sample_pid)
+                continue
+            if marker == NV_MARKER_INPUT_SAMPLE:
+                # Emitted by titles with full Reflex PCL markers, right before
+                # SIMULATION_START. Anchors the true input-to-present lag.
+                if frame not in pending_input:
+                    input_order.append(frame)
+                pending_input[frame] = t_us
+                while len(input_order) > _MAX_PENDING:
+                    pending_input.pop(input_order.pop(0), None)
+            elif marker == NV_MARKER_SIMULATION_START:
+                if frame not in pending_sim:
+                    order.append(frame)
+                pending_sim[frame] = t_us
+                while len(order) > _MAX_PENDING:
+                    pending_sim.pop(order.pop(0), None)
+            elif marker == NV_MARKER_PRESENT_END:
+                sim_us = pending_sim.pop(frame, None)
+                if sim_us is None or t_us <= sim_us:
+                    pending_input.pop(frame, None)
+                    continue
+                input_us = pending_input.pop(frame, 0)
+                span_us = t_us - sim_us
+                framegen_marker_us = framegen_marker_frames.pop(frame, 0)
+                # Recent out-of-band present activity means a displayed-present marker
+                # is expected for this frame. It is NOT evidence of frame generation:
+                # Reflex emits out-of-band presents with frame gen off, so the bridge
+                # never asserts framegen_active. The receiver decides frame generation
+                # from the displayed-vs-base cadence ratio instead.
+                oob_present_recent = (
+                    bool(framegen_marker_us) or t_us <= framegen_active_until_us
+                )
+                sample = {
+                    "v": 1,
+                    "type": "timing",
+                    "measurement": "marker-proxy",
+                    "source": "nvapi-marker-log",
+                    "pid": sample_pid,
+                    "present_id": frame,
+                    "quality": "reflex-markers",
+                    "marker_bits": 1,
+                    "sim_to_present_us": span_us,
+                    "framegen_active": False,
+                }
+                if input_us and t_us > input_us:
+                    # Full Reflex input lag: input sample -> application present.
+                    sample["input_to_present_us"] = t_us - input_us
+                _send_sample(sock, targets, sample)
+                if oob_present_recent:
+                    # Wait for the displayed (out-of-band) present to emit the wider
+                    # sim_to_oob_present_us span for the click-to-photon proxy.
+                    awaiting_oob.append((frame, input_us, sim_us, t_us))
+                    while len(awaiting_oob) > _MAX_PENDING:
+                        awaiting_oob.pop(0)
+    finally:
+        sock.close()
+
+
+class NvapiMarkerBridge:
+    """In-process dxvk-nvapi marker FIFO reader.
+
+    The Steam wrapper only writes to this FIFO when
+    ``PENGUIN_BURNER_INGAME_LATENCY=1``/``PB_INGAME_LATENCY=1`` is present in
+    the launch options. Keeping this reader inside the main runtime avoids a
+    second service while leaving trace/marker logging explicitly opt-in.
+    """
+
+    def __init__(
+        self,
+        *,
+        log_path: Path | None = None,
+        poll_interval_s: float = 0.25,
+        log=None,
+    ) -> None:
+        self.log_path = log_path if log_path is not None else default_log_path()
+        self.poll_interval_s = float(poll_interval_s)
+        self.log = log
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "NvapiMarkerBridge":
+        if self._thread is not None:
+            return self
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.log is not None:
+            self.log(f"Latency marker FIFO: {self.log_path}")
+        self._thread = threading.Thread(
+            target=self._run,
+            name="penguin-burner-nvapi-marker-bridge",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+    def _run(self) -> None:
+        try:
+            run(
+                self.log_path,
+                poll_interval_s=self.poll_interval_s,
+                stop_event=self._stop,
             )
-            sample = {
-                "v": 1,
-                "type": "timing",
-                "measurement": "marker-proxy",
-                "source": "nvapi-marker-log",
-                "pid": pid,
-                "present_id": frame,
-                "quality": "reflex-markers",
-                "marker_bits": 1,
-                "sim_to_present_us": span_us,
-                "framegen_active": False,
-            }
-            if input_us and t_us > input_us:
-                # Full Reflex input lag: input sample -> application present.
-                sample["input_to_present_us"] = t_us - input_us
-            _send_sample(sock, targets, sample)
-            if oob_present_recent:
-                # Wait for the displayed (out-of-band) present to emit the wider
-                # sim_to_oob_present_us span for the click-to-photon proxy.
-                awaiting_oob.append((frame, input_us, sim_us, t_us))
-                while len(awaiting_oob) > _MAX_PENDING:
-                    awaiting_oob.pop(0)
+        except Exception as exc:
+            if self.log is not None:
+                self.log(f"Latency marker FIFO unavailable: {exc}")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Bridge dxvk-nvapi trace marker records into the latency socket."
+            "Bridge dxvk-nvapi marker records into the latency socket."
         )
     )
-    default_log = Path.home() / ".cache" / "penguin-burner" / "nvapi-trace.fifo"
-    parser.add_argument("--log", type=Path, default=default_log)
+    parser.add_argument("--log", type=Path, default=default_log_path())
     parser.add_argument("--poll-interval", type=float, default=0.25)
     parser.add_argument(
         "--from-start",

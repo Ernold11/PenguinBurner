@@ -39,6 +39,55 @@ def test_parse_line_accepts_stock_dxvk_nvapi_async_frame_marker() -> None:
     ) == (42, NV_MARKER_OUT_OF_BAND_PRESENT_END, 123456000)
 
 
+def test_parse_line_accepts_dxvk_nvapi_marker_only_log() -> None:
+    assert _parse_line(
+        "123.456:1abc:2def:latency-marker:nvapi64:"
+        "qpcUs=987654321 api=d3d frameID=42 markerType=SIMULATION_START "
+        "markerValue=0"
+    ) == (42, NV_MARKER_SIMULATION_START, 987654321)
+
+
+def test_parse_line_accepts_dxvk_nvapi_marker_only_async_log() -> None:
+    assert _parse_line(
+        "123.456:1abc:2def:latency-marker:nvapi64:"
+        "qpcUs=987654321 api=d3d12_async frameID=42 "
+        "markerType=OUT_OF_BAND_PRESENT_END markerValue=12 presentFrameID=77"
+    ) == (42, NV_MARKER_OUT_OF_BAND_PRESENT_END, 987654321)
+
+
+def test_bridge_uses_marker_only_log_process_id(monkeypatch, tmp_path) -> None:
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    lines = iter(
+        (
+            "123.456:0000002a:2def:latency-marker:nvapi64:"
+            "qpcUs=1000000 api=d3d frameID=7 markerType=SIMULATION_START "
+            "markerValue=0",
+            "123.466:0000002a:2def:latency-marker:nvapi64:"
+            "qpcUs=1010000 api=d3d frameID=7 markerType=PRESENT_END "
+            "markerValue=5",
+        )
+    )
+    samples = []
+
+    monkeypatch.setattr(
+        bridge,
+        "_follow",
+        lambda _path, poll_interval_s, from_start, stop_event=None: lines,
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_send_sample",
+        lambda _sock, _targets, sample: samples.append(sample),
+    )
+
+    run(tmp_path / "trace.fifo", env={}, pid=999)
+
+    assert len(samples) == 1
+    assert samples[0]["pid"] == 42
+    assert samples[0]["sim_to_present_us"] == 10000
+
+
 def test_bridge_does_not_mark_framegen_from_oob_present_trace(monkeypatch, tmp_path) -> None:
     # Reflex out-of-band present markers are emitted with frame generation OFF, so
     # the bridge must never assert frame generation from them -- it emits the span
@@ -60,7 +109,7 @@ def test_bridge_does_not_mark_framegen_from_oob_present_trace(monkeypatch, tmp_p
     monkeypatch.setattr(
         bridge,
         "_follow",
-        lambda _path, poll_interval_s, from_start: lines,
+        lambda _path, poll_interval_s, from_start, stop_event=None: lines,
     )
     monkeypatch.setattr(
         bridge,
@@ -101,7 +150,7 @@ def test_bridge_emits_oob_present_span_in_present_order(monkeypatch, tmp_path) -
     monkeypatch.setattr(
         bridge,
         "_follow",
-        lambda _path, poll_interval_s, from_start: lines,
+        lambda _path, poll_interval_s, from_start, stop_event=None: lines,
     )
     monkeypatch.setattr(
         bridge,
@@ -139,7 +188,7 @@ def test_bridge_reports_input_to_present_when_input_marker_present(monkeypatch, 
     monkeypatch.setattr(
         bridge,
         "_follow",
-        lambda _path, poll_interval_s, from_start: lines,
+        lambda _path, poll_interval_s, from_start, stop_event=None: lines,
     )
     monkeypatch.setattr(
         bridge,

@@ -64,4 +64,6 @@ alone.
 
 - Set `PENGUIN_BURNER_LATENCY_DISPLAY=0` to show render latency only.
 - Set `PB_INGAME_LATENCY=1` before `PENGUIN_BURNER` only when explicitly testing
-  the dxvk-nvapi trace fallback.
+  the dxvk-nvapi marker path. New dxvk-nvapi builds use marker-only logging;
+  stock builds automatically fall back to full trace so public installs still
+  work.

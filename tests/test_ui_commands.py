@@ -1281,7 +1281,7 @@ def test_overlay_panel_launch_box_latency_is_default_on(tmp_path) -> None:
         runtime_config_path=tmp_path / "penguin_burner.toml",
     )
 
-    # Latency is default-on through the native layer; trace fallback is not.
+    # Latency is default-on through the native layer; dxvk-nvapi parsing is not.
     assert STEAM_LAUNCH_OPTION_WITH_LATENCY == (
         "PB_OVERLAY=1 PENGUIN_BURNER %command%"
     )

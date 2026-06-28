@@ -52,6 +52,7 @@ def test_pb_overlay_launcher_execs_with_layer_environment(monkeypatch, tmp_path)
     assert env["DXVK_NVAPI_VKREFLEX"] == "1"
     assert env["PROTON_ENABLE_NVAPI"] == "1"
     assert env["PROTON_HIDE_NVIDIA_GPU"] == "0"
+    assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in env
     assert "DXVK_NVAPI_LOG_LEVEL" not in env
     assert "PROTON_LOG" not in env
     assert "VK_LAYER_PENGUINBURNER_latency" in env["VK_LOADER_LAYERS_ENABLE"]
@@ -103,18 +104,90 @@ def test_configure_environment_keeps_explicit_overlay_env_over_alias() -> None:
     assert env[OVERLAY_ENABLE_ENV] == "0"
 
 
-def test_configure_environment_enables_trace_only_with_ingame_latency() -> None:
+def test_configure_environment_prefers_marker_log_with_patched_prefix(tmp_path) -> None:
     off = {OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml"}
     launcher.configure_penguin_burner_environment(off)
+    assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in off
     assert "DXVK_NVAPI_LOG_LEVEL" not in off
 
+    _write_prefix_nvapi(tmp_path, supports_marker_log=True)
     on = {
         OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
         "PENGUIN_BURNER_INGAME_LATENCY": "1",
+        "STEAM_COMPAT_DATA_PATH": str(tmp_path),
     }
     launcher.configure_penguin_burner_environment(on)
-    assert on["DXVK_NVAPI_LOG_LEVEL"] == "trace"
+    assert on["DXVK_NVAPI_LATENCY_MARKER_LOG"] == "1"
+    assert "DXVK_NVAPI_LOG_LEVEL" not in on
     assert "PROTON_LOG" not in on
+
+
+def test_configure_environment_falls_back_to_trace_with_unpatched_prefix(tmp_path) -> None:
+    _write_prefix_nvapi(tmp_path, supports_marker_log=False)
+    env = {
+        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
+        "PB_INGAME_LATENCY": "1",
+        "STEAM_COMPAT_DATA_PATH": str(tmp_path),
+    }
+
+    launcher.configure_penguin_burner_environment(env)
+
+    assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in env
+    assert env["DXVK_NVAPI_LOG_LEVEL"] == "trace"
+
+
+def test_configure_environment_ignores_patched_nvofapi_without_nvapi(tmp_path) -> None:
+    _write_prefix_nvapi(tmp_path, supports_marker_log=False)
+    nvofapi = tmp_path / "pfx/drive_c/windows/system32/nvofapi64.dll"
+    nvofapi.write_bytes(b"DXVK_NVAPI_LATENCY_MARKER_LOG")
+    env = {
+        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
+        "PB_INGAME_LATENCY": "1",
+        "STEAM_COMPAT_DATA_PATH": str(tmp_path),
+    }
+
+    launcher.configure_penguin_burner_environment(env)
+
+    assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in env
+    assert env["DXVK_NVAPI_LOG_LEVEL"] == "trace"
+
+
+def test_configure_environment_detects_marker_log_in_proton_command_path(
+    tmp_path,
+) -> None:
+    proton = tmp_path / "Proton-Test"
+    marker_dll = (
+        proton / "files/lib/wine/nvapi/x86_64-windows/nvapi64.dll"
+    )
+    marker_dll.parent.mkdir(parents=True)
+    marker_dll.write_bytes(b"abc DXVK_NVAPI_LATENCY_MARKER_LOG xyz")
+    proton.joinpath("proton").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    env = {
+        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
+        "PB_INGAME_LATENCY": "1",
+    }
+
+    launcher.configure_penguin_burner_environment(
+        env,
+        command_args=[str(proton / "proton"), "waitforexitandrun"],
+    )
+
+    assert env["DXVK_NVAPI_LATENCY_MARKER_LOG"] == "1"
+    assert "DXVK_NVAPI_LOG_LEVEL" not in env
+
+
+def test_configure_environment_keeps_explicit_trace_last_resort() -> None:
+    env = {
+        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
+        "PB_INGAME_LATENCY": "1",
+        "DXVK_NVAPI_LOG_LEVEL": "trace",
+    }
+
+    launcher.configure_penguin_burner_environment(env)
+
+    assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in env
+    assert env["DXVK_NVAPI_LOG_LEVEL"] == "trace"
 
 
 def test_explicit_ingame_latency_zero_overrides_latency_alias() -> None:
@@ -126,6 +199,7 @@ def test_explicit_ingame_latency_zero_overrides_latency_alias() -> None:
 
     launcher.configure_penguin_burner_environment(env)
 
+    assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in env
     assert "DXVK_NVAPI_LOG_LEVEL" not in env
     assert "PENGUIN_BURNER_LATENCY_DISPLAY" not in env
     assert "PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID" not in env
@@ -160,6 +234,7 @@ def test_configure_environment_keeps_global_latency_config_full_path(tmp_path) -
     assert env[OVERLAY_ENABLE_ENV] == "auto"
     assert "PENGUIN_BURNER_INGAME_LATENCY" not in env
     assert "PB_INGAME_LATENCY" not in env
+    assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in env
     assert "DXVK_NVAPI_LOG_LEVEL" not in env
 
 
@@ -207,3 +282,10 @@ def _fake_native_layer_dir(tmp_path):
     (path / NATIVE_LAYER_MANIFEST).write_text("{}", encoding="utf-8")
     (path / NATIVE_LAYER_LIBRARY).write_bytes(b"")
     return path
+
+
+def _write_prefix_nvapi(tmp_path, *, supports_marker_log: bool) -> None:
+    dll = tmp_path / "pfx/drive_c/windows/system32/nvapi64.dll"
+    dll.parent.mkdir(parents=True)
+    marker = b"DXVK_NVAPI_LATENCY_MARKER_LOG" if supports_marker_log else b""
+    dll.write_bytes(b"prefix-nvapi " + marker)
