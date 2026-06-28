@@ -147,10 +147,34 @@ tier.
 
 ![Performance overlay](docs/assets/overlay.png)
 
-Launch it with the game via `PENGUIN_BURNER %command%`, then toggle the fields
-you want. Any tuning change you make is reflected live in the overlay while you
-play, so you see the effect of an undervolt, clock, or fan change in real time
-without leaving the game.
+Launch the game through the wrapper, then toggle the fields you want:
+
+```text
+PENGUIN_BURNER %command%
+```
+
+Add the overlay flag when you want the readout visible immediately:
+
+```text
+PB_OVERLAY=1 PENGUIN_BURNER %command%
+```
+
+Native Vulkan markers are the default latency source. For games whose latency
+markers only reach dxvk-nvapi, opt in explicitly:
+
+```text
+PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%
+```
+
+PenguinBurner auto-detects patched dxvk-nvapi/Proton nvapi builds and uses
+`DXVK_NVAPI_LATENCY_MARKER_LOG=1`, which emits marker-only records instead of
+full trace. With stock dxvk-nvapi it falls back to `DXVK_NVAPI_LOG_LEVEL=trace`,
+but only for games launched with `PB_INGAME_LATENCY=1`; the main runtime handles
+the data path without a separate helper service.
+
+Any tuning change you make is reflected live in the overlay while you play, so
+you see the effect of an undervolt, clock, or fan change in real time without
+leaving the game.
 
 If you want the detailed numbers behind that LAT figure, start the daemon with
 `PENGUIN_BURNER_DUMP_LATENCY_DATA=1` in its environment. It dumps the full
