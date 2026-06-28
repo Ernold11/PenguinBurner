@@ -52,8 +52,6 @@ def test_pb_overlay_launcher_execs_with_layer_environment(monkeypatch, tmp_path)
     assert env["DXVK_NVAPI_VKREFLEX"] == "1"
     assert env["PROTON_ENABLE_NVAPI"] == "1"
     assert env["PROTON_HIDE_NVIDIA_GPU"] == "0"
-    # Trace logging is gated behind the in-game-latency opt-in; a plain launch
-    # must stay trace-free (no Proton log, no overhead).
     assert "DXVK_NVAPI_LOG_LEVEL" not in env
     assert "PROTON_LOG" not in env
     assert "VK_LAYER_PENGUINBURNER_latency" in env["VK_LOADER_LAYERS_ENABLE"]
@@ -116,14 +114,24 @@ def test_configure_environment_enables_trace_only_with_ingame_latency() -> None:
     }
     launcher.configure_penguin_burner_environment(on)
     assert on["DXVK_NVAPI_LOG_LEVEL"] == "trace"
-    # Trace goes to the in-memory FIFO via stderr, never to an on-disk
-    # Proton log, so PROTON_LOG must stay unset.
     assert "PROTON_LOG" not in on
 
 
+def test_explicit_ingame_latency_zero_overrides_latency_alias() -> None:
+    env = {
+        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
+        "PENGUIN_BURNER_INGAME_LATENCY": "0",
+        "PB_INGAME_LATENCY": "1",
+    }
+
+    launcher.configure_penguin_burner_environment(env)
+
+    assert "DXVK_NVAPI_LOG_LEVEL" not in env
+    assert "PENGUIN_BURNER_LATENCY_DISPLAY" not in env
+    assert "PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID" not in env
+
+
 def test_ingame_latency_also_enables_display_tail() -> None:
-    # The single PB_INGAME_LATENCY opt-in must enable the present->scanout
-    # display tail (present-wait + present-id injection) too.
     off = {OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml"}
     launcher.configure_penguin_burner_environment(off)
     assert "PENGUIN_BURNER_LATENCY_DISPLAY" not in off
@@ -136,11 +144,10 @@ def test_ingame_latency_also_enables_display_tail() -> None:
     launcher.configure_penguin_burner_environment(on)
     assert on["PENGUIN_BURNER_LATENCY_DISPLAY"] == "1"
     assert on["PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID"] == "1"
-    # Diagnostics stay out of the default opt-in.
     assert "PENGUIN_BURNER_LATENCY_DEBUG_FLOW" not in on
 
 
-def test_configure_environment_enables_trace_from_global_latency_config(tmp_path) -> None:
+def test_configure_environment_keeps_global_latency_config_full_path(tmp_path) -> None:
     path = tmp_path / "overlay.toml"
     save_overlay_config(
         OverlayConfig(enabled=True, enabled_item_ids=("base_fps", "latency_ms")),
@@ -151,8 +158,9 @@ def test_configure_environment_enables_trace_from_global_latency_config(tmp_path
     launcher.configure_penguin_burner_environment(env)
 
     assert env[OVERLAY_ENABLE_ENV] == "auto"
-    assert env["PENGUIN_BURNER_INGAME_LATENCY"] == "1"
-    assert env["DXVK_NVAPI_LOG_LEVEL"] == "trace"
+    assert "PENGUIN_BURNER_INGAME_LATENCY" not in env
+    assert "PB_INGAME_LATENCY" not in env
+    assert "DXVK_NVAPI_LOG_LEVEL" not in env
 
 
 def test_pb_overlay_launcher_strips_mangohud_preload(monkeypatch, tmp_path) -> None:

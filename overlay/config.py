@@ -13,29 +13,33 @@ OVERLAY_CONFIG_ENV = "PENGUIN_BURNER_OVERLAY_CONFIG"
 STEAM_LAUNCH_OPTION = "PENGUIN_BURNER %command%"
 
 
-def steam_launch_option(*, latency_enabled: bool = False) -> str:
+def steam_launch_option(*, trace_fallback_enabled: bool = False) -> str:
     """Steam launch string for the overlay.
 
-    ``PB_OVERLAY=1`` turns the overlay on. ``PB_INGAME_LATENCY=1`` is the single
-    opt-in that enables the whole latency stack -- render (Reflex) AND the
-    present->scanout display tail -- via overlay.launcher; it is omitted by
-    default so a plain overlay launch measures no latency.
+    ``PB_OVERLAY=1`` turns the overlay on. Native Vulkan marker latency is wired
+    by the wrapper. ``PB_INGAME_LATENCY=1`` explicitly enables the dxvk-nvapi
+    trace fallback for testing titles where native markers are not enough.
     """
     tokens = ["PB_OVERLAY=1"]
-    if latency_enabled:
+    if trace_fallback_enabled:
         tokens.append("PB_INGAME_LATENCY=1")
     tokens.append(STEAM_LAUNCH_OPTION)
     return " ".join(tokens)
 
 
-# Overlay on, no latency -- the default copy string.
+# Overlay on with latency -- the default copy string.
 STEAM_LAUNCH_OPTION_OVERLAY = steam_launch_option()
-# Overlay on with the single latency opt-in (render + display).
-STEAM_LAUNCH_OPTION_WITH_LATENCY = steam_launch_option(latency_enabled=True)
+# Backwards-compatible name.
+STEAM_LAUNCH_OPTION_WITH_LATENCY = STEAM_LAUNCH_OPTION_OVERLAY
+# Explicit heavy fallback for stock dxvk-nvapi trace testing.
+STEAM_LAUNCH_OPTION_WITH_TRACE_FALLBACK = steam_launch_option(
+    trace_fallback_enabled=True
+)
 
 BASIC_OVERLAY_ITEM_IDS = (
     "base_fps",
     "fg_fps",
+    "latency_ms",
     "clock_mhz",
     "voltage_mv",
     "power_w",
@@ -47,7 +51,6 @@ ADVANCED_OVERLAY_ITEM_IDS = (
     "cpu_peak_thread_pct",
     "fan_pct",
     "temperature_c",
-    "latency_ms",
     "uv_offset_mv",
 )
 OVERLAY_ITEM_IDS = (

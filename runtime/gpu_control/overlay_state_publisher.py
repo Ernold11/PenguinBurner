@@ -57,6 +57,16 @@ class OverlayStatePublisher:
         init=False,
         repr=False,
     )
+    _last_latency_ms: str | None = field(default=None, init=False, repr=False)
+    _last_display_latency_ms: str | None = field(default=None, init=False, repr=False)
+    _last_latency_pid: object | None = field(default=None, init=False, repr=False)
+    _last_latency_ns: int | None = field(default=None, init=False, repr=False)
+    _last_present_fps: str | None = field(default=None, init=False, repr=False)
+    _last_fps_source: str | None = field(default=None, init=False, repr=False)
+    _last_framegen_fps: str | None = field(default=None, init=False, repr=False)
+    _last_framegen_active: bool = field(default=False, init=False, repr=False)
+    _last_fps_pid: object | None = field(default=None, init=False, repr=False)
+    _last_fps_ns: int | None = field(default=None, init=False, repr=False)
 
     @property
     def last_gpu_util_pct(self) -> int | None:
@@ -181,28 +191,22 @@ class OverlayStatePublisher:
         if not label:
             label = profile_tier_label(self.profile_tier_key) or "Balanced"
         present_fps = ""
+        fps_source = ""
         framegen_fps = ""
         framegen_active = False
+        present_fps, fps_source, framegen_fps, framegen_active = self._overlay_fps_values(
+            latency_snapshot,
+            now_ns=now_ns,
+        )
         latency_ms = ""
         display_latency_ms = ""
         if isinstance(latency_snapshot, dict):
-            present_fps = str(latency_snapshot.get("present_fps") or "").strip()
-            framegen_fps = _framegen_fps_from_snapshot(latency_snapshot)
-            framegen_active = _flag_enabled(latency_snapshot.get("framegen_active"))
-            latency_p95_ms = latency_snapshot.get("latency_p95_ms")
-            if latency_p95_ms is not None:
-                try:
-                    latency_ms = str(int(round(float(latency_p95_ms))))
-                except (TypeError, ValueError):
-                    latency_ms = ""
             # Present->scanout tail kept separate from latency_ms; the overlay
             # sums the two into the displayed click-to-photon number.
-            display_latency_p95_ms = latency_snapshot.get("display_latency_p95_ms")
-            if display_latency_p95_ms is not None:
-                try:
-                    display_latency_ms = str(int(round(float(display_latency_p95_ms))))
-                except (TypeError, ValueError):
-                    display_latency_ms = ""
+            latency_ms, display_latency_ms = self._overlay_latency_values(
+                latency_snapshot,
+                now_ns=now_ns,
+            )
         return write_overlay_state(
             OverlayState(
                 gpu_index=int(self.gpu_index),
@@ -217,6 +221,7 @@ class OverlayStatePublisher:
                 uv_offset_mv=uv_offset_mv,
                 profile_tier=label,
                 present_fps=present_fps,
+                fps_source=fps_source,
                 framegen_fps=framegen_fps,
                 framegen_active=framegen_active,
                 latency_ms=latency_ms,
@@ -278,6 +283,158 @@ class OverlayStatePublisher:
         )
         return int(round(interval_s * 1_000_000_000))
 
+    def _overlay_fps_values(
+        self,
+        latency_snapshot: dict | None,
+        *,
+        now_ns: int,
+    ) -> tuple[str, str, str, bool]:
+        if not isinstance(latency_snapshot, dict):
+            return self._sticky_fps_values(now_ns)
+
+        fps_pid = _pid_from_latency_snapshot(latency_snapshot)
+        present_fps = _fps_text(latency_snapshot.get("present_fps"))
+        fps_source = str(latency_snapshot.get("fps_source") or "").strip()
+        framegen_fps = _framegen_fps_from_snapshot(latency_snapshot)
+        framegen_active = _flag_enabled(latency_snapshot.get("framegen_active"))
+
+        if present_fps:
+            self._remember_fps_values(
+                present_fps=present_fps,
+                fps_source=fps_source,
+                framegen_fps=framegen_fps,
+                framegen_active=framegen_active,
+                fps_pid=fps_pid,
+                now_ns=now_ns,
+            )
+            return present_fps, fps_source, framegen_fps, framegen_active
+
+        return self._sticky_fps_values(now_ns, fps_pid=fps_pid)
+
+    def _remember_fps_values(
+        self,
+        *,
+        present_fps: str,
+        fps_source: str,
+        framegen_fps: str,
+        framegen_active: bool,
+        fps_pid: object | None,
+        now_ns: int,
+    ) -> None:
+        self._last_present_fps = present_fps
+        self._last_fps_source = fps_source
+        self._last_framegen_fps = framegen_fps
+        self._last_framegen_active = bool(framegen_active)
+        self._last_fps_pid = fps_pid
+        self._last_fps_ns = int(now_ns)
+
+    def _sticky_fps_values(
+        self,
+        now_ns: int,
+        *,
+        fps_pid: object | None = None,
+    ) -> tuple[str, str, str, bool]:
+        if not self._last_present_fps:
+            return "", "", "", False
+        if not self._fps_matches_active_pid(fps_pid):
+            self._clear_fps()
+            return "", "", "", False
+        if not self._fps_still_fresh(now_ns):
+            self._clear_fps()
+            return "", "", "", False
+        return (
+            self._last_present_fps or "",
+            self._last_fps_source or "",
+            self._last_framegen_fps or "",
+            bool(self._last_framegen_active),
+        )
+
+    def _fps_matches_active_pid(self, fps_pid: object | None) -> bool:
+        if self._last_fps_pid in (None, "") or fps_pid in (None, ""):
+            return True
+        return str(self._last_fps_pid) == str(fps_pid)
+
+    def _fps_still_fresh(self, now_ns: int) -> bool:
+        if self._last_fps_ns is None:
+            return False
+        return int(now_ns) - int(self._last_fps_ns) <= self._fps_hold_ns()
+
+    def _fps_hold_ns(self) -> int:
+        try:
+            interval_s = float(self.update_interval_s)
+        except (TypeError, ValueError):
+            interval_s = float(DEFAULT_OVERLAY_UPDATE_INTERVAL_S)
+        interval_s = max(
+            float(MIN_OVERLAY_UPDATE_INTERVAL_S),
+            min(float(MAX_OVERLAY_UPDATE_INTERVAL_S), interval_s),
+        )
+        hold_s = max(3.0, min(10.0, interval_s * 3.0))
+        return int(round(hold_s * 1_000_000_000))
+
+    def _clear_fps(self) -> None:
+        self._last_present_fps = None
+        self._last_fps_source = None
+        self._last_framegen_fps = None
+        self._last_framegen_active = False
+        self._last_fps_pid = None
+        self._last_fps_ns = None
+
+    def _overlay_latency_values(
+        self,
+        latency_snapshot: dict,
+        *,
+        now_ns: int,
+    ) -> tuple[str, str]:
+        latency_pid = _pid_from_latency_snapshot(latency_snapshot)
+        latency_ms = _rounded_text(latency_snapshot.get("latency_p95_ms"))
+        display_latency_ms = _rounded_text(
+            latency_snapshot.get("display_latency_p95_ms")
+        )
+        if latency_ms:
+            self._last_latency_ms = latency_ms
+            self._last_display_latency_ms = display_latency_ms
+            self._last_latency_pid = latency_pid
+            self._last_latency_ns = int(now_ns)
+            return latency_ms, display_latency_ms
+
+        if self._latency_matches_active_pid(latency_pid) and self._latency_still_fresh(
+            now_ns
+        ):
+            return self._last_latency_ms or "", self._last_display_latency_ms or ""
+
+        self._clear_latency()
+        return "", ""
+
+    def _latency_matches_active_pid(self, latency_pid: object | None) -> bool:
+        if not self._last_latency_ms:
+            return False
+        if self._last_latency_pid in (None, "") or latency_pid in (None, ""):
+            return False
+        return str(self._last_latency_pid) == str(latency_pid)
+
+    def _clear_latency(self) -> None:
+        self._last_latency_ms = None
+        self._last_display_latency_ms = None
+        self._last_latency_pid = None
+        self._last_latency_ns = None
+
+    def _latency_still_fresh(self, now_ns: int) -> bool:
+        if self._last_latency_ns is None:
+            return False
+        return int(now_ns) - int(self._last_latency_ns) <= self._latency_hold_ns()
+
+    def _latency_hold_ns(self) -> int:
+        try:
+            interval_s = float(self.update_interval_s)
+        except (TypeError, ValueError):
+            interval_s = float(DEFAULT_OVERLAY_UPDATE_INTERVAL_S)
+        interval_s = max(
+            float(MIN_OVERLAY_UPDATE_INTERVAL_S),
+            min(float(MAX_OVERLAY_UPDATE_INTERVAL_S), interval_s),
+        )
+        hold_s = max(3.0, min(10.0, interval_s * 3.0))
+        return int(round(hold_s * 1_000_000_000))
+
 
 def _framegen_fps_from_snapshot(snapshot: dict) -> str:
     stats = snapshot.get("raw_present_fps_stats")
@@ -295,6 +452,13 @@ def _framegen_fps_from_snapshot(snapshot: dict) -> str:
         return ""
 
 
+def _fps_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() == "n/a":
+        return ""
+    return text
+
+
 def _int_or_none(value: object) -> int | None:
     if value is None:
         return None
@@ -302,6 +466,11 @@ def _int_or_none(value: object) -> int | None:
         return int(round(float(value)))
     except (TypeError, ValueError):
         return None
+
+
+def _rounded_text(value: object) -> str:
+    rounded = _int_or_none(value)
+    return "" if rounded is None else str(rounded)
 
 
 def _pid_from_latency_snapshot(snapshot: dict | None) -> object | None:

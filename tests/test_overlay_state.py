@@ -31,6 +31,7 @@ def test_overlay_state_round_trips_key_value_file(tmp_path) -> None:
             uv_offset_mv=-75,
             profile_tier="Balanced",
             present_fps="58",
+            fps_source="base-frame-marker",
             framegen_fps="116",
             framegen_active=True,
             profile_tier_key="balanced",
@@ -54,6 +55,7 @@ def test_overlay_state_round_trips_key_value_file(tmp_path) -> None:
     assert values["temperature_c"] == "67"
     assert values["uv_offset_mv"] == "-75"
     assert values["present_fps"] == "58"
+    assert values["fps_source"] == "base-frame-marker"
     assert values["framegen_fps"] == "116"
     assert values["framegen_active"] == "1"
     assert values["profile_tier"] == "Balanced"
@@ -115,6 +117,7 @@ def test_overlay_state_publisher_passes_latency_p95_ms(tmp_path, monkeypatch) ->
     written = publisher.publish(
         latency_snapshot={
             "present_fps": "50",
+            "fps_source": "present-pacing-deinterlaced",
             "raw_present_fps_stats": {"avg": "100"},
             "framegen_active": True,
             "latency_p95_ms": 34.4,
@@ -124,11 +127,187 @@ def test_overlay_state_publisher_passes_latency_p95_ms(tmp_path, monkeypatch) ->
 
     values = read_overlay_state(written)
     assert values["present_fps"] == "50"
+    assert values["fps_source"] == "present-pacing-deinterlaced"
     assert values["framegen_fps"] == "100"
     assert values["framegen_active"] == "1"
     assert values["latency_ms"] == "34"
     assert values["display_latency_ms"] == "4"
     assert values["power_w"] == "220"
+
+
+def test_overlay_state_publisher_keeps_last_latency_briefly_then_clears(
+    tmp_path,
+) -> None:
+    import runtime.gpu_control.overlay_state_publisher as overlay_state_publisher
+
+    class _NvmlSession:
+        nvml = None
+        device = None
+
+        def fan_count(self):
+            return 0
+
+        def temperature_c(self):
+            return 60
+
+    times = iter(
+        [
+            1_000_000_000,
+            5_000_000_000,
+            120_000_000_001,
+        ]
+    )
+    publisher = overlay_state_publisher.OverlayStatePublisher(
+        gpu_index=0,
+        nvml_session=_NvmlSession(),
+        voltage_reader=None,
+        profile_tier="Balanced",
+        update_interval_s=2,
+        path=tmp_path / "overlay-state.txt",
+        time_ns=lambda: next(times),
+    )
+
+    first = read_overlay_state(
+        publisher.publish(
+            latency_snapshot={
+                "present_fps": "80",
+                "samples": [{"pid": 1234}],
+                "latency_p95_ms": 34.4,
+                "display_latency_p95_ms": 3.6,
+            }
+        )
+    )
+    second = read_overlay_state(
+        publisher.publish(
+            latency_snapshot={
+                "present_fps": "81",
+                "samples": [{"pid": 1234}],
+                "latency_p95_ms": None,
+                "best_quality": "reflex-marker-presence",
+            }
+        )
+    )
+    third = read_overlay_state(
+        publisher.publish(
+            latency_snapshot={
+                "present_fps": "82",
+                "samples": [{"pid": 1234}],
+                "latency_p95_ms": None,
+                "best_quality": "base-frame-marker",
+            }
+        )
+    )
+
+    assert first["latency_ms"] == "34"
+    assert first["display_latency_ms"] == "4"
+    assert second["latency_ms"] == "34"
+    assert second["display_latency_ms"] == "4"
+    assert third["latency_ms"] == ""
+    assert third["display_latency_ms"] == ""
+
+
+def test_overlay_state_publisher_keeps_framegen_fps_through_sample_gap(
+    tmp_path,
+) -> None:
+    import runtime.gpu_control.overlay_state_publisher as overlay_state_publisher
+
+    class _NvmlSession:
+        nvml = None
+        device = None
+
+        def fan_count(self):
+            return 0
+
+        def temperature_c(self):
+            return 60
+
+    times = iter([1_000_000_000, 2_000_000_000, 120_000_000_001])
+    publisher = overlay_state_publisher.OverlayStatePublisher(
+        gpu_index=0,
+        nvml_session=_NvmlSession(),
+        voltage_reader=None,
+        profile_tier="Balanced",
+        update_interval_s=2,
+        path=tmp_path / "overlay-state.txt",
+        time_ns=lambda: next(times),
+    )
+
+    first = read_overlay_state(
+        publisher.publish(
+            latency_snapshot={
+                "present_fps": "55",
+                "fps_source": "base-frame-marker",
+                "raw_present_fps_stats": {"avg": "110"},
+                "framegen_active": True,
+                "samples": [{"pid": 1234}],
+            }
+        )
+    )
+    second = read_overlay_state(publisher.publish(latency_snapshot=None))
+    third = read_overlay_state(publisher.publish(latency_snapshot=None))
+
+    assert first["present_fps"] == "55"
+    assert first["framegen_fps"] == "110"
+    assert first["framegen_active"] == "1"
+    assert second["present_fps"] == "55"
+    assert second["framegen_fps"] == "110"
+    assert second["framegen_active"] == "1"
+    assert third["present_fps"] == ""
+    assert third["framegen_fps"] == ""
+    assert third["framegen_active"] == "0"
+
+
+def test_overlay_state_publisher_clears_latency_when_pid_changes(
+    tmp_path,
+) -> None:
+    import runtime.gpu_control.overlay_state_publisher as overlay_state_publisher
+
+    class _NvmlSession:
+        nvml = None
+        device = None
+
+        def fan_count(self):
+            return 0
+
+        def temperature_c(self):
+            return 60
+
+    times = iter([1_000_000_000, 2_000_000_000])
+    publisher = overlay_state_publisher.OverlayStatePublisher(
+        gpu_index=0,
+        nvml_session=_NvmlSession(),
+        voltage_reader=None,
+        profile_tier="Balanced",
+        update_interval_s=2,
+        path=tmp_path / "overlay-state.txt",
+        time_ns=lambda: next(times),
+    )
+
+    first = read_overlay_state(
+        publisher.publish(
+            latency_snapshot={
+                "present_fps": "80",
+                "samples": [{"pid": 1234}],
+                "latency_p95_ms": 34.4,
+                "display_latency_p95_ms": 3.6,
+            }
+        )
+    )
+    second = read_overlay_state(
+        publisher.publish(
+            latency_snapshot={
+                "present_fps": "81",
+                "samples": [{"pid": 5678}],
+                "latency_p95_ms": None,
+                "best_quality": "reflex-marker-presence",
+            }
+        )
+    )
+
+    assert first["latency_ms"] == "34"
+    assert first["display_latency_ms"] == "4"
+    assert second["latency_ms"] == ""
+    assert second["display_latency_ms"] == ""
 
 
 def test_overlay_state_publisher_writes_fan_temperature_and_uv_offset(

@@ -19,7 +19,7 @@ def test_overlay_text_formats_compact_line_with_explicit_fg_fps() -> None:
                 "profile_tier": "Balanced",
             }
         )
-        == "50 FPS 100 FG 2500 MHz 850 mV 220 W BAL"
+        == "50 FPS 100 FG LAT 34 ms 2500 MHz 850 mV 220 W BAL"
     )
 
 
@@ -82,6 +82,12 @@ def test_overlay_text_latency_falls_back_to_render_without_display_tail() -> Non
     )
 
 
+def test_overlay_text_omits_latency_placeholder_when_signal_is_incomplete() -> None:
+    config = OverlayConfig(enabled=True, enabled_item_ids=("latency_ms",))
+
+    assert format_overlay_text({"latency_ms": "--"}, config=config) == "PB waiting"
+
+
 def test_overlay_text_normalizes_latency_into_fps_block() -> None:
     config = OverlayConfig(
         enabled=True,
@@ -124,7 +130,7 @@ def test_overlay_text_does_not_guess_static_framegen_from_ratio() -> None:
                 "profile_tier": "Balanced",
             }
         )
-        == "50 FPS 2500 MHz 850 mV 220 W BAL"
+        == "50 FPS LAT 34 ms 2500 MHz 850 mV 220 W BAL"
     )
 
 
@@ -141,7 +147,7 @@ def test_overlay_text_keeps_base_fps_when_output_is_not_framegen() -> None:
                 "profile_tier": "Balanced",
             }
         )
-        == "58 FPS 2500 MHz 850 mV 220 W BAL"
+        == "58 FPS LAT 18 ms 2500 MHz 850 mV 220 W BAL"
     )
 
 
@@ -158,7 +164,7 @@ def test_overlay_text_keeps_base_fps_when_dynamic_fg_is_unmarked() -> None:
                 "profile_tier": "Efficiency",
             }
         )
-        == "39 FPS 2550 MHz 850 mV 194 W EFF"
+        == "39 FPS LAT 21 ms 2550 MHz 850 mV 194 W EFF"
     )
 
 
@@ -176,7 +182,7 @@ def test_overlay_text_shows_dynamic_fg_when_marked_active() -> None:
                 "profile_tier": "Balanced",
             }
         )
-        == "51 FPS 120 FG 2500 MHz 850 mV 220 W BAL"
+        == "51 FPS 120 FG LAT 32 ms 2500 MHz 850 mV 220 W BAL"
     )
 
 
@@ -193,7 +199,7 @@ def test_overlay_text_falls_back_to_base_when_output_missing() -> None:
                 "profile_tier": "Balanced",
             }
         )
-        == "58 FPS 2500 MHz 850 mV 220 W BAL"
+        == "58 FPS LAT 18 ms 2500 MHz 850 mV 220 W BAL"
     )
 
 
@@ -209,7 +215,7 @@ def test_overlay_text_does_not_substitute_output_fps_when_base_is_missing() -> N
                 "profile_tier": "Balanced",
             }
         )
-        == "n/a FPS 2500 MHz 850 mV 220 W BAL"
+        == "n/a FPS LAT 18 ms 2500 MHz 850 mV 220 W BAL"
     )
 
 

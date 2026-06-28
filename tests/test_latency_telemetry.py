@@ -31,6 +31,7 @@ def test_latency_telemetry_meter_reports_present_pacing() -> None:
     assert summary == (
         "event=latency-meter pid=123 quality=present-frametime samples=4 "
         "present-frametime-p95=50.00ms present-fps=20 "
+        "fps-source=present-pacing "
         "raw-present-fps-avg=40 raw-present-fps-median=60 "
         "raw-present-fps-5pct-low=20 raw-present-fps-1pct-low=20"
     )
@@ -166,6 +167,7 @@ def test_latency_telemetry_meter_deinterlaces_output_cadence_from_previous_base(
     base_summary = meter.summary(now=103.0)
     assert base_summary is not None
     assert "present-fps=40" in base_summary
+    assert "fps-source=present-pacing" in base_summary
 
     for index in range(360):
         clock["now"] = 104.0 + index / 120.0
@@ -185,6 +187,7 @@ def test_latency_telemetry_meter_deinterlaces_output_cadence_from_previous_base(
     assert output_summary is not None
     assert "present-frametime-p95=8.33ms" in output_summary
     assert "present-fps=40" in output_summary
+    assert "fps-source=present-pacing-deinterlaced" in output_summary
     assert "raw-present-fps-avg=120" in output_summary
 
 
@@ -233,6 +236,7 @@ def test_latency_telemetry_meter_no_deinterlace_or_framegen_without_marker_strea
 
     assert snapshot is not None
     assert snapshot["present_fps"] == "120"
+    assert snapshot["fps_source"] == "present-pacing"
     assert snapshot["raw_present_fps_stats"]["avg"] == "120"
     assert snapshot["framegen_active"] is False
 
@@ -274,6 +278,7 @@ def test_latency_telemetry_meter_prefers_base_frame_markers_over_output_presents
     assert summary is not None
     assert "quality=base-frame-marker" in summary
     assert "present-fps=40" in summary
+    assert "fps-source=base-frame-marker" in summary
     assert "raw-present-fps-avg=120" in summary
 
 
@@ -315,6 +320,7 @@ def test_latency_telemetry_snapshot_exposes_base_present_cadence() -> None:
     assert snapshot is not None
     assert snapshot["present_frametime_p95_ms"] == 8.333
     assert snapshot["present_fps"] == "40"
+    assert snapshot["fps_source"] == "base-frame-marker"
     assert snapshot["base_present_fps"] == 40
     assert snapshot["base_present_frametime_p95_ms"] == 25.0
     assert snapshot["raw_present_fps_stats"]["avg"] == "120"
@@ -480,6 +486,7 @@ def test_latency_telemetry_meter_prefers_oob_marker_source_over_fast_marker_sour
     assert summary is not None
     assert "quality=base-frame-marker" in summary
     assert "present-fps=40" in summary
+    assert "fps-source=base-frame-marker" in summary
     assert "raw-present-fps-avg=120" in summary
 
 
@@ -509,6 +516,7 @@ def test_latency_telemetry_meter_falls_back_to_present_start_marker_source() -> 
     assert summary is not None
     assert "quality=base-frame-marker" in summary
     assert "present-fps=40" in summary
+    assert "fps-source=base-frame-marker" in summary
 
 
 def test_latency_telemetry_meter_rejects_marker_source_faster_than_output() -> None:
@@ -550,6 +558,7 @@ def test_latency_telemetry_meter_rejects_marker_source_faster_than_output() -> N
     assert "quality=base-frame-marker" in summary
     assert "present-frametime-p95=10.00ms" in summary
     assert "present-fps=n/a" in summary
+    assert "fps-source=none" in summary
     assert "raw-present-fps-avg=100" in summary
 
 

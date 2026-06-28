@@ -423,6 +423,7 @@ class LatencyTelemetryMeter:
         present_frametime_p95 = snapshot["present_frametime_p95_us"]
         latency_proxy_p95 = snapshot["latency_proxy_p95_us"]
         present_fps = snapshot["present_fps"]
+        fps_source = snapshot.get("fps_source") or "unknown"
         present_fps_stats = snapshot["raw_present_fps_stats"]
         has_rich_latency_sample = any(
             str(sample.get("measurement") or "")
@@ -431,6 +432,7 @@ class LatencyTelemetryMeter:
         )
         fps_tail = (
             f"present-fps={present_fps} "
+            f"fps-source={fps_source} "
             f"raw-present-fps-avg={present_fps_stats['avg']} "
             f"raw-present-fps-median={present_fps_stats['median']} "
             f"raw-present-fps-5pct-low={present_fps_stats['5pct_low']} "
@@ -519,6 +521,7 @@ class LatencyTelemetryMeter:
             present_fps_value = _fps_from_frametime(marker_frametime_p95)
             self._last_base_present_fps = present_fps_value
             cadence_is_independent = True
+            fps_source = "base-frame-marker"
         else:
             present_fps_value, cadence_is_independent = (
                 self._estimate_base_present_fps(
@@ -527,6 +530,13 @@ class LatencyTelemetryMeter:
                     marker_stream=_has_marker_stream(samples),
                 )
             )
+            fps_source = (
+                "present-pacing-deinterlaced"
+                if cadence_is_independent
+                else "present-pacing"
+            )
+            if present_fps_value is None:
+                fps_source = "none"
             base_present_frametime_p95 = (
                 int(round(1_000_000 / present_fps_value))
                 if present_fps_value
@@ -609,6 +619,7 @@ class LatencyTelemetryMeter:
             "raw_present_fps_avg": raw_present_avg_fps,
             "raw_present_fps_median": _format_fps(present_median),
             "framegen_active": framegen_active,
+            "fps_source": fps_source,
         }
 
     def _stale_driver_report_age_s(self, latest: dict, *, now: float) -> float:

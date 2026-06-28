@@ -15,9 +15,6 @@ EXCLUDED_INSTALLED_APP_NAME_PREFIXES = (
     "Steamworks Common Redistributables",
 )
 
-# Present in the launch line, this tells the PENGUIN_BURNER wrapper to enable
-# stock Proton dxvk-nvapi trace logging. PB_INGAME_LATENCY is the short alias
-# the wrapper accepts alongside PENGUIN_BURNER_INGAME_LATENCY.
 INGAME_LATENCY_TOKENS = ("PB_INGAME_LATENCY=1",)
 OVERLAY_TOKENS = ("PENGUIN_BURNER_OVERLAY=1", "PB_OVERLAY=1")
 
@@ -48,10 +45,8 @@ def build_game_launch_options(
     ingame_latency: bool = False,
     overlay: bool = False,
 ) -> str:
-    # The wrapper expands to the full Vulkan/NVAPI env. The optional
-    # PENGUIN_BURNER_INGAME_LATENCY toggle tells the wrapper to also enable
-    # dxvk-nvapi trace logging (the heavy part) so the marker bridge can derive
-    # in-game latency; without it the wrapper stays trace-free.
+    # The wrapper expands to the native Vulkan layer. The optional in-game
+    # latency token enables the dxvk-nvapi trace fallback for explicit tests.
     tokens: list[str] = []
     if overlay:
         tokens.extend(OVERLAY_TOKENS)

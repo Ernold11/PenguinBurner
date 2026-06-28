@@ -29,6 +29,7 @@ class OverlayState:
     temperature_c: int | None = None
     uv_offset_mv: int | None = None
     present_fps: str = ""
+    fps_source: str = ""
     framegen_fps: str = ""
     framegen_active: bool = False
     latency_ms: str = ""
@@ -147,6 +148,7 @@ def write_overlay_state(
         "temperature_c": _value_text(state.temperature_c),
         "uv_offset_mv": _value_text(state.uv_offset_mv),
         "present_fps": str(state.present_fps or ""),
+        "fps_source": str(state.fps_source or ""),
         "framegen_fps": str(state.framegen_fps or ""),
         "framegen_active": "1" if bool(state.framegen_active) else "0",
         "latency_ms": str(state.latency_ms or ""),

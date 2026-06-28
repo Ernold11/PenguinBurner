@@ -11,7 +11,7 @@ from runtime.support.adaptive_target_fps import (
 from cli.runtime_config_file import persist_adaptive_target_fps_to_runtime_config
 from overlay.config import ADVANCED_OVERLAY_ITEM_IDS
 from overlay.config import BASIC_OVERLAY_ITEM_IDS
-from overlay.config import STEAM_LAUNCH_OPTION_WITH_LATENCY
+from overlay.config import STEAM_LAUNCH_OPTION_OVERLAY
 from overlay.config import steam_launch_option
 from overlay.config import MAX_OVERLAY_UPDATE_INTERVAL_S
 from overlay.config import MIN_OVERLAY_UPDATE_INTERVAL_S
@@ -78,9 +78,9 @@ ITEM_TOOLTIPS = {
         "when supported (it grows with GPU/present-queue load). It still cannot "
         "see mouse/USB latency before input sampling or final panel pixel "
         "response, so it is close to but not exactly click-to-photon. This is the "
-        "single latency opt-in: checking it makes the copyable Steam launch "
-        "string add PB_INGAME_LATENCY=1, which enables the whole latency stack on "
-        "the next launch and may add trace overhead."
+        "default latency field. The copyable Steam launch string uses the "
+        "native Vulkan marker path; dxvk-nvapi trace fallback is only for "
+        "explicit testing."
     ),
     "uv_offset_mv": (
         "Current voltage delta from the stock VF point for the nearest active "
@@ -217,12 +217,12 @@ class OverlayConfigPanel:
         self.launch_line.setReadOnly(True)
         self.launch_line.setObjectName("overlaySteamLaunchLine")
         self.launch_line.setToolTip(
-            "Steam launch options. Enable the Latency item to add the single "
-            "PB_INGAME_LATENCY opt-in (render + display); off by default."
+            "Steam launch options. Latency uses the native Vulkan marker path "
+            "by default; PB_INGAME_LATENCY=1 is only an explicit trace test."
         )
-        # Size to the longer (with-latency) string so the field never reflows.
+        # Size to the default launch string so the field never reflows.
         launch_width = self.launch_line.fontMetrics().horizontalAdvance(
-            STEAM_LAUNCH_OPTION_WITH_LATENCY
+            STEAM_LAUNCH_OPTION_OVERLAY
         )
         self.launch_line.setFixedWidth(launch_width + 34)
         self.copy_button = QtWidgets.QPushButton("Copy")
@@ -413,10 +413,9 @@ class OverlayConfigPanel:
         self.preview_label.setEnabled(bool(self.config.enabled))
 
     def _launch_option_text(self) -> str:
-        # Latency is opt-in: the token is added only when the Latency item is on.
-        return steam_launch_option(
-            latency_enabled="latency_ms" in self.config.enabled_item_ids
-        )
+        # The copied Steam line stays native-only. Overlay item visibility only
+        # changes what is rendered, not whether the trace fallback runs.
+        return steam_launch_option()
 
     def _copy_launch_option(self) -> None:
         clipboard = self.QtWidgets.QApplication.clipboard()

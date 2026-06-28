@@ -38,11 +38,11 @@ Toggle each item independently. They are grouped into **Basic** and **Advanced**
 | --- | --- |
 | Base FPS | GPU % |
 | FG FPS (frame-generation) | CPU % |
-| Clock MHz | CPU-T (CPU temperature) |
-| Voltage mV | Fan % |
-| Power W | Temp C |
-| Profile (tier: EFF/BAL/PERF) | Latency ms |
-|  | UV offset mV |
+| Latency ms | CPU-T (peak thread) |
+| Clock MHz | Fan % |
+| Voltage mV | Temp C |
+| Power W | UV offset mV |
+| Profile (tier: EFF/BAL/PERF) |  |
 
 ## Pre-frame-generation FPS
 
@@ -57,11 +57,11 @@ frames versus rendered ones.
 
 ## PC latency meter
 
-The **LAT** field shows a full click-to-photon latency in milliseconds: the
-render tail plus the present-to-scanout display tail. Both are on by default, so
-you get the complete meter wherever the stack supports it. Where the display tail
-isn't available, it falls back to render latency alone.
+The **LAT** field shows PC latency in milliseconds from the native Vulkan marker
+path: the render tail plus the present-to-scanout display tail when that tail is
+supported. Where the display tail isn't available, it shows render latency
+alone.
 
 - Set `PENGUIN_BURNER_LATENCY_DISPLAY=0` to show render latency only.
-- Add `PB_INGAME_LATENCY=1` before `PENGUIN_BURNER` to opt into stock Proton
-  in-game latency tracing.
+- Set `PB_INGAME_LATENCY=1` before `PENGUIN_BURNER` only when explicitly testing
+  the dxvk-nvapi trace fallback.

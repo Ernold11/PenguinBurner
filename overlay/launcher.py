@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import sys
 
-from .config import OVERLAY_CONFIG_ENV, default_overlay_config_path, load_overlay_config
+from .config import OVERLAY_CONFIG_ENV, default_overlay_config_path
 from .native_layer import LATENCY_LAYER_NAME
 from .native_layer import native_layer_dirs
 from .state import (
@@ -20,12 +20,10 @@ from .state import (
 MASTER_ENABLE_ENV = "PENGUIN_BURNER"
 LATENCY_ENABLE_ENV = "PENGUIN_BURNER_LATENCY_LAYER"
 LATENCY_SOCKET_ENV = "PENGUIN_BURNER_LATENCY_SOCKET"
-# User-facing toggle for in-game (under frame generation) latency. When unset,
-# the wrapper does NOT enable dxvk-nvapi trace logging, so a plain launch keeps
-# the overlay's present-FPS/clocks/voltage with zero trace overhead. Add
-# PB_INGAME_LATENCY=1 to a launch line to turn on trace and the marker feed.
+# User-facing toggle for the stock dxvk-nvapi trace fallback. Native Vulkan
+# marker latency stays enabled by the wrapper; this toggle is only for the trace
+# path.
 INGAME_LATENCY_ENV = "PENGUIN_BURNER_INGAME_LATENCY"
-# Short alias for the toggle, used in the Steam launch line.
 INGAME_LATENCY_ENV_ALIAS = "PB_INGAME_LATENCY"
 # Display (present->scanout) latency is folded into the single in-game latency
 # opt-in: when latency is on, the wrapper also enables the present-wait tail and
@@ -38,9 +36,13 @@ VK_LAYER_PATH_ENV = "VK_ADD_IMPLICIT_LAYER_PATH"
 VK_LAYER_ENABLE_ENV = "VK_LOADER_LAYERS_ENABLE"
 
 _TRUTHY = {"1", "true", "yes", "on"}
+_FALSEY = {"0", "false", "no", "off"}
 
 
 def ingame_latency_enabled(env: dict[str, str]) -> bool:
+    for key in (INGAME_LATENCY_ENV, INGAME_LATENCY_ENV_ALIAS):
+        if str(env.get(key) or "").strip().lower() in _FALSEY:
+            return False
     for key in (INGAME_LATENCY_ENV, INGAME_LATENCY_ENV_ALIAS):
         if str(env.get(key) or "").strip().lower() in _TRUTHY:
             return True
@@ -105,27 +107,21 @@ def _route_trace_to_fifo(env: dict[str, str]) -> None:
 def configure_penguin_burner_environment(env: dict[str, str]) -> None:
     overlay_config_path = default_overlay_config_path(env)
     env.setdefault(OVERLAY_CONFIG_ENV, str(overlay_config_path))
-    overlay_config = load_overlay_config(overlay_config_path)
     env.setdefault(MASTER_ENABLE_ENV, "1")
     env.setdefault(LATENCY_ENABLE_ENV, "1")
     _apply_overlay_enable_alias(env)
     env.setdefault(OVERLAY_ENABLE_ENV, "auto")
-    if overlay_config.latency_enabled:
-        env.setdefault(INGAME_LATENCY_ENV, "1")
     env.setdefault(DXVK_NVAPI_ENABLE_ENV, "1")
     env.setdefault("PROTON_ENABLE_NVAPI", "1")
     env.setdefault("PROTON_HIDE_NVIDIA_GPU", "0")
-    # Trace logging is the heavy, opt-in part: it makes stock dxvk-nvapi emit a
-    # line per Reflex marker so the bridge can derive in-game (under FG) latency.
-    # Only enable it when the user opted in, so a default launch pays no trace
-    # overhead. The trace goes to stderr (routed to an in-memory FIFO in main),
-    # NOT to an on-disk Proton log, so PROTON_LOG stays unset.
+    # Trace logging makes stock dxvk-nvapi emit a line per Reflex marker. It is
+    # off by default; PB_INGAME_LATENCY=1 explicitly opts into this fallback for
+    # games where the native Vulkan marker path is not enough. The trace goes to
+    # stderr routed to an in-memory FIFO, not to an on-disk Proton log.
     if ingame_latency_enabled(env):
         env.setdefault("DXVK_NVAPI_LOG_LEVEL", "trace")
         # Fold the present->scanout display tail into the same opt-in. Both are
-        # read-only/gated in the layer and inert where the stack doesn't support
-        # them, so enabling them with latency adds the display segment wherever
-        # it works (e.g. vkd3d titles via present-id injection).
+        # read-only/gated in the layer and inert where unsupported.
         env.setdefault(DISPLAY_LATENCY_ENV, "1")
         env.setdefault(INJECT_PRESENT_ID_ENV, "1")
     env.setdefault(LATENCY_SOCKET_ENV, str(_home_latency_socket_path(env)))

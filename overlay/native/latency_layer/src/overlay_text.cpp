@@ -139,6 +139,7 @@ OverlayTextConfig default_overlay_text_config(bool enabled = true) {
     return OverlayTextConfig{enabled, {
         "base_fps",
         "fg_fps",
+        "latency_ms",
         "clock_mhz",
         "voltage_mv",
         "power_w",
@@ -416,7 +417,7 @@ std::string overlay_combined_latency_value(
     char* render_end = nullptr;
     const long render = std::strtol(render_text.c_str(), &render_end, 10);
     if (errno != 0 || render_end == render_text.c_str()) {
-        return render_text;  // non-numeric; show as-is
+        return "";
     }
     long total = render;
     if (!overlay_value_missing(display_ms)) {

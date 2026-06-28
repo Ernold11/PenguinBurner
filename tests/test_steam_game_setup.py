@@ -31,8 +31,8 @@ def test_game_preset_defaults_to_app_id_name() -> None:
     assert build_game_launch_options(preset) == "PENGUIN_BURNER %command%"
 
 
-def test_build_launch_options_default_has_no_trace() -> None:
-    opts = build_game_launch_options(PRESET, ingame_latency=False)
+def test_build_launch_options_default_is_native_only() -> None:
+    opts = build_game_launch_options(PRESET)
     assert opts == "PENGUIN_BURNER %command%"
     assert "DXVK_NVAPI_LOG_LEVEL=trace" not in opts
     assert "PROTON_LOG=1" not in opts
@@ -49,11 +49,10 @@ def test_build_launch_options_ingame_latency_adds_toggle_before_wrapper() -> Non
 
 
 def test_build_launch_options_overlay_adds_short_toggle_before_wrapper() -> None:
-    opts = build_game_launch_options(PRESET, ingame_latency=True, overlay=True)
+    opts = build_game_launch_options(PRESET, overlay=True)
 
     assert opts == (
-        "PENGUIN_BURNER_OVERLAY=1 PB_OVERLAY=1 "
-        "PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%"
+        "PENGUIN_BURNER_OVERLAY=1 PB_OVERLAY=1 PENGUIN_BURNER %command%"
     )
 
 

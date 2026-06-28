@@ -1258,7 +1258,7 @@ def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
     assert "scale = 2.0" in config_path.read_text(encoding="utf-8")
 
 
-def test_overlay_panel_launch_box_latency_is_opt_in(tmp_path) -> None:
+def test_overlay_panel_launch_box_latency_is_default_on(tmp_path) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1281,22 +1281,22 @@ def test_overlay_panel_launch_box_latency_is_opt_in(tmp_path) -> None:
         runtime_config_path=tmp_path / "penguin_burner.toml",
     )
 
-    # The single latency opt-in is PB_INGAME_LATENCY (render + display).
-    assert STEAM_LAUNCH_OPTION_OVERLAY == "PB_OVERLAY=1 PENGUIN_BURNER %command%"
+    # Latency is default-on through the native layer; trace fallback is not.
     assert STEAM_LAUNCH_OPTION_WITH_LATENCY == (
-        "PB_OVERLAY=1 PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%"
+        "PB_OVERLAY=1 PENGUIN_BURNER %command%"
     )
+    assert STEAM_LAUNCH_OPTION_OVERLAY == STEAM_LAUNCH_OPTION_WITH_LATENCY
 
-    # Default config has latency off -> copy string omits the latency token.
-    assert "latency_ms" not in panel.config.enabled_item_ids
-    assert panel.launch_line.text() == STEAM_LAUNCH_OPTION_OVERLAY
+    # Default config has latency visible, but the copied line stays native-only.
+    assert "latency_ms" in panel.config.enabled_item_ids
+    assert panel.launch_line.text() == STEAM_LAUNCH_OPTION_WITH_LATENCY
     panel._copy_launch_option()
     assert (
-        QtWidgets.QApplication.clipboard().text() == STEAM_LAUNCH_OPTION_OVERLAY
+        QtWidgets.QApplication.clipboard().text() == STEAM_LAUNCH_OPTION_WITH_LATENCY
     )
 
-    # Enabling the Latency item adds the single PB_INGAME_LATENCY opt-in.
-    panel._set_item_enabled("latency_ms", True)
+    # Hiding the Latency item only changes rendering, not launch env fallback.
+    panel._set_item_enabled("latency_ms", False)
     assert panel.launch_line.text() == STEAM_LAUNCH_OPTION_WITH_LATENCY
     panel._copy_launch_option()
     assert (
