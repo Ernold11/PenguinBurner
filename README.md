@@ -40,6 +40,12 @@ and use, closing the feature gap with the Windows tools Linux users miss: the
 python -m pip install --user --upgrade penguin-burner
 ```
 
+Or install the self-hosted Flatpak:
+
+```bash
+flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo && flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner
+```
+
 Also packaged for [Fedora (COPR)](https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/),
 [Arch / CachyOS (AUR)](https://aur.archlinux.org/packages/penguin-burner), and
 [Ubuntu (PPA)](https://launchpad.net/~jpietek/+archive/ubuntu/penguin-burner) —

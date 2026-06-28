@@ -5,11 +5,13 @@ import importlib.metadata
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import socketserver
 import subprocess
 import struct
 import sys
+import threading
 from typing import Any
 
 
@@ -20,6 +22,21 @@ ALLOWED_UID_ENV = "PENGUIN_BURNER_DAEMON_ALLOWED_UID"
 
 _AUTOSTART_PROCESS: subprocess.Popen | None = None
 _AUTOSTART_ARGV: list[str] = []
+_ACTIVE_SCAN_PROCESS: subprocess.Popen | None = None
+_ACTIVE_SCAN_ARGV: list[str] = []
+_ACTIVE_SCAN_LOCK = threading.Lock()
+
+_AUTO_UV_OPTION_FLAGS = {
+    "gpu_index": "--gpu-index",
+    "auto_uv_mode": "--auto-uv-mode",
+    "auto_uv_min_voltage_mv": "--auto-uv-min-voltage-mv",
+    "auto_uv_max_clock_drop_pct": "--auto-uv-max-clock-drop-pct",
+    "auto_uv_memory_offset_mhz": "--auto-uv-memory-offset-mhz",
+    "auto_uv_power_limit_w": "--auto-uv-power-limit-w",
+    "auto_uv_tail_rise_bins": "--auto-uv-tail-rise-bins",
+    "auto_oc_target_voltage_mv": "--auto-oc-target-voltage-mv",
+    "auto_oc_target_clock_mhz": "--auto-oc-target-clock-mhz",
+}
 
 
 def application_version() -> str:
@@ -32,7 +49,16 @@ def application_version() -> str:
 def status_payload() -> dict[str, Any]:
     active_job = None
     state = "idle"
-    if _AUTOSTART_PROCESS is not None:
+    if _ACTIVE_SCAN_PROCESS is not None:
+        returncode = _ACTIVE_SCAN_PROCESS.poll()
+        active_job = {
+            "type": "auto_uv_scan",
+            "argv": list(_ACTIVE_SCAN_ARGV),
+            "pid": _ACTIVE_SCAN_PROCESS.pid,
+            "returncode": returncode,
+        }
+        state = "auto_uv_scan_running" if returncode is None else "auto_uv_scan_stopped"
+    elif _AUTOSTART_PROCESS is not None:
         returncode = _AUTOSTART_PROCESS.poll()
         active_job = {
             "type": "runtime_profile",
@@ -62,6 +88,8 @@ def handle_request(payload: object) -> dict[str, Any]:
     method = payload.get("method")
     if method == "status":
         return status_payload()
+    if method == "stop_auto_uv_scan":
+        return stop_auto_uv_scan()
     if not isinstance(method, str) or not method:
         raise ValueError("request method is required")
     raise ValueError(f"unknown daemon method: {method}")
@@ -81,13 +109,45 @@ class _DaemonRequestHandler(socketserver.StreamRequestHandler):
                 continue
             try:
                 request = json.loads(line)
+                if _is_start_auto_uv_scan_request(request):
+                    self._handle_start_auto_uv_scan(request)
+                    return
                 response = {"ok": True, "result": handle_request(request)}
+            except (BrokenPipeError, ConnectionResetError):
+                return
             except Exception as exc:
                 response = {"ok": False, "error": str(exc)}
+            try:
+                self.wfile.write(
+                    (json.dumps(response, separators=(",", ":")) + "\n").encode("utf-8")
+                )
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
+    def _handle_start_auto_uv_scan(self, request: dict[str, Any]) -> None:
+        unknown = sorted(set(request) - {"method", "options"})
+        if unknown:
+            self._write_stream_payload(
+                {
+                    "ok": False,
+                    "error": f"unknown request field: {', '.join(unknown)}",
+                }
+            )
+            return
+        for payload in stream_auto_uv_scan(request.get("options")):
+            if not self._write_stream_payload(payload):
+                return
+
+    def _write_stream_payload(self, payload: dict[str, Any]) -> bool:
+        try:
             self.wfile.write(
-                (json.dumps(response, separators=(",", ":")) + "\n").encode("utf-8")
+                (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
             )
             self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return False
+        return True
 
 
 class _UnixDaemonServer(socketserver.ThreadingUnixStreamServer):
@@ -113,6 +173,160 @@ def serve_daemon_api(socket_path: str | Path = DEFAULT_DAEMON_SOCKET) -> None:
             path.unlink()
         except FileNotFoundError:
             pass
+
+
+def stream_auto_uv_scan(options: object):
+    global _ACTIVE_SCAN_PROCESS, _ACTIVE_SCAN_ARGV
+    command = _auto_uv_scan_command(options)
+    with _ACTIVE_SCAN_LOCK:
+        if _scan_running():
+            yield {"ok": False, "error": "Auto-UV scan is already running"}
+            return
+        _stop_autostart_runtime_for_scan()
+        process = subprocess.Popen(
+            command,
+            cwd="/",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        _ACTIVE_SCAN_PROCESS = process
+        _ACTIVE_SCAN_ARGV = command[2:]
+    yield {"ok": True, "control": "started", "pid": process.pid}
+    exit_code = 1
+    completed = False
+    try:
+        assert process.stdout is not None
+        for line in process.stdout:
+            yield {"ok": True, "line": line}
+        exit_code = int(process.wait())
+        completed = True
+        yield {"ok": True, "control": "finished", "exit_code": exit_code}
+    finally:
+        if completed or process.poll() is not None:
+            _finish_auto_uv_scan(process)
+        else:
+            _start_detached_scan_monitor(process)
+
+
+def stop_auto_uv_scan() -> dict[str, Any]:
+    process = _ACTIVE_SCAN_PROCESS
+    if process is None or process.poll() is not None:
+        return {"stopped": False, "state": "idle"}
+    _write_auto_uv_stop_request()
+    try:
+        process.send_signal(signal.SIGINT)
+    except OSError:
+        pass
+    return {"stopped": True, "pid": process.pid}
+
+
+def _is_start_auto_uv_scan_request(request: object) -> bool:
+    return isinstance(request, dict) and request.get("method") == "start_auto_uv_scan"
+
+
+def _auto_uv_scan_command(options: object) -> list[str]:
+    if not isinstance(options, dict):
+        raise ValueError("start_auto_uv_scan options must be a JSON object")
+    unknown = sorted(set(options) - set(_AUTO_UV_OPTION_FLAGS))
+    if unknown:
+        raise ValueError(f"unknown Auto-UV option: {', '.join(unknown)}")
+    command = [
+        sys.executable,
+        _daemon_program_file(),
+        "--auto-uv-voltage-scan",
+        "--json-events",
+        "--auto-uv-require-final-choice",
+    ]
+    for key, flag in _AUTO_UV_OPTION_FLAGS.items():
+        value = options.get(key)
+        if value in (None, ""):
+            continue
+        if not isinstance(value, (str, int, float, bool)):
+            raise ValueError(f"Auto-UV option {key} must be scalar")
+        command.extend([flag, _command_value_text(value)])
+    return command
+
+
+def _daemon_program_file() -> str:
+    configured = os.environ.get(AUTOSTART_PROGRAM_FILE_ENV, "").strip()
+    if configured:
+        return str(Path(configured).resolve())
+    return str(Path(sys.argv[0]).resolve())
+
+
+def _command_value_text(value: object) -> str:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
+
+
+def _scan_running() -> bool:
+    return _ACTIVE_SCAN_PROCESS is not None and _ACTIVE_SCAN_PROCESS.poll() is None
+
+
+def _start_detached_scan_monitor(process: subprocess.Popen) -> None:
+    thread = threading.Thread(
+        target=_wait_for_detached_scan,
+        args=(process,),
+        daemon=True,
+        name="penguin-burner-auto-uv-scan-monitor",
+    )
+    thread.start()
+
+
+def _wait_for_detached_scan(process: subprocess.Popen) -> None:
+    try:
+        process.wait()
+    finally:
+        _finish_auto_uv_scan(process)
+
+
+def _finish_auto_uv_scan(process: subprocess.Popen) -> None:
+    global _ACTIVE_SCAN_PROCESS, _ACTIVE_SCAN_ARGV
+    restart_autostart = False
+    with _ACTIVE_SCAN_LOCK:
+        if _ACTIVE_SCAN_PROCESS is process:
+            _ACTIVE_SCAN_PROCESS = None
+            _ACTIVE_SCAN_ARGV = []
+            restart_autostart = True
+    if restart_autostart:
+        _start_autostart_runtime_if_configured()
+
+
+def _stop_autostart_runtime_for_scan() -> None:
+    global _AUTOSTART_PROCESS
+    process = _AUTOSTART_PROCESS
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
+    _AUTOSTART_PROCESS = None
+
+
+def _write_auto_uv_stop_request() -> None:
+    try:
+        from auto_uv.persistence.auto_uv_persisted_json_files import (
+            auto_uv_stop_request_path,
+        )
+
+        path = auto_uv_stop_request_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "stop requested by PenguinBurner daemon client\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 def _start_autostart_runtime_if_configured() -> None:

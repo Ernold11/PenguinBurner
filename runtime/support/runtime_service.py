@@ -287,6 +287,13 @@ def build_daemon_api_service_unit(
         )
     allowed_uid = daemon_allowed_uid_assignment()
     allowed_uid_env = f"Environment={allowed_uid}\n" if allowed_uid else ""
+    runtime_env = "".join(
+        f"Environment={assignment}\n"
+        for assignment in [
+            *desktop_runtime_env_assignments(),
+            *adaptive_policy_env_assignments(),
+        ]
+    )
     return (
         "[Unit]\n"
         "Description=PenguinBurner root hardware daemon\n"
@@ -295,6 +302,7 @@ def build_daemon_api_service_unit(
         "[Service]\n"
         "Type=simple\n"
         "WorkingDirectory=/\n"
+        f"{runtime_env}"
         f"{allowed_uid_env}"
         f"{autostart_env}"
         f"ExecStart={exec_start}\n"

@@ -165,6 +165,8 @@ def test_main_run_launches_app(monkeypatch) -> None:
     fake_qtwidgets = SimpleNamespace(QApplication=lambda argv: app)
     fake_qtgui = SimpleNamespace()
     monkeypatch.setattr(ui_main, "import_qt", lambda: (object(), fake_qtgui, fake_qtwidgets, None))
+    monkeypatch.setattr(ui_main, "prepare_desktop_scale_env", lambda: None)
+    monkeypatch.setattr(ui_main, "apply_desktop_font_settings", lambda app, qtgui: None)
     monkeypatch.setattr(ui_main, "apply_dark_palette", lambda app, qtgui: None)
     monkeypatch.setattr(ui_main, "application_icon", lambda qtgui: SimpleNamespace(isNull=lambda: True))
 

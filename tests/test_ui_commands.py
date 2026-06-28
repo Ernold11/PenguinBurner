@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -70,7 +71,12 @@ from ui.components.curve_plot import (
 from ui.components.table_sizing import set_header_fit_column_widths
 
 
-def test_ui_scan_command_passes_desktop_user_through_pkexec(monkeypatch) -> None:
+def _scan_daemon_options(command: list[str]) -> dict:
+    assert command[1:4] == ["-m", "runtime.daemon_client", "start-auto-uv"]
+    return json.loads(command[4])
+
+
+def test_ui_scan_command_uses_daemon_client_without_pkexec(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(commands.os, "getuid", lambda: 1000)
     monkeypatch.setattr(commands.os, "getgid", lambda: 1000)
@@ -78,6 +84,7 @@ def test_ui_scan_command_passes_desktop_user_through_pkexec(monkeypatch) -> None
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
     monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
+    monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 0)
 
     def fake_which(name: str) -> str | None:
         return {
@@ -89,20 +96,70 @@ def test_ui_scan_command_passes_desktop_user_through_pkexec(monkeypatch) -> None
     monkeypatch.setattr(commands.shutil, "which", fake_which)
 
     command = commands.scan_command()
+    options = _scan_daemon_options(command)
 
-    assert command[:2] == ["/usr/bin/pkexec", "/usr/bin/env"]
-    assert "PENGUIN_BURNER_Q2RTX_USER=desktop-user" in command
-    assert "PENGUIN_BURNER_Q2RTX_UID=1000" in command
-    assert "PENGUIN_BURNER_Q2RTX_GID=1000" in command
-    assert "SUDO_USER=desktop-user" in command
-    assert "SUDO_UID=1000" in command
-    assert "SUDO_GID=1000" in command
-    assert "DISPLAY=:0" in command
-    assert "XDG_RUNTIME_DIR=/run/user/1000" in command
-    assert "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus" in command
-    assert "--auto-uv-voltage-scan" in command
-    assert "--json-events" in command
-    assert "--auto-uv-require-final-choice" in command
+    assert "/usr/bin/pkexec" not in command
+    assert "/usr/bin/sudo" not in command
+    assert options["gpu_index"] == commands.runtime_gpu_index()
+
+
+def test_ui_scan_command_uses_flatpak_host_privilege(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    flatpak_info = tmp_path / ".flatpak-info"
+    flatpak_info.write_text("[Application]\n", encoding="utf-8")
+    monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(commands.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(commands.os, "getgid", lambda: 1000)
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/flatpak/bus")
+
+    def fake_which(name: str) -> str | None:
+        return {
+            "flatpak-spawn": "/usr/bin/flatpak-spawn",
+        }.get(name)
+
+    monkeypatch.setattr(commands.shutil, "which", fake_which)
+
+    command = commands.scan_command({"gpu_index": 0})
+    options = _scan_daemon_options(command)
+
+    assert "/usr/bin/flatpak-spawn" not in command
+    assert "/usr/bin/pkexec" not in command
+    assert options["gpu_index"] == 0
+
+
+def test_daemon_migration_command_uses_flatpak_host_cli(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    flatpak_info = tmp_path / ".flatpak-info"
+    flatpak_info.write_text("[Application]\n", encoding="utf-8")
+    monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+
+    def fake_which(name: str) -> str | None:
+        return {
+            "flatpak-spawn": "/usr/bin/flatpak-spawn",
+        }.get(name)
+
+    monkeypatch.setattr(commands.shutil, "which", fake_which)
+
+    command = commands.daemon_migration_command()
+
+    assert command[:4] == [
+        "/usr/bin/flatpak-spawn",
+        "--host",
+        "/usr/bin/pkexec",
+        "/usr/bin/env",
+    ]
+    assert "penguin-burner-cli" in command
+    assert "--migrate-to-daemon-service" in command
+    assert "/app/" not in " ".join(command)
 
 
 def test_daemon_migration_command_uses_privileged_cli(monkeypatch) -> None:
@@ -159,29 +216,21 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
             "auto_oc_target_clock_mhz": 2670,
         }
     )
+    options = _scan_daemon_options(command)
 
-    assert "--gpu-index" in command
-    assert command[command.index("--gpu-index") + 1] == "2"
-    assert "--auto-uv-mode" in command
-    assert command[command.index("--auto-uv-mode") + 1] == "performance"
-    assert "--auto-uv-min-voltage-mv" in command
-    assert command[command.index("--auto-uv-min-voltage-mv") + 1] == "850"
-    assert "--auto-uv-max-clock-drop-pct" in command
-    assert command[command.index("--auto-uv-max-clock-drop-pct") + 1] == "10"
-    assert "--auto-oc-target-voltage-mv" in command
-    assert command[command.index("--auto-oc-target-voltage-mv") + 1] == "925"
-    assert "--auto-oc-target-clock-mhz" in command
-    assert command[command.index("--auto-oc-target-clock-mhz") + 1] == "2670"
+    assert options["gpu_index"] == 2
+    assert options["auto_uv_mode"] == "performance"
+    assert options["auto_uv_min_voltage_mv"] == 850
+    assert options["auto_uv_max_clock_drop_pct"] == 10.0
+    assert options["auto_oc_target_voltage_mv"] == 925
+    assert options["auto_oc_target_clock_mhz"] == 2670
     assert "--power-limit-override-w" not in command
-    assert "--auto-uv-power-limit-w" in command
-    assert command[command.index("--auto-uv-power-limit-w") + 1] == "390"
+    assert options["auto_uv_power_limit_w"] == 390
     assert "--yolo" not in command
     assert "--auto-uv-efficiency-stop-streak" not in command
     assert "--auto-uv-min-efficiency-stop-drop-pct" not in command
-    assert "--auto-uv-memory-offset-mhz" in command
-    assert command[command.index("--auto-uv-memory-offset-mhz") + 1] == "500"
-    assert "--auto-uv-tail-rise-bins" in command
-    assert command[command.index("--auto-uv-tail-rise-bins") + 1] == "2"
+    assert options["auto_uv_memory_offset_mhz"] == 500
+    assert options["auto_uv_tail_rise_bins"] == 2
 
 
 def test_ui_scan_command_can_override_runtime_gpu_index(monkeypatch) -> None:
@@ -189,8 +238,9 @@ def test_ui_scan_command_can_override_runtime_gpu_index(monkeypatch) -> None:
     monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 2)
 
     command = commands.scan_command({"gpu_index": 1})
+    options = _scan_daemon_options(command)
 
-    assert command[command.index("--gpu-index") + 1] == "1"
+    assert options["gpu_index"] == 1
 
 
 def test_auto_uv_short_verification_defaults_to_10_seconds() -> None:

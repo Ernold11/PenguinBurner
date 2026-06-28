@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import pwd
@@ -11,10 +12,24 @@ from ui.constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
 from ui.features.tuning.gpu_selection import runtime_gpu_index
 
 
+FLATPAK_INFO_PATH = Path("/.flatpak-info")
+
+
+def running_in_flatpak() -> bool:
+    return FLATPAK_INFO_PATH.is_file()
+
+
 def cli_base_command() -> list[str]:
     script_path = Path(__file__).resolve().parents[1] / "penguin_burner.py"
     if script_path.is_file():
         return [sys.executable, str(script_path)]
+    return ["penguin-burner-cli"]
+
+
+def host_cli_base_command() -> list[str]:
+    override = os.environ.get("PENGUIN_BURNER_HOST_CLI", "").strip()
+    if override:
+        return [override]
     return ["penguin-burner-cli"]
 
 
@@ -71,7 +86,10 @@ def desktop_session_env() -> list[str]:
     ]
     values = []
     for name in names:
-        value = os.environ.get(name, "").strip()
+        if running_in_flatpak() and name == "DBUS_SESSION_BUS_ADDRESS":
+            value = _host_session_bus_address()
+        else:
+            value = os.environ.get(name, "").strip()
         if value:
             values.append(f"{name}={value}")
     if os.environ.get("DISPLAY", "").strip() and not os.environ.get(
@@ -97,55 +115,124 @@ def _default_xauthority_path() -> str:
     return str(path) if path.is_file() else ""
 
 
-def _command_value_text(value: object) -> str:
-    if isinstance(value, float):
-        return f"{value:.6g}"
-    return str(value)
+def _host_session_bus_address() -> str:
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if runtime_dir.startswith("/run/user/"):
+        return f"unix:path={runtime_dir}/bus"
+    uid = (
+        os.environ.get("PENGUIN_BURNER_Q2RTX_UID", "").strip()
+        or os.environ.get("SUDO_UID", "").strip()
+    )
+    if not uid and os.getuid() != 0:
+        uid = str(os.getuid())
+    return f"unix:path=/run/user/{uid}/bus" if uid else ""
+
+
+def _privileged_command_base() -> list[str] | None:
+    if os.geteuid() == 0:
+        return []
+    if running_in_flatpak():
+        flatpak_spawn = shutil.which("flatpak-spawn")
+        if flatpak_spawn:
+            return [flatpak_spawn, "--host", "/usr/bin/pkexec", "/usr/bin/env"]
+        return None
+    escalator = shutil.which("pkexec") or shutil.which("sudo")
+    if not escalator:
+        return None
+    env = shutil.which("env") or "/usr/bin/env"
+    return [escalator, env]
+
+
+def _privileged_env() -> list[str]:
+    values = []
+    if running_in_flatpak():
+        values.append(_host_path_assignment())
+        pythonpath = _host_pythonpath_assignment()
+        if pythonpath:
+            values.append(pythonpath)
+    return [*values, *desktop_user_env(), *desktop_session_env()]
+
+
+def _host_path_assignment() -> str:
+    entries = []
+    home = str(Path.home()).strip()
+    if home and home != "/":
+        entries.append(str(Path(home) / ".local" / "bin"))
+    entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
+    for item in os.environ.get("PATH", "").split(os.pathsep):
+        item = item.strip()
+        if item and not item.startswith("/app") and item not in entries:
+            entries.append(item)
+    return "PATH=" + os.pathsep.join(entries)
+
+
+def _host_pythonpath_assignment() -> str:
+    entries = []
+    home = Path.home()
+    user_lib = home / ".local" / "lib"
+    if user_lib.is_dir():
+        entries.extend(
+            str(path)
+            for path in sorted(user_lib.glob("python*/site-packages"), reverse=True)
+            if path.is_dir()
+        )
+    for item in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+        item = item.strip()
+        if item and not item.startswith("/app") and item not in entries:
+            entries.append(item)
+    return "PYTHONPATH=" + os.pathsep.join(entries) if entries else ""
+
+
+def _privileged_command(command: list[str]) -> list[str]:
+    base = _privileged_command_base()
+    if base is None:
+        return list(command)
+    if not base:
+        return list(command)
+    return [*base, *_privileged_env(), *command]
 
 
 def scan_command(auto_uv_options: Mapping[str, object] | None = None) -> list[str]:
     options = auto_uv_options or {}
-    command = [
-        *cli_base_command(),
-        "--auto-uv-voltage-scan",
-        "--json-events",
-        "--auto-uv-require-final-choice",
-        "--gpu-index",
-        _command_value_text(options.get("gpu_index", runtime_gpu_index())),
-    ]
-    option_flags = {
-        "auto_uv_mode": "--auto-uv-mode",
-        "auto_uv_min_voltage_mv": "--auto-uv-min-voltage-mv",
-        "auto_uv_max_clock_drop_pct": "--auto-uv-max-clock-drop-pct",
-        "auto_uv_memory_offset_mhz": "--auto-uv-memory-offset-mhz",
-        "auto_uv_power_limit_w": "--auto-uv-power-limit-w",
-        "auto_uv_tail_rise_bins": "--auto-uv-tail-rise-bins",
-        "auto_oc_target_voltage_mv": "--auto-oc-target-voltage-mv",
-        "auto_oc_target_clock_mhz": "--auto-oc-target-clock-mhz",
+    payload = {
+        "gpu_index": options.get("gpu_index", runtime_gpu_index()),
     }
-    for key, flag in option_flags.items():
+    option_keys = (
+        "auto_uv_mode",
+        "auto_uv_min_voltage_mv",
+        "auto_uv_max_clock_drop_pct",
+        "auto_uv_memory_offset_mhz",
+        "auto_uv_power_limit_w",
+        "auto_uv_tail_rise_bins",
+        "auto_oc_target_voltage_mv",
+        "auto_oc_target_clock_mhz",
+    )
+    for key in option_keys:
         value = options.get(key)
         if value in (None, ""):
             continue
-        command.extend([flag, _command_value_text(value)])
-    if os.geteuid() == 0:
-        return command
-
-    escalator = shutil.which("pkexec") or shutil.which("sudo")
-    if escalator:
-        env = shutil.which("env") or "/usr/bin/env"
-        return [escalator, env, *desktop_user_env(), *desktop_session_env(), *command]
-    return command
+        payload[key] = value
+    return [
+        sys.executable,
+        "-m",
+        "runtime.daemon_client",
+        "start-auto-uv",
+        json.dumps(payload, separators=(",", ":")),
+    ]
 
 
 def privileged_command(command: list[str]) -> list[str]:
-    if os.geteuid() == 0:
-        return list(command)
-    escalator = shutil.which("pkexec") or shutil.which("sudo")
-    if not escalator:
-        return list(command)
-    env = shutil.which("env") or "/usr/bin/env"
-    return [escalator, env, *desktop_user_env(), *desktop_session_env(), *command]
+    if running_in_flatpak():
+        command = _host_equivalent_command(command)
+    return _privileged_command(command)
+
+
+def _host_equivalent_command(command: list[str]) -> list[str]:
+    command = list(command)
+    local_base = cli_base_command()
+    if command[: len(local_base)] == local_base:
+        return [*host_cli_base_command(), *command[len(local_base) :]]
+    return command
 
 
 def daemon_migration_command() -> list[str]:

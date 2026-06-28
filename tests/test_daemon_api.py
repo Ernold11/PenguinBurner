@@ -30,6 +30,114 @@ def test_daemon_rejects_unknown_methods() -> None:
         daemon_api.handle_request({"method": "run_cli"})
 
 
+def test_daemon_start_auto_uv_streams_process_lines(monkeypatch) -> None:
+    calls = []
+    restarted = []
+
+    class FakeProcess:
+        pid = 1234
+        stdout = iter(['{"event":"auto_uv_start"}\n', "human line\n"])
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(command, **_kwargs):
+        calls.append(list(command))
+        return FakeProcess()
+
+    monkeypatch.setattr(daemon_api.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        daemon_api,
+        "_daemon_program_file",
+        lambda: "/tmp/penguin_burner.py",
+    )
+    monkeypatch.setattr(daemon_api, "_stop_autostart_runtime_for_scan", lambda: None)
+    monkeypatch.setattr(
+        daemon_api,
+        "_start_autostart_runtime_if_configured",
+        lambda: restarted.append(None),
+    )
+    monkeypatch.setattr(daemon_api, "_ACTIVE_SCAN_PROCESS", None)
+    monkeypatch.setattr(daemon_api, "_ACTIVE_SCAN_ARGV", [])
+
+    payloads = list(
+        daemon_api.stream_auto_uv_scan(
+            {"gpu_index": 0, "auto_uv_mode": "performance"}
+        )
+    )
+
+    assert calls == [
+        [
+            daemon_api.sys.executable,
+            "/tmp/penguin_burner.py",
+            "--auto-uv-voltage-scan",
+            "--json-events",
+            "--auto-uv-require-final-choice",
+            "--gpu-index",
+            "0",
+            "--auto-uv-mode",
+            "performance",
+        ]
+    ]
+    assert payloads[0]["control"] == "started"
+    assert payloads[1]["line"] == '{"event":"auto_uv_start"}\n'
+    assert payloads[2]["line"] == "human line\n"
+    assert payloads[3]["control"] == "finished"
+    assert payloads[3]["exit_code"] == 0
+    assert daemon_api._ACTIVE_SCAN_PROCESS is None
+    assert restarted == [None]
+
+
+def test_daemon_stream_disconnect_keeps_scan_tracked_for_monitor(monkeypatch) -> None:
+    calls = []
+    monitored = []
+
+    class FakeProcess:
+        pid = 1234
+        stdout = iter(["first line\n", "second line\n"])
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(command, **_kwargs):
+        calls.append(list(command))
+        return FakeProcess()
+
+    monkeypatch.setattr(daemon_api.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        daemon_api,
+        "_daemon_program_file",
+        lambda: "/tmp/penguin_burner.py",
+    )
+    monkeypatch.setattr(daemon_api, "_stop_autostart_runtime_for_scan", lambda: None)
+    monkeypatch.setattr(daemon_api, "_start_detached_scan_monitor", monitored.append)
+    monkeypatch.setattr(daemon_api, "_ACTIVE_SCAN_PROCESS", None)
+    monkeypatch.setattr(daemon_api, "_ACTIVE_SCAN_ARGV", [])
+
+    stream = daemon_api.stream_auto_uv_scan({"gpu_index": 0})
+
+    started = next(stream)
+    line = next(stream)
+    stream.close()
+
+    assert calls
+    assert started["control"] == "started"
+    assert line["line"] == "first line\n"
+    assert daemon_api._ACTIVE_SCAN_PROCESS is monitored[0]
+    assert daemon_api.status_payload()["state"] == "auto_uv_scan_running"
+
+
+def test_daemon_start_auto_uv_rejects_unknown_options() -> None:
+    with pytest.raises(ValueError, match="unknown Auto-UV option: unknown"):
+        list(daemon_api.stream_auto_uv_scan({"unknown": "value"}))
+
+
 def test_daemon_client_status_roundtrip(tmp_path: Path) -> None:
     socket_path = tmp_path / "penguin-burnerd.sock"
     thread = threading.Thread(

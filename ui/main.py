@@ -7,7 +7,9 @@ from .assets import application_icon
 from .constants import APP_DESKTOP_ID
 from .constants import APP_DISPLAY_NAME
 from .qt import apply_dark_palette
+from .qt import apply_desktop_font_settings
 from .qt import import_qt
+from .qt import prepare_desktop_scale_env
 from .window import MainWindow
 
 
@@ -71,6 +73,7 @@ def run(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    prepare_desktop_scale_env()
     _QtCore, QtGui, QtWidgets, _pg = qt_modules
     app = QtWidgets.QApplication(qt_argv)
     app.setApplicationName(APP_DISPLAY_NAME)
@@ -81,6 +84,7 @@ def run(argv: list[str] | None = None) -> int:
     icon = application_icon(QtGui)
     if not icon.isNull():
         app.setWindowIcon(icon)
+    apply_desktop_font_settings(app, QtGui)
     apply_dark_palette(app, QtGui)
     window = MainWindow(
         qt_modules,

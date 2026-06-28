@@ -65,6 +65,31 @@ def test_daemon_api_unit_uses_daemon_socket_and_autostart_argv(
     assert "PenguinBurner.service" not in unit
 
 
+def test_daemon_api_unit_preserves_desktop_profile_environment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    program = tmp_path / "penguin_burner.py"
+    program.write_text("# program\n", encoding="utf-8")
+    monkeypatch.setenv("SUDO_USER", "jp")
+    monkeypatch.setenv("PENGUIN_BURNER_HOME", "/home/jp")
+    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_UID", "1000")
+    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_GID", "1000")
+    monkeypatch.setenv("PENGUIN_BURNER_ADAPTIVE_TARGET_FPS", "60")
+
+    unit = runtime_service.build_daemon_api_service_unit(
+        program,
+        socket_path="/run/penguin-burnerd.sock",
+        autostart_argv=["--adaptive-auto-uv"],
+    )
+
+    assert "Environment=SUDO_USER=jp" in unit
+    assert "Environment=PENGUIN_BURNER_HOME=/home/jp" in unit
+    assert "Environment=PENGUIN_BURNER_Q2RTX_UID=1000" in unit
+    assert "Environment=PENGUIN_BURNER_Q2RTX_GID=1000" in unit
+    assert "Environment=PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=60" in unit
+
+
 def test_parse_runtime_argv_from_legacy_unit() -> None:
     unit = """
 [Service]
@@ -258,6 +283,8 @@ def test_stop_existing_runtime_does_not_disable_persistent_service(monkeypatch) 
 
     assert ["/bin/systemctl", "stop", "PenguinBurner.service"] in calls
     assert ["/bin/systemctl", "disable", "--now", "PenguinBurner.service"] not in calls
+    assert ["/bin/systemctl", "stop", "penguin-burnerd.service"] not in calls
+    assert ["/bin/systemctl", "disable", "--now", "penguin-burnerd.service"] not in calls
     assert any("before foreground Auto-UV scan" in message for message in logs)
 
 

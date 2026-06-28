@@ -4,13 +4,18 @@ runtime-version: "25.08"
 sdk: org.freedesktop.Sdk
 command: penguin-burner
 
+cleanup:
+  - /lib/debug
+
 finish-args:
   - --share=ipc
   - --share=network
   - --socket=wayland
   - --socket=fallback-x11
+  - --talk-name=org.freedesktop.Flatpak
   - --device=dri
   - --filesystem=home
+  - --filesystem=/run/penguin-burnerd.sock
 
 modules:
   - name: penguin-burner
@@ -25,7 +30,12 @@ modules:
       - type: dir
         path: ../..
     build-commands:
-      - python3 -m pip install --prefix=/app --no-build-isolation --no-cache-dir .
+      - python3 -m pip install --prefix=/app --no-build-isolation --no-cache-dir --no-compile .
+      - rm -rf /app/lib/python*/site-packages/PySide6/Qt/qml /app/lib/python*/site-packages/PySide6/Qt/translations /app/lib/python*/site-packages/PySide6/Qt/metatypes /app/lib/python*/site-packages/PySide6/Qt/bin
+      - rm -rf /app/lib/python*/site-packages/PySide6/assistant /app/lib/python*/site-packages/PySide6/designer /app/lib/python*/site-packages/PySide6/linguist /app/lib/python*/site-packages/PySide6/lrelease /app/lib/python*/site-packages/PySide6/lupdate /app/lib/python*/site-packages/PySide6/qmllint /app/lib/python*/site-packages/PySide6/qmlls /app/lib/python*/site-packages/PySide6/qmlformat /app/lib/python*/site-packages/PySide6/svgtoqml
+      - rm -rf /app/lib/python*/site-packages/PySide6/glue /app/lib/python*/site-packages/PySide6/scripts /app/lib/python*/site-packages/PySide6/typesystems
+      - find /app/lib/python*/site-packages -type d \( -name __pycache__ -o -name tests -o -name test -o -name examples \) -prune -exec rm -rf {} +
+      - find /app/lib/python*/site-packages -type f \( -name '*.pyc' -o -name '*.pyo' -o -name '*.pyi' \) -delete
       - install -Dm644 packaging/flatpak/io.github.jpietek.PenguinBurner.desktop /app/share/applications/io.github.jpietek.PenguinBurner.desktop
       - install -Dm644 packaging/flatpak/io.github.jpietek.PenguinBurner.metainfo.xml /app/share/metainfo/io.github.jpietek.PenguinBurner.metainfo.xml
       - install -Dm644 packaging/icons/hicolor/256x256/apps/penguin-burner.png /app/share/icons/hicolor/256x256/apps/io.github.jpietek.PenguinBurner.png

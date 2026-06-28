@@ -30,6 +30,57 @@ def test_apply_dark_palette_runs(qapp) -> None:
     assert palette.color(QtGui.QPalette.Window).isValid()
 
 
+def test_prepare_desktop_scale_env_uses_flatpak_kde_force_dpi(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    flatpak_info = tmp_path / ".flatpak-info"
+    flatpak_info.write_text("[Application]\n", encoding="utf-8")
+    home = tmp_path / "home"
+    config = home / ".config"
+    config.mkdir(parents=True)
+    (config / "kcmfonts").write_text(
+        "[General]\nforceFontDPI=144\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ui_qt, "FLATPAK_INFO_PATH", flatpak_info)
+    monkeypatch.setattr(ui_qt.Path, "home", staticmethod(lambda: home))
+    env = {"XDG_CURRENT_DESKTOP": "KDE"}
+
+    ui_qt.prepare_desktop_scale_env(env)
+
+    assert env["QT_SCALE_FACTOR_ROUNDING_POLICY"] == "PassThrough"
+    assert env["QT_FONT_DPI"] == "144"
+
+
+def test_apply_desktop_font_settings_uses_flatpak_kde_font(
+    qapp,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    flatpak_info = tmp_path / ".flatpak-info"
+    flatpak_info.write_text("[Application]\n", encoding="utf-8")
+    home = tmp_path / "home"
+    config = home / ".config"
+    config.mkdir(parents=True)
+    (config / "kdeglobals").write_text(
+        "[General]\n"
+        "font=Noto Sans,11,-1,5,400,0,0,0,0,0,0,0,0,0,0,1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ui_qt, "FLATPAK_INFO_PATH", flatpak_info)
+    monkeypatch.setattr(ui_qt.Path, "home", staticmethod(lambda: home))
+    original_font = qapp.font()
+    try:
+        ui_qt.apply_desktop_font_settings(qapp, QtGui, {"XDG_CURRENT_DESKTOP": "KDE"})
+
+        font = qapp.font()
+        assert font.family() == "Noto Sans"
+        assert font.pointSizeF() == 11.0
+    finally:
+        qapp.setFont(original_font)
+
+
 def test_command_controller_runs_command_and_reports(qtbot) -> None:
     controller = CommandController(QtCore=QtCore)
     outputs: list[str] = []

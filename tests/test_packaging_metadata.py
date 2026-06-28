@@ -10,7 +10,7 @@ def test_base_package_installs_gui_dependencies() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     dependencies = set(metadata["project"]["dependencies"])
 
-    assert "PySide6>=6.7" in dependencies
+    assert "PySide6-Essentials>=6.7" in dependencies
     assert "colorama>=0.4" in dependencies
     assert "pyqtgraph>=0.13" in dependencies
 
@@ -19,7 +19,7 @@ def test_ui_extra_remains_as_compatibility_alias() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     ui_dependencies = set(metadata["project"]["optional-dependencies"]["ui"])
 
-    assert "PySide6>=6.7" in ui_dependencies
+    assert "PySide6-Essentials>=6.7" in ui_dependencies
     assert "colorama>=0.4" in ui_dependencies
     assert "pyqtgraph>=0.13" in ui_dependencies
 
@@ -107,6 +107,15 @@ def test_package_installs_desktop_launcher_and_icons() -> None:
         "packaging/icons/hicolor/512x512/apps/penguin-burner.png"
     ]
     assert "*.png" in package_data["ui.assets"]
+
+
+def test_flatpak_manifest_exposes_daemon_socket_and_host_spawn_portal() -> None:
+    manifest = Path("packaging/flatpak/io.github.jpietek.PenguinBurner.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--filesystem=/run/penguin-burnerd.sock" in manifest
+    assert "--talk-name=org.freedesktop.Flatpak" in manifest
 
 
 def test_python_build_requires_native_layer_build_tooling() -> None:
