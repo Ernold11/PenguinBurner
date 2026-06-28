@@ -5,6 +5,8 @@ from overlay.telemetry.steam_launch_check import (
     check_launch_options,
     default_localconfig_paths,
     launch_options_from_localconfig,
+    rewrite_launch_options,
+    rewrite_launch_options_in_localconfig,
 )
 
 # Synthetic app id -- the helpers are game-agnostic, so the tests do not name a
@@ -41,12 +43,89 @@ def _localconfig(launch_options: str) -> str:
 '''
 
 
+def _localconfig_without_launch_options() -> str:
+    return f'''
+"UserLocalConfigStore"
+{{
+    "Software"
+    {{
+        "Valve"
+        {{
+            "Steam"
+            {{
+                "apps"
+                {{
+                    "{APP_ID}"
+                    {{
+                        "LastPlayed" "1781029254"
+                    }}
+                }}
+            }}
+        }}
+    }}
+}}
+'''
+
+
 def test_launch_options_from_localconfig_finds_app_block() -> None:
     launch_options = "PENGUIN_BURNER_LATENCY_LAYER=1 %command%"
 
     assert launch_options_from_localconfig(
         _localconfig(launch_options), APP_ID
     ) == launch_options
+
+
+def test_rewrite_launch_options_in_localconfig_replaces_existing_value() -> None:
+    updated = rewrite_launch_options_in_localconfig(
+        _localconfig("mangohud %command%"),
+        APP_ID,
+        "PB_OVERLAY=1 PENGUIN_BURNER %command%",
+    )
+
+    assert updated is not None
+    text, previous = updated
+    assert previous == "mangohud %command%"
+    assert (
+        launch_options_from_localconfig(text, APP_ID)
+        == "PB_OVERLAY=1 PENGUIN_BURNER %command%"
+    )
+    assert (
+        launch_options_from_localconfig(text, "4180480")
+        == "OTHER=1 %command%"
+    )
+
+
+def test_rewrite_launch_options_in_localconfig_adds_missing_value() -> None:
+    updated = rewrite_launch_options_in_localconfig(
+        _localconfig_without_launch_options(),
+        APP_ID,
+        "PB_OVERLAY=1 PENGUIN_BURNER %command%",
+    )
+
+    assert updated is not None
+    text, previous = updated
+    assert previous is None
+    assert (
+        launch_options_from_localconfig(text, APP_ID)
+        == "PB_OVERLAY=1 PENGUIN_BURNER %command%"
+    )
+
+
+def test_rewrite_launch_options_writes_and_verifies_localconfig(tmp_path) -> None:
+    path = tmp_path / "localconfig.vdf"
+    path.write_text(_localconfig("mangohud %command%"), encoding="utf-8")
+
+    result = rewrite_launch_options(
+        app_id=APP_ID,
+        launch_options="PB_OVERLAY=1 PENGUIN_BURNER %command%",
+        config_paths=[path],
+        verify_delay_s=0.0,
+    )
+
+    assert result.ok
+    assert result.config_path == path
+    assert result.previous_launch_options == "mangohud %command%"
+    assert result.current_launch_options == "PB_OVERLAY=1 PENGUIN_BURNER %command%"
 
 
 def test_check_launch_options_accepts_default_probe_tokens(tmp_path) -> None:

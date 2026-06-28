@@ -6,6 +6,8 @@ from typing import Callable
 
 from cli.effective_runtime_options import build_effective_auto_uv_runtime_options
 from common.penguin_burner_errors import NvmlError
+from overlay.config import steam_launch_option
+from overlay.telemetry.steam_launch_check import rewrite_launch_options
 from runtime.support.runtime_debug import (
     debug_effective_runtime_options,
     enable_stdio_capture,
@@ -51,6 +53,8 @@ class MainCommandRoutingDependencies:
     normalize_profile_tier: Callable = normalize_profile_tier
     profile_tier_is_none: Callable = profile_tier_is_none
     profile_tier_label: Callable = profile_tier_label
+    rewrite_steam_launch_options: Callable = rewrite_launch_options
+    steam_launch_option: Callable = steam_launch_option
     log: Callable[[str], None] = runtime_log
     print_fn: Callable = print
 
@@ -100,6 +104,10 @@ def route_main_command(
 
     if args.assign_auto_uv_tier:
         _assign_profile_tier(args, deps=deps)
+        return MainCommandRoutingResult(handled=True)
+
+    if getattr(args, "set_steam_overlay_launch", None):
+        _set_steam_overlay_launch(args, deps=deps)
         return MainCommandRoutingResult(handled=True)
 
     if not explicit_cli_args and not deps.running_under_systemd_service():
@@ -251,6 +259,46 @@ def _assign_profile_tier(args, *, deps: MainCommandRoutingDependencies) -> None:
         f"Assigned Auto-UV profile {profile_id} to {tier_label} tier.",
         flush=True,
     )
+
+
+def _set_steam_overlay_launch(args, *, deps: MainCommandRoutingDependencies) -> None:
+    app_id = str(getattr(args, "set_steam_overlay_launch", "") or "").strip()
+    if not app_id:
+        raise NvmlError("Steam app id is required")
+    result = deps.rewrite_steam_launch_options(
+        app_id=app_id,
+        launch_options=deps.steam_launch_option(),
+    )
+    if getattr(args, "json_events", False):
+        deps.print_fn(
+            json.dumps(
+                {
+                    "steam_launch_options": {
+                        "app_id": result.app_id,
+                        "config_path": (
+                            None
+                            if result.config_path is None
+                            else str(result.config_path)
+                        ),
+                        "requested_launch_options": (
+                            result.requested_launch_options
+                        ),
+                        "previous_launch_options": result.previous_launch_options,
+                        "current_launch_options": result.current_launch_options,
+                        "persisted": result.persisted,
+                    }
+                },
+                indent=2,
+            ),
+            flush=True,
+        )
+        return
+    deps.print_fn(result.format_text(), flush=True)
+    if not result.persisted:
+        raise NvmlError(
+            "Steam launch options were not persisted. If Steam is running, it "
+            "may have rewritten localconfig.vdf from memory."
+        )
 
 
 def _auto_uv_final_curve_available(

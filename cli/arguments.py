@@ -31,6 +31,7 @@ def parse_arguments(argv):
     )
 
     auto_uv_group = parser.add_argument_group("Auto-UV")
+    steam_group = parser.add_argument_group("Steam overlay setup")
     daemon_group = parser.add_argument_group("Runtime and daemon essentials")
     runtime_group = parser.add_argument_group("Runtime tuning")
     advanced_group = parser.add_argument_group("Advanced/debug")
@@ -150,6 +151,15 @@ def parse_arguments(argv):
         help=(
             "How many voltage bins can the voltage curve rise above the locked "
             "undervolt point."
+        ),
+    )
+    steam_group.add_argument(
+        "--set-steam-overlay-launch",
+        metavar="APPID",
+        help=(
+            "Write the PenguinBurner native-overlay launch option for a Steam "
+            "app id and exit. The write is verified so running Steam rewrites "
+            "are reported instead of treated as success."
         ),
     )
     auto_uv_group.add_argument(

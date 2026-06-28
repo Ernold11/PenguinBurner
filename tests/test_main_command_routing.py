@@ -20,6 +20,7 @@ def _args(**overrides):
         "json_events": False,
         "delete_auto_uv_profiles": [],
         "assign_auto_uv_tier": None,
+        "set_steam_overlay_launch": None,
         "config": "/tmp/config.json",
         "gpu_index": None,
         "stability_test": False,
@@ -44,6 +45,7 @@ def _deps(**overrides):
         "debug_options": [],
         "release_fans": [],
         "tier_assignments": [],
+        "steam_launch_rewrites": [],
     }
 
     def load_config(config_path):
@@ -88,6 +90,21 @@ def _deps(**overrides):
             "tier_assignments"
         ].append((profile_id, tier))
         or {"balanced": profile_id},
+        "rewrite_steam_launch_options": lambda **kwargs: calls[
+            "steam_launch_rewrites"
+        ].append(kwargs)
+        or SimpleNamespace(
+            app_id=kwargs["app_id"],
+            config_path=Path("/tmp/localconfig.vdf"),
+            requested_launch_options=kwargs["launch_options"],
+            previous_launch_options="mangohud %command%",
+            current_launch_options=kwargs["launch_options"],
+            persisted=True,
+            format_text=lambda: "persisted=True",
+        ),
+        "steam_launch_option": lambda **kwargs: (
+            "PB_OVERLAY=1 PENGUIN_BURNER %command%"
+        ),
         "log": calls["logs"].append,
         "print_fn": lambda *args, **kwargs: calls["prints"].append(
             (args, kwargs)
@@ -154,6 +171,57 @@ def test_main_command_routing_assigns_profile_tier_none():
     assert calls["prints"][0][0] == (
         "Removed adaptive tier assignment for Auto-UV profile profile-a.",
     )
+
+
+def test_main_command_routing_sets_steam_overlay_launch_without_loading_config():
+    deps, calls = _deps(
+        load_config=lambda config_path: (_ for _ in ()).throw(
+            AssertionError("config should not be loaded")
+        )
+    )
+
+    result = route_main_command(
+        args=_args(set_steam_overlay_launch="835960"),
+        argv=["--set-steam-overlay-launch", "835960"],
+        explicit_cli_args=True,
+        interactive=False,
+        dependencies=deps,
+    )
+
+    assert result.handled is True
+    assert calls["steam_launch_rewrites"] == [
+        {
+            "app_id": "835960",
+            "launch_options": "PB_OVERLAY=1 PENGUIN_BURNER %command%",
+        }
+    ]
+    assert calls["prints"][0][0] == ("persisted=True",)
+
+
+def test_main_command_routing_reports_steam_overlay_rewrite_failure():
+    failed_result = SimpleNamespace(
+        app_id="835960",
+        config_path=Path("/tmp/localconfig.vdf"),
+        requested_launch_options="PB_OVERLAY=1 PENGUIN_BURNER %command%",
+        previous_launch_options="mangohud %command%",
+        current_launch_options="mangohud %command%",
+        persisted=False,
+        format_text=lambda: "persisted=False",
+    )
+    deps, calls = _deps(
+        rewrite_steam_launch_options=lambda **kwargs: failed_result,
+    )
+
+    with pytest.raises(NvmlError, match="not persisted"):
+        route_main_command(
+            args=_args(set_steam_overlay_launch="835960"),
+            argv=["--set-steam-overlay-launch", "835960"],
+            explicit_cli_args=True,
+            interactive=False,
+            dependencies=deps,
+        )
+
+    assert calls["prints"][0][0] == ("persisted=False",)
 
 
 def test_main_command_routing_rejects_unknown_profile_tier():
