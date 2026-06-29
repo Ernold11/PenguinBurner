@@ -8,6 +8,7 @@ import sys
 from .config import OVERLAY_CONFIG_ENV, default_overlay_config_path
 from .native_layer import LATENCY_LAYER_NAME
 from .native_layer import native_layer_dirs
+from .shim_deploy import deploy_nvapi_shim
 from .state import (
     OVERLAY_ENABLE_ENV_ALIAS,
     OVERLAY_ENABLE_ENV,
@@ -146,6 +147,15 @@ def _configure_dxvk_nvapi_marker_output(
         return
 
     if str(env.get(DXVK_NVAPI_MARKER_LOG_ENV) or "").strip().lower() in _TRUTHY:
+        return
+
+    # Prefer our drop-in NVAPI shim over enabling dxvk-nvapi's own logging: it
+    # fronts the prefix's nvapi64.dll and taps the same Reflex markers above
+    # vkd3d's owner-gate (so it works under frame generation), writing them to
+    # stderr, which the wrapper already routes to the marker FIFO the bridge
+    # drains -- no trace, no marker-log, no dxvk-nvapi fork. Falls through when
+    # the shim is unavailable or there is no prefix to front.
+    if deploy_nvapi_shim(env):
         return
 
     if dxvk_nvapi_marker_log_supported(env, command_args=command_args):

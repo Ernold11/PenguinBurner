@@ -115,6 +115,9 @@ def test_configure_environment_prefers_marker_log_with_patched_prefix(tmp_path) 
         OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
         "PENGUIN_BURNER_INGAME_LATENCY": "1",
         "STEAM_COMPAT_DATA_PATH": str(tmp_path),
+        # Exercise the marker-log/trace fallback selector in isolation; the
+        # preferred NVAPI shim path is covered by tests/test_shim_deploy.py.
+        "PENGUIN_BURNER_NVAPI_SHIM_DISABLE": "1",
     }
     launcher.configure_penguin_burner_environment(on)
     assert on["DXVK_NVAPI_LATENCY_MARKER_LOG"] == "1"
@@ -128,6 +131,7 @@ def test_configure_environment_falls_back_to_trace_with_unpatched_prefix(tmp_pat
         OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
         "PB_INGAME_LATENCY": "1",
         "STEAM_COMPAT_DATA_PATH": str(tmp_path),
+        "PENGUIN_BURNER_NVAPI_SHIM_DISABLE": "1",
     }
 
     launcher.configure_penguin_burner_environment(env)
@@ -144,6 +148,7 @@ def test_configure_environment_ignores_patched_nvofapi_without_nvapi(tmp_path) -
         OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
         "PB_INGAME_LATENCY": "1",
         "STEAM_COMPAT_DATA_PATH": str(tmp_path),
+        "PENGUIN_BURNER_NVAPI_SHIM_DISABLE": "1",
     }
 
     launcher.configure_penguin_burner_environment(env)

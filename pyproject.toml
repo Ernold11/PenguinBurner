@@ -118,6 +118,7 @@ packages = [
 "overlay" = [
   "native_layer/*.json",
   "native_layer/*.so",
+  "nvapi_shim/*.dll",
 ]
 "ui.assets" = [
   "*.png",
