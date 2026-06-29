@@ -89,7 +89,8 @@ def test_discovery_probe_runner_uses_live_voltage_reader_keyword(monkeypatch) ->
         reader = object()
         live_voltage_reader = object()
         runtime_default_plan = []
-        power_limit_w = 360
+        power_limit_w = 390
+        baseline_power_limit_w = 360
 
     class FakeRunner:
         def __init__(self, *, reader, live_voltage_reader, **kwargs):
@@ -127,6 +128,7 @@ def test_discovery_probe_runner_uses_live_voltage_reader_keyword(monkeypatch) ->
 
     assert captured["live_voltage_reader"] is FakeGpu.live_voltage_reader
     assert captured["label_voltage_mv"] == 1000
+    assert captured["kwargs"]["power_limit_w"] == 360
 
 
 def test_discovery_probe_logs_selected_gpu_light_load_diagnostic(monkeypatch) -> None:

@@ -21,6 +21,7 @@ from auto_uv.curve.base_load_telemetry import (
     LoadedTelemetryRules,
     decision_samples,
     percentile,
+    sample_is_loaded,
     saturated_tail_samples,
 )
 from auto_uv.curve.base_load_voltage import (
@@ -196,6 +197,17 @@ def test_percentile_requires_values_and_handles_single() -> None:
     assert percentile([42.0], 0.5) == 42.0
 
 
+def test_loaded_sample_accepts_busy_util_below_power_floor() -> None:
+    assert sample_is_loaded(
+        {"power_w": 256.0, "gpu_util_pct": 99.0},
+        active_power_floor_w=292.5,
+    )
+    assert not sample_is_loaded(
+        {"power_w": 256.0, "gpu_util_pct": 10.0},
+        active_power_floor_w=292.5,
+    )
+
+
 # --------------------------------------------------------------------------
 # base_load_voltage.py
 # --------------------------------------------------------------------------
@@ -232,3 +244,26 @@ def test_loaded_voltage_band_summarizes_passing_samples() -> None:
         use_power_limit_floor=True,
     )
     assert band.average_mv == 910
+
+
+def test_loaded_voltage_band_accepts_busy_util_below_power_limit_floor() -> None:
+    band = derive_loaded_voltage_band(
+        [
+            {
+                "elapsed_s": 6.0,
+                "power_w": 252.0,
+                "gpu_util_pct": 99.0,
+                "voltage_mv": 1025.0,
+            },
+            {
+                "elapsed_s": 7.0,
+                "power_w": 256.0,
+                "gpu_util_pct": 99.0,
+                "voltage_mv": 1030.0,
+            },
+        ],
+        power_limit_w=390,
+        use_power_limit_floor=True,
+    )
+
+    assert band == LoadedVoltageBand(1028)

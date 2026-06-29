@@ -49,6 +49,7 @@ class AutoUvMetricTuning:
     target_core_clock_low_streak_samples: int = 3
     power_saturation_headroom_pct: float = 2.0
     loaded_sample_power_floor_pct: float = 75.0
+    loaded_sample_gpu_util_pct: float = 60.0
     active_core_clock_percentile: float = 0.75
     loaded_voltage_floor_percentile: float = 0.10
     loaded_voltage_ceiling_percentile: float = 0.90

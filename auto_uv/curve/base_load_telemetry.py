@@ -19,6 +19,7 @@ class LoadedTelemetryRules:
     saturated_tail_min_samples: int = 2
     power_saturation_headroom_pct: float = 2.0
     loaded_sample_power_floor_pct: float = 75.0
+    loaded_sample_gpu_util_pct: float = 60.0
     active_core_clock_percentile: float = 0.75
 
 
@@ -114,19 +115,26 @@ def derive_active_core_clock_mhz(
         use_power_limit_floor=use_power_limit_floor,
         rules=rules,
     )
-    if active_power_floor_w is None:
-        return None, None, 0, None
-
     # Only loaded samples choose the flatten clock; idle/menu samples must not lower it.
     clocks = sorted(
         float(read_field(sample, "core_clock_mhz"))
         for sample in samples
-        if read_field(sample, "power_w") is not None
-        and read_field(sample, "core_clock_mhz") is not None
-        and float(read_field(sample, "power_w")) >= float(active_power_floor_w)
+        if read_field(sample, "core_clock_mhz") is not None
+        and sample_is_loaded(
+            sample,
+            active_power_floor_w=active_power_floor_w,
+            rules=rules,
+        )
     )
     if not clocks:
-        return None, None, 0, float(active_power_floor_w)
+        return (
+            None,
+            None,
+            0,
+            float(active_power_floor_w)
+            if active_power_floor_w is not None
+            else None,
+        )
     avg_clock_mhz = sum(clocks) / len(clocks)
     preferred_clock_mhz = percentile(
         clocks,
@@ -156,6 +164,28 @@ def derive_active_power_floor_w(
     if use_power_limit_floor and power_limit_w is not None and int(power_limit_w) > 0:
         return float(power_limit_w) * percent(rules.loaded_sample_power_floor_pct)
     return max(power_values) * percent(rules.loaded_sample_power_floor_pct)
+
+
+def sample_is_loaded(
+    sample: Any,
+    *,
+    active_power_floor_w: float | None,
+    rules: LoadedTelemetryRules = LoadedTelemetryRules(),
+) -> bool:
+    if sample is None:
+        return False
+    gpu_util_pct = read_field(sample, "gpu_util_pct")
+    if (
+        gpu_util_pct is not None
+        and float(gpu_util_pct) >= float(rules.loaded_sample_gpu_util_pct)
+    ):
+        return True
+    power_w = read_field(sample, "power_w")
+    return (
+        power_w is not None
+        and active_power_floor_w is not None
+        and float(power_w) >= float(active_power_floor_w)
+    )
 
 
 def sample_values(samples: list[Any], field_name: str) -> list[float]:

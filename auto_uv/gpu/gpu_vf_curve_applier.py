@@ -31,6 +31,7 @@ class LiveGpuVfCurveApplier:
     live_voltage_reader: LiveNvmlVoltageReader
     runtime_default_plan: list[dict]
     translated_gpu_policy: dict
+    baseline_power_limit_w: int | None = None
     clock_ceiling: ProbeClockCeilingController | None = None
 
     @property
@@ -80,9 +81,10 @@ def open_live_gpu_vf_curve_applier(
     apply_plan(reader, runtime_default_plan)
     assert_zero_runtime_vf_offsets(reader)
 
+    baseline_power_limit_w = _positive_power_limit_w(runtime_reset.get("power_limit_w"))
     translated_gpu_policy = {
         "gpu_name": runtime_reset.get("gpu_name"),
-        "power_limit_w": runtime_reset.get("power_limit_w"),
+        "power_limit_w": baseline_power_limit_w,
     }
     power_limit_w = _auto_uv_power_limit_w(runtime_options)
     if power_limit_w is not None:
@@ -116,6 +118,7 @@ def open_live_gpu_vf_curve_applier(
         live_voltage_reader=live_voltage_reader,
         runtime_default_plan=runtime_default_plan,
         translated_gpu_policy=translated_gpu_policy,
+        baseline_power_limit_w=baseline_power_limit_w,
     )
 
 
@@ -127,4 +130,14 @@ def _auto_uv_power_limit_w(runtime_options: dict) -> int | None:
         power_limit_w = int(round(float(value)))
     except (TypeError, ValueError) as exc:
         raise AutoUvError(f"invalid Auto-UV power limit: {value!r}") from exc
+    return power_limit_w if power_limit_w > 0 else None
+
+
+def _positive_power_limit_w(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        power_limit_w = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
     return power_limit_w if power_limit_w > 0 else None

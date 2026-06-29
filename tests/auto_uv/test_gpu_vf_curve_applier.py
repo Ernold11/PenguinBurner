@@ -67,5 +67,6 @@ def test_open_live_gpu_applier_applies_auto_uv_power_limit(monkeypatch) -> None:
 
     assert controllers[0].power_limit_calls == [390]
     assert applier.power_limit_w == 390
+    assert applier.baseline_power_limit_w == 360
     assert applier.translated_gpu_policy["power_limit_w"] == 390
     assert logs == ["Auto-UV power limit: applied 390W"]

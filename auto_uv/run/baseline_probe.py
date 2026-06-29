@@ -61,12 +61,25 @@ def run_discovery_probe(
     marker_details: dict | None = None,
 ) -> tuple[AutoUvProbeSummary, object]:
     point = max(editable_base_vf_points(base_curve), key=lambda item: item.target_mhz)
+    reference_power_limit_w = baseline_load_reference_power_limit_w(gpu)
+    scan_power_limit_w = _positive_power_limit_w(getattr(gpu, "power_limit_w", None))
+    if (
+        reference_power_limit_w is not None
+        and scan_power_limit_w is not None
+        and int(reference_power_limit_w) != int(scan_power_limit_w)
+    ):
+        log_phase(
+            log,
+            "discover",
+            "baseline load reference power-limit="
+            f"{int(reference_power_limit_w)}W scan-power-limit={int(scan_power_limit_w)}W",
+        )
     runner = Q2RtxCudaProbeRunner(
         reader=gpu.reader,
         live_voltage_reader=gpu.live_voltage_reader,
         q2rtx_config=q2rtx_config,
         runtime_default_plan=gpu.runtime_default_plan,
-        power_limit_w=gpu.power_limit_w,
+        power_limit_w=reference_power_limit_w,
         start_voltage_mv=int(point.voltage_mv),
         baseline_clock_mhz=None,
         min_performance_core_clock_pct=90.0,
@@ -105,11 +118,27 @@ def run_discovery_probe(
     log_benchmark(log, phase="discover", probe=summary)
     light_load_diagnostic = selected_nvidia_light_load_diagnostic(
         list(getattr(result, "telemetry_samples", []) or []),
-        power_limit_w=gpu.power_limit_w,
+        power_limit_w=reference_power_limit_w,
     )
     if light_load_diagnostic is not None:
         log_phase(log, "discover", light_load_diagnostic)
     return summary, result
+
+
+def baseline_load_reference_power_limit_w(gpu) -> int | None:
+    return _positive_power_limit_w(
+        getattr(gpu, "baseline_power_limit_w", None)
+    ) or _positive_power_limit_w(getattr(gpu, "power_limit_w", None))
+
+
+def _positive_power_limit_w(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        power_limit_w = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return power_limit_w if power_limit_w > 0 else None
 
 
 def build_loaded_baseline_candidate(

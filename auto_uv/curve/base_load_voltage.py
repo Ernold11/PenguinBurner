@@ -12,6 +12,7 @@ from .base_load_telemetry import (
     LoadedTelemetryRules,
     decision_samples,
     derive_active_power_floor_w,
+    sample_is_loaded,
 )
 from ..shared.probe_data_fields import read_field
 
@@ -41,9 +42,12 @@ def derive_loaded_voltage_band(
     voltages = sorted(
         int(round(float(read_field(sample, "voltage_mv"))))
         for sample in samples
-        if read_field(sample, "power_w") is not None
-        and read_field(sample, "voltage_mv") is not None
-        and float(read_field(sample, "power_w")) >= float(active_power_floor_w)
+        if read_field(sample, "voltage_mv") is not None
+        and sample_is_loaded(
+            sample,
+            active_power_floor_w=active_power_floor_w,
+            rules=telemetry_rules,
+        )
     )
     if not voltages:
         return LoadedVoltageBand(None)

@@ -94,6 +94,12 @@ plus a **CUDA** compute test, with stability and performance checks built in.
 If a scan crashes mid-probe, the next run records that voltage/clock band as
 unsafe and can resume from saved candidates for the same tier.
 
+During Auto-UV, leave the GPU otherwise idle. Do not run games, renders,
+machine-learning jobs, video encoders, miners, or other GPU/VF/VRAM-heavy work
+while the scan is progressing. Auto-UV needs the whole card to itself so its
+FPS-per-watt and stability measurements reflect the candidate curve, not a
+second workload competing for power, clocks, memory bandwidth, or VRAM.
+
 ![Auto-UV candidate sweep](docs/assets/auto-uv-scan.png)
 
 Pick a bias (Efficiency, Balanced, or Performance) and it finds the matching

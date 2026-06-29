@@ -14,6 +14,7 @@ from auto_uv.domain.user_options import AUTO_UV_METRIC_TUNING
 from ..curve.base_load_telemetry import (
     derive_active_power_floor_w,
     decision_samples,
+    sample_is_loaded,
     saturated_tail_samples,
 )
 from ..shared.probe_data_fields import read_field
@@ -180,10 +181,18 @@ def loaded_telemetry_samples(
         sample
         for sample in samples
         if sample is not None
-        and read_field(sample, "power_w") is not None
-        and float(read_field(sample, "power_w")) >= float(active_power_floor_w)
+        and sample_is_loaded(
+            sample,
+            active_power_floor_w=active_power_floor_w,
+            rules=AUTO_UV_METRIC_TUNING,
+        )
     ]
-    return active_samples, float(active_power_floor_w)
+    return (
+        active_samples,
+        float(active_power_floor_w)
+        if active_power_floor_w is not None
+        else None,
+    )
 
 
 def loaded_telemetry_means(
@@ -207,7 +216,7 @@ def loaded_telemetry_means(
         use_power_limit_floor=use_power_limit_floor,
         skip_elapsed_warmup=skip_elapsed_warmup,
     )
-    if active_power_floor_w is None:
+    if active_power_floor_w is None and not active_samples:
         return None, None, None, None, None, 0, None
 
     if not active_samples:
@@ -220,7 +229,9 @@ def loaded_telemetry_means(
         mean([read_field(sample, "temperature_c") for sample in active_samples]),
         mean([read_field(sample, "fan_speed_pct") for sample in active_samples]),
         len(active_samples),
-        float(active_power_floor_w),
+        float(active_power_floor_w)
+        if active_power_floor_w is not None
+        else None,
     )
 
 

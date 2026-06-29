@@ -27,6 +27,7 @@ from auto_uv.shared.positive_int import positive_int
 from auto_uv.run.baseline_probe import (
     adjust_baseline_to_measured_clock,
     build_loaded_baseline_candidate,
+    baseline_load_reference_power_limit_w,
     lower_voltage_descent_enforces_clock_floor,
     require_probe_summary,
     retarget_clock_ceiling_for_candidate,
@@ -291,7 +292,7 @@ def run_voltage_frequency_undervolt_main_loop(
             base_curve,
             discovery_summary=discovery_summary,
             discovery_result=discovery_result,
-            power_limit_w=gpu.power_limit_w,
+            power_limit_w=baseline_load_reference_power_limit_w(gpu),
             tail_rise_bins=int(tail_rise_bins),
         )
         gpu.start_clock_ceiling(

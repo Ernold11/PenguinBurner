@@ -7,6 +7,7 @@ import pytest
 
 from auto_uv.persistence.verified_candidate_result_file import probe_metrics
 from auto_uv.q2rtx.q2rtx_probe_summary import (
+    loaded_telemetry_means,
     summarize_loaded_perf_cap_reason,
     summarize_q2rtx_cuda_probe,
 )
@@ -192,6 +193,62 @@ def test_probe_summary_prefers_benchmark_summary_and_hot_telemetry() -> None:
     assert summary.fps_stddev is None
     assert summary.max_power_w == pytest.approx(140.0)
     assert summary.avg_core_clock_mhz == pytest.approx(2350.0)
+
+
+def test_probe_summary_accepts_busy_util_below_power_limit_floor() -> None:
+    samples = [
+        {
+            "elapsed_s": 5.0 + index,
+            "power_w": power_w,
+            "gpu_util_pct": 99.0,
+            "core_clock_mhz": clock_mhz,
+            "voltage_mv": voltage_mv,
+            "temperature_c": 60.0,
+            "fan_speed_pct": 36.0,
+        }
+        for index, (power_w, clock_mhz, voltage_mv) in enumerate(
+            [
+                (252.1, 2752.0, 1025.0),
+                (255.6, 2760.0, 1030.0),
+                (256.4, 2760.0, 1025.0),
+                (255.3, 2752.0, 1025.0),
+            ]
+        )
+    ]
+    result = SimpleNamespace(
+        telemetry_samples=samples,
+        companion_telemetry_samples=[],
+        telemetry_summary=lambda: {},
+        reason="ok",
+        log_path=Path("/tmp/q2rtx.log"),
+    )
+
+    loaded = loaded_telemetry_means(
+        samples,
+        power_limit_w=390,
+        use_power_limit_floor=True,
+        skip_elapsed_warmup=True,
+    )
+    summary = summarize_q2rtx_cuda_probe(
+        candidate_voltage_mv=1030,
+        lock_clock_mhz=2760,
+        live_voltage_before_mv=1045,
+        live_voltage_after_mv=1025,
+        used_companion_load=False,
+        power_limit_w=390,
+        result=result,
+        telemetry_samples=samples,
+        use_power_limit_floor=True,
+    )
+
+    assert loaded[0] == pytest.approx(254.85)
+    assert loaded[1] == pytest.approx(2756.0)
+    assert loaded[5] == 4
+    assert loaded[6] == pytest.approx(292.5)
+    assert summary.avg_power_w == pytest.approx(254.85)
+    assert summary.avg_core_clock_mhz == pytest.approx(2756.0)
+    assert summary.avg_voltage_mv == pytest.approx(1026.25)
+    assert summary.loaded_qualified_sample_count == 4
 
 
 def test_loaded_perf_cap_reason_suppresses_idle_as_none() -> None:
