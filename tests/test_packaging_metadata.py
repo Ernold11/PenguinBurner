@@ -748,6 +748,17 @@ def test_readme_distinguishes_flatpak_from_native_console_scripts() -> None:
         "flatpak update --user -y io.github.jpietek.PenguinBurner"
         in readme
     )
+    assert "To uninstall the Flatpak cleanly" in readme
+    assert (
+        "penguin-burner-install-wrappers io.github.jpietek.PenguinBurner --uninstall"
+        in readme
+    )
+    assert (
+        "flatpak uninstall --user --delete-data io.github.jpietek.PenguinBurner"
+        in readme
+    )
+    assert "flatpak remote-delete --user penguinburner" in readme
+    assert "`~/.config/PenguinBurner`" in readme
     assert "`penguin-burner`, `pburn`, `penguin-burner-ui`, `pburn-ui`," in readme
     assert "`penguin-burner-cli`, `pburn-cli`, and `PENGUIN_BURNER`" in readme
     assert "`PENGUIN_BURNER` work from your `PATH`" in readme

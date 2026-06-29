@@ -59,6 +59,18 @@ Existing Flatpak users should update and refresh the PATH wrappers with:
 flatpak update --user -y io.github.jpietek.PenguinBurner && flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
 ```
 
+To uninstall the Flatpak cleanly, remove the host wrappers before removing the
+app. The wrapper cleanup removes only files created by the wrapper installer,
+including the `~/.local/bin` commands and the user Vulkan layer manifest. It
+does not remove your regular PenguinBurner config or Auto-UV profiles under
+`~/.config/PenguinBurner`, so those stay available to PyPI/native installs.
+
+```bash
+flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner --uninstall
+flatpak uninstall --user --delete-data io.github.jpietek.PenguinBurner
+flatpak remote-delete --user penguinburner
+```
+
 You can also launch the Flatpak directly without wrappers:
 
 ```bash
