@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -141,7 +142,10 @@ def test_daemon_migration_command_uses_flatpak_host_cli(
     flatpak_info.write_text("[Application]\n", encoding="utf-8")
     monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
     monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_USER", "desktop-user")
+    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_UID", "1000")
     monkeypatch.setattr(
         commands.pwd,
         "getpwnam",
@@ -166,17 +170,28 @@ def test_daemon_migration_command_uses_flatpak_host_cli(
     ]
     assert "HOME=/home/desktop-user" in command
     assert "XDG_DATA_HOME=/home/desktop-user/.local/share" in command
-    flatpak_index = command.index("/usr/bin/flatpak")
-    assert command[flatpak_index : flatpak_index + 5] == [
-        "/usr/bin/flatpak",
-        "run",
-        "--user",
-        "--command=penguin-burner-cli",
-        "io.github.jpietek.PenguinBurner",
+    encoded_unit = next(
+        item.split("=", 1)[1]
+        for item in command
+        if item.startswith("PENGUIN_BURNER_SYSTEMD_UNIT_B64=")
+    )
+    unit = base64.b64decode(encoded_unit).decode("utf-8")
+
+    assert "/usr/bin/flatpak" not in command
+    assert command[-5:] == [
+        "/bin/sh",
+        "-eu",
+        "-c",
+        command[-2],
+        "penguin-burner-daemon-install",
     ]
-    assert "penguin-burner-cli" not in command
-    assert "--migrate-to-daemon-service" in command
-    assert "/app/" not in " ".join(command)
+    assert "systemctl enable --now penguin-burnerd.service" in command[-2]
+    assert (
+        "ExecStart=/usr/bin/flatpak run --user --command=penguin-burner-cli "
+        "io.github.jpietek.PenguinBurner --daemon-api /run/penguin-burnerd.sock"
+    ) in unit
+    assert "Environment=PENGUIN_BURNER_DAEMON_ALLOWED_UID=1000" in unit
+    assert "--migrate-to-daemon-service" not in command
 
 
 def test_flatpak_runtime_profile_command_avoids_host_path_wrapper(
@@ -187,7 +202,9 @@ def test_flatpak_runtime_profile_command_avoids_host_path_wrapper(
     flatpak_info.write_text("[Application]\n", encoding="utf-8")
     monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
     monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_USER", "desktop-user")
     monkeypatch.setattr(
         commands.pwd,
         "getpwnam",
@@ -223,6 +240,76 @@ def test_flatpak_runtime_profile_command_avoids_host_path_wrapper(
     )
     assert "HOME=/home/desktop-user" in command
     assert "XDG_DATA_HOME=/home/desktop-user/.local/share" in command
+    encoded_unit = next(
+        item.split("=", 1)[1]
+        for item in command
+        if item.startswith("PENGUIN_BURNER_SYSTEMD_UNIT_B64=")
+    )
+    unit = base64.b64decode(encoded_unit).decode("utf-8")
+
+    assert "/usr/bin/flatpak" not in command
+    assert command[-5:] == [
+        "/bin/sh",
+        "-eu",
+        "-c",
+        command[-2],
+        "penguin-burner-systemd-install",
+    ]
+    assert "systemctl enable --now PenguinBurner.service" in command[-2]
+    assert (
+        "ExecStart=/usr/bin/flatpak run --user --command=penguin-burner-cli "
+        "io.github.jpietek.PenguinBurner --silent-fan-curve "
+        "--adaptive-auto-uv --gpu-index 0"
+    ) in unit
+    assert "Environment=HOME=/home/desktop-user" in unit
+    assert "Environment=XDG_DATA_HOME=/home/desktop-user/.local/share" in unit
+
+
+def test_flatpak_runtime_profile_daemonize_uses_host_systemd_run(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    flatpak_info = tmp_path / ".flatpak-info"
+    flatpak_info.write_text("[Application]\n", encoding="utf-8")
+    monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setattr(
+        commands.pwd,
+        "getpwnam",
+        lambda user: SimpleNamespace(pw_dir=f"/home/{user}"),
+    )
+
+    def fake_which(name: str) -> str | None:
+        return {
+            "flatpak-spawn": "/usr/bin/flatpak-spawn",
+            "flatpak": "/usr/bin/flatpak",
+        }.get(name)
+
+    monkeypatch.setattr(commands.shutil, "which", fake_which)
+
+    command = commands.runtime_profile_command(
+        "daemonize",
+        profile_selector="profile-a",
+        silent_fan_curve=True,
+        gpu_index=0,
+    )
+
+    assert command[:4] == [
+        "/usr/bin/flatpak-spawn",
+        "--host",
+        "/usr/bin/pkexec",
+        "/usr/bin/env",
+    ]
+    assert "/usr/bin/flatpak" not in command[: command.index("/usr/bin/systemd-run")]
+    systemd_index = command.index("/usr/bin/systemd-run")
+    assert command[systemd_index : systemd_index + 5] == [
+        "/usr/bin/systemd-run",
+        "--unit",
+        "PenguinBurner",
+        "--collect",
+        "--service-type=simple",
+    ]
     flatpak_index = command.index("/usr/bin/flatpak")
     assert command[flatpak_index : flatpak_index + 5] == [
         "/usr/bin/flatpak",
@@ -231,10 +318,10 @@ def test_flatpak_runtime_profile_command_avoids_host_path_wrapper(
         "--command=penguin-burner-cli",
         "io.github.jpietek.PenguinBurner",
     ]
-    assert "penguin-burner-cli" not in command
-    assert command[-4:] == [
+    assert command[-5:] == [
+        "--auto-uv-profile",
+        "profile-a",
         "--silent-fan-curve",
-        "--adaptive-auto-uv",
         "--gpu-index",
         "0",
     ]

@@ -221,6 +221,8 @@ def daemon_allowed_uid_assignment() -> str:
         os.environ.get("PENGUIN_BURNER_Q2RTX_UID", "").strip()
         or os.environ.get("SUDO_UID", "").strip()
     )
+    if not uid and os.getuid() != 0:
+        uid = str(os.getuid())
     return f"{ALLOWED_UID_ENV}={uid}" if uid else ""
 
 

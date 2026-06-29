@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -280,7 +281,39 @@ def _host_equivalent_command(command: list[str]) -> list[str]:
 
 
 def daemon_migration_command() -> list[str]:
+    if running_in_flatpak():
+        return _flatpak_daemon_service_install_command()
     return privileged_command([*cli_base_command(), "--migrate-to-daemon-service"])
+
+
+def _flatpak_daemon_service_install_command() -> list[str]:
+    from runtime.support.runtime_service import build_daemon_api_service_unit
+
+    unit = build_daemon_api_service_unit(sys.argv[0])
+    encoded_unit = base64.b64encode(unit.encode("utf-8")).decode("ascii")
+    script = r"""
+unit=/etc/systemd/system/penguin-burnerd.service
+tmp="$(mktemp /etc/systemd/system/.penguin-burnerd.service.XXXXXX)"
+trap 'rm -f "$tmp"' EXIT
+printf '%s' "$PENGUIN_BURNER_SYSTEMD_UNIT_B64" | base64 -d > "$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "$unit"
+trap - EXIT
+systemctl daemon-reload
+systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
+systemctl enable --now penguin-burnerd.service
+echo "Installed and started penguin-burnerd.service at $unit."
+""".strip()
+    return _privileged_command(
+        [
+            f"PENGUIN_BURNER_SYSTEMD_UNIT_B64={encoded_unit}",
+            "/bin/sh",
+            "-eu",
+            "-c",
+            script,
+            "penguin-burner-daemon-install",
+        ]
+    )
 
 
 def runtime_profile_command(
@@ -291,24 +324,141 @@ def runtime_profile_command(
     adaptive_auto_uv: bool = False,
     gpu_index: int | None = None,
 ) -> list[str]:
-    command = [*cli_base_command()]
+    runtime_argv: list[str] = []
     if action == "daemonize":
-        command.append("--daemonize")
+        service_flag = "--daemonize"
     elif action == "install-systemd":
-        command.append("--install-systemd-service")
+        service_flag = "--install-systemd-service"
     elif action == "uninstall-systemd":
-        command.append("--uninstall-systemd-service")
+        service_flag = "--uninstall-systemd-service"
     else:
         raise ValueError(f"unknown runtime profile action: {action}")
     if profile_selector and action != "uninstall-systemd":
-        command.extend(["--auto-uv-profile", str(profile_selector)])
+        runtime_argv.extend(["--auto-uv-profile", str(profile_selector)])
     if silent_fan_curve and action != "uninstall-systemd":
-        command.append("--silent-fan-curve")
+        runtime_argv.append("--silent-fan-curve")
     if adaptive_auto_uv and action != "uninstall-systemd":
-        command.append("--adaptive-auto-uv")
+        runtime_argv.append("--adaptive-auto-uv")
     if gpu_index is not None:
-        command.extend(["--gpu-index", str(max(0, int(gpu_index)))])
+        runtime_argv.extend(["--gpu-index", str(max(0, int(gpu_index)))])
+    if running_in_flatpak():
+        return _flatpak_systemd_profile_command(action, runtime_argv)
+    command = [*cli_base_command(), service_flag, *runtime_argv]
     return privileged_command(command)
+
+
+def _flatpak_systemd_profile_command(action: str, runtime_argv: list[str]) -> list[str]:
+    if action == "install-systemd":
+        return _flatpak_install_systemd_command(runtime_argv)
+    if action == "uninstall-systemd":
+        return _flatpak_uninstall_systemd_command()
+    if action == "daemonize":
+        return _flatpak_daemonize_command(runtime_argv)
+    raise ValueError(f"unknown runtime profile action: {action}")
+
+
+def _flatpak_install_systemd_command(runtime_argv: list[str]) -> list[str]:
+    from runtime.support.runtime_service import build_systemd_service_unit
+
+    unit = build_systemd_service_unit(sys.argv[0], list(runtime_argv))
+    encoded_unit = base64.b64encode(unit.encode("utf-8")).decode("ascii")
+    script = r"""
+unit=/etc/systemd/system/PenguinBurner.service
+systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
+if [ -f "$unit" ]; then
+    rm -f "$unit"
+    echo "Removed existing static PenguinBurner.service before persistent service install."
+fi
+tmp="$(mktemp /etc/systemd/system/.PenguinBurner.service.XXXXXX)"
+trap 'rm -f "$tmp"' EXIT
+printf '%s' "$PENGUIN_BURNER_SYSTEMD_UNIT_B64" | base64 -d > "$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "$unit"
+trap - EXIT
+systemctl daemon-reload
+systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
+systemctl enable --now PenguinBurner.service
+echo "Installed and enabled PenguinBurner.service at $unit."
+echo "Follow the journal with: journalctl -u PenguinBurner.service --since \"-4 hours\" -f"
+""".strip()
+    return _privileged_command(
+        [
+            f"PENGUIN_BURNER_SYSTEMD_UNIT_B64={encoded_unit}",
+            "/bin/sh",
+            "-eu",
+            "-c",
+            script,
+            "penguin-burner-systemd-install",
+        ]
+    )
+
+
+def _flatpak_uninstall_systemd_command() -> list[str]:
+    script = r"""
+unit=/etc/systemd/system/PenguinBurner.service
+systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
+rm -f "$unit"
+systemctl daemon-reload
+systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
+echo "Removed PenguinBurner.service."
+""".strip()
+    return _privileged_command(
+        ["/bin/sh", "-eu", "-c", script, "penguin-burner-systemd-uninstall"]
+    )
+
+
+def _flatpak_daemonize_command(runtime_argv: list[str]) -> list[str]:
+    script = r"""
+unit=/etc/systemd/system/PenguinBurner.service
+systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
+rm -f "$unit"
+systemctl daemon-reload
+systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
+exec "$@"
+""".strip()
+    return _privileged_command(
+        [
+            "/bin/sh",
+            "-eu",
+            "-c",
+            script,
+            "penguin-burner-systemd-run",
+            *_flatpak_systemd_run_command(runtime_argv),
+        ]
+    )
+
+
+def _flatpak_systemd_run_command(runtime_argv: list[str]) -> list[str]:
+    from runtime.support.runtime_service import (
+        PENGUIN_BURNER_FOREGROUND_ENV,
+        adaptive_policy_env_assignments,
+        desktop_runtime_env_assignments,
+    )
+
+    command = [
+        "/usr/bin/systemd-run",
+        "--unit",
+        "PenguinBurner",
+        "--collect",
+        "--service-type=simple",
+        "--description",
+        "PenguinBurner runtime daemon",
+        "--property=WorkingDirectory=/",
+        "--property=Restart=on-failure",
+        "--property=RestartSec=2",
+        "--property=StandardOutput=journal",
+        "--property=StandardError=journal",
+        "--property=SyslogIdentifier=PenguinBurner",
+        "--setenv",
+        f"{PENGUIN_BURNER_FOREGROUND_ENV}=1",
+    ]
+    for assignment in [
+        *desktop_runtime_env_assignments(),
+        *adaptive_policy_env_assignments(),
+    ]:
+        command.extend(["--setenv", assignment])
+    command.extend([*host_cli_base_command(), *runtime_argv])
+    return command
 
 
 def profile_verify_command(
