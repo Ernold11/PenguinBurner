@@ -13,6 +13,7 @@ from ui.features.tuning.gpu_selection import runtime_gpu_index
 
 
 FLATPAK_INFO_PATH = Path("/.flatpak-info")
+FLATPAK_APP_ID = "io.github.jpietek.PenguinBurner"
 
 
 def running_in_flatpak() -> bool:
@@ -30,6 +31,15 @@ def host_cli_base_command() -> list[str]:
     override = os.environ.get("PENGUIN_BURNER_HOST_CLI", "").strip()
     if override:
         return [override]
+    if running_in_flatpak():
+        flatpak = shutil.which("flatpak") or "/usr/bin/flatpak"
+        return [
+            flatpak,
+            "run",
+            "--user",
+            "--command=penguin-burner-cli",
+            os.environ.get("FLATPAK_ID", "").strip() or FLATPAK_APP_ID,
+        ]
     return ["penguin-burner-cli"]
 
 
@@ -146,6 +156,7 @@ def _privileged_command_base() -> list[str] | None:
 def _privileged_env() -> list[str]:
     values = []
     if running_in_flatpak():
+        values.extend(_host_flatpak_user_env())
         values.append(_host_path_assignment())
         pythonpath = _host_pythonpath_assignment()
         if pythonpath:
@@ -153,9 +164,42 @@ def _privileged_env() -> list[str]:
     return [*values, *desktop_user_env(), *desktop_session_env()]
 
 
+def _host_flatpak_user_env() -> list[str]:
+    home = _desktop_user_home()
+    if not home:
+        return []
+    return [
+        f"HOME={home}",
+        f"XDG_DATA_HOME={home}/.local/share",
+    ]
+
+
+def _desktop_user_home() -> str:
+    override = os.environ.get("PENGUIN_BURNER_HOME", "").strip()
+    if override:
+        return str(Path(override).expanduser())
+    user = _desktop_user_name()
+    if user:
+        try:
+            return pwd.getpwnam(user).pw_dir
+        except KeyError:
+            pass
+    uid = (
+        os.environ.get("PENGUIN_BURNER_Q2RTX_UID", "").strip()
+        or os.environ.get("SUDO_UID", "").strip()
+    )
+    if uid:
+        try:
+            return pwd.getpwuid(int(uid)).pw_dir
+        except (KeyError, ValueError):
+            pass
+    home = str(Path.home())
+    return home if home and home != "/" else ""
+
+
 def _host_path_assignment() -> str:
     entries = []
-    home = str(Path.home()).strip()
+    home = (_desktop_user_home() if running_in_flatpak() else str(Path.home())).strip()
     if home and home != "/":
         entries.append(str(Path(home) / ".local" / "bin"))
     entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])

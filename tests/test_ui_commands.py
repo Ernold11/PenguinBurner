@@ -141,10 +141,17 @@ def test_daemon_migration_command_uses_flatpak_host_cli(
     flatpak_info.write_text("[Application]\n", encoding="utf-8")
     monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setattr(
+        commands.pwd,
+        "getpwnam",
+        lambda user: SimpleNamespace(pw_dir=f"/home/{user}"),
+    )
 
     def fake_which(name: str) -> str | None:
         return {
             "flatpak-spawn": "/usr/bin/flatpak-spawn",
+            "flatpak": "/usr/bin/flatpak",
         }.get(name)
 
     monkeypatch.setattr(commands.shutil, "which", fake_which)
@@ -157,9 +164,80 @@ def test_daemon_migration_command_uses_flatpak_host_cli(
         "/usr/bin/pkexec",
         "/usr/bin/env",
     ]
-    assert "penguin-burner-cli" in command
+    assert "HOME=/home/desktop-user" in command
+    assert "XDG_DATA_HOME=/home/desktop-user/.local/share" in command
+    flatpak_index = command.index("/usr/bin/flatpak")
+    assert command[flatpak_index : flatpak_index + 5] == [
+        "/usr/bin/flatpak",
+        "run",
+        "--user",
+        "--command=penguin-burner-cli",
+        "io.github.jpietek.PenguinBurner",
+    ]
+    assert "penguin-burner-cli" not in command
     assert "--migrate-to-daemon-service" in command
     assert "/app/" not in " ".join(command)
+
+
+def test_flatpak_runtime_profile_command_avoids_host_path_wrapper(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    flatpak_info = tmp_path / ".flatpak-info"
+    flatpak_info.write_text("[Application]\n", encoding="utf-8")
+    monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setattr(
+        commands.pwd,
+        "getpwnam",
+        lambda user: SimpleNamespace(pw_dir=f"/home/{user}"),
+    )
+
+    def fake_which(name: str) -> str | None:
+        return {
+            "flatpak-spawn": "/usr/bin/flatpak-spawn",
+            "flatpak": "/usr/bin/flatpak",
+        }.get(name)
+
+    monkeypatch.setattr(commands.shutil, "which", fake_which)
+
+    command = commands.runtime_profile_command(
+        "install-systemd",
+        silent_fan_curve=True,
+        adaptive_auto_uv=True,
+        gpu_index=0,
+    )
+
+    assert command[:4] == [
+        "/usr/bin/flatpak-spawn",
+        "--host",
+        "/usr/bin/pkexec",
+        "/usr/bin/env",
+    ]
+    assert any(
+        item.startswith(
+            "PATH=/home/desktop-user/.local/bin:/usr/local/bin:/usr/bin:/bin"
+        )
+        for item in command
+    )
+    assert "HOME=/home/desktop-user" in command
+    assert "XDG_DATA_HOME=/home/desktop-user/.local/share" in command
+    flatpak_index = command.index("/usr/bin/flatpak")
+    assert command[flatpak_index : flatpak_index + 5] == [
+        "/usr/bin/flatpak",
+        "run",
+        "--user",
+        "--command=penguin-burner-cli",
+        "io.github.jpietek.PenguinBurner",
+    ]
+    assert "penguin-burner-cli" not in command
+    assert command[-4:] == [
+        "--silent-fan-curve",
+        "--adaptive-auto-uv",
+        "--gpu-index",
+        "0",
+    ]
 
 
 def test_daemon_migration_command_uses_privileged_cli(monkeypatch) -> None:

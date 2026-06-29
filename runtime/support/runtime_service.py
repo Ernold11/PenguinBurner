@@ -41,6 +41,8 @@ PENGUIN_BURNER_UNIT_NAME = "PenguinBurner"
 PENGUIN_BURNER_DAEMON_UNIT_NAME = "penguin-burnerd"
 PENGUIN_BURNER_FOREGROUND_ENV = "PENGUIN_BURNER_FOREGROUND"
 DEFAULT_JOURNAL_HOURS = 4
+FLATPAK_ID_ENV = "FLATPAK_ID"
+FLATPAK_APP_ID = "io.github.jpietek.PenguinBurner"
 DESKTOP_RUNTIME_ENV_NAMES = (
     "PENGUIN_BURNER_HOME",
     "PENGUIN_BURNER_Q2RTX_USER",
@@ -166,7 +168,52 @@ def desktop_runtime_env_assignments() -> list[str]:
         value = os.environ.get(env_name, "").strip()
         if value:
             assignments.append(f"{env_name}={value}")
+    if running_in_flatpak():
+        assignments.extend(_flatpak_host_user_env_assignments())
     return assignments
+
+
+def running_in_flatpak() -> bool:
+    return bool(os.environ.get(FLATPAK_ID_ENV, "").strip()) or Path(
+        "/.flatpak-info"
+    ).is_file()
+
+
+def _flatpak_app_id() -> str:
+    return os.environ.get(FLATPAK_ID_ENV, "").strip() or FLATPAK_APP_ID
+
+
+def _desktop_user_home() -> str:
+    override = os.environ.get("PENGUIN_BURNER_HOME", "").strip()
+    if override:
+        return str(Path(override).expanduser())
+    user = _invoking_user_name()
+    if user:
+        try:
+            return pwd.getpwnam(user).pw_dir
+        except KeyError:
+            pass
+    uid = (
+        os.environ.get("PENGUIN_BURNER_Q2RTX_UID", "").strip()
+        or os.environ.get("SUDO_UID", "").strip()
+    )
+    if uid:
+        try:
+            return pwd.getpwuid(int(uid)).pw_dir
+        except (KeyError, ValueError):
+            pass
+    home = str(Path.home())
+    return home if home and home != "/" else ""
+
+
+def _flatpak_host_user_env_assignments() -> list[str]:
+    home = _desktop_user_home()
+    if not home:
+        return []
+    return [
+        f"HOME={home}",
+        f"XDG_DATA_HOME={home}/.local/share",
+    ]
 
 
 def daemon_allowed_uid_assignment() -> str:
@@ -186,6 +233,15 @@ def _format_systemd_exec(args):
 
 
 def runtime_foreground_command(program_file, argv):
+    if running_in_flatpak():
+        return [
+            "/usr/bin/flatpak",
+            "run",
+            "--user",
+            "--command=penguin-burner-cli",
+            _flatpak_app_id(),
+            *argv,
+        ]
     python = sys.executable or shutil.which("python3") or "python3"
     return [python, str(Path(program_file).resolve()), *argv]
 

@@ -151,7 +151,8 @@ def test_flatpak_cli_wrapper_installer_is_conservative() -> None:
     assert "penguin-burner-cli" in script
     assert "pburn-cli" in script
     assert "PENGUIN_BURNER" in script
-    assert "exec /usr/bin/flatpak run --command={command_name} {APP_ID}" in script
+    assert "PENGUIN_BURNER_Q2RTX_USER" in script
+    assert "exec /usr/bin/flatpak run --user --command={command_name} {APP_ID}" in script
     assert "refusing to overwrite existing command" in script
     assert "--force" in script
     assert "--uninstall" in script

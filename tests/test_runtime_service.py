@@ -352,3 +352,58 @@ def test_daemonize_preserves_pkexec_desktop_user_env(monkeypatch) -> None:
     assert "SUDO_USER=jp" in command
     assert "PENGUIN_BURNER_HOME=/home/jp" in command
     assert "PENGUIN_BURNER_Q2RTX_USER=jp" in command
+
+
+def test_flatpak_systemd_unit_uses_host_flatpak_run(monkeypatch) -> None:
+    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
+    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_USER", "jp")
+    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_UID", "1000")
+    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_GID", "1000")
+    monkeypatch.setattr(
+        runtime_service.pwd,
+        "getpwnam",
+        lambda user: SimpleNamespace(pw_dir=f"/home/{user}"),
+    )
+
+    unit = runtime_service.build_systemd_service_unit(
+        "/app/lib/python3.13/site-packages/penguin_burner.py",
+        ["--silent-fan-curve", "--adaptive-auto-uv", "--gpu-index", "0"],
+    )
+
+    assert "Environment=HOME=/home/jp" in unit
+    assert "Environment=XDG_DATA_HOME=/home/jp/.local/share" in unit
+    assert "/app/lib/python3.13/site-packages/penguin_burner.py" not in unit
+    assert (
+        "ExecStart=/usr/bin/flatpak run --user --command=penguin-burner-cli "
+        "io.github.jpietek.PenguinBurner --silent-fan-curve "
+        "--adaptive-auto-uv --gpu-index 0"
+    ) in unit
+
+
+def test_flatpak_daemon_unit_execstart_uses_host_flatpak_run(monkeypatch) -> None:
+    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
+    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_USER", "jp")
+    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_UID", "1000")
+    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_GID", "1000")
+    monkeypatch.setattr(
+        runtime_service.pwd,
+        "getpwnam",
+        lambda user: SimpleNamespace(pw_dir=f"/home/{user}"),
+    )
+
+    unit = runtime_service.build_daemon_api_service_unit(
+        "/app/lib/python3.13/site-packages/penguin_burner.py",
+        autostart_argv=["--adaptive-auto-uv"],
+    )
+
+    assert "Environment=HOME=/home/jp" in unit
+    assert "Environment=XDG_DATA_HOME=/home/jp/.local/share" in unit
+    assert (
+        "Environment=PENGUIN_BURNER_DAEMON_PROGRAM_FILE="
+        "/app/lib/python3.13/site-packages/penguin_burner.py"
+    ) in unit
+    assert (
+        "ExecStart=/usr/bin/flatpak run --user --command=penguin-burner-cli "
+        "io.github.jpietek.PenguinBurner --daemon-api "
+        "/run/penguin-burnerd.sock"
+    ) in unit

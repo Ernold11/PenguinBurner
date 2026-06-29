@@ -68,7 +68,17 @@ def _wrapper_text(command_name: str) -> str:
     return (
         "#!/usr/bin/env sh\n"
         f"# {MARKER}\n"
-        f'exec /usr/bin/flatpak run --command={command_name} {APP_ID} "$@"\n'
+        "if [ \"$(id -u)\" = 0 ]; then\n"
+        "    desktop_user=\"${PENGUIN_BURNER_Q2RTX_USER:-${SUDO_USER:-}}\"\n"
+        "    if [ -n \"$desktop_user\" ] && command -v getent >/dev/null 2>&1; then\n"
+        "        desktop_home=\"$(getent passwd \"$desktop_user\" | cut -d: -f6)\"\n"
+        "        if [ -n \"$desktop_home\" ]; then\n"
+        "            export HOME=\"$desktop_home\"\n"
+        "            export XDG_DATA_HOME=\"${XDG_DATA_HOME:-$desktop_home/.local/share}\"\n"
+        "        fi\n"
+        "    fi\n"
+        "fi\n"
+        f'exec /usr/bin/flatpak run --user --command={command_name} {APP_ID} "$@"\n'
     )
 
 
