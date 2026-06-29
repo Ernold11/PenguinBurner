@@ -52,6 +52,12 @@ That single command installs the Flatpak and host command wrappers. After that,
 just like the native packages. The wrapper installer refuses to overwrite
 existing native/PyPI commands unless rerun with `--force`.
 
+Existing Flatpak users should update and refresh the PATH wrappers with:
+
+```bash
+flatpak update --user -y io.github.jpietek.PenguinBurner && flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
+```
+
 You can also launch the Flatpak directly without wrappers:
 
 ```bash

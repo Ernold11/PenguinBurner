@@ -357,6 +357,11 @@ def test_readme_distinguishes_flatpak_from_native_console_scripts() -> None:
     assert "flatpak run io.github.jpietek.PenguinBurner" in readme
     assert "install-flatpak-cli-wrappers.sh | bash" not in readme
     assert "penguin-burner-install-wrappers" in readme
+    assert "Existing Flatpak users should update" in readme
+    assert (
+        "flatpak update --user -y io.github.jpietek.PenguinBurner"
+        in readme
+    )
     assert "`penguin-burner`, `pburn`, `penguin-burner-ui`, `pburn-ui`," in readme
     assert "`penguin-burner-cli`, `pburn-cli`, and `PENGUIN_BURNER`" in readme
     assert "`PENGUIN_BURNER` work from your `PATH`" in readme
