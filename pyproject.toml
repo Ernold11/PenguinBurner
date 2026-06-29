@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "penguin-burner"
-version = "0.5.3"
+version = "0.5.4"
 description = "NVIDIA GPU tuning tool for Linux: automatic and adaptive undervolting, an in-game monitoring overlay with PC latency and pre-frame-generation FPS, plus MSI Afterburner imports and LACT exports"
 requires-python = ">=3.11"
 dynamic = ["readme"]
@@ -59,6 +59,7 @@ pburn-ui = "ui.main:main"
 penguin-burner-cli = "penguin_burner:cli_main"
 pburn-cli = "penguin_burner:cli_main"
 PENGUIN_BURNER = "overlay.launcher:main"
+penguin-burner-install-wrappers = "common.flatpak_wrappers:main"
 
 [tool.setuptools]
 py-modules = [

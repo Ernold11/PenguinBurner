@@ -43,20 +43,14 @@ python -m pip install --user --upgrade penguin-burner
 Or install the self-hosted Flatpak:
 
 ```bash
-flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo && flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner
+flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo && flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner && flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
 ```
 
-Then install the host command wrappers:
-
-```bash
-curl -fsSL https://jpietek.github.io/PenguinBurner/install-flatpak-cli-wrappers.sh | bash
-```
-
-After that, `penguin-burner`, `pburn`, `penguin-burner-ui`, `pburn-ui`,
+That single command installs the Flatpak and host command wrappers. After that,
+`penguin-burner`, `pburn`, `penguin-burner-ui`, `pburn-ui`,
 `penguin-burner-cli`, `pburn-cli`, and `PENGUIN_BURNER` work from your `PATH`
-just like the native packages.
-The wrapper installer refuses to overwrite existing native/PyPI commands unless
-rerun as `curl -fsSL https://jpietek.github.io/PenguinBurner/install-flatpak-cli-wrappers.sh | bash -s -- --force`.
+just like the native packages. The wrapper installer refuses to overwrite
+existing native/PyPI commands unless rerun with `--force`.
 
 You can also launch the Flatpak directly without wrappers:
 

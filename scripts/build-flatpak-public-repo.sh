@@ -12,7 +12,6 @@ REPO_DIR="$OUT_DIR/repo"
 KEY_FILE="$OUT_DIR/penguin-burner-flatpak.gpg"
 FLATPAKREPO_FILE="$OUT_DIR/penguin-burner.flatpakrepo"
 BUNDLE_FILE="$OUT_DIR/PenguinBurner.flatpak"
-WRAPPER_INSTALLER_FILE="$OUT_DIR/install-flatpak-cli-wrappers.sh"
 GPG_KEY="${PENGUIN_BURNER_FLATPAK_GPG_KEY:-2800D243DB4657B3}"
 REPO_URL="${PENGUIN_BURNER_FLATPAK_REPO_URL:-file://$REPO_DIR}"
 HOMEPAGE="${PENGUIN_BURNER_FLATPAK_HOMEPAGE:-https://github.com/jpietek/PenguinBurner}"
@@ -39,8 +38,8 @@ if ! gpg --list-secret-keys "$GPG_KEY" >/dev/null 2>&1; then
 fi
 
 mkdir -p "$OUT_DIR"
+rm -f "$OUT_DIR/install-flatpak-cli-wrappers.sh"
 gpg --batch --yes --output "$KEY_FILE" --export "$GPG_KEY"
-install -m 0644 "$ROOT/scripts/install-flatpak-cli-wrappers.sh" "$WRAPPER_INSTALLER_FILE"
 
 flatpak install -y flathub \
     org.freedesktop.Platform//25.08 \
@@ -104,12 +103,11 @@ Built signed PenguinBurner Flatpak repository:
   Remote file: $FLATPAKREPO_FILE
   Bundle:      $bundle_status
   GPG key:     $KEY_FILE
-  CLI wrappers: $WRAPPER_INSTALLER_FILE
 
 Local test:
   flatpak remote-add --user --if-not-exists penguinburner "$FLATPAKREPO_FILE"
   flatpak install --user -y penguinburner "$APP_ID"
-  bash "$WRAPPER_INSTALLER_FILE"
+  flatpak run --user --command=penguin-burner-install-wrappers "$APP_ID"
   flatpak run "$APP_ID"
 
 Public hosting:

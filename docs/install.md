@@ -20,17 +20,20 @@ python -m pip install --user --upgrade penguin-burner
 ```bash
 flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo
 flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner
-curl -fsSL https://jpietek.github.io/PenguinBurner/install-flatpak-cli-wrappers.sh | bash
+flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
 ```
 
-The wrapper installer adds `penguin-burner`, `pburn`, `penguin-burner-ui`,
-`pburn-ui`, `penguin-burner-cli`, `pburn-cli`, and `PENGUIN_BURNER` under
-`~/.local/bin`, forwarding each command into the Flatpak sandbox. It refuses to
-overwrite an existing native or PyPI command unless you rerun it as:
+Or as a single pasteable command:
 
 ```bash
-curl -fsSL https://jpietek.github.io/PenguinBurner/install-flatpak-cli-wrappers.sh | bash -s -- --force
+flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo && flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner && flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
 ```
+
+The wrapper installer is shipped inside the Flatpak. It adds `penguin-burner`,
+`pburn`, `penguin-burner-ui`, `pburn-ui`, `penguin-burner-cli`, `pburn-cli`,
+and `PENGUIN_BURNER` under `~/.local/bin`, forwarding each command into the
+Flatpak sandbox. It refuses to overwrite an existing native or PyPI command
+unless you rerun it with `--force`.
 
 The direct Flatpak launcher also remains available:
 
