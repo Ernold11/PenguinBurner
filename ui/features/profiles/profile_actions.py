@@ -11,6 +11,7 @@ from profiles.uv.profile_tiers import save_profile_tier_none_assignment
 from ui.commands import delete_profiles_command
 from ui.commands import profile_verify_command
 from ui.commands import runtime_profile_command
+from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
 from ui.components.fan_curve_editor import open_fan_curve_editor_dialog
 from ui.components.vf_curve_editor import open_vf_curve_editor_dialog
 from ui.features.curves.curve_profiles import profile_base_curve_points
@@ -98,6 +99,17 @@ class ProfileActionsMixin:
         ):
             self.controls.set_status_text("No runtime-ready silent fan curve is available.")
             self.log_view.append("\nNo runtime-ready silent fan curve is available.\n")
+            return
+        if action == "daemonize" and not ensure_daemon_ready_for_privileged_action(
+            QtWidgets=self.QtWidgets,
+            parent=self.window,
+            log=self.log_view.append,
+            action_label=(
+                "Applying adaptive Auto-UV"
+                if adaptive_auto_uv
+                else "Applying runtime profile"
+            ),
+        ):
             return
         command = runtime_profile_command(
             action,

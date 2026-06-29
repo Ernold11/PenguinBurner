@@ -21,19 +21,19 @@ def test_game_preset_builds_arbitrary_app_id() -> None:
     assert preset.key == "app-9876543"
     assert (
         build_game_launch_options(preset, ingame_latency=True)
-        == "PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%"
+        == f"PB_INGAME_LATENCY=1 {PENGUIN_BURNER_WRAPPER} %command%"
     )
 
 
 def test_game_preset_defaults_to_app_id_name() -> None:
     preset = game_preset("9876543")
     assert preset.name == "9876543"
-    assert build_game_launch_options(preset) == "PENGUIN_BURNER %command%"
+    assert build_game_launch_options(preset) == f"{PENGUIN_BURNER_WRAPPER} %command%"
 
 
 def test_build_launch_options_default_is_native_only() -> None:
     opts = build_game_launch_options(PRESET)
-    assert opts == "PENGUIN_BURNER %command%"
+    assert opts == f"{PENGUIN_BURNER_WRAPPER} %command%"
     assert "DXVK_NVAPI_LOG_LEVEL=trace" not in opts
     assert "PROTON_LOG=1" not in opts
     assert "VK_ADD_IMPLICIT_LAYER_PATH" not in opts
@@ -51,9 +51,7 @@ def test_build_launch_options_ingame_latency_adds_toggle_before_wrapper() -> Non
 def test_build_launch_options_overlay_adds_short_toggle_before_wrapper() -> None:
     opts = build_game_launch_options(PRESET, overlay=True)
 
-    assert opts == (
-        "PENGUIN_BURNER_OVERLAY=1 PB_OVERLAY=1 PENGUIN_BURNER %command%"
-    )
+    assert opts == f"PB_OVERLAY=1 {PENGUIN_BURNER_WRAPPER} %command%"
 
 
 def test_installed_steam_game_presets_skip_steam_tools(tmp_path) -> None:

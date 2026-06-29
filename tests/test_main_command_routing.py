@@ -9,6 +9,7 @@ from cli.main_command_routing import (
     route_main_command,
 )
 from common.penguin_burner_errors import NvmlError
+from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 
 
 def _args(**overrides):
@@ -103,7 +104,7 @@ def _deps(**overrides):
             format_text=lambda: "persisted=True",
         ),
         "steam_launch_option": lambda **kwargs: (
-            "PB_OVERLAY=1 PENGUIN_BURNER %command%"
+            f"PB_OVERLAY=1 {PENGUIN_BURNER_WRAPPER} %command%"
         ),
         "log": calls["logs"].append,
         "print_fn": lambda *args, **kwargs: calls["prints"].append(
@@ -192,7 +193,7 @@ def test_main_command_routing_sets_steam_overlay_launch_without_loading_config()
     assert calls["steam_launch_rewrites"] == [
         {
             "app_id": "835960",
-            "launch_options": "PB_OVERLAY=1 PENGUIN_BURNER %command%",
+            "launch_options": f"PB_OVERLAY=1 {PENGUIN_BURNER_WRAPPER} %command%",
         }
     ]
     assert calls["prints"][0][0] == ("persisted=True",)
@@ -202,7 +203,7 @@ def test_main_command_routing_reports_steam_overlay_rewrite_failure():
     failed_result = SimpleNamespace(
         app_id="835960",
         config_path=Path("/tmp/localconfig.vdf"),
-        requested_launch_options="PB_OVERLAY=1 PENGUIN_BURNER %command%",
+        requested_launch_options=f"PB_OVERLAY=1 {PENGUIN_BURNER_WRAPPER} %command%",
         previous_launch_options="mangohud %command%",
         current_launch_options="mangohud %command%",
         persisted=False,

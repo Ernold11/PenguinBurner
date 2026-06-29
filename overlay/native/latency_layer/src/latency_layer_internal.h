@@ -44,6 +44,7 @@ namespace pblayer {
 
 constexpr const char* kLayerName = "VK_LAYER_PENGUINBURNER_latency";
 constexpr const char* kSocketEnv = "PENGUIN_BURNER_LATENCY_SOCKET";
+constexpr const char* kMasterEnableEnv = "PENGUIN_BURNER";
 constexpr const char* kEnableEnv = "PENGUIN_BURNER_LATENCY_LAYER";
 constexpr const char* kOverlayEnableEnv = "PENGUIN_BURNER_OVERLAY";
 constexpr const char* kOverlayEnableEnvAlias = "PB_OVERLAY";

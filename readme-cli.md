@@ -223,7 +223,7 @@ PENGUIN_BURNER %command%
 Enable the native in-game overlay for games launched through the wrapper:
 
 ```text
-PENGUIN_BURNER_OVERLAY=1 PENGUIN_BURNER %command%
+PB_OVERLAY=1 PENGUIN_BURNER %command%
 ```
 
 Enable optional dxvk-nvapi in-game latency marker parsing:
@@ -249,7 +249,7 @@ sudo ./penguin_burner.sh --debug-log --auto-uv-voltage-scan
 Follow daemon logs:
 
 ```bash
-sudo journalctl -u PenguinBurner.service --since "-4 hours" -f
+sudo journalctl -u penguin-burnerd.service --since "-4 hours" -f
 ```
 
 More details:

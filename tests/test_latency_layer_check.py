@@ -5,6 +5,7 @@ import subprocess
 import overlay.telemetry.layer_check as layer_check
 from overlay.native_layer import NATIVE_LAYER_LIBRARY
 from overlay.native_layer import NATIVE_LAYER_MANIFEST
+from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 
 
 def test_latency_layer_check_uses_build_tree_layer_path(monkeypatch, tmp_path) -> None:
@@ -32,7 +33,8 @@ def test_latency_layer_check_uses_build_tree_layer_path(monkeypatch, tmp_path) -
     )
 
     assert result["ok"] is True
-    assert result["launch_options"] == "PENGUIN_BURNER %command%"
+    assert result["launch_options"] == f"{PENGUIN_BURNER_WRAPPER} %command%"
+    assert seen["env"]["PENGUIN_BURNER"] == "1"
     assert seen["env"]["PENGUIN_BURNER_LATENCY_LAYER"] == "1"
     assert seen["env"]["VK_ADD_IMPLICIT_LAYER_PATH"] == str(build_dir)
     assert (
@@ -48,4 +50,4 @@ def test_latency_layer_check_reports_wrapper_launch_options_without_vulkaninfo()
     )
 
     assert result["ok"] is False
-    assert result["launch_options"] == "PENGUIN_BURNER %command%"
+    assert result["launch_options"] == f"{PENGUIN_BURNER_WRAPPER} %command%"

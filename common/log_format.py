@@ -22,9 +22,9 @@ _TAG_WIDTH = 6
 def format_sections(sections: Iterable[object]) -> str:
     """Join non-empty sections with `` | ``."""
     return " | ".join(
-        str(section)
+        single_line_text(section)
         for section in sections
-        if section is not None and str(section).strip()
+        if section is not None and single_line_text(section)
     )
 
 
@@ -40,3 +40,14 @@ def format_log_line(tag: str, *sections: object) -> str:
     if not body:
         return tag
     return f"{tag:<{_TAG_WIDTH}} | {body}"
+
+
+def single_line_text(value: object, *, divider: str = " | ") -> str:
+    """Flatten a log payload into one journal record.
+
+    Components sometimes include embedded newlines in diagnostic previews. The
+    daemon journal is easier to follow when each logical event remains one line,
+    with the former line breaks shown as section dividers.
+    """
+    parts = [part.strip() for part in str(value).splitlines() if part.strip()]
+    return divider.join(parts)

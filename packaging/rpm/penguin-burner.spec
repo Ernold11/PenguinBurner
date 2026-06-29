@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.5.7
+Version:        0.5.8
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -79,7 +79,6 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/applications/io.github.jpietek.PenguinBurner.desktop
 %{_datadir}/icons/hicolor/256x256/apps/penguin-burner.png
 %{_datadir}/icons/hicolor/512x512/apps/penguin-burner.png
-%{_datadir}/penguin-burner/PenguinBurner.service
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog

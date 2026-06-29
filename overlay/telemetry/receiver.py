@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Callable
 
+from common.log_format import single_line_text
 from common.penguin_burner_paths import claim_desktop_user_ownership
 
 from .framegen import _explicit_framegen_active
@@ -441,9 +442,9 @@ class LatencyTelemetryMeter:
         )
         if not has_rich_latency_sample and stale_driver_report is None:
             return (
-                f"event=latency-meter pid={latest.get('pid', 'unknown')} "
-                f"quality={best_quality} samples={len(samples)} "
-                f"present-frametime-p95={_format_ms(present_frametime_p95)} "
+                f"event=latency-meter | pid={latest.get('pid', 'unknown')} "
+                f"quality={best_quality} samples={len(samples)} | "
+                f"present-frametime-p95={_format_ms(present_frametime_p95)} | "
                 f"{fps_tail}"
             )
 
@@ -464,20 +465,20 @@ class LatencyTelemetryMeter:
                 f" stale-age-s={self._stale_driver_report_age_s(stale_driver_report, now=now):.1f}"
             )
         return (
-            f"event=latency-meter pid={latest.get('pid', 'unknown')} "
-            f"quality={best_quality} samples={len(samples)} "
+            f"event=latency-meter | pid={latest.get('pid', 'unknown')} "
+            f"quality={best_quality} samples={len(samples)} | "
             f"latency-proxy-p95={_format_ms(latency_proxy_p95)} "
-            f"latency-quality={snapshot['latency_quality'] or 'n/a'} "
+            f"latency-quality={snapshot['latency_quality'] or 'n/a'} | "
             f"sim-to-present-p95={_format_ms(snapshot['sim_to_present_p95_us'])} "
             f"submit-to-present-p95="
-            f"{_format_ms(snapshot['submit_to_present_p95_us'])} "
+            f"{_format_ms(snapshot['submit_to_present_p95_us'])} | "
             f"render-submit-p95={_format_ms(render_submit_p95)} "
-            f"render-present-p95={_format_ms(render_present_p95)} "
+            f"render-present-p95={_format_ms(render_present_p95)} | "
             f"gpu-render-p95={_format_ms(gpu_render_p95)} "
             f"input-present-p95={_format_ms(input_present_p95)} "
-            f"gpu-frame-p95={_format_ms(gpu_frame_p95)} "
+            f"gpu-frame-p95={_format_ms(gpu_frame_p95)} | "
             f"display-latency-p95={_format_ms(snapshot['display_latency_p95_us'])} "
-            f"present-frametime-p95={_format_ms(present_frametime_p95)} "
+            f"present-frametime-p95={_format_ms(present_frametime_p95)} | "
             f"{fps_tail}"
             f"{stale_text}"
             f"{missing_text}"
@@ -642,12 +643,12 @@ class LatencyTelemetryMeter:
             return None
         age_s = self._stale_driver_report_age_s(latest, now=now)
         return (
-            f"event=latency-meter pid={latest.get('pid', 'unknown')} "
-            "quality=stale-driver-report samples=0 "
+            f"event=latency-meter | pid={latest.get('pid', 'unknown')} "
+            "quality=stale-driver-report samples=0 | "
             "latency-proxy-p95=n/a render-submit-p95=n/a "
-            "render-present-p95=n/a gpu-render-p95=n/a "
+            "render-present-p95=n/a | gpu-render-p95=n/a "
             "input-present-p95=n/a gpu-frame-p95=n/a "
-            "present-frametime-p95=n/a present-fps=n/a "
+            "present-frametime-p95=n/a present-fps=n/a | "
             f"stale-present_id={latest.get('present_id', 'unknown')} "
             "stale-driver-report-duplicates="
             f"{_int_value(latest.get('driver_report_duplicate_count'))} "
@@ -862,7 +863,9 @@ class LatencyTelemetryLogger:
         if not summary:
             return
         self._last_log_monotonic = now
-        self.log(f"{self.time_strftime('%Y-%m-%d %H:%M:%S')} {summary}")
+        self.log(
+            single_line_text(f"{self.time_strftime('%Y-%m-%d %H:%M:%S')} {summary}")
+        )
 
     # Layer status events worth surfacing. The present-flow snapshot is the only
     # carrier of the VK_KHR_present_wait / present_id probe fields, so logging it
@@ -971,7 +974,11 @@ class LatencyTelemetryLogger:
         for key in keys:
             if key in sample:
                 fields.append(f"{key}={sample[key]}")
-        self.log(f"{self.time_strftime('%Y-%m-%d %H:%M:%S')} {' '.join(fields)}")
+        self.log(
+            single_line_text(
+                f"{self.time_strftime('%Y-%m-%d %H:%M:%S')} {' '.join(fields)}"
+            )
+        )
 
     def _maybe_log_raw_timing(self, sample: dict) -> None:
         if sample.get("type") != "timing" or self.raw_log_interval_s is None:
@@ -999,7 +1006,11 @@ class LatencyTelemetryLogger:
         ):
             if key in sample:
                 fields.append(f"{key}={sample[key]}")
-        self.log(f"{self.time_strftime('%Y-%m-%d %H:%M:%S')} {' '.join(fields)}")
+        self.log(
+            single_line_text(
+                f"{self.time_strftime('%Y-%m-%d %H:%M:%S')} {' '.join(fields)}"
+            )
+        )
 
 
 def start_latency_telemetry_logger(

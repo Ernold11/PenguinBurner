@@ -32,8 +32,10 @@ flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.i
 The wrapper installer is shipped inside the Flatpak. It adds `penguin-burner`,
 `pburn`, `penguin-burner-ui`, `pburn-ui`, `penguin-burner-cli`, `pburn-cli`,
 and `PENGUIN_BURNER` under `~/.local/bin`, forwarding each command into the
-Flatpak sandbox. It refuses to overwrite an existing native or PyPI command
-unless you rerun it with `--force`.
+Flatpak sandbox. It also registers the native Vulkan overlay layer under your
+user Vulkan layer directory so Steam launch options can stay short. It refuses
+to overwrite an existing native or PyPI command unless you rerun it with
+`--force`.
 
 The direct Flatpak launcher also remains available:
 

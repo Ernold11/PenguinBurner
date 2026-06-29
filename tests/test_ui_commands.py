@@ -33,6 +33,7 @@ from ui.models import top_status_text as _top_status_text
 from ui.models import probe_decision_label as _probe_decision_label
 from ui.models import probe_failure_label as _probe_failure_label
 from ui.styles import STYLESHEET
+from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 from ui.features.tuning.tuning import (
     AUTO_UV_PRESET_BALANCED,
     AUTO_UV_PRESET_EFFICIENCY,
@@ -82,6 +83,11 @@ FLATPAK_CLI_PROGRAM = f"{FLATPAK_SITE_PACKAGES}/penguin_burner.py"
 
 def _scan_daemon_options(command: list[str]) -> dict:
     assert command[1:4] == ["-m", "runtime.daemon_client", "start-auto-uv"]
+    return json.loads(command[4])
+
+
+def _runtime_profile_daemon_argv(command: list[str]) -> list[str]:
+    assert command[1:4] == ["-m", "runtime.daemon_client", "start-runtime-profile"]
     return json.loads(command[4])
 
 
@@ -195,7 +201,10 @@ def test_daemon_migration_command_uses_flatpak_host_cli(
         command[-2],
         "penguin-burner-daemon-install",
     ]
-    assert "systemctl enable --now penguin-burnerd.service" in command[-2]
+    assert "systemctl is-active --quiet penguin-burnerd.service" not in command[-2]
+    assert "systemctl enable penguin-burnerd.service" in command[-2]
+    assert "systemctl restart penguin-burnerd.service" in command[-2]
+    assert "systemctl enable --now penguin-burnerd.service" not in command[-2]
     assert "/usr/bin/flatpak" not in unit
     assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
     assert (
@@ -269,7 +278,10 @@ def test_flatpak_runtime_profile_command_avoids_host_path_wrapper(
         command[-2],
         "penguin-burner-systemd-install",
     ]
-    assert "systemctl enable --now penguin-burnerd.service" in command[-2]
+    assert "systemctl is-active --quiet penguin-burnerd.service" not in command[-2]
+    assert "systemctl enable penguin-burnerd.service" in command[-2]
+    assert "systemctl restart penguin-burnerd.service" in command[-2]
+    assert "systemctl enable --now penguin-burnerd.service" not in command[-2]
     assert "systemctl enable --now PenguinBurner.service" not in command[-2]
     assert "/usr/bin/flatpak" not in unit
     assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
@@ -284,7 +296,7 @@ def test_flatpak_runtime_profile_command_avoids_host_path_wrapper(
     assert "Environment=XDG_DATA_HOME=/home/desktop-user/.local/share" in unit
 
 
-def test_flatpak_runtime_profile_daemonize_uses_host_systemd_run(
+def test_flatpak_runtime_profile_daemonize_uses_daemon_client(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -316,32 +328,12 @@ def test_flatpak_runtime_profile_daemonize_uses_host_systemd_run(
         silent_fan_curve=True,
         gpu_index=0,
     )
+    runtime_argv = _runtime_profile_daemon_argv(command)
 
-    assert command[:4] == [
-        "/usr/bin/flatpak-spawn",
-        "--host",
-        "/usr/bin/pkexec",
-        "/usr/bin/env",
-    ]
-    assert "/usr/bin/flatpak" not in command[: command.index("/usr/bin/systemd-run")]
-    systemd_index = command.index("/usr/bin/systemd-run")
-    assert command[systemd_index : systemd_index + 5] == [
-        "/usr/bin/systemd-run",
-        "--unit",
-        "PenguinBurner",
-        "--collect",
-        "--service-type=simple",
-    ]
+    assert "/usr/bin/systemd-run" not in command
+    assert "PenguinBurner" not in command
     assert "/usr/bin/flatpak" not in command
-    assert "PYTHONNOUSERSITE=1" in command
-    assert "PYTHONDONTWRITEBYTECODE=1" in command
-    assert f"PYTHONPATH={FLATPAK_SITE_PACKAGES}" in command
-    python_index = command.index("/usr/bin/python3")
-    assert command[python_index : python_index + 2] == [
-        "/usr/bin/python3",
-        FLATPAK_CLI_PROGRAM,
-    ]
-    assert command[-5:] == [
+    assert runtime_argv == [
         "--auto-uv-profile",
         "profile-a",
         "--silent-fan-curve",
@@ -602,12 +594,13 @@ def test_ui_runtime_command_uses_auto_uv_profile_without_afterburner_flag(monkey
         silent_fan_curve=True,
         gpu_index=1,
     )
+    runtime_argv = _runtime_profile_daemon_argv(command)
 
-    assert "--daemonize" in command
+    assert "--daemonize" not in command
     assert "--prefer-afterburner-curve" not in command
-    assert "--silent-fan-curve" in command
-    assert command[command.index("--auto-uv-profile") + 1] == "profile-a"
-    assert command[command.index("--gpu-index") + 1] == "1"
+    assert "--silent-fan-curve" in runtime_argv
+    assert runtime_argv[runtime_argv.index("--auto-uv-profile") + 1] == "profile-a"
+    assert runtime_argv[runtime_argv.index("--gpu-index") + 1] == "1"
 
 
 def test_ui_runtime_command_adds_adaptive_for_transient_and_persistent(monkeypatch) -> None:
@@ -623,9 +616,9 @@ def test_ui_runtime_command_adds_adaptive_for_transient_and_persistent(monkeypat
     )
 
     assert "--adaptive-auto-uv" in persistent
-    assert "--adaptive-auto-uv" in transient
+    assert "--adaptive-auto-uv" in _runtime_profile_daemon_argv(transient)
     assert "--auto-uv-profile" not in persistent
-    assert "--auto-uv-profile" not in transient
+    assert "--auto-uv-profile" not in _runtime_profile_daemon_argv(transient)
 
 
 def test_final_choice_performance_mode_sorts_by_fps() -> None:
@@ -1471,7 +1464,7 @@ def test_overlay_panel_launch_box_latency_is_default_on(tmp_path) -> None:
 
     # Latency is default-on through the native layer; dxvk-nvapi parsing is not.
     assert STEAM_LAUNCH_OPTION_WITH_LATENCY == (
-        "PB_OVERLAY=1 PENGUIN_BURNER %command%"
+        f"PB_OVERLAY=1 {PENGUIN_BURNER_WRAPPER} %command%"
     )
     assert STEAM_LAUNCH_OPTION_OVERLAY == STEAM_LAUNCH_OPTION_WITH_LATENCY
 
@@ -2117,6 +2110,108 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     buttons[AUTO_UV_PRESET_EFFICIENCY].click()
     assert dialog.size() == initial_size
     assert max_clock_drop_spin.value() == pytest.approx(11.1)
+
+
+def test_scan_tuning_enter_in_numeric_field_only_commits_value(monkeypatch) -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtTest, QtWidgets
+
+    import ui.dialogs.scan_tuning as scan_tuning
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_voltage_drop_default",
+        lambda gpu_index=None: SimpleNamespace(
+            gpu_name="NVIDIA GeForce RTX 5080",
+            value_pct=15.0,
+            floor_voltage_mv=850,
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_clock_drop_default",
+        lambda gpu_index=None, preset_id=None: SimpleNamespace(
+            value_pct={
+                AUTO_UV_PRESET_EFFICIENCY: 11.1,
+                AUTO_UV_PRESET_BALANCED: 6.0,
+                AUTO_UV_PRESET_PERFORMANCE: 5.4,
+            }.get(preset_id, 6.0)
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "gpu_choices_with_fallback",
+        lambda selected_index=None: (
+            [SimpleNamespace(index=0, label="GPU 0 - NVIDIA GeForce RTX 5080")],
+            0,
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "read_auto_uv_nvml_info",
+        lambda selected: SimpleNamespace(
+            power_draw_w=42.0,
+            power_management_enabled=True,
+            power_limit_w=360.0,
+            power_limit_default_w=360.0,
+            power_limit_min_w=330.0,
+            power_limit_max_w=390.0,
+            graphics_clock_mhz=2100,
+            memory_clock_mhz=10501,
+            supported_memory_clocks_mhz=(),
+            supported_graphics_clock_steps_mhz=(),
+        ),
+    )
+
+    def reject_after_enter_on_memory_offset(dialog):
+        dialog.show()
+        app.processEvents()
+        accepted = []
+        dialog.accepted.connect(lambda: accepted.append(True))
+        buttons = {
+            str(button.property("presetId")): button
+            for button in dialog.findChildren(QtWidgets.QPushButton)
+            if button.property("presetId")
+        }
+        for button in buttons.values():
+            assert not button.autoDefault()
+            assert not button.isDefault()
+        buttons[AUTO_UV_PRESET_PERFORMANCE].click()
+        assert buttons[AUTO_UV_PRESET_PERFORMANCE].isChecked()
+
+        memory_spin = dialog.findChild(QtWidgets.QSpinBox, "memoryOffsetSpin")
+        assert memory_spin is not None
+        memory_spin.setValue(0)
+        editor = memory_spin.lineEdit()
+        editor.setFocus()
+        editor.selectAll()
+        app.processEvents()
+        QtTest.QTest.keyClicks(editor, "1000")
+        QtTest.QTest.keyClick(editor, QtCore.Qt.Key.Key_Return)
+        app.processEvents()
+
+        assert memory_spin.value() == 1000
+        assert buttons[AUTO_UV_PRESET_PERFORMANCE].isChecked()
+        assert not buttons[AUTO_UV_PRESET_EFFICIENCY].isChecked()
+        assert accepted == []
+        return QtWidgets.QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(QtWidgets.QDialog, "exec", reject_after_enter_on_memory_offset)
+
+    assert (
+        scan_tuning.select_scan_tuning(
+            QtCore=QtCore,
+            QtGui=QtGui,
+            QtWidgets=QtWidgets,
+            parent=None,
+            gpu_index=0,
+        )
+        is None
+    )
 
 
 def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None:

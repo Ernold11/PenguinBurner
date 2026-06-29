@@ -149,6 +149,8 @@ def select_scan_tuning(
         button = QtWidgets.QPushButton(label)
         button.setObjectName("autoUvPresetButton")
         button.setCheckable(True)
+        button.setAutoDefault(False)
+        button.setDefault(False)
         button.setProperty("presetId", preset.preset_id)
         button.setToolTip(_wrapped_tooltip(preset_tooltips[preset.preset_id]))
         button.setToolTipDuration(20000)
@@ -197,6 +199,7 @@ def select_scan_tuning(
         int(getattr(voltage_drop_default, "floor_voltage_mv", None) or 850)
     )
     memory_offset_spin = QtWidgets.QSpinBox()
+    memory_offset_spin.setObjectName("memoryOffsetSpin")
     memory_min_mhz, memory_max_mhz = memory_offset_mhz_range()
     memory_offset_spin.setRange(memory_min_mhz, memory_max_mhz)
     memory_offset_spin.setSuffix(" MHz")
@@ -252,12 +255,14 @@ def select_scan_tuning(
         gpu_name=voltage_drop_default.gpu_name,
     )
     performance_voltage_spin = QtWidgets.QSpinBox()
+    performance_voltage_spin.setObjectName("performanceVoltageSpin")
     performance_voltage_spin.setRange(700, 1250)
     performance_voltage_spin.setSuffix(" mV")
     performance_voltage_spin.setSingleStep(5)
     performance_voltage_spin.setFixedWidth(136)
     performance_voltage_spin.setValue(int(performance_target.voltage_mv or 950))
     performance_clock_spin = QtWidgets.QSpinBox()
+    performance_clock_spin.setObjectName("performanceClockSpin")
     performance_clock_spin.setRange(1000, 4000)
     performance_clock_spin.setSuffix(" MHz")
     performance_clock_spin.setSingleStep(15)
@@ -387,6 +392,19 @@ def select_scan_tuning(
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     start_button.setDefault(True)
+    _install_spinbox_enter_commit_filter(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        parent=dialog,
+        spinboxes=[
+            max_clock_drop_spin,
+            voltage_floor_spin,
+            memory_offset_spin,
+            power_limit_spin,
+            performance_voltage_spin,
+            performance_clock_spin,
+        ],
+    )
 
     layout.addWidget(purpose)
     layout.addWidget(gpu_group)
@@ -531,6 +549,53 @@ def _double_spin(QtWidgets, minimum: float, maximum: float, value: float, suffix
     spin.setFixedWidth(116)
     spin.setValue(float(value))
     return spin
+
+
+def _install_spinbox_enter_commit_filter(*, QtCore, QtWidgets, parent, spinboxes) -> None:
+    event_type = getattr(getattr(QtCore.QEvent, "Type", QtCore.QEvent), "KeyPress")
+    key_enum = getattr(QtCore.Qt, "Key", QtCore.Qt)
+    enter_keys = {
+        _qt_enum_value(getattr(key_enum, "Key_Return")),
+        _qt_enum_value(getattr(key_enum, "Key_Enter")),
+    }
+
+    class _SpinBoxEnterFilter(QtCore.QObject):
+        def __init__(self):
+            super().__init__(parent)
+            self._spinboxes_by_target = {}
+            for spinbox in spinboxes:
+                self._spinboxes_by_target[spinbox] = spinbox
+                try:
+                    editor = spinbox.lineEdit()
+                except AttributeError:
+                    editor = None
+                if editor is not None:
+                    self._spinboxes_by_target[editor] = spinbox
+
+        def eventFilter(self, watched, event):  # noqa: N802 - Qt override name
+            if watched not in self._spinboxes_by_target:
+                return False
+            if event.type() != event_type:
+                return False
+            try:
+                key = _qt_enum_value(event.key())
+            except AttributeError:
+                return False
+            if key not in enter_keys:
+                return False
+            spinbox = self._spinboxes_by_target[watched]
+            spinbox.interpretText()
+            event.accept()
+            return True
+
+    event_filter = _SpinBoxEnterFilter()
+    for target in event_filter._spinboxes_by_target:
+        target.installEventFilter(event_filter)
+    parent._penguin_burner_spinbox_enter_filter = event_filter
+
+
+def _qt_enum_value(value) -> int:
+    return int(getattr(value, "value", value))
 
 
 def _aspect_mode(QtCore):

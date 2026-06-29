@@ -29,8 +29,9 @@ def ensure_daemon_ready_for_privileged_action(
         "PenguinBurner Hardware Service",
         (
             f"{action_label} requires the PenguinBurner root hardware service.\n\n"
-            "PenguinBurner can install or migrate it now. This may ask for your "
-            "administrator password once."
+            "PenguinBurner can install or repair it now. If an older "
+            "PenguinBurner.service exists, it will be migrated once. This may "
+            "ask for your administrator password once."
         ),
         QtWidgets.QMessageBox.StandardButton.Yes
         | QtWidgets.QMessageBox.StandardButton.No,
@@ -64,7 +65,7 @@ def ensure_daemon_ready_for_privileged_action(
         QtWidgets.QMessageBox.critical(
             parent,
             "PenguinBurner Hardware Service",
-            "PenguinBurner could not install or migrate the hardware service.\n\n"
+            "PenguinBurner could not install or repair the hardware service.\n\n"
             + (output or f"Exit code: {getattr(result, 'returncode', 1)}"),
         )
         return False

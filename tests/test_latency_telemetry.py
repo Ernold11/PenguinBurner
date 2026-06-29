@@ -28,9 +28,10 @@ def test_latency_telemetry_meter_reports_present_pacing() -> None:
     summary = meter.summary(now=101.25)
 
     assert summary is not None
+    assert "\n" not in summary
     assert summary == (
-        "event=latency-meter pid=123 quality=present-frametime samples=4 "
-        "present-frametime-p95=50.00ms present-fps=20 "
+        "event=latency-meter | pid=123 quality=present-frametime samples=4 | "
+        "present-frametime-p95=50.00ms | present-fps=20 "
         "fps-source=present-pacing "
         "raw-present-fps-avg=40 raw-present-fps-median=60 "
         "raw-present-fps-5pct-low=20 raw-present-fps-1pct-low=20"

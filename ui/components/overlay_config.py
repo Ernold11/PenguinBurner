@@ -121,7 +121,7 @@ class OverlayConfigPanel:
         self.enable_checkbox.setToolTip(
             _wrapped_tooltip(
                 "Controls whether PenguinBurner's native in-game overlay is "
-                "enabled for Steam launches through PENGUIN_BURNER %command%. "
+                "enabled for Steam launches through the generated wrapper path. "
                 "Changes update the running native overlay live."
             )
         )

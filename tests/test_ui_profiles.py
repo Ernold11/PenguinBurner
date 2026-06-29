@@ -4,6 +4,8 @@ status text, and the systemd query wrappers (subprocess monkeypatched).
 
 from __future__ import annotations
 
+import base64
+import json
 from types import SimpleNamespace
 
 import ui.features.profiles.profiles as profiles
@@ -186,6 +188,7 @@ def test_delete_confirmation_text_variants() -> None:
 
 
 def test_systemctl_backed_queries(monkeypatch) -> None:
+    monkeypatch.setattr(profiles, "_daemon_status_payload", lambda: {})
     monkeypatch.setattr(
         profiles.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="")
     )
@@ -199,44 +202,84 @@ def test_systemctl_backed_queries(monkeypatch) -> None:
     assert profiles.systemd_service_is_enabled() is False
 
 
-def test_running_exec_start(monkeypatch) -> None:
+def test_legacy_running_exec_start(monkeypatch) -> None:
     monkeypatch.setattr(
         profiles.subprocess,
         "run",
         lambda *a, **k: SimpleNamespace(returncode=0, stdout="pburn --auto-uv-profile p3\n"),
     )
-    assert "--auto-uv-profile p3" in profiles._systemd_running_exec_start()
+    assert "--auto-uv-profile p3" in profiles._legacy_systemd_running_exec_start()
     monkeypatch.setattr(
         profiles.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1, stdout="x")
     )
-    assert profiles._systemd_running_exec_start() == ""
+    assert profiles._legacy_systemd_running_exec_start() == ""
 
 
-def test_unit_exec_start_and_entry_exists(monkeypatch, tmp_path) -> None:
+def test_daemon_unit_autostart_and_entry_exists(monkeypatch, tmp_path) -> None:
     unit = tmp_path / "pb.service"
-    unit.write_text("[Service]\nExecStart=pburn --auto-uv-profile p4\n", encoding="utf-8")
+    encoded = base64.b64encode(
+        json.dumps(["--auto-uv-profile", "p4", "--silent-fan-curve"]).encode("utf-8")
+    ).decode("ascii")
+    unit.write_text(
+        f"[Service]\nEnvironment=PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64={encoded}\n",
+        encoding="utf-8",
+    )
+    legacy = tmp_path / "legacy.service"
     monkeypatch.setattr(profiles, "systemd_service_unit_path", lambda: unit)
-    assert profiles._systemd_unit_exec_start() == "pburn --auto-uv-profile p4"
+    monkeypatch.setattr(profiles, "legacy_systemd_service_unit_path", lambda: legacy)
+    assert profiles._daemon_unit_autostart_argv() == [
+        "--auto-uv-profile",
+        "p4",
+        "--silent-fan-curve",
+    ]
     assert profiles.systemd_unit_entry_exists() is True
 
     empty_unit = tmp_path / "missing.service"
     monkeypatch.setattr(profiles, "systemd_service_unit_path", lambda: empty_unit)
-    assert profiles._systemd_unit_exec_start() == ""
+    assert profiles._daemon_unit_autostart_argv() == []
     assert profiles.systemd_unit_entry_exists() is False
 
 
 def test_autostart_and_running_info(monkeypatch) -> None:
     monkeypatch.setattr(profiles, "systemd_service_is_enabled", lambda: False)
+    monkeypatch.setattr(
+        profiles,
+        "_legacy_systemd_autostart_profile_info",
+        lambda: {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False},
+    )
     assert profiles.systemd_autostart_profile_info() == {
         "selector": "",
         "silent_fan_curve": False,
+        "adaptive_auto_uv": False,
     }
     monkeypatch.setattr(profiles, "systemd_service_is_enabled", lambda: True)
     monkeypatch.setattr(
-        profiles, "_systemd_unit_exec_start", lambda: "pburn --auto-uv-profile p5"
+        profiles,
+        "_daemon_unit_autostart_argv",
+        lambda: ["--auto-uv-profile", "p5", "--silent-fan-curve"],
     )
     assert profiles.systemd_autostart_profile_info()["selector"] == "p5"
 
-    monkeypatch.setattr(profiles, "_systemd_running_exec_start", lambda: "")
+    monkeypatch.setattr(profiles, "_daemon_status_payload", lambda: {})
+    monkeypatch.setattr(profiles, "_legacy_systemd_running_exec_start", lambda: "")
     # Falls back to autostart info when nothing is running.
     assert profiles.running_auto_uv_profile_info()["selector"] == "p5"
+
+
+def test_running_info_uses_daemon_status(monkeypatch) -> None:
+    monkeypatch.setattr(
+        profiles,
+        "_daemon_status_payload",
+        lambda: {
+            "state": "runtime_profile_running",
+            "active_job": {
+                "type": "runtime_profile",
+                "argv": ["--auto-uv-profile", "p6", "--adaptive-auto-uv"],
+            },
+        },
+    )
+
+    assert profiles.penguin_burner_runtime_is_active() is True
+    info = profiles.running_auto_uv_profile_info()
+    assert info["selector"] == "p6"
+    assert info["adaptive_auto_uv"] is True

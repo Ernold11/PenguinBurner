@@ -219,13 +219,13 @@ def parse_arguments(argv):
         action="store_true",
         help=(
             "Install penguin-burnerd.service and migrate an existing "
-            "PenguinBurner.service when possible."
+            "legacy PenguinBurner.service when possible."
         ),
     )
     daemon_group.add_argument(
         "--daemon-status",
         action="store_true",
-        help="Print PenguinBurner root daemon status and exit.",
+        help="Print PenguinBurner hardware daemon status and exit.",
     )
     daemon_group.add_argument(
         "--daemon-api",

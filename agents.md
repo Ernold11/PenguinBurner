@@ -264,7 +264,7 @@ Before merging a feature or cleanup:
 
 7. For daemon/adaptive changes, verify with logs from the real service boundary.
    ```bash
-   journalctl -u PenguinBurner
+   journalctl -u penguin-burnerd
    ```
 
 8. For Auto-UV behavior, run or explicitly defer live hardware validation. Unit

@@ -9,6 +9,8 @@ from typing import Callable
 
 from drivers.nvidia.nvml_gpu_policy import describe_translated_gpu_policy
 from profiles.uv.profile_tiers import profile_tier_label
+from common.log_format import format_log_line
+from common.log_format import single_line_text
 from common.penguin_burner_errors import NvmlError
 from runtime.support.vf_curve_plan import apply_plan
 from runtime.support.runtime_debug import debug_log as runtime_debug_log
@@ -45,8 +47,8 @@ class RuntimeFanLoopDependencies:
     describe_translated_gpu_policy: Callable = describe_translated_gpu_policy
     log: Callable[[str], None] = runtime_log
     # Full per-tick detail (incl. all VF curve points, clock offsets, ceiling,
-    # mem clock) for users troubleshooting a problem. Only written to the
-    # --debug-log file, never the concise journal stream.
+    # mem clock) for users troubleshooting a problem. The journal receives a
+    # single-line normalized record; --debug-log mirrors the same detail.
     debug_log: Callable[[str], None] = runtime_debug_log
     overlay_state_publisher_factory: Callable | None = None
     print_fn: Callable = print
@@ -193,7 +195,10 @@ def run_runtime_fan_control_loop(
     overlay_publish_failed = False
     adaptive_update_failed = False
     latency_snapshot_failed = False
-    current_tier_label = None
+    profile_clock_mhz, profile_voltage_mv = _vf_policy_profile_target(vf_policy)
+    current_tier_label = _vf_policy_profile_tier_label(vf_policy)
+    status_core_clock_mhz = profile_clock_mhz
+    status_voltage_mv = profile_voltage_mv
     last_status_signature = None
 
     def emit_status(*, fan_pct, fan_mode) -> None:
@@ -203,6 +208,8 @@ def run_runtime_fan_control_loop(
         signature = status_signature(
             temp_c=current_temp_c,
             power_w=power_draw_w,
+            core_clock_mhz=status_core_clock_mhz,
+            voltage_mv=status_voltage_mv,
             fan_pct=fan_pct,
             fan_mode=fan_mode,
             tier=current_tier_label,
@@ -214,6 +221,8 @@ def run_runtime_fan_control_loop(
             status_line(
                 temp_c=current_temp_c,
                 power_w=power_draw_w,
+                core_clock_mhz=status_core_clock_mhz,
+                voltage_mv=status_voltage_mv,
                 fan_pct=fan_pct,
                 fan_mode=fan_mode,
                 tier=current_tier_label,
@@ -276,10 +285,22 @@ def run_runtime_fan_control_loop(
             power_draw_w=power_draw_w,
             clock_ceiling_controller=clock_ceiling_controller,
         )
-        # Full detail (every VF curve point, offsets, ceiling, mem clock) is
-        # preserved for troubleshooting in the --debug-log file every tick,
-        # while the journal only gets the concise status line below.
-        deps.debug_log(telemetry_text)
+        telemetry_clock_mhz = _telemetry_number(telemetry_text, "gpu_clock", "MHz")
+        telemetry_voltage_mv = _telemetry_number(telemetry_text, "voltage", "mV")
+        status_core_clock_mhz = profile_clock_mhz or telemetry_clock_mhz
+        status_voltage_mv = profile_voltage_mv or telemetry_voltage_mv
+        # Keep the full per-poll telemetry in the journal. The compact status
+        # line below is a quick summary, but it must not replace the diagnostic
+        # fields users need when the daemon is running under systemd.
+        telemetry_log_text = single_line_text(telemetry_text)
+        deps.log(
+            format_log_line(
+                "telemetry",
+                deps.time_strftime("%Y-%m-%d %H:%M:%S"),
+                telemetry_log_text,
+            )
+        )
+        deps.debug_log(telemetry_log_text)
         if _overlay_updates_enabled(overlay_state_publisher):
             try:
                 if (
@@ -625,6 +646,50 @@ def _log_fan_curve_startup(
     )
 
 
+def _vf_policy_profile_target(
+    vf_policy: RuntimeVfCurvePolicyResult | None,
+) -> tuple[float | None, float | None]:
+    curve = vf_policy.auto_uv_final_curve if vf_policy is not None else None
+    if not isinstance(curve, dict):
+        return None, None
+    return (
+        _number_or_none(curve.get("lock_clock_mhz")),
+        _number_or_none(curve.get("candidate_voltage_mv")),
+    )
+
+
+def _vf_policy_profile_tier_label(vf_policy: RuntimeVfCurvePolicyResult | None) -> str:
+    if vf_policy is None:
+        return ""
+    label = str(vf_policy.active_profile_tier or "").strip()
+    if label:
+        return label
+    tier_key = str(vf_policy.active_profile_tier_key or "").strip()
+    return str(profile_tier_label(tier_key) or "").strip() if tier_key else ""
+
+
+def _telemetry_number(text: str, key: str, unit: str) -> float | None:
+    prefix = f"{key}="
+    suffix = str(unit)
+    for token in str(text or "").split():
+        if not token.startswith(prefix) or not token.endswith(suffix):
+            continue
+        value = token[len(prefix) : -len(suffix)]
+        parsed = _number_or_none(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _number_or_none(value) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _maybe_reapply_vf_curve(
     *,
     vf_curve_reader,
@@ -666,8 +731,13 @@ def _maybe_reapply_vf_curve(
 
     mismatch_preview = deps.format_vf_curve_mismatch_preview(vf_mismatches)
     deps.log(
-        f"{timestamp} {telemetry_text} "
-        f"event=vf-curve-reapplied mismatches={len(vf_mismatches)} "
-        f"samples={mismatch_preview}"
+        format_log_line(
+            "vf",
+            timestamp,
+            single_line_text(telemetry_text),
+            "event=vf-curve-reapplied",
+            f"mismatches={len(vf_mismatches)}",
+            f"samples={single_line_text(mismatch_preview)}",
+        )
     )
     return loop_started

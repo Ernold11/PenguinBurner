@@ -1,7 +1,6 @@
 include LICENSE
 include README.md
 include readme-cli.md
-include PenguinBurner.service
 include penguin_burner.sh
 include packaging/linux/*.desktop
 include overlay/native/latency_layer/CMakeLists.txt

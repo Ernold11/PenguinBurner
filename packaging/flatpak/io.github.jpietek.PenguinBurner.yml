@@ -24,7 +24,7 @@ modules:
       build-args:
         - --share=network
       env:
-        PENGUIN_BURNER_BUILD_NATIVE_LAYER: "0"
+        PENGUIN_BURNER_REQUIRE_NATIVE_LAYER: "1"
         PIP_DISABLE_PIP_VERSION_CHECK: "1"
     sources:
       - type: dir

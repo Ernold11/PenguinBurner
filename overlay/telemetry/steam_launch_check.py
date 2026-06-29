@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 import re
+from pathlib import Path
 import time
 
 
-# Clean command name resolved via PATH, so the Steam launch line stays readable
-# instead of carrying a hardcoded /home/<user>/.local/bin/... path.
-PENGUIN_BURNER_WRAPPER = "PENGUIN_BURNER"
+BARE_PENGUIN_BURNER_WRAPPER = "PENGUIN_BURNER"
+PENGUIN_BURNER_WRAPPER = BARE_PENGUIN_BURNER_WRAPPER
 
 # The only token any game needs in its launch line is the PenguinBurner wrapper;
 # overlay and in-game latency are opt-in via extra tokens (see steam_game_setup).
+# Flatpak installs also register a user Vulkan implicit-layer manifest enabled
+# by PENGUIN_BURNER=1, so this short token works even if Steam treats it as an
+# environment toggle instead of executing the PATH wrapper.
 DEFAULT_REQUIRED_TOKENS = (
     PENGUIN_BURNER_WRAPPER,
 )

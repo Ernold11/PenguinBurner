@@ -7,19 +7,20 @@ import tomllib
 
 from common.penguin_burner_paths import claim_desktop_user_ownership
 from common.penguin_burner_paths import default_user_config_dir
+from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 
 
 OVERLAY_CONFIG_ENV = "PENGUIN_BURNER_OVERLAY_CONFIG"
-STEAM_LAUNCH_OPTION = "PENGUIN_BURNER %command%"
+STEAM_LAUNCH_OPTION = f"{PENGUIN_BURNER_WRAPPER} %command%"
 
 
 def steam_launch_option(*, ingame_latency_enabled: bool = False) -> str:
     """Steam launch string for the overlay.
 
-    ``PB_OVERLAY=1`` turns the overlay on. Native Vulkan marker latency is wired
-    by the wrapper. ``PB_INGAME_LATENCY=1`` enables dxvk-nvapi marker parsing
-    for titles where native Vulkan markers are not enough; patched dxvk-nvapi
-    builds use marker-only logging, and stock builds fall back to trace.
+    ``PB_OVERLAY=1`` turns the overlay on. Flatpak installs register the native
+    Vulkan layer for ``PENGUIN_BURNER=1``; the wrapper also wires the layer when
+    Steam executes it directly. ``PB_INGAME_LATENCY=1`` enables dxvk-nvapi
+    marker parsing for titles where native Vulkan markers are not enough.
     """
     tokens = ["PB_OVERLAY=1"]
     if ingame_latency_enabled:

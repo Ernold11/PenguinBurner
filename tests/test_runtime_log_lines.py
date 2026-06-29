@@ -12,6 +12,8 @@ from common.runtime_log_lines import (
     tier_switch_line,
     warn_line,
 )
+from common.log_format import format_log_line
+from common.log_format import single_line_text
 
 
 def test_format_clock_voltage_variants() -> None:
@@ -76,3 +78,10 @@ def test_event_and_warn_lines() -> None:
         "warn   | overlay publish unavailable | socket gone"
     )
     assert warn_line("latency telemetry unavailable") == "warn   | latency telemetry unavailable"
+
+
+def test_log_sections_flatten_embedded_newlines() -> None:
+    assert single_line_text("alpha\nbeta\n\n gamma ") == "alpha | beta | gamma"
+    assert format_log_line("telemetry", "2026-06-29", "temp=40C\nvf_point=2280MHz") == (
+        "telemetry | 2026-06-29 | temp=40C | vf_point=2280MHz"
+    )

@@ -25,6 +25,16 @@ _AUTOSTART_ARGV: list[str] = []
 _ACTIVE_SCAN_PROCESS: subprocess.Popen | None = None
 _ACTIVE_SCAN_ARGV: list[str] = []
 _ACTIVE_SCAN_LOCK = threading.Lock()
+_RUNTIME_PROFILE_OPTION_FLAGS = {
+    "--auto-uv-profile",
+    "--silent-fan-curve",
+    "--adaptive-auto-uv",
+    "--gpu-index",
+}
+_RUNTIME_PROFILE_VALUE_FLAGS = {
+    "--auto-uv-profile",
+    "--gpu-index",
+}
 
 _AUTO_UV_OPTION_FLAGS = {
     "gpu_index": "--gpu-index",
@@ -81,15 +91,21 @@ def status_payload() -> dict[str, Any]:
 def handle_request(payload: object) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("request must be a JSON object")
+    method = payload.get("method")
     allowed = {"method"}
+    if method == "start_runtime_profile":
+        allowed.add("argv")
     unknown = sorted(set(payload) - allowed)
     if unknown:
         raise ValueError(f"unknown request field: {', '.join(unknown)}")
-    method = payload.get("method")
     if method == "status":
         return status_payload()
     if method == "stop_auto_uv_scan":
         return stop_auto_uv_scan()
+    if method == "start_runtime_profile":
+        return start_runtime_profile(payload.get("argv"))
+    if method == "stop_runtime_profile":
+        return stop_runtime_profile()
     if not isinstance(method, str) or not method:
         raise ValueError("request method is required")
     raise ValueError(f"unknown daemon method: {method}")
@@ -224,6 +240,30 @@ def stop_auto_uv_scan() -> dict[str, Any]:
     return {"stopped": True, "pid": process.pid}
 
 
+def start_runtime_profile(argv: object) -> dict[str, Any]:
+    global _AUTOSTART_PROCESS, _AUTOSTART_ARGV
+    runtime_argv = _runtime_profile_argv(argv)
+    with _ACTIVE_SCAN_LOCK:
+        if _scan_running():
+            raise RuntimeError("cannot start a runtime profile while Auto-UV scan is running")
+        _stop_autostart_runtime_for_scan()
+        process = subprocess.Popen(
+            [sys.executable, _daemon_program_file(), *runtime_argv],
+            cwd="/",
+        )
+        _AUTOSTART_PROCESS = process
+        _AUTOSTART_ARGV = runtime_argv
+    return {"started": True, "pid": process.pid, "argv": list(runtime_argv)}
+
+
+def stop_runtime_profile() -> dict[str, Any]:
+    process = _AUTOSTART_PROCESS
+    if process is None or process.poll() is not None:
+        return {"stopped": False, "state": "idle"}
+    _stop_autostart_runtime_for_scan()
+    return {"stopped": True, "pid": process.pid}
+
+
 def _is_start_auto_uv_scan_request(request: object) -> bool:
     return isinstance(request, dict) and request.get("method") == "start_auto_uv_scan"
 
@@ -249,6 +289,28 @@ def _auto_uv_scan_command(options: object) -> list[str]:
             raise ValueError(f"Auto-UV option {key} must be scalar")
         command.extend([flag, _command_value_text(value)])
     return command
+
+
+def _runtime_profile_argv(argv: object) -> list[str]:
+    if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
+        raise ValueError("runtime profile argv must be a JSON string list")
+    clean = [str(item) for item in argv]
+    index = 0
+    while index < len(clean):
+        item = clean[index]
+        if item in _RUNTIME_PROFILE_VALUE_FLAGS:
+            if index + 1 >= len(clean):
+                raise ValueError(f"{item} requires a value")
+            index += 2
+            continue
+        if item.startswith("--auto-uv-profile=") or item.startswith("--gpu-index="):
+            index += 1
+            continue
+        if item in _RUNTIME_PROFILE_OPTION_FLAGS:
+            index += 1
+            continue
+        raise ValueError(f"unsupported runtime profile argument: {item}")
+    return clean
 
 
 def _daemon_program_file() -> str:

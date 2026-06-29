@@ -77,6 +77,8 @@ def test_daemon_setup_prompts_and_runs_migration_when_missing() -> None:
     assert ok is True
     assert commands == [["pkexec", "penguin-burner-cli", "--migrate-to-daemon-service"]]
     assert _MessageBox.questions
+    assert "install or repair" in _MessageBox.questions[0][2]
+    assert "migrated once" in _MessageBox.questions[0][2]
     assert not _MessageBox.criticals
     assert any("--migrate-to-daemon-service" in message for message in logs)
 

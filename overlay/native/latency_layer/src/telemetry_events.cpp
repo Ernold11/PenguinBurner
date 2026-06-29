@@ -2,6 +2,11 @@
 #include "latency_layer_internal.h"
 
 namespace pblayer {
+
+bool layer_enabled() {
+    return std::getenv(kEnableEnv) || std::getenv(kMasterEnableEnv);
+}
+
 uint64_t live_swapchain_count_locked(VkDevice device) {
     uint64_t count = 0;
     for (const auto& entry : g_swapchains) {
@@ -555,7 +560,7 @@ void send_marker_timing_sample(
 }
 
 void send_status_event_once(const char* event, std::atomic<bool>& reported) {
-    if (!std::getenv(kEnableEnv)) {
+    if (!layer_enabled()) {
         return;
     }
 
@@ -573,7 +578,7 @@ void send_status_event_once(const char* event, std::atomic<bool>& reported) {
 }
 
 __attribute__((constructor)) void layer_loaded() {
-    if (!std::getenv(kEnableEnv)) {
+    if (!layer_enabled()) {
         return;
     }
     send_status_event(

@@ -106,6 +106,31 @@ def daemon_status(
     return daemon_request("status", socket_path=socket_path, timeout_s=timeout_s)
 
 
+def start_runtime_profile(
+    argv: list[str],
+    *,
+    socket_path: str | Path = DEFAULT_DAEMON_SOCKET,
+    timeout_s: float = 3.0,
+) -> dict[str, Any]:
+    return daemon_payload_request(
+        {"method": "start_runtime_profile", "argv": list(argv)},
+        socket_path=socket_path,
+        timeout_s=timeout_s,
+    )
+
+
+def stop_runtime_profile(
+    *,
+    socket_path: str | Path = DEFAULT_DAEMON_SOCKET,
+    timeout_s: float = 3.0,
+) -> dict[str, Any]:
+    return daemon_request(
+        "stop_runtime_profile",
+        socket_path=socket_path,
+        timeout_s=timeout_s,
+    )
+
+
 def stream_auto_uv_scan(
     options: dict[str, Any],
     *,
@@ -154,8 +179,11 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("status")
     subparsers.add_parser("stop-auto-uv")
+    subparsers.add_parser("stop-runtime-profile")
     start = subparsers.add_parser("start-auto-uv")
     start.add_argument("options_json")
+    runtime = subparsers.add_parser("start-runtime-profile")
+    runtime.add_argument("argv_json")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     try:
@@ -174,11 +202,31 @@ def main(argv: list[str] | None = None) -> int:
                 flush=True,
             )
             return 0
+        if args.command == "stop-runtime-profile":
+            print(
+                json.dumps(stop_runtime_profile(socket_path=args.socket), indent=2),
+                flush=True,
+            )
+            return 0
         if args.command == "start-auto-uv":
             options = json.loads(args.options_json)
             if not isinstance(options, dict):
                 raise RuntimeError("Auto-UV options JSON must be an object")
             return stream_auto_uv_scan(options, socket_path=args.socket)
+        if args.command == "start-runtime-profile":
+            runtime_argv = json.loads(args.argv_json)
+            if not isinstance(runtime_argv, list) or not all(
+                isinstance(item, str) for item in runtime_argv
+            ):
+                raise RuntimeError("runtime profile argv JSON must be a string list")
+            print(
+                json.dumps(
+                    start_runtime_profile(runtime_argv, socket_path=args.socket),
+                    indent=2,
+                ),
+                flush=True,
+            )
+            return 0
     except KeyboardInterrupt:
         return 130
     except Exception as exc:

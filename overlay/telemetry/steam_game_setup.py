@@ -16,7 +16,7 @@ EXCLUDED_INSTALLED_APP_NAME_PREFIXES = (
 )
 
 INGAME_LATENCY_TOKENS = ("PB_INGAME_LATENCY=1",)
-OVERLAY_TOKENS = ("PENGUIN_BURNER_OVERLAY=1", "PB_OVERLAY=1")
+OVERLAY_TOKENS = ("PB_OVERLAY=1",)
 
 
 @dataclass(frozen=True)
@@ -45,8 +45,9 @@ def build_game_launch_options(
     ingame_latency: bool = False,
     overlay: bool = False,
 ) -> str:
-    # The wrapper expands to the native Vulkan layer. The optional in-game
-    # latency token enables dxvk-nvapi marker parsing for explicit tests.
+    # PENGUIN_BURNER is both the PATH wrapper name and the Flatpak host-layer
+    # enable token. The optional in-game latency token enables dxvk-nvapi marker
+    # parsing for explicit tests.
     tokens: list[str] = []
     if overlay:
         tokens.extend(OVERLAY_TOKENS)

@@ -295,7 +295,10 @@ def _flatpak_daemon_service_install_command() -> list[str]:
     unit = build_daemon_api_service_unit(flatpak_host_cli_program_file())
     encoded_unit = base64.b64encode(unit.encode("utf-8")).decode("ascii")
     script = r"""
+legacy_unit=/etc/systemd/system/PenguinBurner.service
 unit=/etc/systemd/system/penguin-burnerd.service
+systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
+rm -f "$legacy_unit"
 tmp="$(mktemp /etc/systemd/system/.penguin-burnerd.service.XXXXXX)"
 trap 'rm -f "$tmp"' EXIT
 printf '%s' "$PENGUIN_BURNER_SYSTEMD_UNIT_B64" | base64 -d > "$tmp"
@@ -303,8 +306,10 @@ chmod 0644 "$tmp"
 mv "$tmp" "$unit"
 trap - EXIT
 systemctl daemon-reload
+systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
 systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
-systemctl enable --now penguin-burnerd.service
+systemctl enable penguin-burnerd.service
+systemctl restart penguin-burnerd.service
 echo "Installed and started penguin-burnerd.service at $unit."
 """.strip()
     return _privileged_command(
@@ -344,10 +349,22 @@ def runtime_profile_command(
         runtime_argv.append("--adaptive-auto-uv")
     if gpu_index is not None:
         runtime_argv.extend(["--gpu-index", str(max(0, int(gpu_index)))])
+    if action == "daemonize":
+        return _daemon_runtime_profile_command(runtime_argv)
     if running_in_flatpak():
         return _flatpak_systemd_profile_command(action, runtime_argv)
     command = [*cli_base_command(), service_flag, *runtime_argv]
     return privileged_command(command)
+
+
+def _daemon_runtime_profile_command(runtime_argv: list[str]) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "runtime.daemon_client",
+        "start-runtime-profile",
+        json.dumps(list(runtime_argv), separators=(",", ":")),
+    ]
 
 
 def _flatpak_systemd_profile_command(action: str, runtime_argv: list[str]) -> list[str]:
@@ -355,8 +372,6 @@ def _flatpak_systemd_profile_command(action: str, runtime_argv: list[str]) -> li
         return _flatpak_install_systemd_command(runtime_argv)
     if action == "uninstall-systemd":
         return _flatpak_uninstall_systemd_command()
-    if action == "daemonize":
-        return _flatpak_daemonize_command(runtime_argv)
     raise ValueError(f"unknown runtime profile action: {action}")
 
 
@@ -388,7 +403,8 @@ trap - EXIT
 systemctl daemon-reload
 systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
 systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
-systemctl enable --now penguin-burnerd.service
+systemctl enable penguin-burnerd.service
+systemctl restart penguin-burnerd.service
 echo "Installed and enabled penguin-burnerd.service at $unit."
 echo "Follow the journal with: journalctl -u penguin-burnerd.service --since \"-4 hours\" -f"
 """.strip()
@@ -425,65 +441,6 @@ echo "Removed PenguinBurner.service and penguin-burnerd.service."
             "penguin-burner-systemd-uninstall",
         ]
     )
-
-
-def _flatpak_daemonize_command(runtime_argv: list[str]) -> list[str]:
-    script = r"""
-legacy_unit=/etc/systemd/system/PenguinBurner.service
-systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
-rm -f "$legacy_unit"
-systemctl daemon-reload
-systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
-exec "$@"
-""".strip()
-    return _privileged_command(
-        [
-            "/bin/sh",
-            "-eu",
-            "-c",
-            script,
-            "penguin-burner-systemd-run",
-            *_flatpak_systemd_run_command(runtime_argv),
-        ]
-    )
-
-
-def _flatpak_systemd_run_command(runtime_argv: list[str]) -> list[str]:
-    from runtime.support.runtime_service import (
-        PENGUIN_BURNER_FOREGROUND_ENV,
-        adaptive_policy_env_assignments,
-        desktop_runtime_env_assignments,
-        flatpak_host_cli_program_file,
-        runtime_foreground_command,
-        runtime_python_env_assignments,
-    )
-
-    program_file = flatpak_host_cli_program_file()
-    command = [
-        "/usr/bin/systemd-run",
-        "--unit",
-        "PenguinBurner",
-        "--collect",
-        "--service-type=simple",
-        "--description",
-        "PenguinBurner runtime daemon",
-        "--property=WorkingDirectory=/",
-        "--property=Restart=on-failure",
-        "--property=RestartSec=2",
-        "--property=StandardOutput=journal",
-        "--property=StandardError=journal",
-        "--property=SyslogIdentifier=PenguinBurner",
-        "--setenv",
-        f"{PENGUIN_BURNER_FOREGROUND_ENV}=1",
-    ]
-    for assignment in [
-        *desktop_runtime_env_assignments(),
-        *runtime_python_env_assignments(program_file),
-        *adaptive_policy_env_assignments(),
-    ]:
-        command.extend(["--setenv", assignment])
-    command.extend(runtime_foreground_command(program_file, runtime_argv))
-    return command
 
 
 def profile_verify_command(

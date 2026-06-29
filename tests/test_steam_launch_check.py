@@ -1,7 +1,9 @@
 from pathlib import Path
 
 from overlay.telemetry.steam_launch_check import (
+    BARE_PENGUIN_BURNER_WRAPPER,
     DEFAULT_REQUIRED_TOKENS,
+    PENGUIN_BURNER_WRAPPER,
     check_launch_options,
     default_localconfig_paths,
     launch_options_from_localconfig,
@@ -76,19 +78,17 @@ def test_launch_options_from_localconfig_finds_app_block() -> None:
 
 
 def test_rewrite_launch_options_in_localconfig_replaces_existing_value() -> None:
+    requested = f"PB_OVERLAY=1 {PENGUIN_BURNER_WRAPPER} %command%"
     updated = rewrite_launch_options_in_localconfig(
         _localconfig("mangohud %command%"),
         APP_ID,
-        "PB_OVERLAY=1 PENGUIN_BURNER %command%",
+        requested,
     )
 
     assert updated is not None
     text, previous = updated
     assert previous == "mangohud %command%"
-    assert (
-        launch_options_from_localconfig(text, APP_ID)
-        == "PB_OVERLAY=1 PENGUIN_BURNER %command%"
-    )
+    assert launch_options_from_localconfig(text, APP_ID) == requested
     assert (
         launch_options_from_localconfig(text, "4180480")
         == "OTHER=1 %command%"
@@ -96,28 +96,27 @@ def test_rewrite_launch_options_in_localconfig_replaces_existing_value() -> None
 
 
 def test_rewrite_launch_options_in_localconfig_adds_missing_value() -> None:
+    requested = f"PB_OVERLAY=1 {PENGUIN_BURNER_WRAPPER} %command%"
     updated = rewrite_launch_options_in_localconfig(
         _localconfig_without_launch_options(),
         APP_ID,
-        "PB_OVERLAY=1 PENGUIN_BURNER %command%",
+        requested,
     )
 
     assert updated is not None
     text, previous = updated
     assert previous is None
-    assert (
-        launch_options_from_localconfig(text, APP_ID)
-        == "PB_OVERLAY=1 PENGUIN_BURNER %command%"
-    )
+    assert launch_options_from_localconfig(text, APP_ID) == requested
 
 
 def test_rewrite_launch_options_writes_and_verifies_localconfig(tmp_path) -> None:
     path = tmp_path / "localconfig.vdf"
     path.write_text(_localconfig("mangohud %command%"), encoding="utf-8")
+    requested = f"PB_OVERLAY=1 {PENGUIN_BURNER_WRAPPER} %command%"
 
     result = rewrite_launch_options(
         app_id=APP_ID,
-        launch_options="PB_OVERLAY=1 PENGUIN_BURNER %command%",
+        launch_options=requested,
         config_paths=[path],
         verify_delay_s=0.0,
     )
@@ -125,7 +124,7 @@ def test_rewrite_launch_options_writes_and_verifies_localconfig(tmp_path) -> Non
     assert result.ok
     assert result.config_path == path
     assert result.previous_launch_options == "mangohud %command%"
-    assert result.current_launch_options == "PB_OVERLAY=1 PENGUIN_BURNER %command%"
+    assert result.current_launch_options == requested
 
 
 def test_check_launch_options_accepts_default_probe_tokens(tmp_path) -> None:
@@ -143,6 +142,24 @@ def test_check_launch_options_accepts_default_probe_tokens(tmp_path) -> None:
 
     assert result.ok
     assert result.config_path == path
+    assert result.missing_tokens == ()
+
+
+def test_check_launch_options_accepts_bare_wrapper_token(tmp_path) -> None:
+    path = tmp_path / "localconfig.vdf"
+    path.write_text(
+        _localconfig(f"PB_OVERLAY=1 {BARE_PENGUIN_BURNER_WRAPPER} %command%"),
+        encoding="utf-8",
+    )
+
+    result = check_launch_options(
+        app_id=APP_ID,
+        required_tokens=DEFAULT_REQUIRED_TOKENS,
+        config_paths=[path],
+    )
+
+    assert result.ok
+    assert BARE_PENGUIN_BURNER_WRAPPER == PENGUIN_BURNER_WRAPPER
     assert result.missing_tokens == ()
 
 

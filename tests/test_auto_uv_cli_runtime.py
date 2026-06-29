@@ -15,6 +15,7 @@ from auto_uv.run.cli_runtime import (
 )
 from cli.final_choice_text import format_cli_final_choice_request
 from common.penguin_burner_errors import NvmlError
+from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 
 
 def test_auto_uv_voltage_scan_wires_json_events_and_final_result() -> None:
@@ -399,7 +400,7 @@ def test_auto_uv_foreground_command_offers_optional_adaptive_when_two_tiers_exis
     assert installed == []
     output = "\n".join(logs)
     assert "Adaptive Auto-UV is also available" in output
-    assert "PENGUIN_BURNER %command%" in output
+    assert f"{PENGUIN_BURNER_WRAPPER} %command%" in output
 
 
 def test_auto_uv_foreground_command_prints_privileged_command_when_not_root() -> None:

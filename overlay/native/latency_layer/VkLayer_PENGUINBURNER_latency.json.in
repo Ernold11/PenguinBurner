@@ -13,7 +13,7 @@
       "vkGetDeviceProcAddr": "vkGetDeviceProcAddr"
     },
     "enable_environment": {
-      "PENGUIN_BURNER_LATENCY_LAYER": "1"
+      "PENGUIN_BURNER": "1"
     },
     "disable_environment": {
       "DISABLE_PENGUIN_BURNER_LATENCY_LAYER": ""

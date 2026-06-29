@@ -157,7 +157,7 @@ def test_runtime_fan_loop_disabled_logs_telemetry_without_fan_writes():
 
 def test_runtime_fan_loop_status_is_only_logged_on_change():
     # Steady temperature across several polls -> a single status line, not one
-    # per iteration (the only-on-change gate keeps the journal quiet).
+    # per iteration. Full telemetry still logs every poll for diagnostics.
     logs = []
     prints = []
     sleeps = []
@@ -184,11 +184,46 @@ def test_runtime_fan_loop_status_is_only_logged_on_change():
 
     status_lines = [m for m in logs if m.startswith("status |")]
     assert len(status_lines) == 1
+    telemetry_lines = [m for m in logs if "temp=55C power=240W fans=2" in m]
+    assert len(telemetry_lines) == 4
 
 
-def test_runtime_fan_loop_keeps_full_detail_in_debug_log():
-    # The journal stays concise, but the full per-tick telemetry (which includes
-    # the VF curve points) is preserved in the debug log for troubleshooting.
+def test_runtime_fan_loop_status_includes_profile_target_and_tier():
+    logs = []
+    prints = []
+    sleeps = []
+    nvml_session = FakeNvmlSession([44.0])
+    vf_policy = RuntimeVfCurvePolicyResult(
+        auto_uv_final_curve={
+            "lock_clock_mhz": 2280,
+            "candidate_voltage_mv": 825,
+        },
+        active_profile_tier="Efficiency",
+    )
+
+    run_runtime_fan_control_loop(
+        gpu_index=0,
+        config_path="/tmp/config.json",
+        fan_config={"poll_interval_s": 2.0},
+        fan_control_enabled=False,
+        enable_persistence_mode=True,
+        nvml_session=nvml_session,
+        voltage_reader=None,
+        vf_curve_reader=None,
+        gpu_policy_controller=None,
+        vf_policy=vf_policy,
+        dependencies=_dependencies(logs=logs, prints=prints, sleeps=sleeps),
+        max_iterations=1,
+    )
+
+    status = next(message for message in logs if message.startswith("status |"))
+    assert "2280MHz @ 825mV" in status
+    assert "Efficiency" in status
+
+
+def test_runtime_fan_loop_keeps_full_detail_in_journal_and_debug_log():
+    # The journal keeps full per-tick telemetry because systemd is the primary
+    # runtime diagnostic surface; --debug-log mirrors it for file-based reports.
     logs = []
     debug_logs = []
     prints = []
@@ -211,9 +246,45 @@ def test_runtime_fan_loop_keeps_full_detail_in_debug_log():
         max_iterations=1,
     )
 
-    # Concise line in the journal, full telemetry in the debug log.
     assert any(message.startswith("status |") for message in logs)
+    assert any(
+        message.startswith("telemetry |")
+        and "temp=55C power=240W fans=2" in message
+        for message in logs
+    )
     assert debug_logs == ["temp=55C power=240W fans=2"]
+
+
+def test_runtime_fan_loop_flattens_multiline_telemetry_logs():
+    logs = []
+    debug_logs = []
+    prints = []
+    sleeps = []
+    nvml_session = FakeNvmlSession([55.0])
+    nvml_session.format_telemetry = lambda **_kwargs: (
+        "temp=55C power=240W\nvf_point=2280MHz@825mV"
+    )
+
+    run_runtime_fan_control_loop(
+        gpu_index=0,
+        config_path="/tmp/config.json",
+        fan_config={"poll_interval_s": 2.0},
+        fan_control_enabled=False,
+        enable_persistence_mode=True,
+        nvml_session=nvml_session,
+        voltage_reader=None,
+        vf_curve_reader=None,
+        gpu_policy_controller=None,
+        dependencies=_dependencies(
+            logs=logs, prints=prints, sleeps=sleeps, debug_log=debug_logs.append
+        ),
+        max_iterations=1,
+    )
+
+    telemetry = next(message for message in logs if message.startswith("telemetry |"))
+    assert "\n" not in telemetry
+    assert "temp=55C power=240W | vf_point=2280MHz@825mV" in telemetry
+    assert debug_logs == ["temp=55C power=240W | vf_point=2280MHz@825mV"]
 
 
 def test_runtime_fan_loop_uses_faster_overlay_update_interval_when_enabled():

@@ -19,6 +19,7 @@ from runtime.daemon_api import (
     DEFAULT_DAEMON_SOCKET,
 )
 from runtime.daemon_client import daemon_status
+from runtime.daemon_client import start_runtime_profile
 from .adaptive_target_fps import (
     ADAPTIVE_TARGET_FPS_ENV,
     adaptive_target_fps_from_env,
@@ -36,10 +37,10 @@ from runtime.gpu_control.adaptive_profile_policy import (
 from common.subprocess_locale import stable_subprocess_env
 
 
-SYSTEMD_RUN = shutil.which("systemd-run") or "systemd-run"
 SYSTEMCTL = shutil.which("systemctl") or "systemctl"
-PENGUIN_BURNER_UNIT_NAME = "PenguinBurner"
+LEGACY_PENGUIN_BURNER_UNIT_NAME = "PenguinBurner"
 PENGUIN_BURNER_DAEMON_UNIT_NAME = "penguin-burnerd"
+PENGUIN_BURNER_UNIT_NAME = PENGUIN_BURNER_DAEMON_UNIT_NAME
 PENGUIN_BURNER_FOREGROUND_ENV = "PENGUIN_BURNER_FOREGROUND"
 DEFAULT_JOURNAL_HOURS = 4
 FLATPAK_ID_ENV = "FLATPAK_ID"
@@ -139,7 +140,7 @@ def running_under_systemd_service():
 
 def systemd_is_available():
     return (
-        Path("/run/systemd/system").exists() and shutil.which("systemd-run") is not None
+        Path("/run/systemd/system").exists() and shutil.which("systemctl") is not None
     )
 
 
@@ -148,7 +149,11 @@ def journalctl_follow_command(hours):
 
 
 def systemd_service_unit_path():
-    return Path("/etc/systemd/system") / f"{PENGUIN_BURNER_UNIT_NAME}.service"
+    return daemon_systemd_service_unit_path()
+
+
+def legacy_systemd_service_unit_path():
+    return Path("/etc/systemd/system") / f"{LEGACY_PENGUIN_BURNER_UNIT_NAME}.service"
 
 
 def daemon_systemd_service_unit_path():
@@ -183,27 +188,52 @@ def running_in_flatpak() -> bool:
 def flatpak_host_app_path() -> Path:
     override = os.environ.get("PENGUIN_BURNER_FLATPAK_APP_PATH", "").strip()
     if override:
-        return Path(override).expanduser()
+        return _stable_flatpak_deployment_path(Path(override).expanduser())
     parser = configparser.ConfigParser(interpolation=None)
     try:
         parser.read(FLATPAK_INFO_PATH, encoding="utf-8")
     except OSError:
         return Path("/app")
     app_path = parser.get("Instance", "app-path", fallback="").strip()
-    return Path(app_path) if app_path else Path("/app")
+    return _stable_flatpak_deployment_path(Path(app_path)) if app_path else Path("/app")
+
+
+def _stable_flatpak_deployment_path(path: str | Path) -> Path:
+    item = Path(path).expanduser()
+    parts = item.parts
+    for index, part in enumerate(parts):
+        if part != "flatpak":
+            continue
+        if index + 6 > len(parts):
+            continue
+        if parts[index + 1] != "app":
+            continue
+        deploy_index = index + 5
+        deployment = parts[deploy_index]
+        if deployment == "active":
+            return item
+        if _looks_like_flatpak_deployment_id(deployment):
+            return Path(*parts[:deploy_index], "active", *parts[deploy_index + 1 :])
+    return item
+
+
+def _looks_like_flatpak_deployment_id(value: str) -> bool:
+    return len(value) == 64 and all(char in "0123456789abcdefABCDEF" for char in value)
 
 
 def _flatpak_host_path_for_app_path(path: str | Path) -> Path:
     item = Path(str(path))
     if item.is_absolute() and len(item.parts) >= 2 and item.parts[1] == "app":
-        return flatpak_host_app_path().joinpath(*item.parts[2:])
-    return item
+        return _stable_flatpak_deployment_path(
+            flatpak_host_app_path().joinpath(*item.parts[2:])
+        )
+    return _stable_flatpak_deployment_path(item)
 
 
 def flatpak_host_site_packages_path(program_file: str | Path | None = None) -> Path:
     override = os.environ.get("PENGUIN_BURNER_FLATPAK_SITE_PACKAGES", "").strip()
     if override:
-        return Path(override).expanduser()
+        return _stable_flatpak_deployment_path(Path(override).expanduser())
     if program_file is not None:
         mapped_program = _flatpak_host_path_for_app_path(program_file)
         if mapped_program.parent.name == "site-packages":
@@ -352,42 +382,6 @@ def run_checked_subprocess(args):
     return result
 
 
-def build_systemd_service_unit(program_file, argv):
-    exec_start = _format_systemd_exec(runtime_foreground_command(program_file, argv))
-    return (
-        "[Unit]\n"
-        "Description=PenguinBurner runtime daemon\n"
-        "After=multi-user.target\n"
-        "\n"
-        "[Service]\n"
-        "Type=simple\n"
-        f"Environment={PENGUIN_BURNER_FOREGROUND_ENV}=1\n"
-        + "".join(
-            f"Environment={assignment}\n"
-            for assignment in desktop_runtime_env_assignments()
-        )
-        + "".join(
-            f"Environment={assignment}\n"
-            for assignment in runtime_python_env_assignments(program_file)
-        )
-        + "".join(
-            f"Environment={assignment}\n"
-            for assignment in adaptive_policy_env_assignments()
-        )
-        +
-        "WorkingDirectory=/\n"
-        f"ExecStart={exec_start}\n"
-        "Restart=on-failure\n"
-        "RestartSec=2\n"
-        "StandardOutput=journal\n"
-        "StandardError=journal\n"
-        f"SyslogIdentifier={PENGUIN_BURNER_UNIT_NAME}\n"
-        "\n"
-        "[Install]\n"
-        "WantedBy=multi-user.target\n"
-    )
-
-
 def build_daemon_api_service_unit(
     program_file,
     *,
@@ -424,7 +418,7 @@ def build_daemon_api_service_unit(
     )
     return (
         "[Unit]\n"
-        "Description=PenguinBurner root hardware daemon\n"
+        "Description=PenguinBurner hardware daemon\n"
         "After=multi-user.target\n"
         "\n"
         "[Service]\n"
@@ -454,8 +448,11 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
         )
 
     clear_existing_penguin_burner_unit_for_install(log=log)
-    unit_path = systemd_service_unit_path()
-    unit_path.write_text(build_systemd_service_unit(program_file, argv), encoding="utf-8")
+    unit_path = daemon_systemd_service_unit_path()
+    unit_path.write_text(
+        build_daemon_api_service_unit(program_file, autostart_argv=list(argv)),
+        encoding="utf-8",
+    )
     run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
     subprocess.run(
         [SYSTEMCTL, "reset-failed", unit_path.name],
@@ -466,7 +463,8 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
         env=stable_subprocess_env(),
         check=False,
     )
-    run_checked_subprocess([SYSTEMCTL, "enable", "--now", unit_path.name])
+    _enable_and_start_or_restart_daemon_unit(unit_path.name)
+    _wait_for_daemon_status(DEFAULT_DAEMON_SOCKET)
     log(f"Installed and enabled {unit_path.name} at {unit_path}.")
     log(f"Follow the journal with: {journalctl_follow_command(journal_hours)}")
 
@@ -512,7 +510,7 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
         env=stable_subprocess_env(),
         check=False,
     )
-    run_checked_subprocess([SYSTEMCTL, "enable", "--now", unit_path.name])
+    _enable_and_start_or_restart_daemon_unit(unit_path.name)
     _wait_for_daemon_status(socket_path)
     log(f"Installed and started {unit_path.name} at {unit_path}.")
 
@@ -530,7 +528,7 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
 
 
 def read_legacy_service_state() -> dict[str, object]:
-    unit_path = systemd_service_unit_path()
+    unit_path = legacy_systemd_service_unit_path()
     text = ""
     exists = unit_path.is_file()
     if exists:
@@ -590,6 +588,11 @@ def _systemd_unit_is_active(unit_name: str) -> bool:
     return result.returncode == 0 and result.stdout.strip() == "active"
 
 
+def _enable_and_start_or_restart_daemon_unit(unit_name: str) -> None:
+    run_checked_subprocess([SYSTEMCTL, "enable", unit_name])
+    run_checked_subprocess([SYSTEMCTL, "restart", unit_name])
+
+
 def _wait_for_daemon_status(socket_path) -> None:
     last_error = None
     for _attempt in range(30):
@@ -603,7 +606,7 @@ def _wait_for_daemon_status(socket_path) -> None:
 
 
 def _disable_legacy_service_after_daemon_migration(*, log) -> None:
-    unit_name = f"{PENGUIN_BURNER_UNIT_NAME}.service"
+    unit_name = f"{LEGACY_PENGUIN_BURNER_UNIT_NAME}.service"
     result = subprocess.run(
         [SYSTEMCTL, "disable", "--now", unit_name],
         capture_output=True,
@@ -634,30 +637,35 @@ def uninstall_systemd_service(*, log):
             "systemd service uninstall requires root privileges. Re-run with sudo."
         )
 
-    unit_path = systemd_service_unit_path()
-    subprocess.run(
-        [SYSTEMCTL, "disable", "--now", unit_path.name],
-        env=stable_subprocess_env(),
-        check=False,
+    unit_paths = (
+        daemon_systemd_service_unit_path(),
+        legacy_systemd_service_unit_path(),
     )
-    if unit_path.exists():
-        unit_path.unlink()
+    for unit_path in unit_paths:
+        subprocess.run(
+            [SYSTEMCTL, "disable", "--now", unit_path.name],
+            env=stable_subprocess_env(),
+            check=False,
+        )
+        if unit_path.exists():
+            unit_path.unlink()
     run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
-    subprocess.run(
-        [SYSTEMCTL, "reset-failed", unit_path.name],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=stable_subprocess_env(),
-        check=False,
-    )
-    log(f"Removed {unit_path.name}.")
+    for unit_path in unit_paths:
+        subprocess.run(
+            [SYSTEMCTL, "reset-failed", unit_path.name],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=stable_subprocess_env(),
+            check=False,
+        )
+    log("Removed penguin-burnerd.service and legacy PenguinBurner.service.")
 
 
 def _clear_existing_penguin_burner_unit(*, log, reason):
-    unit_name = f"{PENGUIN_BURNER_UNIT_NAME}.service"
-    unit_path = systemd_service_unit_path()
+    unit_name = f"{LEGACY_PENGUIN_BURNER_UNIT_NAME}.service"
+    unit_path = legacy_systemd_service_unit_path()
 
     subprocess.run(
         [SYSTEMCTL, "disable", "--now", unit_name],
@@ -702,7 +710,7 @@ def stop_existing_penguin_burner_runtime(*, log):
         return
     if os.geteuid() != 0:
         return
-    unit_name = f"{PENGUIN_BURNER_UNIT_NAME}.service"
+    unit_name = f"{LEGACY_PENGUIN_BURNER_UNIT_NAME}.service"
     result = subprocess.run(
         [SYSTEMCTL, "stop", unit_name],
         capture_output=True,
@@ -738,41 +746,46 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
         )
 
     clear_existing_penguin_burner_unit_for_daemonize(log=log)
+    _ensure_daemon_service_started(
+        program_file,
+        socket_path=DEFAULT_DAEMON_SOCKET,
+        log=log,
+    )
+    result = start_runtime_profile(
+        list(argv),
+        socket_path=DEFAULT_DAEMON_SOCKET,
+        timeout_s=3,
+    )
+    log(
+        "Started runtime profile through "
+        f"{PENGUIN_BURNER_DAEMON_UNIT_NAME}.service"
+        + (
+            f" (pid {result.get('pid')})."
+            if str(result.get("pid") or "").strip()
+            else "."
+        )
+    )
+    log(f"Follow the journal with: {journalctl_follow_command(journal_hours)}")
 
-    result = subprocess.run(
-        [
-            SYSTEMD_RUN,
-            "--unit",
-            PENGUIN_BURNER_UNIT_NAME,
-            "--collect",
-            "--service-type=simple",
-            "--description",
-            "PenguinBurner runtime daemon",
-            "--property=WorkingDirectory=/",
-            "--property=Restart=on-failure",
-            "--property=RestartSec=2",
-            "--property=StandardOutput=journal",
-            "--property=StandardError=journal",
-            "--property=SyslogIdentifier=PenguinBurner",
-            "--setenv",
-            f"{PENGUIN_BURNER_FOREGROUND_ENV}=1",
-            *[
-                item
-                for assignment in desktop_runtime_env_assignments()
-                for item in ("--setenv", assignment)
-            ],
-            *[
-                item
-                for assignment in runtime_python_env_assignments(program_file)
-                for item in ("--setenv", assignment)
-            ],
-            *[
-                item
-                for assignment in adaptive_policy_env_assignments()
-                for item in ("--setenv", assignment)
-            ],
-            *runtime_foreground_command(program_file, argv),
-        ],
+
+def _ensure_daemon_service_started(program_file, *, socket_path, log) -> None:
+    unit_path = daemon_systemd_service_unit_path()
+    unit_text = build_daemon_api_service_unit(program_file, socket_path=socket_path)
+    wrote_unit = False
+    current_text = (
+        unit_path.read_text(encoding="utf-8", errors="replace")
+        if unit_path.exists()
+        else ""
+    )
+    if current_text != unit_text:
+        unit_path.write_text(unit_text, encoding="utf-8")
+        wrote_unit = True
+        verb = "Updated" if current_text else "Installed"
+        log(f"{verb} {unit_path.name} at {unit_path}.")
+    if wrote_unit:
+        run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
+    subprocess.run(
+        [SYSTEMCTL, "reset-failed", unit_path.name],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -780,15 +793,9 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
         env=stable_subprocess_env(),
         check=False,
     )
-    output = (result.stdout.strip() or result.stderr.strip()).strip()
-    if result.returncode != 0:
-        raise RuntimeError(
-            "failed to daemonize PenguinBurner with systemd: "
-            + (output or str(result.returncode))
-        )
-
-    unit_name = f"{PENGUIN_BURNER_UNIT_NAME}.service"
-    if output:
-        log(output)
-    log(f"PenguinBurner daemonized under systemd as {unit_name}.")
-    log(f"Follow the journal with: {journalctl_follow_command(journal_hours)}")
+    if wrote_unit:
+        run_checked_subprocess([SYSTEMCTL, "enable", unit_path.name])
+        run_checked_subprocess([SYSTEMCTL, "restart", unit_path.name])
+    else:
+        run_checked_subprocess([SYSTEMCTL, "start", unit_path.name])
+    _wait_for_daemon_status(socket_path)

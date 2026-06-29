@@ -8,8 +8,9 @@ from typing import Callable
 
 from overlay.native_layer import LATENCY_LAYER_NAME
 from overlay.native_layer import native_layer_dirs
+from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 
-DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS = "PENGUIN_BURNER %command%"
+DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS = f"{PENGUIN_BURNER_WRAPPER} %command%"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _BUILD_LAYER_DIR = _REPO_ROOT / "native" / "latency_layer" / "build"
 
@@ -93,7 +94,7 @@ def format_latency_layer_check(result: dict[str, object]) -> str:
             [
                 "Layer check example:",
                 f"  VK_ADD_IMPLICIT_LAYER_PATH={layer_dir} "
-                "PENGUIN_BURNER_LATENCY_LAYER=1 vulkaninfo --summary",
+                "PENGUIN_BURNER=1 vulkaninfo --summary",
             ]
         )
 
@@ -106,6 +107,7 @@ def format_latency_layer_check(result: dict[str, object]) -> str:
 
 
 def _latency_layer_check_env(env: dict[str, str]) -> dict[str, str]:
+    env["PENGUIN_BURNER"] = "1"
     env["PENGUIN_BURNER_LATENCY_LAYER"] = "1"
     layer_dirs = native_layer_dirs(env, source_build_dir=_BUILD_LAYER_DIR)
     if layer_dirs:

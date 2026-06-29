@@ -73,6 +73,11 @@ def test_start_scan_runs(win) -> None:
     window, monkeypatch = win
     monkeypatch.setattr(window_mod, "select_scan_tuning", lambda **k: {"gpu_index": 0})
     monkeypatch.setattr(window_mod, "persist_runtime_gpu_index", lambda idx: int(idx))
+    monkeypatch.setattr(
+        window_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: True,
+    )
     monkeypatch.setattr(window_mod, "scan_command", lambda options: ["echo", "scan"])
     fake = _FakeController()
     window.scan_controller = fake
@@ -80,10 +85,59 @@ def test_start_scan_runs(win) -> None:
     assert fake.started  # scan command launched
 
 
+def test_start_scan_runs_daemon_migration_gate_before_scan(win) -> None:
+    window, monkeypatch = win
+    gate_calls = []
+    monkeypatch.setattr(window_mod, "select_scan_tuning", lambda **k: {"gpu_index": 0})
+    monkeypatch.setattr(window_mod, "persist_runtime_gpu_index", lambda idx: int(idx))
+    monkeypatch.setattr(window_mod, "scan_command", lambda options: ["echo", "scan"])
+
+    def fake_gate(**kwargs):
+        gate_calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        window_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        fake_gate,
+    )
+    fake = _FakeController()
+    window.scan_controller = fake
+
+    window.start_scan()
+
+    assert gate_calls
+    assert gate_calls[0]["action_label"] == "Starting Auto-UV"
+    assert fake.started
+
+
+def test_start_scan_blocks_when_daemon_migration_cancelled(win) -> None:
+    window, monkeypatch = win
+    monkeypatch.setattr(window_mod, "select_scan_tuning", lambda **k: {"gpu_index": 0})
+    monkeypatch.setattr(window_mod, "persist_runtime_gpu_index", lambda idx: int(idx))
+    monkeypatch.setattr(
+        window_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(window_mod, "scan_command", lambda options: ["echo", "scan"])
+    fake = _FakeController()
+    window.scan_controller = fake
+
+    window.start_scan()
+
+    assert fake.started == []
+
+
 def test_start_scan_switches_to_auto_uv_tab(win) -> None:
     window, monkeypatch = win
     monkeypatch.setattr(window_mod, "select_scan_tuning", lambda **k: {"gpu_index": 0})
     monkeypatch.setattr(window_mod, "persist_runtime_gpu_index", lambda idx: int(idx))
+    monkeypatch.setattr(
+        window_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: True,
+    )
     monkeypatch.setattr(window_mod, "scan_command", lambda options: ["echo", "scan"])
     window.scan_controller = _FakeController()
     # Start from a different tab; the scan must pull the user to Auto-UV.
@@ -149,11 +203,67 @@ def test_run_runtime_action_launches(win) -> None:
     monkeypatch.setattr(window.profile_list, "selected_profile_id", lambda: "p1")
     monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: False)
     monkeypatch.setattr(window.profile_list, "set_runtime_actions_enabled", lambda enabled: None)
+    monkeypatch.setattr(
+        actions_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: True,
+    )
     monkeypatch.setattr(actions_mod, "runtime_profile_command", lambda *a, **k: ["echo", "run"])
     fake = _FakeController()
     window.command_controller = fake
     window._run_runtime_action("daemonize")
     assert fake.started  # runtime command launched
+
+
+def test_run_runtime_action_runs_daemon_migration_gate_before_apply(win) -> None:
+    window, monkeypatch = win
+    gate_calls = []
+    window.profile_summaries = [
+        {"profile_id": "p1", "final_verified": True, "path": "/tmp/p1.json"}
+    ]
+    monkeypatch.setattr(window.profile_list, "selected_profile_id", lambda: "p1")
+    monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: False)
+    monkeypatch.setattr(window.profile_list, "set_runtime_actions_enabled", lambda enabled: None)
+
+    def fake_gate(**kwargs):
+        gate_calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        actions_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        fake_gate,
+    )
+    monkeypatch.setattr(actions_mod, "runtime_profile_command", lambda *a, **k: ["echo", "run"])
+    fake = _FakeController()
+    window.command_controller = fake
+
+    window._run_runtime_action("daemonize")
+
+    assert gate_calls
+    assert gate_calls[0]["action_label"] == "Applying runtime profile"
+    assert fake.started
+
+
+def test_run_runtime_action_blocks_when_daemon_migration_cancelled(win) -> None:
+    window, monkeypatch = win
+    window.profile_summaries = [
+        {"profile_id": "p1", "final_verified": True, "path": "/tmp/p1.json"}
+    ]
+    monkeypatch.setattr(window.profile_list, "selected_profile_id", lambda: "p1")
+    monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: False)
+    monkeypatch.setattr(
+        actions_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(actions_mod, "runtime_profile_command", lambda *a, **k: ["echo", "run"])
+    fake = _FakeController()
+    window.command_controller = fake
+
+    window._run_runtime_action("daemonize")
+
+    assert fake.started == []
 
 
 def test_run_runtime_action_blocked_when_busy(win) -> None:

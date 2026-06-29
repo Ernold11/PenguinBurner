@@ -13,7 +13,8 @@ of an undervolt, clock, or fan change in real time without leaving the game.
 
 The overlay launches with the game through a command wrapper. Copy the launch
 string from the Overlay tab and paste it into Steam's launch options
-(`PENGUIN_BURNER %command%`), or use the **Copy** button next to the field.
+(`PENGUIN_BURNER %command%`), or use the **Copy**
+button next to the field.
 
 Top-level controls:
 

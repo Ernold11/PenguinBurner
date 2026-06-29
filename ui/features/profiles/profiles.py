@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import base64
+import json
 import shlex
 import subprocess
 
@@ -9,8 +11,12 @@ from profiles.uv.profile_store import read_auto_uv_profile_summaries
 from profiles.uv.profile_tiers import available_adaptive_tiers
 from profiles.uv.profile_tiers import profile_tier_label
 from profiles.uv.profile_tiers import resolve_profile_tier_profiles
+from runtime.daemon_api import AUTOSTART_ARGV_B64_ENV
+from runtime.daemon_client import daemon_status
+from runtime.support.runtime_service import LEGACY_PENGUIN_BURNER_UNIT_NAME
 from runtime.support.runtime_service import PENGUIN_BURNER_UNIT_NAME
 from runtime.support.runtime_service import SYSTEMCTL
+from runtime.support.runtime_service import legacy_systemd_service_unit_path
 from runtime.support.runtime_service import systemd_service_unit_path
 
 
@@ -220,13 +226,18 @@ def runner_status_text(
 
 def systemd_autostart_profile_info() -> dict[str, object]:
     if not systemd_service_is_enabled():
-        return {"selector": "", "silent_fan_curve": False}
-    command = _systemd_unit_exec_start()
-    return profile_info_from_command_text(command, default_if_present=True)
+        return _legacy_systemd_autostart_profile_info()
+    argv = _daemon_unit_autostart_argv()
+    if argv:
+        return profile_info_from_command_parts(argv)
+    return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
 
 
 def running_auto_uv_profile_info() -> dict[str, object]:
-    command = _systemd_running_exec_start()
+    info = _daemon_running_profile_info()
+    if str(info["selector"]):
+        return info
+    command = _legacy_systemd_running_exec_start()
     info = profile_info_from_command_text(command, default_if_present=True)
     if str(info["selector"]):
         return info
@@ -239,8 +250,16 @@ def profile_info_from_command_text(
     default_if_present: bool = False,
 ) -> dict[str, object]:
     parts = _command_parts(command_text)
+    return profile_info_from_command_parts(parts, default_if_present=default_if_present)
+
+
+def profile_info_from_command_parts(
+    parts: list[str],
+    *,
+    default_if_present: bool = False,
+) -> dict[str, object]:
     selector = _profile_selector_from_command_parts(parts)
-    if not selector and default_if_present and str(command_text).strip():
+    if not selector and default_if_present and parts:
         selector = "__systemd_default__"
     return {
         "selector": selector,
@@ -251,7 +270,7 @@ def profile_info_from_command_text(
 
 def systemd_unit_entry_exists() -> bool:
     try:
-        return systemd_service_unit_path().is_file()
+        return bool(_daemon_unit_autostart_argv()) or legacy_systemd_service_unit_path().is_file()
     except OSError:
         return False
 
@@ -261,6 +280,8 @@ def systemd_service_is_enabled() -> bool:
 
 
 def penguin_burner_runtime_is_active() -> bool:
+    if _daemon_runtime_profile_running():
+        return True
     return _systemctl_quiet("is-active")
 
 
@@ -341,9 +362,34 @@ def _command_parts(command_text: str) -> list[str]:
         return str(command_text or "").split()
 
 
-def _systemd_unit_exec_start() -> str:
+def _daemon_unit_autostart_argv() -> list[str]:
     try:
         text = systemd_service_unit_path().read_text(
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        return []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("Environment="):
+            continue
+        value = line.split("=", 1)[1].strip()
+        if value.startswith(f"{AUTOSTART_ARGV_B64_ENV}="):
+            encoded = value.split("=", 1)[1].strip()
+            try:
+                decoded = json.loads(base64.b64decode(encoded).decode("utf-8"))
+            except Exception:
+                return []
+            if isinstance(decoded, list) and all(isinstance(item, str) for item in decoded):
+                return list(decoded)
+            return []
+    return []
+
+
+def _legacy_systemd_unit_exec_start() -> str:
+    try:
+        text = legacy_systemd_service_unit_path().read_text(
             encoding="utf-8",
             errors="replace",
         )
@@ -356,8 +402,8 @@ def _systemd_unit_exec_start() -> str:
     return "__systemd_default__" if service_exists else ""
 
 
-def _systemd_running_exec_start() -> str:
-    unit_name = f"{PENGUIN_BURNER_UNIT_NAME}.service"
+def _legacy_systemd_running_exec_start() -> str:
+    unit_name = f"{LEGACY_PENGUIN_BURNER_UNIT_NAME}.service"
     try:
         result = subprocess.run(
             [SYSTEMCTL, "show", unit_name, "--property=ExecStart", "--value"],
@@ -388,6 +434,52 @@ def _systemctl_quiet(action: str) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return int(result.returncode) == 0
+
+
+def _legacy_systemd_autostart_profile_info() -> dict[str, object]:
+    unit_name = f"{LEGACY_PENGUIN_BURNER_UNIT_NAME}.service"
+    if not _systemctl_quiet_for_unit("is-enabled", unit_name):
+        return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+    command = _legacy_systemd_unit_exec_start()
+    return profile_info_from_command_text(command, default_if_present=True)
+
+
+def _systemctl_quiet_for_unit(action: str, unit_name: str) -> bool:
+    try:
+        result = subprocess.run(
+            [SYSTEMCTL, str(action), "--quiet", unit_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=1.5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return int(result.returncode) == 0
+
+
+def _daemon_runtime_profile_running() -> bool:
+    payload = _daemon_status_payload()
+    return str(payload.get("state") or "") == "runtime_profile_running"
+
+
+def _daemon_running_profile_info() -> dict[str, object]:
+    payload = _daemon_status_payload()
+    if str(payload.get("state") or "") != "runtime_profile_running":
+        return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+    active_job = payload.get("active_job")
+    argv = active_job.get("argv") if isinstance(active_job, dict) else []
+    if isinstance(argv, list) and all(isinstance(item, str) for item in argv):
+        return profile_info_from_command_parts(list(argv), default_if_present=True)
+    return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+
+
+def _daemon_status_payload() -> dict[str, object]:
+    try:
+        payload = daemon_status(timeout_s=1.0)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _status_number(value, *, precision: int) -> str:

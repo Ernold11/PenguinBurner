@@ -16,6 +16,7 @@ from .state import (
     overlay_state_path,
     overlay_text_path,
 )
+from .telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 
 MASTER_ENABLE_ENV = "PENGUIN_BURNER"
 LATENCY_ENABLE_ENV = "PENGUIN_BURNER_LATENCY_LAYER"
@@ -60,8 +61,8 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         print(
-            "Usage: PENGUIN_BURNER %command%\n"
-            "Steam launch option example: PENGUIN_BURNER %command%",
+            f"Usage: {PENGUIN_BURNER_WRAPPER} %command%\n"
+            f"Steam launch option example: {PENGUIN_BURNER_WRAPPER} %command%",
             file=sys.stderr,
         )
         return 2

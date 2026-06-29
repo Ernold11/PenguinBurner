@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import struct
 import tomllib
 import zlib
@@ -110,6 +113,9 @@ def test_package_installs_desktop_launcher_and_icons() -> None:
     assert data_files["share/icons/hicolor/512x512/apps"] == [
         "packaging/icons/hicolor/512x512/apps/penguin-burner.png"
     ]
+    assert "PenguinBurner.service" not in "\n".join(
+        item for values in data_files.values() for item in values
+    )
     assert "*.png" in package_data["ui.assets"]
 
 
@@ -120,6 +126,8 @@ def test_flatpak_manifest_exposes_daemon_socket_and_host_spawn_portal() -> None:
 
     assert "--filesystem=/run/penguin-burnerd.sock" in manifest
     assert "--talk-name=org.freedesktop.Flatpak" in manifest
+    assert "PENGUIN_BURNER_REQUIRE_NATIVE_LAYER" in manifest
+    assert "PENGUIN_BURNER_BUILD_NATIVE_LAYER: \"0\"" not in manifest
 
 
 def test_flatpak_smoke_script_uses_isolated_profile_and_app_id_launcher() -> None:
@@ -159,6 +167,383 @@ def test_flatpak_cli_wrapper_installer_is_conservative() -> None:
     assert "penguin-burner-install-wrappers" in build_script
     assert "install -m 0644" not in build_script
     assert "$ROOT/scripts/install-flatpak-cli-wrappers.sh" not in build_script
+
+
+def test_flatpak_cli_wrappers_forward_to_flatpak_but_steam_wrapper_does_not() -> None:
+    from common.flatpak_wrappers import _wrapper_text
+
+    cli_wrapper = _wrapper_text("pburn-cli")
+    steam_wrapper = _wrapper_text("PENGUIN_BURNER")
+
+    assert "exec /usr/bin/flatpak run --user --command=pburn-cli" in cli_wrapper
+    assert "flatpak run" not in steam_wrapper
+    assert 'exec "$@"' in steam_wrapper
+    assert "VK_ADD_IMPLICIT_LAYER_PATH" in steam_wrapper
+    assert "PENGUIN_BURNER_NATIVE_LAYER_DIR" in steam_wrapper
+
+
+def test_flatpak_steam_wrapper_launches_game_on_host_when_layer_missing(tmp_path) -> None:
+    from common.flatpak_wrappers import _wrapper_text
+
+    wrapper = tmp_path / "PENGUIN_BURNER"
+    env_file = tmp_path / "env.txt"
+    game = tmp_path / "game"
+    wrapper.write_text(_wrapper_text("PENGUIN_BURNER"), encoding="utf-8")
+    wrapper.chmod(0o755)
+    game.write_text(
+        "#!/usr/bin/env sh\n"
+        f"env | sort > {env_file}\n",
+        encoding="utf-8",
+    )
+    game.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "PB_OVERLAY": "1",
+        "PB_INGAME_LATENCY": "1",
+        "PENGUIN_BURNER_FLATPAK_APP_PATH": str(tmp_path / "missing-app-files"),
+    }
+    result = subprocess.run(
+        [str(wrapper), str(game)],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    captured = env_file.read_text(encoding="utf-8")
+    assert "PENGUIN_BURNER=1\n" in captured
+    assert "PENGUIN_BURNER_OVERLAY=1\n" in captured
+    assert "PENGUIN_BURNER_LATENCY_LAYER=1\n" in captured
+    assert "PENGUIN_BURNER_LATENCY_DISPLAY=1\n" in captured
+    assert "VK_ADD_IMPLICIT_LAYER_PATH=" not in captured
+
+
+def test_flatpak_steam_wrapper_routes_ingame_latency_stderr_to_fifo(tmp_path) -> None:
+    from common.flatpak_wrappers import _wrapper_text
+
+    wrapper = tmp_path / "PENGUIN_BURNER"
+    fd_file = tmp_path / "fd2.txt"
+    game = tmp_path / "game"
+    cache_home = tmp_path / "cache"
+    trace_fifo = cache_home / "penguin-burner" / "nvapi-trace.fifo"
+    wrapper.write_text(_wrapper_text("PENGUIN_BURNER"), encoding="utf-8")
+    wrapper.chmod(0o755)
+    game.write_text(
+        "#!/usr/bin/env sh\n"
+        f"test -p {trace_fifo}\n"
+        f"readlink /proc/$$/fd/2 > {fd_file}\n"
+        "printf 'nvapi marker line\\n' >&2\n",
+        encoding="utf-8",
+    )
+    game.chmod(0o755)
+
+    result = subprocess.run(
+        [str(wrapper), str(game)],
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "XDG_CACHE_HOME": str(cache_home),
+            "PB_INGAME_LATENCY": "1",
+            "PENGUIN_BURNER_FLATPAK_APP_PATH": str(tmp_path / "missing-app-files"),
+        },
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert trace_fifo.is_fifo()
+    assert fd_file.read_text(encoding="utf-8").strip() == str(trace_fifo)
+
+
+def test_flatpak_steam_wrapper_falls_back_to_trace_with_unpatched_nvapi(
+    tmp_path,
+) -> None:
+    from common.flatpak_wrappers import _wrapper_text
+
+    compat_data = tmp_path / "compatdata" / "game"
+    nvapi = compat_data / "pfx" / "drive_c" / "windows" / "system32" / "nvapi64.dll"
+    nvapi.parent.mkdir(parents=True)
+    nvapi.write_bytes(b"stock dxvk-nvapi")
+    wrapper = tmp_path / "PENGUIN_BURNER"
+    env_file = tmp_path / "env.txt"
+    game = tmp_path / "game"
+    wrapper.write_text(_wrapper_text("PENGUIN_BURNER"), encoding="utf-8")
+    wrapper.chmod(0o755)
+    game.write_text(
+        "#!/usr/bin/env sh\n"
+        f"env | sort > {env_file}\n",
+        encoding="utf-8",
+    )
+    game.chmod(0o755)
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"DXVK_NVAPI_LATENCY_MARKER_LOG", "DXVK_NVAPI_LOG_LEVEL"}
+    }
+    env.update(
+        {
+            "HOME": str(tmp_path),
+            "PB_INGAME_LATENCY": "1",
+            "STEAM_COMPAT_DATA_PATH": str(compat_data),
+            "PENGUIN_BURNER_FLATPAK_APP_PATH": str(tmp_path / "missing-app-files"),
+        }
+    )
+    result = subprocess.run(
+        [str(wrapper), str(game)],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    captured = env_file.read_text(encoding="utf-8")
+    assert "DXVK_NVAPI_LOG_LEVEL=trace\n" in captured
+    assert "DXVK_NVAPI_LATENCY_MARKER_LOG=" not in captured
+
+
+def test_flatpak_steam_wrapper_prefers_marker_log_with_patched_nvapi(tmp_path) -> None:
+    from common.flatpak_wrappers import _wrapper_text
+
+    compat_data = tmp_path / "compatdata" / "game"
+    nvapi = compat_data / "pfx" / "drive_c" / "windows" / "system32" / "nvapi64.dll"
+    nvapi.parent.mkdir(parents=True)
+    nvapi.write_bytes(b"patched DXVK_NVAPI_LATENCY_MARKER_LOG dxvk-nvapi")
+    wrapper = tmp_path / "PENGUIN_BURNER"
+    env_file = tmp_path / "env.txt"
+    game = tmp_path / "game"
+    wrapper.write_text(_wrapper_text("PENGUIN_BURNER"), encoding="utf-8")
+    wrapper.chmod(0o755)
+    game.write_text(
+        "#!/usr/bin/env sh\n"
+        f"env | sort > {env_file}\n",
+        encoding="utf-8",
+    )
+    game.chmod(0o755)
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"DXVK_NVAPI_LATENCY_MARKER_LOG", "DXVK_NVAPI_LOG_LEVEL"}
+    }
+    env.update(
+        {
+            "HOME": str(tmp_path),
+            "PB_INGAME_LATENCY": "1",
+            "STEAM_COMPAT_DATA_PATH": str(compat_data),
+            "PENGUIN_BURNER_FLATPAK_APP_PATH": str(tmp_path / "missing-app-files"),
+        }
+    )
+    result = subprocess.run(
+        [str(wrapper), str(game)],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    captured = env_file.read_text(encoding="utf-8")
+    assert "DXVK_NVAPI_LATENCY_MARKER_LOG=1\n" in captured
+    assert "DXVK_NVAPI_LOG_LEVEL=" not in captured
+
+
+def test_flatpak_steam_wrapper_points_at_shipped_native_layer(tmp_path) -> None:
+    from common.flatpak_wrappers import _wrapper_text
+
+    app_files = tmp_path / "app" / "files"
+    layer_dir = (
+        app_files
+        / "lib"
+        / "python3.13"
+        / "site-packages"
+        / "overlay"
+        / "native_layer"
+    )
+    layer_dir.mkdir(parents=True)
+    layer_dir.joinpath("VkLayer_PENGUINBURNER_latency.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
+    layer_dir.joinpath("libVkLayer_penguinburner_latency.so").write_bytes(b"so")
+    wrapper = tmp_path / "PENGUIN_BURNER"
+    env_file = tmp_path / "env.txt"
+    game = tmp_path / "game"
+    wrapper.write_text(_wrapper_text("PENGUIN_BURNER"), encoding="utf-8")
+    wrapper.chmod(0o755)
+    game.write_text(
+        "#!/usr/bin/env sh\n"
+        f"env | sort > {env_file}\n",
+        encoding="utf-8",
+    )
+    game.chmod(0o755)
+
+    result = subprocess.run(
+        [str(wrapper), str(game)],
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "PENGUIN_BURNER_FLATPAK_APP_PATH": str(app_files),
+        },
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    captured = env_file.read_text(encoding="utf-8")
+    assert f"PENGUIN_BURNER_NATIVE_LAYER_DIR={layer_dir}\n" in captured
+    assert f"VK_ADD_IMPLICIT_LAYER_PATH={layer_dir}\n" in captured
+    assert "VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency\n" in captured
+
+
+def test_flatpak_wrapper_installer_registers_user_vulkan_layer(tmp_path) -> None:
+    from common.flatpak_wrappers import install_vulkan_layer_manifest
+    from common.flatpak_wrappers import uninstall_vulkan_layer_manifest
+
+    layer_dir = (
+        tmp_path
+        / "app"
+        / "files"
+        / "lib"
+        / "python3.13"
+        / "site-packages"
+        / "overlay"
+        / "native_layer"
+    )
+    layer_dir.mkdir(parents=True)
+    layer_dir.joinpath("VkLayer_PENGUINBURNER_latency.json").write_text(
+        json.dumps(
+            {
+                "file_format_version": "1.2.1",
+                "layer": {
+                    "name": "VK_LAYER_PENGUINBURNER_latency",
+                    "type": "GLOBAL",
+                    "api_version": "1.4.0",
+                    "library_path": "./libVkLayer_penguinburner_latency.so",
+                    "library_arch": "64",
+                    "implementation_version": "1",
+                    "description": "PenguinBurner latency telemetry observer",
+                    "functions": {
+                        "vkGetInstanceProcAddr": "vkGetInstanceProcAddr",
+                        "vkGetDeviceProcAddr": "vkGetDeviceProcAddr",
+                    },
+                    "enable_environment": {
+                        "PENGUIN_BURNER_LATENCY_LAYER": "1",
+                    },
+                    "disable_environment": {
+                        "DISABLE_PENGUIN_BURNER_LATENCY_LAYER": "",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    layer_dir.joinpath("libVkLayer_penguinburner_latency.so").write_bytes(b"so")
+
+    target = install_vulkan_layer_manifest(home=tmp_path, layer_dirs=[layer_dir])
+
+    assert target == (
+        tmp_path
+        / ".local/share/vulkan/implicit_layer.d/VkLayer_PENGUINBURNER_latency.json"
+    )
+    assert target is not None
+    manifest = json.loads(target.read_text(encoding="utf-8"))
+    assert manifest["layer"]["library_path"] == str(
+        (layer_dir / "libVkLayer_penguinburner_latency.so").resolve()
+    )
+    assert manifest["layer"]["enable_environment"] == {"PENGUIN_BURNER": "1"}
+    assert manifest["layer"]["disable_environment"] == {
+        "DISABLE_PENGUIN_BURNER_LATENCY_LAYER": ""
+    }
+
+    assert uninstall_vulkan_layer_manifest(home=tmp_path) == target
+    assert not target.exists()
+
+
+def test_flatpak_wrapper_installer_uses_flatpak_app_path_for_layer(tmp_path) -> None:
+    from common.flatpak_wrappers import install_vulkan_layer_manifest
+
+    app_files = tmp_path / "flatpak" / "files"
+    layer_dir = (
+        app_files
+        / "lib"
+        / "python3.13"
+        / "site-packages"
+        / "overlay"
+        / "native_layer"
+    )
+    layer_dir.mkdir(parents=True)
+    layer_dir.joinpath("VkLayer_PENGUINBURNER_latency.json").write_text(
+        json.dumps(
+            {
+                "file_format_version": "1.2.1",
+                "layer": {
+                    "name": "VK_LAYER_PENGUINBURNER_latency",
+                    "type": "GLOBAL",
+                    "api_version": "1.4.0",
+                    "library_path": "./libVkLayer_penguinburner_latency.so",
+                    "library_arch": "64",
+                    "implementation_version": "1",
+                    "description": "PenguinBurner latency telemetry observer",
+                    "functions": {
+                        "vkGetInstanceProcAddr": "vkGetInstanceProcAddr",
+                        "vkGetDeviceProcAddr": "vkGetDeviceProcAddr",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    layer_dir.joinpath("libVkLayer_penguinburner_latency.so").write_bytes(b"so")
+    flatpak_info = tmp_path / ".flatpak-info"
+    flatpak_info.write_text(
+        f"[Instance]\napp-path={app_files}\n",
+        encoding="utf-8",
+    )
+
+    target = install_vulkan_layer_manifest(
+        home=tmp_path,
+        flatpak_info_path=flatpak_info,
+    )
+
+    assert target is not None
+    manifest = json.loads(target.read_text(encoding="utf-8"))
+    assert manifest["layer"]["library_path"] == str(
+        (layer_dir / "libVkLayer_penguinburner_latency.so").resolve()
+    )
+    assert not manifest["layer"]["library_path"].startswith("/app/")
+
+
+def test_flatpak_shell_installer_registers_user_vulkan_layer_manifest() -> None:
+    script = Path("scripts/install-flatpak-cli-wrappers.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert ".local/share/vulkan/implicit_layer.d" in script
+    assert '"enable_environment":' in script
+    assert '"PENGUIN_BURNER": "1"' in script
+    assert "libVkLayer_penguinburner_latency.so" in script
+    assert "nvapi-trace.fifo" in script
+    assert 'exec 2>&3' in script
+    assert "dxvk_nvapi_marker_log_supported" in script
+    assert "DXVK_NVAPI_LOG_LEVEL" in script
 
 
 def test_python_build_requires_native_layer_build_tooling() -> None:

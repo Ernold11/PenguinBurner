@@ -138,6 +138,66 @@ def test_daemon_start_auto_uv_rejects_unknown_options() -> None:
         list(daemon_api.stream_auto_uv_scan({"unknown": "value"}))
 
 
+def test_daemon_start_runtime_profile_tracks_process(monkeypatch) -> None:
+    calls = []
+
+    class FakeProcess:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(command, **_kwargs):
+        calls.append(list(command))
+        return FakeProcess()
+
+    monkeypatch.setattr(daemon_api.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        daemon_api,
+        "_daemon_program_file",
+        lambda: "/tmp/penguin_burner.py",
+    )
+    monkeypatch.setattr(daemon_api, "_ACTIVE_SCAN_PROCESS", None)
+    monkeypatch.setattr(daemon_api, "_AUTOSTART_PROCESS", None)
+    monkeypatch.setattr(daemon_api, "_AUTOSTART_ARGV", [])
+
+    result = daemon_api.handle_request(
+        {
+            "method": "start_runtime_profile",
+            "argv": ["--auto-uv-profile", "profile-a", "--silent-fan-curve"],
+        }
+    )
+
+    assert result == {
+        "started": True,
+        "pid": 4321,
+        "argv": ["--auto-uv-profile", "profile-a", "--silent-fan-curve"],
+    }
+    assert calls == [
+        [
+            daemon_api.sys.executable,
+            "/tmp/penguin_burner.py",
+            "--auto-uv-profile",
+            "profile-a",
+            "--silent-fan-curve",
+        ]
+    ]
+    assert daemon_api.status_payload()["state"] == "runtime_profile_running"
+
+
+def test_daemon_start_runtime_profile_rejects_unsupported_args() -> None:
+    with pytest.raises(ValueError, match="unsupported runtime profile argument"):
+        daemon_api.handle_request(
+            {"method": "start_runtime_profile", "argv": ["--daemon-api", "/tmp/x"]}
+        )
+
+
 def test_daemon_client_status_roundtrip(tmp_path: Path) -> None:
     socket_path = tmp_path / "penguin-burnerd.sock"
     thread = threading.Thread(
