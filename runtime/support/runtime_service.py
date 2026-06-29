@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import pwd
 import base64
+import configparser
 import json
 import shlex
 import shutil
@@ -42,7 +43,7 @@ PENGUIN_BURNER_DAEMON_UNIT_NAME = "penguin-burnerd"
 PENGUIN_BURNER_FOREGROUND_ENV = "PENGUIN_BURNER_FOREGROUND"
 DEFAULT_JOURNAL_HOURS = 4
 FLATPAK_ID_ENV = "FLATPAK_ID"
-FLATPAK_APP_ID = "io.github.jpietek.PenguinBurner"
+FLATPAK_INFO_PATH = Path("/.flatpak-info")
 DESKTOP_RUNTIME_ENV_NAMES = (
     "PENGUIN_BURNER_HOME",
     "PENGUIN_BURNER_Q2RTX_USER",
@@ -179,8 +180,60 @@ def running_in_flatpak() -> bool:
     ).is_file()
 
 
-def _flatpak_app_id() -> str:
-    return os.environ.get(FLATPAK_ID_ENV, "").strip() or FLATPAK_APP_ID
+def flatpak_host_app_path() -> Path:
+    override = os.environ.get("PENGUIN_BURNER_FLATPAK_APP_PATH", "").strip()
+    if override:
+        return Path(override).expanduser()
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(FLATPAK_INFO_PATH, encoding="utf-8")
+    except OSError:
+        return Path("/app")
+    app_path = parser.get("Instance", "app-path", fallback="").strip()
+    return Path(app_path) if app_path else Path("/app")
+
+
+def _flatpak_host_path_for_app_path(path: str | Path) -> Path:
+    item = Path(str(path))
+    if item.is_absolute() and len(item.parts) >= 2 and item.parts[1] == "app":
+        return flatpak_host_app_path().joinpath(*item.parts[2:])
+    return item
+
+
+def flatpak_host_site_packages_path(program_file: str | Path | None = None) -> Path:
+    override = os.environ.get("PENGUIN_BURNER_FLATPAK_SITE_PACKAGES", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if program_file is not None:
+        mapped_program = _flatpak_host_path_for_app_path(program_file)
+        if mapped_program.parent.name == "site-packages":
+            return mapped_program.parent
+    app_path = flatpak_host_app_path()
+    candidates = sorted((app_path / "lib").glob("python*/site-packages"), reverse=True)
+    if candidates:
+        return candidates[0]
+    local_relative = _flatpak_local_site_packages_relative_path()
+    if local_relative is not None:
+        return app_path / local_relative
+    if program_file is not None:
+        mapped_program = _flatpak_host_path_for_app_path(program_file)
+        if mapped_program.name == "penguin_burner.py":
+            return mapped_program.parent
+    raise RuntimeError(f"could not locate Flatpak Python site-packages under {app_path}")
+
+
+def _flatpak_local_site_packages_relative_path() -> Path | None:
+    candidates = sorted(Path("/app/lib").glob("python*/site-packages"), reverse=True)
+    if not candidates:
+        return None
+    try:
+        return candidates[0].relative_to("/app")
+    except ValueError:
+        return None
+
+
+def flatpak_host_cli_program_file(program_file: str | Path | None = None) -> Path:
+    return flatpak_host_site_packages_path(program_file) / "penguin_burner.py"
 
 
 def _desktop_user_home() -> str:
@@ -237,15 +290,22 @@ def _format_systemd_exec(args):
 def runtime_foreground_command(program_file, argv):
     if running_in_flatpak():
         return [
-            "/usr/bin/flatpak",
-            "run",
-            "--user",
-            "--command=penguin-burner-cli",
-            _flatpak_app_id(),
+            "/usr/bin/python3",
+            str(flatpak_host_cli_program_file(program_file)),
             *argv,
         ]
     python = sys.executable or shutil.which("python3") or "python3"
     return [python, str(Path(program_file).resolve()), *argv]
+
+
+def runtime_python_env_assignments(program_file) -> list[str]:
+    if not running_in_flatpak():
+        return []
+    return [
+        "PYTHONNOUSERSITE=1",
+        "PYTHONDONTWRITEBYTECODE=1",
+        f"PYTHONPATH={flatpak_host_site_packages_path(program_file)}",
+    ]
 
 
 def adaptive_policy_env_assignments(env: dict[str, str] | None = None) -> list[str]:
@@ -308,6 +368,10 @@ def build_systemd_service_unit(program_file, argv):
         )
         + "".join(
             f"Environment={assignment}\n"
+            for assignment in runtime_python_env_assignments(program_file)
+        )
+        + "".join(
+            f"Environment={assignment}\n"
             for assignment in adaptive_policy_env_assignments()
         )
         +
@@ -339,8 +403,13 @@ def build_daemon_api_service_unit(
         encoded = base64.b64encode(json.dumps(autostart_argv).encode("utf-8")).decode(
             "ascii"
         )
+        autostart_program_file = (
+            flatpak_host_cli_program_file(program_file)
+            if running_in_flatpak()
+            else Path(program_file).resolve()
+        )
         autostart_env = (
-            f"Environment={AUTOSTART_PROGRAM_FILE_ENV}={Path(program_file).resolve()}\n"
+            f"Environment={AUTOSTART_PROGRAM_FILE_ENV}={autostart_program_file}\n"
             f"Environment={AUTOSTART_ARGV_B64_ENV}={encoded}\n"
         )
     allowed_uid = daemon_allowed_uid_assignment()
@@ -349,6 +418,7 @@ def build_daemon_api_service_unit(
         f"Environment={assignment}\n"
         for assignment in [
             *desktop_runtime_env_assignments(),
+            *runtime_python_env_assignments(program_file),
             *adaptive_policy_env_assignments(),
         ]
     )
@@ -689,6 +759,11 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
             *[
                 item
                 for assignment in desktop_runtime_env_assignments()
+                for item in ("--setenv", assignment)
+            ],
+            *[
+                item
+                for assignment in runtime_python_env_assignments(program_file)
                 for item in ("--setenv", assignment)
             ],
             *[

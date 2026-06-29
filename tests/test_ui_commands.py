@@ -72,6 +72,14 @@ from ui.components.curve_plot import (
 from ui.components.table_sizing import set_header_fit_column_widths
 
 
+FLATPAK_APP_PATH = (
+    "/home/desktop-user/.local/share/flatpak/app/"
+    "io.github.jpietek.PenguinBurner/current/active/files"
+)
+FLATPAK_SITE_PACKAGES = f"{FLATPAK_APP_PATH}/lib/python3.13/site-packages"
+FLATPAK_CLI_PROGRAM = f"{FLATPAK_SITE_PACKAGES}/penguin_burner.py"
+
+
 def _scan_daemon_options(command: list[str]) -> dict:
     assert command[1:4] == ["-m", "runtime.daemon_client", "start-auto-uv"]
     return json.loads(command[4])
@@ -143,6 +151,8 @@ def test_daemon_migration_command_uses_flatpak_host_cli(
     monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
     monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_APP_PATH", FLATPAK_APP_PATH)
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_SITE_PACKAGES", FLATPAK_SITE_PACKAGES)
     monkeypatch.setenv("USER", "desktop-user")
     monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_USER", "desktop-user")
     monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_UID", "1000")
@@ -186,9 +196,11 @@ def test_daemon_migration_command_uses_flatpak_host_cli(
         "penguin-burner-daemon-install",
     ]
     assert "systemctl enable --now penguin-burnerd.service" in command[-2]
+    assert "/usr/bin/flatpak" not in unit
+    assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
     assert (
-        "ExecStart=/usr/bin/flatpak run --user --command=penguin-burner-cli "
-        "io.github.jpietek.PenguinBurner --daemon-api /run/penguin-burnerd.sock"
+        f"ExecStart=/usr/bin/python3 {FLATPAK_CLI_PROGRAM} "
+        "--daemon-api /run/penguin-burnerd.sock"
     ) in unit
     assert "Environment=PENGUIN_BURNER_DAEMON_ALLOWED_UID=1000" in unit
     assert "--migrate-to-daemon-service" not in command
@@ -203,6 +215,8 @@ def test_flatpak_runtime_profile_command_avoids_host_path_wrapper(
     monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
     monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_APP_PATH", FLATPAK_APP_PATH)
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_SITE_PACKAGES", FLATPAK_SITE_PACKAGES)
     monkeypatch.setenv("USER", "desktop-user")
     monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_USER", "desktop-user")
     monkeypatch.setattr(
@@ -255,11 +269,16 @@ def test_flatpak_runtime_profile_command_avoids_host_path_wrapper(
         command[-2],
         "penguin-burner-systemd-install",
     ]
-    assert "systemctl enable --now PenguinBurner.service" in command[-2]
+    assert "systemctl enable --now penguin-burnerd.service" in command[-2]
+    assert "systemctl enable --now PenguinBurner.service" not in command[-2]
+    assert "/usr/bin/flatpak" not in unit
+    assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
     assert (
-        "ExecStart=/usr/bin/flatpak run --user --command=penguin-burner-cli "
-        "io.github.jpietek.PenguinBurner --silent-fan-curve "
-        "--adaptive-auto-uv --gpu-index 0"
+        f"ExecStart=/usr/bin/python3 {FLATPAK_CLI_PROGRAM} "
+        "--daemon-api /run/penguin-burnerd.sock"
+    ) in unit
+    assert (
+        "Environment=PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64="
     ) in unit
     assert "Environment=HOME=/home/desktop-user" in unit
     assert "Environment=XDG_DATA_HOME=/home/desktop-user/.local/share" in unit
@@ -273,6 +292,9 @@ def test_flatpak_runtime_profile_daemonize_uses_host_systemd_run(
     flatpak_info.write_text("[Application]\n", encoding="utf-8")
     monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_APP_PATH", FLATPAK_APP_PATH)
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_SITE_PACKAGES", FLATPAK_SITE_PACKAGES)
     monkeypatch.setenv("USER", "desktop-user")
     monkeypatch.setattr(
         commands.pwd,
@@ -310,13 +332,14 @@ def test_flatpak_runtime_profile_daemonize_uses_host_systemd_run(
         "--collect",
         "--service-type=simple",
     ]
-    flatpak_index = command.index("/usr/bin/flatpak")
-    assert command[flatpak_index : flatpak_index + 5] == [
-        "/usr/bin/flatpak",
-        "run",
-        "--user",
-        "--command=penguin-burner-cli",
-        "io.github.jpietek.PenguinBurner",
+    assert "/usr/bin/flatpak" not in command
+    assert "PYTHONNOUSERSITE=1" in command
+    assert "PYTHONDONTWRITEBYTECODE=1" in command
+    assert f"PYTHONPATH={FLATPAK_SITE_PACKAGES}" in command
+    python_index = command.index("/usr/bin/python3")
+    assert command[python_index : python_index + 2] == [
+        "/usr/bin/python3",
+        FLATPAK_CLI_PROGRAM,
     ]
     assert command[-5:] == [
         "--auto-uv-profile",

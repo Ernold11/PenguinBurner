@@ -287,9 +287,12 @@ def daemon_migration_command() -> list[str]:
 
 
 def _flatpak_daemon_service_install_command() -> list[str]:
-    from runtime.support.runtime_service import build_daemon_api_service_unit
+    from runtime.support.runtime_service import (
+        build_daemon_api_service_unit,
+        flatpak_host_cli_program_file,
+    )
 
-    unit = build_daemon_api_service_unit(sys.argv[0])
+    unit = build_daemon_api_service_unit(flatpak_host_cli_program_file())
     encoded_unit = base64.b64encode(unit.encode("utf-8")).decode("ascii")
     script = r"""
 unit=/etc/systemd/system/penguin-burnerd.service
@@ -358,18 +361,25 @@ def _flatpak_systemd_profile_command(action: str, runtime_argv: list[str]) -> li
 
 
 def _flatpak_install_systemd_command(runtime_argv: list[str]) -> list[str]:
-    from runtime.support.runtime_service import build_systemd_service_unit
+    from runtime.support.runtime_service import (
+        build_daemon_api_service_unit,
+        flatpak_host_cli_program_file,
+    )
 
-    unit = build_systemd_service_unit(sys.argv[0], list(runtime_argv))
+    unit = build_daemon_api_service_unit(
+        flatpak_host_cli_program_file(),
+        autostart_argv=list(runtime_argv),
+    )
     encoded_unit = base64.b64encode(unit.encode("utf-8")).decode("ascii")
     script = r"""
-unit=/etc/systemd/system/PenguinBurner.service
+legacy_unit=/etc/systemd/system/PenguinBurner.service
+unit=/etc/systemd/system/penguin-burnerd.service
 systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
-if [ -f "$unit" ]; then
-    rm -f "$unit"
-    echo "Removed existing static PenguinBurner.service before persistent service install."
+if [ -f "$legacy_unit" ]; then
+    rm -f "$legacy_unit"
+    echo "Removed existing static PenguinBurner.service before daemon autostart install."
 fi
-tmp="$(mktemp /etc/systemd/system/.PenguinBurner.service.XXXXXX)"
+tmp="$(mktemp /etc/systemd/system/.penguin-burnerd.service.XXXXXX)"
 trap 'rm -f "$tmp"' EXIT
 printf '%s' "$PENGUIN_BURNER_SYSTEMD_UNIT_B64" | base64 -d > "$tmp"
 chmod 0644 "$tmp"
@@ -377,9 +387,10 @@ mv "$tmp" "$unit"
 trap - EXIT
 systemctl daemon-reload
 systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
-systemctl enable --now PenguinBurner.service
-echo "Installed and enabled PenguinBurner.service at $unit."
-echo "Follow the journal with: journalctl -u PenguinBurner.service --since \"-4 hours\" -f"
+systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
+systemctl enable --now penguin-burnerd.service
+echo "Installed and enabled penguin-burnerd.service at $unit."
+echo "Follow the journal with: journalctl -u penguin-burnerd.service --since \"-4 hours\" -f"
 """.strip()
     return _privileged_command(
         [
@@ -395,23 +406,32 @@ echo "Follow the journal with: journalctl -u PenguinBurner.service --since \"-4 
 
 def _flatpak_uninstall_systemd_command() -> list[str]:
     script = r"""
-unit=/etc/systemd/system/PenguinBurner.service
+legacy_unit=/etc/systemd/system/PenguinBurner.service
+daemon_unit=/etc/systemd/system/penguin-burnerd.service
 systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
-rm -f "$unit"
+systemctl disable --now penguin-burnerd.service >/dev/null 2>&1 || true
+rm -f "$legacy_unit" "$daemon_unit"
 systemctl daemon-reload
 systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
-echo "Removed PenguinBurner.service."
+systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
+echo "Removed PenguinBurner.service and penguin-burnerd.service."
 """.strip()
     return _privileged_command(
-        ["/bin/sh", "-eu", "-c", script, "penguin-burner-systemd-uninstall"]
+        [
+            "/bin/sh",
+            "-eu",
+            "-c",
+            script,
+            "penguin-burner-systemd-uninstall",
+        ]
     )
 
 
 def _flatpak_daemonize_command(runtime_argv: list[str]) -> list[str]:
     script = r"""
-unit=/etc/systemd/system/PenguinBurner.service
+legacy_unit=/etc/systemd/system/PenguinBurner.service
 systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
-rm -f "$unit"
+rm -f "$legacy_unit"
 systemctl daemon-reload
 systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
 exec "$@"
@@ -433,8 +453,12 @@ def _flatpak_systemd_run_command(runtime_argv: list[str]) -> list[str]:
         PENGUIN_BURNER_FOREGROUND_ENV,
         adaptive_policy_env_assignments,
         desktop_runtime_env_assignments,
+        flatpak_host_cli_program_file,
+        runtime_foreground_command,
+        runtime_python_env_assignments,
     )
 
+    program_file = flatpak_host_cli_program_file()
     command = [
         "/usr/bin/systemd-run",
         "--unit",
@@ -454,10 +478,11 @@ def _flatpak_systemd_run_command(runtime_argv: list[str]) -> list[str]:
     ]
     for assignment in [
         *desktop_runtime_env_assignments(),
+        *runtime_python_env_assignments(program_file),
         *adaptive_policy_env_assignments(),
     ]:
         command.extend(["--setenv", assignment])
-    command.extend([*host_cli_base_command(), *runtime_argv])
+    command.extend(runtime_foreground_command(program_file, runtime_argv))
     return command
 
 

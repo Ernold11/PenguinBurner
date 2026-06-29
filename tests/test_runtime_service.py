@@ -6,6 +6,14 @@ from types import SimpleNamespace
 from runtime.support import runtime_service
 
 
+FLATPAK_APP_PATH = (
+    "/home/jp/.local/share/flatpak/app/io.github.jpietek.PenguinBurner/"
+    "current/active/files"
+)
+FLATPAK_SITE_PACKAGES = f"{FLATPAK_APP_PATH}/lib/python3.13/site-packages"
+FLATPAK_CLI_PROGRAM = f"{FLATPAK_SITE_PACKAGES}/penguin_burner.py"
+
+
 def test_systemd_unit_uses_running_python_and_program_without_launcher(
     tmp_path: Path,
     monkeypatch,
@@ -354,8 +362,9 @@ def test_daemonize_preserves_pkexec_desktop_user_env(monkeypatch) -> None:
     assert "PENGUIN_BURNER_Q2RTX_USER=jp" in command
 
 
-def test_flatpak_systemd_unit_uses_host_flatpak_run(monkeypatch) -> None:
+def test_flatpak_systemd_unit_uses_host_python_deployment(monkeypatch) -> None:
     monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_APP_PATH", FLATPAK_APP_PATH)
     monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_USER", "jp")
     monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_UID", "1000")
     monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_GID", "1000")
@@ -372,16 +381,20 @@ def test_flatpak_systemd_unit_uses_host_flatpak_run(monkeypatch) -> None:
 
     assert "Environment=HOME=/home/jp" in unit
     assert "Environment=XDG_DATA_HOME=/home/jp/.local/share" in unit
+    assert "Environment=PYTHONNOUSERSITE=1" in unit
+    assert "Environment=PYTHONDONTWRITEBYTECODE=1" in unit
+    assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
     assert "/app/lib/python3.13/site-packages/penguin_burner.py" not in unit
+    assert "/usr/bin/flatpak" not in unit
     assert (
-        "ExecStart=/usr/bin/flatpak run --user --command=penguin-burner-cli "
-        "io.github.jpietek.PenguinBurner --silent-fan-curve "
+        f"ExecStart=/usr/bin/python3 {FLATPAK_CLI_PROGRAM} --silent-fan-curve "
         "--adaptive-auto-uv --gpu-index 0"
     ) in unit
 
 
-def test_flatpak_daemon_unit_execstart_uses_host_flatpak_run(monkeypatch) -> None:
+def test_flatpak_daemon_unit_execstart_uses_host_python_deployment(monkeypatch) -> None:
     monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_APP_PATH", FLATPAK_APP_PATH)
     monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_USER", "jp")
     monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_UID", "1000")
     monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_GID", "1000")
@@ -398,12 +411,34 @@ def test_flatpak_daemon_unit_execstart_uses_host_flatpak_run(monkeypatch) -> Non
 
     assert "Environment=HOME=/home/jp" in unit
     assert "Environment=XDG_DATA_HOME=/home/jp/.local/share" in unit
+    assert "Environment=PYTHONNOUSERSITE=1" in unit
+    assert "Environment=PYTHONDONTWRITEBYTECODE=1" in unit
+    assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
     assert (
         "Environment=PENGUIN_BURNER_DAEMON_PROGRAM_FILE="
-        "/app/lib/python3.13/site-packages/penguin_burner.py"
+        f"{FLATPAK_CLI_PROGRAM}"
     ) in unit
+    assert "/usr/bin/flatpak" not in unit
     assert (
-        "ExecStart=/usr/bin/flatpak run --user --command=penguin-burner-cli "
-        "io.github.jpietek.PenguinBurner --daemon-api "
+        f"ExecStart=/usr/bin/python3 {FLATPAK_CLI_PROGRAM} --daemon-api "
         "/run/penguin-burnerd.sock"
     ) in unit
+
+
+def test_flatpak_site_packages_falls_back_to_local_app_relative_path(
+    monkeypatch,
+) -> None:
+    host_app_path = Path("/home/jp/.local/share/flatpak/app/appid/current/active/files")
+    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_APP_PATH", str(host_app_path))
+    monkeypatch.delenv("PENGUIN_BURNER_FLATPAK_SITE_PACKAGES", raising=False)
+    monkeypatch.setattr(
+        runtime_service,
+        "_flatpak_local_site_packages_relative_path",
+        lambda: Path("lib/python3.13/site-packages"),
+    )
+
+    assert (
+        runtime_service.flatpak_host_site_packages_path()
+        == host_app_path / "lib/python3.13/site-packages"
+    )
