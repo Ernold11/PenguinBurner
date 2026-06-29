@@ -46,18 +46,37 @@ Or install the self-hosted Flatpak:
 flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo && flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner
 ```
 
+Then install the host command wrappers:
+
+```bash
+curl -fsSL https://jpietek.github.io/PenguinBurner/install-flatpak-cli-wrappers.sh | bash
+```
+
+After that, `penguin-burner`, `pburn`, `penguin-burner-ui`, `pburn-ui`,
+`penguin-burner-cli`, `pburn-cli`, and `PENGUIN_BURNER` work from your `PATH`
+just like the native packages.
+The wrapper installer refuses to overwrite existing native/PyPI commands unless
+rerun as `curl -fsSL https://jpietek.github.io/PenguinBurner/install-flatpak-cli-wrappers.sh | bash -s -- --force`.
+
+You can also launch the Flatpak directly without wrappers:
+
+```bash
+flatpak run io.github.jpietek.PenguinBurner
+```
+
 Also packaged for [Fedora (COPR)](https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/),
 [Arch / CachyOS (AUR)](https://aur.archlinux.org/packages/penguin-burner), and
 [Ubuntu (PPA)](https://launchpad.net/~jpietek/+archive/ubuntu/penguin-burner) —
 commands in the [Install guide](docs/install.md).
 
-Run the GUI with `penguin-burner` (or `pburn`). Install the NVIDIA driver and
-CUDA first.
+PyPI, Flatpak with wrappers, COPR, AUR, and PPA installs run the GUI with
+`penguin-burner` (or `pburn`). Install the NVIDIA driver and CUDA first.
 
 ## Quick start
 
 1. Install (above) with the NVIDIA driver and CUDA already set up.
-2. Launch PenguinBurner (`penguin-burner`).
+2. Launch PenguinBurner (`penguin-burner` or `pburn`; Flatpak without wrappers:
+   `flatpak run io.github.jpietek.PenguinBurner`).
 3. Click **Setup Auto Undervolt**, choose a performance bias, and let the scan
    find and verify a stable curve.
 4. On the **Profiles** tab, select the result and click **Apply Selected**.

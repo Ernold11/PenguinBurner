@@ -15,6 +15,29 @@ debugging but is not the GPU picker backend.
 python -m pip install --user --upgrade penguin-burner
 ```
 
+## Flatpak
+
+```bash
+flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo
+flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner
+curl -fsSL https://jpietek.github.io/PenguinBurner/install-flatpak-cli-wrappers.sh | bash
+```
+
+The wrapper installer adds `penguin-burner`, `pburn`, `penguin-burner-ui`,
+`pburn-ui`, `penguin-burner-cli`, `pburn-cli`, and `PENGUIN_BURNER` under
+`~/.local/bin`, forwarding each command into the Flatpak sandbox. It refuses to
+overwrite an existing native or PyPI command unless you rerun it as:
+
+```bash
+curl -fsSL https://jpietek.github.io/PenguinBurner/install-flatpak-cli-wrappers.sh | bash -s -- --force
+```
+
+The direct Flatpak launcher also remains available:
+
+```bash
+flatpak run io.github.jpietek.PenguinBurner
+```
+
 ## Fedora ([COPR](https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/))
 
 Fedora 42 / 43 / 44, with the NVIDIA driver from Fedora's repo or RPM Fusion:
@@ -45,8 +68,8 @@ sudo apt update && sudo apt install penguin-burner
 - GUI: `penguin-burner` (alias `pburn`)
 - CLI: `penguin-burner-cli` (alias `pburn-cli`)
 
-The pip package also installs a desktop launcher entry. If the commands are not
-found, make sure `~/.local/bin` is on your `PATH`.
+The pip and Flatpak-wrapper installs also add desktop-friendly command entries.
+If the commands are not found, make sure `~/.local/bin` is on your `PATH`.
 
 ## Local wheel (from a checkout)
 

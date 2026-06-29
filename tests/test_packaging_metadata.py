@@ -118,6 +118,42 @@ def test_flatpak_manifest_exposes_daemon_socket_and_host_spawn_portal() -> None:
     assert "--talk-name=org.freedesktop.Flatpak" in manifest
 
 
+def test_flatpak_smoke_script_uses_isolated_profile_and_app_id_launcher() -> None:
+    script = Path("scripts/check-flatpak-install-smoke.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "XDG_DATA_HOME" in script
+    assert 'export PATH="/usr/bin:/bin"' in script
+    assert "host command leaked into smoke test PATH" in script
+    assert "exports/bin/$APP_ID" in script
+    assert 'flatpak run --user --command=bash "$APP_ID" -c' in script
+    assert 'test "$resolved" = "/app/bin/$bin"' in script
+    assert 'flatpak run --user --command=penguin-burner-cli "$APP_ID" --help' in script
+    assert 'flatpak run --user --command=pburn-cli "$APP_ID" --help' in script
+
+
+def test_flatpak_cli_wrapper_installer_is_conservative() -> None:
+    script = Path("scripts/install-flatpak-cli-wrappers.sh").read_text(
+        encoding="utf-8"
+    )
+    build_script = Path("scripts/build-flatpak-public-repo.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "penguin-burner" in script
+    assert "pburn" in script
+    assert "penguin-burner-cli" in script
+    assert "pburn-cli" in script
+    assert "PENGUIN_BURNER" in script
+    assert "exec flatpak run --command=$command_name $APP_ID" in script
+    assert "refusing to overwrite existing command" in script
+    assert "--force" in script
+    assert "--uninstall" in script
+    assert 'flatpak info "$APP_ID"' in script
+    assert "install-flatpak-cli-wrappers.sh" in build_script
+
+
 def test_python_build_requires_native_layer_build_tooling() -> None:
     setup_py = Path("setup.py").read_text(encoding="utf-8")
     manifest = Path("MANIFEST.in").read_text(encoding="utf-8")
@@ -306,6 +342,31 @@ def test_readme_uses_logo_image_instead_of_emoji_title() -> None:
     assert "LACT" in readme
     assert "https://github.com/jpietek/PenguinBurner/issues" in readme
     assert "# 🐧 PenguinBurner 🔥" not in readme
+
+
+def test_readme_distinguishes_flatpak_from_native_console_scripts() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+    install_doc = Path("docs/install.md").read_text(encoding="utf-8")
+
+    assert "flatpak run io.github.jpietek.PenguinBurner" in readme
+    assert "install-flatpak-cli-wrappers.sh | bash" in readme
+    assert "`penguin-burner`, `pburn`, `penguin-burner-ui`, `pburn-ui`," in readme
+    assert "`penguin-burner-cli`, `pburn-cli`, and `PENGUIN_BURNER`" in readme
+    assert "`PENGUIN_BURNER` work from your `PATH`" in readme
+    assert (
+        "refuses to overwrite existing native/PyPI commands"
+        in readme
+    )
+    assert (
+        "PyPI, Flatpak with wrappers, COPR, AUR, and PPA installs run the GUI"
+        in readme
+    )
+    assert (
+        "Launch PenguinBurner (`penguin-burner` or `pburn`; Flatpak without wrappers:"
+        in readme
+    )
+    assert "## Flatpak" in install_doc
+    assert "install-flatpak-cli-wrappers.sh | bash" in install_doc
 
 
 def _png_alpha_channel(path: Path) -> tuple[int, int, list[int]]:
