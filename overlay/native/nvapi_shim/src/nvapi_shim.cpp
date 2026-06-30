@@ -30,6 +30,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
 
 namespace {
 
@@ -65,6 +68,10 @@ struct NvAsyncFrameMarkerParams {
     NvU8 rsvd[55];                  // @33
 };
 
+// Bytes we read from a caller marker struct (version@0, frameID@8, markerType@16
+// — last byte @19). Used to bound the defensive readability probe below.
+constexpr SIZE_T kMarkerReadBytes = 24;
+
 using PfnQueryInterface = void*(__cdecl*)(NvU32 id);
 using PfnSetLatencyMarker = NvAPI_Status(__cdecl*)(void* dev, NvLatencyMarkerParams* p);
 using PfnAsyncFrameMarker = NvAPI_Status(__cdecl*)(void* queue, NvAsyncFrameMarkerParams* p);
@@ -82,7 +89,7 @@ volatile PfnSetSleepMode g_real_set_sleep = nullptr;
 INIT_ONCE g_init_once = INIT_ONCE_STATIC_INIT;
 CRITICAL_SECTION g_emit_lock;
 double g_qpc_to_us = 0.0;
-HANDLE g_out = INVALID_HANDLE_VALUE;
+int g_out_fd = -1;
 DWORD g_pid = 0;
 
 // Only the marker types the bridge consumes; others are dropped to keep volume
@@ -105,12 +112,11 @@ NvU64 qpc_us() {
 }
 
 void emit_raw(const char* buf, int len) {
-    if (g_out == INVALID_HANDLE_VALUE || len <= 0) {
+    if (g_out_fd < 0 || len <= 0) {
         return;
     }
     EnterCriticalSection(&g_emit_lock);
-    DWORD written = 0;
-    WriteFile(g_out, buf, static_cast<DWORD>(len), &written, nullptr);
+    _write(g_out_fd, buf, static_cast<unsigned int>(len));
     LeaveCriticalSection(&g_emit_lock);
 }
 
@@ -126,6 +132,14 @@ void emit_marker(NvU64 frame_id, NV_LATENCY_MARKER_TYPE type) {
         static_cast<unsigned>(g_pid),
         static_cast<unsigned long long>(qpc_us()),
         static_cast<unsigned long long>(frame_id), name);
+    if (len < 0) {
+        return;  // formatting error
+    }
+    // snprintf returns the would-be length; clamp to what's actually in buf so a
+    // truncation can never make emit_raw read past the buffer.
+    if (len >= static_cast<int>(sizeof(buf))) {
+        len = static_cast<int>(sizeof(buf)) - 1;
+    }
     emit_raw(buf, len);
 }
 
@@ -133,15 +147,22 @@ void emit_marker(NvU64 frame_id, NV_LATENCY_MARKER_TYPE type) {
 void open_output() {
     const char* path = std::getenv("PENGUIN_BURNER_SHIM_OUTPUT");
     if (path && path[0]) {
-        HANDLE handle = CreateFileA(
-            path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (handle != INVALID_HANDLE_VALUE) {
-            g_out = handle;
+        int fd = _open(
+            path, _O_WRONLY | _O_CREAT | _O_APPEND | _O_BINARY,
+            _S_IREAD | _S_IWRITE);
+        if (fd != -1) {
+            g_out_fd = fd;
             return;
         }
     }
-    g_out = GetStdHandle(STD_ERROR_HANDLE);
+    // Write at the msvcrt fd level (fd 2). The launcher routes the game's
+    // stderr (fd 2) to the marker FIFO the bridge drains, and dxvk-nvapi's own
+    // logger reaches it the same way (std::cerr -> stdio -> msvcrt _write(2)).
+    // We bypass the FILE* layer: in a *loaded DLL*, mingw's FILE* stderr is not
+    // reliably wired to fd 2 (GetStdHandle(STD_ERROR_HANDLE) is also NULL in a
+    // GUI game like Talos2-Win64-Shipping.exe), so earlier handle/FILE writes
+    // silently produced no syscall. The raw fd does.
+    g_out_fd = 2;
 }
 
 // We are system32\nvapi64.dll. The launcher parked the real dxvk-nvapi next to
@@ -173,8 +194,13 @@ bool load_real() {
 
 BOOL CALLBACK init_once(PINIT_ONCE, PVOID, PVOID*) {
     LARGE_INTEGER freq;
+    freq.QuadPart = 0;
     QueryPerformanceFrequency(&freq);
-    g_qpc_to_us = 1000000.0 / static_cast<double>(freq.QuadPart);
+    // Guard div-by-zero on a weird/absent timer (would otherwise be inf). A 0
+    // scale just yields qpcUs=0 markers (no latency, but never a crash).
+    g_qpc_to_us = freq.QuadPart > 0
+        ? 1000000.0 / static_cast<double>(freq.QuadPart)
+        : 0.0;
     g_pid = GetCurrentProcessId();
     open_output();
     bool ok = load_real();
@@ -184,7 +210,12 @@ BOOL CALLBACK init_once(PINIT_ONCE, PVOID, PVOID*) {
         "[pb-nvapi-shim] init pid=%u real=%s qi=%p\n",
         static_cast<unsigned>(g_pid), ok ? "ok" : "MISSING",
         reinterpret_cast<void*>(g_real_qi));
-    emit_raw(banner, len);
+    if (len > 0) {
+        if (len >= static_cast<int>(sizeof(banner))) {
+            len = static_cast<int>(sizeof(banner)) - 1;
+        }
+        emit_raw(banner, len);
+    }
     return TRUE;
 }
 
@@ -193,19 +224,30 @@ void ensure_init() {
 }
 
 // ---- tapped wrappers (addresses handed to the app via QueryInterface) --------
+//
+// Defensive contract for ALL wrappers (the shim runs inside the game process, so
+// it must never be the cause of a crash or memory corruption):
+//   * The ONLY caller memory we touch is a read of a few fixed fields, and only
+//     after a null + readability check; if the struct is unexpected we just skip
+//     the tap. (A wild pointer would fault in the real nvapi too, so we add no
+//     new crash surface — but we make sure it isn't *us* that faults.)
+//   * We never write to caller/external memory — emit only formats into a local
+//     bounded buffer (snprintf, capped) and writes to our own fd. No corruption.
+//   * Every forward target is null-guarded; if the real is missing we return a
+//     benign status instead of dereferencing null.
 NvAPI_Status __cdecl wrap_set_latency_marker(void* dev, NvLatencyMarkerParams* p) {
-    if (p) {
+    PfnSetLatencyMarker real = g_real_set_marker;
+    if (p && !IsBadReadPtr(p, kMarkerReadBytes)) {
         emit_marker(p->frameID, p->markerType);
     }
-    PfnSetLatencyMarker real = g_real_set_marker;
     return real ? real(dev, p) : 0;
 }
 
 NvAPI_Status __cdecl wrap_async_frame_marker(void* queue, NvAsyncFrameMarkerParams* p) {
-    if (p) {
+    PfnAsyncFrameMarker real = g_real_async_marker;
+    if (p && !IsBadReadPtr(p, kMarkerReadBytes)) {
         emit_marker(p->frameID, p->markerType);
     }
-    PfnAsyncFrameMarker real = g_real_async_marker;
     return real ? real(queue, p) : 0;
 }
 

@@ -8,7 +8,7 @@ import sys
 from .config import OVERLAY_CONFIG_ENV, default_overlay_config_path
 from .native_layer import LATENCY_LAYER_NAME
 from .native_layer import native_layer_dirs
-from .shim_deploy import deploy_nvapi_shim
+from .shim_deploy import deploy_nvapi_shim, spawn_refront_watcher
 from .state import (
     OVERLAY_ENABLE_ENV_ALIAS,
     OVERLAY_ENABLE_ENV,
@@ -69,17 +69,34 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     env = dict(os.environ)
-    configure_penguin_burner_environment(env, command_args=args)
+    shim_active = configure_penguin_burner_environment(env, command_args=args)
     _remove_mangohud_environment(env)
     _prepare_overlay_paths(env)
+    if shim_active:
+        # Proton clobbers our pre-exec shim during prefix setup; this detached
+        # watcher re-fronts it across that window and survives the exec below.
+        # Spawn it before _route_trace_to_fifo so the watcher inherits the
+        # console stderr -- not the marker FIFO that fd 2 is about to become,
+        # which would feed its diagnostics into the bridge as bogus markers.
+        spawn_refront_watcher(env)
     if ingame_latency_enabled(env):
         _route_trace_to_fifo(env)
     os.execvpe(args[0], args, env)
     return 127
 
 
+SHIM_OUTPUT_ENV = "PENGUIN_BURNER_SHIM_OUTPUT"
+
+
 def trace_fifo_path(env: dict[str, str]) -> Path:
     return _home_latency_socket_path(env).with_name("nvapi-trace.fifo")
+
+
+def _fifo_wine_path(env: dict[str, str]) -> str:
+    # Wine maps the unix filesystem root to Z:. The shim runs inside the prefix,
+    # so the marker FIFO (created by the launcher on the host) is reachable at
+    # its Z:\ path; opening it by path sidesteps the broken inherited fd 2.
+    return "Z:" + str(trace_fifo_path(env)).replace("/", "\\")
 
 
 def _route_trace_to_fifo(env: dict[str, str]) -> None:
@@ -113,7 +130,9 @@ def configure_penguin_burner_environment(
     env: dict[str, str],
     *,
     command_args: list[str] | tuple[str, ...] | None = None,
-) -> None:
+) -> bool:
+    """Populate the launch env. Return True when the NVAPI shim is the marker
+    source (so the caller arms the re-front watcher)."""
     overlay_config_path = default_overlay_config_path(env)
     env.setdefault(OVERLAY_CONFIG_ENV, str(overlay_config_path))
     env.setdefault(MASTER_ENABLE_ENV, "1")
@@ -123,8 +142,11 @@ def configure_penguin_burner_environment(
     env.setdefault(DXVK_NVAPI_ENABLE_ENV, "1")
     env.setdefault("PROTON_ENABLE_NVAPI", "1")
     env.setdefault("PROTON_HIDE_NVIDIA_GPU", "0")
+    shim_active = False
     if ingame_latency_enabled(env):
-        _configure_dxvk_nvapi_marker_output(env, command_args=command_args)
+        shim_active = _configure_dxvk_nvapi_marker_output(
+            env, command_args=command_args
+        )
         # Fold the present->scanout display tail into the same opt-in. Both are
         # read-only/gated in the layer and inert where unsupported.
         env.setdefault(DISPLAY_LATENCY_ENV, "1")
@@ -134,20 +156,21 @@ def configure_penguin_burner_environment(
     env.setdefault(OVERLAY_TEXT_ENV, str(overlay_text_path(env)))
     _prepend_layer_paths(env)
     _prepend_enabled_layers(env)
+    return shim_active
 
 
 def _configure_dxvk_nvapi_marker_output(
     env: dict[str, str],
     *,
     command_args: list[str] | tuple[str, ...] | None = None,
-) -> None:
+) -> bool:
     # If the user already forced full trace, honor it and avoid enabling
     # marker-only logging too; emitting both formats would duplicate samples.
     if str(env.get(DXVK_NVAPI_TRACE_ENV) or "").strip().lower() == "trace":
-        return
+        return False
 
     if str(env.get(DXVK_NVAPI_MARKER_LOG_ENV) or "").strip().lower() in _TRUTHY:
-        return
+        return False
 
     # Prefer our drop-in NVAPI shim over enabling dxvk-nvapi's own logging: it
     # fronts the prefix's nvapi64.dll and taps the same Reflex markers above
@@ -156,12 +179,20 @@ def _configure_dxvk_nvapi_marker_output(
     # drains -- no trace, no marker-log, no dxvk-nvapi fork. Falls through when
     # the shim is unavailable or there is no prefix to front.
     if deploy_nvapi_shim(env):
-        return
+        # The shim's wrapper runs (Streamline calls it) but its default write to
+        # fd 2 silently fails: in a GUI game process msvcrt's std fd 2 isn't a
+        # writable handle for our loaded DLL, so _write(2) returns EBADF with no
+        # syscall. Hand it the FIFO's wine path so it opens a fresh, valid fd
+        # (CreateFile/_open) and its markers reach the same FIFO the bridge
+        # drains. A user-set SHIM_OUTPUT (debug file) still wins.
+        env.setdefault(SHIM_OUTPUT_ENV, _fifo_wine_path(env))
+        return True
 
     if dxvk_nvapi_marker_log_supported(env, command_args=command_args):
         env.setdefault(DXVK_NVAPI_MARKER_LOG_ENV, "1")
     else:
         env.setdefault(DXVK_NVAPI_TRACE_ENV, "trace")
+    return False
 
 
 def dxvk_nvapi_marker_log_supported(

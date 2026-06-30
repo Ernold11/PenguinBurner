@@ -169,3 +169,81 @@ def test_launcher_falls_back_to_trace_without_prefix(tmp_path: Path) -> None:
     _configure_dxvk_nvapi_marker_output(env)
 
     assert env.get("DXVK_NVAPI_LOG_LEVEL") == "trace"
+
+
+def test_watch_and_refront_reinstalls_after_proton_clobber(tmp_path: Path) -> None:
+    """Proton copies its stock nvapi64.dll over our shim mid-launch; the watcher
+    re-fronts it (one iteration here) so the game still loads the shim."""
+    _make_artifact(tmp_path)
+    data_path = _make_prefix(tmp_path)
+    env = _env(tmp_path, data_path)
+    sys32 = _system32(data_path)
+    nvapi = sys32 / shim_deploy.SHIM_DLL_NAME
+
+    assert shim_deploy.deploy_nvapi_shim(env) is not None
+    assert nvapi.read_bytes() == SHIM_BYTES
+
+    # Proton's try_copy removes our shim and drops the stock real back in place.
+    nvapi.write_bytes(REAL_BYTES)
+
+    # duration_s=0 runs exactly one re-front pass, then returns.
+    shim_deploy.watch_and_refront(env, duration_s=0.0, poll_s=0.0)
+
+    assert nvapi.read_bytes() == SHIM_BYTES
+    # The parked real is still the real dxvk-nvapi (not overwritten with itself
+    # in a way that loses it), so the shim still has a forward target.
+    assert (sys32 / shim_deploy.REAL_SIDECAR_NAME).read_bytes() == REAL_BYTES
+
+
+def test_spawn_refront_watcher_launches_detached_watch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _make_artifact(tmp_path)
+    data_path = _make_prefix(tmp_path)
+    env = _env(tmp_path, data_path)
+    captured: dict = {}
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs) -> None:
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(shim_deploy.subprocess, "Popen", FakePopen)
+
+    assert shim_deploy.spawn_refront_watcher(env) is not None
+    assert captured["argv"] == [
+        shim_deploy.sys.executable,
+        "-m",
+        "overlay.shim_deploy",
+        "--watch",
+    ]
+    assert captured["kwargs"]["start_new_session"] is True
+    assert captured["kwargs"]["env"] is env
+
+
+def test_spawn_refront_watcher_skips_when_disabled(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _make_artifact(tmp_path)
+    data_path = _make_prefix(tmp_path)
+    env = _env(tmp_path, data_path)
+    env[shim_deploy.NVAPI_SHIM_DISABLE_ENV] = "1"
+
+    def fail(*_args, **_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("watcher must not spawn when disabled")
+
+    monkeypatch.setattr(shim_deploy.subprocess, "Popen", fail)
+    assert shim_deploy.spawn_refront_watcher(env) is None
+
+
+def test_spawn_refront_watcher_skips_without_prefix(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _make_artifact(tmp_path)
+    env = {shim_deploy.NVAPI_SHIM_DIR_ENV: str(tmp_path / "shim")}  # no prefix
+
+    def fail(*_args, **_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("watcher must not spawn without a prefix")
+
+    monkeypatch.setattr(shim_deploy.subprocess, "Popen", fail)
+    assert shim_deploy.spawn_refront_watcher(env) is None

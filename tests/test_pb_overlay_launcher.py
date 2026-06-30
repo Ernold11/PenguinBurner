@@ -276,6 +276,55 @@ def test_pb_overlay_launcher_strips_mangohud_preload(monkeypatch, tmp_path) -> N
     assert "MANGOAPP_CONFIG" not in env
 
 
+def test_main_arms_refront_watcher_when_shim_active(monkeypatch, tmp_path) -> None:
+    """A real launch with the shim chosen spawns the detached re-front watcher
+    that survives the exec and outlasts Proton's nvapi64.dll clobber."""
+    _write_prefix_nvapi(tmp_path, supports_marker_log=False)  # stock real present
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    (shim_dir / "nvapi64.dll").write_bytes(b"MZ [pb-nvapi-shim] forwarder")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PENGUIN_BURNER_NVAPI_SHIM_DIR", str(shim_dir))
+    monkeypatch.setenv("PB_INGAME_LATENCY", "1")
+    monkeypatch.setenv("STEAM_COMPAT_DATA_PATH", str(tmp_path))
+    monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
+
+    spawned = []
+    monkeypatch.setattr(launcher, "spawn_refront_watcher", lambda env: spawned.append(env))
+
+    def fake_execvpe(file, args, env):
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
+
+    try:
+        launcher.main(["game"])
+    except RuntimeError:
+        pass
+
+    assert len(spawned) == 1
+    sys32 = tmp_path / "pfx/drive_c/windows/system32"
+    assert (sys32 / "nvapi64-pb.dll").is_file()  # shim deployed (real parked)
+
+
+def test_main_does_not_arm_watcher_without_ingame_latency(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
+    spawned = []
+    monkeypatch.setattr(launcher, "spawn_refront_watcher", lambda env: spawned.append(env))
+
+    def fake_execvpe(file, args, env):
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
+
+    try:
+        launcher.main(["game"])
+    except RuntimeError:
+        pass
+
+    assert spawned == []
+
+
 def test_trace_fifo_path_is_in_cache_dir() -> None:
     p = launcher.trace_fifo_path({"HOME": "/home/jp"})
     assert str(p) == "/home/jp/.cache/penguin-burner/nvapi-trace.fifo"
