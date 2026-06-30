@@ -104,82 +104,29 @@ def test_configure_environment_keeps_explicit_overlay_env_over_alias() -> None:
     assert env[OVERLAY_ENABLE_ENV] == "0"
 
 
-def test_configure_environment_prefers_marker_log_with_patched_prefix(tmp_path) -> None:
-    off = {OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml"}
-    launcher.configure_penguin_burner_environment(off)
-    assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in off
-    assert "DXVK_NVAPI_LOG_LEVEL" not in off
-
-    _write_prefix_nvapi(tmp_path, supports_marker_log=True)
-    on = {
-        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
-        "PENGUIN_BURNER_INGAME_LATENCY": "1",
-        "STEAM_COMPAT_DATA_PATH": str(tmp_path),
-        # Exercise the marker-log/trace fallback selector in isolation; the
-        # preferred NVAPI shim path is covered by tests/test_shim_deploy.py.
-        "PENGUIN_BURNER_NVAPI_SHIM_DISABLE": "1",
-    }
-    launcher.configure_penguin_burner_environment(on)
-    assert on["DXVK_NVAPI_LATENCY_MARKER_LOG"] == "1"
-    assert "DXVK_NVAPI_LOG_LEVEL" not in on
-    assert "PROTON_LOG" not in on
-
-
-def test_configure_environment_falls_back_to_trace_with_unpatched_prefix(tmp_path) -> None:
-    _write_prefix_nvapi(tmp_path, supports_marker_log=False)
-    env = {
-        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
-        "PB_INGAME_LATENCY": "1",
-        "STEAM_COMPAT_DATA_PATH": str(tmp_path),
-        "PENGUIN_BURNER_NVAPI_SHIM_DISABLE": "1",
-    }
-
+def test_configure_environment_no_marker_output_without_prefix() -> None:
+    # Overlay on (default) -> in-game latency on, but with no prefix to front the
+    # shim it falls through and sets NO dxvk-nvapi trace/marker-log env: latency
+    # degrades to the Vulkan layer's own marker tap, never the heavy log.
+    env = {OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml"}
     launcher.configure_penguin_burner_environment(env)
-
     assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in env
-    assert env["DXVK_NVAPI_LOG_LEVEL"] == "trace"
-
-
-def test_configure_environment_ignores_patched_nvofapi_without_nvapi(tmp_path) -> None:
-    _write_prefix_nvapi(tmp_path, supports_marker_log=False)
-    nvofapi = tmp_path / "pfx/drive_c/windows/system32/nvofapi64.dll"
-    nvofapi.write_bytes(b"DXVK_NVAPI_LATENCY_MARKER_LOG")
-    env = {
-        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
-        "PB_INGAME_LATENCY": "1",
-        "STEAM_COMPAT_DATA_PATH": str(tmp_path),
-        "PENGUIN_BURNER_NVAPI_SHIM_DISABLE": "1",
-    }
-
-    launcher.configure_penguin_burner_environment(env)
-
-    assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in env
-    assert env["DXVK_NVAPI_LOG_LEVEL"] == "trace"
-
-
-def test_configure_environment_detects_marker_log_in_proton_command_path(
-    tmp_path,
-) -> None:
-    proton = tmp_path / "Proton-Test"
-    marker_dll = (
-        proton / "files/lib/wine/nvapi/x86_64-windows/nvapi64.dll"
-    )
-    marker_dll.parent.mkdir(parents=True)
-    marker_dll.write_bytes(b"abc DXVK_NVAPI_LATENCY_MARKER_LOG xyz")
-    proton.joinpath("proton").write_text("#!/bin/sh\n", encoding="utf-8")
-
-    env = {
-        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
-        "PB_INGAME_LATENCY": "1",
-    }
-
-    launcher.configure_penguin_burner_environment(
-        env,
-        command_args=[str(proton / "proton"), "waitforexitandrun"],
-    )
-
-    assert env["DXVK_NVAPI_LATENCY_MARKER_LOG"] == "1"
     assert "DXVK_NVAPI_LOG_LEVEL" not in env
+
+
+def test_overlay_on_defaults_ingame_latency_on() -> None:
+    # Enabling the overlay defaults the latency meter on (no explicit flag).
+    env = {OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml"}
+    launcher.configure_penguin_burner_environment(env)
+    assert launcher.ingame_latency_enabled(env)
+    assert env["PENGUIN_BURNER_LATENCY_DISPLAY"] == "1"
+
+
+def test_overlay_disabled_defaults_ingame_latency_off() -> None:
+    env = {OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml", "PB_OVERLAY": "0"}
+    launcher.configure_penguin_burner_environment(env)
+    assert not launcher.ingame_latency_enabled(env)
+    assert "PENGUIN_BURNER_LATENCY_DISPLAY" not in env
 
 
 def test_configure_environment_keeps_explicit_trace_last_resort() -> None:
@@ -211,7 +158,11 @@ def test_explicit_ingame_latency_zero_overrides_latency_alias() -> None:
 
 
 def test_ingame_latency_also_enables_display_tail() -> None:
-    off = {OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml"}
+    # Explicitly disabled -> no display tail (overrides the overlay default-on).
+    off = {
+        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
+        "PB_INGAME_LATENCY": "0",
+    }
     launcher.configure_penguin_burner_environment(off)
     assert "PENGUIN_BURNER_LATENCY_DISPLAY" not in off
     assert "PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID" not in off

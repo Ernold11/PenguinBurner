@@ -51,6 +51,19 @@ def ingame_latency_enabled(env: dict[str, str]) -> bool:
     for key in (INGAME_LATENCY_ENV, INGAME_LATENCY_ENV_ALIAS):
         if str(env.get(key) or "").strip().lower() in _TRUTHY:
             return True
+    # No explicit setting: default the latency meter ON whenever the overlay is
+    # enabled, so turning on the overlay just gives you latency too. Opt out with
+    # PENGUIN_BURNER_INGAME_LATENCY=0 (or PB_INGAME_LATENCY=0).
+    return _overlay_enabled(env)
+
+
+def _overlay_enabled(env: dict[str, str]) -> bool:
+    for key in (OVERLAY_ENABLE_ENV, OVERLAY_ENABLE_ENV_ALIAS):
+        value = str(env.get(key) or "").strip().lower()
+        if value in _FALSEY:
+            return False
+        if value:  # "1", "auto", etc.
+            return True
     return False
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -164,142 +177,26 @@ def _configure_dxvk_nvapi_marker_output(
     *,
     command_args: list[str] | tuple[str, ...] | None = None,
 ) -> bool:
-    # If the user already forced full trace, honor it and avoid enabling
-    # marker-only logging too; emitting both formats would duplicate samples.
+    _ = command_args
+    # Debug escape: if the user explicitly forces dxvk-nvapi's own trace log
+    # (DXVK_NVAPI_LOG_LEVEL=trace), skip the shim and let it log. That path is
+    # heavy (every nvapi call) -- diagnostics only; the shim is the normal source.
     if str(env.get(DXVK_NVAPI_TRACE_ENV) or "").strip().lower() == "trace":
         return False
 
-    if str(env.get(DXVK_NVAPI_MARKER_LOG_ENV) or "").strip().lower() in _TRUTHY:
-        return False
-
-    # Prefer our drop-in NVAPI shim over enabling dxvk-nvapi's own logging: it
-    # fronts the prefix's nvapi64.dll and taps the same Reflex markers above
-    # vkd3d's owner-gate (so it works under frame generation), writing them to
-    # stderr, which the wrapper already routes to the marker FIFO the bridge
-    # drains -- no trace, no marker-log, no dxvk-nvapi fork. Falls through when
-    # the shim is unavailable or there is no prefix to front.
+    # The drop-in NVAPI shim taps the Reflex markers above vkd3d's owner-gate (so
+    # it works under frame generation) and writes them to the marker FIFO the
+    # bridge drains -- no trace, no marker-log, no dxvk-nvapi fork. When there is
+    # no prefix to front, in-game latency falls back to the Vulkan layer's own
+    # vkSetLatencyMarkerNV tap (which covers the single-swapchain / non-FG case).
     if deploy_nvapi_shim(env):
-        # The shim's wrapper runs (Streamline calls it) but its default write to
-        # fd 2 silently fails: in a GUI game process msvcrt's std fd 2 isn't a
-        # writable handle for our loaded DLL, so _write(2) returns EBADF with no
-        # syscall. Hand it the FIFO's wine path so it opens a fresh, valid fd
-        # (CreateFile/_open) and its markers reach the same FIFO the bridge
-        # drains. A user-set SHIM_OUTPUT (debug file) still wins.
+        # The shim's default write to fd 2 silently fails in a GUI game process
+        # (msvcrt's std fd 2 isn't a writable handle for our loaded DLL: _write(2)
+        # returns EBADF with no syscall). Hand it the FIFO's wine path so it
+        # _open()s a fresh, valid fd. A user-set SHIM_OUTPUT (debug file) wins.
         env.setdefault(SHIM_OUTPUT_ENV, _fifo_wine_path(env))
         return True
 
-    if dxvk_nvapi_marker_log_supported(env, command_args=command_args):
-        env.setdefault(DXVK_NVAPI_MARKER_LOG_ENV, "1")
-    else:
-        env.setdefault(DXVK_NVAPI_TRACE_ENV, "trace")
-    return False
-
-
-def dxvk_nvapi_marker_log_supported(
-    env: dict[str, str],
-    *,
-    command_args: list[str] | tuple[str, ...] | None = None,
-) -> bool:
-    prefix_candidates = list(_prefix_nvapi_dll_candidates(env))
-    if prefix_candidates:
-        return any(_dll_contains_marker_log_flag(path) for path in prefix_candidates)
-
-    return any(
-        _dll_contains_marker_log_flag(path)
-        for path in _proton_nvapi_dll_candidates(env, command_args=command_args)
-    )
-
-
-def _prefix_nvapi_dll_candidates(env: dict[str, str]):
-    data_path = str(env.get("STEAM_COMPAT_DATA_PATH") or "").strip()
-    if not data_path:
-        return
-    windows = Path(data_path).expanduser() / "pfx" / "drive_c" / "windows"
-    yield from _existing_paths(
-        (
-            windows / "system32" / "nvapi64.dll",
-            windows / "syswow64" / "nvapi.dll",
-        )
-    )
-
-
-def _proton_nvapi_dll_candidates(
-    env: dict[str, str],
-    *,
-    command_args: list[str] | tuple[str, ...] | None = None,
-):
-    roots: list[Path] = []
-    for key in ("STEAM_COMPAT_TOOL_PATHS", "STEAM_COMPAT_TOOL_PATH"):
-        value = str(env.get(key) or "").strip()
-        if not value:
-            continue
-        for item in value.split(os.pathsep):
-            if item:
-                roots.append(Path(item).expanduser())
-
-    for arg in command_args or ():
-        try:
-            path = Path(str(arg)).expanduser()
-        except OSError:
-            continue
-        if path.name == "proton":
-            roots.append(path.parent)
-
-    seen: set[Path] = set()
-    for root in roots:
-        try:
-            root = root.resolve()
-        except OSError:
-            pass
-        if root in seen:
-            continue
-        seen.add(root)
-        yield from _nvapi_dlls_under_proton_root(root)
-
-
-def _nvapi_dlls_under_proton_root(root: Path):
-    yield from _existing_paths(
-        (
-            root / "files" / "lib" / "wine" / "nvapi" / "x86_64-windows" / "nvapi64.dll",
-            root / "files" / "lib" / "wine" / "nvapi" / "i386-windows" / "nvapi.dll",
-            root
-            / "files"
-            / "lib"
-            / "wine"
-            / "nvidia-libs"
-            / "nvapi"
-            / "x86_64-windows"
-            / "nvapi64.dll",
-            root
-            / "files"
-            / "lib"
-            / "wine"
-            / "nvidia-libs"
-            / "nvapi"
-            / "i386-windows"
-            / "nvapi.dll",
-        )
-    )
-
-
-def _existing_paths(paths):
-    for path in paths:
-        try:
-            if path.is_file():
-                yield path
-        except OSError:
-            continue
-
-
-def _dll_contains_marker_log_flag(path: Path) -> bool:
-    needle = DXVK_NVAPI_MARKER_LOG_ENV.encode("ascii")
-    try:
-        with path.open("rb") as handle:
-            while chunk := handle.read(1024 * 1024):
-                if needle in chunk:
-                    return True
-    except OSError:
-        return False
     return False
 
 

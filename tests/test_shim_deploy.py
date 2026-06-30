@@ -161,14 +161,16 @@ def test_launcher_prefers_shim_over_trace(tmp_path: Path) -> None:
     assert (_system32(data_path) / shim_deploy.REAL_SIDECAR_NAME).is_file()
 
 
-def test_launcher_falls_back_to_trace_without_prefix(tmp_path: Path) -> None:
-    """No prefix -> shim skipped -> existing trace fallback used."""
+def test_launcher_no_marker_output_without_prefix(tmp_path: Path) -> None:
+    """No prefix -> shim skipped -> no dxvk-nvapi trace/marker-log env set;
+    in-game latency degrades to the Vulkan layer's own marker tap."""
     _make_artifact(tmp_path)
     env = {shim_deploy.NVAPI_SHIM_DIR_ENV: str(tmp_path / "shim")}
 
     _configure_dxvk_nvapi_marker_output(env)
 
-    assert env.get("DXVK_NVAPI_LOG_LEVEL") == "trace"
+    assert "DXVK_NVAPI_LOG_LEVEL" not in env
+    assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in env
 
 
 def test_watch_and_refront_reinstalls_after_proton_clobber(tmp_path: Path) -> None:
