@@ -7,6 +7,11 @@ from dataclasses import dataclass
 
 AUTO_UV_PERFORMANCE_OC_PROFILE_ID = "performance"
 
+# Balanced blends the efficiency and performance clock-drop limits, weighted
+# toward efficiency so the preset leans into power savings (0.6 efficiency /
+# 0.4 performance) rather than sitting at the dead-center midpoint.
+_BALANCED_EFFICIENCY_WEIGHT = 0.6
+
 
 @dataclass(frozen=True, slots=True)
 class UvTierTarget:
@@ -219,6 +224,31 @@ def uv_limit_clock_drop_pct_for_gpu(
     entry = _uv_limit_entry_for_gpu(gpu_name)
     if entry is None:
         return None
+    profile = str(profile_id or "efficiency").strip().lower()
+    if profile == "balanced":
+        # Balanced is a savings-biased blend of the efficiency and performance
+        # clock-drop limits. Deriving it from a single clock ratio
+        # (efficiency.clock / performance.clock) collapsed balanced toward
+        # whichever neighbour the table's clock geometry sat closest to - the
+        # RTX 5080 fell to ~6% (almost identical to performance) while the
+        # RTX 5070 Ti rose to ~15% (almost identical to efficiency). Weighting it
+        # toward efficiency keeps balanced centered-but-deeper on every GPU so it
+        # actually saves power while staying short of the full efficiency drop.
+        efficiency_pct = _derived_clock_drop_pct(entry, "efficiency")
+        performance_pct = _derived_clock_drop_pct(entry, "performance")
+        if efficiency_pct is None or performance_pct is None:
+            return _derived_clock_drop_pct(entry, "balanced")
+        return (
+            efficiency_pct * _BALANCED_EFFICIENCY_WEIGHT
+            + performance_pct * (1.0 - _BALANCED_EFFICIENCY_WEIGHT)
+        )
+    return _derived_clock_drop_pct(entry, profile)
+
+
+def _derived_clock_drop_pct(
+    entry: dict[str, object],
+    profile_id: str,
+) -> float | None:
     lower_clock_mhz, upper_clock_mhz = _uv_limit_clock_drop_bounds_mhz_from_entry(
         entry,
         profile_id,

@@ -1241,7 +1241,9 @@ def test_auto_uv_clock_drop_default_uses_preset_aware_gpu_table_ratio() -> None:
     assert efficiency.preset_matched is True
     assert efficiency.gpu_family == "RTX 5080"
     assert efficiency.value_pct == pytest.approx(11.111111111111116)
-    assert balanced.value_pct == pytest.approx(6.040268456375841)
+    assert balanced.value_pct == pytest.approx(
+        efficiency.value_pct * 0.6 + performance.value_pct * 0.4
+    )
     assert performance.value_pct == pytest.approx(5.3968253968254)
 
 

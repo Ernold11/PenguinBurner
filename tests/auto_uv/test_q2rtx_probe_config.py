@@ -175,10 +175,11 @@ def test_scan_runtime_settings_use_preset_aware_clock_drop_defaults() -> None:
         gpu_name="NVIDIA GeForce RTX 5080",
     )
 
-    assert round(balanced.final_clock_drop_margin_pct, 4) == 6.0403
-    assert round(balanced.min_performance_core_clock_pct, 4) == 93.9597
+    # Balanced = 0.6*efficiency (11.1111%) + 0.4*performance (5.3968%).
+    assert round(balanced.final_clock_drop_margin_pct, 4) == 8.8254
+    assert round(balanced.min_performance_core_clock_pct, 4) == 91.1746
     assert balanced.tail_rise_bins == 4
-    assert round(cli_balanced.final_clock_drop_margin_pct, 4) == 6.0403
+    assert round(cli_balanced.final_clock_drop_margin_pct, 4) == 8.8254
     assert round(performance.final_clock_drop_margin_pct, 4) == 5.3968
     assert round(performance.min_performance_core_clock_pct, 4) == 94.6032
     assert explicit.final_clock_drop_margin_pct == 9.0
