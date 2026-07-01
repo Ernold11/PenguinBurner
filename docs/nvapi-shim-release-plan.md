@@ -25,7 +25,7 @@
 | L1 | Doc rot: removed marker-log/trace fallback still described | Low | 3 |
 | L2 | Wrapped games' stderr swallowed by the FIFO (support/debugging) | Low | 5 |
 | L3 | FIFO path mismatch under explicit `PENGUIN_BURNER_LATENCY_SOCKET` | Low | 4 |
-| — | Branch is under a standing "do not commit to main" instruction | Decision | 5 |
+| — | Merge to `main` once Phases 1–3 land (shim is the chosen direction) | Gate | 5 |
 
 ---
 
@@ -160,9 +160,9 @@ prefix (log shows `nvapi shim: installed …`).
   into the FIFO (discarded by the bridge). `PROTON_LOG=1` file logging still
   works; add a support-doc note, optionally tee non-marker lines when a debug
   env is set.
-- **Branch policy**: `docs/nvapi-shim.md` records a standing instruction to
-  keep the shim off `main`. Releasing requires explicitly revisiting that
-  decision once Phases 1–3 land.
+- **Branch policy**: the shim is the chosen direction — merge `nvapi_shim` to
+  `main` once Phases 1–3 land (B1/B2 fixed, correctness items done, suite
+  green in a clean checkout).
 - **Validation matrix (re-run before tagging)**:
   - FG + Streamline (Talos 2, RE9) → `quality=reflex-marker-sim-present`,
     sane sim→oob-present.
