@@ -310,7 +310,9 @@ def memory_offset_mhz_range() -> tuple[int, int]:
         max_mhz = int(driver_max)
     except (TypeError, ValueError):
         return fallback
-    return 0, max(0, min(fallback[1], max_mhz))
+    # The driver-reported max is the real authority for this GPU; the static
+    # fallback cap only applies when NVML exposes no range.
+    return 0, max(0, max_mhz)
 
 
 def _query_gpu_name(gpu_index: int | None = None) -> str | None:

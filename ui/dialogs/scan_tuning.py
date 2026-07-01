@@ -202,9 +202,26 @@ def select_scan_tuning(
     memory_offset_spin.setObjectName("memoryOffsetSpin")
     memory_min_mhz, memory_max_mhz = memory_offset_mhz_range()
     memory_offset_spin.setRange(memory_min_mhz, memory_max_mhz)
-    memory_offset_spin.setSuffix(" MHz")
+    memory_offset_spin.setSuffix(" MT/s")
     memory_offset_spin.setSingleStep(50)
     memory_offset_spin.setFixedWidth(136)
+    memory_offset_clock_label = QtWidgets.QLabel()
+    memory_offset_clock_label.setObjectName("memoryOffsetClockLabel")
+
+    def _update_memory_offset_clock_label(value: int) -> None:
+        # NVML memory offsets are transfer-rate units; the realized memory
+        # clock moves by half the offset (verified on Blackwell, issue #20).
+        memory_offset_clock_label.setText(f"= +{int(value) // 2} MHz memory clock")
+
+    memory_offset_spin.valueChanged.connect(_update_memory_offset_clock_label)
+    _update_memory_offset_clock_label(memory_offset_spin.value())
+    memory_offset_widget = QtWidgets.QWidget()
+    memory_offset_layout = QtWidgets.QHBoxLayout(memory_offset_widget)
+    memory_offset_layout.setContentsMargins(0, 0, 0, 0)
+    memory_offset_layout.setSpacing(10)
+    memory_offset_layout.addWidget(memory_offset_spin)
+    memory_offset_layout.addWidget(memory_offset_clock_label)
+    memory_offset_layout.addStretch(1)
     power_limit_slider = QtWidgets.QSlider(_horizontal_orientation(QtCore))
     power_limit_slider.setObjectName("powerLimitSlider")
     power_limit_slider.setMinimumWidth(220)
@@ -313,13 +330,15 @@ def select_scan_tuning(
         QtCore=QtCore,
         QtWidgets=QtWidgets,
         form_layout=common_form,
-        text="Memory Offset MHz",
-        widget=memory_offset_spin,
+        text="Memory Offset",
+        widget=memory_offset_widget,
         tooltip=(
-            "Optional global memory clock V/F offset in MHz applied during the "
-            "Auto-UV scan and saved with the final profile. Higher values can "
-            "improve memory performance, but may introduce instability or be "
-            "rejected by the Nvidia driver; modify with care."
+            "Optional global memory clock V/F offset applied during the "
+            "Auto-UV scan and saved with the final profile. The value is in "
+            "NVML transfer-rate units (MT/s, like Afterburner/LACT); the "
+            "actual memory clock rises by half of it. The range is read from "
+            "the driver for this GPU. Higher values can improve memory "
+            "performance, but may introduce instability; modify with care."
         ),
     )
     _add_form_row(

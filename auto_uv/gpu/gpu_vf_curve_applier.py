@@ -106,10 +106,39 @@ def open_live_gpu_vf_curve_applier(
         translated_gpu_policy["mem_clk_vf_offset_limit_mhz"] = int(
             memory_offset_limit_mhz
         )
+        raw_memory_offset = runtime_options.get(
+            "auto_uv_memory_offset_mhz",
+            runtime_options.get("memory_offset_mhz"),
+        )
+        if raw_memory_offset not in (None, "") and int(raw_memory_offset) != int(
+            memory_offset_mhz
+        ):
+            log(
+                f"Auto-UV memory offset: requested {int(raw_memory_offset)} MHz "
+                f"clamped to {int(memory_offset_mhz)} MHz "
+                f"(limit {int(memory_offset_limit_mhz)} MHz)"
+            )
         if int(memory_offset_mhz) != 0:
-            policy_controller.apply_clock_offsets(
+            applied_memory_offset = policy_controller.apply_clock_offsets(
                 mem_clk_vf_offset_mhz=int(memory_offset_mhz)
             )
+            readback_mhz = applied_memory_offset.get("mem_clk_vf_offset_readback_mhz")
+            if readback_mhz is None:
+                log(
+                    f"Auto-UV memory offset: applied {int(memory_offset_mhz):+d} MHz "
+                    "(driver does not support read-back)"
+                )
+            elif int(readback_mhz) == int(memory_offset_mhz):
+                log(
+                    f"Auto-UV memory offset: applied {int(memory_offset_mhz):+d} MHz, "
+                    f"NVML read-back confirms {int(readback_mhz):+d} MHz"
+                )
+            else:
+                log(
+                    f"Auto-UV memory offset MISMATCH: requested "
+                    f"{int(memory_offset_mhz):+d} MHz but NVML reads back "
+                    f"{int(readback_mhz):+d} MHz -- the driver clamped or ignored it"
+                )
 
     return LiveGpuVfCurveApplier(
         gpu_index=int(gpu_index),

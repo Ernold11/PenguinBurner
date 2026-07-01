@@ -128,8 +128,11 @@ def parse_arguments(argv):
         default=None,
         metavar="MHz",
         help=(
-            "Memory clock V/F offset in MHz to apply during Auto-UV and save "
-            f"with the final profile; range 0..{MAX_AFTERBURNER_MEM_OFFSET_MHZ}."
+            "Memory clock V/F offset to apply during Auto-UV and save with "
+            "the final profile. NVML offsets are in transfer-rate units "
+            "(MT/s): the realized memory clock rises by half the value. "
+            "Clamped to the driver-reported limit for the GPU (fallback "
+            f"0..{MAX_AFTERBURNER_MEM_OFFSET_MHZ} when NVML exposes no range)."
         ),
     )
     auto_uv_group.add_argument(

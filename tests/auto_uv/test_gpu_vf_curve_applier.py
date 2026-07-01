@@ -70,3 +70,133 @@ def test_open_live_gpu_applier_applies_auto_uv_power_limit(monkeypatch) -> None:
     assert applier.baseline_power_limit_w == 360
     assert applier.translated_gpu_policy["power_limit_w"] == 390
     assert logs == ["Auto-UV power limit: applied 390W"]
+
+
+def _patch_applier_environment(monkeypatch, policy_controller_cls) -> None:
+    class FakeReader:
+        def refresh_points(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "create_hidden_vf_curve_reader",
+        lambda gpu_index: FakeReader(),
+    )
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "reset_nvidia_runtime_defaults",
+        lambda **_kwargs: {
+            "plan": [{"index": 0, "voltage_mv": 900, "target_mhz": 2500}],
+            "gpu_name": "NVIDIA GeForce RTX 5080",
+            "power_limit_w": 360,
+        },
+    )
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "NvmlGpuPolicyController",
+        policy_controller_cls,
+    )
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "LiveNvmlVoltageReader",
+        lambda gpu_index: SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(gpu_vf_curve_applier, "apply_plan", lambda *_args: None)
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "assert_zero_runtime_vf_offsets",
+        lambda *_args: None,
+    )
+
+
+class _MemoryOffsetPolicyController:
+    readback_mhz: int | None = None
+
+    def __init__(self, *, gpu_index: int) -> None:
+        self.gpu_index = int(gpu_index)
+        self.clock_offset_calls: list[dict] = []
+
+    def get_memory_clock_offset_range_mhz(self):
+        return (-2000, 6000)
+
+    def apply_clock_offsets(self, **kwargs):
+        self.clock_offset_calls.append(kwargs)
+        applied = dict(kwargs)
+        applied["mem_clk_vf_offset_readback_mhz"] = self.readback_mhz
+        return applied
+
+
+def test_open_live_gpu_applier_logs_memory_offset_clamp_and_readback(
+    monkeypatch,
+) -> None:
+    logs: list[str] = []
+
+    class ConfirmingController(_MemoryOffsetPolicyController):
+        readback_mhz = 6000
+
+    _patch_applier_environment(monkeypatch, ConfirmingController)
+
+    applier = gpu_vf_curve_applier.open_live_gpu_vf_curve_applier(
+        gpu_index=0,
+        runtime_options={"auto_uv_memory_offset_mhz": 8000},
+        log=logs.append,
+    )
+
+    # The driver-reported max (6000) is the clamp authority, not the static
+    # 2000 fallback cap.
+    assert applier.translated_gpu_policy["mem_clk_vf_offset_mhz"] == 6000
+    assert applier.policy_controller.clock_offset_calls == [
+        {"mem_clk_vf_offset_mhz": 6000}
+    ]
+    assert (
+        "Auto-UV memory offset: requested 8000 MHz clamped to 6000 MHz "
+        "(limit 6000 MHz)"
+    ) in logs
+    assert (
+        "Auto-UV memory offset: applied +6000 MHz, "
+        "NVML read-back confirms +6000 MHz"
+    ) in logs
+
+
+def test_open_live_gpu_applier_logs_memory_offset_readback_mismatch(
+    monkeypatch,
+) -> None:
+    logs: list[str] = []
+
+    class ClampingController(_MemoryOffsetPolicyController):
+        readback_mhz = 500
+
+    _patch_applier_environment(monkeypatch, ClampingController)
+
+    gpu_vf_curve_applier.open_live_gpu_vf_curve_applier(
+        gpu_index=0,
+        runtime_options={"auto_uv_memory_offset_mhz": 1000},
+        log=logs.append,
+    )
+
+    assert (
+        "Auto-UV memory offset MISMATCH: requested +1000 MHz but NVML reads "
+        "back +500 MHz -- the driver clamped or ignored it"
+    ) in logs
+
+
+def test_open_live_gpu_applier_logs_memory_offset_readback_unsupported(
+    monkeypatch,
+) -> None:
+    logs: list[str] = []
+
+    class NoReadbackController(_MemoryOffsetPolicyController):
+        readback_mhz = None
+
+    _patch_applier_environment(monkeypatch, NoReadbackController)
+
+    gpu_vf_curve_applier.open_live_gpu_vf_curve_applier(
+        gpu_index=0,
+        runtime_options={"auto_uv_memory_offset_mhz": 1000},
+        log=logs.append,
+    )
+
+    assert (
+        "Auto-UV memory offset: applied +1000 MHz "
+        "(driver does not support read-back)"
+    ) in logs

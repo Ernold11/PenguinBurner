@@ -2092,7 +2092,7 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
         label.text() for label in advanced_group.findChildren(QtWidgets.QLabel)
     }
     assert "Max loaded clock drop" in advanced_labels
-    assert "Memory Offset MHz" in advanced_labels
+    assert "Memory Offset" in advanced_labels
     assert "Power limit" in advanced_labels
     assert stack is not None
     assert stack.count() == 3

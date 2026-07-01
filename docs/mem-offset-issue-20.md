@@ -1,12 +1,46 @@
 # Memory overclock not applying (issue #20)
 
-> **Status 2026-07-01: investigation + repro tooling, not yet root-caused on
-> hardware.** Reported against **RTX 6000 (Blackwell)** by @xinanhuang
+> **Status 2026-07-01: verified WORKING on Blackwell (RTX 5080, see results
+> below) — the apply path is not broken.** Reported against **RTX 6000
+> (Blackwell)** by @xinanhuang
 > ([#20](https://github.com/jpietek/PenguinBurner/issues/20)): a `+2000 MHz`
 > memory offset yields no memory-clock increase, while **LACT `+3000 MHz`
 > applies** (verified ~32.6 GBPS, no ECC errors). Ships with
 > `scripts/verify-mem-offset.py` to confirm on the Blackwell box whether an
 > offset actually lands.
+
+## Hardware verification (RTX 5080, 2026-07-01)
+
+Ran on a Blackwell RTX 5080 (driver-reported offset window `-2000..+6000`),
+under a 100% `stability.cuda_bruteforce` load, sampling
+`nvidia-smi --query-gpu=clocks.mem`:
+
+| Applied via `nvmlDeviceSetMemClkVfOffset` | Read-back | Loaded mem clock |
+| --- | --- | --- |
+| 0 | 0 | 14801 MHz (P1) |
+| +1000 | +1000 — ACCEPTED | 15301 MHz (**+500**) |
+| +2000 (app cap) | +2000 — ACCEPTED | 15801 MHz (**+1000**) |
+| +3000 raw (bypasses app cap) | +3000 — ACCEPTED | not tested under load |
+
+Conclusions:
+
+- **The apply path works on Blackwell.** The driver stores the offset AND the
+  realized clock moves under load. `apply_clock_offsets()` is not silently
+  failing on this generation/driver.
+- **The NVML offset is in transfer-rate (MT/s) units**: the realized
+  memory-clock delta is exactly half the requested offset. So the reporter's
+  LACT `+3000` ≈ `+1500` in `nvidia-smi` clock terms, and PB's `+2000` cap
+  ≈ `+1000` — the unit-ambiguity caveat below is resolved (2× on Blackwell).
+- **Idle observation shows nothing**, as predicted: at the desktop the VRAM
+  sits at 405 MHz (P8) regardless of offset. A transient/light 3D load
+  (vkcube) never held the top mem P-state either — the reporter comparing
+  clocks outside a sustained load would see "no increase" from a working
+  offset.
+- Most likely explanation for #20: observation at idle/light load, plus the
+  hard `2000` cap making PB's ceiling half of what LACT was asked for.
+  Remaining unknown: whether the RTX 6000 (workstation) driver behaves
+  differently — the reporter running `scripts/verify-mem-offset.py` on that
+  box would settle it.
 
 ## TL;DR
 
@@ -93,10 +127,23 @@ restores the prior offset on exit.
   (2×) units is driver-dependent — a plausible reason LACT `+3000` realizes like
   ~`+2000`.
 
-## Proposed fixes (pending hardware confirmation)
+## Fixes — IMPLEMENTED 2026-07-02
 
-1. **Add read-back + a log line** in `apply_clock_offsets` so applied-vs-requested
-   is visible and a silent driver clamp is caught on every run. Cheap; do first.
-2. **Lift/raise the `2000` cap** — make it configurable or bound it by the
-   driver's reported max — so `+3000` is expressible. Gate the target value on
-   what `verify-mem-offset.py` shows the driver actually accepts.
+1. **Read-back + logging — DONE.** `apply_clock_offsets` now reads every offset
+   back after the set and returns it as `*_readback_mhz`. The Auto-UV apply
+   site logs `applied +N MHz, NVML read-back confirms +N MHz`, a loud
+   `MISMATCH` line when the driver clamped/ignored the request, and the app
+   clamp itself (`requested X clamped to Y (limit Z)`). The runtime VF-reset
+   re-apply logs `event=mem-offset-reapplied requested=N readback=N`.
+2. **Static `2000` cap lifted — DONE.** The driver-reported max from
+   `nvmlDeviceGetMemClkMinMaxVfOffset` (via the new
+   `driver_memory_offset_limit_mhz()`) is now the clamp authority on every
+   path — Auto-UV option, saved-profile apply, Auto-UV dialog spinbox range —
+   with `MAX_AFTERBURNER_MEM_OFFSET_MHZ = 2000` kept only as the fallback when
+   NVML exposes no range (and for Afterburner import translation). The CLI no
+   longer statically clamps; the apply path clamps and logs. On the 5080 the
+   dialog now offers 0..6000, so the reporter's `+3000` is expressible.
+3. **Units surfaced in the UI.** The dialog spinbox is labeled MT/s with a
+   live `= +N MHz memory clock` conversion (half the offset, per the 2×
+   transfer-rate unit confirmed above), matching the Afterburner/LACT slider
+   convention.
