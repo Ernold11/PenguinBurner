@@ -2,6 +2,11 @@ app-id: io.github.jpietek.PenguinBurner
 runtime: org.freedesktop.Platform
 runtime-version: "25.08"
 sdk: org.freedesktop.Sdk
+# MinGW cross-toolchain for the NVAPI latency shim (a PE nvapi64.dll built at
+# package time by setup.py; see docs/nvapi-shim.md). Build-time only -- the
+# extension is not part of the installed app.
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.mingw-w64
 command: penguin-burner
 
 cleanup:
@@ -21,10 +26,14 @@ modules:
   - name: penguin-burner
     buildsystem: simple
     build-options:
+      append-path: /usr/lib/sdk/mingw-w64/bin
       build-args:
         - --share=network
       env:
         PENGUIN_BURNER_REQUIRE_NATIVE_LAYER: "1"
+        # Fail the build loudly if the shim DLL cannot be produced -- a silent
+        # skip ships the in-game latency feature hollow (release-plan B2).
+        PENGUIN_BURNER_REQUIRE_NVAPI_SHIM: "1"
         PIP_DISABLE_PIP_VERSION_CHECK: "1"
     sources:
       - type: dir

@@ -13,7 +13,7 @@
 | # | Finding | Severity | Phase | Status |
 |---|---------|----------|-------|--------|
 | B1 | No guaranteed FIFO drainer → game freeze when the app is closed | Blocker | 1 | **DONE 2026-07-01** — detached per-game drainer + per-launch FIFO + shim drop-on-full ring; in-app reader off by default. Manual matrix pending. |
-| B2 | Shim DLL not built in any release channel (Flatpak/arch/deb/rpm) | Blocker | 2 | open |
+| B2 | Shim DLL not built in any release channel (Flatpak/arch/deb/rpm) | Blocker | 2 | **Flatpak DONE 2026-07-01** — `org.freedesktop.Sdk.Extension.mingw-w64` + `REQUIRE_NVAPI_SHIM=1` in the manifest, DLL verified inside the built app. Wheel (cibuildwheel), arch/deb/rpm, and the marker-source diagnostic still open. |
 | H1 | `_file_contains` 1 MB chunk scan can miss the needle → sidecar destruction | High (latent) | 3 | open |
 | H2 | Bridge pairs markers by frameID only → cross-game mispairing | High | 3 | largely mooted by per-launch FIFOs (one game per pipe); `(pid, frame)` keying still worthwhile |
 | H3 | Test suite red in clean checkout (`VK_LAYER_DXVK_NVAPI_reflex` assertion) | High (CI) | 3 | open |
@@ -76,6 +76,16 @@ went from opt-in to default.
 and latency appears in the overlay when the app starts afterwards.
 
 ## Phase 2 — B2: actually ship the DLL (distribution blocker)
+
+> **Status 2026-07-01: Flatpak SHIPPED.** The manifest pulls
+> `org.freedesktop.Sdk.Extension.mingw-w64//25.08` (build-time only,
+> `append-path: /usr/lib/sdk/mingw-w64/bin`) and sets
+> `PENGUIN_BURNER_REQUIRE_NVAPI_SHIM=1` so a missing toolchain fails the build
+> instead of shipping hollow; both build scripts install the extension. Local
+> `flatpak-builder` run verified `overlay/nvapi_shim/nvapi64.dll` (PE, needle
+> present) inside the installed app. Remaining: wheel/PyPI (add mingw to the
+> cibuildwheel container via `CIBW_BEFORE_ALL_LINUX`), arch/deb/rpm build-deps,
+> and the user-visible marker-source diagnostic (item 4).
 
 **Finding.** No release channel builds the shim:
 - Flatpak: freedesktop 25.08 SDK has no `x86_64-w64-mingw32-g++`; the manifest

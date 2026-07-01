@@ -149,7 +149,11 @@ polling if inotify is unavailable. (Idempotent/self-healing either way.)
   `build/nvapi64.dll` (gitignored). Toolchain `x86_64-w64-mingw32-g++`, static.
 - Packaging: `setup.py:_build_nvapi_shim` cross-compiles into the wheel at
   `overlay/nvapi_shim/nvapi64.dll`; `pyproject.toml` package-data; `MANIFEST.in`
-  ships the source. PB is a **non-editable wheel** at
+  ships the source. Set `PENGUIN_BURNER_REQUIRE_NVAPI_SHIM=1` in release builds
+  so a missing toolchain fails loudly instead of silently shipping without the
+  DLL. The **Flatpak** builds it via the `org.freedesktop.Sdk.Extension.mingw-w64`
+  SDK extension (build-time only; see the manifest). PB is a
+  **non-editable wheel** at
   `~/.local/lib/python3.14/site-packages` — Python edits need a reinstall (or copy
   the changed file in); the shim DLL needs a rebuild + copy to take effect.
 

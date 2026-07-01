@@ -14,7 +14,8 @@ fi
 
 flatpak install -y flathub \
     org.freedesktop.Platform//25.08 \
-    org.freedesktop.Sdk//25.08
+    org.freedesktop.Sdk//25.08 \
+    org.freedesktop.Sdk.Extension.mingw-w64//25.08
 
 flatpak-builder \
     --user \
