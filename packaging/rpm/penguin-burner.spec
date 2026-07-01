@@ -17,6 +17,10 @@ BuildRequires:  python3-setuptools
 BuildRequires:  python3-wheel
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
+# Cross-compiles the NVAPI latency shim (a PE nvapi64.dll) into the wheel;
+# the static winpthreads is needed for its -static link.
+BuildRequires:  mingw64-gcc-c++
+BuildRequires:  mingw64-winpthreads-static
 BuildRequires:  vulkan-headers
 BuildRequires:  desktop-file-utils
 
@@ -47,6 +51,7 @@ Fusion.
 
 %build
 export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
+export PENGUIN_BURNER_REQUIRE_NVAPI_SHIM=1
 %pyproject_wheel
 
 %install

@@ -19,6 +19,7 @@ from .framegen import _framegen_active_for_overlay
 from .framegen import _has_marker_stream
 from .layer_check import DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS
 from .nvapi_marker_bridge import NvapiMarkerBridge
+from ..shim_deploy import nvapi_shim_artifact
 from .samples import _int_value
 from .samples import _positive_us
 from .samples import normalize_timing_sample
@@ -798,6 +799,18 @@ class LatencyTelemetryLogger:
             "Latency telemetry launch options: "
             f"{DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS}"
         )
+        # Which in-game marker source this install can deploy -- makes a build
+        # that shipped without the shim DLL visible in bug reports instead of
+        # silently degrading to the layer tap (blind on frame-gen titles).
+        shim_dll = nvapi_shim_artifact()
+        if shim_dll is not None:
+            self.log(f"In-game latency marker source: nvapi shim ({shim_dll})")
+        else:
+            self.log(
+                "In-game latency marker source: Vulkan layer only -- the nvapi "
+                "shim DLL is missing from this install, so frame-generation "
+                "titles get no in-game latency"
+            )
         self._thread = threading.Thread(
             target=self._run,
             name="penguin-burner-latency-telemetry",

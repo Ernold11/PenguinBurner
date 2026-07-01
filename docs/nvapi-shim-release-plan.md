@@ -13,7 +13,7 @@
 | # | Finding | Severity | Phase | Status |
 |---|---------|----------|-------|--------|
 | B1 | No guaranteed FIFO drainer → game freeze when the app is closed | Blocker | 1 | **DONE 2026-07-01** — detached per-game drainer + per-launch FIFO + shim drop-on-full ring; in-app reader off by default. Manual matrix pending. |
-| B2 | Shim DLL not built in any release channel (Flatpak/arch/deb/rpm) | Blocker | 2 | **Flatpak DONE 2026-07-01** — `org.freedesktop.Sdk.Extension.mingw-w64` + `REQUIRE_NVAPI_SHIM=1` in the manifest, DLL verified inside the built app. Wheel (cibuildwheel), arch/deb/rpm, and the marker-source diagnostic still open. |
+| B2 | Shim DLL not built in any release channel (Flatpak/arch/deb/rpm) | Blocker | 2 | **PREPARED 2026-07-01 (all channels, unpublished)** — Flatpak (mingw SDK extension, DLL verified in-app), wheel (EPEL mingw in the cibuildwheel container, DLL verified in-wheel), arch/deb/rpm build-deps, `REQUIRE_NVAPI_SHIM=1` everywhere, marker-source startup diagnostic. Distro packages need one real build each to verify dep names; nothing published yet. |
 | H1 | `_file_contains` 1 MB chunk scan can miss the needle → sidecar destruction | High (latent) | 3 | open |
 | H2 | Bridge pairs markers by frameID only → cross-game mispairing | High | 3 | largely mooted by per-launch FIFOs (one game per pipe); `(pid, frame)` keying still worthwhile |
 | H3 | Test suite red in clean checkout (`VK_LAYER_DXVK_NVAPI_reflex` assertion) | High (CI) | 3 | open |
@@ -89,8 +89,14 @@ and latency appears in the overlay when the app starts afterwards.
 > (`CIBW_BEFORE_ALL_LINUX`) and sets `REQUIRE_NVAPI_SHIM=1`; the shim source
 > pins `_WIN32_WINNT=0x0601` because EPEL8's MinGW 7.2 otherwise hides
 > `InitOnceExecuteOnce`, and needs static winpthreads for the `-static` link.
-> Remaining: arch/deb/rpm build-deps and the user-visible marker-source
-> diagnostic (item 4).
+> **arch/deb/rpm + diagnostic wired 2026-07-01:** PKGBUILD adds
+> `mingw-w64-gcc`, debian adds `g++-mingw-w64-x86-64`, the rpm spec adds
+> `mingw64-gcc-c++` + `mingw64-winpthreads-static`; all three export
+> `PENGUIN_BURNER_REQUIRE_NVAPI_SHIM=1`. The app's telemetry startup log now
+> names the active marker source (`nvapi shim (<path>)` vs `Vulkan layer only
+> -- shim DLL missing`), so degraded installs show in bug reports. All
+> preparation only -- no channel has been published with the shim yet; the
+> distro packages still need a real build each to verify the dep names.
 
 **Finding.** No release channel builds the shim:
 - Flatpak: freedesktop 25.08 SDK has no `x86_64-w64-mingw32-g++`; the manifest
