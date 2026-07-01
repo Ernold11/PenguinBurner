@@ -25,6 +25,12 @@
 // frameID@8, markerType@16) and the id table.
 
 #define WIN32_LEAN_AND_MEAN
+// Older MinGW (e.g. EPEL8's 7.2 in the manylinux wheel container) defaults
+// _WIN32_WINNT below Vista, hiding InitOnceExecuteOnce. Everything this shim
+// runs under (Proton/Wine, Streamline titles) is far newer than Win7.
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif
 #include <windows.h>
 
 #include <cstdint>

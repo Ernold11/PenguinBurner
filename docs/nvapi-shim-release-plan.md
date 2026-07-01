@@ -83,9 +83,14 @@ and latency appears in the overlay when the app starts afterwards.
 > `PENGUIN_BURNER_REQUIRE_NVAPI_SHIM=1` so a missing toolchain fails the build
 > instead of shipping hollow; both build scripts install the extension. Local
 > `flatpak-builder` run verified `overlay/nvapi_shim/nvapi64.dll` (PE, needle
-> present) inside the installed app. Remaining: wheel/PyPI (add mingw to the
-> cibuildwheel container via `CIBW_BEFORE_ALL_LINUX`), arch/deb/rpm build-deps,
-> and the user-visible marker-source diagnostic (item 4).
+> present) inside the installed app. **Wheel/PyPI wired 2026-07-01:**
+> `build-python-dist.sh` installs `epel-release` + `mingw64-gcc-c++` +
+> `mingw64-winpthreads-static` in the manylinux_2_28 container
+> (`CIBW_BEFORE_ALL_LINUX`) and sets `REQUIRE_NVAPI_SHIM=1`; the shim source
+> pins `_WIN32_WINNT=0x0601` because EPEL8's MinGW 7.2 otherwise hides
+> `InitOnceExecuteOnce`, and needs static winpthreads for the `-static` link.
+> Remaining: arch/deb/rpm build-deps and the user-visible marker-source
+> diagnostic (item 4).
 
 **Finding.** No release channel builds the shim:
 - Flatpak: freedesktop 25.08 SDK has no `x86_64-w64-mingw32-g++`; the manifest
