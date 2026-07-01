@@ -23,9 +23,12 @@ existing dxvk-nvapi marker-log / trace path.
 
 from __future__ import annotations
 
+import ctypes
 import os
 from pathlib import Path
+import select
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -42,19 +45,24 @@ NVAPI_SHIM_DIR_ENV = "PENGUIN_BURNER_NVAPI_SHIM_DIR"
 # Force the shim off even when the in-game latency flag is on (falls back to the
 # dxvk-nvapi marker-log / trace path).
 NVAPI_SHIM_DISABLE_ENV = "PENGUIN_BURNER_NVAPI_SHIM_DISABLE"
-# How long the re-front watcher keeps re-applying the shim after launch (see
-# spawn_refront_watcher / watch_and_refront). Override for slow first launches.
+# Optional hard cap (seconds) on how long the re-front watcher runs. Unset, the
+# watcher runs for the whole Proton session (see watch_and_refront).
 NVAPI_SHIM_WATCH_SECONDS_ENV = "PENGUIN_BURNER_NVAPI_SHIM_WATCH_SECONDS"
 
-# Proton copies its bundled dxvk-nvapi nvapi64.dll into the prefix's system32
-# once during prefix setup, early in each launch -- *after* the wrapper's
-# pre-exec deploy but *before* the game loads nvapi64.dll. So a single deploy is
-# always clobbered. The watcher re-applies the shim across that window; once
-# Proton's one-shot copy is past, the shim stays on disk for the game's later
-# load. 60s comfortably outlasts prefix setup; the game's nvapi load comes well
-# after, reading whatever is on disk by then (our shim).
-_DEFAULT_WATCH_SECONDS = 60.0
+# Proton's per-launch prefix setup unconditionally try_copy()s its bundled
+# dxvk-nvapi over system32\nvapi64.dll (os.remove + copyfile, no content check;
+# proton script, the `if use_nvapi:` block of setup_prefix). That runs *after*
+# the wrapper's pre-exec deploy but *before* the game loads nvapi64.dll, so a
+# single deploy is always clobbered. The watcher re-fronts the shim when that
+# happens: inotify on system32 reacts to each finished rewrite of nvapi64.dll
+# (falling back to this poll interval if inotify is unavailable), and it stays
+# armed for the whole Proton session -- a fixed window would miss slow first
+# launches (prefix creation / anticheat installs can outlast any constant) and
+# mid-session re-copies (e.g. a compat-config change re-running prefix setup).
 _WATCH_POLL_SECONDS = 0.25
+# How often the watcher wakes from the inotify wait to check whether the Proton
+# session (its parent process) is still alive.
+_SESSION_POLL_SECONDS = 2.0
 
 _OVERLAY_ROOT = Path(__file__).resolve().parent
 # Packaged location (populated by the build) and the source-checkout build dir.
@@ -182,14 +190,124 @@ def deploy_nvapi_shim(env: dict[str, str]) -> Path | None:
         return None
 
 
-def watch_seconds(env: dict[str, str]) -> float:
+def watch_seconds(env: dict[str, str]) -> float | None:
+    """Optional hard cap on the watch duration; None = whole Proton session."""
     raw = str(env.get(NVAPI_SHIM_WATCH_SECONDS_ENV) or "").strip()
     if raw:
         try:
             return max(0.0, float(raw))
         except ValueError:
             pass
-    return _DEFAULT_WATCH_SECONDS
+    return None
+
+
+# inotify(7) constants (linux/inotify.h); PenguinBurner is Linux-only.
+_IN_CLOSE_WRITE = 0x00000008
+_IN_MOVED_TO = 0x00000080
+_IN_Q_OVERFLOW = 0x00004000
+_IN_IGNORED = 0x00008000
+_INOTIFY_EVENT_HEADER = struct.Struct("iIII")  # wd, mask, cookie, len
+
+
+def _parse_inotify_events(buf: bytes) -> list[tuple[int, str]]:
+    """Decode an inotify read() buffer into (mask, name) pairs."""
+    events: list[tuple[int, str]] = []
+    offset = 0
+    header = _INOTIFY_EVENT_HEADER
+    while offset + header.size <= len(buf):
+        fields = header.unpack_from(buf, offset)
+        mask, name_len = fields[1], fields[3]
+        offset += header.size
+        raw_name = buf[offset : offset + name_len].split(b"\0", 1)[0]
+        offset += name_len
+        events.append((mask, os.fsdecode(raw_name)))
+    return events
+
+
+class _Nvapi64Notifier:
+    """inotify watch on system32, reporting finished rewrites of nvapi64.dll.
+
+    Only ``IN_CLOSE_WRITE`` / ``IN_MOVED_TO`` are watched: reacting to creation
+    would race Proton's in-progress copy and could park a half-written DLL as
+    the shim's forward target. A queue overflow or a dropped watch (prefix
+    recreated) also reports "changed" so the caller re-checks the file.
+    """
+
+    _MASK = _IN_CLOSE_WRITE | _IN_MOVED_TO
+
+    def __init__(self, directory: Path) -> None:
+        self._libc = ctypes.CDLL(None, use_errno=True)
+        self._dir = os.fsencode(str(directory))
+        fd = self._libc.inotify_init1(os.O_CLOEXEC)
+        if fd < 0:
+            raise OSError(ctypes.get_errno(), "inotify_init1 failed")
+        self.fd = fd
+        try:
+            self._add_watch()
+        except OSError:
+            self.close()
+            raise
+
+    def _add_watch(self) -> None:
+        if self._libc.inotify_add_watch(self.fd, self._dir, self._MASK) < 0:
+            raise OSError(ctypes.get_errno(), "inotify_add_watch failed")
+
+    def drain(self) -> bool:
+        """Consume queued events; True when nvapi64.dll may have been rewritten."""
+        changed = False
+        for mask, name in _parse_inotify_events(os.read(self.fd, 4096)):
+            if mask & _IN_Q_OVERFLOW:
+                changed = True  # events lost; caller must re-check
+            if mask & _IN_IGNORED:
+                changed = True
+                self._add_watch()  # dir was replaced; re-arm (raises if gone)
+            if name == SHIM_DLL_NAME:
+                changed = True
+        return changed
+
+    def close(self) -> None:
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+
+
+def _open_notifier(system32: Path | None) -> "_Nvapi64Notifier | None":
+    if system32 is None:
+        return None
+    try:
+        return _Nvapi64Notifier(system32)
+    except OSError as error:
+        _log(f"nvapi shim: inotify unavailable ({error}); watcher falls back to polling")
+        return None
+
+
+def _open_session_fd(session_pid: int) -> int | None:
+    """A pidfd for the Proton session, so its exit wakes the watcher's select.
+
+    None when pidfds are unavailable (the watcher then polls the pid's
+    liveness) or the session is already gone (the first liveness check ends
+    the watch).
+    """
+    pidfd_open = getattr(os, "pidfd_open", None)
+    if pidfd_open is None:
+        return None
+    try:
+        return pidfd_open(session_pid)
+    except OSError:
+        return None
+
+
+def _session_alive(session_pid: int, session_fd: int | None) -> bool:
+    if session_fd is not None:
+        return True  # the select on the pidfd reports the exit instead
+    try:
+        os.kill(session_pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def watch_and_refront(
@@ -197,31 +315,76 @@ def watch_and_refront(
     *,
     duration_s: float | None = None,
     poll_s: float = _WATCH_POLL_SECONDS,
+    session_pid: int | None = None,
 ) -> None:
-    """Keep the shim fronted across Proton's per-launch nvapi64.dll copy.
+    """Keep the shim fronted across Proton's per-launch nvapi64.dll copies.
 
-    Runs ``deploy_nvapi_shim`` on a short poll for ``duration_s`` seconds. Proton
-    removes our shim once (early in launch) and copies its bundled dxvk-nvapi
-    over it; this re-installs the shim right after, and because Proton does not
-    copy again that launch, the shim then persists on disk for the game's later
-    nvapi64.dll load. Meant to run detached (see ``spawn_refront_watcher``).
+    Deploys once, then re-runs ``deploy_nvapi_shim`` whenever inotify reports
+    system32's ``nvapi64.dll`` was rewritten (Proton's prefix setup does that
+    unconditionally every launch), polling instead if inotify is unavailable.
+
+    Runs until the Proton session exits: ``session_pid`` is the wrapper's pid,
+    which ``os.execvpe`` turns *into* the Proton session, watched via a pidfd
+    (with a liveness poll as fallback). Defaults to our parent when not given
+    (direct invocation). ``duration_s`` (or the env override) caps the run
+    instead when set. Meant to run detached (see ``spawn_refront_watcher``).
     """
     if duration_s is None:
         duration_s = watch_seconds(env)
-    deadline = time.monotonic() + max(0.0, float(duration_s))
-    while True:
+    deadline = (
+        None if duration_s is None else time.monotonic() + max(0.0, float(duration_s))
+    )
+    if session_pid is None:
+        session_pid = os.getppid()
+    session_fd = _open_session_fd(session_pid)
+    notifier = _open_notifier(prefix_system32(env))
+    try:
         deploy_nvapi_shim(env)
-        if time.monotonic() >= deadline:
-            return
-        time.sleep(max(0.0, float(poll_s)))
+        while True:
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                return
+            if not _session_alive(session_pid, session_fd):
+                return  # Proton session exited; nothing left to guard
+            wait_s = _SESSION_POLL_SECONDS if notifier is not None else max(0.0, poll_s)
+            if deadline is not None:
+                wait_s = min(wait_s, max(0.0, deadline - now))
+            fds = [fd for fd in ((notifier.fd if notifier else None), session_fd) if fd is not None]
+            ready: list[int] = []
+            if fds:
+                ready = select.select(fds, [], [], wait_s)[0]
+            else:
+                time.sleep(wait_s)
+            if session_fd is not None and session_fd in ready:
+                return  # Proton session exited
+            if notifier is None:
+                deploy_nvapi_shim(env)  # polling fallback: re-front each cadence
+            elif notifier.fd in ready:
+                try:
+                    if notifier.drain():
+                        deploy_nvapi_shim(env)
+                except OSError:
+                    # Watch lost (e.g. prefix recreated): degrade to polling.
+                    notifier.close()
+                    notifier = None
+    finally:
+        if notifier is not None:
+            notifier.close()
+        if session_fd is not None:
+            try:
+                os.close(session_fd)
+            except OSError:
+                pass
 
 
 def spawn_refront_watcher(env: dict[str, str]) -> "subprocess.Popen | None":
     """Launch ``watch_and_refront`` as a detached process that outlives exec().
 
     The wrapper ``os.execvpe``s into Proton right after configuring the env, so
-    the re-fronting must live in a separate, session-detached process. Returns
-    the Popen, or None when there is nothing to front or the spawn fails.
+    the re-fronting must live in a separate, session-detached process. Our own
+    pid is passed along: exec keeps it, so it *is* the Proton session's pid and
+    the watcher ends when that session does. Returns the Popen, or None when
+    there is nothing to front or the spawn fails.
     """
     if str(env.get(NVAPI_SHIM_DISABLE_ENV) or "").strip().lower() in _TRUTHY:
         return None
@@ -229,7 +392,13 @@ def spawn_refront_watcher(env: dict[str, str]) -> "subprocess.Popen | None":
         return None
     try:
         return subprocess.Popen(
-            [sys.executable, "-m", "overlay.shim_deploy", "--watch"],
+            [
+                sys.executable,
+                "-m",
+                "overlay.shim_deploy",
+                "--watch",
+                f"--session-pid={os.getpid()}",
+            ],
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -250,8 +419,15 @@ def _log(message: str) -> None:
 
 def _main(argv: list[str]) -> int:
     env = dict(os.environ)
+    session_pid: int | None = None
+    for arg in argv:
+        if arg.startswith("--session-pid="):
+            try:
+                session_pid = int(arg.split("=", 1)[1])
+            except ValueError:
+                pass
     if "--watch" in argv:
-        watch_and_refront(env)
+        watch_and_refront(env, session_pid=session_pid)
     else:
         deploy_nvapi_shim(env)
     return 0

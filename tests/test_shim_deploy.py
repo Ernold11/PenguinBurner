@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import struct
+import subprocess
+import threading
+import time
 from pathlib import Path
 
 from overlay import shim_deploy
@@ -197,6 +201,105 @@ def test_watch_and_refront_reinstalls_after_proton_clobber(tmp_path: Path) -> No
     assert (sys32 / shim_deploy.REAL_SIDECAR_NAME).read_bytes() == REAL_BYTES
 
 
+def test_watch_seconds_default_is_session_scoped() -> None:
+    """No env cap -> None: the watcher guards the whole Proton session."""
+    assert shim_deploy.watch_seconds({}) is None
+    assert shim_deploy.watch_seconds(
+        {shim_deploy.NVAPI_SHIM_WATCH_SECONDS_ENV: "12.5"}
+    ) == 12.5
+    assert shim_deploy.watch_seconds(
+        {shim_deploy.NVAPI_SHIM_WATCH_SECONDS_ENV: "bogus"}
+    ) is None
+
+
+def test_parse_inotify_events_decodes_names() -> None:
+    name = b"nvapi64.dll\0\0\0\0\0"
+    event = struct.pack("iIII", 1, shim_deploy._IN_CLOSE_WRITE, 0, len(name)) + name
+    dir_event = struct.pack("iIII", 1, shim_deploy._IN_IGNORED, 0, 0)
+    events = shim_deploy._parse_inotify_events(event + dir_event)
+    assert events == [
+        (shim_deploy._IN_CLOSE_WRITE, "nvapi64.dll"),
+        (shim_deploy._IN_IGNORED, ""),
+    ]
+
+
+def _wait_readable(fd: int, timeout_s: float) -> bool:
+    import select
+
+    return bool(select.select([fd], [], [], timeout_s)[0])
+
+
+def test_notifier_reports_nvapi_rewrite(tmp_path: Path) -> None:
+    """A completed write of nvapi64.dll wakes the notifier; other files do not."""
+    notifier = shim_deploy._Nvapi64Notifier(tmp_path)
+    try:
+        (tmp_path / "unrelated.dll").write_bytes(b"x")
+        assert _wait_readable(notifier.fd, 0.5)
+        assert notifier.drain() is False
+
+        (tmp_path / shim_deploy.SHIM_DLL_NAME).write_bytes(REAL_BYTES)
+        assert _wait_readable(notifier.fd, 0.5)
+        assert notifier.drain() is True
+    finally:
+        notifier.close()
+
+
+def test_watch_refronts_on_rewrite_event(tmp_path: Path) -> None:
+    """Session-scoped watch: the watcher re-fronts as soon as Proton's rewrite
+    of nvapi64.dll completes, and ends when the session process exits."""
+    _make_artifact(tmp_path)
+    data_path = _make_prefix(tmp_path)
+    env = _env(tmp_path, data_path)
+    nvapi = _system32(data_path) / shim_deploy.SHIM_DLL_NAME
+
+    # Stand-in for the exec'd Proton session the watcher guards.
+    session = subprocess.Popen(["sleep", "30"])
+    watcher = threading.Thread(
+        target=shim_deploy.watch_and_refront,
+        args=(env,),
+        kwargs={"session_pid": session.pid, "poll_s": 0.02},  # no duration cap
+    )
+    watcher.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while nvapi.read_bytes() != SHIM_BYTES and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert nvapi.read_bytes() == SHIM_BYTES  # initial deploy landed
+
+        nvapi.write_bytes(REAL_BYTES)  # Proton's per-launch clobber
+        deadline = time.monotonic() + 2.0
+        while nvapi.read_bytes() != SHIM_BYTES and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert nvapi.read_bytes() == SHIM_BYTES  # re-fronted well within 2s
+    finally:
+        session.kill()
+        session.wait()
+    # Session death must end the watch promptly (pidfd wakes the select).
+    watcher.join(timeout=5.0)
+    assert not watcher.is_alive()
+
+
+def test_watch_exits_when_session_already_dead(tmp_path: Path, monkeypatch) -> None:
+    """With no duration cap, a session that is already gone when the watcher
+    starts must end the watch immediately (the startup race), not run forever."""
+    _make_artifact(tmp_path)
+    data_path = _make_prefix(tmp_path)
+    env = _env(tmp_path, data_path)
+
+    # No pidfd support and a dead pid: exercise the liveness-poll fallback.
+    monkeypatch.setattr(shim_deploy, "_open_session_fd", lambda _pid: None)
+
+    def dead(_pid: int, _sig: int) -> None:
+        raise ProcessLookupError
+
+    monkeypatch.setattr(shim_deploy.os, "kill", dead)
+    monkeypatch.setattr(shim_deploy, "_SESSION_POLL_SECONDS", 0.05)
+
+    start = time.monotonic()
+    shim_deploy.watch_and_refront(env, session_pid=999999, poll_s=0.01)
+    assert time.monotonic() - start < 2.0  # returned because the session is gone
+
+
 def test_spawn_refront_watcher_launches_detached_watch(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -218,6 +321,7 @@ def test_spawn_refront_watcher_launches_detached_watch(
         "-m",
         "overlay.shim_deploy",
         "--watch",
+        f"--session-pid={shim_deploy.os.getpid()}",
     ]
     assert captured["kwargs"]["start_new_session"] is True
     assert captured["kwargs"]["env"] is env

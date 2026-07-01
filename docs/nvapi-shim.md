@@ -102,11 +102,19 @@ Generic because every nvapi64-loading process (bootstrappers, UE shipping exes,
 Streamline's `sl.interposer` which `GetSystemDirectory`-loads nvapi64) resolves
 from system32.
 
-**Proton clobbers the shim every launch** (its prefix DLL sync copies the stock
-dxvk-nvapi back over `nvapi64.dll`, *after* the wrapper's pre-exec deploy but
-*before* the game loads it). So `spawn_refront_watcher` launches a detached
-process that re-applies the shim across that window; once Proton's one-shot copy
-is past, the shim persists for the game's later load. (Idempotent/self-healing.)
+**Proton clobbers the shim every launch**: prefix setup unconditionally
+`try_copy`s the bundled dxvk-nvapi over `system32\nvapi64.dll` (`os.remove` +
+copy, no content check — the `if use_nvapi:` block in the proton script's
+`setup_prefix`), *after* the wrapper's pre-exec deploy but *before* the game
+loads it. So `spawn_refront_watcher` launches a detached watcher that holds an
+**inotify watch on system32** and re-fronts the shim the moment a rewrite of
+`nvapi64.dll` completes (`IN_CLOSE_WRITE`/`IN_MOVED_TO` only — reacting to
+creation could park a half-written DLL as the forward target). It runs for the
+**whole Proton session** (the wrapper execs into Proton, so the watcher's parent
+*is* the session; reparenting = session over), not a fixed window — a fixed 60s
+missed slow first launches (prefix creation, anticheat installs) and mid-session
+re-copies (compat-config changes re-run prefix setup). Falls back to 0.25s
+polling if inotify is unavailable. (Idempotent/self-healing either way.)
 
 ## Integration
 
@@ -163,7 +171,8 @@ is past, the shim persists for the game's later load. (Idempotent/self-healing.)
 - `PENGUIN_BURNER_NVAPI_SHIM_DISABLE=1` — skip the shim (layer-only). Stops
   re-deploying; does not un-front an already-installed shim.
 - `PENGUIN_BURNER_NVAPI_SHIM_DIR` — override the shim artifact path.
-- `PENGUIN_BURNER_NVAPI_SHIM_WATCH_SECONDS` — re-front watcher window (default 60).
+- `PENGUIN_BURNER_NVAPI_SHIM_WATCH_SECONDS` — optional hard cap on the re-front
+  watcher's runtime; unset it runs for the whole Proton session.
 - `PENGUIN_BURNER_SHIM_REAL` — override the forward-target DLL.
 - `PENGUIN_BURNER_SHIM_OUTPUT` — set by the launcher to the FIFO wine path (the
   transport); override to a real file for diagnostics.
