@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 
 from .config import OVERLAY_CONFIG_ENV, default_overlay_config_path
 from .native_layer import LATENCY_LAYER_NAME
 from .native_layer import native_layer_dirs
 from .shim_deploy import deploy_nvapi_shim, spawn_refront_watcher
+from .telemetry.nvapi_marker_bridge import spawn_detached_drainer
 from .state import (
     OVERLAY_ENABLE_ENV_ALIAS,
     OVERLAY_ENABLE_ENV,
@@ -93,16 +96,42 @@ def main(argv: list[str] | None = None) -> int:
         # which would feed its diagnostics into the bridge as bogus markers.
         spawn_refront_watcher(env)
     if ingame_latency_enabled(env):
+        # The FIFO must always have a drainer for as long as it can have
+        # writers, or the 64 KB pipe fills and the shim's marker write (and any
+        # stderr write) blocks the game. The drainer's lifetime is tied to this
+        # pid (the exec below turns it into the Proton session) plus the FIFO's
+        # writer count -- NOT to the app, which may be closed the whole time.
+        # Same stderr caveat as the watcher: spawn before the redirect.
+        _sweep_stale_marker_fifos(env)
+        if _create_marker_fifo(env):
+            spawn_detached_drainer(
+                env, trace_fifo_path(env), session_pid=os.getpid()
+            )
         _route_trace_to_fifo(env)
     os.execvpe(args[0], args, env)
     return 127
 
 
 SHIM_OUTPUT_ENV = "PENGUIN_BURNER_SHIM_OUTPUT"
+# The per-launch marker FIFO path, pinned into the env so the wrapper, the shim
+# (via its Z:\ wine path) and the detached drainer all agree on one file.
+MARKER_FIFO_ENV = "PENGUIN_BURNER_MARKER_FIFO"
 
 
 def trace_fifo_path(env: dict[str, str]) -> Path:
-    return _home_latency_socket_path(env).with_name("nvapi-trace.fifo")
+    """The marker FIFO for this launch.
+
+    One FIFO *per game session* (named by the wrapper's pid, which exec turns
+    into the Proton session's): each launch gets its own drainer, so two
+    concurrently wrapped games never share a pipe -- a shared FIFO with one
+    reader per wrapper would have the readers stealing each other's lines.
+    """
+    explicit = str(env.get(MARKER_FIFO_ENV) or "").strip()
+    if explicit:
+        return Path(explicit)
+    return _home_latency_socket_path(env).with_name(
+        f"nvapi-trace.{os.getpid()}.fifo"
+    )
 
 
 def _fifo_wine_path(env: dict[str, str]) -> str:
@@ -110,6 +139,47 @@ def _fifo_wine_path(env: dict[str, str]) -> str:
     # so the marker FIFO (created by the launcher on the host) is reachable at
     # its Z:\ path; opening it by path sidesteps the broken inherited fd 2.
     return "Z:" + str(trace_fifo_path(env)).replace("/", "\\")
+
+
+def _create_marker_fifo(env: dict[str, str]) -> bool:
+    """Create this launch's marker FIFO. False when the filesystem refuses."""
+    fifo = trace_fifo_path(env)
+    try:
+        fifo.parent.mkdir(parents=True, exist_ok=True)
+        if not fifo.exists():
+            os.mkfifo(fifo, 0o600)
+        return True
+    except OSError:
+        return False
+
+
+def _sweep_stale_marker_fifos(env: dict[str, str]) -> None:
+    """Unlink leftover per-launch marker FIFOs that no drainer reads anymore.
+
+    The drainer unlinks its own FIFO on exit; this catches the crash/SIGKILL
+    leftovers. A non-blocking write-only open of a FIFO fails with ENXIO
+    exactly when it has no reader -- a live drainer means skip it.
+    """
+    current = trace_fifo_path(env)
+    try:
+        siblings = list(current.parent.glob("nvapi-trace*.fifo"))
+    except OSError:
+        return
+    for path in siblings:
+        if path == current:
+            continue
+        try:
+            if not stat.S_ISFIFO(path.stat().st_mode):
+                continue
+            fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as error:
+            if error.errno == errno.ENXIO:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            continue
+        os.close(fd)  # a reader exists: another launch's drainer is live
 
 
 def _route_trace_to_fifo(env: dict[str, str]) -> None:
@@ -157,6 +227,9 @@ def configure_penguin_burner_environment(
     env.setdefault("PROTON_HIDE_NVIDIA_GPU", "0")
     shim_active = False
     if ingame_latency_enabled(env):
+        # Pin this launch's marker FIFO before anything derives from it (the
+        # shim's SHIM_OUTPUT wine path, the drainer's --log, the stderr route).
+        env.setdefault(MARKER_FIFO_ENV, str(trace_fifo_path(env)))
         shim_active = _configure_dxvk_nvapi_marker_output(
             env, command_args=command_args
         )

@@ -127,7 +127,9 @@ polling if inotify is unavailable. (Idempotent/self-healing either way.)
   `PENGUIN_BURNER_INGAME_LATENCY=0`.
 - Marker line format (satisfies `_MARKER_LOG_RE`):
   `0.0:<pidHex>:0:latency-marker:pb:qpcUs=<us> frameID=<id> markerType=<NAME>`.
-- `overlay/telemetry/nvapi_marker_bridge.py` drains the FIFO unchanged.
+- `overlay/telemetry/nvapi_marker_bridge.py` parses the stream unchanged, but it
+  now runs as a **detached per-game drainer** spawned by the wrapper (one per
+  launch, own FIFO) instead of inside the app — see the freeze-hazard section.
 
 ## Shim vs Vulkan layer — complementary, not redundant
 
@@ -164,20 +166,41 @@ polling if inotify is unavailable. (Idempotent/self-healing either way.)
   the shim's `[pb-nvapi-shim] init … real=ok` + raw markers, decoupled from the
   bridge.
 
-## Known hazard — blocking FIFO writes can freeze the game
+## The freeze hazard (release-plan B1) — FIXED, two independent layers
 
-The defensive contract above covers crashes; the one way the shim can *stall*
-the game is **blocking FIFO I/O inside the game process**. `emit_raw` does a
-plain blocking `_write` to the marker FIFO under `g_emit_lock`
-(`nvapi_shim.cpp`). The FIFO's kernel buffer is 64 KB: if the bridge stops
-draining mid-game (PB quit, daemon crash), it fills in ~10 s at ~75 markers/s
-and the next Reflex marker call blocks forever — inside Streamline, on the
-game's frame thread → hard freeze. No EPIPE rescue: the launcher's `O_RDWR` fd
-(the game's stderr) keeps the pipe open without reading it. (The blocking
-`_open(O_WRONLY)` in `open_output` is the same hazard at init, mitigated only
-because that same `O_RDWR` fd guarantees a read end exists.)
+The one way the shim could *stall* the game was **blocking FIFO I/O inside the
+game process**: the FIFO's kernel buffer is 64 KB, and with no drainer (the app
+closed — a normal state, the wrapper lives in Steam launch options) it fills in
+seconds, after which the shim's blocking `_write` froze the frame loop (and any
+game stderr write could do the same). Fixed on both sides:
 
-### Manual test, host-only (~1 min, no game)
+1. **Guaranteed drainer, game-scoped (the real fix).** The wrapper spawns the
+   marker bridge as a **detached per-game process**
+   (`nvapi_marker_bridge.spawn_detached_drainer`, `--session-pid` +
+   `--cleanup`), spawned *before* the stderr redirect so it never holds the
+   FIFO's write side. Each launch gets its **own FIFO**
+   (`nvapi-trace.<sessionpid>.fifo`, pinned via `PENGUIN_BURNER_MARKER_FIFO`) so
+   two concurrent games never share a pipe or steal each other's lines. The
+   drainer forwards samples to the latency socket as before — the app just
+   receives datagrams *whenever it happens to run*; with the app closed the
+   sends fail silently and the pipe still drains. Lifetime: drains as long as
+   any writer holds the FIFO (a game can outlive its launch session); exits on
+   EOF once the session is gone, then unlinks its FIFO. A launch that dies
+   before any writer connects is reaped by a 60 s no-writer grace
+   (`_NO_WRITER_GRACE_S`) — a FIFO reader gets *no* poll event until a writer
+   has connected at least once. Crash leftovers are swept at the next launch
+   (`launcher._sweep_stale_marker_fifos`: `ENXIO` on a non-blocking write-only
+   open = no reader = stale). The **in-app** bridge reader is now off by
+   default (exactly one reader must exist); re-enable for debugging with
+   `PENGUIN_BURNER_INAPP_MARKER_BRIDGE=1`.
+2. **The shim can no longer block regardless (belt and braces).** `emit_raw`
+   only copies the line into a fixed in-DLL ring (256×192 B) under the lock; a
+   dedicated writer thread does the blocking `_write`. If the output stalls
+   anyway, the ring fills and new lines are **dropped** — lost samples beat a
+   frozen game — and a `[pb-nvapi-shim] output stalled: dropped N marker lines`
+   diagnostic is emitted once it drains again.
+
+### Regression check, host-only (~1 min, no game)
 
 ```bash
 f=/tmp/pb-hang-test.fifo; mkfifo $f
@@ -194,23 +217,25 @@ while True:
     print(i, flush=True)"
 ```
 
-The counter stalls around ~840 lines (64 KB) — that is the "game" hung. In
-another shell, `cat /tmp/pb-hang-test.fifo >/dev/null` and it resumes
-instantly.
+A raw blocking writer stalls at ~840 lines (64 KB) — that demonstrates the old
+hazard mechanism. With the fix, the real FIFO always has the per-game drainer
+reading (start a wrapped game and `ls ~/.cache/penguin-burner/` shows
+`nvapi-trace.<pid>.fifo` plus a live `nvapi_marker_bridge --log … --session-pid …`
+process), and the shim's ring would drop rather than stall even if it died.
 
-### Manual test, in-game (Talos 2 / RE9)
+### Regression check, in-game (Talos 2 / RE9)
 
-1. Launch with overlay + latency as usual; confirm LAT is populated (markers
-   flowing).
-2. Mid-game, kill only the drain side: stop the PB daemon (or
-   `pkill -f nvapi_marker_bridge`), leaving the game running.
-3. If the hazard is live, the game hard-freezes ~10 seconds later.
-4. Prove the cause and recover:
-   `cat ~/.cache/penguin-burner/nvapi-trace.fifo >/dev/null` — an instant
-   unfreeze confirms the write-block. Restarting PB recovers the same way.
-
-Fix, when we take it: a non-blocking emit in the shim that drops markers when
-the pipe is full — lost samples beat a frozen game.
+1. Launch with overlay + latency **while the PB app is closed** — the primary
+   B1 scenario. The game must run indefinitely; markers flow into the drainer
+   and are dropped at the dead socket.
+2. Start the app mid-game: LAT should populate live (drainer → socket → meter).
+3. Close the app mid-game: game keeps running; LAT disappears, nothing stalls.
+4. Kill the drainer mid-game (`pkill -f "nvapi_marker_bridge --log"`): the game
+   must keep running — the shim's ring now drops lines instead of blocking (the
+   old behavior froze ~10 s after the drain stopped). Expect the
+   `output stalled: dropped N` line if a drainer is later attached.
+5. Exit the game: the drainer exits by itself and its `nvapi-trace.<pid>.fifo`
+   is gone.
 
 ## Env vars
 
@@ -224,6 +249,11 @@ the pipe is full — lost samples beat a frozen game.
 - `PENGUIN_BURNER_SHIM_REAL` — override the forward-target DLL.
 - `PENGUIN_BURNER_SHIM_OUTPUT` — set by the launcher to the FIFO wine path (the
   transport); override to a real file for diagnostics.
+- `PENGUIN_BURNER_MARKER_FIFO` — set by the launcher: this launch's marker FIFO
+  path (`nvapi-trace.<sessionpid>.fifo`), shared by the stderr route, the shim
+  wine path and the detached drainer.
+- `PENGUIN_BURNER_INAPP_MARKER_BRIDGE=1` — debug-only: also start the legacy
+  in-app FIFO reader (normally off; exactly one reader must exist).
 
 ## Remaining / enhancements
 

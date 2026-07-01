@@ -287,7 +287,7 @@ def test_watch_exits_when_session_already_dead(tmp_path: Path, monkeypatch) -> N
     env = _env(tmp_path, data_path)
 
     # No pidfd support and a dead pid: exercise the liveness-poll fallback.
-    monkeypatch.setattr(shim_deploy, "_open_session_fd", lambda _pid: None)
+    monkeypatch.setattr(shim_deploy, "open_session_fd", lambda _pid: None)
 
     def dead(_pid: int, _sig: int) -> None:
         raise ProcessLookupError

@@ -17,6 +17,7 @@ from overlay.state import (
 
 def test_pb_overlay_launcher_execs_with_layer_environment(monkeypatch, tmp_path) -> None:
     calls = []
+    monkeypatch.setenv("HOME", str(tmp_path))
     state_path = tmp_path / "overlay-state.txt"
     text_path = tmp_path / "overlay-text.txt"
     monkeypatch.setenv(OVERLAY_STATE_ENV, str(state_path))
@@ -195,6 +196,7 @@ def test_configure_environment_keeps_global_latency_config_full_path(tmp_path) -
 
 
 def test_pb_overlay_launcher_strips_mangohud_preload(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     calls = []
     state_path = tmp_path / "overlay-state.txt"
     text_path = tmp_path / "overlay-text.txt"
@@ -242,6 +244,12 @@ def test_main_arms_refront_watcher_when_shim_active(monkeypatch, tmp_path) -> No
 
     spawned = []
     monkeypatch.setattr(launcher, "spawn_refront_watcher", lambda env: spawned.append(env))
+    drained = []
+    monkeypatch.setattr(
+        launcher,
+        "spawn_detached_drainer",
+        lambda env, path, session_pid=None: drained.append((path, session_pid)),
+    )
 
     def fake_execvpe(file, args, env):
         raise RuntimeError("stop")
@@ -256,12 +264,23 @@ def test_main_arms_refront_watcher_when_shim_active(monkeypatch, tmp_path) -> No
     assert len(spawned) == 1
     sys32 = tmp_path / "pfx/drive_c/windows/system32"
     assert (sys32 / "nvapi64-pb.dll").is_file()  # shim deployed (real parked)
+    # The per-game FIFO drainer is armed with the wrapper pid (= the future
+    # Proton session) and the FIFO exists before the game could write to it.
+    assert drained == [(launcher.trace_fifo_path(dict(launcher.os.environ)), launcher.os.getpid())]
+    assert drained[0][0].is_fifo()
 
 
 def test_main_does_not_arm_watcher_without_ingame_latency(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
     spawned = []
     monkeypatch.setattr(launcher, "spawn_refront_watcher", lambda env: spawned.append(env))
+    drained = []
+    monkeypatch.setattr(
+        launcher,
+        "spawn_detached_drainer",
+        lambda env, path, session_pid=None: drained.append(path),
+    )
 
     def fake_execvpe(file, args, env):
         raise RuntimeError("stop")
@@ -273,12 +292,73 @@ def test_main_does_not_arm_watcher_without_ingame_latency(monkeypatch, tmp_path)
     except RuntimeError:
         pass
 
-    assert spawned == []
+    assert spawned == []  # no prefix -> no shim -> no re-front watcher
+    # In-game latency defaults on with the overlay, so stderr is routed into
+    # the FIFO even without the shim -- and a routed FIFO always needs its
+    # drainer, or plain game stderr could fill the pipe and stall the game.
+    assert len(drained) == 1
 
 
-def test_trace_fifo_path_is_in_cache_dir() -> None:
+def test_main_spawns_no_drainer_when_latency_opted_out(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
+    monkeypatch.setenv("PENGUIN_BURNER_INGAME_LATENCY", "0")
+    drained = []
+    monkeypatch.setattr(
+        launcher,
+        "spawn_detached_drainer",
+        lambda env, path, session_pid=None: drained.append(path),
+    )
+
+    def fake_execvpe(file, args, env):
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
+
+    try:
+        launcher.main(["game"])
+    except RuntimeError:
+        pass
+
+    assert drained == []  # latency off -> stderr untouched -> nothing to drain
+
+
+def test_trace_fifo_path_is_per_launch() -> None:
     p = launcher.trace_fifo_path({"HOME": "/home/jp"})
-    assert str(p) == "/home/jp/.cache/penguin-burner/nvapi-trace.fifo"
+    assert str(p) == (
+        f"/home/jp/.cache/penguin-burner/nvapi-trace.{launcher.os.getpid()}.fifo"
+    )
+
+
+def test_trace_fifo_path_honors_env_pin() -> None:
+    """Once the wrapper pins the path into the env, every consumer (shim wine
+    path, drainer --log, stderr route) resolves the same file."""
+    pinned = "/tmp/somewhere/nvapi-trace.1234.fifo"
+    env = {"HOME": "/home/jp", launcher.MARKER_FIFO_ENV: pinned}
+    assert str(launcher.trace_fifo_path(env)) == pinned
+
+
+def test_sweep_removes_only_readerless_fifos(tmp_path) -> None:
+    import os
+
+    env = {launcher.MARKER_FIFO_ENV: str(tmp_path / "nvapi-trace.1.fifo")}
+    stale = tmp_path / "nvapi-trace.2.fifo"
+    live = tmp_path / "nvapi-trace.3.fifo"
+    legacy = tmp_path / "nvapi-trace.fifo"
+    plain = tmp_path / "nvapi-trace.4.fifo.txt"
+    for fifo in (stale, live, legacy):
+        os.mkfifo(fifo)
+    plain.write_text("not a fifo")
+    reader = os.open(live, os.O_RDONLY | os.O_NONBLOCK)  # a live drainer
+    try:
+        launcher._sweep_stale_marker_fifos(env)
+    finally:
+        os.close(reader)
+
+    assert not stale.exists()  # readerless leftover reaped
+    assert not legacy.exists()  # old fixed-name FIFO reaped too
+    assert live.exists()  # another launch's drainer keeps its FIFO
+    assert plain.exists()  # non-FIFOs are never touched
 
 
 def _fake_native_layer_dir(tmp_path):

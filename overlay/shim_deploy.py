@@ -282,7 +282,7 @@ def _open_notifier(system32: Path | None) -> "_Nvapi64Notifier | None":
         return None
 
 
-def _open_session_fd(session_pid: int) -> int | None:
+def open_session_fd(session_pid: int) -> int | None:
     """A pidfd for the Proton session, so its exit wakes the watcher's select.
 
     None when pidfds are unavailable (the watcher then polls the pid's
@@ -298,9 +298,12 @@ def _open_session_fd(session_pid: int) -> int | None:
         return None
 
 
-def _session_alive(session_pid: int, session_fd: int | None) -> bool:
+def session_alive(session_pid: int, session_fd: int | None) -> bool:
     if session_fd is not None:
-        return True  # the select on the pidfd reports the exit instead
+        # A pidfd polls readable once its process has exited. (The watcher's
+        # select also has it armed for an instant wake; polling callers like
+        # the marker drainer rely on this check alone.)
+        return not select.select([session_fd], [], [], 0)[0]
     try:
         os.kill(session_pid, 0)
     except ProcessLookupError:
@@ -336,7 +339,7 @@ def watch_and_refront(
     )
     if session_pid is None:
         session_pid = os.getppid()
-    session_fd = _open_session_fd(session_pid)
+    session_fd = open_session_fd(session_pid)
     notifier = _open_notifier(prefix_system32(env))
     try:
         deploy_nvapi_shim(env)
@@ -344,7 +347,7 @@ def watch_and_refront(
             now = time.monotonic()
             if deadline is not None and now >= deadline:
                 return
-            if not _session_alive(session_pid, session_fd):
+            if not session_alive(session_pid, session_fd):
                 return  # Proton session exited; nothing left to guard
             wait_s = _SESSION_POLL_SECONDS if notifier is not None else max(0.0, poll_s)
             if deadline is not None:

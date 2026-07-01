@@ -73,7 +73,7 @@ def test_bridge_uses_marker_only_log_process_id(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         bridge,
         "_follow",
-        lambda _path, poll_interval_s, from_start, stop_event=None: lines,
+        lambda _path, poll_interval_s, from_start, stop_event=None, session_alive_fn=None: lines,
     )
     monkeypatch.setattr(
         bridge,
@@ -109,7 +109,7 @@ def test_bridge_does_not_mark_framegen_from_oob_present_trace(monkeypatch, tmp_p
     monkeypatch.setattr(
         bridge,
         "_follow",
-        lambda _path, poll_interval_s, from_start, stop_event=None: lines,
+        lambda _path, poll_interval_s, from_start, stop_event=None, session_alive_fn=None: lines,
     )
     monkeypatch.setattr(
         bridge,
@@ -150,7 +150,7 @@ def test_bridge_emits_oob_present_span_in_present_order(monkeypatch, tmp_path) -
     monkeypatch.setattr(
         bridge,
         "_follow",
-        lambda _path, poll_interval_s, from_start, stop_event=None: lines,
+        lambda _path, poll_interval_s, from_start, stop_event=None, session_alive_fn=None: lines,
     )
     monkeypatch.setattr(
         bridge,
@@ -188,7 +188,7 @@ def test_bridge_reports_input_to_present_when_input_marker_present(monkeypatch, 
     monkeypatch.setattr(
         bridge,
         "_follow",
-        lambda _path, poll_interval_s, from_start, stop_event=None: lines,
+        lambda _path, poll_interval_s, from_start, stop_event=None, session_alive_fn=None: lines,
     )
     monkeypatch.setattr(
         bridge,
@@ -202,3 +202,112 @@ def test_bridge_reports_input_to_present_when_input_marker_present(monkeypatch, 
     # input -> present (30ms) is wider than sim -> present (28ms): the input lag.
     assert samples[0]["input_to_present_us"] == 30000
     assert samples[0]["sim_to_present_us"] == 28000
+
+
+def test_drainer_exits_when_session_dead_and_no_writers(tmp_path, monkeypatch) -> None:
+    """Detached-drainer lifetime: the launching session died before any writer
+    ever connected (e.g. failed exec); after the no-writer grace, run() returns
+    instead of tailing a pipe that can never fill."""
+    import os
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    monkeypatch.setattr(bridge, "_NO_WRITER_GRACE_S", 0.05)
+    fifo = tmp_path / "nvapi-trace.1.fifo"
+    os.mkfifo(fifo)
+
+    bridge.run(fifo, poll_interval_s=0.01, session_alive_fn=lambda: False)
+    # Returned promptly (a hang here would fail the test by timeout).
+
+
+def test_drainer_keeps_draining_while_writer_exists(tmp_path) -> None:
+    """A dead session does not stop the drain while any writer holds the FIFO
+    (a wrapped game can outlive the wrapper session that launched it)."""
+    import os
+    import threading
+    import time
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    fifo = tmp_path / "nvapi-trace.1.fifo"
+    os.mkfifo(fifo)
+    samples = []
+
+    def send(_sock, _targets, sample):
+        samples.append(sample)
+
+    thread = threading.Thread(
+        target=lambda: bridge.run(
+            fifo,
+            poll_interval_s=0.01,
+            session_alive_fn=lambda: False,  # session died immediately
+            env={},
+        ),
+        daemon=True,
+    )
+    import unittest.mock
+
+    with unittest.mock.patch.object(bridge, "_send_sample", send):
+        writer = os.open(fifo, os.O_RDWR)  # the surviving game's stderr fd
+        thread.start()
+        os.write(
+            writer,
+            b"123.456:2a:0:latency-marker:pb:qpcUs=1000000 frameID=7 "
+            b"markerType=SIMULATION_START\n"
+            b"123.466:2a:0:latency-marker:pb:qpcUs=1010000 frameID=7 "
+            b"markerType=PRESENT_END\n",
+        )
+        deadline = time.monotonic() + 2.0
+        while not samples and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert samples, "markers must be drained while the game lives"
+        assert samples[0]["sim_to_present_us"] == 10000
+        os.close(writer)  # last writer gone -> EOF -> session check -> exit
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+
+
+def test_drainer_main_cleans_up_fifo(tmp_path, monkeypatch) -> None:
+    """--cleanup unlinks the per-launch FIFO once the watch ends."""
+    import os
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    monkeypatch.setattr(bridge, "_NO_WRITER_GRACE_S", 0.05)
+    fifo = tmp_path / "nvapi-trace.9.fifo"
+    os.mkfifo(fifo)
+    # A pid that cannot exist: the session is dead from the first check, and
+    # no writer ever connects, so the watch ends after the grace.
+    rc = bridge.main(
+        ["--log", str(fifo), "--session-pid", "2147483646", "--cleanup",
+         "--poll-interval", "0.01"]
+    )
+    assert rc == 0
+    assert not fifo.exists()
+
+
+def test_spawn_detached_drainer_argv(monkeypatch, tmp_path) -> None:
+    import subprocess
+    import sys
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs) -> None:
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(bridge.subprocess, "Popen", FakePopen)
+    fifo = tmp_path / "nvapi-trace.5.fifo"
+    env = {"HOME": str(tmp_path)}
+
+    assert bridge.spawn_detached_drainer(env, fifo, session_pid=41) is not None
+    assert captured["argv"] == [
+        sys.executable,
+        "-m",
+        "overlay.telemetry.nvapi_marker_bridge",
+        "--log",
+        str(fifo),
+        "--cleanup",
+        "--session-pid=41",
+    ]
+    assert captured["kwargs"]["start_new_session"] is True
+    assert captured["kwargs"]["env"] is env

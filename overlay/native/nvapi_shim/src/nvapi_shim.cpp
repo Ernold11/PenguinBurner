@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fcntl.h>
 #include <io.h>
 #include <sys/stat.h>
@@ -111,13 +112,113 @@ NvU64 qpc_us() {
     return static_cast<NvU64>(static_cast<double>(counter.QuadPart) * g_qpc_to_us);
 }
 
+// ---- non-blocking emit: ring buffer + dedicated writer thread -----------------
+//
+// emit_raw must NEVER block a game thread. g_out_fd is normally the marker FIFO,
+// and a FIFO whose drainer died fills at 64 KB -- after that a blocking _write
+// would stall the caller *inside the game's frame loop* (Streamline invokes the
+// marker wrappers on the simulation thread) and freeze the game. So game
+// threads only copy the line into a fixed ring under the lock; the writer
+// thread below does the (possibly blocking) _write on its own time. When the
+// output backs up the ring fills and new lines are dropped -- lost latency
+// samples beat a frozen game -- and a diagnostic line reports the drop count
+// once the output drains again.
+constexpr int kRingSlots = 256;  // ~3.4 s of markers at ~75 lines/s
+constexpr int kSlotBytes = 192;  // >= emit_marker's buffer; lines are ~90 B
+char g_ring[kRingSlots][kSlotBytes];
+int g_ring_len[kRingSlots];
+int g_ring_head = 0;  // producer: next slot to fill
+int g_ring_tail = 0;  // consumer: next slot to drain
+unsigned long long g_dropped = 0;
+unsigned long long g_dropped_reported = 0;
+HANDLE g_wake = nullptr;           // auto-reset: ring went non-empty
+HANDLE g_writer_thread = nullptr;  // null => fall back to direct writes
+
 void emit_raw(const char* buf, int len) {
     if (g_out_fd < 0 || len <= 0) {
         return;
     }
+    if (len >= kSlotBytes) {
+        len = kSlotBytes - 1;  // defensive cap; real lines never get here
+    }
+    if (g_writer_thread == nullptr) {
+        // Writer thread could not start (init failure): direct write. This is
+        // the pre-ring behavior and can block on a stalled pipe; it is only a
+        // last resort so a broken init still yields markers.
+        EnterCriticalSection(&g_emit_lock);
+        _write(g_out_fd, buf, static_cast<unsigned int>(len));
+        LeaveCriticalSection(&g_emit_lock);
+        return;
+    }
+    bool queued = false;
     EnterCriticalSection(&g_emit_lock);
-    _write(g_out_fd, buf, static_cast<unsigned int>(len));
+    int next = (g_ring_head + 1) % kRingSlots;
+    if (next != g_ring_tail) {
+        std::memcpy(g_ring[g_ring_head], buf, static_cast<size_t>(len));
+        g_ring_len[g_ring_head] = len;
+        g_ring_head = next;
+        queued = true;
+    } else {
+        ++g_dropped;  // output stalled; drop, never block the game
+    }
     LeaveCriticalSection(&g_emit_lock);
+    if (queued && g_wake != nullptr) {
+        SetEvent(g_wake);
+    }
+}
+
+DWORD WINAPI writer_main(LPVOID) {
+    char local[kSlotBytes];
+    for (;;) {
+        // Timeout so drop reporting still happens if a wake was coalesced away.
+        WaitForSingleObject(g_wake, 1000);
+        for (;;) {
+            int len = 0;
+            unsigned long long dropped = 0;
+            EnterCriticalSection(&g_emit_lock);
+            if (g_ring_tail != g_ring_head) {
+                len = g_ring_len[g_ring_tail];
+                std::memcpy(local, g_ring[g_ring_tail], static_cast<size_t>(len));
+                g_ring_tail = (g_ring_tail + 1) % kRingSlots;
+            } else {
+                dropped = g_dropped;
+            }
+            LeaveCriticalSection(&g_emit_lock);
+            if (len > 0) {
+                // May block on a full pipe -- that parks only this thread; the
+                // ring keeps absorbing (then dropping) game-thread emits.
+                _write(g_out_fd, local, static_cast<unsigned int>(len));
+                continue;
+            }
+            if (dropped > g_dropped_reported) {
+                int n = std::snprintf(
+                    local, sizeof(local),
+                    "[pb-nvapi-shim] output stalled: dropped %llu marker lines\n",
+                    dropped - g_dropped_reported);
+                if (n > 0) {
+                    if (n >= static_cast<int>(sizeof(local))) {
+                        n = static_cast<int>(sizeof(local)) - 1;
+                    }
+                    _write(g_out_fd, local, static_cast<unsigned int>(n));
+                }
+                g_dropped_reported = dropped;
+            }
+            break;
+        }
+    }
+    return 0;
+}
+
+void start_writer_thread() {
+    g_wake = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    if (g_wake == nullptr) {
+        return;  // emit_raw falls back to direct writes
+    }
+    g_writer_thread = CreateThread(nullptr, 64 * 1024, writer_main, nullptr, 0, nullptr);
+    if (g_writer_thread == nullptr) {
+        CloseHandle(g_wake);
+        g_wake = nullptr;
+    }
 }
 
 void emit_marker(NvU64 frame_id, NV_LATENCY_MARKER_TYPE type) {
@@ -203,6 +304,7 @@ BOOL CALLBACK init_once(PINIT_ONCE, PVOID, PVOID*) {
         : 0.0;
     g_pid = GetCurrentProcessId();
     open_output();
+    start_writer_thread();
     bool ok = load_real();
     char banner[256];
     int len = std::snprintf(
@@ -235,6 +337,8 @@ void ensure_init() {
 //     bounded buffer (snprintf, capped) and writes to our own fd. No corruption.
 //   * Every forward target is null-guarded; if the real is missing we return a
 //     benign status instead of dereferencing null.
+//   * We never block the caller: emits go through the ring buffer above, and a
+//     stalled output pipe drops lines instead of stalling the frame loop.
 NvAPI_Status __cdecl wrap_set_latency_marker(void* dev, NvLatencyMarkerParams* p) {
     PfnSetLatencyMarker real = g_real_set_marker;
     if (p && !IsBadReadPtr(p, kMarkerReadBytes)) {

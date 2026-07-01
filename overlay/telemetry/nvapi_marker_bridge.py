@@ -38,11 +38,14 @@ import re
 import select
 import socket
 import stat
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
 from .sockets import latency_socket_path, latency_socket_paths
+from .. import shim_deploy as _shim_deploy
 
 # NV_LATENCY_MARKER_TYPE values emitted by dxvk-nvapi trace.
 NV_MARKER_SIMULATION_START = 0
@@ -110,6 +113,13 @@ def _parse_line_with_pid(line: str):
 # A frame id whose PRESENT_END never arrives must not leak forever; keep only a
 # small window of pending SIMULATION_START timestamps.
 _MAX_PENDING = 512
+
+# Detached-drainer bail-out for launches that die before any writer connects to
+# the FIFO (see _follow_fifo): how long the launching session must be gone, with
+# no traffic ever seen, before the drainer gives up. Generous on purpose -- the
+# cost of waiting is one idle process, the cost of leaving early is a game that
+# could still fill the pipe unread.
+_NO_WRITER_GRACE_S = 60.0
 
 # An out-of-band (frame-generation) present this much later than a base frame's
 # PRESENT_END is treated as a different frame's display, not this one's. Bounds a
@@ -216,17 +226,42 @@ def _follow_fifo(
     *,
     poll_interval_s: float,
     stop_event: threading.Event | None = None,
+    session_alive_fn=None,
 ):
     """Yield lines from a named pipe (in-memory trace stream).
 
     Opened read-only/non-blocking so the bridge never blocks waiting for a
     writer; lines are drained as the game produces them. On writer close
     (game exit) readline returns EOF and we reopen.
+
+    ``session_alive_fn`` scopes a detached drainer's lifetime. The drainer must
+    keep draining as long as *any* process holds the FIFO's write side (a
+    wrapped game can outlive the wrapper session that launched it), so the
+    session check ends the watch only where no writer can be feeding the pipe:
+
+    - at EOF or open failure -- writers existed and are all gone, or the FIFO
+      itself is gone;
+    - on the quiet-select path, ONLY before any traffic has ever been seen and
+      only after the session has been gone for a sustained grace period. A FIFO
+      reader gets *no* poll event until a writer has connected at least once,
+      so a launch that dies before routing its stderr (failed exec) would
+      otherwise park the drainer forever. Once a single byte or EOF has been
+      observed, writers demonstrably existed and the EOF path is reliable --
+      the quiet path then never exits, so an idle-but-alive game is never
+      abandoned.
     """
+
+    def _session_over() -> bool:
+        return session_alive_fn is not None and not session_alive_fn()
+
+    had_traffic = False
+    session_over_since: float | None = None
     while not _stop_requested(stop_event):
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         except OSError:
+            if _session_over():
+                return
             _wait_or_stopped(stop_event, poll_interval_s)
             continue
         pending = ""
@@ -236,11 +271,22 @@ def _follow_fifo(
                     [fd], [], [], poll_interval_s
                 )
                 if not readable:
+                    if had_traffic:
+                        continue
+                    if not _session_over():
+                        session_over_since = None
+                        continue
+                    now = time.monotonic()
+                    if session_over_since is None:
+                        session_over_since = now
+                    elif now - session_over_since >= _NO_WRITER_GRACE_S:
+                        return  # session gone and no writer ever connected
                     continue
                 try:
                     chunk = os.read(fd, 65536)
                 except BlockingIOError:
                     continue
+                had_traffic = True
                 if not chunk:
                     # Writer closed (game exited): reopen and wait for the next run.
                     break
@@ -250,6 +296,8 @@ def _follow_fifo(
                     yield line + "\n"
         finally:
             os.close(fd)
+        if _session_over():
+            return  # no writers left and the launching session is gone
         _wait_or_stopped(stop_event, poll_interval_s)
 
 
@@ -259,6 +307,7 @@ def _follow(
     poll_interval_s: float,
     from_start: bool,
     stop_event: threading.Event | None = None,
+    session_alive_fn=None,
 ):
     """Yield lines from a FIFO (in-memory) or a growing/rotating file."""
     try:
@@ -267,6 +316,7 @@ def _follow(
                 path,
                 poll_interval_s=poll_interval_s,
                 stop_event=stop_event,
+                session_alive_fn=session_alive_fn,
             )
             return
     except OSError:
@@ -322,10 +372,15 @@ def run(
     env: dict[str, str] | None = None,
     pid: int | None = None,
     stop_event: threading.Event | None = None,
+    session_alive_fn=None,
 ) -> None:
     env = os.environ if env is None else env
     targets = _socket_targets(env)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    # Never block on a slow/full receiver: unix datagram sendto() BLOCKS when
+    # the destination queue is full (unlike UDP), which would stop the drain
+    # and let the FIFO back up into the game. Full queue -> drop the sample.
+    sock.setblocking(False)
     pid = os.getpid() if pid is None else pid
 
     try:
@@ -344,6 +399,7 @@ def run(
             poll_interval_s=poll_interval_s,
             from_start=from_start,
             stop_event=stop_event,
+            session_alive_fn=session_alive_fn,
         ):
             parsed = _parse_line_with_pid(line)
             if parsed is None:
@@ -472,6 +528,47 @@ class NvapiMarkerBridge:
                 self.log(f"Latency marker FIFO unavailable: {exc}")
 
 
+def spawn_detached_drainer(
+    env: dict[str, str],
+    log_path: Path,
+    *,
+    session_pid: int | None = None,
+) -> "subprocess.Popen | None":
+    """Launch this module as a detached per-game FIFO drainer.
+
+    The wrapper spawns this right before it execs into Proton, so the FIFO
+    always has a reader for exactly as long as it can have writers -- with the
+    app closed, samples are simply dropped at the (dead) latency socket instead
+    of backing up in the pipe and freezing the game (see docs/nvapi-shim.md,
+    "Known hazard"). Must be spawned *before* the wrapper redirects its stderr
+    into the FIFO: the drainer inherits the console stderr, and must never hold
+    the FIFO's write side (that would keep its own EOF from ever firing).
+    Returns the Popen, or None when the spawn fails.
+    """
+    argv = [
+        sys.executable,
+        "-m",
+        "overlay.telemetry.nvapi_marker_bridge",
+        "--log",
+        str(log_path),
+        "--cleanup",
+    ]
+    if session_pid is not None:
+        argv.append(f"--session-pid={session_pid}")
+    try:
+        return subprocess.Popen(
+            argv,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=sys.stderr,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except (OSError, ValueError):
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -485,8 +582,39 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Process the whole log instead of only new lines.",
     )
+    parser.add_argument(
+        "--session-pid",
+        type=int,
+        default=None,
+        help=(
+            "Exit once this process is gone and the FIFO has no writers "
+            "(detached per-game drainer mode)."
+        ),
+    )
+    parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Unlink the FIFO after the watch ends.",
+    )
     args = parser.parse_args(argv)
-    run(args.log, poll_interval_s=args.poll_interval, from_start=args.from_start)
+    session_alive_fn = None
+    if args.session_pid is not None:
+        session_fd = _shim_deploy.open_session_fd(args.session_pid)
+        session_alive_fn = lambda: _shim_deploy.session_alive(  # noqa: E731
+            args.session_pid, session_fd
+        )
+    run(
+        args.log,
+        poll_interval_s=args.poll_interval,
+        from_start=args.from_start,
+        session_alive_fn=session_alive_fn,
+    )
+    if args.cleanup:
+        try:
+            if stat.S_ISFIFO(args.log.stat().st_mode):
+                args.log.unlink()
+        except OSError:
+            pass
     return 0
 
 

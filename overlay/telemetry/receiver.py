@@ -203,6 +203,19 @@ def _dump_latency_data_enabled(env: dict[str, str] | None = None) -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+# The marker FIFO drainer is a detached per-game process spawned by the wrapper
+# (nvapi_marker_bridge.spawn_detached_drainer), so games are drained whether or
+# not the app runs. The in-app reader therefore stays off -- exactly one reader
+# must exist, or the two steal lines from each other. Debug-only re-enable:
+INAPP_MARKER_BRIDGE_ENV = "PENGUIN_BURNER_INAPP_MARKER_BRIDGE"
+
+
+def _inapp_marker_bridge_enabled(env: dict[str, str] | None = None) -> bool:
+    env = os.environ if env is None else env
+    value = str(env.get(INAPP_MARKER_BRIDGE_ENV) or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 def _raw_timing_log_interval(env: dict[str, str] | None = None) -> float | None:
     env = os.environ if env is None else env
     value = str(env.get(RAW_TIMING_LOG_ENV) or "").strip()
@@ -791,7 +804,7 @@ class LatencyTelemetryLogger:
             daemon=True,
         )
         self._thread.start()
-        if self._start_nvapi_marker_bridge:
+        if self._start_nvapi_marker_bridge and _inapp_marker_bridge_enabled():
             log_path = self._nvapi_marker_log_path or self.paths[-1].with_name(
                 "nvapi-trace.fifo"
             )

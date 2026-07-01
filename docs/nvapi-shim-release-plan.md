@@ -10,26 +10,35 @@
 
 ## Verdict summary
 
-| # | Finding | Severity | Phase |
-|---|---------|----------|-------|
-| B1 | No guaranteed FIFO drainer → game freeze when the app is closed | Blocker | 1 |
-| B2 | Shim DLL not built in any release channel (Flatpak/arch/deb/rpm) | Blocker | 2 |
-| H1 | `_file_contains` 1 MB chunk scan can miss the needle → sidecar destruction | High (latent) | 3 |
-| H2 | Bridge pairs markers by frameID only → cross-game mispairing | High | 3 |
-| H3 | Test suite red in clean checkout (`VK_LAYER_DXVK_NVAPI_reflex` assertion) | High (CI) | 3 |
-| M1 | Watcher TOCTOU with Proton's non-atomic DLL copy → truncated sidecar | Medium | 4 |
-| M2 | Fixed 60 s watch window / brand-new prefix gets no shim | Medium | 4 |
-| M3 | `IsBadReadPtr` guard-page hazard | Medium | 4 |
-| M4 | No un-front/cleanup path (disable/uninstall leaves shim + sidecar) | Medium | 4 |
-| M5 | Anti-cheat coverage untested (EAC/BattlEye) | Medium | 5 |
-| L1 | Doc rot: removed marker-log/trace fallback still described | Low | 3 |
-| L2 | Wrapped games' stderr swallowed by the FIFO (support/debugging) | Low | 5 |
-| L3 | FIFO path mismatch under explicit `PENGUIN_BURNER_LATENCY_SOCKET` | Low | 4 |
-| — | Merge to `main` once Phases 1–3 land (shim is the chosen direction) | Gate | 5 |
+| # | Finding | Severity | Phase | Status |
+|---|---------|----------|-------|--------|
+| B1 | No guaranteed FIFO drainer → game freeze when the app is closed | Blocker | 1 | **DONE 2026-07-01** — detached per-game drainer + per-launch FIFO + shim drop-on-full ring; in-app reader off by default. Manual matrix pending. |
+| B2 | Shim DLL not built in any release channel (Flatpak/arch/deb/rpm) | Blocker | 2 | open |
+| H1 | `_file_contains` 1 MB chunk scan can miss the needle → sidecar destruction | High (latent) | 3 | open |
+| H2 | Bridge pairs markers by frameID only → cross-game mispairing | High | 3 | largely mooted by per-launch FIFOs (one game per pipe); `(pid, frame)` keying still worthwhile |
+| H3 | Test suite red in clean checkout (`VK_LAYER_DXVK_NVAPI_reflex` assertion) | High (CI) | 3 | open |
+| M1 | Watcher TOCTOU with Proton's non-atomic DLL copy → truncated sidecar | Medium | 4 | partially fixed 2026-07-01 (`d4caacb`): watcher reacts only to completed rewrites (`IN_CLOSE_WRITE`/`IN_MOVED_TO`); parking sanity-check still open |
+| M2 | Fixed 60 s watch window / brand-new prefix gets no shim | Medium | 4 | **DONE 2026-07-01** (`d4caacb`) — inotify watcher scoped to the Proton session (pidfd), no fixed window |
+| M3 | `IsBadReadPtr` guard-page hazard | Medium | 4 | open |
+| M4 | No un-front/cleanup path (disable/uninstall leaves shim + sidecar) | Medium | 4 | open |
+| M5 | Anti-cheat coverage untested (EAC/BattlEye) | Medium | 5 | open |
+| L1 | Doc rot: removed marker-log/trace fallback still described | Low | 3 | open |
+| L2 | Wrapped games' stderr swallowed by the FIFO (support/debugging) | Low | 5 | open |
+| L3 | FIFO path mismatch under explicit `PENGUIN_BURNER_LATENCY_SOCKET` | Low | 4 | mooted: the drainer is told its FIFO explicitly (`--log`, `PENGUIN_BURNER_MARKER_FIFO`) |
+| — | Merge to `main` once Phases 1–3 land (shim is the chosen direction) | Gate | 5 | open |
 
 ---
 
 ## Phase 1 — B1: guarantee a FIFO drainer (game-freeze blocker)
+
+> **Status 2026-07-01: IMPLEMENTED** (plan items 2 + 3, plus per-launch FIFOs).
+> The wrapper spawns `nvapi_marker_bridge` as a detached per-game drainer
+> (`--session-pid`/`--cleanup`); each launch gets its own
+> `nvapi-trace.<sessionpid>.fifo`; the in-app reader is off by default
+> (`PENGUIN_BURNER_INAPP_MARKER_BRIDGE=1` re-enables); the shim's emit path is a
+> ring buffer + writer thread that drops on a stalled pipe instead of blocking.
+> See docs/nvapi-shim.md "The freeze hazard". Remaining: the manual validation
+> matrix below (app closed at launch / closed mid-game / started mid-game).
 
 **Finding.** The only drainer of `nvapi-trace.fifo` is `NvapiMarkerBridge`,
 which lives inside the app runtime (`cli/normal_runtime.py:114` →
