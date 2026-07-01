@@ -164,6 +164,54 @@ polling if inotify is unavailable. (Idempotent/self-healing either way.)
   the shim's `[pb-nvapi-shim] init … real=ok` + raw markers, decoupled from the
   bridge.
 
+## Known hazard — blocking FIFO writes can freeze the game
+
+The defensive contract above covers crashes; the one way the shim can *stall*
+the game is **blocking FIFO I/O inside the game process**. `emit_raw` does a
+plain blocking `_write` to the marker FIFO under `g_emit_lock`
+(`nvapi_shim.cpp`). The FIFO's kernel buffer is 64 KB: if the bridge stops
+draining mid-game (PB quit, daemon crash), it fills in ~10 s at ~75 markers/s
+and the next Reflex marker call blocks forever — inside Streamline, on the
+game's frame thread → hard freeze. No EPIPE rescue: the launcher's `O_RDWR` fd
+(the game's stderr) keeps the pipe open without reading it. (The blocking
+`_open(O_WRONLY)` in `open_output` is the same hazard at init, mitigated only
+because that same `O_RDWR` fd guarantees a read end exists.)
+
+### Manual test, host-only (~1 min, no game)
+
+```bash
+f=/tmp/pb-hang-test.fifo; mkfifo $f
+# launcher stand-in: holds O_RDWR like the game's fd 2, never reads
+python3 -c "import os,time; os.open('$f', os.O_RDWR); time.sleep(600)" &
+# shim stand-in: blocking marker-sized writes, prints a counter
+python3 -c "
+import os
+fd = os.open('$f', os.O_WRONLY)
+line = b'0.0:1a2b:0:latency-marker:pb:qpcUs=1 frameID=1 markerType=SIMULATION_START\n'
+i = 0
+while True:
+    os.write(fd, line); i += 1
+    print(i, flush=True)"
+```
+
+The counter stalls around ~840 lines (64 KB) — that is the "game" hung. In
+another shell, `cat /tmp/pb-hang-test.fifo >/dev/null` and it resumes
+instantly.
+
+### Manual test, in-game (Talos 2 / RE9)
+
+1. Launch with overlay + latency as usual; confirm LAT is populated (markers
+   flowing).
+2. Mid-game, kill only the drain side: stop the PB daemon (or
+   `pkill -f nvapi_marker_bridge`), leaving the game running.
+3. If the hazard is live, the game hard-freezes ~10 seconds later.
+4. Prove the cause and recover:
+   `cat ~/.cache/penguin-burner/nvapi-trace.fifo >/dev/null` — an instant
+   unfreeze confirms the write-block. Restarting PB recovers the same way.
+
+Fix, when we take it: a non-blocking emit in the shim that drops markers when
+the pipe is full — lost samples beat a frozen game.
+
 ## Env vars
 
 - `PENGUIN_BURNER_INGAME_LATENCY` (alias `PB_INGAME_LATENCY`) — `0` opts out;
