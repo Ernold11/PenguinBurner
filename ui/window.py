@@ -272,7 +272,6 @@ class MainWindow(ProfileActionsMixin):
         command = scan_command(options)
         self.runs_table.clear()
         self.vf_plot.clear()
-        self.header.clear_silicon_quality()
         self.pending_final_result_payload = None
         self.final_choice_discarded = False
         self.final_choice_aborted = False
@@ -352,11 +351,6 @@ class MainWindow(ProfileActionsMixin):
         elif event == "memory_offset_applied":
             self.controls.set_status_text(
                 _memory_offset_status_text(payload.get("offset_mhz"))
-            )
-        elif event == "silicon_quality":
-            self.header.set_silicon_quality(
-                str(payload.get("grade", "")),
-                f"Silicon: {payload.get('summary', '')}",
             )
         elif event == "final_choice_request":
             self._handle_final_choice_request(payload)

@@ -10,9 +10,6 @@ class StatusHeader:
         layout.setContentsMargins(0, 0, 0, 0)
         self.stage_label = QtWidgets.QLabel("Idle")
         self.stage_label.setObjectName("stageLabel")
-        self.quality_label = QtWidgets.QLabel("")
-        self.quality_label.setObjectName("siliconQualityLabel")
-        self.quality_label.setVisible(False)
         self.candidate_label = QtWidgets.QLabel("No active scan")
         self.candidate_label.setObjectName("candidateLabel")
         self.candidate_label.setWordWrap(True)
@@ -37,7 +34,6 @@ class StatusHeader:
             self._show_candidate_context_menu
         )
         layout.addWidget(self.stage_label)
-        layout.addWidget(self.quality_label)
         layout.addWidget(self.candidate_label, 1)
 
     def set_stage(self, text: str) -> None:
@@ -48,22 +44,6 @@ class StatusHeader:
 
     def set_candidate(self, text: str) -> None:
         self.candidate_label.setText(str(text))
-
-    def set_silicon_quality(self, grade: str, text: str) -> None:
-        self.quality_label.setText(str(text))
-        self.quality_label.setProperty("grade", str(grade))
-        self.quality_label.setVisible(bool(text))
-        self._repolish(self.quality_label)
-
-    def clear_silicon_quality(self) -> None:
-        self.quality_label.clear()
-        self.quality_label.setVisible(False)
-
-    def _repolish(self, widget) -> None:
-        style = widget.style()
-        if style is not None:
-            style.unpolish(widget)
-            style.polish(widget)
 
     def _show_candidate_context_menu(self, position) -> None:
         text = str(self.candidate_label.text())

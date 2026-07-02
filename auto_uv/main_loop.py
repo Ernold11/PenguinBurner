@@ -89,47 +89,6 @@ from auto_uv.scan_mode.auto_uv_mode import (
     AUTO_UV_MODE_EFFICIENCY,
     AUTO_UV_MODE_PERFORMANCE,
 )
-from auto_uv.silicon_quality import assess_silicon_quality
-
-
-def emit_silicon_quality(
-    *,
-    gpu_name: object | None,
-    voltage_mv: int,
-    clock_mhz: int,
-    log,
-    event_callback: "AutoUvEventCallback | None",
-) -> None:
-    """Grade the chosen final point and surface it before final verification.
-
-    Uses only the already-decided candidate and the reference V/F targets, so it
-    adds no probe time. Silently does nothing when the GPU has no reference
-    targets (grade would be meaningless).
-    """
-    quality = assess_silicon_quality(
-        gpu_name=gpu_name,
-        voltage_mv=int(voltage_mv),
-        clock_mhz=int(clock_mhz),
-    )
-    if quality is None:
-        return
-    log_user_stage(
-        log,
-        "Silicon quality",
-        [quality.summary_text()],
-    )
-    emit_ui_json_event(
-        event_callback,
-        "silicon_quality",
-        grade=quality.grade,
-        label=quality.label,
-        summary=quality.summary_text(),
-        delta_mhz=int(quality.delta_mhz),
-        voltage_mv=int(quality.voltage_mv),
-        clock_mhz=int(quality.clock_mhz),
-        reference_clock_mhz=int(quality.reference_clock_mhz),
-        gpu_family=quality.gpu_family,
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -634,13 +593,6 @@ def run_voltage_frequency_undervolt_main_loop(
         )
 
         final_tail_rise_bins = int(final_selection.tail_rise_bins)
-        emit_silicon_quality(
-            gpu_name=gpu.translated_gpu_policy.get("gpu_name"),
-            voltage_mv=int(final_selection.voltage_mv),
-            clock_mhz=int(final_selection.lock_clock_mhz),
-            log=log,
-            event_callback=event_callback,
-        )
         failed_final_voltages: set[int] = set()
         while True:
             try:

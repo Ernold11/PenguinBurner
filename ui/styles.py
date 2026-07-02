@@ -17,32 +17,6 @@ QLabel#candidateLabel {{
     font-size: 13px;
     font-weight: 400;
 }}
-QLabel#siliconQualityLabel {{
-    color: {theme.BASELINE_TEXT};
-    background: {theme.SURFACE_ALT_BG};
-    border: 1px solid {theme.BORDER};
-    border-radius: 5px;
-    font-size: 12px;
-    font-weight: 600;
-    padding: 2px 8px;
-    margin: 0 8px;
-}}
-QLabel#siliconQualityLabel[grade="excellent"] {{
-    color: {theme.GOOD_TEXT};
-    border-color: {theme.GOOD};
-}}
-QLabel#siliconQualityLabel[grade="above-average"] {{
-    color: {theme.GOOD_TEXT};
-    border-color: {theme.GOOD};
-}}
-QLabel#siliconQualityLabel[grade="average"] {{
-    color: {theme.WARNING_TEXT};
-    border-color: {theme.WARNING};
-}}
-QLabel#siliconQualityLabel[grade="below-average"] {{
-    color: {theme.ERROR_TEXT};
-    border-color: {theme.ERROR};
-}}
 QLabel#aboutTitle {{
     color: {theme.TEXT_PROGRESS};
     font-size: 20px;
