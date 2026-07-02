@@ -388,6 +388,54 @@ def memory_offset_mhz_range() -> tuple[int, int]:
     return 0, max(0, max_mhz)
 
 
+def auto_uv_voltage_floor_range_mv(gpu_index: int | None = None) -> tuple[int, int]:
+    """Settable voltage-floor range (mV), derived from the live V/F curve.
+
+    Lower bound = the curve "knee": the lowest voltage that still holds a real
+    boost clock (at/above half the card's max base clock). Below the knee the
+    curve is the flat idle shelf (e.g. 180 MHz on Blackwell), so those voltages
+    are unreachable-under-load and pointless as a floor. Upper bound = the
+    curve's max voltage point. Falls back to (800, 1250) when the live curve
+    cannot be read (no GPU, non-editable driver, etc.).
+    """
+    fallback = (800, 1250)
+    index = (
+        runtime_gpu_index(default_runtime_config_path())
+        if gpu_index is None
+        else int(gpu_index)
+    )
+    reader = None
+    try:
+        from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
+
+        reader = create_hidden_vf_curve_reader(gpu_index=index)
+        if reader is None:
+            return fallback
+        points = [
+            (int(p["voltage_uv"]) // 1000, int(p["base_freq_khz"]) // 1000)
+            for p in reader.editable_core_points()
+        ]
+    except Exception:
+        return fallback
+    finally:
+        if reader is not None:
+            try:
+                reader.close()
+            except Exception:
+                pass
+    points = [(v, c) for v, c in points if v > 0 and c > 0]
+    if not points:
+        return fallback
+    max_clock = max(c for _, c in points)
+    max_voltage = max(v for v, _ in points)
+    # Knee: lowest voltage that reaches at least half the max base clock. Snap to
+    # the 5 mV spinbox step so the bound sits on a settable value.
+    useful = [v for v, c in points if c * 2 >= max_clock]
+    knee = min(useful) if useful else min(v for v, _ in points)
+    knee = int(round(knee / 5.0) * 5)
+    return (knee, int(max_voltage))
+
+
 def _query_gpu_name(gpu_index: int | None = None) -> str | None:
     controller = None
     try:

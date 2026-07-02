@@ -9,6 +9,7 @@ from ui.features.tuning.tuning import AUTO_UV_PRESET_PERFORMANCE
 from ui.features.tuning.tuning import DEFAULT_AUTO_UV_PRESET
 from ui.features.tuning.tuning import GPU_UNDERVOLTING_PURPOSE_TEXT
 from ui.features.tuning.tuning import auto_uv_clock_drop_default
+from ui.features.tuning.tuning import auto_uv_voltage_floor_range_mv
 from ui.features.tuning.tuning import auto_uv_nvml_info_text
 from ui.features.tuning.tuning import auto_uv_performance_preset_label
 from ui.features.tuning.tuning import auto_uv_performance_preset_tooltip
@@ -194,13 +195,16 @@ def select_scan_tuning(
     )
     max_clock_drop_spin.setObjectName("maxClockDropSpin")
     voltage_floor_spin = QtWidgets.QSpinBox()
-    voltage_floor_spin.setRange(700, 1250)
+    # Derive the settable floor from the live V/F curve: lower bound = the knee
+    # (lowest voltage with a real boost clock), upper = curve max. Below the knee
+    # the card sits on its idle shelf, so exposing e.g. 700 mV was meaningless.
+    floor_lo, floor_hi = auto_uv_voltage_floor_range_mv(gpu_index=selected_gpu_index)
+    voltage_floor_spin.setRange(floor_lo, floor_hi)
     voltage_floor_spin.setSuffix(" mV")
     voltage_floor_spin.setSingleStep(5)
     voltage_floor_spin.setFixedWidth(136)
-    voltage_floor_spin.setValue(
-        int(getattr(voltage_drop_default, "floor_voltage_mv", None) or 850)
-    )
+    default_floor = int(getattr(voltage_drop_default, "floor_voltage_mv", None) or 850)
+    voltage_floor_spin.setValue(max(floor_lo, min(default_floor, floor_hi)))
     memory_offset_spin = QtWidgets.QSpinBox()
     memory_offset_spin.setObjectName("memoryOffsetSpin")
     # The driver range and the applied offset are NVML transfer-rate units
