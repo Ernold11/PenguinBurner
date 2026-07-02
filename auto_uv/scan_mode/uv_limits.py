@@ -77,12 +77,16 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "efficiency_power_limit_pct": 80,
     },
     {
+        # The RTX 5060 is a cut GB206 with a much lower board-power budget than
+        # the 5060 Ti, so it shares the 5060 Ti V/F targets and lets the
+        # efficiency power cap (80%) hold the smaller die inside its envelope
+        # rather than chasing a separate, more conservative clock ladder.
         "family": "RTX 5060",
         "patterns": ("5060",),
-        "efficiency": (875, 2300),
-        "balanced": (900, 2450),
-        "performance": (925, 2600),
-        "clock_drop_ceiling_mhz": 2730,
+        "efficiency": (800, 2500),
+        "balanced": (875, 2700),
+        "performance": (925, 2900),
+        "clock_drop_ceiling_mhz": 3000,
         "efficiency_power_limit_pct": 80,
     },
     {

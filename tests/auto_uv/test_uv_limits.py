@@ -54,6 +54,20 @@ def test_clock_drop_uses_preset_aware_gpu_table_ratio() -> None:
     ) == pytest.approx(12.903225806451612)
 
 
+def test_rtx_5060_shares_the_5060_ti_vf_targets() -> None:
+    # The lower-TBP GB206 cut reuses the 5060 Ti ladder and relies on the
+    # efficiency power cap to stay inside its envelope.
+    for profile in ("efficiency", "balanced", "performance"):
+        base = uv_limit_profile_target_for_gpu("NVIDIA GeForce RTX 5060", profile)
+        ti = uv_limit_profile_target_for_gpu("NVIDIA GeForce RTX 5060 Ti", profile)
+        assert base is not None and ti is not None
+        assert base.gpu_family == "RTX 5060"
+        assert (base.voltage_mv, base.clock_mhz) == (ti.voltage_mv, ti.clock_mhz)
+    assert uv_limit_power_limit_pct_for_gpu(
+        "NVIDIA GeForce RTX 5060", profile_id="efficiency"
+    ) == pytest.approx(80.0)
+
+
 def test_power_limit_pct_reduces_savings_tiers_and_keeps_performance_full() -> None:
     # Blackwell: efficiency cap is the stored per-family value, balanced sits at
     # the shared middle cap, performance keeps the full board power budget.
