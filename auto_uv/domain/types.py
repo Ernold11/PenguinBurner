@@ -92,6 +92,7 @@ class FailureKind(str, Enum):
     CUDA_FAILED = "cuda-failed"
     Q2RTX_FAILED = "q2rtx-failed"
     NVIDIA_XID = "nvidia-xid"
+    GPU_HANG = "gpu-hang"
     METRICS_MISSING = "metrics-missing"
     METRICS_INVALID = "metrics-invalid"
     USER_STOP = "user-stop"

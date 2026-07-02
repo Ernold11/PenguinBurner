@@ -33,6 +33,7 @@ FATAL_REASON_PREFIXES = (
     "benchmark-timeout",
     "fatal-cuda-output",
     "fatal-q2rtx-output",
+    "gpu-hang-watchdog",
     "nvidia-xid-detected",
     "q2rtx-selected-nvidia-gpu-idle",
 )
@@ -155,11 +156,12 @@ def classify_failed_result(
             log_path=log_path,
         )
     if text.startswith(FATAL_REASON_PREFIXES):
-        kind = (
-            FailureKind.NVIDIA_XID
-            if text.startswith("nvidia-xid")
-            else FailureKind.Q2RTX_FAILED
-        )
+        if text.startswith("nvidia-xid"):
+            kind = FailureKind.NVIDIA_XID
+        elif text.startswith("gpu-hang"):
+            kind = FailureKind.GPU_HANG
+        else:
+            kind = FailureKind.Q2RTX_FAILED
         return _fail(
             kind,
             FailureSeverity.CRITICAL,

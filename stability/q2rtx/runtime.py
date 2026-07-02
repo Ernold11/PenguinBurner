@@ -331,6 +331,57 @@ def _drain_text_fd(
     return buffer, closed
 
 
+FRAME_HANG_WATCHDOG_REASON = "gpu-hang-watchdog"
+
+
+class _FrameProgressWatchdog:
+    """Trips when the benchmark's frame counter stops advancing mid-pass.
+
+    The fork emits a throttled ``frame`` heartbeat (~every 250 ms of wall time,
+    regardless of frame rate). We arm on the first heartbeat and reset the timer
+    on every advance and on any phase/loop boundary (scene reloads and pipeline
+    hitches legitimately pause rendering). Only a genuine freeze — the process
+    alive but no frame progress for ``threshold_s`` — trips it. A binary that
+    never emits ``frame`` events leaves the watchdog dormant.
+    """
+
+    __slots__ = ("threshold_s", "_armed", "_last_index", "_last_progress_s")
+
+    # Events that mark a legitimate rendering pause; reset (disarm) on these so a
+    # scene reload or hold phase never looks like a hang.
+    _RESET_EVENTS = frozenset({"phase", "loop_start", "loop_done", "done"})
+
+    def __init__(self, threshold_s: float) -> None:
+        self.threshold_s = float(threshold_s)
+        self._armed = False
+        self._last_index: int | None = None
+        self._last_progress_s = 0.0
+
+    @property
+    def armed(self) -> bool:
+        return self._armed
+
+    def note_event(self, event: dict, now_monotonic: float) -> None:
+        name = event.get("event")
+        if name == "frame":
+            index = event.get("n")
+            if isinstance(index, bool) or not isinstance(index, int):
+                return
+            if not self._armed or index != self._last_index:
+                self._armed = True
+                self._last_index = index
+                self._last_progress_s = float(now_monotonic)
+        elif name in self._RESET_EVENTS:
+            self._armed = False
+            self._last_index = None
+            self._last_progress_s = float(now_monotonic)
+
+    def tripped(self, now_monotonic: float) -> bool:
+        if not self._armed or self.threshold_s <= 0.0:
+            return False
+        return (float(now_monotonic) - self._last_progress_s) >= self.threshold_s
+
+
 def _benchmark_abort_is_immediate(reason: str) -> bool:
     reason = str(reason or "").strip()
     if not reason:
@@ -616,6 +667,7 @@ def _run_benchmark_process(
     benchmark_event_errors: list[str] = []
     benchmark_summary: Q2RTXBenchmarkSummary | None = None
     benchmark_telemetry_samples: list[TelemetrySample] = []
+    frame_watchdog = _FrameProgressWatchdog(config.hang_watchdog_s)
     output_tail: deque[str] = deque(maxlen=80)
     fatal_output_matches_seen: set[str] = set()
     event_read_fd = -1
@@ -649,6 +701,7 @@ def _run_benchmark_process(
                     )
                     return
                 benchmark_events.append(event)
+                frame_watchdog.note_event(event, time.monotonic())
 
             def _handle_output_line(line: str) -> None:
                 text = str(line).rstrip("\r")
@@ -719,6 +772,12 @@ def _run_benchmark_process(
                     )
                 _refresh_benchmark_state()
                 process_exit_code = process.poll()
+                if process_exit_code is None and frame_watchdog.tripped(now_monotonic):
+                    _terminate_process_group(process)
+                    process_exit_code = process.returncode
+                    observed_duration_s = time.monotonic() - run_start_monotonic
+                    exit_reason = FRAME_HANG_WATCHDOG_REASON
+                    break
                 if now_monotonic >= next_heartbeat_monotonic:
                     latest_metrics = _format_sample_metrics(
                         telemetry_samples[-1] if telemetry_samples else None
