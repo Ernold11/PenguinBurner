@@ -335,17 +335,33 @@ FRAME_HANG_WATCHDOG_REASON = "gpu-hang-watchdog"
 
 
 class _FrameProgressWatchdog:
-    """Trips when the benchmark's frame counter stops advancing mid-pass.
+    """Trips only on a definitive, sustained rendering freeze.
 
-    The fork emits a throttled ``frame`` heartbeat (~every 250 ms of wall time,
-    regardless of frame rate). We arm on the first heartbeat and reset the timer
-    on every advance and on any phase/loop boundary (scene reloads and pipeline
-    hitches legitimately pause rendering). Only a genuine freeze — the process
-    alive but no frame progress for ``threshold_s`` — trips it. A binary that
-    never emits ``frame`` events leaves the watchdog dormant.
+    A trip immediately blacklists the probed voltage, so this is deliberately
+    biased hard against false positives — better to miss a hang (the pass
+    timeout still catches it) than to discard a stable voltage.
+
+    Three independent guards keep transient behaviour from ever tripping it:
+
+    1. The fork emits a *time-throttled* ``frame`` heartbeat (~every 250 ms of
+       wall time, not per rendered frame), so even a collapse to a few FPS keeps
+       the pulse flowing; frame-time jitter and slow frames never gap it.
+    2. It only becomes trippable after confirmed steady rendering
+       (``_MIN_ADVANCES_BEFORE_TRIP`` distinct frame advances). A single warm-up
+       frame followed by a one-off compile/scene pause cannot arm-then-trip it.
+    3. It disarms on any phase/loop/done boundary (scene reloads and finish
+       drains legitimately stop producing frames) and re-confirms from scratch.
+
+    Only the process being alive with the frame index frozen for the *entire*
+    ``threshold_s`` window — after steady rendering was established — trips it.
+    A binary that never emits ``frame`` events leaves the watchdog dormant.
     """
 
-    __slots__ = ("threshold_s", "_armed", "_last_index", "_last_progress_s")
+    __slots__ = ("threshold_s", "_advances", "_last_index", "_last_progress_s")
+
+    # Distinct frame advances required before a freeze can trip. Proves the
+    # render loop was genuinely live, so a lone startup frame can't false-trip.
+    _MIN_ADVANCES_BEFORE_TRIP = 2
 
     # Events that mark a legitimate rendering pause; reset (disarm) on these so a
     # scene reload or hold phase never looks like a hang.
@@ -353,13 +369,13 @@ class _FrameProgressWatchdog:
 
     def __init__(self, threshold_s: float) -> None:
         self.threshold_s = float(threshold_s)
-        self._armed = False
+        self._advances = 0
         self._last_index: int | None = None
         self._last_progress_s = 0.0
 
     @property
     def armed(self) -> bool:
-        return self._armed
+        return self._advances >= self._MIN_ADVANCES_BEFORE_TRIP
 
     def note_event(self, event: dict, now_monotonic: float) -> None:
         name = event.get("event")
@@ -367,17 +383,17 @@ class _FrameProgressWatchdog:
             index = event.get("n")
             if isinstance(index, bool) or not isinstance(index, int):
                 return
-            if not self._armed or index != self._last_index:
-                self._armed = True
+            if self._last_index is None or index != self._last_index:
+                self._advances += 1
                 self._last_index = index
                 self._last_progress_s = float(now_monotonic)
         elif name in self._RESET_EVENTS:
-            self._armed = False
+            self._advances = 0
             self._last_index = None
             self._last_progress_s = float(now_monotonic)
 
     def tripped(self, now_monotonic: float) -> bool:
-        if not self._armed or self.threshold_s <= 0.0:
+        if not self.armed or self.threshold_s <= 0.0:
             return False
         return (float(now_monotonic) - self._last_progress_s) >= self.threshold_s
 

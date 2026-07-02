@@ -889,40 +889,54 @@ def test_frame_watchdog_stays_dormant_without_frame_events() -> None:
     assert watchdog.tripped(10_000.0) is False
 
 
-def test_frame_watchdog_trips_after_threshold_without_progress() -> None:
-    watchdog = q2rtx_runtime._FrameProgressWatchdog(3.0)
+def test_frame_watchdog_needs_confirmed_rendering_before_it_can_trip() -> None:
+    # A single warm-up frame must never arm the watchdog: a legitimate one-off
+    # pause right after it (e.g. a lazy pipeline compile) would otherwise blacklist
+    # a good voltage. Steady rendering (>=2 advances) is required first.
+    watchdog = q2rtx_runtime._FrameProgressWatchdog(5.0)
     watchdog.note_event(_frame(1), now_monotonic=100.0)
+    assert watchdog.armed is False
+    assert watchdog.tripped(1_000.0) is False
+
+
+def test_frame_watchdog_trips_after_threshold_without_progress() -> None:
+    watchdog = q2rtx_runtime._FrameProgressWatchdog(5.0)
+    watchdog.note_event(_frame(1), now_monotonic=100.0)
+    watchdog.note_event(_frame(2), now_monotonic=100.2)
     assert watchdog.armed is True
-    assert watchdog.tripped(102.9) is False
-    assert watchdog.tripped(103.0) is True
+    assert watchdog.tripped(105.1) is False
+    assert watchdog.tripped(105.2) is True
 
 
 def test_frame_watchdog_resets_on_frame_progress() -> None:
-    watchdog = q2rtx_runtime._FrameProgressWatchdog(3.0)
+    watchdog = q2rtx_runtime._FrameProgressWatchdog(5.0)
     watchdog.note_event(_frame(1), now_monotonic=100.0)
     watchdog.note_event(_frame(2), now_monotonic=102.5)
-    # A fresh frame at 102.5 pushes the deadline out to 105.5, so 103 is fine.
+    # A fresh frame at 102.5 pushes the deadline out to 107.5, so 103 is fine.
     assert watchdog.tripped(103.0) is False
-    assert watchdog.tripped(105.5) is True
+    assert watchdog.tripped(107.5) is True
 
 
 def test_frame_watchdog_disarms_across_scene_boundaries() -> None:
     # loop_done / phase / done mark legitimate rendering pauses (scene reload,
-    # pipeline hitch); the watchdog must disarm until the next frame flows.
+    # pipeline hitch); the watchdog must disarm and re-confirm before it can trip.
     for boundary in ("loop_done", "phase", "done", "loop_start"):
-        watchdog = q2rtx_runtime._FrameProgressWatchdog(3.0)
+        watchdog = q2rtx_runtime._FrameProgressWatchdog(5.0)
         watchdog.note_event(_frame(5), now_monotonic=100.0)
+        watchdog.note_event(_frame(6), now_monotonic=100.2)
+        assert watchdog.armed is True
         watchdog.note_event({"event": boundary}, now_monotonic=100.5)
         assert watchdog.armed is False
         # Even a long gap during the pause does not trip it.
         assert watchdog.tripped(200.0) is False
-        # It re-arms on the next frame and resumes protecting.
-        watchdog.note_event(_frame(6), now_monotonic=200.0)
-        assert watchdog.tripped(203.0) is True
+        # It re-confirms steady rendering, then resumes protecting.
+        watchdog.note_event(_frame(7), now_monotonic=200.0)
+        watchdog.note_event(_frame(8), now_monotonic=200.2)
+        assert watchdog.tripped(205.2) is True
 
 
 def test_frame_watchdog_ignores_non_integer_frame_index() -> None:
-    watchdog = q2rtx_runtime._FrameProgressWatchdog(3.0)
+    watchdog = q2rtx_runtime._FrameProgressWatchdog(5.0)
     watchdog.note_event({"event": "frame", "n": True}, now_monotonic=100.0)
     watchdog.note_event({"event": "frame", "n": "7"}, now_monotonic=100.0)
     watchdog.note_event({"event": "frame"}, now_monotonic=100.0)
@@ -932,6 +946,7 @@ def test_frame_watchdog_ignores_non_integer_frame_index() -> None:
 def test_frame_watchdog_threshold_zero_disables() -> None:
     watchdog = q2rtx_runtime._FrameProgressWatchdog(0.0)
     watchdog.note_event(_frame(1), now_monotonic=100.0)
+    watchdog.note_event(_frame(2), now_monotonic=100.2)
     assert watchdog.tripped(1_000.0) is False
 
 

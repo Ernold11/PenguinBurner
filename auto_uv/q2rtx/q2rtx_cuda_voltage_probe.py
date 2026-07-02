@@ -10,7 +10,10 @@ from stability.q2rtx.models import (
     StabilityTestError,
 )
 from stability.q2rtx.reporting import print_q2rtx_stability_result
-from stability.q2rtx.runtime import run_q2rtx_stability_test
+from stability.q2rtx.runtime import (
+    FRAME_HANG_WATCHDOG_REASON,
+    run_q2rtx_stability_test,
+)
 from stability.q2rtx.telemetry import query_gpu_metrics
 
 from auto_uv.domain.console_log import log_phase
@@ -262,7 +265,11 @@ def probe_voltage_candidate(
             abort_callback=abort_callback,
         )
         try:
-            result = run_q2rtx_stability_test(probe_config)
+            result = run_probe_with_hang_confirmation(
+                probe_config,
+                log=log,
+                phase_label=str(phase_label),
+            )
         except StabilityTestError:
             raise
         except Exception as exc:
@@ -320,6 +327,53 @@ def probe_voltage_candidate(
     finally:
         if mark_in_progress:
             clear_probe_in_progress_marker()
+
+
+def run_probe_with_hang_confirmation(
+    probe_config: Q2RTXStabilityConfig,
+    *,
+    log: Callable[[str], None],
+    phase_label: str,
+) -> Q2RTXStabilityResult:
+    """Run one probe; if the frame-hang watchdog trips, confirm with a re-probe.
+
+    A watchdog trip blacklists the voltage permanently, so a single trip is never
+    trusted on its own: we run the exact same probe once more. A transient hitch
+    renders normally on the retry (voltage kept); a real hang reproduces (voltage
+    blacklisted). Any non-hang result is returned as-is with no extra run.
+    """
+    result = run_q2rtx_stability_test(probe_config)
+    if str(result.reason) != FRAME_HANG_WATCHDOG_REASON:
+        return result
+
+    log_phase(
+        log,
+        phase_label,
+        "frame-hang watchdog tripped; re-probing once to confirm before "
+        "treating the voltage as unsafe",
+    )
+    confirmation = run_q2rtx_stability_test(probe_config)
+    if str(confirmation.reason) == FRAME_HANG_WATCHDOG_REASON:
+        log_phase(
+            log,
+            phase_label,
+            "re-probe hung again - confirmed GPU hang, marking the voltage unsafe",
+        )
+    elif confirmation.success:
+        log_phase(
+            log,
+            phase_label,
+            "re-probe rendered normally - treating the first hang as transient "
+            "and keeping the voltage",
+        )
+    else:
+        log_phase(
+            log,
+            phase_label,
+            "re-probe did not hang but failed for another reason "
+            f"({confirmation.reason}); using the re-probe result",
+        )
+    return confirmation
 
 
 def live_probe_reference_floors(

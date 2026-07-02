@@ -11,11 +11,13 @@ DEFAULT_DEMO_NAME = "auto"
 DEFAULT_POLL_INTERVAL_S = 1.0
 DEFAULT_SINGLE_PASS_TIMEOUT_S = 120.0
 # Abort a pass if the benchmark's frame counter stops advancing for this long
-# while the process is still alive (a frozen GPU). Generous relative to the
-# ~250 ms frame heartbeat so brief hitches never trip it; 0 disables. Only arms
-# once frame heartbeats are seen, so older binaries that never emit them are
-# unaffected.
-DEFAULT_HANG_WATCHDOG_S = 3.0
+# while the process is still alive (a frozen GPU). Deliberately generous - ~20x
+# the 250 ms frame heartbeat and well beyond any plausible frame-time hitch or
+# lazy pipeline compile - because a trip blacklists the voltage with no retry,
+# so only an indefinite freeze must reach it. The pass timeout still catches
+# anything slower. 0 disables; only arms after steady rendering is confirmed, so
+# older binaries that never emit frame heartbeats are unaffected.
+DEFAULT_HANG_WATCHDOG_S = 5.0
 DEFAULT_LOG_DIR = Path.home() / ".config" / "PenguinBurner" / "stability-logs"
 DEFAULT_INSTALL_DATA_DIR = Path.home() / ".local" / "share" / "PenguinBurner" / "q2rtx"
 DEFAULT_INSTALL_CACHE_DIR = Path.home() / ".cache" / "PenguinBurner" / "q2rtx"
