@@ -17,6 +17,7 @@ from runtime.daemon_api import (
     AUTOSTART_ARGV_B64_ENV,
     AUTOSTART_PROGRAM_FILE_ENV,
     DEFAULT_DAEMON_SOCKET,
+    clear_last_runtime_state,
 )
 from runtime.daemon_client import daemon_status
 from runtime.daemon_client import start_runtime_profile
@@ -58,6 +59,7 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
     daemonize = False
     install_systemd_service = False
     uninstall_systemd_service = False
+    reset_gpu_defaults = False
     migrate_to_daemon = False
     daemon_status_requested = False
     daemon_api_socket = ""
@@ -80,6 +82,10 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
             continue
         if arg in ("--uninstall-systemd-service", "--deinstall-systemd-service"):
             uninstall_systemd_service = True
+            index += 1
+            continue
+        if arg == "--reset-gpu-defaults":
+            reset_gpu_defaults = True
             index += 1
             continue
         if arg == "--migrate-to-daemon-service":
@@ -126,6 +132,7 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
         "daemonize": daemonize,
         "install_systemd_service": install_systemd_service,
         "uninstall_systemd_service": uninstall_systemd_service,
+        "reset_gpu_defaults": reset_gpu_defaults,
         "migrate_to_daemon": migrate_to_daemon,
         "daemon_status": daemon_status_requested,
         "daemon_api_socket": daemon_api_socket,
@@ -463,6 +470,9 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
         env=stable_subprocess_env(),
         check=False,
     )
+    # Explicit "persist THIS profile": drop any prior last-action state so the
+    # daemon re-seeds from the unit we just wrote instead of an older choice.
+    clear_last_runtime_state()
     _enable_and_start_or_restart_daemon_unit(unit_path.name)
     _wait_for_daemon_status(DEFAULT_DAEMON_SOCKET)
     log(f"Installed and enabled {unit_path.name} at {unit_path}.")
@@ -637,6 +647,7 @@ def uninstall_systemd_service(*, log):
             "systemd service uninstall requires root privileges. Re-run with sudo."
         )
 
+    clear_last_runtime_state()  # nothing to re-run once the service is gone
     unit_paths = (
         daemon_systemd_service_unit_path(),
         legacy_systemd_service_unit_path(),

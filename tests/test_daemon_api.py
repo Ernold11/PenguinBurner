@@ -12,6 +12,16 @@ from runtime import daemon_api
 from runtime.daemon_client import daemon_status
 
 
+@pytest.fixture(autouse=True)
+def _isolate_last_runtime_state(tmp_path, monkeypatch):
+    # The daemon prefers a persisted last-action file over the unit env autostart.
+    # Point it at a non-existent tmp path so tests never read the host's real
+    # /var/lib state (which would make a served daemon spuriously start a runtime).
+    monkeypatch.setattr(
+        daemon_api, "LAST_RUNTIME_STATE_PATH", tmp_path / "last-runtime.json"
+    )
+
+
 def test_daemon_status_payload_is_stable() -> None:
     payload = daemon_api.handle_request({"method": "status"})
 

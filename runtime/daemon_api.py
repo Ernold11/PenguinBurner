@@ -20,6 +20,13 @@ AUTOSTART_ARGV_B64_ENV = "PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64"
 AUTOSTART_PROGRAM_FILE_ENV = "PENGUIN_BURNER_DAEMON_PROGRAM_FILE"
 ALLOWED_UID_ENV = "PENGUIN_BURNER_DAEMON_ALLOWED_UID"
 
+# Persisted "last runtime action" so a daemon restart / reboot re-runs exactly
+# what the user last applied -- including "reset to stock". The root daemon owns
+# this file and prefers it over the systemd-unit env autostart, so the last user
+# action always wins, with NO elevation prompt. install/uninstall-systemd clear
+# it so an explicit "persist THIS profile" re-seeds from the unit instead.
+LAST_RUNTIME_STATE_PATH = Path("/var/lib/penguin-burner/last-runtime.json")
+
 _AUTOSTART_PROCESS: subprocess.Popen | None = None
 _AUTOSTART_ARGV: list[str] = []
 _ACTIVE_SCAN_PROCESS: subprocess.Popen | None = None
@@ -253,6 +260,8 @@ def start_runtime_profile(argv: object) -> dict[str, Any]:
         )
         _AUTOSTART_PROCESS = process
         _AUTOSTART_ARGV = runtime_argv
+    # Remember this as the last user action so a restart / reboot re-runs it.
+    _persist_last_runtime_argv(runtime_argv, _daemon_program_file())
     return {"started": True, "pid": process.pid, "argv": list(runtime_argv)}
 
 
@@ -391,18 +400,66 @@ def _write_auto_uv_stop_request() -> None:
         pass
 
 
+def _persist_last_runtime_argv(argv: list[str], program_file: str) -> None:
+    """Record the last runtime action so a restart / reboot re-runs it."""
+    try:
+        LAST_RUNTIME_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LAST_RUNTIME_STATE_PATH.write_text(
+            json.dumps({"argv": list(argv), "program_file": str(program_file)}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # best-effort; falls back to the unit env autostart
+
+
+def _load_last_runtime_argv() -> tuple[list[str], str] | None:
+    try:
+        data = json.loads(LAST_RUNTIME_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    argv = data.get("argv") if isinstance(data, dict) else None
+    program_file = str(data.get("program_file") or "").strip() if isinstance(data, dict) else ""
+    if (
+        isinstance(argv, list)
+        and all(isinstance(item, str) for item in argv)
+        and program_file
+    ):
+        return list(argv), program_file
+    return None
+
+
+def clear_last_runtime_state() -> None:
+    """Forget the persisted last action (used by install/uninstall-systemd)."""
+    try:
+        LAST_RUNTIME_STATE_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+
 def _start_autostart_runtime_if_configured() -> None:
     global _AUTOSTART_PROCESS, _AUTOSTART_ARGV
-    encoded = os.environ.get(AUTOSTART_ARGV_B64_ENV, "").strip()
-    program_file = os.environ.get(AUTOSTART_PROGRAM_FILE_ENV, "").strip()
-    if not encoded or not program_file or _AUTOSTART_PROCESS is not None:
+    if _AUTOSTART_PROCESS is not None:
         return
-    try:
-        argv = json.loads(base64.b64decode(encoded).decode("utf-8"))
-    except Exception as exc:
-        raise RuntimeError(f"failed to decode daemon autostart argv: {exc}") from exc
-    if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
-        raise RuntimeError("daemon autostart argv must be a JSON string list")
+    # Prefer the persisted last user action (incl. reset-to-stock) over the
+    # unit's env autostart, so a reboot re-runs exactly what the user last did.
+    persisted = _load_last_runtime_argv()
+    if persisted is not None:
+        argv, program_file = persisted
+    else:
+        encoded = os.environ.get(AUTOSTART_ARGV_B64_ENV, "").strip()
+        program_file = os.environ.get(AUTOSTART_PROGRAM_FILE_ENV, "").strip()
+        if not encoded or not program_file:
+            return
+        try:
+            argv = json.loads(base64.b64decode(encoded).decode("utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"failed to decode daemon autostart argv: {exc}") from exc
+        if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
+            raise RuntimeError("daemon autostart argv must be a JSON string list")
+        # Seed the state file from the unit so subsequent boots are consistent.
+        _persist_last_runtime_argv(argv, program_file)
     _AUTOSTART_ARGV = list(argv)
     _AUTOSTART_PROCESS = subprocess.Popen(
         [sys.executable, str(Path(program_file).resolve()), *_AUTOSTART_ARGV],
