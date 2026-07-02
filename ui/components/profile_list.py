@@ -203,9 +203,8 @@ class ProfileList:
                         precision=2,
                         lower_is_better=True,
                     ),
-                    _format_signed_number(
+                    _format_signed_memory_clock(
                         profile.get("memory_offset_mhz"),
-                        precision=0,
                     ),
                     _profile_tier_label(profile, tier_winner_ids),
                     _profile_source_label(profile),
@@ -605,6 +604,19 @@ def _format_signed_number(value, *, precision: int) -> str:
     if abs(number) < 0.5:
         return "0"
     return f"+{text}" if number > 0 else text
+
+
+def _format_signed_memory_clock(value) -> str:
+    # The stored memory offset is an NVML transfer-rate value (MT/s); the
+    # realized memory clock moves by half of it (verified on Blackwell,
+    # issue #20). Show the memory-clock MHz, matching the Auto-UV dialog.
+    number = _to_float(value)
+    if number is None:
+        return ""
+    text = _format_signed_number(number / 2, precision=0)
+    if not text:
+        return ""
+    return f"{text} MHz"
 
 
 def _to_float(value) -> float | None:

@@ -530,7 +530,7 @@ def format_profile_table(profiles: list[dict]) -> str:
                 _display_number(profile.get("lock_clock_mhz"), precision=0),
                 _display_number(profile.get("avg_core_clock_mhz"), precision=2),
                 _display_number(profile.get("efficiency_fps_per_w"), precision=4),
-                _display_signed_number(profile.get("memory_offset_mhz"), precision=0),
+                _display_signed_memory_clock(profile.get("memory_offset_mhz")),
                 str(profile.get("profile_source", "")),
             )
         )
@@ -566,3 +566,21 @@ def _display_signed_number(value, *, precision: int) -> str:
     if abs(number) < 0.5:
         return "0"
     return f"+{text}" if number > 0 else text
+
+
+def display_signed_memory_clock(value) -> str:
+    # The stored memory offset is an NVML transfer-rate value (MT/s); the
+    # realized memory clock moves by half of it (verified on Blackwell,
+    # issue #20). Show the memory-clock MHz, matching the Auto-UV dialog.
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    text = _display_signed_number(number / 2, precision=0)
+    if not text:
+        return ""
+    return f"{text} MHz"
+
+
+# Backwards-compatible private alias for existing in-module callers.
+_display_signed_memory_clock = display_signed_memory_clock

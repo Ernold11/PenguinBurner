@@ -6,6 +6,7 @@ import json
 import shlex
 import subprocess
 
+from profiles.uv.profile_store import display_signed_memory_clock
 from profiles.uv.profile_store import profile_display_name
 from profiles.uv.profile_store import read_auto_uv_profile_summaries
 from profiles.uv.profile_tiers import available_adaptive_tiers
@@ -170,8 +171,23 @@ def profile_frequency_voltage(profile: dict) -> str:
     clock = _status_number(profile.get("lock_clock_mhz"), precision=0)
     voltage = _status_number(profile.get("candidate_voltage_mv"), precision=0)
     if clock and voltage:
-        return f"{clock} MHz {voltage} mV"
-    return f"{clock} MHz" if clock else (f"{voltage} mV" if voltage else "")
+        text = f"{clock} MHz {voltage} mV"
+    else:
+        text = f"{clock} MHz" if clock else (f"{voltage} mV" if voltage else "")
+    memory = _memory_offset_summary(profile.get("memory_offset_mhz"))
+    if text and memory:
+        return f"{text}, {memory}"
+    return text or memory
+
+
+def _memory_offset_summary(value) -> str:
+    # Match the profile table / Auto-UV dialog (signed memory-clock MHz), but
+    # suppress a no-op +0 MHz so the running-profile line stays clean when the
+    # profile carries no memory offset.
+    text = display_signed_memory_clock(value)
+    if not text or text.startswith("0 "):
+        return ""
+    return f"mem {text}"
 
 
 def final_result_frequency_voltage(payload: dict) -> str:
