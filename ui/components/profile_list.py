@@ -77,6 +77,11 @@ class ProfileList:
         self.delete_button.setToolTip("Delete Selected Profiles")
         self.delete_button.setAccessibleName("Delete Selected Profiles")
         self.remove_button = QtWidgets.QPushButton("Remove Autostart Entry")
+        self.restore_defaults_button = QtWidgets.QPushButton("Restore defaults")
+        self.restore_defaults_button.setToolTip(
+            "Reset the GPU to stock clocks, voltage and memory (clear VF offsets, "
+            "release locked clocks, restore the default power limit)."
+        )
         top.addWidget(QtWidgets.QLabel("Stored undervolt profiles"))
         top.addStretch(1)
         top.addWidget(self.silent_fan_checkbox)
@@ -85,6 +90,7 @@ class ProfileList:
         top.addWidget(self.daemonize_button)
         top.addWidget(self.delete_button)
         top.addWidget(self.remove_button)
+        top.addWidget(self.restore_defaults_button)
 
         self.table = QtWidgets.QTableWidget(0, len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
@@ -457,6 +463,7 @@ class ProfileList:
         self.remove_button.setEnabled(
             self._runtime_actions_available and self._has_systemd_service
         )
+        self.restore_defaults_button.setEnabled(self._runtime_actions_available)
 
     def _set_persist_toggle_checked(self, checked: bool) -> None:
         signals_blocked = self.install_button.blockSignals(True)

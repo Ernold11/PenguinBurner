@@ -41,6 +41,7 @@ from .models import stage_title
 from .models import status_value
 from .models import top_status_text
 from ui.features.profiles.profiles import load_profile_summaries
+from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 from ui.features.profiles.profiles import penguin_burner_runtime_is_active
 from ui.features.profiles.profiles import profile_for_selector
 from ui.features.profiles.profiles import runner_status_text
@@ -67,6 +68,9 @@ class MainWindow(ProfileActionsMixin):
         self.final_choice_aborted = False
         self._pre_scan_autostart: dict | None = None
         self.last_auto_uv_candidate_id = ""
+        # True once the user restored stock GPU settings and nothing has been
+        # applied since; drives the "Currently running profile: default" status.
+        self._defaults_restored = False
         self._delete_remove_systemd = False
         self._delete_switch_systemd_profile_id = ""
 
@@ -210,6 +214,9 @@ class MainWindow(ProfileActionsMixin):
         self.profile_list.remove_button.clicked.connect(
             lambda: self._run_runtime_action("uninstall-systemd")
         )
+        self.profile_list.restore_defaults_button.clicked.connect(
+            self._restore_gpu_defaults
+        )
         context_menu_policy = getattr(
             getattr(self.QtCore.Qt, "ContextMenuPolicy", self.QtCore.Qt),
             "CustomContextMenu",
@@ -223,6 +230,13 @@ class MainWindow(ProfileActionsMixin):
         self._sync_selected_tab_layout(self.tabs.currentIndex())
         self.window.setCentralWidget(root)
         self.window.setStyleSheet(STYLESHEET)
+        # Keep the "Currently running profile" line current even when the
+        # daemon/GPU state changes outside the UI (external CLI, a profile that
+        # exited, reboot). Lightweight: recomputes only the status text.
+        self._status_timer = self.QtCore.QTimer(self.window)
+        self._status_timer.setInterval(2000)
+        self._status_timer.timeout.connect(self._refresh_running_status)
+        self._status_timer.start()
 
     def show(self) -> None:
         self.window.show()
@@ -276,6 +290,8 @@ class MainWindow(ProfileActionsMixin):
         self.final_choice_discarded = False
         self.final_choice_aborted = False
         self.last_auto_uv_candidate_id = ""
+        # A scan applies its own curves, so the GPU is no longer at stock.
+        self._defaults_restored = False
         # Snapshot the autostart that the scan is about to disable so an aborted
         # run can restore it (profile + silent fan curve + adaptive setting). An
         # empty selector means nothing was autostarting -> nothing to restore.
@@ -566,6 +582,37 @@ class MainWindow(ProfileActionsMixin):
             ),
         )
         self._set_profile_actions_enabled(not self._workflow_running())
+        self._refresh_running_status(running_info, autostart_info)
+
+    def _refresh_running_status(
+        self,
+        running_info: dict | None = None,
+        autostart_info: dict | None = None,
+    ) -> None:
+        """Recompute the 'Currently running profile' line from LIVE state.
+
+        Cheap enough to run on a timer so the line stays current even when the
+        daemon/GPU state changes outside the UI (external CLI, reboot, a profile
+        that exited). Skipped while a scan/command owns the status line.
+        """
+        if self._workflow_running() or self.command_controller.is_running():
+            return
+        if running_info is None:
+            running_info = (
+                running_auto_uv_profile_info()
+                if penguin_burner_runtime_is_active()
+                else {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+            )
+        if autostart_info is None:
+            autostart_info = systemd_autostart_profile_info()
+        # A live running profile always wins: it means the flag is stale, so
+        # clear it. This keeps the status honest if a profile is (re)applied
+        # outside the UI after a restore.
+        live_selector = str(running_info["selector"]).strip()
+        if live_selector and live_selector != STOCK_PROFILE_SELECTOR:
+            # A real profile is live -> the restore flag is stale; clear it. The
+            # stock sentinel is NOT a real profile, so it keeps "Default".
+            self._defaults_restored = False
         self.controls.set_status_text(
             runner_status_text(
                 self.profile_summaries,
@@ -573,6 +620,7 @@ class MainWindow(ProfileActionsMixin):
                 autostart_selector=str(autostart_info["selector"]),
                 running_silent_fan=bool(running_info["silent_fan_curve"]),
                 autostart_silent_fan=bool(autostart_info["silent_fan_curve"]),
+                defaults_restored=self._defaults_restored,
             )
         )
 

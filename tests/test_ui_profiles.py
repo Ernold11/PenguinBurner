@@ -262,8 +262,11 @@ def test_autostart_and_running_info(monkeypatch) -> None:
 
     monkeypatch.setattr(profiles, "_daemon_status_payload", lambda: {})
     monkeypatch.setattr(profiles, "_legacy_systemd_running_exec_start", lambda: "")
-    # Falls back to autostart info when nothing is running.
-    assert profiles.running_auto_uv_profile_info()["selector"] == "p5"
+    # Nothing is actually running: the running-profile lookup reports empty and
+    # does NOT fall back to the autostart entry (a boot-configured profile is not
+    # a running one). Autostart is surfaced separately via
+    # systemd_autostart_profile_info().
+    assert profiles.running_auto_uv_profile_info()["selector"] == ""
 
 
 def test_running_info_uses_daemon_status(monkeypatch) -> None:
