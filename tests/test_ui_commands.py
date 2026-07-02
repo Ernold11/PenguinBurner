@@ -2357,6 +2357,33 @@ def test_status_header_candidate_detail_wraps_instead_of_hard_clipping() -> None
     assert header.candidate_label.wordWrap() is True
 
 
+def test_status_header_silicon_quality_toggles_and_carries_grade() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    from ui.components.status_header import StatusHeader
+
+    header = StatusHeader(QtCore=QtCore, QtWidgets=QtWidgets)
+
+    # Hidden until a grade arrives.
+    assert header.quality_label.isVisibleTo(header.widget) is False
+
+    header.set_silicon_quality("excellent", "Silicon: Excellent (+72 MHz)")
+    assert header.quality_label.text() == "Silicon: Excellent (+72 MHz)"
+    assert header.quality_label.property("grade") == "excellent"
+    assert header.quality_label.isVisibleTo(header.widget) is True
+
+    header.clear_silicon_quality()
+    assert header.quality_label.isVisibleTo(header.widget) is False
+    assert header.quality_label.text() == ""
+
+
 def test_column_width_includes_header_text_width() -> None:
     class FakeFontMetrics:
         def horizontalAdvance(self, text: str) -> int:

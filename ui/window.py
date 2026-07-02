@@ -272,6 +272,7 @@ class MainWindow(ProfileActionsMixin):
         command = scan_command(options)
         self.runs_table.clear()
         self.vf_plot.clear()
+        self.header.clear_silicon_quality()
         self.pending_final_result_payload = None
         self.final_choice_discarded = False
         self.final_choice_aborted = False
@@ -337,6 +338,11 @@ class MainWindow(ProfileActionsMixin):
             self.vf_plot.set_candidate_points(
                 event_points(payload),
                 curve_id=candidate_id_from_payload(payload),
+            )
+        elif event == "silicon_quality":
+            self.header.set_silicon_quality(
+                str(payload.get("grade", "")),
+                f"Silicon: {payload.get('summary', '')}",
             )
         elif event == "final_choice_request":
             self._handle_final_choice_request(payload)
