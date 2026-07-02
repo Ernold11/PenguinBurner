@@ -5,6 +5,8 @@ from typing import Callable
 
 from runtime.support.runtime_debug import log as runtime_log
 from runtime.support.vf_curve_plan import apply_plan
+from runtime.support.nvidia_runtime_defaults import build_runtime_default_plan
+from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 from profiles.uv.runtime_auto_uv_profile import (
     apply_auto_uv_profile_memory_offset,
     apply_auto_uv_profile_power_limit,
@@ -68,6 +70,24 @@ def configure_runtime_vf_curve_policy(
     deps = dependencies or RuntimeVfCurvePolicyDependencies()
     result = RuntimeVfCurvePolicyResult()
 
+    if str(auto_uv_profile_selector or "").strip() == STOCK_PROFILE_SELECTOR:
+        # "Keep stock" runtime: apply NO undervolt and actively reset the GPU to
+        # factory (release locked clocks, zero VF/mem offsets, restore default
+        # power limit, zero the per-point V/F curve). Runs inside the root daemon
+        # -- no pkexec. The daemon keeps running for fan control.
+        deps.apply_gpu_base_policy(
+            gpu_policy_controller=gpu_policy_controller,
+            enable_persistence_mode=enable_persistence_mode,
+            log=deps.log,
+        )
+        _reset_gpu_to_stock(
+            vf_curve_reader=vf_curve_reader,
+            gpu_policy_controller=gpu_policy_controller,
+            deps=deps,
+        )
+        result.active_vf_curve_source = "stock"
+        return result
+
     try:
         result.auto_uv_final_curve = deps.load_auto_uv_final_curve(
             auto_uv_profile_selector
@@ -93,6 +113,44 @@ def configure_runtime_vf_curve_policy(
     )
 
     return result
+
+
+def _reset_gpu_to_stock(*, vf_curve_reader, gpu_policy_controller, deps) -> None:
+    """Undo any applied profile: locks, VF/mem offsets, power limit, V/F curve.
+
+    Uses the runtime's already-open handles (no second NVML/VF session).
+    """
+    if gpu_policy_controller is not None:
+        for op, label in (
+            (gpu_policy_controller.reset_locked_core_clocks, "locked core clocks"),
+            (gpu_policy_controller.reset_locked_memory_clocks, "locked memory clocks"),
+        ):
+            try:
+                op()
+            except Exception as exc:
+                deps.log(f"keep-stock: {label} reset skipped: {exc}")
+        try:
+            gpu_policy_controller.apply_clock_offsets(
+                gpc_clk_vf_offset_mhz=0, mem_clk_vf_offset_mhz=0
+            )
+        except Exception as exc:
+            deps.log(f"keep-stock: VF offset reset skipped: {exc}")
+        try:
+            default_w = gpu_policy_controller.query_power_limits().get(
+                "power_limit_default_w"
+            )
+            if default_w:
+                gpu_policy_controller.apply_power_limit_w(int(default_w))
+        except Exception as exc:
+            deps.log(f"keep-stock: power-limit reset skipped: {exc}")
+    if vf_curve_reader is not None:
+        try:
+            if hasattr(vf_curve_reader, "refresh_points"):
+                vf_curve_reader.refresh_points()
+            deps.apply_plan(vf_curve_reader, build_runtime_default_plan(vf_curve_reader))
+        except Exception as exc:
+            deps.log(f"keep-stock: V/F curve reset skipped: {exc}")
+    deps.log("keep-stock: GPU reset to factory V/F; no undervolt applied")
 
 
 def _apply_auto_uv_final_curve(

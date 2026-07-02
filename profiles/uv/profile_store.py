@@ -17,6 +17,13 @@ from .profile_tiers import (
 _PROFILE_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _USER_EDITED_PROFILE_SOURCE = "user-edited"
 
+# Reserved profile selector meaning "run the daemon at stock -- apply no
+# undervolt". Used so the daemon can keep running (fan control) while the GPU
+# stays at factory clocks/voltage, and so this survives daemon restart/reboot.
+# Double-underscore + reserved word so it can never collide with a real
+# profile_id (which are timestamp-prefixed).
+STOCK_PROFILE_SELECTOR = "__stock__"
+
 
 def auto_uv_profiles_dir() -> Path:
     return default_user_config_dir() / "auto-uv-profiles"

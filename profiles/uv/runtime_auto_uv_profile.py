@@ -15,11 +15,15 @@ from drivers.nvidia.nvml_gpu_policy import (
 from common.penguin_burner_errors import NvmlError
 
 from .profile_tiers import profile_tier_summary_fields
-from .profile_store import resolve_auto_uv_profile
+from .profile_store import STOCK_PROFILE_SELECTOR, resolve_auto_uv_profile
 
 
 def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = False):
     selector = str(profile_selector or "").strip()
+    if selector == STOCK_PROFILE_SELECTOR:
+        # Reserved "keep stock" runtime: apply NO undervolt curve. Distinct from
+        # an empty selector, which falls back to the latest saved profile.
+        return None
     resolved_profile = resolve_auto_uv_profile(
         selector or "latest",
         allow_unverified=bool(allow_unverified),
