@@ -203,18 +203,23 @@ def select_scan_tuning(
     )
     memory_offset_spin = QtWidgets.QSpinBox()
     memory_offset_spin.setObjectName("memoryOffsetSpin")
-    memory_min_mhz, memory_max_mhz = memory_offset_mhz_range()
-    memory_offset_spin.setRange(memory_min_mhz, memory_max_mhz)
-    memory_offset_spin.setSuffix(" MT/s")
-    memory_offset_spin.setSingleStep(50)
+    # The driver range and the applied offset are NVML transfer-rate units
+    # (MT/s); the realized memory clock moves by half. The user picks the memory
+    # clock (MHz) here, so the box works in MHz (half the MT/s range) and the
+    # equivalent MT/s is shown alongside. Converted back to MT/s on accept.
+    memory_min_mt_s, memory_max_mt_s = memory_offset_mhz_range()
+    memory_offset_spin.setRange(int(memory_min_mt_s) // 2, int(memory_max_mt_s) // 2)
+    memory_offset_spin.setSuffix(" MHz")
+    memory_offset_spin.setSingleStep(25)
     memory_offset_spin.setFixedWidth(136)
     memory_offset_clock_label = QtWidgets.QLabel()
     memory_offset_clock_label.setObjectName("memoryOffsetClockLabel")
 
     def _update_memory_offset_clock_label(value: int) -> None:
-        # NVML memory offsets are transfer-rate units; the realized memory
-        # clock moves by half the offset (verified on Blackwell, issue #20).
-        memory_offset_clock_label.setText(f"= +{int(value) // 2} MHz memory clock")
+        # NVML memory offsets are transfer-rate units; the realized memory clock
+        # moves by half the offset (verified on Blackwell, issue #20), so the
+        # MT/s offset is twice the memory-clock value the user selects.
+        memory_offset_clock_label.setText(f"= +{int(value) * 2} MT/s transfer rate")
 
     memory_offset_spin.valueChanged.connect(_update_memory_offset_clock_label)
     _update_memory_offset_clock_label(memory_offset_spin.value())
@@ -337,11 +342,12 @@ def select_scan_tuning(
         widget=memory_offset_widget,
         tooltip=(
             "Optional global memory clock V/F offset applied during the "
-            "Auto-UV scan and saved with the final profile. The value is in "
-            "NVML transfer-rate units (MT/s, like Afterburner/LACT); the "
-            "actual memory clock rises by half of it. The range is read from "
-            "the driver for this GPU. Higher values can improve memory "
-            "performance, but may introduce instability; modify with care."
+            "Auto-UV scan and saved with the final profile. You set the memory "
+            "clock rise in MHz; the equivalent NVML transfer-rate offset (MT/s, "
+            "like Afterburner/LACT), which is twice the clock, is shown "
+            "alongside. The range is read from the driver for this GPU. Higher "
+            "values can improve memory performance, but may introduce "
+            "instability; modify with care."
         ),
     )
     _add_form_row(
@@ -481,7 +487,9 @@ def select_scan_tuning(
         "gpu_index": _selected_gpu_index(gpu_combo, selected_gpu_index),
         "auto_uv_mode": preset.auto_uv_mode,
         "auto_uv_max_clock_drop_pct": float(max_clock_drop_spin.value()),
-        "auto_uv_memory_offset_mhz": int(memory_offset_spin.value()),
+        # The box is in memory-clock MHz; the applied NVML offset is transfer
+        # rate (MT/s), which is twice the clock delta.
+        "auto_uv_memory_offset_mhz": int(memory_offset_spin.value()) * 2,
     }
     if power_limit_spin.isEnabled() and int(power_limit_spin.value()) > 0:
         options["auto_uv_power_limit_w"] = int(power_limit_spin.value())

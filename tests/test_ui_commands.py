@@ -2321,6 +2321,87 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
     assert options["auto_uv_power_limit_w"] == 390
 
 
+def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
+    monkeypatch,
+) -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    import ui.dialogs.scan_tuning as scan_tuning
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_voltage_drop_default",
+        lambda gpu_index=None: SimpleNamespace(
+            gpu_name="NVIDIA GeForce RTX 5080", value_pct=15.0, floor_voltage_mv=850
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_clock_drop_default",
+        lambda gpu_index=None, preset_id=None: SimpleNamespace(value_pct=6.0),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_power_limit_default",
+        lambda max_w=None, min_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
+            watts=None, pct=None, preset_matched=False
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "gpu_choices_with_fallback",
+        lambda selected_index=None: (
+            [SimpleNamespace(index=0, label="GPU 0 - NVIDIA GeForce RTX 5080")],
+            0,
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "read_auto_uv_nvml_info",
+        lambda selected: SimpleNamespace(
+            power_draw_w=42.0,
+            power_management_enabled=True,
+            power_limit_w=360.0,
+            power_limit_default_w=360.0,
+            power_limit_min_w=None,
+            power_limit_max_w=None,
+            graphics_clock_mhz=2100,
+            memory_clock_mhz=10501,
+            supported_memory_clocks_mhz=(),
+            supported_graphics_clock_steps_mhz=(),
+        ),
+    )
+    # Driver NVML offset range is MT/s; the box works in MHz (half of it).
+    monkeypatch.setattr(scan_tuning, "memory_offset_mhz_range", lambda: (0, 4000))
+
+    def accept_with_memory_offset(dialog):
+        spin = dialog.findChild(QtWidgets.QSpinBox, "memoryOffsetSpin")
+        label = dialog.findChild(QtWidgets.QLabel, "memoryOffsetClockLabel")
+        assert spin is not None and label is not None
+        assert spin.suffix() == " MHz"
+        assert spin.maximum() == 2000  # 4000 MT/s range -> 2000 MHz box
+        spin.setValue(500)
+        # The side label recalculates the MT/s transfer rate (twice the clock).
+        assert label.text() == "= +1000 MT/s transfer rate"
+        return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QtWidgets.QDialog, "exec", accept_with_memory_offset)
+
+    options = scan_tuning.select_scan_tuning(
+        QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets, parent=None, gpu_index=0
+    )
+
+    assert options is not None
+    # Selected 500 MHz clock -> applied NVML offset is 1000 MT/s.
+    assert options["auto_uv_memory_offset_mhz"] == 1000
+
+
 def test_about_dialog_preserves_project_links() -> None:
     assert "https://github.com/sponsors/jpietek" in ABOUT_LINKS_HTML
     assert "https://github.com/jpietek/PenguinBurner/issues" in ABOUT_LINKS_HTML
