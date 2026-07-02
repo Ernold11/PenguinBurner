@@ -13,6 +13,7 @@ from ui.features.tuning.tuning import auto_uv_nvml_info_text
 from ui.features.tuning.tuning import auto_uv_performance_preset_label
 from ui.features.tuning.tuning import auto_uv_performance_preset_tooltip
 from ui.features.tuning.tuning import auto_uv_performance_target_default
+from ui.features.tuning.tuning import auto_uv_power_limit_default
 from ui.features.tuning.tuning import auto_uv_preset
 from ui.features.tuning.tuning import auto_uv_presets
 from ui.features.tuning.tuning import auto_uv_voltage_drop_default
@@ -93,7 +94,9 @@ def select_scan_tuning(
         selected = _selected_gpu_index(gpu_combo, selected_gpu_index)
         info = read_auto_uv_nvml_info(selected)
         gpu_nvml_info.setText(auto_uv_nvml_info_text(info))
+        power_limit_controls["info"] = info
         _sync_power_limit_controls(power_limit_controls, info)
+        sync_power_limit_default()
 
     gpu_combo.currentIndexChanged.connect(lambda _index: sync_gpu_nvml_info())
     _add_form_row(
@@ -386,11 +389,43 @@ def select_scan_tuning(
         max_clock_drop_spin.setValue(float(default.value_pct))
         clock_drop_syncing["active"] = False
 
+    power_limit_syncing = {"active": False}
+    power_limit_manual_override = {"active": False}
+
+    def mark_power_limit_manual_override(_value) -> None:
+        if not bool(power_limit_syncing["active"]):
+            power_limit_manual_override["active"] = True
+
+    def sync_power_limit_default() -> None:
+        if bool(power_limit_manual_override["active"]):
+            return
+        spin = power_limit_controls.get("spin")
+        slider = power_limit_controls.get("slider")
+        info = power_limit_controls.get("info")
+        if spin is None or slider is None or not spin.isEnabled():
+            return
+        selected = _selected_gpu_index(gpu_combo, selected_gpu_index)
+        default = auto_uv_power_limit_default(
+            max_w=getattr(info, "power_limit_max_w", None),
+            min_w=getattr(info, "power_limit_min_w", None),
+            gpu_index=selected,
+            preset_id=checked_preset_id(),
+        )
+        if default.watts is None:
+            return
+        watts = max(spin.minimum(), min(spin.maximum(), int(default.watts)))
+        power_limit_syncing["active"] = True
+        spin.setValue(watts)
+        slider.setValue(watts)
+        power_limit_syncing["active"] = False
+
     def sync_preset_defaults() -> None:
         sync_preset_specific_fields()
         sync_clock_drop_default()
+        sync_power_limit_default()
 
     max_clock_drop_spin.valueChanged.connect(mark_clock_drop_manual_override)
+    power_limit_controls["spin"].valueChanged.connect(mark_power_limit_manual_override)
     gpu_combo.currentIndexChanged.connect(lambda _index: sync_clock_drop_default())
     preset_button_group.buttonClicked.connect(lambda _button: sync_preset_defaults())
     sync_preset_specific_fields()

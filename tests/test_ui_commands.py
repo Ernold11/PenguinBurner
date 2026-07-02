@@ -2018,6 +2018,19 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     )
     monkeypatch.setattr(
         scan_tuning,
+        "auto_uv_power_limit_default",
+        lambda max_w=None, min_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
+            watts={
+                AUTO_UV_PRESET_EFFICIENCY: 383,
+                AUTO_UV_PRESET_BALANCED: 405,
+                AUTO_UV_PRESET_PERFORMANCE: 450,
+            }.get(preset_id, 405),
+            pct=None,
+            preset_matched=True,
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
         "gpu_choices_with_fallback",
         lambda selected_index=None: (
             [
@@ -2082,12 +2095,12 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     assert max_clock_drop_spin.value() == pytest.approx(6.0)
     assert power_limit_slider.minimum() == 200
     assert power_limit_slider.maximum() == 450
-    assert power_limit_slider.value() == 350
+    # Balanced preset targets a reduced default board-power cap, not the raw
+    # NVML default; the slider mirrors the spin box.
+    assert power_limit_slider.value() == 405
     assert power_limit_spin.minimum() == 200
     assert power_limit_spin.maximum() == 450
-    assert power_limit_spin.value() == 350
-    power_limit_slider.setValue(390)
-    assert power_limit_spin.value() == 390
+    assert power_limit_spin.value() == 405
     advanced_labels = {
         label.text() for label in advanced_group.findChildren(QtWidgets.QLabel)
     }
@@ -2109,9 +2122,18 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     buttons[AUTO_UV_PRESET_PERFORMANCE].click()
     assert dialog.size() == initial_size
     assert max_clock_drop_spin.value() == pytest.approx(5.4)
+    # Switching presets retargets the default power cap until the user overrides.
+    assert power_limit_spin.value() == 450
     buttons[AUTO_UV_PRESET_EFFICIENCY].click()
     assert dialog.size() == initial_size
     assert max_clock_drop_spin.value() == pytest.approx(11.1)
+    assert power_limit_spin.value() == 383
+
+    # A manual edit sticks: later preset switches no longer move the cap.
+    power_limit_slider.setValue(390)
+    assert power_limit_spin.value() == 390
+    buttons[AUTO_UV_PRESET_BALANCED].click()
+    assert power_limit_spin.value() == 390
 
 
 def test_scan_tuning_enter_in_numeric_field_only_commits_value(monkeypatch) -> None:
@@ -2243,6 +2265,15 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
     )
     monkeypatch.setattr(
         scan_tuning,
+        "auto_uv_power_limit_default",
+        lambda max_w=None, min_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
+            watts=351,
+            pct=90.0,
+            preset_matched=True,
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
         "gpu_choices_with_fallback",
         lambda selected_index=None: (
             [SimpleNamespace(index=0, label="GPU 0 - NVIDIA GeForce RTX 5080")],
@@ -2271,7 +2302,8 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
         assert spin is not None
         assert spin.minimum() == 330
         assert spin.maximum() == 390
-        assert spin.value() == 360
+        # Balanced preset default cap (patched), not the raw NVML default.
+        assert spin.value() == 351
         spin.setValue(390)
         return QtWidgets.QDialog.DialogCode.Accepted
 

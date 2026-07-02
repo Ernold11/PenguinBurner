@@ -9,6 +9,7 @@ from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
 from auto_uv.scan_mode.uv_limits import (
     AUTO_UV_PERFORMANCE_OC_PROFILE_ID,
     uv_limit_clock_drop_pct_for_gpu,
+    uv_limit_power_limit_pct_for_gpu,
     uv_limit_profile_target_for_gpu,
     uv_limit_voltage_floor_target_for_gpu,
     voltage_drop_pct,
@@ -61,6 +62,15 @@ class AutoUvPerformanceTargetDefault:
 @dataclass(frozen=True, slots=True)
 class AutoUvClockDropDefault:
     value_pct: float
+    gpu_name: str | None
+    gpu_family: str | None
+    preset_matched: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AutoUvPowerLimitDefault:
+    watts: int | None
+    pct: float | None
     gpu_name: str | None
     gpu_family: str | None
     preset_matched: bool
@@ -186,6 +196,65 @@ def auto_uv_clock_drop_default(
         gpu_family=str(target.gpu_family) if target is not None else None,
         preset_matched=True,
     )
+
+
+def auto_uv_power_limit_default(
+    *,
+    max_w: float | None,
+    min_w: float | None = None,
+    gpu_name: object | None = None,
+    gpu_index: int | None = None,
+    preset_id: object | None = AUTO_UV_PRESET_EFFICIENCY,
+) -> AutoUvPowerLimitDefault:
+    """Preset-aware default board-power cap in watts.
+
+    Savings-biased presets pair the V/F floor with a fraction of the card's
+    maximum board power; the performance preset (and any GPU not covered by the
+    tier table) keeps the full board power budget so nothing is left on the
+    table when the user asked for headroom.
+    """
+    detected_name = str(gpu_name).strip() if gpu_name else _query_gpu_name(gpu_index)
+    preset = auto_uv_preset(preset_id)
+    max_watts = _positive_float(max_w)
+    if max_watts is None:
+        return AutoUvPowerLimitDefault(
+            watts=None,
+            pct=None,
+            gpu_name=detected_name or None,
+            gpu_family=None,
+            preset_matched=False,
+        )
+    pct = uv_limit_power_limit_pct_for_gpu(detected_name, profile_id=preset.preset_id)
+    if pct is None:
+        return AutoUvPowerLimitDefault(
+            watts=int(round(max_watts)),
+            pct=100.0,
+            gpu_name=detected_name or None,
+            gpu_family=None,
+            preset_matched=False,
+        )
+    watts = int(round(max_watts * (float(pct) / 100.0)))
+    floor_watts = _positive_float(min_w)
+    if floor_watts is not None:
+        watts = max(int(round(floor_watts)), watts)
+    watts = min(int(round(max_watts)), watts)
+    return AutoUvPowerLimitDefault(
+        watts=watts,
+        pct=float(pct),
+        gpu_name=detected_name or None,
+        gpu_family=None,
+        preset_matched=True,
+    )
+
+
+def _positive_float(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0.0 else None
 
 
 def auto_uv_performance_target_default(

@@ -23,6 +23,7 @@ from ui.features.tuning.tuning import (
     auto_uv_performance_preset_label,
     auto_uv_performance_preset_tooltip,
     auto_uv_performance_target_default,
+    auto_uv_power_limit_default,
     memory_offset_mhz_range,
 )
 
@@ -137,6 +138,61 @@ def test_performance_preset_label_and_tooltip() -> None:
     assert auto_uv_performance_preset_label() == "Performance"
     assert "6-bin tail curve" in auto_uv_performance_preset_tooltip()
     assert "Performance Auto-OC ladder" in auto_uv_performance_preset_tooltip()
+
+
+def test_power_limit_default_caps_efficiency_below_max() -> None:
+    default = auto_uv_power_limit_default(
+        max_w=360.0,
+        min_w=100.0,
+        gpu_name="NVIDIA GeForce RTX 5080",
+        preset_id="efficiency",
+    )
+    assert default.preset_matched is True
+    assert default.pct == 88.0
+    # 360 W * 88% = 316.8 -> 317 W, above the 100 W floor.
+    assert default.watts == 317
+
+
+def test_power_limit_default_performance_keeps_full_board_power() -> None:
+    default = auto_uv_power_limit_default(
+        max_w=360.0,
+        gpu_name="NVIDIA GeForce RTX 5080",
+        preset_id="performance",
+    )
+    assert default.pct == 100.0
+    assert default.watts == 360
+
+
+def test_power_limit_default_clamps_to_min_floor() -> None:
+    default = auto_uv_power_limit_default(
+        max_w=200.0,
+        min_w=180.0,
+        gpu_name="NVIDIA GeForce RTX 5070",
+        preset_id="efficiency",
+    )
+    # 200 W * 80% = 160 W would drop under the 180 W driver floor.
+    assert default.watts == 180
+
+
+def test_power_limit_default_without_max_is_unresolved() -> None:
+    default = auto_uv_power_limit_default(
+        max_w=None,
+        gpu_name="NVIDIA GeForce RTX 5080",
+        preset_id="efficiency",
+    )
+    assert default.watts is None
+    assert default.preset_matched is False
+
+
+def test_power_limit_default_unlisted_gpu_defaults_full_power() -> None:
+    default = auto_uv_power_limit_default(
+        max_w=250.0,
+        gpu_name="totally-unknown-gpu-9999",
+        preset_id="efficiency",
+    )
+    assert default.preset_matched is False
+    assert default.watts == 250
+    assert default.pct == 100.0
 
 
 def test_performance_target_default_for_unknown_gpu() -> None:

@@ -4,6 +4,7 @@ import pytest
 
 from auto_uv.scan_mode.uv_limits import (
     uv_limit_clock_drop_pct_for_gpu,
+    uv_limit_power_limit_pct_for_gpu,
     uv_limit_profile_target_for_gpu,
     uv_limit_voltage_floor_target_for_gpu,
     voltage_drop_pct,
@@ -51,6 +52,44 @@ def test_clock_drop_uses_preset_aware_gpu_table_ratio() -> None:
     assert uv_limit_clock_drop_pct_for_gpu(
         "NVIDIA GeForce RTX 5090"
     ) == pytest.approx(12.903225806451612)
+
+
+def test_power_limit_pct_reduces_savings_tiers_and_keeps_performance_full() -> None:
+    # Blackwell: efficiency cap is the stored per-family value, balanced sits at
+    # the shared middle cap, performance keeps the full board power budget.
+    assert uv_limit_power_limit_pct_for_gpu(
+        "NVIDIA GeForce RTX 5080", profile_id="efficiency"
+    ) == pytest.approx(88.0)
+    assert uv_limit_power_limit_pct_for_gpu(
+        "NVIDIA GeForce RTX 5080", profile_id="balanced"
+    ) == pytest.approx(90.0)
+    assert uv_limit_power_limit_pct_for_gpu(
+        "NVIDIA GeForce RTX 5080", profile_id="performance"
+    ) == pytest.approx(100.0)
+
+
+def test_power_limit_pct_ampere_uses_80_90_100_ladder() -> None:
+    assert uv_limit_power_limit_pct_for_gpu(
+        "NVIDIA GeForce RTX 3080", profile_id="efficiency"
+    ) == pytest.approx(80.0)
+    assert uv_limit_power_limit_pct_for_gpu(
+        "NVIDIA GeForce RTX 3080", profile_id="balanced"
+    ) == pytest.approx(90.0)
+    assert uv_limit_power_limit_pct_for_gpu(
+        "NVIDIA GeForce RTX 3080", profile_id="performance"
+    ) == pytest.approx(100.0)
+
+
+def test_power_limit_pct_ada_stays_full_power_on_every_tier() -> None:
+    # Ada runs uncapped efficiency, so balanced must not drop to the middle cap.
+    for profile in ("efficiency", "balanced", "performance"):
+        assert uv_limit_power_limit_pct_for_gpu(
+            "NVIDIA GeForce RTX 4090", profile_id=profile
+        ) == pytest.approx(100.0)
+
+
+def test_power_limit_pct_unlisted_gpu_returns_none() -> None:
+    assert uv_limit_power_limit_pct_for_gpu("NVIDIA GeForce GTX 1080") is None
 
 
 def test_target_matching_keeps_ti_super_before_base_4070() -> None:
