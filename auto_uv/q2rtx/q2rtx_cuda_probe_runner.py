@@ -10,6 +10,7 @@ from typing import Callable
 
 from stability.q2rtx.models import Q2RTXStabilityConfig
 
+from auto_uv.curve.probe_tail_flatten import flatten_probe_tail
 from auto_uv.domain.types import AutoUvProbeSummary, VfCurveCandidate
 from .probe_stability_decision import StabilityThresholds, evaluate_stable_run
 from .q2rtx_cuda_voltage_probe import probe_voltage_candidate
@@ -136,7 +137,10 @@ class Q2RtxCudaProbeRunner:
         )
         summary, result = probe_voltage_candidate(
             reader=self.reader,
-            candidate_plan=candidate.flattened_plan,
+            candidate_plan=flatten_probe_tail(
+                candidate.flattened_plan,
+                candidate_voltage_mv=int(candidate.voltage_mv),
+            ),
             candidate_voltage_mv=int(candidate.voltage_mv),
             lock_clock_mhz=int(candidate.target_mhz),
             q2rtx_config=config,

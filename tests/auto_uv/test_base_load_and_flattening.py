@@ -6,6 +6,7 @@ from auto_uv.curve.base_load_flatten_target import (
     choose_base_load_flatten_target,
     selected_nvidia_light_load_diagnostic,
 )
+from auto_uv.curve.probe_tail_flatten import flatten_probe_tail
 from auto_uv.curve.vf_curve_flattening import (
     build_flatten_target_for_plan,
     build_flattened_plan,
@@ -322,3 +323,69 @@ def test_flattened_plan_rejects_non_editable_voltage() -> None:
             lock_clock_mhz=2070,
             candidate_voltage_mv=850,
         )
+
+
+def test_probe_tail_flatten_caps_rising_tail_to_candidate_clock() -> None:
+    curve = base_curve(825, 1000, 25, 1900, 30)
+    plan = build_flattened_plan(
+        curve,
+        lock_clock_mhz=2000,
+        candidate_voltage_mv=900,
+        tail_rise_bins=2,
+    )
+    assert {point["voltage_mv"]: point["target_mhz"] for point in plan}[950] == 2030
+
+    guarded = flatten_probe_tail(plan, candidate_voltage_mv=900)
+
+    by_voltage = _by_voltage(guarded)
+    for voltage_mv, point in by_voltage.items():
+        if voltage_mv > 900:
+            assert point["target_mhz"] == 2000
+            assert point["new_offset_mhz"] == 2000 - point["base_mhz"]
+    assert by_voltage[900]["target_mhz"] == 2000
+    # Points below the candidate keep the sweep plan's shape untouched.
+    below = [point for point in plan if point["voltage_mv"] < 900]
+    assert [point for point in guarded if point["voltage_mv"] < 900] == below
+    # The stored sweep plan (saved-profile shape) is not mutated.
+    assert _by_voltage(plan)[950]["target_mhz"] == 2030
+
+
+def test_probe_tail_flatten_is_noop_without_rising_tail() -> None:
+    curve = base_curve(825, 1000, 25, 1900, 30)
+    plan = build_flattened_plan(
+        curve,
+        lock_clock_mhz=2000,
+        candidate_voltage_mv=900,
+        tail_rise_bins=0,
+    )
+
+    assert flatten_probe_tail(plan, candidate_voltage_mv=900) == plan
+
+
+def test_probe_tail_flatten_leaves_preserved_points_alone() -> None:
+    plan = [
+        {"voltage_mv": 875, "base_mhz": 2200, "target_mhz": 2400, "new_offset_mhz": 200},
+        {"voltage_mv": 900, "base_mhz": 2250, "target_mhz": 2430, "new_offset_mhz": 180},
+        {
+            "voltage_mv": 925,
+            "base_mhz": 2280,
+            "target_mhz": 2280,
+            "new_offset_mhz": 0,
+            "preserve_base": True,
+        },
+    ]
+
+    guarded = flatten_probe_tail(plan, candidate_voltage_mv=875)
+
+    by_voltage = _by_voltage(guarded)
+    assert by_voltage[900]["target_mhz"] == 2400
+    assert by_voltage[925]["target_mhz"] == 2280
+    assert by_voltage[925].get("preserve_base") is True
+
+
+def test_probe_tail_flatten_without_candidate_bin_returns_plan_unchanged() -> None:
+    plan = [
+        {"voltage_mv": 900, "base_mhz": 2250, "target_mhz": 2430, "new_offset_mhz": 180},
+    ]
+
+    assert flatten_probe_tail(plan, candidate_voltage_mv=880) == plan
