@@ -184,6 +184,18 @@ def run_voltage_frequency_undervolt_main_loop(
             "base_curve",
             points=vf_curve_ui_points(base_curve),
         )
+        # The applied NVML memory offset is a transfer rate (MT/s); the realized
+        # memory clock moves by half. Surface the clock delta so the status bar
+        # can show the currently applied memory offset for the whole run.
+        applied_memory_offset_mt_s = int(
+            gpu.translated_gpu_policy.get("mem_clk_vf_offset_mhz") or 0
+        )
+        emit_ui_json_event(
+            event_callback,
+            "memory_offset_applied",
+            offset_mt_s=int(applied_memory_offset_mt_s),
+            offset_mhz=int(applied_memory_offset_mt_s) // 2,
+        )
         pending_recovery_selection = None
         if bool(runtime_options.get("auto_uv_require_final_choice")) and isinstance(
             crash_recovery_entry,

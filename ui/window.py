@@ -290,6 +290,16 @@ class MainWindow(ProfileActionsMixin):
         self.log_view.append("$ " + " ".join(shlex.quote(part) for part in command) + "\n")
         self.header.set_stage("Starting")
         self.header.set_candidate("Writing to main Auto-UV profile store")
+        # Show the requested memory offset immediately; the scan later confirms
+        # the actually-applied (post-clamp) value via a memory_offset_applied
+        # event. NVML offsets are transfer-rate units (MT/s); the memory clock
+        # moves by half.
+        requested_memory_offset_mhz = (
+            int(options.get("auto_uv_memory_offset_mhz") or 0) // 2
+        )
+        self.controls.set_status_text(
+            _memory_offset_status_text(requested_memory_offset_mhz)
+        )
         self.controls.set_running(True)
         self.profile_list.set_runtime_actions_enabled(False)
         if not self.scan_controller.start(command):
@@ -339,6 +349,10 @@ class MainWindow(ProfileActionsMixin):
                 event_points(payload),
                 curve_id=candidate_id_from_payload(payload),
             )
+        elif event == "memory_offset_applied":
+            self.controls.set_status_text(
+                _memory_offset_status_text(payload.get("offset_mhz"))
+            )
         elif event == "silicon_quality":
             self.header.set_silicon_quality(
                 str(payload.get("grade", "")),
@@ -372,11 +386,13 @@ class MainWindow(ProfileActionsMixin):
             self.header.set_candidate(top_status_text(line))
 
     def _handle_dependency_progress(self, payload: dict) -> None:
+        # The download status lives in the progress bar; the status label keeps
+        # showing the applied memory offset so a terminal "Dependencies are
+        # ready" no longer sits in it for the whole run.
         detail = str(payload.get("detail") or "Downloading dependencies").strip()
         percent = payload.get("percent", 0)
         self.header.set_stage("Downloading dependencies")
         self.header.set_candidate("")
-        self.controls.set_status_text(detail)
         self.controls.set_dependency_progress(percent, detail=detail)
 
     def _handle_final_choice_request(self, payload: dict) -> None:
@@ -588,6 +604,17 @@ def _probe_text(payload: dict) -> str:
     voltage = status_value(payload.get("voltage_mv") or payload.get("candidate_voltage_mv"))
     clock = status_value(payload.get("clock_mhz") or payload.get("lock_clock_mhz"))
     return f"{voltage or 'n/a'} mV @ {clock or 'n/a'} MHz"
+
+
+def _memory_offset_status_text(offset_mhz) -> str:
+    """Status-bar text for the memory offset applied during the scan (MHz)."""
+    try:
+        mhz = int(offset_mhz)
+    except (TypeError, ValueError):
+        mhz = 0
+    if mhz == 0:
+        return "Memory offset: none"
+    return f"Memory offset: {mhz:+d} MHz memory clock"
 
 
 def _stop_request_path() -> Path:
