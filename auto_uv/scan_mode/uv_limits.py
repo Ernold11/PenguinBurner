@@ -18,8 +18,11 @@ _BALANCED_EFFICIENCY_WEIGHT = 0.6
 # performance preset keeps the stock board power budget. Only the efficiency cap
 # varies by silicon (a weaker cut caps sooner); balanced sits halfway between
 # the family's efficiency cap and full power, so one number per family fully
-# describes the ladder. Percentages apply to the card's DEFAULT power limit
-# (stock TGP), not the raised OC maximum.
+# describes the ladder. Unlike the clock-drop blend below, a plain midpoint is
+# fine here: the cap is a linear mix of one stored number against a fixed 100,
+# so it cannot collapse toward a neighbour the way clock geometry can.
+# Percentages apply to the card's DEFAULT power limit (stock TGP), not the
+# raised OC maximum.
 _FULL_POWER_LIMIT_PCT = 100.0
 
 
