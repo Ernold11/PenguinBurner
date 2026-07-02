@@ -414,6 +414,7 @@ def select_scan_tuning(
         default = auto_uv_power_limit_default(
             max_w=getattr(info, "power_limit_max_w", None),
             min_w=getattr(info, "power_limit_min_w", None),
+            default_w=getattr(info, "power_limit_default_w", None),
             gpu_index=selected,
             preset_id=checked_preset_id(),
         )

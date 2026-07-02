@@ -202,6 +202,7 @@ def auto_uv_power_limit_default(
     *,
     max_w: float | None,
     min_w: float | None = None,
+    default_w: float | None = None,
     gpu_name: object | None = None,
     gpu_index: int | None = None,
     preset_id: object | None = AUTO_UV_PRESET_EFFICIENCY,
@@ -209,14 +210,16 @@ def auto_uv_power_limit_default(
     """Preset-aware default board-power cap in watts.
 
     Savings-biased presets pair the V/F floor with a fraction of the card's
-    maximum board power; the performance preset (and any GPU not covered by the
-    tier table) keeps the full board power budget so nothing is left on the
-    table when the user asked for headroom.
+    stock power budget (the driver default limit, not the raised OC maximum);
+    the performance preset (and any GPU not covered by the tier table) keeps
+    the stock board power budget so nothing is left on the table when the user
+    asked for headroom.
     """
     detected_name = str(gpu_name).strip() if gpu_name else _query_gpu_name(gpu_index)
     preset = auto_uv_preset(preset_id)
     max_watts = _positive_float(max_w)
-    if max_watts is None:
+    base_watts = _positive_float(default_w) or max_watts
+    if base_watts is None:
         return AutoUvPowerLimitDefault(
             watts=None,
             pct=None,
@@ -227,17 +230,18 @@ def auto_uv_power_limit_default(
     pct = uv_limit_power_limit_pct_for_gpu(detected_name, profile_id=preset.preset_id)
     if pct is None:
         return AutoUvPowerLimitDefault(
-            watts=int(round(max_watts)),
+            watts=int(round(base_watts)),
             pct=100.0,
             gpu_name=detected_name or None,
             gpu_family=None,
             preset_matched=False,
         )
-    watts = int(round(max_watts * (float(pct) / 100.0)))
+    watts = int(round(base_watts * (float(pct) / 100.0)))
     floor_watts = _positive_float(min_w)
     if floor_watts is not None:
         watts = max(int(round(floor_watts)), watts)
-    watts = min(int(round(max_watts)), watts)
+    if max_watts is not None:
+        watts = min(int(round(max_watts)), watts)
     return AutoUvPowerLimitDefault(
         watts=watts,
         pct=float(pct),

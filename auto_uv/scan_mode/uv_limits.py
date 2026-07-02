@@ -15,10 +15,11 @@ _BALANCED_EFFICIENCY_WEIGHT = 0.6
 # Per-tier power-cap defaults. Undervolting alone still lets the card chase
 # transient boost bins that cost disproportionate watts for a few MHz, so the
 # savings-biased presets pair the V/F floor with a board-power cap while the
-# performance preset keeps the full board power budget. Only the efficiency cap
-# varies by silicon (a weaker cut caps sooner); balanced and performance follow
-# a shared pattern, so one number per family fully describes the ladder.
-_BALANCED_POWER_LIMIT_PCT = 90.0
+# performance preset keeps the stock board power budget. Only the efficiency cap
+# varies by silicon (a weaker cut caps sooner); balanced sits halfway between
+# the family's efficiency cap and full power, so one number per family fully
+# describes the ladder. Percentages apply to the card's DEFAULT power limit
+# (stock TGP), not the raised OC maximum.
 _FULL_POWER_LIMIT_PCT = 100.0
 
 
@@ -285,12 +286,12 @@ def uv_limit_power_limit_pct_for_gpu(
     gpu_name: object | None,
     profile_id: object | None = "efficiency",
 ) -> float | None:
-    """Return the default board-power cap (percent of the card's max) for a tier.
+    """Return the default board-power cap (percent of the card's stock TGP) for a tier.
 
-    The performance tier always keeps the full board power budget. The efficiency
-    cap is the per-family stored value; balanced sits at the shared middle cap
-    unless the family runs uncapped efficiency (in which case every tier is full
-    power, so balanced is full power too).
+    The performance tier always keeps the full stock power budget. The efficiency
+    cap is the per-family stored value; balanced sits halfway between the family's
+    efficiency cap and full power (so a family whose efficiency runs uncapped keeps
+    every tier at full power).
     """
     entry = _uv_limit_entry_for_gpu(gpu_name)
     if entry is None:
@@ -310,9 +311,7 @@ def _derived_power_limit_pct(
     if profile == "performance":
         return _FULL_POWER_LIMIT_PCT
     if profile == "balanced":
-        if efficiency_pct >= _FULL_POWER_LIMIT_PCT:
-            return _FULL_POWER_LIMIT_PCT
-        return _BALANCED_POWER_LIMIT_PCT
+        return (efficiency_pct + _FULL_POWER_LIMIT_PCT) / 2.0
     return efficiency_pct
 
 

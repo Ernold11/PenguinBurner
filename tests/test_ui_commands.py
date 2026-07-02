@@ -2019,7 +2019,7 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_power_limit_default",
-        lambda max_w=None, min_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
+        lambda max_w=None, min_w=None, default_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
             watts={
                 AUTO_UV_PRESET_EFFICIENCY: 383,
                 AUTO_UV_PRESET_BALANCED: 405,
@@ -2266,7 +2266,7 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_power_limit_default",
-        lambda max_w=None, min_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
+        lambda max_w=None, min_w=None, default_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
             watts=351,
             pct=90.0,
             preset_matched=True,
@@ -2349,7 +2349,7 @@ def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_power_limit_default",
-        lambda max_w=None, min_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
+        lambda max_w=None, min_w=None, default_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
             watts=None, pct=None, preset_matched=False
         ),
     )

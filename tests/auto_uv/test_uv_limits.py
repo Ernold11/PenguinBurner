@@ -69,14 +69,14 @@ def test_rtx_5060_shares_the_5060_ti_vf_targets() -> None:
 
 
 def test_power_limit_pct_reduces_savings_tiers_and_keeps_performance_full() -> None:
-    # Blackwell: efficiency cap is the stored per-family value, balanced sits at
-    # the shared middle cap, performance keeps the full board power budget.
+    # Blackwell: efficiency cap is the stored per-family value, balanced sits
+    # halfway between it and full power, performance keeps the stock budget.
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 5080", profile_id="efficiency"
     ) == pytest.approx(88.0)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 5080", profile_id="balanced"
-    ) == pytest.approx(90.0)
+    ) == pytest.approx(94.0)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 5080", profile_id="performance"
     ) == pytest.approx(100.0)
