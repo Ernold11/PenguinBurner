@@ -844,16 +844,23 @@ def shape_final_selection_for_runtime_profile(
 
     metadata = dict(shaped_candidate.metadata or {})
     drop_pct = float(metadata.get("profile_runtime_shape_clock_drop_pct") or 0.0)
+    sustained_clock_mhz = int(
+        metadata.get("profile_runtime_shape_sustained_clock_mhz")
+        or shaped_candidate.target_mhz
+    )
+    anchor_voltage_mv = int(
+        metadata.get("profile_runtime_shape_anchor_voltage_mv")
+        or shaped_candidate.voltage_mv
+    )
     log_phase(
         log,
         "auto-uv",
         "tier-runtime-shape "
         f"{run_profile_tier}: "
-        f"{int(final_selection.voltage_mv)}mV@"
-        f"{int(final_selection.lock_clock_mhz)}MHz "
-        "-> "
-        f"{int(shaped_candidate.voltage_mv)}mV@"
-        f"{int(shaped_candidate.target_mhz)}MHz "
+        f"keep {int(shaped_candidate.voltage_mv)}mV@"
+        f"{int(shaped_candidate.target_mhz)}MHz, "
+        f"upper curve -> {int(sustained_clock_mhz)}MHz by "
+        f"{int(anchor_voltage_mv)}mV "
         f"(drop {drop_pct:.1f}%, "
         f"tail {int(final_selection.tail_rise_bins)}->"
         f"{int(shaped_tail_rise_bins)})",

@@ -814,7 +814,7 @@ def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
     assert captured["auto_oc_start"] == (870, 2741)
     assert captured["choice_stable"] == (910, 2890)
     assert (910, 2890) in captured["choice_history"]
-    assert captured["final"] == (870, 2595)
+    assert captured["final"] == (910, 2890)
 
 
 def test_previous_crash_resume_starts_auto_oc_from_next_saved_voltage(
