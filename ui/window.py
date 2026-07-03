@@ -469,9 +469,9 @@ class MainWindow(ProfileActionsMixin):
             self._restore_pre_scan_autostart()
 
     def _restore_pre_scan_autostart(self) -> None:
-        # On abort, bring back the autostart profile the scan disabled, including
-        # its silent fan curve and adaptive setting. If nothing was autostarting
-        # before the scan there is nothing to restore.
+        # On abort, bring back the autostart profile the scan disabled through
+        # the already-root daemon. Reinstalling the systemd unit here would ask
+        # for pkexec again after every cancelled scan.
         snapshot = self._pre_scan_autostart
         self._pre_scan_autostart = None
         if not snapshot:
@@ -491,7 +491,7 @@ class MainWindow(ProfileActionsMixin):
                 # The daemon needs the fan payload on disk before it starts.
                 sync_profile_fan_payload(profile)
         command = runtime_profile_command(
-            "install-systemd",
+            "daemonize",
             profile_selector=restore_selector,
             silent_fan_curve=silent_fan,
             adaptive_auto_uv=adaptive,
@@ -500,11 +500,11 @@ class MainWindow(ProfileActionsMixin):
         self._persist_silent_fan_preference(silent_fan)
         self._persist_startup_preference(True)
         self.log_view.append(
-            "\nRestoring the previous autostart profile (incl. fan curve) after abort.\n"
+            "\nRestoring the previous autostart profile through the hardware service after abort.\n"
         )
         self._set_profile_actions_enabled(False)
         self.command_controller.start(
-            "adaptive-install-systemd" if adaptive else "install-systemd",
+            "adaptive-daemonize" if adaptive else "daemonize",
             command,
             fail_text="Failed to restore the previous autostart profile.",
         )
