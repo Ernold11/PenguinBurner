@@ -34,6 +34,7 @@ from auto_uv.run.baseline_probe import (
     run_discovery_probe,
     write_verified_candidate,
 )
+from auto_uv.run.lower_voltage_probe_target import scan_clock_floor_mhz
 from auto_uv.run.crash_recovery import (
     _float_or_none,
     append_unique_probe_summary,
@@ -210,6 +211,9 @@ def run_voltage_frequency_undervolt_main_loop(
                             settings.short_probe_base_duration_s
                         ),
                         recovery_decision=recovery_decision,
+                        min_core_clock_pct=float(
+                            settings.min_performance_core_clock_pct
+                        ),
                     )
                 )
             else:
@@ -248,6 +252,9 @@ def run_voltage_frequency_undervolt_main_loop(
                                 settings.short_probe_base_duration_s
                             ),
                             recovery_decision=recovery_decision,
+                            min_core_clock_pct=float(
+                                settings.min_performance_core_clock_pct
+                            ),
                         )
                     )
             if pending_recovery_selection is not None:
@@ -793,10 +800,17 @@ def select_final_scan_candidate(
             short_probe_base_duration_s=int(settings.short_probe_base_duration_s),
             tail_rise_bins=int(tail_rise_bins),
             request_reason=str(request_reason or "sweep-complete"),
+            min_core_clock_pct=float(settings.min_performance_core_clock_pct),
         )
         final_verification_duration_s = int(selected_final_verification_duration_s)
         if selected_stable_probe is not None:
             final_probe = selected_stable_probe
+
+    enforce_scan_clock_floor(
+        lock_clock_mhz=int(final_lock_clock_mhz),
+        baseline_core_clock_mhz=float(measured_baseline_clock_mhz),
+        min_core_clock_pct=float(settings.min_performance_core_clock_pct),
+    )
 
     return FinalScanCandidate(
         plan=final_plan,
@@ -884,6 +898,27 @@ def shape_final_selection_for_runtime_profile(
     )
 
 
+def enforce_scan_clock_floor(
+    *,
+    lock_clock_mhz: int,
+    baseline_core_clock_mhz: float,
+    min_core_clock_pct: float,
+) -> None:
+    floor_mhz = scan_clock_floor_mhz(
+        baseline_core_clock_mhz=float(baseline_core_clock_mhz),
+        min_core_clock_pct=float(min_core_clock_pct),
+    )
+    if floor_mhz is None:
+        return
+    if int(lock_clock_mhz) < int(floor_mhz):
+        raise AutoUvError(
+            "Auto-UV selected candidate below the configured clock-drop limit: "
+            f"selected={int(lock_clock_mhz)}MHz floor={int(floor_mhz)}MHz "
+            f"baseline={float(baseline_core_clock_mhz):.0f}MHz "
+            f"min={float(min_core_clock_pct):.1f}%"
+        )
+
+
 def final_verification_failure_can_offer_retry(
     exc: AutoUvError,
     *,
@@ -948,6 +983,7 @@ def choose_next_candidate_after_final_failure(
         initial_target_voltage_mv=int(baseline_candidate.voltage_mv),
         short_probe_base_duration_s=int(short_probe_base_duration_s),
         recovery_decision=recovery_decision,
+        min_core_clock_pct=float(settings.min_performance_core_clock_pct),
     )
     if selection is None:
         log_phase(

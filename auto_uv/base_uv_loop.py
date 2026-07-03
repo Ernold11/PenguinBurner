@@ -38,6 +38,7 @@ from auto_uv.curve.flattened_voltage_probe_curve import build_flattened_voltage_
 from auto_uv.run.lower_voltage_probe_target import (
     base_curve_target_for_lower_voltage,
     lower_voltage_phase,
+    scan_clock_floor_mhz,
 )
 from auto_uv.run.lower_voltage_search import select_next_lower_voltage
 from auto_uv.persistence.unsafe_voltage_cache import (
@@ -347,6 +348,12 @@ def build_next_lower_voltage_candidate(
         candidate_voltage_mv=int(state.next_voltage_mv),
         stable_target_mhz=int(state.stable_target_mhz),
         stable_measured_target_mhz=state.stable_measured_target_mhz,
+        baseline_core_clock_mhz=settings.baseline_core_clock_mhz,
+        min_core_clock_pct=settings.min_core_clock_pct,
+    )
+    floor_mhz = scan_clock_floor_mhz(
+        baseline_core_clock_mhz=settings.baseline_core_clock_mhz,
+        min_core_clock_pct=settings.min_core_clock_pct,
     )
     phase = lower_voltage_phase(
         start_voltage_mv=int(settings.start_voltage_mv),
@@ -364,6 +371,17 @@ def build_next_lower_voltage_candidate(
         metadata={
             "tail_rise_bins": int(tail_rise_bins),
             "target_policy": "hold-required-clock",
+            **(
+                {
+                    "scan_clock_floor_mhz": int(floor_mhz),
+                    "scan_clock_floor_pct": float(settings.min_core_clock_pct),
+                    "scan_clock_floor_reference_mhz": float(
+                        settings.baseline_core_clock_mhz or 0.0
+                    ),
+                }
+                if floor_mhz is not None
+                else {}
+            ),
         },
     )
     return candidate, state

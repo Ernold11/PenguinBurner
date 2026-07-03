@@ -14,6 +14,7 @@ from auto_uv.run.scan_runtime_settings import (
 )
 from ui.features.auto_uv.candidate_choice import (
     candidate_selection_summary as _candidate_selection_summary,
+    filter_candidates_by_scan_clock_floor as _filter_candidates_by_scan_clock_floor,
     sorted_final_choice_candidates as _sorted_backend_final_choice_candidates,
 )
 from ui.assets import application_version as _application_version
@@ -835,6 +836,32 @@ def test_backend_final_choice_summary_includes_core_oc_above_baseline() -> None:
 
     assert summary["base_avg_core_clock_mhz"] == 2700.0
     assert summary["core_oc_mhz"] == 210
+
+
+def test_backend_final_choice_filters_candidates_below_scan_clock_floor() -> None:
+    candidates = [
+        {
+            "candidate_id": "860mv-2197mhz",
+            "candidate_voltage_mv": 860,
+            "lock_clock_mhz": 2197,
+            "base_avg_core_clock_mhz": 2730.0,
+        },
+        {
+            "candidate_id": "900mv-2430mhz",
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2430,
+            "base_avg_core_clock_mhz": 2730.0,
+        },
+    ]
+
+    kept, skipped = _filter_candidates_by_scan_clock_floor(
+        candidates,
+        base_probe=None,
+        min_core_clock_pct=88.8889,
+    )
+
+    assert skipped == 1
+    assert [candidate["candidate_id"] for candidate in kept] == ["900mv-2430mhz"]
 
 
 def test_final_choice_table_default_sort_and_header_toggles() -> None:
