@@ -181,6 +181,54 @@ def test_auto_oc_search_keeps_exploring_after_measured_clock_regression() -> Non
     }
 
 
+def test_auto_oc_search_stops_climbing_after_confirmed_gpu_hang() -> None:
+    curve = base_curve(875, 955, 5, 2400, 15)
+    start = VfCurveCandidate("start", 925, 2670, curve)
+    tried: list[tuple[int, int]] = []
+
+    class FakeRunner:
+        def probe_candidate(self, candidate, **kwargs):
+            tried.append((candidate.voltage_mv, candidate.target_mhz))
+            probe = _probe(
+                candidate.voltage_mv,
+                candidate.target_mhz,
+                q2rtx_clock_mhz=2660.0,
+            )
+            return VoltageProbeOutcome(
+                decision=StableRunDecision(
+                    False,
+                    FailureKind.GPU_HANG,
+                    FailureSeverity.CRITICAL,
+                    "gpu-hang-watchdog",
+                ),
+                measured_core_clock_mhz=probe.avg_core_clock_mhz,
+                measured_voltage_mv=probe.avg_voltage_mv,
+                raw_probe=probe,
+                raw_result=object(),
+            )
+
+    result = run_auto_oc_candidate_search(
+        base_curve=curve,
+        start_candidate=start,
+        start_probe=_probe(925, 2670, q2rtx_clock_mhz=2670.0),
+        runner=FakeRunner(),
+        gpu_name="NVIDIA GeForce RTX 4090",
+        clock_ceiling=None,
+        probe_history=[],
+        log=lambda _message: None,
+        tail_rise_bins=0,
+        max_interpolation_steps=2,
+        target_voltage_mv=950,
+        target_clock_mhz=2745,
+        measured_baseline_clock_mhz=2670,
+    )
+
+    # The GPU provably hung at the first step; the ladder must not try the
+    # next, higher-clock step, and the verified UV start candidate is kept.
+    assert tried == [(935, 2715)]
+    assert result.selected_candidate is start
+
+
 def test_performance_sweep_profile_uses_passed_auto_oc_anchors_below_selection() -> None:
     curve = base_curve(800, 1000, 25, 1000, 50)
     selected = build_flattened_voltage_probe_curve(

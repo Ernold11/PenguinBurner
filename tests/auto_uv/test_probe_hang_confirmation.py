@@ -71,6 +71,47 @@ def test_reproduced_hang_stays_a_hang(monkeypatch) -> None:
     assert len(calls) == 2
 
 
+def test_confirmation_run_starts_with_reset_live_abort_state(monkeypatch) -> None:
+    reset_calls: list[int] = []
+    calls = _patch_runs(
+        monkeypatch,
+        [
+            _result(FRAME_HANG_WATCHDOG_REASON, success=False),
+            _result("ok", success=True),
+        ],
+    )
+
+    def _reset() -> None:
+        # The hung first run must already have happened, and the confirmation
+        # run must not have started yet.
+        reset_calls.append(len(calls))
+
+    result = run_probe_with_hang_confirmation(
+        SimpleNamespace(),
+        log=lambda *_: None,
+        phase_label="candidate",
+        reset_live_abort_state=_reset,
+    )
+
+    assert result.success is True
+    assert reset_calls == [1]
+
+
+def test_non_hang_result_does_not_reset_live_abort_state(monkeypatch) -> None:
+    reset_calls: list[int] = []
+    _patch_runs(monkeypatch, [_result("ok", success=True)])
+
+    result = run_probe_with_hang_confirmation(
+        SimpleNamespace(),
+        log=lambda *_: None,
+        phase_label="candidate",
+        reset_live_abort_state=lambda: reset_calls.append(1),
+    )
+
+    assert result.reason == "ok"
+    assert reset_calls == []
+
+
 def test_reprobe_with_different_failure_uses_reprobe_result(monkeypatch) -> None:
     calls = _patch_runs(
         monkeypatch,

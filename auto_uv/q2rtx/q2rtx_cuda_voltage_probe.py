@@ -89,6 +89,15 @@ def probe_voltage_candidate(
         "low_core_clock_streak": 0,
         "low_power_streak": 0,
     }
+
+    def reset_live_abort_streaks() -> None:
+        # The abort callback below is baked into probe_config, so a
+        # hang-confirmation re-probe shares this dict with the hung first run;
+        # without a reset it starts with the first run's accumulated streaks
+        # and can abort before its own samples justify it.
+        progress_state["low_core_clock_streak"] = 0
+        progress_state["low_power_streak"] = 0
+
     busy_power_floor_w, proper_run_power_floor_w = (
         live_probe_reference_floors(
             latest_stable_probe,
@@ -269,6 +278,7 @@ def probe_voltage_candidate(
                 probe_config,
                 log=log,
                 phase_label=str(phase_label),
+                reset_live_abort_state=reset_live_abort_streaks,
             )
         except StabilityTestError:
             raise
@@ -334,6 +344,7 @@ def run_probe_with_hang_confirmation(
     *,
     log: Callable[[str], None],
     phase_label: str,
+    reset_live_abort_state: Callable[[], None] | None = None,
 ) -> Q2RTXStabilityResult:
     """Run one probe; if the frame-hang watchdog trips, confirm with a re-probe.
 
@@ -341,6 +352,11 @@ def run_probe_with_hang_confirmation(
     trusted on its own: we run the exact same probe once more. A transient hitch
     renders normally on the retry (voltage kept); a real hang reproduces (voltage
     blacklisted). Any non-hang result is returned as-is with no extra run.
+
+    ``reset_live_abort_state`` clears live-abort state shared between the two
+    runs through probe_config's abort callback; a hung first run leaves partial
+    low-power/low-clock streaks behind, and inheriting them would let the
+    confirmation run abort early with a blacklisting reason.
     """
     result = run_q2rtx_stability_test(probe_config)
     if str(result.reason) != FRAME_HANG_WATCHDOG_REASON:
@@ -352,6 +368,8 @@ def run_probe_with_hang_confirmation(
         "frame-hang watchdog tripped; re-probing once to confirm before "
         "treating the voltage as unsafe",
     )
+    if reset_live_abort_state is not None:
+        reset_live_abort_state()
     confirmation = run_q2rtx_stability_test(probe_config)
     if str(confirmation.reason) == FRAME_HANG_WATCHDOG_REASON:
         log_phase(
