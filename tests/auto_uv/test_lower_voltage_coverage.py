@@ -143,6 +143,41 @@ def test_lower_voltage_candidate_target_never_drops_below_scan_clock_floor() -> 
     assert candidate.metadata["scan_clock_floor_mhz"] == 2430
 
 
+def test_performance_lower_voltage_candidate_keeps_six_bin_tail_over_floor() -> None:
+    curve = rtx_5080_20260524_high_oc_base_curve()
+    candidate, _state = build_next_lower_voltage_candidate(
+        curve,
+        settings=AutoUvScanSettings(
+            start_voltage_mv=1000,
+            min_search_voltage_mv=860,
+            baseline_core_clock_mhz=2730.0,
+            min_core_clock_pct=94.6032,
+            auto_uv_mode="performance",
+            tail_rise_bins=6,
+            reference_actual_voltage_mv=None,
+        ),
+        state=VoltageSweepState(
+            stable_voltage_mv=1000,
+            stable_target_mhz=2730,
+            stable_measured_target_mhz=None,
+            next_voltage_mv=860,
+        ),
+        probe_history=[],
+    )
+
+    tail_targets = [
+        int(point["target_mhz"])
+        for point in candidate.flattened_plan
+        if int(point["voltage_mv"]) >= int(candidate.voltage_mv)
+    ]
+
+    assert candidate.voltage_mv == 860
+    assert candidate.target_mhz == 2595
+    assert candidate.metadata["tail_rise_bins"] == 6
+    assert candidate.metadata["scan_clock_floor_mhz"] == 2595
+    assert tail_targets[:7] == [2595, 2610, 2625, 2640, 2655, 2670, 2685]
+
+
 # ---------------------------------------------------------------------------
 # lower_voltage_search.py
 # ---------------------------------------------------------------------------

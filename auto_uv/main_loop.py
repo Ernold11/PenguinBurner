@@ -34,7 +34,6 @@ from auto_uv.run.baseline_probe import (
     run_discovery_probe,
     write_verified_candidate,
 )
-from auto_uv.run.lower_voltage_probe_target import scan_clock_floor_mhz
 from auto_uv.run.crash_recovery import (
     _float_or_none,
     append_unique_probe_summary,
@@ -79,7 +78,6 @@ from auto_uv.persistence.verified_candidate_result_file import (
 )
 from auto_uv.persistence.auto_uv_persisted_json_files import clear_auto_uv_stop_request
 from auto_uv.curve.vf_curve_flattening import build_flatten_target_for_plan
-from auto_uv.curve.tier_runtime_profile import build_tier_runtime_profile_candidate
 from ui.features.auto_uv.vf_curve_ui_points import vf_curve_ui_points
 from auto_uv.run.voltage_sweep_state import (
     LowerVoltageSweepEvent,
@@ -603,15 +601,6 @@ def run_voltage_frequency_undervolt_main_loop(
         final_tail_rise_bins = int(final_selection.tail_rise_bins)
         failed_final_voltages: set[int] = set()
         while True:
-            final_selection = shape_final_selection_for_runtime_profile(
-                base_curve=base_curve,
-                final_selection=final_selection,
-                run_profile_tier=run_profile_tier,
-                gpu_name=gpu.translated_gpu_policy.get("gpu_name"),
-                clock_drop_pct=float(settings.final_clock_drop_margin_pct),
-                log=log,
-            )
-            final_tail_rise_bins = int(final_selection.tail_rise_bins)
             try:
                 return finish_with_final_verification(
                     final_stable_plan=final_selection.plan,
@@ -806,12 +795,6 @@ def select_final_scan_candidate(
         if selected_stable_probe is not None:
             final_probe = selected_stable_probe
 
-    enforce_scan_clock_floor(
-        lock_clock_mhz=int(final_lock_clock_mhz),
-        baseline_core_clock_mhz=float(measured_baseline_clock_mhz),
-        min_core_clock_pct=float(settings.min_performance_core_clock_pct),
-    )
-
     return FinalScanCandidate(
         plan=final_plan,
         voltage_mv=int(final_voltage_mv),
@@ -821,101 +804,6 @@ def select_final_scan_candidate(
         auto_oc_metadata=dict(final_auto_oc_metadata or {}),
         tail_rise_bins=int(tail_rise_bins),
     )
-
-
-def shape_final_selection_for_runtime_profile(
-    *,
-    base_curve: list[dict],
-    final_selection: FinalScanCandidate,
-    run_profile_tier: str,
-    gpu_name: object | None,
-    clock_drop_pct: float | None,
-    log: Callable[[str], None],
-) -> FinalScanCandidate:
-    selected_candidate = VfCurveCandidate(
-        label="final-selection",
-        voltage_mv=int(final_selection.voltage_mv),
-        target_mhz=int(final_selection.lock_clock_mhz),
-        flattened_plan=final_selection.plan,
-        metadata={
-            "tail_rise_bins": int(final_selection.tail_rise_bins),
-            **dict(final_selection.auto_oc_metadata or {}),
-        },
-    )
-    configured_clock_drop_pct = (
-        clock_drop_pct if str(gpu_name or "").strip() else None
-    )
-    shaped_candidate, shaped_tail_rise_bins = build_tier_runtime_profile_candidate(
-        base_curve,
-        selected_candidate=selected_candidate,
-        profile_tier=run_profile_tier,
-        gpu_name=gpu_name,
-        tail_rise_bins=int(final_selection.tail_rise_bins),
-        clock_drop_pct=configured_clock_drop_pct,
-    )
-    if shaped_candidate is selected_candidate:
-        return final_selection
-
-    metadata = dict(shaped_candidate.metadata or {})
-    drop_pct = float(metadata.get("profile_runtime_shape_clock_drop_pct") or 0.0)
-    sustained_clock_mhz = int(
-        metadata.get("profile_runtime_shape_sustained_clock_mhz")
-        or shaped_candidate.target_mhz
-    )
-    anchor_voltage_mv = int(
-        metadata.get("profile_runtime_shape_anchor_voltage_mv")
-        or shaped_candidate.voltage_mv
-    )
-    log_phase(
-        log,
-        "auto-uv",
-        "tier-runtime-shape "
-        f"{run_profile_tier}: "
-        f"keep {int(shaped_candidate.voltage_mv)}mV@"
-        f"{int(shaped_candidate.target_mhz)}MHz, "
-        f"below-lock ramp -> {int(sustained_clock_mhz)}MHz "
-        f"down to {int(anchor_voltage_mv)}mV "
-        f"(drop {drop_pct:.1f}%, "
-        f"tail {int(shaped_tail_rise_bins)} kept)",
-    )
-    auto_oc_metadata = dict(final_selection.auto_oc_metadata or {})
-    auto_oc_metadata.update(
-        {
-            key: value
-            for key, value in metadata.items()
-            if str(key).startswith("profile_runtime_shape")
-        }
-    )
-    return FinalScanCandidate(
-        plan=shaped_candidate.flattened_plan,
-        voltage_mv=int(shaped_candidate.voltage_mv),
-        lock_clock_mhz=int(shaped_candidate.target_mhz),
-        probe=final_selection.probe,
-        verification_duration_s=int(final_selection.verification_duration_s),
-        auto_oc_metadata=auto_oc_metadata,
-        tail_rise_bins=int(shaped_tail_rise_bins),
-    )
-
-
-def enforce_scan_clock_floor(
-    *,
-    lock_clock_mhz: int,
-    baseline_core_clock_mhz: float,
-    min_core_clock_pct: float,
-) -> None:
-    floor_mhz = scan_clock_floor_mhz(
-        baseline_core_clock_mhz=float(baseline_core_clock_mhz),
-        min_core_clock_pct=float(min_core_clock_pct),
-    )
-    if floor_mhz is None:
-        return
-    if int(lock_clock_mhz) < int(floor_mhz):
-        raise AutoUvError(
-            "Auto-UV selected candidate below the configured clock-drop limit: "
-            f"selected={int(lock_clock_mhz)}MHz floor={int(floor_mhz)}MHz "
-            f"baseline={float(baseline_core_clock_mhz):.0f}MHz "
-            f"min={float(min_core_clock_pct):.1f}%"
-        )
 
 
 def final_verification_failure_can_offer_retry(

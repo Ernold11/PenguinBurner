@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.domain.types import AutoUvProbeSummary, FailureKind, VfCurveCandidate
+from auto_uv.curve.vf_curve_flattening import build_flattened_plan
 from auto_uv.q2rtx.q2rtx_cuda_probe_runner import (
     Q2RtxCudaProbeRunner,
     probe_runner_marker_details,
@@ -17,6 +18,7 @@ def test_probe_runner_emits_candidate_table_start_and_result(monkeypatch) -> Non
     from auto_uv.q2rtx import q2rtx_cuda_probe_runner as module
 
     events: list[tuple[str, dict]] = []
+    captured: dict[str, object] = {}
     summary = AutoUvProbeSummary(
         candidate_voltage_mv=950,
         lock_clock_mhz=2400,
@@ -57,10 +59,15 @@ def test_probe_runner_emits_candidate_table_start_and_result(monkeypatch) -> Non
         "q2rtx_cuda_probe_config_for_voltage_band",
         lambda *args, **kwargs: object(),
     )
+
+    def fake_probe_voltage_candidate(**kwargs):
+        captured["candidate_plan"] = kwargs["candidate_plan"]
+        return summary, result
+
     monkeypatch.setattr(
         module,
         "probe_voltage_candidate",
-        lambda **kwargs: (summary, result),
+        fake_probe_voltage_candidate,
     )
 
     runner = Q2RtxCudaProbeRunner(
@@ -77,12 +84,19 @@ def test_probe_runner_emits_candidate_table_start_and_result(monkeypatch) -> Non
         event_callback=lambda name, payload: events.append((name, payload)),
     )
 
+    candidate_plan = build_flattened_plan(
+        base_curve(900, 1025, 25, 2200, 20),
+        lock_clock_mhz=2400,
+        candidate_voltage_mv=950,
+        tail_rise_bins=2,
+    )
+
     runner.probe_sweep_candidate(
         VfCurveCandidate(
             label="lower-voltage 950mV",
             voltage_mv=950,
             target_mhz=2400,
-            flattened_plan=base_curve(900, 1000, 25, 2200, 20),
+            flattened_plan=candidate_plan,
         ),
         stable_history=[],
     )
@@ -95,6 +109,10 @@ def test_probe_runner_emits_candidate_table_start_and_result(monkeypatch) -> Non
     assert events[1][1]["voltage_mv"] == 950
     assert events[2][1]["fps"] == 100.0
     assert events[2][1]["measured_clock_mhz"] == 2400.0
+    assert captured["candidate_plan"] is candidate_plan
+    by_voltage = {int(point["voltage_mv"]): point for point in candidate_plan}
+    assert by_voltage[975]["target_mhz"] == 2415
+    assert by_voltage[1000]["target_mhz"] == 2430
 
 
 def test_probe_runner_marker_details_add_candidate_tier_metadata() -> None:
