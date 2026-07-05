@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import ui.features.tuning.gpu_selection as gpu_selection
 import ui.features.tuning.tuning as tuning
 from ui.features.tuning.gpu_selection import (
@@ -166,9 +168,11 @@ def test_power_limit_default_caps_efficiency_from_stock_tgp() -> None:
         preset_id="efficiency",
     )
     assert default.preset_matched is True
-    assert default.pct == 88.0
-    # 360 W * 88% = 316.8 -> 317 W, above the 300 W driver floor.
-    assert default.watts == 317
+    # 88% stored less the fixed 12% efficiency reduction = 77.44%.
+    assert default.pct == pytest.approx(77.44)
+    # 360 W * 77.44% = 278.8 -> 279 W would drop under the 300 W driver floor,
+    # so the efficiency default clamps up to the 300 W hardware minimum.
+    assert default.watts == 300
 
 
 def test_power_limit_default_balanced_splits_efficiency_and_full() -> None:
@@ -179,9 +183,10 @@ def test_power_limit_default_balanced_splits_efficiency_and_full() -> None:
         gpu_name="NVIDIA GeForce RTX 5080",
         preset_id="balanced",
     )
-    # Balanced is the midpoint of the family efficiency cap (88%) and 100%.
-    assert default.pct == 94.0
-    assert default.watts == 338
+    # Balanced is the midpoint of the reduced efficiency cap (77.44%) and 100%.
+    assert default.pct == pytest.approx(88.72)
+    # 360 W * 88.72% = 319.4 -> 319 W.
+    assert default.watts == 319
 
 
 def test_power_limit_default_performance_keeps_stock_board_power() -> None:
@@ -202,7 +207,9 @@ def test_power_limit_default_falls_back_to_max_without_default() -> None:
         gpu_name="NVIDIA GeForce RTX 5080",
         preset_id="efficiency",
     )
-    assert default.watts == 317
+    # No default_w and no min_w: base is max_w (360), reduced by efficiency to
+    # 360 * 77.44% = 278.8 -> 279 W, with no driver floor to clamp against.
+    assert default.watts == 279
 
 
 def test_power_limit_default_clamps_to_min_floor() -> None:

@@ -63,39 +63,45 @@ def test_rtx_5060_shares_the_5060_ti_vf_targets() -> None:
         assert base is not None and ti is not None
         assert base.gpu_family == "RTX 5060"
         assert (base.voltage_mv, base.clock_mhz) == (ti.voltage_mv, ti.clock_mhz)
+    # 80% stored, less the fixed 12% efficiency reduction: 80 * 0.88 = 70.4.
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 5060", profile_id="efficiency"
-    ) == pytest.approx(80.0)
+    ) == pytest.approx(70.4)
 
 
 def test_power_limit_pct_reduces_savings_tiers_and_keeps_performance_full() -> None:
-    # Blackwell: efficiency cap is the stored per-family value, balanced sits
-    # halfway between it and full power, performance keeps the stock budget.
+    # Blackwell: efficiency cap is the stored per-family value LESS the fixed
+    # 12% efficiency reduction (88 * 0.88 = 77.44); balanced sits halfway
+    # between that and full power ((77.44 + 100) / 2 = 88.72); performance keeps
+    # the stock budget.
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 5080", profile_id="efficiency"
-    ) == pytest.approx(88.0)
+    ) == pytest.approx(77.44)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 5080", profile_id="balanced"
-    ) == pytest.approx(94.0)
+    ) == pytest.approx(88.72)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 5080", profile_id="performance"
     ) == pytest.approx(100.0)
 
 
-def test_power_limit_pct_ampere_uses_80_90_100_ladder() -> None:
+def test_power_limit_pct_ampere_efficiency_takes_fixed_reduction() -> None:
+    # 80% stored - 12% reduction = 70.4; balanced halfway to full = 85.2.
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 3080", profile_id="efficiency"
-    ) == pytest.approx(80.0)
+    ) == pytest.approx(70.4)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 3080", profile_id="balanced"
-    ) == pytest.approx(90.0)
+    ) == pytest.approx(85.2)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 3080", profile_id="performance"
     ) == pytest.approx(100.0)
 
 
 def test_power_limit_pct_ada_stays_full_power_on_every_tier() -> None:
-    # Ada runs uncapped efficiency, so balanced must not drop to the middle cap.
+    # Ada is deliberately uncapped (stored efficiency == full power), so the
+    # fixed reduction does not apply: you cannot lower a limit that is not
+    # there. Every tier stays at full power.
     for profile in ("efficiency", "balanced", "performance"):
         assert uv_limit_power_limit_pct_for_gpu(
             "NVIDIA GeForce RTX 4090", profile_id=profile

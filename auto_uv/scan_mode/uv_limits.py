@@ -25,6 +25,17 @@ _BALANCED_EFFICIENCY_WEIGHT = 0.6
 # raised OC maximum.
 _FULL_POWER_LIMIT_PCT = 100.0
 
+# A fixed extra reduction applied to EVERY family's efficiency power cap. The
+# per-family `efficiency_power_limit_pct` values sit close to stock TGP (the
+# 5080's 88% resolves to 317W — the stock default, which caps nothing), so a
+# sustained power-virus load fills the whole budget regardless of the V/F curve
+# (curve shape cannot lower board power at a fixed cap; only the cap can). This
+# knob pulls the efficiency default down by a fixed percentage across all GPUs
+# so the tier actually undercuts stock; the driver-reported minimum power limit
+# still clamps the result (e.g. the 5080 floors at its 300W hardware minimum),
+# and the user can raise the cap per run.
+_EFFICIENCY_POWER_LIMIT_EXTRA_REDUCTION_PCT = 12.0
+
 
 @dataclass(frozen=True, slots=True)
 class UvTierTarget:
@@ -310,6 +321,17 @@ def _derived_power_limit_pct(
     if stored is None:
         return None
     efficiency_pct = float(stored)
+    # Families that already cap efficiency get the same fixed extra reduction so
+    # the default undercuts stock TGP by a real margin; balanced inherits it
+    # through the halfway blend below. A family left at full power is
+    # deliberately uncapped, so it stays uncapped (you cannot lower a limit that
+    # is not there).
+    if efficiency_pct < _FULL_POWER_LIMIT_PCT:
+        efficiency_pct = max(
+            0.0,
+            efficiency_pct
+            * (1.0 - _EFFICIENCY_POWER_LIMIT_EXTRA_REDUCTION_PCT / 100.0),
+        )
     profile = str(profile_id or "efficiency").strip().lower()
     if profile == "performance":
         return _FULL_POWER_LIMIT_PCT
