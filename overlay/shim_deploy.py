@@ -42,8 +42,10 @@ REAL_SIDECAR_NAME = "nvapi64-pb.dll"
 
 # Override the directory (or direct file path) the shim artifact is loaded from.
 NVAPI_SHIM_DIR_ENV = "PENGUIN_BURNER_NVAPI_SHIM_DIR"
-# Force the shim off even when the in-game latency flag is on (falls back to the
-# dxvk-nvapi marker-log / trace path).
+# Force NVAPI marker latency off even when the in-game latency flag is on. The
+# Vulkan layer remains active, so this is a layer-only latency path.
+NVAPI_LATENCY_DISABLE_ENV = "PENGUIN_BURNER_NVAPI_LATENCY_DISABLE"
+# Legacy alias for existing launch options; keep accepting it silently.
 NVAPI_SHIM_DISABLE_ENV = "PENGUIN_BURNER_NVAPI_SHIM_DISABLE"
 # Optional hard cap (seconds) on how long the re-front watcher runs. Unset, the
 # watcher runs for the whole Proton session (see watch_and_refront).
@@ -150,7 +152,7 @@ def deploy_nvapi_shim(env: dict[str, str]) -> Path | None:
     Returns None (launcher falls back to dxvk-nvapi marker-log / trace) when the
     shim is disabled or unbuilt, there is no prefix, or system32 is not writable.
     """
-    if str(env.get(NVAPI_SHIM_DISABLE_ENV) or "").strip().lower() in _TRUTHY:
+    if nvapi_latency_disabled(env):
         return None
 
     artifact = nvapi_shim_artifact(env)
@@ -389,7 +391,7 @@ def spawn_refront_watcher(env: dict[str, str]) -> "subprocess.Popen | None":
     the watcher ends when that session does. Returns the Popen, or None when
     there is nothing to front or the spawn fails.
     """
-    if str(env.get(NVAPI_SHIM_DISABLE_ENV) or "").strip().lower() in _TRUTHY:
+    if nvapi_latency_disabled(env):
         return None
     if nvapi_shim_artifact(env) is None or prefix_system32(env) is None:
         return None
@@ -418,6 +420,13 @@ def _log(message: str) -> None:
     # Wrapper stderr here is the inherited console / proton log (the marker FIFO
     # redirect happens later), so this is a human diagnostic, not marker data.
     print(message, file=sys.stderr)
+
+
+def nvapi_latency_disabled(env: dict[str, str]) -> bool:
+    return any(
+        str(env.get(key) or "").strip().lower() in _TRUTHY
+        for key in (NVAPI_LATENCY_DISABLE_ENV, NVAPI_SHIM_DISABLE_ENV)
+    )
 
 
 def _main(argv: list[str]) -> int:

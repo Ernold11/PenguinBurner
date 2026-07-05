@@ -245,8 +245,9 @@ process), and the shim's ring would drop rather than stall even if it died.
 
 - `PENGUIN_BURNER_INGAME_LATENCY` (alias `PB_INGAME_LATENCY`) — `0` opts out;
   unset defaults to the overlay-enabled state.
-- `PENGUIN_BURNER_NVAPI_SHIM_DISABLE=1` — skip the shim (layer-only). Stops
-  re-deploying; does not un-front an already-installed shim.
+- `PENGUIN_BURNER_NVAPI_LATENCY_DISABLE=1` — skip NVAPI latency capture
+  (layer-only). Stops re-deploying the shim; does not un-front an
+  already-installed shim.
 - `PENGUIN_BURNER_NVAPI_SHIM_DIR` — override the shim artifact path.
 - `PENGUIN_BURNER_NVAPI_SHIM_WATCH_SECONDS` — optional hard cap on the re-front
   watcher's runtime; unset it runs for the whole Proton session.

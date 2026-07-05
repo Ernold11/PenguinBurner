@@ -170,7 +170,7 @@ prefix (log shows `nvapi shim: installed …`).
   dxvk) pass valid structs and the real nvapi does a plain null check — the
   probe adds more risk than it removes. Replace with the null check alone (or
   a VEH-scoped probe if paranoia is required).
-- **M4 — cleanup/un-front path**: `PENGUIN_BURNER_NVAPI_SHIM_DISABLE` stops
+- **M4 — cleanup/un-front path**: `PENGUIN_BURNER_NVAPI_LATENCY_DISABLE` stops
   re-deploying but never restores the prefix; uninstall leaves shim + sidecar
   behind. Works today only because Proton re-clobbers per launch. Add a
   `--restore` mode to `overlay/shim_deploy.py` (sidecar → `nvapi64.dll`,
@@ -184,7 +184,7 @@ prefix (log shows `nvapi shim: installed …`).
 - **M5 — anti-cheat matrix**: RE9's anti-tamper tolerated the proxy and Wine
   prefixes are unsigned DLLs everywhere, but no EAC/BattlEye title has been
   tested. Before default-on release: test ≥1 EAC and ≥1 BattlEye title;
-  document the per-game opt-out (`PENGUIN_BURNER_NVAPI_SHIM_DISABLE=1`)
+  document the per-game opt-out (`PENGUIN_BURNER_NVAPI_LATENCY_DISABLE=1`)
   prominently either way.
 - **L2 — swallowed stderr**: wrapped games' console/stderr output disappears
   into the FIFO (discarded by the bridge). `PROTON_LOG=1` file logging still

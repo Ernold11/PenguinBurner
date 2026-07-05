@@ -144,7 +144,15 @@ def test_deploy_guards_shim_without_sidecar(tmp_path: Path) -> None:
     assert shim_deploy.deploy_nvapi_shim(env) is None
 
 
-def test_deploy_respects_disable_env(tmp_path: Path) -> None:
+def test_deploy_respects_latency_disable_env(tmp_path: Path) -> None:
+    _make_artifact(tmp_path)
+    data_path = _make_prefix(tmp_path)
+    env = _env(tmp_path, data_path)
+    env[shim_deploy.NVAPI_LATENCY_DISABLE_ENV] = "1"
+    assert shim_deploy.deploy_nvapi_shim(env) is None
+
+
+def test_deploy_respects_legacy_shim_disable_env(tmp_path: Path) -> None:
     _make_artifact(tmp_path)
     data_path = _make_prefix(tmp_path)
     env = _env(tmp_path, data_path)
@@ -333,7 +341,7 @@ def test_spawn_refront_watcher_skips_when_disabled(
     _make_artifact(tmp_path)
     data_path = _make_prefix(tmp_path)
     env = _env(tmp_path, data_path)
-    env[shim_deploy.NVAPI_SHIM_DISABLE_ENV] = "1"
+    env[shim_deploy.NVAPI_LATENCY_DISABLE_ENV] = "1"
 
     def fail(*_args, **_kwargs):  # pragma: no cover - must not run
         raise AssertionError("watcher must not spawn when disabled")
