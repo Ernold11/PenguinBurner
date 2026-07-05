@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable, cast
 
 from stability.q2rtx.models import Q2RTXStabilityConfig
 
-from auto_uv.domain.types import AutoUvError, AutoUvProbeSummary, VfCurveCandidate
+from auto_uv.domain.types import (
+    AutoUvError,
+    AutoUvProbeSummary,
+    BaseLoadTarget,
+    VfCurveCandidate,
+)
 from auto_uv.domain.console_log import log_benchmark, log_phase
 from auto_uv.curve.base_load_flatten_target import (
     choose_base_load_flatten_target,
@@ -44,10 +49,6 @@ def retarget_clock_ceiling_for_candidate(
             lock_voltage_mv=int(candidate.voltage_mv),
         ),
     )
-
-
-def lower_voltage_descent_enforces_clock_floor(*, tail_rise_bins: int) -> bool:
-    return int(tail_rise_bins) > 0
 
 
 def run_discovery_probe(
@@ -135,7 +136,7 @@ def _positive_power_limit_w(value: object) -> int | None:
     if value in (None, ""):
         return None
     try:
-        power_limit_w = int(round(float(value)))
+        power_limit_w = int(round(float(cast(Any, value))))
     except (TypeError, ValueError):
         return None
     return power_limit_w if power_limit_w > 0 else None
@@ -148,7 +149,7 @@ def build_loaded_baseline_candidate(
     discovery_result: object,
     power_limit_w: int | None,
     tail_rise_bins: int = 0,
-) -> tuple[VfCurveCandidate, object]:
+) -> tuple[VfCurveCandidate, BaseLoadTarget]:
     target = choose_base_load_flatten_target(
         base_curve,
         list(getattr(discovery_result, "telemetry_samples", []) or []),

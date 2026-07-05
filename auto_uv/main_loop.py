@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Callable
+from typing import Any, Callable, cast
 
 from stability.q2rtx.models import Q2RTXStabilityConfig
 from stability.q2rtx.process_harness import cleanup_managed_q2rtx_processes
@@ -28,7 +28,6 @@ from auto_uv.run.baseline_probe import (
     adjust_baseline_to_measured_clock,
     build_loaded_baseline_candidate,
     baseline_load_reference_power_limit_w,
-    lower_voltage_descent_enforces_clock_floor,
     require_probe_summary,
     retarget_clock_ceiling_for_candidate,
     run_discovery_probe,
@@ -132,9 +131,6 @@ def run_voltage_frequency_undervolt_main_loop(
             tail_rise_bins=int(tail_rise_bins),
         )
         descent_tail_rise_bins = int(tail_rise_bins)
-        enforce_descent_clock_floor = lower_voltage_descent_enforces_clock_floor(
-            tail_rise_bins=int(descent_tail_rise_bins),
-        )
         cleanup_managed_q2rtx_processes(q2rtx_config, log=log)
         base_curve = list(gpu.runtime_default_plan)
         validate_base_vf_curve(base_curve)
@@ -425,13 +421,11 @@ def run_voltage_frequency_undervolt_main_loop(
 
         def probe_candidate(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
             retarget_clock_ceiling_for_candidate(gpu.clock_ceiling, candidate)
-            probe_kwargs = {
-                "stable_history": stable_history,
-                "phase_label": "candidate",
-            }
-            if not bool(enforce_descent_clock_floor):
-                probe_kwargs["enforce_target_core_clock_floor"] = False
-            outcome = runner.probe_sweep_candidate(candidate, **probe_kwargs)
+            outcome = runner.probe_sweep_candidate(
+                candidate,
+                stable_history=stable_history,
+                phase_label="candidate",
+            )
             if outcome.raw_probe is not None:
                 probe_history.append(outcome.raw_probe)
             return outcome
@@ -477,6 +471,7 @@ def run_voltage_frequency_undervolt_main_loop(
             final_tail_rise_bins: int,
             final_auto_oc_metadata: dict | None = None,
         ):
+            apply_requested_power_limit_for_final_verification(gpu, log=log)
             return run_final_verification_and_save(
                 probe_voltage_candidate=probe_voltage_candidate,
                 build_voltage_scan_result=build_voltage_scan_result,
@@ -816,6 +811,19 @@ def final_verification_failure_can_offer_retry(
     return str(exc).startswith("final long verification failed:")
 
 
+def apply_requested_power_limit_for_final_verification(gpu, *, log) -> int | None:
+    apply_power_limit = getattr(gpu, "apply_requested_power_limit", None)
+    if callable(apply_power_limit):
+        applied_power_limit_w = apply_power_limit(log=log)
+        return (
+            int(cast(Any, applied_power_limit_w))
+            if applied_power_limit_w is not None
+            else None
+        )
+    power_limit_w = getattr(gpu, "power_limit_w", None)
+    return int(power_limit_w) if power_limit_w is not None else None
+
+
 def choose_next_candidate_after_final_failure(
     *,
     base_curve: list[dict],
@@ -1063,6 +1071,7 @@ def run_recovered_previous_crash_selection(
         request_reason="sweep-complete",
     )
 
+    apply_requested_power_limit_for_final_verification(gpu, log=log)
     return run_final_verification_and_save(
         probe_voltage_candidate=probe_voltage_candidate,
         build_voltage_scan_result=build_voltage_scan_result,

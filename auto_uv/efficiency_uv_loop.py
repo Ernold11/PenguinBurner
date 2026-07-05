@@ -6,9 +6,9 @@ raise the curve tail by two bins, disable the FPS/W early-stop wall, and allow
 low-clock-only probes to be skipped while searching lower voltage bins.
 
 Whichever pass produces the final candidate, the saved efficiency profile
-always carries the raised tail: scan probes flatten the tail anyway, so a
-pass-1 result rebuilt with the tail is validated exactly as much as a
-tail-tune result, and final verification still tests the real shape.
+always carries the raised tail: a pass-1 result that already sits at the
+minimum voltage is rebuilt with the tail, and final verification tests the
+real raised-tail shape before anything is saved.
 """
 
 from __future__ import annotations

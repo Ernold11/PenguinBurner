@@ -76,6 +76,76 @@ def _tail_targets_above_lock(candidate: VfCurveCandidate) -> list[int]:
     ]
 
 
+def _recoverable_low_clock_outcome() -> VoltageProbeOutcome:
+    return VoltageProbeOutcome(
+        decision=StableRunDecision(
+            passed=False,
+            failure_kind=FailureKind.LOW_CLOCK,
+            severity=FailureSeverity.RECOVERABLE,
+            reason="average busy core clock below floor",
+        ),
+        measured_core_clock_mhz=None,
+        measured_voltage_mv=None,
+        raw_probe=None,
+        raw_result=None,
+    )
+
+
+def test_first_pass_stops_at_clock_floor_and_tail_tune_descends_through() -> None:
+    # The confirmed two-pass design: pass 1 (flat tail) stops at the first
+    # recoverable low-clock probe instead of sweeping on with a sagging clock;
+    # the tail-tune pass then owns the deep voltage region, where the raised
+    # tail must hold the clock and low-clock bins are skipped, not fatal.
+    curve = base_curve()
+    probed: list[tuple[int, int]] = []
+
+    def probe(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
+        voltage_mv = int(candidate.voltage_mv)
+        tail_bins = int(dict(candidate.metadata or {}).get("tail_rise_bins") or 0)
+        probed.append((voltage_mv, tail_bins))
+        if tail_bins == 0:
+            floor_mv = 950  # flat curve sags below the clock floor under 950mV
+        else:
+            floor_mv = 850  # the raised tail holds the clock down to 850mV
+        if voltage_mv >= floor_mv:
+            return _passing_outcome()
+        return _recoverable_low_clock_outcome()
+
+    result = run_efficiency_uv_loop(
+        curve,
+        settings=_settings(min_search_voltage_mv=825),
+        initial_stable_candidate=_initial_candidate(curve, voltage_mv=1000, lock_mhz=2240),
+        io=BaseUvLoopIO(
+            probe_candidate=probe,
+            write_verified_candidate=lambda _candidate, _outcome: None,
+            mark_unsafe_candidate=lambda _candidate, _outcome: None,
+        ),
+        min_search_voltage_mv=825,
+        initial_tail_rise_bins=0,
+        log=lambda _message: None,
+    )
+
+    flat_probes = [(v, bins) for v, bins in probed if bins == 0]
+    tail_probes = [(v, bins) for v, bins in probed if bins == 2]
+
+    # Pass 1 stopped at its first low-clock probe: exactly one flat probe below
+    # the flat floor, and no flat probes after the tail-tune pass began.
+    flat_low_clock = [v for v, _bins in flat_probes if v < 950]
+    assert len(flat_low_clock) == 1
+    assert probed.index((flat_low_clock[0], 0)) == len(flat_probes) - 1
+
+    # The deep region was probed only with the raised tail, past where the
+    # flat pass stopped, and the low-clock bins below 850 were skipped without
+    # ending the sweep.
+    assert tail_probes
+    assert min(v for v, _bins in tail_probes) < min(v for v, _bins in flat_probes)
+    assert any(v < 850 for v, _bins in tail_probes)
+
+    candidate = result.stable_candidate
+    assert candidate.voltage_mv == 850
+    assert int(candidate.metadata["tail_rise_bins"]) == 2
+
+
 def test_floor_reached_first_pass_still_ships_raised_tail() -> None:
     curve = base_curve()
     result = run_efficiency_uv_loop(

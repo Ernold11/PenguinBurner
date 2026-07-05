@@ -67,21 +67,6 @@ def _assert_final_verification_kwargs_match_real_signature(kwargs: dict) -> None
     assert unexpected == set()
 
 
-def test_zero_tail_descent_does_not_enforce_clock_floor() -> None:
-    assert (
-        undervolt_main_loop.lower_voltage_descent_enforces_clock_floor(
-            tail_rise_bins=0,
-        )
-        is False
-    )
-    assert (
-        undervolt_main_loop.lower_voltage_descent_enforces_clock_floor(
-            tail_rise_bins=2,
-        )
-        is True
-    )
-
-
 def test_discovery_probe_runner_uses_live_voltage_reader_keyword(monkeypatch) -> None:
     captured = {}
 
@@ -2482,10 +2467,11 @@ def test_orchestration_sweep_hooks_probe_and_record_candidates(monkeypatch) -> N
     )
 
     assert result == "done"
-    # The sweep candidate probe disabled the clock floor.
+    # The sweep candidate probe keeps the clock floor enforced (runner default):
+    # pass 1 must stop at the floor so the tail-tune pass owns the deep region.
     assert captured["sweep_kwargs"]
     assert (
-        captured["sweep_kwargs"][0].get("enforce_target_core_clock_floor") is False
+        "enforce_target_core_clock_floor" not in captured["sweep_kwargs"][0]
     )
     # The candidate's clock ceiling was retargeted for the sweep candidate.
     assert captured.get("retargets")
