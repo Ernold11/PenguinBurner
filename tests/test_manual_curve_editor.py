@@ -468,7 +468,7 @@ def test_manual_nudge_selected_voltage_left_interpolates_without_low_kink() -> N
     assert _target_at(nudged.plan, 890) == 2535
 
 
-def test_manual_select_curve_point_clamps_flat_tail_to_anchor() -> None:
+def test_manual_select_curve_point_selects_tail_bin_right_of_anchor() -> None:
     edit = manual_drag_anchor_edit(
         _plan(),
         anchor_voltage_mv=900,
@@ -481,8 +481,92 @@ def test_manual_select_curve_point_clamps_flat_tail_to_anchor() -> None:
 
     assert selected.anchor_voltage_mv == 900
     assert selected.anchor_clock_mhz == 2775
-    assert selected.selected_voltage_mv == 900
+    assert selected.selected_voltage_mv == 980
     assert selected.selected_clock_mhz == 2775
+
+
+def test_manual_tune_single_tail_point_raises_above_anchor() -> None:
+    edit = manual_tune_single_point_edit(
+        _plan(),
+        anchor_voltage_mv=900,
+        anchor_clock_mhz=2550,
+        point_voltage_mv=980,
+        requested_clock_mhz=2800,
+    )
+
+    assert edit.anchor_voltage_mv == 900
+    assert edit.anchor_clock_mhz == 2550
+    assert edit.selected_voltage_mv == 980
+    assert edit.selected_clock_mhz == 2805
+    assert _target_at(edit.plan, 900) == 2550
+    assert _target_at(edit.plan, 980) == 2805
+    assert edit.control_voltage_mvs == ()
+
+
+def test_manual_tune_single_tail_point_cannot_drop_below_anchor_clock() -> None:
+    edit = manual_tune_single_point_edit(
+        _plan(),
+        anchor_voltage_mv=900,
+        anchor_clock_mhz=2550,
+        point_voltage_mv=980,
+        requested_clock_mhz=2400,
+    )
+
+    assert edit.selected_voltage_mv == 980
+    assert edit.selected_clock_mhz == 2550
+    assert _target_at(edit.plan, 980) == 2550
+
+
+def test_manual_tune_single_tail_point_cannot_move_left_of_anchor() -> None:
+    edit = manual_tune_single_point_edit(
+        _plan(),
+        anchor_voltage_mv=900,
+        anchor_clock_mhz=2550,
+        point_voltage_mv=980,
+        requested_voltage_mv=860,
+        requested_clock_mhz=2700,
+    )
+
+    assert edit.selected_voltage_mv == 910
+    assert edit.selected_clock_mhz == 2700
+    assert _target_at(edit.plan, 900) == 2550
+    assert _target_at(edit.plan, 910) == 2700
+
+
+def test_manual_nudge_selected_frequency_updates_tail_point() -> None:
+    base_edit = ManualCurveEdit(
+        plan=_plan(),
+        anchor_voltage_mv=900,
+        anchor_clock_mhz=2550,
+        edit_kind="unchanged",
+        selected_voltage_mv=900,
+        selected_clock_mhz=2550,
+    )
+    selected = manual_select_curve_point(base_edit, voltage_mv=980)
+
+    nudged = manual_nudge_selected_frequency(selected, direction=1)
+
+    assert nudged.anchor_voltage_mv == 900
+    assert nudged.anchor_clock_mhz == 2550
+    assert nudged.selected_voltage_mv == 980
+    assert nudged.selected_clock_mhz == 2685
+    assert _target_at(nudged.plan, 980) == 2685
+
+
+def test_manual_nudge_selected_voltage_moves_tail_point_within_tail() -> None:
+    base_edit = ManualCurveEdit(
+        plan=_plan(),
+        anchor_voltage_mv=900,
+        anchor_clock_mhz=2550,
+        edit_kind="unchanged",
+        selected_voltage_mv=910,
+        selected_clock_mhz=2565,
+    )
+
+    nudged = manual_nudge_selected_voltage(base_edit, direction=-1)
+
+    assert nudged.selected_voltage_mv == 910
+    assert _target_at(nudged.plan, 900) == 2550
 
 
 def test_manual_select_adjacent_point_tabs_right_and_left() -> None:
@@ -502,6 +586,48 @@ def test_manual_select_adjacent_point_tabs_right_and_left() -> None:
     assert right.selected_clock_mhz == 2535
     assert left.selected_voltage_mv == 880
     assert left.selected_clock_mhz == 2520
+
+
+def test_manual_select_adjacent_point_tabs_past_anchor_into_tail() -> None:
+    base_edit = ManualCurveEdit(
+        plan=_plan(),
+        anchor_voltage_mv=900,
+        anchor_clock_mhz=2550,
+        edit_kind="unchanged",
+        selected_voltage_mv=900,
+        selected_clock_mhz=2550,
+    )
+
+    right = manual_select_adjacent_point(base_edit, direction=1)
+    back = manual_select_adjacent_point(right, direction=-1)
+
+    assert right.selected_voltage_mv == 910
+    assert right.selected_clock_mhz == 2565
+    assert back.selected_voltage_mv == 900
+    assert back.selected_clock_mhz == 2550
+
+
+def test_manual_add_curve_point_above_anchor_edits_tail_bin() -> None:
+    edit = ManualCurveEdit(
+        plan=_plan(),
+        anchor_voltage_mv=900,
+        anchor_clock_mhz=2550,
+        edit_kind="unchanged",
+        selected_voltage_mv=900,
+        selected_clock_mhz=2550,
+    )
+
+    added = manual_add_curve_point_edit(
+        edit,
+        requested_voltage_mv=984,
+        requested_clock_mhz=2704,
+    )
+
+    assert added.edit_kind == "add-point"
+    assert added.selected_voltage_mv == 980
+    assert added.selected_clock_mhz == 2700
+    assert added.control_voltage_mvs == ()
+    assert _target_at(added.plan, 980) == 2700
 
 
 def test_manual_select_range_to_right_offsets_points_through_flat_tail() -> None:

@@ -71,8 +71,8 @@ def open_vf_curve_editor_dialog(
 
     current_edit = {"value": initial_manual_edit()}
     syncing_target = {"active": False}
-    syncing_left_points = {"active": False}
-    left_point_items: dict[int, object] = {}
+    syncing_point_handles = {"active": False}
+    point_handle_items: dict[int, object] = {}
 
     dialog = QtWidgets.QDialog(parent)
     dialog.setWindowTitle("Edit VF Curve")
@@ -229,7 +229,7 @@ def open_vf_curve_editor_dialog(
         update_status(edit)
         if move_target:
             snap_target(edit)
-        refresh_left_point_handles(edit)
+        refresh_point_handles(edit)
 
     history = CurveEditHistory(
         clone=clone_edit,
@@ -325,19 +325,28 @@ def open_vf_curve_editor_dialog(
         history.finish_action("target", current_edit["value"])
         snap_target(current_edit["value"])
 
-    def left_point_values(edit: ManualCurveEdit) -> dict[int, int]:
+    def point_handle_values(edit: ManualCurveEdit) -> dict[int, int]:
         values = {}
         control_voltage_mvs = set(int(value) for value in edit.control_voltage_mvs)
+        anchor_voltage_mv = int(edit.anchor_voltage_mv)
+        selected_voltage_mv = (
+            None
+            if edit.selected_voltage_mv is None
+            else int(edit.selected_voltage_mv)
+        )
         for raw in edit.plan:
             try:
                 voltage_mv = int(raw["voltage_mv"])
                 clock_mhz = int(raw["target_mhz"])
             except (KeyError, TypeError, ValueError):
                 continue
-            if (
-                voltage_mv < int(edit.anchor_voltage_mv)
+            if voltage_mv == anchor_voltage_mv:
+                continue
+            is_control = (
+                voltage_mv < anchor_voltage_mv
                 and voltage_mv in control_voltage_mvs
-            ):
+            )
+            if is_control or voltage_mv == selected_voltage_mv:
                 values[voltage_mv] = clock_mhz
         return dict(sorted(values.items()))
 
@@ -349,8 +358,6 @@ def open_vf_curve_editor_dialog(
                 clock_mhz = int(raw["target_mhz"])
             except (KeyError, TypeError, ValueError):
                 continue
-            if voltage_mv > int(edit.anchor_voltage_mv):
-                continue
             if voltage_mv == int(edit.anchor_voltage_mv):
                 clock_mhz = int(edit.anchor_clock_mhz)
             points.append((float(voltage_mv), float(clock_mhz)))
@@ -359,7 +366,7 @@ def open_vf_curve_editor_dialog(
     def point_item(entry):
         return entry.get("item") if isinstance(entry, dict) else entry
 
-    def style_left_point_handle(item, *, selected: bool) -> None:
+    def style_point_handle(item, *, selected: bool) -> None:
         if item is None:
             return
         if selected:
@@ -369,13 +376,18 @@ def open_vf_curve_editor_dialog(
             item.setPen(pg.mkPen(pg.mkColor(210, 226, 235, 190), width=1))
             item.setBrush(pg.mkBrush(pg.mkColor(94, 243, 140, 110)))
 
-    def left_point_is_range_selected(edit: ManualCurveEdit, voltage_mv: int) -> bool:
-        return bool(
+    def point_handle_is_highlighted(edit: ManualCurveEdit, voltage_mv: int) -> bool:
+        if (
             edit.selected_range_start_voltage_mv is not None
             and int(voltage_mv) >= int(edit.selected_range_start_voltage_mv)
+        ):
+            return True
+        return bool(
+            edit.selected_voltage_mv is not None
+            and int(voltage_mv) == int(edit.selected_voltage_mv)
         )
 
-    def add_left_point_handle(voltage_mv: int, clock_mhz: int) -> None:
+    def add_point_handle(voltage_mv: int, clock_mhz: int) -> None:
         item = pg.TargetItem(
             pos=(float(voltage_mv), float(clock_mhz)),
             size=11,
@@ -399,57 +411,57 @@ def open_vf_curve_editor_dialog(
         item.mouseClickEvent = on_item_mouse_click_event
 
         def on_changed(*_args, point_voltage_mv=int(voltage_mv)) -> None:
-            on_left_point_position_changed(point_voltage_mv)
+            on_point_handle_position_changed(point_voltage_mv)
 
         def on_finished(*_args, point_voltage_mv=int(voltage_mv)) -> None:
-            history.finish_action(f"left-point:{int(point_voltage_mv)}", current_edit["value"])
-            snap_left_point_handle(point_voltage_mv)
+            history.finish_action(f"point:{int(point_voltage_mv)}", current_edit["value"])
+            snap_point_handle(point_voltage_mv)
 
         item.sigPositionChanged.connect(on_changed)
         item.sigPositionChangeFinished.connect(on_finished)
         plot.plot.addItem(item)
-        left_point_items[int(voltage_mv)] = {"item": item}
+        point_handle_items[int(voltage_mv)] = {"item": item}
 
-    def refresh_left_point_handles(edit: ManualCurveEdit) -> None:
-        values = left_point_values(edit)
-        for voltage_mv in list(left_point_items):
+    def refresh_point_handles(edit: ManualCurveEdit) -> None:
+        values = point_handle_values(edit)
+        for voltage_mv in list(point_handle_items):
             if voltage_mv not in values:
-                item = point_item(left_point_items.pop(voltage_mv))
+                item = point_item(point_handle_items.pop(voltage_mv))
                 if item is not None:
                     plot.plot.removeItem(item)
         for voltage_mv, clock_mhz in values.items():
-            if voltage_mv not in left_point_items:
-                add_left_point_handle(voltage_mv, clock_mhz)
-        syncing_left_points["active"] = True
+            if voltage_mv not in point_handle_items:
+                add_point_handle(voltage_mv, clock_mhz)
+        syncing_point_handles["active"] = True
         try:
             for voltage_mv, clock_mhz in values.items():
-                item = point_item(left_point_items.get(voltage_mv))
+                item = point_item(point_handle_items.get(voltage_mv))
                 if item is None:
                     continue
                 item.setPos(float(voltage_mv), float(clock_mhz))
-                style_left_point_handle(
+                style_point_handle(
                     item,
-                    selected=left_point_is_range_selected(edit, voltage_mv),
+                    selected=point_handle_is_highlighted(edit, voltage_mv),
                 )
         finally:
-            syncing_left_points["active"] = False
+            syncing_point_handles["active"] = False
 
-    def snap_left_point_handle(voltage_mv: int) -> None:
-        values = left_point_values(current_edit["value"])
-        item = point_item(left_point_items.get(int(voltage_mv)))
+    def snap_point_handle(voltage_mv: int) -> None:
+        values = point_handle_values(current_edit["value"])
+        item = point_item(point_handle_items.get(int(voltage_mv)))
         clock_mhz = values.get(int(voltage_mv))
         if item is None or clock_mhz is None:
             return
-        syncing_left_points["active"] = True
+        syncing_point_handles["active"] = True
         try:
             item.setPos(float(voltage_mv), float(clock_mhz))
         finally:
-            syncing_left_points["active"] = False
+            syncing_point_handles["active"] = False
 
-    def on_left_point_position_changed(voltage_mv: int) -> None:
-        if syncing_left_points["active"]:
+    def on_point_handle_position_changed(voltage_mv: int) -> None:
+        if syncing_point_handles["active"]:
             return
-        item = point_item(left_point_items.get(int(voltage_mv)))
+        item = point_item(point_handle_items.get(int(voltage_mv)))
         if item is None:
             return
         pos = item.pos()
@@ -474,7 +486,7 @@ def open_vf_curve_editor_dialog(
                 control_voltage_mvs=current_value.control_voltage_mvs,
             )
         if not edits_equal(edit, current_value):
-            history.begin_action(f"left-point:{int(voltage_mv)}", current_value)
+            history.begin_action(f"point:{int(voltage_mv)}", current_value)
         set_preview(edit, move_target=False)
 
     def select_curve_point(voltage_mv: float) -> None:
@@ -649,7 +661,7 @@ def open_vf_curve_editor_dialog(
     target_item.sigPositionChanged.connect(on_target_position_changed)
     target_item.sigPositionChangeFinished.connect(on_target_position_finished)
     plot.plot.scene().sigMouseClicked.connect(on_plot_clicked)
-    refresh_left_point_handles(current_edit["value"])
+    refresh_point_handles(current_edit["value"])
     revert_button.clicked.connect(revert_edit)
     undo_button.clicked.connect(lambda: history.undo(current_edit["value"]))
     redo_button.clicked.connect(lambda: history.redo(current_edit["value"]))
@@ -677,6 +689,11 @@ def open_vf_curve_editor_dialog(
         shortcut.activated.connect(callback)
         shortcuts.append(shortcut)
     dialog._curve_editor_shortcuts = shortcuts
+    dialog._curve_editor_state = {
+        "current_edit": current_edit,
+        "point_handle_items": point_handle_items,
+        "select_curve_point": select_curve_point,
+    }
     save_button.clicked.connect(save_edit)
     cancel_button.clicked.connect(dialog.reject)
     set_preview(current_edit["value"], record_undo=False)

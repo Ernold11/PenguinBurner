@@ -126,3 +126,58 @@ def test_dialog_builds_and_handlers_run(qapp, monkeypatch) -> None:
     assert result is False
     # Clicking Save ran the save callback at least once.
     assert saved
+
+
+def test_every_curve_point_is_selectable_with_a_drag_handle(qapp, monkeypatch) -> None:
+    qtcore, qtgui, qtwidgets, pg = import_qt()
+    if pg is None:
+        pytest.skip("pyqtgraph not available")
+
+    observed = {}
+
+    def _exec(dialog):
+        state = dialog._curve_editor_state
+        select_curve_point = state["select_curve_point"]
+        handles = state["point_handle_items"]
+        current_edit = state["current_edit"]
+        # A prior control point has a handle from the start.
+        observed["initial"] = sorted(handles)
+        # Click a plain (non-control) bin left of the anchor.
+        select_curve_point(800.0)
+        observed["below"] = (
+            current_edit["value"].selected_voltage_mv,
+            sorted(handles),
+        )
+        # Click a tail bin right of the anchor.
+        select_curve_point(925.0)
+        observed["above"] = (
+            current_edit["value"].selected_voltage_mv,
+            sorted(handles),
+        )
+        # Clicking the anchor keeps only the control handle (big dot covers it).
+        select_curve_point(850.0)
+        observed["anchor"] = (
+            current_edit["value"].selected_voltage_mv,
+            sorted(handles),
+        )
+        return qtwidgets.QDialog.Rejected
+
+    monkeypatch.setattr(qtwidgets.QDialog, "exec", _exec)
+
+    open_vf_curve_editor_dialog(
+        QtCore=qtcore,
+        QtGui=qtgui,
+        QtWidgets=qtwidgets,
+        pg=pg,
+        parent=None,
+        plan=_plan(),
+        base_points=_base_points(),
+        anchor=(850, 2050),
+        save_callback=lambda _edit: None,
+        control_voltage_mvs=(825,),
+    )
+
+    assert observed["initial"] == [825]
+    assert observed["below"] == (800, [800, 825])
+    assert observed["above"] == (925, [825, 925])
+    assert observed["anchor"] == (850, [825])
