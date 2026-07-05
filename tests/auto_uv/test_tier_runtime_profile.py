@@ -76,14 +76,19 @@ def test_efficiency_shape_keeps_lock_and_ramps_below_lock() -> None:
         fallback_clock_mhz=shaped.target_mhz,
         lock_voltage_mv=shaped.voltage_mv,
     ) == 2265
-    # Below the lock the curve ramps down to the sustained clock at the anchor,
-    # then returns to stock; no shaped bin drops below the sustained clock and
-    # bins keep the scan plan's own value when it already exceeds the ramp.
+    # Below the lock each bin re-uses the lock's proven voltage offset
+    # (scaled by the bin's own voltage) against the stock curve; under the
+    # sustained floor the shift tapers to zero across one ramp window so the
+    # curve rejoins the stock knee smoothly.
     assert by_voltage[845]["target_mhz"] == 2220
     assert by_voltage[840]["target_mhz"] == 2205
+    assert by_voltage[815]["target_mhz"] == 2055
     assert by_voltage[820]["target_mhz"] == 2085
-    assert by_voltage[800]["target_mhz"] == 1980
-    assert by_voltage[795]["target_mhz"] == 1732
+    assert by_voltage[800]["target_mhz"] == 1995
+    assert by_voltage[795]["target_mhz"] == 1965
+    assert by_voltage[790]["target_mhz"] == 1875
+    assert by_voltage[785]["target_mhz"] == 1725
+    assert by_voltage[775]["target_mhz"] == 1312
     assert by_voltage[760]["target_mhz"] == 892
     # No below-lock bin ever reaches the lock clock itself.
     assert all(
@@ -96,7 +101,7 @@ def test_efficiency_shape_keeps_lock_and_ramps_below_lock() -> None:
         for point in shaped.flattened_plan
         if 800 <= int(point["voltage_mv"]) <= 850
     ]
-    assert min(shaped_region) == 1980
+    assert min(shaped_region) == 1995
     assert shaped.metadata["profile_runtime_shape"] == "tier-runtime-shape"
     assert shaped.metadata["profile_runtime_shape_reference_clock_mhz"] == 2235
     assert shaped.metadata["profile_runtime_shape_sustained_clock_mhz"] == 1980
@@ -135,17 +140,21 @@ def test_balanced_and_performance_keep_tails_and_ramp_proportionally() -> None:
     # The rising tail above the lock is preserved, not inverted.
     assert balanced_by_voltage[890]["target_mhz"] == 2310
     assert performance_by_voltage[890]["target_mhz"] == 2310
-    # Below the lock, balanced derates deeper than performance and both bottom
-    # out at their tier's sustained clock at a lower voltage than the lock.
-    assert balanced.metadata["profile_runtime_shape_anchor_voltage_mv"] == 790
+    # Both tiers carry the same proven-offset shift below the lock; the tier's
+    # sustained floor decides how deep the shaped region extends, so balanced
+    # keeps its undervolt further down the curve than performance.
+    assert balanced.metadata["profile_runtime_shape_anchor_voltage_mv"] == 785
     assert balanced.metadata["profile_runtime_shape_sustained_clock_mhz"] == 2085
-    assert balanced_by_voltage[790]["target_mhz"] == 2085
-    assert performance.metadata["profile_runtime_shape_anchor_voltage_mv"] == 800
+    assert balanced_by_voltage[785]["target_mhz"] == 2115
+    assert performance.metadata["profile_runtime_shape_anchor_voltage_mv"] == 795
     assert performance.metadata["profile_runtime_shape_sustained_clock_mhz"] == 2160
-    assert performance_by_voltage[800]["target_mhz"] == 2160
-    assert balanced_by_voltage[810]["target_mhz"] < performance_by_voltage[810][
+    assert performance_by_voltage[795]["target_mhz"] == 2160
+    assert balanced_by_voltage[810]["target_mhz"] == performance_by_voltage[810][
         "target_mhz"
     ] < selected.target_mhz
+    assert balanced_by_voltage[790]["target_mhz"] > performance_by_voltage[790][
+        "target_mhz"
+    ]
 
 
 def test_unknown_gpu_keeps_selected_candidate_unchanged() -> None:
@@ -183,9 +192,10 @@ def test_configured_drop_pct_shapes_unlisted_gpu() -> None:
     assert shaped.voltage_mv == 825
     assert shaped.target_mhz == 2280
     assert tail_rise_bins == 2
-    assert shaped.metadata["profile_runtime_shape_anchor_voltage_mv"] == 775
-    assert by_voltage[775]["target_mhz"] == 2025
-    assert by_voltage[785]["target_mhz"] == 2070
+    assert shaped.metadata["profile_runtime_shape_anchor_voltage_mv"] == 765
+    assert by_voltage[765]["target_mhz"] == 2025
+    assert by_voltage[775]["target_mhz"] == 2055
+    assert by_voltage[785]["target_mhz"] == 2115
     assert by_voltage[890]["target_mhz"] == 2310
 
 

@@ -3,12 +3,16 @@
 The scan proves one lock point. Under a sustained power-heavy load
 (FurMark-class) the power limiter walks the card DOWN the curve into
 below-lock bins, and stock below-lock bins carry no undervolt at all, so the
-throttled clocks pay full stock voltage. This shape extends a tapered share of
-the lock's proven voltage offset to the bins below the lock: the same
-power-limited clock tiers arrive at lower voltage (more watts saved). The ramp
-only ever RAISES a bin above the scan plan's own value, stays a full clock
-step below the lock clock, and bottoms out at the tier's allowed clock drop;
-everything at or above the lock (including any rising tail) is untouched.
+throttled clocks pay full stock voltage. This shape re-applies the lock's
+proven voltage offset to every bin below the lock: each bin gets the stock
+clock found `offset` millivolts above it, with the offset scaled by the bin's
+own voltage so the implied per-millivolt undervolt never exceeds what the
+scan verified at the lock. The shape only ever RAISES a bin above the scan
+plan's own value, stays a full clock step below the lock clock, and bottoms
+out at the tier's allowed clock drop; below that floor the shift tapers to
+zero across one ramp window so the curve rejoins the stock knee smoothly
+instead of stepping off a cliff. Everything at or above the lock (including
+any rising tail) is untouched.
 """
 
 from __future__ import annotations
@@ -24,12 +28,6 @@ from .vf_curve_flattening import (
 
 
 _TIERS = ("efficiency", "balanced", "performance")
-
-# The far (anchor) end of the below-lock ramp re-uses this fraction of the
-# lock's proven voltage offset. Staying under 1.0 keeps the implied undervolt
-# of the unprobed lower bins strictly inside the margin the scan verified at
-# the lock, so the ramp is safe to apply without its own Q2RTX/CUDA probe.
-_SUSTAINED_ANCHOR_OFFSET_TAPER = 0.7
 
 
 def build_tier_runtime_profile_candidate(
@@ -161,48 +159,83 @@ def _shape_below_lock_for_sustained_load(
     if int(sustained_clock_mhz) >= ceiling_clock_mhz:
         return None
 
-    anchor_voltage_mv = _sustained_anchor_voltage_mv(
-        base_curve,
-        editable_below_voltages=editable_below_voltages,
-        lock_voltage_mv=int(lock_voltage_mv),
-        lock_clock_mhz=int(lock_clock_mhz),
-        sustained_clock_mhz=int(sustained_clock_mhz),
-    )
-    if anchor_voltage_mv is None:
+    stock_lock_voltage_mv = _stock_voltage_for_clock(base_curve, int(lock_clock_mhz))
+    if stock_lock_voltage_mv is None:
+        # The lock sits above every stock clock (e.g. an overclocked lock);
+        # there is no proven-offset geometry to extend, so the profile is
+        # left unshaped rather than extrapolated.
+        return None
+    lock_offset_mv = int(stock_lock_voltage_mv) - int(lock_voltage_mv)
+    if lock_offset_mv <= 0:
         return None
 
-    ramp_span_mv = max(1, int(lock_voltage_mv) - int(anchor_voltage_mv))
-    editable_voltages = set(editable_below_voltages)
+    full_shift_targets: dict[int, int] = {}
+    for voltage_mv in editable_below_voltages:
+        shifted_clock_mhz = _stock_clock_for_voltage(
+            base_curve,
+            voltage_mv + _proven_shift_mv(
+                voltage_mv,
+                lock_offset_mv=lock_offset_mv,
+                lock_voltage_mv=int(lock_voltage_mv),
+            ),
+        )
+        if shifted_clock_mhz is None:
+            continue
+        full_shift_targets[voltage_mv] = min(
+            int(ceiling_clock_mhz),
+            snap_target_clock(int(shifted_clock_mhz), rules=rules),
+        )
+    anchored_voltages = [
+        voltage_mv
+        for voltage_mv in editable_below_voltages
+        if full_shift_targets.get(voltage_mv, 0) >= int(sustained_clock_mhz)
+    ]
+    if not anchored_voltages:
+        return None
+    anchor_voltage_mv = anchored_voltages[0]
+
+    targets = {
+        voltage_mv: full_shift_targets[voltage_mv]
+        for voltage_mv in anchored_voltages
+    }
+    # Below the tier's sustained floor the proven shift tapers linearly to
+    # zero across one ramp window, so the shaped region rejoins the stock
+    # knee smoothly instead of dropping the whole offset in a single bin.
+    blend_window_mv = max(1, int(rules.flatten_ramp_window_mv))
+    for voltage_mv in editable_below_voltages:
+        distance_mv = int(anchor_voltage_mv) - voltage_mv
+        if distance_mv <= 0 or distance_mv >= blend_window_mv:
+            continue
+        blend_fraction = 1.0 - (float(distance_mv) / float(blend_window_mv))
+        blended_shift_mv = int(
+            round(
+                blend_fraction
+                * _proven_shift_mv(
+                    voltage_mv,
+                    lock_offset_mv=lock_offset_mv,
+                    lock_voltage_mv=int(lock_voltage_mv),
+                )
+            )
+        )
+        blended_clock_mhz = _stock_clock_for_voltage(
+            base_curve,
+            voltage_mv + blended_shift_mv,
+        )
+        if blended_clock_mhz is None:
+            continue
+        targets[voltage_mv] = min(
+            int(ceiling_clock_mhz),
+            snap_target_clock(int(blended_clock_mhz), rules=rules),
+        )
+
     shaped_plan = []
     raised_any_bin = False
     for source_point in plan:
-        voltage_mv = int(source_point["voltage_mv"])
-        if (
-            voltage_mv not in editable_voltages
-            or voltage_mv < int(anchor_voltage_mv)
-        ):
-            shaped_plan.append(source_point)
-            continue
-        fraction = (
-            float(voltage_mv) - float(anchor_voltage_mv)
-        ) / float(ramp_span_mv)
-        ramp_clock_mhz = snap_target_clock(
-            int(
-                round(
-                    float(sustained_clock_mhz)
-                    + (
-                        (float(lock_clock_mhz) - float(sustained_clock_mhz))
-                        * fraction
-                    )
-                )
-            ),
-            rules=rules,
-        )
-        target_mhz = min(int(ceiling_clock_mhz), int(ramp_clock_mhz))
+        target_mhz = targets.get(int(source_point["voltage_mv"]))
         # Only ever raise a bin: the scan plan's own value is the floor, so a
         # lock that ratcheted below the stock geometry keeps its verified
         # (monotonic) below-lock shape instead of gaining unproven points.
-        if target_mhz <= int(source_point["target_mhz"]):
+        if target_mhz is None or target_mhz <= int(source_point["target_mhz"]):
             shaped_plan.append(source_point)
             continue
         point = dict(source_point)
@@ -215,38 +248,34 @@ def _shape_below_lock_for_sustained_load(
     return shaped_plan, int(anchor_voltage_mv)
 
 
-def _sustained_anchor_voltage_mv(
-    base_curve: list[dict],
+def _proven_shift_mv(
+    voltage_mv: int,
     *,
-    editable_below_voltages: list[int],
+    lock_offset_mv: int,
     lock_voltage_mv: int,
-    lock_clock_mhz: int,
-    sustained_clock_mhz: int,
-) -> int | None:
-    stock_lock_voltage_mv = _stock_voltage_for_clock(base_curve, int(lock_clock_mhz))
-    stock_sustained_voltage_mv = _stock_voltage_for_clock(
-        base_curve,
-        int(sustained_clock_mhz),
+) -> int:
+    """The lock's proven voltage offset scaled by the bin's own voltage.
+
+    Scaling keeps the implied per-millivolt undervolt at or below the ratio
+    the scan verified at the lock.
+    """
+
+    return int(
+        round(
+            float(lock_offset_mv) * float(voltage_mv) / float(lock_voltage_mv)
+        )
     )
-    if stock_lock_voltage_mv is None or stock_sustained_voltage_mv is None:
-        # The lock or sustained clock sits above every stock clock (e.g. an
-        # overclocked lock); there is no proven-offset geometry to extend, so
-        # the profile is left unshaped rather than extrapolated.
-        return None
-    # The lock proved a voltage offset against the stock curve; the anchor
-    # keeps a tapered share of that proven offset at the sustained clock.
-    lock_offset_mv = max(0, int(stock_lock_voltage_mv) - int(lock_voltage_mv))
-    requested_anchor_mv = int(stock_sustained_voltage_mv) - int(
-        round(_SUSTAINED_ANCHOR_OFFSET_TAPER * float(lock_offset_mv))
-    )
-    at_or_below = [
-        voltage_mv
-        for voltage_mv in editable_below_voltages
-        if voltage_mv <= int(requested_anchor_mv)
+
+
+def _stock_clock_for_voltage(base_curve: list[dict], voltage_mv: int) -> int | None:
+    candidates = [
+        int(point.base_mhz)
+        for point in editable_base_vf_points(base_curve)
+        if int(point.voltage_mv) <= int(voltage_mv)
     ]
-    if at_or_below:
-        return at_or_below[-1]
-    return editable_below_voltages[0]
+    if not candidates:
+        return None
+    return max(candidates)
 
 
 def _stock_voltage_for_clock(base_curve: list[dict], clock_mhz: int) -> int | None:
