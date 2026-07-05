@@ -873,11 +873,10 @@ def shape_final_selection_for_runtime_profile(
         f"{run_profile_tier}: "
         f"keep {int(shaped_candidate.voltage_mv)}mV@"
         f"{int(shaped_candidate.target_mhz)}MHz, "
-        f"upper curve -> {int(sustained_clock_mhz)}MHz by "
-        f"{int(anchor_voltage_mv)}mV "
+        f"below-lock ramp -> {int(sustained_clock_mhz)}MHz "
+        f"down to {int(anchor_voltage_mv)}mV "
         f"(drop {drop_pct:.1f}%, "
-        f"tail {int(final_selection.tail_rise_bins)}->"
-        f"{int(shaped_tail_rise_bins)})",
+        f"tail {int(shaped_tail_rise_bins)} kept)",
     )
     auto_oc_metadata = dict(final_selection.auto_oc_metadata or {})
     auto_oc_metadata.update(
