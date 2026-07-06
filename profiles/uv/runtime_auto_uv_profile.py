@@ -8,15 +8,22 @@ from __future__ import annotations
 import json
 
 from auto_uv.curve.rising_tail import tail_ceiling_clock_mhz
-from drivers.nvidia.nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
+from drivers.nvidia.nvml_gpu_policy import (
+    MAX_AFTERBURNER_MEM_OFFSET_MHZ,
+    driver_memory_offset_limit_mhz,
+)
 from common.penguin_burner_errors import NvmlError
 
 from .profile_tiers import profile_tier_summary_fields
-from .profile_store import resolve_auto_uv_profile
+from .profile_store import STOCK_PROFILE_SELECTOR, resolve_auto_uv_profile
 
 
 def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = False):
     selector = str(profile_selector or "").strip()
+    if selector == STOCK_PROFILE_SELECTOR:
+        # Reserved "keep stock" runtime: apply NO undervolt curve. Distinct from
+        # an empty selector, which falls back to the latest saved profile.
+        return None
     resolved_profile = resolve_auto_uv_profile(
         selector or "latest",
         allow_unverified=bool(allow_unverified),
@@ -58,7 +65,9 @@ def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = Fa
     candidate_voltage_mv = int(payload.get("candidate_voltage_mv", 0) or 0)
     if lock_clock_mhz <= 0 or candidate_voltage_mv <= 0:
         raise NvmlError(f"auto-UV final curve is missing lock clock or voltage: {path}")
-    memory_offset_mhz = profile_memory_offset_mhz(payload)
+    # No static cap at load time: apply_auto_uv_profile_memory_offset clamps
+    # against the driver-reported limit, which can exceed the fallback cap.
+    memory_offset_mhz = profile_memory_offset_mhz(payload, limit_mhz=None)
     power_limit_w = profile_power_limit_w(payload)
 
     voltage_bins = sorted({int(item["voltage_mv"]) for item in plan})
@@ -109,15 +118,25 @@ def load_auto_uv_final_curve(profile_selector="", *, allow_unverified: bool = Fa
     }
 
 
-def profile_memory_offset_mhz(payload):
+def profile_memory_offset_mhz(
+    payload, *, limit_mhz: int | None = MAX_AFTERBURNER_MEM_OFFSET_MHZ
+):
+    """Parse the profile's memory offset, clamped to ``limit_mhz``.
+
+    Pass ``limit_mhz=None`` to skip the cap (the apply path clamps against the
+    driver-reported limit instead, which can exceed the static fallback).
+    """
     for key in ("memory_offset_mhz", "mem_clk_vf_offset_mhz"):
         value = payload.get(key) if isinstance(payload, dict) else None
         if value in (None, ""):
             continue
         try:
-            return max(0, min(MAX_AFTERBURNER_MEM_OFFSET_MHZ, int(round(float(value)))))
+            offset = max(0, int(round(float(value))))
         except (TypeError, ValueError):
             return None
+        if limit_mhz is not None:
+            offset = min(int(limit_mhz), offset)
+        return offset
     return None
 
 
@@ -164,7 +183,10 @@ def apply_auto_uv_profile_memory_offset(
     memory_offset_mhz,
     gpu_policy_controller,
 ) -> dict:
-    memory_offset = profile_memory_offset_mhz({"memory_offset_mhz": memory_offset_mhz})
+    memory_offset = profile_memory_offset_mhz(
+        {"memory_offset_mhz": memory_offset_mhz},
+        limit_mhz=driver_memory_offset_limit_mhz(gpu_policy_controller),
+    )
     if memory_offset is None:
         return {}
     if gpu_policy_controller is None:

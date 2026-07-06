@@ -67,6 +67,12 @@ class FakeGpuPolicyController:
 
     def apply_clock_offsets(self, **kwargs):
         self.clock_offsets.append(kwargs)
+        applied = dict(kwargs)
+        if kwargs.get("mem_clk_vf_offset_mhz") is not None:
+            applied["mem_clk_vf_offset_readback_mhz"] = int(
+                kwargs["mem_clk_vf_offset_mhz"]
+            )
+        return applied
 
     def close(self):
         self.closed = True
@@ -531,3 +537,7 @@ def test_runtime_fan_loop_reapplies_memory_offset_after_vf_curve_reset():
         {"mem_clk_vf_offset_mhz": 750}
     ]
     assert any("event=vf-curve-reapplied" in message for message in logs)
+    assert any(
+        "event=mem-offset-reapplied requested=750 readback=750" in message
+        for message in logs
+    )

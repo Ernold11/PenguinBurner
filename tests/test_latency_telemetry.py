@@ -1110,3 +1110,27 @@ def test_marker_bridge_resolve_oob_waits_for_future_base_frame() -> None:
     assert emitted == 0
     assert awaiting == [(8, 0, 2_000_000, 2_050_000)]
     assert sock.samples == []
+
+
+def test_logger_reports_marker_source_shim(tmp_path, monkeypatch) -> None:
+    """Startup diagnostics name the active in-game marker source, so an
+    install that shipped without the shim DLL is visible in bug reports."""
+    lines = []
+    monkeypatch.setattr(
+        receiver, "nvapi_shim_artifact", lambda env=None: tmp_path / "nvapi64.dll"
+    )
+    logger = LatencyTelemetryLogger(
+        paths=[tmp_path / "latency.sock"], log=lines.append
+    ).start()
+    logger.close()
+    assert any("marker source: nvapi shim" in line for line in lines)
+
+
+def test_logger_reports_marker_source_layer_only(tmp_path, monkeypatch) -> None:
+    lines = []
+    monkeypatch.setattr(receiver, "nvapi_shim_artifact", lambda env=None: None)
+    logger = LatencyTelemetryLogger(
+        paths=[tmp_path / "latency.sock"], log=lines.append
+    ).start()
+    logger.close()
+    assert any("Vulkan layer only" in line for line in lines)

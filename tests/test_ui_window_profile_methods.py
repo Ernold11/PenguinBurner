@@ -240,8 +240,8 @@ def test_apply_profile_persists_silent_fan_choice(win, monkeypatch) -> None:
     assert saved and saved[-1] is True
 
 
-def test_restore_pre_scan_autostart_reinstalls_previous_profile(win, monkeypatch) -> None:
-    # On abort, the autostart the scan disabled is restored (profile + fan curve).
+def test_restore_pre_scan_autostart_uses_daemon_without_pkexec(win, monkeypatch) -> None:
+    # On abort, restore the disabled autostart through burnerd, not pkexec.
     window, _mp = win
     started: list = []
     monkeypatch.setattr(
@@ -254,7 +254,14 @@ def test_restore_pre_scan_autostart_reinstalls_previous_profile(win, monkeypatch
         window_mod, "silent_fan_curve_to_runtime_config",
         lambda v: saved_fan.append(v),
     )
-    monkeypatch.setattr(window_mod, "runtime_profile_command", lambda *a, **k: ["pb"])
+    captured: dict = {}
+
+    def fake_cmd(action, **kwargs):
+        captured["action"] = action
+        captured["kwargs"] = dict(kwargs)
+        return ["pb"]
+
+    monkeypatch.setattr(window_mod, "runtime_profile_command", fake_cmd)
     monkeypatch.setattr(
         window_mod, "profile_for_selector", lambda summaries, sel: {"profile_id": sel}
     )
@@ -271,7 +278,11 @@ def test_restore_pre_scan_autostart_reinstalls_previous_profile(win, monkeypatch
     window._restore_pre_scan_autostart()
 
     assert started
-    assert started[0][0][0] == "install-systemd"
+    assert started[0][0][0] == "daemonize"
+    assert captured["action"] == "daemonize"
+    assert captured["kwargs"]["profile_selector"] == "profile-x"
+    assert captured["kwargs"]["silent_fan_curve"] is True
+    assert captured["kwargs"]["adaptive_auto_uv"] is False
     assert saved_fan == [True]
     assert synced  # fan payload written before the daemon starts
     assert window._pre_scan_autostart is None  # snapshot consumed
@@ -301,6 +312,7 @@ def test_restore_pre_scan_autostart_default_selector_restores_latest(win, monkey
 
     def fake_cmd(action, *, profile_selector="", silent_fan_curve=False,
                  adaptive_auto_uv=False, gpu_index=None):
+        captured["action"] = action
         captured["selector"] = profile_selector
         captured["adaptive"] = adaptive_auto_uv
         return ["pb"]
@@ -314,5 +326,6 @@ def test_restore_pre_scan_autostart_default_selector_restores_latest(win, monkey
     }
     window._restore_pre_scan_autostart()
 
+    assert captured["action"] == "daemonize"
     assert captured["selector"] == ""  # default profile, not a literal sentinel
     assert captured["adaptive"] is True

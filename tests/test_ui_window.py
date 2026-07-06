@@ -122,6 +122,41 @@ def test_window_handles_scan_events(main_window, monkeypatch) -> None:
     assert win.pending_final_result_payload is not None
 
 
+def test_memory_offset_status_text_formats() -> None:
+    from ui.window import _memory_offset_status_text
+
+    assert _memory_offset_status_text(0) == "Memory offset: none"
+    assert _memory_offset_status_text(500) == "Memory offset: +500 MHz memory clock"
+    assert _memory_offset_status_text(-200) == "Memory offset: -200 MHz memory clock"
+    assert _memory_offset_status_text(None) == "Memory offset: none"
+
+
+def test_window_shows_applied_memory_offset_in_status_label(main_window) -> None:
+    win = main_window
+    win._handle_scan_event({"event": "memory_offset_applied", "offset_mhz": 500})
+    assert win.controls.status_label.text() == "Memory offset: +500 MHz memory clock"
+
+    # A none/zero offset reads honestly rather than a stale static string.
+    win._handle_scan_event({"event": "memory_offset_applied", "offset_mhz": 0})
+    assert win.controls.status_label.text() == "Memory offset: none"
+
+
+def test_dependency_progress_no_longer_hijacks_the_status_label(main_window) -> None:
+    win = main_window
+    win._handle_scan_event({"event": "memory_offset_applied", "offset_mhz": 500})
+    # The terminal "Dependencies are ready" used to sit in the status label for
+    # the whole run; the download status now lives only in the progress bar.
+    win._handle_scan_event(
+        {
+            "event": "dependency_progress",
+            "detail": "Dependencies are ready",
+            "percent": 100,
+        }
+    )
+    assert win.controls.status_label.text() == "Memory offset: +500 MHz memory clock"
+    assert "Dependencies are ready" not in win.controls.status_label.text()
+
+
 def test_window_final_choice_request_without_response_path(main_window, monkeypatch) -> None:
     monkeypatch.setattr(
         window_mod,

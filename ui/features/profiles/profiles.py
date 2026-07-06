@@ -6,6 +6,8 @@ import json
 import shlex
 import subprocess
 
+from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
+from profiles.uv.profile_store import display_signed_memory_clock
 from profiles.uv.profile_store import profile_display_name
 from profiles.uv.profile_store import read_auto_uv_profile_summaries
 from profiles.uv.profile_tiers import available_adaptive_tiers
@@ -170,8 +172,23 @@ def profile_frequency_voltage(profile: dict) -> str:
     clock = _status_number(profile.get("lock_clock_mhz"), precision=0)
     voltage = _status_number(profile.get("candidate_voltage_mv"), precision=0)
     if clock and voltage:
-        return f"{clock} MHz {voltage} mV"
-    return f"{clock} MHz" if clock else (f"{voltage} mV" if voltage else "")
+        text = f"{clock} MHz {voltage} mV"
+    else:
+        text = f"{clock} MHz" if clock else (f"{voltage} mV" if voltage else "")
+    memory = _memory_offset_summary(profile.get("memory_offset_mhz"))
+    if text and memory:
+        return f"{text}, {memory}"
+    return text or memory
+
+
+def _memory_offset_summary(value) -> str:
+    # Match the profile table / Auto-UV dialog (signed memory-clock MHz), but
+    # suppress a no-op +0 MHz so the running-profile line stays clean when the
+    # profile carries no memory offset.
+    text = display_signed_memory_clock(value)
+    if not text or text.startswith("0 "):
+        return ""
+    return f"mem {text}"
 
 
 def final_result_frequency_voltage(payload: dict) -> str:
@@ -195,9 +212,16 @@ def runner_status_text(
     autostart_selector: str = "",
     running_silent_fan: bool = False,
     autostart_silent_fan: bool = False,
+    defaults_restored: bool = False,
 ) -> str:
     running_selector = str(running_selector or "").strip()
     autostart_selector = str(autostart_selector or "").strip()
+    # Daemon running the reserved stock runtime, or a just-completed restore:
+    # the GPU is at stock, so report it plainly as Default (no misleading
+    # clock/voltage numbers -- those are the V/F ceiling, not the live point).
+    if defaults_restored or running_selector == STOCK_PROFILE_SELECTOR:
+        autostarts = "Yes" if autostart_selector else "No"
+        return f"Currently running profile: Default; Systemd autostart: {autostarts}."
     if running_selector:
         autostarts = _profile_selectors_match(
             profiles,
@@ -234,6 +258,11 @@ def systemd_autostart_profile_info() -> dict[str, object]:
 
 
 def running_auto_uv_profile_info() -> dict[str, object]:
+    # Report only what is ACTUALLY applied right now (live daemon runner, or a
+    # live legacy systemd unit). Deliberately no fallback to the autostart entry:
+    # a configured-for-boot profile is not the same as a running one, and using
+    # it here made the status show a stale profile after the runner was stopped
+    # or the GPU was reset to stock. Autostart is surfaced separately.
     info = _daemon_running_profile_info()
     if str(info["selector"]):
         return info
@@ -241,7 +270,7 @@ def running_auto_uv_profile_info() -> dict[str, object]:
     info = profile_info_from_command_text(command, default_if_present=True)
     if str(info["selector"]):
         return info
-    return systemd_autostart_profile_info()
+    return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
 
 
 def profile_info_from_command_text(

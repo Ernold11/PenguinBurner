@@ -153,7 +153,11 @@ def manual_add_curve_point_edit(
         edit.control_voltage_mvs,
         int(anchor_index),
     )
-    if anchor_index <= 0:
+    target_index = _nearest_voltage_index(
+        points,
+        int(round(float(requested_voltage_mv))),
+    )
+    if target_index == anchor_index:
         return ManualCurveEdit(
             plan=[dict(item) for item in points],
             anchor_voltage_mv=int(points[anchor_index]["voltage_mv"]),
@@ -163,11 +167,6 @@ def manual_add_curve_point_edit(
             selected_clock_mhz=int(edit.anchor_clock_mhz),
             control_voltage_mvs=controls,
         )
-    target_index = _nearest_voltage_index(
-        points,
-        int(round(float(requested_voltage_mv))),
-    )
-    target_index = _clamp(target_index, 0, anchor_index - 1)
     target_voltage_mv = int(points[target_index]["voltage_mv"])
     if target_voltage_mv in set(controls):
         return ManualCurveEdit(
@@ -179,11 +178,17 @@ def manual_add_curve_point_edit(
             selected_clock_mhz=int(points[target_index]["target_mhz"]),
             control_voltage_mvs=controls,
         )
-    clamped_clock_mhz = _clamp(
-        _snap_clock_mhz(requested_clock_mhz),
-        0,
-        int(edit.anchor_clock_mhz),
-    )
+    if target_index < anchor_index:
+        clamped_clock_mhz = _clamp(
+            _snap_clock_mhz(requested_clock_mhz),
+            0,
+            int(edit.anchor_clock_mhz),
+        )
+    else:
+        clamped_clock_mhz = max(
+            int(edit.anchor_clock_mhz),
+            _snap_clock_mhz(requested_clock_mhz),
+        )
     edited = []
     for index, raw in enumerate(points):
         item = dict(raw)
@@ -221,7 +226,19 @@ def manual_tune_single_point_edit(
 ) -> ManualCurveEdit:
     points = _sorted_plan(plan)
     anchor_index = _nearest_voltage_index(points, int(anchor_voltage_mv))
-    if anchor_index <= 0:
+    source_index = _nearest_voltage_index(
+        points,
+        int(round(float(point_voltage_mv))),
+    )
+    if source_index < anchor_index:
+        region_first_index = 0
+        region_last_index = int(anchor_index) - 1
+    else:
+        region_first_index = int(anchor_index) + 1
+        region_last_index = len(points) - 1
+    if source_index == anchor_index or region_last_index < region_first_index:
+        # The anchor itself (and an empty side of the curve) has no
+        # single-point edit; the anchor is moved with manual_drag_anchor_edit.
         controls = _normalized_control_voltage_mvs(
             points,
             control_voltage_mvs,
@@ -239,21 +256,27 @@ def manual_tune_single_point_edit(
     requested_point_voltage_mv = (
         point_voltage_mv if requested_voltage_mv is None else requested_voltage_mv
     )
-    target_index = _nearest_voltage_index(
-        points,
-        int(round(float(requested_point_voltage_mv))),
+    target_index = _clamp(
+        _nearest_voltage_index(
+            points,
+            int(round(float(requested_point_voltage_mv))),
+        ),
+        region_first_index,
+        region_last_index,
     )
-    target_index = _clamp(target_index, 0, anchor_index - 1)
-    source_index = _clamp(
-        _nearest_voltage_index(points, int(round(float(point_voltage_mv)))),
-        0,
-        anchor_index - 1,
-    )
-    clamped_clock_mhz = _clamp(
-        _snap_clock_mhz(requested_clock_mhz),
-        0,
-        int(anchor_clock_mhz),
-    )
+    if source_index < anchor_index:
+        clamped_clock_mhz = _clamp(
+            _snap_clock_mhz(requested_clock_mhz),
+            0,
+            int(anchor_clock_mhz),
+        )
+    else:
+        # Bins right of the anchor form the rising tail: they may sit above
+        # the locked clock but never below it.
+        clamped_clock_mhz = max(
+            int(anchor_clock_mhz),
+            _snap_clock_mhz(requested_clock_mhz),
+        )
     edited = []
     for index, raw in enumerate(points):
         item = dict(raw)
@@ -268,7 +291,14 @@ def manual_tune_single_point_edit(
             edited,
             source_index=int(source_index),
             target_index=int(target_index),
-            anchor_index=int(anchor_index),
+            lower_bound_index=(
+                0 if source_index < anchor_index else int(anchor_index)
+            ),
+            upper_bound_index=(
+                int(anchor_index)
+                if source_index < anchor_index
+                else len(points) - 1
+            ),
         )
     return ManualCurveEdit(
         plan=edited,
@@ -310,7 +340,7 @@ def manual_nudge_selected_frequency(
         if edit.selected_voltage_mv is not None
         else int(edit.anchor_voltage_mv)
     )
-    if selected_voltage_mv < int(edit.anchor_voltage_mv):
+    if selected_voltage_mv != int(edit.anchor_voltage_mv):
         selected_clock_mhz = _target_clock_for_voltage(
             edit.plan,
             selected_voltage_mv,
@@ -351,12 +381,19 @@ def manual_nudge_selected_voltage(
         else int(edit.anchor_voltage_mv)
     )
     selected_index = _nearest_voltage_index(points, selected_voltage_mv)
-    if selected_index < anchor_index:
-        target_index = _clamp(
-            int(selected_index) + (1 if int(direction) >= 0 else -1),
-            0,
-            max(0, int(anchor_index) - 1),
-        )
+    if selected_index != anchor_index:
+        if selected_index < anchor_index:
+            target_index = _clamp(
+                int(selected_index) + (1 if int(direction) >= 0 else -1),
+                0,
+                max(0, int(anchor_index) - 1),
+            )
+        else:
+            target_index = _clamp(
+                int(selected_index) + (1 if int(direction) >= 0 else -1),
+                min(len(points) - 1, int(anchor_index) + 1),
+                len(points) - 1,
+            )
         selected_clock_mhz = _target_clock_for_voltage(
             points,
             int(points[selected_index]["voltage_mv"]),
@@ -397,14 +434,14 @@ def manual_select_curve_point(
 ) -> ManualCurveEdit:
     points = _sorted_plan(edit.plan)
     anchor_index = _nearest_voltage_index(points, int(edit.anchor_voltage_mv))
-    selected_index = min(
-        int(anchor_index),
-        _nearest_voltage_index(points, int(round(float(voltage_mv)))),
+    selected_index = _nearest_voltage_index(
+        points,
+        int(round(float(voltage_mv))),
     )
     selected_voltage_mv = int(points[selected_index]["voltage_mv"])
     selected_clock_mhz = (
         int(edit.anchor_clock_mhz)
-        if selected_index >= anchor_index
+        if selected_index == anchor_index
         else int(points[selected_index]["target_mhz"])
     )
     return ManualCurveEdit(
@@ -429,20 +466,16 @@ def manual_select_adjacent_point(
     direction: int,
 ) -> ManualCurveEdit:
     points = _sorted_plan(edit.plan)
-    anchor_index = _nearest_voltage_index(points, int(edit.anchor_voltage_mv))
     selected_voltage_mv = (
         int(edit.selected_voltage_mv)
         if edit.selected_voltage_mv is not None
         else int(edit.anchor_voltage_mv)
     )
-    selected_index = min(
-        int(anchor_index),
-        _nearest_voltage_index(points, int(selected_voltage_mv)),
-    )
+    selected_index = _nearest_voltage_index(points, int(selected_voltage_mv))
     target_index = _clamp(
         int(selected_index) + (1 if int(direction) >= 0 else -1),
         0,
-        int(anchor_index),
+        len(points) - 1,
     )
     return manual_select_curve_point(
         edit,
@@ -808,20 +841,22 @@ def _interpolate_single_point_voltage_move(
     *,
     source_index: int,
     target_index: int,
-    anchor_index: int,
+    lower_bound_index: int,
+    upper_bound_index: int,
 ) -> None:
     if not points:
         return
     source_index = _clamp(int(source_index), 0, len(points) - 1)
     target_index = _clamp(int(target_index), 0, len(points) - 1)
-    anchor_index = _clamp(int(anchor_index), 0, len(points) - 1)
+    lower_bound_index = _clamp(int(lower_bound_index), 0, len(points) - 1)
+    upper_bound_index = _clamp(int(upper_bound_index), 0, len(points) - 1)
     if int(source_index) == int(target_index):
         return
     if int(target_index) < int(source_index):
         start_index = int(target_index)
-        end_index = min(int(anchor_index), int(source_index) + 1)
+        end_index = min(int(upper_bound_index), int(source_index) + 1)
     else:
-        start_index = max(0, int(source_index) - 1)
+        start_index = max(int(lower_bound_index), int(source_index) - 1)
         end_index = int(target_index)
     if end_index <= start_index:
         return

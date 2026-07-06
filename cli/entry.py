@@ -21,6 +21,7 @@ from runtime.support.runtime_service import (
     running_under_systemd_service,
     uninstall_systemd_service,
 )
+from runtime.support.nvidia_runtime_defaults import reset_nvidia_runtime_defaults
 from runtime.daemon_api import serve_daemon_api
 from runtime.daemon_client import daemon_status
 from profiles.uv.profile_store import read_auto_uv_profiles, resolve_auto_uv_profile
@@ -73,6 +74,11 @@ def dispatch_cli(
             )
         elif runtime_flags["uninstall_systemd_service"]:
             uninstall_systemd_service(log=log)
+        elif runtime_flags["reset_gpu_defaults"]:
+            reset_nvidia_runtime_defaults(
+                gpu_index=_gpu_index_from_argv(runtime_argv),
+                log=log,
+            )
         elif (
             runtime_flags["daemonize"]
             and not runtime_flags["foreground"]
@@ -96,9 +102,29 @@ def dispatch_cli(
     return 0
 
 
+def _gpu_index_from_argv(runtime_argv: list[str]) -> int:
+    """Read --gpu-index N / --gpu-index=N from the passthrough argv (default 0)."""
+    for index, arg in enumerate(runtime_argv):
+        value = ""
+        if arg == "--gpu-index" and index + 1 < len(runtime_argv):
+            value = str(runtime_argv[index + 1]).strip()
+        elif arg.startswith("--gpu-index="):
+            value = arg.split("=", 1)[1].strip()
+        if value:
+            try:
+                return max(0, int(value))
+            except ValueError:
+                return 0
+    return 0
+
+
 def _require_selected_profile_exists(runtime_argv: list[str]) -> None:
+    from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
+
     selector = runtime_profile_selector_from_argv(runtime_argv)
-    if not selector:
+    if not selector or selector == STOCK_PROFILE_SELECTOR:
+        # Empty = latest; the stock sentinel = run at stock. Neither names a
+        # saved profile to validate.
         return
     if resolve_auto_uv_profile(
         selector,

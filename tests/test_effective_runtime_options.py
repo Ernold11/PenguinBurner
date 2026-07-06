@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
 from cli.effective_runtime_options import build_effective_auto_uv_runtime_options
-from drivers.nvidia.nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 
 
 def _args(**overrides):
@@ -43,7 +42,9 @@ def test_effective_runtime_options_apply_gui_scan_options_and_clamps() -> None:
     )
 
     assert effective["auto_uv_min_voltage_mv"] == 850
-    assert effective["auto_uv_memory_offset_mhz"] == MAX_AFTERBURNER_MEM_OFFSET_MHZ
+    # No static cap at CLI parse time: the Auto-UV apply path clamps against
+    # the driver-reported limit and logs the clamp.
+    assert effective["auto_uv_memory_offset_mhz"] == 99999
     assert effective["auto_uv_power_limit_w"] == 390
     assert effective["auto_uv_tail_rise_bins"] == AUTO_UV_DEFAULTS.max_tail_rise_bins
     assert effective["auto_oc_target_voltage_mv"] == 925

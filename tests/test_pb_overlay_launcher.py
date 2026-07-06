@@ -17,12 +17,16 @@ from overlay.state import (
 
 def test_pb_overlay_launcher_execs_with_layer_environment(monkeypatch, tmp_path) -> None:
     calls = []
+    monkeypatch.setenv("HOME", str(tmp_path))
     state_path = tmp_path / "overlay-state.txt"
     text_path = tmp_path / "overlay-text.txt"
     monkeypatch.setenv(OVERLAY_STATE_ENV, str(state_path))
     monkeypatch.setenv(OVERLAY_TEXT_ENV, str(text_path))
     monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
     native_layer_dir = _fake_native_layer_dir(tmp_path)
+    dxvk_layer_dir = tmp_path / "dxvk-nvapi-layer"
+    dxvk_layer_dir.mkdir()
+    monkeypatch.setattr(launcher, "_DXVK_NVAPI_LAYER_DIR", dxvk_layer_dir)
     monkeypatch.setenv(NATIVE_LAYER_DIR_ENV, str(native_layer_dir))
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setenv("LD_PRELOAD", "steam-overlay.so")
@@ -58,7 +62,7 @@ def test_pb_overlay_launcher_execs_with_layer_environment(monkeypatch, tmp_path)
     assert "VK_LAYER_PENGUINBURNER_latency" in env["VK_LOADER_LAYERS_ENABLE"]
     assert "VK_LAYER_DXVK_NVAPI_reflex" in env["VK_LOADER_LAYERS_ENABLE"]
     assert str(native_layer_dir) in env["VK_ADD_IMPLICIT_LAYER_PATH"]
-    assert "third_party/dxvk-nvapi/build.layer" in env["VK_ADD_IMPLICIT_LAYER_PATH"]
+    assert str(dxvk_layer_dir) in env["VK_ADD_IMPLICIT_LAYER_PATH"]
     assert env[OVERLAY_STATE_ENV] == str(state_path)
     assert env[OVERLAY_TEXT_ENV] == str(text_path)
 
@@ -104,77 +108,29 @@ def test_configure_environment_keeps_explicit_overlay_env_over_alias() -> None:
     assert env[OVERLAY_ENABLE_ENV] == "0"
 
 
-def test_configure_environment_prefers_marker_log_with_patched_prefix(tmp_path) -> None:
-    off = {OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml"}
-    launcher.configure_penguin_burner_environment(off)
-    assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in off
-    assert "DXVK_NVAPI_LOG_LEVEL" not in off
-
-    _write_prefix_nvapi(tmp_path, supports_marker_log=True)
-    on = {
-        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
-        "PENGUIN_BURNER_INGAME_LATENCY": "1",
-        "STEAM_COMPAT_DATA_PATH": str(tmp_path),
-    }
-    launcher.configure_penguin_burner_environment(on)
-    assert on["DXVK_NVAPI_LATENCY_MARKER_LOG"] == "1"
-    assert "DXVK_NVAPI_LOG_LEVEL" not in on
-    assert "PROTON_LOG" not in on
-
-
-def test_configure_environment_falls_back_to_trace_with_unpatched_prefix(tmp_path) -> None:
-    _write_prefix_nvapi(tmp_path, supports_marker_log=False)
-    env = {
-        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
-        "PB_INGAME_LATENCY": "1",
-        "STEAM_COMPAT_DATA_PATH": str(tmp_path),
-    }
-
+def test_configure_environment_no_marker_output_without_prefix() -> None:
+    # Overlay on (default) -> in-game latency on, but with no prefix to front the
+    # shim it falls through and sets NO dxvk-nvapi trace/marker-log env: latency
+    # degrades to the Vulkan layer's own marker tap, never the heavy log.
+    env = {OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml"}
     launcher.configure_penguin_burner_environment(env)
-
     assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in env
-    assert env["DXVK_NVAPI_LOG_LEVEL"] == "trace"
-
-
-def test_configure_environment_ignores_patched_nvofapi_without_nvapi(tmp_path) -> None:
-    _write_prefix_nvapi(tmp_path, supports_marker_log=False)
-    nvofapi = tmp_path / "pfx/drive_c/windows/system32/nvofapi64.dll"
-    nvofapi.write_bytes(b"DXVK_NVAPI_LATENCY_MARKER_LOG")
-    env = {
-        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
-        "PB_INGAME_LATENCY": "1",
-        "STEAM_COMPAT_DATA_PATH": str(tmp_path),
-    }
-
-    launcher.configure_penguin_burner_environment(env)
-
-    assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in env
-    assert env["DXVK_NVAPI_LOG_LEVEL"] == "trace"
-
-
-def test_configure_environment_detects_marker_log_in_proton_command_path(
-    tmp_path,
-) -> None:
-    proton = tmp_path / "Proton-Test"
-    marker_dll = (
-        proton / "files/lib/wine/nvapi/x86_64-windows/nvapi64.dll"
-    )
-    marker_dll.parent.mkdir(parents=True)
-    marker_dll.write_bytes(b"abc DXVK_NVAPI_LATENCY_MARKER_LOG xyz")
-    proton.joinpath("proton").write_text("#!/bin/sh\n", encoding="utf-8")
-
-    env = {
-        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
-        "PB_INGAME_LATENCY": "1",
-    }
-
-    launcher.configure_penguin_burner_environment(
-        env,
-        command_args=[str(proton / "proton"), "waitforexitandrun"],
-    )
-
-    assert env["DXVK_NVAPI_LATENCY_MARKER_LOG"] == "1"
     assert "DXVK_NVAPI_LOG_LEVEL" not in env
+
+
+def test_overlay_on_defaults_ingame_latency_on() -> None:
+    # Enabling the overlay defaults the latency meter on (no explicit flag).
+    env = {OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml"}
+    launcher.configure_penguin_burner_environment(env)
+    assert launcher.ingame_latency_enabled(env)
+    assert env["PENGUIN_BURNER_LATENCY_DISPLAY"] == "1"
+
+
+def test_overlay_disabled_defaults_ingame_latency_off() -> None:
+    env = {OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml", "PB_OVERLAY": "0"}
+    launcher.configure_penguin_burner_environment(env)
+    assert not launcher.ingame_latency_enabled(env)
+    assert "PENGUIN_BURNER_LATENCY_DISPLAY" not in env
 
 
 def test_configure_environment_keeps_explicit_trace_last_resort() -> None:
@@ -206,7 +162,11 @@ def test_explicit_ingame_latency_zero_overrides_latency_alias() -> None:
 
 
 def test_ingame_latency_also_enables_display_tail() -> None:
-    off = {OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml"}
+    # Explicitly disabled -> no display tail (overrides the overlay default-on).
+    off = {
+        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
+        "PB_INGAME_LATENCY": "0",
+    }
     launcher.configure_penguin_burner_environment(off)
     assert "PENGUIN_BURNER_LATENCY_DISPLAY" not in off
     assert "PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID" not in off
@@ -239,6 +199,7 @@ def test_configure_environment_keeps_global_latency_config_full_path(tmp_path) -
 
 
 def test_pb_overlay_launcher_strips_mangohud_preload(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     calls = []
     state_path = tmp_path / "overlay-state.txt"
     text_path = tmp_path / "overlay-text.txt"
@@ -271,9 +232,136 @@ def test_pb_overlay_launcher_strips_mangohud_preload(monkeypatch, tmp_path) -> N
     assert "MANGOAPP_CONFIG" not in env
 
 
-def test_trace_fifo_path_is_in_cache_dir() -> None:
+def test_main_arms_refront_watcher_when_shim_active(monkeypatch, tmp_path) -> None:
+    """A real launch with the shim chosen spawns the detached re-front watcher
+    that survives the exec and outlasts Proton's nvapi64.dll clobber."""
+    _write_prefix_nvapi(tmp_path, supports_marker_log=False)  # stock real present
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    (shim_dir / "nvapi64.dll").write_bytes(b"MZ [pb-nvapi-shim] forwarder")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PENGUIN_BURNER_NVAPI_SHIM_DIR", str(shim_dir))
+    monkeypatch.setenv("PB_INGAME_LATENCY", "1")
+    monkeypatch.setenv("STEAM_COMPAT_DATA_PATH", str(tmp_path))
+    monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
+
+    spawned = []
+    monkeypatch.setattr(launcher, "spawn_refront_watcher", lambda env: spawned.append(env))
+    drained = []
+    monkeypatch.setattr(
+        launcher,
+        "spawn_detached_drainer",
+        lambda env, path, session_pid=None: drained.append((path, session_pid)),
+    )
+
+    def fake_execvpe(file, args, env):
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
+
+    try:
+        launcher.main(["game"])
+    except RuntimeError:
+        pass
+
+    assert len(spawned) == 1
+    sys32 = tmp_path / "pfx/drive_c/windows/system32"
+    assert (sys32 / "nvapi64-pb.dll").is_file()  # shim deployed (real parked)
+    # The per-game FIFO drainer is armed with the wrapper pid (= the future
+    # Proton session) and the FIFO exists before the game could write to it.
+    assert drained == [(launcher.trace_fifo_path(dict(launcher.os.environ)), launcher.os.getpid())]
+    assert drained[0][0].is_fifo()
+
+
+def test_main_does_not_arm_watcher_without_ingame_latency(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
+    spawned = []
+    monkeypatch.setattr(launcher, "spawn_refront_watcher", lambda env: spawned.append(env))
+    drained = []
+    monkeypatch.setattr(
+        launcher,
+        "spawn_detached_drainer",
+        lambda env, path, session_pid=None: drained.append(path),
+    )
+
+    def fake_execvpe(file, args, env):
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
+
+    try:
+        launcher.main(["game"])
+    except RuntimeError:
+        pass
+
+    assert spawned == []  # no prefix -> no shim -> no re-front watcher
+    # In-game latency defaults on with the overlay, so stderr is routed into
+    # the FIFO even without the shim -- and a routed FIFO always needs its
+    # drainer, or plain game stderr could fill the pipe and stall the game.
+    assert len(drained) == 1
+
+
+def test_main_spawns_no_drainer_when_latency_opted_out(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
+    monkeypatch.setenv("PENGUIN_BURNER_INGAME_LATENCY", "0")
+    drained = []
+    monkeypatch.setattr(
+        launcher,
+        "spawn_detached_drainer",
+        lambda env, path, session_pid=None: drained.append(path),
+    )
+
+    def fake_execvpe(file, args, env):
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
+
+    try:
+        launcher.main(["game"])
+    except RuntimeError:
+        pass
+
+    assert drained == []  # latency off -> stderr untouched -> nothing to drain
+
+
+def test_trace_fifo_path_is_per_launch() -> None:
     p = launcher.trace_fifo_path({"HOME": "/home/jp"})
-    assert str(p) == "/home/jp/.cache/penguin-burner/nvapi-trace.fifo"
+    assert str(p) == (
+        f"/home/jp/.cache/penguin-burner/nvapi-trace.{launcher.os.getpid()}.fifo"
+    )
+
+
+def test_trace_fifo_path_honors_env_pin() -> None:
+    """Once the wrapper pins the path into the env, every consumer (shim wine
+    path, drainer --log, stderr route) resolves the same file."""
+    pinned = "/tmp/somewhere/nvapi-trace.1234.fifo"
+    env = {"HOME": "/home/jp", launcher.MARKER_FIFO_ENV: pinned}
+    assert str(launcher.trace_fifo_path(env)) == pinned
+
+
+def test_sweep_removes_only_readerless_fifos(tmp_path) -> None:
+    import os
+
+    env = {launcher.MARKER_FIFO_ENV: str(tmp_path / "nvapi-trace.1.fifo")}
+    stale = tmp_path / "nvapi-trace.2.fifo"
+    live = tmp_path / "nvapi-trace.3.fifo"
+    legacy = tmp_path / "nvapi-trace.fifo"
+    plain = tmp_path / "nvapi-trace.4.fifo.txt"
+    for fifo in (stale, live, legacy):
+        os.mkfifo(fifo)
+    plain.write_text("not a fifo")
+    reader = os.open(live, os.O_RDONLY | os.O_NONBLOCK)  # a live drainer
+    try:
+        launcher._sweep_stale_marker_fifos(env)
+    finally:
+        os.close(reader)
+
+    assert not stale.exists()  # readerless leftover reaped
+    assert not legacy.exists()  # old fixed-name FIFO reaped too
+    assert live.exists()  # another launch's drainer keeps its FIFO
+    assert plain.exists()  # non-FIFOs are never touched
 
 
 def _fake_native_layer_dir(tmp_path):

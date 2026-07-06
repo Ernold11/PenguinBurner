@@ -6,6 +6,7 @@ Build-Depends:
  debhelper-compat (= 13),
  cmake,
  g++,
+ g++-mingw-w64-x86-64,
  libvulkan-dev,
  python3,
  python3-build,

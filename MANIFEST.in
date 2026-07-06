@@ -5,8 +5,11 @@ include penguin_burner.sh
 include packaging/linux/*.desktop
 include overlay/native/latency_layer/CMakeLists.txt
 include overlay/native/latency_layer/VkLayer_PENGUINBURNER_latency.json.in
+include overlay/native/nvapi_shim/nvapi64.def
+include overlay/native/nvapi_shim/build.sh
 recursive-include docs *.md *.png *.svg
 recursive-include packaging/icons *.png *.svg
 recursive-include ui/assets *.png
 recursive-include tests *.py
 recursive-include overlay/native/latency_layer/src *.cpp *.h *.hpp
+recursive-include overlay/native/nvapi_shim/src *.cpp

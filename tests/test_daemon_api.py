@@ -12,6 +12,16 @@ from runtime import daemon_api
 from runtime.daemon_client import daemon_status
 
 
+@pytest.fixture(autouse=True)
+def _isolate_last_runtime_state(tmp_path, monkeypatch):
+    # The daemon prefers a persisted last-action file over the unit env autostart.
+    # Point it at a non-existent tmp path so tests never read the host's real
+    # /var/lib state (which would make a served daemon spuriously start a runtime).
+    monkeypatch.setattr(
+        daemon_api, "LAST_RUNTIME_STATE_PATH", tmp_path / "last-runtime.json"
+    )
+
+
 def test_daemon_status_payload_is_stable() -> None:
     payload = daemon_api.handle_request({"method": "status"})
 
@@ -91,9 +101,11 @@ def test_daemon_start_auto_uv_streams_process_lines(monkeypatch) -> None:
     assert restarted == [None]
 
 
-def test_daemon_stream_disconnect_keeps_scan_tracked_for_monitor(monkeypatch) -> None:
+def test_daemon_stream_disconnect_stops_scan_without_final_choice(monkeypatch) -> None:
     calls = []
     monitored = []
+    stop_requests = []
+    signals = []
 
     class FakeProcess:
         pid = 1234
@@ -104,6 +116,9 @@ def test_daemon_stream_disconnect_keeps_scan_tracked_for_monitor(monkeypatch) ->
 
         def wait(self, timeout=None):
             return 0
+
+        def send_signal(self, signum):
+            signals.append(signum)
 
     def fake_popen(command, **_kwargs):
         calls.append(list(command))
@@ -116,7 +131,16 @@ def test_daemon_stream_disconnect_keeps_scan_tracked_for_monitor(monkeypatch) ->
         lambda: "/tmp/penguin_burner.py",
     )
     monkeypatch.setattr(daemon_api, "_stop_autostart_runtime_for_scan", lambda: None)
-    monkeypatch.setattr(daemon_api, "_start_detached_scan_monitor", monitored.append)
+    monkeypatch.setattr(
+        daemon_api,
+        "_start_detached_scan_monitor",
+        lambda process, **kwargs: monitored.append((process, kwargs)),
+    )
+    monkeypatch.setattr(
+        daemon_api,
+        "_write_auto_uv_stop_request",
+        lambda **kwargs: stop_requests.append(kwargs),
+    )
     monkeypatch.setattr(daemon_api, "_ACTIVE_SCAN_PROCESS", None)
     monkeypatch.setattr(daemon_api, "_ACTIVE_SCAN_ARGV", [])
 
@@ -129,8 +153,11 @@ def test_daemon_stream_disconnect_keeps_scan_tracked_for_monitor(monkeypatch) ->
     assert calls
     assert started["control"] == "started"
     assert line["line"] == "first line\n"
-    assert daemon_api._ACTIVE_SCAN_PROCESS is monitored[0]
+    assert daemon_api._ACTIVE_SCAN_PROCESS is monitored[0][0]
     assert daemon_api.status_payload()["state"] == "auto_uv_scan_running"
+    assert stop_requests == [{"abort_final_choice": True}]
+    assert signals == [daemon_api.signal.SIGINT]
+    assert monitored[0][1] == {"kill_after_s": 30.0}
 
 
 def test_daemon_start_auto_uv_rejects_unknown_options() -> None:

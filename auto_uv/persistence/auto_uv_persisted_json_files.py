@@ -47,6 +47,17 @@ def auto_uv_stop_requested() -> bool:
     return auto_uv_stop_request_path().exists()
 
 
+def auto_uv_stop_request_aborts_final_choice() -> bool:
+    try:
+        request_text = auto_uv_stop_request_path().read_text(
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (FileNotFoundError, OSError):
+        return False
+    return "abort-final-choice" in request_text.lower()
+
+
 def clear_auto_uv_stop_request() -> None:
     try:
         auto_uv_stop_request_path().unlink()

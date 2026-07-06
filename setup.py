@@ -17,6 +17,9 @@ ROOT = Path(__file__).resolve().parent
 NATIVE_LAYER_SOURCE_DIR = ROOT / "overlay" / "native" / "latency_layer"
 NATIVE_LAYER_LIBRARY = "libVkLayer_penguinburner_latency.so"
 NATIVE_LAYER_MANIFEST = "VkLayer_PENGUINBURNER_latency.json"
+NVAPI_SHIM_SOURCE_DIR = ROOT / "overlay" / "native" / "nvapi_shim"
+NVAPI_SHIM_DLL = "nvapi64.dll"
+NVAPI_SHIM_COMPILER = "x86_64-w64-mingw32-g++"
 
 # README uses repo-relative image/link paths so it renders on GitHub and in the
 # local docs preview. PyPI does not resolve relative paths, so rewrite them to
@@ -64,6 +67,7 @@ class build_py(_build_py):
     def run(self) -> None:
         super().run()
         self._build_native_latency_layer()
+        self._build_nvapi_shim()
 
     def _build_native_latency_layer(self) -> None:
         if _env_flag_disabled("PENGUIN_BURNER_BUILD_NATIVE_LAYER"):
@@ -124,6 +128,66 @@ class build_py(_build_py):
         if require:
             raise RuntimeError(message)
         self.warn(f"{message}; installing Python package without native overlay layer")
+
+    def _build_nvapi_shim(self) -> None:
+        # Cross-compile the drop-in NVAPI latency shim (a PE nvapi64.dll) with
+        # MinGW and stage it inside the package. Optional: when MinGW is absent
+        # the in-game latency path simply falls back to dxvk-nvapi marker-log /
+        # trace, so a missing toolchain is a warning, not a failure.
+        if _env_flag_disabled("PENGUIN_BURNER_BUILD_NVAPI_SHIM"):
+            return
+        require_shim = _env_flag_enabled("PENGUIN_BURNER_REQUIRE_NVAPI_SHIM")
+        source = NVAPI_SHIM_SOURCE_DIR / "src" / "nvapi_shim.cpp"
+        def_file = NVAPI_SHIM_SOURCE_DIR / NVAPI_SHIM_DLL.replace(".dll", ".def")
+        if not source.exists() or not def_file.exists():
+            return
+        compiler = shutil.which(NVAPI_SHIM_COMPILER)
+        if not compiler:
+            self._nvapi_shim_unavailable(
+                f"{NVAPI_SHIM_COMPILER} (MinGW) is required to build the NVAPI shim",
+                require=require_shim,
+            )
+            return
+        output_dir = Path(self.build_lib) / "overlay" / "nvapi_shim"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output = output_dir / NVAPI_SHIM_DLL
+        try:
+            subprocess.check_call(
+                [
+                    compiler,
+                    "-O2",
+                    "-shared",
+                    "-std=c++17",
+                    "-fno-exceptions",
+                    "-fno-rtti",
+                    "-static",
+                    "-static-libgcc",
+                    "-static-libstdc++",
+                    "-o",
+                    str(output),
+                    str(source),
+                    str(def_file),
+                    "-lkernel32",
+                ]
+            )
+        except subprocess.CalledProcessError as exc:
+            if output.exists():
+                output.unlink()
+            self._nvapi_shim_unavailable(
+                f"NVAPI shim build failed: {exc}",
+                require=require_shim,
+            )
+            return
+        if not output.exists():
+            self._nvapi_shim_unavailable(
+                f"NVAPI shim build did not produce {output}",
+                require=require_shim,
+            )
+
+    def _nvapi_shim_unavailable(self, message: str, *, require: bool) -> None:
+        if require:
+            raise RuntimeError(message)
+        self.warn(f"{message}; installing Python package without the NVAPI latency shim")
 
 
 class bdist_wheel(_bdist_wheel):

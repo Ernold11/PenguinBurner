@@ -6,7 +6,7 @@ This is the only Auto-UV module that creates NVAPI/NVML helpers and applies curv
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable, cast
 
 from drivers.nvidia.hidden_nvapi_vf import (
     create_hidden_vf_curve_reader,
@@ -32,6 +32,7 @@ class LiveGpuVfCurveApplier:
     runtime_default_plan: list[dict]
     translated_gpu_policy: dict
     baseline_power_limit_w: int | None = None
+    requested_power_limit_w: int | None = None
     clock_ceiling: ProbeClockCeilingController | None = None
 
     @property
@@ -41,7 +42,9 @@ class LiveGpuVfCurveApplier:
 
     def apply_plan(self, plan: list[dict]) -> None:
         apply_plan(self.reader, plan)
-        self.reader.refresh_points()
+        refresh_points = getattr(self.reader, "refresh_points", None)
+        if callable(refresh_points):
+            refresh_points()
 
     def start_clock_ceiling(self, flatten_target: dict) -> None:
         self.clock_ceiling = ProbeClockCeilingController(
@@ -49,6 +52,27 @@ class LiveGpuVfCurveApplier:
             policy_controller=self.policy_controller,
         )
         self.clock_ceiling.apply()
+
+    def apply_requested_power_limit(self, *, log: Callable[[str], None]) -> int | None:
+        requested_w = _positive_power_limit_w(self.requested_power_limit_w)
+        if requested_w is None:
+            return self.power_limit_w
+        if self.power_limit_w == requested_w:
+            return self.power_limit_w
+        try:
+            applied_power_limit_w = self.policy_controller.apply_power_limit_w(
+                int(requested_w)
+            )
+        except Exception as exc:
+            raise AutoUvError(
+                f"failed to apply Auto-UV power limit {int(requested_w)}W: {exc}"
+            ) from exc
+        self.translated_gpu_policy["power_limit_w"] = int(applied_power_limit_w)
+        log(
+            "Auto-UV power limit: applied "
+            f"{int(applied_power_limit_w)}W for final verification"
+        )
+        return int(applied_power_limit_w)
 
     def close(self) -> None:
         if self.clock_ceiling is not None:
@@ -86,16 +110,28 @@ def open_live_gpu_vf_curve_applier(
         "gpu_name": runtime_reset.get("gpu_name"),
         "power_limit_w": baseline_power_limit_w,
     }
-    power_limit_w = _auto_uv_power_limit_w(runtime_options)
-    if power_limit_w is not None:
+    requested_power_limit_w = _auto_uv_power_limit_w(runtime_options)
+    if requested_power_limit_w is not None and (
+        baseline_power_limit_w is None
+        or int(requested_power_limit_w) >= int(baseline_power_limit_w)
+    ):
         try:
-            applied_power_limit_w = policy_controller.apply_power_limit_w(power_limit_w)
+            applied_power_limit_w = policy_controller.apply_power_limit_w(
+                int(requested_power_limit_w)
+            )
         except Exception as exc:
             raise AutoUvError(
-                f"failed to apply Auto-UV power limit {int(power_limit_w)}W: {exc}"
+                "failed to apply Auto-UV power limit "
+                f"{int(requested_power_limit_w)}W: {exc}"
             ) from exc
         translated_gpu_policy["power_limit_w"] = int(applied_power_limit_w)
         log(f"Auto-UV power limit: applied {int(applied_power_limit_w)}W")
+    elif requested_power_limit_w is not None and baseline_power_limit_w is not None:
+        log(
+            "Auto-UV power limit: keeping "
+            f"{int(baseline_power_limit_w)}W for discovery/sweep; "
+            f"will apply {int(requested_power_limit_w)}W for final verification"
+        )
 
     memory_offset_mhz, memory_offset_limit_mhz = auto_uv_memory_offset_mhz(
         runtime_options,
@@ -106,10 +142,39 @@ def open_live_gpu_vf_curve_applier(
         translated_gpu_policy["mem_clk_vf_offset_limit_mhz"] = int(
             memory_offset_limit_mhz
         )
+        raw_memory_offset = runtime_options.get(
+            "auto_uv_memory_offset_mhz",
+            runtime_options.get("memory_offset_mhz"),
+        )
+        if raw_memory_offset not in (None, "") and int(raw_memory_offset) != int(
+            memory_offset_mhz
+        ):
+            log(
+                f"Auto-UV memory offset: requested {int(raw_memory_offset)} MHz "
+                f"clamped to {int(memory_offset_mhz)} MHz "
+                f"(limit {int(memory_offset_limit_mhz)} MHz)"
+            )
         if int(memory_offset_mhz) != 0:
-            policy_controller.apply_clock_offsets(
+            applied_memory_offset = policy_controller.apply_clock_offsets(
                 mem_clk_vf_offset_mhz=int(memory_offset_mhz)
             )
+            readback_mhz = applied_memory_offset.get("mem_clk_vf_offset_readback_mhz")
+            if readback_mhz is None:
+                log(
+                    f"Auto-UV memory offset: applied {int(memory_offset_mhz):+d} MHz "
+                    "(driver does not support read-back)"
+                )
+            elif int(readback_mhz) == int(memory_offset_mhz):
+                log(
+                    f"Auto-UV memory offset: applied {int(memory_offset_mhz):+d} MHz, "
+                    f"NVML read-back confirms {int(readback_mhz):+d} MHz"
+                )
+            else:
+                log(
+                    f"Auto-UV memory offset MISMATCH: requested "
+                    f"{int(memory_offset_mhz):+d} MHz but NVML reads back "
+                    f"{int(readback_mhz):+d} MHz -- the driver clamped or ignored it"
+                )
 
     return LiveGpuVfCurveApplier(
         gpu_index=int(gpu_index),
@@ -119,6 +184,7 @@ def open_live_gpu_vf_curve_applier(
         runtime_default_plan=runtime_default_plan,
         translated_gpu_policy=translated_gpu_policy,
         baseline_power_limit_w=baseline_power_limit_w,
+        requested_power_limit_w=requested_power_limit_w,
     )
 
 
@@ -127,7 +193,7 @@ def _auto_uv_power_limit_w(runtime_options: dict) -> int | None:
     if value in (None, ""):
         return None
     try:
-        power_limit_w = int(round(float(value)))
+        power_limit_w = int(round(float(cast(Any, value))))
     except (TypeError, ValueError) as exc:
         raise AutoUvError(f"invalid Auto-UV power limit: {value!r}") from exc
     return power_limit_w if power_limit_w > 0 else None
@@ -137,7 +203,7 @@ def _positive_power_limit_w(value: object) -> int | None:
     if value in (None, ""):
         return None
     try:
-        power_limit_w = int(round(float(value)))
+        power_limit_w = int(round(float(cast(Any, value))))
     except (TypeError, ValueError):
         return None
     return power_limit_w if power_limit_w > 0 else None

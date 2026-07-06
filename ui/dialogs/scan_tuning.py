@@ -9,10 +9,12 @@ from ui.features.tuning.tuning import AUTO_UV_PRESET_PERFORMANCE
 from ui.features.tuning.tuning import DEFAULT_AUTO_UV_PRESET
 from ui.features.tuning.tuning import GPU_UNDERVOLTING_PURPOSE_TEXT
 from ui.features.tuning.tuning import auto_uv_clock_drop_default
+from ui.features.tuning.tuning import auto_uv_voltage_floor_range_mv
 from ui.features.tuning.tuning import auto_uv_nvml_info_text
 from ui.features.tuning.tuning import auto_uv_performance_preset_label
 from ui.features.tuning.tuning import auto_uv_performance_preset_tooltip
 from ui.features.tuning.tuning import auto_uv_performance_target_default
+from ui.features.tuning.tuning import auto_uv_power_limit_default
 from ui.features.tuning.tuning import auto_uv_preset
 from ui.features.tuning.tuning import auto_uv_presets
 from ui.features.tuning.tuning import auto_uv_voltage_drop_default
@@ -93,7 +95,9 @@ def select_scan_tuning(
         selected = _selected_gpu_index(gpu_combo, selected_gpu_index)
         info = read_auto_uv_nvml_info(selected)
         gpu_nvml_info.setText(auto_uv_nvml_info_text(info))
+        power_limit_controls["info"] = info
         _sync_power_limit_controls(power_limit_controls, info)
+        sync_power_limit_default()
 
     gpu_combo.currentIndexChanged.connect(lambda _index: sync_gpu_nvml_info())
     _add_form_row(
@@ -191,20 +195,45 @@ def select_scan_tuning(
     )
     max_clock_drop_spin.setObjectName("maxClockDropSpin")
     voltage_floor_spin = QtWidgets.QSpinBox()
-    voltage_floor_spin.setRange(700, 1250)
+    # Derive the settable floor from the live V/F curve: lower bound = the knee
+    # (lowest voltage with a real boost clock), upper = curve max. Below the knee
+    # the card sits on its idle shelf, so exposing e.g. 700 mV was meaningless.
+    floor_lo, floor_hi = auto_uv_voltage_floor_range_mv(gpu_index=selected_gpu_index)
+    voltage_floor_spin.setRange(floor_lo, floor_hi)
     voltage_floor_spin.setSuffix(" mV")
     voltage_floor_spin.setSingleStep(5)
     voltage_floor_spin.setFixedWidth(136)
-    voltage_floor_spin.setValue(
-        int(getattr(voltage_drop_default, "floor_voltage_mv", None) or 850)
-    )
+    default_floor = int(getattr(voltage_drop_default, "floor_voltage_mv", None) or 850)
+    voltage_floor_spin.setValue(max(floor_lo, min(default_floor, floor_hi)))
     memory_offset_spin = QtWidgets.QSpinBox()
     memory_offset_spin.setObjectName("memoryOffsetSpin")
-    memory_min_mhz, memory_max_mhz = memory_offset_mhz_range()
-    memory_offset_spin.setRange(memory_min_mhz, memory_max_mhz)
+    # The driver range and the applied offset are NVML transfer-rate units
+    # (MT/s); the realized memory clock moves by half. The user picks the memory
+    # clock (MHz) here, so the box works in MHz (half the MT/s range) and the
+    # equivalent MT/s is shown alongside. Converted back to MT/s on accept.
+    memory_min_mt_s, memory_max_mt_s = memory_offset_mhz_range()
+    memory_offset_spin.setRange(int(memory_min_mt_s) // 2, int(memory_max_mt_s) // 2)
     memory_offset_spin.setSuffix(" MHz")
-    memory_offset_spin.setSingleStep(50)
+    memory_offset_spin.setSingleStep(25)
     memory_offset_spin.setFixedWidth(136)
+    memory_offset_clock_label = QtWidgets.QLabel()
+    memory_offset_clock_label.setObjectName("memoryOffsetClockLabel")
+
+    def _update_memory_offset_clock_label(value: int) -> None:
+        # NVML memory offsets are transfer-rate units; the realized memory clock
+        # moves by half the offset (verified on Blackwell, issue #20), so the
+        # MT/s offset is twice the memory-clock value the user selects.
+        memory_offset_clock_label.setText(f"= +{int(value) * 2} MT/s transfer rate")
+
+    memory_offset_spin.valueChanged.connect(_update_memory_offset_clock_label)
+    _update_memory_offset_clock_label(memory_offset_spin.value())
+    memory_offset_widget = QtWidgets.QWidget()
+    memory_offset_layout = QtWidgets.QHBoxLayout(memory_offset_widget)
+    memory_offset_layout.setContentsMargins(0, 0, 0, 0)
+    memory_offset_layout.setSpacing(10)
+    memory_offset_layout.addWidget(memory_offset_spin)
+    memory_offset_layout.addWidget(memory_offset_clock_label)
+    memory_offset_layout.addStretch(1)
     power_limit_slider = QtWidgets.QSlider(_horizontal_orientation(QtCore))
     power_limit_slider.setObjectName("powerLimitSlider")
     power_limit_slider.setMinimumWidth(220)
@@ -313,13 +342,16 @@ def select_scan_tuning(
         QtCore=QtCore,
         QtWidgets=QtWidgets,
         form_layout=common_form,
-        text="Memory Offset MHz",
-        widget=memory_offset_spin,
+        text="Memory Offset",
+        widget=memory_offset_widget,
         tooltip=(
-            "Optional global memory clock V/F offset in MHz applied during the "
-            "Auto-UV scan and saved with the final profile. Higher values can "
-            "improve memory performance, but may introduce instability or be "
-            "rejected by the Nvidia driver; modify with care."
+            "Optional global memory clock V/F offset applied during the "
+            "Auto-UV scan and saved with the final profile. You set the memory "
+            "clock rise in MHz; the equivalent NVML transfer-rate offset (MT/s, "
+            "like Afterburner/LACT), which is twice the clock, is shown "
+            "alongside. The range is read from the driver for this GPU. Higher "
+            "values can improve memory performance, but may introduce "
+            "instability; modify with care."
         ),
     )
     _add_form_row(
@@ -367,11 +399,44 @@ def select_scan_tuning(
         max_clock_drop_spin.setValue(float(default.value_pct))
         clock_drop_syncing["active"] = False
 
+    power_limit_syncing = {"active": False}
+    power_limit_manual_override = {"active": False}
+
+    def mark_power_limit_manual_override(_value) -> None:
+        if not bool(power_limit_syncing["active"]):
+            power_limit_manual_override["active"] = True
+
+    def sync_power_limit_default() -> None:
+        if bool(power_limit_manual_override["active"]):
+            return
+        spin = power_limit_controls.get("spin")
+        slider = power_limit_controls.get("slider")
+        info = power_limit_controls.get("info")
+        if spin is None or slider is None or not spin.isEnabled():
+            return
+        selected = _selected_gpu_index(gpu_combo, selected_gpu_index)
+        default = auto_uv_power_limit_default(
+            max_w=getattr(info, "power_limit_max_w", None),
+            min_w=getattr(info, "power_limit_min_w", None),
+            default_w=getattr(info, "power_limit_default_w", None),
+            gpu_index=selected,
+            preset_id=checked_preset_id(),
+        )
+        if default.watts is None:
+            return
+        watts = max(spin.minimum(), min(spin.maximum(), int(default.watts)))
+        power_limit_syncing["active"] = True
+        spin.setValue(watts)
+        slider.setValue(watts)
+        power_limit_syncing["active"] = False
+
     def sync_preset_defaults() -> None:
         sync_preset_specific_fields()
         sync_clock_drop_default()
+        sync_power_limit_default()
 
     max_clock_drop_spin.valueChanged.connect(mark_clock_drop_manual_override)
+    power_limit_controls["spin"].valueChanged.connect(mark_power_limit_manual_override)
     gpu_combo.currentIndexChanged.connect(lambda _index: sync_clock_drop_default())
     preset_button_group.buttonClicked.connect(lambda _button: sync_preset_defaults())
     sync_preset_specific_fields()
@@ -427,7 +492,9 @@ def select_scan_tuning(
         "gpu_index": _selected_gpu_index(gpu_combo, selected_gpu_index),
         "auto_uv_mode": preset.auto_uv_mode,
         "auto_uv_max_clock_drop_pct": float(max_clock_drop_spin.value()),
-        "auto_uv_memory_offset_mhz": int(memory_offset_spin.value()),
+        # The box is in memory-clock MHz; the applied NVML offset is transfer
+        # rate (MT/s), which is twice the clock delta.
+        "auto_uv_memory_offset_mhz": int(memory_offset_spin.value()) * 2,
     }
     if power_limit_spin.isEnabled() and int(power_limit_spin.value()) > 0:
         options["auto_uv_power_limit_w"] = int(power_limit_spin.value())

@@ -723,11 +723,17 @@ def _maybe_reapply_vf_curve(
         and gpu_policy_controller is not None
     ):
         try:
-            gpu_policy_controller.apply_clock_offsets(
+            reapplied = gpu_policy_controller.apply_clock_offsets(
                 mem_clk_vf_offset_mhz=int(memory_offset_mhz)
             )
         except Exception as exc:
             deps.log(f"{timestamp} event=mem-offset-reapply-error error={exc}")
+        else:
+            deps.log(
+                f"{timestamp} event=mem-offset-reapplied "
+                f"requested={int(memory_offset_mhz)} "
+                f"readback={reapplied.get('mem_clk_vf_offset_readback_mhz')}"
+            )
 
     mismatch_preview = deps.format_vf_curve_mismatch_preview(vf_mismatches)
     deps.log(

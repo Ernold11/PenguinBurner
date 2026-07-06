@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import ui.features.tuning.gpu_selection as gpu_selection
 import ui.features.tuning.tuning as tuning
 from ui.features.tuning.gpu_selection import (
@@ -23,8 +25,24 @@ from ui.features.tuning.tuning import (
     auto_uv_performance_preset_label,
     auto_uv_performance_preset_tooltip,
     auto_uv_performance_target_default,
+    auto_uv_power_limit_default,
+    auto_uv_voltage_floor_range_mv,
     memory_offset_mhz_range,
 )
+
+
+class _FakeVfReader:
+    def __init__(self, points):  # points: list of (voltage_mv, clock_mhz)
+        self._points = points
+
+    def editable_core_points(self):
+        return [
+            {"voltage_uv": v * 1000, "base_freq_khz": c * 1000}
+            for v, c in self._points
+        ]
+
+    def close(self):
+        pass
 
 
 # --- ui/gpu_selection.py ------------------------------------------------------
@@ -139,6 +157,95 @@ def test_performance_preset_label_and_tooltip() -> None:
     assert "Performance Auto-OC ladder" in auto_uv_performance_preset_tooltip()
 
 
+def test_power_limit_default_caps_efficiency_from_stock_tgp() -> None:
+    # 5080 FE: default 360 W, driver range 300-390 W. The cap is a fraction of
+    # the STOCK budget, not the raised 390 W OC maximum.
+    default = auto_uv_power_limit_default(
+        max_w=390.0,
+        min_w=300.0,
+        default_w=360.0,
+        gpu_name="NVIDIA GeForce RTX 5080",
+        preset_id="efficiency",
+    )
+    assert default.preset_matched is True
+    # 88% stored less the fixed 12% efficiency reduction = 77.44%.
+    assert default.pct == pytest.approx(77.44)
+    # 360 W * 77.44% = 278.8 -> 279 W would drop under the 300 W driver floor,
+    # so the efficiency default clamps up to the 300 W hardware minimum.
+    assert default.watts == 300
+
+
+def test_power_limit_default_balanced_splits_efficiency_and_full() -> None:
+    default = auto_uv_power_limit_default(
+        max_w=390.0,
+        min_w=300.0,
+        default_w=360.0,
+        gpu_name="NVIDIA GeForce RTX 5080",
+        preset_id="balanced",
+    )
+    # Balanced is the midpoint of the reduced efficiency cap (77.44%) and 100%.
+    assert default.pct == pytest.approx(88.72)
+    # 360 W * 88.72% = 319.4 -> 319 W.
+    assert default.watts == 319
+
+
+def test_power_limit_default_performance_keeps_stock_board_power() -> None:
+    default = auto_uv_power_limit_default(
+        max_w=390.0,
+        default_w=360.0,
+        gpu_name="NVIDIA GeForce RTX 5080",
+        preset_id="performance",
+    )
+    # Performance means the stock budget, not the raised OC maximum.
+    assert default.pct == 100.0
+    assert default.watts == 360
+
+
+def test_power_limit_default_falls_back_to_max_without_default() -> None:
+    default = auto_uv_power_limit_default(
+        max_w=360.0,
+        gpu_name="NVIDIA GeForce RTX 5080",
+        preset_id="efficiency",
+    )
+    # No default_w and no min_w: base is max_w (360), reduced by efficiency to
+    # 360 * 77.44% = 278.8 -> 279 W, with no driver floor to clamp against.
+    assert default.watts == 279
+
+
+def test_power_limit_default_clamps_to_min_floor() -> None:
+    default = auto_uv_power_limit_default(
+        max_w=220.0,
+        min_w=180.0,
+        default_w=200.0,
+        gpu_name="NVIDIA GeForce RTX 5070",
+        preset_id="efficiency",
+    )
+    # 200 W * 80% = 160 W would drop under the 180 W driver floor.
+    assert default.watts == 180
+
+
+def test_power_limit_default_without_limits_is_unresolved() -> None:
+    default = auto_uv_power_limit_default(
+        max_w=None,
+        gpu_name="NVIDIA GeForce RTX 5080",
+        preset_id="efficiency",
+    )
+    assert default.watts is None
+    assert default.preset_matched is False
+
+
+def test_power_limit_default_unlisted_gpu_defaults_stock_power() -> None:
+    default = auto_uv_power_limit_default(
+        max_w=275.0,
+        default_w=250.0,
+        gpu_name="totally-unknown-gpu-9999",
+        preset_id="efficiency",
+    )
+    assert default.preset_matched is False
+    assert default.watts == 250
+    assert default.pct == 100.0
+
+
 def test_performance_target_default_for_unknown_gpu() -> None:
     target = auto_uv_performance_target_default(gpu_name="totally-unknown-gpu-9999")
     assert target.preset_matched is False
@@ -222,6 +329,25 @@ def test_memory_offset_range_falls_back_on_empty_range(monkeypatch) -> None:
         lambda *, gpu_index: _FakeController(gpu_index=gpu_index, driver_range=()),
     )
     assert memory_offset_mhz_range() == (0, 2000)
+
+
+def test_voltage_floor_range_knee_from_curve(monkeypatch) -> None:
+    # Idle shelf at 180 MHz; knee = lowest voltage reaching >= half the max clock
+    # (3000/2 = 1500): 750 mV -> 757 (below), 800 mV -> 1875 (at/above) -> knee 800.
+    points = [(700, 180), (750, 757), (800, 1875), (850, 2167), (1200, 3000)]
+    monkeypatch.setattr(
+        "drivers.nvidia.hidden_nvapi_vf.create_hidden_vf_curve_reader",
+        lambda *, gpu_index: _FakeVfReader(points),
+    )
+    assert auto_uv_voltage_floor_range_mv(gpu_index=0) == (800, 1200)
+
+
+def test_voltage_floor_range_falls_back_without_curve(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "drivers.nvidia.hidden_nvapi_vf.create_hidden_vf_curve_reader",
+        lambda *, gpu_index: None,
+    )
+    assert auto_uv_voltage_floor_range_mv(gpu_index=0) == (800, 1250)
 
 
 def test_tuning_uses_shared_runtime_gpu_index() -> None:

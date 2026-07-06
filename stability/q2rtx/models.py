@@ -7,6 +7,7 @@ from typing import Callable
 from .constants import (
     DEFAULT_DEMO_NAME,
     DEFAULT_DURATION_S,
+    DEFAULT_HANG_WATCHDOG_S,
     DEFAULT_HEIGHT,
     DEFAULT_LOG_DIR,
     DEFAULT_POLL_INTERVAL_S,
@@ -63,6 +64,7 @@ class Q2RTXStabilityConfig:
     log_dir: Path = DEFAULT_LOG_DIR
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S
     single_pass_timeout_s: float = DEFAULT_SINGLE_PASS_TIMEOUT_S
+    hang_watchdog_s: float = DEFAULT_HANG_WATCHDOG_S
     progress_callback: Callable[[dict], None] | None = None
     abort_callback: Callable[[dict], str | None] | None = None
     companion_command: tuple[str, ...] | None = None

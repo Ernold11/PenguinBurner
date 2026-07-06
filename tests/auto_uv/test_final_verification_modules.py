@@ -56,6 +56,25 @@ def test_final_probe_duration_split_keeps_cuda_inside_total_budget() -> None:
     assert (q2rtx_s, cuda_s) == (225, 75)
 
 
+def test_stop_request_abort_final_choice_marker(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(persisted_files, "auto_uv_user_config_dir", lambda: tmp_path)
+    stop_path = persisted_files.auto_uv_stop_request_path()
+
+    assert persisted_files.auto_uv_stop_request_aborts_final_choice() is False
+
+    stop_path.write_text(
+        "stop requested by PenguinBurner daemon client\nreason=offer-final-choice\n",
+        encoding="utf-8",
+    )
+    assert persisted_files.auto_uv_stop_request_aborts_final_choice() is False
+
+    stop_path.write_text(
+        "stop requested by PenguinBurner daemon client\nreason=abort-final-choice\n",
+        encoding="utf-8",
+    )
+    assert persisted_files.auto_uv_stop_request_aborts_final_choice() is True
+
+
 def test_final_probe_config_adds_cuda_and_long_timeout() -> None:
     config = final_q2rtx_cuda_probe_config(
         Q2RTXStabilityConfig(gpu_index=2, single_pass_timeout_s=9999.0),

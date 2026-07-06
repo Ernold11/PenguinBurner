@@ -19,6 +19,7 @@ from .framegen import _framegen_active_for_overlay
 from .framegen import _has_marker_stream
 from .layer_check import DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS
 from .nvapi_marker_bridge import NvapiMarkerBridge
+from ..shim_deploy import nvapi_shim_artifact
 from .samples import _int_value
 from .samples import _positive_us
 from .samples import normalize_timing_sample
@@ -200,6 +201,19 @@ def _select_base_marker_frametime_p95(
 def _dump_latency_data_enabled(env: dict[str, str] | None = None) -> bool:
     env = os.environ if env is None else env
     value = str(env.get(DUMP_LATENCY_DATA_ENV) or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+# The marker FIFO drainer is a detached per-game process spawned by the wrapper
+# (nvapi_marker_bridge.spawn_detached_drainer), so games are drained whether or
+# not the app runs. The in-app reader therefore stays off -- exactly one reader
+# must exist, or the two steal lines from each other. Debug-only re-enable:
+INAPP_MARKER_BRIDGE_ENV = "PENGUIN_BURNER_INAPP_MARKER_BRIDGE"
+
+
+def _inapp_marker_bridge_enabled(env: dict[str, str] | None = None) -> bool:
+    env = os.environ if env is None else env
+    value = str(env.get(INAPP_MARKER_BRIDGE_ENV) or "").strip().lower()
     return value in {"1", "true", "yes", "on"}
 
 
@@ -785,13 +799,25 @@ class LatencyTelemetryLogger:
             "Latency telemetry launch options: "
             f"{DEFAULT_LATENCY_LAYER_LAUNCH_OPTIONS}"
         )
+        # Which in-game marker source this install can deploy -- makes a build
+        # that shipped without the shim DLL visible in bug reports instead of
+        # silently degrading to the layer tap (blind on frame-gen titles).
+        shim_dll = nvapi_shim_artifact()
+        if shim_dll is not None:
+            self.log(f"In-game latency marker source: nvapi shim ({shim_dll})")
+        else:
+            self.log(
+                "In-game latency marker source: Vulkan layer only -- the nvapi "
+                "shim DLL is missing from this install, so frame-generation "
+                "titles get no in-game latency"
+            )
         self._thread = threading.Thread(
             target=self._run,
             name="penguin-burner-latency-telemetry",
             daemon=True,
         )
         self._thread.start()
-        if self._start_nvapi_marker_bridge:
+        if self._start_nvapi_marker_bridge and _inapp_marker_bridge_enabled():
             log_path = self._nvapi_marker_log_path or self.paths[-1].with_name(
                 "nvapi-trace.fifo"
             )

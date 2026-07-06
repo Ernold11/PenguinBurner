@@ -70,7 +70,7 @@ def select_performance_auto_oc_candidate(
     target_voltage_mv: int | None = None,
     target_clock_mhz: int | None = None,
     measured_baseline_clock_mhz: float | int | None = None,
-) -> tuple[list[dict], int, int, AutoUvProbeSummary | None]:
+) -> tuple[list[dict], int, int, AutoUvProbeSummary | None, dict]:
     if str(auto_uv_mode) != AUTO_UV_MODE_PERFORMANCE:
         return (
             stable_plan,

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Callable
+from typing import Any, Callable, cast
 
 from stability.q2rtx.models import Q2RTXStabilityConfig
 from stability.q2rtx.process_harness import cleanup_managed_q2rtx_processes
@@ -28,7 +28,6 @@ from auto_uv.run.baseline_probe import (
     adjust_baseline_to_measured_clock,
     build_loaded_baseline_candidate,
     baseline_load_reference_power_limit_w,
-    lower_voltage_descent_enforces_clock_floor,
     require_probe_summary,
     retarget_clock_ceiling_for_candidate,
     run_discovery_probe,
@@ -76,7 +75,10 @@ from ui.features.auto_uv.ui_json_event_writer import AutoUvEventCallback, emit_u
 from auto_uv.persistence.verified_candidate_result_file import (
     read_verified_candidates,
 )
-from auto_uv.persistence.auto_uv_persisted_json_files import clear_auto_uv_stop_request
+from auto_uv.persistence.auto_uv_persisted_json_files import (
+    auto_uv_stop_request_aborts_final_choice,
+    clear_auto_uv_stop_request,
+)
 from auto_uv.curve.vf_curve_flattening import build_flatten_target_for_plan
 from ui.features.auto_uv.vf_curve_ui_points import vf_curve_ui_points
 from auto_uv.run.voltage_sweep_state import (
@@ -132,9 +134,6 @@ def run_voltage_frequency_undervolt_main_loop(
             tail_rise_bins=int(tail_rise_bins),
         )
         descent_tail_rise_bins = int(tail_rise_bins)
-        enforce_descent_clock_floor = lower_voltage_descent_enforces_clock_floor(
-            tail_rise_bins=int(descent_tail_rise_bins),
-        )
         cleanup_managed_q2rtx_processes(q2rtx_config, log=log)
         base_curve = list(gpu.runtime_default_plan)
         validate_base_vf_curve(base_curve)
@@ -142,6 +141,18 @@ def run_voltage_frequency_undervolt_main_loop(
             event_callback,
             "base_curve",
             points=vf_curve_ui_points(base_curve),
+        )
+        # The applied NVML memory offset is a transfer rate (MT/s); the realized
+        # memory clock moves by half. Surface the clock delta so the status bar
+        # can show the currently applied memory offset for the whole run.
+        applied_memory_offset_mt_s = int(
+            gpu.translated_gpu_policy.get("mem_clk_vf_offset_mhz") or 0
+        )
+        emit_ui_json_event(
+            event_callback,
+            "memory_offset_applied",
+            offset_mt_s=int(applied_memory_offset_mt_s),
+            offset_mhz=int(applied_memory_offset_mt_s) // 2,
         )
         pending_recovery_selection = None
         if bool(runtime_options.get("auto_uv_require_final_choice")) and isinstance(
@@ -197,6 +208,9 @@ def run_voltage_frequency_undervolt_main_loop(
                             settings.short_probe_base_duration_s
                         ),
                         recovery_decision=recovery_decision,
+                        min_core_clock_pct=float(
+                            settings.min_performance_core_clock_pct
+                        ),
                     )
                 )
             else:
@@ -235,6 +249,9 @@ def run_voltage_frequency_undervolt_main_loop(
                                 settings.short_probe_base_duration_s
                             ),
                             recovery_decision=recovery_decision,
+                            min_core_clock_pct=float(
+                                settings.min_performance_core_clock_pct
+                            ),
                         )
                     )
             if pending_recovery_selection is not None:
@@ -407,13 +424,11 @@ def run_voltage_frequency_undervolt_main_loop(
 
         def probe_candidate(candidate: VfCurveCandidate) -> VoltageProbeOutcome:
             retarget_clock_ceiling_for_candidate(gpu.clock_ceiling, candidate)
-            probe_kwargs = {
-                "stable_history": stable_history,
-                "phase_label": "candidate",
-            }
-            if not bool(enforce_descent_clock_floor):
-                probe_kwargs["enforce_target_core_clock_floor"] = False
-            outcome = runner.probe_sweep_candidate(candidate, **probe_kwargs)
+            outcome = runner.probe_sweep_candidate(
+                candidate,
+                stable_history=stable_history,
+                phase_label="candidate",
+            )
             if outcome.raw_probe is not None:
                 probe_history.append(outcome.raw_probe)
             return outcome
@@ -459,6 +474,7 @@ def run_voltage_frequency_undervolt_main_loop(
             final_tail_rise_bins: int,
             final_auto_oc_metadata: dict | None = None,
         ):
+            apply_requested_power_limit_for_final_verification(gpu, log=log)
             return run_final_verification_and_save(
                 probe_voltage_candidate=probe_voltage_candidate,
                 build_voltage_scan_result=build_voltage_scan_result,
@@ -540,6 +556,9 @@ def run_voltage_frequency_undervolt_main_loop(
                 if selected_probe is not None:
                     stable_probe = selected_probe
         except KeyboardInterrupt:
+            if auto_uv_stop_request_aborts_final_choice():
+                clear_auto_uv_stop_request()
+                raise
             if not bool(runtime_options.get("auto_uv_require_final_choice")):
                 raise
             user_stop_final_choice = True
@@ -771,6 +790,7 @@ def select_final_scan_candidate(
             short_probe_base_duration_s=int(settings.short_probe_base_duration_s),
             tail_rise_bins=int(tail_rise_bins),
             request_reason=str(request_reason or "sweep-complete"),
+            min_core_clock_pct=float(settings.min_performance_core_clock_pct),
         )
         final_verification_duration_s = int(selected_final_verification_duration_s)
         if selected_stable_probe is not None:
@@ -795,6 +815,19 @@ def final_verification_failure_can_offer_retry(
     if not bool(runtime_options.get("auto_uv_require_final_choice")):
         return False
     return str(exc).startswith("final long verification failed:")
+
+
+def apply_requested_power_limit_for_final_verification(gpu, *, log) -> int | None:
+    apply_power_limit = getattr(gpu, "apply_requested_power_limit", None)
+    if callable(apply_power_limit):
+        applied_power_limit_w = apply_power_limit(log=log)
+        return (
+            int(cast(Any, applied_power_limit_w))
+            if applied_power_limit_w is not None
+            else None
+        )
+    power_limit_w = getattr(gpu, "power_limit_w", None)
+    return int(power_limit_w) if power_limit_w is not None else None
 
 
 def choose_next_candidate_after_final_failure(
@@ -851,6 +884,7 @@ def choose_next_candidate_after_final_failure(
         initial_target_voltage_mv=int(baseline_candidate.voltage_mv),
         short_probe_base_duration_s=int(short_probe_base_duration_s),
         recovery_decision=recovery_decision,
+        min_core_clock_pct=float(settings.min_performance_core_clock_pct),
     )
     if selection is None:
         log_phase(
@@ -1043,6 +1077,7 @@ def run_recovered_previous_crash_selection(
         request_reason="sweep-complete",
     )
 
+    apply_requested_power_limit_for_final_verification(gpu, log=log)
     return run_final_verification_and_save(
         probe_voltage_candidate=probe_voltage_candidate,
         build_voltage_scan_result=build_voltage_scan_result,

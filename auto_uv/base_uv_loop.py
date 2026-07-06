@@ -15,7 +15,7 @@ decision flow.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Callable
+from typing import Any, Callable, cast
 
 from auto_uv.domain.types import (
     FailureKind,
@@ -38,6 +38,7 @@ from auto_uv.curve.flattened_voltage_probe_curve import build_flattened_voltage_
 from auto_uv.run.lower_voltage_probe_target import (
     base_curve_target_for_lower_voltage,
     lower_voltage_phase,
+    scan_clock_floor_mhz,
 )
 from auto_uv.run.lower_voltage_search import select_next_lower_voltage
 from auto_uv.persistence.unsafe_voltage_cache import (
@@ -127,8 +128,9 @@ def run_base_uv_loop(
             min_search_voltage_mv=min_search_voltage_mv,
             failed_floor_voltage_mv=unsafe_floor_mv,
         ),
-        stable_measured_target_mhz=measured_target_from_outcome(
-            initial_stable_outcome
+        stable_measured_target_mhz=propagated_measured_target_mhz(
+            initial_stable_candidate,
+            initial_stable_outcome,
         ),
     )
     latest_stable_candidate = initial_stable_candidate
@@ -347,6 +349,12 @@ def build_next_lower_voltage_candidate(
         candidate_voltage_mv=int(state.next_voltage_mv),
         stable_target_mhz=int(state.stable_target_mhz),
         stable_measured_target_mhz=state.stable_measured_target_mhz,
+        baseline_core_clock_mhz=settings.baseline_core_clock_mhz,
+        min_core_clock_pct=settings.min_core_clock_pct,
+    )
+    floor_mhz = scan_clock_floor_mhz(
+        baseline_core_clock_mhz=settings.baseline_core_clock_mhz,
+        min_core_clock_pct=settings.min_core_clock_pct,
     )
     phase = lower_voltage_phase(
         start_voltage_mv=int(settings.start_voltage_mv),
@@ -364,15 +372,50 @@ def build_next_lower_voltage_candidate(
         metadata={
             "tail_rise_bins": int(tail_rise_bins),
             "target_policy": "hold-required-clock",
+            **(
+                {
+                    "scan_clock_floor_mhz": int(floor_mhz),
+                    "scan_clock_floor_pct": float(settings.min_core_clock_pct),
+                    "scan_clock_floor_reference_mhz": float(
+                        settings.baseline_core_clock_mhz or 0.0
+                    ),
+                }
+                if floor_mhz is not None
+                else {}
+            ),
         },
     )
     return candidate, state
 
 
-def measured_target_from_outcome(outcome: VoltageProbeOutcome | None) -> int | None:
+def propagated_measured_target_mhz(
+    candidate: VfCurveCandidate,
+    outcome: VoltageProbeOutcome | None,
+) -> int:
     if outcome is None or outcome.measured_core_clock_mhz is None:
-        return None
-    return int(outcome.measured_core_clock_mhz)
+        return int(candidate.target_mhz)
+    measured_mhz = int(outcome.measured_core_clock_mhz)
+    if (
+        measured_mhz < int(candidate.target_mhz)
+        and outcome_indicates_power_cap(outcome)
+    ):
+        return int(candidate.target_mhz)
+    return int(measured_mhz)
+
+
+def outcome_indicates_power_cap(outcome: VoltageProbeOutcome) -> bool:
+    reason = probe_perf_cap_reason(outcome.raw_probe)
+    if not reason:
+        return False
+    return any("power" in token for token in reason.replace(",", "+").split("+"))
+
+
+def probe_perf_cap_reason(raw_probe: object) -> str:
+    if raw_probe is None:
+        return ""
+    if isinstance(raw_probe, dict):
+        return str(raw_probe.get("perf_cap_reason") or "").strip().lower()
+    return str(getattr(raw_probe, "perf_cap_reason", "") or "").strip().lower()
 
 
 def decide_passed_probe(
@@ -486,13 +529,7 @@ def state_for_selected_candidate(
     candidate: VfCurveCandidate,
     outcome: VoltageProbeOutcome | None,
 ) -> VoltageSweepState:
-    measured_target_mhz = int(
-        (
-            outcome.measured_core_clock_mhz
-            if outcome is not None and outcome.measured_core_clock_mhz is not None
-            else candidate.target_mhz
-        )
-    )
+    measured_target_mhz = propagated_measured_target_mhz(candidate, outcome)
     return replace(
         state,
         stable_voltage_mv=int(candidate.voltage_mv),
@@ -519,8 +556,9 @@ def voltage_drop_from_start_pct(*, start_voltage_mv: int, candidate_voltage_mv: 
 
 
 def float_or_none(value: object) -> float | None:
+    raw_value = cast(Any, value)
     try:
-        return None if value is None else float(value)
+        return None if raw_value is None else float(raw_value)
     except (TypeError, ValueError):
         return None
 
@@ -573,7 +611,7 @@ def accept_voltage_probe(
     outcome: VoltageProbeOutcome,
     min_search_voltage_mv: int | None,
 ) -> tuple[VfCurveCandidate, VoltageSweepState]:
-    measured_target_mhz = int(outcome.measured_core_clock_mhz or candidate.target_mhz)
+    measured_target_mhz = propagated_measured_target_mhz(candidate, outcome)
     reference_voltage_mv = (
         float(outcome.measured_voltage_mv)
         if outcome.measured_voltage_mv is not None

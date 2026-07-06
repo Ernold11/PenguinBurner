@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 
 from .config import OVERLAY_CONFIG_ENV, default_overlay_config_path
 from .native_layer import LATENCY_LAYER_NAME
 from .native_layer import native_layer_dirs
+from .shim_deploy import deploy_nvapi_shim, spawn_refront_watcher
+from .telemetry.nvapi_marker_bridge import spawn_detached_drainer
 from .state import (
     OVERLAY_ENABLE_ENV_ALIAS,
     OVERLAY_ENABLE_ENV,
@@ -50,6 +54,19 @@ def ingame_latency_enabled(env: dict[str, str]) -> bool:
     for key in (INGAME_LATENCY_ENV, INGAME_LATENCY_ENV_ALIAS):
         if str(env.get(key) or "").strip().lower() in _TRUTHY:
             return True
+    # No explicit setting: default the latency meter ON whenever the overlay is
+    # enabled, so turning on the overlay just gives you latency too. Opt out with
+    # PENGUIN_BURNER_INGAME_LATENCY=0 (or PB_INGAME_LATENCY=0).
+    return _overlay_enabled(env)
+
+
+def _overlay_enabled(env: dict[str, str]) -> bool:
+    for key in (OVERLAY_ENABLE_ENV, OVERLAY_ENABLE_ENV_ALIAS):
+        value = str(env.get(key) or "").strip().lower()
+        if value in _FALSEY:
+            return False
+        if value:  # "1", "auto", etc.
+            return True
     return False
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -68,17 +85,101 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     env = dict(os.environ)
-    configure_penguin_burner_environment(env, command_args=args)
+    shim_active = configure_penguin_burner_environment(env, command_args=args)
     _remove_mangohud_environment(env)
     _prepare_overlay_paths(env)
+    if shim_active:
+        # Proton clobbers our pre-exec shim during prefix setup; this detached
+        # watcher re-fronts it across that window and survives the exec below.
+        # Spawn it before _route_trace_to_fifo so the watcher inherits the
+        # console stderr -- not the marker FIFO that fd 2 is about to become,
+        # which would feed its diagnostics into the bridge as bogus markers.
+        spawn_refront_watcher(env)
     if ingame_latency_enabled(env):
+        # The FIFO must always have a drainer for as long as it can have
+        # writers, or the 64 KB pipe fills and the shim's marker write (and any
+        # stderr write) blocks the game. The drainer's lifetime is tied to this
+        # pid (the exec below turns it into the Proton session) plus the FIFO's
+        # writer count -- NOT to the app, which may be closed the whole time.
+        # Same stderr caveat as the watcher: spawn before the redirect.
+        _sweep_stale_marker_fifos(env)
+        if _create_marker_fifo(env):
+            spawn_detached_drainer(
+                env, trace_fifo_path(env), session_pid=os.getpid()
+            )
         _route_trace_to_fifo(env)
     os.execvpe(args[0], args, env)
     return 127
 
 
+SHIM_OUTPUT_ENV = "PENGUIN_BURNER_SHIM_OUTPUT"
+# The per-launch marker FIFO path, pinned into the env so the wrapper, the shim
+# (via its Z:\ wine path) and the detached drainer all agree on one file.
+MARKER_FIFO_ENV = "PENGUIN_BURNER_MARKER_FIFO"
+
+
 def trace_fifo_path(env: dict[str, str]) -> Path:
-    return _home_latency_socket_path(env).with_name("nvapi-trace.fifo")
+    """The marker FIFO for this launch.
+
+    One FIFO *per game session* (named by the wrapper's pid, which exec turns
+    into the Proton session's): each launch gets its own drainer, so two
+    concurrently wrapped games never share a pipe -- a shared FIFO with one
+    reader per wrapper would have the readers stealing each other's lines.
+    """
+    explicit = str(env.get(MARKER_FIFO_ENV) or "").strip()
+    if explicit:
+        return Path(explicit)
+    return _home_latency_socket_path(env).with_name(
+        f"nvapi-trace.{os.getpid()}.fifo"
+    )
+
+
+def _fifo_wine_path(env: dict[str, str]) -> str:
+    # Wine maps the unix filesystem root to Z:. The shim runs inside the prefix,
+    # so the marker FIFO (created by the launcher on the host) is reachable at
+    # its Z:\ path; opening it by path sidesteps the broken inherited fd 2.
+    return "Z:" + str(trace_fifo_path(env)).replace("/", "\\")
+
+
+def _create_marker_fifo(env: dict[str, str]) -> bool:
+    """Create this launch's marker FIFO. False when the filesystem refuses."""
+    fifo = trace_fifo_path(env)
+    try:
+        fifo.parent.mkdir(parents=True, exist_ok=True)
+        if not fifo.exists():
+            os.mkfifo(fifo, 0o600)
+        return True
+    except OSError:
+        return False
+
+
+def _sweep_stale_marker_fifos(env: dict[str, str]) -> None:
+    """Unlink leftover per-launch marker FIFOs that no drainer reads anymore.
+
+    The drainer unlinks its own FIFO on exit; this catches the crash/SIGKILL
+    leftovers. A non-blocking write-only open of a FIFO fails with ENXIO
+    exactly when it has no reader -- a live drainer means skip it.
+    """
+    current = trace_fifo_path(env)
+    try:
+        siblings = list(current.parent.glob("nvapi-trace*.fifo"))
+    except OSError:
+        return
+    for path in siblings:
+        if path == current:
+            continue
+        try:
+            if not stat.S_ISFIFO(path.stat().st_mode):
+                continue
+            fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as error:
+            if error.errno == errno.ENXIO:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            continue
+        os.close(fd)  # a reader exists: another launch's drainer is live
 
 
 def _route_trace_to_fifo(env: dict[str, str]) -> None:
@@ -112,7 +213,9 @@ def configure_penguin_burner_environment(
     env: dict[str, str],
     *,
     command_args: list[str] | tuple[str, ...] | None = None,
-) -> None:
+) -> bool:
+    """Populate the launch env. Return True when the NVAPI shim is the marker
+    source (so the caller arms the re-front watcher)."""
     overlay_config_path = default_overlay_config_path(env)
     env.setdefault(OVERLAY_CONFIG_ENV, str(overlay_config_path))
     env.setdefault(MASTER_ENABLE_ENV, "1")
@@ -122,8 +225,14 @@ def configure_penguin_burner_environment(
     env.setdefault(DXVK_NVAPI_ENABLE_ENV, "1")
     env.setdefault("PROTON_ENABLE_NVAPI", "1")
     env.setdefault("PROTON_HIDE_NVIDIA_GPU", "0")
+    shim_active = False
     if ingame_latency_enabled(env):
-        _configure_dxvk_nvapi_marker_output(env, command_args=command_args)
+        # Pin this launch's marker FIFO before anything derives from it (the
+        # shim's SHIM_OUTPUT wine path, the drainer's --log, the stderr route).
+        env.setdefault(MARKER_FIFO_ENV, str(trace_fifo_path(env)))
+        shim_active = _configure_dxvk_nvapi_marker_output(
+            env, command_args=command_args
+        )
         # Fold the present->scanout display tail into the same opt-in. Both are
         # read-only/gated in the layer and inert where unsupported.
         env.setdefault(DISPLAY_LATENCY_ENV, "1")
@@ -133,132 +242,34 @@ def configure_penguin_burner_environment(
     env.setdefault(OVERLAY_TEXT_ENV, str(overlay_text_path(env)))
     _prepend_layer_paths(env)
     _prepend_enabled_layers(env)
+    return shim_active
 
 
 def _configure_dxvk_nvapi_marker_output(
     env: dict[str, str],
     *,
     command_args: list[str] | tuple[str, ...] | None = None,
-) -> None:
-    # If the user already forced full trace, honor it and avoid enabling
-    # marker-only logging too; emitting both formats would duplicate samples.
-    if str(env.get(DXVK_NVAPI_TRACE_ENV) or "").strip().lower() == "trace":
-        return
-
-    if str(env.get(DXVK_NVAPI_MARKER_LOG_ENV) or "").strip().lower() in _TRUTHY:
-        return
-
-    if dxvk_nvapi_marker_log_supported(env, command_args=command_args):
-        env.setdefault(DXVK_NVAPI_MARKER_LOG_ENV, "1")
-    else:
-        env.setdefault(DXVK_NVAPI_TRACE_ENV, "trace")
-
-
-def dxvk_nvapi_marker_log_supported(
-    env: dict[str, str],
-    *,
-    command_args: list[str] | tuple[str, ...] | None = None,
 ) -> bool:
-    prefix_candidates = list(_prefix_nvapi_dll_candidates(env))
-    if prefix_candidates:
-        return any(_dll_contains_marker_log_flag(path) for path in prefix_candidates)
-
-    return any(
-        _dll_contains_marker_log_flag(path)
-        for path in _proton_nvapi_dll_candidates(env, command_args=command_args)
-    )
-
-
-def _prefix_nvapi_dll_candidates(env: dict[str, str]):
-    data_path = str(env.get("STEAM_COMPAT_DATA_PATH") or "").strip()
-    if not data_path:
-        return
-    windows = Path(data_path).expanduser() / "pfx" / "drive_c" / "windows"
-    yield from _existing_paths(
-        (
-            windows / "system32" / "nvapi64.dll",
-            windows / "syswow64" / "nvapi.dll",
-        )
-    )
-
-
-def _proton_nvapi_dll_candidates(
-    env: dict[str, str],
-    *,
-    command_args: list[str] | tuple[str, ...] | None = None,
-):
-    roots: list[Path] = []
-    for key in ("STEAM_COMPAT_TOOL_PATHS", "STEAM_COMPAT_TOOL_PATH"):
-        value = str(env.get(key) or "").strip()
-        if not value:
-            continue
-        for item in value.split(os.pathsep):
-            if item:
-                roots.append(Path(item).expanduser())
-
-    for arg in command_args or ():
-        try:
-            path = Path(str(arg)).expanduser()
-        except OSError:
-            continue
-        if path.name == "proton":
-            roots.append(path.parent)
-
-    seen: set[Path] = set()
-    for root in roots:
-        try:
-            root = root.resolve()
-        except OSError:
-            pass
-        if root in seen:
-            continue
-        seen.add(root)
-        yield from _nvapi_dlls_under_proton_root(root)
-
-
-def _nvapi_dlls_under_proton_root(root: Path):
-    yield from _existing_paths(
-        (
-            root / "files" / "lib" / "wine" / "nvapi" / "x86_64-windows" / "nvapi64.dll",
-            root / "files" / "lib" / "wine" / "nvapi" / "i386-windows" / "nvapi.dll",
-            root
-            / "files"
-            / "lib"
-            / "wine"
-            / "nvidia-libs"
-            / "nvapi"
-            / "x86_64-windows"
-            / "nvapi64.dll",
-            root
-            / "files"
-            / "lib"
-            / "wine"
-            / "nvidia-libs"
-            / "nvapi"
-            / "i386-windows"
-            / "nvapi.dll",
-        )
-    )
-
-
-def _existing_paths(paths):
-    for path in paths:
-        try:
-            if path.is_file():
-                yield path
-        except OSError:
-            continue
-
-
-def _dll_contains_marker_log_flag(path: Path) -> bool:
-    needle = DXVK_NVAPI_MARKER_LOG_ENV.encode("ascii")
-    try:
-        with path.open("rb") as handle:
-            while chunk := handle.read(1024 * 1024):
-                if needle in chunk:
-                    return True
-    except OSError:
+    _ = command_args
+    # Debug escape: if the user explicitly forces dxvk-nvapi's own trace log
+    # (DXVK_NVAPI_LOG_LEVEL=trace), skip the shim and let it log. That path is
+    # heavy (every nvapi call) -- diagnostics only; the shim is the normal source.
+    if str(env.get(DXVK_NVAPI_TRACE_ENV) or "").strip().lower() == "trace":
         return False
+
+    # The drop-in NVAPI shim taps the Reflex markers above vkd3d's owner-gate (so
+    # it works under frame generation) and writes them to the marker FIFO the
+    # bridge drains -- no trace, no marker-log, no dxvk-nvapi fork. When there is
+    # no prefix to front, in-game latency falls back to the Vulkan layer's own
+    # vkSetLatencyMarkerNV tap (which covers the single-swapchain / non-FG case).
+    if deploy_nvapi_shim(env):
+        # The shim's default write to fd 2 silently fails in a GUI game process
+        # (msvcrt's std fd 2 isn't a writable handle for our loaded DLL: _write(2)
+        # returns EBADF with no syscall). Hand it the FIFO's wine path so it
+        # _open()s a fresh, valid fd. A user-set SHIM_OUTPUT (debug file) wins.
+        env.setdefault(SHIM_OUTPUT_ENV, _fifo_wine_path(env))
+        return True
+
     return False
 
 

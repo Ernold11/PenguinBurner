@@ -72,15 +72,13 @@ ITEM_TOOLTIPS = {
     "fan_pct": "Current reported GPU fan speed percentage. Missing fan data is hidden.",
     "temperature_c": "Current GPU temperature in C. Missing temperature data is hidden.",
     "latency_ms": (
-        "PC latency shown as render + display. Render is the Reflex-marker span "
-        "(input/sim to present, including the frame-gen hold); display is the "
-        "present->scanout tail measured via present-wait, added automatically "
-        "when supported (it grows with GPU/present-queue load). It still cannot "
-        "see mouse/USB latency before input sampling or final panel pixel "
-        "response, so it is close to but not exactly click-to-photon. This is the "
-        "default latency field. The copyable Steam launch string uses the "
-        "native Vulkan marker path; dxvk-nvapi marker parsing is only for "
-        "explicit testing."
+        "NVIDIA App-style PC latency for the game: render (Reflex input-to-present "
+        "span, including the frame-gen hold) plus the present->scanout display "
+        "tail, added automatically when supported. Measuring it injects a drop-in "
+        "nvapi64.dll into the game's Proton prefix to tap the game's own Reflex "
+        "markers, so it works even under frame generation; without the shim a "
+        "native Vulkan marker fallback covers the non-frame-gen case. Not exactly "
+        "click-to-photon -- mouse/USB input and panel pixel response are excluded."
     ),
     "uv_offset_mv": (
         "Current voltage delta from the stock VF point for the nearest active "

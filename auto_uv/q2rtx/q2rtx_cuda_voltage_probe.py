@@ -10,7 +10,10 @@ from stability.q2rtx.models import (
     StabilityTestError,
 )
 from stability.q2rtx.reporting import print_q2rtx_stability_result
-from stability.q2rtx.runtime import run_q2rtx_stability_test
+from stability.q2rtx.runtime import (
+    FRAME_HANG_WATCHDOG_REASON,
+    run_q2rtx_stability_test,
+)
 from stability.q2rtx.telemetry import query_gpu_metrics
 
 from auto_uv.domain.console_log import log_phase
@@ -86,6 +89,15 @@ def probe_voltage_candidate(
         "low_core_clock_streak": 0,
         "low_power_streak": 0,
     }
+
+    def reset_live_abort_streaks() -> None:
+        # The abort callback below is baked into probe_config, so a
+        # hang-confirmation re-probe shares this dict with the hung first run;
+        # without a reset it starts with the first run's accumulated streaks
+        # and can abort before its own samples justify it.
+        progress_state["low_core_clock_streak"] = 0
+        progress_state["low_power_streak"] = 0
+
     busy_power_floor_w, proper_run_power_floor_w = (
         live_probe_reference_floors(
             latest_stable_probe,
@@ -262,7 +274,12 @@ def probe_voltage_candidate(
             abort_callback=abort_callback,
         )
         try:
-            result = run_q2rtx_stability_test(probe_config)
+            result = run_probe_with_hang_confirmation(
+                probe_config,
+                log=log,
+                phase_label=str(phase_label),
+                reset_live_abort_state=reset_live_abort_streaks,
+            )
         except StabilityTestError:
             raise
         except Exception as exc:
@@ -320,6 +337,61 @@ def probe_voltage_candidate(
     finally:
         if mark_in_progress:
             clear_probe_in_progress_marker()
+
+
+def run_probe_with_hang_confirmation(
+    probe_config: Q2RTXStabilityConfig,
+    *,
+    log: Callable[[str], None],
+    phase_label: str,
+    reset_live_abort_state: Callable[[], None] | None = None,
+) -> Q2RTXStabilityResult:
+    """Run one probe; if the frame-hang watchdog trips, confirm with a re-probe.
+
+    A watchdog trip blacklists the voltage permanently, so a single trip is never
+    trusted on its own: we run the exact same probe once more. A transient hitch
+    renders normally on the retry (voltage kept); a real hang reproduces (voltage
+    blacklisted). Any non-hang result is returned as-is with no extra run.
+
+    ``reset_live_abort_state`` clears live-abort state shared between the two
+    runs through probe_config's abort callback; a hung first run leaves partial
+    low-power/low-clock streaks behind, and inheriting them would let the
+    confirmation run abort early with a blacklisting reason.
+    """
+    result = run_q2rtx_stability_test(probe_config)
+    if str(result.reason) != FRAME_HANG_WATCHDOG_REASON:
+        return result
+
+    log_phase(
+        log,
+        phase_label,
+        "frame-hang watchdog tripped; re-probing once to confirm before "
+        "treating the voltage as unsafe",
+    )
+    if reset_live_abort_state is not None:
+        reset_live_abort_state()
+    confirmation = run_q2rtx_stability_test(probe_config)
+    if str(confirmation.reason) == FRAME_HANG_WATCHDOG_REASON:
+        log_phase(
+            log,
+            phase_label,
+            "re-probe hung again - confirmed GPU hang, marking the voltage unsafe",
+        )
+    elif confirmation.success:
+        log_phase(
+            log,
+            phase_label,
+            "re-probe rendered normally - treating the first hang as transient "
+            "and keeping the voltage",
+        )
+    else:
+        log_phase(
+            log,
+            phase_label,
+            "re-probe did not hang but failed for another reason "
+            f"({confirmation.reason}); using the re-probe result",
+        )
+    return confirmation
 
 
 def live_probe_reference_floors(

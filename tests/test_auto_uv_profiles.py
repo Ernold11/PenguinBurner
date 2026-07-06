@@ -123,7 +123,8 @@ def test_profile_table_shows_copyable_id_and_keeps_date_separate_from_name() -> 
     assert "20260427-120000-000000-875mv-2610mhz" in rendered
     assert "Balanced" in rendered
     assert "2610 MHz 875 mV" in rendered
-    assert "+500" in rendered
+    # 500 MT/s transfer-rate offset -> 250 MHz realized memory clock.
+    assert "+250 MHz" in rendered
 
 
 def test_curve_editor_shortcut_legend_mentions_core_actions() -> None:
@@ -309,8 +310,10 @@ def test_profile_table_keeps_regular_font_for_highlight_and_deltas() -> None:
     assert profile_list.table.item(0, profile_list.POWER_COLUMN).text() == (
         "200.00 (-20.00%)"
     )
+    # The stored offset is an NVML transfer-rate value (MT/s); the table shows
+    # the realized memory clock in MHz (half of it) with a unit suffix.
     assert profile_list.table.item(0, profile_list.MEMORY_OFFSET_COLUMN).text() == (
-        "+1000"
+        "+500 MHz"
     )
     for column in range(profile_list.table.columnCount()):
         item = profile_list.table.item(0, column)

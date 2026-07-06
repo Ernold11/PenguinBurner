@@ -9,6 +9,7 @@ from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
 from auto_uv.scan_mode.uv_limits import (
     AUTO_UV_PERFORMANCE_OC_PROFILE_ID,
     uv_limit_clock_drop_pct_for_gpu,
+    uv_limit_power_limit_pct_for_gpu,
     uv_limit_profile_target_for_gpu,
     uv_limit_voltage_floor_target_for_gpu,
     voltage_drop_pct,
@@ -61,6 +62,15 @@ class AutoUvPerformanceTargetDefault:
 @dataclass(frozen=True, slots=True)
 class AutoUvClockDropDefault:
     value_pct: float
+    gpu_name: str | None
+    gpu_family: str | None
+    preset_matched: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AutoUvPowerLimitDefault:
+    watts: int | None
+    pct: float | None
     gpu_name: str | None
     gpu_family: str | None
     preset_matched: bool
@@ -188,6 +198,69 @@ def auto_uv_clock_drop_default(
     )
 
 
+def auto_uv_power_limit_default(
+    *,
+    max_w: float | None,
+    min_w: float | None = None,
+    default_w: float | None = None,
+    gpu_name: object | None = None,
+    gpu_index: int | None = None,
+    preset_id: object | None = AUTO_UV_PRESET_EFFICIENCY,
+) -> AutoUvPowerLimitDefault:
+    """Preset-aware default board-power cap in watts.
+
+    Savings-biased presets pair the V/F floor with a fraction of the card's
+    stock power budget (the driver default limit, not the raised OC maximum);
+    the performance preset (and any GPU not covered by the tier table) keeps
+    the stock board power budget so nothing is left on the table when the user
+    asked for headroom.
+    """
+    detected_name = str(gpu_name).strip() if gpu_name else _query_gpu_name(gpu_index)
+    preset = auto_uv_preset(preset_id)
+    max_watts = _positive_float(max_w)
+    base_watts = _positive_float(default_w) or max_watts
+    if base_watts is None:
+        return AutoUvPowerLimitDefault(
+            watts=None,
+            pct=None,
+            gpu_name=detected_name or None,
+            gpu_family=None,
+            preset_matched=False,
+        )
+    pct = uv_limit_power_limit_pct_for_gpu(detected_name, profile_id=preset.preset_id)
+    if pct is None:
+        return AutoUvPowerLimitDefault(
+            watts=int(round(base_watts)),
+            pct=100.0,
+            gpu_name=detected_name or None,
+            gpu_family=None,
+            preset_matched=False,
+        )
+    watts = int(round(base_watts * (float(pct) / 100.0)))
+    floor_watts = _positive_float(min_w)
+    if floor_watts is not None:
+        watts = max(int(round(floor_watts)), watts)
+    if max_watts is not None:
+        watts = min(int(round(max_watts)), watts)
+    return AutoUvPowerLimitDefault(
+        watts=watts,
+        pct=float(pct),
+        gpu_name=detected_name or None,
+        gpu_family=None,
+        preset_matched=True,
+    )
+
+
+def _positive_float(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0.0 else None
+
+
 def auto_uv_performance_target_default(
     *,
     gpu_name: object | None = None,
@@ -310,7 +383,57 @@ def memory_offset_mhz_range() -> tuple[int, int]:
         max_mhz = int(driver_max)
     except (TypeError, ValueError):
         return fallback
-    return 0, max(0, min(fallback[1], max_mhz))
+    # The driver-reported max is the real authority for this GPU; the static
+    # fallback cap only applies when NVML exposes no range.
+    return 0, max(0, max_mhz)
+
+
+def auto_uv_voltage_floor_range_mv(gpu_index: int | None = None) -> tuple[int, int]:
+    """Settable voltage-floor range (mV), derived from the live V/F curve.
+
+    Lower bound = the curve "knee": the lowest voltage that still holds a real
+    boost clock (at/above half the card's max base clock). Below the knee the
+    curve is the flat idle shelf (e.g. 180 MHz on Blackwell), so those voltages
+    are unreachable-under-load and pointless as a floor. Upper bound = the
+    curve's max voltage point. Falls back to (800, 1250) when the live curve
+    cannot be read (no GPU, non-editable driver, etc.).
+    """
+    fallback = (800, 1250)
+    index = (
+        runtime_gpu_index(default_runtime_config_path())
+        if gpu_index is None
+        else int(gpu_index)
+    )
+    reader = None
+    try:
+        from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
+
+        reader = create_hidden_vf_curve_reader(gpu_index=index)
+        if reader is None:
+            return fallback
+        points = [
+            (int(p["voltage_uv"]) // 1000, int(p["base_freq_khz"]) // 1000)
+            for p in reader.editable_core_points()
+        ]
+    except Exception:
+        return fallback
+    finally:
+        if reader is not None:
+            try:
+                reader.close()
+            except Exception:
+                pass
+    points = [(v, c) for v, c in points if v > 0 and c > 0]
+    if not points:
+        return fallback
+    max_clock = max(c for _, c in points)
+    max_voltage = max(v for v, _ in points)
+    # Knee: lowest voltage that reaches at least half the max base clock. Snap to
+    # the 5 mV spinbox step so the bound sits on a settable value.
+    useful = [v for v, c in points if c * 2 >= max_clock]
+    knee = min(useful) if useful else min(v for v, _ in points)
+    knee = int(round(knee / 5.0) * 5)
+    return (knee, int(max_voltage))
 
 
 def _query_gpu_name(gpu_index: int | None = None) -> str | None:

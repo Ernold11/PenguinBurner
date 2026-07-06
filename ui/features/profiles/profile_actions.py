@@ -4,6 +4,7 @@ import shlex
 
 from common.penguin_burner_paths import default_user_config_dir
 from curve_editors.uv.vf_curve_manual_editor import editable_anchor_from_profile
+from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 from profiles.uv.profile_store import delete_auto_uv_profile_paths
 from profiles.uv.profile_tiers import save_profile_tier_assignment
 from profiles.uv.profile_tiers import save_profile_tier_none_assignment
@@ -37,26 +38,32 @@ from ui.features.profiles.profiles import profile_is_deletable
 from ui.features.profiles.profiles import profile_status_label
 from ui.features.profiles.profiles import profile_verify_selector
 from ui.features.profiles.profiles import systemd_autostart_profile_info
+from ui.features.profiles.profiles import systemd_unit_entry_exists
 from ui.features.tuning.verify import stop_request_path as verify_stop_request_path
 from ui.features.tuning.verify import workload_label
 
 
 class ProfileActionsMixin:
+    def _apply_profile_action(self) -> str:
+        # Apply always goes through the root daemon ("daemonize" = socket call, no
+        # pkexec); the daemon persists the last action so it survives reboot.
+        # A one-time systemd install is only needed to ENABLE the daemon on boot
+        # when the user wants persistence and it is not set up yet -- that single
+        # case still needs one elevation. See CLAUDE.md.
+        if (
+            self.profile_list.persist_on_startup_enabled()
+            and not systemd_unit_entry_exists()
+        ):
+            return "install-systemd"
+        return "daemonize"
+
     def _run_selected_profile(self) -> None:
-        action = (
-            "install-systemd"
-            if self.profile_list.persist_on_startup_enabled()
-            else "daemonize"
-        )
-        self._run_runtime_action(action)
+        self._run_runtime_action(self._apply_profile_action())
 
     def _run_adaptive_profiles(self) -> None:
-        action = (
-            "install-systemd"
-            if self.profile_list.persist_on_startup_enabled()
-            else "daemonize"
+        self._run_runtime_action(
+            self._apply_profile_action(), adaptive_auto_uv=True
         )
-        self._run_runtime_action(action, adaptive_auto_uv=True)
 
     def _run_runtime_action(
         self,
@@ -124,6 +131,9 @@ class ProfileActionsMixin:
             self._persist_startup_preference(True)
         elif action == "uninstall-systemd":
             self._persist_startup_preference(False)
+        if action != "uninstall-systemd":
+            # A profile is now in effect, so the GPU is no longer at stock.
+            self._defaults_restored = False
         self.controls.set_status_text(
             self._runtime_action_start_text(action, adaptive_auto_uv=adaptive_auto_uv)
         )
@@ -133,6 +143,37 @@ class ProfileActionsMixin:
             f"adaptive-{action}" if adaptive_auto_uv else action,
             command,
             fail_text="Failed to start runtime profile action.",
+        )
+
+    def _restore_gpu_defaults(self) -> None:
+        if self._workflow_running():
+            return
+        # Elevated work goes through the already-root daemon (NO pkexec): ask it
+        # to run the reserved stock runtime. The daemon stops the current profile,
+        # resets the GPU to factory, applies no undervolt, and keeps running for
+        # fan control. See CLAUDE.md: privileged ops route through the daemon.
+        if not ensure_daemon_ready_for_privileged_action(
+            QtWidgets=self.QtWidgets,
+            parent=self.window,
+            log=self.log_view.append,
+            action_label="Restoring GPU to stock",
+        ):
+            return
+        command = runtime_profile_command(
+            "daemonize",
+            profile_selector=STOCK_PROFILE_SELECTOR,
+            silent_fan_curve=self.profile_list.silent_fan_enabled(),
+            gpu_index=self.gpu_index,
+        )
+        self.controls.set_status_text(
+            "Restoring GPU to stock (daemon keeps running, no undervolt)."
+        )
+        self._set_profile_actions_enabled(False)
+        self.controls.start_button.setEnabled(False)
+        self.command_controller.start(
+            "restore-keep-stock",
+            command,
+            fail_text="Failed to restore GPU to stock.",
         )
 
     def _run_delete_autostart_followup(
@@ -413,6 +454,11 @@ class ProfileActionsMixin:
             self._delete_switch_systemd_profile_id = ""
             self._load_profiles()
             return
+        if kind == "restore-keep-stock" and success:
+            # Daemon now runs the stock runtime (GPU at factory, no undervolt);
+            # reflect that as Default in the status line. Live daemon detection
+            # (running selector == stock sentinel) also drives this.
+            self._defaults_restored = True
         if success:
             self.controls.set_status_text(f"{label} complete.")
         else:
@@ -575,5 +621,7 @@ def _runtime_action_label(action: str) -> str:
         "adaptive-install-systemd": "Install adaptive startup profile",
         "uninstall-systemd": "Remove autostart entry",
         "delete-profiles": "Delete selected profiles",
+        "restore-defaults": "Restore GPU defaults",
+        "restore-keep-stock": "Keep GPU at stock",
     }
     return labels.get(str(action), str(action) or "Profile action")

@@ -268,10 +268,14 @@ def retarget_clock_ceiling(
 
 
 def auto_oc_should_stop(outcome: VoltageProbeOutcome) -> bool:
+    # A confirmed hang or CUDA fault at one ladder step makes every higher-clock
+    # step strictly more dangerous, so the search must not keep climbing.
     return outcome.decision.failure_kind in {
         FailureKind.FATAL_OUTPUT,
         FailureKind.NVIDIA_XID,
         FailureKind.USER_STOP,
+        FailureKind.GPU_HANG,
+        FailureKind.CUDA_FAILED,
     }
 
 

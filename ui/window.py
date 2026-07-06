@@ -41,6 +41,7 @@ from .models import stage_title
 from .models import status_value
 from .models import top_status_text
 from ui.features.profiles.profiles import load_profile_summaries
+from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 from ui.features.profiles.profiles import penguin_burner_runtime_is_active
 from ui.features.profiles.profiles import profile_for_selector
 from ui.features.profiles.profiles import runner_status_text
@@ -67,6 +68,9 @@ class MainWindow(ProfileActionsMixin):
         self.final_choice_aborted = False
         self._pre_scan_autostart: dict | None = None
         self.last_auto_uv_candidate_id = ""
+        # True once the user restored stock GPU settings and nothing has been
+        # applied since; drives the "Currently running profile: default" status.
+        self._defaults_restored = False
         self._delete_remove_systemd = False
         self._delete_switch_systemd_profile_id = ""
 
@@ -210,6 +214,9 @@ class MainWindow(ProfileActionsMixin):
         self.profile_list.remove_button.clicked.connect(
             lambda: self._run_runtime_action("uninstall-systemd")
         )
+        self.profile_list.restore_defaults_button.clicked.connect(
+            self._restore_gpu_defaults
+        )
         context_menu_policy = getattr(
             getattr(self.QtCore.Qt, "ContextMenuPolicy", self.QtCore.Qt),
             "CustomContextMenu",
@@ -223,6 +230,13 @@ class MainWindow(ProfileActionsMixin):
         self._sync_selected_tab_layout(self.tabs.currentIndex())
         self.window.setCentralWidget(root)
         self.window.setStyleSheet(STYLESHEET)
+        # Keep the "Currently running profile" line current even when the
+        # daemon/GPU state changes outside the UI (external CLI, a profile that
+        # exited, reboot). Lightweight: recomputes only the status text.
+        self._status_timer = self.QtCore.QTimer(self.window)
+        self._status_timer.setInterval(2000)
+        self._status_timer.timeout.connect(self._refresh_running_status)
+        self._status_timer.start()
 
     def show(self) -> None:
         self.window.show()
@@ -276,6 +290,8 @@ class MainWindow(ProfileActionsMixin):
         self.final_choice_discarded = False
         self.final_choice_aborted = False
         self.last_auto_uv_candidate_id = ""
+        # A scan applies its own curves, so the GPU is no longer at stock.
+        self._defaults_restored = False
         # Snapshot the autostart that the scan is about to disable so an aborted
         # run can restore it (profile + silent fan curve + adaptive setting). An
         # empty selector means nothing was autostarting -> nothing to restore.
@@ -289,6 +305,16 @@ class MainWindow(ProfileActionsMixin):
         self.log_view.append("$ " + " ".join(shlex.quote(part) for part in command) + "\n")
         self.header.set_stage("Starting")
         self.header.set_candidate("Writing to main Auto-UV profile store")
+        # Show the requested memory offset immediately; the scan later confirms
+        # the actually-applied (post-clamp) value via a memory_offset_applied
+        # event. NVML offsets are transfer-rate units (MT/s); the memory clock
+        # moves by half.
+        requested_memory_offset_mhz = (
+            int(options.get("auto_uv_memory_offset_mhz") or 0) // 2
+        )
+        self.controls.set_status_text(
+            _memory_offset_status_text(requested_memory_offset_mhz)
+        )
         self.controls.set_running(True)
         self.profile_list.set_runtime_actions_enabled(False)
         if not self.scan_controller.start(command):
@@ -338,6 +364,10 @@ class MainWindow(ProfileActionsMixin):
                 event_points(payload),
                 curve_id=candidate_id_from_payload(payload),
             )
+        elif event == "memory_offset_applied":
+            self.controls.set_status_text(
+                _memory_offset_status_text(payload.get("offset_mhz"))
+            )
         elif event == "final_choice_request":
             self._handle_final_choice_request(payload)
         elif event == "final_choice_discarded":
@@ -366,11 +396,13 @@ class MainWindow(ProfileActionsMixin):
             self.header.set_candidate(top_status_text(line))
 
     def _handle_dependency_progress(self, payload: dict) -> None:
+        # The download status lives in the progress bar; the status label keeps
+        # showing the applied memory offset so a terminal "Dependencies are
+        # ready" no longer sits in it for the whole run.
         detail = str(payload.get("detail") or "Downloading dependencies").strip()
         percent = payload.get("percent", 0)
         self.header.set_stage("Downloading dependencies")
         self.header.set_candidate("")
-        self.controls.set_status_text(detail)
         self.controls.set_dependency_progress(percent, detail=detail)
 
     def _handle_final_choice_request(self, payload: dict) -> None:
@@ -437,9 +469,9 @@ class MainWindow(ProfileActionsMixin):
             self._restore_pre_scan_autostart()
 
     def _restore_pre_scan_autostart(self) -> None:
-        # On abort, bring back the autostart profile the scan disabled, including
-        # its silent fan curve and adaptive setting. If nothing was autostarting
-        # before the scan there is nothing to restore.
+        # On abort, bring back the autostart profile the scan disabled through
+        # the already-root daemon. Reinstalling the systemd unit here would ask
+        # for pkexec again after every cancelled scan.
         snapshot = self._pre_scan_autostart
         self._pre_scan_autostart = None
         if not snapshot:
@@ -459,7 +491,7 @@ class MainWindow(ProfileActionsMixin):
                 # The daemon needs the fan payload on disk before it starts.
                 sync_profile_fan_payload(profile)
         command = runtime_profile_command(
-            "install-systemd",
+            "daemonize",
             profile_selector=restore_selector,
             silent_fan_curve=silent_fan,
             adaptive_auto_uv=adaptive,
@@ -468,11 +500,11 @@ class MainWindow(ProfileActionsMixin):
         self._persist_silent_fan_preference(silent_fan)
         self._persist_startup_preference(True)
         self.log_view.append(
-            "\nRestoring the previous autostart profile (incl. fan curve) after abort.\n"
+            "\nRestoring the previous autostart profile through the hardware service after abort.\n"
         )
         self._set_profile_actions_enabled(False)
         self.command_controller.start(
-            "adaptive-install-systemd" if adaptive else "install-systemd",
+            "adaptive-daemonize" if adaptive else "daemonize",
             command,
             fail_text="Failed to restore the previous autostart profile.",
         )
@@ -550,6 +582,37 @@ class MainWindow(ProfileActionsMixin):
             ),
         )
         self._set_profile_actions_enabled(not self._workflow_running())
+        self._refresh_running_status(running_info, autostart_info)
+
+    def _refresh_running_status(
+        self,
+        running_info: dict | None = None,
+        autostart_info: dict | None = None,
+    ) -> None:
+        """Recompute the 'Currently running profile' line from LIVE state.
+
+        Cheap enough to run on a timer so the line stays current even when the
+        daemon/GPU state changes outside the UI (external CLI, reboot, a profile
+        that exited). Skipped while a scan/command owns the status line.
+        """
+        if self._workflow_running() or self.command_controller.is_running():
+            return
+        if running_info is None:
+            running_info = (
+                running_auto_uv_profile_info()
+                if penguin_burner_runtime_is_active()
+                else {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+            )
+        if autostart_info is None:
+            autostart_info = systemd_autostart_profile_info()
+        # A live running profile always wins: it means the flag is stale, so
+        # clear it. This keeps the status honest if a profile is (re)applied
+        # outside the UI after a restore.
+        live_selector = str(running_info["selector"]).strip()
+        if live_selector and live_selector != STOCK_PROFILE_SELECTOR:
+            # A real profile is live -> the restore flag is stale; clear it. The
+            # stock sentinel is NOT a real profile, so it keeps "Default".
+            self._defaults_restored = False
         self.controls.set_status_text(
             runner_status_text(
                 self.profile_summaries,
@@ -557,6 +620,7 @@ class MainWindow(ProfileActionsMixin):
                 autostart_selector=str(autostart_info["selector"]),
                 running_silent_fan=bool(running_info["silent_fan_curve"]),
                 autostart_silent_fan=bool(autostart_info["silent_fan_curve"]),
+                defaults_restored=self._defaults_restored,
             )
         )
 
@@ -582,6 +646,17 @@ def _probe_text(payload: dict) -> str:
     voltage = status_value(payload.get("voltage_mv") or payload.get("candidate_voltage_mv"))
     clock = status_value(payload.get("clock_mhz") or payload.get("lock_clock_mhz"))
     return f"{voltage or 'n/a'} mV @ {clock or 'n/a'} MHz"
+
+
+def _memory_offset_status_text(offset_mhz) -> str:
+    """Status-bar text for the memory offset applied during the scan (MHz)."""
+    try:
+        mhz = int(offset_mhz)
+    except (TypeError, ValueError):
+        mhz = 0
+    if mhz == 0:
+        return "Memory offset: none"
+    return f"Memory offset: {mhz:+d} MHz memory clock"
 
 
 def _stop_request_path() -> Path:

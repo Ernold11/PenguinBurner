@@ -25,9 +25,30 @@ __all__ = [
     "apply_translated_gpu_policy",
     "clamp_afterburner_mem_offset_mhz",
     "describe_translated_gpu_policy",
+    "driver_memory_offset_limit_mhz",
     "translate_afterburner_gpu_policy",
     "translate_afterburner_power_limit_pct",
 ]
+
+
+def driver_memory_offset_limit_mhz(policy_controller=None) -> int:
+    """Positive memory-offset cap for this GPU.
+
+    The driver-reported max (``nvmlDeviceGetMemClkMinMaxVfOffset``) is the
+    real authority; the static Afterburner-style cap is only the fallback
+    when NVML does not expose a range.
+    """
+    if policy_controller is not None:
+        try:
+            driver_range = policy_controller.get_memory_clock_offset_range_mhz()
+        except Exception:
+            driver_range = None
+        if driver_range:
+            try:
+                return max(0, int(driver_range[1]))
+            except (TypeError, ValueError):
+                pass
+    return MAX_AFTERBURNER_MEM_OFFSET_MHZ
 
 
 class NvmlGpuPolicyController:
@@ -517,6 +538,9 @@ class NvmlGpuPolicyController:
                     f"nvmlDeviceSetGpcClkVfOffset failed with NVML error {rc}: {self.error_text(rc)}"
                 )
             applied["gpc_clk_vf_offset_mhz"] = int(gpc_clk_vf_offset_mhz)
+            applied["gpc_clk_vf_offset_readback_mhz"] = self._read_clock_offset(
+                "nvmlDeviceGetGpcClkVfOffset"
+            )
 
         if mem_clk_vf_offset_mhz is not None:
             setter = getattr(self._nvml, "nvmlDeviceSetMemClkVfOffset", None)
@@ -530,5 +554,10 @@ class NvmlGpuPolicyController:
                     f"nvmlDeviceSetMemClkVfOffset failed with NVML error {rc}: {self.error_text(rc)}"
                 )
             applied["mem_clk_vf_offset_mhz"] = int(mem_clk_vf_offset_mhz)
+            # NVML_SUCCESS does not guarantee the offset stuck (issue #20):
+            # read it back so callers can log requested-vs-actual.
+            applied["mem_clk_vf_offset_readback_mhz"] = self._read_clock_offset(
+                "nvmlDeviceGetMemClkVfOffset"
+            )
 
         return applied
