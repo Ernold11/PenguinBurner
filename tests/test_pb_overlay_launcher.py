@@ -198,7 +198,9 @@ def test_configure_environment_keeps_global_latency_config_full_path(tmp_path) -
     assert "DXVK_NVAPI_LOG_LEVEL" not in env
 
 
-def test_pb_overlay_launcher_strips_mangohud_preload(monkeypatch, tmp_path) -> None:
+def test_pb_overlay_launcher_strips_mangohud_when_overlay_enabled(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     calls = []
     state_path = tmp_path / "overlay-state.txt"
@@ -206,6 +208,7 @@ def test_pb_overlay_launcher_strips_mangohud_preload(monkeypatch, tmp_path) -> N
     monkeypatch.setenv(OVERLAY_STATE_ENV, str(state_path))
     monkeypatch.setenv(OVERLAY_TEXT_ENV, str(text_path))
     monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
+    monkeypatch.setenv("PB_OVERLAY", "1")
     monkeypatch.setenv(
         "LD_PRELOAD",
         "steam-overlay.so:/run/host/usr/lib64/mangohud/libMangoHud_shim.so",
@@ -230,6 +233,36 @@ def test_pb_overlay_launcher_strips_mangohud_preload(monkeypatch, tmp_path) -> N
     assert "MANGOHUD" not in env
     assert "MANGOHUD_CONFIG" not in env
     assert "MANGOAPP_CONFIG" not in env
+
+
+def test_pb_overlay_launcher_keeps_mangohud_when_overlay_disabled(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    calls = []
+    monkeypatch.setenv(OVERLAY_STATE_ENV, str(tmp_path / "overlay-state.txt"))
+    monkeypatch.setenv(OVERLAY_TEXT_ENV, str(tmp_path / "overlay-text.txt"))
+    monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
+    # Explicit overlay-off (what the Steam tab writes for an unchecked overlay
+    # toggle) is the one launch mode where MangoHud must survive.
+    monkeypatch.setenv("PB_OVERLAY", "0")
+    monkeypatch.setenv("MANGOHUD", "1")
+    monkeypatch.setenv("MANGOHUD_CONFIG", "fps")
+
+    def fake_execvpe(file, args, env):
+        calls.append((file, args, env))
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
+
+    try:
+        launcher.main(["game"])
+    except RuntimeError:
+        pass
+
+    env = calls[0][2]
+    assert env["MANGOHUD"] == "1"
+    assert env["MANGOHUD_CONFIG"] == "fps"
 
 
 def test_main_arms_refront_watcher_when_shim_active(monkeypatch, tmp_path) -> None:
@@ -377,3 +410,70 @@ def _write_prefix_nvapi(tmp_path, *, supports_marker_log: bool) -> None:
     dll.parent.mkdir(parents=True)
     marker = b"DXVK_NVAPI_LATENCY_MARKER_LOG" if supports_marker_log else b""
     dll.write_bytes(b"prefix-nvapi " + marker)
+
+
+def test_steam_game_profile_failure_never_blocks_launch(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv(OVERLAY_STATE_ENV, str(tmp_path / "overlay-state.txt"))
+    monkeypatch.setenv(OVERLAY_TEXT_ENV, str(tmp_path / "overlay-text.txt"))
+    monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
+    import integrations.steam.game_runtime as game_runtime
+
+    def broken_apply(env, **kwargs):
+        raise RuntimeError("daemon exploded")
+
+    monkeypatch.setattr(game_runtime, "apply_game_runtime_profile", broken_apply)
+    calls = []
+
+    def fake_execvpe(file, args, env):
+        calls.append((file, args, env))
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
+    try:
+        launcher.main(["game"])
+    except RuntimeError:
+        pass
+    assert calls, "the game must exec even when the profile apply fails"
+    assert "skipped" in capsys.readouterr().err
+
+
+def test_wrapper_consumes_pb_overlay_flag(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv(OVERLAY_STATE_ENV, str(tmp_path / "overlay-state.txt"))
+    monkeypatch.setenv(OVERLAY_TEXT_ENV, str(tmp_path / "overlay-text.txt"))
+    monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
+    monkeypatch.setenv("MANGOHUD", "1")
+    calls = []
+
+    def fake_execvpe(file, args, env):
+        calls.append((file, args, env))
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
+
+    # --pb-overlay=0: flag consumed, overlay off, MangoHud preserved.
+    try:
+        launcher.main(["--pb-overlay=0", "game", "--arg"])
+    except RuntimeError:
+        pass
+    file, args, env = calls[0]
+    assert (file, args) == ("game", ["game", "--arg"])
+    assert env[OVERLAY_ENABLE_ENV] == "0"
+    assert env["MANGOHUD"] == "1"
+
+    # --pb-overlay=1: overlay on, MangoHud stripped.
+    try:
+        launcher.main(["--pb-overlay=1", "game"])
+    except RuntimeError:
+        pass
+    file, args, env = calls[1]
+    assert (file, args) == ("game", ["game"])
+    assert env[OVERLAY_ENABLE_ENV] == "1"
+    assert "MANGOHUD" not in env
+
+    # Only flags and no command -> usage error, no exec.
+    assert launcher.main(["--pb-overlay=1"]) == 2
+    assert len(calls) == 2

@@ -69,6 +69,7 @@ def _overlay_enabled(env: dict[str, str]) -> bool:
             return True
     return False
 
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DXVK_NVAPI_LAYER_DIR = _REPO_ROOT / "third_party" / "dxvk-nvapi" / "build.layer"
 _DXVK_NVAPI_LAYER_NAME = "VK_LAYER_DXVK_NVAPI_reflex"
@@ -76,6 +77,8 @@ _DXVK_NVAPI_LAYER_NAME = "VK_LAYER_DXVK_NVAPI_reflex"
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    env = dict(os.environ)
+    args = _consume_wrapper_flags(args, env)
     if not args:
         print(
             f"Usage: {PENGUIN_BURNER_WRAPPER} %command%\n"
@@ -84,10 +87,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    env = dict(os.environ)
     shim_active = configure_penguin_burner_environment(env, command_args=args)
-    _remove_mangohud_environment(env)
+    if _overlay_enabled(env):
+        # Two overlays on one swapchain conflict, so MangoHud is stripped
+        # unless the overlay is explicitly off (PB_OVERLAY=0 — what the Steam
+        # tab writes for an unchecked overlay toggle). "auto" keeps the
+        # historical strip: the config file may enable the overlay mid-game.
+        _remove_mangohud_environment(env)
     _prepare_overlay_paths(env)
+    _apply_steam_game_profile(env)
     if shim_active:
         # Proton clobbers our pre-exec shim during prefix setup; this detached
         # watcher re-fronts it across that window and survives the exec below.
@@ -110,6 +118,39 @@ def main(argv: list[str] | None = None) -> int:
         _route_trace_to_fifo(env)
     os.execvpe(args[0], args, env)
     return 127
+
+
+def _consume_wrapper_flags(args: list[str], env: dict[str, str]) -> list[str]:
+    """Strip leading --pb-* wrapper flags off the command.
+
+    The Steam tab injects the per-game overlay switch as a flag rather than a
+    PB_OVERLAY=x env token, because launchers that exec their child directly
+    (gamescope after its "--") cannot start an env assignment as a program.
+    The flag carries the same meaning, so it lands in the same env vars.
+    """
+    while args and args[0].startswith("--pb-overlay="):
+        value = args.pop(0).partition("=")[2].strip()
+        if value in _TRUTHY | _FALSEY:
+            env[OVERLAY_ENABLE_ENV_ALIAS] = value
+            env[OVERLAY_ENABLE_ENV] = value
+    return args
+
+
+def _apply_steam_game_profile(env: dict[str, str]) -> None:
+    # Per-game Auto-UV preset (Steam tab): the root daemon applies it and
+    # watches this PID -- the exec below makes it the game session's PID, so
+    # the daemon restores the standing profile when the game exits. Runs
+    # before exec, outside pressure-vessel, so the daemon socket is reachable.
+    # Any failure is only reported: it must never block a game launch.
+    try:
+        from integrations.steam.game_runtime import apply_game_runtime_profile
+
+        apply_game_runtime_profile(env)
+    except Exception as error:
+        print(
+            f"penguin-burner: per-game profile apply skipped: {error}",
+            file=sys.stderr,
+        )
 
 
 SHIM_OUTPUT_ENV = "PENGUIN_BURNER_SHIM_OUTPUT"

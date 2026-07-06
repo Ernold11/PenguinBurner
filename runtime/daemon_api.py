@@ -8,10 +8,12 @@ from pathlib import Path
 import signal
 import socket
 import socketserver
+import select
 import subprocess
 import struct
 import sys
 import threading
+import time
 from typing import Any
 
 
@@ -32,6 +34,20 @@ _AUTOSTART_ARGV: list[str] = []
 _ACTIVE_SCAN_PROCESS: subprocess.Popen | None = None
 _ACTIVE_SCAN_ARGV: list[str] = []
 _ACTIVE_SCAN_LOCK = threading.Lock()
+
+# Per-game runtime profiles (Steam tab): the wrapper asks us to apply a
+# profile and watch the game session's PID; when the last watched game exits
+# we restore the persisted standing action. Watches survive user profile
+# switches mid-game (last-writer-wins while running, default on last exit).
+_GAME_WATCH_LOCK = threading.Lock()
+_GAME_WATCHED_PIDS: dict[int, str] = {}
+_GAME_RUNTIME_ACTIVE = False
+# Whether a runtime child was running when the first watched game started —
+# restore-on-exit must not resurrect a profile the user had stopped.
+_GAME_PRIOR_RUNTIME_RUNNING = False
+# Short debounce so a launcher chain that re-launches immediately (new wrapper
+# call, new PID) does not thrash the profile between its processes.
+_GAME_RESTORE_GRACE_S = 3.0
 _RUNTIME_PROFILE_OPTION_FLAGS = {
     "--auto-uv-profile",
     "--silent-fan-curve",
@@ -88,11 +104,21 @@ def status_payload() -> dict[str, Any]:
             if returncode is None
             else "runtime_profile_stopped"
         )
-    return {
+    payload: dict[str, Any] = {
         "state": state,
         "active_job": active_job,
         "version": application_version(),
     }
+    with _GAME_WATCH_LOCK:
+        if _GAME_WATCHED_PIDS:
+            payload["game_runtime"] = {
+                "active": _GAME_RUNTIME_ACTIVE,
+                "watched": [
+                    {"pid": pid, "app_id": app_id}
+                    for pid, app_id in sorted(_GAME_WATCHED_PIDS.items())
+                ],
+            }
+    return payload
 
 
 def handle_request(payload: object) -> dict[str, Any]:
@@ -102,6 +128,8 @@ def handle_request(payload: object) -> dict[str, Any]:
     allowed = {"method"}
     if method == "start_runtime_profile":
         allowed.add("argv")
+    if method == "start_game_runtime_profile":
+        allowed.update({"argv", "watch_pid", "app_id"})
     unknown = sorted(set(payload) - allowed)
     if unknown:
         raise ValueError(f"unknown request field: {', '.join(unknown)}")
@@ -111,6 +139,12 @@ def handle_request(payload: object) -> dict[str, Any]:
         return stop_auto_uv_scan()
     if method == "start_runtime_profile":
         return start_runtime_profile(payload.get("argv"))
+    if method == "start_game_runtime_profile":
+        return start_game_runtime_profile(
+            payload.get("argv"),
+            payload.get("watch_pid"),
+            payload.get("app_id"),
+        )
     if method == "stop_runtime_profile":
         return stop_runtime_profile()
     if not isinstance(method, str) or not method:
@@ -251,10 +285,7 @@ def start_runtime_profile(argv: object) -> dict[str, Any]:
         if _scan_running():
             raise RuntimeError("cannot start a runtime profile while Auto-UV scan is running")
         _stop_autostart_runtime_for_scan()
-        process = subprocess.Popen(
-            [sys.executable, _daemon_program_file(), *runtime_argv],
-            cwd="/",
-        )
+        process = _spawn_runtime_child(runtime_argv)
         _AUTOSTART_PROCESS = process
         _AUTOSTART_ARGV = runtime_argv
     # Remember this as the last user action so a restart / reboot re-runs it.
@@ -268,6 +299,142 @@ def stop_runtime_profile() -> dict[str, Any]:
         return {"stopped": False, "state": "idle"}
     _stop_autostart_runtime_for_scan()
     return {"stopped": True, "pid": process.pid}
+
+
+def start_game_runtime_profile(
+    argv: object,
+    watch_pid: object,
+    app_id: object = "",
+) -> dict[str, Any]:
+    """Apply a per-game profile and restore the standing one when it exits.
+
+    Unlike start_runtime_profile this does NOT persist to last-runtime.json:
+    the persisted file keeps the user's standing action, which is exactly
+    what gets re-applied when the last watched game exits.
+    """
+    global _AUTOSTART_PROCESS, _AUTOSTART_ARGV
+    global _GAME_RUNTIME_ACTIVE, _GAME_PRIOR_RUNTIME_RUNNING
+    runtime_argv = _runtime_profile_argv(argv)
+    try:
+        pid = int(watch_pid)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as error:
+        raise ValueError("watch_pid must be an integer") from error
+    if pid <= 1 or not Path(f"/proc/{pid}").is_dir():
+        raise ValueError(f"watch_pid {pid} is not a running process")
+    with _ACTIVE_SCAN_LOCK:
+        if _scan_running():
+            raise RuntimeError(
+                "cannot start a game runtime profile while Auto-UV scan is running"
+            )
+        with _GAME_WATCH_LOCK:
+            if not _GAME_RUNTIME_ACTIVE:
+                _GAME_PRIOR_RUNTIME_RUNNING = (
+                    _AUTOSTART_PROCESS is not None
+                    and _AUTOSTART_PROCESS.poll() is None
+                )
+        _stop_autostart_runtime_for_scan()
+        try:
+            process = _spawn_runtime_child(runtime_argv)
+        except OSError:
+            # The standing runtime is already stopped; try to bring it back
+            # before reporting failure, so a broken game apply does not leave
+            # the GPU with no profile at all.
+            _spawn_persisted_standing_runtime()
+            raise
+        _AUTOSTART_PROCESS = process
+        _AUTOSTART_ARGV = runtime_argv
+        # Register the watch inside the scan lock so a concurrent restore
+        # (previous game's watcher) cannot miss it and kill this profile.
+        with _GAME_WATCH_LOCK:
+            fresh_watch = pid not in _GAME_WATCHED_PIDS
+            _GAME_WATCHED_PIDS[pid] = str(app_id or "")
+            _GAME_RUNTIME_ACTIVE = True
+    if fresh_watch:
+        threading.Thread(
+            target=_watch_game_pid, args=(pid,), daemon=True
+        ).start()
+    return {
+        "started": True,
+        "pid": process.pid,
+        "watching_pid": pid,
+        "argv": list(runtime_argv),
+    }
+
+
+def _spawn_runtime_child(
+    runtime_argv: list[str], program_file: str = ""
+) -> subprocess.Popen:
+    return subprocess.Popen(
+        [sys.executable, program_file or _daemon_program_file(), *runtime_argv],
+        cwd="/",
+    )
+
+
+def _spawn_persisted_standing_runtime() -> bool:
+    """Best-effort relaunch of the persisted standing action (caller holds
+    _ACTIVE_SCAN_LOCK with no runtime child running)."""
+    global _AUTOSTART_PROCESS, _AUTOSTART_ARGV
+    persisted = _load_last_runtime_argv()
+    if persisted is None:
+        return False
+    argv, program_file = persisted
+    try:
+        process = _spawn_runtime_child(argv, program_file)
+    except OSError:
+        return False
+    _AUTOSTART_PROCESS = process
+    _AUTOSTART_ARGV = list(argv)
+    return True
+
+
+def _watch_game_pid(pid: int) -> None:
+    global _GAME_RUNTIME_ACTIVE
+    try:
+        _wait_for_pid_exit(pid)
+    finally:
+        time.sleep(_GAME_RESTORE_GRACE_S)
+        with _GAME_WATCH_LOCK:
+            _GAME_WATCHED_PIDS.pop(pid, None)
+            skip_restore = _GAME_WATCHED_PIDS or not _GAME_RUNTIME_ACTIVE
+            if not skip_restore:
+                _GAME_RUNTIME_ACTIVE = False
+        if not skip_restore:
+            _restore_standing_runtime()
+
+
+def _wait_for_pid_exit(pid: int) -> None:
+    try:
+        fd = os.pidfd_open(pid)
+    except OSError:
+        fd = None
+    if fd is not None:
+        try:
+            # poll(), not select(): select breaks on fd numbers >= 1024.
+            poller = select.poll()
+            poller.register(fd, select.POLLIN)
+            poller.poll()
+        finally:
+            os.close(fd)
+        return
+    while Path(f"/proc/{pid}").is_dir():
+        time.sleep(1.0)
+
+
+def _restore_standing_runtime() -> None:
+    """Bring back what ran before the first game: the persisted standing
+    action if a runtime was active then, otherwise stay stopped."""
+    with _ACTIVE_SCAN_LOCK:
+        with _GAME_WATCH_LOCK:
+            # A new game may have taken over between our watch-set check and
+            # this lock acquisition; its profile must not be torn down.
+            if _GAME_WATCHED_PIDS or _GAME_RUNTIME_ACTIVE:
+                return
+        if _scan_running():
+            return
+        _stop_autostart_runtime_for_scan()
+        if not _GAME_PRIOR_RUNTIME_RUNNING:
+            return
+        _spawn_persisted_standing_runtime()
 
 
 def _is_start_auto_uv_scan_request(request: object) -> bool:

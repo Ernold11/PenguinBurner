@@ -21,6 +21,8 @@ from ui.components.profile_list import ProfileList
 from ui.components.runs_table import RunsTable
 from ui.components.scan_controls import ScanControls
 from ui.components.status_header import StatusHeader
+from ui.components.steam_panel import SteamPanel
+from ui.features.profiles.profiles import adaptive_profile_tier_labels
 from ui.constants import APP_DISPLAY_NAME
 from .controllers.command import CommandController
 from .controllers.scan import ScanController
@@ -147,6 +149,16 @@ class MainWindow(ProfileActionsMixin):
         auto_uv_view.addWidget(self.log_view.widget)
         auto_uv_view.setSizes([760, 440])
 
+        self.steam_panel = SteamPanel(
+            QtCore=self.QtCore,
+            QtGui=self.QtGui,
+            QtWidgets=self.QtWidgets,
+            adaptive_available=lambda: len(
+                adaptive_profile_tier_labels(self.profile_summaries)
+            )
+            >= 2,
+        )
+
         self.tabs = self.QtWidgets.QTabWidget()
         self.auto_uv_tab_index = self.tabs.addTab(auto_uv_view, "Auto-UV")
         self.profiles_tab_index = self.tabs.addTab(self.profile_list.widget, "Profiles")
@@ -154,6 +166,7 @@ class MainWindow(ProfileActionsMixin):
             self.overlay_config.widget,
             "Ingame Overlay",
         )
+        self.steam_tab_index = self.tabs.addTab(self.steam_panel.widget, "Steam")
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self._close_dynamic_tab)
         self.errors = ErrorReporter(

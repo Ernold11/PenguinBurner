@@ -119,6 +119,26 @@ def start_runtime_profile(
     )
 
 
+def start_game_runtime_profile(
+    argv: list[str],
+    *,
+    watch_pid: int,
+    app_id: str = "",
+    socket_path: str | Path = DEFAULT_DAEMON_SOCKET,
+    timeout_s: float = 3.0,
+) -> dict[str, Any]:
+    return daemon_payload_request(
+        {
+            "method": "start_game_runtime_profile",
+            "argv": list(argv),
+            "watch_pid": int(watch_pid),
+            "app_id": str(app_id),
+        },
+        socket_path=socket_path,
+        timeout_s=timeout_s,
+    )
+
+
 def stop_runtime_profile(
     *,
     socket_path: str | Path = DEFAULT_DAEMON_SOCKET,
