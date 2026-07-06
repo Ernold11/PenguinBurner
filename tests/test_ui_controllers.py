@@ -70,6 +70,14 @@ def test_scan_handle_line_keeps_json_out_of_log_view() -> None:
     ]
 
 
+def test_scan_interrupted_line_marks_user_stop() -> None:
+    controller = ScanController(QtCore=QtCore)
+
+    controller._handle_line("Interrupted by user.")
+
+    assert controller.stop_requested is True
+
+
 def test_scan_read_output_survives_deleted_process() -> None:
     # A readyRead delivered after the process was retired must not crash.
     controller = ScanController(QtCore=QtCore)
@@ -98,6 +106,18 @@ class _FinishingQProcess:
         self.deleted = True
 
 
+class _KillableQProcess:
+    def __init__(self, state) -> None:
+        self._state = state
+        self.killed = False
+
+    def state(self):
+        return self._state
+
+    def kill(self) -> None:
+        self.killed = True
+
+
 def test_scan_finished_detaches_slots_and_reports() -> None:
     controller = ScanController(QtCore=QtCore)
     finished: list = []
@@ -116,6 +136,36 @@ def test_scan_finished_detaches_slots_and_reports() -> None:
     # Both slots were detached so a late callback cannot touch the dead process.
     assert controller._read_output in process.readyReadStandardOutput.disconnected
     assert controller._finished in process.finished.disconnected
+
+
+def test_scan_finished_treats_sigint_exit_as_stopped() -> None:
+    controller = ScanController(QtCore=QtCore)
+    finished: list = []
+    controller.on_finished = lambda code, status, stopped: finished.append(
+        (code, stopped)
+    )
+    process = _FinishingQProcess()
+    controller.process = process
+
+    controller._finished(130, 0)
+
+    assert finished == [(130, True)]
+
+
+def test_scan_stop_watchdog_only_kills_original_process() -> None:
+    controller = ScanController(QtCore=QtCore)
+    old_process = _KillableQProcess(QtCore.QProcess.Running)
+    new_process = _KillableQProcess(QtCore.QProcess.Running)
+    controller.process = new_process
+
+    controller.kill_if_running(old_process)
+
+    assert old_process.killed is False
+    assert new_process.killed is False
+
+    controller.kill_if_running(new_process)
+
+    assert new_process.killed is True
 
 
 def test_scan_write_json_response(tmp_path) -> None:

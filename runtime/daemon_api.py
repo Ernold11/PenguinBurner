@@ -239,6 +239,14 @@ def stream_auto_uv_scan(options: object):
         if _scan_running():
             yield {"ok": False, "error": "Auto-UV scan is already running"}
             return
+        try:
+            _clear_stale_auto_uv_stop_request()
+        except Exception as exc:
+            yield {
+                "ok": False,
+                "error": f"failed to clear stale Auto-UV stop request: {exc}",
+            }
+            return
         _stop_autostart_runtime_for_scan()
         process = subprocess.Popen(
             command,
@@ -611,6 +619,14 @@ def _write_auto_uv_stop_request(*, abort_final_choice: bool = False) -> None:
         )
     except Exception:
         pass
+
+
+def _clear_stale_auto_uv_stop_request() -> None:
+    from auto_uv.persistence.auto_uv_persisted_json_files import (
+        clear_auto_uv_stop_request,
+    )
+
+    clear_auto_uv_stop_request()
 
 
 def _persist_last_runtime_argv(argv: list[str], program_file: str) -> None:

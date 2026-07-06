@@ -43,6 +43,7 @@ def test_daemon_rejects_unknown_methods() -> None:
 def test_daemon_start_auto_uv_streams_process_lines(monkeypatch) -> None:
     calls = []
     restarted = []
+    cleared = []
 
     class FakeProcess:
         pid = 1234
@@ -69,6 +70,11 @@ def test_daemon_start_auto_uv_streams_process_lines(monkeypatch) -> None:
         daemon_api,
         "_start_autostart_runtime_if_configured",
         lambda: restarted.append(None),
+    )
+    monkeypatch.setattr(
+        daemon_api,
+        "_clear_stale_auto_uv_stop_request",
+        lambda: cleared.append(None),
     )
     monkeypatch.setattr(daemon_api, "_ACTIVE_SCAN_PROCESS", None)
     monkeypatch.setattr(daemon_api, "_ACTIVE_SCAN_ARGV", [])
@@ -98,7 +104,41 @@ def test_daemon_start_auto_uv_streams_process_lines(monkeypatch) -> None:
     assert payloads[3]["control"] == "finished"
     assert payloads[3]["exit_code"] == 0
     assert daemon_api._ACTIVE_SCAN_PROCESS is None
+    assert cleared == [None]
     assert restarted == [None]
+
+
+def test_daemon_start_auto_uv_reports_stale_stop_clear_failure(monkeypatch) -> None:
+    calls = []
+
+    def fake_popen(command, **_kwargs):
+        calls.append(list(command))
+        raise AssertionError("scan must not launch when stop cleanup fails")
+
+    monkeypatch.setattr(daemon_api.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        daemon_api,
+        "_daemon_program_file",
+        lambda: "/tmp/penguin_burner.py",
+    )
+    monkeypatch.setattr(daemon_api, "_stop_autostart_runtime_for_scan", lambda: None)
+    monkeypatch.setattr(
+        daemon_api,
+        "_clear_stale_auto_uv_stop_request",
+        lambda: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+    monkeypatch.setattr(daemon_api, "_ACTIVE_SCAN_PROCESS", None)
+    monkeypatch.setattr(daemon_api, "_ACTIVE_SCAN_ARGV", [])
+
+    payloads = list(daemon_api.stream_auto_uv_scan({"gpu_index": 0}))
+
+    assert calls == []
+    assert payloads == [
+        {
+            "ok": False,
+            "error": "failed to clear stale Auto-UV stop request: denied",
+        }
+    ]
 
 
 def test_daemon_stream_disconnect_stops_scan_without_final_choice(monkeypatch) -> None:
