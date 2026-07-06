@@ -9,12 +9,15 @@ does not). The UI panel stays a thin view over this.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import json
 from pathlib import Path
 
 from overlay.telemetry.steam_launch_check import (
     launch_options_from_localconfig,
     rewrite_launch_options,
 )
+from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR, resolve_auto_uv_profile
+from profiles.uv.profile_tiers import profile_tier_label
 
 from .cdp import SteamCdpClient, SteamCdpError, cdp_available, cdp_marker_present, ensure_cdp_marker
 from .launch_options import (
@@ -26,7 +29,7 @@ from .launch_options import (
 from .library import InstalledSteamGame, installed_steam_games
 from .process import steam_running
 from .settings import (
-    GAME_MODE_STOCK,
+    GAME_MODE_DEFAULT,
     SteamGameSetting,
     load_steam_game_settings,
     normalize_game_mode,
@@ -34,6 +37,11 @@ from .settings import (
     store_steam_game_setting,
 )
 from .users import SteamUser, active_steam_user
+
+
+# The daemon's persisted standing action (world-readable); the source of what
+# an unconfigured game effectively runs under.
+STANDING_RUNTIME_STATE_PATH = Path("/var/lib/penguin-burner/last-runtime.json")
 
 
 @dataclass(frozen=True)
@@ -78,6 +86,35 @@ class SteamIntegrationManager:
     def live_apply_ready(self) -> bool:
         """Writes can land right now: CDP up, or Steam stopped (disk path)."""
         return self.cdp_ready() or not self.steam_running()
+
+    def standing_mode_label(self) -> str:
+        """What an unconfigured game runs under: the user's standing action
+        from the Profiles tab (Adaptive, a tier's profile, or Stock)."""
+        try:
+            payload = json.loads(
+                STANDING_RUNTIME_STATE_PATH.read_text(encoding="utf-8")
+            )
+            argv = payload.get("argv") or []
+        except (OSError, ValueError):
+            return "Stock"
+        if not isinstance(argv, list):
+            return "Stock"
+        if "--adaptive-auto-uv" in argv:
+            return "Adaptive"
+        selector = ""
+        for index, item in enumerate(argv):
+            if item == "--auto-uv-profile" and index + 1 < len(argv):
+                selector = str(argv[index + 1])
+            elif isinstance(item, str) and item.startswith("--auto-uv-profile="):
+                selector = item.partition("=")[2]
+        if not selector or selector == STOCK_PROFILE_SELECTOR:
+            return "Stock"
+        resolved = resolve_auto_uv_profile(selector)
+        if resolved is not None:
+            label = profile_tier_label(resolved[1].get("profile_tier"))
+            if label:
+                return label
+        return selector
 
     def initialize(self) -> ApplyResult:
         if not ensure_cdp_marker(self._home):
@@ -177,7 +214,7 @@ class SteamIntegrationManager:
                 app_id,
                 replace(
                     setting,
-                    mode=GAME_MODE_STOCK,
+                    mode=GAME_MODE_DEFAULT,
                     overlay=False,
                     original_launch_options=text,
                     injected_launch_options="",
@@ -211,7 +248,7 @@ class SteamIntegrationManager:
         argv = profile_argv_for_setting(self._setting(app_id))
         if argv is None:
             return ApplyResult(
-                True, "Running game keeps its profile; stock applies on exit."
+                True, "Running game keeps its profile; default applies on exit."
             )
         try:
             start_game_runtime_profile(argv, watch_pid=pids[0], app_id=app_id)
@@ -223,7 +260,7 @@ class SteamIntegrationManager:
         return ApplyResult(True, "Profile re-applied to the running game.")
 
     def reset_game(self, app_id: str) -> ApplyResult:
-        """Back to stock: restore the pre-injection launch string, drop the preset."""
+        """Back to default: restore the pre-injection launch string, drop the preset."""
         setting = self._setting(app_id)
         current = self._launch_options.get(app_id, "")
         restored = remove_injection(
@@ -237,7 +274,7 @@ class SteamIntegrationManager:
         remove_steam_game_setting(
             self._account_id(), app_id, path=self._settings_path
         )
-        return ApplyResult(True, "Reset to stock.", launch_options=restored)
+        return ApplyResult(True, "Reset to default.", launch_options=restored)
 
     def _apply(self, app_id: str, setting: SteamGameSetting) -> ApplyResult:
         current = self._launch_options.get(app_id, "")

@@ -15,18 +15,22 @@ from integrations.steam.manager import SteamGameRow, SteamIntegrationManager
 from integrations.steam.process import launch_steam_game, restart_steam
 from integrations.steam.settings import (
     GAME_MODE_ADAPTIVE,
+    GAME_MODE_DEFAULT,
     GAME_MODE_STOCK,
     normalize_game_mode,
 )
 from profiles.uv.profile_tiers import PROFILE_TIER_LABELS, PROFILE_TIERS
 
 
+# "Default" (no per-game choice, follows the Profiles-tab standing action)
+# leads; explicit Stock is the last resort at the bottom.
 _MODE_LABELS = {
-    GAME_MODE_STOCK: "Stock",
+    GAME_MODE_DEFAULT: "Default",
     GAME_MODE_ADAPTIVE: "Adaptive",
     **PROFILE_TIER_LABELS,
+    GAME_MODE_STOCK: "Stock",
 }
-_MODE_KEYS = (GAME_MODE_STOCK, GAME_MODE_ADAPTIVE, *PROFILE_TIERS)
+_MODE_KEYS = (GAME_MODE_DEFAULT, GAME_MODE_ADAPTIVE, *PROFILE_TIERS, GAME_MODE_STOCK)
 
 _AUTO_SYNC_INTERVAL_MS = 10000
 _ROW_HEIGHT = 40
@@ -37,14 +41,13 @@ def _wrapped_tooltip(text: str) -> str:
 
 
 class SteamPanel:
-    COLUMNS = ["Game", "Type", "Auto-UV mode", "Overlay", "Launch options", "", ""]
+    COLUMNS = ["Game", "Auto-UV mode", "Overlay", "Launch options", "", ""]
     GAME_COLUMN = 0
-    TYPE_COLUMN = 1
-    MODE_COLUMN = 2
-    OVERLAY_COLUMN = 3
-    LAUNCH_OPTIONS_COLUMN = 4
-    PLAY_COLUMN = 5
-    RESET_COLUMN = 6
+    MODE_COLUMN = 1
+    OVERLAY_COLUMN = 2
+    LAUNCH_OPTIONS_COLUMN = 3
+    PLAY_COLUMN = 4
+    RESET_COLUMN = 5
 
     def __init__(
         self,
@@ -66,6 +69,7 @@ class SteamPanel:
         self._restart_result: bool | None = None
         self._rescan_thread: threading.Thread | None = None
         self._rescan_rows: tuple[SteamGameRow, ...] | None = None
+        self._default_mode_label = "Default"
 
         self.widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(self.widget)
@@ -193,6 +197,7 @@ class SteamPanel:
         self._syncing = True
         try:
             self._rows = {row.game.app_id: row for row in rows}
+            self._default_mode_label = f"Default ({self.manager.standing_mode_label()})"
             self.table.setRowCount(len(rows))
             for index, row in enumerate(rows):
                 self._populate_row(index, row)
@@ -208,20 +213,17 @@ class SteamPanel:
         game_item = self.QtWidgets.QTableWidgetItem(row.game.name)
         if row.game.icon_path is not None:
             game_item.setIcon(self.QtGui.QIcon(str(row.game.icon_path)))
-        game_item.setToolTip(f"{row.game.name} (app id {app_id})")
+        runtime = row.game.compat_tool if row.game.is_proton else "native"
+        game_item.setToolTip(f"{row.game.name} (app id {app_id}, {runtime})")
         self.table.setItem(index, self.GAME_COLUMN, game_item)
-
-        type_item = QtWidgets.QTableWidgetItem(
-            "Proton" if row.game.is_proton else "Native"
-        )
-        if row.game.compat_tool:
-            type_item.setToolTip(row.game.compat_tool)
-        self.table.setItem(index, self.TYPE_COLUMN, type_item)
 
         mode_combo = QtWidgets.QComboBox()
         adaptive_ok = bool(self.adaptive_available())
         for key in _MODE_KEYS:
-            mode_combo.addItem(_MODE_LABELS[key], key)
+            label = (
+                self._default_mode_label if key == GAME_MODE_DEFAULT else _MODE_LABELS[key]
+            )
+            mode_combo.addItem(label, key)
         if not adaptive_ok:
             model_item = mode_combo.model().item(_MODE_KEYS.index(GAME_MODE_ADAPTIVE))
             model_item.setEnabled(False)
@@ -282,8 +284,9 @@ class SteamPanel:
         reset_button = QtWidgets.QPushButton("Reset")
         reset_button.setToolTip(
             _wrapped_tooltip(
-                "Back to stock: restore the game's original launch options "
-                "and drop its PenguinBurner preset."
+                "Back to default: restore the game's original launch options "
+                "and drop its PenguinBurner preset (the game then follows "
+                "the standing profile from the Profiles tab)."
             )
         )
         reset_button.clicked.connect(

@@ -19,32 +19,40 @@ from common.penguin_burner_paths import default_user_config_dir
 from profiles.uv.profile_tiers import PROFILE_TIERS, normalize_profile_tier
 
 
+# "default" = no per-game choice: the game follows whatever standing profile
+# the user applied in the Profiles tab, and nothing is persisted. Explicit
+# choices — INCLUDING explicit stock — persist and are enforced per game
+# (stock pins the GPU to factory for that game even while a standing
+# adaptive/tier profile is active).
+GAME_MODE_DEFAULT = "default"
 GAME_MODE_STOCK = "stock"
 GAME_MODE_ADAPTIVE = "adaptive"
-GAME_MODES = (GAME_MODE_STOCK, GAME_MODE_ADAPTIVE, *PROFILE_TIERS)
+GAME_MODES = (GAME_MODE_DEFAULT, GAME_MODE_STOCK, GAME_MODE_ADAPTIVE, *PROFILE_TIERS)
 
 STEAM_GAME_SETTINGS_FILENAME = "steam-game-settings.json"
 
 
-def normalize_game_mode(value: object | None, *, default: str = GAME_MODE_STOCK) -> str:
+def normalize_game_mode(
+    value: object | None, *, default: str = GAME_MODE_DEFAULT
+) -> str:
     text = str(value or "").strip().lower()
     if not text:
         return default
-    if text in (GAME_MODE_STOCK, GAME_MODE_ADAPTIVE):
+    if text in (GAME_MODE_DEFAULT, GAME_MODE_STOCK, GAME_MODE_ADAPTIVE):
         return text
     return normalize_profile_tier(text, default=default)
 
 
 @dataclass(frozen=True)
 class SteamGameSetting:
-    mode: str = GAME_MODE_STOCK
+    mode: str = GAME_MODE_DEFAULT
     overlay: bool = False
     original_launch_options: str = ""
     injected_launch_options: str = ""
 
     @property
     def active(self) -> bool:
-        return self.mode != GAME_MODE_STOCK or self.overlay
+        return self.mode != GAME_MODE_DEFAULT or self.overlay
 
 
 def steam_game_settings_path() -> Path:

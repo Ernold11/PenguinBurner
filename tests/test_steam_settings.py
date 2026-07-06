@@ -2,6 +2,7 @@ from pathlib import Path
 
 from integrations.steam.settings import (
     GAME_MODE_ADAPTIVE,
+    GAME_MODE_DEFAULT,
     GAME_MODE_STOCK,
     SteamGameSetting,
     load_steam_game_settings,
@@ -49,13 +50,17 @@ def test_corrupt_file_loads_as_empty(tmp_path: Path) -> None:
 
 def test_normalize_game_mode_accepts_tier_aliases() -> None:
     assert normalize_game_mode("adaptive") == GAME_MODE_ADAPTIVE
+    assert normalize_game_mode("stock") == GAME_MODE_STOCK
     assert normalize_game_mode("eff") == "efficiency"
     assert normalize_game_mode("perf") == "performance"
-    assert normalize_game_mode("bogus") == GAME_MODE_STOCK
-    assert normalize_game_mode(None) == GAME_MODE_STOCK
+    assert normalize_game_mode("bogus") == GAME_MODE_DEFAULT
+    assert normalize_game_mode(None) == GAME_MODE_DEFAULT
 
 
 def test_setting_active_property() -> None:
+    # No choice (default) is inactive; every explicit choice -- including
+    # explicit stock -- persists and is active.
     assert not SteamGameSetting().active
     assert SteamGameSetting(mode="balanced").active
+    assert SteamGameSetting(mode=GAME_MODE_STOCK).active
     assert SteamGameSetting(overlay=True).active

@@ -5,6 +5,7 @@ import pytest
 import integrations.steam.manager as manager_module
 from integrations.steam.manager import SteamIntegrationManager
 from integrations.steam.settings import (
+    GAME_MODE_DEFAULT,
     GAME_MODE_STOCK,
     load_steam_game_settings,
 )
@@ -74,7 +75,7 @@ def test_refresh_merges_library_settings_and_launch_options(manager) -> None:
     rows = manager.refresh()
     assert [row.game.app_id for row in rows] == [APP_ID]
     assert rows[0].launch_options == "gamemoderun %command%"
-    assert rows[0].setting.mode == GAME_MODE_STOCK
+    assert rows[0].setting.mode == GAME_MODE_DEFAULT
 
 
 def test_set_mode_injects_and_persists(manager, tmp_path) -> None:
@@ -101,15 +102,26 @@ def test_overlay_toggle_updates_tokens(manager) -> None:
     )
 
 
-def test_back_to_stock_restores_original_and_drops_setting(
+def test_back_to_default_restores_original_and_drops_setting(
     manager, tmp_path
 ) -> None:
     manager.refresh()
     manager.set_game_mode(APP_ID, "balanced")
-    result = manager.set_game_mode(APP_ID, GAME_MODE_STOCK)
+    result = manager.set_game_mode(APP_ID, GAME_MODE_DEFAULT)
     assert result.ok
     assert _FakeCdpClient.launch_options[APP_ID] == "gamemoderun %command%"
     assert load_steam_game_settings(tmp_path / "steam-game-settings.json") == {}
+
+
+def test_explicit_stock_persists_and_injects(manager, tmp_path) -> None:
+    manager.refresh()
+    result = manager.set_game_mode(APP_ID, GAME_MODE_STOCK)
+    assert result.ok
+    assert result.launch_options == (
+        "gamemoderun PENGUIN_BURNER --pb-overlay=0 %command%"
+    )
+    stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
+    assert stored[ACCOUNT_ID][APP_ID].mode == GAME_MODE_STOCK
 
 
 def test_reset_game_round_trips(manager, tmp_path) -> None:
@@ -140,7 +152,7 @@ def test_raw_edit_removing_wrapper_deactivates_mode(manager, tmp_path) -> None:
     result = manager.set_raw_launch_options(APP_ID, "gamemoderun %command%")
     assert result.ok
     stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
-    assert stored[ACCOUNT_ID][APP_ID].mode == GAME_MODE_STOCK
+    assert stored[ACCOUNT_ID][APP_ID].mode == GAME_MODE_DEFAULT
 
 
 def test_write_blocked_while_steam_runs_without_cdp(manager) -> None:

@@ -51,8 +51,13 @@ def test_game_account_id_matches_steam_user_env(steam_home: Path) -> None:
     assert game_account_id({}, home=steam_home) == ACCOUNT_ID
 
 
-def test_profile_argv_for_stock_is_none() -> None:
-    assert profile_argv_for_setting(SteamGameSetting(mode="stock")) is None
+def test_profile_argv_for_default_is_none() -> None:
+    assert profile_argv_for_setting(SteamGameSetting(mode="default")) is None
+
+
+def test_profile_argv_for_explicit_stock_pins_factory_state() -> None:
+    argv = profile_argv_for_setting(SteamGameSetting(mode="stock"))
+    assert argv == ["--auto-uv-profile", "__stock__"]
 
 
 def test_profile_argv_for_adaptive() -> None:
