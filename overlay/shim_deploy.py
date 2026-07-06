@@ -32,6 +32,7 @@ import struct
 import subprocess
 import sys
 import time
+from typing import Callable
 
 # Recognises our own DLL; the banner string is compiled into the shim (see
 # native/nvapi_shim/src/nvapi_shim.cpp).
@@ -65,6 +66,11 @@ _WATCH_POLL_SECONDS = 0.25
 # How often the watcher wakes from the inotify wait to check whether the Proton
 # session (its parent process) is still alive.
 _SESSION_POLL_SECONDS = 2.0
+_STEAM_REAPER_STARTUP_GRACE_S = 15.0
+_SESSION_HELPER_MODULES = (
+    "overlay.shim_deploy",
+    "overlay.telemetry.nvapi_marker_bridge",
+)
 
 _OVERLAY_ROOT = Path(__file__).resolve().parent
 # Packaged location (populated by the build) and the source-checkout build dir.
@@ -315,6 +321,94 @@ def session_alive(session_pid: int, session_fd: int | None) -> bool:
     return True
 
 
+def _proc_cmdline(pid: int) -> str | None:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return None
+    return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+
+
+def _looks_like_steam_reaper(cmdline: str | None) -> bool:
+    if not cmdline:
+        return False
+    parts = cmdline.split()
+    return "SteamLaunch" in parts and any(Path(part).name == "reaper" for part in parts[:3])
+
+
+def _session_child_pids(session_pid: int) -> list[int] | None:
+    try:
+        raw = Path(f"/proc/{session_pid}/task/{session_pid}/children").read_text(
+            encoding="ascii"
+        )
+    except OSError:
+        return None
+    children: list[int] = []
+    for item in raw.split():
+        try:
+            children.append(int(item))
+        except ValueError:
+            continue
+    return children
+
+
+def _is_session_helper(pid: int) -> bool:
+    cmdline = _proc_cmdline(pid)
+    if cmdline is None:
+        return False
+    return any(module in cmdline for module in _SESSION_HELPER_MODULES)
+
+
+class SessionLiveness:
+    """Track Steam reaper lifetime without letting PB helpers keep it alive."""
+
+    def __init__(
+        self,
+        session_pid: int,
+        session_fd: int | None,
+        *,
+        now_fn: Callable[[], float] = time.monotonic,
+        startup_grace_s: float = _STEAM_REAPER_STARTUP_GRACE_S,
+    ) -> None:
+        self.session_pid = session_pid
+        self.session_fd = session_fd
+        self._now_fn = now_fn
+        self._startup_deadline = now_fn() + max(0.0, startup_grace_s)
+        self._saw_non_helper_child = False
+
+    def session_alive(self) -> bool:
+        return session_alive(self.session_pid, self.session_fd)
+
+    def steam_reaper_quiesced(self) -> bool:
+        """True when Steam's reaper has no non-PenguinBurner children left.
+
+        The wrapper execs into Steam's reaper, so the helper processes become
+        reaper children. If those helpers wait for the reaper PID, and the reaper
+        waits for its children, game close deadlocks. Only apply this rule to the
+        Steam reaper shape; a direct `PENGUIN_BURNER game` launch may legitimately
+        have no children besides these helpers while the game process itself runs.
+        """
+        if not self.session_alive():
+            return False
+        if not _looks_like_steam_reaper(_proc_cmdline(self.session_pid)):
+            return False
+        child_pids = _session_child_pids(self.session_pid)
+        if child_pids is None:
+            return False
+        non_helper_children = [
+            pid for pid in child_pids if not _is_session_helper(pid)
+        ]
+        if non_helper_children:
+            self._saw_non_helper_child = True
+            return False
+        if self._saw_non_helper_child:
+            return True
+        return self._now_fn() >= self._startup_deadline
+
+    def active(self) -> bool:
+        return self.session_alive() and not self.steam_reaper_quiesced()
+
+
 def watch_and_refront(
     env: dict[str, str],
     *,
@@ -342,6 +436,7 @@ def watch_and_refront(
     if session_pid is None:
         session_pid = os.getppid()
     session_fd = open_session_fd(session_pid)
+    liveness = SessionLiveness(session_pid, session_fd)
     notifier = _open_notifier(prefix_system32(env))
     try:
         deploy_nvapi_shim(env)
@@ -349,7 +444,7 @@ def watch_and_refront(
             now = time.monotonic()
             if deadline is not None and now >= deadline:
                 return
-            if not session_alive(session_pid, session_fd):
+            if not liveness.active():
                 return  # Proton session exited; nothing left to guard
             wait_s = _SESSION_POLL_SECONDS if notifier is not None else max(0.0, poll_s)
             if deadline is not None:

@@ -128,7 +128,7 @@ _MAX_OOB_LAG_US = 200_000
 
 
 def _socket_targets(env: dict[str, str] | None = None) -> list[Path]:
-    env = os.environ if env is None else env
+    env = dict(os.environ) if env is None else env
     try:
         targets = list(latency_socket_paths(env))
     except Exception:
@@ -227,6 +227,7 @@ def _follow_fifo(
     poll_interval_s: float,
     stop_event: threading.Event | None = None,
     session_alive_fn=None,
+    session_quiesced_fn=None,
 ):
     """Yield lines from a named pipe (in-memory trace stream).
 
@@ -235,9 +236,10 @@ def _follow_fifo(
     (game exit) readline returns EOF and we reopen.
 
     ``session_alive_fn`` scopes a detached drainer's lifetime. The drainer must
-    keep draining as long as *any* process holds the FIFO's write side (a
-    wrapped game can outlive the wrapper session that launched it), so the
-    session check ends the watch only where no writer can be feeding the pipe:
+    keep draining as long as *any* real game process holds the FIFO's write side
+    (a wrapped game can outlive the wrapper session that launched it), so the
+    plain session check ends the watch only where no writer can be feeding the
+    pipe:
 
     - at EOF or open failure -- writers existed and are all gone, or the FIFO
       itself is gone;
@@ -246,13 +248,19 @@ def _follow_fifo(
       reader gets *no* poll event until a writer has connected at least once,
       so a launch that dies before routing its stderr (failed exec) would
       otherwise park the drainer forever. Once a single byte or EOF has been
-      observed, writers demonstrably existed and the EOF path is reliable --
-      the quiet path then never exits, so an idle-but-alive game is never
-      abandoned.
+      observed, writers demonstrably existed and the EOF path is reliable.
+
+    ``session_quiesced_fn`` is narrower: Steam's reaper can keep the write side
+    open after the game exits because PenguinBurner's own helpers are still its
+    children. In that specific process-tree shape, the quiet path exits so the
+    reaper can finish closing the app.
     """
 
     def _session_over() -> bool:
         return session_alive_fn is not None and not session_alive_fn()
+
+    def _session_quiesced() -> bool:
+        return session_quiesced_fn is not None and session_quiesced_fn()
 
     had_traffic = False
     session_over_since: float | None = None
@@ -271,6 +279,8 @@ def _follow_fifo(
                     [fd], [], [], poll_interval_s
                 )
                 if not readable:
+                    if _session_quiesced():
+                        return
                     if had_traffic:
                         continue
                     if not _session_over():
@@ -296,7 +306,7 @@ def _follow_fifo(
                     yield line + "\n"
         finally:
             os.close(fd)
-        if _session_over():
+        if _session_over() or _session_quiesced():
             return  # no writers left and the launching session is gone
         _wait_or_stopped(stop_event, poll_interval_s)
 
@@ -308,6 +318,7 @@ def _follow(
     from_start: bool,
     stop_event: threading.Event | None = None,
     session_alive_fn=None,
+    session_quiesced_fn=None,
 ):
     """Yield lines from a FIFO (in-memory) or a growing/rotating file."""
     try:
@@ -317,6 +328,7 @@ def _follow(
                 poll_interval_s=poll_interval_s,
                 stop_event=stop_event,
                 session_alive_fn=session_alive_fn,
+                session_quiesced_fn=session_quiesced_fn,
             )
             return
     except OSError:
@@ -373,8 +385,9 @@ def run(
     pid: int | None = None,
     stop_event: threading.Event | None = None,
     session_alive_fn=None,
+    session_quiesced_fn=None,
 ) -> None:
-    env = os.environ if env is None else env
+    env = dict(os.environ) if env is None else env
     targets = _socket_targets(env)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     # Never block on a slow/full receiver: unix datagram sendto() BLOCKS when
@@ -400,6 +413,7 @@ def run(
             from_start=from_start,
             stop_event=stop_event,
             session_alive_fn=session_alive_fn,
+            session_quiesced_fn=session_quiesced_fn,
         ):
             parsed = _parse_line_with_pid(line)
             if parsed is None:
@@ -588,6 +602,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Exit once this process is gone and the FIFO has no writers "
+            "or once Steam's reaper has no non-PenguinBurner children "
             "(detached per-game drainer mode)."
         ),
     )
@@ -598,17 +613,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     session_alive_fn = None
+    session_quiesced_fn = None
+    session_fd = None
     if args.session_pid is not None:
         session_fd = _shim_deploy.open_session_fd(args.session_pid)
-        session_alive_fn = lambda: _shim_deploy.session_alive(  # noqa: E731
-            args.session_pid, session_fd
+        liveness = _shim_deploy.SessionLiveness(args.session_pid, session_fd)
+        session_alive_fn = liveness.session_alive
+        session_quiesced_fn = liveness.steam_reaper_quiesced
+    try:
+        run(
+            args.log,
+            poll_interval_s=args.poll_interval,
+            from_start=args.from_start,
+            session_alive_fn=session_alive_fn,
+            session_quiesced_fn=session_quiesced_fn,
         )
-    run(
-        args.log,
-        poll_interval_s=args.poll_interval,
-        from_start=args.from_start,
-        session_alive_fn=session_alive_fn,
-    )
+    finally:
+        if session_fd is not None:
+            try:
+                os.close(session_fd)
+            except OSError:
+                pass
     if args.cleanup:
         try:
             if stat.S_ISFIFO(args.log.stat().st_mode):

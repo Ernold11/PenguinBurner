@@ -73,7 +73,8 @@ def test_bridge_uses_marker_only_log_process_id(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         bridge,
         "_follow",
-        lambda _path, poll_interval_s, from_start, stop_event=None, session_alive_fn=None: lines,
+        lambda _path, poll_interval_s, from_start, stop_event=None,
+        session_alive_fn=None, session_quiesced_fn=None: lines,
     )
     monkeypatch.setattr(
         bridge,
@@ -109,7 +110,8 @@ def test_bridge_does_not_mark_framegen_from_oob_present_trace(monkeypatch, tmp_p
     monkeypatch.setattr(
         bridge,
         "_follow",
-        lambda _path, poll_interval_s, from_start, stop_event=None, session_alive_fn=None: lines,
+        lambda _path, poll_interval_s, from_start, stop_event=None,
+        session_alive_fn=None, session_quiesced_fn=None: lines,
     )
     monkeypatch.setattr(
         bridge,
@@ -150,7 +152,8 @@ def test_bridge_emits_oob_present_span_in_present_order(monkeypatch, tmp_path) -
     monkeypatch.setattr(
         bridge,
         "_follow",
-        lambda _path, poll_interval_s, from_start, stop_event=None, session_alive_fn=None: lines,
+        lambda _path, poll_interval_s, from_start, stop_event=None,
+        session_alive_fn=None, session_quiesced_fn=None: lines,
     )
     monkeypatch.setattr(
         bridge,
@@ -188,7 +191,8 @@ def test_bridge_reports_input_to_present_when_input_marker_present(monkeypatch, 
     monkeypatch.setattr(
         bridge,
         "_follow",
-        lambda _path, poll_interval_s, from_start, stop_event=None, session_alive_fn=None: lines,
+        lambda _path, poll_interval_s, from_start, stop_event=None,
+        session_alive_fn=None, session_quiesced_fn=None: lines,
     )
     monkeypatch.setattr(
         bridge,
@@ -263,6 +267,44 @@ def test_drainer_keeps_draining_while_writer_exists(tmp_path) -> None:
         os.close(writer)  # last writer gone -> EOF -> session check -> exit
     thread.join(timeout=2.0)
     assert not thread.is_alive()
+
+
+def test_drainer_exits_when_steam_reaper_quiesces_after_traffic(tmp_path) -> None:
+    """Steam's reaper keeps the FIFO write side open after the game is gone; the
+    drainer must still exit once the reaper has only PB helper children left."""
+    import os
+    import threading
+    import time
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    fifo = tmp_path / "nvapi-trace.1.fifo"
+    os.mkfifo(fifo)
+
+    quiesced = threading.Event()
+    thread = threading.Thread(
+        target=lambda: bridge.run(
+            fifo,
+            poll_interval_s=0.01,
+            session_alive_fn=lambda: True,
+            session_quiesced_fn=lambda: quiesced.is_set(),
+            env={},
+        ),
+        daemon=True,
+    )
+    writer = os.open(fifo, os.O_RDWR)  # Steam reaper's inherited stderr fd
+    try:
+        thread.start()
+        os.write(
+            writer,
+            b"123.456:2a:0:latency-marker:pb:qpcUs=1000000 frameID=7 "
+            b"markerType=SIMULATION_START\n",
+        )
+        time.sleep(0.05)
+        quiesced.set()
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+    finally:
+        os.close(writer)
 
 
 def test_drainer_main_cleans_up_fifo(tmp_path, monkeypatch) -> None:

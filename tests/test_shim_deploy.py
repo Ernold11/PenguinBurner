@@ -308,6 +308,92 @@ def test_watch_exits_when_session_already_dead(tmp_path: Path, monkeypatch) -> N
     assert time.monotonic() - start < 2.0  # returned because the session is gone
 
 
+def test_session_liveness_waits_for_real_steam_child_before_quiescing(
+    monkeypatch,
+) -> None:
+    now = 10.0
+    monkeypatch.setattr(
+        shim_deploy, "session_alive", lambda _pid, _fd: True
+    )
+    monkeypatch.setattr(
+        shim_deploy,
+        "_proc_cmdline",
+        lambda pid: (
+            "/home/jp/.local/share/Steam/ubuntu12_32/reaper "
+            "SteamLaunch AppId=1"
+            if pid == 100
+            else f"/usr/bin/python -m overlay.shim_deploy --session-pid=100 {pid}"
+        ),
+    )
+    monkeypatch.setattr(shim_deploy, "_session_child_pids", lambda _pid: [201, 202])
+
+    tracker = shim_deploy.SessionLiveness(
+        100,
+        None,
+        now_fn=lambda: now,
+        startup_grace_s=15.0,
+    )
+
+    assert tracker.steam_reaper_quiesced() is False
+
+
+def test_session_liveness_quiesces_after_real_steam_child_exits(monkeypatch) -> None:
+    children = iter(([200, 201, 202], [201, 202]))
+    monkeypatch.setattr(
+        shim_deploy, "session_alive", lambda _pid, _fd: True
+    )
+    monkeypatch.setattr(
+        shim_deploy,
+        "_proc_cmdline",
+        lambda pid: (
+            "/home/jp/.local/share/Steam/ubuntu12_32/reaper "
+            "SteamLaunch AppId=1"
+            if pid == 100
+            else (
+                "/usr/bin/python -m overlay.shim_deploy --session-pid=100"
+                if pid == 201
+                else (
+                    "/usr/bin/python -m overlay.telemetry.nvapi_marker_bridge "
+                    "--session-pid=100"
+                    if pid == 202
+                    else "/home/jp/.local/share/Steam/steamapps/common/Game/game.exe"
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(shim_deploy, "_session_child_pids", lambda _pid: next(children))
+
+    tracker = shim_deploy.SessionLiveness(100, None)
+
+    assert tracker.steam_reaper_quiesced() is False
+    assert tracker.steam_reaper_quiesced() is True
+
+
+def test_session_liveness_does_not_quiesce_direct_game_launch(monkeypatch) -> None:
+    monkeypatch.setattr(
+        shim_deploy, "session_alive", lambda _pid, _fd: True
+    )
+    monkeypatch.setattr(
+        shim_deploy,
+        "_proc_cmdline",
+        lambda pid: (
+            "/games/Game/game.exe"
+            if pid == 100
+            else "/usr/bin/python -m overlay.shim_deploy --session-pid=100"
+        ),
+    )
+    monkeypatch.setattr(shim_deploy, "_session_child_pids", lambda _pid: [201])
+
+    tracker = shim_deploy.SessionLiveness(
+        100,
+        None,
+        now_fn=lambda: 100.0,
+        startup_grace_s=0.0,
+    )
+
+    assert tracker.steam_reaper_quiesced() is False
+
+
 def test_spawn_refront_watcher_launches_detached_watch(
     tmp_path: Path, monkeypatch
 ) -> None:
