@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable, Protocol, cast
 
 from auto_uv.domain.console_log import log_phase
 from auto_uv.domain.types import (
@@ -11,9 +11,9 @@ from auto_uv.domain.types import (
     FailureKind,
     VfCurveCandidate,
 )
+from auto_uv.curve.base_vf_curve_voltage_bins import editable_voltage_bins
 from auto_uv.curve.flattened_voltage_probe_curve import build_flattened_voltage_probe_curve
 from auto_uv.curve.rising_tail import tail_ceiling_clock_mhz
-from auto_uv.q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
 from auto_uv.scan_mode.uv_limits import UvTierTarget, uv_limit_profile_target_for_gpu
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from .ladder import AutoOcStep, build_auto_oc_ladder
@@ -22,6 +22,14 @@ from .settings import (
     AUTO_OC_DEFAULT_MAX_INTERPOLATION_STEPS,
     AUTO_OC_TARGET_PROFILE_ID,
 )
+
+
+class AutoOcProbeRunner(Protocol):
+    def probe_candidate(
+        self,
+        candidate: VfCurveCandidate,
+        **kwargs: Any,
+    ) -> VoltageProbeOutcome: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +52,7 @@ def run_auto_oc_candidate_search(
     base_curve: list[dict],
     start_candidate: VfCurveCandidate,
     start_probe: AutoUvProbeSummary | None,
-    runner: Q2RtxCudaProbeRunner,
+    runner: AutoOcProbeRunner,
     gpu_name: object | None,
     clock_ceiling,
     probe_history: list[AutoUvProbeSummary],
@@ -100,7 +108,10 @@ def run_auto_oc_candidate_search(
         step_index=0,
     )
     attempts: list[AutoOcAttempt] = []
-    for step in ladder:
+    failed_voltage_floor_mv: int | None = None
+    consumed_voltage_floor_mv: int | None = None
+
+    def probe_step(step: AutoOcStep, *, action: str) -> tuple[VfCurveCandidate, VoltageProbeOutcome]:
         candidate = auto_oc_candidate(
             base_curve,
             step=step,
@@ -118,7 +129,7 @@ def run_auto_oc_candidate_search(
         log_phase(
             log,
             "auto-oc",
-            f"try={step.index}/{len(ladder)} "
+            f"{action}={step.index}/{len(ladder)} "
             f"{candidate.voltage_mv}mV@{candidate.target_mhz}MHz",
         )
         outcome = runner.probe_candidate(
@@ -133,6 +144,14 @@ def run_auto_oc_candidate_search(
         if outcome.raw_probe is not None:
             probe_history.append(outcome.raw_probe)
         attempts.append(AutoOcAttempt(step=step, candidate=candidate, outcome=outcome))
+        return candidate, outcome
+
+    def record_outcome(
+        candidate: VfCurveCandidate,
+        step: AutoOcStep,
+        outcome: VoltageProbeOutcome,
+    ) -> bool:
+        nonlocal selected_candidate, selected_probe, selected_key
         if outcome.decision.passed and outcome.raw_probe is not None:
             candidate_key = auto_oc_probe_key(
                 outcome.raw_probe,
@@ -149,10 +168,88 @@ def run_auto_oc_candidate_search(
                 "pass measured-clock="
                 f"{_format_clock(effective_q2rtx_clock_mhz(outcome.raw_probe))}",
             )
-        else:
-            log_phase(log, "auto-oc", f"rejected {outcome.decision.reason}")
+            return True
+        log_phase(log, "auto-oc", f"rejected {outcome.decision.reason}")
+        return False
+
+    stop_requested = False
+    for step in ladder:
+        if (
+            consumed_voltage_floor_mv is not None
+            and int(step.voltage_mv) <= int(consumed_voltage_floor_mv)
+        ):
+            log_phase(
+                log,
+                "auto-oc",
+                "skip consumed-voltage-rung "
+                f"{int(step.voltage_mv)}mV@{int(step.target_mhz)}MHz "
+                f"consumed-voltage={int(consumed_voltage_floor_mv)}mV",
+            )
+            continue
+        if (
+            failed_voltage_floor_mv is not None
+            and int(step.voltage_mv) <= int(failed_voltage_floor_mv)
+        ):
+            log_phase(
+                log,
+                "auto-oc",
+                "skip failed-voltage-rung "
+                f"{int(step.voltage_mv)}mV@{int(step.target_mhz)}MHz "
+                f"failed-voltage={int(failed_voltage_floor_mv)}mV",
+            )
+            continue
+        candidate, outcome = probe_step(step, action="try")
+        passed = record_outcome(candidate, step, outcome)
+        if not passed:
+            failed_voltage_floor_mv = max(
+                int(failed_voltage_floor_mv or 0),
+                int(candidate.voltage_mv),
+            )
         if auto_oc_should_stop(outcome):
             log_phase(log, "auto-oc", f"stop critical={outcome.decision.reason}")
+            break
+        if passed:
+            continue
+        for retry_voltage_mv in auto_oc_retry_voltages(
+            base_curve,
+            failed_voltage_mv=int(candidate.voltage_mv),
+            endpoint_voltage_mv=int(endpoint.voltage_mv),
+        ):
+            if (
+                consumed_voltage_floor_mv is not None
+                and int(retry_voltage_mv) <= int(consumed_voltage_floor_mv)
+            ):
+                continue
+            retry_step = AutoOcStep(
+                index=int(step.index),
+                voltage_mv=int(retry_voltage_mv),
+                target_mhz=int(candidate.target_mhz),
+                ratio=float(step.ratio),
+            )
+            retry_candidate, retry_outcome = probe_step(
+                retry_step,
+                action=f"retry-voltage failed={int(candidate.voltage_mv)}mV",
+            )
+            retry_passed = record_outcome(retry_candidate, retry_step, retry_outcome)
+            if auto_oc_should_stop(retry_outcome):
+                log_phase(
+                    log,
+                    "auto-oc",
+                    f"stop critical={retry_outcome.decision.reason}",
+                )
+                stop_requested = True
+                break
+            if retry_passed:
+                consumed_voltage_floor_mv = max(
+                    int(consumed_voltage_floor_mv or 0),
+                    int(retry_candidate.voltage_mv),
+                )
+                break
+            failed_voltage_floor_mv = max(
+                int(failed_voltage_floor_mv or 0),
+                int(retry_candidate.voltage_mv),
+            )
+        if stop_requested:
             break
 
     if selected_candidate is start_candidate:
@@ -181,15 +278,18 @@ def auto_oc_endpoint(
     table_target = uv_limit_profile_target_for_gpu(gpu_name, AUTO_OC_TARGET_PROFILE_ID)
     voltage_mv = positive_int(target_voltage_mv)
     clock_mhz = positive_int(target_clock_mhz)
-    if table_target is None and (voltage_mv is None or clock_mhz is None):
-        return None
+    if table_target is None:
+        if voltage_mv is None or clock_mhz is None:
+            return None
+        return UvTierTarget(
+            gpu_family="Custom GPU",
+            profile_id="custom",
+            voltage_mv=int(voltage_mv),
+            clock_mhz=int(clock_mhz),
+        )
     return UvTierTarget(
-        gpu_family=(
-            table_target.gpu_family if table_target is not None else "Custom GPU"
-        ),
-        profile_id=(
-            table_target.profile_id if table_target is not None else "custom"
-        ),
+        gpu_family=table_target.gpu_family,
+        profile_id=table_target.profile_id,
         voltage_mv=int(
             voltage_mv
             if voltage_mv is not None
@@ -268,15 +368,20 @@ def retarget_clock_ceiling(
 
 
 def auto_oc_should_stop(outcome: VoltageProbeOutcome) -> bool:
-    # A confirmed hang or CUDA fault at one ladder step makes every higher-clock
-    # step strictly more dangerous, so the search must not keep climbing.
-    return outcome.decision.failure_kind in {
-        FailureKind.FATAL_OUTPUT,
-        FailureKind.NVIDIA_XID,
-        FailureKind.USER_STOP,
-        FailureKind.GPU_HANG,
-        FailureKind.CUDA_FAILED,
-    }
+    return outcome.decision.failure_kind is FailureKind.USER_STOP
+
+
+def auto_oc_retry_voltages(
+    base_curve: list[dict],
+    *,
+    failed_voltage_mv: int,
+    endpoint_voltage_mv: int,
+) -> list[int]:
+    return [
+        int(voltage)
+        for voltage in sorted(editable_voltage_bins(base_curve))
+        if int(failed_voltage_mv) < int(voltage) <= int(endpoint_voltage_mv)
+    ]
 
 
 def _skip(
@@ -298,7 +403,7 @@ def positive_int(value: object | None) -> int | None:
     if value is None:
         return None
     try:
-        parsed = int(value)
+        parsed = int(cast(Any, value))
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None

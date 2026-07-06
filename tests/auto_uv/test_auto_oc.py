@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import auto_uv.auto_oc.search as auto_oc_search
 from auto_uv.auto_oc.ladder import AutoOcStep, build_auto_oc_ladder
 from auto_uv.auto_oc.scoring import auto_oc_probe_key
 from auto_uv.auto_oc.search import AutoOcAttempt, run_auto_oc_candidate_search
@@ -19,7 +20,7 @@ from auto_uv.curve.performance_sweep_profile import (
     build_performance_sweep_profile_candidate,
 )
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
-from auto_uv_test_data import base_curve
+from auto_uv_test_data import base_curve, rtx_5080_20260524_high_oc_base_curve
 
 
 def _probe(
@@ -108,6 +109,31 @@ def test_auto_oc_ladder_interpolates_to_endpoint_without_exceeding_caps() -> Non
     assert len({(step.voltage_mv, step.target_mhz) for step in ladder}) == len(ladder)
 
 
+def test_auto_oc_ladder_climbs_strictly_by_voltage_on_sparse_bins() -> None:
+    curve = rtx_5080_20260524_high_oc_base_curve()
+
+    ladder = build_auto_oc_ladder(
+        curve,
+        start_voltage_mv=870,
+        start_clock_mhz=2806,
+        endpoint_voltage_mv=915,
+        endpoint_clock_mhz=2980,
+        max_steps=10,
+    )
+
+    tried = [(step.voltage_mv, step.target_mhz) for step in ladder]
+    assert tried == [
+        (875, 2820),
+        (885, 2865),
+        (890, 2880),
+        (895, 2910),
+        (900, 2925),
+        (910, 2940),
+        (915, 2980),
+    ]
+    assert len({step.voltage_mv for step in ladder}) == len(ladder)
+
+
 def test_auto_oc_probe_key_uses_q2rtx_clock_before_fps() -> None:
     lower_fps_higher_clock = _probe(950, 2745, fps=80.0, q2rtx_clock_mhz=2735.0)
     higher_fps_lower_clock = _probe(925, 2670, fps=120.0, q2rtx_clock_mhz=2680.0)
@@ -121,6 +147,81 @@ def test_auto_oc_probe_key_uses_q2rtx_clock_before_fps() -> None:
         voltage_mv=925,
         step_index=1,
     )
+
+
+def test_auto_oc_search_climbs_voltage_and_clock_to_target() -> None:
+    curve = base_curve(850, 950, 5, 2400, 15)
+    start = VfCurveCandidate("undervolt-winner", 865, 2824, curve)
+    tried: list[tuple[int, int]] = []
+
+    class FakeRunner:
+        def probe_candidate(self, candidate, **_kwargs):
+            tried.append((candidate.voltage_mv, candidate.target_mhz))
+            return _passed_outcome(
+                _probe(
+                    candidate.voltage_mv,
+                    candidate.target_mhz,
+                    q2rtx_clock_mhz=float(candidate.target_mhz),
+                )
+            )
+
+    result = run_auto_oc_candidate_search(
+        base_curve=curve,
+        start_candidate=start,
+        start_probe=_probe(865, 2824, q2rtx_clock_mhz=2824.0),
+        runner=FakeRunner(),
+        gpu_name="NVIDIA GeForce RTX 4090",
+        clock_ceiling=None,
+        probe_history=[],
+        log=lambda _message: None,
+        tail_rise_bins=0,
+        max_interpolation_steps=10,
+        target_voltage_mv=925,
+        target_clock_mhz=2980,
+        measured_baseline_clock_mhz=2735,
+    )
+
+    assert tried == [
+        (870, 2835),
+        (875, 2850),
+        (885, 2865),
+        (890, 2880),
+        (895, 2895),
+        (900, 2925),
+        (905, 2940),
+        (915, 2955),
+        (920, 2970),
+        (925, 2980),
+    ]
+    assert (result.selected_candidate.voltage_mv, result.selected_candidate.target_mhz) == (
+        925,
+        2980,
+    )
+
+
+def test_auto_oc_search_skips_target_voltage_below_uv_candidate() -> None:
+    curve = base_curve(850, 950, 5, 2400, 15)
+    start = VfCurveCandidate("uv-winner", 925, 2824, curve)
+
+    class FakeRunner:
+        def probe_candidate(self, *_args, **_kwargs):
+            raise AssertionError("lower-voltage Auto-OC target must not be probed")
+
+    result = run_auto_oc_candidate_search(
+        base_curve=curve,
+        start_candidate=start,
+        start_probe=_probe(925, 2824, q2rtx_clock_mhz=2824.0),
+        runner=FakeRunner(),
+        gpu_name="NVIDIA GeForce RTX 4090",
+        clock_ceiling=None,
+        probe_history=[],
+        log=lambda _message: None,
+        target_voltage_mv=900,
+        target_clock_mhz=2980,
+    )
+
+    assert result.selected_candidate is start
+    assert result.attempts == ()
 
 
 def test_auto_oc_search_keeps_exploring_after_measured_clock_regression() -> None:
@@ -147,7 +248,9 @@ def test_auto_oc_search_keeps_exploring_after_measured_clock_regression() -> Non
                     candidate.voltage_mv,
                     candidate.target_mhz,
                     fps=70.0,
-                    q2rtx_clock_mhz=2735.0,
+                    q2rtx_clock_mhz=(
+                        2745.0 if candidate.target_mhz > 2715 else 2735.0
+                    ),
                 )
             )
 
@@ -167,12 +270,13 @@ def test_auto_oc_search_keeps_exploring_after_measured_clock_regression() -> Non
         measured_baseline_clock_mhz=2670,
     )
 
-    assert tried == [(935, 2715), (950, 2745)]
+    assert tried == [(935, 2715), (940, 2715), (950, 2745)]
     assert (result.selected_candidate.voltage_mv, result.selected_candidate.target_mhz) == (
         950,
         2745,
     )
     assert [attempt.candidate.metadata["auto_oc_applied_mhz"] for attempt in result.attempts] == [
+        45,
         45,
         75,
     ]
@@ -181,25 +285,34 @@ def test_auto_oc_search_keeps_exploring_after_measured_clock_regression() -> Non
     }
 
 
-def test_auto_oc_search_stops_climbing_after_confirmed_gpu_hang() -> None:
+def test_auto_oc_search_retries_failed_clock_at_higher_voltage_before_climbing() -> None:
     curve = base_curve(875, 955, 5, 2400, 15)
     start = VfCurveCandidate("start", 925, 2670, curve)
     tried: list[tuple[int, int]] = []
 
     class FakeRunner:
         def probe_candidate(self, candidate, **kwargs):
+            _ = kwargs
             tried.append((candidate.voltage_mv, candidate.target_mhz))
             probe = _probe(
                 candidate.voltage_mv,
                 candidate.target_mhz,
                 q2rtx_clock_mhz=2660.0,
             )
+            if len(tried) > 1:
+                return _passed_outcome(
+                    _probe(
+                        candidate.voltage_mv,
+                        candidate.target_mhz,
+                        q2rtx_clock_mhz=float(candidate.target_mhz),
+                    )
+                )
             return VoltageProbeOutcome(
                 decision=StableRunDecision(
                     False,
-                    FailureKind.GPU_HANG,
+                    FailureKind.NVIDIA_XID,
                     FailureSeverity.CRITICAL,
-                    "gpu-hang-watchdog",
+                    "nvidia-xid",
                 ),
                 measured_core_clock_mhz=probe.avg_core_clock_mhz,
                 measured_voltage_mv=probe.avg_voltage_mv,
@@ -223,8 +336,126 @@ def test_auto_oc_search_stops_climbing_after_confirmed_gpu_hang() -> None:
         measured_baseline_clock_mhz=2670,
     )
 
-    # The GPU provably hung at the first step; the ladder must not try the
-    # next, higher-clock step, and the verified UV start candidate is kept.
+    assert tried == [(935, 2715), (940, 2715), (950, 2745)]
+    assert (result.selected_candidate.voltage_mv, result.selected_candidate.target_mhz) == (
+        950,
+        2745,
+    )
+
+
+def test_auto_oc_search_skips_more_mhz_until_failed_clock_is_stable(monkeypatch) -> None:
+    curve = rtx_5080_20260524_high_oc_base_curve()
+    start = VfCurveCandidate("start", 870, 2806, curve)
+    tried: list[tuple[int, int]] = []
+    log_messages: list[str] = []
+
+    monkeypatch.setattr(
+        auto_oc_search,
+        "build_auto_oc_ladder",
+        lambda *_args, **_kwargs: [
+            AutoOcStep(1, 875, 2820, 0.1),
+            AutoOcStep(2, 875, 2835, 0.2),
+            AutoOcStep(3, 885, 2865, 0.3),
+            AutoOcStep(4, 890, 2880, 0.4),
+        ],
+    )
+
+    class FakeRunner:
+        def probe_candidate(self, candidate, **_kwargs):
+            tried.append((candidate.voltage_mv, candidate.target_mhz))
+            if len(tried) == 1:
+                probe = _probe(
+                    candidate.voltage_mv,
+                    candidate.target_mhz,
+                    q2rtx_clock_mhz=2810.0,
+                )
+                return VoltageProbeOutcome(
+                    decision=StableRunDecision(
+                        False,
+                        FailureKind.NVIDIA_XID,
+                        FailureSeverity.CRITICAL,
+                        "nvidia-xid",
+                    ),
+                    measured_core_clock_mhz=probe.avg_core_clock_mhz,
+                    measured_voltage_mv=probe.avg_voltage_mv,
+                    raw_probe=probe,
+                    raw_result=object(),
+                )
+            return _passed_outcome(
+                _probe(
+                    candidate.voltage_mv,
+                    candidate.target_mhz,
+                    q2rtx_clock_mhz=float(candidate.target_mhz),
+                )
+            )
+
+    result = run_auto_oc_candidate_search(
+        base_curve=curve,
+        start_candidate=start,
+        start_probe=_probe(870, 2806, q2rtx_clock_mhz=2806.0),
+        runner=FakeRunner(),
+        gpu_name="Custom GPU",
+        clock_ceiling=None,
+        probe_history=[],
+        log=log_messages.append,
+        tail_rise_bins=0,
+        max_interpolation_steps=10,
+        target_voltage_mv=915,
+        target_clock_mhz=2980,
+        measured_baseline_clock_mhz=2735,
+    )
+
+    assert tried == [(875, 2820), (885, 2820), (890, 2880)]
+    assert (result.selected_candidate.voltage_mv, result.selected_candidate.target_mhz) == (
+        890,
+        2880,
+    )
+    assert (875, 2835) not in tried
+    assert (885, 2865) not in tried
+
+
+def test_auto_oc_search_stops_when_user_stops_scan() -> None:
+    curve = base_curve(875, 955, 5, 2400, 15)
+    start = VfCurveCandidate("start", 925, 2670, curve)
+    tried: list[tuple[int, int]] = []
+
+    class FakeRunner:
+        def probe_candidate(self, candidate, **_kwargs):
+            tried.append((candidate.voltage_mv, candidate.target_mhz))
+            probe = _probe(
+                candidate.voltage_mv,
+                candidate.target_mhz,
+                q2rtx_clock_mhz=2660.0,
+            )
+            return VoltageProbeOutcome(
+                decision=StableRunDecision(
+                    False,
+                    FailureKind.USER_STOP,
+                    FailureSeverity.CRITICAL,
+                    "user-stop",
+                ),
+                measured_core_clock_mhz=probe.avg_core_clock_mhz,
+                measured_voltage_mv=probe.avg_voltage_mv,
+                raw_probe=probe,
+                raw_result=object(),
+            )
+
+    result = run_auto_oc_candidate_search(
+        base_curve=curve,
+        start_candidate=start,
+        start_probe=_probe(925, 2670, q2rtx_clock_mhz=2670.0),
+        runner=FakeRunner(),
+        gpu_name="NVIDIA GeForce RTX 4090",
+        clock_ceiling=None,
+        probe_history=[],
+        log=lambda _message: None,
+        tail_rise_bins=0,
+        max_interpolation_steps=2,
+        target_voltage_mv=950,
+        target_clock_mhz=2745,
+        measured_baseline_clock_mhz=2670,
+    )
+
     assert tried == [(935, 2715)]
     assert result.selected_candidate is start
 

@@ -4,6 +4,7 @@ import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -610,7 +611,7 @@ def test_final_verification_failure_offers_safer_sorted_candidates(
 
 def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
     curve = base_curve(870, 930, 5, 2600, 15)
-    captured: dict[str, object] = {"order": []}
+    captured: dict[str, Any] = {"order": []}
 
     class FakeGpu:
         reader = object()
@@ -654,6 +655,7 @@ def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
         **_kwargs,
     ):
         _ = settings, initial_stable_candidate, unsafe_entries, initial_stable_outcome
+        captured["order"].append("lower-sweep")
         candidate = VfCurveCandidate("balanced-result", 870, 2741, curve)
         outcome = VoltageProbeOutcome(
             decision=StableRunDecision(
@@ -795,7 +797,7 @@ def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
     )
 
     assert result == "final-result"
-    assert captured["order"] == ["auto-oc", "choice", "final"]
+    assert captured["order"] == ["lower-sweep", "auto-oc", "choice", "final"]
     assert captured["auto_oc_start"] == (870, 2741)
     assert captured["choice_stable"] == (910, 2890)
     assert (910, 2890) in captured["choice_history"]

@@ -255,6 +255,11 @@ OverlayTextConfig read_overlay_text_config() {
         }
     }
     std::fclose(file);
+    // An explicit launch env (PB_OVERLAY=1) wins over the saved UI toggle; the
+    // saved config only decides the wrapper's automatic/default overlay mode.
+    if (fallback_enabled) {
+        enabled = true;
+    }
     OverlayTextConfig result = requested.empty()
         ? default_overlay_text_config(enabled)
         : OverlayTextConfig{enabled, normalize_overlay_items(requested), scale};

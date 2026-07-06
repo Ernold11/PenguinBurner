@@ -47,7 +47,7 @@ def build_auto_oc_ladder(
         return []
 
     step_count = max(1, int(max_steps))
-    seen: set[tuple[int, int]] = set()
+    seen_voltages: set[int] = set()
     steps: list[AutoOcStep] = []
     for raw_index in range(1, step_count + 1):
         ratio = float(raw_index) / float(step_count)
@@ -66,10 +66,10 @@ def build_auto_oc_ladder(
             endpoint_clock_mhz=endpoint_clock,
             clock_step_mhz=int(clock_step_mhz),
         )
-        key = (int(voltage_mv), int(target_mhz))
-        if key == (start_voltage, start_clock) or key in seen:
+        voltage_key = int(voltage_mv)
+        if voltage_key <= start_voltage or voltage_key in seen_voltages:
             continue
-        seen.add(key)
+        seen_voltages.add(voltage_key)
         steps.append(
             AutoOcStep(
                 index=len(steps) + 1,
