@@ -473,15 +473,3 @@ def delete_profiles_command(profile_paths: list[str]) -> list[str]:
         *[str(path) for path in profile_paths],
     ]
     return privileged_command(command)
-
-
-def restore_defaults_command(gpu_index: int | None = None) -> list[str]:
-    # Reset the GPU to stock clocks/voltage/memory (zero VF offsets, release
-    # locked clocks, restore default power limit) via the runtime reset path.
-    command = [
-        *cli_base_command(),
-        "--reset-gpu-defaults",
-        "--gpu-index",
-        str(runtime_gpu_index() if gpu_index is None else max(0, int(gpu_index))),
-    ]
-    return privileged_command(command)

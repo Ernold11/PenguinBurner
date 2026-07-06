@@ -45,21 +45,6 @@ def profile_for_selector(profiles: list[dict], selector: str) -> dict | None:
     return None
 
 
-def profiles_for_selectors(profiles: list[dict], selectors: list[str]) -> list[dict]:
-    selected = []
-    seen = set()
-    for selector in selectors:
-        profile = profile_for_selector(profiles, selector)
-        if profile is None:
-            continue
-        profile_id = str(profile.get("profile_id", ""))
-        if profile_id in seen:
-            continue
-        selected.append(profile)
-        seen.add(profile_id)
-    return selected
-
-
 def selected_profile_ids_include_selector(
     profiles: list[dict],
     selected_ids: list[str],
@@ -189,20 +174,6 @@ def _memory_offset_summary(value) -> str:
     if not text or text.startswith("0 "):
         return ""
     return f"mem {text}"
-
-
-def final_result_frequency_voltage(payload: dict) -> str:
-    clock = _status_number(
-        payload.get("clock_mhz", payload.get("lock_clock_mhz")),
-        precision=0,
-    )
-    voltage = _status_number(
-        payload.get("voltage_mv", payload.get("candidate_voltage_mv")),
-        precision=0,
-    )
-    if clock and voltage:
-        return f"{clock} MHz {voltage} mV"
-    return f"{clock} MHz" if clock else (f"{voltage} mV" if voltage else "")
 
 
 def runner_status_text(

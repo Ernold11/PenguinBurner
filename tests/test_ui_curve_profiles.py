@@ -72,14 +72,6 @@ def test_curve_plan_from_values_builds_and_defaults_offset() -> None:
     assert cp.curve_plan_from_values("x") == []
 
 
-def test_curve_points_from_payload_key_priority_and_materialization() -> None:
-    assert cp.curve_points_from_payload({"points": [[900, 2500]]}) == [(900.0, 2500.0)]
-    assert cp.curve_points_from_payload(
-        {"materialization": {"points": [[850, 2400]]}}
-    ) == [(850.0, 2400.0)]
-    assert cp.curve_points_from_payload("not-dict") == []
-
-
 def test_curve_plan_from_payload_and_base_points_payload() -> None:
     payload = {"plan": [{"index": 0, "voltage_mv": 900, "base_mhz": 2400, "target_mhz": 2500}]}
     assert cp.curve_plan_from_payload(payload)[0]["target_mhz"] == 2500
@@ -101,11 +93,6 @@ def test_profile_curve_plan_and_base_points_fallback(monkeypatch) -> None:
     monkeypatch.setattr(cp, "profile_payload_from_path", lambda profile: payload)
     assert cp.profile_curve_plan({})[0]["voltage_mv"] == 900
     assert cp.profile_base_curve_points({}) == [(900.0, 2400.0)]
-
-
-def test_profile_curve_tab_key_variants() -> None:
-    assert cp.profile_curve_tab_key({"profile_id": "p1"}) == "p1"
-    assert cp.profile_curve_tab_key({}) == "profile-curve"
 
 
 # --- cache + save -------------------------------------------------------------

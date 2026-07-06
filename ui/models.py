@@ -36,13 +36,6 @@ def fan_measurement_point(payload: dict) -> tuple[float, float] | None:
     return temp, fan
 
 
-def sorted_unique_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    by_x: dict[float, float] = {}
-    for x, y in points:
-        by_x[float(x)] = float(y)
-    return sorted(by_x.items())
-
-
 def candidate_id_from_payload(payload: dict) -> str:
     candidate_id = str(payload.get("candidate_id", "")).strip()
     if candidate_id:

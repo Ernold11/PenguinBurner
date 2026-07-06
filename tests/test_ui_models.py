@@ -11,7 +11,6 @@ from ui.models import (
     probe_decision_label,
     probe_failure_label,
     probe_reason_tooltip,
-    sorted_unique_points,
     stage_title,
     status_value,
     top_status_text,
@@ -40,13 +39,6 @@ def test_fan_points_accepts_alternate_keys() -> None:
 def test_fan_measurement_point_and_none() -> None:
     assert fan_measurement_point({"temp_c": 50, "fan_pct": 45}) == (50.0, 45.0)
     assert fan_measurement_point({"temp_c": 50}) is None
-
-
-def test_sorted_unique_points_dedupes_by_x_and_sorts() -> None:
-    assert sorted_unique_points([(2.0, 9.0), (1.0, 5.0), (2.0, 7.0)]) == [
-        (1.0, 5.0),
-        (2.0, 7.0),
-    ]
 
 
 def test_candidate_id_uses_explicit_then_derived_then_empty() -> None:

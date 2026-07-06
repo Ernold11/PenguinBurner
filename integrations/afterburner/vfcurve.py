@@ -124,25 +124,8 @@ def parse_vfcurve_blob(hex_blob: str):
     return header, points, tail
 
 
-def load_afterburner_vfcurve_hex(profile_path=DEFAULT_PROFILE, section=DEFAULT_SECTION):
-    settings = load_afterburner_profile_settings(
-        profile_path=profile_path, section=section
-    )
-    hex_blob = settings["vf_curve_hex"]
-    if not hex_blob:
-        raise KeyError(
-            f"Afterburner section {settings['section']} does not contain a VFCurve blob"
-        )
-    return hex_blob
-
-
 def hash_afterburner_vfcurve_hex(hex_blob: str) -> str:
     return hashlib.sha256(hex_blob.strip().encode()).hexdigest()
-
-
-def load_afterburner_vfcurve(profile_path=DEFAULT_PROFILE, section=DEFAULT_SECTION):
-    hex_blob = load_afterburner_vfcurve_hex(profile_path=profile_path, section=section)
-    return parse_vfcurve_blob(hex_blob)
 
 
 def _load_afterburner_profile_parser(profile_path):
@@ -232,10 +215,6 @@ def load_afterburner_profile_settings(
 
 def point_map_by_voltage(points):
     return {int(round(point["voltage_mv"])): point for point in points}
-
-
-class AfterburnerVfCurveSafetyError(RuntimeError):
-    pass
 
 
 class AfterburnerProfileSelectionError(RuntimeError):
@@ -872,10 +851,3 @@ def analyze_afterburner_vfcurve(points):
         "unique_nonzero_third_values": unique_nonzero_third_values,
         "adjusted_anchor": adjusted_anchor,
     }
-
-
-def ensure_safe_afterburner_vfcurve(points, *, section="startup", allow_unsafe=False):
-    analysis = analyze_afterburner_vfcurve(points)
-    analysis["section"] = str(section)
-    analysis["allow_unsafe"] = bool(allow_unsafe)
-    return analysis

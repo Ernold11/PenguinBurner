@@ -30,27 +30,6 @@ def profile_base_curve_points(profile: dict) -> list[tuple[float, float]]:
     return [] if payload is None else base_curve_points_from_payload(payload)
 
 
-def profile_curve_tab_key(profile: dict) -> str:
-    for key in ("profile_id", "candidate_id", "path", "display_name"):
-        value = str(profile.get(key, "")).strip()
-        if value:
-            return value
-    return "profile-curve"
-
-
-def curve_points_from_payload(payload: dict) -> list[tuple[float, float]]:
-    if not isinstance(payload, dict):
-        return []
-    for key in ("curve_points", "points", "plan"):
-        points = curve_points_from_values(payload.get(key))
-        if points:
-            return points
-    materialization = payload.get("materialization")
-    if isinstance(materialization, dict):
-        return curve_points_from_values(materialization.get("points"))
-    return []
-
-
 def curve_plan_from_payload(payload: dict) -> list[dict]:
     if not isinstance(payload, dict):
         return []

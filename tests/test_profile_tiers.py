@@ -10,9 +10,7 @@ from profiles.uv.profile_tiers import (
     PROFILE_TIER_PERFORMANCE,
     assigned_tier_for_profile,
     available_adaptive_tiers,
-    clear_profile_tier_assignment,
     generated_profile_tier,
-    generated_profile_tier_from_runtime_options,
     load_profile_tier_disabled_profile_ids,
     load_profile_tier_assignments,
     profile_tier_disabled,
@@ -45,20 +43,6 @@ def _measured_profile(
     profile = _profile(profile_id, tier, created_at)
     profile.update({"efficiency_fps_per_w": fpsw, "avg_fps": fps})
     return profile
-
-
-def test_runtime_options_preserve_user_facing_balanced_tier() -> None:
-    assert (
-        generated_profile_tier_from_runtime_options(
-            {"auto_uv_requested_mode": "balanced", "auto_uv_mode": "balanced"}
-        )
-        == PROFILE_TIER_BALANCED
-    )
-    assert (
-        generated_profile_tier_from_runtime_options({"auto_uv_mode": "performance"})
-        == PROFILE_TIER_PERFORMANCE
-    )
-    assert generated_profile_tier_from_runtime_options({}) == PROFILE_TIER_BALANCED
 
 
 def test_profile_tier_infers_legacy_balanced_from_tail_shape() -> None:
@@ -96,23 +80,6 @@ def test_profile_tier_none_assignment_disables_generated_tier(tmp_path) -> None:
     assert fields["profile_tier"] == ""
     assert fields["profile_tier_key"] == ""
     assert fields["profile_tier_disabled"] is True
-
-
-def test_clear_profile_tier_assignment_restores_generated_tier(tmp_path) -> None:
-    path = tmp_path / "assignments.json"
-
-    save_profile_tier_none_assignment("profile-a", path=path)
-    clear_profile_tier_assignment("profile-a", path=path)
-
-    assert load_profile_tier_disabled_profile_ids(path) == set()
-    fields = profile_tier_summary_fields(
-        _profile("profile-a", "Balanced", "2026-06-03T12:00:00+00:00"),
-        assignments={},
-        disabled_profile_ids=set(),
-    )
-    assert fields["profile_tier"] == "Balanced"
-    assert fields["profile_tier_key"] == PROFILE_TIER_BALANCED
-    assert fields["profile_tier_disabled"] is False
 
 
 def test_resolve_profile_tier_profiles_prefers_pinned_then_latest_generated() -> None:
@@ -211,49 +178,6 @@ def test_resolve_profile_tier_profiles_uses_latest_for_balanced_score_tie() -> N
     resolved = resolve_profile_tier_profiles(profiles, assignments={})
 
     assert resolved[PROFILE_TIER_BALANCED]["profile_id"] == "balanced-new"
-
-
-# --- generated_profile_tier_from_runtime_options: tail_rise_bins thresholds ---
-
-
-def test_runtime_options_tail_rise_bins_maps_to_performance() -> None:
-    # tail_rise_bins >= _PERFORMANCE_TAIL_RISE_BINS (6) -> performance (line 73-74)
-    assert (
-        generated_profile_tier_from_runtime_options({"auto_uv_tail_rise_bins": 6})
-        == PROFILE_TIER_PERFORMANCE
-    )
-
-
-def test_runtime_options_tail_rise_bins_maps_to_balanced() -> None:
-    # _BALANCED_TAIL_RISE_BINS (4) <= tail_rise_bins < 6 -> balanced (line 75-76)
-    assert (
-        generated_profile_tier_from_runtime_options({"auto_uv_tail_rise_bins": 4})
-        == PROFILE_TIER_BALANCED
-    )
-
-
-def test_runtime_options_tail_rise_bins_maps_to_efficiency() -> None:
-    # tail_rise_bins < 4 -> efficiency (line 77)
-    assert (
-        generated_profile_tier_from_runtime_options({"auto_uv_tail_rise_bins": 1})
-        == PROFILE_TIER_EFFICIENCY
-    )
-
-
-def test_runtime_options_mode_efficiency_fallback() -> None:
-    # No tail_rise_bins, mode efficiency -> efficiency (line 79-80)
-    assert (
-        generated_profile_tier_from_runtime_options({"auto_uv_mode": "efficiency"})
-        == PROFILE_TIER_EFFICIENCY
-    )
-
-
-def test_runtime_options_mode_balanced_fallback() -> None:
-    # No tail_rise_bins, mode balanced -> balanced (line 81-82)
-    assert (
-        generated_profile_tier_from_runtime_options({"auto_uv_mode": "balanced"})
-        == PROFILE_TIER_BALANCED
-    )
 
 
 # --- generated_profile_tier: mode / profile_curve / tail thresholds ---

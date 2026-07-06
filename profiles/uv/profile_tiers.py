@@ -76,23 +76,6 @@ def _tier_from_mode(mode: str) -> str:
     return PROFILE_TIER_BALANCED
 
 
-def generated_profile_tier_from_runtime_options(runtime_options: dict | None) -> str:
-    options = runtime_options if isinstance(runtime_options, dict) else {}
-    requested = normalize_profile_tier(options.get("auto_uv_requested_mode"))
-    if requested:
-        return requested
-
-    mode = normalize_profile_tier(options.get("auto_uv_mode"))
-    if mode == PROFILE_TIER_PERFORMANCE:
-        return PROFILE_TIER_PERFORMANCE
-
-    tail_rise_bins = _optional_int(options.get("auto_uv_tail_rise_bins"))
-    if tail_rise_bins is not None:
-        return _tier_from_tail_rise_bins(tail_rise_bins)
-
-    return _tier_from_mode(mode)
-
-
 def generated_profile_tier(profile: dict | None) -> str:
     payload = profile if isinstance(profile, dict) else {}
     for key in (
@@ -205,27 +188,6 @@ def save_profile_tier_none_assignment(
     }
     disabled_profile_ids = load_profile_tier_disabled_profile_ids(path)
     disabled_profile_ids.add(selected_profile_id)
-    _write_profile_tier_assignments(
-        assignments,
-        disabled_profile_ids=disabled_profile_ids,
-        path=path,
-    )
-    return assignments
-
-
-def clear_profile_tier_assignment(
-    profile_id: str,
-    *,
-    path: str | Path | None = None,
-) -> dict[str, str]:
-    selected_profile_id = str(profile_id or "").strip()
-    assignments = {
-        key: value
-        for key, value in load_profile_tier_assignments(path).items()
-        if value != selected_profile_id
-    }
-    disabled_profile_ids = load_profile_tier_disabled_profile_ids(path)
-    disabled_profile_ids.discard(selected_profile_id)
     _write_profile_tier_assignments(
         assignments,
         disabled_profile_ids=disabled_profile_ids,

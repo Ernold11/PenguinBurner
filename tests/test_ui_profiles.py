@@ -30,13 +30,6 @@ def test_profile_for_selector_variants() -> None:
     assert profiles.profile_for_selector([], "latest") is None
 
 
-def test_profiles_for_selectors_dedupes() -> None:
-    assert profiles.profiles_for_selectors([_P1, _P2], ["p1", "p1", "p2", "nope"]) == [
-        _P1,
-        _P2,
-    ]
-
-
 def test_selected_ids_include_selector() -> None:
     assert profiles.selected_profile_ids_include_selector([_P1], ["p1"], "p1") is True
     assert profiles.selected_profile_ids_include_selector([_P1], ["p2"], "p1") is False
@@ -118,15 +111,6 @@ def test_status_label_and_frequency_voltage() -> None:
     assert profiles.profile_frequency_voltage({"lock_clock_mhz": 2500}) == "2500 MHz"
     assert profiles.profile_frequency_voltage({"candidate_voltage_mv": 900}) == "900 mV"
     assert profiles.profile_frequency_voltage({}) == ""
-
-
-def test_final_result_voltage() -> None:
-    assert (
-        profiles.final_result_frequency_voltage({"clock_mhz": 2400, "voltage_mv": 880})
-        == "2400 MHz 880 mV"
-    )
-    assert profiles.final_result_frequency_voltage({"clock_mhz": 2400}) == "2400 MHz"
-    assert profiles.final_result_frequency_voltage({}) == ""
 
 
 def test_runner_status_text_branches() -> None:
