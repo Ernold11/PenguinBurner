@@ -1,0 +1,30 @@
+[package]
+name = "penguin-burnerd"
+version = "0.6.3"
+edition = "2021"
+rust-version = "1.75"
+license = "GPL-3.0-only"
+description = "PenguinBurner root daemon: socket API + native runtime profile engine (NVML/NVAPI)"
+
+[[bin]]
+name = "penguin-burnerd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+libloading = "0.8"
+nvml-wrapper = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
