@@ -1,1 +1,503 @@
-//! Implemented in wave A1 (see DESIGN.md).
+//! The single supervisor: one `Mutex<Supervisor>` holding the profile-engine job,
+//! the Auto-UV scan job, and a generation counter (the Python identity guard).
+//!
+//! Free functions take `&Mutex<Supervisor>` / `&Arc<Mutex<Supervisor>>` and manage
+//! locking themselves so lock scopes stay tiny (parity with `_ACTIVE_SCAN_LOCK`).
+
+use std::env;
+use std::fs;
+use std::fs::File;
+use std::path::PathBuf;
+use std::process::{Child, ExitStatus};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+use serde_json::Value;
+
+use crate::api::{ActiveJob, StartResult, StatusResult, StopResult};
+use crate::logging;
+use crate::paths;
+use crate::profile::{self, EngineHandle, EngineOptions};
+
+const PROGRAM_FILE_ENV: &str = "PENGUIN_BURNER_DAEMON_PROGRAM_FILE";
+/// Test-only override for the last-runtime state file (production uses the fixed
+/// path below). Set by the integration tests to avoid touching `/var/lib`.
+const STATE_FILE_ENV: &str = "PENGUIN_BURNERD_TEST_STATE_FILE";
+const LAST_RUNTIME_STATE_PATH: &str = "/var/lib/penguin-burner/last-runtime.json";
+const ENGINE_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A spawned child process with a cached return code, mirroring `Popen.poll()`'s
+/// caching so status can still report the exit code after the child is reaped.
+pub struct ChildProc {
+    child: Mutex<Child>,
+    pid: u32,
+    returncode: Mutex<Option<i32>>,
+}
+
+impl ChildProc {
+    pub fn new(child: Child) -> Self {
+        let pid = child.id();
+        ChildProc {
+            child: Mutex::new(child),
+            pid,
+            returncode: Mutex::new(None),
+        }
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Non-blocking `poll()`: `None` if still running, else the (cached) code.
+    pub fn poll(&self) -> Option<i32> {
+        // Always lock child first, then returncode, to keep a single lock order.
+        let mut child = self.child.lock().unwrap_or_else(|p| p.into_inner());
+        let mut returncode = self.returncode.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(code) = *returncode {
+            return Some(code);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let code = exit_code(status);
+                *returncode = Some(code);
+                Some(code)
+            }
+            _ => None,
+        }
+    }
+
+    /// Block until the child exits and return its code.
+    pub fn wait(&self) -> i32 {
+        loop {
+            if let Some(code) = self.poll() {
+                return code;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Wait up to `timeout`; `None` on timeout, else the exit code.
+    pub fn wait_timeout(&self, timeout: Duration) -> Option<i32> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(code) = self.poll() {
+                return Some(code);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Send a signal, guarded like `Popen.send_signal` so a reaped (possibly
+    /// reused) pid is never signalled. Errors are ignored (parity).
+    pub fn signal(&self, sig: i32) {
+        if self.poll().is_some() {
+            return;
+        }
+        // SAFETY: kill() on our own child pid; a bad pid just returns an error.
+        unsafe {
+            libc::kill(self.pid as libc::pid_t, sig);
+        }
+    }
+}
+
+fn exit_code(status: ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    // Python's poll() returns -signum when the child is killed by a signal.
+    status
+        .code()
+        .unwrap_or_else(|| -status.signal().unwrap_or(0))
+}
+
+/// The active Auto-UV scan child. `generation` is the identity guard: a stale
+/// monitor only clears/restarts if the supervisor still holds this exact job.
+pub struct ScanJob {
+    pub proc: ChildProc,
+    pub argv: Vec<String>,
+    pub generation: u64,
+}
+
+struct ProfileJob {
+    engine: EngineHandle,
+    argv: Vec<String>,
+}
+
+pub struct Supervisor {
+    profile: Option<ProfileJob>,
+    scan: Option<Arc<ScanJob>>,
+    scan_generation: u64,
+}
+
+impl Default for Supervisor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Supervisor {
+    pub fn new() -> Self {
+        Supervisor {
+            profile: None,
+            scan: None,
+            scan_generation: 0,
+        }
+    }
+
+    fn scan_running(&self) -> bool {
+        self.scan
+            .as_ref()
+            .is_some_and(|job| job.proc.poll().is_none())
+    }
+
+    fn next_scan_generation(&mut self) -> u64 {
+        self.scan_generation += 1;
+        self.scan_generation
+    }
+
+    /// Stop the engine so the scan can own the GPU. Mirrors
+    /// `_stop_autostart_runtime_for_scan`: only stop+clear a *running* engine; a
+    /// job that already exited is left in place (so autostart restart stays
+    /// idempotent).
+    fn stop_engine_for_scan(&mut self) {
+        if let Some(job) = self.profile.as_mut() {
+            if job.engine.is_running() {
+                job.engine.stop(ENGINE_STOP_TIMEOUT);
+                self.profile = None;
+            }
+        }
+    }
+}
+
+fn guard(sup: &Mutex<Supervisor>) -> MutexGuard<'_, Supervisor> {
+    sup.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+/// `PENGUIN_BURNER_DAEMON_PROGRAM_FILE` resolved absolute, else this binary's path.
+pub fn daemon_program_file() -> String {
+    if let Ok(value) = env::var(PROGRAM_FILE_ENV) {
+        let value = value.trim();
+        if !value.is_empty() {
+            return fs::canonicalize(value)
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|_| value.to_string());
+        }
+    }
+    env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default()
+}
+
+fn state_file_path() -> PathBuf {
+    if let Some(path) = env::var_os(STATE_FILE_ENV) {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+    PathBuf::from(LAST_RUNTIME_STATE_PATH)
+}
+
+/// Persist the last runtime action (best-effort). `program_file` is written for
+/// downgrade compatibility with the Python daemon and ignored on read.
+fn persist_last_runtime(argv: &[String]) {
+    #[derive(Serialize)]
+    struct State<'a> {
+        argv: &'a [String],
+        program_file: String,
+    }
+    let path = state_file_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let state = State {
+        argv,
+        program_file: daemon_program_file(),
+    };
+    if let Ok(text) = serde_json::to_string(&state) {
+        let _ = fs::write(&path, text);
+    }
+}
+
+/// Read the persisted last runtime argv (or `None` on any error/invalid file).
+fn load_last_runtime() -> Option<Vec<String>> {
+    let text = fs::read_to_string(state_file_path()).ok()?;
+    let data: Value = serde_json::from_str(&text).ok()?;
+    let object = data.as_object()?;
+    let program_file = object
+        .get("program_file")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if program_file.is_empty() {
+        return None;
+    }
+    let array = object.get("argv")?.as_array()?;
+    let mut argv = Vec::with_capacity(array.len());
+    for item in array {
+        argv.push(item.as_str()?.to_string());
+    }
+    Some(argv)
+}
+
+pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
+    let supervisor = guard(sup);
+    let version = env!("CARGO_PKG_VERSION").to_string();
+
+    if let Some(job) = &supervisor.scan {
+        let returncode = job.proc.poll();
+        let state = if returncode.is_none() {
+            "auto_uv_scan_running"
+        } else {
+            "auto_uv_scan_stopped"
+        };
+        return StatusResult {
+            state: state.to_string(),
+            active_job: Some(ActiveJob {
+                job_type: "auto_uv_scan",
+                argv: job.argv.clone(),
+                pid: job.proc.pid(),
+                returncode,
+            }),
+            version,
+        };
+    }
+
+    if let Some(job) = &supervisor.profile {
+        let returncode = job.engine.returncode();
+        let state = if returncode.is_none() {
+            "runtime_profile_running"
+        } else {
+            "runtime_profile_stopped"
+        };
+        return StatusResult {
+            state: state.to_string(),
+            active_job: Some(ActiveJob {
+                job_type: "runtime_profile",
+                argv: job.argv.clone(),
+                // The engine is in-process, so the "job pid" is the daemon's pid.
+                pid: std::process::id(),
+                returncode,
+            }),
+            version,
+        };
+    }
+
+    StatusResult {
+        state: "idle".to_string(),
+        active_job: None,
+        version,
+    }
+}
+
+pub fn stop_auto_uv_scan(sup: &Mutex<Supervisor>) -> StopResult {
+    let supervisor = guard(sup);
+    match &supervisor.scan {
+        Some(job) if job.proc.poll().is_none() => {
+            let pid = job.proc.pid();
+            // Write the stop-request file FIRST, then SIGINT (ordered protocol).
+            paths::write_auto_uv_stop_request(false);
+            job.proc.signal(libc::SIGINT);
+            StopResult::stopped(pid)
+        }
+        _ => StopResult::idle(),
+    }
+}
+
+pub fn start_runtime_profile(
+    sup: &Mutex<Supervisor>,
+    argv: Vec<String>,
+) -> Result<StartResult, String> {
+    {
+        let mut supervisor = guard(sup);
+        if supervisor.scan_running() {
+            return Err("cannot start a runtime profile while Auto-UV scan is running".to_string());
+        }
+        supervisor.stop_engine_for_scan();
+        let engine = profile::start(EngineOptions::from_argv(&argv)).map_err(|e| e.to_string())?;
+        supervisor.profile = Some(ProfileJob {
+            engine,
+            argv: argv.clone(),
+        });
+    }
+    // Persist outside the lock (best-effort), like the Python daemon.
+    persist_last_runtime(&argv);
+    Ok(StartResult {
+        started: true,
+        pid: std::process::id(),
+        argv,
+    })
+}
+
+pub fn stop_runtime_profile(sup: &Mutex<Supervisor>) -> StopResult {
+    let mut supervisor = guard(sup);
+    match supervisor.profile.as_mut() {
+        Some(job) if job.engine.is_running() => {
+            let pid = std::process::id();
+            job.engine.stop(ENGINE_STOP_TIMEOUT);
+            supervisor.profile = None;
+            StopResult::stopped(pid)
+        }
+        // None or already-exited: do NOT clear the file (parity), report idle.
+        _ => StopResult::idle(),
+    }
+}
+
+/// Result of the atomic scan-start critical section.
+pub enum ScanStart {
+    Refused,
+    ClearFailed(String),
+    SpawnFailed(String),
+    Started(Arc<ScanJob>, File),
+}
+
+/// Atomically (under one lock, like Python's `_ACTIVE_SCAN_LOCK`): refuse a
+/// concurrent scan, clear the stale stop-request, stop the engine, spawn the
+/// child via `spawn`, and install the job. Holding the lock across the spawn is
+/// what prevents two racing requests from both launching a scan.
+pub fn begin_scan(
+    sup: &Mutex<Supervisor>,
+    argv: Vec<String>,
+    spawn: impl FnOnce(&[String]) -> std::io::Result<(Child, File)>,
+) -> ScanStart {
+    let mut supervisor = guard(sup);
+    if supervisor.scan_running() {
+        return ScanStart::Refused;
+    }
+    if let Err(err) = paths::clear_auto_uv_stop_request() {
+        return ScanStart::ClearFailed(err.to_string());
+    }
+    supervisor.stop_engine_for_scan();
+    let (child, reader) = match spawn(&argv) {
+        Ok(pair) => pair,
+        Err(err) => return ScanStart::SpawnFailed(err.to_string()),
+    };
+    let generation = supervisor.next_scan_generation();
+    let job = Arc::new(ScanJob {
+        proc: ChildProc::new(child),
+        argv,
+        generation,
+    });
+    supervisor.scan = Some(job.clone());
+    ScanStart::Started(job, reader)
+}
+
+/// Clear the scan slot if it still holds `job` (identity guard) and, if so,
+/// restart the persisted runtime profile now that the GPU is free.
+pub fn finish_scan(sup: &Arc<Mutex<Supervisor>>, job: &Arc<ScanJob>) {
+    let restart = {
+        let mut supervisor = guard(sup);
+        match &supervisor.scan {
+            Some(current) if current.generation == job.generation => {
+                supervisor.scan = None;
+                true
+            }
+            _ => false,
+        }
+    };
+    if restart {
+        start_autostart_if_configured(sup);
+    }
+}
+
+/// Start the engine from the persisted last-runtime state, if any. Idempotent:
+/// does nothing when a profile job is already present (parity).
+pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
+    let mut supervisor = guard(sup);
+    if supervisor.profile.is_some() {
+        return;
+    }
+    let Some(argv) = load_last_runtime() else {
+        return;
+    };
+    match profile::start(EngineOptions::from_argv(&argv)) {
+        Ok(engine) => {
+            logging::info(&format!("autostart runtime profile: {}", argv.join(" ")));
+            supervisor.profile = Some(ProfileJob { engine, argv });
+        }
+        Err(err) => logging::error(&format!("failed to start autostart runtime: {err}")),
+    }
+}
+
+/// Shutdown cleanup: stop the in-process engine (A3 releases fans + clock lock).
+pub fn shutdown(sup: &Mutex<Supervisor>) {
+    let mut supervisor = guard(sup);
+    if let Some(mut job) = supervisor.profile.take() {
+        job.engine.stop(ENGINE_STOP_TIMEOUT);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `STATE_FILE_ENV` is process-global; serialize the tests that mutate it.
+    static STATE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct StateEnvGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+    impl StateEnvGuard {
+        fn new(path: &std::path::Path) -> Self {
+            let previous = env::var_os(STATE_FILE_ENV);
+            env::set_var(STATE_FILE_ENV, path);
+            StateEnvGuard { previous }
+        }
+    }
+    impl Drop for StateEnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => env::set_var(STATE_FILE_ENV, value),
+                None => env::remove_var(STATE_FILE_ENV),
+            }
+        }
+    }
+
+    #[test]
+    fn last_runtime_round_trip() {
+        let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = env::temp_dir().join(format!("pb-state-a-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("last-runtime.json");
+        let _guard = StateEnvGuard::new(&path);
+
+        let argv = vec![
+            "--auto-uv-profile".to_string(),
+            "profile-a".to_string(),
+            "--silent-fan-curve".to_string(),
+        ];
+        persist_last_runtime(&argv);
+        assert_eq!(load_last_runtime(), Some(argv));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn last_runtime_missing_program_file_is_none() {
+        let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = env::temp_dir().join(format!("pb-state-b-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("last-runtime.json");
+        let _guard = StateEnvGuard::new(&path);
+
+        fs::write(&path, r#"{"argv":["--gpu-index","0"]}"#).unwrap();
+        assert_eq!(load_last_runtime(), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn last_runtime_malformed_is_none() {
+        let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = env::temp_dir().join(format!("pb-state-c-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("last-runtime.json");
+        let _guard = StateEnvGuard::new(&path);
+
+        fs::write(&path, "{not json").unwrap();
+        assert_eq!(load_last_runtime(), None);
+
+        fs::write(&path, r#"{"argv":[1,2],"program_file":"/x"}"#).unwrap();
+        assert_eq!(load_last_runtime(), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

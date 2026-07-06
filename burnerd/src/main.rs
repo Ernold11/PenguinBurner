@@ -8,8 +8,195 @@ mod scan;
 mod server;
 mod supervisor;
 
+use std::env;
+use std::fs;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+
+use supervisor::Supervisor;
+
+const DEFAULT_SOCKET: &str = "/run/penguin-burnerd.sock";
+const WATCHDOG_INTERVAL: Duration = Duration::from_secs(10);
+
 fn main() {
-    // Filled in by wave A1 (see DESIGN.md): parse args, init logging, serve.
-    eprintln!("penguin-burnerd: not yet implemented");
-    std::process::exit(2);
+    std::process::exit(run());
+}
+
+fn run() -> i32 {
+    let socket_path = match parse_args() {
+        Ok(path) => path,
+        Err(message) => {
+            eprintln!("{message}");
+            return 2;
+        }
+    };
+
+    logging::info(&format!(
+        "penguin-burnerd {} starting",
+        env!("CARGO_PKG_VERSION")
+    ));
+
+    let sup = Arc::new(Mutex::new(Supervisor::new()));
+
+    // Start the persisted runtime profile before binding the socket (parity with
+    // `serve_daemon_api`, which runs autostart first).
+    supervisor::start_autostart_if_configured(&sup);
+
+    // Route SIGINT/SIGTERM to a dedicated thread that performs a clean shutdown.
+    block_termination_signals();
+    {
+        let sup = sup.clone();
+        let socket_path = socket_path.clone();
+        thread::Builder::new()
+            .name("penguin-burner-signals".to_string())
+            .spawn(move || wait_and_shutdown(&sup, &socket_path))
+            .expect("spawn signal thread");
+    }
+
+    let listener = match server::bind(&socket_path) {
+        Ok(listener) => listener,
+        Err(err) => {
+            logging::error(&format!("{err}"));
+            return 1;
+        }
+    };
+    logging::info(&format!("listening on {}", socket_path.display()));
+
+    sd_notify("READY=1");
+    {
+        let sup = sup.clone();
+        thread::Builder::new()
+            .name("penguin-burner-watchdog".to_string())
+            .spawn(move || watchdog_loop(&sup))
+            .expect("spawn watchdog thread");
+    }
+
+    // Blocks forever; the process exits via the signal thread.
+    server::serve(listener, sup);
+    0
+}
+
+fn parse_args() -> Result<PathBuf, String> {
+    let mut socket = PathBuf::from(DEFAULT_SOCKET);
+    let mut args = env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "serve" => {}
+            "--socket" => {
+                socket = PathBuf::from(args.next().ok_or("--socket requires a value")?);
+            }
+            other if other.starts_with("--socket=") => {
+                socket = PathBuf::from(&other["--socket=".len()..]);
+            }
+            "-h" | "--help" => {
+                return Err("usage: penguin-burnerd [serve] [--socket PATH]".to_string());
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    Ok(socket)
+}
+
+// --- signal handling ---------------------------------------------------------
+
+fn termination_sigset() -> libc::sigset_t {
+    // SAFETY: sigemptyset/sigaddset operate on the owned, zeroed set.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        set
+    }
+}
+
+/// Block SIGINT/SIGTERM in every thread so only the dedicated `sigwait` thread
+/// receives them (clean cleanup runs in normal thread context, not a handler).
+fn block_termination_signals() {
+    let set = termination_sigset();
+    // SAFETY: standard process-wide signal-mask update.
+    unsafe {
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+    }
+}
+
+fn wait_and_shutdown(sup: &Arc<Mutex<Supervisor>>, socket_path: &Path) -> ! {
+    let set = termination_sigset();
+    let mut received: libc::c_int = 0;
+    // SAFETY: `set` and `received` are valid for the call.
+    unsafe {
+        libc::sigwait(&set, &mut received);
+    }
+    logging::info(&format!("received signal {received}, shutting down"));
+    supervisor::shutdown(sup);
+    let _ = fs::remove_file(socket_path);
+    std::process::exit(0);
+}
+
+// --- systemd sd_notify + watchdog -------------------------------------------
+
+fn watchdog_loop(sup: &Arc<Mutex<Supervisor>>) {
+    if env::var_os("NOTIFY_SOCKET").is_none() {
+        return;
+    }
+    loop {
+        thread::sleep(WATCHDOG_INTERVAL);
+        // Health = the supervisor mutex is acquirable (not wedged mid-operation).
+        let healthy = !matches!(sup.try_lock(), Err(std::sync::TryLockError::WouldBlock));
+        if healthy {
+            sd_notify("WATCHDOG=1");
+        }
+    }
+}
+
+/// Hand-rolled `sd_notify` datagram (no libsystemd). Best-effort; supports both
+/// filesystem and abstract (`@`) `$NOTIFY_SOCKET` addresses.
+fn sd_notify(message: &str) {
+    let address = match env::var_os("NOTIFY_SOCKET") {
+        Some(value) if !value.is_empty() => value,
+        _ => return,
+    };
+    let raw = address.as_bytes();
+
+    // SAFETY: builds a sockaddr_un and sends one datagram, closing the fd after.
+    unsafe {
+        let mut sun: libc::sockaddr_un = std::mem::zeroed();
+        sun.sun_family = libc::AF_UNIX as libc::sa_family_t;
+
+        let path_offset = {
+            let base = &sun as *const _ as usize;
+            let path = &sun.sun_path as *const _ as usize;
+            path - base
+        };
+        let (start, bytes): (usize, &[u8]) = if raw.first() == Some(&b'@') {
+            // Abstract namespace: leading NUL byte, then the name.
+            (1, &raw[1..])
+        } else {
+            (0, raw)
+        };
+        if start + bytes.len() > sun.sun_path.len() {
+            return;
+        }
+        for (index, byte) in bytes.iter().enumerate() {
+            sun.sun_path[start + index] = *byte as libc::c_char;
+        }
+        let addr_len = (path_offset + start + bytes.len()) as libc::socklen_t;
+
+        let fd = libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+        if fd < 0 {
+            return;
+        }
+        libc::sendto(
+            fd,
+            message.as_ptr() as *const libc::c_void,
+            message.len(),
+            0,
+            &sun as *const _ as *const libc::sockaddr,
+            addr_len,
+        );
+        libc::close(fd);
+    }
 }
