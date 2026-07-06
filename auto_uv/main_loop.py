@@ -75,7 +75,10 @@ from ui.features.auto_uv.ui_json_event_writer import AutoUvEventCallback, emit_u
 from auto_uv.persistence.verified_candidate_result_file import (
     read_verified_candidates,
 )
-from auto_uv.persistence.auto_uv_persisted_json_files import clear_auto_uv_stop_request
+from auto_uv.persistence.auto_uv_persisted_json_files import (
+    auto_uv_stop_request_aborts_final_choice,
+    clear_auto_uv_stop_request,
+)
 from auto_uv.curve.vf_curve_flattening import build_flatten_target_for_plan
 from ui.features.auto_uv.vf_curve_ui_points import vf_curve_ui_points
 from auto_uv.run.voltage_sweep_state import (
@@ -553,6 +556,9 @@ def run_voltage_frequency_undervolt_main_loop(
                 if selected_probe is not None:
                     stable_probe = selected_probe
         except KeyboardInterrupt:
+            if auto_uv_stop_request_aborts_final_choice():
+                clear_auto_uv_stop_request()
+                raise
             if not bool(runtime_options.get("auto_uv_require_final_choice")):
                 raise
             user_stop_final_choice = True

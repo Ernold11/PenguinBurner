@@ -232,18 +232,15 @@ def stream_auto_uv_scan(options: object):
         if completed or process.poll() is not None:
             _finish_auto_uv_scan(process)
         else:
-            _start_detached_scan_monitor(process)
+            _request_auto_uv_scan_stop(process, abort_final_choice=True)
+            _start_detached_scan_monitor(process, kill_after_s=30.0)
 
 
 def stop_auto_uv_scan() -> dict[str, Any]:
     process = _ACTIVE_SCAN_PROCESS
     if process is None or process.poll() is not None:
         return {"stopped": False, "state": "idle"}
-    _write_auto_uv_stop_request()
-    try:
-        process.send_signal(signal.SIGINT)
-    except OSError:
-        pass
+    _request_auto_uv_scan_stop(process, abort_final_choice=False)
     return {"stopped": True, "pid": process.pid}
 
 
@@ -341,21 +338,56 @@ def _scan_running() -> bool:
     return _ACTIVE_SCAN_PROCESS is not None and _ACTIVE_SCAN_PROCESS.poll() is None
 
 
-def _start_detached_scan_monitor(process: subprocess.Popen) -> None:
+def _start_detached_scan_monitor(
+    process: subprocess.Popen,
+    *,
+    kill_after_s: float | None = None,
+) -> None:
+    threading.Thread(
+        target=_drain_detached_scan_output,
+        args=(process,),
+        daemon=True,
+        name="penguin-burner-auto-uv-scan-drain",
+    ).start()
     thread = threading.Thread(
         target=_wait_for_detached_scan,
-        args=(process,),
+        args=(process, kill_after_s),
         daemon=True,
         name="penguin-burner-auto-uv-scan-monitor",
     )
     thread.start()
 
 
-def _wait_for_detached_scan(process: subprocess.Popen) -> None:
+def _wait_for_detached_scan(
+    process: subprocess.Popen,
+    kill_after_s: float | None,
+) -> None:
     try:
-        process.wait()
+        if kill_after_s is None:
+            process.wait()
+        else:
+            try:
+                process.wait(timeout=max(0.1, float(kill_after_s)))
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
     finally:
         _finish_auto_uv_scan(process)
+
+
+def _drain_detached_scan_output(process: subprocess.Popen) -> None:
+    stdout = process.stdout
+    if stdout is None:
+        return
+    try:
+        for _line in stdout:
+            pass
+    except (OSError, ValueError):
+        pass
 
 
 def _finish_auto_uv_scan(process: subprocess.Popen) -> None:
@@ -384,7 +416,19 @@ def _stop_autostart_runtime_for_scan() -> None:
     _AUTOSTART_PROCESS = None
 
 
-def _write_auto_uv_stop_request() -> None:
+def _request_auto_uv_scan_stop(
+    process: subprocess.Popen,
+    *,
+    abort_final_choice: bool,
+) -> None:
+    _write_auto_uv_stop_request(abort_final_choice=abort_final_choice)
+    try:
+        process.send_signal(signal.SIGINT)
+    except OSError:
+        pass
+
+
+def _write_auto_uv_stop_request(*, abort_final_choice: bool = False) -> None:
     try:
         from auto_uv.persistence.auto_uv_persisted_json_files import (
             auto_uv_stop_request_path,
@@ -392,8 +436,10 @@ def _write_auto_uv_stop_request() -> None:
 
         path = auto_uv_stop_request_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        reason = "abort-final-choice" if abort_final_choice else "offer-final-choice"
         path.write_text(
-            "stop requested by PenguinBurner daemon client\n",
+            "stop requested by PenguinBurner daemon client\n"
+            f"reason={reason}\n",
             encoding="utf-8",
         )
     except Exception:
