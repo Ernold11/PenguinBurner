@@ -23,6 +23,7 @@ def test_auto_uv_voltage_scan_wires_json_events_and_final_result() -> None:
     logs = []
     checks = []
     build_calls = []
+    stop_clears = []
 
     args = SimpleNamespace(json_events=True)
     q2rtx_config = object()
@@ -59,10 +60,12 @@ def test_auto_uv_voltage_scan_wires_json_events_and_final_result() -> None:
             emit_json_event=lambda enabled, event, **payload: emitted.append(
                 (enabled, event, payload)
             ),
+            clear_auto_uv_stop_request=lambda: stop_clears.append(None),
             log=logs.append,
         ),
     )
 
+    assert stop_clears == [None]
     assert checks[0]["gpu_index"] == 1
     assert callable(checks[0]["log"])
     assert build_calls[0][1]["auto_install_q2rtx"] is True

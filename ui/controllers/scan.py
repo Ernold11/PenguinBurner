@@ -43,7 +43,8 @@ class ScanController:
         return False
 
     def stop(self) -> None:
-        if self.process is None:
+        process = self.process
+        if process is None:
             return
         self.stop_requested = True
         if self.stop_request_path is not None:
@@ -53,16 +54,16 @@ class ScanController:
                 encoding="utf-8",
             )
             self.on_output(f"\nRequested cooperative Auto-UV stop: {self.stop_request_path}\n")
-        pid = int(self.process.processId())
+        pid = int(process.processId())
         if pid > 0:
             try:
                 os.kill(pid, signal.SIGINT)
                 self.on_output("Sent SIGINT to Auto-UV launcher.\n")
             except OSError:
-                self.process.terminate()
+                process.terminate()
         else:
-            self.process.terminate()
-        self.QtCore.QTimer.singleShot(30000, self.kill_if_running)
+            process.terminate()
+        self.QtCore.QTimer.singleShot(30000, lambda: self.kill_if_running(process))
 
     def write_json_response(self, path: str | Path, payload: dict) -> None:
         response_path = Path(path).expanduser()
@@ -71,12 +72,12 @@ class ScanController:
         response_path.parent.mkdir(parents=True, exist_ok=True)
         response_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-    def kill_if_running(self) -> None:
-        if (
-            self.process is not None
-            and self.process.state() != self.QtCore.QProcess.NotRunning
-        ):
-            self.process.kill()
+    def kill_if_running(self, process=None) -> None:
+        target = self.process if process is None else process
+        if target is None or self.process is not target:
+            return
+        if target.state() != self.QtCore.QProcess.NotRunning:
+            target.kill()
 
     def _read_output(self) -> None:
         process = self.process
@@ -120,6 +121,8 @@ class ScanController:
                 return
         # Human-readable progress line: show it in the log and let the window
         # derive header text from it.
+        if stripped == "Interrupted by user.":
+            self.stop_requested = True
         self.on_output(line + "\n")
         self.on_human_line(stripped)
 
@@ -153,7 +156,7 @@ class ScanController:
                 process.finished.disconnect(self._finished)
             except (RuntimeError, TypeError):
                 pass
-        stopped = bool(self.stop_requested)
+        stopped = bool(self.stop_requested) or int(exit_code) == 130
         self.stop_requested = False
         self.on_finished(exit_code, exit_status, stopped)
         if process is not None:

@@ -13,6 +13,7 @@ from auto_uv.domain.types import AutoUvError, AutoUvFinalChoiceDiscarded
 from auto_uv.main_loop import (
     run_voltage_frequency_undervolt_main_loop,
 )
+from auto_uv.persistence.auto_uv_persisted_json_files import clear_auto_uv_stop_request
 from auto_uv.initial_check.auto_uv_hardware_initial_check import (
     require_auto_uv_initial_check,
 )
@@ -61,6 +62,7 @@ class AutoUvForegroundDependencies:
     available_adaptive_tiers: Callable = available_adaptive_tiers
     profile_tier_label: Callable = profile_tier_label
     is_root: Callable[[], bool] = _process_is_root
+    clear_auto_uv_stop_request: Callable = clear_auto_uv_stop_request
     log: Callable[[str], None] = runtime_log
 
 
@@ -114,6 +116,7 @@ def run_auto_uv_voltage_scan(
 ):
     deps = dependencies or AutoUvForegroundDependencies()
     json_events = bool(args.json_events)
+    deps.clear_auto_uv_stop_request()
     deps.emit_json_event(
         json_events,
         "auto_uv_start",
