@@ -24,6 +24,121 @@ Mechanics/architecture: see `DESIGN.md`. Behavior specs: `port-notes/`.
 - Overnight hardware verification on this box: approved (restore original
   setup after; anything off → stop, leave Python daemon running).
 
+## 2026-07-07 — Wave A1: supervisor + socket protocol + scan child mgmt
+
+- Implemented the JSON-lines socket server, wire protocol, supervisor, and
+  Auto-UV scan child management. Files (logical code lines, excl. test modules):
+  `supervisor.rs` 351, `scan.rs` 166, `api.rs` 166, `main.rs` 163, `server.rs`
+  146, `paths.rs` 137, `argvspec.rs` 144, `profile/mod.rs` 119 (STUB engine),
+  `logging.rs` 32 → **~1424 logical / ~1740 physical non-test lines**.
+- Wire parity verified byte-for-byte against a live-driven binary: `status`,
+  `start`/`stop_runtime_profile`, `stop_auto_uv_scan`, streaming
+  `start_auto_uv_scan` (started/line/finished), all error strings, the peercred
+  denial line, and compact `json.dumps(separators=(",",":"))`-equivalent output
+  (struct field order preserved via serde derive; no `Value` reordering).
+- Supervisor: one `Mutex<Supervisor>` (profile engine job / scan job / generation
+  counter). Scan lifecycle spawns `python3 <program_file> --auto-uv-voltage-scan
+  --json-events --auto-uv-require-final-choice <opts>` with stdout+stderr merged
+  on one `pipe2(O_CLOEXEC)`, `cwd=/`; two-part stop protocol (stop-file THEN
+  SIGINT); disconnect → abort-file + detached drain + kill ladder
+  (30s→SIGTERM→5s→SIGKILL→5s). Last-runtime.json persisted on start (with
+  `program_file` for downgrade compat), read for autostart, not cleared on stop.
+  Base64-env autostart deliberately dropped per DESIGN.
+- Tests: **34 unit** (argv whitelist accept/reject, `%.6g`/bool formatting vs a
+  36-case Python table, effective-home matrix, stop-file bytes, last-runtime
+  round-trip/malformed, request-validation error strings) + **12 integration**
+  (spawn the real binary on a temp socket, stub-python scan child): status idle,
+  scan framing + exact child argv, concurrent-scan refusal, stop→offer file,
+  disconnect→abort file + scan end, SIGINT-ignoring kill ladder, runtime-profile
+  start/stop/state-file, autostart replay, peercred denial, malformed JSON,
+  byte-exact unknown method/field, unknown scan option. All green;
+  `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings` clean.
+- Fixed a real race while implementing: the scan-start critical section now runs
+  under one lock (`supervisor::begin_scan`) so two concurrent requests can't both
+  pass the "already running?" check and launch two children (Python holds one
+  `_ACTIVE_SCAN_LOCK` across the whole section; an earlier split-lock draft did
+  not).
+
+### Deviations from spec (deliberate, parity-preserving)
+
+1. **Malformed-JSON error text** differs (`serde_json` message vs Python `json`
+   module message); the envelope shape `{"ok":false,"error":<str>}` matches and
+   the only test that pins it checks shape, not text. Reproducing CPython's
+   parser strings is out of scope.
+2. **`last-runtime.json` written compact** (serde) vs Python's spaced default
+   `json.dumps`. The file is only ever JSON-parsed (never byte-compared), so both
+   directions round-trip; not a load-bearing string.
+3. **OS-error text** in `failed to clear stale Auto-UV stop request: {err}` uses
+   `io::Error` text, not Python's `[Errno N] …`; the load-bearing prefix matches.
+4. **Client disconnects before receiving `started`**: Python leaks the scan (its
+   `finally` isn't entered at that yield); we route it through the normal
+   disconnect cleanup (abort + monitor) instead of leaking. Strictly better.
+5. **Test-only env knobs** added (unset in production, so no behavior change):
+   `PENGUIN_BURNERD_TEST_STATE_FILE` (override the `/var/lib` state path so tests
+   don't touch host state — the Rust analog of the pytest `monkeypatch` of
+   `LAST_RUNTIME_STATE_PATH`) and `PENGUIN_BURNERD_TEST_TIMINGS` (shrink the kill
+   ladder). Both documented in-code as test-only.
+
+### Open questions (A1)
+
+1. **`status` takes the supervisor lock; Python's `status_payload` is lock-free.**
+   So a `status` during the scan-start critical section can briefly block while
+   the engine stops + the child spawns. Harmless with the A1 stub engine (stop is
+   instant); flag for A3 when `engine.stop` may take seconds (release fans/clock).
+   Keep locked status for simplicity, or add a lock-free status snapshot?
+2. **CLI flag: only `--socket PATH` (+ optional bare `serve`) is accepted.** The
+   *current* Python unit's ExecStart uses `--daemon-api <socket>`. A4's installer
+   must emit `--socket`; if the overnight hardware verify reuses the existing
+   unit, it needs the flag updated (or should the binary also accept
+   `--daemon-api` as an alias for drop-in reuse?).
+3. **Runtime-profile `pid` = the daemon's own pid** (engine is in-process), for
+   both the `start` result and the `status` active_job. Spec 08 confirms no
+   caller reads this pid for behavior; verify once more against the GUI in A4.
+
+## 2026-07-07 — Wave A2: GPU backend (NVML + hidden NVAPI)
+
+- `src/gpu/`: narrow `GpuBackend` trait (39 methods, ~1:1 with the Python
+  drivers), `NvmlBackend` (real), `MockGpu` (test-only), split
+  `mod.rs`/`nvml_raw.rs`/`nvapi.rs`/`backend.rs`/`mock.rs`. Production code
+  ~1580 statement-lines (excl. mock + doc comments); ~2475 raw non-test lines
+  incl. heavy parity docs.
+- All NVML/NVAPI struct sizes asserted at compile time against ctypes `sizeof`
+  (76/40/348/88844/24/6188/16/36/9248/68/24/8). Live read-only smoke test on the
+  5080 matches the Python readers exactly (voltage 805000µV, VF 132/127 points,
+  identical first point, mem-offset range (-2000,+6000)).
+- 20 gpu unit tests + smoke pass; full crate `cargo test` green (50 unit + 12
+  integration). `rustfmt` clean; `cargo clippy` clean for `src/gpu/**` (the
+  remaining crate-wide clippy findings are all in non-gpu wave-A1 files).
+- Static FFI-discovery notes appended to `port-notes/12-nvapi-nvml-discovery.md`
+  ("Findings from the FFI implementation").
+
+### Open questions (A2)
+
+1. **nvml-wrapper deliberately unused.** The crate collapses `nvmlReturn_t` into
+   a typed enum, discarding the integer `rc` that the load-bearing error strings
+   embed (`"… failed with NVML error {rc}"`), and lacks the VF-offset /
+   min-max-VF-offset / throttle-reason symbols. So the whole NVML surface is raw
+   `libloading` FFI in `nvml_raw.rs` for exact parity. `nvml-wrapper` stays a
+   declared-but-unused dep (Cargo.toml is frozen). OK to drop it in a later
+   Cargo.toml change, or keep for future use? (Not a clippy/deny failure.)
+2. **Consolidated init error shape.** The Python code has several separate NVML
+   sessions with two `nvmlInit_v2`-failure message shapes (runtime session: no
+   `nvmlErrorString`; policy controller: with it). The backend consolidates to
+   one init and uses the **runtime-session shape** (no error text), since that's
+   the primary daemon session that gates engine start. Confirm A3 doesn't rely
+   on the policy-shaped init string.
+3. **Staging `#![allow(dead_code)]` in `gpu/mod.rs`.** The whole backend reads as
+   dead code until A3 wires it into `main` (same artifact as A1's unused
+   `logging::warn`). Allow is scoped to the gpu module with a "remove when A3
+   consumes it" note. Remove during A3/A4 so real dead code re-surfaces.
+4. **VF write path takes kHz.** `apply_vf_offsets_khz(&[(index, offset_khz)])`
+   keeps the backend unit-faithful (hidden-NVAPI curve is kHz); the plan's
+   `new_offset_mhz * 1000` conversion stays in the A3 caller (matches Python
+   `apply_plan`). Confirm A3 does the ×1000 there.
+5. **Defensive index guard.** VF point indices ≥255 (256-bit mask vs 255-slot
+   array — never observed) are skipped rather than read out of bounds; Python
+   would `IndexError`. Parity-neutral in practice.
+
 ## 2026-07-07 ~01:00 — understanding phase + scaffold
 
 - 9 behavioral specs produced by parallel readers and committed to
@@ -35,6 +150,24 @@ Mechanics/architecture: see `DESIGN.md`. Behavior specs: `port-notes/`.
   (serde/serde_json/nvml-wrapper/libloading/libc/anyhow), lto+strip release
   profile, cargo-deny config. rustc 1.95 on this box; passwordless sudo
   confirmed for the overnight hardware pass.
+
+## Live-system snapshot (2026-07-07, this box — verify against this)
+
+- Autostart state file: `{"argv": ["--silent-fan-curve", "--adaptive-auto-uv",
+  "--gpu-index", "0"], ...}` — **adaptive mode with no fixed tier is the
+  primary running mode**, not an edge case. The engine's adaptive controller
+  and the silent fan curve are the default path to verify.
+- Unit env contract the engine must honor: `PENGUIN_BURNER_ADAPTIVE_*`
+  (TARGET_FPS=60, TARGET_SLOW_WINDOWS=3, NEAR_SLOW_WINDOWS=2,
+  COMFORT_WINDOWS=6, PERFORMANCE_COMFORT_WINDOWS=10, DEMOTE_DWELL_S=60,
+  PERFORMANCE_DEMOTE_DWELL_S=45), `SUDO_USER=jp` (effective-home),
+  `PENGUIN_BURNER_Q2RTX_USER/UID/GID`, `PENGUIN_BURNER_DAEMON_ALLOWED_UID=1000`
+  (peercred gate active), `PENGUIN_BURNER_DAEMON_PROGRAM_FILE=<site-packages>/penguin_burner.py`.
+- Python daemon ExecStart shape: `python3 …/penguin_burner.py --daemon-api
+  /run/penguin-burnerd.sock`.
+- Owner field data on stability probes: the CUDA companion has NEVER caught an
+  instability; Q2RTX HAS (Vulkan device-lost, esp. performance scans) — Q2RTX
+  is the core detector and must never be touched (rule 2).
 
 ## Next
 
