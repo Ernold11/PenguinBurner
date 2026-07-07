@@ -30,14 +30,14 @@ fn nonempty_env(key: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
-fn pw_by_uid(uid: u32) -> Option<(PathBuf, u32)> {
+pub(super) fn pw_by_uid(uid: u32) -> Option<(PathBuf, u32)> {
     pw_lookup(|pwd, buf, len, res| {
         // SAFETY: valid pointers/lengths for getpwuid_r.
         unsafe { libc::getpwuid_r(uid, pwd, buf, len, res) }
     })
 }
 
-fn pw_by_name(name: &str) -> Option<(PathBuf, u32)> {
+pub(super) fn pw_by_name(name: &str) -> Option<(PathBuf, u32)> {
     let c = CString::new(name).ok()?;
     pw_lookup(|pwd, buf, len, res| {
         // SAFETY: valid pointers/lengths for getpwnam_r.

@@ -89,6 +89,7 @@ fn loop_reapplies_vf_curve_when_driver_resets_offsets() {
         vf_policy,
         &mut publisher,
         None,
+        None,
         stop,
         Some(1),
     );
@@ -145,6 +146,7 @@ fn loop_manual_fan_control_and_restore_on_exit() {
         true,
         VfPolicyResult::default(),
         &mut publisher,
+        None,
         None,
         stop,
         Some(2),

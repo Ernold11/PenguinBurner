@@ -13,6 +13,7 @@ mod config;
 mod cpu;
 mod fan;
 mod guard;
+mod latency_rx;
 mod logfmt;
 mod profile_store;
 mod telemetry;
@@ -57,10 +58,10 @@ pub(crate) fn floor_div(a: i64, b: i64) -> i64 {
     }
 }
 
-/// The subset of the overlay latency snapshot the engine consumes. Wave A3 does
-/// not run the latency *receiver* (`overlay/telemetry/`), so this is `None` at
-/// runtime; the consuming logic (adaptive frametime input, overlay fps/latency)
-/// is complete and tested for when a later wave wires the meter.
+/// The subset of the overlay latency snapshot the engine consumes. Wave A5 wires
+/// the latency *receiver* (`latency_rx`, port of `overlay/telemetry/`), so this is
+/// fed for real from in-game timing datagrams; the injected-snapshot seam is kept
+/// so the engine loop tests still drive it as `None`.
 #[derive(Debug, Clone, Default)]
 pub struct LatencySnapshot {
     pub base_present_frametime_p95_ms: Option<f64>,
@@ -367,6 +368,12 @@ fn run_with_backend(
         }
     }
 
+    // Latency telemetry receiver (in-game FPS/latency datagrams). Created
+    // unconditionally like the Python runtime; a bind failure logs and yields no
+    // meter (adaptive then holds tier / overlay omits fps). Dropped on every exit
+    // path — including error return and panic unwind — closing the sockets.
+    let latency_receiver = latency_rx::LatencyReceiver::start(&mut log);
+
     run_fan_control_loop(
         backend,
         gpu_index,
@@ -376,6 +383,7 @@ fn run_with_backend(
         vf_policy,
         &mut publisher,
         adaptive_ctrl.as_mut(),
+        latency_receiver.as_ref(),
         stop_flag,
         max_iterations,
     )
@@ -427,6 +435,7 @@ fn run_fan_control_loop(
     vf_policy: VfPolicyResult<'_>,
     publisher: &mut OverlayStatePublisher,
     mut adaptive_ctrl: Option<&mut AdaptiveAutoUvRuntimeController>,
+    latency_receiver: Option<&latency_rx::LatencyReceiver>,
     stop_flag: Arc<AtomicBool>,
     max_iterations: Option<u64>,
 ) -> Result<(), String> {
@@ -509,8 +518,10 @@ fn run_fan_control_loop(
         publisher.refresh_config();
         let overlay_interval_s = overlay_update_interval_s(publisher);
 
-        // No latency meter in wave A3 (see LatencySnapshot doc); pass None.
-        let latency_snapshot: Option<&LatencySnapshot> = None;
+        // Aggregate the current in-game telemetry window (None when no receiver /
+        // no fresh samples). Owned here; adaptive + overlay borrow it this tick.
+        let latency_owned = latency_receiver.and_then(|rx| rx.snapshot(loop_started));
+        let latency_snapshot: Option<&LatencySnapshot> = latency_owned.as_ref();
 
         // Adaptive update — BEFORE the fan decision, same iteration.
         if let Some(controller) = adaptive_ctrl.as_deref_mut() {
