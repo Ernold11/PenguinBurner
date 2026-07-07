@@ -421,3 +421,35 @@ mem guard that always re-applies VF after a genuine rewrite.
 Verified live with JP: 61 VF points applied and holding, zero guard events,
 and under Q2RTX load the curve ENGAGES — 2842 MHz @ 900 mV @ 303 W vs the
 broken 2662 MHz @ 995 mV @ 330 W. More clock, less voltage, less power.
+
+## 2026-07-07 ~10:40 — MILESTONE B COMPLETE + SHIP-READY (local)
+
+Everything routed through the Rust daemon; 100% feature parity with 0.6.3; all
+live-verified on the 5080. Branch origin/rust_burnerd @ 71c2a26 (27 commits).
+
+- **B1** GPU-write RPC surface (8 methods) + profile verification stream +
+  path-validated profile deletion (O_NOFOLLOW openat walk).
+- **B2** Python write-half re-pointed to daemon RPC — sweep byte-identical
+  (auto_uv/ zero diff, 364 sweep tests unchanged); pkexec removed from
+  GPU/verify/delete flows. Rising tails 2/4/6 + perf Auto-OC proven byte-identical
+  over the wire. LIVE: gpu_apply_power_limit through the socket moved hw 330→300 W.
+- **B3** scan/verification children de-rooted — LIVE proof child runs uid/gid 1000
+  (+ correct supplementary groups), zero root-owned files left in ~/.config.
+  Fail-closed pre_exec (async-signal-safe getgrouplist→setgroups→setgid→setuid).
+- **B4** flatpak daemon parity (built into /app/libexec, install-copies to
+  /usr/libexec; gate removed).
+- **B5** wheel bundles the daemon; verified full artifact set in one wheel
+  (daemon ELF + Vulkan layer + shim + RECORD), deleted modules absent.
+- **Fable audit** of the Opus-written A-core: F1 CRITICAL (SIGTERM killed the
+  daemon before cleanup) fixed + proven live (systemctl stop → exit 0 + fan
+  restore + socket unlink); F2..F15 fixed (wedge-refusal, socket read cap,
+  fan-safety truthiness, zombie reap, ceiling-leak Drop, …).
+- **2× /simplify** passes; both binaries re-verified live.
+- Ship: clean local wheel build + `pip --user --force-reinstall` verified
+  (daemon executes from site-packages, deleted modules gone, native artifacts
+  present); packaged binary deployed to /usr/libexec, daemon healthy.
+
+**Deferred for the maintainer (NOT done):** 0.6.3→0.7.0 version bump (pyproject +
+PKGBUILD pkgver + RPM Version:, pinned together by test_packaging_metadata);
+release-notes-0.7.0.md is a ready-but-unpublished draft. No tag, no GitHub
+Release, no PyPI upload. Awaiting JP's manual test pass.
