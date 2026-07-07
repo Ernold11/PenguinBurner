@@ -12,14 +12,7 @@ import subprocess
 import sys
 import time
 
-from runtime import daemon_api
-from runtime.daemon_api import (
-    ALLOWED_UID_ENV,
-    AUTOSTART_ARGV_B64_ENV,
-    AUTOSTART_PROGRAM_FILE_ENV,
-    DEFAULT_DAEMON_SOCKET,
-    clear_last_runtime_state,
-)
+from runtime.daemon_client import DEFAULT_DAEMON_SOCKET
 from runtime.daemon_client import daemon_status
 from runtime.daemon_client import start_runtime_profile
 from .adaptive_target_fps import (
@@ -44,6 +37,15 @@ LEGACY_PENGUIN_BURNER_UNIT_NAME = "PenguinBurner"
 PENGUIN_BURNER_DAEMON_UNIT_NAME = "penguin-burnerd"
 PENGUIN_BURNER_UNIT_NAME = PENGUIN_BURNER_DAEMON_UNIT_NAME
 PENGUIN_BURNER_FOREGROUND_ENV = "PENGUIN_BURNER_FOREGROUND"
+ALLOWED_UID_ENV = "PENGUIN_BURNER_DAEMON_ALLOWED_UID"
+AUTOSTART_PROGRAM_FILE_ENV = "PENGUIN_BURNER_DAEMON_PROGRAM_FILE"
+AUTOSTART_ARGV_B64_ENV = "PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64"
+
+# Persisted "last runtime action" so a daemon restart / reboot re-runs exactly
+# what the user last applied -- including "reset to stock". The root daemon owns
+# this file (default world-readable mode); install/uninstall clear it so an
+# explicit "persist THIS profile" re-seeds it.
+LAST_RUNTIME_STATE_PATH = Path("/var/lib/penguin-burner/last-runtime.json")
 DEFAULT_JOURNAL_HOURS = 4
 FLATPAK_ID_ENV = "FLATPAK_ID"
 FLATPAK_INFO_PATH = Path("/.flatpak-info")
@@ -446,13 +448,22 @@ def _persist_autostart_last_runtime(argv, program_file) -> None:
     Best-effort, mirroring the daemon's own persistence — install already runs as
     root, so ``/var/lib`` is writable.
     """
-    state_path = daemon_api.LAST_RUNTIME_STATE_PATH
     try:
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(
+        LAST_RUNTIME_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LAST_RUNTIME_STATE_PATH.write_text(
             json.dumps({"argv": list(argv), "program_file": str(program_file)}),
             encoding="utf-8",
         )
+    except OSError:
+        pass
+
+
+def clear_last_runtime_state() -> None:
+    """Forget the persisted last action (used by install/uninstall-systemd)."""
+    try:
+        LAST_RUNTIME_STATE_PATH.unlink()
+    except FileNotFoundError:
+        pass
     except OSError:
         pass
 

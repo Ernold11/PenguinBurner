@@ -8,7 +8,8 @@ import socket
 import sys
 from typing import Any
 
-from runtime.daemon_api import DEFAULT_DAEMON_SOCKET
+
+DEFAULT_DAEMON_SOCKET = "/run/penguin-burnerd.sock"
 
 
 def daemon_request(

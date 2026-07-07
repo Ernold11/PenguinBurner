@@ -181,7 +181,7 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
         runtime_service, "daemon_binary_path", lambda *a, **k: RUST_DAEMON_BINARY
     )
     monkeypatch.setattr(
-        runtime_service.daemon_api, "LAST_RUNTIME_STATE_PATH", state_file
+        runtime_service, "LAST_RUNTIME_STATE_PATH", state_file
     )
     monkeypatch.setattr(
         runtime_service,
@@ -266,7 +266,7 @@ def test_install_systemd_service_restarts_active_daemon_after_unit_update(
         runtime_service, "daemon_binary_path", lambda *a, **k: RUST_DAEMON_BINARY
     )
     monkeypatch.setattr(
-        runtime_service.daemon_api, "LAST_RUNTIME_STATE_PATH", state_file
+        runtime_service, "LAST_RUNTIME_STATE_PATH", state_file
     )
     monkeypatch.setattr(
         runtime_service,
@@ -345,7 +345,7 @@ def test_migrate_to_daemon_service_disables_legacy_after_daemon_reachable(
         runtime_service, "daemon_binary_path", lambda *a, **k: RUST_DAEMON_BINARY
     )
     monkeypatch.setattr(
-        runtime_service.daemon_api, "LAST_RUNTIME_STATE_PATH", state_file
+        runtime_service, "LAST_RUNTIME_STATE_PATH", state_file
     )
     monkeypatch.setattr(
         runtime_service,
