@@ -10,8 +10,11 @@ that boundary unless there is a clear shared contract.
   final verification orchestration, and Auto-UV persistence helpers.
 - `stability/`: managed stability workloads and their install/runtime helpers,
   currently Q2RTX plus the CUDA companion load.
-- `runtime/`: long-running daemon behavior that applies saved profiles, fan
-  control, adaptive tier switching, and live GPU policy enforcement.
+- `runtime/`: the daemon socket client (`daemon_client.py`), the systemd-unit
+  installer (`support/runtime_service.py`), and scan/verify support modules
+  (`gpu_control/`, `stability_test/`, `support/`). The root daemon itself is the
+  Rust `burnerd/` crate — it applies saved profiles, fan control, adaptive tier
+  switching, and live GPU policy enforcement in-process.
 - `profiles/`: saved Auto-UV profile storage, verification, tier assignment, and
   runtime profile payload interpretation.
 - `overlay/`: Steam wrapper, overlay config, native Vulkan layer, compact text,
@@ -200,7 +203,7 @@ Known regression patterns from the cleanup:
 
 8. Adaptive Auto-UV uses saved profile tiers.
    - Tier assignment belongs in `profiles/uv/profile_tiers.py`.
-   - Runtime switching belongs in `runtime/gpu_control/adaptive_profile_runtime.py`.
+   - Runtime switching belongs in the Rust daemon (`burnerd/src/profile/adaptive.rs`).
    - The controller needs at least two usable verified tiers.
    - Target FPS comes from overlay/runtime config with env override support.
 

@@ -734,7 +734,6 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     assert "integrations.afterburner" in packages
     assert "integrations.lact" in packages
     assert "runtime" in packages
-    assert "runtime.fan_control" in packages
     assert "runtime.gpu_control" in packages
     assert "runtime.stability_test" in packages
     assert "profiles" in packages

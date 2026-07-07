@@ -96,7 +96,6 @@ packages = [
   "overlay.telemetry",
   "runtime",
   "runtime.support",
-  "runtime.fan_control",
   "runtime.gpu_control",
   "runtime.stability_test",
   "profiles",

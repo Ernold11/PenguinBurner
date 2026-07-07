@@ -10,10 +10,12 @@ socket API — the UI/CLI send a request and the already-root daemon does the wo
 - **Do NOT** wrap privileged actions in `pkexec`/`sudo` (`privileged_command`).
   Each of those pops a password prompt, which is exactly what the daemon exists to
   avoid. Even a single prompt is wrong when the daemon is running.
-- **Do** add/extend a daemon API method (`runtime/daemon_api.py`) and call it from
-  the client (`runtime/daemon_client.py`); the UI reaches it through the
-  `"daemonize"` runtime path (`runtime_profile_command("daemonize", ...)`), which
-  talks to the socket with no elevation prompt.
+- **Do** add/extend a daemon API method in the Rust daemon (`burnerd/` — wire the
+  request through `burnerd/src/api.rs` + the supervisor; the socket protocol is
+  unchanged) and call it from the client (`runtime/daemon_client.py`); the UI
+  reaches it through the `"daemonize"` runtime path
+  (`runtime_profile_command("daemonize", ...)`), which talks to the socket with no
+  elevation prompt.
 - GPU resets, VF-curve application, power limits, fan control, "restore to stock",
   etc. are all privileged and belong in the daemon.
 - The rare exceptions that genuinely cannot go through the daemon are the systemd

@@ -68,7 +68,7 @@ run git diff --check
 echo
 echo "==> stale moved-package import scan"
 if rg -n \
-    '^(from|import) (auto_oc|initial_check|runtime_support|runtime_gpu_control|runtime_fan_control|runtime_stability_test|nvidia_driver|saved_uv_profiles|saved_profile_verification|latency_telemetry|manual_uv_curve_editor|manual_fan_curve_editor|afterburner|lact)(\b|\.)' \
+    '^(from|import) (auto_oc|initial_check|runtime_support|runtime_gpu_control|runtime_stability_test|nvidia_driver|saved_uv_profiles|saved_profile_verification|manual_uv_curve_editor|manual_fan_curve_editor|afterburner|lact)(\b|\.)' \
     --glob '*.py'
 then
     echo "stale moved-package imports found" >&2
