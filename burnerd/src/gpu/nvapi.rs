@@ -572,6 +572,7 @@ impl NvapiVfSession {
         Ok(points)
     }
 
+    #[allow(dead_code)] // backend uses vf_points(); direct accessor kept for parity
     pub(crate) fn points(&self) -> Vec<VfPoint> {
         self.points.borrow().clone()
     }
@@ -588,6 +589,7 @@ impl NvapiVfSession {
         vf_find_nearest(&self.points.borrow(), core_clock_mhz, voltage_uv)
     }
 
+    #[allow(dead_code)] // startup-log helper (milestone-B)
     pub(crate) fn summary(&self) -> VfSummary {
         vf_summary_of(&self.points.borrow())
     }

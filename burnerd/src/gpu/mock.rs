@@ -150,6 +150,7 @@ impl MockGpu {
     }
 
     /// Drain the recorded operations.
+    #[allow(dead_code)] // convenience helper for tests that assert op sub-sequences
     pub fn take_recorded(&self) -> Vec<MockOp> {
         std::mem::take(&mut self.ops.borrow_mut())
     }

@@ -99,15 +99,22 @@ pub(crate) struct NvmlLib {
     pub get_power_usage: FnDevUout,
     pub get_clock_info: FnDevUUout,
 
-    // Optional — telemetry / identity.
+    // Optional — telemetry / identity. Several are bound but only read by the
+    // milestone-B identity/count/throttle reads, unused by the A3 engine.
     pub error_string: Option<FnErrStr>,
+    #[allow(dead_code)]
     pub get_count: Option<FnUout>,
     pub get_pci_info: Option<FnDevPci>,
+    #[allow(dead_code)]
     pub get_mem_info: Option<FnDevMem>,
+    #[allow(dead_code)]
     pub get_name: Option<FnDevCharU>,
+    #[allow(dead_code)]
     pub get_uuid: Option<FnDevCharU>,
+    #[allow(dead_code)]
     pub get_driver: Option<FnCharU>,
     pub get_util: Option<FnDevUtil>,
+    #[allow(dead_code)]
     pub get_throttle: Option<FnDevU64>,
     pub get_minmax_fan: Option<FnDevUUout2>,
 

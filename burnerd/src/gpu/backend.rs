@@ -22,14 +22,18 @@ use super::{
 
 const NVML_TEMPERATURE_GPU: c_uint = 0;
 const NVML_FEATURE_ENABLED: c_uint = 1;
+#[allow(dead_code)] // identity string buffers (milestone-B identity read)
 const NAME_BUFFER: usize = 96;
+#[allow(dead_code)]
 const UUID_BUFFER: usize = 96;
+#[allow(dead_code)]
 const DRIVER_BUFFER: usize = 80;
 const MEM_CLOCK_CAPACITY: usize = 64;
 const CORE_CLOCK_CAPACITY: usize = 512;
 
 pub struct NvmlBackend {
     lib: NvmlLib,
+    #[allow(dead_code)] // reported via identity() (milestone-B)
     gpu_index: u32,
     device: Device,
     voltage: Option<NvapiVoltageSession>,
@@ -155,6 +159,7 @@ impl NvmlBackend {
     }
 
     // --- string / struct reads -------------------------------------------
+    #[allow(dead_code)] // identity strings (milestone-B)
     fn read_device_string(
         &self,
         getter: Option<super::nvml_raw::FnDevCharU>,
@@ -178,6 +183,7 @@ impl NvmlBackend {
         decode_cstr(&buf)
     }
 
+    #[allow(dead_code)] // identity string (milestone-B)
     fn driver_version(&self) -> String {
         let Some(f) = self.lib.get_driver else {
             return String::new();

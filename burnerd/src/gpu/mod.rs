@@ -7,13 +7,6 @@
 //! `drivers/nvidia/*.py` and `runtime/gpu_control/*.py`; unit conventions and
 //! error-message text are preserved verbatim (see `port-notes/03-nvml-ffi.md`).
 
-// Staging allow: this module is the GPU backend surface consumed by the
-// wave-A3 engine, which is not yet wired into `main`. Until then every public
-// item reads as dead code in the plain binary build (the same staging artifact
-// that affects the other not-yet-wired waves). Remove this once A3 drives the
-// backend. The test target already exercises the whole surface.
-#![allow(dead_code)]
-
 mod backend;
 mod nvapi;
 mod nvml_raw;
@@ -21,12 +14,18 @@ mod nvml_raw;
 #[cfg(test)]
 pub mod mock;
 
-#[allow(unused_imports)] // Re-exported for the wave-A3 engine; unused until then.
 pub use backend::NvmlBackend;
 
 use std::fmt;
 
+// The A2 backend is a stable 39-method contract; the wave-A3 engine consumes
+// most of it. The remainder tagged below (device identity/memory/throttle reads,
+// single-fan writes, the exact-lock path, driver/uuid strings, VfSummary) is
+// retained for milestone-B write RPCs and telemetry completeness — not dead by
+// accident. Narrowly allowed per-item so real future dead code still surfaces.
+
 /// NVML clock domain (matches `nvmlClockType_t`).
+#[allow(dead_code)] // Sm/Video domains unused by A3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClockType {
     Graphics = 0,
@@ -45,6 +44,7 @@ impl ClockType {
 ///
 /// String fields degrade to `""` on read failure, exactly like the Python
 /// session — they never fail the whole identity read.
+#[allow(dead_code)] // milestone-B identity read
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GpuIdentity {
     pub index: u32,
@@ -56,6 +56,7 @@ pub struct GpuIdentity {
 }
 
 /// `nvmlMemory_t` view (bytes).
+#[allow(dead_code)] // milestone-B memory read
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GpuMemoryInfo {
     pub index: u32,
@@ -130,6 +131,7 @@ pub struct VfPoint {
 }
 
 /// `summary()` of the VF curve.
+#[allow(dead_code)] // startup-log helper, not consumed by A3
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct VfSummary {
     pub active_points: usize,
@@ -154,6 +156,7 @@ pub struct GpuError {
 impl GpuError {
     /// The native return code (NVML `nvmlReturn_t` / NVAPI `NvAPI_Status`), or
     /// `0` when the failure was not a native call (e.g. a missing symbol).
+    #[allow(dead_code)] // callers that branch on rc arrive in milestone B
     pub fn rc(&self) -> i64 {
         self.rc
     }
@@ -230,6 +233,7 @@ pub type GpuResult<T> = Result<T, GpuError>;
 /// Python code lets degrade return `Option`/empty instead of erroring. The
 /// engine chooses handling (log-and-continue vs abort vs the double-reset
 /// quirk) — none of that policy lives here.
+#[allow(dead_code)] // identity/memory/throttle reads, single-fan writes, exact-lock: milestone-B
 pub trait GpuBackend {
     // --- device identity / info -------------------------------------------
     fn gpu_index(&self) -> u32;
@@ -488,6 +492,7 @@ pub(crate) fn vf_find_nearest(
 }
 
 /// VF curve `summary()`.
+#[allow(dead_code)] // pairs with VfSummary (startup-log helper)
 pub(crate) fn vf_summary_of(points: &[VfPoint]) -> VfSummary {
     VfSummary {
         active_points: points.len(),
