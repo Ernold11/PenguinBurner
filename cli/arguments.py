@@ -231,11 +231,6 @@ def parse_arguments(argv):
         help="Print PenguinBurner hardware daemon status and exit.",
     )
     daemon_group.add_argument(
-        "--daemon-api",
-        metavar="SOCKET",
-        help=argparse.SUPPRESS,
-    )
-    daemon_group.add_argument(
         "--auto-uv-profile",
         default="",
         help=(

@@ -61,23 +61,17 @@ LIBEXEC_DAEMON_BINARY = Path("/usr/libexec/penguin-burnerd")
 
 
 def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
-    foreground = False
     daemonize = False
     install_systemd_service = False
     uninstall_systemd_service = False
     reset_gpu_defaults = False
     migrate_to_daemon = False
     daemon_status_requested = False
-    daemon_api_socket = ""
     journal_hours = default_journal_hours
     passthrough = []
     index = 0
     while index < len(argv):
         arg = argv[index]
-        if arg == "--foreground":
-            foreground = True
-            index += 1
-            continue
         if arg == "--daemonize":
             daemonize = True
             index += 1
@@ -102,19 +96,6 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
             daemon_status_requested = True
             index += 1
             continue
-        if arg == "--daemon-api":
-            if index + 1 >= len(argv):
-                raise RuntimeError("--daemon-api requires a socket path")
-            index += 1
-            daemon_api_socket = str(argv[index]).strip()
-            index += 1
-            continue
-        if arg.startswith("--daemon-api="):
-            daemon_api_socket = arg.split("=", 1)[1].strip()
-            if not daemon_api_socket:
-                raise RuntimeError("--daemon-api requires a socket path")
-            index += 1
-            continue
         if arg == "--journal-hours":
             if index + 1 >= len(argv):
                 raise RuntimeError("--journal-hours requires a value")
@@ -134,14 +115,12 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
             "choose either --install-systemd-service or --uninstall-systemd-service"
         )
     return {
-        "foreground": foreground,
         "daemonize": daemonize,
         "install_systemd_service": install_systemd_service,
         "uninstall_systemd_service": uninstall_systemd_service,
         "reset_gpu_defaults": reset_gpu_defaults,
         "migrate_to_daemon": migrate_to_daemon,
         "daemon_status": daemon_status_requested,
-        "daemon_api_socket": daemon_api_socket,
         "journal_hours": journal_hours,
         "passthrough": passthrough,
     }

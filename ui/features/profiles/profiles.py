@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import base64
 import json
 import shlex
 import subprocess
@@ -13,8 +12,8 @@ from profiles.uv.profile_store import read_auto_uv_profile_summaries
 from profiles.uv.profile_tiers import available_adaptive_tiers
 from profiles.uv.profile_tiers import profile_tier_label
 from profiles.uv.profile_tiers import resolve_profile_tier_profiles
-from runtime.daemon_api import AUTOSTART_ARGV_B64_ENV
 from runtime.daemon_client import daemon_status
+from runtime.support.runtime_service import LAST_RUNTIME_STATE_PATH
 from runtime.support.runtime_service import LEGACY_PENGUIN_BURNER_UNIT_NAME
 from runtime.support.runtime_service import PENGUIN_BURNER_UNIT_NAME
 from runtime.support.runtime_service import SYSTEMCTL
@@ -269,8 +268,14 @@ def profile_info_from_command_parts(
 
 
 def systemd_unit_entry_exists() -> bool:
+    # A persistent PenguinBurner entry means the native daemon unit is installed
+    # (or a legacy unit survives) -- more robust than reading the state file,
+    # which is briefly absent for a stock/no-argv autostart.
     try:
-        return bool(_daemon_unit_autostart_argv()) or legacy_systemd_service_unit_path().is_file()
+        return (
+            systemd_service_unit_path().is_file()
+            or legacy_systemd_service_unit_path().is_file()
+        )
     except OSError:
         return False
 
@@ -363,27 +368,16 @@ def _command_parts(command_text: str) -> list[str]:
 
 
 def _daemon_unit_autostart_argv() -> list[str]:
+    # The native Rust daemon carries the autostart intent in the world-readable
+    # last-runtime state file (not a base64 unit env), so the unprivileged GUI
+    # reads the argv from there. Missing/unreadable -> no autostart argv.
     try:
-        text = systemd_service_unit_path().read_text(
-            encoding="utf-8",
-            errors="replace",
-        )
-    except OSError:
+        data = json.loads(LAST_RUNTIME_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("Environment="):
-            continue
-        value = line.split("=", 1)[1].strip()
-        if value.startswith(f"{AUTOSTART_ARGV_B64_ENV}="):
-            encoded = value.split("=", 1)[1].strip()
-            try:
-                decoded = json.loads(base64.b64decode(encoded).decode("utf-8"))
-            except Exception:
-                return []
-            if isinstance(decoded, list) and all(isinstance(item, str) for item in decoded):
-                return list(decoded)
-            return []
+    argv = data.get("argv") if isinstance(data, dict) else None
+    if isinstance(argv, list) and all(isinstance(item, str) for item in argv):
+        return list(argv)
     return []
 
 

@@ -17,7 +17,6 @@ from cli.main_command_routing import (
     MainCommandRoutingDependencies,
     route_main_command,
 )
-from cli.normal_runtime import run_normal_runtime
 from cli.arguments import parse_arguments
 from cli.entry import dispatch_cli
 from cli.runtime_config_file import (
@@ -118,14 +117,13 @@ def main(argv=None, *, journal_hours=DEFAULT_JOURNAL_HOURS):
     if command_route.handled:
         return
 
-    run_normal_runtime(
-        args=args,
-        argv=argv,
-        journal_hours=journal_hours,
-        program_file=__file__,
-        command_route=command_route,
-        prompt_yes_no=functools.partial(cli_prompt_yes_no, debug_log=debug_log),
-        interactive=sys.stdin.isatty(),
+    # Foreground Python apply was removed with the Python daemon engine. Privileged
+    # profile apply now runs in-process in the Rust penguin-burnerd; reach it over
+    # the socket via --daemonize.
+    raise NvmlError(
+        "apply runtime profiles through the daemon -- re-run with "
+        "--daemonize --auto-uv-profile <selector> (foreground apply was removed "
+        "with the Rust daemon)"
     )
 
 

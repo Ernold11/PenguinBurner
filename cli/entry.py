@@ -21,7 +21,6 @@ from runtime.support.runtime_service import (
     running_under_systemd_service,
     uninstall_systemd_service,
 )
-from runtime.daemon_api import serve_daemon_api
 from runtime.daemon_client import daemon_status
 from profiles.uv.profile_store import read_auto_uv_profiles, resolve_auto_uv_profile
 from profiles.uv.profile_tiers import (
@@ -47,9 +46,6 @@ def dispatch_cli(
         raw_argv = list(sys.argv[1:] if argv is None else argv)
         runtime_flags = parse_runtime_flags(raw_argv)
         runtime_argv = runtime_flags["passthrough"]
-        if runtime_flags["daemon_api_socket"]:
-            serve_daemon_api(runtime_flags["daemon_api_socket"])
-            return 0
         if runtime_flags["daemon_status"]:
             status = daemon_status(socket_path=DEFAULT_DAEMON_SOCKET)
             print(json.dumps(status, indent=2), flush=True)
@@ -73,11 +69,7 @@ def dispatch_cli(
             )
         elif runtime_flags["uninstall_systemd_service"]:
             uninstall_systemd_service(log=log)
-        elif (
-            runtime_flags["daemonize"]
-            and not runtime_flags["foreground"]
-            and not running_under_systemd_service()
-        ):
+        elif runtime_flags["daemonize"] and not running_under_systemd_service():
             daemonize_with_systemd(
                 program_file,
                 runtime_argv,
