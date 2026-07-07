@@ -159,6 +159,31 @@ fn apply_memory_offset(
     Ok(Some(offset))
 }
 
+/// Apply the memory offset (when `memory_offset_mhz` is `Some`) and then the
+/// per-point VF plan, re-reading the curve afterward. Returns the applied,
+/// driver-clamped memory offset (`None` when `memory_offset_mhz` was `None`).
+///
+/// WHY the mem offset must precede the VF writes (load-bearing invariant): a
+/// `nvmlDeviceSetMemClkVfOffset` write WIPES the entire core per-point VF offset
+/// table. The coupling is one-directional — VF writes leave the mem offset
+/// untouched, and locked clocks / the power limit touch neither. Proven
+/// 2026-07-07 on the live GPU (driver 610.43.02): applying the mem offset first,
+/// then the per-point offsets, leaves both live; the reverse order silently
+/// erases the fresh curve. Callers that pass `None` (the startup and VF-reapply
+/// guards) have already written/verified the mem offset just above the call, so
+/// the ordering still holds.
+pub fn apply_memory_offset_then_vf_plan(
+    backend: &dyn GpuBackend,
+    label: &str,
+    memory_offset_mhz: Option<i64>,
+    plan: &[PlanItem],
+) -> Result<Option<i64>, String> {
+    let memory = apply_memory_offset(backend, label, memory_offset_mhz)?;
+    apply_plan(backend, plan).map_err(|e| e.to_string())?;
+    backend.refresh_vf_points().map_err(|e| e.to_string())?;
+    Ok(memory)
+}
+
 /// `configure_runtime_vf_curve_policy`. Fatal `Err` = initial power-limit /
 /// memory-offset failure (spec 02 §6.4); everything else logs-and-continues.
 pub fn configure_runtime_vf_curve_policy<'a>(
@@ -203,20 +228,19 @@ fn apply_auto_uv_final_curve<'a>(
         return Ok(());
     };
 
-    // Memory offset FIRST — before the per-point VF writes. A
-    // `nvmlDeviceSetMemClkVfOffset` write WIPES the whole core per-point VF offset
-    // table (one-directional; proven 2026-07-07 on driver 610.43.02), so applying
-    // it after the curve would erase the curve we just wrote. Fatal on failure
-    // (spec 02 §6.4). Recorded into the result immediately so the applied policy
-    // reflects hardware even if the VF write below then fails and bails.
+    // Memory offset FIRST — before the per-point VF writes (mem-wipes-VF; see
+    // `apply_memory_offset_then_vf_plan`). Fatal on failure (spec 02 §6.4).
+    // Recorded into the result immediately so the applied policy reflects hardware
+    // even if the VF write below then fails and bails.
     let memory = apply_memory_offset(backend, "auto-UV final curve", curve.memory_offset_mhz)?;
     if let Some(m) = memory {
         log(&format!("Applied auto-UV profile memory offset: {m:+}MHz."));
     }
     result.auto_uv_profile_gpu_policy.mem_clk_vf_offset_mhz = memory;
 
+    // Mem already applied above → pass None; the helper does the VF plan + readback.
     if let Err(exc) =
-        apply_plan(backend, &curve.plan).and_then(|_| backend.refresh_vf_points().map(|_| ()))
+        apply_memory_offset_then_vf_plan(backend, "auto-UV final curve", None, &curve.plan)
     {
         log(&format!(
             "Skipping auto-UV final curve apply: path={} error={exc}",
@@ -272,12 +296,9 @@ fn apply_auto_uv_final_curve<'a>(
 }
 
 /// The adaptive tier switch's GPU ops: memory offset → VF plan → power →
-/// ceiling retarget. Returns the applied power/mem for the switch result.
-///
-/// The memory offset MUST precede the VF plan for the same reason as the
-/// startup pipeline: a `nvmlDeviceSetMemClkVfOffset` write WIPES the whole core
-/// per-point VF offset table (proven 2026-07-07 on driver 610.43.02), so a tier
-/// switch that wrote mem after the curve would erase the curve it just applied.
+/// ceiling retarget. Returns the applied power/mem for the switch result. The
+/// mem-before-VF ordering (mem write wipes the VF table) is owned by
+/// `apply_memory_offset_then_vf_plan`; power stays after the VF writes.
 pub fn apply_adaptive_curve(
     backend: &dyn GpuBackend,
     curve: &LoadedCurve,
@@ -285,9 +306,8 @@ pub fn apply_adaptive_curve(
     tier_label: &str,
 ) -> Result<(Option<i64>, Option<i64>), String> {
     let label = format!("adaptive {tier_label} profile");
-    let memory = apply_memory_offset(backend, &label, curve.memory_offset_mhz)?;
-    apply_plan(backend, &curve.plan).map_err(|e| e.to_string())?;
-    backend.refresh_vf_points().map_err(|e| e.to_string())?;
+    let memory =
+        apply_memory_offset_then_vf_plan(backend, &label, curve.memory_offset_mhz, &curve.plan)?;
     let power = apply_power_limit(backend, &label, curve.power_limit_w)?;
     if let Some(controller) = ceiling {
         controller

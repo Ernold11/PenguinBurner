@@ -273,11 +273,11 @@ fn monotonic_now() -> f64 {
     ts.tv_sec as f64 + ts.tv_nsec as f64 / 1_000_000_000.0
 }
 
-/// Test-only inert engine: idle until stop, no NVML/hardware writes. Gated on the
-/// integration harness's env knobs so `cargo test` never mutates a real GPU.
+/// Test-only inert engine: idle until stop, no NVML/hardware writes. Gated solely
+/// on its own env knob (`PENGUIN_BURNERD_TEST_INERT_ENGINE`) so it is independent
+/// of the state-file path knob; the integration harnesses set it explicitly.
 fn test_inert_engine() -> bool {
-    std::env::var_os("PENGUIN_BURNERD_TEST_STATE_FILE").is_some()
-        || std::env::var_os("PENGUIN_BURNERD_TEST_INERT_ENGINE").is_some()
+    std::env::var_os("PENGUIN_BURNERD_TEST_INERT_ENGINE").is_some()
 }
 
 fn run_inert(stop_flag: Arc<AtomicBool>) -> i32 {
@@ -829,8 +829,10 @@ fn maybe_reapply_vf_curve(
         }
     }
 
-    if let Err(exc) = apply::apply_plan(backend, vf_apply_plan)
-        .and_then(|_| backend.refresh_vf_points().map(|_| ()))
+    // Mem handled by the conditional guard above → pass None; the helper does the
+    // VF plan + readback (mem-before-VF invariant lives on it).
+    if let Err(exc) =
+        apply::apply_memory_offset_then_vf_plan(backend, "vf-curve reapply", None, vf_apply_plan)
     {
         engine_log(&format!("{ts} event=vf-curve-reapply-error error={exc}"));
         return last_vf_reapply;

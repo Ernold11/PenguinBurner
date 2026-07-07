@@ -71,6 +71,7 @@ impl Daemon {
             .env("PENGUIN_BURNER_DAEMON_PROGRAM_FILE", &stub)
             .env("PENGUIN_BURNER_HOME", &home)
             .env("PENGUIN_BURNERD_TEST_STATE_FILE", &state_file)
+            .env("PENGUIN_BURNERD_TEST_INERT_ENGINE", "1")
             .env("PENGUIN_BURNERD_TEST_TIMINGS", "1")
             .env_remove("PENGUIN_BURNER_DAEMON_ALLOWED_UID")
             .env_remove("NOTIFY_SOCKET")

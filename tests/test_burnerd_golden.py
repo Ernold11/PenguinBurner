@@ -197,6 +197,7 @@ def make_daemon(tmp_path):
         env["PENGUIN_BURNER_DAEMON_PROGRAM_FILE"] = str(stub)
         env["PENGUIN_BURNER_HOME"] = str(home)  # stop-request files land under here
         env["PENGUIN_BURNERD_TEST_STATE_FILE"] = str(state_file)
+        env["PENGUIN_BURNERD_TEST_INERT_ENGINE"] = "1"  # engine idles (no GPU under test)
         env["PENGUIN_BURNERD_TEST_TIMINGS"] = "1"  # fast kill ladder
         env.pop("PENGUIN_BURNER_DAEMON_ALLOWED_UID", None)  # open the peercred gate
         env.pop("NOTIFY_SOCKET", None)  # no systemd watchdog under test
