@@ -84,15 +84,6 @@ enum RpcBackend {
     Mock(MockGpu),
 }
 
-impl RpcBackend {
-    fn backend(&self) -> &dyn GpuBackend {
-        match self {
-            RpcBackend::Real(backend) => backend,
-            RpcBackend::Mock(mock) => mock,
-        }
-    }
-}
-
 // SAFETY: the registry `Mutex` serializes every access, so the backend is only
 // ever touched by one thread at a time — no data race on its interior
 // `Cell`/`RefCell` caches. Cross-thread *reuse* (opened on one connection
@@ -174,23 +165,24 @@ pub fn handle(method: &str, request: &Map<String, Value>) -> Result<Value, Strin
             registry.len() - 1
         }
     };
-    let entry = &registry[position].1;
 
-    let ops_before = match entry {
-        RpcBackend::Mock(mock) => Some(mock.recorded().len()),
-        RpcBackend::Real(_) => None,
-    };
-    let mut result = execute(entry.backend(), write)?;
-    if let (Some(before), RpcBackend::Mock(mock)) = (ops_before, entry) {
-        let ops: Vec<Value> = mock.recorded()[before..]
-            .iter()
-            .map(|op| Value::String(format!("{op:?}")))
-            .collect();
-        if let Some(object) = result.as_object_mut() {
-            object.insert("mock_ops".to_string(), Value::Array(ops));
+    match &registry[position].1 {
+        RpcBackend::Real(backend) => execute(backend, write),
+        // Test seam only: echo the ops recorded during this call back to the
+        // integration test (its sole cross-process channel). Never runs in prod.
+        RpcBackend::Mock(mock) => {
+            let before = mock.recorded().len();
+            let mut result = execute(mock, write)?;
+            let ops: Vec<Value> = mock.recorded()[before..]
+                .iter()
+                .map(|op| Value::String(format!("{op:?}")))
+                .collect();
+            if let Some(object) = result.as_object_mut() {
+                object.insert("mock_ops".to_string(), Value::Array(ops));
+            }
+            Ok(result)
         }
     }
-    Ok(result)
 }
 
 /// Parse + validate the method's request fields into a [`GpuWrite`]. Pure.

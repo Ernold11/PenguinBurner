@@ -137,22 +137,10 @@ fn run_child(
             plan.uid,
             plan.gid
         ));
-        // A root daemon (this version or an earlier one) may have left
-        // root-owned dirs in `~/.config/PenguinBurner` (stop markers, pre-B3
-        // scans): hand the config dir and its immediate subdirectories to the
-        // drop target so the de-rooted child can create/replace files there
-        // (writes go via rename, so user-owned DIRS are sufficient). Uses the
-        // resolved plan ids directly so the hand-off cannot disagree with the
-        // env chown-back ladder. Best-effort.
-        let config_dir = paths::user_config_dir();
-        paths::claim_ownership_for(&config_dir, plan.uid, plan.gid, true);
-        if let Ok(entries) = std::fs::read_dir(&config_dir) {
-            for entry in entries.flatten() {
-                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    paths::claim_ownership_for(&entry.path(), plan.uid, plan.gid, false);
-                }
-            }
-        }
+        // Hand any root-owned `~/.config/PenguinBurner` leftovers (stop markers,
+        // pre-B3 scans a root daemon created) to the drop target so the de-rooted
+        // child can create/replace files there. Best-effort.
+        paths::claim_config_tree_for(plan.uid, plan.gid);
     }
 
     // The whole check-clear-stop-spawn-install runs atomically under the lock.

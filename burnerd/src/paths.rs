@@ -317,6 +317,14 @@ fn lchown(path: &Path, uid: u32, gid: u32) {
 /// `include_parents`, the chain up to the effective home) to the desktop user
 /// resolved from the env chown-back ladder.
 pub(crate) fn claim_desktop_user_ownership(path: &Path, include_parents: bool) {
+    // Fast-path the non-root (dev/test) daemon before the env/NSS identity
+    // ladder: this sits on the per-tick telemetry/overlay writers, and there is
+    // nothing to chown when we are not root. `claim_ownership_for` re-checks the
+    // same gate (the drop-plan hand-off calls it directly), so root behavior is
+    // unchanged — both paths end in the identical no-op when not root.
+    if !geteuid_is_root() {
+        return;
+    }
     let Some((uid, gid)) = effective_desktop_user_ids() else {
         return;
     };
@@ -350,6 +358,25 @@ pub(crate) fn claim_ownership_for(path: &Path, uid: u32, gid: u32, include_paren
         }
     }
     lchown(path, uid, gid);
+}
+
+/// Hand `~/.config/PenguinBurner` and its immediate subdirectories to the drop
+/// target (`uid`/`gid`) so a de-rooted scan/verification child can create or
+/// replace files there. A root daemon (this or an earlier version) may have left
+/// root-owned dirs behind (stop markers, pre-B3 scans); writes go via rename, so
+/// handing over the DIRS is sufficient. Uses the resolved plan ids directly (not
+/// the env chown-back ladder) so the hand-off cannot disagree with the drop
+/// plan. Best-effort; the inner `claim_ownership_for` no-ops when not root.
+pub(crate) fn claim_config_tree_for(uid: u32, gid: u32) {
+    let config_dir = user_config_dir();
+    claim_ownership_for(&config_dir, uid, gid, true);
+    if let Ok(entries) = fs::read_dir(&config_dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                claim_ownership_for(&entry.path(), uid, gid, false);
+            }
+        }
+    }
 }
 
 /// The `/run/user/<uid>/penguin-burner` directory when the process runs as root
