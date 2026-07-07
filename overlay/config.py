@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import tomllib
 
-from common.penguin_burner_paths import claim_desktop_user_ownership
+from common.atomic_write import atomic_write_text
 from common.penguin_burner_paths import default_user_config_dir
 from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 
@@ -151,8 +151,6 @@ def save_overlay_config(
         if path is None
         else Path(path).expanduser()
     )
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    claim_desktop_user_ownership(config_path.parent, include_parents=True)
     text = (
         "version = 1\n"
         f"enabled = {_toml_bool(config.enabled)}\n"
@@ -162,11 +160,7 @@ def save_overlay_config(
         + ", ".join(f'"{item_id}"' for item_id in config.enabled_item_ids)
         + "]\n"
     )
-    temp_path = config_path.with_name(config_path.name + ".tmp")
-    temp_path.write_text(text, encoding="utf-8")
-    temp_path.replace(config_path)
-    claim_desktop_user_ownership(config_path)
-    return config_path
+    return atomic_write_text(config_path, text)
 
 
 def normalize_overlay_config(config: OverlayConfig) -> OverlayConfig:

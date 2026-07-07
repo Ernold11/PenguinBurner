@@ -6,7 +6,7 @@ from pathlib import Path
 import pwd
 import time
 
-from common.penguin_burner_paths import claim_desktop_user_ownership
+from common.atomic_write import atomic_write_text
 
 
 OVERLAY_STATE_ENV = "PENGUIN_BURNER_OVERLAY_STATE"
@@ -159,13 +159,7 @@ def write_overlay_state(
         "adaptive": "1" if bool(state.adaptive) else "0",
     }
     text = "".join(f"{key}={_escape_value(value)}\n" for key, value in payload.items())
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    claim_desktop_user_ownership(state_path.parent, include_parents=True)
-    temp_path = state_path.with_name(state_path.name + ".tmp")
-    temp_path.write_text(text, encoding="utf-8")
-    temp_path.replace(state_path)
-    claim_desktop_user_ownership(state_path)
-    return state_path
+    return atomic_write_text(state_path, text)
 
 
 def read_overlay_state(path: str | Path | None = None) -> dict[str, str]:

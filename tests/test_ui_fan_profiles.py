@@ -151,7 +151,9 @@ def test_profile_payload_has_saved_vf_curve_and_archive_id() -> None:
 def test_write_payload_and_matching(monkeypatch, tmp_path) -> None:
     target = tmp_path / "auto-uv-fan-curve.json"
     monkeypatch.setattr(fp, "auto_uv_fan_curve_payload_path", lambda: target)
-    monkeypatch.setattr(fp, "claim_desktop_user_ownership", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "common.atomic_write.claim_desktop_user_ownership", lambda *a, **k: None
+    )
 
     import pytest
 

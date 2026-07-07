@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 import time
 
-from common.penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
+from common.atomic_write import atomic_write_json
+from common.penguin_burner_paths import default_user_config_dir
 
 
 PROFILE_TIER_EFFICIENCY = "efficiency"
@@ -348,13 +349,7 @@ def _write_profile_tier_assignments(
     }
     if disabled:
         payload["disabled_profile_ids"] = disabled
-    assignment_path.parent.mkdir(parents=True, exist_ok=True)
-    claim_desktop_user_ownership(assignment_path.parent, include_parents=True)
-    temp_path = assignment_path.with_name(assignment_path.name + ".tmp")
-    temp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    temp_path.replace(assignment_path)
-    claim_desktop_user_ownership(assignment_path)
-    return assignment_path
+    return atomic_write_json(assignment_path, payload)
 
 
 def _read_profile_tier_assignments(path: str | Path | None = None) -> dict:

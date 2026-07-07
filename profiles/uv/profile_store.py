@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 
+from common.atomic_write import atomic_write_json
 from common.penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
 
 from .profile_tiers import (
@@ -42,16 +43,6 @@ def _file_time_iso(path: Path) -> str:
         return datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat()
     except OSError:
         return _now_iso()
-
-
-def _safe_json_write(path: Path, payload: dict) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    claim_desktop_user_ownership(path.parent, include_parents=True)
-    temp_path = path.with_name(path.name + ".tmp")
-    temp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    temp_path.replace(path)
-    claim_desktop_user_ownership(path)
-    return path
 
 
 def _read_json(path: Path) -> dict | None:
@@ -110,7 +101,7 @@ def archive_auto_uv_profile(final_curve_payload: dict) -> Path:
             "profile_source": str(payload.get("profile_source") or "auto-uv-final"),
         }
     )
-    return _safe_json_write(
+    return atomic_write_json(
         auto_uv_profiles_dir() / f"auto-uv-profile-{profile_id}.json",
         payload,
     )
@@ -167,7 +158,7 @@ def mark_auto_uv_profile_verified(
                 continue
             updated[target_key] = value
 
-    return _safe_json_write(path, updated)
+    return atomic_write_json(path, updated)
 
 
 def mark_auto_uv_profile_verification_failed(
@@ -203,7 +194,7 @@ def mark_auto_uv_profile_verification_failed(
             if value not in (None, "")
         }
     updated["verification"] = merged_verification
-    return _safe_json_write(path, updated)
+    return atomic_write_json(path, updated)
 
 
 _VERIFICATION_METRIC_KEYS = (

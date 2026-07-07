@@ -8,7 +8,7 @@ from curve_editors.fan.fan_curve_manual_editor import (
     user_edited_fan_curve_profile_payload,
 )
 from profiles.uv.profile_store import archive_auto_uv_profile
-from common.penguin_burner_paths import claim_desktop_user_ownership
+from common.atomic_write import atomic_write_json
 from common.penguin_burner_paths import default_user_config_dir
 
 
@@ -135,14 +135,7 @@ def auto_uv_fan_curve_payload_path() -> Path:
 def write_auto_uv_fan_curve_payload(payload: dict) -> Path:
     if not isinstance(payload, dict):
         raise ValueError("fan curve payload must be an object")
-    path = auto_uv_fan_curve_payload_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    claim_desktop_user_ownership(path.parent, include_parents=True)
-    temp_path = path.with_name(path.name + ".tmp")
-    temp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    temp_path.replace(path)
-    claim_desktop_user_ownership(path)
-    return path
+    return atomic_write_json(auto_uv_fan_curve_payload_path(), payload)
 
 
 def embedded_fan_payload(payload) -> dict | None:

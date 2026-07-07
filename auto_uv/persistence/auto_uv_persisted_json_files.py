@@ -5,14 +5,10 @@ The helpers make writes atomic and preserve desktop-user ownership for files cre
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 
-from common.penguin_burner_paths import (
-    claim_desktop_user_ownership,
-    default_user_config_dir,
-)
+from common.atomic_write import atomic_write_json
+from common.penguin_burner_paths import default_user_config_dir
 
 
 def auto_uv_user_config_dir() -> Path:
@@ -66,25 +62,4 @@ def clear_auto_uv_stop_request() -> None:
 
 
 def safe_json_write(path: Path, payload: dict) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    claim_desktop_user_ownership(path.parent, include_parents=True)
-    temp_path = path.with_name(path.name + ".tmp")
-    with temp_path.open("w", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, indent=2) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    temp_path.replace(path)
-    fsync_directory(path.parent)
-    claim_desktop_user_ownership(path)
-    return path
-
-
-def fsync_directory(path: Path) -> None:
-    try:
-        directory_fd = os.open(path, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
+    return atomic_write_json(path, payload, durable=True)
