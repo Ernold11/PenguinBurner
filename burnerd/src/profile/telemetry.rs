@@ -5,7 +5,6 @@
 //! stickiness are reproduced exactly; the C++ Vulkan layer and the Python GUI
 //! parse it in-process.
 
-use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
 use crate::gpu::{ClockType, GpuBackend};
@@ -17,180 +16,12 @@ use super::floor_div;
 use super::profile_store::profile_tier_label;
 use super::LatencySnapshot;
 
-// --- ownership (chown-back) -------------------------------------------------
-
-fn geteuid_is_root() -> bool {
-    // SAFETY: geteuid is always safe.
-    unsafe { libc::geteuid() == 0 }
-}
-
-fn nonempty_env(key: &str) -> Option<String> {
-    let v = std::env::var(key).ok()?;
-    let t = v.trim();
-    (!t.is_empty()).then(|| t.to_string())
-}
-
-pub(super) fn pw_by_uid(uid: u32) -> Option<(PathBuf, u32)> {
-    pw_lookup(|pwd, buf, len, res| {
-        // SAFETY: valid pointers/lengths for getpwuid_r.
-        unsafe { libc::getpwuid_r(uid, pwd, buf, len, res) }
-    })
-}
-
-pub(super) fn pw_by_name(name: &str) -> Option<(PathBuf, u32)> {
-    let c = CString::new(name).ok()?;
-    pw_lookup(|pwd, buf, len, res| {
-        // SAFETY: valid pointers/lengths for getpwnam_r.
-        unsafe { libc::getpwnam_r(c.as_ptr(), pwd, buf, len, res) }
-    })
-}
-
-fn pw_lookup(
-    mut call: impl FnMut(
-        *mut libc::passwd,
-        *mut libc::c_char,
-        usize,
-        *mut *mut libc::passwd,
-    ) -> libc::c_int,
-) -> Option<(PathBuf, u32)> {
-    use std::os::unix::ffi::OsStrExt;
-    let mut buf = vec![0u8; 4096];
-    loop {
-        // SAFETY: a zeroed passwd is a valid initial value.
-        let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
-        let mut result: *mut libc::passwd = std::ptr::null_mut();
-        let rc = call(
-            &mut pwd,
-            buf.as_mut_ptr() as *mut libc::c_char,
-            buf.len(),
-            &mut result,
-        );
-        if rc == libc::ERANGE {
-            buf.resize(buf.len() * 2, 0);
-            continue;
-        }
-        if rc != 0 || result.is_null() {
-            return None;
-        }
-        // SAFETY: on success pw_dir is a valid NUL-terminated string.
-        let dir = unsafe { std::ffi::CStr::from_ptr(pwd.pw_dir) };
-        let path = PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes()));
-        return Some((path, pwd.pw_uid));
-    }
-}
-
-fn parse_positive_int(text: &str) -> Option<u32> {
-    match text.trim().parse::<i64>() {
-        Ok(v) if v > 0 => Some(v as u32),
-        _ => None,
-    }
-}
-
-/// `effective_desktop_user_ids` → `(uid, gid)` for chown-back.
-fn effective_desktop_user_ids() -> Option<(u32, u32)> {
-    let mut uid = nonempty_env("PENGUIN_BURNER_Q2RTX_UID")
-        .or_else(|| nonempty_env("SUDO_UID"))
-        .and_then(|t| parse_positive_int(&t));
-    let mut gid = nonempty_env("PENGUIN_BURNER_Q2RTX_GID")
-        .or_else(|| nonempty_env("SUDO_GID"))
-        .and_then(|t| parse_positive_int(&t));
-    if uid.is_none() || gid.is_none() {
-        if let Some(user) =
-            nonempty_env("PENGUIN_BURNER_Q2RTX_USER").or_else(|| nonempty_env("SUDO_USER"))
-        {
-            if let Some((_, pw_uid)) = pw_by_name(&user) {
-                uid = uid.or(Some(pw_uid));
-                // The passwd gid isn't exposed by pw_by_name; use uid as a best
-                // effort only when SUDO_GID/Q2RTX_GID are set. If gid is still
-                // unknown here, fall through to the None check below.
-                gid = gid.or_else(|| pw_gid_by_name(&user));
-            }
-        }
-    }
-    match (uid, gid) {
-        (Some(u), Some(g)) => Some((u, g)),
-        _ => None,
-    }
-}
-
-fn pw_gid_by_name(name: &str) -> Option<u32> {
-    let c = CString::new(name).ok()?;
-    let mut buf = vec![0u8; 4096];
-    loop {
-        // SAFETY: zeroed passwd; valid pointers.
-        let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
-        let mut result: *mut libc::passwd = std::ptr::null_mut();
-        // SAFETY: getpwnam_r with valid buffers.
-        let rc = unsafe {
-            libc::getpwnam_r(
-                c.as_ptr(),
-                &mut pwd,
-                buf.as_mut_ptr() as *mut libc::c_char,
-                buf.len(),
-                &mut result,
-            )
-        };
-        if rc == libc::ERANGE {
-            buf.resize(buf.len() * 2, 0);
-            continue;
-        }
-        if rc != 0 || result.is_null() {
-            return None;
-        }
-        return Some(pwd.pw_gid);
-    }
-}
-
-fn is_under_desktop_path(path: &Path, uid: u32) -> bool {
-    let home = paths::effective_home();
-    if path.starts_with(&home) {
-        return true;
-    }
-    let run_user = PathBuf::from(format!("/run/user/{uid}"));
-    path.starts_with(&run_user)
-}
-
-fn lchown(path: &Path, uid: u32, gid: u32) {
-    use std::os::unix::ffi::OsStrExt;
-    if let Ok(c) = CString::new(path.as_os_str().as_bytes()) {
-        // SAFETY: lchown on a valid path; errors are ignored (best-effort).
-        unsafe {
-            libc::lchown(c.as_ptr(), uid, gid);
-        }
-    }
-}
-
-/// `claim_desktop_user_ownership` — chown a root-created path (and, with
-/// `include_parents`, the chain up to the effective home) to the desktop user.
-pub fn claim_desktop_user_ownership(path: &Path, include_parents: bool) {
-    if !geteuid_is_root() {
-        return;
-    }
-    let Some((uid, gid)) = effective_desktop_user_ids() else {
-        return;
-    };
-    if !is_under_desktop_path(path, uid) {
-        return;
-    }
-    if include_parents {
-        let home = paths::effective_home();
-        let mut parents: Vec<PathBuf> = Vec::new();
-        let mut current = path.parent();
-        while let Some(dir) = current {
-            if dir == home || !dir.starts_with(&home) {
-                break;
-            }
-            parents.push(dir.to_path_buf());
-            current = dir.parent();
-        }
-        for dir in parents.iter().rev() {
-            lchown(dir, uid, gid);
-        }
-    }
-    lchown(path, uid, gid);
-}
-
 // --- overlay-state.txt path resolution --------------------------------------
+// Passwd lookups, desktop-user id resolution, and chown-back live in `paths`
+// (shared with the latency receiver); this module resolves the overlay path and
+// writes the state file.
+
+use paths::{claim_desktop_user_ownership, geteuid_is_root, nonempty_env};
 
 /// `overlay_state_path` — env override first (always pinned by the launcher),
 /// then the home cache dir, XDG runtime, root fallback, and `/tmp` last resort.
@@ -198,7 +29,7 @@ pub fn overlay_state_path() -> PathBuf {
     if let Some(explicit) = nonempty_env("PENGUIN_BURNER_OVERLAY_STATE") {
         return PathBuf::from(explicit);
     }
-    if let Some(home_dir) = home_overlay_dir() {
+    if let Some(home_dir) = paths::desktop_cache_dir() {
         return home_dir.join("overlay-state.txt");
     }
     if let Some(runtime) = nonempty_env("XDG_RUNTIME_DIR") {
@@ -206,46 +37,13 @@ pub fn overlay_state_path() -> PathBuf {
             .join("penguin-burner")
             .join("overlay-state.txt");
     }
-    if geteuid_is_root() {
-        if let Some(uid) =
-            nonempty_env("SUDO_UID").filter(|s| s.chars().all(|c| c.is_ascii_digit()))
-        {
-            let candidate = PathBuf::from("/run/user").join(&uid);
-            if candidate.exists() {
-                return candidate.join("penguin-burner").join("overlay-state.txt");
-            }
-        }
-        if let Some(user) = nonempty_env("SUDO_USER") {
-            if let Some((_, pw_uid)) = pw_by_name(&user) {
-                let candidate = PathBuf::from("/run/user").join(pw_uid.to_string());
-                if candidate.exists() {
-                    return candidate.join("penguin-burner").join("overlay-state.txt");
-                }
-            }
-        }
+    // Root-only /run/user probe uses the EFFECTIVE uid (see run_user_penguin_dir).
+    if let Some(dir) = paths::run_user_penguin_dir(geteuid_is_root()) {
+        return dir.join("overlay-state.txt");
     }
     // SAFETY: getuid is always safe.
     let uid = unsafe { libc::getuid() };
     PathBuf::from(format!("/tmp/penguin-burner-overlay-{uid}.txt"))
-}
-
-fn home_overlay_dir() -> Option<PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let home = home.trim();
-    if !home.is_empty() && home != "/root" {
-        return Some(PathBuf::from(home).join(".cache").join("penguin-burner"));
-    }
-    if let Some(uid) = nonempty_env("SUDO_UID").filter(|s| s.chars().all(|c| c.is_ascii_digit())) {
-        if let Some((dir, _)) = uid.parse::<u32>().ok().and_then(pw_by_uid) {
-            return Some(dir.join(".cache").join("penguin-burner"));
-        }
-    }
-    if let Some(user) = nonempty_env("SUDO_USER") {
-        if let Some((dir, _)) = pw_by_name(&user) {
-            return Some(dir.join(".cache").join("penguin-burner"));
-        }
-    }
-    None
 }
 
 // --- overlay-state.txt writer -----------------------------------------------
@@ -288,7 +86,7 @@ pub fn render_overlay_state(state: &OverlayState) -> String {
     let updated = if state.updated_unix_ns > 0 {
         state.updated_unix_ns
     } else {
-        now_unix_ns()
+        super::now_unix_ns()
     };
     let bool_text = |b: bool| if b { "1" } else { "0" };
     let pairs: [(&str, String); 22] = [
@@ -326,13 +124,6 @@ pub fn render_overlay_state(state: &OverlayState) -> String {
         text.push('\n');
     }
     text
-}
-
-fn now_unix_ns() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0)
 }
 
 /// `write_overlay_state` — atomic tmp+rename with chown-back to the desktop user.

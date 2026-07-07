@@ -14,7 +14,6 @@
 //! parses them and they are not part of the snapshot contract (see STATUS Wave A5).
 
 use std::collections::{HashMap, VecDeque};
-use std::ffi::CString;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
@@ -25,8 +24,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 
-use super::telemetry::{claim_desktop_user_ownership, pw_by_name, pw_by_uid};
 use super::{monotonic_now, round_half_even, LatencySnapshot};
+use crate::paths::{
+    claim_desktop_user_ownership, cpath, desktop_cache_dir, nonempty_env, run_user_penguin_dir,
+};
 
 // --- constants (receiver.py / framegen.py) ----------------------------------
 
@@ -648,12 +649,6 @@ fn driver_report_key(sample: &Map<String, Value>) -> String {
 
 // --- socket path resolution (sockets.py) ------------------------------------
 
-fn nonempty_env(key: &str) -> Option<String> {
-    let v = std::env::var(key).ok()?;
-    let t = v.trim();
-    (!t.is_empty()).then(|| t.to_string())
-}
-
 fn getuid() -> u32 {
     // SAFETY: getuid is always safe.
     unsafe { libc::getuid() }
@@ -669,23 +664,9 @@ fn latency_socket_path() -> PathBuf {
             .join("penguin-burner")
             .join("latency.sock");
     }
-    if getuid() == 0 {
-        if let Some(uid) =
-            nonempty_env("SUDO_UID").filter(|s| s.chars().all(|c| c.is_ascii_digit()))
-        {
-            let candidate = PathBuf::from("/run/user").join(&uid);
-            if candidate.exists() {
-                return candidate.join("penguin-burner").join("latency.sock");
-            }
-        }
-        if let Some(user) = nonempty_env("SUDO_USER") {
-            if let Some((_, pw_uid)) = pw_by_name(&user) {
-                let candidate = PathBuf::from("/run/user").join(pw_uid.to_string());
-                if candidate.exists() {
-                    return candidate.join("penguin-burner").join("latency.sock");
-                }
-            }
-        }
+    // Root-only /run/user probe uses the REAL uid (see run_user_penguin_dir).
+    if let Some(dir) = run_user_penguin_dir(getuid() == 0) {
+        return dir.join("latency.sock");
     }
     PathBuf::from(format!("/tmp/penguin-burner-latency-{}.sock", getuid()))
 }
@@ -693,20 +674,8 @@ fn latency_socket_path() -> PathBuf {
 /// `_home_latency_socket_path(env)` — the `~/.cache/penguin-burner` socket the
 /// game launcher pins into the game process (the load-bearing path).
 fn home_latency_socket_path() -> Option<PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let home = home.trim();
-    if !home.is_empty() && home != "/root" {
-        return Some(cache_socket(Path::new(home)));
-    }
-    if let Some(uid) = nonempty_env("SUDO_UID").filter(|s| s.chars().all(|c| c.is_ascii_digit())) {
-        if let Some((dir, _)) = uid.parse::<u32>().ok().and_then(pw_by_uid) {
-            return Some(cache_socket(&dir));
-        }
-    }
-    if let Some(user) = nonempty_env("SUDO_USER") {
-        if let Some((dir, _)) = pw_by_name(&user) {
-            return Some(cache_socket(&dir));
-        }
+    if let Some(cache) = desktop_cache_dir() {
+        return Some(cache.join("latency.sock"));
     }
     // Last resort: a cwd ancestor directly under /home/<user>. (The Python code
     // also scans the module's source path; a compiled binary has no analogue, and
@@ -875,8 +844,7 @@ fn bind_socket(path: &Path) -> std::io::Result<UnixDatagram> {
 }
 
 fn chmod_666(path: &Path) {
-    use std::os::unix::ffi::OsStrExt;
-    if let Ok(c) = CString::new(path.as_os_str().as_bytes()) {
+    if let Some(c) = cpath(path) {
         // SAFETY: chmod on a valid path; failures are ignored (best-effort, as in
         // the Python `try/except OSError`).
         unsafe {

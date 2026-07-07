@@ -12,7 +12,7 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-fn nonempty_env(key: &str) -> Option<String> {
+pub(crate) fn nonempty_env(key: &str) -> Option<String> {
     let value = env::var(key).ok()?;
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -22,17 +22,25 @@ fn nonempty_env(key: &str) -> Option<String> {
     }
 }
 
-/// Run a reentrant passwd lookup (`getpw*_r`), growing the buffer on `ERANGE`,
-/// and return the entry's `pw_dir`. `call(pwd, buf, len, result)` performs the
-/// actual `getpwnam_r`/`getpwuid_r`.
-fn pw_dir_lookup(
+/// A resolved passwd entry: the user's home dir plus its numeric uid/gid. The
+/// single lookup surfaces all three so a caller that needs both ids (chown-back)
+/// does not pay a second `getpw*_r`.
+pub(crate) struct PwEntry {
+    pub dir: PathBuf,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+/// Run a reentrant passwd lookup (`getpw*_r`), growing the buffer on `ERANGE`.
+/// `call(pwd, buf, len, result)` performs the actual `getpwnam_r`/`getpwuid_r`.
+fn pw_lookup(
     mut call: impl FnMut(
         *mut libc::passwd,
         *mut libc::c_char,
         usize,
         *mut *mut libc::passwd,
     ) -> libc::c_int,
-) -> Option<PathBuf> {
+) -> Option<PwEntry> {
     let mut buf = vec![0u8; 4096];
     loop {
         // SAFETY: an all-zero passwd is a valid initial value.
@@ -53,22 +61,26 @@ fn pw_dir_lookup(
         }
         // SAFETY: on success pw_dir is a valid NUL-terminated C string.
         let dir = unsafe { CStr::from_ptr(pwd.pw_dir) };
-        return Some(PathBuf::from(OsStr::from_bytes(dir.to_bytes())));
+        return Some(PwEntry {
+            dir: PathBuf::from(OsStr::from_bytes(dir.to_bytes())),
+            uid: pwd.pw_uid,
+            gid: pwd.pw_gid,
+        });
     }
 }
 
-/// Look up a user's home directory by name (`pwd.getpwnam(...).pw_dir`).
-fn pw_dir_by_name(name: &str) -> Option<PathBuf> {
+/// Look up a passwd entry by name (`pwd.getpwnam(...)`).
+pub(crate) fn pw_by_name(name: &str) -> Option<PwEntry> {
     let c_name = CString::new(name).ok()?;
-    pw_dir_lookup(|pwd, buf, len, result| {
+    pw_lookup(|pwd, buf, len, result| {
         // SAFETY: all pointers/lengths are valid for the call.
         unsafe { libc::getpwnam_r(c_name.as_ptr(), pwd, buf, len, result) }
     })
 }
 
-/// Look up a home directory by uid (`pwd.getpwuid(...).pw_dir`).
-fn pw_dir_by_uid(uid: u32) -> Option<PathBuf> {
-    pw_dir_lookup(|pwd, buf, len, result| {
+/// Look up a passwd entry by uid (`pwd.getpwuid(...)`).
+pub(crate) fn pw_by_uid(uid: u32) -> Option<PwEntry> {
+    pw_lookup(|pwd, buf, len, result| {
         // SAFETY: all pointers/lengths are valid for the call.
         unsafe { libc::getpwuid_r(uid as libc::uid_t, pwd, buf, len, result) }
     })
@@ -82,7 +94,9 @@ fn home_fallback() -> PathBuf {
     }
     // SAFETY: getuid is always safe.
     let uid = unsafe { libc::getuid() };
-    pw_dir_by_uid(uid).unwrap_or_else(|| PathBuf::from("/"))
+    pw_by_uid(uid)
+        .map(|e| e.dir)
+        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 /// Minimal `Path(text).expanduser()`: expands a leading `~`, `~/...`, or
@@ -102,7 +116,7 @@ fn expanduser(text: &str) -> PathBuf {
         Some(idx) => (&after[..idx], Some(&after[idx + 1..])),
         None => (after, None),
     };
-    match pw_dir_by_name(user) {
+    match pw_by_name(user).map(|e| e.dir) {
         Some(dir) => match rest {
             Some(r) => dir.join(r),
             None => dir,
@@ -118,15 +132,15 @@ pub fn effective_home() -> PathBuf {
     }
     for key in ["SUDO_USER", "PENGUIN_BURNER_Q2RTX_USER"] {
         if let Some(user) = nonempty_env(key) {
-            if let Some(dir) = pw_dir_by_name(&user) {
-                return dir;
+            if let Some(entry) = pw_by_name(&user) {
+                return entry.dir;
             }
         }
     }
     if let Some(uid_text) = nonempty_env("PENGUIN_BURNER_Q2RTX_UID") {
         if let Ok(uid) = uid_text.parse::<u32>() {
-            if let Some(dir) = pw_dir_by_uid(uid) {
-                return dir;
+            if let Some(entry) = pw_by_uid(uid) {
+                return entry.dir;
             }
         }
     }
@@ -172,6 +186,150 @@ fn clear_marker(path: &Path) -> io::Result<()> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }
+}
+
+// --- desktop-user ownership + XDG/cache ladder ------------------------------
+// The daemon runs as root but persists overlay/telemetry files under the desktop
+// user's home; these helpers resolve that user's ids/paths and chown root-created
+// files back to it. Shared by the telemetry writer and the latency receiver.
+
+pub(crate) fn geteuid_is_root() -> bool {
+    // SAFETY: geteuid is always safe.
+    unsafe { libc::geteuid() == 0 }
+}
+
+fn parse_positive_int(text: &str) -> Option<u32> {
+    match text.trim().parse::<i64>() {
+        Ok(v) if v > 0 => Some(v as u32),
+        _ => None,
+    }
+}
+
+/// `effective_desktop_user_ids` → `(uid, gid)` for chown-back. One passwd lookup
+/// resolves both ids when the numeric env hints are absent.
+fn effective_desktop_user_ids() -> Option<(u32, u32)> {
+    let mut uid = nonempty_env("PENGUIN_BURNER_Q2RTX_UID")
+        .or_else(|| nonempty_env("SUDO_UID"))
+        .and_then(|t| parse_positive_int(&t));
+    let mut gid = nonempty_env("PENGUIN_BURNER_Q2RTX_GID")
+        .or_else(|| nonempty_env("SUDO_GID"))
+        .and_then(|t| parse_positive_int(&t));
+    if uid.is_none() || gid.is_none() {
+        if let Some(user) =
+            nonempty_env("PENGUIN_BURNER_Q2RTX_USER").or_else(|| nonempty_env("SUDO_USER"))
+        {
+            if let Some(entry) = pw_by_name(&user) {
+                uid = uid.or(Some(entry.uid));
+                gid = gid.or(Some(entry.gid));
+            }
+        }
+    }
+    match (uid, gid) {
+        (Some(u), Some(g)) => Some((u, g)),
+        _ => None,
+    }
+}
+
+fn is_under_desktop_path(path: &Path, uid: u32) -> bool {
+    let home = effective_home();
+    if path.starts_with(&home) {
+        return true;
+    }
+    let run_user = PathBuf::from(format!("/run/user/{uid}"));
+    path.starts_with(&run_user)
+}
+
+/// A path as a NUL-terminated C string for a raw libc call (`None` on interior
+/// NUL). Shared by the `lchown`/`chmod` best-effort ownership writers.
+pub(crate) fn cpath(path: &Path) -> Option<CString> {
+    CString::new(path.as_os_str().as_bytes()).ok()
+}
+
+fn lchown(path: &Path, uid: u32, gid: u32) {
+    if let Some(c) = cpath(path) {
+        // SAFETY: lchown on a valid path; errors are ignored (best-effort).
+        unsafe {
+            libc::lchown(c.as_ptr(), uid, gid);
+        }
+    }
+}
+
+/// `claim_desktop_user_ownership` — chown a root-created path (and, with
+/// `include_parents`, the chain up to the effective home) to the desktop user.
+pub(crate) fn claim_desktop_user_ownership(path: &Path, include_parents: bool) {
+    if !geteuid_is_root() {
+        return;
+    }
+    let Some((uid, gid)) = effective_desktop_user_ids() else {
+        return;
+    };
+    if !is_under_desktop_path(path, uid) {
+        return;
+    }
+    if include_parents {
+        let home = effective_home();
+        let mut parents: Vec<PathBuf> = Vec::new();
+        let mut current = path.parent();
+        while let Some(dir) = current {
+            if dir == home || !dir.starts_with(&home) {
+                break;
+            }
+            parents.push(dir.to_path_buf());
+            current = dir.parent();
+        }
+        for dir in parents.iter().rev() {
+            lchown(dir, uid, gid);
+        }
+    }
+    lchown(path, uid, gid);
+}
+
+/// The `/run/user/<uid>/penguin-burner` directory when the process runs as root
+/// and a desktop uid resolves (SUDO_UID digits, else SUDO_USER passwd uid) and the
+/// runtime dir exists. `is_root` differs by caller — a deliberate divergence: the
+/// overlay writer passes the EFFECTIVE-uid check (`geteuid`), the latency receiver
+/// the REAL-uid check (`getuid`). The trailing filename is joined by the caller.
+pub(crate) fn run_user_penguin_dir(is_root: bool) -> Option<PathBuf> {
+    if !is_root {
+        return None;
+    }
+    if let Some(uid) = nonempty_env("SUDO_UID").filter(|s| s.chars().all(|c| c.is_ascii_digit())) {
+        let candidate = PathBuf::from("/run/user").join(&uid);
+        if candidate.exists() {
+            return Some(candidate.join("penguin-burner"));
+        }
+    }
+    if let Some(user) = nonempty_env("SUDO_USER") {
+        if let Some(entry) = pw_by_name(&user) {
+            let candidate = PathBuf::from("/run/user").join(entry.uid.to_string());
+            if candidate.exists() {
+                return Some(candidate.join("penguin-burner"));
+            }
+        }
+    }
+    None
+}
+
+/// The desktop user's `~/.cache/penguin-burner`: `$HOME` (unless empty or
+/// `/root`), else the SUDO_UID passwd home, else the SUDO_USER passwd home. The
+/// trailing filename (`overlay-state.txt` / `latency.sock`) is joined by callers.
+pub(crate) fn desktop_cache_dir() -> Option<PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let home = home.trim();
+    if !home.is_empty() && home != "/root" {
+        return Some(PathBuf::from(home).join(".cache").join("penguin-burner"));
+    }
+    if let Some(uid) = nonempty_env("SUDO_UID").filter(|s| s.chars().all(|c| c.is_ascii_digit())) {
+        if let Some(entry) = uid.parse::<u32>().ok().and_then(pw_by_uid) {
+            return Some(entry.dir.join(".cache").join("penguin-burner"));
+        }
+    }
+    if let Some(user) = nonempty_env("SUDO_USER") {
+        if let Some(entry) = pw_by_name(&user) {
+            return Some(entry.dir.join(".cache").join("penguin-burner"));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -239,7 +397,7 @@ mod tests {
         let guard = EnvGuard::new(KEYS);
         guard.set("SUDO_USER", "root");
         // root's home is whatever the passwd db says; just assert it resolved to it.
-        assert_eq!(effective_home(), super::pw_dir_by_name("root").unwrap());
+        assert_eq!(effective_home(), super::pw_by_name("root").unwrap().dir);
     }
 
     #[test]
@@ -247,7 +405,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap();
         let guard = EnvGuard::new(KEYS);
         guard.set("PENGUIN_BURNER_Q2RTX_UID", "0");
-        assert_eq!(effective_home(), super::pw_dir_by_uid(0).unwrap());
+        assert_eq!(effective_home(), super::pw_by_uid(0).unwrap().dir);
     }
 
     #[test]

@@ -14,8 +14,8 @@ use std::os::raw::{c_char, c_int};
 use libloading::{Library, Symbol};
 
 use super::{
-    vf_editable_core_points, vf_find_nearest, vf_summary_of, voltage_uv_in_window, GpuError,
-    GpuResult, VfPoint, VfSummary,
+    decode_cstr, vf_editable_core_points, vf_find_nearest, vf_summary_of, voltage_uv_in_window,
+    GpuError, GpuResult, VfPoint, VfSummary,
 };
 
 type NvapiHandle = *mut c_void;
@@ -221,11 +221,6 @@ fn status_text(get_err: GetErrMsgFn, status: c_int) -> String {
     } else {
         format!("status={status}")
     }
-}
-
-fn decode_cstr(buf: &[u8]) -> String {
-    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    String::from_utf8_lossy(&buf[..end]).trim().to_string()
 }
 
 /// Set bits of a 256-bit mask → active point indices (`_mask_to_indices`).

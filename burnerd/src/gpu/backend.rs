@@ -15,9 +15,9 @@ use super::nvml_raw::{
     FnDevUout, NvmlLib, NvmlMemoryInfo, NvmlPciInfo, NvmlUtilization,
 };
 use super::{
-    mw_to_w_float, mw_to_w_round, snap_core_clock_mhz, snap_core_clock_range, w_to_mw_round,
-    AppliedOffsets, ClockOffsets, ClockType, GpuBackend, GpuError, GpuIdentity, GpuMemoryInfo,
-    GpuResult, PowerLimits, RangeSnapResult, SnapResult, VfPoint, VfSummary,
+    decode_cstr, mw_to_w_float, mw_to_w_round, snap_core_clock_mhz, snap_core_clock_range,
+    w_to_mw_round, AppliedOffsets, ClockOffsets, ClockType, GpuBackend, GpuError, GpuIdentity,
+    GpuMemoryInfo, GpuResult, PowerLimits, RangeSnapResult, SnapResult, VfPoint, VfSummary,
 };
 
 const NVML_TEMPERATURE_GPU: c_uint = 0;
@@ -275,11 +275,6 @@ impl NvmlBackend {
         let (rc, mw) = self.call_uout(f);
         (rc == 0).then(|| mw_to_w_round(mw))
     }
-}
-
-fn decode_cstr(buf: &[u8]) -> String {
-    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    String::from_utf8_lossy(&buf[..end]).trim().to_string()
 }
 
 impl Drop for NvmlBackend {

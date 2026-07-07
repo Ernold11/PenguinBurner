@@ -316,6 +316,13 @@ pub trait GpuBackend {
 // real backend and the mock, and unit-tested here without a GPU.
 // ------------------------------------------------------------------------
 
+/// Decode a fixed-size C buffer: bytes up to the first NUL, lossy UTF-8, trimmed.
+/// Shared by the NVML (`backend`) and NVAPI (`nvapi`) string/struct readers.
+pub(crate) fn decode_cstr(buf: &[u8]) -> String {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..end]).trim().to_string()
+}
+
 /// Round half-to-even (banker's rounding), matching Python's `round()`.
 pub(crate) fn round_half_even(x: f64) -> f64 {
     let floor = x.floor();
