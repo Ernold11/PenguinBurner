@@ -123,7 +123,10 @@ fn get_str(map: &Map<String, Value>, key: &str) -> String {
     map.get(key).map(value_display).unwrap_or_default()
 }
 
-fn is_truthy(v: Option<&Value>) -> bool {
+/// Full Python truthiness (`bool(value)`) over a JSON value. Also used by the
+/// saved-fan-curve loader for the `fan_curve_blocked` safety flag, which must
+/// not be bypassable by `"true"` / `1.0`-style values Python would block on.
+pub(in crate::profile) fn is_truthy(v: Option<&Value>) -> bool {
     match v {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
@@ -934,9 +937,12 @@ pub fn load_auto_uv_final_curve(selector: &str) -> Result<Option<LoadedCurve>, S
 /// static fallback) at apply time — `apply_auto_uv_profile_memory_offset`'s
 /// `profile_memory_offset_mhz(..., limit_mhz=driver_limit)`.
 pub fn clamp_memory_offset_to_driver(offset_mhz: i64, driver_range_max: Option<i64>) -> i64 {
+    // Python (`driver_memory_offset_limit_mhz`): a reported driver max is
+    // `max(0, int(range[1]))` — so a negative max clamps the offset to 0. The
+    // static Afterburner cap applies only when NVML exposes no range at all.
     let limit = match driver_range_max {
-        Some(max) if max >= 0 => max,
-        _ => MAX_AFTERBURNER_MEM_OFFSET_MHZ,
+        Some(max) => max.max(0),
+        None => MAX_AFTERBURNER_MEM_OFFSET_MHZ,
     };
     offset_mhz.max(0).min(limit)
 }
@@ -944,6 +950,18 @@ pub fn clamp_memory_offset_to_driver(offset_mhz: i64, driver_range_max: Option<i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clamp_memory_offset_driver_limits() {
+        assert_eq!(clamp_memory_offset_to_driver(1500, Some(6000)), 1500);
+        assert_eq!(clamp_memory_offset_to_driver(7000, Some(6000)), 6000);
+        assert_eq!(clamp_memory_offset_to_driver(-100, Some(6000)), 0);
+        // Negative driver max → Python's max(0, int(max)) → applied offset 0
+        // (NOT the static 2000 fallback, which the driver would reject).
+        assert_eq!(clamp_memory_offset_to_driver(1500, Some(-500)), 0);
+        // No driver range at all → static Afterburner cap.
+        assert_eq!(clamp_memory_offset_to_driver(2500, None), 2000);
+    }
 
     #[test]
     fn tier_normalization_and_labels() {

@@ -59,7 +59,13 @@ fn pw_lookup(
         if rc != 0 || result.is_null() {
             return None;
         }
-        // SAFETY: on success pw_dir is a valid NUL-terminated C string.
+        // glibc always fills pw_dir, but a broken third-party NSS module may
+        // return NULL — dereferencing that would be UB in a root daemon.
+        if pwd.pw_dir.is_null() {
+            return None;
+        }
+        // SAFETY: pw_dir is non-NULL (checked above) and points at a
+        // NUL-terminated C string backed by `buf`, which is still alive.
         let dir = unsafe { CStr::from_ptr(pwd.pw_dir) };
         return Some(PwEntry {
             dir: PathBuf::from(OsStr::from_bytes(dir.to_bytes())),
@@ -239,10 +245,10 @@ pub(crate) fn geteuid_is_root() -> bool {
 }
 
 fn parse_positive_int(text: &str) -> Option<u32> {
-    match text.trim().parse::<i64>() {
-        Ok(v) if v > 0 => Some(v as u32),
-        _ => None,
-    }
+    // Parse straight to u32: this rejects negatives, non-numerics, AND
+    // out-of-range values like "4294967297" in one step — no `as u32`
+    // truncation that would chown files to the wrong user.
+    text.trim().parse::<u32>().ok().filter(|&v| v > 0)
 }
 
 /// `effective_desktop_user_ids` → `(uid, gid)` for chown-back. One passwd lookup
@@ -461,6 +467,18 @@ mod tests {
             auto_uv_stop_request_path(),
             PathBuf::from("/tmp/pb-home-abc/.config/PenguinBurner/auto-uv-stop-requested")
         );
+    }
+
+    #[test]
+    fn parse_positive_int_rejects_out_of_range() {
+        assert_eq!(parse_positive_int("1000"), Some(1000));
+        assert_eq!(parse_positive_int(" 42 "), Some(42));
+        assert_eq!(parse_positive_int("0"), None);
+        assert_eq!(parse_positive_int("-5"), None);
+        // Would previously wrap to 1 via `as u32` and chown to the wrong user.
+        assert_eq!(parse_positive_int("4294967297"), None);
+        assert_eq!(parse_positive_int("99999999999999999999"), None);
+        assert_eq!(parse_positive_int("abc"), None);
     }
 
     #[test]

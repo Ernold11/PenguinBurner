@@ -441,6 +441,59 @@ fn autostart_runs_the_persisted_runtime_profile() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// F1 regression: the autostart engine thread spawns before the signal thread,
+/// so it MUST inherit the SIGTERM/SIGINT block — otherwise the kernel delivers
+/// a process-directed SIGTERM to it (the only thread with the signal unblocked)
+/// and the daemon dies instantly with no cleanup. Clean shutdown is observable
+/// as exit code 0 (`wait_and_shutdown` → `exit(0)`) + the socket unlinked;
+/// signal death would report a signal, not a code, and leave the socket behind.
+#[test]
+fn sigterm_with_autostart_engine_runs_clean_shutdown() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-sigterm-{}-{}", std::process::id(), n));
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_file = dir.join("state.json");
+    std::fs::write(
+        &state_file,
+        r#"{"argv":["--auto-uv-profile","seeded"],"program_file":"/does/not/matter"}"#,
+    )
+    .unwrap();
+
+    let mut daemon = Daemon::start(&[(
+        "PENGUIN_BURNERD_TEST_STATE_FILE",
+        state_file.to_str().unwrap(),
+    )]);
+    // The engine thread is live (spawned during autostart, before the socket).
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(status["result"]["state"], "runtime_profile_running");
+
+    // SAFETY: SIGTERM to our own child daemon.
+    unsafe {
+        libc::kill(daemon.child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let exit = loop {
+        if let Some(exit) = daemon.child.try_wait().unwrap() {
+            break exit;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not exit after SIGTERM"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    assert_eq!(
+        exit.code(),
+        Some(0),
+        "daemon must exit through the clean-shutdown path, not signal death: {exit:?}"
+    );
+    assert!(
+        !daemon.socket.exists(),
+        "the shutdown path must unlink the socket"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn peercred_denies_non_matching_uid() {
     let daemon = Daemon::start(&[("PENGUIN_BURNER_DAEMON_ALLOWED_UID", "999999")]);
@@ -930,4 +983,65 @@ fn delete_auto_uv_profiles_happy_path_and_attacks() {
     // Empty list is a successful no-op.
     let response = daemon.request(r#"{"method":"delete_auto_uv_profiles","paths":[]}"#);
     assert_eq!(response["result"]["deleted"], serde_json::json!([]));
+}
+
+// --- request-size cap on the 0666 socket ---------------------------------------
+
+/// A client streaming an over-long "line" (no newline) must get a bounded error
+/// and a closed connection — not an unbounded buffer in the root daemon — and
+/// the daemon must keep serving other clients afterwards.
+#[test]
+fn oversized_request_line_is_rejected_and_daemon_survives() {
+    let daemon = Daemon::start(&[]);
+
+    let mut stream = daemon.connect();
+    let chunk = vec![b'x'; 64 * 1024];
+    let mut sent: u64 = 0;
+    // 1 MiB cap + 2 bytes so the daemon's bounded read trips without us racing
+    // its close (Unix sockets don't discard buffered data on close).
+    while sent < 1024 * 1024 + 2 {
+        if stream.write_all(&chunk).is_err() {
+            break; // daemon already rejected and closed — fine
+        }
+        sent += chunk.len() as u64;
+    }
+    let _ = stream.flush();
+
+    let mut reader = BufReader::new(stream);
+    let line = read_line(&mut reader).expect("a bounded error line");
+    let response: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(response["ok"], Value::Bool(false));
+    assert!(
+        response["error"]
+            .as_str()
+            .unwrap()
+            .contains("request line exceeds"),
+        "{response}"
+    );
+    // The connection is closed after the error (the line cannot be resynced).
+    assert!(read_line(&mut reader).is_none());
+
+    // The daemon is still healthy for new connections.
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(status["ok"], Value::Bool(true));
+    assert_eq!(status["result"]["state"], "idle");
+}
+
+/// A request of a normal size (well under the cap) still round-trips — the cap
+/// must not interfere with legitimate lines.
+#[test]
+fn large_but_legal_request_line_still_parses() {
+    let daemon = Daemon::start(&[]);
+    // ~64 KiB of padding inside an unknown field name: parsed as JSON, rejected
+    // as an unknown field (proving it passed the size gate into the dispatcher).
+    let padding = "p".repeat(64 * 1024);
+    let response = daemon.request(&format!(r#"{{"method":"status","{padding}":1}}"#));
+    assert_eq!(response["ok"], Value::Bool(false));
+    assert!(
+        response["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("unknown request field:"),
+        "{response}"
+    );
 }

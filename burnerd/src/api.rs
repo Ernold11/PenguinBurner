@@ -217,7 +217,7 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
             supervisor::start_runtime_profile(sup, argv).map(MethodResult::Start)
         }
         Some("stop_runtime_profile") => {
-            Ok(MethodResult::Stop(supervisor::stop_runtime_profile(sup)))
+            supervisor::stop_runtime_profile(sup).map(MethodResult::Stop)
         }
         Some("delete_auto_uv_profiles") => {
             delete::delete_auto_uv_profiles(object.get("paths")).map(MethodResult::Value)

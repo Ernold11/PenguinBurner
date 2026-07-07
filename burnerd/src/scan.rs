@@ -9,6 +9,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -104,36 +105,41 @@ fn run_child(
     writer: &mut UnixStream,
 ) {
     let program_file = supervisor::daemon_program_file();
+    // Resolve the interpreter here, OUTSIDE `begin_child`'s critical section:
+    // the spawn closure runs while the supervisor mutex is held, so the env
+    // read + ancestor filesystem walk must not happen under the lock.
+    let python = child_python(&program_file);
 
     // The whole check-clear-stop-spawn-install runs atomically under the lock.
-    let (job, reader) =
-        match supervisor::begin_child(sup, kind, argv, |argv| spawn_child(&program_file, argv)) {
-            ChildStart::Started(job, reader) => (job, reader),
-            ChildStart::Refused(err) => {
-                write_json_line(writer, &StreamError::new(err));
-                return;
-            }
-            ChildStart::ClearFailed(err) => {
-                // The scan text is byte-exact with the Python daemon ("Auto-UV",
-                // not "Auto-UV scan"); the verification text is new.
-                let label = match kind {
-                    ChildKind::Scan => "Auto-UV",
-                    ChildKind::Verify => "profile verification",
-                };
-                write_json_line(
-                    writer,
-                    &StreamError::new(format!("failed to clear stale {label} stop request: {err}")),
-                );
-                return;
-            }
-            ChildStart::SpawnFailed(err) => {
-                write_json_line(
-                    writer,
-                    &StreamError::new(format!("failed to launch {}: {err}", launch_label(kind))),
-                );
-                return;
-            }
-        };
+    let (job, reader) = match supervisor::begin_child(sup, kind, argv, |argv| {
+        spawn_child(&python, &program_file, argv)
+    }) {
+        ChildStart::Started(job, reader) => (job, reader),
+        ChildStart::Refused(err) => {
+            write_json_line(writer, &StreamError::new(err));
+            return;
+        }
+        ChildStart::ClearFailed(err) => {
+            // The scan text is byte-exact with the Python daemon ("Auto-UV",
+            // not "Auto-UV scan"); the verification text is new.
+            let label = match kind {
+                ChildKind::Scan => "Auto-UV",
+                ChildKind::Verify => "profile verification",
+            };
+            write_json_line(
+                writer,
+                &StreamError::new(format!("failed to clear stale {label} stop request: {err}")),
+            );
+            return;
+        }
+        ChildStart::SpawnFailed(err) => {
+            write_json_line(
+                writer,
+                &StreamError::new(format!("failed to launch {}: {err}", launch_label(kind))),
+            );
+            return;
+        }
+    };
 
     // If the client is already gone by the time we announce "started", treat it
     // as a mid-stream disconnect (abort + monitor) rather than leaking the child.
@@ -215,12 +221,11 @@ fn start_detached_monitor(sup: &Arc<Mutex<Supervisor>>, job: Arc<ChildJob>, read
     let _ = thread::Builder::new()
         .name("penguin-burner-child-monitor".to_string())
         .spawn(move || {
-            wait_for_detached_child(&sup, &job);
+            wait_for_detached_child(&sup, &job, &timings());
         });
 }
 
-fn wait_for_detached_child(sup: &Arc<Mutex<Supervisor>>, job: &Arc<ChildJob>) {
-    let timings = timings();
+fn wait_for_detached_child(sup: &Arc<Mutex<Supervisor>>, job: &Arc<ChildJob>, timings: &Timings) {
     if job.proc.wait_timeout(timings.kill_after).is_none() {
         job.proc.signal(libc::SIGTERM);
         if job.proc.wait_timeout(timings.term_grace).is_none() {
@@ -228,12 +233,81 @@ fn wait_for_detached_child(sup: &Arc<Mutex<Supervisor>>, job: &Arc<ChildJob>) {
             let _ = job.proc.wait_timeout(timings.kill_grace);
         }
     }
+    // Reap the child BEFORE `finish_child` restarts the autostart engine. Even
+    // after SIGKILL the child can outlive the grace window (uninterruptible
+    // sleep on a wedged GPU); restarting the runtime engine while its GPU ioctls
+    // are still in flight would put two writers on one GPU — the exact thing the
+    // supervisor's "refuse GPU work until the previous owner provably stopped"
+    // rule exists to prevent. This `poll()` also reaps a zombie (`try_wait`), so
+    // the child never lingers for the daemon's (unbounded) lifetime. Poll on a
+    // coarse interval so the per-job lock is only held briefly — `status`/`poll`
+    // from other threads must not block on this wait.
+    while job.proc.poll().is_none() {
+        std::thread::sleep(Duration::from_millis(200));
+    }
     supervisor::finish_child(sup, job);
 }
 
+/// Installer-recorded Python interpreter for the scan/verification child (the
+/// role `sys.executable` played for the Python daemon, which the Rust daemon
+/// does not have).
+const DAEMON_PYTHON_ENV: &str = "PENGUIN_BURNER_DAEMON_PYTHON";
+
+/// Resolve the interpreter for the Python child:
+/// 1. the `PENGUIN_BURNER_DAEMON_PYTHON` override, if the installer set one;
+/// 2. else, if `program_file` lives inside a **virtualenv** (an ancestor with
+///    both `pyvenv.cfg` and an executable `bin/python3`), that venv interpreter
+///    — root's PATH `python3` cannot import a venv-installed package;
+/// 3. else bare `python3` from PATH.
+///
+/// The venv anchor is deliberately conservative: a bare `bin/python3` under an
+/// ancestor is NOT adopted without a `pyvenv.cfg`, because for a `pip --user`
+/// layout that would wrongly pick an unrelated `~/.local/bin/python3` (a uv /
+/// pipx / pyenv shim of a different minor version) over the PATH interpreter
+/// that actually owns the user site-packages — breaking every scan.
+fn child_python(program_file: &str) -> PathBuf {
+    resolve_child_python(
+        paths::nonempty_env(DAEMON_PYTHON_ENV).as_deref(),
+        program_file,
+    )
+}
+
+fn resolve_child_python(override_value: Option<&str>, program_file: &str) -> PathBuf {
+    if let Some(value) = override_value {
+        let value = value.trim();
+        if !value.is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+    let mut dir = Path::new(program_file).parent();
+    while let Some(ancestor) = dir {
+        if ancestor == Path::new("/") {
+            break; // stop before the root.
+        }
+        let candidate = ancestor.join("bin").join("python3");
+        if ancestor.join("pyvenv.cfg").is_file() && is_executable_file(&candidate) {
+            return candidate;
+        }
+        dir = ancestor.parent();
+    }
+    PathBuf::from("python3")
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
 /// Spawn the child with stdout and stderr merged onto one pipe, `cwd="/"`.
-/// Returns the child and the read end of the pipe.
-fn spawn_child(program_file: &str, argv: &[String]) -> std::io::Result<(Child, File)> {
+/// Returns the child and the read end of the pipe. `python` is the pre-resolved
+/// interpreter (resolved outside the supervisor lock by the caller).
+fn spawn_child(
+    python: &Path,
+    program_file: &str,
+    argv: &[String],
+) -> std::io::Result<(Child, File)> {
     let mut fds = [0i32; 2];
     // SAFETY: pipe2 fills `fds` with a (read, write) pair; both are O_CLOEXEC so
     // they never leak into the child except via the explicit stdio dup below.
@@ -251,7 +325,7 @@ fn spawn_child(program_file: &str, argv: &[String]) -> std::io::Result<(Child, F
     let write_file = unsafe { File::from_raw_fd(write_fd) };
     let write_clone = write_file.try_clone()?;
 
-    let mut command = Command::new("python3");
+    let mut command = Command::new(python);
     command
         .arg(program_file)
         .args(argv)
@@ -278,4 +352,131 @@ fn spawn_child(program_file: &str, argv: &[String]) -> std::io::Result<(Child, F
     // The parent's copies of the write end were moved into `command` and are now
     // closed; only the child holds it, so `reader` sees EOF when the child exits.
     Ok((child, reader))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::supervisor::ChildProc;
+    use std::fs;
+
+    // --- child interpreter resolution (F3) -----------------------------------
+
+    #[test]
+    fn child_python_env_override_wins() {
+        assert_eq!(
+            resolve_child_python(Some("/opt/pb/bin/python"), "/x/penguin_burner.py"),
+            PathBuf::from("/opt/pb/bin/python")
+        );
+        // Blank override is ignored (falls through to the heuristic/fallback).
+        assert_eq!(
+            resolve_child_python(Some("   "), "/x/penguin_burner.py"),
+            PathBuf::from("python3")
+        );
+    }
+
+    /// Make an executable `bin/python3` under `venv_root`; optionally mark it as
+    /// a virtualenv with a `pyvenv.cfg`. Returns the interpreter path.
+    fn make_venv(venv_root: &Path, with_marker: bool) -> PathBuf {
+        let bin = venv_root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let python = bin.join("python3");
+        fs::write(&python, "#!/bin/sh\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&python, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        if with_marker {
+            fs::write(venv_root.join("pyvenv.cfg"), "home = /usr/bin\n").unwrap();
+        }
+        python
+    }
+
+    #[test]
+    fn child_python_finds_venv_interpreter_above_program_file() {
+        let root = std::env::temp_dir().join(format!("pb-venv-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let venv = root.join("venv");
+        let python = make_venv(&venv, true);
+        let program = venv
+            .join("lib")
+            .join("python3.12")
+            .join("site-packages")
+            .join("penguin_burner.py");
+        assert_eq!(
+            resolve_child_python(None, program.to_str().unwrap()),
+            python
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Regression guard for the pip `--user` layout: a bare `bin/python3` under
+    /// an ancestor WITHOUT a `pyvenv.cfg` (e.g. a uv/pyenv shim in ~/.local/bin)
+    /// must NOT be adopted — that would break scans where PATH `python3` worked.
+    #[test]
+    fn child_python_ignores_non_venv_bin_python() {
+        let root = std::env::temp_dir().join(format!("pb-user-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let local = root.join(".local");
+        make_venv(&local, false); // ~/.local/bin/python3 but no pyvenv.cfg
+        let program = local
+            .join("lib")
+            .join("python3.14")
+            .join("site-packages")
+            .join("penguin_burner.py");
+        assert_eq!(
+            resolve_child_python(None, program.to_str().unwrap()),
+            PathBuf::from("python3")
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn child_python_falls_back_to_path_python3() {
+        let root = std::env::temp_dir().join(format!("pb-noenv-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let program = root.join("penguin_burner.py");
+        assert_eq!(
+            resolve_child_python(None, program.to_str().unwrap()),
+            PathBuf::from("python3")
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // --- kill-ladder reap (F6) ------------------------------------------------
+
+    /// After the final SIGKILL the monitor must block until the child is reaped:
+    /// with a zero kill-grace (simulating a child that outlives the grace
+    /// window) the child must NOT be left as a permanent zombie.
+    #[test]
+    fn kill_ladder_reaps_child_after_final_sigkill() {
+        // A child that survives the SIGTERM rung so the ladder reaches SIGKILL.
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM INT; while :; do sleep 0.05; done")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn stub child");
+        let pid = child.id();
+        let sup = Arc::new(Mutex::new(Supervisor::new()));
+        let job = Arc::new(ChildJob {
+            proc: ChildProc::new(child),
+            argv: Vec::new(),
+            generation: 1,
+            kind: ChildKind::Scan,
+        });
+        let timings = Timings {
+            kill_after: Duration::from_millis(50),
+            term_grace: Duration::from_millis(50),
+            kill_grace: Duration::ZERO,
+        };
+        wait_for_detached_child(&sup, &job, &timings);
+        // Fully reaped: the pid is gone (a zombie would still answer kill(0)).
+        // SAFETY: kill(pid, 0) only probes for existence.
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+        assert!(!alive, "child must be reaped, not left a zombie");
+        assert_eq!(job.proc.poll(), Some(-libc::SIGKILL));
+    }
 }

@@ -92,6 +92,13 @@ pub struct MockGpu {
 
     ops: RefCell<Vec<MockOp>>,
     failures: RefCell<HashMap<&'static str, GpuError>>,
+    /// Test hook run on every `temperature_c` read — lets engine-loop tests
+    /// simulate an event (e.g. a stop request) landing while a blocking backend
+    /// call is in flight. `Send` so `MockGpu` stays movable across threads.
+    pub on_temperature: RefCell<Option<Box<dyn Fn() + Send>>>,
+    /// Same, for the `editable_core_vf_points` read (the blocking NVML call at
+    /// the head of the VF-reapply guard).
+    pub on_editable_vf_points: RefCell<Option<Box<dyn Fn() + Send>>>,
 }
 
 impl Default for MockGpu {
@@ -123,6 +130,8 @@ impl Default for MockGpu {
             vf_points: Vec::new(),
             ops: RefCell::new(Vec::new()),
             failures: RefCell::new(HashMap::new()),
+            on_temperature: RefCell::new(None),
+            on_editable_vf_points: RefCell::new(None),
         }
     }
 }
@@ -184,6 +193,9 @@ impl GpuBackend for MockGpu {
     }
 
     fn temperature_c(&self) -> GpuResult<f64> {
+        if let Some(hook) = self.on_temperature.borrow().as_ref() {
+            hook();
+        }
         self.fail("temperature_c")?;
         Ok(self.temperature_c)
     }
@@ -385,6 +397,9 @@ impl GpuBackend for MockGpu {
     }
 
     fn editable_core_vf_points(&self) -> Vec<VfPoint> {
+        if let Some(hook) = self.on_editable_vf_points.borrow().as_ref() {
+            hook();
+        }
         vf_editable_core_points(&self.vf_points)
     }
 

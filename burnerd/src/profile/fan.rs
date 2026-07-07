@@ -325,12 +325,18 @@ fn validate_safety(curve: &[(f64, f64)], path: &Path) -> Result<(), String> {
 /// `load_auto_uv_fan_curve` — parse + validate the saved silent curve JSON.
 /// Returns `SavedFanCurve`; `None` (file absent) is handled by the caller.
 pub fn load_auto_uv_fan_curve(base: &FanConfig) -> Option<SavedFanCurve> {
-    let path = paths::user_config_dir().join("auto-uv-fan-curve.json");
+    load_auto_uv_fan_curve_at(
+        &paths::user_config_dir().join("auto-uv-fan-curve.json"),
+        base,
+    )
+}
+
+fn load_auto_uv_fan_curve_at(path: &Path, base: &FanConfig) -> Option<SavedFanCurve> {
     if !path.is_file() {
         return None;
     }
     let path_display = path.display().to_string();
-    let bytes = std::fs::read(&path).ok()?;
+    let bytes = std::fs::read(path).ok()?;
     let payload: Value = match serde_json::from_str(&String::from_utf8_lossy(&bytes)) {
         Ok(v) => v,
         Err(_) => {
@@ -346,10 +352,10 @@ pub fn load_auto_uv_fan_curve(base: &FanConfig) -> Option<SavedFanCurve> {
     };
     let max_base = tuning::MAX_BASE_CURVE_LOAD_TEMP_C;
     let loaded_temp_c = obj.get("loaded_temperature_c");
-    let blocked = obj
-        .get("fan_curve_blocked")
-        .map(|v| v.as_bool().unwrap_or(false) || v.as_i64().is_some_and(|i| i != 0))
-        .unwrap_or(false);
+    // Full Python truthiness (`bool(payload.get("fan_curve_blocked"))`): this is
+    // a thermal-safety flag, so `"true"`, `"yes"`, `1.0`, … must all block —
+    // never load a curve Python would have refused.
+    let blocked = super::profile_store::is_truthy(obj.get("fan_curve_blocked"));
     if blocked {
         let reason = obj
             .get("block_reason")
@@ -421,7 +427,7 @@ pub fn load_auto_uv_fan_curve(base: &FanConfig) -> Option<SavedFanCurve> {
         // validate_curve raises NvmlError → "invalid" path.
         return Some(SavedFanCurve::Invalid(msg));
     }
-    if let Err(msg) = validate_safety(&curve, &path) {
+    if let Err(msg) = validate_safety(&curve, path) {
         return Some(SavedFanCurve::Blocked(msg));
     }
     let mut config = base.clone();
@@ -661,6 +667,46 @@ mod tests {
             out.push(target);
         }
         assert_eq!(out, vec![40, 46, 42, 36, 36, 26]);
+    }
+
+    /// `fan_curve_blocked` uses full Python truthiness (safety flag): string /
+    /// float truthy values must block — previously `"true"` / `1.0` bypassed it.
+    #[test]
+    fn saved_curve_blocked_flag_matches_python_truthiness() {
+        let dir = std::env::temp_dir().join(format!("pb-fancurve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auto-uv-fan-curve.json");
+        let base = FanConfig::defaults();
+        let load = |payload: &str| {
+            std::fs::write(&path, payload).unwrap();
+            load_auto_uv_fan_curve_at(&path, &base)
+        };
+
+        // Truthy variants — including the ones the old parser let through.
+        for value in ["true", "1", "1.0", r#""true""#, r#""yes""#, r#""0""#, "[1]"] {
+            let payload = format!(r#"{{"fan_curve_blocked": {value}, "block_reason": "too hot"}}"#);
+            match load(&payload) {
+                Some(SavedFanCurve::Blocked(msg)) => assert!(
+                    msg.starts_with("auto-UV fan curve is blocked: reason=too hot"),
+                    "value {value}: {msg}"
+                ),
+                _ => panic!("value {value} must take the blocked-flag branch"),
+            }
+        }
+        // Falsy variants skip the blocked-flag branch (and then fail on the
+        // missing load temperature — a different message).
+        for value in ["false", "0", "0.0", r#""""#, "null", "[]"] {
+            let payload = format!(r#"{{"fan_curve_blocked": {value}}}"#);
+            match load(&payload) {
+                Some(SavedFanCurve::Blocked(msg)) => assert!(
+                    msg.contains("missing saved final load temperature"),
+                    "value {value} must not hit the blocked-flag branch: {msg}"
+                ),
+                _ => panic!("unexpected result for value {value}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

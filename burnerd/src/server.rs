@@ -3,7 +3,7 @@
 
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
@@ -18,6 +18,11 @@ use crate::supervisor::{ChildKind, Supervisor};
 
 const ALLOWED_UID_ENV: &str = "PENGUIN_BURNER_DAEMON_ALLOWED_UID";
 const UID_DENIED_LINE: &[u8] = b"{\"ok\":false,\"error\":\"daemon client uid is not allowed\"}\n";
+/// Per-request cap on the world-connectable (0666) socket: the maximum content
+/// bytes of one request line, EXCLUDING its trailing newline. A client that
+/// streams bytes without a newline gets a bounded error, not an unbounded buffer
+/// in the root daemon. Generous — real requests are < 4 KiB.
+const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
 
 /// Bind and prepare the listening socket. Errors carry the exact Python message
 /// for the "path exists and is not a socket" case.
@@ -81,10 +86,30 @@ fn handle_connection(stream: UnixStream, sup: &Arc<Mutex<Supervisor>>) {
 
     loop {
         buffer.clear();
-        match reader.read_until(b'\n', &mut buffer) {
+        // Bounded read: `take` caps how much a single "line" may buffer. This
+        // sits below every method (including the streaming and gpu_* ones), so
+        // no request path can be fed an unbounded line. Read one byte past a
+        // full-size line-plus-newline so an exactly-at-cap line is accepted and
+        // a one-byte-over line is still detected as oversized.
+        match (&mut reader)
+            .take(MAX_REQUEST_BYTES + 2)
+            .read_until(b'\n', &mut buffer)
+        {
             Ok(0) => return, // EOF
             Ok(_) => {}
             Err(_) => return,
+        }
+        // Measure content excluding a single trailing newline, so a line whose
+        // content is exactly the cap is accepted (the newline does not count).
+        let content_len = buffer.len() - usize::from(buffer.last() == Some(&b'\n'));
+        if content_len as u64 > MAX_REQUEST_BYTES {
+            // Oversized request: answer with a bounded error and close (the
+            // remainder of the line cannot be resynced).
+            let _ = api::write_response(
+                &mut writer,
+                Err(format!("request line exceeds {MAX_REQUEST_BYTES} bytes")),
+            );
+            return;
         }
         let decoded = String::from_utf8_lossy(&buffer);
         let line = decoded.trim();

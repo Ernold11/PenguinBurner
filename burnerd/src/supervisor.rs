@@ -20,7 +20,7 @@ use serde_json::Value;
 use crate::api::{ActiveJob, StartResult, StatusResult, StopResult};
 use crate::logging;
 use crate::paths;
-use crate::profile::{self, EngineHandle, EngineOptions};
+use crate::profile::{self, EngineHandle, EngineOptions, StopOutcome};
 
 const PROGRAM_FILE_ENV: &str = "PENGUIN_BURNER_DAEMON_PROGRAM_FILE";
 /// Test-only override for the last-runtime state file (production uses the fixed
@@ -160,6 +160,7 @@ pub struct Supervisor {
     profile: Option<ProfileJob>,
     child: Option<Arc<ChildJob>>,
     child_generation: u64,
+    stop_timeout: Duration,
 }
 
 impl Default for Supervisor {
@@ -174,6 +175,17 @@ impl Supervisor {
             profile: None,
             child: None,
             child_generation: 0,
+            stop_timeout: ENGINE_STOP_TIMEOUT,
+        }
+    }
+
+    /// Test-only constructor with a short engine-stop timeout so the
+    /// wedged-engine (`StopOutcome::TimedOut`) paths run in milliseconds.
+    #[cfg(test)]
+    fn with_stop_timeout(stop_timeout: Duration) -> Self {
+        Supervisor {
+            stop_timeout,
+            ..Self::new()
         }
     }
 
@@ -190,16 +202,37 @@ impl Supervisor {
     }
 
     /// Stop the engine so the child can own the GPU. Mirrors
-    /// `_stop_autostart_runtime_for_scan`: only stop+clear a *running* engine; a
-    /// job that already exited is left in place (so autostart restart stays
-    /// idempotent).
-    fn stop_engine_for_child(&mut self) {
+    /// `_stop_autostart_runtime_for_scan`.
+    ///
+    /// A `TimedOut` stop means the engine thread is wedged in a blocking GPU
+    /// call and could revive at any moment, writing fans/mem/VF/locked clocks
+    /// over whatever owns the GPU next — so the caller must NOT proceed. The
+    /// wedged job is retained (stop flag already set) so status stays truthful
+    /// and a later attempt re-checks it.
+    ///
+    /// An engine that has ALREADY exited (a clean stop, an error exit, or a
+    /// previously-wedged thread that finally returned and honored the stop flag)
+    /// is dead: free the slot so it cannot block the post-child autostart
+    /// restart (`start_autostart_if_configured` early-returns while
+    /// `profile.is_some()`).
+    fn stop_engine_for_child(&mut self, what: &str) -> Result<(), String> {
         if let Some(job) = self.profile.as_mut() {
             if job.engine.is_running() {
-                job.engine.stop(ENGINE_STOP_TIMEOUT);
+                match job.engine.stop(self.stop_timeout) {
+                    StopOutcome::Stopped => self.profile = None,
+                    StopOutcome::TimedOut => {
+                        let message = format!(
+                            "runtime profile engine did not stop (wedged GPU call?); refusing to start {what}"
+                        );
+                        logging::error(&message);
+                        return Err(message);
+                    }
+                }
+            } else {
                 self.profile = None;
             }
         }
+        Ok(())
     }
 }
 
@@ -395,7 +428,7 @@ pub fn start_runtime_profile(
             }
             None => {}
         }
-        supervisor.stop_engine_for_child();
+        supervisor.stop_engine_for_child("a new runtime profile")?;
         let engine = profile::start(EngineOptions::from_argv(&argv)).map_err(|e| e.to_string())?;
         supervisor.profile = Some(ProfileJob {
             engine,
@@ -411,17 +444,32 @@ pub fn start_runtime_profile(
     })
 }
 
-pub fn stop_runtime_profile(sup: &Mutex<Supervisor>) -> StopResult {
+pub fn stop_runtime_profile(sup: &Mutex<Supervisor>) -> Result<StopResult, String> {
     let mut supervisor = guard(sup);
+    let stop_timeout = supervisor.stop_timeout;
     match supervisor.profile.as_mut() {
         Some(job) if job.engine.is_running() => {
             let pid = std::process::id();
-            job.engine.stop(ENGINE_STOP_TIMEOUT);
-            supervisor.profile = None;
-            StopResult::stopped(pid)
+            match job.engine.stop(stop_timeout) {
+                StopOutcome::Stopped => {
+                    supervisor.profile = None;
+                    Ok(StopResult::stopped(pid))
+                }
+                // Wedged engine: keep the job (so future scan/verification/
+                // profile starts still see it and refuse) and tell the client
+                // the truth. The stop flag is set, so the engine exits — and
+                // runs its cleanup — as soon as the wedged call returns.
+                StopOutcome::TimedOut => {
+                    let message =
+                        "runtime profile engine did not stop within timeout (wedged GPU call?)"
+                            .to_string();
+                    logging::error(&message);
+                    Err(message)
+                }
+            }
         }
         // None or already-exited: do NOT clear the file (parity), report idle.
-        _ => StopResult::idle(),
+        _ => Ok(StopResult::idle()),
     }
 }
 
@@ -450,7 +498,13 @@ pub fn begin_child(
     if let Err(err) = kind.clear_stop_request() {
         return ChildStart::ClearFailed(err.to_string());
     }
-    supervisor.stop_engine_for_child();
+    let what = match kind {
+        ChildKind::Scan => "an Auto-UV scan",
+        ChildKind::Verify => "profile verification",
+    };
+    if let Err(err) = supervisor.stop_engine_for_child(what) {
+        return ChildStart::Refused(err);
+    }
     let (child, reader) = match spawn(&argv) {
         Ok(pair) => pair,
         Err(err) => return ChildStart::SpawnFailed(err.to_string()),
@@ -506,8 +560,15 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
 /// Shutdown cleanup: stop the in-process engine (A3 releases fans + clock lock).
 pub fn shutdown(sup: &Mutex<Supervisor>) {
     let mut supervisor = guard(sup);
+    let stop_timeout = supervisor.stop_timeout;
     if let Some(mut job) = supervisor.profile.take() {
-        job.engine.stop(ENGINE_STOP_TIMEOUT);
+        if job.engine.stop(stop_timeout) == StopOutcome::TimedOut {
+            // The process exits anyway; the wedged thread cannot run its
+            // cleanup, so at least say so in the journal.
+            logging::error(
+                "engine thread did not stop during shutdown; exiting without its fan/clock cleanup",
+            );
+        }
     }
 }
 
@@ -535,6 +596,147 @@ mod tests {
                 None => env::remove_var(STATE_FILE_ENV),
             }
         }
+    }
+
+    // --- wedged-engine (StopOutcome::TimedOut) refusal paths ------------------
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A supervisor holding a running engine that ignores its stop flag for
+    /// `wedge` (longer than the supervisor's `stop_timeout`).
+    fn wedged_supervisor(wedge: Duration, stop_timeout: Duration) -> Mutex<Supervisor> {
+        let sup = Mutex::new(Supervisor::with_stop_timeout(stop_timeout));
+        guard(&sup).profile = Some(ProfileJob {
+            engine: profile::wedged_engine_for_test(wedge),
+            argv: vec!["--auto-uv-profile".to_string(), "test".to_string()],
+        });
+        sup
+    }
+
+    #[test]
+    fn begin_child_refuses_scan_when_engine_stop_times_out() {
+        let sup = wedged_supervisor(Duration::from_secs(5), Duration::from_millis(50));
+        let spawned = AtomicBool::new(false);
+        let result = begin_child(&sup, ChildKind::Scan, vec![], |_| {
+            spawned.store(true, Ordering::SeqCst);
+            Err(std::io::Error::other("must not spawn"))
+        });
+        match result {
+            ChildStart::Refused(err) => {
+                assert!(err.contains("did not stop"), "{err}");
+                assert!(err.contains("Auto-UV scan"), "{err}");
+            }
+            _ => panic!("expected Refused"),
+        }
+        assert!(
+            !spawned.load(Ordering::SeqCst),
+            "the child must not be spawned over a wedged engine"
+        );
+        assert!(
+            guard(&sup).profile.is_some(),
+            "the wedged job must be retained so later attempts re-check it"
+        );
+    }
+
+    #[test]
+    fn begin_child_refuses_verification_when_engine_stop_times_out() {
+        let sup = wedged_supervisor(Duration::from_secs(5), Duration::from_millis(50));
+        let result = begin_child(&sup, ChildKind::Verify, vec![], |_| {
+            Err(std::io::Error::other("must not spawn"))
+        });
+        match result {
+            ChildStart::Refused(err) => {
+                assert!(err.contains("did not stop"), "{err}");
+                assert!(err.contains("profile verification"), "{err}");
+            }
+            _ => panic!("expected Refused"),
+        }
+    }
+
+    #[test]
+    fn start_runtime_profile_refuses_when_engine_stop_times_out() {
+        let sup = wedged_supervisor(Duration::from_secs(5), Duration::from_millis(50));
+        let err = start_runtime_profile(
+            &sup,
+            vec!["--auto-uv-profile".to_string(), "other".to_string()],
+        )
+        .unwrap_err();
+        assert!(err.contains("did not stop"), "{err}");
+        assert!(guard(&sup).profile.is_some());
+    }
+
+    #[test]
+    fn stop_runtime_profile_errors_when_engine_wedged() {
+        let sup = wedged_supervisor(Duration::from_secs(5), Duration::from_millis(50));
+        let err = stop_runtime_profile(&sup).unwrap_err();
+        assert!(err.contains("did not stop"), "{err}");
+        assert!(
+            guard(&sup).profile.is_some(),
+            "the wedged job must be retained (dropping it would let a scan start \
+             while the engine can still write to the GPU)"
+        );
+    }
+
+    #[test]
+    fn begin_child_recovers_after_wedged_engine_exits() {
+        let sup = wedged_supervisor(Duration::from_millis(300), Duration::from_millis(50));
+        let result = begin_child(&sup, ChildKind::Scan, vec![], |_| {
+            Err(std::io::Error::other("no spawn"))
+        });
+        assert!(matches!(result, ChildStart::Refused(_)));
+        // The wedged engine eventually exits on its own; a retry must get past
+        // the engine gate (reaching the spawn closure proves it).
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            std::thread::sleep(Duration::from_millis(50));
+            let result = begin_child(&sup, ChildKind::Scan, vec![], |_| {
+                Err(std::io::Error::other("no spawn"))
+            });
+            match result {
+                ChildStart::SpawnFailed(_) => break,
+                ChildStart::Refused(_) if Instant::now() < deadline => continue,
+                ChildStart::Refused(err) => panic!("still refused after engine exit: {err}"),
+                _ => panic!("expected SpawnFailed or Refused"),
+            }
+        }
+    }
+
+    /// After a wedged engine finally exits, the dead job must NOT linger in the
+    /// slot — otherwise `start_autostart_if_configured` (early-returns while
+    /// `profile.is_some()`) never re-applies the persisted profile after a scan.
+    /// `stop_engine_for_child` frees the exited slot on the next start.
+    #[test]
+    fn stop_engine_for_child_frees_an_already_exited_job() {
+        let sup = wedged_supervisor(Duration::from_millis(100), Duration::from_millis(50));
+        // First attempt times out and retains the (still-wedged) job.
+        assert!(guard(&sup).stop_engine_for_child("a scan").is_err());
+        // Let the engine thread finish.
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!guard(&sup).profile.as_ref().unwrap().engine.is_running());
+        // The next start sees a dead engine and frees the slot (Ok, not Err).
+        assert!(guard(&sup).stop_engine_for_child("a scan").is_ok());
+        assert!(
+            guard(&sup).profile.is_none(),
+            "an exited engine's slot must be freed so autostart can restart"
+        );
+    }
+
+    /// A retry against a STILL-wedged engine must return quickly rather than
+    /// re-paying the full stop timeout under the supervisor mutex (which would
+    /// starve the watchdog and hang status). The second stop polls once.
+    #[test]
+    fn repeated_stop_of_wedged_engine_is_fast() {
+        let sup = wedged_supervisor(Duration::from_secs(5), Duration::from_millis(400));
+        // First stop pays the timeout.
+        assert!(guard(&sup).stop_engine_for_child("a scan").is_err());
+        // Second stop, still wedged: must be near-instant, not another 400ms.
+        let start = Instant::now();
+        assert!(guard(&sup).stop_engine_for_child("a scan").is_err());
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "a retry against a still-wedged engine must not re-wait the timeout: {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]

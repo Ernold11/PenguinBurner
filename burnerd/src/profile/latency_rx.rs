@@ -754,9 +754,13 @@ impl LatencyReceiver {
             match bind_socket(path) {
                 Ok(sock) => sockets.push(sock),
                 Err(err) => {
+                    // Unlink only the paths WE bound (one per socket, in order).
+                    // A not-yet-attempted path may be a live socket owned by a
+                    // previous binder and must be left alone.
+                    let bound = sockets.len();
                     drop(sockets);
-                    for bound in &paths {
-                        let _ = std::fs::remove_file(bound);
+                    for path in paths.iter().take(bound) {
+                        let _ = std::fs::remove_file(path);
                     }
                     log(&format!("Latency telemetry unavailable: {err}"));
                     return None;
@@ -834,7 +838,13 @@ fn bind_socket(path: &Path) -> std::io::Result<UnixDatagram> {
         let _ = std::fs::remove_file(path);
     }
     let sock = UnixDatagram::bind(path)?;
-    sock.set_nonblocking(true)?;
+    // A post-bind failure would otherwise leave this freshly-created socket file
+    // on disk (start_at only unlinks paths it recorded as bound), so clean up
+    // our own file before propagating the error.
+    if let Err(err) = sock.set_nonblocking(true) {
+        let _ = std::fs::remove_file(path);
+        return Err(err);
+    }
     chmod_666(path);
     claim_desktop_user_ownership(path, false);
     Ok(sock)
@@ -874,13 +884,31 @@ fn run_receiver(sockets: Vec<UnixDatagram>, meter: &Arc<Mutex<Meter>>, stop: &At
                 POLL_TIMEOUT_MS,
             )
         };
-        if rc <= 0 {
-            continue; // timeout, EINTR, or error — re-check the stop flag.
+        if rc < 0 {
+            // A persistent poll error (EBADF/EINVAL/ENOMEM) returns instantly
+            // and would busy-spin this loop at 100% CPU; back off before the
+            // re-poll. EINTR just re-checks the stop flag.
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::EINTR) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            continue;
         }
+        if rc == 0 {
+            continue; // timeout — re-check the stop flag.
+        }
+        let mut drained = false;
         for (i, sock) in sockets.iter().enumerate() {
             if pollfds[i].revents & libc::POLLIN != 0 {
                 receive_available(sock, &mut buf, meter);
+                drained = true;
             }
+        }
+        if !drained {
+            // rc > 0 with no POLLIN means error-only revents (POLLERR/POLLHUP/
+            // POLLNVAL), which poll() reports immediately — back off so the
+            // loop cannot busy-spin on a persistently errored fd.
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 }
@@ -1305,5 +1333,40 @@ mod tests {
         drop(receiver);
         // The socket file is unlinked on drop.
         assert!(!sock_path.exists());
+    }
+
+    /// A bind failure must unlink only the paths this receiver actually bound —
+    /// never a not-yet-attempted path that may belong to a live previous binder.
+    #[test]
+    fn bind_failure_unlinks_only_bound_paths() {
+        let n = SOCK_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("pb-latbind-{}-{}", std::process::id(), n));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let bound_ok = dir.join("a.sock");
+        // Parent is a regular file → bind_socket's create_dir_all fails.
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, "x").unwrap();
+        let bind_fails = blocker.join("b.sock");
+        // Stand-in for a foreign live binder's socket: never attempted here.
+        let foreign = dir.join("c.sock");
+        std::fs::write(&foreign, "").unwrap();
+
+        let mut logs: Vec<String> = Vec::new();
+        let receiver = LatencyReceiver::start_at(
+            vec![bound_ok.clone(), bind_fails.clone(), foreign.clone()],
+            &mut |m| logs.push(m.to_string()),
+        );
+        assert!(receiver.is_none());
+        assert!(logs
+            .iter()
+            .any(|l| l.contains("Latency telemetry unavailable:")));
+        assert!(!bound_ok.exists(), "the bound path must be cleaned up");
+        assert!(
+            foreign.exists(),
+            "a never-attempted path must be left alone"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -28,6 +28,14 @@ fn main() {
 }
 
 fn run() -> i32 {
+    // Block SIGINT/SIGTERM before ANY thread is spawned. Threads inherit the
+    // signal mask at spawn, and the sigwait design only works when every other
+    // thread blocks these signals: a thread spawned earlier (the autostart
+    // engine and everything it spawns) would receive a process-directed SIGTERM
+    // directly and kill the process with NO cleanup — no fan-auto restore, no
+    // clock-lock release, no socket unlink.
+    block_termination_signals();
+
     let socket_path = match parse_args() {
         Ok(path) => path,
         Err(message) => {
@@ -48,7 +56,6 @@ fn run() -> i32 {
     supervisor::start_autostart_if_configured(&sup);
 
     // Route SIGINT/SIGTERM to a dedicated thread that performs a clean shutdown.
-    block_termination_signals();
     {
         let sup = sup.clone();
         let socket_path = socket_path.clone();

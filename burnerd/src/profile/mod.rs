@@ -153,6 +153,11 @@ pub struct EngineHandle {
     stop_flag: Arc<AtomicBool>,
     returncode: Arc<Mutex<Option<i32>>>,
     thread: Option<JoinHandle<()>>,
+    /// Set once a `stop()` has timed out on this handle: subsequent `stop()`
+    /// calls then poll the wedged thread once instead of re-paying the full
+    /// timeout. The supervisor holds its mutex across `stop()`, so re-blocking
+    /// for the full timeout on every retry would starve the systemd watchdog.
+    timed_out: bool,
 }
 
 impl EngineHandle {
@@ -173,16 +178,29 @@ impl EngineHandle {
         let Some(thread) = self.thread.take() else {
             return StopOutcome::Stopped;
         };
-        let deadline = Instant::now() + timeout;
+        // A retry against an already-timed-out (still-wedged) engine polls once
+        // rather than re-waiting the whole timeout under the supervisor mutex.
+        let deadline = if self.timed_out {
+            Instant::now()
+        } else {
+            Instant::now() + timeout
+        };
         while !thread.is_finished() {
             if Instant::now() >= deadline {
-                // Detach the wedged thread; the daemon watchdog recovers a hard
-                // NVML wedge by restarting the process (DESIGN §Profile engine).
+                // Keep the handle so a later stop() re-checks the wedged thread
+                // instead of spuriously reporting success. The supervisor refuses
+                // to start new GPU work (scan/verification/profile) while the
+                // engine has not provably stopped; the thread itself re-checks
+                // the stop flag before its GPU-write section, so a late-returning
+                // wedged call exits without further writes.
+                self.thread = Some(thread);
+                self.timed_out = true;
                 return StopOutcome::TimedOut;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
         let _ = thread.join();
+        self.timed_out = false;
         let mut returncode = self
             .returncode
             .lock()
@@ -229,7 +247,36 @@ pub fn start(options: EngineOptions) -> anyhow::Result<EngineHandle> {
         stop_flag,
         returncode,
         thread: Some(thread),
+        timed_out: false,
     })
+}
+
+/// Test-only engine whose thread ignores the stop flag for `wedge_for` (a
+/// blocking NVML call that outlives the stop timeout), then exits cleanly.
+/// Lets supervisor tests exercise the `StopOutcome::TimedOut` refusal paths.
+#[cfg(test)]
+pub(crate) fn wedged_engine_for_test(wedge_for: Duration) -> EngineHandle {
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let returncode: Arc<Mutex<Option<i32>>> = Arc::new(Mutex::new(None));
+    let thread_returncode = returncode.clone();
+    let thread = std::thread::Builder::new()
+        .name("penguin-burnerd-engine-wedged-test".to_string())
+        .spawn(move || {
+            std::thread::sleep(wedge_for);
+            let mut stored = thread_returncode
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            if stored.is_none() {
+                *stored = Some(0);
+            }
+        })
+        .expect("spawn wedged test engine");
+    EngineHandle {
+        stop_flag,
+        returncode,
+        thread: Some(thread),
+        timed_out: false,
+    }
 }
 
 // --- engine assembly --------------------------------------------------------
@@ -515,6 +562,7 @@ fn run_fan_control_loop(
     let mut iteration_count: u64 = 0;
     let mut last_status_signature: Option<StatusSignature> = None;
     let mut last_overlay_publish: Option<f64> = None;
+    let mut overlay_publish_failed = false;
     let mut last_vf_reapply = 0.0_f64;
 
     loop {
@@ -537,7 +585,12 @@ fn run_fan_control_loop(
         let latency_owned = latency_receiver.and_then(|rx| rx.snapshot(loop_started));
         let latency_snapshot: Option<&LatencySnapshot> = latency_owned.as_ref();
 
-        // Adaptive update — BEFORE the fan decision, same iteration.
+        // Adaptive update — BEFORE the fan decision, same iteration. A tier
+        // switch issues GPU writes (VF/mem/power/ceiling), so honor a stop that
+        // landed since the loop-top check before entering it.
+        if stop_flag.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         if let Some(controller) = adaptive_ctrl.as_deref_mut() {
             if let Some(update) = controller.update(
                 latency_snapshot,
@@ -588,14 +641,29 @@ fn run_fan_control_loop(
             ],
         ));
 
-        // Overlay publish (throttled).
+        // A stop request may have arrived while a backend call above was blocked
+        // (a wedged NVML call can outlive `EngineHandle::stop`'s timeout).
+        // Re-check before the GPU-write section so a late-returning iteration
+        // cannot write fans/mem/VF state over a successor that now owns the GPU.
+        if stop_flag.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        // Overlay publish (throttled). On failure, log once (the Python
+        // `overlay_publish_failed` latch) and do NOT advance the publish marker
+        // (Python retried every tick, silently).
         let publish_due =
             last_overlay_publish.map_or(true, |last| loop_started - last >= overlay_interval_s);
         if publisher.enabled && publish_due {
-            if let Err(exc) = publisher.publish(backend, latency_snapshot, now_unix_ns()) {
-                engine_log(&warn_line("overlay publish unavailable", &exc.to_string()));
+            match publisher.publish(backend, latency_snapshot, now_unix_ns()) {
+                Ok(()) => last_overlay_publish = Some(loop_started),
+                Err(exc) => {
+                    if !overlay_publish_failed {
+                        engine_log(&warn_line("overlay publish unavailable", &exc.to_string()));
+                    }
+                    overlay_publish_failed = true;
+                }
             }
-            last_overlay_publish = Some(loop_started);
         }
 
         // VF-curve reapply guard.
@@ -609,6 +677,7 @@ fn run_fan_control_loop(
                 last_vf_reapply,
                 vf_reapply_cooldown_s,
                 reapply_memory_offset_mhz,
+                &stop_flag,
             );
         }
 
@@ -809,6 +878,7 @@ fn maybe_reapply_vf_curve(
     last_vf_reapply: f64,
     cooldown_s: f64,
     memory_offset_mhz: Option<i64>,
+    stop_flag: &AtomicBool,
 ) -> f64 {
     let mismatches =
         detect_vf_curve_reset(&backend.editable_core_vf_points(), vf_expected_samples, 1);
@@ -816,6 +886,14 @@ fn maybe_reapply_vf_curve(
         return last_vf_reapply;
     }
     if (loop_started - last_vf_reapply) < cooldown_s {
+        return last_vf_reapply;
+    }
+    // The `editable_core_vf_points()` read above is a blocking NVML call; a stop
+    // (e.g. a scan handoff) can land while it is wedged. Bail before the mem/VF
+    // writes so this iteration cannot clobber the state the successor now owns —
+    // these are precisely the writes F2 warns about (mem write wipes the VF
+    // table; the VF re-apply rewrites the whole plan).
+    if stop_flag.load(Ordering::SeqCst) {
         return last_vf_reapply;
     }
     let ts = local_timestamp();

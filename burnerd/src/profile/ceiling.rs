@@ -125,8 +125,11 @@ impl<'a> FlattenedClockCeilingController<'a> {
     /// caller, which log-swallows them during cleanup so fans still restore.
     pub fn close(&mut self) -> crate::gpu::GpuResult<()> {
         if self.active {
-            self.active = false;
+            // Clear `active` only AFTER the reset succeeds (Python parity): a
+            // failed reset leaves a live lock, and marking it inactive would
+            // hide it from telemetry and make a later close() a silent no-op.
             self.backend.reset_locked_core_clocks()?;
+            self.active = false;
         }
         Ok(())
     }
@@ -190,6 +193,17 @@ impl<'a> FlattenedClockCeilingController<'a> {
     }
 }
 
+/// Safety net for the early engine-setup error paths: those `?`-returns fire
+/// before the cleanup guard takes ownership of the controller, and without this
+/// the GPU would stay range-locked with nothing left to release it. `close()`
+/// is idempotent (guards on `active`), so the explicit cleanup paths double up
+/// harmlessly.
+impl Drop for FlattenedClockCeilingController<'_> {
+    fn drop(&mut self) {
+        let _ = self.close();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +251,29 @@ mod tests {
         ctrl.close().unwrap();
         assert_eq!(mock.recorded().last(), Some(&MockOp::ResetLockedCoreClocks));
         assert_eq!(ctrl.telemetry_text(), "");
+    }
+
+    /// A failed reset must leave the lock marked active (telemetry keeps
+    /// reporting it, a later close() retries) — clearing `active` first would
+    /// hide a live lock behind an inactive controller.
+    #[test]
+    fn close_failure_keeps_lock_active_until_reset_succeeds() {
+        let mut mock = MockGpu::new();
+        mock.supported_core_clocks = vec![2400, 2500, 2600, 2640, 2700];
+        let mut ctrl = FlattenedClockCeilingController::new(target(), &mock);
+        ctrl.apply().unwrap();
+
+        mock.inject_failure(
+            "reset_locked_core_clocks",
+            crate::gpu::GpuError::nvml_with_text("nvmlDeviceResetGpuLockedClocks", 3, "Unknown"),
+        );
+        assert!(ctrl.close().is_err());
+        // Still active: the lock is live and must not be reported as released.
+        assert_eq!(ctrl.telemetry_text(), "clk_ceiling=2640MHz@875mV ");
+
+        mock.clear_failure("reset_locked_core_clocks");
+        ctrl.close().unwrap();
+        assert_eq!(ctrl.telemetry_text(), "");
+        assert_eq!(mock.recorded().last(), Some(&MockOp::ResetLockedCoreClocks));
     }
 }
