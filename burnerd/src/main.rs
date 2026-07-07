@@ -12,7 +12,9 @@ mod supervisor;
 
 use std::env;
 use std::fs;
+use std::os::linux::net::SocketAddrExt;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -161,51 +163,26 @@ fn watchdog_loop(sup: &Arc<Mutex<Supervisor>>) {
     }
 }
 
-/// Hand-rolled `sd_notify` datagram (no libsystemd). Best-effort; supports both
-/// filesystem and abstract (`@`) `$NOTIFY_SOCKET` addresses.
+/// `sd_notify` datagram via std (no libsystemd). Best-effort — every failure is
+/// a silent no-op; supports both filesystem and abstract (`@` or NUL prefix)
+/// `$NOTIFY_SOCKET` addresses.
 fn sd_notify(message: &str) {
     let address = match env::var_os("NOTIFY_SOCKET") {
         Some(value) if !value.is_empty() => value,
         _ => return,
     };
     let raw = address.as_bytes();
-
-    // SAFETY: builds a sockaddr_un and sends one datagram, closing the fd after.
-    unsafe {
-        let mut sun: libc::sockaddr_un = std::mem::zeroed();
-        sun.sun_family = libc::AF_UNIX as libc::sa_family_t;
-
-        let path_offset = {
-            let base = &sun as *const _ as usize;
-            let path = &sun.sun_path as *const _ as usize;
-            path - base
-        };
-        let (start, bytes): (usize, &[u8]) = if raw.first() == Some(&b'@') {
-            // Abstract namespace: leading NUL byte, then the name.
-            (1, &raw[1..])
-        } else {
-            (0, raw)
-        };
-        if start + bytes.len() > sun.sun_path.len() {
+    let Ok(socket) = UnixDatagram::unbound() else {
+        return;
+    };
+    if matches!(raw.first(), Some(&b'@') | Some(&0)) {
+        // Abstract namespace: strip the marker byte; the kernel address is a
+        // leading NUL plus the name, which `from_abstract_name` builds for us.
+        let Ok(addr) = SocketAddr::from_abstract_name(&raw[1..]) else {
             return;
-        }
-        for (index, byte) in bytes.iter().enumerate() {
-            sun.sun_path[start + index] = *byte as libc::c_char;
-        }
-        let addr_len = (path_offset + start + bytes.len()) as libc::socklen_t;
-
-        let fd = libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
-        if fd < 0 {
-            return;
-        }
-        libc::sendto(
-            fd,
-            message.as_ptr() as *const libc::c_void,
-            message.len(),
-            0,
-            &sun as *const _ as *const libc::sockaddr,
-            addr_len,
-        );
-        libc::close(fd);
+        };
+        let _ = socket.send_to_addr(message.as_bytes(), &addr);
+    } else {
+        let _ = socket.send_to(message.as_bytes(), Path::new(&address));
     }
 }
