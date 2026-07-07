@@ -534,7 +534,8 @@ impl NvapiVfSession {
     }
 
     /// Re-read the whole curve into the cache (`_read_points`/`refresh_points`).
-    pub(crate) fn refresh_points(&self) -> GpuResult<Vec<VfPoint>> {
+    /// Consumers read the fresh points back with [`Self::points`].
+    pub(crate) fn refresh_points(&self) -> GpuResult<()> {
         let info = self.get_info()?;
         let mask = info.vf_points_mask;
         let status = self.get_status(&mask)?;
@@ -563,11 +564,10 @@ impl NvapiVfSession {
                 current_offset_khz: i64::from(ct.data.prog_freq_offset_khz),
             });
         }
-        *self.points.borrow_mut() = points.clone();
-        Ok(points)
+        *self.points.borrow_mut() = points;
+        Ok(())
     }
 
-    #[allow(dead_code)] // backend uses vf_points(); direct accessor kept for parity
     pub(crate) fn points(&self) -> Vec<VfPoint> {
         self.points.borrow().clone()
     }
@@ -584,7 +584,6 @@ impl NvapiVfSession {
         vf_find_nearest(&self.points.borrow(), core_clock_mhz, voltage_uv)
     }
 
-    #[allow(dead_code)] // startup-log helper (milestone-B)
     pub(crate) fn summary(&self) -> VfSummary {
         vf_summary_of(&self.points.borrow())
     }

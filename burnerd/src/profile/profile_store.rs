@@ -46,9 +46,6 @@ pub struct FlattenTarget {
 pub struct LoadedCurve {
     pub path: PathBuf,
     pub profile_id: String,
-    /// Present for parity with the Python loader; the runtime reads `profile_id`.
-    #[allow(dead_code)]
-    pub candidate_id: String,
     pub profile_tier: String,
     pub profile_tier_key: String,
     pub plan: Vec<PlanItem>,
@@ -617,7 +614,7 @@ pub fn resolve_profile_tier_profiles(
         }
         if let Some(profile) = visible
             .iter()
-            .find(|p| get_str(p, "profile_id").trim() == assigned_id && !assigned_id.is_empty())
+            .find(|p| get_str(p, "profile_id").trim() == assigned_id)
         {
             resolved[i].1 = Some(profile.clone());
             assigned_ids.push(assigned_id);
@@ -762,15 +759,18 @@ fn profile_memory_offset_mhz(payload: &Map<String, Value>, limit_mhz: Option<i64
 
 /// `profile_power_limit_w` — rounded, only if `> 0`.
 fn profile_power_limit_w(payload: &Map<String, Value>) -> Option<i64> {
-    let value = payload.get("power_limit_w");
-    match value {
-        None | Some(Value::Null) => None,
-        Some(Value::String(s)) if s.is_empty() => None,
-        Some(value) => {
-            let f = value_float(value)?;
-            let power = super::round_half_even(f) as i64;
-            (power > 0).then_some(power)
-        }
+    let f = optional_float(payload.get("power_limit_w"))?;
+    let power = super::round_half_even(f) as i64;
+    (power > 0).then_some(power)
+}
+
+/// The first of two candidate strings that is non-empty (the profile-id fallback:
+/// the profile's own field, else the resolved payload's field).
+fn first_nonempty(primary: String, fallback: String) -> String {
+    if primary.is_empty() {
+        fallback
+    } else {
+        primary
     }
 }
 
@@ -911,27 +911,14 @@ pub fn load_auto_uv_final_curve(selector: &str) -> Result<Option<LoadedCurve>, S
     let (profile_tier, profile_tier_key) =
         profile_tier_summary_fields(&payload, &assignments, &disabled);
 
-    let profile_id = {
-        let a = get_str(&payload, "profile_id");
-        if !a.is_empty() {
-            a
-        } else {
-            get_str(&resolved_payload, "profile_id")
-        }
-    };
-    let candidate_id = {
-        let a = get_str(&payload, "candidate_id");
-        if !a.is_empty() {
-            a
-        } else {
-            get_str(&resolved_payload, "candidate_id")
-        }
-    };
+    let profile_id = first_nonempty(
+        get_str(&payload, "profile_id"),
+        get_str(&resolved_payload, "profile_id"),
+    );
 
     Ok(Some(LoadedCurve {
         path,
         profile_id,
-        candidate_id,
         profile_tier,
         profile_tier_key,
         plan,

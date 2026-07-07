@@ -219,62 +219,28 @@ impl FanConfig {
             return config;
         };
         use super::config::TomlValue;
-        if let Some(v) = section.get("poll_interval_s").and_then(TomlValue::as_f64) {
-            config.poll_interval_s = v;
+        // Overlay each scalar `[fan]` key onto the defaults (key == field name).
+        // mode + curve stay explicit below (String conversion / nested-array parse).
+        macro_rules! overlay {
+            ($field:ident, $conv:ident) => {
+                if let Some(v) = section.get(stringify!($field)).and_then(TomlValue::$conv) {
+                    config.$field = v;
+                }
+            };
         }
-        if let Some(v) = section.get("hysteresis_c").and_then(TomlValue::as_f64) {
-            config.hysteresis_c = v;
-        }
+        overlay!(poll_interval_s, as_f64);
+        overlay!(hysteresis_c, as_f64);
+        overlay!(min_fan_speed_pct, as_i64);
+        overlay!(max_fan_speed_pct, as_i64);
+        overlay!(max_step_up_pct_per_s, as_f64);
+        overlay!(max_step_down_pct_per_s, as_f64);
+        overlay!(manual_enable_temp_c, as_f64);
+        overlay!(auto_restore_temp_c, as_f64);
+        overlay!(emergency_auto_override_temp_c, as_f64);
+        overlay!(emergency_auto_resume_temp_c, as_f64);
+        overlay!(force_update_every_poll, as_bool);
         if let Some(v) = section.get("mode").and_then(TomlValue::as_str) {
             config.mode = v.to_string();
-        }
-        if let Some(v) = section.get("min_fan_speed_pct").and_then(TomlValue::as_i64) {
-            config.min_fan_speed_pct = v;
-        }
-        if let Some(v) = section.get("max_fan_speed_pct").and_then(TomlValue::as_i64) {
-            config.max_fan_speed_pct = v;
-        }
-        if let Some(v) = section
-            .get("max_step_up_pct_per_s")
-            .and_then(TomlValue::as_f64)
-        {
-            config.max_step_up_pct_per_s = v;
-        }
-        if let Some(v) = section
-            .get("max_step_down_pct_per_s")
-            .and_then(TomlValue::as_f64)
-        {
-            config.max_step_down_pct_per_s = v;
-        }
-        if let Some(v) = section
-            .get("manual_enable_temp_c")
-            .and_then(TomlValue::as_f64)
-        {
-            config.manual_enable_temp_c = v;
-        }
-        if let Some(v) = section
-            .get("auto_restore_temp_c")
-            .and_then(TomlValue::as_f64)
-        {
-            config.auto_restore_temp_c = v;
-        }
-        if let Some(v) = section
-            .get("emergency_auto_override_temp_c")
-            .and_then(TomlValue::as_f64)
-        {
-            config.emergency_auto_override_temp_c = v;
-        }
-        if let Some(v) = section
-            .get("emergency_auto_resume_temp_c")
-            .and_then(TomlValue::as_f64)
-        {
-            config.emergency_auto_resume_temp_c = v;
-        }
-        if let Some(v) = section
-            .get("force_update_every_poll")
-            .and_then(TomlValue::as_bool)
-        {
-            config.force_update_every_poll = v;
         }
         if let Some(array) = section.get("curve").and_then(TomlValue::as_array) {
             let mut curve = Vec::new();
@@ -365,15 +331,14 @@ pub fn load_auto_uv_fan_curve(base: &FanConfig) -> Option<SavedFanCurve> {
     }
     let path_display = path.display().to_string();
     let bytes = std::fs::read(&path).ok()?;
-    let payload: Value =
-        match serde_json::from_slice(&String::from_utf8_lossy(&bytes).into_owned().into_bytes()) {
-            Ok(v) => v,
-            Err(_) => {
-                return Some(SavedFanCurve::Invalid(format!(
-                    "auto-UV fan curve payload is invalid: {path_display}"
-                )))
-            }
-        };
+    let payload: Value = match serde_json::from_str(&String::from_utf8_lossy(&bytes)) {
+        Ok(v) => v,
+        Err(_) => {
+            return Some(SavedFanCurve::Invalid(format!(
+                "auto-UV fan curve payload is invalid: {path_display}"
+            )))
+        }
+    };
     let Some(obj) = payload.as_object() else {
         return Some(SavedFanCurve::Invalid(format!(
             "auto-UV fan curve payload is invalid: {path_display}"

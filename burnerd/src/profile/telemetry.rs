@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::gpu::{ClockType, GpuBackend};
+use crate::gpu::{ClockType, GpuBackend, VfPoint};
 use crate::paths;
 
 use super::config::{self, load_overlay_config};
@@ -146,25 +146,36 @@ pub fn write_overlay_state(state: &OverlayState, path: &Path) -> std::io::Result
 
 // --- per-poll telemetry text ------------------------------------------------
 
+/// The nearest active VF point to `(core_clock_mhz, voltage_uv)` plus the nearest
+/// editable *base* point by base-frequency distance. `None` when either is
+/// missing (no nearest point / no editable points). Shared by
+/// `format_vf_curve_comparison` and `uv_offset_mv`; neither refreshes the cache
+/// here — the caller does so beforehand when it needs a fresh read.
+fn nearest_and_base(
+    backend: &dyn GpuBackend,
+    core_clock_mhz: i64,
+    voltage_uv: i64,
+) -> Option<(VfPoint, VfPoint)> {
+    let point = backend.find_nearest_vf_point(core_clock_mhz, voltage_uv)?;
+    let editable = backend.editable_core_vf_points();
+    let base_point = *editable
+        .iter()
+        .min_by_key(|c| (c.base_freq_khz - core_clock_mhz * 1000).abs())?;
+    Some((point, base_point))
+}
+
 /// `format_vf_curve_comparison` — the `vf_point=… uv=…` fragment.
 fn format_vf_curve_comparison(
     backend: &dyn GpuBackend,
     core_clock_mhz: i64,
     voltage_uv: i64,
 ) -> String {
-    let Some(point) = backend.find_nearest_vf_point(core_clock_mhz, voltage_uv) else {
+    let Some((point, base_point)) = nearest_and_base(backend, core_clock_mhz, voltage_uv) else {
         return String::new();
     };
     let point_freq_mhz = floor_div(point.freq_khz, 1000);
     let point_voltage_mv = floor_div(point.voltage_uv, 1000);
     let point_offset_mhz = floor_div(point.current_offset_khz, 1000);
-    let editable = backend.editable_core_vf_points();
-    let Some(base_point) = editable
-        .iter()
-        .min_by_key(|c| (c.base_freq_khz - core_clock_mhz * 1000).abs())
-    else {
-        return String::new();
-    };
     let base_clock_mhz = floor_div(base_point.base_freq_khz, 1000);
     let base_voltage_mv = floor_div(base_point.voltage_uv, 1000);
     let uv_delta_mv = point_voltage_mv - base_voltage_mv;
@@ -245,14 +256,7 @@ fn uv_offset_mv(
         return None;
     };
     let _ = backend.refresh_vf_points();
-    let point = backend.find_nearest_vf_point(clock, volt * 1000)?;
-    let base_points = backend.editable_core_vf_points();
-    if base_points.is_empty() {
-        return None;
-    }
-    let base_point = base_points
-        .iter()
-        .min_by_key(|c| (c.base_freq_khz - clock * 1000).abs())?;
+    let (point, base_point) = nearest_and_base(backend, clock, volt * 1000)?;
     let point_voltage_mv = floor_div(point.voltage_uv, 1000);
     let base_voltage_mv = floor_div(base_point.voltage_uv, 1000);
     Some(point_voltage_mv - base_voltage_mv)
@@ -630,8 +634,7 @@ fn framegen_fps_from_snapshot(snapshot: &LatencySnapshot) -> String {
 }
 
 fn flag_enabled(value: Option<&str>) -> bool {
-    let text = value.unwrap_or("").trim().to_lowercase();
-    matches!(text.as_str(), "1" | "true" | "yes" | "on" | "active")
+    super::truthy_str(value.unwrap_or(""))
 }
 
 fn rounded_text(value: Option<f64>) -> String {

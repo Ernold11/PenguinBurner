@@ -79,7 +79,6 @@ pub struct MockGpu {
     pub throttle_mask: Option<u64>,
 
     pub power_limits: PowerLimits,
-    pub supported_memory_clocks: Vec<u32>,
     pub supported_core_clocks: Vec<u32>,
     pub clock_offsets: ClockOffsets,
     pub mem_offset_range: Option<(i32, i32)>,
@@ -114,7 +113,6 @@ impl Default for MockGpu {
             video_clock_mhz: None,
             throttle_mask: None,
             power_limits: PowerLimits::default(),
-            supported_memory_clocks: Vec::new(),
             supported_core_clocks: Vec::new(),
             clock_offsets: ClockOffsets::default(),
             mem_offset_range: None,
@@ -147,12 +145,6 @@ impl MockGpu {
     /// A snapshot of the recorded operations.
     pub fn recorded(&self) -> Vec<MockOp> {
         self.ops.borrow().clone()
-    }
-
-    /// Drain the recorded operations.
-    #[allow(dead_code)] // convenience helper for tests that assert op sub-sequences
-    pub fn take_recorded(&self) -> Vec<MockOp> {
-        std::mem::take(&mut self.ops.borrow_mut())
     }
 
     fn record(&self, op: MockOp) {
@@ -241,14 +233,6 @@ impl GpuBackend for MockGpu {
     fn enable_persistence_mode(&self) -> GpuResult<()> {
         self.record(MockOp::EnablePersistence);
         self.fail("enable_persistence_mode")
-    }
-
-    fn supported_memory_clocks_mhz(&self) -> Vec<u32> {
-        self.supported_memory_clocks.clone()
-    }
-
-    fn supported_core_clocks_mhz(&self, _memory_clock_mhz: u32) -> Vec<u32> {
-        self.supported_core_clocks.clone()
     }
 
     fn supported_core_clock_steps_mhz(&self) -> Vec<u32> {
@@ -394,9 +378,8 @@ impl GpuBackend for MockGpu {
         self.vf_points.clone()
     }
 
-    fn refresh_vf_points(&self) -> GpuResult<Vec<VfPoint>> {
-        self.fail("refresh_vf_points")?;
-        Ok(self.vf_points.clone())
+    fn refresh_vf_points(&self) -> GpuResult<()> {
+        self.fail("refresh_vf_points")
     }
 
     fn editable_core_vf_points(&self) -> Vec<VfPoint> {

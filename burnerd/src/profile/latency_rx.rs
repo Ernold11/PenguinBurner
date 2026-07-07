@@ -118,10 +118,7 @@ fn truthy_value(value: Option<&Value>) -> bool {
         Some(Value::Number(n)) => n.to_string(),
         Some(other) => other.to_string(),
     };
-    matches!(
-        text.trim().to_lowercase().as_str(),
-        "1" | "true" | "yes" | "on" | "active"
-    )
+    super::truthy_str(&text)
 }
 
 fn any_truthy(sample: &Map<String, Value>, keys: &[&str]) -> bool {

@@ -466,14 +466,6 @@ impl GpuBackend for NvmlBackend {
         Ok(())
     }
 
-    fn supported_memory_clocks_mhz(&self) -> Vec<u32> {
-        self.read_mem_clock_list()
-    }
-
-    fn supported_core_clocks_mhz(&self, memory_clock_mhz: u32) -> Vec<u32> {
-        self.read_core_clock_list(memory_clock_mhz)
-    }
-
     fn supported_core_clock_steps_mhz(&self) -> Vec<u32> {
         let mut steps: Vec<u32> = Vec::new();
         for mem in self.read_mem_clock_list() {
@@ -675,7 +667,7 @@ impl GpuBackend for NvmlBackend {
             .unwrap_or_default()
     }
 
-    fn refresh_vf_points(&self) -> GpuResult<Vec<VfPoint>> {
+    fn refresh_vf_points(&self) -> GpuResult<()> {
         match &self.vf {
             Some(vf) => vf.refresh_points(),
             None => Err(GpuError::other(

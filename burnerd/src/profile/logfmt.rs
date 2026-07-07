@@ -61,15 +61,9 @@ pub fn format_fan_section(fan_pct: Option<f64>, fan_mode: &str) -> String {
         return "fan off".to_string();
     }
     match fan_pct {
-        None => {
-            let text = format!("fan {mode}");
-            let trimmed = text.trim().to_string();
-            if trimmed.is_empty() {
-                "fan".to_string()
-            } else {
-                trimmed
-            }
-        }
+        // `format!("fan {mode}")` always starts with "fan", so the trim is never
+        // empty (empty mode → "fan"); no empty-string fallback branch needed.
+        None => format!("fan {mode}").trim().to_string(),
         Some(pct) => format!("fan {}% {}", int_round(pct), mode)
             .trim()
             .to_string(),

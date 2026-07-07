@@ -46,6 +46,17 @@ use logfmt::{
 use profile_store::PlanItem;
 use telemetry::{format_telemetry, telemetry_number, OverlayStatePublisher};
 
+/// The overlay "truthy" set — `{1, true, yes, on, active}` after strip+lowercase.
+/// Shared by the overlay flag parser (`telemetry::flag_enabled`) and the latency
+/// marker truthy check (`latency_rx::truthy_value`); `profile_store`'s narrower
+/// `{1, true, yes, on}` set is intentionally separate.
+pub(crate) fn truthy_str(text: &str) -> bool {
+    matches!(
+        text.trim().to_lowercase().as_str(),
+        "1" | "true" | "yes" | "on" | "active"
+    )
+}
+
 /// Python floor division (`a // b`), used for the kHz→MHz conversions that must
 /// round toward negative infinity for negative offsets.
 pub(crate) fn floor_div(a: i64, b: i64) -> i64 {
@@ -85,7 +96,9 @@ pub struct EngineOptions {
 }
 
 impl EngineOptions {
-    /// Parse an already-validated runtime argv (see `argvspec::parse_runtime_argv`).
+    /// Parse an already-validated runtime argv. The flags handled below mirror
+    /// `argvspec::RUNTIME_OPTION_FLAGS`/`RUNTIME_VALUE_FLAGS` (the daemon-side
+    /// whitelist that gates what can reach this parser).
     pub fn from_argv(argv: &[String]) -> Self {
         let mut options = EngineOptions::default();
         let mut index = 0;

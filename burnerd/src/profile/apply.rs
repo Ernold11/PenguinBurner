@@ -427,7 +427,6 @@ mod tests {
         let curve = LoadedCurve {
             path: std::path::PathBuf::new(),
             profile_id: "adaptive-test".to_string(),
-            candidate_id: String::new(),
             profile_tier: "Balanced".to_string(),
             profile_tier_key: "balanced".to_string(),
             plan: vec![item(12, 240)],

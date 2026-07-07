@@ -150,8 +150,9 @@ impl Parser {
         self.skip_inline_ws();
         match self.peek() {
             Some('[') => self.parse_array(),
-            Some('"') => self.parse_string().map(TomlValue::Str),
-            Some('\'') => self.parse_literal_string().map(TomlValue::Str),
+            // Basic strings honor backslash escapes; literal strings do not.
+            Some('"') => self.parse_quoted('"', true).map(TomlValue::Str),
+            Some('\'') => self.parse_quoted('\'', false).map(TomlValue::Str),
             _ => self.parse_scalar_token(),
         }
     }
@@ -182,37 +183,28 @@ impl Parser {
         Some(TomlValue::Array(items))
     }
 
-    fn parse_string(&mut self) -> Option<String> {
+    /// Parse a `quote`-delimited string. With `escapes`, a backslash consumes the
+    /// next char (`\n`/`\t`/`\r` decoded, anything else passed through) — the
+    /// basic-string rules; without it (literal strings) backslashes are literal.
+    fn parse_quoted(&mut self, quote: char, escapes: bool) -> Option<String> {
         self.pos += 1; // opening quote
         let mut out = String::new();
         while let Some(c) = self.peek() {
             self.pos += 1;
-            match c {
-                '"' => return Some(out),
-                '\\' => {
-                    if let Some(next) = self.peek() {
-                        self.pos += 1;
-                        out.push(match next {
-                            'n' => '\n',
-                            't' => '\t',
-                            'r' => '\r',
-                            other => other,
-                        });
-                    }
-                }
-                other => out.push(other),
-            }
-        }
-        Some(out)
-    }
-
-    fn parse_literal_string(&mut self) -> Option<String> {
-        self.pos += 1;
-        let mut out = String::new();
-        while let Some(c) = self.peek() {
-            self.pos += 1;
-            if c == '\'' {
+            if c == quote {
                 return Some(out);
+            }
+            if escapes && c == '\\' {
+                if let Some(next) = self.peek() {
+                    self.pos += 1;
+                    out.push(match next {
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        other => other,
+                    });
+                }
+                continue;
             }
             out.push(c);
         }
@@ -371,12 +363,10 @@ pub fn adaptive_target_fps_from_config(config_path: &std::path::Path, default: f
     match value {
         None => default,
         Some(TomlValue::Str(s)) if s.is_empty() => default,
-        Some(v) => match v {
-            TomlValue::Int(i) => parse_adaptive_target_fps(&i.to_string(), default),
-            TomlValue::Float(f) => parse_adaptive_target_fps(&format!("{f}"), default),
-            TomlValue::Str(s) => parse_adaptive_target_fps(s, default),
-            _ => default,
-        },
+        Some(TomlValue::Int(i)) => parse_adaptive_target_fps(&i.to_string(), default),
+        Some(TomlValue::Float(f)) => parse_adaptive_target_fps(&format!("{f}"), default),
+        Some(TomlValue::Str(s)) => parse_adaptive_target_fps(s, default),
+        _ => default,
     }
 }
 

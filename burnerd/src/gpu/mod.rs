@@ -131,7 +131,6 @@ pub struct VfPoint {
 }
 
 /// `summary()` of the VF curve.
-#[allow(dead_code)] // startup-log helper, not consumed by A3
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct VfSummary {
     pub active_points: usize,
@@ -258,8 +257,6 @@ pub trait GpuBackend {
     fn enable_persistence_mode(&self) -> GpuResult<()>;
 
     // --- supported clocks + locked-clock control --------------------------
-    fn supported_memory_clocks_mhz(&self) -> Vec<u32>;
-    fn supported_core_clocks_mhz(&self, memory_clock_mhz: u32) -> Vec<u32>;
     fn supported_core_clock_steps_mhz(&self) -> Vec<u32>;
     fn apply_locked_core_clock_mhz(
         &self,
@@ -300,7 +297,9 @@ pub trait GpuBackend {
     // --- hidden NVAPI: VF curve -------------------------------------------
     fn vf_curve_available(&self) -> bool;
     fn vf_points(&self) -> Vec<VfPoint>;
-    fn refresh_vf_points(&self) -> GpuResult<Vec<VfPoint>>;
+    /// Re-read the whole VF curve into the backend's cache; consumers that need
+    /// the fresh points read them back with [`GpuBackend::vf_points`].
+    fn refresh_vf_points(&self) -> GpuResult<()>;
     fn editable_core_vf_points(&self) -> Vec<VfPoint>;
     fn find_nearest_vf_point(&self, core_clock_mhz: i64, voltage_uv: i64) -> Option<VfPoint>;
     fn vf_summary(&self) -> VfSummary;
@@ -325,17 +324,7 @@ pub(crate) fn decode_cstr(buf: &[u8]) -> String {
 
 /// Round half-to-even (banker's rounding), matching Python's `round()`.
 pub(crate) fn round_half_even(x: f64) -> f64 {
-    let floor = x.floor();
-    let diff = x - floor;
-    if diff < 0.5 {
-        floor
-    } else if diff > 0.5 {
-        floor + 1.0
-    } else if (floor as i64) % 2 == 0 {
-        floor
-    } else {
-        floor + 1.0
-    }
+    x.round_ties_even()
 }
 
 /// milliwatts → **integer** watts, rounded (policy controller convention, §8).
@@ -351,20 +340,6 @@ pub(crate) fn mw_to_w_float(mw: u32) -> f64 {
 /// watts → milliwatts, rounded (the `apply_power_limit_w` target, §8).
 pub(crate) fn w_to_mw_round(w: f64) -> i64 {
     round_half_even(w * 1000.0) as i64
-}
-
-/// Afterburner memory offset kHz → MHz, rounded (`afterburner.policy`).
-/// Consumed by the wave-A3 memory-offset apply path.
-#[allow(dead_code)]
-pub(crate) fn afterburner_offset_khz_to_mhz(khz: i64) -> i64 {
-    round_half_even(khz as f64 / 1000.0) as i64
-}
-
-/// Clamp an Afterburner memory offset to `[-2000, +2000]` MHz.
-/// Consumed by the wave-A3 memory-offset apply path.
-#[allow(dead_code)]
-pub(crate) fn clamp_afterburner_mem_offset_mhz(mhz: i64) -> i64 {
-    mhz.clamp(-2000, 2000)
 }
 
 /// The core-voltage validity window (`read_microvolts`).
@@ -499,7 +474,6 @@ pub(crate) fn vf_find_nearest(
 }
 
 /// VF curve `summary()`.
-#[allow(dead_code)] // pairs with VfSummary (startup-log helper)
 pub(crate) fn vf_summary_of(points: &[VfPoint]) -> VfSummary {
     VfSummary {
         active_points: points.len(),
@@ -533,17 +507,6 @@ mod tests {
         assert_eq!(w_to_mw_round(300.0), 300_000);
         assert_eq!(w_to_mw_round(0.5), 500); // 0.5 W = 500 mW exactly
         assert_eq!(w_to_mw_round(210.5), 210_500);
-    }
-
-    #[test]
-    fn afterburner_offset_conversion_and_clamp() {
-        assert_eq!(afterburner_offset_khz_to_mhz(1_500_000), 1500);
-        assert_eq!(afterburner_offset_khz_to_mhz(1_499_400), 1499);
-        assert_eq!(afterburner_offset_khz_to_mhz(500), 0); // 0.5 -> even 0
-        assert_eq!(afterburner_offset_khz_to_mhz(1500), 2); // 1.5 -> even 2
-        assert_eq!(clamp_afterburner_mem_offset_mhz(3000), 2000);
-        assert_eq!(clamp_afterburner_mem_offset_mhz(-3000), -2000);
-        assert_eq!(clamp_afterburner_mem_offset_mhz(1500), 1500);
     }
 
     #[test]

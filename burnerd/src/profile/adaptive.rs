@@ -63,7 +63,10 @@ impl Default for PolicyConfig {
     }
 }
 
-fn env_int(name: &str, default: i64) -> i64 {
+/// Parse `$name`, accepting it only when it falls in `[min, max]`; otherwise
+/// (unset, empty, unparseable, or out of range) return `default`. Replaces the
+/// former `env_int` (`[1, 120]`) and `env_float` (`[0.0, 3600.0]`) helpers.
+fn env_clamped<T: std::str::FromStr + PartialOrd>(name: &str, default: T, min: T, max: T) -> T {
     let Ok(raw) = std::env::var(name) else {
         return default;
     };
@@ -71,22 +74,8 @@ fn env_int(name: &str, default: i64) -> i64 {
     if raw.is_empty() {
         return default;
     }
-    match raw.parse::<i64>() {
-        Ok(v) if (1..=120).contains(&v) => v,
-        _ => default,
-    }
-}
-
-fn env_float(name: &str, default: f64) -> f64 {
-    let Ok(raw) = std::env::var(name) else {
-        return default;
-    };
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return default;
-    }
-    match raw.parse::<f64>() {
-        Ok(v) if (0.0..=3600.0).contains(&v) => v,
+    match raw.parse::<T>() {
+        Ok(v) if v >= min && v <= max => v,
         _ => default,
     }
 }
@@ -108,41 +97,59 @@ impl PolicyConfig {
 
     fn with_env_overrides(self) -> Self {
         PolicyConfig {
-            target_slow_windows: env_int(
+            target_slow_windows: env_clamped(
                 "PENGUIN_BURNER_ADAPTIVE_TARGET_SLOW_WINDOWS",
                 self.target_slow_windows,
+                1,
+                120,
             ),
-            near_slow_windows: env_int(
+            near_slow_windows: env_clamped(
                 "PENGUIN_BURNER_ADAPTIVE_NEAR_SLOW_WINDOWS",
                 self.near_slow_windows,
+                1,
+                120,
             ),
-            comfort_windows: env_int(
+            comfort_windows: env_clamped(
                 "PENGUIN_BURNER_ADAPTIVE_COMFORT_WINDOWS",
                 self.comfort_windows,
+                1,
+                120,
             ),
-            performance_comfort_windows: env_int(
+            performance_comfort_windows: env_clamped(
                 "PENGUIN_BURNER_ADAPTIVE_PERFORMANCE_COMFORT_WINDOWS",
                 self.performance_comfort_windows,
+                1,
+                120,
             ),
-            demote_dwell_s: env_float(
+            demote_dwell_s: env_clamped(
                 "PENGUIN_BURNER_ADAPTIVE_DEMOTE_DWELL_S",
                 self.demote_dwell_s,
+                0.0,
+                3600.0,
             ),
-            performance_demote_dwell_s: env_float(
+            performance_demote_dwell_s: env_clamped(
                 "PENGUIN_BURNER_ADAPTIVE_PERFORMANCE_DEMOTE_DWELL_S",
                 self.performance_demote_dwell_s,
+                0.0,
+                3600.0,
             ),
-            cpu_bound_gpu_util_max_pct: env_float(
+            cpu_bound_gpu_util_max_pct: env_clamped(
                 "PENGUIN_BURNER_ADAPTIVE_CPU_BOUND_GPU_UTIL_MAX",
                 self.cpu_bound_gpu_util_max_pct,
+                0.0,
+                3600.0,
             ),
-            cpu_bound_peak_thread_min_pct: env_float(
+            cpu_bound_peak_thread_min_pct: env_clamped(
                 "PENGUIN_BURNER_ADAPTIVE_CPU_BOUND_PEAK_THREAD_MIN",
                 self.cpu_bound_peak_thread_min_pct,
+                0.0,
+                3600.0,
             ),
-            cpu_bound_process_util_min_pct: env_float(
+            cpu_bound_process_util_min_pct: env_clamped(
                 "PENGUIN_BURNER_ADAPTIVE_CPU_BOUND_PROCESS_UTIL_MIN",
                 self.cpu_bound_process_util_min_pct,
+                0.0,
+                3600.0,
             ),
             ..self
         }
@@ -169,11 +176,7 @@ struct PolicyState {
 
 pub struct AdaptiveProfileController {
     config: PolicyConfig,
-    current_tier: String,
-    last_switch_monotonic: f64,
-    target_slow_count: i64,
-    near_slow_count: i64,
-    comfort_count: i64,
+    state: PolicyState,
 }
 
 fn ordered_available_tiers(raw: &[String]) -> Vec<String> {
@@ -221,33 +224,25 @@ impl AdaptiveProfileController {
     pub fn new(initial_tier: &str, config: PolicyConfig) -> Self {
         AdaptiveProfileController {
             config,
-            current_tier: profile_store::normalize_profile_tier(
-                initial_tier,
-                PROFILE_TIER_BALANCED,
-            ),
-            last_switch_monotonic: 0.0,
-            target_slow_count: 0,
-            near_slow_count: 0,
-            comfort_count: 0,
+            state: PolicyState {
+                current_tier: profile_store::normalize_profile_tier(
+                    initial_tier,
+                    PROFILE_TIER_BALANCED,
+                ),
+                last_switch_monotonic: 0.0,
+                target_slow_count: 0,
+                near_slow_count: 0,
+                comfort_count: 0,
+            },
         }
     }
 
     fn snapshot_state(&self) -> PolicyState {
-        PolicyState {
-            current_tier: self.current_tier.clone(),
-            last_switch_monotonic: self.last_switch_monotonic,
-            target_slow_count: self.target_slow_count,
-            near_slow_count: self.near_slow_count,
-            comfort_count: self.comfort_count,
-        }
+        self.state.clone()
     }
 
     fn restore_state(&mut self, state: &PolicyState) {
-        self.current_tier = state.current_tier.clone();
-        self.last_switch_monotonic = state.last_switch_monotonic;
-        self.target_slow_count = state.target_slow_count;
-        self.near_slow_count = state.near_slow_count;
-        self.comfort_count = state.comfort_count;
+        self.state = state.clone();
     }
 
     pub fn reconfigure(&mut self, config: PolicyConfig) {
@@ -256,9 +251,9 @@ impl AdaptiveProfileController {
     }
 
     fn reset_counts(&mut self) {
-        self.target_slow_count = 0;
-        self.near_slow_count = 0;
-        self.comfort_count = 0;
+        self.state.target_slow_count = 0;
+        self.state.near_slow_count = 0;
+        self.state.comfort_count = 0;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -276,8 +271,8 @@ impl AdaptiveProfileController {
             let tier = ordered
                 .first()
                 .cloned()
-                .unwrap_or_else(|| self.current_tier.clone());
-            self.current_tier = tier.clone();
+                .unwrap_or_else(|| self.state.current_tier.clone());
+            self.state.current_tier = tier.clone();
             self.reset_counts();
             return Decision {
                 tier,
@@ -285,12 +280,12 @@ impl AdaptiveProfileController {
                 reason: "not-enough-tiers".into(),
             };
         }
-        if !ordered.contains(&self.current_tier) {
-            self.current_tier = ordered[0].clone();
-            self.last_switch_monotonic = now_monotonic;
+        if !ordered.contains(&self.state.current_tier) {
+            self.state.current_tier = ordered[0].clone();
+            self.state.last_switch_monotonic = now_monotonic;
             self.reset_counts();
             return Decision {
-                tier: self.current_tier.clone(),
+                tier: self.state.current_tier.clone(),
                 changed: true,
                 reason: "snap-to-available".into(),
             };
@@ -298,7 +293,7 @@ impl AdaptiveProfileController {
         let Some(frametime_ms) = present_frametime_p95_ms else {
             self.reset_counts();
             return Decision {
-                tier: self.current_tier.clone(),
+                tier: self.state.current_tier.clone(),
                 changed: false,
                 reason: "no-sample".into(),
             };
@@ -316,11 +311,11 @@ impl AdaptiveProfileController {
             );
         }
         if frametime_ms > self.config.near_slow_ms {
-            self.near_slow_count += 1;
-            self.target_slow_count = 0;
-            self.comfort_count = 0;
-            if self.near_slow_count >= self.config.near_slow_windows {
-                let target = higher_tier(&self.current_tier, &ordered);
+            self.state.near_slow_count += 1;
+            self.state.target_slow_count = 0;
+            self.state.comfort_count = 0;
+            if self.state.near_slow_count >= self.config.near_slow_windows {
+                let target = higher_tier(&self.state.current_tier, &ordered);
                 return self.switch_with_cpu_bound_guard(
                     target,
                     &ordered,
@@ -332,17 +327,17 @@ impl AdaptiveProfileController {
                 );
             }
             return Decision {
-                tier: self.current_tier.clone(),
+                tier: self.state.current_tier.clone(),
                 changed: false,
                 reason: "clearly-slow-wait".into(),
             };
         }
         if frametime_ms > self.config.target_ms {
-            self.target_slow_count += 1;
-            self.near_slow_count = 0;
-            self.comfort_count = 0;
-            if self.target_slow_count >= self.config.target_slow_windows {
-                let target = higher_tier(&self.current_tier, &ordered);
+            self.state.target_slow_count += 1;
+            self.state.near_slow_count = 0;
+            self.state.comfort_count = 0;
+            if self.state.target_slow_count >= self.config.target_slow_windows {
+                let target = higher_tier(&self.state.current_tier, &ordered);
                 return self.switch_with_cpu_bound_guard(
                     target,
                     &ordered,
@@ -354,39 +349,39 @@ impl AdaptiveProfileController {
                 );
             }
             return Decision {
-                tier: self.current_tier.clone(),
+                tier: self.state.current_tier.clone(),
                 changed: false,
                 reason: "near-slow-wait".into(),
             };
         }
         if frametime_ms <= self.config.comfort_ms {
-            self.target_slow_count = 0;
-            self.near_slow_count = 0;
-            self.comfort_count += 1;
-            let required_windows = if self.current_tier == PROFILE_TIER_PERFORMANCE {
+            self.state.target_slow_count = 0;
+            self.state.near_slow_count = 0;
+            self.state.comfort_count += 1;
+            let required_windows = if self.state.current_tier == PROFILE_TIER_PERFORMANCE {
                 self.config.performance_comfort_windows
             } else {
                 self.config.comfort_windows
             };
-            let required_dwell = if self.current_tier == PROFILE_TIER_PERFORMANCE {
+            let required_dwell = if self.state.current_tier == PROFILE_TIER_PERFORMANCE {
                 self.config.performance_demote_dwell_s
             } else {
                 self.config.demote_dwell_s
             };
-            let dwell_s = now_monotonic - self.last_switch_monotonic;
-            if self.comfort_count >= required_windows && dwell_s >= required_dwell {
-                let target = lower_tier(&self.current_tier, &ordered);
+            let dwell_s = now_monotonic - self.state.last_switch_monotonic;
+            if self.state.comfort_count >= required_windows && dwell_s >= required_dwell {
+                let target = lower_tier(&self.state.current_tier, &ordered);
                 return self.switch(target, now_monotonic, "comfort");
             }
             return Decision {
-                tier: self.current_tier.clone(),
+                tier: self.state.current_tier.clone(),
                 changed: false,
                 reason: "comfort-wait".into(),
             };
         }
         self.reset_counts();
         Decision {
-            tier: self.current_tier.clone(),
+            tier: self.state.current_tier.clone(),
             changed: false,
             reason: "target-ok".into(),
         }
@@ -403,7 +398,8 @@ impl AdaptiveProfileController {
         cpu_util_pct: Option<f64>,
         cpu_peak_thread_pct: Option<f64>,
     ) -> Decision {
-        let target_tier = profile_store::normalize_profile_tier(&target_tier, &self.current_tier);
+        let target_tier =
+            profile_store::normalize_profile_tier(&target_tier, &self.state.current_tier);
         if !self.performance_promotion_cpu_bound(
             &target_tier,
             gpu_util_pct,
@@ -413,12 +409,12 @@ impl AdaptiveProfileController {
             return self.switch(target_tier, now_monotonic, reason);
         }
         let capped = highest_non_performance_tier(ordered);
-        if tier_index(&capped, ordered) > tier_index(&self.current_tier, ordered) {
+        if tier_index(&capped, ordered) > tier_index(&self.state.current_tier, ordered) {
             return self.switch(capped, now_monotonic, "cpu-bound-performance-cap");
         }
         self.reset_counts();
         Decision {
-            tier: self.current_tier.clone(),
+            tier: self.state.current_tier.clone(),
             changed: false,
             reason: "cpu-bound-performance-block".into(),
         }
@@ -448,17 +444,18 @@ impl AdaptiveProfileController {
     }
 
     fn switch(&mut self, target_tier: String, now_monotonic: f64, reason: &str) -> Decision {
-        let target_tier = profile_store::normalize_profile_tier(&target_tier, &self.current_tier);
-        if target_tier == self.current_tier {
+        let target_tier =
+            profile_store::normalize_profile_tier(&target_tier, &self.state.current_tier);
+        if target_tier == self.state.current_tier {
             self.reset_counts();
             return Decision {
-                tier: self.current_tier.clone(),
+                tier: self.state.current_tier.clone(),
                 changed: false,
                 reason: format!("{reason}-already"),
             };
         }
-        self.current_tier = target_tier.clone();
-        self.last_switch_monotonic = now_monotonic;
+        self.state.current_tier = target_tier.clone();
+        self.state.last_switch_monotonic = now_monotonic;
         self.reset_counts();
         Decision {
             tier: target_tier,
@@ -473,9 +470,6 @@ impl AdaptiveProfileController {
 pub struct AdaptiveSwitchResult {
     pub changed: bool,
     pub tier: String,
-    /// Mirrors the Python result; the loop consumes `tier`/`changed` only.
-    #[allow(dead_code)]
-    pub reason: String,
     pub vf_apply_plan: Option<Vec<PlanItem>>,
     pub vf_expected_samples: Vec<PlanItem>,
     pub memory_offset_mhz: Option<i64>,
@@ -626,7 +620,6 @@ impl AdaptiveAutoUvRuntimeController {
             return Some(AdaptiveSwitchResult {
                 changed: false,
                 tier: decision.tier,
-                reason: decision.reason,
                 vf_apply_plan: None,
                 vf_expected_samples: Vec::new(),
                 memory_offset_mhz: None,
@@ -637,7 +630,6 @@ impl AdaptiveAutoUvRuntimeController {
             return Some(AdaptiveSwitchResult {
                 changed: false,
                 tier: policy_state.current_tier,
-                reason: "missing-curve".into(),
                 vf_apply_plan: None,
                 vf_expected_samples: Vec::new(),
                 memory_offset_mhz: None,
@@ -663,7 +655,6 @@ impl AdaptiveAutoUvRuntimeController {
                 Some(AdaptiveSwitchResult {
                     changed: false,
                     tier: policy_state.current_tier,
-                    reason: "apply-failed".into(),
                     vf_apply_plan: None,
                     vf_expected_samples: Vec::new(),
                     memory_offset_mhz: None,
@@ -701,7 +692,6 @@ impl AdaptiveAutoUvRuntimeController {
         Ok(AdaptiveSwitchResult {
             changed: true,
             tier: tier.to_string(),
-            reason: reason.to_string(),
             vf_apply_plan: Some(curve.plan.clone()),
             vf_expected_samples: select_expected_vf_samples(&curve.plan, 8),
             memory_offset_mhz: memory,
@@ -799,8 +789,8 @@ mod tests {
     #[test]
     fn comfort_demotes_after_windows_and_dwell() {
         let mut c = controller();
-        c.current_tier = "performance".into();
-        c.last_switch_monotonic = 0.0;
+        c.state.current_tier = "performance".into();
+        c.state.last_switch_monotonic = 0.0;
         // comfort_ms 14.5; performance requires 10 windows + 45s dwell.
         for i in 1..10 {
             let d = c.update(Some(10.0), &tiers(), i as f64, None, None, None);
@@ -815,7 +805,7 @@ mod tests {
     #[test]
     fn cpu_bound_blocks_performance_promotion() {
         let mut c = controller();
-        c.current_tier = "balanced".into();
+        c.state.current_tier = "balanced".into();
         // badly-slow would jump to performance, but low GPU + busy thread caps it.
         let d = c.update(
             Some(30.0),

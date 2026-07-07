@@ -6,7 +6,9 @@ use serde_json::Value;
 /// Runtime-profile flags that take a following value.
 const RUNTIME_VALUE_FLAGS: &[&str] = &["--auto-uv-profile", "--gpu-index"];
 
-/// Runtime-profile bare option flags (no value).
+/// Runtime-profile bare option flags (no value). Kept in sync with the flags
+/// parsed by `profile::EngineOptions::from_argv` (the whitelist gates what the
+/// engine parser can receive).
 const RUNTIME_OPTION_FLAGS: &[&str] = &[
     "--auto-uv-profile",
     "--silent-fan-curve",
