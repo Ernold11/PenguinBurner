@@ -24,6 +24,42 @@ Mechanics/architecture: see `DESIGN.md`. Behavior specs: `port-notes/`.
 - Overnight hardware verification on this box: approved (restore original
   setup after; anything off → stop, leave Python daemon running).
 
+## 2026-07-07 ~03:30 — HARDWARE VERIFICATION PASSED; Rust daemon is live
+
+The Rust daemon replaced the Python daemon on this box (unit swapped via the
+real installer-generated content; binary at /usr/libexec/penguin-burnerd;
+original unit backed up in the session scratchpad). Verified on the live 5080:
+
+- Type=notify READY + watchdog heartbeats (WatchdogTimestamp advancing).
+- Status/protocol via the real Python client: exact shapes, version 0.6.3.
+- Telemetry journal lines byte-identical to Python's, 1 Hz; overlay-state.txt
+  advancing with the exact schema.
+- Autostart replay from last-runtime.json across systemctl restart.
+- Profile switch by id (balanced 850mv-2638mhz): tier label, power 330→319 W,
+  ceiling retargeted 2985@890 → 2692@850, balanced VF plan signature; invalid
+  selector ("balanced" — tier names were never valid) handled with the parity
+  message. Adaptive argv restored after the test; state file ends correct.
+- Under a real 75 s Q2RTX load: fan curve responded (34% @ 68°C), mem offset
+  engaged (18001 MHz), power at the 330 W cap, telemetry correct at load.
+
+### DISCOVERY (pre-existing host issue, NOT a port regression — morning item)
+
+Core per-point VF offsets do not stick on this box — under load the GPU runs
+the stock curve (2662 MHz @ 995 mV instead of ~2985 @ 890). A/B-verified: the
+PYTHON daemon shows the identical failure under identical load, and its
+journal shows the same vf-curve-reapplied fight every ~10 s. Onset matches the
+2026-07-05 10:40 boot exactly (Jul 4 had zero events; the Jul 3 session ended
+in a crash; driver userspace 610.43.02-3 was installed Jun 29 but the loaded
+open kernel module was built Jun 13). Mem offset and power limit DO stick.
+Candidate fixes to evaluate with JP: reboot; align kernel module/userspace;
+or migrate the coarse offset path to the official per-pstate
+nvmlDeviceSetClockOffsets (live-verified working — see port-notes/12).
+
+Pending: cargo deny advisories DB unreachable from the sandbox tonight
+(licenses+bans pass); re-run when network allows. Real scan through the Rust
+daemon deliberately deferred to a supervised morning run (protocol covered by
+golden tests + stub children).
+
 ## 2026-07-07 — Wave A1: supervisor + socket protocol + scan child mgmt
 
 - Implemented the JSON-lines socket server, wire protocol, supervisor, and
@@ -347,10 +383,25 @@ Mechanics/architecture: see `DESIGN.md`. Behavior specs: `port-notes/`.
   instability; Q2RTX HAS (Vulkan device-lost, esp. performance scans) — Q2RTX
   is the core detector and must never be touched (rule 2).
 
-## Next
+## Morning review agenda (2026-07-07, for JP)
 
-- Wave A1: supervisor + wire-compatible socket protocol + scan child mgmt.
-- Wave A2: GPU backend (nvml-wrapper + raw FFI + hidden NVAPI, size-asserted).
-- Wave A3: profile engine + fan + adaptive + telemetry (byte-compatible files).
-- Wave A4: installer/packaging integration, golden pytest parity, full suites,
-  live-5080 verify, then Python engine deletion.
+1. **Host issue (not the port):** core per-point VF offsets stopped sticking at
+   the 2026-07-05 10:40 boot — your UV curves are NOT engaging under load, under
+   either daemon (A/B-verified). Options: reboot; check kernel-module (built
+   Jun 13) vs userspace (610.43.02-3, Jun 29) mismatch; or trial the official
+   per-pstate SetClockOffsets path (port-notes/12, live-verified).
+2. **Flatpak sign-off:** daemon support gated off on Flatpak (Option A) until
+   penguin-burnerd is bundled; TODO note in the manifest.
+3. **Supervised real-scan smoke** through the Rust daemon (protocol is
+   golden-tested; a live Q2RTX scan run with you watching closes the loop).
+4. **Milestone B go/no-go:** auto-UV writes over daemon RPC + de-root scan.
+5. Rust LoC: ~10.8k total incl. tests/fixtures; non-test ~8.3k logical vs
+   ~6.6k Python replaced — parity-first left compression on the table
+   (hand-rolled TOML config parser, telemetry/profile_store verbosity).
+   Proposed follow-up: a /simplify pass now that parity is pinned by tests.
+6. Small items: drop unused nvml-wrapper dep (one-line Cargo.toml + lockfile);
+   cargo-deny advisories re-run (DB unreachable from tonight's sandbox);
+   `event=latency-meter` debug journal line — want it back?; dev-path daemon
+   binary discovery when program_file is in site-packages (tonight worked
+   around via /usr/libexec install); deferred medium-risk Python cleanups
+   (atomic-write helper dedup, auto-UV test-file consolidation).
