@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -14,11 +15,6 @@ from ui.features.tuning.gpu_selection import runtime_gpu_index
 
 FLATPAK_INFO_PATH = Path("/.flatpak-info")
 FLATPAK_APP_ID = "io.github.jpietek.PenguinBurner"
-FLATPAK_DAEMON_UNAVAILABLE_MESSAGE = (
-    "The PenguinBurner daemon service is not yet available in the Flatpak build "
-    "(the penguin-burnerd binary is not packaged into the sandbox). Install and "
-    "run the daemon from the native package instead."
-)
 
 
 def running_in_flatpak() -> bool:
@@ -286,7 +282,7 @@ def _host_equivalent_command(command: list[str]) -> list[str]:
 
 def daemon_migration_command() -> list[str]:
     if running_in_flatpak():
-        raise RuntimeError(FLATPAK_DAEMON_UNAVAILABLE_MESSAGE)
+        return _flatpak_daemon_install_command(autostart_argv=None)
     return privileged_command([*cli_base_command(), "--migrate-to-daemon-service"])
 
 
@@ -335,13 +331,113 @@ def _daemon_runtime_profile_command(runtime_argv: list[str]) -> list[str]:
 
 def _flatpak_systemd_profile_command(action: str, runtime_argv: list[str]) -> list[str]:
     if action == "install-systemd":
-        # Option A: the flatpak sandbox has no penguin-burnerd binary yet, so the
-        # daemon unit cannot be built here. Uninstall still works (it only removes
-        # units and needs no binary).
-        raise RuntimeError(FLATPAK_DAEMON_UNAVAILABLE_MESSAGE)
+        return _flatpak_daemon_install_command(autostart_argv=list(runtime_argv))
     if action == "uninstall-systemd":
         return _flatpak_uninstall_systemd_command()
     raise ValueError(f"unknown runtime profile action: {action}")
+
+
+def _flatpak_daemon_install_command(
+    *, autostart_argv: list[str] | None
+) -> list[str]:
+    """Elevated host-side install of the Rust daemon from a Flatpak sandbox.
+
+    The manifest builds penguin-burnerd into /app/libexec (host-visible inside
+    the flatpak deployment dir); the one pkexec elevation copies it onto the
+    root-owned /usr/libexec/penguin-burnerd (a root service must never execute
+    from a user-writable path), drops the generated unit into
+    /etc/systemd/system, and enables+restarts it. ExecStart points at the fixed
+    /usr/libexec path, so unit generation needs no flatpak-specific ExecStart.
+
+    ``autostart_argv`` is None for the migrate/repair flow (leave any persisted
+    last-runtime state alone); a list (possibly empty) means "persist THIS
+    profile": clear the state file, then seed it so the daemon replays the
+    installed profile on boot.
+    """
+    from runtime.support.runtime_service import (
+        LAST_RUNTIME_STATE_PATH,
+        LIBEXEC_DAEMON_BINARY,
+        build_daemon_api_service_unit,
+        flatpak_host_app_path,
+        flatpak_host_cli_program_file,
+    )
+
+    program_file = flatpak_host_cli_program_file()
+    unit = build_daemon_api_service_unit(
+        program_file,
+        binary_path=str(LIBEXEC_DAEMON_BINARY),
+    )
+    encoded_unit = base64.b64encode(unit.encode("utf-8")).decode("ascii")
+    daemon_binary_src = flatpak_host_app_path() / "libexec" / "penguin-burnerd"
+
+    environment = [
+        f"PENGUIN_BURNER_DAEMON_BINARY_SRC={daemon_binary_src}",
+        f"PENGUIN_BURNER_SYSTEMD_UNIT_B64={encoded_unit}",
+    ]
+    state_block = ""
+    if autostart_argv is not None:
+        state_json = (
+            json.dumps(
+                {
+                    "argv": [str(arg) for arg in autostart_argv],
+                    "program_file": str(program_file),
+                },
+                separators=(",", ":"),
+            )
+            if autostart_argv
+            else ""
+        )
+        environment.extend(
+            [
+                f"PENGUIN_BURNER_LAST_RUNTIME_PATH={LAST_RUNTIME_STATE_PATH}",
+                "PENGUIN_BURNER_LAST_RUNTIME_B64="
+                + base64.b64encode(state_json.encode("utf-8")).decode("ascii"),
+            ]
+        )
+        state_block = (
+            'rm -f "$PENGUIN_BURNER_LAST_RUNTIME_PATH"\n'
+            'if [ -n "${PENGUIN_BURNER_LAST_RUNTIME_B64:-}" ]; then\n'
+            '    mkdir -p "$(dirname "$PENGUIN_BURNER_LAST_RUNTIME_PATH")"\n'
+            "    printf '%s' \"$PENGUIN_BURNER_LAST_RUNTIME_B64\" | base64 -d "
+            '> "$PENGUIN_BURNER_LAST_RUNTIME_PATH"\n'
+            "fi\n"
+        )
+
+    script = (
+        "legacy_unit=/etc/systemd/system/PenguinBurner.service\n"
+        "unit=/etc/systemd/system/penguin-burnerd.service\n"
+        "systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true\n"
+        'if [ -f "$legacy_unit" ]; then\n'
+        '    rm -f "$legacy_unit"\n'
+        '    echo "Removed existing static PenguinBurner.service."\n'
+        "fi\n"
+        'install -Dm0755 "$PENGUIN_BURNER_DAEMON_BINARY_SRC" '
+        "/usr/libexec/penguin-burnerd\n"
+        'tmp="$(mktemp /etc/systemd/system/.penguin-burnerd.service.XXXXXX)"\n'
+        "trap 'rm -f \"$tmp\"' EXIT\n"
+        "printf '%s' \"$PENGUIN_BURNER_SYSTEMD_UNIT_B64\" | base64 -d > \"$tmp\"\n"
+        'chmod 0644 "$tmp"\n'
+        'mv "$tmp" "$unit"\n'
+        "trap - EXIT\n"
+        f"{state_block}"
+        "systemctl daemon-reload\n"
+        "systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true\n"
+        "systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true\n"
+        "systemctl enable penguin-burnerd.service\n"
+        "systemctl restart penguin-burnerd.service\n"
+        'echo "Copied penguin-burnerd to /usr/libexec/penguin-burnerd."\n'
+        'echo "Installed and enabled penguin-burnerd.service at $unit."'
+    )
+    return _privileged_command(
+        [
+            *environment,
+            "/bin/sh",
+            "-eu",
+            "-c",
+            script,
+            "penguin-burner-daemon-install",
+        ]
+    )
 
 
 def _flatpak_uninstall_systemd_command() -> list[str]:
@@ -374,26 +470,34 @@ def profile_verify_command(
     stop_request_path: str | Path = "",
     gpu_index: int | None = None,
 ) -> list[str]:
-    duration_s = max(1, int(duration_s))
-    command = [
-        *cli_base_command(),
-        "--stability-test",
-        "--stability-seconds",
-        str(duration_s),
-        "--gpu-index",
-        str(runtime_gpu_index() if gpu_index is None else max(0, int(gpu_index))),
-    ]
+    # Verification runs inside the already-root daemon (streaming socket RPC,
+    # no pkexec). The daemon owns the child's --stability-stop-request-file
+    # marker (same <config>/profile-verify-stop-requested path the UI writes
+    # for a cooperative stop), so stop_request_path is accepted for caller
+    # compatibility but not forwarded.
+    del stop_request_path
+    payload: dict[str, object] = {
+        "stability_seconds": max(1, int(duration_s)),
+        "gpu_index": runtime_gpu_index() if gpu_index is None else max(0, int(gpu_index)),
+    }
     if profile_selector:
-        command.extend(["--auto-uv-profile", str(profile_selector)])
-    if str(stop_request_path).strip():
-        command.extend(["--stability-stop-request-file", str(stop_request_path)])
-    return privileged_command(command)
+        payload["auto_uv_profile"] = str(profile_selector)
+    return [
+        sys.executable,
+        "-m",
+        "runtime.daemon_client",
+        "start-profile-verification",
+        json.dumps(payload, separators=(",", ":")),
+    ]
 
 
 def delete_profiles_command(profile_paths: list[str]) -> list[str]:
-    command = [
-        *cli_base_command(),
-        "--delete-auto-uv-profiles",
-        *[str(path) for path in profile_paths],
+    # Profile deletion goes through the root daemon (unary RPC, no pkexec);
+    # the daemon path-validates against the saved-profiles dir before deleting.
+    return [
+        sys.executable,
+        "-m",
+        "runtime.daemon_client",
+        "delete-auto-uv-profiles",
+        json.dumps([str(path) for path in profile_paths], separators=(",", ":")),
     ]
-    return privileged_command(command)

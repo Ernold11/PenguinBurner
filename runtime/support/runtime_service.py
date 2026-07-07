@@ -471,9 +471,10 @@ def build_daemon_api_service_unit(
 
     # The compiled Rust penguin-burnerd binary. Autostart is carried by the seeded
     # last-runtime.json state file, not a unit env. Type=notify + WatchdogSec: the
-    # daemon sends READY=1 and heartbeats WATCHDOG=1. Flatpak is not supported here
-    # until the binary is packaged into the sandbox (the install path is gated in
-    # ui/commands.py), so this is native-only.
+    # daemon sends READY=1 and heartbeats WATCHDOG=1. Flatpak callers pass
+    # binary_path=/usr/libexec/penguin-burnerd explicitly (the elevated install
+    # step copies the sandbox-built /app/libexec binary there), since discovery
+    # cannot see the host's /usr/libexec from inside the sandbox.
     binary = daemon_binary_path(program_file, binary_path=binary_path)
     exec_start = _format_systemd_exec([binary, "--socket", str(socket_path)])
     program_file_env = (

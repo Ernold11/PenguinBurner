@@ -4,6 +4,16 @@ from __future__ import annotations
 
 import ctypes
 
+from runtime.daemon_client import (
+    gpu_apply_clock_offsets,
+    gpu_apply_locked_core_clock,
+    gpu_apply_locked_core_clock_range,
+    gpu_apply_power_limit,
+    gpu_enable_persistence_mode,
+    gpu_reset_locked_core_clocks,
+    gpu_reset_locked_memory_clocks,
+)
+
 from integrations.afterburner.policy import (
     MAX_AFTERBURNER_MEM_OFFSET_MHZ,
     afterburner_offset_khz_to_mhz,
@@ -251,35 +261,18 @@ class NvmlGpuPolicyController:
             info["power_limit_max_w"] = int(round(max_limit_mw.value / 1000.0))
         return info
 
-    def apply_power_limit_w(self, power_limit_w):
-        setter = getattr(self._nvml, "nvmlDeviceSetPowerManagementLimit", None)
-        if setter is None:
-            raise RuntimeError(
-                "nvmlDeviceSetPowerManagementLimit is not available on this system"
-            )
+    # Every write below routes through the root daemon (milestone B): the
+    # daemon's Rust backend performs the identical NVML/NVAPI call and relays
+    # its exact Python-shaped error text ("<fn> failed with NVML error <rc>:
+    # <text>", "<fn> is not available on this system"), which the client raises
+    # verbatim as the RuntimeError message. Reads stay local ctypes.
 
-        target_mw = int(round(float(power_limit_w) * 1000.0))
-        rc = int(setter(self._device, ctypes.c_uint(target_mw)))
-        if rc != NVML_SUCCESS:
-            raise RuntimeError(
-                "nvmlDeviceSetPowerManagementLimit failed with "
-                f"NVML error {rc}: {self.error_text(rc)}"
-            )
+    def apply_power_limit_w(self, power_limit_w):
+        gpu_apply_power_limit(self._gpu_index, int(power_limit_w))
         return int(power_limit_w)
 
     def enable_persistence_mode(self):
-        setter = getattr(self._nvml, "nvmlDeviceSetPersistenceMode", None)
-        if setter is None:
-            raise RuntimeError(
-                "nvmlDeviceSetPersistenceMode is not available on this system"
-            )
-
-        rc = int(setter(self._device, ctypes.c_uint(NVML_FEATURE_ENABLED)))
-        if rc != NVML_SUCCESS:
-            raise RuntimeError(
-                "nvmlDeviceSetPersistenceMode failed with "
-                f"NVML error {rc}: {self.error_text(rc)}"
-            )
+        gpu_enable_persistence_mode(self._gpu_index)
         return True
 
     def _read_clock_list(self, getter_name, *getter_args, capacity=512):
@@ -365,37 +358,21 @@ class NvmlGpuPolicyController:
         prefer_not_above=True,
         snap_to_supported=True,
     ):
-        setter = getattr(self._nvml, "nvmlDeviceSetGpuLockedClocks", None)
-        if setter is None:
-            raise RuntimeError(
-                "nvmlDeviceSetGpuLockedClocks is not available on this system"
-            )
-
-        snap = {
-            "requested_clock_mhz": int(clock_mhz),
-            "applied_clock_mhz": int(clock_mhz),
-            "mode": "unsnapped",
-            "supported_steps_mhz": [],
-        }
-        if snap_to_supported:
-            snap = self.snap_core_clock_mhz(
-                clock_mhz, prefer_not_above=prefer_not_above
-            )
-
-        applied_clock_mhz = int(snap["applied_clock_mhz"])
-        rc = int(
-            setter(
-                self._device,
-                ctypes.c_uint(applied_clock_mhz),
-                ctypes.c_uint(applied_clock_mhz),
-            )
+        # The daemon runs the identical snap (same branch order, same mode
+        # strings) and returns the snap decision; rebuild the dict in the
+        # legacy key order so callers see the exact pre-daemon shape.
+        result = gpu_apply_locked_core_clock(
+            self._gpu_index,
+            int(clock_mhz),
+            prefer_not_above=bool(prefer_not_above),
+            snap_to_supported=bool(snap_to_supported),
         )
-        if rc != NVML_SUCCESS:
-            raise RuntimeError(
-                "nvmlDeviceSetGpuLockedClocks failed with "
-                f"NVML error {rc}: {self.error_text(rc)}"
-            )
-        return snap
+        return {
+            "requested_clock_mhz": int(result["requested_clock_mhz"]),
+            "applied_clock_mhz": int(result["applied_clock_mhz"]),
+            "mode": str(result["mode"]),
+            "supported_steps_mhz": [int(step) for step in result["supported_steps_mhz"]],
+        }
 
     def apply_locked_core_clock_range_mhz(
         self,
@@ -405,88 +382,32 @@ class NvmlGpuPolicyController:
         prefer_max_not_above=True,
         snap_to_supported=True,
     ):
-        setter = getattr(self._nvml, "nvmlDeviceSetGpuLockedClocks", None)
-        if setter is None:
-            raise RuntimeError(
-                "nvmlDeviceSetGpuLockedClocks is not available on this system"
-            )
-
-        range_snap = {
-            "requested_min_clock_mhz": int(min_clock_mhz),
-            "requested_max_clock_mhz": int(max_clock_mhz),
-            "applied_min_clock_mhz": int(min_clock_mhz),
-            "applied_max_clock_mhz": int(max_clock_mhz),
-            "min_mode": "unsnapped",
-            "max_mode": "unsnapped",
-            "supported_steps_mhz": [],
-        }
-        if snap_to_supported:
-            min_snap = self.snap_core_clock_mhz(min_clock_mhz, prefer_not_above=False)
-            max_snap = self.snap_core_clock_mhz(
-                max_clock_mhz, prefer_not_above=prefer_max_not_above
-            )
-            applied_min_clock_mhz = int(min_snap["applied_clock_mhz"])
-            applied_max_clock_mhz = int(max_snap["applied_clock_mhz"])
-            min_mode = str(min_snap["mode"])
-            max_mode = str(max_snap["mode"])
-            supported_steps_mhz = list(
-                max_snap["supported_steps_mhz"] or min_snap["supported_steps_mhz"]
-            )
-            if applied_min_clock_mhz > applied_max_clock_mhz:
-                applied_min_clock_mhz = applied_max_clock_mhz
-                min_mode = f"{min_mode}-clamped-to-max"
-            range_snap = {
-                "requested_min_clock_mhz": int(min_clock_mhz),
-                "requested_max_clock_mhz": int(max_clock_mhz),
-                "applied_min_clock_mhz": applied_min_clock_mhz,
-                "applied_max_clock_mhz": applied_max_clock_mhz,
-                "min_mode": min_mode,
-                "max_mode": max_mode,
-                "supported_steps_mhz": supported_steps_mhz,
-            }
-
-        rc = int(
-            setter(
-                self._device,
-                ctypes.c_uint(int(range_snap["applied_min_clock_mhz"])),
-                ctypes.c_uint(int(range_snap["applied_max_clock_mhz"])),
-            )
+        # Daemon-side snap is byte-identical (min snaps ceil-preference, max
+        # honors prefer_max_not_above, min clamps to max with the
+        # "-clamped-to-max" suffix); rebuild the legacy dict shape.
+        result = gpu_apply_locked_core_clock_range(
+            self._gpu_index,
+            int(min_clock_mhz),
+            int(max_clock_mhz),
+            prefer_max_not_above=bool(prefer_max_not_above),
+            snap_to_supported=bool(snap_to_supported),
         )
-        if rc != NVML_SUCCESS:
-            raise RuntimeError(
-                "nvmlDeviceSetGpuLockedClocks failed with "
-                f"NVML error {rc}: {self.error_text(rc)}"
-            )
-        return range_snap
+        return {
+            "requested_min_clock_mhz": int(result["requested_min_clock_mhz"]),
+            "requested_max_clock_mhz": int(result["requested_max_clock_mhz"]),
+            "applied_min_clock_mhz": int(result["applied_min_clock_mhz"]),
+            "applied_max_clock_mhz": int(result["applied_max_clock_mhz"]),
+            "min_mode": str(result["min_mode"]),
+            "max_mode": str(result["max_mode"]),
+            "supported_steps_mhz": [int(step) for step in result["supported_steps_mhz"]],
+        }
 
     def reset_locked_core_clocks(self):
-        setter = getattr(self._nvml, "nvmlDeviceResetGpuLockedClocks", None)
-        if setter is None:
-            raise RuntimeError(
-                "nvmlDeviceResetGpuLockedClocks is not available on this system"
-            )
-
-        rc = int(setter(self._device))
-        if rc != NVML_SUCCESS:
-            raise RuntimeError(
-                "nvmlDeviceResetGpuLockedClocks failed with "
-                f"NVML error {rc}: {self.error_text(rc)}"
-            )
+        gpu_reset_locked_core_clocks(self._gpu_index)
         return True
 
     def reset_locked_memory_clocks(self):
-        setter = getattr(self._nvml, "nvmlDeviceResetMemoryLockedClocks", None)
-        if setter is None:
-            raise RuntimeError(
-                "nvmlDeviceResetMemoryLockedClocks is not available on this system"
-            )
-
-        rc = int(setter(self._device))
-        if rc != NVML_SUCCESS:
-            raise RuntimeError(
-                "nvmlDeviceResetMemoryLockedClocks failed with "
-                f"NVML error {rc}: {self.error_text(rc)}"
-            )
+        gpu_reset_locked_memory_clocks(self._gpu_index)
         return True
 
     def _read_clock_offset(self, getter_name):
@@ -524,40 +445,30 @@ class NvmlGpuPolicyController:
     def apply_clock_offsets(
         self, *, gpc_clk_vf_offset_mhz=None, mem_clk_vf_offset_mhz=None
     ):
+        if gpc_clk_vf_offset_mhz is None and mem_clk_vf_offset_mhz is None:
+            return {}
+        # The daemon applies gpc-then-mem in the original order and returns
+        # each side's mandatory read-back (NVML_SUCCESS does not guarantee the
+        # mem offset stuck, issue #20). Rebuild the legacy dict: only the
+        # requested sides carry keys, in the original insertion order.
+        result = gpu_apply_clock_offsets(
+            self._gpu_index,
+            gpc_clk_vf_offset_mhz=gpc_clk_vf_offset_mhz,
+            mem_clk_vf_offset_mhz=mem_clk_vf_offset_mhz,
+        )
+
+        def _optional_int(value):
+            return None if value is None else int(value)
+
         applied = {}
-
         if gpc_clk_vf_offset_mhz is not None:
-            setter = getattr(self._nvml, "nvmlDeviceSetGpcClkVfOffset", None)
-            if setter is None:
-                raise RuntimeError(
-                    "nvmlDeviceSetGpcClkVfOffset is not available on this system"
-                )
-            rc = int(setter(self._device, ctypes.c_int(int(gpc_clk_vf_offset_mhz))))
-            if rc != NVML_SUCCESS:
-                raise RuntimeError(
-                    f"nvmlDeviceSetGpcClkVfOffset failed with NVML error {rc}: {self.error_text(rc)}"
-                )
             applied["gpc_clk_vf_offset_mhz"] = int(gpc_clk_vf_offset_mhz)
-            applied["gpc_clk_vf_offset_readback_mhz"] = self._read_clock_offset(
-                "nvmlDeviceGetGpcClkVfOffset"
+            applied["gpc_clk_vf_offset_readback_mhz"] = _optional_int(
+                result.get("gpc_clk_vf_offset_readback_mhz")
             )
-
         if mem_clk_vf_offset_mhz is not None:
-            setter = getattr(self._nvml, "nvmlDeviceSetMemClkVfOffset", None)
-            if setter is None:
-                raise RuntimeError(
-                    "nvmlDeviceSetMemClkVfOffset is not available on this system"
-                )
-            rc = int(setter(self._device, ctypes.c_int(int(mem_clk_vf_offset_mhz))))
-            if rc != NVML_SUCCESS:
-                raise RuntimeError(
-                    f"nvmlDeviceSetMemClkVfOffset failed with NVML error {rc}: {self.error_text(rc)}"
-                )
             applied["mem_clk_vf_offset_mhz"] = int(mem_clk_vf_offset_mhz)
-            # NVML_SUCCESS does not guarantee the offset stuck (issue #20):
-            # read it back so callers can log requested-vs-actual.
-            applied["mem_clk_vf_offset_readback_mhz"] = self._read_clock_offset(
-                "nvmlDeviceGetMemClkVfOffset"
+            applied["mem_clk_vf_offset_readback_mhz"] = _optional_int(
+                result.get("mem_clk_vf_offset_readback_mhz")
             )
-
         return applied

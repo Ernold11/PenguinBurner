@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -146,29 +147,123 @@ def test_ui_scan_command_uses_flatpak_host_privilege(
     assert options["gpu_index"] == 0
 
 
-def test_daemon_migration_command_rejects_flatpak(monkeypatch, tmp_path) -> None:
-    # Option A: the flatpak sandbox has no penguin-burnerd binary, so daemon
-    # migration is gated with a clear message instead of building a Python unit.
+def _flatpak_daemon_install_env(monkeypatch, tmp_path) -> None:
+    """Environment for building the elevated flatpak daemon-install command."""
     flatpak_info = tmp_path / ".flatpak-info"
     flatpak_info.write_text("[Application]\n", encoding="utf-8")
     monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(commands.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(commands.os, "getgid", lambda: 1000)
+    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_APP_PATH", FLATPAK_APP_PATH)
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_SITE_PACKAGES", FLATPAK_SITE_PACKAGES)
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setattr(
+        commands.pwd,
+        "getpwnam",
+        lambda user: SimpleNamespace(pw_dir=f"/home/{user}"),
+    )
 
-    with pytest.raises(RuntimeError, match="not yet available in the Flatpak build"):
-        commands.daemon_migration_command()
+    def fake_which(name: str) -> str | None:
+        return {
+            "flatpak-spawn": "/usr/bin/flatpak-spawn",
+            "flatpak": "/usr/bin/flatpak",
+        }.get(name)
+
+    monkeypatch.setattr(commands.shutil, "which", fake_which)
 
 
-def test_flatpak_runtime_profile_install_is_rejected(monkeypatch, tmp_path) -> None:
-    flatpak_info = tmp_path / ".flatpak-info"
-    flatpak_info.write_text("[Application]\n", encoding="utf-8")
-    monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
+def _command_env_value(command: list[str], name: str) -> str:
+    prefix = f"{name}="
+    values = [part[len(prefix):] for part in command if part.startswith(prefix)]
+    assert len(values) == 1, f"expected exactly one {name} assignment"
+    return values[0]
 
-    with pytest.raises(RuntimeError, match="not yet available in the Flatpak build"):
-        commands.runtime_profile_command(
-            "install-systemd",
-            silent_fan_curve=True,
-            adaptive_auto_uv=True,
-            gpu_index=0,
-        )
+
+def test_daemon_migration_command_installs_flatpak_daemon(monkeypatch, tmp_path) -> None:
+    # B4b: the sandbox-built /app/libexec binary is copied onto the host's
+    # root-owned /usr/libexec by the one pkexec elevation; the repair flow does
+    # not touch the persisted last-runtime state.
+    _flatpak_daemon_install_env(monkeypatch, tmp_path)
+
+    command = commands.daemon_migration_command()
+
+    assert command[:4] == [
+        "/usr/bin/flatpak-spawn",
+        "--host",
+        "/usr/bin/pkexec",
+        "/usr/bin/env",
+    ]
+    assert _command_env_value(command, "PENGUIN_BURNER_DAEMON_BINARY_SRC") == (
+        f"{FLATPAK_APP_PATH}/libexec/penguin-burnerd"
+    )
+    script = command[command.index("-c") + 1]
+    assert (
+        'install -Dm0755 "$PENGUIN_BURNER_DAEMON_BINARY_SRC" '
+        "/usr/libexec/penguin-burnerd" in script
+    )
+    assert "systemctl enable penguin-burnerd.service" in script
+    # Repair/migrate leaves last-runtime.json alone.
+    assert "PENGUIN_BURNER_LAST_RUNTIME_B64" not in " ".join(command)
+    unit = base64.b64decode(
+        _command_env_value(command, "PENGUIN_BURNER_SYSTEMD_UNIT_B64")
+    ).decode("utf-8")
+    assert (
+        "ExecStart=/usr/libexec/penguin-burnerd --socket /run/penguin-burnerd.sock"
+        in unit
+    )
+
+
+def test_flatpak_runtime_profile_install_copies_daemon_and_seeds_autostart(
+    monkeypatch, tmp_path
+) -> None:
+    _flatpak_daemon_install_env(monkeypatch, tmp_path)
+
+    command = commands.runtime_profile_command(
+        "install-systemd",
+        profile_selector="profile-a",
+        silent_fan_curve=True,
+        gpu_index=0,
+    )
+
+    assert command[:4] == [
+        "/usr/bin/flatpak-spawn",
+        "--host",
+        "/usr/bin/pkexec",
+        "/usr/bin/env",
+    ]
+    script = command[command.index("-c") + 1]
+    assert (
+        'install -Dm0755 "$PENGUIN_BURNER_DAEMON_BINARY_SRC" '
+        "/usr/libexec/penguin-burnerd" in script
+    )
+    # "Persist THIS profile": the state file is cleared, then re-seeded so the
+    # Rust daemon replays the installed profile on boot.
+    assert 'rm -f "$PENGUIN_BURNER_LAST_RUNTIME_PATH"' in script
+    assert _command_env_value(command, "PENGUIN_BURNER_LAST_RUNTIME_PATH") == (
+        "/var/lib/penguin-burner/last-runtime.json"
+    )
+    state = json.loads(
+        base64.b64decode(
+            _command_env_value(command, "PENGUIN_BURNER_LAST_RUNTIME_B64")
+        ).decode("utf-8")
+    )
+    assert state["argv"] == [
+        "--auto-uv-profile",
+        "profile-a",
+        "--silent-fan-curve",
+        "--gpu-index",
+        "0",
+    ]
+    assert state["program_file"].endswith("penguin_burner.py")
+    unit = base64.b64decode(
+        _command_env_value(command, "PENGUIN_BURNER_SYSTEMD_UNIT_B64")
+    ).decode("utf-8")
+    assert (
+        "ExecStart=/usr/libexec/penguin-burnerd --socket /run/penguin-burnerd.sock"
+        in unit
+    )
 
 
 def test_flatpak_runtime_profile_daemonize_uses_daemon_client(
@@ -439,25 +534,19 @@ def test_runs_table_compacts_metric_delta_columns() -> None:
     )
 
 
-def test_ui_profile_delete_command_uses_privileged_launcher(monkeypatch) -> None:
+def test_ui_profile_delete_command_uses_daemon_client(monkeypatch) -> None:
+    # Deletion routes through the already-root daemon: no pkexec, no elevation.
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(commands.os, "getuid", lambda: 1000)
-    monkeypatch.setattr(commands.os, "getgid", lambda: 1000)
-    monkeypatch.setenv("USER", "desktop-user")
-
-    def fake_which(name: str) -> str | None:
-        return {
-            "pkexec": "/usr/bin/pkexec",
-            "env": "/usr/bin/env",
-        }.get(name)
-
-    monkeypatch.setattr(commands.shutil, "which", fake_which)
 
     command = commands.delete_profiles_command(["/home/user/profile.json"])
 
-    assert command[:2] == ["/usr/bin/pkexec", "/usr/bin/env"]
-    assert "--delete-auto-uv-profiles" in command
-    assert "/home/user/profile.json" in command
+    assert command[1:4] == [
+        "-m",
+        "runtime.daemon_client",
+        "delete-auto-uv-profiles",
+    ]
+    assert json.loads(command[4]) == ["/home/user/profile.json"]
+    assert "pkexec" not in " ".join(command)
 
 
 def test_ui_runtime_command_uses_auto_uv_profile_without_afterburner_flag(monkeypatch) -> None:
@@ -1003,8 +1092,19 @@ def test_start_auto_uv_button_uses_orange_without_changing_primary_green() -> No
     assert "border-color: #d45d5d" in STYLESHEET
 
 
+def _verify_daemon_options(command: list[str]) -> dict:
+    assert command[1:4] == [
+        "-m",
+        "runtime.daemon_client",
+        "start-profile-verification",
+    ]
+    return json.loads(command[4])
+
+
 def test_ui_profile_verify_command_uses_selected_auto_uv_profile(monkeypatch) -> None:
-    monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
+    # Verification streams through the root daemon (no pkexec); the daemon owns
+    # the stop-request marker, so stop_request_path is not forwarded.
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 2)
 
     command = commands.profile_verify_command(
@@ -1012,30 +1112,31 @@ def test_ui_profile_verify_command_uses_selected_auto_uv_profile(monkeypatch) ->
         duration_s=600,
         stop_request_path="/tmp/verify.stop",
     )
+    options = _verify_daemon_options(command)
 
-    assert "--stability-test" in command
-    assert command[command.index("--stability-seconds") + 1] == "600"
-    assert command[command.index("--gpu-index") + 1] == "2"
-    assert command[command.index("--auto-uv-profile") + 1] == "profile-a"
-    assert command[command.index("--stability-stop-request-file") + 1] == (
-        "/tmp/verify.stop"
-    )
-    assert "--prefer-afterburner-curve" not in command
+    assert "pkexec" not in " ".join(command)
+    assert options == {
+        "stability_seconds": 600,
+        "gpu_index": 2,
+        "auto_uv_profile": "profile-a",
+    }
+    assert "/tmp/verify.stop" not in " ".join(command)
 
 
 def test_ui_profile_verify_command_uses_fixed_q2rtx_cuda_workload(monkeypatch) -> None:
-    monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
 
     command = commands.profile_verify_command(
         profile_selector="profile-a",
         duration_s=600,
     )
+    options = _verify_daemon_options(command)
 
-    assert "--stability-workload" not in command
+    assert "stability_workload" not in options
 
 
 def test_ui_profile_verify_command_can_override_runtime_gpu_index(monkeypatch) -> None:
-    monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 2)
 
     command = commands.profile_verify_command(
@@ -1044,7 +1145,7 @@ def test_ui_profile_verify_command_can_override_runtime_gpu_index(monkeypatch) -
         gpu_index=1,
     )
 
-    assert command[command.index("--gpu-index") + 1] == "1"
+    assert _verify_daemon_options(command)["gpu_index"] == 1
 
 
 def test_auto_uv_preset_defaults_and_gpu_table_default() -> None:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ctypes
 
+from runtime.daemon_client import gpu_apply_vf_offsets
+
 from .hidden_nvapi_gpu_selection import (
     pci_bus_number_from_bus_id,
 )
@@ -307,12 +309,21 @@ class HiddenNvapiVfCurveReader:
         return control
 
     def set_control_struct(self, control):
-        rc = int(self._set_vf_control(self._gpu, ctypes.byref(control)))
-        if rc != 0:
-            raise RuntimeError(
-                f"ClockClientClkVfPointsSetControl failed with status {rc}: {self.status_text(rc)}"
+        # Milestone B: the privileged NVAPI SET routes through the root daemon.
+        # Ship the full plan the local SET would have programmed -- every masked
+        # point with its freq_offset_khz from `control` (which callers filled
+        # from a fresh GET before mutating) -- so the daemon's get-mutate-set
+        # produces byte-identical driver state. Error text is the backend's
+        # exact "ClockClientClkVfPointsSetControl failed with status ..."
+        # message, relayed verbatim as the RuntimeError message.
+        offsets = [
+            (index, int(control.vf_points[index].prog.freq_offset_khz))
+            for index in self._mask_to_indices(
+                [int(word) for word in control.vf_points_mask]
             )
-        return rc
+        ]
+        gpu_apply_vf_offsets(self._gpu_index, offsets)
+        return 0
 
     def editable_core_points(self):
         return [
