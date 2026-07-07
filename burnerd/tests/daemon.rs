@@ -128,6 +128,34 @@ impl Daemon {
             .join("PenguinBurner")
             .join("auto-uv-stop-requested")
     }
+
+    fn verify_stop_request_file(&self) -> PathBuf {
+        self.home
+            .join(".config")
+            .join("PenguinBurner")
+            .join("profile-verify-stop-requested")
+    }
+
+    fn profiles_dir(&self) -> PathBuf {
+        self.home
+            .join(".config")
+            .join("PenguinBurner")
+            .join("auto-uv-profiles")
+    }
+
+    /// Send a streaming start request, assert the `started` frame, and return
+    /// the connection reader plus the child pid.
+    fn start_streaming(&self, request: &str) -> (UnixStream, BufReader<UnixStream>, u32) {
+        let mut stream = self.connect();
+        stream.write_all(request.as_bytes()).unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let started: Value = serde_json::from_str(&read_line(&mut reader).unwrap()).unwrap();
+        assert_eq!(started["control"], "started", "frame: {started}");
+        let pid = started["pid"].as_u64().unwrap() as u32;
+        (stream, reader, pid)
+    }
 }
 
 impl Drop for Daemon {
@@ -248,6 +276,7 @@ fn stop_auto_uv_writes_offer_stop_file() {
     let mut reader = BufReader::new(stream);
     let started: Value = serde_json::from_str(&read_line(&mut reader).unwrap()).unwrap();
     assert_eq!(started["control"], "started");
+    let scan_pid = started["pid"].as_u64().unwrap() as u32;
 
     let stop = daemon.request(r#"{"method":"stop_auto_uv_scan"}"#);
     assert_eq!(stop["ok"], Value::Bool(true));
@@ -267,6 +296,11 @@ fn stop_auto_uv_writes_offer_stop_file() {
         content,
         "stop requested by PenguinBurner daemon client\nreason=offer-final-choice\n"
     );
+
+    // The SIGINT actually reaches the child (the child's signal mask is reset
+    // at spawn; the daemon itself blocks SIGINT process-wide).
+    wait_until(|| !pid_alive(scan_pid), Duration::from_secs(5));
+    assert!(!pid_alive(scan_pid), "scan child did not receive SIGINT");
 }
 
 #[test]
@@ -487,4 +521,413 @@ fn wait_until<F: Fn() -> bool>(predicate: F, timeout: Duration) {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+// --- milestone B: GPU-write RPCs (mock-GPU seam) -------------------------------
+
+const MOCK_GPU: (&str, &str) = ("PENGUIN_BURNERD_TEST_MOCK_GPU", "1");
+
+#[test]
+fn gpu_writes_run_against_the_mock_and_echo_ops() {
+    let daemon = Daemon::start(&[MOCK_GPU]);
+
+    let response = daemon.request(
+        r#"{"method":"gpu_apply_vf_offsets","gpu_index":0,"offsets":[[12,150000],[13,-15000]]}"#,
+    );
+    assert_eq!(response["ok"], Value::Bool(true));
+    assert_eq!(response["result"]["applied"], 2);
+    assert_eq!(
+        response["result"]["mock_ops"],
+        serde_json::json!(["ApplyVfOffsets { offsets: [(12, 150000), (13, -15000)] }"])
+    );
+
+    let response =
+        daemon.request(r#"{"method":"gpu_apply_power_limit","gpu_index":0,"power_limit_w":300}"#);
+    assert_eq!(response["result"]["applied_w"], 300);
+    assert_eq!(
+        response["result"]["mock_ops"],
+        serde_json::json!(["ApplyPowerLimit { power_limit_w: 300 }"])
+    );
+
+    let response = daemon.request(
+        r#"{"method":"gpu_apply_clock_offsets","gpu_index":0,"gpc_clk_vf_offset_mhz":30,"mem_clk_vf_offset_mhz":1500}"#,
+    );
+    assert_eq!(response["result"]["gpc_clk_vf_offset_mhz"], 30);
+    assert_eq!(response["result"]["gpc_clk_vf_offset_readback_mhz"], 30);
+    assert_eq!(response["result"]["mem_clk_vf_offset_mhz"], 1500);
+    assert_eq!(response["result"]["mem_clk_vf_offset_readback_mhz"], 1500);
+
+    // The mock's canned steps are 1800/1900/2000/2100: 1950 floors to 1900.
+    let response = daemon
+        .request(r#"{"method":"gpu_apply_locked_core_clock","gpu_index":0,"clock_mhz":1950}"#);
+    assert_eq!(response["result"]["requested_clock_mhz"], 1950);
+    assert_eq!(response["result"]["applied_clock_mhz"], 1900);
+    assert_eq!(response["result"]["mode"], "floor");
+    assert_eq!(
+        response["result"]["mock_ops"],
+        serde_json::json!([
+            "ApplyLockedCoreClock { clock_mhz: 1950, prefer_not_above: true, snap: true }"
+        ])
+    );
+
+    let response = daemon.request(
+        r#"{"method":"gpu_apply_locked_core_clock_range","gpu_index":0,"min_mhz":1850,"max_mhz":2150}"#,
+    );
+    assert_eq!(response["result"]["applied_min_clock_mhz"], 1900);
+    assert_eq!(response["result"]["min_mode"], "ceil");
+    assert_eq!(response["result"]["applied_max_clock_mhz"], 2100);
+    assert_eq!(response["result"]["max_mode"], "floor");
+
+    for (method, key) in [
+        ("gpu_reset_locked_core_clocks", "reset"),
+        ("gpu_reset_locked_memory_clocks", "reset"),
+        ("gpu_enable_persistence_mode", "enabled"),
+    ] {
+        let response = daemon.request(&format!(r#"{{"method":"{method}","gpu_index":0}}"#));
+        assert_eq!(response["ok"], Value::Bool(true), "{method}");
+        assert_eq!(response["result"][key], Value::Bool(true), "{method}");
+        assert_eq!(
+            response["result"]["mock_ops"].as_array().unwrap().len(),
+            1,
+            "{method}"
+        );
+    }
+}
+
+#[test]
+fn gpu_write_validation_errors_over_the_wire() {
+    let daemon = Daemon::start(&[MOCK_GPU]);
+
+    let cases = [
+        (
+            r#"{"method":"gpu_apply_power_limit","gpu_index":0,"power_limit_w":300,"bogus":1}"#,
+            "unknown request field: bogus",
+        ),
+        (
+            r#"{"method":"gpu_apply_power_limit","power_limit_w":300}"#,
+            "gpu_index must be an integer",
+        ),
+        (
+            r#"{"method":"gpu_apply_power_limit","gpu_index":-1,"power_limit_w":300}"#,
+            "gpu_index must be an integer",
+        ),
+        (
+            r#"{"method":"gpu_apply_power_limit","gpu_index":0,"power_limit_w":"300"}"#,
+            "power_limit_w must be an integer",
+        ),
+        (
+            r#"{"method":"gpu_apply_vf_offsets","gpu_index":0,"offsets":[[1,2,3]]}"#,
+            "offsets must be a list of [index, offset_khz] integer pairs",
+        ),
+        (
+            r#"{"method":"gpu_apply_locked_core_clock","gpu_index":0,"clock_mhz":1950,"prefer_not_above":"yes"}"#,
+            "prefer_not_above must be a boolean",
+        ),
+        // Unknown-field rejection precedes method dispatch (existing precedence),
+        // so the not-a-method probe carries no fields.
+        (
+            r#"{"method":"gpu_frobnicate"}"#,
+            "unknown daemon method: gpu_frobnicate",
+        ),
+    ];
+    for (request, expected) in cases {
+        let response = daemon.request(request);
+        assert_eq!(response["ok"], Value::Bool(false), "request: {request}");
+        assert_eq!(response["error"], expected, "request: {request}");
+    }
+}
+
+#[test]
+fn gpu_write_backend_error_text_is_relayed() {
+    let daemon = Daemon::start(&[
+        MOCK_GPU,
+        ("PENGUIN_BURNERD_TEST_MOCK_GPU_FAIL", "apply_power_limit_w"),
+    ]);
+    let response =
+        daemon.request(r#"{"method":"gpu_apply_power_limit","gpu_index":0,"power_limit_w":300}"#);
+    assert_eq!(response["ok"], Value::Bool(false));
+    assert_eq!(response["error"], "apply_power_limit_w mock failure");
+
+    // Other methods on the same backend still work.
+    let response = daemon.request(r#"{"method":"gpu_reset_locked_core_clocks","gpu_index":0}"#);
+    assert_eq!(response["ok"], Value::Bool(true));
+}
+
+#[test]
+fn gpu_writes_are_legal_while_a_scan_runs() {
+    let daemon = Daemon::start(&[MOCK_GPU]);
+    let (_stream, _reader, _pid) =
+        daemon.start_streaming(r#"{"method":"start_auto_uv_scan","options":{"gpu_index":0}}"#);
+
+    // The scan child is the intended caller of the write RPCs: no arbitration.
+    let response =
+        daemon.request(r#"{"method":"gpu_apply_power_limit","gpu_index":0,"power_limit_w":250}"#);
+    assert_eq!(response["ok"], Value::Bool(true));
+    assert_eq!(response["result"]["applied_w"], 250);
+}
+
+// --- milestone B: profile verification (streaming) -----------------------------
+
+#[test]
+fn verification_streams_frames_and_builds_the_exact_argv() {
+    let argv_file = std::env::temp_dir().join(format!("pb-vargv-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&argv_file);
+    let daemon = Daemon::start(&[
+        ("SCAN_STUB_EXIT_AFTER_LINES", "1"),
+        ("SCAN_STUB_ARGV_FILE", argv_file.to_str().unwrap()),
+    ]);
+
+    let mut stream = daemon.connect();
+    stream
+        .write_all(br#"{"method":"start_profile_verification","options":{"gpu_index":0,"stability_seconds":120,"auto_uv_profile":"profile-a"}}"#)
+        .unwrap();
+    stream.write_all(b"\n").unwrap();
+    stream.flush().unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut frames = Vec::new();
+    while let Some(line) = read_line(&mut reader) {
+        frames.push(serde_json::from_str::<Value>(&line).unwrap());
+    }
+    assert_eq!(frames[0]["control"], "started");
+    assert_eq!(frames[1]["line"], "{\"event\":\"auto_uv_start\"}\n");
+    assert_eq!(frames[2]["line"], "human line\n");
+    assert_eq!(frames[3]["control"], "finished");
+    assert_eq!(frames[3]["exit_code"], 0);
+
+    // The exact argv of `ui/commands.py::profile_verify_command`, with the
+    // daemon-owned stop-request file appended last.
+    let argv: Value = serde_json::from_str(&std::fs::read_to_string(&argv_file).unwrap()).unwrap();
+    assert_eq!(
+        argv,
+        serde_json::json!([
+            "--stability-test",
+            "--stability-seconds",
+            "120",
+            "--gpu-index",
+            "0",
+            "--auto-uv-profile",
+            "profile-a",
+            "--stability-stop-request-file",
+            daemon.verify_stop_request_file().to_str().unwrap(),
+        ])
+    );
+    let _ = std::fs::remove_file(&argv_file);
+}
+
+#[test]
+fn unknown_verification_option_is_rejected() {
+    let daemon = Daemon::start(&[]);
+    let mut stream = daemon.connect();
+    stream
+        .write_all(br#"{"method":"start_profile_verification","options":{"bogus":1}}"#)
+        .unwrap();
+    stream.write_all(b"\n").unwrap();
+    stream.flush().unwrap();
+    let mut reader = BufReader::new(stream);
+    let line = read_line(&mut reader).unwrap();
+    assert_eq!(
+        line,
+        "{\"ok\":false,\"error\":\"unknown profile verification option: bogus\"}\n"
+    );
+}
+
+#[test]
+fn stop_profile_verification_writes_marker_and_ends_child() {
+    let daemon = Daemon::start(&[]);
+    let (_stream, mut reader, pid) = daemon
+        .start_streaming(r#"{"method":"start_profile_verification","options":{"gpu_index":0}}"#);
+
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(status["result"]["state"], "profile_verification_running");
+    assert_eq!(
+        status["result"]["active_job"]["type"],
+        "profile_verification"
+    );
+
+    let stop = daemon.request(r#"{"method":"stop_profile_verification"}"#);
+    assert_eq!(stop["ok"], Value::Bool(true));
+    assert_eq!(stop["result"]["stopped"], Value::Bool(true));
+    assert_eq!(stop["result"]["pid"].as_u64().unwrap() as u32, pid);
+
+    let marker = std::fs::read_to_string(daemon.verify_stop_request_file()).unwrap();
+    assert_eq!(marker, "stop requested by PenguinBurner daemon client\n");
+
+    // The child exits on SIGINT and the stream finishes.
+    let mut finished = None;
+    while let Some(line) = read_line(&mut reader) {
+        let frame: Value = serde_json::from_str(&line).unwrap();
+        if frame["control"] == "finished" {
+            finished = Some(frame);
+            break;
+        }
+    }
+    assert!(finished.is_some(), "no finished frame after stop");
+    wait_until(|| !pid_alive(pid), Duration::from_secs(5));
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(status["result"]["state"], "idle");
+
+    // Stopping again reports idle (no verification running).
+    let stop = daemon.request(r#"{"method":"stop_profile_verification"}"#);
+    assert_eq!(stop["result"]["stopped"], Value::Bool(false));
+    assert_eq!(stop["result"]["state"], "idle");
+}
+
+#[test]
+fn stop_auto_uv_scan_does_not_stop_a_verification() {
+    let daemon = Daemon::start(&[]);
+    let (_stream, _reader, pid) = daemon
+        .start_streaming(r#"{"method":"start_profile_verification","options":{"gpu_index":0}}"#);
+
+    let stop = daemon.request(r#"{"method":"stop_auto_uv_scan"}"#);
+    assert_eq!(stop["result"]["stopped"], Value::Bool(false));
+    assert!(pid_alive(pid), "verification child was signalled");
+}
+
+#[test]
+fn verification_disconnect_writes_marker_and_ends_child() {
+    let daemon = Daemon::start(&[]);
+    let (stream, reader, pid) = daemon
+        .start_streaming(r#"{"method":"start_profile_verification","options":{"gpu_index":0}}"#);
+
+    drop(reader);
+    drop(stream);
+
+    let path = daemon.verify_stop_request_file();
+    wait_until(|| path.exists(), Duration::from_secs(5));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "stop requested by PenguinBurner daemon client\n"
+    );
+    wait_until(|| !pid_alive(pid), Duration::from_secs(8));
+    assert!(!pid_alive(pid), "verification child survived disconnect");
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(status["result"]["state"], "idle");
+}
+
+#[test]
+fn scan_and_verification_refuse_each_other() {
+    let daemon = Daemon::start(&[]);
+
+    // Scan running → verification, second scan, and runtime profile refused.
+    let (_stream, _reader, _pid) =
+        daemon.start_streaming(r#"{"method":"start_auto_uv_scan","options":{"gpu_index":0}}"#);
+    let refused =
+        daemon.request(r#"{"method":"start_profile_verification","options":{"gpu_index":0}}"#);
+    assert_eq!(
+        refused["error"],
+        "cannot start profile verification while Auto-UV scan is running"
+    );
+    let refused = daemon.request(r#"{"method":"start_runtime_profile","argv":[]}"#);
+    assert_eq!(
+        refused["error"],
+        "cannot start a runtime profile while Auto-UV scan is running"
+    );
+}
+
+#[test]
+fn verification_refuses_scan_second_verification_and_profile() {
+    let daemon = Daemon::start(&[]);
+    let (_stream, _reader, _pid) = daemon
+        .start_streaming(r#"{"method":"start_profile_verification","options":{"gpu_index":0}}"#);
+
+    let refused = daemon.request(r#"{"method":"start_auto_uv_scan","options":{"gpu_index":0}}"#);
+    assert_eq!(
+        refused["error"],
+        "cannot start an Auto-UV scan while profile verification is running"
+    );
+    let refused =
+        daemon.request(r#"{"method":"start_profile_verification","options":{"gpu_index":0}}"#);
+    assert_eq!(refused["error"], "profile verification is already running");
+    let refused = daemon.request(r#"{"method":"start_runtime_profile","argv":[]}"#);
+    assert_eq!(
+        refused["error"],
+        "cannot start a runtime profile while profile verification is running"
+    );
+}
+
+// --- milestone B: profile deletion ---------------------------------------------
+
+#[test]
+fn delete_auto_uv_profiles_happy_path_and_attacks() {
+    let daemon = Daemon::start(&[]);
+    let profiles_dir = daemon.profiles_dir();
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("auto-uv-profile-a.json"), "{}").unwrap();
+    std::fs::write(profiles_dir.join("auto-uv-profile-b.json"), "{}").unwrap();
+    let victim = daemon.home.join("victim.json");
+    std::fs::write(&victim, "precious").unwrap();
+
+    // Attack: ../ traversal out of the profiles dir.
+    let attack = profiles_dir.join("../../../victim.json");
+    let response = daemon.request(&format!(
+        r#"{{"method":"delete_auto_uv_profiles","paths":["{}"]}}"#,
+        attack.display()
+    ));
+    assert_eq!(response["ok"], Value::Bool(false));
+    assert!(
+        response["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("refusing to delete a path outside"),
+        "{response}"
+    );
+    assert!(victim.exists());
+
+    // Attack: absolute path outside the dir.
+    let response = daemon.request(&format!(
+        r#"{{"method":"delete_auto_uv_profiles","paths":["{}"]}}"#,
+        victim.display()
+    ));
+    assert_eq!(response["ok"], Value::Bool(false));
+    assert!(victim.exists());
+
+    // Attack: symlink inside the dir escaping it.
+    let link = profiles_dir.join("evil.json");
+    std::os::unix::fs::symlink(&victim, &link).unwrap();
+    let response = daemon.request(&format!(
+        r#"{{"method":"delete_auto_uv_profiles","paths":["{}"]}}"#,
+        link.display()
+    ));
+    assert_eq!(response["ok"], Value::Bool(false));
+    assert!(victim.exists());
+    assert!(std::fs::symlink_metadata(&link).is_ok());
+
+    // Validation: paths must be a string list; unknown fields rejected.
+    let response = daemon.request(r#"{"method":"delete_auto_uv_profiles"}"#);
+    assert_eq!(
+        response["error"],
+        "profile paths must be a JSON string list"
+    );
+    let response = daemon.request(r#"{"method":"delete_auto_uv_profiles","paths":[],"x":1}"#);
+    assert_eq!(response["error"], "unknown request field: x");
+
+    // A failing batch deletes nothing, even when it contains a valid path.
+    let response = daemon.request(&format!(
+        r#"{{"method":"delete_auto_uv_profiles","paths":["{}","{}"]}}"#,
+        profiles_dir.join("auto-uv-profile-a.json").display(),
+        victim.display()
+    ));
+    assert_eq!(response["ok"], Value::Bool(false));
+    assert!(profiles_dir.join("auto-uv-profile-a.json").exists());
+
+    // Happy path: both profiles deleted, canonical paths reported.
+    let response = daemon.request(&format!(
+        r#"{{"method":"delete_auto_uv_profiles","paths":["{}","{}"]}}"#,
+        profiles_dir.join("auto-uv-profile-a.json").display(),
+        profiles_dir.join("auto-uv-profile-b.json").display()
+    ));
+    assert_eq!(response["ok"], Value::Bool(true), "{response}");
+    let deleted = response["result"]["deleted"].as_array().unwrap();
+    assert_eq!(deleted.len(), 2);
+    assert!(deleted[0]
+        .as_str()
+        .unwrap()
+        .ends_with("auto-uv-profile-a.json"));
+    assert!(!profiles_dir.join("auto-uv-profile-a.json").exists());
+    assert!(!profiles_dir.join("auto-uv-profile-b.json").exists());
+
+    // Empty list is a successful no-op.
+    let response = daemon.request(r#"{"method":"delete_auto_uv_profiles","paths":[]}"#);
+    assert_eq!(response["result"]["deleted"], serde_json::json!([]));
 }

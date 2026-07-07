@@ -1,5 +1,7 @@
 //! The single supervisor: one `Mutex<Supervisor>` holding the profile-engine job,
-//! the Auto-UV scan job, and a generation counter (the Python identity guard).
+//! the streaming child job (Auto-UV scan or profile verification — one slot, so
+//! they are mutually exclusive), and a generation counter (the Python identity
+//! guard).
 //!
 //! Free functions take `&Mutex<Supervisor>` / `&Arc<Mutex<Supervisor>>` and manage
 //! locking themselves so lock scopes stay tiny (parity with `_ACTIVE_SCAN_LOCK`).
@@ -112,12 +114,41 @@ fn exit_code(status: ExitStatus) -> i32 {
         .unwrap_or_else(|| -status.signal().unwrap_or(0))
 }
 
-/// The active Auto-UV scan child. `generation` is the identity guard: a stale
-/// monitor only clears/restarts if the supervisor still holds this exact job.
-pub struct ScanJob {
+/// Which streaming child occupies the (single) child-job slot. A scan and a
+/// profile verification are mutually exclusive: both own the GPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildKind {
+    Scan,
+    Verify,
+}
+
+impl ChildKind {
+    /// Write this kind's cooperative stop marker. `abort_final_choice` selects
+    /// the scan's abort-vs-offer reason (the verification marker has no reason).
+    pub fn write_stop_request(self, abort_final_choice: bool) {
+        match self {
+            ChildKind::Scan => paths::write_auto_uv_stop_request(abort_final_choice),
+            ChildKind::Verify => paths::write_profile_verify_stop_request(),
+        }
+    }
+
+    /// Clear this kind's stale stop marker (`NotFound` is success).
+    fn clear_stop_request(self) -> std::io::Result<()> {
+        match self {
+            ChildKind::Scan => paths::clear_auto_uv_stop_request(),
+            ChildKind::Verify => paths::clear_profile_verify_stop_request(),
+        }
+    }
+}
+
+/// The active streaming child (Auto-UV scan or profile verification).
+/// `generation` is the identity guard: a stale monitor only clears/restarts if
+/// the supervisor still holds this exact job.
+pub struct ChildJob {
     pub proc: ChildProc,
     pub argv: Vec<String>,
     pub generation: u64,
+    pub kind: ChildKind,
 }
 
 struct ProfileJob {
@@ -127,8 +158,8 @@ struct ProfileJob {
 
 pub struct Supervisor {
     profile: Option<ProfileJob>,
-    scan: Option<Arc<ScanJob>>,
-    scan_generation: u64,
+    child: Option<Arc<ChildJob>>,
+    child_generation: u64,
 }
 
 impl Default for Supervisor {
@@ -141,27 +172,28 @@ impl Supervisor {
     pub fn new() -> Self {
         Supervisor {
             profile: None,
-            scan: None,
-            scan_generation: 0,
+            child: None,
+            child_generation: 0,
         }
     }
 
-    fn scan_running(&self) -> bool {
-        self.scan
+    fn child_running_kind(&self) -> Option<ChildKind> {
+        self.child
             .as_ref()
-            .is_some_and(|job| job.proc.poll().is_none())
+            .filter(|job| job.proc.poll().is_none())
+            .map(|job| job.kind)
     }
 
-    fn next_scan_generation(&mut self) -> u64 {
-        self.scan_generation += 1;
-        self.scan_generation
+    fn next_child_generation(&mut self) -> u64 {
+        self.child_generation += 1;
+        self.child_generation
     }
 
-    /// Stop the engine so the scan can own the GPU. Mirrors
+    /// Stop the engine so the child can own the GPU. Mirrors
     /// `_stop_autostart_runtime_for_scan`: only stop+clear a *running* engine; a
     /// job that already exited is left in place (so autostart restart stays
     /// idempotent).
-    fn stop_engine_for_scan(&mut self) {
+    fn stop_engine_for_child(&mut self) {
         if let Some(job) = self.profile.as_mut() {
             if job.engine.is_running() {
                 job.engine.stop(ENGINE_STOP_TIMEOUT);
@@ -169,6 +201,23 @@ impl Supervisor {
             }
         }
     }
+}
+
+/// The refusal error for starting `requested` while `running` occupies the
+/// child slot. The scan-vs-scan text is byte-exact with the Python daemon; the
+/// verification texts are new (the method is milestone-B additive).
+fn child_refusal(running: ChildKind, requested: ChildKind) -> String {
+    match (running, requested) {
+        (ChildKind::Scan, ChildKind::Scan) => "Auto-UV scan is already running",
+        (ChildKind::Verify, ChildKind::Verify) => "profile verification is already running",
+        (ChildKind::Scan, ChildKind::Verify) => {
+            "cannot start profile verification while Auto-UV scan is running"
+        }
+        (ChildKind::Verify, ChildKind::Scan) => {
+            "cannot start an Auto-UV scan while profile verification is running"
+        }
+    }
+    .to_string()
 }
 
 fn guard(sup: &Mutex<Supervisor>) -> MutexGuard<'_, Supervisor> {
@@ -245,17 +294,29 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
     let supervisor = guard(sup);
     let version = env!("CARGO_PKG_VERSION").to_string();
 
-    if let Some(job) = &supervisor.scan {
+    if let Some(job) = &supervisor.child {
         let returncode = job.proc.poll();
+        let (running_state, stopped_state, job_type) = match job.kind {
+            ChildKind::Scan => (
+                "auto_uv_scan_running",
+                "auto_uv_scan_stopped",
+                "auto_uv_scan",
+            ),
+            ChildKind::Verify => (
+                "profile_verification_running",
+                "profile_verification_stopped",
+                "profile_verification",
+            ),
+        };
         let state = if returncode.is_none() {
-            "auto_uv_scan_running"
+            running_state
         } else {
-            "auto_uv_scan_stopped"
+            stopped_state
         };
         return StatusResult {
             state: state.to_string(),
             active_job: Some(ActiveJob {
-                job_type: "auto_uv_scan",
+                job_type,
                 argv: job.argv.clone(),
                 pid: job.proc.pid(),
                 returncode,
@@ -292,12 +353,21 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
 }
 
 pub fn stop_auto_uv_scan(sup: &Mutex<Supervisor>) -> StopResult {
+    stop_child(sup, ChildKind::Scan)
+}
+
+pub fn stop_profile_verification(sup: &Mutex<Supervisor>) -> StopResult {
+    stop_child(sup, ChildKind::Verify)
+}
+
+/// Cooperative stop: write the kind's stop-request marker FIRST, then SIGINT
+/// (ordered protocol, parity with the Python daemon's scan stop).
+fn stop_child(sup: &Mutex<Supervisor>, kind: ChildKind) -> StopResult {
     let supervisor = guard(sup);
-    match &supervisor.scan {
-        Some(job) if job.proc.poll().is_none() => {
+    match &supervisor.child {
+        Some(job) if job.kind == kind && job.proc.poll().is_none() => {
             let pid = job.proc.pid();
-            // Write the stop-request file FIRST, then SIGINT (ordered protocol).
-            paths::write_auto_uv_stop_request(false);
+            kind.write_stop_request(false);
             job.proc.signal(libc::SIGINT);
             StopResult::stopped(pid)
         }
@@ -311,10 +381,21 @@ pub fn start_runtime_profile(
 ) -> Result<StartResult, String> {
     {
         let mut supervisor = guard(sup);
-        if supervisor.scan_running() {
-            return Err("cannot start a runtime profile while Auto-UV scan is running".to_string());
+        match supervisor.child_running_kind() {
+            Some(ChildKind::Scan) => {
+                return Err(
+                    "cannot start a runtime profile while Auto-UV scan is running".to_string(),
+                );
+            }
+            Some(ChildKind::Verify) => {
+                return Err(
+                    "cannot start a runtime profile while profile verification is running"
+                        .to_string(),
+                );
+            }
+            None => {}
         }
-        supervisor.stop_engine_for_scan();
+        supervisor.stop_engine_for_child();
         let engine = profile::start(EngineOptions::from_argv(&argv)).map_err(|e| e.to_string())?;
         supervisor.profile = Some(ProfileJob {
             engine,
@@ -344,53 +425,55 @@ pub fn stop_runtime_profile(sup: &Mutex<Supervisor>) -> StopResult {
     }
 }
 
-/// Result of the atomic scan-start critical section.
-pub enum ScanStart {
-    Refused,
+/// Result of the atomic child-start critical section.
+pub enum ChildStart {
+    Refused(String),
     ClearFailed(String),
     SpawnFailed(String),
-    Started(Arc<ScanJob>, File),
+    Started(Arc<ChildJob>, File),
 }
 
 /// Atomically (under one lock, like Python's `_ACTIVE_SCAN_LOCK`): refuse a
-/// concurrent scan, clear the stale stop-request, stop the engine, spawn the
-/// child via `spawn`, and install the job. Holding the lock across the spawn is
-/// what prevents two racing requests from both launching a scan.
-pub fn begin_scan(
+/// concurrent scan/verification, clear the kind's stale stop-request, stop the
+/// engine, spawn the child via `spawn`, and install the job. Holding the lock
+/// across the spawn is what prevents two racing requests from both launching.
+pub fn begin_child(
     sup: &Mutex<Supervisor>,
+    kind: ChildKind,
     argv: Vec<String>,
     spawn: impl FnOnce(&[String]) -> std::io::Result<(Child, File)>,
-) -> ScanStart {
+) -> ChildStart {
     let mut supervisor = guard(sup);
-    if supervisor.scan_running() {
-        return ScanStart::Refused;
+    if let Some(running) = supervisor.child_running_kind() {
+        return ChildStart::Refused(child_refusal(running, kind));
     }
-    if let Err(err) = paths::clear_auto_uv_stop_request() {
-        return ScanStart::ClearFailed(err.to_string());
+    if let Err(err) = kind.clear_stop_request() {
+        return ChildStart::ClearFailed(err.to_string());
     }
-    supervisor.stop_engine_for_scan();
+    supervisor.stop_engine_for_child();
     let (child, reader) = match spawn(&argv) {
         Ok(pair) => pair,
-        Err(err) => return ScanStart::SpawnFailed(err.to_string()),
+        Err(err) => return ChildStart::SpawnFailed(err.to_string()),
     };
-    let generation = supervisor.next_scan_generation();
-    let job = Arc::new(ScanJob {
+    let generation = supervisor.next_child_generation();
+    let job = Arc::new(ChildJob {
         proc: ChildProc::new(child),
         argv,
         generation,
+        kind,
     });
-    supervisor.scan = Some(job.clone());
-    ScanStart::Started(job, reader)
+    supervisor.child = Some(job.clone());
+    ChildStart::Started(job, reader)
 }
 
-/// Clear the scan slot if it still holds `job` (identity guard) and, if so,
+/// Clear the child slot if it still holds `job` (identity guard) and, if so,
 /// restart the persisted runtime profile now that the GPU is free.
-pub fn finish_scan(sup: &Arc<Mutex<Supervisor>>, job: &Arc<ScanJob>) {
+pub fn finish_child(sup: &Arc<Mutex<Supervisor>>, job: &Arc<ChildJob>) {
     let restart = {
         let mut supervisor = guard(sup);
-        match &supervisor.scan {
+        match &supervisor.child {
             Some(current) if current.generation == job.generation => {
-                supervisor.scan = None;
+                supervisor.child = None;
                 true
             }
             _ => false,

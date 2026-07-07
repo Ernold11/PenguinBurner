@@ -1,6 +1,8 @@
 mod api;
 mod argvspec;
+mod delete;
 mod gpu;
+mod gpu_rpc;
 mod logging;
 mod paths;
 mod profile;

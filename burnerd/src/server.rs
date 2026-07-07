@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::api::{self, StreamError};
 use crate::scan;
-use crate::supervisor::Supervisor;
+use crate::supervisor::{ChildKind, Supervisor};
 
 const ALLOWED_UID_ENV: &str = "PENGUIN_BURNER_DAEMON_ALLOWED_UID";
 const UID_DENIED_LINE: &[u8] = b"{\"ok\":false,\"error\":\"daemon client uid is not allowed\"}\n";
@@ -92,11 +92,11 @@ fn handle_connection(stream: UnixStream, sup: &Arc<Mutex<Supervisor>>) {
             continue;
         }
         match serde_json::from_str::<Value>(line) {
-            Ok(value) if is_start_scan(&value) => {
-                handle_start_scan(&value, sup, &mut writer);
-                return; // streaming consumes the connection
-            }
             Ok(value) => {
+                if let Some(kind) = streaming_kind(&value) {
+                    handle_start_stream(kind, &value, sup, &mut writer);
+                    return; // streaming consumes the connection
+                }
                 let response = api::handle_request(sup, &value);
                 if !api::write_response(&mut writer, response) {
                     return;
@@ -113,13 +113,22 @@ fn handle_connection(stream: UnixStream, sup: &Arc<Mutex<Supervisor>>) {
     }
 }
 
-fn is_start_scan(value: &Value) -> bool {
-    value.get("method").and_then(Value::as_str) == Some("start_auto_uv_scan")
+fn streaming_kind(value: &Value) -> Option<ChildKind> {
+    match value.get("method").and_then(Value::as_str) {
+        Some("start_auto_uv_scan") => Some(ChildKind::Scan),
+        Some("start_profile_verification") => Some(ChildKind::Verify),
+        _ => None,
+    }
 }
 
-fn handle_start_scan(value: &Value, sup: &Arc<Mutex<Supervisor>>, writer: &mut UnixStream) {
-    // `is_start_scan` already established this is an object with a string method.
-    let object = value.as_object().expect("start_auto_uv_scan is an object");
+fn handle_start_stream(
+    kind: ChildKind,
+    value: &Value,
+    sup: &Arc<Mutex<Supervisor>>,
+    writer: &mut UnixStream,
+) {
+    // `streaming_kind` already established this is an object with a string method.
+    let object = value.as_object().expect("streaming request is an object");
     let mut unknown: Vec<&str> = object
         .keys()
         .filter(|key| key.as_str() != "method" && key.as_str() != "options")
@@ -134,7 +143,10 @@ fn handle_start_scan(value: &Value, sup: &Arc<Mutex<Supervisor>>, writer: &mut U
         return;
     }
     let options = object.get("options").cloned().unwrap_or(Value::Null);
-    scan::run_scan(sup, &options, writer);
+    match kind {
+        ChildKind::Scan => scan::run_scan(sup, &options, writer),
+        ChildKind::Verify => scan::run_verification(sup, &options, writer),
+    }
 }
 
 fn peer_uid_allowed(stream: &UnixStream) -> bool {

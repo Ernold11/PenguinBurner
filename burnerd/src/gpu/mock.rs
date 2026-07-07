@@ -1,4 +1,5 @@
-//! `MockGpu`: a dumb in-memory [`GpuBackend`] for the wave-A3 engine tests.
+//! `MockGpu`: a dumb in-memory [`GpuBackend`] for the wave-A3 engine tests and
+//! the `PENGUIN_BURNERD_TEST_MOCK_GPU` RPC seam (`gpu_rpc`).
 //!
 //! No mocking framework — just settable telemetry (plain public fields), a
 //! `Vec` of recorded write operations, and a per-method failure-injection map.
@@ -138,6 +139,7 @@ impl MockGpu {
     }
 
     /// Clear an injected failure.
+    #[allow(dead_code)] // used by unit tests only (the module is not test-gated)
     pub fn clear_failure(&self, method: &'static str) {
         self.failures.borrow_mut().remove(method);
     }

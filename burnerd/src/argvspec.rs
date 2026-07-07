@@ -68,30 +68,60 @@ pub fn parse_runtime_argv(argv: Option<&Value>) -> Result<Vec<String>, String> {
     Ok(clean)
 }
 
+/// Profile-verification option key → CLI flag, in the exact argv order of
+/// `ui/commands.py::profile_verify_command` (after the fixed `--stability-test`
+/// prefix; the daemon-owned `--stability-stop-request-file` is appended last).
+pub const PROFILE_VERIFY_OPTION_FLAGS: &[(&str, &str)] = &[
+    ("stability_seconds", "--stability-seconds"),
+    ("gpu_index", "--gpu-index"),
+    ("auto_uv_profile", "--auto-uv-profile"),
+];
+
 /// Build the Auto-UV option flag pairs that follow the fixed scan-command prefix
 /// (`_auto_uv_scan_command`). Errors are byte-exact with Python.
 pub fn auto_uv_option_args(options: &Value) -> Result<Vec<String>, String> {
+    option_args(
+        options,
+        AUTO_UV_OPTION_FLAGS,
+        "start_auto_uv_scan options must be a JSON object",
+        "Auto-UV option",
+    )
+}
+
+/// Build the profile-verification option flag pairs (same option semantics as
+/// the scan: whitelist keys, skip null/empty, scalars only).
+pub fn profile_verify_option_args(options: &Value) -> Result<Vec<String>, String> {
+    option_args(
+        options,
+        PROFILE_VERIFY_OPTION_FLAGS,
+        "start_profile_verification options must be a JSON object",
+        "profile verification option",
+    )
+}
+
+fn option_args(
+    options: &Value,
+    flags: &[(&str, &str)],
+    object_error: &str,
+    label: &str,
+) -> Result<Vec<String>, String> {
     let object = match options.as_object() {
         Some(object) => object,
-        None => return Err("start_auto_uv_scan options must be a JSON object".to_string()),
+        None => return Err(object_error.to_string()),
     };
 
     let mut unknown: Vec<&str> = object
         .keys()
-        .filter(|key| {
-            !AUTO_UV_OPTION_FLAGS
-                .iter()
-                .any(|(known, _)| *known == key.as_str())
-        })
+        .filter(|key| !flags.iter().any(|(known, _)| *known == key.as_str()))
         .map(|key| key.as_str())
         .collect();
     unknown.sort_unstable();
     if !unknown.is_empty() {
-        return Err(format!("unknown Auto-UV option: {}", unknown.join(", ")));
+        return Err(format!("unknown {label}: {}", unknown.join(", ")));
     }
 
     let mut args = Vec::new();
-    for (key, flag) in AUTO_UV_OPTION_FLAGS {
+    for (key, flag) in flags {
         let value = match object.get(*key) {
             Some(value) => value,
             None => continue,
@@ -107,7 +137,7 @@ pub fn auto_uv_option_args(options: &Value) -> Result<Vec<String>, String> {
         }
         let text = match command_value_text(value) {
             Some(text) => text,
-            None => return Err(format!("Auto-UV option {key} must be scalar")),
+            None => return Err(format!("{label} {key} must be scalar")),
         };
         args.push((*flag).to_string());
         args.push(text);
@@ -295,6 +325,47 @@ mod tests {
     fn scan_command_rejects_non_scalar_value() {
         let err = auto_uv_option_args(&json!({"gpu_index": [1]})).unwrap_err();
         assert_eq!(err, "Auto-UV option gpu_index must be scalar");
+    }
+
+    #[test]
+    fn verify_command_argv_order_matches_profile_verify_command() {
+        // Map order fixes the argv order regardless of the JSON key order.
+        let options =
+            json!({"auto_uv_profile": "profile-a", "gpu_index": 0, "stability_seconds": 120});
+        let args = profile_verify_option_args(&options).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "--stability-seconds",
+                "120",
+                "--gpu-index",
+                "0",
+                "--auto-uv-profile",
+                "profile-a"
+            ]
+        );
+    }
+
+    #[test]
+    fn verify_command_skips_null_and_empty_and_rejects_unknown() {
+        let args = profile_verify_option_args(
+            &json!({"gpu_index": 1, "auto_uv_profile": "", "stability_seconds": null}),
+        )
+        .unwrap();
+        assert_eq!(args, vec!["--gpu-index", "1"]);
+
+        assert_eq!(
+            profile_verify_option_args(&json!({"zeta": 1, "alpha": 2})).unwrap_err(),
+            "unknown profile verification option: alpha, zeta"
+        );
+        assert_eq!(
+            profile_verify_option_args(&json!("x")).unwrap_err(),
+            "start_profile_verification options must be a JSON object"
+        );
+        assert_eq!(
+            profile_verify_option_args(&json!({"gpu_index": [1]})).unwrap_err(),
+            "profile verification option gpu_index must be scalar"
+        );
     }
 
     #[test]

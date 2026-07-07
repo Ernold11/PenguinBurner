@@ -1,6 +1,8 @@
-//! Auto-UV scan child management: spawn the (unchanged, Python) scan, relay its
-//! merged stdout/stderr as JSON-line frames, and drive the two-part stop protocol
-//! + detached kill ladder. Parity with `stream_auto_uv_scan` (spec 01 §4.4).
+//! Streaming-child management for the Auto-UV scan and profile verification:
+//! spawn the (unchanged, Python) CLI child, relay its merged stdout/stderr as
+//! JSON-line frames, and drive the stop protocol + detached kill ladder. Scan
+//! behavior is parity with `stream_auto_uv_scan` (spec 01 §4.4); verification
+//! reuses the same machinery with its own argv whitelist and stop marker.
 
 use std::env;
 use std::fs::File;
@@ -16,7 +18,8 @@ use serde_json::Value;
 
 use crate::api::{write_json_line, StreamError, StreamFinished, StreamLine, StreamStarted};
 use crate::argvspec;
-use crate::supervisor::{self, ScanJob, ScanStart, Supervisor};
+use crate::paths;
+use crate::supervisor::{self, ChildJob, ChildKind, ChildStart, Supervisor};
 
 /// Kill-ladder timings. Shrunk by the undocumented `PENGUIN_BURNERD_TEST_TIMINGS`
 /// env (integration tests only) so the ladder can be exercised quickly.
@@ -42,9 +45,15 @@ fn timings() -> Timings {
     }
 }
 
+/// The launch-failure label for each child kind.
+fn launch_label(kind: ChildKind) -> &'static str {
+    match kind {
+        ChildKind::Scan => "Auto-UV scan",
+        ChildKind::Verify => "profile verification",
+    }
+}
+
 /// Handle a `start_auto_uv_scan` request on `writer` (the connection stream).
-/// This consumes the connection: it streams frames until the scan finishes or the
-/// client disconnects, then returns.
 pub fn run_scan(sup: &Arc<Mutex<Supervisor>>, options: &Value, writer: &mut UnixStream) {
     let option_args = match argvspec::auto_uv_option_args(options) {
         Ok(args) => args,
@@ -53,37 +62,74 @@ pub fn run_scan(sup: &Arc<Mutex<Supervisor>>, options: &Value, writer: &mut Unix
             return;
         }
     };
-
-    let program_file = supervisor::daemon_program_file();
     let mut argv = vec![
         "--auto-uv-voltage-scan".to_string(),
         "--json-events".to_string(),
         "--auto-uv-require-final-choice".to_string(),
     ];
     argv.extend(option_args);
+    run_child(sup, ChildKind::Scan, argv, writer);
+}
+
+/// Handle a `start_profile_verification` request on `writer`. The argv mirrors
+/// `ui/commands.py::profile_verify_command` (`--stability-test` prefix, then
+/// the whitelisted options in its exact order); the stop-request file is owned
+/// by the daemon and always appended, pointing at the effective user's config
+/// dir like the Qt `VerifyController` did.
+pub fn run_verification(sup: &Arc<Mutex<Supervisor>>, options: &Value, writer: &mut UnixStream) {
+    let option_args = match argvspec::profile_verify_option_args(options) {
+        Ok(args) => args,
+        Err(err) => {
+            write_json_line(writer, &StreamError::new(err));
+            return;
+        }
+    };
+    let mut argv = vec!["--stability-test".to_string()];
+    argv.extend(option_args);
+    argv.push("--stability-stop-request-file".to_string());
+    argv.push(
+        paths::profile_verify_stop_request_path()
+            .display()
+            .to_string(),
+    );
+    run_child(sup, ChildKind::Verify, argv, writer);
+}
+
+/// Start + stream one child. This consumes the connection: it streams frames
+/// until the child finishes or the client disconnects, then returns.
+fn run_child(
+    sup: &Arc<Mutex<Supervisor>>,
+    kind: ChildKind,
+    argv: Vec<String>,
+    writer: &mut UnixStream,
+) {
+    let program_file = supervisor::daemon_program_file();
 
     // The whole check-clear-stop-spawn-install runs atomically under the lock.
     let (job, reader) =
-        match supervisor::begin_scan(sup, argv, |argv| spawn_scan_child(&program_file, argv)) {
-            ScanStart::Started(job, reader) => (job, reader),
-            ScanStart::Refused => {
+        match supervisor::begin_child(sup, kind, argv, |argv| spawn_child(&program_file, argv)) {
+            ChildStart::Started(job, reader) => (job, reader),
+            ChildStart::Refused(err) => {
+                write_json_line(writer, &StreamError::new(err));
+                return;
+            }
+            ChildStart::ClearFailed(err) => {
+                // The scan text is byte-exact with the Python daemon ("Auto-UV",
+                // not "Auto-UV scan"); the verification text is new.
+                let label = match kind {
+                    ChildKind::Scan => "Auto-UV",
+                    ChildKind::Verify => "profile verification",
+                };
                 write_json_line(
                     writer,
-                    &StreamError::new("Auto-UV scan is already running".to_string()),
+                    &StreamError::new(format!("failed to clear stale {label} stop request: {err}")),
                 );
                 return;
             }
-            ScanStart::ClearFailed(err) => {
+            ChildStart::SpawnFailed(err) => {
                 write_json_line(
                     writer,
-                    &StreamError::new(format!("failed to clear stale Auto-UV stop request: {err}")),
-                );
-                return;
-            }
-            ScanStart::SpawnFailed(err) => {
-                write_json_line(
-                    writer,
-                    &StreamError::new(format!("failed to launch Auto-UV scan: {err}")),
+                    &StreamError::new(format!("failed to launch {}: {err}", launch_label(kind))),
                 );
                 return;
             }
@@ -103,7 +149,7 @@ pub fn run_scan(sup: &Arc<Mutex<Supervisor>>, options: &Value, writer: &mut Unix
 /// emit `finished`; on client disconnect, run the abort + detached kill ladder.
 fn stream_stdout(
     sup: &Arc<Mutex<Supervisor>>,
-    job: Arc<ScanJob>,
+    job: Arc<ChildJob>,
     reader: File,
     writer: &mut UnixStream,
 ) {
@@ -139,24 +185,25 @@ fn stream_stdout(
     // finally: `completed or poll() is not None` → finish; else disconnect.
     if completed || job.proc.poll().is_some() {
         drop(reader);
-        supervisor::finish_scan(sup, &job);
+        supervisor::finish_child(sup, &job);
     } else {
         disconnect_cleanup(sup, job, reader.into_inner());
     }
 }
 
-/// Client-disconnect cleanup: abort stop-request + SIGINT, then detach a drain
+/// Client-disconnect cleanup: stop-request marker + SIGINT, then detach a drain
 /// thread and a kill-ladder monitor thread (parity `_start_detached_scan_monitor`).
-fn disconnect_cleanup(sup: &Arc<Mutex<Supervisor>>, job: Arc<ScanJob>, reader: File) {
-    crate::paths::write_auto_uv_stop_request(true);
+fn disconnect_cleanup(sup: &Arc<Mutex<Supervisor>>, job: Arc<ChildJob>, reader: File) {
+    // Disconnect is an abort (scan: abort-final-choice reason).
+    job.kind.write_stop_request(true);
     job.proc.signal(libc::SIGINT);
     start_detached_monitor(sup, job, reader);
 }
 
-fn start_detached_monitor(sup: &Arc<Mutex<Supervisor>>, job: Arc<ScanJob>, reader: File) {
+fn start_detached_monitor(sup: &Arc<Mutex<Supervisor>>, job: Arc<ChildJob>, reader: File) {
     // Drain thread: consume stdout to EOF so the child never blocks on a full pipe.
     let _ = thread::Builder::new()
-        .name("penguin-burner-auto-uv-scan-drain".to_string())
+        .name("penguin-burner-child-drain".to_string())
         .spawn(move || {
             let mut reader = reader;
             let mut sink = [0u8; 8192];
@@ -166,13 +213,13 @@ fn start_detached_monitor(sup: &Arc<Mutex<Supervisor>>, job: Arc<ScanJob>, reade
     // Monitor thread: the kill ladder, then finish.
     let sup = sup.clone();
     let _ = thread::Builder::new()
-        .name("penguin-burner-auto-uv-scan-monitor".to_string())
+        .name("penguin-burner-child-monitor".to_string())
         .spawn(move || {
-            wait_for_detached_scan(&sup, &job);
+            wait_for_detached_child(&sup, &job);
         });
 }
 
-fn wait_for_detached_scan(sup: &Arc<Mutex<Supervisor>>, job: &Arc<ScanJob>) {
+fn wait_for_detached_child(sup: &Arc<Mutex<Supervisor>>, job: &Arc<ChildJob>) {
     let timings = timings();
     if job.proc.wait_timeout(timings.kill_after).is_none() {
         job.proc.signal(libc::SIGTERM);
@@ -181,12 +228,12 @@ fn wait_for_detached_scan(sup: &Arc<Mutex<Supervisor>>, job: &Arc<ScanJob>) {
             let _ = job.proc.wait_timeout(timings.kill_grace);
         }
     }
-    supervisor::finish_scan(sup, job);
+    supervisor::finish_child(sup, job);
 }
 
-/// Spawn the scan child with stdout and stderr merged onto one pipe, `cwd="/"`.
+/// Spawn the child with stdout and stderr merged onto one pipe, `cwd="/"`.
 /// Returns the child and the read end of the pipe.
-fn spawn_scan_child(program_file: &str, argv: &[String]) -> std::io::Result<(Child, File)> {
+fn spawn_child(program_file: &str, argv: &[String]) -> std::io::Result<(Child, File)> {
     let mut fds = [0i32; 2];
     // SAFETY: pipe2 fills `fds` with a (read, write) pair; both are O_CLOEXEC so
     // they never leak into the child except via the explicit stdio dup below.
@@ -212,6 +259,20 @@ fn spawn_scan_child(program_file: &str, argv: &[String]) -> std::io::Result<(Chi
         .stdout(Stdio::from(write_file))
         .stderr(Stdio::from(write_clone));
     // stdin is inherited (parity: the Python daemon does not redirect it).
+
+    // The daemon blocks SIGINT/SIGTERM process-wide (signal thread) and the
+    // mask survives exec — without a reset the child would never receive the
+    // stop SIGINT (the Python daemon's children inherited a default mask).
+    // SAFETY: runs between fork and exec; sigprocmask is async-signal-safe.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(|| {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigprocmask(libc::SIG_SETMASK, &set, std::ptr::null_mut());
+            Ok(())
+        });
+    }
 
     let child = command.spawn()?;
     // The parent's copies of the write end were moved into `command` and are now

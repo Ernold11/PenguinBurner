@@ -12,6 +12,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::argvspec;
+use crate::delete;
+use crate::gpu_rpc;
 use crate::supervisor::{self, Supervisor};
 
 #[derive(Debug, Serialize)]
@@ -70,6 +72,8 @@ pub enum MethodResult {
     Status(StatusResult),
     Start(StartResult),
     Stop(StopResult),
+    /// Dynamic result dicts (milestone-B `gpu_*` writes + profile deletion).
+    Value(Value),
 }
 
 #[derive(Debug, Serialize)]
@@ -167,7 +171,14 @@ pub fn write_response<W: Write>(writer: &mut W, response: Result<MethodResult, S
 }
 
 /// Dispatch a non-streaming request (`handle_request`). Field validation and the
-/// error strings are byte-exact with `runtime/daemon_api.py::handle_request`.
+/// error strings are byte-exact with `runtime/daemon_api.py::handle_request`;
+/// the milestone-B methods (`gpu_*`, `stop_profile_verification`,
+/// `delete_auto_uv_profiles`) are additive and reuse the same validation style.
+///
+/// Engine/scan interplay: `gpu_*` writes carry NO supervisor arbitration — they
+/// are legal in any state. During a scan or verification the profile engine is
+/// stopped by design and the streaming child is the intended caller of these
+/// writes; adding arbitration here would deadlock the very flow they serve.
 pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<MethodResult, String> {
     let object = match payload.as_object() {
         Some(object) => object,
@@ -175,13 +186,18 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
     };
 
     let method = object.get("method").and_then(Value::as_str);
-    let allow_argv = method == Some("start_runtime_profile");
+    let allowed_fields: &[&str] = match method {
+        Some("start_runtime_profile") => &["argv"],
+        Some("delete_auto_uv_profiles") => &["paths"],
+        Some(name) if gpu_rpc::is_gpu_method(name) => gpu_rpc::allowed_fields(name),
+        _ => &[],
+    };
 
     let mut unknown: Vec<&str> = object
         .keys()
         .filter(|key| {
             let key = key.as_str();
-            key != "method" && !(allow_argv && key == "argv")
+            key != "method" && !allowed_fields.contains(&key)
         })
         .map(String::as_str)
         .collect();
@@ -193,12 +209,21 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
     match method {
         Some("status") => Ok(MethodResult::Status(supervisor::status(sup))),
         Some("stop_auto_uv_scan") => Ok(MethodResult::Stop(supervisor::stop_auto_uv_scan(sup))),
+        Some("stop_profile_verification") => Ok(MethodResult::Stop(
+            supervisor::stop_profile_verification(sup),
+        )),
         Some("start_runtime_profile") => {
             let argv = argvspec::parse_runtime_argv(object.get("argv"))?;
             supervisor::start_runtime_profile(sup, argv).map(MethodResult::Start)
         }
         Some("stop_runtime_profile") => {
             Ok(MethodResult::Stop(supervisor::stop_runtime_profile(sup)))
+        }
+        Some("delete_auto_uv_profiles") => {
+            delete::delete_auto_uv_profiles(object.get("paths")).map(MethodResult::Value)
+        }
+        Some(name) if gpu_rpc::is_gpu_method(name) => {
+            gpu_rpc::handle(name, object).map(MethodResult::Value)
         }
         Some(name) if !name.is_empty() => Err(format!("unknown daemon method: {name}")),
         _ => Err("request method is required".to_string()),
@@ -288,5 +313,55 @@ mod tests {
             text,
             "{\"ok\":true,\"result\":{\"stopped\":false,\"state\":\"idle\"}}"
         );
+    }
+
+    #[test]
+    fn stop_profile_verification_when_idle() {
+        let sup = fresh();
+        let result = handle_request(&sup, &json!({"method": "stop_profile_verification"})).unwrap();
+        let text = serde_json::to_string(&OkEnvelope { ok: true, result }).unwrap();
+        assert_eq!(
+            text,
+            "{\"ok\":true,\"result\":{\"stopped\":false,\"state\":\"idle\"}}"
+        );
+    }
+
+    #[test]
+    fn gpu_method_rejects_unknown_field_and_bad_gpu_index() {
+        let sup = fresh();
+        // Both failures happen before any backend is opened (no NVML in tests).
+        let err = handle_request(
+            &sup,
+            &json!({"method": "gpu_apply_power_limit", "gpu_index": 0, "power_limit_w": 1, "bogus": 1}),
+        )
+        .unwrap_err();
+        assert_eq!(err, "unknown request field: bogus");
+
+        let err = handle_request(
+            &sup,
+            &json!({"method": "gpu_apply_power_limit", "gpu_index": "x", "power_limit_w": 1}),
+        )
+        .unwrap_err();
+        assert_eq!(err, "gpu_index must be an integer");
+    }
+
+    #[test]
+    fn delete_auto_uv_profiles_requires_a_string_list() {
+        let sup = fresh();
+        let err = handle_request(&sup, &json!({"method": "delete_auto_uv_profiles"})).unwrap_err();
+        assert_eq!(err, "profile paths must be a JSON string list");
+        let err = handle_request(
+            &sup,
+            &json!({"method": "delete_auto_uv_profiles", "paths": [1]}),
+        )
+        .unwrap_err();
+        assert_eq!(err, "profile paths must be a JSON string list");
+        // Unknown fields are rejected before any filesystem work.
+        let err = handle_request(
+            &sup,
+            &json!({"method": "delete_auto_uv_profiles", "paths": [], "force": true}),
+        )
+        .unwrap_err();
+        assert_eq!(err, "unknown request field: force");
     }
 }

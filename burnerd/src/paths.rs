@@ -147,9 +147,22 @@ pub fn effective_home() -> PathBuf {
     home_fallback()
 }
 
+/// `<home>/.config/PenguinBurner` for an explicit home. The single place the
+/// `.config/PenguinBurner` spelling lives.
+pub fn config_dir_in(home: &Path) -> PathBuf {
+    home.join(".config").join("PenguinBurner")
+}
+
 /// `<home>/.config/PenguinBurner`.
 pub fn user_config_dir() -> PathBuf {
-    effective_home().join(".config").join("PenguinBurner")
+    config_dir_in(&effective_home())
+}
+
+/// `<home>/.config/PenguinBurner/auto-uv-profiles` for an explicit home (the
+/// deletion flow passes a *canonicalized* home so the suffix can be checked
+/// symlink-free). Mirrors `profiles/uv/profile_store.py::auto_uv_profiles_dir`.
+pub fn auto_uv_profiles_dir_in(home: &Path) -> PathBuf {
+    config_dir_in(home).join("auto-uv-profiles")
 }
 
 /// `<config>/auto-uv-stop-requested` (a marker file, no `.json`).
@@ -157,20 +170,47 @@ pub fn auto_uv_stop_request_path() -> PathBuf {
     user_config_dir().join("auto-uv-stop-requested")
 }
 
+/// `<config>/profile-verify-stop-requested` — the cooperative stop marker the
+/// `--stability-test` child polls (same file the Qt `VerifyController` used).
+pub fn profile_verify_stop_request_path() -> PathBuf {
+    user_config_dir().join("profile-verify-stop-requested")
+}
+
+/// Write the profile-verification stop marker (best-effort). The child only
+/// checks existence; the content is informational.
+pub fn write_profile_verify_stop_request() {
+    write_marker(
+        &profile_verify_stop_request_path(),
+        "stop requested by PenguinBurner daemon client\n",
+    );
+}
+
+/// Remove the profile-verification stop marker (`NotFound` is success).
+pub fn clear_profile_verify_stop_request() -> io::Result<()> {
+    clear_marker(&profile_verify_stop_request_path())
+}
+
 /// Write the stop-request marker (best-effort, all errors swallowed). Content is
 /// byte-identical to the Python daemon's `_write_auto_uv_stop_request`.
 pub fn write_auto_uv_stop_request(abort_final_choice: bool) {
-    let path = auto_uv_stop_request_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
     let reason = if abort_final_choice {
         "abort-final-choice"
     } else {
         "offer-final-choice"
     };
-    let content = format!("stop requested by PenguinBurner daemon client\nreason={reason}\n");
-    let _ = fs::write(&path, content);
+    write_marker(
+        &auto_uv_stop_request_path(),
+        &format!("stop requested by PenguinBurner daemon client\nreason={reason}\n"),
+    );
+}
+
+/// Best-effort marker write: create the parent dir, then write `content`. All
+/// errors are swallowed (parity with the Python daemon's marker writers).
+fn write_marker(path: &Path, content: &str) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, content);
 }
 
 /// Remove the stop-request marker. `NotFound` is treated as success (parity with

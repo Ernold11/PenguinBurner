@@ -11,12 +11,16 @@ mod backend;
 mod nvapi;
 mod nvml_raw;
 
-#[cfg(test)]
+// Compiled into the binary (not test-gated) because it also backs the
+// `PENGUIN_BURNERD_TEST_MOCK_GPU` RPC seam in `gpu_rpc` — production code never
+// constructs it outside that explicitly test-only env knob.
 pub mod mock;
 
 pub use backend::NvmlBackend;
 
 use std::fmt;
+
+use serde::Serialize;
 
 // The A2 backend is a stable 39-method contract; the wave-A3 engine consumes
 // most of it. The remainder tagged below (device identity/memory/throttle reads,
@@ -93,8 +97,9 @@ pub struct AppliedOffsets {
     pub mem_clk_vf_offset_readback_mhz: Option<i32>,
 }
 
-/// A single locked-clock snap decision (`snap_core_clock_mhz`, §8).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A single locked-clock snap decision (`snap_core_clock_mhz`, §8). Field names
+/// are the `gpu_apply_locked_core_clock` RPC's wire keys (serialized directly).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SnapResult {
     pub requested_clock_mhz: i64,
     pub applied_clock_mhz: i64,
@@ -103,7 +108,8 @@ pub struct SnapResult {
 }
 
 /// A locked-clock **range** snap decision (`apply_locked_core_clock_range_mhz`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Field names are the `gpu_apply_locked_core_clock_range` RPC's wire keys.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RangeSnapResult {
     pub requested_min_clock_mhz: i64,
     pub requested_max_clock_mhz: i64,
