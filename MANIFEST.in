@@ -13,3 +13,8 @@ recursive-include ui/assets *.png
 recursive-include tests *.py
 recursive-include overlay/native/latency_layer/src *.cpp *.h *.hpp
 recursive-include overlay/native/nvapi_shim/src *.cpp
+# Rust daemon (penguin-burnerd) crate: ship sources + committed lockfile so a
+# `pip install` from the sdist can cargo-build the daemon into the wheel.
+include burnerd/Cargo.toml
+include burnerd/Cargo.lock
+recursive-include burnerd/src *.rs

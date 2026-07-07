@@ -360,6 +360,18 @@ def run_checked_subprocess(args):
     return result
 
 
+def _packaged_daemon_binary() -> Path:
+    """penguin-burnerd bundled inside the installed wheel / site-packages.
+
+    setup.py's build_py cargo-builds the daemon and stages it at
+    ``runtime/daemon_bin/penguin-burnerd`` (package data). This module lives at
+    ``runtime/support/runtime_service.py``, so the sibling ``daemon_bin`` dir is
+    one level up from ``support``. This is the *source* copy the elevated install
+    step reads from to populate the root-owned /usr/libexec target.
+    """
+    return Path(__file__).resolve().parent.parent / "daemon_bin" / "penguin-burnerd"
+
+
 def _dev_daemon_binary(program_file) -> Path:
     """Cargo release build sitting next to a dev checkout's sources."""
     return (
@@ -374,13 +386,20 @@ def _dev_daemon_binary(program_file) -> Path:
 def daemon_binary_path(program_file, *, binary_path=None) -> str:
     """Resolve the compiled penguin-burnerd binary the unit's ExecStart runs.
 
-    Discovery order: an explicit override, then the packaged
-    ``/usr/libexec/penguin-burnerd``, then the dev cargo build under
-    ``<repo>/burnerd/target/release/``. Errors clearly if none is present.
+    Discovery order: an explicit override, then the root-owned packaged
+    ``/usr/libexec/penguin-burnerd`` (what the unit actually execs), then the
+    copy bundled in the installed wheel at ``runtime/daemon_bin/`` (the install
+    *source* — the elevated install step copies it into /usr/libexec), then the
+    dev cargo build under ``<repo>/burnerd/target/release/``. Errors clearly if
+    none is present.
     """
     if binary_path:
         return str(binary_path)
-    candidates = [LIBEXEC_DAEMON_BINARY, _dev_daemon_binary(program_file)]
+    candidates = [
+        LIBEXEC_DAEMON_BINARY,
+        _packaged_daemon_binary(),
+        _dev_daemon_binary(program_file),
+    ]
     for candidate in candidates:
         if candidate.exists():
             return str(candidate)

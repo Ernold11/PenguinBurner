@@ -20,6 +20,9 @@ NATIVE_LAYER_MANIFEST = "VkLayer_PENGUINBURNER_latency.json"
 NVAPI_SHIM_SOURCE_DIR = ROOT / "overlay" / "native" / "nvapi_shim"
 NVAPI_SHIM_DLL = "nvapi64.dll"
 NVAPI_SHIM_COMPILER = "x86_64-w64-mingw32-g++"
+DAEMON_SOURCE_DIR = ROOT / "burnerd"
+DAEMON_MANIFEST = DAEMON_SOURCE_DIR / "Cargo.toml"
+DAEMON_BINARY = "penguin-burnerd"
 
 # README uses repo-relative image/link paths so it renders on GitHub and in the
 # local docs preview. PyPI does not resolve relative paths, so rewrite them to
@@ -68,6 +71,7 @@ class build_py(_build_py):
         super().run()
         self._build_native_latency_layer()
         self._build_nvapi_shim()
+        self._build_rust_daemon()
 
     def _build_native_latency_layer(self) -> None:
         if _env_flag_disabled("PENGUIN_BURNER_BUILD_NATIVE_LAYER"):
@@ -188,6 +192,69 @@ class build_py(_build_py):
         if require:
             raise RuntimeError(message)
         self.warn(f"{message}; installing Python package without the NVAPI latency shim")
+
+    def _build_rust_daemon(self) -> None:
+        # Compile the root daemon (burnerd/ Rust crate) and stage the release
+        # binary inside the package at runtime/daemon_bin/penguin-burnerd so the
+        # elevated systemd-install step has a copy to place at
+        # /usr/libexec/penguin-burnerd (runtime_service.daemon_binary_path finds
+        # it as the install source). Optional: without a cargo toolchain a plain
+        # `pip install .` still yields a working GUI/CLI, so a missing toolchain
+        # is a warning unless REQUIRE_DAEMON forces it (release/native builds do).
+        if _env_flag_disabled("PENGUIN_BURNER_BUILD_DAEMON"):
+            return
+        require_daemon = _env_flag_enabled("PENGUIN_BURNER_REQUIRE_DAEMON")
+        if not _native_layer_supported():
+            self._daemon_unavailable(
+                "penguin-burnerd is only built for Linux",
+                require=require_daemon,
+            )
+            return
+        if not DAEMON_MANIFEST.exists():
+            return
+        cargo = shutil.which("cargo")
+        if not cargo:
+            self._daemon_unavailable(
+                "cargo (Rust toolchain) is required to build the penguin-burnerd daemon",
+                require=require_daemon,
+            )
+            return
+        output_dir = Path(self.build_lib) / "runtime" / "daemon_bin"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            # --locked pins the committed burnerd/Cargo.lock so the wheel builds
+            # the exact dependency set the native packages compile.
+            subprocess.check_call(
+                [
+                    cargo,
+                    "build",
+                    "--release",
+                    "--locked",
+                    "--manifest-path",
+                    str(DAEMON_MANIFEST),
+                ]
+            )
+        except subprocess.CalledProcessError as exc:
+            self._daemon_unavailable(
+                f"penguin-burnerd daemon build failed: {exc}",
+                require=require_daemon,
+            )
+            return
+        source = DAEMON_SOURCE_DIR / "target" / "release" / DAEMON_BINARY
+        if not source.exists():
+            self._daemon_unavailable(
+                f"penguin-burnerd daemon build did not produce {source}",
+                require=require_daemon,
+            )
+            return
+        destination = output_dir / DAEMON_BINARY
+        shutil.copy2(source, destination)
+        os.chmod(destination, 0o755)
+
+    def _daemon_unavailable(self, message: str, *, require: bool) -> None:
+        if require:
+            raise RuntimeError(message)
+        self.warn(f"{message}; installing Python package without the penguin-burnerd daemon")
 
 
 class bdist_wheel(_bdist_wheel):

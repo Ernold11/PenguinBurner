@@ -86,11 +86,19 @@ python -m pip install --user --no-index --no-deps --find-links dist --upgrade pe
 
 The privileged root daemon (`penguin-burnerd`) is a compiled Rust binary. The
 native COPR/AUR/PPA packages build it for you and install it to
-`/usr/libexec/penguin-burnerd`. From a checkout, build it once with:
+`/usr/libexec/penguin-burnerd`. The PyPI/local wheel also bundles a compiled
+copy (built with `cargo` at wheel-build time) inside the package at
+`runtime/daemon_bin/penguin-burnerd`; building the wheel from source therefore
+needs a Rust toolchain (`cargo`) just as it needs `cmake` for the Vulkan layer
+and MinGW for the NVAPI shim. From a checkout you can instead build the daemon
+once with:
 
 ```bash
 scripts/build-daemon.sh   # cargo build --release --locked in burnerd/
 ```
 
-The installer then discovers the dev build at
-`burnerd/target/release/penguin-burnerd` when no packaged binary is present.
+The installer discovers the daemon in this order: the root-owned
+`/usr/libexec/penguin-burnerd` (what the systemd unit execs), then the
+wheel-bundled `runtime/daemon_bin/penguin-burnerd` copy (which the elevated
+install step copies into `/usr/libexec`), then the dev build at
+`burnerd/target/release/penguin-burnerd`.

@@ -44,7 +44,8 @@ gpg --batch --yes --output "$KEY_FILE" --export "$GPG_KEY"
 flatpak install -y flathub \
     org.freedesktop.Platform//25.08 \
     org.freedesktop.Sdk//25.08 \
-    org.freedesktop.Sdk.Extension.mingw-w64//25.08
+    org.freedesktop.Sdk.Extension.mingw-w64//25.08 \
+    org.freedesktop.Sdk.Extension.rust-stable//25.08
 
 flatpak-builder \
     --force-clean \

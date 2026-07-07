@@ -119,6 +119,11 @@ packages = [
   "native_layer/*.so",
   "nvapi_shim/*.dll",
 ]
+"runtime" = [
+  # Compiled root daemon staged by setup.py build_py; the elevated install
+  # step copies it to /usr/libexec/penguin-burnerd.
+  "daemon_bin/penguin-burnerd",
+]
 "ui.assets" = [
   "*.png",
 ]

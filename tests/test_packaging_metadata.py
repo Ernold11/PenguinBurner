@@ -659,6 +659,74 @@ def test_daemon_dev_build_script_uses_locked_cargo_build() -> None:
     assert "burnerd/Cargo.toml" in script
 
 
+def test_wheel_bundles_rust_daemon_as_package_data() -> None:
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    package_data = metadata["tool"]["setuptools"]["package-data"]
+    packages = set(metadata["tool"]["setuptools"]["packages"])
+    setup_py = Path("setup.py").read_text(encoding="utf-8")
+    manifest = Path("MANIFEST.in").read_text(encoding="utf-8")
+
+    # The compiled daemon ships as package data on the `runtime` package (which
+    # owns the discovery code), staged under runtime/daemon_bin/.
+    assert "runtime" in packages
+    assert "daemon_bin/penguin-burnerd" in package_data["runtime"]
+
+    # setup.py build_py compiles the crate at wheel build time, gated exactly
+    # like the native layer / NVAPI shim (best-effort skip; REQUIRE_DAEMON hard
+    # fails when a toolchain is missing).
+    assert "PENGUIN_BURNER_BUILD_DAEMON" in setup_py
+    assert "PENGUIN_BURNER_REQUIRE_DAEMON" in setup_py
+    assert "cargo" in setup_py
+    assert "--release" in setup_py and "--locked" in setup_py
+    assert 'Path(self.build_lib) / "runtime" / "daemon_bin"' in setup_py
+
+    # The sdist carries the crate sources + committed lockfile so a pip install
+    # from sdist can cargo-build the daemon into the wheel.
+    assert "include burnerd/Cargo.toml" in manifest
+    assert "include burnerd/Cargo.lock" in manifest
+    assert "recursive-include burnerd/src *.rs" in manifest
+
+
+def test_pypi_wheel_build_installs_rust_toolchain_and_requires_daemon() -> None:
+    build_script = Path("scripts/build-python-dist.sh").read_text(encoding="utf-8")
+
+    # The manylinux container gets a pinned rustup toolchain (AlmaLinux 8's cargo
+    # is too old for edition 2021), and the daemon build is required, not
+    # best-effort, for the released wheel.
+    assert "rustup" in build_script
+    assert "sh.rustup.rs" in build_script
+    assert "--default-toolchain" in build_script
+    assert "PENGUIN_BURNER_REQUIRE_DAEMON=1" in build_script
+    assert "/opt/rust/cargo/bin" in build_script
+
+
+def test_daemon_discovery_includes_packaged_site_packages_copy() -> None:
+    service = Path("runtime/support/runtime_service.py").read_text(encoding="utf-8")
+
+    # daemon_binary_path resolves, in order: /usr/libexec (root-owned, the unit's
+    # ExecStart), then the wheel-bundled runtime/daemon_bin copy (install source),
+    # then the dev cargo build.
+    assert "def _packaged_daemon_binary" in service
+    assert '"daemon_bin"' in service
+    libexec = service.index("LIBEXEC_DAEMON_BINARY,\n")
+    packaged = service.index("_packaged_daemon_binary(),")
+    dev = service.index("_dev_daemon_binary(program_file),")
+    assert libexec < packaged < dev
+
+
+def test_flatpak_build_scripts_install_rust_stable_extension() -> None:
+    for path in (
+        "scripts/build-flatpak-local.sh",
+        "scripts/build-flatpak-public-repo.sh",
+    ):
+        script = Path(path).read_text(encoding="utf-8")
+        # The manifest requires the rust-stable SDK extension for the daemon;
+        # the driver scripts must install it (matching the runtime version) or a
+        # clean host fails with "sdk extension not installed".
+        assert "org.freedesktop.Sdk.Extension.mingw-w64//25.08" in script
+        assert "org.freedesktop.Sdk.Extension.rust-stable//25.08" in script
+
+
 def test_pypi_release_builds_manylinux_native_layer_wheel() -> None:
     build_script = Path("scripts/build-python-dist.sh").read_text(encoding="utf-8")
     workflow = Path(".github/workflows/publish-python-package.yml").read_text(
