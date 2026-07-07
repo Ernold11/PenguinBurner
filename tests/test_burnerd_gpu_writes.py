@@ -473,6 +473,124 @@ def test_apply_plan_produces_byte_identical_offsets(make_daemon, rpc_spy):
     ]
 
 
+# --- rising-tail region: byte-identical plan through the transport -------------
+#
+# RULE ZERO watch: the sweep raises a small number of high-voltage "tail" bins
+# for each preset (efficiency tail-tune = 2, balanced = 4, performance = 6).
+# The transport swap must ship EXACTLY the offsets the old direct-ctypes SET
+# applied for that raised-tail curve -- same tail indices, same offset_khz,
+# same clamping. We drive the REAL sweep flattening code (imported read-only;
+# no auto_uv edit) to compute a tail plan, run it through the REAL apply_plan,
+# and assert the daemon recorded exactly what apply_plan wrote into the struct.
+
+# Editable tail curve: indices ascend with voltage, so the TAIL (highest
+# voltages) is the top of the mask -- the high-voltage end the sweep raises.
+_TAIL_BASE_CURVE = [
+    {"index": 10 + i, "voltage_mv": 800 + 15 * i, "base_mhz": 2100 + 20 * i,
+     "target_mhz": 2100 + 20 * i}
+    for i in range(12)
+]
+_TAIL_LOCK_CLOCK_MHZ = 2400
+_TAIL_CANDIDATE_VOLTAGE_MV = 890  # index 16; bins above it form the rising tail
+
+
+def _expected_ship_from_plan(plan, base_curve):
+    """What apply_plan writes into the struct, then set_control_struct ships:
+    every base index in mask (ascending) order with new_offset_mhz*1000 kHz.
+    Ground truth is the plan itself -- the same source apply_plan consumes."""
+    offset_by_index = {
+        int(item["index"]): int(item["new_offset_mhz"]) * 1000 for item in plan
+    }
+    return [
+        [int(point["index"]), offset_by_index[int(point["index"])]]
+        for point in sorted(base_curve, key=lambda p: int(p["index"]))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("tail_rise_bins", "preset"),
+    [(2, "efficiency-tail-tune"), (4, "balanced"), (6, "performance")],
+)
+def test_rising_tail_plan_ships_byte_identical(
+    make_daemon, rpc_spy, tail_rise_bins, preset
+):
+    from auto_uv.curve.vf_curve_flattening import build_flattened_plan
+
+    make_daemon()
+    reader = _vf_reader(gpu_index=0)
+
+    plan = build_flattened_plan(
+        _TAIL_BASE_CURVE,
+        lock_clock_mhz=_TAIL_LOCK_CLOCK_MHZ,
+        candidate_voltage_mv=_TAIL_CANDIDATE_VOLTAGE_MV,
+        tail_rise_bins=tail_rise_bins,
+    )
+
+    # Fresh baseline GET (all masked at offset 0); apply_plan mutates in place.
+    control = _control_with_offsets(
+        {int(point["index"]): 0 for point in _TAIL_BASE_CURVE}
+    )
+    reader.get_control_struct = lambda mask=None: control
+    apply_plan(reader, plan)
+
+    expected = _expected_ship_from_plan(plan, _TAIL_BASE_CURVE)
+    request, result = rpc_spy[-1]
+    # The shipped offsets are byte-identical to what apply_plan programmed --
+    # same indices, same offset_khz -- for the whole curve INCLUDING the raised
+    # tail bins at the high-voltage end.
+    assert request["offsets"] == expected, preset
+    recorded = ", ".join(f"({i}, {o})" for i, o in expected)
+    assert result["mock_ops"] == [f"ApplyVfOffsets {{ offsets: [{recorded}] }}"]
+
+    # Sanity: the plan genuinely carries a RISING tail (target clocks strictly
+    # increase across the first `tail_rise_bins` editable bins above the lock,
+    # then plateau at the soft cap), so this test actually exercises raised
+    # bins, not a flat curve. (Offsets themselves shrink because stock base_mhz
+    # climbs faster than the tail soft-cap -- the raised bins live in the
+    # target clocks, and those are what apply_plan turns into the shipped
+    # offset_khz.)
+    tail_targets = [
+        int(item["target_mhz"])
+        for item in sorted(plan, key=lambda p: int(p["voltage_mv"]))
+        if int(item["voltage_mv"]) > _TAIL_CANDIDATE_VOLTAGE_MV
+    ]
+    rising_prefix = tail_targets[:tail_rise_bins]
+    assert rising_prefix == sorted(rising_prefix)
+    assert rising_prefix[-1] > rising_prefix[0], (preset, tail_targets)
+    assert min(rising_prefix) >= _TAIL_LOCK_CLOCK_MHZ, (preset, tail_targets)
+
+
+def test_rising_tail_bin_count_changes_the_shipped_tail(make_daemon, rpc_spy):
+    """A larger tail-rise (performance 6 vs efficiency 2) ships a DIFFERENT,
+    higher tail -- proving the raised bins flow through the transport unaltered
+    rather than being flattened by the client."""
+    from auto_uv.curve.vf_curve_flattening import build_flattened_plan
+
+    def ship(tail_rise_bins):
+        make_daemon()
+        reader = _vf_reader(gpu_index=0)
+        plan = build_flattened_plan(
+            _TAIL_BASE_CURVE,
+            lock_clock_mhz=_TAIL_LOCK_CLOCK_MHZ,
+            candidate_voltage_mv=_TAIL_CANDIDATE_VOLTAGE_MV,
+            tail_rise_bins=tail_rise_bins,
+        )
+        control = _control_with_offsets(
+            {int(point["index"]): 0 for point in _TAIL_BASE_CURVE}
+        )
+        reader.get_control_struct = lambda mask=None: control
+        apply_plan(reader, plan)
+        return dict(rpc_spy[-1][0]["offsets"])
+
+    efficiency = ship(2)
+    performance = ship(6)
+
+    # The top tail index carries a strictly higher offset under the 6-bin
+    # performance tail than the 2-bin efficiency tail-tune.
+    top_index = max(point["index"] for point in _TAIL_BASE_CURVE)
+    assert performance[top_index] > efficiency[top_index]
+
+
 # --- error relay ---------------------------------------------------------------
 
 
