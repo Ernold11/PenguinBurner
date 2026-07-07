@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 
+from runtime import daemon_api
 from runtime.daemon_api import (
     ALLOWED_UID_ENV,
     AUTOSTART_ARGV_B64_ENV,
@@ -52,6 +53,9 @@ DESKTOP_RUNTIME_ENV_NAMES = (
     "PENGUIN_BURNER_Q2RTX_UID",
     "PENGUIN_BURNER_Q2RTX_GID",
 )
+# Packaged install location for the compiled Rust daemon; a dev checkout falls
+# back to the cargo release build next to the sources (see daemon_binary_path).
+LIBEXEC_DAEMON_BINARY = Path("/usr/libexec/penguin-burnerd")
 
 
 def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
@@ -389,30 +393,77 @@ def run_checked_subprocess(args):
     return result
 
 
+def _dev_daemon_binary(program_file) -> Path:
+    """Cargo release build sitting next to a dev checkout's sources."""
+    return (
+        Path(program_file).resolve().parent
+        / "burnerd"
+        / "target"
+        / "release"
+        / "penguin-burnerd"
+    )
+
+
+def daemon_binary_path(program_file, *, binary_path=None) -> str:
+    """Resolve the compiled penguin-burnerd binary the unit's ExecStart runs.
+
+    Discovery order: an explicit override, then the packaged
+    ``/usr/libexec/penguin-burnerd``, then the dev cargo build under
+    ``<repo>/burnerd/target/release/``. Errors clearly if none is present.
+    """
+    if binary_path:
+        return str(binary_path)
+    candidates = [LIBEXEC_DAEMON_BINARY, _dev_daemon_binary(program_file)]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    searched = ", ".join(str(candidate) for candidate in candidates)
+    raise RuntimeError(
+        "penguin-burnerd binary not found (looked in: "
+        f"{searched}). Install the daemon package or build it with "
+        "`cargo build --release` in burnerd/."
+    )
+
+
+def _daemon_program_file_for_unit(program_file) -> Path:
+    """The Python CLI the daemon re-launches for Auto-UV scan children.
+
+    Flatpak maps it to the host deployment path; otherwise it is the resolved
+    program file. This is what the unit's PENGUIN_BURNER_DAEMON_PROGRAM_FILE env
+    and the seeded last-runtime.json ``program_file`` both point at.
+    """
+    if running_in_flatpak():
+        return flatpak_host_cli_program_file(program_file)
+    return Path(program_file).resolve()
+
+
+def _persist_autostart_last_runtime(argv, program_file) -> None:
+    """Seed ``/var/lib/penguin-burner/last-runtime.json`` so the native daemon
+    autostarts the just-installed profile.
+
+    The Rust daemon reads this state file (not a base64 unit env) for autostart,
+    so the install/migrate flows write the intended runtime argv here directly.
+    Best-effort, mirroring the daemon's own persistence — install already runs as
+    root, so ``/var/lib`` is writable.
+    """
+    state_path = daemon_api.LAST_RUNTIME_STATE_PATH
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(
+            json.dumps({"argv": list(argv), "program_file": str(program_file)}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
 def build_daemon_api_service_unit(
     program_file,
     *,
     socket_path=DEFAULT_DAEMON_SOCKET,
     autostart_argv: list[str] | None = None,
+    binary_path=None,
 ) -> str:
-    exec_start = _format_systemd_exec(
-        runtime_foreground_command(program_file, ["--daemon-api", str(socket_path)])
-    )
-    autostart_argv = list(autostart_argv or [])
-    autostart_env = ""
-    if autostart_argv:
-        encoded = base64.b64encode(json.dumps(autostart_argv).encode("utf-8")).decode(
-            "ascii"
-        )
-        autostart_program_file = (
-            flatpak_host_cli_program_file(program_file)
-            if running_in_flatpak()
-            else Path(program_file).resolve()
-        )
-        autostart_env = (
-            f"Environment={AUTOSTART_PROGRAM_FILE_ENV}={autostart_program_file}\n"
-            f"Environment={AUTOSTART_ARGV_B64_ENV}={encoded}\n"
-        )
     allowed_uid = daemon_allowed_uid_assignment()
     allowed_uid_env = f"Environment={allowed_uid}\n" if allowed_uid else ""
     runtime_env = "".join(
@@ -423,17 +474,69 @@ def build_daemon_api_service_unit(
             *adaptive_policy_env_assignments(),
         ]
     )
+
+    if running_in_flatpak():
+        # Flatpak still runs the Python daemon (`--daemon-api`) with the base64
+        # autostart env until the Rust binary is packaged into the sandbox; keep
+        # the legacy unit shape untouched. `binary_path` does not apply here.
+        exec_start = _format_systemd_exec(
+            runtime_foreground_command(program_file, ["--daemon-api", str(socket_path)])
+        )
+        autostart_argv = list(autostart_argv or [])
+        autostart_env = ""
+        if autostart_argv:
+            encoded = base64.b64encode(
+                json.dumps(autostart_argv).encode("utf-8")
+            ).decode("ascii")
+            autostart_program_file = flatpak_host_cli_program_file(program_file)
+            autostart_env = (
+                f"Environment={AUTOSTART_PROGRAM_FILE_ENV}={autostart_program_file}\n"
+                f"Environment={AUTOSTART_ARGV_B64_ENV}={encoded}\n"
+            )
+        return (
+            "[Unit]\n"
+            "Description=PenguinBurner hardware daemon\n"
+            "After=multi-user.target\n"
+            "\n"
+            "[Service]\n"
+            "Type=simple\n"
+            "WorkingDirectory=/\n"
+            f"{runtime_env}"
+            f"{allowed_uid_env}"
+            f"{autostart_env}"
+            f"ExecStart={exec_start}\n"
+            "Restart=on-failure\n"
+            "RestartSec=2\n"
+            "StandardOutput=journal\n"
+            "StandardError=journal\n"
+            f"SyslogIdentifier={PENGUIN_BURNER_DAEMON_UNIT_NAME}\n"
+            "\n"
+            "[Install]\n"
+            "WantedBy=multi-user.target\n"
+        )
+
+    # Native (non-flatpak): the compiled Rust penguin-burnerd binary. Autostart is
+    # carried by the seeded last-runtime.json state file, not a unit env — so
+    # `autostart_argv` is not baked into the unit here. Type=notify + WatchdogSec:
+    # the daemon sends READY=1 and heartbeats WATCHDOG=1.
+    binary = daemon_binary_path(program_file, binary_path=binary_path)
+    exec_start = _format_systemd_exec([binary, "--socket", str(socket_path)])
+    program_file_env = (
+        f"Environment={AUTOSTART_PROGRAM_FILE_ENV}="
+        f"{_daemon_program_file_for_unit(program_file)}\n"
+    )
     return (
         "[Unit]\n"
         "Description=PenguinBurner hardware daemon\n"
         "After=multi-user.target\n"
         "\n"
         "[Service]\n"
-        "Type=simple\n"
+        "Type=notify\n"
         "WorkingDirectory=/\n"
+        "WatchdogSec=30\n"
         f"{runtime_env}"
         f"{allowed_uid_env}"
-        f"{autostart_env}"
+        f"{program_file_env}"
         f"ExecStart={exec_start}\n"
         "Restart=on-failure\n"
         "RestartSec=2\n"
@@ -457,7 +560,7 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
     clear_existing_penguin_burner_unit_for_install(log=log)
     unit_path = daemon_systemd_service_unit_path()
     unit_path.write_text(
-        build_daemon_api_service_unit(program_file, autostart_argv=list(argv)),
+        build_daemon_api_service_unit(program_file),
         encoding="utf-8",
     )
     run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
@@ -470,9 +573,13 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
         env=stable_subprocess_env(),
         check=False,
     )
-    # Explicit "persist THIS profile": drop any prior last-action state so the
-    # daemon re-seeds from the unit we just wrote instead of an older choice.
+    # Explicit "persist THIS profile": drop any prior last-action state, then seed
+    # this install's autostart argv so the native daemon replays it on start. The
+    # Rust daemon reads last-runtime.json (not a unit env), so the argv is written
+    # to the state file here instead of baked into the unit.
     clear_last_runtime_state()
+    if argv:
+        _persist_autostart_last_runtime(argv, _daemon_program_file_for_unit(program_file))
     _enable_and_start_or_restart_daemon_unit(unit_path.name)
     _wait_for_daemon_status(DEFAULT_DAEMON_SOCKET)
     log(f"Installed and enabled {unit_path.name} at {unit_path}.")
@@ -491,11 +598,12 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
         )
 
     legacy_state = read_legacy_service_state()
-    autostart_argv = (
+    raw_argv = (
         legacy_state["runtime_argv"]
         if legacy_state["exists"] and legacy_state["enabled"]
         else []
     )
+    autostart_argv = [str(arg) for arg in raw_argv] if isinstance(raw_argv, list) else []
     if legacy_state["exists"] and legacy_state["enabled"] and not autostart_argv:
         raise RuntimeError(
             "existing enabled PenguinBurner.service could not be parsed; "
@@ -503,11 +611,7 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
         )
     unit_path = daemon_systemd_service_unit_path()
     unit_path.write_text(
-        build_daemon_api_service_unit(
-            program_file,
-            socket_path=socket_path,
-            autostart_argv=autostart_argv,
-        ),
+        build_daemon_api_service_unit(program_file, socket_path=socket_path),
         encoding="utf-8",
     )
     run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
@@ -520,6 +624,12 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
         env=stable_subprocess_env(),
         check=False,
     )
+    # Carry the migrated legacy autostart intent into the state file the native
+    # daemon reads on start (replaces the old base64 unit env).
+    if autostart_argv:
+        _persist_autostart_last_runtime(
+            autostart_argv, _daemon_program_file_for_unit(program_file)
+        )
     _enable_and_start_or_restart_daemon_unit(unit_path.name)
     _wait_for_daemon_status(socket_path)
     log(f"Installed and started {unit_path.name} at {unit_path}.")

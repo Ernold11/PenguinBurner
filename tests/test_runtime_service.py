@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 from runtime.support import runtime_service
+
+
+# The native unit's ExecStart now runs the compiled Rust daemon. Tests inject a
+# fixed binary path (the packaged /usr/libexec location) since the real binary
+# isn't present under a tmp program dir.
+RUST_DAEMON_BINARY = "/usr/libexec/penguin-burnerd"
 
 
 FLATPAK_APP_PATH = (
@@ -27,27 +34,37 @@ FLATPAK_ACTIVE_SITE_PACKAGES = (
 FLATPAK_ACTIVE_CLI_PROGRAM = f"{FLATPAK_ACTIVE_SITE_PACKAGES}/penguin_burner.py"
 
 
-def test_daemon_systemd_unit_uses_running_python_and_program_without_launcher(
+def test_daemon_systemd_unit_uses_rust_binary_and_program_file(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     program = tmp_path / "site-packages" / "penguin_burner.py"
     program.parent.mkdir()
     program.write_text("# program\n", encoding="utf-8")
-    monkeypatch.setattr(runtime_service.sys, "executable", "/opt/python/bin/python")
     monkeypatch.setenv("PENGUIN_BURNER_ADAPTIVE_TARGET_FPS", "60")
 
+    # Native unit runs the Rust daemon binary with --socket (no launcher, no
+    # python --daemon-api). Autostart no longer travels as a unit env.
     unit = runtime_service.build_daemon_api_service_unit(
         program,
-        autostart_argv=["--auto-uv-profile", "profile-a", "--silent-fan-curve"],
+        binary_path=RUST_DAEMON_BINARY,
     )
 
     assert (
-        f"ExecStart=/opt/python/bin/python {program} "
-        "--daemon-api /run/penguin-burnerd.sock"
+        "ExecStart=/usr/libexec/penguin-burnerd "
+        "--socket /run/penguin-burnerd.sock"
     ) in unit
+    assert "Type=notify" in unit
+    assert "WatchdogSec=30" in unit
+    assert "Restart=on-failure" in unit
+    assert "RestartSec=2" in unit
+    # PENGUIN_BURNER_DAEMON_PROGRAM_FILE points at the Python CLI (scan children).
+    assert (
+        f"Environment=PENGUIN_BURNER_DAEMON_PROGRAM_FILE={program.resolve()}" in unit
+    )
     assert "Environment=PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=60" in unit
-    assert "Environment=PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64=" in unit
+    assert "PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64" not in unit
+    assert "--daemon-api" not in unit
     assert "penguin_burner.sh" not in unit
     assert "SyslogIdentifier=penguin-burnerd" in unit
 
@@ -62,32 +79,34 @@ def test_daemon_systemd_unit_uses_adaptive_target_fps_env(
 
     unit = runtime_service.build_daemon_api_service_unit(
         program,
-        autostart_argv=["--adaptive-auto-uv"],
+        binary_path=RUST_DAEMON_BINARY,
     )
 
     assert "Environment=PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=50" in unit
 
 
-def test_daemon_api_unit_uses_daemon_socket_and_autostart_argv(
+def test_daemon_api_unit_uses_daemon_socket_and_program_file(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     program = tmp_path / "penguin_burner.py"
     program.write_text("# program\n", encoding="utf-8")
-    monkeypatch.setattr(runtime_service.sys, "executable", "/opt/python/bin/python")
 
     unit = runtime_service.build_daemon_api_service_unit(
         program,
         socket_path="/run/penguin-burnerd.sock",
-        autostart_argv=["--auto-uv-profile", "profile-a", "--silent-fan-curve"],
+        binary_path=RUST_DAEMON_BINARY,
     )
 
     assert (
-        f"ExecStart=/opt/python/bin/python {program} "
-        "--daemon-api /run/penguin-burnerd.sock"
+        "ExecStart=/usr/libexec/penguin-burnerd "
+        "--socket /run/penguin-burnerd.sock"
     ) in unit
-    assert "Environment=PENGUIN_BURNER_DAEMON_PROGRAM_FILE=" in unit
-    assert "Environment=PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64=" in unit
+    assert (
+        f"Environment=PENGUIN_BURNER_DAEMON_PROGRAM_FILE={program.resolve()}" in unit
+    )
+    # Autostart no longer travels as a unit env; it is seeded to last-runtime.json.
+    assert "PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64" not in unit
     assert "PenguinBurner.service" not in unit
 
 
@@ -106,7 +125,7 @@ def test_daemon_api_unit_preserves_desktop_profile_environment(
     unit = runtime_service.build_daemon_api_service_unit(
         program,
         socket_path="/run/penguin-burnerd.sock",
-        autostart_argv=["--adaptive-auto-uv"],
+        binary_path=RUST_DAEMON_BINARY,
     )
 
     assert "Environment=SUDO_USER=jp" in unit
@@ -140,6 +159,7 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
     program = tmp_path / "penguin_burner.py"
     legacy_unit = tmp_path / "PenguinBurner.service"
     daemon_unit = tmp_path / "penguin-burnerd.service"
+    state_file = tmp_path / "last-runtime.json"
     program.write_text("# program\n", encoding="utf-8")
     legacy_unit.write_text("old unit\n", encoding="utf-8")
     actions = []
@@ -157,6 +177,12 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        runtime_service, "daemon_binary_path", lambda *a, **k: RUST_DAEMON_BINARY
+    )
+    monkeypatch.setattr(
+        runtime_service.daemon_api, "LAST_RUNTIME_STATE_PATH", state_file
+    )
     monkeypatch.setattr(
         runtime_service,
         "legacy_systemd_service_unit_path",
@@ -199,8 +225,14 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
         )
     )
     unit = daemon_unit.read_text(encoding="utf-8")
-    assert "--daemon-api /run/penguin-burnerd.sock" in unit
-    assert "PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64" in unit
+    assert (
+        "ExecStart=/usr/libexec/penguin-burnerd --socket /run/penguin-burnerd.sock"
+    ) in unit
+    assert "PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64" not in unit
+    # Autostart now rides the seeded last-runtime.json state file, not a unit env.
+    seeded = json.loads(state_file.read_text(encoding="utf-8"))
+    assert seeded["argv"] == ["--auto-uv-profile", "profile-a"]
+    assert seeded["program_file"] == str(program.resolve())
     assert any("persistent service install" in message for message in logs)
 
 
@@ -211,6 +243,7 @@ def test_install_systemd_service_restarts_active_daemon_after_unit_update(
     program = tmp_path / "penguin_burner.py"
     legacy_unit = tmp_path / "PenguinBurner.service"
     daemon_unit = tmp_path / "penguin-burnerd.service"
+    state_file = tmp_path / "last-runtime.json"
     program.write_text("# program\n", encoding="utf-8")
     actions = []
     waited = []
@@ -229,6 +262,12 @@ def test_install_systemd_service_restarts_active_daemon_after_unit_update(
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        runtime_service, "daemon_binary_path", lambda *a, **k: RUST_DAEMON_BINARY
+    )
+    monkeypatch.setattr(
+        runtime_service.daemon_api, "LAST_RUNTIME_STATE_PATH", state_file
+    )
     monkeypatch.setattr(
         runtime_service,
         "legacy_systemd_service_unit_path",
@@ -277,6 +316,7 @@ def test_migrate_to_daemon_service_disables_legacy_after_daemon_reachable(
     program = tmp_path / "penguin_burner.py"
     legacy_unit = tmp_path / "PenguinBurner.service"
     daemon_unit = tmp_path / "penguin-burnerd.service"
+    state_file = tmp_path / "last-runtime.json"
     program.write_text("# program\n", encoding="utf-8")
     legacy_unit.write_text(
         "ExecStart=/usr/bin/python3 "
@@ -302,6 +342,12 @@ def test_migrate_to_daemon_service_disables_legacy_after_daemon_reachable(
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
     monkeypatch.setattr(
+        runtime_service, "daemon_binary_path", lambda *a, **k: RUST_DAEMON_BINARY
+    )
+    monkeypatch.setattr(
+        runtime_service.daemon_api, "LAST_RUNTIME_STATE_PATH", state_file
+    )
+    monkeypatch.setattr(
         runtime_service,
         "legacy_systemd_service_unit_path",
         lambda: legacy_unit,
@@ -322,9 +368,15 @@ def test_migrate_to_daemon_service_disables_legacy_after_daemon_reachable(
     )
 
     assert daemon_unit.is_file()
-    assert "PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64" in daemon_unit.read_text(
-        encoding="utf-8"
-    )
+    unit_text = daemon_unit.read_text(encoding="utf-8")
+    assert (
+        "ExecStart=/usr/libexec/penguin-burnerd --socket /tmp/penguin-burnerd.sock"
+    ) in unit_text
+    assert "PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64" not in unit_text
+    # The migrated legacy autostart argv is seeded to the native daemon state file.
+    seeded = json.loads(state_file.read_text(encoding="utf-8"))
+    assert seeded["argv"] == ["--auto-uv-profile", "profile-a", "--adaptive-auto-uv"]
+    assert seeded["program_file"] == str(program.resolve())
     assert (
         "checked",
         ["/bin/systemctl", "enable", "penguin-burnerd.service"],
@@ -421,6 +473,9 @@ def test_daemonize_starts_daemon_service_and_runtime_profile(tmp_path, monkeypat
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
     monkeypatch.setattr(
+        runtime_service, "daemon_binary_path", lambda *a, **k: RUST_DAEMON_BINARY
+    )
+    monkeypatch.setattr(
         runtime_service,
         "daemon_systemd_service_unit_path",
         lambda: daemon_unit,
@@ -476,6 +531,9 @@ def test_daemonize_preserves_pkexec_desktop_user_env(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        runtime_service, "daemon_binary_path", lambda *a, **k: RUST_DAEMON_BINARY
+    )
     monkeypatch.setattr(
         runtime_service,
         "daemon_systemd_service_unit_path",
