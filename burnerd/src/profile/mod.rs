@@ -330,7 +330,8 @@ fn run_with_backend(
     let (fan_config, fan_control_enabled) =
         fan::prepare_fan_source(&base_fan, options.silent_fan_curve, &mut log);
 
-    // VF-curve policy: persistence → VF → power → memory → clock ceiling.
+    // VF-curve policy: persistence → memory → VF → power → clock ceiling
+    // (mem before VF: a mem-offset write wipes the per-point VF table).
     let vf_policy = apply::configure_runtime_vf_curve_policy(
         backend,
         gpu_cfg.enable_persistence_mode,
@@ -805,23 +806,34 @@ fn maybe_reapply_vf_curve(
         return last_vf_reapply;
     }
     let ts = local_timestamp();
+
+    // Memory-offset guard, BEFORE the VF re-apply. A `nvmlDeviceSetMemClkVfOffset`
+    // write WIPES the entire core per-point VF table (proven 2026-07-07 on driver
+    // 610.43.02), so an UNCONDITIONAL rewrite here would erase the very curve we
+    // are about to re-apply — the VF guard and mem guard then fight every cadence
+    // (~10s). Read the live offset back first and only rewrite when it has drifted
+    // from the target; when we do rewrite, the VF re-apply below MUST follow it
+    // (ordered dependency) so the curve survives the wipe.
+    if let Some(offset) = memory_offset_mhz.filter(|&m| m > 0) {
+        if backend.clock_offsets().mem_clk_vf_offset_mhz != Some(offset as i32) {
+            match backend.apply_clock_offsets(None, Some(offset as i32)) {
+                Ok(applied) => engine_log(&format!(
+                    "{ts} event=mem-offset-reapplied requested={offset} readback={}",
+                    applied
+                        .mem_clk_vf_offset_readback_mhz
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "None".to_string())
+                )),
+                Err(exc) => engine_log(&format!("{ts} event=mem-offset-reapply-error error={exc}")),
+            }
+        }
+    }
+
     if let Err(exc) = apply::apply_plan(backend, vf_apply_plan)
         .and_then(|_| backend.refresh_vf_points().map(|_| ()))
     {
         engine_log(&format!("{ts} event=vf-curve-reapply-error error={exc}"));
         return last_vf_reapply;
-    }
-    if let Some(offset) = memory_offset_mhz.filter(|&m| m > 0) {
-        match backend.apply_clock_offsets(None, Some(offset as i32)) {
-            Ok(applied) => engine_log(&format!(
-                "{ts} event=mem-offset-reapplied requested={offset} readback={}",
-                applied
-                    .mem_clk_vf_offset_readback_mhz
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "None".to_string())
-            )),
-            Err(exc) => engine_log(&format!("{ts} event=mem-offset-reapply-error error={exc}")),
-        }
     }
     let preview = format_vf_curve_mismatch_preview(&mismatches, 4);
     engine_log(&format_log_line(

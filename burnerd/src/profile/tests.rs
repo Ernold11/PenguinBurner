@@ -107,6 +107,139 @@ fn loop_reapplies_vf_curve_when_driver_resets_offsets() {
     )));
 }
 
+/// Build a VF-drifted policy whose applied mem offset is `mem_offset`, so the VF
+/// reapply guard fires and the mem-offset guard has a target to check.
+fn vf_reapply_policy(mem_offset: i64) -> (Vec<PlanItem>, VfPolicyResult<'static>) {
+    let plan = vec![PlanItem {
+        index: 12,
+        voltage_mv: 900,
+        base_mhz: 2680,
+        target_mhz: 2800,
+        new_offset_mhz: 120,
+    }];
+    let policy = VfPolicyResult {
+        vf_apply_plan: Some(plan.clone()),
+        vf_expected_samples: super::guard::select_expected_vf_samples(&plan, 8),
+        active_vf_curve_source: Some("auto-uv-final".into()),
+        profile_clock_mhz: Some(2800.0),
+        profile_voltage_mv: Some(900.0),
+        auto_uv_profile_gpu_policy: super::apply::GpuPolicyApplied {
+            power_limit_w: None,
+            mem_clk_vf_offset_mhz: Some(mem_offset),
+        },
+        ..VfPolicyResult::default()
+    };
+    (plan, policy)
+}
+
+fn drifted_vf_mock(mem_readback: i32) -> MockGpu {
+    let mut mock = MockGpu::new();
+    mock.temperature_c = 55.0;
+    mock.power_draw_w = Some(200.0);
+    mock.graphics_clock_mhz = Some(2800);
+    mock.memory_clock_mhz = Some(12000);
+    mock.voltage_uv = Some(900_000);
+    mock.vf_available = true;
+    // Live point drifted to +0 offset (driver reset) vs expected +120 → VF guard fires.
+    mock.vf_points = vec![editable_point(12, 2_800_000, 900_000, 0)];
+    mock.clock_offsets = crate::gpu::ClockOffsets {
+        gpc_clk_vf_offset_mhz: None,
+        mem_clk_vf_offset_mhz: Some(mem_readback),
+    };
+    mock
+}
+
+fn run_one_vf_guard_iteration(mock: &MockGpu, policy: VfPolicyResult<'_>) {
+    let mut fan_config = FanConfig::defaults();
+    fan_config.poll_interval_s = 0.0;
+    let mut publisher = super::telemetry::OverlayStatePublisher::new(
+        0,
+        false,
+        1.0,
+        String::new(),
+        String::new(),
+        String::new(),
+        false,
+        None,
+        None,
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    let result = run_fan_control_loop(
+        mock,
+        0,
+        false,
+        fan_config,
+        false,
+        policy,
+        &mut publisher,
+        None,
+        None,
+        stop,
+        Some(1),
+    );
+    assert!(result.is_ok());
+}
+
+/// The mem-offset guard reads the live offset back first and does NOT rewrite it
+/// when the readback already matches the applied target — this is what stops the
+/// VF/mem guards fighting every cadence (a mem rewrite would wipe the VF table).
+#[test]
+fn loop_vf_reapply_skips_mem_rewrite_when_readback_matches() {
+    let mock = drifted_vf_mock(1500); // mem readback == target 1500 → no rewrite.
+    let (_plan, policy) = vf_reapply_policy(1500);
+    run_one_vf_guard_iteration(&mock, policy);
+    let ops = mock.recorded();
+    // The VF curve was reapplied (guard fired)...
+    assert!(ops.iter().any(|op| matches!(
+        op,
+        MockOp::ApplyVfOffsets { offsets } if offsets == &vec![(12, 120_000)]
+    )));
+    // ...but the matching mem readback means NO mem rewrite was issued.
+    assert!(
+        !ops.iter()
+            .any(|op| matches!(op, MockOp::ApplyClockOffsets { .. })),
+        "mem offset must NOT be rewritten when the readback already matches: {ops:?}"
+    );
+}
+
+/// When the mem-offset readback has drifted from the target, the guard DOES
+/// rewrite it — and because a mem write wipes the per-point VF table, the mem
+/// rewrite must be followed by the VF re-apply in the recorded op sequence.
+#[test]
+fn loop_vf_reapply_rewrites_mem_then_reapplies_vf_when_readback_drifts() {
+    let mock = drifted_vf_mock(0); // mem readback 0 != target 1500 → rewrite.
+    let (_plan, policy) = vf_reapply_policy(1500);
+    run_one_vf_guard_iteration(&mock, policy);
+    let ops = mock.recorded();
+    let mem_pos = ops
+        .iter()
+        .position(|op| {
+            matches!(
+                op,
+                MockOp::ApplyClockOffsets {
+                    mem_mhz: Some(1500),
+                    ..
+                }
+            )
+        })
+        .expect("drifted mem readback must trigger a mem rewrite");
+    let vf_pos = ops
+        .iter()
+        .position(|op| {
+            matches!(
+                op,
+                MockOp::ApplyVfOffsets { offsets } if offsets == &vec![(12, 120_000)]
+            )
+        })
+        .expect("VF curve must be reapplied");
+    // Ordered dependency: the mem rewrite (which wipes VF) lands BEFORE the VF
+    // re-apply, so the curve survives.
+    assert!(
+        mem_pos < vf_pos,
+        "mem rewrite must precede the VF re-apply, got mem={mem_pos} vf={vf_pos}: {ops:?}"
+    );
+}
+
 /// The manual fan decision drives a spin-up write and restores fans on stop.
 #[test]
 fn loop_manual_fan_control_and_restore_on_exit() {
@@ -164,7 +297,11 @@ fn loop_manual_fan_control_and_restore_on_exit() {
 }
 
 /// Applying an auto-UV-final profile hits the exact op ordering: persistence →
-/// VF offsets → power limit → memory offset → locked clock range.
+/// memory offset → VF offsets → power limit → locked clock range. The memory
+/// offset MUST precede the per-point VF writes because a
+/// `nvmlDeviceSetMemClkVfOffset` write WIPES the whole core per-point VF offset
+/// table (one-directional; proven 2026-07-07 on driver 610.43.02) — writing it
+/// after the curve would erase the fresh curve.
 #[test]
 fn configure_auto_uv_final_apply_ordering() {
     let mut mock = MockGpu::new();
@@ -207,7 +344,10 @@ fn configure_auto_uv_final_apply_ordering() {
     let indices: Vec<&MockOp> = ops.iter().collect();
     // persistence first.
     assert!(matches!(indices[0], MockOp::EnablePersistence));
-    // Then VF offsets, power limit, memory offset, then locked clock range.
+    // Then memory offset, VF offsets, power limit, then locked clock range. The
+    // memory write lands BEFORE the VF writes because a mem write wipes the whole
+    // per-point VF table (mem-wipes-VF coupling); the reverse order would erase
+    // the fresh curve.
     let vf_pos = ops
         .iter()
         .position(|o| matches!(o, MockOp::ApplyVfOffsets { .. }))
@@ -232,7 +372,7 @@ fn configure_auto_uv_final_apply_ordering() {
         .iter()
         .position(|o| matches!(o, MockOp::ApplyLockedCoreClockRange { .. }))
         .unwrap();
-    assert!(vf_pos < power_pos && power_pos < mem_pos && mem_pos < lock_pos);
+    assert!(mem_pos < vf_pos && vf_pos < power_pos && power_pos < lock_pos);
 
     let curve = result.auto_uv_final_curve.unwrap();
     assert_eq!(curve.lock_clock_mhz, 2640);

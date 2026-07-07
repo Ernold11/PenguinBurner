@@ -2,8 +2,16 @@
 //! `runtime/gpu_control/vf_curve_runtime_policy.py`, `vf_curve_plan.py::apply_plan`,
 //! and the profile power/memory apply in `runtime_auto_uv_profile.py`.
 //!
-//! Load-bearing ordering: persistence mode → per-point VF frequency offsets →
-//! power limit → memory offset (with read-back) → locked clock ceiling.
+//! Load-bearing ordering: persistence mode → memory offset (with read-back) →
+//! per-point VF frequency offsets → power limit → locked clock ceiling.
+//!
+//! WHY the mem offset must precede the VF writes (still load-bearing): a
+//! `nvmlDeviceSetMemClkVfOffset` write WIPES the entire core per-point VF offset
+//! table. The coupling is one-directional — VF writes leave the mem offset
+//! untouched, and locked clocks / the power limit touch neither. Proven
+//! 2026-07-07 on the live GPU (driver 610.43.02). Applying the mem offset first,
+//! then the per-point offsets, leaves both live; the reverse order silently
+//! erases the fresh curve.
 
 use crate::gpu::GpuBackend;
 
@@ -195,6 +203,18 @@ fn apply_auto_uv_final_curve<'a>(
         return Ok(());
     };
 
+    // Memory offset FIRST — before the per-point VF writes. A
+    // `nvmlDeviceSetMemClkVfOffset` write WIPES the whole core per-point VF offset
+    // table (one-directional; proven 2026-07-07 on driver 610.43.02), so applying
+    // it after the curve would erase the curve we just wrote. Fatal on failure
+    // (spec 02 §6.4). Recorded into the result immediately so the applied policy
+    // reflects hardware even if the VF write below then fails and bails.
+    let memory = apply_memory_offset(backend, "auto-UV final curve", curve.memory_offset_mhz)?;
+    if let Some(m) = memory {
+        log(&format!("Applied auto-UV profile memory offset: {m:+}MHz."));
+    }
+    result.auto_uv_profile_gpu_policy.mem_clk_vf_offset_mhz = memory;
+
     if let Err(exc) =
         apply_plan(backend, &curve.plan).and_then(|_| backend.refresh_vf_points().map(|_| ()))
     {
@@ -226,14 +246,7 @@ fn apply_auto_uv_final_curve<'a>(
     if let Some(w) = power {
         log(&format!("Applied auto-UV profile power limit: {w}W."));
     }
-    let memory = apply_memory_offset(backend, "auto-UV final curve", curve.memory_offset_mhz)?;
-    if let Some(m) = memory {
-        log(&format!("Applied auto-UV profile memory offset: {m:+}MHz."));
-    }
-    result.auto_uv_profile_gpu_policy = GpuPolicyApplied {
-        power_limit_w: power,
-        mem_clk_vf_offset_mhz: memory,
-    };
+    result.auto_uv_profile_gpu_policy.power_limit_w = power;
 
     let mut controller =
         FlattenedClockCeilingController::new(curve.flatten_target.clone(), backend);
@@ -258,20 +271,24 @@ fn apply_auto_uv_final_curve<'a>(
     Ok(())
 }
 
-/// The adaptive tier switch's GPU ops (parity with `_apply_curve`): VF plan →
-/// power → memory → ceiling retarget. Returns the applied power/mem for the
-/// switch result.
+/// The adaptive tier switch's GPU ops: memory offset → VF plan → power →
+/// ceiling retarget. Returns the applied power/mem for the switch result.
+///
+/// The memory offset MUST precede the VF plan for the same reason as the
+/// startup pipeline: a `nvmlDeviceSetMemClkVfOffset` write WIPES the whole core
+/// per-point VF offset table (proven 2026-07-07 on driver 610.43.02), so a tier
+/// switch that wrote mem after the curve would erase the curve it just applied.
 pub fn apply_adaptive_curve(
     backend: &dyn GpuBackend,
     curve: &LoadedCurve,
     ceiling: &mut Option<FlattenedClockCeilingController<'_>>,
     tier_label: &str,
 ) -> Result<(Option<i64>, Option<i64>), String> {
+    let label = format!("adaptive {tier_label} profile");
+    let memory = apply_memory_offset(backend, &label, curve.memory_offset_mhz)?;
     apply_plan(backend, &curve.plan).map_err(|e| e.to_string())?;
     backend.refresh_vf_points().map_err(|e| e.to_string())?;
-    let label = format!("adaptive {tier_label} profile");
     let power = apply_power_limit(backend, &label, curve.power_limit_w)?;
-    let memory = apply_memory_offset(backend, &label, curve.memory_offset_mhz)?;
     if let Some(controller) = ceiling {
         controller
             .retarget(curve.flatten_target.clone())
@@ -373,6 +390,60 @@ mod tests {
                 gpc_mhz: None,
                 mem_mhz: Some(3000)
             }]
+        );
+    }
+
+    /// The adaptive tier switch pins the same mem-before-VF ordering as the
+    /// startup pipeline: a `nvmlDeviceSetMemClkVfOffset` write wipes the whole
+    /// core per-point VF offset table (mem-wipes-VF coupling), so the memory
+    /// offset must land BEFORE the VF plan or the switch erases its own curve.
+    /// Power limit stays after the VF writes.
+    #[test]
+    fn adaptive_curve_applies_mem_before_vf_then_power() {
+        use super::super::profile_store::FlattenTarget;
+
+        let mut mock = MockGpu::new();
+        mock.mem_offset_range = Some((-2000, 6000));
+        let curve = LoadedCurve {
+            path: std::path::PathBuf::new(),
+            profile_id: "adaptive-test".to_string(),
+            candidate_id: String::new(),
+            profile_tier: "Balanced".to_string(),
+            profile_tier_key: "balanced".to_string(),
+            plan: vec![item(12, 240)],
+            lock_clock_mhz: 2640,
+            candidate_voltage_mv: 875,
+            memory_offset_mhz: Some(1500),
+            power_limit_w: Some(320),
+            flatten_target: FlattenTarget {
+                source: "auto-uv-final".to_string(),
+                lock_clock_mhz: 2640,
+                lock_voltage_mv: Some(875),
+                end_voltage_mv: Some(875),
+                tail_point_count: Some(1),
+                ceiling_clock_mhz: None,
+                tail_rise_bins: None,
+            },
+        };
+
+        let mut ceiling = None;
+        let (power, memory) =
+            apply_adaptive_curve(&mock, &curve, &mut ceiling, "balanced").unwrap();
+        assert_eq!(power, Some(320));
+        assert_eq!(memory, Some(1500));
+        // Exact op order: mem offset → VF plan → power limit (no ceiling here).
+        assert_eq!(
+            mock.recorded(),
+            vec![
+                MockOp::ApplyClockOffsets {
+                    gpc_mhz: None,
+                    mem_mhz: Some(1500)
+                },
+                MockOp::ApplyVfOffsets {
+                    offsets: vec![(12, 240_000)]
+                },
+                MockOp::ApplyPowerLimit { power_limit_w: 320 },
+            ]
         );
     }
 
