@@ -1,3 +1,10 @@
+# TODO(daemon-on-flatpak): the root daemon is now the compiled Rust
+# penguin-burnerd (burnerd/), which is NOT yet packaged into this sandbox. Until a
+# build module ships /app/libexec/penguin-burnerd, the Flatpak build has no
+# daemon: the GUI gates its install/migrate paths with a clear
+# "daemon not available in the Flatpak build" error (ui/commands.py). Follow-up:
+# add the Rust SDK extension + a module that compiles and installs the binary,
+# then point runtime_service.daemon_binary_path at it and drop the gate.
 app-id: io.github.jpietek.PenguinBurner
 runtime: org.freedesktop.Platform
 runtime-version: "25.08"

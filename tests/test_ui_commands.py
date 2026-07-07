@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import base64
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -78,7 +77,6 @@ FLATPAK_APP_PATH = (
     "io.github.jpietek.PenguinBurner/current/active/files"
 )
 FLATPAK_SITE_PACKAGES = f"{FLATPAK_APP_PATH}/lib/python3.13/site-packages"
-FLATPAK_CLI_PROGRAM = f"{FLATPAK_SITE_PACKAGES}/penguin_burner.py"
 
 
 def _scan_daemon_options(command: list[str]) -> dict:
@@ -148,152 +146,29 @@ def test_ui_scan_command_uses_flatpak_host_privilege(
     assert options["gpu_index"] == 0
 
 
-def test_daemon_migration_command_uses_flatpak_host_cli(
-    monkeypatch,
-    tmp_path,
-) -> None:
+def test_daemon_migration_command_rejects_flatpak(monkeypatch, tmp_path) -> None:
+    # Option A: the flatpak sandbox has no penguin-burnerd binary, so daemon
+    # migration is gated with a clear message instead of building a Python unit.
     flatpak_info = tmp_path / ".flatpak-info"
     flatpak_info.write_text("[Application]\n", encoding="utf-8")
     monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
-    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
-    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
-    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_APP_PATH", FLATPAK_APP_PATH)
-    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_SITE_PACKAGES", FLATPAK_SITE_PACKAGES)
-    monkeypatch.setenv("USER", "desktop-user")
-    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_USER", "desktop-user")
-    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_UID", "1000")
-    monkeypatch.setattr(
-        commands.pwd,
-        "getpwnam",
-        lambda user: SimpleNamespace(pw_dir=f"/home/{user}"),
-    )
 
-    def fake_which(name: str) -> str | None:
-        return {
-            "flatpak-spawn": "/usr/bin/flatpak-spawn",
-            "flatpak": "/usr/bin/flatpak",
-        }.get(name)
-
-    monkeypatch.setattr(commands.shutil, "which", fake_which)
-
-    command = commands.daemon_migration_command()
-
-    assert command[:4] == [
-        "/usr/bin/flatpak-spawn",
-        "--host",
-        "/usr/bin/pkexec",
-        "/usr/bin/env",
-    ]
-    assert "HOME=/home/desktop-user" in command
-    assert "XDG_DATA_HOME=/home/desktop-user/.local/share" in command
-    encoded_unit = next(
-        item.split("=", 1)[1]
-        for item in command
-        if item.startswith("PENGUIN_BURNER_SYSTEMD_UNIT_B64=")
-    )
-    unit = base64.b64decode(encoded_unit).decode("utf-8")
-
-    assert "/usr/bin/flatpak" not in command
-    assert command[-5:] == [
-        "/bin/sh",
-        "-eu",
-        "-c",
-        command[-2],
-        "penguin-burner-daemon-install",
-    ]
-    assert "systemctl is-active --quiet penguin-burnerd.service" not in command[-2]
-    assert "systemctl enable penguin-burnerd.service" in command[-2]
-    assert "systemctl restart penguin-burnerd.service" in command[-2]
-    assert "systemctl enable --now penguin-burnerd.service" not in command[-2]
-    assert "/usr/bin/flatpak" not in unit
-    assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
-    assert (
-        f"ExecStart=/usr/bin/python3 {FLATPAK_CLI_PROGRAM} "
-        "--daemon-api /run/penguin-burnerd.sock"
-    ) in unit
-    assert "Environment=PENGUIN_BURNER_DAEMON_ALLOWED_UID=1000" in unit
-    assert "--migrate-to-daemon-service" not in command
+    with pytest.raises(RuntimeError, match="not yet available in the Flatpak build"):
+        commands.daemon_migration_command()
 
 
-def test_flatpak_runtime_profile_command_avoids_host_path_wrapper(
-    monkeypatch,
-    tmp_path,
-) -> None:
+def test_flatpak_runtime_profile_install_is_rejected(monkeypatch, tmp_path) -> None:
     flatpak_info = tmp_path / ".flatpak-info"
     flatpak_info.write_text("[Application]\n", encoding="utf-8")
     monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
-    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
-    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
-    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_APP_PATH", FLATPAK_APP_PATH)
-    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_SITE_PACKAGES", FLATPAK_SITE_PACKAGES)
-    monkeypatch.setenv("USER", "desktop-user")
-    monkeypatch.setenv("PENGUIN_BURNER_Q2RTX_USER", "desktop-user")
-    monkeypatch.setattr(
-        commands.pwd,
-        "getpwnam",
-        lambda user: SimpleNamespace(pw_dir=f"/home/{user}"),
-    )
 
-    def fake_which(name: str) -> str | None:
-        return {
-            "flatpak-spawn": "/usr/bin/flatpak-spawn",
-            "flatpak": "/usr/bin/flatpak",
-        }.get(name)
-
-    monkeypatch.setattr(commands.shutil, "which", fake_which)
-
-    command = commands.runtime_profile_command(
-        "install-systemd",
-        silent_fan_curve=True,
-        adaptive_auto_uv=True,
-        gpu_index=0,
-    )
-
-    assert command[:4] == [
-        "/usr/bin/flatpak-spawn",
-        "--host",
-        "/usr/bin/pkexec",
-        "/usr/bin/env",
-    ]
-    assert any(
-        item.startswith(
-            "PATH=/home/desktop-user/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    with pytest.raises(RuntimeError, match="not yet available in the Flatpak build"):
+        commands.runtime_profile_command(
+            "install-systemd",
+            silent_fan_curve=True,
+            adaptive_auto_uv=True,
+            gpu_index=0,
         )
-        for item in command
-    )
-    assert "HOME=/home/desktop-user" in command
-    assert "XDG_DATA_HOME=/home/desktop-user/.local/share" in command
-    encoded_unit = next(
-        item.split("=", 1)[1]
-        for item in command
-        if item.startswith("PENGUIN_BURNER_SYSTEMD_UNIT_B64=")
-    )
-    unit = base64.b64decode(encoded_unit).decode("utf-8")
-
-    assert "/usr/bin/flatpak" not in command
-    assert command[-5:] == [
-        "/bin/sh",
-        "-eu",
-        "-c",
-        command[-2],
-        "penguin-burner-systemd-install",
-    ]
-    assert "systemctl is-active --quiet penguin-burnerd.service" not in command[-2]
-    assert "systemctl enable penguin-burnerd.service" in command[-2]
-    assert "systemctl restart penguin-burnerd.service" in command[-2]
-    assert "systemctl enable --now penguin-burnerd.service" not in command[-2]
-    assert "systemctl enable --now PenguinBurner.service" not in command[-2]
-    assert "/usr/bin/flatpak" not in unit
-    assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
-    assert (
-        f"ExecStart=/usr/bin/python3 {FLATPAK_CLI_PROGRAM} "
-        "--daemon-api /run/penguin-burnerd.sock"
-    ) in unit
-    assert (
-        "Environment=PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64="
-    ) in unit
-    assert "Environment=HOME=/home/desktop-user" in unit
-    assert "Environment=XDG_DATA_HOME=/home/desktop-user/.local/share" in unit
 
 
 def test_flatpak_runtime_profile_daemonize_uses_daemon_client(

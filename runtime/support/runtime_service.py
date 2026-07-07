@@ -3,13 +3,11 @@
 import os
 from pathlib import Path
 import pwd
-import base64
 import configparser
 import json
 import shlex
 import shutil
 import subprocess
-import sys
 import time
 
 from runtime.daemon_client import DEFAULT_DAEMON_SOCKET
@@ -39,7 +37,6 @@ PENGUIN_BURNER_UNIT_NAME = PENGUIN_BURNER_DAEMON_UNIT_NAME
 PENGUIN_BURNER_FOREGROUND_ENV = "PENGUIN_BURNER_FOREGROUND"
 ALLOWED_UID_ENV = "PENGUIN_BURNER_DAEMON_ALLOWED_UID"
 AUTOSTART_PROGRAM_FILE_ENV = "PENGUIN_BURNER_DAEMON_PROGRAM_FILE"
-AUTOSTART_ARGV_B64_ENV = "PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64"
 
 # Persisted "last runtime action" so a daemon restart / reboot re-runs exactly
 # what the user last applied -- including "reset to stock". The root daemon owns
@@ -309,17 +306,6 @@ def _format_systemd_exec(args):
     return " ".join(rendered)
 
 
-def runtime_foreground_command(program_file, argv):
-    if running_in_flatpak():
-        return [
-            "/usr/bin/python3",
-            str(flatpak_host_cli_program_file(program_file)),
-            *argv,
-        ]
-    python = sys.executable or shutil.which("python3") or "python3"
-    return [python, str(Path(program_file).resolve()), *argv]
-
-
 def runtime_python_env_assignments(program_file) -> list[str]:
     if not running_in_flatpak():
         return []
@@ -451,7 +437,6 @@ def build_daemon_api_service_unit(
     program_file,
     *,
     socket_path=DEFAULT_DAEMON_SOCKET,
-    autostart_argv: list[str] | None = None,
     binary_path=None,
 ) -> str:
     allowed_uid = daemon_allowed_uid_assignment()
@@ -465,50 +450,11 @@ def build_daemon_api_service_unit(
         ]
     )
 
-    if running_in_flatpak():
-        # Flatpak still runs the Python daemon (`--daemon-api`) with the base64
-        # autostart env until the Rust binary is packaged into the sandbox; keep
-        # the legacy unit shape untouched. `binary_path` does not apply here.
-        exec_start = _format_systemd_exec(
-            runtime_foreground_command(program_file, ["--daemon-api", str(socket_path)])
-        )
-        autostart_argv = list(autostart_argv or [])
-        autostart_env = ""
-        if autostart_argv:
-            encoded = base64.b64encode(
-                json.dumps(autostart_argv).encode("utf-8")
-            ).decode("ascii")
-            autostart_program_file = flatpak_host_cli_program_file(program_file)
-            autostart_env = (
-                f"Environment={AUTOSTART_PROGRAM_FILE_ENV}={autostart_program_file}\n"
-                f"Environment={AUTOSTART_ARGV_B64_ENV}={encoded}\n"
-            )
-        return (
-            "[Unit]\n"
-            "Description=PenguinBurner hardware daemon\n"
-            "After=multi-user.target\n"
-            "\n"
-            "[Service]\n"
-            "Type=simple\n"
-            "WorkingDirectory=/\n"
-            f"{runtime_env}"
-            f"{allowed_uid_env}"
-            f"{autostart_env}"
-            f"ExecStart={exec_start}\n"
-            "Restart=on-failure\n"
-            "RestartSec=2\n"
-            "StandardOutput=journal\n"
-            "StandardError=journal\n"
-            f"SyslogIdentifier={PENGUIN_BURNER_DAEMON_UNIT_NAME}\n"
-            "\n"
-            "[Install]\n"
-            "WantedBy=multi-user.target\n"
-        )
-
-    # Native (non-flatpak): the compiled Rust penguin-burnerd binary. Autostart is
-    # carried by the seeded last-runtime.json state file, not a unit env — so
-    # `autostart_argv` is not baked into the unit here. Type=notify + WatchdogSec:
-    # the daemon sends READY=1 and heartbeats WATCHDOG=1.
+    # The compiled Rust penguin-burnerd binary. Autostart is carried by the seeded
+    # last-runtime.json state file, not a unit env. Type=notify + WatchdogSec: the
+    # daemon sends READY=1 and heartbeats WATCHDOG=1. Flatpak is not supported here
+    # until the binary is packaged into the sandbox (the install path is gated in
+    # ui/commands.py), so this is native-only.
     binary = daemon_binary_path(program_file, binary_path=binary_path)
     exec_start = _format_systemd_exec([binary, "--socket", str(socket_path)])
     program_file_env = (

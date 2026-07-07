@@ -607,9 +607,10 @@ def test_native_packages_build_and_install_rust_daemon() -> None:
     assert "usr/libexec/penguin-burnerd" in debian_rules
     assert "%{_libexecdir}/penguin-burnerd" in rpm_spec
 
-    # Flatpak deliberately stays on the legacy Python daemon -- it must not pull
-    # in the Rust build. (The socket grant /run/penguin-burnerd.sock still
-    # mentions the daemon name, so only the cargo build step is asserted absent.)
+    # Flatpak has no daemon yet (Option A): the Rust binary is not packaged into
+    # the sandbox, so the manifest must not pull in the Rust build. (The socket
+    # grant /run/penguin-burnerd.sock still mentions the daemon name, so only the
+    # cargo build step is asserted absent.)
     flatpak_manifest = Path(
         "packaging/flatpak/io.github.jpietek.PenguinBurner.yml"
     ).read_text(encoding="utf-8")

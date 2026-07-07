@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import os
 from pathlib import Path
@@ -15,6 +14,11 @@ from ui.features.tuning.gpu_selection import runtime_gpu_index
 
 FLATPAK_INFO_PATH = Path("/.flatpak-info")
 FLATPAK_APP_ID = "io.github.jpietek.PenguinBurner"
+FLATPAK_DAEMON_UNAVAILABLE_MESSAGE = (
+    "The PenguinBurner daemon service is not yet available in the Flatpak build "
+    "(the penguin-burnerd binary is not packaged into the sandbox). Install and "
+    "run the daemon from the native package instead."
+)
 
 
 def running_in_flatpak() -> bool:
@@ -282,46 +286,8 @@ def _host_equivalent_command(command: list[str]) -> list[str]:
 
 def daemon_migration_command() -> list[str]:
     if running_in_flatpak():
-        return _flatpak_daemon_service_install_command()
+        raise RuntimeError(FLATPAK_DAEMON_UNAVAILABLE_MESSAGE)
     return privileged_command([*cli_base_command(), "--migrate-to-daemon-service"])
-
-
-def _flatpak_daemon_service_install_command() -> list[str]:
-    from runtime.support.runtime_service import (
-        build_daemon_api_service_unit,
-        flatpak_host_cli_program_file,
-    )
-
-    unit = build_daemon_api_service_unit(flatpak_host_cli_program_file())
-    encoded_unit = base64.b64encode(unit.encode("utf-8")).decode("ascii")
-    script = r"""
-legacy_unit=/etc/systemd/system/PenguinBurner.service
-unit=/etc/systemd/system/penguin-burnerd.service
-systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
-rm -f "$legacy_unit"
-tmp="$(mktemp /etc/systemd/system/.penguin-burnerd.service.XXXXXX)"
-trap 'rm -f "$tmp"' EXIT
-printf '%s' "$PENGUIN_BURNER_SYSTEMD_UNIT_B64" | base64 -d > "$tmp"
-chmod 0644 "$tmp"
-mv "$tmp" "$unit"
-trap - EXIT
-systemctl daemon-reload
-systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
-systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
-systemctl enable penguin-burnerd.service
-systemctl restart penguin-burnerd.service
-echo "Installed and started penguin-burnerd.service at $unit."
-""".strip()
-    return _privileged_command(
-        [
-            f"PENGUIN_BURNER_SYSTEMD_UNIT_B64={encoded_unit}",
-            "/bin/sh",
-            "-eu",
-            "-c",
-            script,
-            "penguin-burner-daemon-install",
-        ]
-    )
 
 
 def runtime_profile_command(
@@ -369,55 +335,13 @@ def _daemon_runtime_profile_command(runtime_argv: list[str]) -> list[str]:
 
 def _flatpak_systemd_profile_command(action: str, runtime_argv: list[str]) -> list[str]:
     if action == "install-systemd":
-        return _flatpak_install_systemd_command(runtime_argv)
+        # Option A: the flatpak sandbox has no penguin-burnerd binary yet, so the
+        # daemon unit cannot be built here. Uninstall still works (it only removes
+        # units and needs no binary).
+        raise RuntimeError(FLATPAK_DAEMON_UNAVAILABLE_MESSAGE)
     if action == "uninstall-systemd":
         return _flatpak_uninstall_systemd_command()
     raise ValueError(f"unknown runtime profile action: {action}")
-
-
-def _flatpak_install_systemd_command(runtime_argv: list[str]) -> list[str]:
-    from runtime.support.runtime_service import (
-        build_daemon_api_service_unit,
-        flatpak_host_cli_program_file,
-    )
-
-    unit = build_daemon_api_service_unit(
-        flatpak_host_cli_program_file(),
-        autostart_argv=list(runtime_argv),
-    )
-    encoded_unit = base64.b64encode(unit.encode("utf-8")).decode("ascii")
-    script = r"""
-legacy_unit=/etc/systemd/system/PenguinBurner.service
-unit=/etc/systemd/system/penguin-burnerd.service
-systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
-if [ -f "$legacy_unit" ]; then
-    rm -f "$legacy_unit"
-    echo "Removed existing static PenguinBurner.service before daemon autostart install."
-fi
-tmp="$(mktemp /etc/systemd/system/.penguin-burnerd.service.XXXXXX)"
-trap 'rm -f "$tmp"' EXIT
-printf '%s' "$PENGUIN_BURNER_SYSTEMD_UNIT_B64" | base64 -d > "$tmp"
-chmod 0644 "$tmp"
-mv "$tmp" "$unit"
-trap - EXIT
-systemctl daemon-reload
-systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
-systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
-systemctl enable penguin-burnerd.service
-systemctl restart penguin-burnerd.service
-echo "Installed and enabled penguin-burnerd.service at $unit."
-echo "Follow the journal with: journalctl -u penguin-burnerd.service --since \"-4 hours\" -f"
-""".strip()
-    return _privileged_command(
-        [
-            f"PENGUIN_BURNER_SYSTEMD_UNIT_B64={encoded_unit}",
-            "/bin/sh",
-            "-eu",
-            "-c",
-            script,
-            "penguin-burner-systemd-install",
-        ]
-    )
 
 
 def _flatpak_uninstall_systemd_command() -> list[str]:
