@@ -405,3 +405,19 @@ golden tests + stub children).
    binary discovery when program_file is in site-packages (tonight worked
    around via /usr/libexec install); deferred medium-risk Python cleanups
    (atomic-write helper dedup, auto-UV test-file consolidation).
+
+## 2026-07-07 ~07:20 — ROOT CAUSE FIXED: mem-offset write was wiping the VF curve
+
+The "offsets don't stick" host issue was neither the driver nor the port:
+`nvmlDeviceSetMemClkVfOffset` WIPES the core per-point VF table (proven by
+isolated write/readback tests; one-directional; locked clocks and power limit
+are innocent). Both engines applied VF before mem at startup and rewrote the
+mem offset unconditionally on the guard cadence — so the mem guard erased the
+curve the VF guard had just restored, every ~10 s, since the applied profile
+first combined a mem offset with core offsets (2026-07-05). Fix (Rust engine):
+mem-before-VF ordering (startup + adaptive tier switch) and a mismatch-gated
+mem guard that always re-applies VF after a genuine rewrite.
+
+Verified live with JP: 61 VF points applied and holding, zero guard events,
+and under Q2RTX load the curve ENGAGES — 2842 MHz @ 900 mV @ 303 W vs the
+broken 2662 MHz @ 995 mV @ 330 W. More clock, less voltage, less power.
