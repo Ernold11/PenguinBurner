@@ -12,6 +12,10 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
+/// The peercred-gate uid the systemd unit sets — also the fallback drop target
+/// for the scan/verification child (`scan.rs`), so the name lives once.
+pub(crate) const DAEMON_ALLOWED_UID_ENV: &str = "PENGUIN_BURNER_DAEMON_ALLOWED_UID";
+
 pub(crate) fn nonempty_env(key: &str) -> Option<String> {
     let value = env::var(key).ok()?;
     let trimmed = value.trim();
@@ -22,10 +26,11 @@ pub(crate) fn nonempty_env(key: &str) -> Option<String> {
     }
 }
 
-/// A resolved passwd entry: the user's home dir plus its numeric uid/gid. The
-/// single lookup surfaces all three so a caller that needs both ids (chown-back)
-/// does not pay a second `getpw*_r`.
+/// A resolved passwd entry: the user's name and home dir plus its numeric
+/// uid/gid. The single lookup surfaces all four so a caller that needs several
+/// (chown-back, the child privilege drop) does not pay a second `getpw*_r`.
 pub(crate) struct PwEntry {
+    pub name: String,
     pub dir: PathBuf,
     pub uid: u32,
     pub gid: u32,
@@ -59,15 +64,18 @@ fn pw_lookup(
         if rc != 0 || result.is_null() {
             return None;
         }
-        // glibc always fills pw_dir, but a broken third-party NSS module may
-        // return NULL — dereferencing that would be UB in a root daemon.
-        if pwd.pw_dir.is_null() {
+        // glibc always fills pw_dir/pw_name, but a broken third-party NSS module
+        // may return NULL — dereferencing that would be UB in a root daemon.
+        if pwd.pw_dir.is_null() || pwd.pw_name.is_null() {
             return None;
         }
-        // SAFETY: pw_dir is non-NULL (checked above) and points at a
-        // NUL-terminated C string backed by `buf`, which is still alive.
+        // SAFETY: pw_dir/pw_name are non-NULL (checked above) and point at
+        // NUL-terminated C strings backed by `buf`, which is still alive.
         let dir = unsafe { CStr::from_ptr(pwd.pw_dir) };
+        // SAFETY: same.
+        let name = unsafe { CStr::from_ptr(pwd.pw_name) };
         return Some(PwEntry {
+            name: String::from_utf8_lossy(name.to_bytes()).into_owned(),
             dir: PathBuf::from(OsStr::from_bytes(dir.to_bytes())),
             uid: pwd.pw_uid,
             gid: pwd.pw_gid,
@@ -211,12 +219,17 @@ pub fn write_auto_uv_stop_request(abort_final_choice: bool) {
 }
 
 /// Best-effort marker write: create the parent dir, then write `content`. All
-/// errors are swallowed (parity with the Python daemon's marker writers).
+/// errors are swallowed (parity with the Python daemon's marker writers). The
+/// root daemon then hands the marker (and any config dirs it just created) to
+/// the desktop user: the de-rooted scan/verification child must be able to
+/// create files next to it, so nothing root-owned may be left in
+/// `~/.config/PenguinBurner`. No-op when the daemon is not root.
 fn write_marker(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
     let _ = fs::write(path, content);
+    claim_desktop_user_ownership(path, true);
 }
 
 /// Remove the stop-request marker. `NotFound` is treated as success (parity with
@@ -301,14 +314,23 @@ fn lchown(path: &Path, uid: u32, gid: u32) {
 }
 
 /// `claim_desktop_user_ownership` — chown a root-created path (and, with
-/// `include_parents`, the chain up to the effective home) to the desktop user.
+/// `include_parents`, the chain up to the effective home) to the desktop user
+/// resolved from the env chown-back ladder.
 pub(crate) fn claim_desktop_user_ownership(path: &Path, include_parents: bool) {
-    if !geteuid_is_root() {
-        return;
-    }
     let Some((uid, gid)) = effective_desktop_user_ids() else {
         return;
     };
+    claim_ownership_for(path, uid, gid, include_parents);
+}
+
+/// Chown a root-created path under the desktop user's home to explicit ids
+/// (best-effort, root-only). The child privilege drop passes its RESOLVED
+/// target ids so the hand-off cannot disagree with the env chown-back ladder
+/// (which, e.g., cannot see `PENGUIN_BURNER_DAEMON_ALLOWED_UID`).
+pub(crate) fn claim_ownership_for(path: &Path, uid: u32, gid: u32, include_parents: bool) {
+    if !geteuid_is_root() {
+        return;
+    }
     if !is_under_desktop_path(path, uid) {
         return;
     }

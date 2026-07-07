@@ -13,10 +13,10 @@ use std::thread;
 use serde_json::Value;
 
 use crate::api::{self, StreamError};
+use crate::paths::DAEMON_ALLOWED_UID_ENV;
 use crate::scan;
 use crate::supervisor::{ChildKind, Supervisor};
 
-const ALLOWED_UID_ENV: &str = "PENGUIN_BURNER_DAEMON_ALLOWED_UID";
 const UID_DENIED_LINE: &[u8] = b"{\"ok\":false,\"error\":\"daemon client uid is not allowed\"}\n";
 /// Per-request cap on the world-connectable (0666) socket: the maximum content
 /// bytes of one request line, EXCLUDING its trailing newline. A client that
@@ -175,7 +175,7 @@ fn handle_start_stream(
 }
 
 fn peer_uid_allowed(stream: &UnixStream) -> bool {
-    let allowed = env::var(ALLOWED_UID_ENV).unwrap_or_default();
+    let allowed = env::var(DAEMON_ALLOWED_UID_ENV).unwrap_or_default();
     let allowed = allowed.trim();
     if allowed.is_empty() {
         return true;

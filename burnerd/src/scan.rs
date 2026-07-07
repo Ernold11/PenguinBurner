@@ -3,10 +3,16 @@
 //! JSON-line frames, and drive the stop protocol + detached kill ladder. Scan
 //! behavior is parity with `stream_auto_uv_scan` (spec 01 §4.4); verification
 //! reuses the same machinery with its own argv whitelist and stop marker.
+//!
+//! Since milestone B every GPU write routes through the daemon socket, so the
+//! Python child no longer needs root: when the daemon runs as root it drops the
+//! child to the desktop user (resolved from the identity env the systemd unit
+//! carries) before exec — Python never runs as root.
 
 use std::env;
+use std::ffi::{CString, OsString};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -19,6 +25,7 @@ use serde_json::Value;
 
 use crate::api::{write_json_line, StreamError, StreamFinished, StreamLine, StreamStarted};
 use crate::argvspec;
+use crate::logging;
 use crate::paths;
 use crate::supervisor::{self, ChildJob, ChildKind, ChildStart, Supervisor};
 
@@ -105,14 +112,52 @@ fn run_child(
     writer: &mut UnixStream,
 ) {
     let program_file = supervisor::daemon_program_file();
-    // Resolve the interpreter here, OUTSIDE `begin_child`'s critical section:
-    // the spawn closure runs while the supervisor mutex is held, so the env
-    // read + ancestor filesystem walk must not happen under the lock.
+    // Resolve the interpreter and the privilege-drop plan here, OUTSIDE
+    // `begin_child`'s critical section: the spawn closure runs while the
+    // supervisor mutex is held, so env reads, passwd/NSS lookups, and
+    // filesystem walks must not happen under the lock.
     let python = child_python(&program_file);
+    let drop_plan = match child_drop_plan() {
+        Ok(plan) => plan,
+        Err(err) => {
+            // Identity env is present but unusable: refuse to launch rather
+            // than silently running Python as root again (fail closed).
+            write_json_line(
+                writer,
+                &StreamError::new(format!("failed to launch {}: {err}", launch_label(kind))),
+            );
+            return;
+        }
+    };
+    if let Some(plan) = &drop_plan {
+        logging::info(&format!(
+            "spawning {} child as {} (uid {} gid {})",
+            launch_label(kind),
+            plan.user,
+            plan.uid,
+            plan.gid
+        ));
+        // A root daemon (this version or an earlier one) may have left
+        // root-owned dirs in `~/.config/PenguinBurner` (stop markers, pre-B3
+        // scans): hand the config dir and its immediate subdirectories to the
+        // drop target so the de-rooted child can create/replace files there
+        // (writes go via rename, so user-owned DIRS are sufficient). Uses the
+        // resolved plan ids directly so the hand-off cannot disagree with the
+        // env chown-back ladder. Best-effort.
+        let config_dir = paths::user_config_dir();
+        paths::claim_ownership_for(&config_dir, plan.uid, plan.gid, true);
+        if let Ok(entries) = std::fs::read_dir(&config_dir) {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    paths::claim_ownership_for(&entry.path(), plan.uid, plan.gid, false);
+                }
+            }
+        }
+    }
 
     // The whole check-clear-stop-spawn-install runs atomically under the lock.
     let (job, reader) = match supervisor::begin_child(sup, kind, argv, |argv| {
-        spawn_child(&python, &program_file, argv)
+        spawn_child(&python, &program_file, argv, drop_plan.as_ref())
     }) {
         ChildStart::Started(job, reader) => (job, reader),
         ChildStart::Refused(err) => {
@@ -300,13 +345,218 @@ fn is_executable_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+// --- child privilege drop (milestone B3) --------------------------------------
+// Every GPU write now routes through the daemon socket, so the Python child no
+// longer needs root. When the daemon runs as root it resolves the desktop-user
+// identity from the env the systemd unit carries and drops the child to it
+// before exec (Python never runs as root). All lookups that can allocate or hit
+// NSS (getpw*, getgrouplist) run in the PARENT; the post-fork `pre_exec` hook
+// only issues raw, async-signal-safe syscalls.
+
+const Q2RTX_UID_ENV: &str = "PENGUIN_BURNER_Q2RTX_UID";
+const Q2RTX_GID_ENV: &str = "PENGUIN_BURNER_Q2RTX_GID";
+const SUDO_USER_ENV: &str = "SUDO_USER";
+
+/// The desktop-user identity the child is dropped to.
+struct ChildIdentity {
+    uid: u32,
+    gid: u32,
+    user: String,
+    home: PathBuf,
+}
+
+/// Everything the spawn needs, precomputed in the parent: the ids, the target
+/// user's supplementary groups (applied via `setgroups` — the async-signal-safe
+/// equivalent of `initgroups`), and the env overrides.
+struct DropPlan {
+    uid: libc::uid_t,
+    gid: libc::gid_t,
+    groups: Vec<libc::gid_t>,
+    env: Vec<(&'static str, OsString)>,
+    user: String,
+}
+
+/// Resolve the drop target from the daemon's environment. `Ok(None)` means
+/// "spawn as-is" (daemon not root, no identity env, or an explicit-root
+/// target); `Err` means identity env is present but unusable — the caller must
+/// refuse to spawn rather than run the child as root.
+fn resolve_child_identity(
+    daemon_is_root: bool,
+    q2rtx_uid: Option<&str>,
+    q2rtx_gid: Option<&str>,
+    allowed_uid: Option<&str>,
+    sudo_user: Option<&str>,
+    pw_uid: impl Fn(u32) -> Option<paths::PwEntry>,
+    pw_name: impl Fn(&str) -> Option<paths::PwEntry>,
+) -> Result<Option<ChildIdentity>, String> {
+    if !daemon_is_root {
+        // Nothing to drop; a non-root dev daemon spawns the child unchanged.
+        return Ok(None);
+    }
+    fn parse_id(env_name: &str, text: &str) -> Result<u32, String> {
+        text.trim()
+            .parse::<u32>()
+            .map_err(|_| format!("invalid {env_name} value: {text:?}"))
+    }
+    // 1. Explicit numeric identity (the systemd unit forwards the desktop ids).
+    if let Some(uid_text) = q2rtx_uid {
+        let uid = parse_id(Q2RTX_UID_ENV, uid_text)?;
+        if uid == 0 {
+            // An explicit-root target: dropping is a no-op, spawn as-is.
+            return Ok(None);
+        }
+        let entry = pw_uid(uid).ok_or_else(|| format!("no passwd entry for uid {uid}"))?;
+        let gid = match q2rtx_gid {
+            Some(text) => parse_id(Q2RTX_GID_ENV, text)?,
+            None => entry.gid,
+        };
+        return Ok(Some(ChildIdentity {
+            uid,
+            gid,
+            user: entry.name,
+            home: entry.dir,
+        }));
+    }
+    // 2. The socket-gate uid, with that user's primary gid.
+    if let Some(uid_text) = allowed_uid {
+        let uid = parse_id(paths::DAEMON_ALLOWED_UID_ENV, uid_text)?;
+        if uid == 0 {
+            return Ok(None);
+        }
+        let entry = pw_uid(uid).ok_or_else(|| format!("no passwd entry for uid {uid}"))?;
+        return Ok(Some(ChildIdentity {
+            uid,
+            gid: entry.gid,
+            user: entry.name,
+            home: entry.dir,
+        }));
+    }
+    // 3. The sudo invoker.
+    if let Some(user) = sudo_user {
+        let entry =
+            pw_name(user).ok_or_else(|| format!("no passwd entry for SUDO_USER {user:?}"))?;
+        if entry.uid == 0 {
+            return Ok(None);
+        }
+        return Ok(Some(ChildIdentity {
+            uid: entry.uid,
+            gid: entry.gid,
+            user: entry.name,
+            home: entry.dir,
+        }));
+    }
+    Ok(None)
+}
+
+/// The env overrides for the de-rooted child, mirroring the block the Python
+/// scan set for its own Q2RTX child (`stability/q2rtx/identity.py`): the child
+/// must resolve the same effective home/config dir it did as root, and the
+/// Q2RTX grandchild (which inherits this env now that the child no longer
+/// re-drops) must see the same world. `PENGUIN_BURNER_*` passthrough is
+/// untouched — the child inherits the rest of the daemon env.
+fn child_env_overrides(
+    identity: &ChildIdentity,
+    runtime_dir: Option<&Path>,
+    parent_has_xauthority: bool,
+) -> Vec<(&'static str, OsString)> {
+    let home = &identity.home;
+    let mut env: Vec<(&'static str, OsString)> = vec![
+        ("HOME", home.clone().into_os_string()),
+        ("USER", OsString::from(&identity.user)),
+        ("LOGNAME", OsString::from(&identity.user)),
+        ("XDG_CONFIG_HOME", home.join(".config").into_os_string()),
+        (
+            "XDG_DATA_HOME",
+            home.join(".local").join("share").into_os_string(),
+        ),
+        ("XDG_CACHE_HOME", home.join(".cache").into_os_string()),
+    ];
+    if let Some(dir) = runtime_dir {
+        env.push(("XDG_RUNTIME_DIR", dir.as_os_str().to_os_string()));
+    }
+    if !parent_has_xauthority {
+        let xauthority = home.join(".Xauthority");
+        if xauthority.is_file() {
+            env.push(("XAUTHORITY", xauthority.into_os_string()));
+        }
+    }
+    env
+}
+
+/// `/run/user/<uid>` if it exists (only then is `XDG_RUNTIME_DIR` injected).
+fn existing_runtime_dir(uid: u32) -> Option<PathBuf> {
+    let dir = PathBuf::from(format!("/run/user/{uid}"));
+    if dir.is_dir() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// The target user's full supplementary group list via `getgrouplist`, resolved
+/// in the parent so the post-fork hook only needs the raw `setgroups` syscall.
+fn supplementary_groups(user: &CString, gid: libc::gid_t) -> Result<Vec<libc::gid_t>, String> {
+    let mut count: libc::c_int = 16;
+    loop {
+        let mut groups = vec![0 as libc::gid_t; count as usize];
+        let mut ngroups = count;
+        // SAFETY: `groups` has capacity `ngroups`; getgrouplist writes at most
+        // that many entries and updates `ngroups` to the real count.
+        let rc =
+            unsafe { libc::getgrouplist(user.as_ptr(), gid, groups.as_mut_ptr(), &mut ngroups) };
+        if rc >= 0 {
+            groups.truncate(ngroups as usize);
+            return Ok(groups);
+        }
+        if ngroups <= count {
+            // No capacity progress: the lookup failed outright.
+            return Err(format!("getgrouplist failed for user {user:?}"));
+        }
+        count = ngroups;
+    }
+}
+
+/// Build the full drop plan from the daemon env, or `None` when no drop applies.
+fn child_drop_plan() -> Result<Option<DropPlan>, String> {
+    let identity = resolve_child_identity(
+        paths::geteuid_is_root(),
+        paths::nonempty_env(Q2RTX_UID_ENV).as_deref(),
+        paths::nonempty_env(Q2RTX_GID_ENV).as_deref(),
+        paths::nonempty_env(paths::DAEMON_ALLOWED_UID_ENV).as_deref(),
+        paths::nonempty_env(SUDO_USER_ENV).as_deref(),
+        paths::pw_by_uid,
+        paths::pw_by_name,
+    )?;
+    let Some(identity) = identity else {
+        return Ok(None);
+    };
+    let user_c = CString::new(identity.user.as_str())
+        .map_err(|_| format!("child user name contains NUL: {:?}", identity.user))?;
+    let groups = supplementary_groups(&user_c, identity.gid)?;
+    let env = child_env_overrides(
+        &identity,
+        existing_runtime_dir(identity.uid).as_deref(),
+        env::var_os("XAUTHORITY").is_some(),
+    );
+    Ok(Some(DropPlan {
+        uid: identity.uid,
+        gid: identity.gid,
+        groups,
+        env,
+        user: identity.user,
+    }))
+}
+
 /// Spawn the child with stdout and stderr merged onto one pipe, `cwd="/"`.
 /// Returns the child and the read end of the pipe. `python` is the pre-resolved
-/// interpreter (resolved outside the supervisor lock by the caller).
+/// interpreter and `drop` the pre-resolved privilege-drop plan (both resolved
+/// outside the supervisor lock by the caller). With a plan, the child is
+/// dropped to the desktop user before exec; any failure aborts the spawn.
 fn spawn_child(
     python: &Path,
     program_file: &str,
     argv: &[String],
+    drop: Option<&DropPlan>,
 ) -> std::io::Result<(Child, File)> {
     let mut fds = [0i32; 2];
     // SAFETY: pipe2 fills `fds` with a (read, write) pair; both are O_CLOEXEC so
@@ -334,16 +584,51 @@ fn spawn_child(
         .stderr(Stdio::from(write_clone));
     // stdin is inherited (parity: the Python daemon does not redirect it).
 
+    // De-rooted child: point HOME/USER/XDG at the desktop user so the child
+    // resolves the same `~/.config/PenguinBurner` it did as root. The rest of
+    // the daemon env (PENGUIN_BURNER_* passthrough) is inherited unchanged.
+    if let Some(plan) = drop {
+        for (key, value) in &plan.env {
+            command.env(key, value);
+        }
+    }
+
+    // The post-fork/pre-exec data must be owned by the closure and applied
+    // without allocating (fork of a multithreaded process: only
+    // async-signal-safe calls are legal until exec).
+    let drop_spec: Option<(libc::uid_t, libc::gid_t, Vec<libc::gid_t>)> =
+        drop.map(|plan| (plan.uid, plan.gid, plan.groups.clone()));
+
     // The daemon blocks SIGINT/SIGTERM process-wide (signal thread) and the
     // mask survives exec — without a reset the child would never receive the
     // stop SIGINT (the Python daemon's children inherited a default mask).
-    // SAFETY: runs between fork and exec; sigprocmask is async-signal-safe.
+    // With a drop plan, privileges are then dropped in the mandatory order
+    // setsid → setgroups → setgid → setuid (gid before uid: after setuid the
+    // process can no longer change its gid). Every step fails CLOSED: an
+    // `Err` here aborts the spawn, so the child can never exec with root or
+    // half-dropped privileges.
+    // SAFETY: runs between fork and exec; every call below is a raw syscall
+    // (async-signal-safe, no allocation — the groups Vec was built pre-fork).
     unsafe {
         use std::os::unix::process::CommandExt;
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             let mut set: libc::sigset_t = std::mem::zeroed();
             libc::sigemptyset(&mut set);
             libc::sigprocmask(libc::SIG_SETMASK, &set, std::ptr::null_mut());
+            if let Some((uid, gid, groups)) = drop_spec.as_ref() {
+                if libc::setsid() < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::setgroups(groups.len(), groups.as_ptr()) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::setgid(*gid) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::setuid(*uid) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
             Ok(())
         });
     }
@@ -442,6 +727,287 @@ mod tests {
             PathBuf::from("python3")
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // --- child privilege-drop resolution (B3) ---------------------------------
+
+    fn entry(name: &str, dir: &str, uid: u32, gid: u32) -> paths::PwEntry {
+        paths::PwEntry {
+            name: name.to_string(),
+            dir: PathBuf::from(dir),
+            uid,
+            gid,
+        }
+    }
+
+    /// Fake passwd tables: uid 1000 = jp (primary gid 1000), uid 2000 = other
+    /// (primary gid 2500); by-name knows jp and root.
+    fn fake_pw_uid(uid: u32) -> Option<paths::PwEntry> {
+        match uid {
+            1000 => Some(entry("jp", "/home/jp", 1000, 1000)),
+            2000 => Some(entry("other", "/home/other", 2000, 2500)),
+            _ => None,
+        }
+    }
+
+    fn fake_pw_name(name: &str) -> Option<paths::PwEntry> {
+        match name {
+            "jp" => Some(entry("jp", "/home/jp", 1000, 1000)),
+            "root" => Some(entry("root", "/root", 0, 0)),
+            _ => None,
+        }
+    }
+
+    fn resolve(
+        daemon_is_root: bool,
+        q2rtx_uid: Option<&str>,
+        q2rtx_gid: Option<&str>,
+        allowed_uid: Option<&str>,
+        sudo_user: Option<&str>,
+    ) -> Result<Option<ChildIdentity>, String> {
+        resolve_child_identity(
+            daemon_is_root,
+            q2rtx_uid,
+            q2rtx_gid,
+            allowed_uid,
+            sudo_user,
+            fake_pw_uid,
+            fake_pw_name,
+        )
+    }
+
+    #[test]
+    fn non_root_daemon_never_drops() {
+        let identity =
+            resolve(false, Some("1000"), Some("1000"), Some("1000"), Some("jp")).expect("no error");
+        assert!(identity.is_none(), "a non-root daemon must spawn as-is");
+    }
+
+    #[test]
+    fn no_identity_env_means_no_drop() {
+        let identity = resolve(true, None, None, None, None).expect("no error");
+        assert!(identity.is_none());
+    }
+
+    #[test]
+    fn q2rtx_uid_and_gid_env_win() {
+        let identity = resolve(true, Some("1000"), Some("985"), Some("2000"), Some("root"))
+            .expect("no error")
+            .expect("drops");
+        assert_eq!(identity.uid, 1000);
+        assert_eq!(identity.gid, 985, "explicit gid env beats the primary gid");
+        assert_eq!(identity.user, "jp");
+        assert_eq!(identity.home, PathBuf::from("/home/jp"));
+    }
+
+    #[test]
+    fn q2rtx_uid_without_gid_uses_primary_gid() {
+        let identity = resolve(true, Some("2000"), None, None, None)
+            .expect("no error")
+            .expect("drops");
+        assert_eq!(identity.uid, 2000);
+        assert_eq!(identity.gid, 2500);
+        assert_eq!(identity.user, "other");
+    }
+
+    #[test]
+    fn allowed_uid_fallback_uses_primary_gid() {
+        let identity = resolve(true, None, None, Some("1000"), Some("root"))
+            .expect("no error")
+            .expect("drops");
+        assert_eq!(identity.uid, 1000);
+        assert_eq!(identity.gid, 1000);
+        assert_eq!(identity.user, "jp");
+    }
+
+    #[test]
+    fn sudo_user_is_the_last_fallback() {
+        let identity = resolve(true, None, None, None, Some("jp"))
+            .expect("no error")
+            .expect("drops");
+        assert_eq!(identity.uid, 1000);
+        assert_eq!(identity.gid, 1000);
+        assert_eq!(identity.home, PathBuf::from("/home/jp"));
+    }
+
+    #[test]
+    fn root_targets_mean_no_drop() {
+        // Explicit-root targets are a no-op drop, not an error (parity with a
+        // root child today), for every source.
+        assert!(resolve(true, Some("0"), None, None, None)
+            .unwrap()
+            .is_none());
+        assert!(resolve(true, None, None, Some("0"), None)
+            .unwrap()
+            .is_none());
+        assert!(resolve(true, None, None, None, Some("root"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn unparseable_identity_env_fails_closed() {
+        assert!(resolve(true, Some("abc"), None, None, None).is_err());
+        assert!(resolve(true, Some("-1"), None, None, None).is_err());
+        assert!(resolve(true, Some("1000"), Some("xyz"), None, None).is_err());
+        assert!(resolve(true, None, None, Some("abc"), None).is_err());
+    }
+
+    #[test]
+    fn unknown_identity_fails_closed() {
+        // Identity env present but not resolvable in passwd: refuse to spawn
+        // rather than silently running the child as root.
+        assert!(resolve(true, Some("4242"), None, None, None).is_err());
+        assert!(resolve(true, None, None, Some("4242"), None).is_err());
+        assert!(resolve(true, None, None, None, Some("ghost")).is_err());
+    }
+
+    // --- child env overrides (B3) ----------------------------------------------
+
+    fn env_value<'a>(env: &'a [(&'static str, OsString)], key: &str) -> Option<&'a OsString> {
+        env.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
+    }
+
+    #[test]
+    fn env_overrides_point_child_at_desktop_home() {
+        let identity = ChildIdentity {
+            uid: 1234,
+            gid: 1234,
+            user: "jp".to_string(),
+            home: PathBuf::from("/home/jp"),
+        };
+        let runtime = PathBuf::from("/run/user/1234");
+        let env = child_env_overrides(&identity, Some(&runtime), true);
+        assert_eq!(env_value(&env, "HOME").unwrap(), "/home/jp");
+        assert_eq!(env_value(&env, "USER").unwrap(), "jp");
+        assert_eq!(env_value(&env, "LOGNAME").unwrap(), "jp");
+        assert_eq!(
+            env_value(&env, "XDG_CONFIG_HOME").unwrap(),
+            "/home/jp/.config"
+        );
+        assert_eq!(
+            env_value(&env, "XDG_DATA_HOME").unwrap(),
+            "/home/jp/.local/share"
+        );
+        assert_eq!(
+            env_value(&env, "XDG_CACHE_HOME").unwrap(),
+            "/home/jp/.cache"
+        );
+        assert_eq!(
+            env_value(&env, "XDG_RUNTIME_DIR").unwrap(),
+            "/run/user/1234"
+        );
+        // Daemon already carries XAUTHORITY: never overridden.
+        assert!(env_value(&env, "XAUTHORITY").is_none());
+    }
+
+    #[test]
+    fn env_overrides_skip_missing_runtime_dir_and_add_xauthority() {
+        let home = std::env::temp_dir().join(format!("pb-xauth-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join(".Xauthority"), "").unwrap();
+        let identity = ChildIdentity {
+            uid: 1234,
+            gid: 1234,
+            user: "jp".to_string(),
+            home: home.clone(),
+        };
+        let env = child_env_overrides(&identity, None, false);
+        assert!(env_value(&env, "XDG_RUNTIME_DIR").is_none());
+        assert_eq!(
+            env_value(&env, "XAUTHORITY").unwrap(),
+            home.join(".Xauthority").as_os_str()
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    // --- the drop itself (B3) ---------------------------------------------------
+
+    #[test]
+    fn supplementary_groups_include_primary_gid() {
+        // SAFETY: getuid is always safe.
+        let uid = unsafe { libc::getuid() };
+        let entry = paths::pw_by_uid(uid).expect("current user resolves");
+        let user = CString::new(entry.name.clone()).unwrap();
+        let groups = supplementary_groups(&user, entry.gid).expect("group list resolves");
+        assert!(
+            groups.contains(&entry.gid),
+            "the primary gid must be in the supplementary list"
+        );
+    }
+
+    /// Fail-closed: without the privilege to drop (non-root test run), a spawn
+    /// WITH a drop plan must fail — the child must never exec half-dropped.
+    #[test]
+    fn spawn_with_drop_plan_fails_closed_without_privilege() {
+        // SAFETY: geteuid is always safe.
+        if unsafe { libc::geteuid() } == 0 {
+            return; // as root the drop succeeds; covered by the root-gated test
+        }
+        let dir = std::env::temp_dir().join(format!("pb-dropfail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("ran");
+        let plan = DropPlan {
+            uid: 1,
+            gid: 1,
+            groups: vec![1],
+            env: Vec::new(),
+            user: "daemon".to_string(),
+        };
+        let result = spawn_child(
+            Path::new("/bin/sh"),
+            "-c",
+            &[format!("touch {}", marker.display())],
+            Some(&plan),
+        );
+        assert!(result.is_err(), "a failed drop must abort the spawn");
+        assert!(
+            !marker.exists(),
+            "the child must never run without the drop"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The real drop, asserted end-to-end when the test itself runs as root:
+    /// the child must report the TARGET uid/gid, not 0.
+    #[test]
+    fn spawn_with_drop_plan_runs_child_as_target_when_root() {
+        // SAFETY: geteuid is always safe.
+        if unsafe { libc::geteuid() } != 0 {
+            return; // needs real root to perform the drop
+        }
+        let Some(entry) = paths::pw_by_name("nobody") else {
+            return;
+        };
+        let user = CString::new(entry.name.clone()).unwrap();
+        let groups = supplementary_groups(&user, entry.gid).expect("group list resolves");
+        let plan = DropPlan {
+            uid: entry.uid,
+            gid: entry.gid,
+            groups,
+            env: Vec::new(),
+            user: entry.name.clone(),
+        };
+        let (child, reader) = spawn_child(
+            Path::new("/bin/sh"),
+            "-c",
+            &["id -u; id -g".to_string()],
+            Some(&plan),
+        )
+        .expect("spawn with drop");
+        let mut output = String::new();
+        let mut reader = BufReader::new(reader);
+        reader.read_to_string(&mut output).unwrap();
+        let mut child = child;
+        let _ = child.wait();
+        let reported: Vec<&str> = output.split_whitespace().collect();
+        assert_eq!(
+            reported,
+            vec![entry.uid.to_string(), entry.gid.to_string()],
+            "the child must run as the drop target, not root"
+        );
     }
 
     // --- kill-ladder reap (F6) ------------------------------------------------
