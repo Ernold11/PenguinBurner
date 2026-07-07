@@ -23,6 +23,9 @@ BuildRequires:  mingw64-gcc-c++
 BuildRequires:  mingw64-winpthreads-static
 BuildRequires:  vulkan-headers
 BuildRequires:  desktop-file-utils
+# Root daemon (penguin-burnerd) is compiled from the bundled Rust crate.
+BuildRequires:  cargo
+BuildRequires:  rust
 
 Requires:       python3-pyside6 >= 6.7
 Requires:       python3-colorama >= 0.4
@@ -54,6 +57,11 @@ export PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1
 export PENGUIN_BURNER_REQUIRE_NVAPI_SHIM=1
 %pyproject_wheel
 
+# Root daemon: compiled from the bundled Rust crate in burnerd/. --locked pins
+# the committed Cargo.lock; crates.io is fetched at build time, so the COPR
+# project must have internet access enabled (see packaging/rpm/README.md).
+cargo build --release --locked --manifest-path burnerd/Cargo.toml
+
 %install
 %pyproject_install
 %pyproject_save_files \
@@ -69,6 +77,10 @@ export PENGUIN_BURNER_REQUIRE_NVAPI_SHIM=1
     drivers \
     penguin_burner
 
+# Root daemon binary at the fixed discovery path (0755, root-owned).
+install -D -m 0755 burnerd/target/release/penguin-burnerd \
+    %{buildroot}%{_libexecdir}/penguin-burnerd
+
 desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.PenguinBurner.desktop
 
 %files -f %{pyproject_files}
@@ -81,6 +93,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_bindir}/penguin-burner-cli
 %{_bindir}/pburn-cli
 %{_bindir}/PENGUIN_BURNER
+%{_libexecdir}/penguin-burnerd
 %{_datadir}/applications/io.github.jpietek.PenguinBurner.desktop
 %{_datadir}/icons/hicolor/256x256/apps/penguin-burner.png
 %{_datadir}/icons/hicolor/512x512/apps/penguin-burner.png

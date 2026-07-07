@@ -1,18 +1,29 @@
 #!/usr/bin/make -f
 
+# Keep cargo's registry/cache inside the build tree (Rules-Requires-Root: no,
+# so the build runs unprivileged and must not write to a system CARGO_HOME).
+export CARGO_HOME = $(CURDIR)/debian/cargo
+
 %:
 	dh $@
 
 override_dh_auto_clean:
-	rm -rf build dist *.egg-info src/*.egg-info
+	rm -rf build dist *.egg-info src/*.egg-info debian/cargo burnerd/target
 
 override_dh_auto_configure:
 
 override_dh_auto_build:
 	PENGUIN_BURNER_REQUIRE_NATIVE_LAYER=1 PENGUIN_BURNER_REQUIRE_NVAPI_SHIM=1 python3 -m build --wheel --no-isolation --skip-dependency-check
+	# Root daemon (penguin-burnerd): compiled from the bundled Rust crate.
+	# --locked pins the committed burnerd/Cargo.lock. Networked builds fetch the
+	# crates from crates.io; offline/Launchpad builders need vendored crates --
+	# see packaging/debian/README.md.
+	cargo build --release --locked --manifest-path burnerd/Cargo.toml
 
 override_dh_auto_install:
 	python3 -m installer --destdir=$(CURDIR)/debian/penguin-burner --prefix=/usr/lib/penguin-burner dist/*.whl
 	python3 packaging/debian/install-private-python.py
+	# Fixed root-owned discovery path (runtime_service.py looks here first).
+	install -D -m 0755 burnerd/target/release/penguin-burnerd $(CURDIR)/debian/penguin-burner/usr/libexec/penguin-burnerd
 
 override_dh_auto_test:

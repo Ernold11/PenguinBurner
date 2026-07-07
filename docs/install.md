@@ -81,3 +81,16 @@ If the commands are not found, make sure `~/.local/bin` is on your `PATH`.
 ```bash
 python -m pip install --user --no-index --no-deps --find-links dist --upgrade penguin-burner
 ```
+
+## Root daemon (from a checkout)
+
+The privileged root daemon (`penguin-burnerd`) is a compiled Rust binary. The
+native COPR/AUR/PPA packages build it for you and install it to
+`/usr/libexec/penguin-burnerd`. From a checkout, build it once with:
+
+```bash
+scripts/build-daemon.sh   # cargo build --release --locked in burnerd/
+```
+
+The installer then discovers the dev build at
+`burnerd/target/release/penguin-burnerd` when no packaged binary is present.

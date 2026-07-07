@@ -584,6 +584,46 @@ def test_native_packages_require_native_layer_build_dependencies() -> None:
         assert "PENGUIN_BURNER_REQUIRE_NATIVE_LAYER" in text
 
 
+def test_native_packages_build_and_install_rust_daemon() -> None:
+    arch_pkgbuild = Path("packaging/arch/PKGBUILD").read_text(encoding="utf-8")
+    debian_control = Path("packaging/debian/control").read_text(encoding="utf-8")
+    debian_rules = Path("packaging/debian/rules").read_text(encoding="utf-8")
+    rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(encoding="utf-8")
+
+    # cargo is a build dependency for every source-built native package.
+    assert "'cargo'" in arch_pkgbuild
+    assert " cargo," in debian_control
+    assert "BuildRequires:  cargo" in rpm_spec
+
+    # Each recipe compiles the bundled crate against the committed lockfile.
+    for text in (arch_pkgbuild, debian_rules, rpm_spec):
+        assert "cargo build --release --locked" in text
+        assert "burnerd/Cargo.toml" in text
+
+    # ... and installs the binary to the fixed root-owned discovery path
+    # (runtime/support/runtime_service.py looks at /usr/libexec first).
+    assert "install -Dm755 burnerd/target/release/penguin-burnerd" in arch_pkgbuild
+    assert "usr/libexec/penguin-burnerd" in arch_pkgbuild
+    assert "usr/libexec/penguin-burnerd" in debian_rules
+    assert "%{_libexecdir}/penguin-burnerd" in rpm_spec
+
+    # Flatpak deliberately stays on the legacy Python daemon -- it must not pull
+    # in the Rust build. (The socket grant /run/penguin-burnerd.sock still
+    # mentions the daemon name, so only the cargo build step is asserted absent.)
+    flatpak_manifest = Path(
+        "packaging/flatpak/io.github.jpietek.PenguinBurner.yml"
+    ).read_text(encoding="utf-8")
+    assert "cargo build" not in flatpak_manifest
+    assert "burnerd/Cargo.toml" not in flatpak_manifest
+
+
+def test_daemon_dev_build_script_uses_locked_cargo_build() -> None:
+    script = Path("scripts/build-daemon.sh").read_text(encoding="utf-8")
+
+    assert "cargo build --release --locked" in script
+    assert "burnerd/Cargo.toml" in script
+
+
 def test_pypi_release_builds_manylinux_native_layer_wheel() -> None:
     build_script = Path("scripts/build-python-dist.sh").read_text(encoding="utf-8")
     workflow = Path(".github/workflows/publish-python-package.yml").read_text(

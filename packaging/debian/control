@@ -4,6 +4,7 @@ Priority: optional
 Maintainer: PenguinBurner contributors <jan.pietek@gmail.com>
 Build-Depends:
  debhelper-compat (= 13),
+ cargo,
  cmake,
  g++,
  g++-mingw-w64-x86-64,
