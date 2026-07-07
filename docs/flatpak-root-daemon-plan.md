@@ -1,5 +1,12 @@
 # Flatpak Root Daemon Plan
 
+> **Historical plan — implemented.** The daemon architecture shipped: the root
+> daemon is now the Rust binary `penguin-burnerd` (see `burnerd/DESIGN.md`),
+> all privileged GPU operations go through its socket, and the Flatpak builds
+> the daemon into the sandbox (see `packaging/flatpak/README.md`). Module
+> names, `pkexec` flows, and `--daemon-api` details below describe the
+> pre-port Python state and are kept only as a design record.
+
 ## Goal
 
 Make PenguinBurner acceptable for Flathub without a large repository reshuffle.

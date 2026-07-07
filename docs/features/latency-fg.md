@@ -149,17 +149,10 @@ The native layer observes `vkQueuePresentKHR` and records the time between
 presents. This is display/output cadence. With frame generation active, this
 often includes generated frames.
 
-The daemon reports raw present statistics:
+The daemon tracks the arithmetic mean output FPS over the recent present
+intervals (the raw present average).
 
-- `raw-present-fps-avg` - arithmetic mean output FPS from recent present
-  intervals.
-- `raw-present-fps-median` - median output FPS.
-- `raw-present-fps-5pct-low` - average FPS of the slowest 5 percent of present
-  intervals.
-- `raw-present-fps-1pct-low` - average FPS of the slowest 1 percent of present
-  intervals.
-
-The overlay's `FG` value is based on `raw-present-fps-avg`. It is shown only
+The overlay's `FG` value is based on that raw present average. It is shown only
 when PenguinBurner has enough evidence that frame generation is active.
 
 ### Base / Pre-FG FPS
@@ -217,29 +210,6 @@ The output cadence is not clearly frame-generated, or PenguinBurner does not
 have enough evidence to split base and output rates.
 
 ## Diagnostics
-
-Enable verbose latency diagnostics:
-
-```text
-PENGUIN_BURNER_DUMP_LATENCY_DATA=1 PENGUIN_BURNER %command%
-```
-
-Then check the daemon log for lines like:
-
-```text
-event=latency-meter ... latency-quality=sim-to-present present-fps=40 fps-source=base-frame-marker raw-present-fps-avg=120
-```
-
-Useful fields:
-
-- `latency-quality` - which latency tier produced `LAT`.
-- `missing=` - which richer fields are unavailable, such as `input-sample` or
-  `driver-timing`.
-- `present-fps` - the base/pre-FG FPS shown by the overlay.
-- `fps-source` - whether base FPS came from markers or present pacing.
-- `raw-present-fps-avg` - output present average, useful for frame-generation
-  diagnosis.
-- `display-latency-p95` - present-to-scanout tail when available.
 
 The live overlay state is written under:
 

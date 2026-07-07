@@ -11,10 +11,25 @@ cd PenguinBurner
 python -m pip install --user -e .
 ```
 
+The privileged root daemon is a Rust crate in `burnerd/`. Building it (and
+building the wheel, which bundles the compiled binary) needs a Rust toolchain
+(`cargo`):
+
+```bash
+scripts/build-daemon.sh   # cargo build --release --locked in burnerd/
+```
+
 ## Tests
 
 ```bash
 python -m pytest tests/
+```
+
+For changes under `burnerd/`, also run the Rust gates:
+
+```bash
+cd burnerd
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo deny check
 ```
 
 Run the docs flag check (catches CLI flags documented but not in the parser):

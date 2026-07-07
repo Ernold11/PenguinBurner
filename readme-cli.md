@@ -9,6 +9,12 @@ PenguinBurner is an NVIDIA Auto-UV tuning tool. The default app entrypoints,
 `penguin-burner-cli` and `pburn-cli`, are for Auto-UV scans, profile
 verification, and applying saved Auto-UV profiles as daemon runtime.
 
+Privileged GPU writes are performed by the root hardware service
+(`penguin-burnerd.service`, a compiled Rust daemon); the CLI itself and Auto-UV
+scans run as your regular user and talk to it over a local socket. `sudo` is
+only needed for the service lifecycle commands (`--install-systemd-service`,
+`--uninstall-systemd-service`, `--daemonize`, `--migrate-to-daemon-service`).
+
 ## Install
 
 ```bash
@@ -21,24 +27,34 @@ Start the GUI:
 ~/.local/bin/penguin-burner
 ```
 
+One-time setup: install the root hardware service so profile application and
+scans can reach the GPU (the GUI offers the same setup automatically on the
+first privileged action):
+
+```bash
+sudo ~/.local/bin/penguin-burner-cli --migrate-to-daemon-service
+```
+
 Run the CLI from an installed package:
 
 ```bash
-sudo ~/.local/bin/penguin-burner-cli --auto-uv-voltage-scan
+~/.local/bin/penguin-burner-cli --auto-uv-voltage-scan
 ```
 
 From a checkout, use the wrapper:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan
+./penguin_burner.sh --auto-uv-voltage-scan
 ```
 
 ## Auto-UV Scan
 
-Scans are explicit because they make hardware changes. Start one with:
+Scans are explicit because they make hardware changes. The scan runs as your
+user; its GPU writes go through the root hardware service, so the service must
+be installed and running (see one-time setup above). Start a scan with:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan
+./penguin_burner.sh --auto-uv-voltage-scan
 ```
 
 The CLI scan options mirror the GUI Auto-UV tuning dialog. Start with
@@ -74,13 +90,13 @@ Examples:
 Balanced with GUI defaults:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan --auto-uv-mode balanced
+./penguin_burner.sh --auto-uv-voltage-scan --auto-uv-mode balanced
 ```
 
 Balanced with all common GUI knobs made explicit:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-mode balanced \
   --auto-uv-max-clock-drop-pct 6.0 \
   --auto-uv-memory-offset-mhz 500 \
@@ -90,7 +106,7 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan \
 Balanced with the preset shape made explicit:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-mode balanced \
   --auto-uv-tail-rise-bins 4
 ```
@@ -98,7 +114,7 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan \
 Efficiency with explicit GUI knobs:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-mode efficiency \
   --auto-uv-min-voltage-mv 850 \
   --auto-uv-max-clock-drop-pct 10 \
@@ -109,14 +125,14 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan \
 Performance using the detected GPU table Auto-OC target:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-mode performance
 ```
 
 Performance with a custom Auto-OC target:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-mode performance \
   --auto-oc-target-voltage-mv 910 \
   --auto-oc-target-clock-mhz 2950 \
@@ -126,7 +142,7 @@ sudo ./penguin_burner.sh --auto-uv-voltage-scan \
 Performance with common scan limits too:
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan \
+./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-mode performance \
   --auto-oc-target-voltage-mv 910 \
   --auto-oc-target-clock-mhz 2950 \
@@ -232,18 +248,12 @@ Enable optional dxvk-nvapi in-game latency marker parsing:
 PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%
 ```
 
-Enable verbose latency diagnostics in the daemon log:
-
-```text
-PENGUIN_BURNER_DUMP_LATENCY_DATA=1 PENGUIN_BURNER %command%
-```
-
 ## Debugging
 
 Write a diagnostic log for the current operation:
 
 ```bash
-sudo ./penguin_burner.sh --debug-log --auto-uv-voltage-scan
+./penguin_burner.sh --debug-log --auto-uv-voltage-scan
 ```
 
 Follow daemon logs:

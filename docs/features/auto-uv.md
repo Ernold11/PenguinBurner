@@ -21,9 +21,14 @@ FPS, power, temp, fan, FPS/W).
 ## Run a scan
 
 ```bash
-sudo ./penguin_burner.sh --auto-uv-voltage-scan   # start a scan explicitly
-sudo ./penguin_burner.sh --fresh-auto-uv-scan     # forget previous results, start clean
+./penguin_burner.sh --auto-uv-voltage-scan   # start a scan explicitly
+./penguin_burner.sh --fresh-auto-uv-scan     # forget previous results, start clean
 ```
+
+The scan runs as your regular user; its privileged GPU writes go through the
+root hardware service (`penguin-burnerd`), which must be installed and running.
+The GUI offers that one-time setup automatically; from the CLI install it with
+`sudo ./penguin_burner.sh --migrate-to-daemon-service`.
 
 ## What happens
 
@@ -155,7 +160,7 @@ causes are an unsafe-voltage history entry, a clock guardrail, a Q2RTX/CUDA
 failure, or interrupted final verification. To wipe history and rerun clean:
 
 ```bash
-sudo ./penguin_burner.sh --fresh-auto-uv-scan
+./penguin_burner.sh --fresh-auto-uv-scan
 ```
 
 This keeps Afterburner imports and the Q2RTX download intact.

@@ -4,6 +4,7 @@
   <a href="https://pypi.org/project/penguin-burner/"><img alt="PyPI" src="https://img.shields.io/pypi/v/penguin-burner?style=flat-square&logo=pypi&logoColor=white&color=3775A9"></a>
   <a href="https://pypi.org/project/penguin-burner/"><img alt="Python" src="https://img.shields.io/badge/python-3-3776AB?style=flat-square&logo=python&logoColor=white"></a>
   <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square&logo=cplusplus&logoColor=white">
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-2021-CE412B?style=flat-square&logo=rust&logoColor=white">
   <a href="LICENSE"><img alt="License: GPL v3" src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"></a>
   <img alt="Coverage" src="https://img.shields.io/badge/coverage-81%25-green?style=flat-square">
   <a href="https://github.com/sponsors/jpietek"><img alt="Sponsors" src="https://img.shields.io/badge/sponsors-1-EA4AAA?style=flat-square&logo=githubsponsors&logoColor=white"></a>
@@ -84,6 +85,13 @@ commands in the [Install guide](docs/install.md).
 
 PyPI, Flatpak with wrappers, COPR, AUR, and PPA installs run the GUI with
 `penguin-burner` (or `pburn`). Install the NVIDIA driver and CUDA first.
+
+All privileged GPU work is done by a small root systemd service,
+`penguin-burnerd` — a compiled Rust daemon that PenguinBurner installs once
+(one admin prompt) the first time you set up hardware control. After that
+one-time setup the GUI, CLI, and Auto-UV scans all run as your regular user
+and talk to the service over a local socket, with no further password
+prompts.
 
 ## Quick start
 
@@ -219,12 +227,6 @@ source and fallback model.
 Any tuning change you make is reflected live in the overlay while you play, so
 you see the effect of an undervolt, clock, or fan change in real time without
 leaving the game.
-
-If you want the detailed numbers behind that LAT figure, start the daemon with
-`PENGUIN_BURNER_DUMP_LATENCY_DATA=1` in its environment. It dumps the full
-per-frame latency breakdown — present mode, queue depth, Reflex sleep-mode/boost,
-and the display/scanout split — to the daemon log, which you can capture to a
-file by also passing `--debug-log`.
 
 [Read the guide](docs/features/overlay.md) or the
 [latency/FG details](docs/features/latency-fg.md).

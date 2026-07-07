@@ -31,6 +31,10 @@ Right-click a profile:
 - **Assign Tier** — Efficiency / Balanced / Performance / None.
 - **Delete** — remove the profile.
 
+Apply, Verify, and Delete go through the root hardware service
+(`penguin-burnerd`), so none of them ask for your password; verification runs
+as your regular user.
+
 ## Where profiles live
 
 Saved profiles are stored under the PenguinBurner user config directory in

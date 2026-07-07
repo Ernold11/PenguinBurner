@@ -9,7 +9,7 @@ Common causes: an unsafe-voltage history entry, a clock guardrail, a Q2RTX or
 CUDA failure, or interrupted final verification. To wipe history and rerun clean:
 
 ```bash
-sudo ./penguin_burner.sh --fresh-auto-uv-scan
+./penguin_burner.sh --fresh-auto-uv-scan
 ```
 
 ### I stopped Auto-UV before it finished
@@ -54,4 +54,8 @@ its other safety checks. Use a recent driver and a supported card (RTX 30 / 40 /
 ### Why does it need root?
 
 Applying a curve changes real hardware (power limits, V/F offsets, fan control),
-which requires root.
+which requires root. That privileged work is done by a small root systemd
+service, `penguin-burnerd` (a compiled Rust daemon), installed once with a
+single admin prompt. The GUI, CLI, and Auto-UV scans themselves run as your
+regular user and send requests to the service over a local socket — normal use
+never asks for your password again.

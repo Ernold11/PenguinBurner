@@ -158,7 +158,9 @@ Known regression patterns from the cleanup:
      through the runtime/config module that already owns that state.
    - CLI option? Only add it if the same Auto-UV/runtime behavior is visible in
      the GUI or is needed for daemon/profile operation.
-   - Daemon behavior? Put policy in `runtime/`, not in the UI or CLI.
+   - Daemon behavior? Runtime/daemon policy lives in the Rust daemon
+     (`burnerd/src/`); the Python `runtime/` package carries only the socket
+     client and scan/verify support, not the privileged engine.
    - Overlay behavior? Keep Python/native overlay formatting aligned and update
      both paths when visible text changes.
 

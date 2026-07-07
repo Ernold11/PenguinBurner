@@ -43,6 +43,12 @@ The direct Flatpak launcher also remains available:
 flatpak run io.github.jpietek.PenguinBurner
 ```
 
+The Flatpak includes the privileged root daemon (`penguin-burnerd`, a compiled
+Rust binary) built into the sandbox. The first privileged action installs it
+onto the host at `/usr/libexec/penguin-burnerd` together with its systemd
+service, with a single admin prompt; after that all privileged GPU operations
+go through the running service with no further prompts.
+
 ## Fedora ([COPR](https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/))
 
 Fedora 42 / 43 / 44, with the NVIDIA driver from Fedora's repo or RPM Fusion:
