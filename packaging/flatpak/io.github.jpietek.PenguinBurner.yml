@@ -1,10 +1,19 @@
-# TODO(daemon-on-flatpak): the root daemon is now the compiled Rust
-# penguin-burnerd (burnerd/), which is NOT yet packaged into this sandbox. Until a
-# build module ships /app/libexec/penguin-burnerd, the Flatpak build has no
-# daemon: the GUI gates its install/migrate paths with a clear
-# "daemon not available in the Flatpak build" error (ui/commands.py). Follow-up:
-# add the Rust SDK extension + a module that compiles and installs the binary,
-# then point runtime_service.daemon_binary_path at it and drop the gate.
+# daemon-on-flatpak -- PACKAGING HALF DONE (milestone B4a): the root daemon is
+# the compiled Rust penguin-burnerd (burnerd/), and the Flatpak BUILD now
+# compiles it into the sandbox at /app/libexec/penguin-burnerd via the
+# rust-stable SDK extension + the penguin-burnerd cargo module below. That build
+# is fully offline for Flathub: it consumes the committed cargo-sources.json
+# (vendored crate archives + a cargo config redirecting crates.io to them);
+# refresh it with `python3 packaging/flatpak/gen-cargo-sources.py` whenever
+# burnerd/Cargo.lock changes (see packaging/flatpak/README.md).
+#
+# TODO(daemon-on-flatpak) -- REMAINING HALF (lands with milestone B4b): the
+# pkexec-elevated systemd install flow must copy /app/libexec/penguin-burnerd
+# onto the host at /usr/libexec/penguin-burnerd -- daemon_binary_path()'s first
+# discovery choice, so runtime_service.py unit generation needs zero change --
+# and the GUI's Option-A "daemon not available in the Flatpak build" gate
+# (ui/commands.py) must be removed. Until B4b lands, the GUI still gates its
+# install/migrate paths, so the packaged binary is present but not yet wired up.
 app-id: io.github.jpietek.PenguinBurner
 runtime: org.freedesktop.Platform
 runtime-version: "25.08"
@@ -14,6 +23,10 @@ sdk: org.freedesktop.Sdk
 # extension is not part of the installed app.
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.mingw-w64
+  # Rust toolchain for the root daemon (penguin-burnerd). Build-time only --
+  # the extension is not part of the installed app; only the compiled binary at
+  # /app/libexec/penguin-burnerd ships.
+  - org.freedesktop.Sdk.Extension.rust-stable
 command: penguin-burner
 
 cleanup:
@@ -30,6 +43,27 @@ finish-args:
   - --filesystem=/run/penguin-burnerd.sock
 
 modules:
+  # Root daemon: compiled from the bundled Rust crate (burnerd/) with the
+  # rust-stable SDK extension and installed to the fixed discovery path
+  # /app/libexec/penguin-burnerd (0755). Fully OFFLINE for Flathub -- the
+  # cargo-sources.json source extracts vendored crate archives to cargo/vendor
+  # plus a cargo/config redirecting crates.io there, so `cargo build --offline
+  # --locked` resolves everything with no network. CARGO_HOME points at that
+  # extracted config; --locked pins the committed Cargo.lock. Milestone B4b will
+  # copy this binary to the host's /usr/libexec/penguin-burnerd at install time.
+  - name: penguin-burnerd
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/penguin-burnerd/cargo
+    build-commands:
+      - cargo build --release --locked --offline
+      - install -Dm755 target/release/penguin-burnerd /app/libexec/penguin-burnerd
+    sources:
+      - type: dir
+        path: ../../burnerd
+      - cargo-sources.json
   - name: penguin-burner
     buildsystem: simple
     build-options:

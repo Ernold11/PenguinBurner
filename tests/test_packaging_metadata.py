@@ -607,15 +607,49 @@ def test_native_packages_build_and_install_rust_daemon() -> None:
     assert "usr/libexec/penguin-burnerd" in debian_rules
     assert "%{_libexecdir}/penguin-burnerd" in rpm_spec
 
-    # Flatpak has no daemon yet (Option A): the Rust binary is not packaged into
-    # the sandbox, so the manifest must not pull in the Rust build. (The socket
-    # grant /run/penguin-burnerd.sock still mentions the daemon name, so only the
-    # cargo build step is asserted absent.)
+    # Flatpak also builds the daemon into the sandbox (milestone B4a packaging
+    # half): the rust-stable SDK extension + a penguin-burnerd cargo module that
+    # compiles offline against the committed cargo-sources.json and installs the
+    # binary to /app/libexec/penguin-burnerd. (Milestone B4b then copies it onto
+    # the host's /usr/libexec at install time and drops the Option-A gate.)
     flatpak_manifest = Path(
         "packaging/flatpak/io.github.jpietek.PenguinBurner.yml"
     ).read_text(encoding="utf-8")
-    assert "cargo build" not in flatpak_manifest
-    assert "burnerd/Cargo.toml" not in flatpak_manifest
+    assert "org.freedesktop.Sdk.Extension.rust-stable" in flatpak_manifest
+    assert "cargo build --release --locked --offline" in flatpak_manifest
+    assert (
+        "install -Dm755 target/release/penguin-burnerd /app/libexec/penguin-burnerd"
+        in flatpak_manifest
+    )
+    # Offline Flathub build: crate sources are pre-declared, not fetched.
+    assert "cargo-sources.json" in flatpak_manifest
+
+    # The generated crate-source list stays in lockstep with burnerd/Cargo.lock:
+    # every sourced package appears exactly once with its lockfile sha256.
+    import json
+    import tomllib
+
+    cargo_lock = tomllib.loads(
+        Path("burnerd/Cargo.lock").read_text(encoding="utf-8")
+    )
+    cargo_sources = json.loads(
+        Path("packaging/flatpak/cargo-sources.json").read_text(encoding="utf-8")
+    )
+    lock_checksums = {
+        f"{pkg['name']}-{pkg['version']}": pkg["checksum"]
+        for pkg in cargo_lock["package"]
+        if pkg.get("source") and pkg.get("checksum")
+    }
+    archive_checksums = {
+        src["dest"].rsplit("/", 1)[-1]: src["sha256"]
+        for src in cargo_sources
+        if src.get("type") == "archive"
+    }
+    assert archive_checksums == lock_checksums
+    # A cargo config source redirects crates.io at the vendored tree.
+    assert any(
+        src.get("dest-filename") == "config" for src in cargo_sources
+    )
 
 
 def test_daemon_dev_build_script_uses_locked_cargo_build() -> None:
