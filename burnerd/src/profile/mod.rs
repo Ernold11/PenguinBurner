@@ -898,13 +898,15 @@ fn maybe_reapply_vf_curve(
     }
     let ts = local_timestamp();
 
-    // Memory-offset guard, BEFORE the VF re-apply. A `nvmlDeviceSetMemClkVfOffset`
-    // write WIPES the entire core per-point VF table (proven 2026-07-07 on driver
-    // 610.43.02), so an UNCONDITIONAL rewrite here would erase the very curve we
-    // are about to re-apply — the VF guard and mem guard then fight every cadence
-    // (~10s). Read the live offset back first and only rewrite when it has drifted
-    // from the target; when we do rewrite, the VF re-apply below MUST follow it
-    // (ordered dependency) so the curve survives the wipe.
+    // Memory-offset guard, BEFORE the VF re-apply. A coarse mem-offset write
+    // WIPES the entire core per-point VF table — on both NVML API families
+    // (`nvmlDeviceSetClockOffsets` and the deprecated fallback; each proven
+    // 2026-07-07 on driver 610.43.02) — so an UNCONDITIONAL rewrite here would
+    // erase the very curve we are about to re-apply — the VF guard and mem
+    // guard then fight every cadence (~10s). Read the live offset back first
+    // and only rewrite when it has drifted from the target; when we do rewrite,
+    // the VF re-apply below MUST follow it (ordered dependency) so the curve
+    // survives the wipe.
     if let Some(offset) = memory_offset_mhz.filter(|&m| m > 0) {
         if backend.clock_offsets().mem_clk_vf_offset_mhz != Some(offset as i32) {
             match backend.apply_clock_offsets(None, Some(offset as i32)) {

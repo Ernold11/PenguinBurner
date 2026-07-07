@@ -5,13 +5,14 @@
 //! Load-bearing ordering: persistence mode → memory offset (with read-back) →
 //! per-point VF frequency offsets → power limit → locked clock ceiling.
 //!
-//! WHY the mem offset must precede the VF writes (still load-bearing): a
-//! `nvmlDeviceSetMemClkVfOffset` write WIPES the entire core per-point VF offset
-//! table. The coupling is one-directional — VF writes leave the mem offset
-//! untouched, and locked clocks / the power limit touch neither. Proven
-//! 2026-07-07 on the live GPU (driver 610.43.02). Applying the mem offset first,
-//! then the per-point offsets, leaves both live; the reverse order silently
-//! erases the fresh curve.
+//! WHY the mem offset must precede the VF writes (still load-bearing): a coarse
+//! mem-offset write WIPES the entire core per-point VF offset table — on BOTH
+//! NVML API families (the modern `nvmlDeviceSetClockOffsets` and the deprecated
+//! `nvmlDeviceSetMemClkVfOffset` fallback; each proven 2026-07-07 on the live
+//! GPU, driver 610.43.02). The coupling is one-directional — VF writes leave the
+//! mem offset untouched, and locked clocks / the power limit touch neither.
+//! Applying the mem offset first, then the per-point offsets, leaves both live;
+//! the reverse order silently erases the fresh curve.
 
 use crate::gpu::GpuBackend;
 
@@ -164,14 +165,16 @@ fn apply_memory_offset(
 /// driver-clamped memory offset (`None` when `memory_offset_mhz` was `None`).
 ///
 /// WHY the mem offset must precede the VF writes (load-bearing invariant): a
-/// `nvmlDeviceSetMemClkVfOffset` write WIPES the entire core per-point VF offset
-/// table. The coupling is one-directional — VF writes leave the mem offset
-/// untouched, and locked clocks / the power limit touch neither. Proven
-/// 2026-07-07 on the live GPU (driver 610.43.02): applying the mem offset first,
-/// then the per-point offsets, leaves both live; the reverse order silently
-/// erases the fresh curve. Callers that pass `None` (the startup and VF-reapply
-/// guards) have already written/verified the mem offset just above the call, so
-/// the ordering still holds.
+/// coarse mem-offset write WIPES the entire core per-point VF offset table — on
+/// BOTH NVML API families (`nvmlDeviceSetClockOffsets` and the deprecated
+/// `nvmlDeviceSetMemClkVfOffset` fallback; each proven 2026-07-07 on the live
+/// GPU, driver 610.43.02). The coupling is one-directional — VF writes leave
+/// the mem offset untouched, and locked clocks / the power limit touch
+/// neither. Applying the mem offset first, then the per-point offsets, leaves
+/// both live; the reverse order silently erases the fresh curve. Callers that
+/// pass `None` (the startup and VF-reapply guards) have already
+/// written/verified the mem offset just above the call, so the ordering still
+/// holds.
 pub fn apply_memory_offset_then_vf_plan(
     backend: &dyn GpuBackend,
     label: &str,
@@ -414,9 +417,10 @@ mod tests {
     }
 
     /// The adaptive tier switch pins the same mem-before-VF ordering as the
-    /// startup pipeline: a `nvmlDeviceSetMemClkVfOffset` write wipes the whole
-    /// core per-point VF offset table (mem-wipes-VF coupling), so the memory
-    /// offset must land BEFORE the VF plan or the switch erases its own curve.
+    /// startup pipeline: a coarse mem-offset write (either NVML API family)
+    /// wipes the whole core per-point VF offset table (mem-wipes-VF coupling),
+    /// so the memory offset must land BEFORE the VF plan or the switch erases
+    /// its own curve.
     /// Power limit stays after the VF writes.
     #[test]
     fn adaptive_curve_applies_mem_before_vf_then_power() {

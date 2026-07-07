@@ -11,8 +11,9 @@ use std::os::raw::{c_char, c_int, c_uint};
 
 use super::nvapi::{NvapiVfSession, NvapiVoltageSession};
 use super::nvml_raw::{
-    Device, FnDev, FnDevIIout2, FnDevIin, FnDevIout, FnDevUUin, FnDevUUout, FnDevUUout2, FnDevUin,
-    FnDevUout, NvmlLib, NvmlMemoryInfo, NvmlPciInfo, NvmlUtilization,
+    Device, FnDev, FnDevClockOffset, FnDevIIout2, FnDevIin, FnDevIout, FnDevUUin, FnDevUUout,
+    FnDevUUout2, FnDevUin, FnDevUout, NvmlClockOffset, NvmlLib, NvmlMemoryInfo, NvmlPciInfo,
+    NvmlUtilization, NVML_CLOCK_GRAPHICS, NVML_CLOCK_MEM,
 };
 use super::{
     decode_cstr, mw_to_w_float, mw_to_w_round, snap_core_clock_mhz, snap_core_clock_range,
@@ -30,6 +31,15 @@ const UUID_BUFFER: usize = 96;
 const DRIVER_BUFFER: usize = 80;
 const MEM_CLOCK_CAPACITY: usize = 64;
 const CORE_CLOCK_CAPACITY: usize = 512;
+
+/// Select the per-pstate `nvmlDevice{Get,Set}ClockOffsets` family (R555+) only
+/// when BOTH symbols resolved, so a set and its mandatory read-back can never
+/// mix API families within one session (spec 17 R6). `None` falls back to the
+/// deprecated per-domain VF-offset calls — the only route on drivers < 555,
+/// and a one-line revert lever if a future driver regresses the new semantics.
+fn per_pstate_offset_fns<T: Copy>(get: Option<T>, set: Option<T>) -> Option<(T, T)> {
+    Some((get?, set?))
+}
 
 pub struct NvmlBackend {
     lib: NvmlLib,
@@ -268,6 +278,87 @@ impl NvmlBackend {
         let f = getter?;
         let (rc, out) = self.call_iout(f);
         (rc == 0).then_some(out)
+    }
+
+    // --- per-pstate clock offsets (spec 17) --------------------------------
+    /// The modern offset family, or `None` → the deprecated fallback.
+    fn clock_offset_v2(&self) -> Option<(FnDevClockOffset, FnDevClockOffset)> {
+        per_pstate_offset_fns(self.lib.get_clock_offsets_v1, self.lib.set_clock_offsets_v1)
+    }
+
+    /// `nvmlDeviceGetClockOffsets` at P0 → (cur, min, max) signed MHz. On this
+    /// driver family one value is mirrored across every supported pstate, so
+    /// the P0 read agrees with the old whole-curve getters for both value and
+    /// range (proven live 2026-07-07, driver 610.43.02).
+    fn read_clock_offset_v2(
+        &self,
+        get: FnDevClockOffset,
+        clock_type: c_int,
+    ) -> Option<(i32, i32, i32)> {
+        let mut info = NvmlClockOffset::query_p0(clock_type);
+        // SAFETY: `device` valid; `info` a correctly-sized, version-tagged
+        // nvmlClockOffset_v1_t the driver fills.
+        let rc = unsafe { get(self.device, &mut info) };
+        (rc == 0).then_some((
+            info.clock_offset_mhz,
+            info.min_clock_offset_mhz,
+            info.max_clock_offset_mhz,
+        ))
+    }
+
+    /// Read one coarse-offset domain's current value, preferring the modern
+    /// per-pstate family and falling back to the deprecated per-domain getter.
+    /// This is the single READ selection point every trait read shares with the
+    /// write path (`apply_one_clock_offset`), so a set and its read-back never
+    /// split across API families (spec 17 R6).
+    fn read_offset_or_legacy(
+        &self,
+        clock_type: c_int,
+        legacy_get: Option<FnDevIout>,
+    ) -> Option<i32> {
+        if let Some((get, _)) = self.clock_offset_v2() {
+            return self
+                .read_clock_offset_v2(get, clock_type)
+                .map(|(cur, ..)| cur);
+        }
+        self.read_clock_offset(legacy_get)
+    }
+
+    /// Write one coarse offset domain and read it back (issue #20:
+    /// NVML_SUCCESS does not guarantee the offset stuck; the engine compares
+    /// the read-back against the request). A `SetClockOffsets(P0)` write
+    /// MIRRORS to every supported pstate (proven live 2026-07-07: P8/5/3/1/0
+    /// all read the written value), so the single P0 write is semantically
+    /// equivalent to the old whole-curve setter — do not loop pstates.
+    fn apply_one_clock_offset(
+        &self,
+        clock_type: c_int,
+        offset_mhz: i32,
+        legacy_set: Option<FnDevIin>,
+        legacy_get: Option<FnDevIout>,
+        legacy_name: &str,
+    ) -> GpuResult<Option<i32>> {
+        if let Some((get, set)) = self.clock_offset_v2() {
+            let mut info = NvmlClockOffset::query_p0(clock_type);
+            info.clock_offset_mhz = offset_mhz;
+            // SAFETY: `device` valid; `info` a correctly-sized, version-tagged
+            // nvmlClockOffset_v1_t carrying the offset.
+            let rc = unsafe { set(self.device, &mut info) };
+            if rc != 0 {
+                return Err(self.policy_err("nvmlDeviceSetClockOffsets", i64::from(rc)));
+            }
+            return Ok(self
+                .read_clock_offset_v2(get, clock_type)
+                .map(|(cur, ..)| cur));
+        }
+        let Some(f) = legacy_set else {
+            return Err(GpuError::unavailable(legacy_name));
+        };
+        let rc = self.call_iin(f, offset_mhz);
+        if rc != 0 {
+            return Err(self.policy_err(legacy_name, i64::from(rc)));
+        }
+        Ok(self.read_clock_offset(legacy_get))
     }
 
     fn read_power_w_round(&self, getter: Option<FnDevUout>) -> Option<i64> {
@@ -563,12 +654,18 @@ impl GpuBackend for NvmlBackend {
 
     fn clock_offsets(&self) -> ClockOffsets {
         ClockOffsets {
-            gpc_clk_vf_offset_mhz: self.read_clock_offset(self.lib.get_gpc_vf),
-            mem_clk_vf_offset_mhz: self.read_clock_offset(self.lib.get_mem_vf),
+            gpc_clk_vf_offset_mhz: self
+                .read_offset_or_legacy(NVML_CLOCK_GRAPHICS, self.lib.get_gpc_vf),
+            mem_clk_vf_offset_mhz: self.read_offset_or_legacy(NVML_CLOCK_MEM, self.lib.get_mem_vf),
         }
     }
 
     fn memory_clock_offset_range_mhz(&self) -> Option<(i32, i32)> {
+        if let Some((get, _)) = self.clock_offset_v2() {
+            return self
+                .read_clock_offset_v2(get, NVML_CLOCK_MEM)
+                .map(|(_, min, max)| (min, max));
+        }
         let f = self.lib.get_mem_minmax_vf?;
         let (rc, min, max) = self.call_iout2(f);
         (rc == 0).then_some((min, max))
@@ -582,29 +679,29 @@ impl GpuBackend for NvmlBackend {
         let mut applied = AppliedOffsets::default();
 
         if let Some(gpc) = gpc_clk_vf_offset_mhz {
-            let Some(f) = self.lib.set_gpc_vf else {
-                return Err(GpuError::unavailable("nvmlDeviceSetGpcClkVfOffset"));
-            };
-            let rc = self.call_iin(f, gpc);
-            if rc != 0 {
-                return Err(self.policy_err("nvmlDeviceSetGpcClkVfOffset", i64::from(rc)));
-            }
+            applied.gpc_clk_vf_offset_readback_mhz = self.apply_one_clock_offset(
+                NVML_CLOCK_GRAPHICS,
+                gpc,
+                self.lib.set_gpc_vf,
+                self.lib.get_gpc_vf,
+                "nvmlDeviceSetGpcClkVfOffset",
+            )?;
             applied.gpc_clk_vf_offset_mhz = Some(gpc);
-            applied.gpc_clk_vf_offset_readback_mhz = self.read_clock_offset(self.lib.get_gpc_vf);
         }
 
         if let Some(mem) = mem_clk_vf_offset_mhz {
-            let Some(f) = self.lib.set_mem_vf else {
-                return Err(GpuError::unavailable("nvmlDeviceSetMemClkVfOffset"));
-            };
-            let rc = self.call_iin(f, mem);
-            if rc != 0 {
-                return Err(self.policy_err("nvmlDeviceSetMemClkVfOffset", i64::from(rc)));
-            }
+            // A coarse MEM write WIPES the per-point VF table on BOTH API
+            // families (proven 2026-07-07 on driver 610.43.02: SetClockOffsets
+            // zeroed 61 shaped points, same as the old setter) — the engine's
+            // mem-before-VF ordering stays load-bearing on the new path too.
+            applied.mem_clk_vf_offset_readback_mhz = self.apply_one_clock_offset(
+                NVML_CLOCK_MEM,
+                mem,
+                self.lib.set_mem_vf,
+                self.lib.get_mem_vf,
+                "nvmlDeviceSetMemClkVfOffset",
+            )?;
             applied.mem_clk_vf_offset_mhz = Some(mem);
-            // NVML_SUCCESS does not guarantee the offset stuck (issue #20): the
-            // engine compares this read-back against the request.
-            applied.mem_clk_vf_offset_readback_mhz = self.read_clock_offset(self.lib.get_mem_vf);
         }
 
         Ok(applied)
@@ -709,6 +806,36 @@ impl GpuBackend for NvmlBackend {
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Routing for the coarse-offset methods: the per-pstate `ClockOffsets`
+    /// family only when BOTH its symbols resolved (a set and its read-back
+    /// never mix API families); anything less → the deprecated per-domain
+    /// calls. Pure selection, pinned like the `first_available` chain tests.
+    #[test]
+    fn per_pstate_family_requires_both_symbols() {
+        assert_eq!(
+            per_pstate_offset_fns(Some("get"), Some("set")),
+            Some(("get", "set"))
+        );
+        assert_eq!(per_pstate_offset_fns(Some("get"), None), None);
+        assert_eq!(per_pstate_offset_fns(None, Some("set")), None);
+        assert_eq!(per_pstate_offset_fns::<&str>(None, None), None);
+    }
+
+    /// A new-API failure relays the same policy-controller error shape the
+    /// Python sweep pattern-matches, just with the modern symbol name.
+    #[test]
+    fn new_api_error_text_keeps_policy_shape() {
+        assert_eq!(
+            GpuError::nvml_with_text("nvmlDeviceSetClockOffsets", 3, "Not Supported").to_string(),
+            "nvmlDeviceSetClockOffsets failed with NVML error 3: Not Supported"
+        );
+    }
+}
+
+#[cfg(test)]
 mod smoke {
     use super::*;
 
@@ -749,6 +876,13 @@ mod smoke {
         println!(
             "mem_off_range  = {:?}",
             backend.memory_clock_offset_range_mhz()
+        );
+        // Old-vs-new getter agreement (reads only): the trait methods above go
+        // through GetClockOffsets(P0) when present; these are the legacy reads.
+        println!(
+            "legacy_offsets = gpc={:?} mem={:?}",
+            backend.read_clock_offset(backend.lib.get_gpc_vf),
+            backend.read_clock_offset(backend.lib.get_mem_vf),
         );
         println!("voltage_uv     = {:?}", backend.read_voltage_uv());
         println!("vf_available   = {}", backend.vf_curve_available());

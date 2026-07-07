@@ -40,6 +40,7 @@ pub(crate) type FnDevU64 = unsafe extern "C" fn(Device, *mut c_ulonglong) -> c_i
 pub(crate) type FnDevIout = unsafe extern "C" fn(Device, *mut c_int) -> c_int;
 pub(crate) type FnDevIin = unsafe extern "C" fn(Device, c_int) -> c_int;
 pub(crate) type FnDevIIout2 = unsafe extern "C" fn(Device, *mut c_int, *mut c_int) -> c_int;
+pub(crate) type FnDevClockOffset = unsafe extern "C" fn(Device, *mut NvmlClockOffset) -> c_int;
 
 // --- version-tagged structs (sizes asserted against ctypes `sizeof`) -------
 
@@ -72,6 +73,49 @@ pub(crate) struct NvmlUtilization {
     pub memory: c_uint,
 }
 const _: () = assert!(std::mem::size_of::<NvmlUtilization>() == 8);
+
+/// `nvmlClockOffset_v1_t` (24 bytes): one coarse offset per (clock domain,
+/// pstate) — the R555+ replacement for the deprecated per-domain VF-offset
+/// calls (spec 17). On Get the driver fills cur/min/max for the tagged
+/// (type, pstate); on Set only `clock_offset_mhz` is consumed.
+#[repr(C)]
+pub(crate) struct NvmlClockOffset {
+    pub version: c_uint,             // nvmlClockOffset_v1
+    pub clock_type: c_int,           // nvmlClockType_t: 0 = GPC, 2 = MEM
+    pub pstate: c_int,               // nvmlPstates_t: 0 = P0
+    pub clock_offset_mhz: c_int,     // IN on Set / OUT on Get (signed MHz)
+    pub min_clock_offset_mhz: c_int, // OUT
+    pub max_clock_offset_mhz: c_int, // OUT
+}
+const _: () = assert!(std::mem::size_of::<NvmlClockOffset>() == 24);
+
+/// NVML struct version tag: `sizeof | (ver << 24)`. NVML shifts the version
+/// into bits 24+, unlike NVAPI's `make_version` (`ver << 16`) — do not reuse
+/// that helper. A wrong tag returns NVML_ERROR_ARGUMENT_VERSION_MISMATCH (25).
+pub(crate) const fn nvml_struct_version(size: usize, ver: u32) -> u32 {
+    (size as u32) | (ver << 24)
+}
+pub(crate) const NVML_CLOCK_OFFSET_V1: u32 =
+    nvml_struct_version(std::mem::size_of::<NvmlClockOffset>(), 1); // 0x0100_0018
+
+pub(crate) const NVML_CLOCK_GRAPHICS: c_int = 0;
+pub(crate) const NVML_CLOCK_MEM: c_int = 2;
+pub(crate) const NVML_PSTATE_0: c_int = 0;
+
+impl NvmlClockOffset {
+    /// A version-tagged struct targeting `clock_type` at P0 — the load pstate
+    /// the profiles act on. Ready for Get as-is; set `clock_offset_mhz` for Set.
+    pub(crate) fn query_p0(clock_type: c_int) -> Self {
+        Self {
+            version: NVML_CLOCK_OFFSET_V1,
+            clock_type,
+            pstate: NVML_PSTATE_0,
+            clock_offset_mhz: 0,
+            min_clock_offset_mhz: 0,
+            max_clock_offset_mhz: 0,
+        }
+    }
+}
 
 // --- fallback chains (data, so selection is unit-testable) -----------------
 const COUNT_SYMS: &[&str] = &["nvmlDeviceGetCount_v2", "nvmlDeviceGetCount"];
@@ -136,6 +180,13 @@ pub(crate) struct NvmlLib {
     pub set_gpc_vf: Option<FnDevIin>,
     pub get_mem_vf: Option<FnDevIout>,
     pub set_mem_vf: Option<FnDevIin>,
+
+    // Per-pstate clock offsets (R555+, spec 17). The five deprecated
+    // per-domain VF-offset symbols above stay bound as the symbol-gated
+    // fallback: the only route on drivers < 555, and a one-line revert lever
+    // if a future driver regresses the new semantics.
+    pub get_clock_offsets_v1: Option<FnDevClockOffset>,
+    pub set_clock_offsets_v1: Option<FnDevClockOffset>,
 }
 
 impl NvmlLib {
@@ -186,6 +237,9 @@ impl NvmlLib {
             get_mem_vf: load_opt(&lib, "nvmlDeviceGetMemClkVfOffset"),
             set_mem_vf: load_opt(&lib, "nvmlDeviceSetMemClkVfOffset"),
 
+            get_clock_offsets_v1: load_opt(&lib, "nvmlDeviceGetClockOffsets"),
+            set_clock_offsets_v1: load_opt(&lib, "nvmlDeviceSetClockOffsets"),
+
             _lib: lib,
         })
     }
@@ -225,4 +279,27 @@ fn load_opt<T: Copy>(lib: &Library, name: &str) -> Option<T> {
 fn load_first<T: Copy>(lib: &Library, names: &[&str]) -> Option<T> {
     let name = first_available(names, |n| load_opt::<T>(lib, n).is_some())?;
     load_opt(lib, name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// NVML packs the struct version into bits 24+ (`sizeof | ver << 24`),
+    /// unlike NVAPI's `make_version` (`ver << 16`): `nvmlClockOffset_v1` is
+    /// `24 | (1 << 24)`. (The 24-byte struct size is a compile-time assert.)
+    #[test]
+    fn clock_offset_version_matches_nvml_macro() {
+        assert_eq!(nvml_struct_version(24, 1), 0x0100_0018);
+        assert_eq!(NVML_CLOCK_OFFSET_V1, 16_777_240);
+    }
+
+    #[test]
+    fn clock_offset_query_struct_is_tagged_for_p0() {
+        let info = NvmlClockOffset::query_p0(NVML_CLOCK_MEM);
+        assert_eq!(info.version, NVML_CLOCK_OFFSET_V1);
+        assert_eq!(info.clock_type, NVML_CLOCK_MEM);
+        assert_eq!(info.pstate, NVML_PSTATE_0);
+        assert_eq!(info.clock_offset_mhz, 0);
+    }
 }
