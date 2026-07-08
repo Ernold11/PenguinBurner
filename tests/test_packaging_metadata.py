@@ -65,6 +65,9 @@ def test_native_package_versions_match_python_project() -> None:
 def test_console_scripts_use_gui_default_and_explicit_cli_names() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     scripts = metadata["project"]["scripts"]
+    rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(
+        encoding="utf-8"
+    )
 
     assert scripts["penguin-burner"] == "ui.main:main"
     assert scripts["pburn"] == "ui.main:main"
@@ -81,6 +84,7 @@ def test_console_scripts_use_gui_default_and_explicit_cli_names() -> None:
         scripts["penguin-burner-install-wrappers"]
         == "common.flatpak_wrappers:main"
     )
+    assert "%{_bindir}/penguin-burner-install-wrappers" in rpm_spec
     assert "PB_OVERLAY" not in scripts
     assert "penguin-burner-overlay" not in scripts
     assert "pburn-overlay" not in scripts
@@ -678,6 +682,9 @@ def test_native_packages_do_not_hard_require_distro_nvidia_driver_packages() -> 
 def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     packages = set(metadata["tool"]["setuptools"]["packages"])
+    rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(
+        encoding="utf-8"
+    )
 
     assert "auto_uv" in packages
     assert "auto_uv.auto_oc" in packages
@@ -701,6 +708,7 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     assert "profiles.verification" in packages
     assert "profiles.uv" in packages
     assert "overlay" in packages
+    assert "    stability \\" in rpm_spec
 
 
 def test_desktop_launcher_is_english_only_nvidia_gpu_tool() -> None:

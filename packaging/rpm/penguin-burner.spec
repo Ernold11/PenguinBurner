@@ -65,6 +65,7 @@ export PENGUIN_BURNER_REQUIRE_NVAPI_SHIM=1
     overlay \
     profiles \
     runtime \
+    stability \
     ui \
     drivers \
     penguin_burner
@@ -81,6 +82,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_bindir}/penguin-burner-cli
 %{_bindir}/pburn-cli
 %{_bindir}/PENGUIN_BURNER
+%{_bindir}/penguin-burner-install-wrappers
 %{_datadir}/applications/io.github.jpietek.PenguinBurner.desktop
 %{_datadir}/icons/hicolor/256x256/apps/penguin-burner.png
 %{_datadir}/icons/hicolor/512x512/apps/penguin-burner.png
