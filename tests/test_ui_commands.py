@@ -97,11 +97,16 @@ def _assert_flatpak_daemon_script_waits_for_api(
     success_message: str,
 ) -> None:
     assert "daemon_socket=/run/penguin-burnerd.sock" in script
+    assert "last_runtime_state=/var/lib/penguin-burner/last-runtime.json" in script
     assert 'client.sendall(b\'{"method":"status"}\\n\')' in script
     assert 'rm -f "$daemon_socket"' in script
+    assert 'rm -f "$last_runtime_state"' in script
     assert "restart_penguin_burnerd" in script
     assert "systemctl status --no-pager penguin-burnerd.service" in script
     assert "journalctl -u penguin-burnerd.service -n 80 --no-pager" in script
+    assert script.rindex('rm -f "$last_runtime_state"') < script.rindex(
+        "restart_penguin_burnerd"
+    )
     assert script.rindex("restart_penguin_burnerd") < script.index(success_message)
 
 
@@ -362,6 +367,43 @@ def test_flatpak_runtime_profile_daemonize_uses_daemon_client(
         "--gpu-index",
         "0",
     ]
+
+
+def test_flatpak_systemd_uninstall_clears_last_runtime_state(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    flatpak_info = tmp_path / ".flatpak-info"
+    flatpak_info.write_text("[Application]\n", encoding="utf-8")
+    monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setattr(
+        commands.pwd,
+        "getpwnam",
+        lambda user: SimpleNamespace(pw_dir=f"/home/{user}"),
+    )
+
+    def fake_which(name: str) -> str | None:
+        return {
+            "flatpak-spawn": "/usr/bin/flatpak-spawn",
+        }.get(name)
+
+    monkeypatch.setattr(commands.shutil, "which", fake_which)
+
+    command = commands.runtime_profile_command("uninstall-systemd")
+    script = command[-2]
+
+    assert command[:4] == [
+        "/usr/bin/flatpak-spawn",
+        "--host",
+        "/usr/bin/pkexec",
+        "/usr/bin/env",
+    ]
+    assert command[-1] == "penguin-burner-systemd-uninstall"
+    assert "last_runtime_state=/var/lib/penguin-burner/last-runtime.json" in script
+    assert 'rm -f "$legacy_unit" "$daemon_unit" "$last_runtime_state"' in script
 
 
 def test_daemon_migration_command_uses_privileged_cli(monkeypatch) -> None:

@@ -289,6 +289,7 @@ def daemon_migration_command() -> list[str]:
 def _flatpak_daemon_restart_and_wait_script() -> str:
     return r"""
 daemon_socket=/run/penguin-burnerd.sock
+last_runtime_state=/var/lib/penguin-burner/last-runtime.json
 
 wait_for_penguin_burnerd() {
     attempt=0
@@ -370,6 +371,7 @@ systemctl daemon-reload
 systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
 systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
 systemctl enable penguin-burnerd.service
+rm -f "$last_runtime_state"
 restart_penguin_burnerd
 echo "Installed and started penguin-burnerd.service at $unit."
 """.strip(),
@@ -470,6 +472,7 @@ systemctl daemon-reload
 systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
 systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
 systemctl enable penguin-burnerd.service
+rm -f "$last_runtime_state"
 restart_penguin_burnerd
 echo "Installed and enabled penguin-burnerd.service at $unit."
 echo "Follow the journal with: journalctl -u penguin-burnerd.service --since \"-4 hours\" -f"
@@ -492,9 +495,10 @@ def _flatpak_uninstall_systemd_command() -> list[str]:
     script = r"""
 legacy_unit=/etc/systemd/system/PenguinBurner.service
 daemon_unit=/etc/systemd/system/penguin-burnerd.service
+last_runtime_state=/var/lib/penguin-burner/last-runtime.json
 systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
 systemctl disable --now penguin-burnerd.service >/dev/null 2>&1 || true
-rm -f "$legacy_unit" "$daemon_unit"
+rm -f "$legacy_unit" "$daemon_unit" "$last_runtime_state"
 systemctl daemon-reload
 systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
 systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true

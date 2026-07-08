@@ -486,7 +486,12 @@ def _load_last_runtime_argv() -> tuple[list[str], str] | None:
         and all(isinstance(item, str) for item in argv)
         and program_file
     ):
-        return list(argv), program_file
+        program_path = Path(program_file).expanduser()
+        if program_path.is_file():
+            return list(argv), str(program_path.resolve())
+        current_program = Path(_daemon_program_file()).expanduser()
+        if current_program.is_file():
+            return list(argv), str(current_program.resolve())
     return None
 
 
@@ -509,6 +514,7 @@ def _start_autostart_runtime_if_configured() -> None:
     persisted = _load_last_runtime_argv()
     if persisted is not None:
         argv, program_file = persisted
+        _persist_last_runtime_argv(argv, program_file)
     else:
         encoded = os.environ.get(AUTOSTART_ARGV_B64_ENV, "").strip()
         program_file = os.environ.get(AUTOSTART_PROGRAM_FILE_ENV, "").strip()

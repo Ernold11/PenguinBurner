@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import cast
 
 from runtime.daemon_api import (
     ALLOWED_UID_ENV,
@@ -491,8 +492,9 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
         )
 
     legacy_state = read_legacy_service_state()
+    legacy_runtime_argv = cast(list[str], legacy_state["runtime_argv"])
     autostart_argv = (
-        legacy_state["runtime_argv"]
+        legacy_runtime_argv
         if legacy_state["exists"] and legacy_state["enabled"]
         else []
     )
@@ -520,6 +522,7 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
         env=stable_subprocess_env(),
         check=False,
     )
+    clear_last_runtime_state()
     _enable_and_start_or_restart_daemon_unit(unit_path.name)
     _wait_for_daemon_status(socket_path)
     log(f"Installed and started {unit_path.name} at {unit_path}.")
@@ -795,6 +798,7 @@ def _ensure_daemon_service_started(program_file, *, socket_path, log) -> None:
         log(f"{verb} {unit_path.name} at {unit_path}.")
     if wrote_unit:
         run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
+        clear_last_runtime_state()
     subprocess.run(
         [SYSTEMCTL, "reset-failed", unit_path.name],
         capture_output=True,

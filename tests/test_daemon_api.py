@@ -265,6 +265,92 @@ def test_daemon_start_runtime_profile_rejects_unsupported_args() -> None:
         )
 
 
+def test_daemon_load_last_runtime_rebases_missing_program_file(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    current_program = tmp_path / "current" / "penguin_burner.py"
+    current_program.parent.mkdir()
+    current_program.write_text("# current\n", encoding="utf-8")
+    missing_program = tmp_path / "removed" / "penguin_burner.py"
+    daemon_api.LAST_RUNTIME_STATE_PATH.write_text(
+        json.dumps(
+            {
+                "argv": ["--auto-uv-profile", "__stock__"],
+                "program_file": str(missing_program),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        daemon_api,
+        "_daemon_program_file",
+        lambda: str(current_program),
+    )
+
+    assert daemon_api._load_last_runtime_argv() == (
+        ["--auto-uv-profile", "__stock__"],
+        str(current_program.resolve()),
+    )
+
+
+def test_daemon_autostart_rewrites_rebased_last_runtime_state(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    current_program = tmp_path / "active" / "penguin_burner.py"
+    current_program.parent.mkdir()
+    current_program.write_text("# current\n", encoding="utf-8")
+    missing_program = tmp_path / "old-deployment" / "penguin_burner.py"
+    daemon_api.LAST_RUNTIME_STATE_PATH.write_text(
+        json.dumps(
+            {
+                "argv": ["--auto-uv-profile", "__stock__"],
+                "program_file": str(missing_program),
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    class FakeProcess:
+        pid = 1234
+
+        def poll(self):
+            return None
+
+    def fake_popen(command, **_kwargs):
+        calls.append(list(command))
+        return FakeProcess()
+
+    monkeypatch.setattr(daemon_api.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        daemon_api,
+        "_daemon_program_file",
+        lambda: str(current_program),
+    )
+    monkeypatch.setattr(daemon_api, "_AUTOSTART_PROCESS", None)
+    monkeypatch.setattr(daemon_api, "_AUTOSTART_ARGV", [])
+
+    daemon_api._start_autostart_runtime_if_configured()
+
+    assert calls == [
+        [
+            daemon_api.sys.executable,
+            str(current_program.resolve()),
+            "--auto-uv-profile",
+            "__stock__",
+        ]
+    ]
+    persisted = json.loads(
+        daemon_api.LAST_RUNTIME_STATE_PATH.read_text(encoding="utf-8")
+    )
+    assert persisted == {
+        "argv": ["--auto-uv-profile", "__stock__"],
+        "program_file": str(current_program.resolve()),
+    }
+
+
 def test_daemon_client_status_roundtrip(tmp_path: Path) -> None:
     socket_path = tmp_path / "penguin-burnerd.sock"
     thread = threading.Thread(
