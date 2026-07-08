@@ -2049,6 +2049,23 @@ def test_advanced_tuning_group_has_breathing_room() -> None:
     assert "dialog.setFixedSize" not in source
     assert "label_layout.setContentsMargins(0, 2, 12, 2)" in source
 
+
+def test_scan_tuning_power_limit_controls_disabled_when_power_management_disabled():
+    import ui.dialogs.scan_tuning as scan_tuning
+
+    values = scan_tuning._power_limit_control_values(
+        SimpleNamespace(
+            power_management_enabled=False,
+            power_limit_min_w=40.0,
+            power_limit_max_w=80.0,
+            power_limit_default_w=55.0,
+            power_limit_w=55.0,
+        )
+    )
+
+    assert values is None
+
+
 def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -> None:
     import os
 

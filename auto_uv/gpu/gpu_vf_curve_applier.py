@@ -64,9 +64,15 @@ class LiveGpuVfCurveApplier:
                 int(requested_w)
             )
         except Exception as exc:
-            raise AutoUvError(
-                f"failed to apply Auto-UV power limit {int(requested_w)}W: {exc}"
-            ) from exc
+            self.requested_power_limit_w = None
+            self.translated_gpu_policy.pop("power_limit_w", None)
+            log(
+                "Auto-UV power limit: unable to apply "
+                f"{int(requested_w)}W for final verification; "
+                "continuing without saved power limit: "
+                f"{exc}"
+            )
+            return None
         self.translated_gpu_policy["power_limit_w"] = int(applied_power_limit_w)
         log(
             "Auto-UV power limit: applied "
@@ -120,12 +126,18 @@ def open_live_gpu_vf_curve_applier(
                 int(requested_power_limit_w)
             )
         except Exception as exc:
-            raise AutoUvError(
-                "failed to apply Auto-UV power limit "
-                f"{int(requested_power_limit_w)}W: {exc}"
-            ) from exc
-        translated_gpu_policy["power_limit_w"] = int(applied_power_limit_w)
-        log(f"Auto-UV power limit: applied {int(applied_power_limit_w)}W")
+            translated_gpu_policy.pop("power_limit_w", None)
+            log(
+                "Auto-UV power limit: unable to apply "
+                f"{int(requested_power_limit_w)}W; "
+                "continuing without saved power limit: "
+                f"{exc}"
+            )
+            requested_power_limit_w = None
+            applied_power_limit_w = None
+        if applied_power_limit_w is not None:
+            translated_gpu_policy["power_limit_w"] = int(applied_power_limit_w)
+            log(f"Auto-UV power limit: applied {int(applied_power_limit_w)}W")
     elif requested_power_limit_w is not None and baseline_power_limit_w is not None:
         log(
             "Auto-UV power limit: keeping "
