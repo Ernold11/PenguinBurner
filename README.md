@@ -39,15 +39,7 @@ and use, closing the feature gap with the Windows tools Linux users miss: the
 python -m pip install --user --upgrade penguin-burner
 ```
 
-Or install the self-hosted Flatpak:
-
-```bash
-flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo && flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner && flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
-```
-
-That single command installs the Flatpak and host command wrappers. See the
-[Flatpak guide](docs/flatpak.md) for wrapper details, updates, clean uninstall,
-and direct launch commands.
+Flatpak users should use the [Flatpak guide](docs/flatpak.md).
 
 Also packaged for [Fedora (COPR)](https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/),
 [Arch / CachyOS (AUR)](https://aur.archlinux.org/packages/penguin-burner), and
@@ -60,8 +52,8 @@ PyPI, Flatpak with wrappers, COPR, AUR, and PPA installs run the GUI with
 ## Quick start
 
 1. Install (above) with the NVIDIA driver and CUDA already set up.
-2. Launch PenguinBurner (`penguin-burner` or `pburn`; Flatpak without wrappers:
-   `flatpak run io.github.jpietek.PenguinBurner`).
+2. Launch PenguinBurner (`penguin-burner` or `pburn`). Flatpak users without
+   wrappers should use the [Flatpak guide](docs/flatpak.md).
 3. Click **Setup Auto Undervolt**, choose a performance bias, and let the scan
    find and verify a stable curve.
 4. On the **Profiles** tab, select the result and click **Apply Selected**.

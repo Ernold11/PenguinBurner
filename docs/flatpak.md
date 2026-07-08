@@ -17,8 +17,10 @@ Or as a single pasteable command:
 flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo && flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner && flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
 ```
 
-That installs the Flatpak and then runs the host wrapper installer shipped
-inside the Flatpak.
+That single command installs the Flatpak and host command wrappers. After that,
+`penguin-burner`, `pburn`, `penguin-burner-ui`, `pburn-ui`,
+`penguin-burner-cli`, `pburn-cli`, and `PENGUIN_BURNER` work from your `PATH`
+just like the native packages.
 
 ## Host Wrappers
 
@@ -33,9 +35,9 @@ one into the Flatpak sandbox:
 - `pburn-cli`
 - `PENGUIN_BURNER`
 
-It also registers the native Vulkan overlay layer under your user Vulkan layer
-directory, so Steam launch options can stay short. The installer refuses to
-overwrite existing native or PyPI commands unless you rerun it with `--force`.
+The wrapper installer also registers the native Vulkan overlay layer for your
+user account, so Steam launch options can stay short. It refuses to overwrite
+existing native/PyPI commands unless rerun with `--force`.
 
 If the commands are not found after installation, make sure `~/.local/bin` is on
 your `PATH`.

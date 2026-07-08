@@ -741,10 +741,12 @@ def test_readme_and_flatpak_guide_distinguish_wrappers_from_native_scripts() -> 
     install_doc = Path("docs/install.md").read_text(encoding="utf-8")
     flatpak_doc = Path("docs/flatpak.md").read_text(encoding="utf-8")
 
-    assert "flatpak run io.github.jpietek.PenguinBurner" in readme
+    assert "flatpak run io.github.jpietek.PenguinBurner" not in readme
     assert "install-flatpak-cli-wrappers.sh | bash" not in readme
-    assert "penguin-burner-install-wrappers" in readme
+    assert "penguin-burner-install-wrappers" not in readme
     assert "[Flatpak guide](docs/flatpak.md)" in readme
+    assert "That single command installs the Flatpak" not in readme
+    assert "That single command installs the Flatpak" in flatpak_doc
     assert "Existing Flatpak users should update" in flatpak_doc
     assert (
         "flatpak update --user -y io.github.jpietek.PenguinBurner"
@@ -773,13 +775,13 @@ def test_readme_and_flatpak_guide_distinguish_wrappers_from_native_scripts() -> 
         assert command in flatpak_doc
     assert "`PATH`" in flatpak_doc
     assert "refuses to" in flatpak_doc
-    assert "existing native or PyPI commands" in flatpak_doc
+    assert "existing native/PyPI commands" in flatpak_doc
     assert (
         "PyPI, Flatpak with wrappers, COPR, AUR, and PPA installs run the GUI"
         in readme
     )
     assert (
-        "Launch PenguinBurner (`penguin-burner` or `pburn`; Flatpak without wrappers:"
+        "Launch PenguinBurner (`penguin-burner` or `pburn`). Flatpak users without"
         in readme
     )
     assert "## Flatpak" in install_doc
