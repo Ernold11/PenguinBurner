@@ -91,6 +91,20 @@ def _runtime_profile_daemon_argv(command: list[str]) -> list[str]:
     return json.loads(command[4])
 
 
+def _assert_flatpak_daemon_script_waits_for_api(
+    script: str,
+    *,
+    success_message: str,
+) -> None:
+    assert "daemon_socket=/run/penguin-burnerd.sock" in script
+    assert 'client.sendall(b\'{"method":"status"}\\n\')' in script
+    assert 'rm -f "$daemon_socket"' in script
+    assert "restart_penguin_burnerd" in script
+    assert "systemctl status --no-pager penguin-burnerd.service" in script
+    assert "journalctl -u penguin-burnerd.service -n 80 --no-pager" in script
+    assert script.rindex("restart_penguin_burnerd") < script.index(success_message)
+
+
 def test_ui_scan_command_uses_daemon_client_without_pkexec(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(commands.os, "getuid", lambda: 1000)
@@ -205,6 +219,10 @@ def test_daemon_migration_command_uses_flatpak_host_cli(
     assert "systemctl enable penguin-burnerd.service" in command[-2]
     assert "systemctl restart penguin-burnerd.service" in command[-2]
     assert "systemctl enable --now penguin-burnerd.service" not in command[-2]
+    _assert_flatpak_daemon_script_waits_for_api(
+        command[-2],
+        success_message='echo "Installed and started penguin-burnerd.service at $unit."',
+    )
     assert "/usr/bin/flatpak" not in unit
     assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
     assert (
@@ -283,6 +301,10 @@ def test_flatpak_runtime_profile_command_avoids_host_path_wrapper(
     assert "systemctl restart penguin-burnerd.service" in command[-2]
     assert "systemctl enable --now penguin-burnerd.service" not in command[-2]
     assert "systemctl enable --now PenguinBurner.service" not in command[-2]
+    _assert_flatpak_daemon_script_waits_for_api(
+        command[-2],
+        success_message='echo "Installed and enabled penguin-burnerd.service at $unit."',
+    )
     assert "/usr/bin/flatpak" not in unit
     assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
     assert (

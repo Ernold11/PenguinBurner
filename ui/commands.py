@@ -286,6 +286,64 @@ def daemon_migration_command() -> list[str]:
     return privileged_command([*cli_base_command(), "--migrate-to-daemon-service"])
 
 
+def _flatpak_daemon_restart_and_wait_script() -> str:
+    return r"""
+daemon_socket=/run/penguin-burnerd.sock
+
+wait_for_penguin_burnerd() {
+    attempt=0
+    while [ "$attempt" -lt 30 ]; do
+        if /usr/bin/python3 - "$daemon_socket" >/dev/null 2>&1 <<'PY'
+import json
+import socket
+import sys
+
+path = sys.argv[1]
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+    client.settimeout(1.0)
+    client.connect(path)
+    client.sendall(b'{"method":"status"}\n')
+    data = b""
+    while b"\n" not in data:
+        chunk = client.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+response = json.loads(data.split(b"\n", 1)[0].decode("utf-8"))
+if not response.get("ok"):
+    raise SystemExit(1)
+PY
+        then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 0.1
+    done
+    return 1
+}
+
+print_penguin_burnerd_diagnostics() {
+    systemctl status --no-pager penguin-burnerd.service >&2 || true
+    journalctl -u penguin-burnerd.service -n 80 --no-pager >&2 || true
+}
+
+restart_penguin_burnerd() {
+    rm -f "$daemon_socket"
+    if ! systemctl restart penguin-burnerd.service; then
+        echo "Failed to restart penguin-burnerd.service." >&2
+        print_penguin_burnerd_diagnostics
+        return 1
+    fi
+    if wait_for_penguin_burnerd; then
+        return 0
+    fi
+    echo "penguin-burnerd.service restarted, but $daemon_socket did not answer status." >&2
+    print_penguin_burnerd_diagnostics
+    return 1
+}
+""".strip()
+
+
 def _flatpak_daemon_service_install_command() -> list[str]:
     from runtime.support.runtime_service import (
         build_daemon_api_service_unit,
@@ -294,7 +352,10 @@ def _flatpak_daemon_service_install_command() -> list[str]:
 
     unit = build_daemon_api_service_unit(flatpak_host_cli_program_file())
     encoded_unit = base64.b64encode(unit.encode("utf-8")).decode("ascii")
-    script = r"""
+    script = "\n".join(
+        [
+            _flatpak_daemon_restart_and_wait_script(),
+            r"""
 legacy_unit=/etc/systemd/system/PenguinBurner.service
 unit=/etc/systemd/system/penguin-burnerd.service
 systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
@@ -309,9 +370,11 @@ systemctl daemon-reload
 systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
 systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
 systemctl enable penguin-burnerd.service
-systemctl restart penguin-burnerd.service
+restart_penguin_burnerd
 echo "Installed and started penguin-burnerd.service at $unit."
-""".strip()
+""".strip(),
+        ]
+    )
     return _privileged_command(
         [
             f"PENGUIN_BURNER_SYSTEMD_UNIT_B64={encoded_unit}",
@@ -386,7 +449,10 @@ def _flatpak_install_systemd_command(runtime_argv: list[str]) -> list[str]:
         autostart_argv=list(runtime_argv),
     )
     encoded_unit = base64.b64encode(unit.encode("utf-8")).decode("ascii")
-    script = r"""
+    script = "\n".join(
+        [
+            _flatpak_daemon_restart_and_wait_script(),
+            r"""
 legacy_unit=/etc/systemd/system/PenguinBurner.service
 unit=/etc/systemd/system/penguin-burnerd.service
 systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
@@ -404,10 +470,12 @@ systemctl daemon-reload
 systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
 systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
 systemctl enable penguin-burnerd.service
-systemctl restart penguin-burnerd.service
+restart_penguin_burnerd
 echo "Installed and enabled penguin-burnerd.service at $unit."
 echo "Follow the journal with: journalctl -u penguin-burnerd.service --since \"-4 hours\" -f"
-""".strip()
+""".strip(),
+        ]
+    )
     return _privileged_command(
         [
             f"PENGUIN_BURNER_SYSTEMD_UNIT_B64={encoded_unit}",
