@@ -45,37 +45,9 @@ Or install the self-hosted Flatpak:
 flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo && flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner && flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
 ```
 
-That single command installs the Flatpak and host command wrappers. After that,
-`penguin-burner`, `pburn`, `penguin-burner-ui`, `pburn-ui`,
-`penguin-burner-cli`, `pburn-cli`, and `PENGUIN_BURNER` work from your `PATH`
-just like the native packages. It also registers the native Vulkan overlay layer
-for your user account, so Steam launch options can stay short. The wrapper
-installer refuses to overwrite existing native/PyPI commands unless rerun with
-`--force`.
-
-Existing Flatpak users should update and refresh the PATH wrappers with:
-
-```bash
-flatpak update --user -y io.github.jpietek.PenguinBurner && flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
-```
-
-To uninstall the Flatpak cleanly, remove the host wrappers before removing the
-app. The wrapper cleanup removes only files created by the wrapper installer,
-including the `~/.local/bin` commands and the user Vulkan layer manifest. It
-does not remove your regular PenguinBurner config or Auto-UV profiles under
-`~/.config/PenguinBurner`, so those stay available to PyPI/native installs.
-
-```bash
-flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner --uninstall
-flatpak uninstall --user --delete-data io.github.jpietek.PenguinBurner
-flatpak remote-delete --user penguinburner
-```
-
-You can also launch the Flatpak directly without wrappers:
-
-```bash
-flatpak run io.github.jpietek.PenguinBurner
-```
+That single command installs the Flatpak and host command wrappers. See the
+[Flatpak guide](docs/flatpak.md) for wrapper details, updates, clean uninstall,
+and direct launch commands.
 
 Also packaged for [Fedora (COPR)](https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/),
 [Arch / CachyOS (AUR)](https://aur.archlinux.org/packages/penguin-burner), and
