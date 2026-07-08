@@ -183,6 +183,11 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
     )
     monkeypatch.setattr(
         runtime_service,
+        "clear_last_runtime_state",
+        lambda: actions.append(("clear-last-runtime", [])),
+    )
+    monkeypatch.setattr(
+        runtime_service,
         "legacy_systemd_service_unit_path",
         lambda: legacy_unit,
     )
@@ -216,6 +221,8 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
     ) in actions
     assert actions.index(
         ("checked", ["/bin/systemctl", "daemon-reload"])
+    ) < actions.index(
+        ("clear-last-runtime", [])
     ) < actions.index(
         (
             "checked",
@@ -268,6 +275,11 @@ def test_install_systemd_service_restarts_active_daemon_after_unit_update(
     )
     monkeypatch.setattr(
         runtime_service,
+        "clear_last_runtime_state",
+        lambda: actions.append(("clear-last-runtime", [])),
+    )
+    monkeypatch.setattr(
+        runtime_service,
         "legacy_systemd_service_unit_path",
         lambda: legacy_unit,
     )
@@ -301,6 +313,8 @@ def test_install_systemd_service_restarts_active_daemon_after_unit_update(
     ) not in actions
     assert actions.index(
         ("checked", ["/bin/systemctl", "daemon-reload"])
+    ) < actions.index(
+        ("clear-last-runtime", [])
     ) < actions.index(
         ("checked", ["/bin/systemctl", "restart", "penguin-burnerd.service"])
     )
@@ -347,6 +361,11 @@ def test_migrate_to_daemon_service_disables_legacy_after_daemon_reachable(
     )
     monkeypatch.setattr(
         runtime_service,
+        "clear_last_runtime_state",
+        lambda: actions.append(("clear-last-runtime", [])),
+    )
+    monkeypatch.setattr(
+        runtime_service,
         "legacy_systemd_service_unit_path",
         lambda: legacy_unit,
     )
@@ -384,6 +403,8 @@ def test_migrate_to_daemon_service_disables_legacy_after_daemon_reachable(
         ["/bin/systemctl", "restart", "penguin-burnerd.service"],
     ) in actions
     assert actions.index(
+        ("clear-last-runtime", [])
+    ) < actions.index(
         ("checked", ["/bin/systemctl", "restart", "penguin-burnerd.service"])
     ) < actions.index(
         ("run", ["/bin/systemctl", "disable", "--now", "PenguinBurner.service"])

@@ -230,6 +230,11 @@ def test_apply_profile_persists_silent_fan_choice(win, monkeypatch) -> None:
     monkeypatch.setattr(actions_mod, "profile_for_selector", lambda summaries, pid: dict(PROFILE))
     monkeypatch.setattr(actions_mod, "profile_can_apply", lambda p: True)
     monkeypatch.setattr(actions_mod, "sync_profile_fan_payload", lambda p: True)
+    monkeypatch.setattr(
+        actions_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: True,
+    )
     monkeypatch.setattr(actions_mod, "runtime_profile_command", lambda *a, **k: ["pb"])
     monkeypatch.setattr(window.profile_list, "selected_profile_id", lambda: "p1")
     monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: True)

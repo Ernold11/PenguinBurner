@@ -7,7 +7,7 @@
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2021-CE412B?style=flat-square&logo=rust&logoColor=white">
   <a href="LICENSE"><img alt="License: GPL v3" src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"></a>
   <img alt="Coverage" src="https://img.shields.io/badge/coverage-81%25-green?style=flat-square">
-  <a href="https://github.com/sponsors/jpietek"><img alt="Sponsors" src="https://img.shields.io/badge/sponsors-1-EA4AAA?style=flat-square&logo=githubsponsors&logoColor=white"></a>
+  <a href="https://github.com/sponsors/jpietek"><img alt="Sponsors" src="https://img.shields.io/badge/sponsors-2-EA4AAA?style=flat-square&logo=githubsponsors&logoColor=white"></a>
   <a href="https://github.com/jpietek/PenguinBurner/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/jpietek/PenguinBurner?style=flat-square&logo=github"></a>
 </p>
 <p align="center">
@@ -40,43 +40,7 @@ and use, closing the feature gap with the Windows tools Linux users miss: the
 python -m pip install --user --upgrade penguin-burner
 ```
 
-Or install the self-hosted Flatpak:
-
-```bash
-flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo && flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner && flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
-```
-
-That single command installs the Flatpak and host command wrappers. After that,
-`penguin-burner`, `pburn`, `penguin-burner-ui`, `pburn-ui`,
-`penguin-burner-cli`, `pburn-cli`, and `PENGUIN_BURNER` work from your `PATH`
-just like the native packages. It also registers the native Vulkan overlay layer
-for your user account, so Steam launch options can stay short. The wrapper
-installer refuses to overwrite existing native/PyPI commands unless rerun with
-`--force`.
-
-Existing Flatpak users should update and refresh the PATH wrappers with:
-
-```bash
-flatpak update --user -y io.github.jpietek.PenguinBurner && flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
-```
-
-To uninstall the Flatpak cleanly, remove the host wrappers before removing the
-app. The wrapper cleanup removes only files created by the wrapper installer,
-including the `~/.local/bin` commands and the user Vulkan layer manifest. It
-does not remove your regular PenguinBurner config or Auto-UV profiles under
-`~/.config/PenguinBurner`, so those stay available to PyPI/native installs.
-
-```bash
-flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner --uninstall
-flatpak uninstall --user --delete-data io.github.jpietek.PenguinBurner
-flatpak remote-delete --user penguinburner
-```
-
-You can also launch the Flatpak directly without wrappers:
-
-```bash
-flatpak run io.github.jpietek.PenguinBurner
-```
+Flatpak users should use the [Flatpak guide](docs/flatpak.md).
 
 Also packaged for [Fedora (COPR)](https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/),
 [Arch / CachyOS (AUR)](https://aur.archlinux.org/packages/penguin-burner), and
@@ -96,8 +60,8 @@ prompts.
 ## Quick start
 
 1. Install (above) with the NVIDIA driver and CUDA already set up.
-2. Launch PenguinBurner (`penguin-burner` or `pburn`; Flatpak without wrappers:
-   `flatpak run io.github.jpietek.PenguinBurner`).
+2. Launch PenguinBurner (`penguin-burner` or `pburn`). Flatpak users without
+   wrappers should use the [Flatpak guide](docs/flatpak.md).
 3. Click **Setup Auto Undervolt**, choose a performance bias, and let the scan
    find and verify a stable curve.
 4. On the **Profiles** tab, select the result and click **Apply Selected**.

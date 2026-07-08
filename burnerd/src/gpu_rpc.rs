@@ -33,6 +33,7 @@ const MOCK_FAIL_ENV: &str = "PENGUIN_BURNERD_TEST_MOCK_GPU_FAIL";
 /// method → request fields allowed besides `method`. Also the method registry:
 /// a name missing here is "unknown daemon method".
 const METHODS: &[(&str, &[&str])] = &[
+    ("probe_power_limit_support", &["gpu_index"]),
     ("gpu_apply_vf_offsets", &["gpu_index", "offsets"]),
     ("gpu_apply_power_limit", &["gpu_index", "power_limit_w"]),
     (
@@ -79,6 +80,10 @@ pub fn allowed_fields(method: &str) -> &'static [&'static str] {
         .unwrap_or(&[])
 }
 
+pub fn request_gpu_index(request: &Map<String, Value>) -> Result<u32, String> {
+    require_u32(request, "gpu_index")
+}
+
 enum RpcBackend {
     Real(NvmlBackend),
     Mock(MockGpu),
@@ -102,6 +107,12 @@ fn open_backend(gpu_index: u32) -> Result<RpcBackend, String> {
     if env::var_os(MOCK_ENV).is_some_and(|v| !v.is_empty()) {
         let mut mock = MockGpu::new();
         mock.gpu_index = gpu_index;
+        mock.power_limits = crate::gpu::PowerLimits {
+            power_limit_w: Some(300),
+            power_limit_default_w: Some(300),
+            power_limit_min_w: Some(150),
+            power_limit_max_w: Some(450),
+        };
         mock.supported_core_clocks = vec![1800, 1900, 2000, 2100];
         if let Ok(method) = env::var(MOCK_FAIL_ENV) {
             if !method.is_empty() {
@@ -183,6 +194,86 @@ pub fn handle(method: &str, request: &Map<String, Value>) -> Result<Value, Strin
             Ok(result)
         }
     }
+}
+
+/// Probe whether the driver accepts power-limit writes by re-applying the
+/// current limit. Unlike `gpu_apply_power_limit`, this is a capability probe:
+/// driver/open/setter failures are reported as `supported:false` instead of a
+/// failing daemon request so the UI can disable the control.
+pub fn probe_power_limit_support(request: &Map<String, Value>) -> Result<Value, String> {
+    let gpu_index = request_gpu_index(request)?;
+    let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
+    let position = match registry.iter().position(|(index, _)| *index == gpu_index) {
+        Some(position) => position,
+        None => match open_backend(gpu_index) {
+            Ok(backend) => {
+                registry.push((gpu_index, backend));
+                registry.len() - 1
+            }
+            Err(err) => {
+                return Ok(json!({
+                    "gpu_index": gpu_index,
+                    "supported": false,
+                    "reason": err,
+                }));
+            }
+        },
+    };
+
+    match &registry[position].1 {
+        RpcBackend::Real(backend) => probe_power_limit_backend(gpu_index, backend),
+        RpcBackend::Mock(mock) => {
+            let before = mock.recorded().len();
+            let mut result = probe_power_limit_backend(gpu_index, mock)?;
+            let ops: Vec<Value> = mock.recorded()[before..]
+                .iter()
+                .map(|op| Value::String(format!("{op:?}")))
+                .collect();
+            if let Some(object) = result.as_object_mut() {
+                object.insert("mock_ops".to_string(), Value::Array(ops));
+            }
+            Ok(result)
+        }
+    }
+}
+
+fn probe_power_limit_backend(gpu_index: u32, backend: &dyn GpuBackend) -> Result<Value, String> {
+    let power_limits = backend.query_power_limits();
+    let Some(current_w) = power_limits.power_limit_w.filter(|w| *w > 0) else {
+        return Ok(json!({
+            "gpu_index": gpu_index,
+            "supported": false,
+            "reason": "current-power-limit-unavailable",
+            "power_limits": power_limits_json(power_limits),
+        }));
+    };
+    match backend.apply_power_limit_w(current_w) {
+        Ok(applied_w) => {
+            let readback = backend.query_power_limits();
+            Ok(json!({
+                "gpu_index": gpu_index,
+                "supported": true,
+                "probe_power_limit_w": applied_w,
+                "power_limits": power_limits_json(readback),
+            }))
+        }
+        Err(err) => Ok(json!({
+            "gpu_index": gpu_index,
+            "supported": false,
+            "reason": err.to_string(),
+            "probe_power_limit_w": current_w,
+            "power_limits": power_limits_json(power_limits),
+        })),
+    }
+}
+
+fn power_limits_json(power_limits: crate::gpu::PowerLimits) -> Value {
+    json!({
+        "power_limit_w": power_limits.power_limit_w,
+        "power_limit_default_w": power_limits.power_limit_default_w,
+        "power_limit_min_w": power_limits.power_limit_min_w,
+        "power_limit_max_w": power_limits.power_limit_max_w,
+    })
 }
 
 /// Parse + validate the method's request fields into a [`GpuWrite`]. Pure.
@@ -389,6 +480,7 @@ mod tests {
 
     #[test]
     fn method_registry_and_fields() {
+        assert!(is_gpu_method("probe_power_limit_support"));
         assert!(is_gpu_method("gpu_apply_vf_offsets"));
         assert!(is_gpu_method("gpu_enable_persistence_mode"));
         assert!(!is_gpu_method("gpu_frobnicate"));
@@ -398,6 +490,83 @@ mod tests {
             &["gpu_index", "power_limit_w"]
         );
         assert!(allowed_fields("nope").is_empty());
+    }
+
+    #[test]
+    fn probe_power_limit_support_reapplies_current_limit() {
+        let mut mock = mock();
+        mock.power_limits = crate::gpu::PowerLimits {
+            power_limit_w: Some(320),
+            power_limit_default_w: Some(360),
+            power_limit_min_w: Some(200),
+            power_limit_max_w: Some(450),
+        };
+        let result = probe_power_limit_backend(2, &mock).unwrap();
+
+        assert_eq!(
+            result,
+            json!({
+                "gpu_index": 2,
+                "supported": true,
+                "probe_power_limit_w": 320,
+                "power_limits": {
+                    "power_limit_w": 320,
+                    "power_limit_default_w": 360,
+                    "power_limit_min_w": 200,
+                    "power_limit_max_w": 450,
+                },
+            })
+        );
+        assert_eq!(
+            mock.recorded(),
+            vec![crate::gpu::mock::MockOp::ApplyPowerLimit { power_limit_w: 320 }]
+        );
+    }
+
+    #[test]
+    fn probe_power_limit_support_reports_setter_rejection() {
+        let mut mock = mock();
+        mock.power_limits.power_limit_w = Some(320);
+        mock.inject_failure(
+            "apply_power_limit_w",
+            GpuError::nvml_with_text("nvmlDeviceSetPowerManagementLimit", 3, "Not Supported"),
+        );
+
+        let result = probe_power_limit_backend(0, &mock).unwrap();
+
+        assert_eq!(result["gpu_index"], 0);
+        assert_eq!(result["supported"], false);
+        assert_eq!(result["probe_power_limit_w"], 320);
+        assert_eq!(
+            result["reason"],
+            "nvmlDeviceSetPowerManagementLimit failed with NVML error 3: Not Supported"
+        );
+        assert_eq!(
+            mock.recorded(),
+            vec![crate::gpu::mock::MockOp::ApplyPowerLimit { power_limit_w: 320 }]
+        );
+    }
+
+    #[test]
+    fn probe_power_limit_support_reports_missing_current_limit() {
+        let mock = mock();
+        let result = probe_power_limit_backend(0, &mock).unwrap();
+
+        assert_eq!(
+            result,
+            json!({
+                "gpu_index": 0,
+                "supported": false,
+                "reason": "current-power-limit-unavailable",
+                "power_limits": {
+                    "power_limit_w": null,
+                    "power_limit_default_w": null,
+                    "power_limit_min_w": null,
+                    "power_limit_max_w": null,
+                },
+            })
+        );
+        assert!(mock.recorded().is_empty());
     }
 
     #[test]

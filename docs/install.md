@@ -23,25 +23,8 @@ flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner
 flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
 ```
 
-Or as a single pasteable command:
-
-```bash
-flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo && flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner && flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
-```
-
-The wrapper installer is shipped inside the Flatpak. It adds `penguin-burner`,
-`pburn`, `penguin-burner-ui`, `pburn-ui`, `penguin-burner-cli`, `pburn-cli`,
-and `PENGUIN_BURNER` under `~/.local/bin`, forwarding each command into the
-Flatpak sandbox. It also registers the native Vulkan overlay layer under your
-user Vulkan layer directory so Steam launch options can stay short. It refuses
-to overwrite an existing native or PyPI command unless you rerun it with
-`--force`.
-
-The direct Flatpak launcher also remains available:
-
-```bash
-flatpak run io.github.jpietek.PenguinBurner
-```
+See the [Flatpak guide](flatpak.md) for the single-command install, wrapper
+details, update command, clean uninstall, and direct launch command.
 
 The Flatpak includes the privileged root daemon (`penguin-burnerd`, a compiled
 Rust binary) built into the sandbox. The first privileged action installs it

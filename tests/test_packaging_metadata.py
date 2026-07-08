@@ -65,6 +65,9 @@ def test_native_package_versions_match_python_project() -> None:
 def test_console_scripts_use_gui_default_and_explicit_cli_names() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     scripts = metadata["project"]["scripts"]
+    rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(
+        encoding="utf-8"
+    )
 
     assert scripts["penguin-burner"] == "ui.main:main"
     assert scripts["pburn"] == "ui.main:main"
@@ -81,6 +84,7 @@ def test_console_scripts_use_gui_default_and_explicit_cli_names() -> None:
         scripts["penguin-burner-install-wrappers"]
         == "common.flatpak_wrappers:main"
     )
+    assert "%{_bindir}/penguin-burner-install-wrappers" in rpm_spec
     assert "PB_OVERLAY" not in scripts
     assert "penguin-burner-overlay" not in scripts
     assert "pburn-overlay" not in scripts
@@ -821,6 +825,9 @@ def test_native_packages_do_not_hard_require_distro_nvidia_driver_packages() -> 
 def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     packages = set(metadata["tool"]["setuptools"]["packages"])
+    rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(
+        encoding="utf-8"
+    )
 
     assert "auto_uv" in packages
     assert "auto_uv.auto_oc" in packages
@@ -843,6 +850,7 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     assert "profiles.verification" in packages
     assert "profiles.uv" in packages
     assert "overlay" in packages
+    assert "    stability \\" in rpm_spec
 
 
 def test_desktop_launcher_is_english_only_nvidia_gpu_tool() -> None:
@@ -878,45 +886,58 @@ def test_readme_uses_logo_image_instead_of_emoji_title() -> None:
     assert "# 🐧 PenguinBurner 🔥" not in readme
 
 
-def test_readme_distinguishes_flatpak_from_native_console_scripts() -> None:
+def test_readme_and_flatpak_guide_distinguish_wrappers_from_native_scripts() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
     install_doc = Path("docs/install.md").read_text(encoding="utf-8")
+    flatpak_doc = Path("docs/flatpak.md").read_text(encoding="utf-8")
 
-    assert "flatpak run io.github.jpietek.PenguinBurner" in readme
+    assert "flatpak run io.github.jpietek.PenguinBurner" not in readme
     assert "install-flatpak-cli-wrappers.sh | bash" not in readme
-    assert "penguin-burner-install-wrappers" in readme
-    assert "Existing Flatpak users should update" in readme
+    assert "penguin-burner-install-wrappers" not in readme
+    assert "[Flatpak guide](docs/flatpak.md)" in readme
+    assert "That single command installs the Flatpak" not in readme
+    assert "That single command installs the Flatpak" in flatpak_doc
+    assert "Existing Flatpak users should update" in flatpak_doc
     assert (
         "flatpak update --user -y io.github.jpietek.PenguinBurner"
-        in readme
+        in flatpak_doc
     )
-    assert "To uninstall the Flatpak cleanly" in readme
+    assert "To uninstall the Flatpak cleanly" in flatpak_doc
     assert (
         "penguin-burner-install-wrappers io.github.jpietek.PenguinBurner --uninstall"
-        in readme
+        in flatpak_doc
     )
     assert (
         "flatpak uninstall --user --delete-data io.github.jpietek.PenguinBurner"
-        in readme
+        in flatpak_doc
     )
-    assert "flatpak remote-delete --user penguinburner" in readme
-    assert "`~/.config/PenguinBurner`" in readme
-    assert "`penguin-burner`, `pburn`, `penguin-burner-ui`, `pburn-ui`," in readme
-    assert "`penguin-burner-cli`, `pburn-cli`, and `PENGUIN_BURNER`" in readme
-    assert "`PENGUIN_BURNER` work from your `PATH`" in readme
-    assert "refuses to overwrite" in readme
-    assert "existing native/PyPI commands" in readme
+    assert "flatpak remote-delete --user penguinburner" in flatpak_doc
+    assert "`~/.config/PenguinBurner`" in flatpak_doc
+    for command in (
+        "`penguin-burner`",
+        "`pburn`",
+        "`penguin-burner-ui`",
+        "`pburn-ui`",
+        "`penguin-burner-cli`",
+        "`pburn-cli`",
+        "`PENGUIN_BURNER`",
+    ):
+        assert command in flatpak_doc
+    assert "`PATH`" in flatpak_doc
+    assert "refuses to" in flatpak_doc
+    assert "existing native/PyPI commands" in flatpak_doc
     assert (
         "PyPI, Flatpak with wrappers, COPR, AUR, and PPA installs run the GUI"
         in readme
     )
     assert (
-        "Launch PenguinBurner (`penguin-burner` or `pburn`; Flatpak without wrappers:"
+        "Launch PenguinBurner (`penguin-burner` or `pburn`). Flatpak users without"
         in readme
     )
     assert "## Flatpak" in install_doc
     assert "install-flatpak-cli-wrappers.sh | bash" not in install_doc
-    assert "single pasteable command" in install_doc
+    assert "[Flatpak guide](flatpak.md)" in install_doc
+    assert "single pasteable command" in flatpak_doc
     assert "penguin-burner-install-wrappers" in install_doc
 
 

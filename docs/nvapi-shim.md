@@ -1,12 +1,10 @@
 # NVAPI latency shim
 
-> **Status 2026-07-01: VALIDATED live.** On branch **`nvapi_shim`** (pushed:
-> `57a0410` shim works on Streamline/FG titles + hardening; `d992f18` trims the
-> dead marker-log path + default-on policy). **The shim is the chosen direction**
-> — it lands on `main` once the release-readiness plan's blockers are cleared
-> (see `docs/nvapi-shim-release-plan.md`). Confirmed end-to-end on **Talos 2**
-> (835960) and **RE9 / Resident Evil Requiem** (3764200) — both DX12 + Streamline +
-> DLSS-G frame generation, on **stock proton-cachyos** (no Proton/vkd3d patch).
+> **Status 2026-07-01: VALIDATED live; merged to `main`.** The shim is the
+> chosen direction (see `docs/nvapi-shim-release-plan.md`). Confirmed
+> end-to-end on **Talos 2** (835960) and **RE9 / Resident Evil Requiem**
+> (3764200) — both DX12 + Streamline + DLSS-G frame generation, on **stock
+> proton-cachyos** (no Proton/vkd3d patch).
 
 ## TL;DR
 

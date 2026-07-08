@@ -5,7 +5,10 @@ comparison.
 
 ## For users
 
-- **[Install guide](install.md)** — pip, Fedora COPR, Arch AUR, Ubuntu PPA.
+- **[Install guide](install.md)** — pip, Flatpak, Fedora COPR, Arch AUR,
+  Ubuntu PPA.
+- **[Flatpak guide](flatpak.md)** — self-hosted Flatpak install, wrappers,
+  update, uninstall, and direct launch commands.
 - **[Feature guides](features/README.md)** — automatic tuning, adaptive
   undervolting, the overlay, profiles, curve editors, the silent fan curve.
 - **[Latency and frame-generation FPS](features/latency-fg.md)** — how the

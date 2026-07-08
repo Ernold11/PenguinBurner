@@ -222,6 +222,20 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
         Some("delete_auto_uv_profiles") => {
             delete::delete_auto_uv_profiles(object.get("paths")).map(MethodResult::Value)
         }
+        Some("probe_power_limit_support") => {
+            let gpu_index = gpu_rpc::request_gpu_index(object)?;
+            if matches!(
+                supervisor::active_child_kind(sup),
+                Some(supervisor::ChildKind::Scan)
+            ) {
+                return Ok(MethodResult::Value(serde_json::json!({
+                    "gpu_index": gpu_index,
+                    "supported": false,
+                    "reason": "auto-uv-scan-running",
+                })));
+            }
+            gpu_rpc::probe_power_limit_support(object).map(MethodResult::Value)
+        }
         Some(name) if gpu_rpc::is_gpu_method(name) => {
             gpu_rpc::handle(name, object).map(MethodResult::Value)
         }
@@ -340,6 +354,24 @@ mod tests {
         let err = handle_request(
             &sup,
             &json!({"method": "gpu_apply_power_limit", "gpu_index": "x", "power_limit_w": 1}),
+        )
+        .unwrap_err();
+        assert_eq!(err, "gpu_index must be an integer");
+    }
+
+    #[test]
+    fn probe_power_limit_support_validates_request_before_backend() {
+        let sup = fresh();
+        let err = handle_request(
+            &sup,
+            &json!({"method": "probe_power_limit_support", "gpu_index": 0, "bogus": true}),
+        )
+        .unwrap_err();
+        assert_eq!(err, "unknown request field: bogus");
+
+        let err = handle_request(
+            &sup,
+            &json!({"method": "probe_power_limit_support", "gpu_index": "0"}),
         )
         .unwrap_err();
         assert_eq!(err, "gpu_index must be an integer");

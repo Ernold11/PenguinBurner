@@ -126,6 +126,19 @@ def daemon_status(
     return daemon_request("status", socket_path=socket_path, timeout_s=timeout_s)
 
 
+def probe_power_limit_support(
+    gpu_index: int,
+    *,
+    socket_path: str | Path | None = None,
+    timeout_s: float = 1.0,
+) -> dict[str, Any]:
+    return daemon_payload_request(
+        {"method": "probe_power_limit_support", "gpu_index": int(gpu_index)},
+        socket_path=_resolved_socket_path(socket_path),
+        timeout_s=timeout_s,
+    )
+
+
 def start_runtime_profile(
     argv: list[str],
     *,

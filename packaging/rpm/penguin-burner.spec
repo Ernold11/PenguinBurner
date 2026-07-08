@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.6.3
+Version:        0.6.5
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -73,6 +73,7 @@ cargo build --release --locked --manifest-path burnerd/Cargo.toml
     overlay \
     profiles \
     runtime \
+    stability \
     ui \
     drivers \
     penguin_burner
@@ -94,6 +95,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_bindir}/pburn-cli
 %{_bindir}/PENGUIN_BURNER
 %{_libexecdir}/penguin-burnerd
+%{_bindir}/penguin-burner-install-wrappers
 %{_datadir}/applications/io.github.jpietek.PenguinBurner.desktop
 %{_datadir}/icons/hicolor/256x256/apps/penguin-burner.png
 %{_datadir}/icons/hicolor/512x512/apps/penguin-burner.png

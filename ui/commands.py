@@ -286,6 +286,65 @@ def daemon_migration_command() -> list[str]:
     return privileged_command([*cli_base_command(), "--migrate-to-daemon-service"])
 
 
+def _flatpak_daemon_restart_and_wait_script() -> str:
+    return r"""
+daemon_socket=/run/penguin-burnerd.sock
+last_runtime_state=/var/lib/penguin-burner/last-runtime.json
+
+wait_for_penguin_burnerd() {
+    attempt=0
+    while [ "$attempt" -lt 30 ]; do
+        if /usr/bin/python3 - "$daemon_socket" >/dev/null 2>&1 <<'PY'
+import json
+import socket
+import sys
+
+path = sys.argv[1]
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+    client.settimeout(1.0)
+    client.connect(path)
+    client.sendall(b'{"method":"status"}\n')
+    data = b""
+    while b"\n" not in data:
+        chunk = client.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+response = json.loads(data.split(b"\n", 1)[0].decode("utf-8"))
+if not response.get("ok"):
+    raise SystemExit(1)
+PY
+        then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 0.1
+    done
+    return 1
+}
+
+print_penguin_burnerd_diagnostics() {
+    systemctl status --no-pager penguin-burnerd.service >&2 || true
+    journalctl -u penguin-burnerd.service -n 80 --no-pager >&2 || true
+}
+
+restart_penguin_burnerd() {
+    rm -f "$daemon_socket"
+    if ! systemctl restart penguin-burnerd.service; then
+        echo "Failed to restart penguin-burnerd.service." >&2
+        print_penguin_burnerd_diagnostics
+        return 1
+    fi
+    if wait_for_penguin_burnerd; then
+        return 0
+    fi
+    echo "penguin-burnerd.service restarted, but $daemon_socket did not answer status." >&2
+    print_penguin_burnerd_diagnostics
+    return 1
+}
+""".strip()
+
+
 def runtime_profile_command(
     action: str,
     *,
@@ -349,10 +408,10 @@ def _flatpak_daemon_install_command(
     /etc/systemd/system, and enables+restarts it. ExecStart points at the fixed
     /usr/libexec path, so unit generation needs no flatpak-specific ExecStart.
 
-    ``autostart_argv`` is None for the migrate/repair flow (leave any persisted
-    last-runtime state alone); a list (possibly empty) means "persist THIS
-    profile": clear the state file, then seed it so the daemon replays the
-    installed profile on boot.
+    ``autostart_argv`` is None for the migrate/repair flow (clear stale
+    last-runtime state from old deployments); a list (possibly empty) means
+    "persist THIS profile": clear the state file, then seed it so the daemon
+    replays the installed profile on boot.
     """
     from runtime.support.runtime_service import (
         LAST_RUNTIME_STATE_PATH,
@@ -374,7 +433,7 @@ def _flatpak_daemon_install_command(
         f"PENGUIN_BURNER_DAEMON_BINARY_SRC={daemon_binary_src}",
         f"PENGUIN_BURNER_SYSTEMD_UNIT_B64={encoded_unit}",
     ]
-    state_block = ""
+    state_block = 'rm -f "$last_runtime_state"\n'
     if autostart_argv is not None:
         state_json = (
             json.dumps(
@@ -403,30 +462,39 @@ def _flatpak_daemon_install_command(
             "fi\n"
         )
 
-    script = (
-        "legacy_unit=/etc/systemd/system/PenguinBurner.service\n"
-        "unit=/etc/systemd/system/penguin-burnerd.service\n"
-        "systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true\n"
-        'if [ -f "$legacy_unit" ]; then\n'
-        '    rm -f "$legacy_unit"\n'
-        '    echo "Removed existing static PenguinBurner.service."\n'
-        "fi\n"
-        'install -Dm0755 "$PENGUIN_BURNER_DAEMON_BINARY_SRC" '
-        "/usr/libexec/penguin-burnerd\n"
-        'tmp="$(mktemp /etc/systemd/system/.penguin-burnerd.service.XXXXXX)"\n'
-        "trap 'rm -f \"$tmp\"' EXIT\n"
-        "printf '%s' \"$PENGUIN_BURNER_SYSTEMD_UNIT_B64\" | base64 -d > \"$tmp\"\n"
-        'chmod 0644 "$tmp"\n'
-        'mv "$tmp" "$unit"\n'
-        "trap - EXIT\n"
-        f"{state_block}"
-        "systemctl daemon-reload\n"
-        "systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true\n"
-        "systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true\n"
-        "systemctl enable penguin-burnerd.service\n"
-        "systemctl restart penguin-burnerd.service\n"
-        'echo "Copied penguin-burnerd to /usr/libexec/penguin-burnerd."\n'
-        'echo "Installed and enabled penguin-burnerd.service at $unit."'
+    script = "\n".join(
+        [
+            _flatpak_daemon_restart_and_wait_script(),
+            (
+                r"""
+legacy_unit=/etc/systemd/system/PenguinBurner.service
+unit=/etc/systemd/system/penguin-burnerd.service
+systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
+if [ -f "$legacy_unit" ]; then
+    rm -f "$legacy_unit"
+    echo "Removed existing static PenguinBurner.service."
+fi
+install -Dm0755 "$PENGUIN_BURNER_DAEMON_BINARY_SRC" /usr/libexec/penguin-burnerd
+tmp="$(mktemp /etc/systemd/system/.penguin-burnerd.service.XXXXXX)"
+trap 'rm -f "$tmp"' EXIT
+printf '%s' "$PENGUIN_BURNER_SYSTEMD_UNIT_B64" | base64 -d > "$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "$unit"
+trap - EXIT
+"""
+                + state_block
+                + r"""
+systemctl daemon-reload
+systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
+systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
+systemctl enable penguin-burnerd.service
+restart_penguin_burnerd
+echo "Copied penguin-burnerd to /usr/libexec/penguin-burnerd."
+echo "Installed and enabled penguin-burnerd.service at $unit."
+echo "Follow the journal with: journalctl -u penguin-burnerd.service --since \"-4 hours\" -f"
+""".strip()
+            ),
+        ]
     )
     return _privileged_command(
         [
@@ -444,9 +512,10 @@ def _flatpak_uninstall_systemd_command() -> list[str]:
     script = r"""
 legacy_unit=/etc/systemd/system/PenguinBurner.service
 daemon_unit=/etc/systemd/system/penguin-burnerd.service
+last_runtime_state=/var/lib/penguin-burner/last-runtime.json
 systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
 systemctl disable --now penguin-burnerd.service >/dev/null 2>&1 || true
-rm -f "$legacy_unit" "$daemon_unit"
+rm -f "$legacy_unit" "$daemon_unit" "$last_runtime_state"
 systemctl daemon-reload
 systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
 systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true

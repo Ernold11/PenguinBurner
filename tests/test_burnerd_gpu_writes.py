@@ -8,8 +8,9 @@ transport swap ships byte-identical writes: same indices, same kHz/MHz/W units,
 same snap flags -- and that driver error text is relayed verbatim as the
 RuntimeError message (the sweep's initial check pattern-matches those strings).
 
-Skipped module-wide when the binary is not built (``cargo build --release`` in
-``burnerd/`` makes them run) -- same convention as ``test_burnerd_golden.py``.
+Skipped module-wide when the binary is not built (``cargo test`` or
+``cargo build`` in ``burnerd/`` makes them run) -- same convention as
+``test_burnerd_golden.py``.
 """
 
 from __future__ import annotations
@@ -40,8 +41,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def _find_binary() -> Path | None:
     for rel in (
-        "burnerd/target/release/penguin-burnerd",
         "burnerd/target/debug/penguin-burnerd",
+        "burnerd/target/release/penguin-burnerd",
     ):
         candidate = _REPO_ROOT / rel
         if candidate.exists():
@@ -236,6 +237,18 @@ def test_apply_power_limit_routes_watts_through_daemon(make_daemon, rpc_spy):
     }
     assert result["applied_w"] == 300
     assert result["mock_ops"] == ["ApplyPowerLimit { power_limit_w: 300 }"]
+
+
+def test_probe_power_limit_support_routes_through_rust_daemon(make_daemon, rpc_spy):
+    make_daemon()
+
+    result = daemon_client.probe_power_limit_support(0)
+
+    request, response = rpc_spy[-1]
+    assert request == {"method": "probe_power_limit_support", "gpu_index": 0}
+    assert result["supported"] is True
+    assert result["probe_power_limit_w"] == 300
+    assert response["mock_ops"] == ["ApplyPowerLimit { power_limit_w: 300 }"]
 
 
 def test_enable_persistence_mode_routes_through_daemon(make_daemon, rpc_spy):

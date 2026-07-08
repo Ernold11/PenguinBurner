@@ -90,6 +90,28 @@ def _runtime_profile_daemon_argv(command: list[str]) -> list[str]:
     return json.loads(command[4])
 
 
+def _assert_flatpak_daemon_script_waits_for_api(
+    script: str,
+    *,
+    success_message: str,
+) -> None:
+    assert "daemon_socket=/run/penguin-burnerd.sock" in script
+    assert "last_runtime_state=/var/lib/penguin-burner/last-runtime.json" in script
+    assert 'client.sendall(b\'{"method":"status"}\\n\')' in script
+    assert 'rm -f "$daemon_socket"' in script
+    state_clear = (
+        'rm -f "$last_runtime_state"'
+        if 'rm -f "$last_runtime_state"' in script
+        else 'rm -f "$PENGUIN_BURNER_LAST_RUNTIME_PATH"'
+    )
+    assert state_clear in script
+    assert "restart_penguin_burnerd" in script
+    assert "systemctl status --no-pager penguin-burnerd.service" in script
+    assert "journalctl -u penguin-burnerd.service -n 80 --no-pager" in script
+    assert script.rindex(state_clear) < script.rindex("restart_penguin_burnerd")
+    assert script.rindex("restart_penguin_burnerd") < script.index(success_message)
+
+
 def test_ui_scan_command_uses_daemon_client_without_pkexec(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(commands.os, "getuid", lambda: 1000)
@@ -183,8 +205,8 @@ def _command_env_value(command: list[str], name: str) -> str:
 
 def test_daemon_migration_command_installs_flatpak_daemon(monkeypatch, tmp_path) -> None:
     # B4b: the sandbox-built /app/libexec binary is copied onto the host's
-    # root-owned /usr/libexec by the one pkexec elevation; the repair flow does
-    # not touch the persisted last-runtime state.
+    # root-owned /usr/libexec by the one pkexec elevation; the repair flow clears
+    # stale last-runtime state from old deployments before restarting.
     _flatpak_daemon_install_env(monkeypatch, tmp_path)
 
     command = commands.daemon_migration_command()
@@ -199,16 +221,35 @@ def test_daemon_migration_command_installs_flatpak_daemon(monkeypatch, tmp_path)
         f"{FLATPAK_APP_PATH}/libexec/penguin-burnerd"
     )
     script = command[command.index("-c") + 1]
+    assert "/usr/bin/flatpak" not in command
+    assert command[-5:] == [
+        "/bin/sh",
+        "-eu",
+        "-c",
+        command[-2],
+        "penguin-burner-daemon-install",
+    ]
+    assert "systemctl is-active --quiet penguin-burnerd.service" not in command[-2]
+    assert "systemctl enable penguin-burnerd.service" in command[-2]
+    assert "systemctl restart penguin-burnerd.service" in command[-2]
+    assert "systemctl enable --now penguin-burnerd.service" not in command[-2]
+    _assert_flatpak_daemon_script_waits_for_api(
+        command[-2],
+        success_message='echo "Installed and enabled penguin-burnerd.service at $unit."',
+    )
     assert (
         'install -Dm0755 "$PENGUIN_BURNER_DAEMON_BINARY_SRC" '
         "/usr/libexec/penguin-burnerd" in script
     )
     assert "systemctl enable penguin-burnerd.service" in script
-    # Repair/migrate leaves last-runtime.json alone.
+    assert 'rm -f "$last_runtime_state"' in script
+    # Repair/migrate clears stale state but does not seed a new autostart payload.
     assert "PENGUIN_BURNER_LAST_RUNTIME_B64" not in " ".join(command)
     unit = base64.b64decode(
         _command_env_value(command, "PENGUIN_BURNER_SYSTEMD_UNIT_B64")
     ).decode("utf-8")
+    assert "/usr/bin/flatpak" not in unit
+    assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
     assert (
         "ExecStart=/usr/libexec/penguin-burnerd --socket /run/penguin-burnerd.sock"
         in unit
@@ -260,6 +301,17 @@ def test_flatpak_runtime_profile_install_copies_daemon_and_seeds_autostart(
     unit = base64.b64decode(
         _command_env_value(command, "PENGUIN_BURNER_SYSTEMD_UNIT_B64")
     ).decode("utf-8")
+    assert "systemctl is-active --quiet penguin-burnerd.service" not in command[-2]
+    assert "systemctl enable penguin-burnerd.service" in command[-2]
+    assert "systemctl restart penguin-burnerd.service" in command[-2]
+    assert "systemctl enable --now penguin-burnerd.service" not in command[-2]
+    assert "systemctl enable --now PenguinBurner.service" not in command[-2]
+    _assert_flatpak_daemon_script_waits_for_api(
+        command[-2],
+        success_message='echo "Installed and enabled penguin-burnerd.service at $unit."',
+    )
+    assert "/usr/bin/flatpak" not in unit
+    assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
     assert (
         "ExecStart=/usr/libexec/penguin-burnerd --socket /run/penguin-burnerd.sock"
         in unit
@@ -310,6 +362,43 @@ def test_flatpak_runtime_profile_daemonize_uses_daemon_client(
         "--gpu-index",
         "0",
     ]
+
+
+def test_flatpak_systemd_uninstall_clears_last_runtime_state(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    flatpak_info = tmp_path / ".flatpak-info"
+    flatpak_info.write_text("[Application]\n", encoding="utf-8")
+    monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
+    monkeypatch.setenv("USER", "desktop-user")
+    monkeypatch.setattr(
+        commands.pwd,
+        "getpwnam",
+        lambda user: SimpleNamespace(pw_dir=f"/home/{user}"),
+    )
+
+    def fake_which(name: str) -> str | None:
+        return {
+            "flatpak-spawn": "/usr/bin/flatpak-spawn",
+        }.get(name)
+
+    monkeypatch.setattr(commands.shutil, "which", fake_which)
+
+    command = commands.runtime_profile_command("uninstall-systemd")
+    script = command[-2]
+
+    assert command[:4] == [
+        "/usr/bin/flatpak-spawn",
+        "--host",
+        "/usr/bin/pkexec",
+        "/usr/bin/env",
+    ]
+    assert command[-1] == "penguin-burner-systemd-uninstall"
+    assert "last_runtime_state=/var/lib/penguin-burner/last-runtime.json" in script
+    assert 'rm -f "$legacy_unit" "$daemon_unit" "$last_runtime_state"' in script
 
 
 def test_daemon_migration_command_uses_privileged_cli(monkeypatch) -> None:
@@ -1961,6 +2050,41 @@ def test_advanced_tuning_group_has_breathing_room() -> None:
     assert "dialog.setFixedSize" not in source
     assert "label_layout.setContentsMargins(0, 2, 12, 2)" in source
 
+
+def test_scan_tuning_power_limit_controls_disabled_when_power_management_disabled():
+    import ui.dialogs.scan_tuning as scan_tuning
+
+    values = scan_tuning._power_limit_control_values(
+        SimpleNamespace(
+            power_management_enabled=False,
+            power_limit_set_supported=True,
+            power_limit_min_w=40.0,
+            power_limit_max_w=80.0,
+            power_limit_default_w=55.0,
+            power_limit_w=55.0,
+        )
+    )
+
+    assert values is None
+
+
+def test_scan_tuning_power_limit_controls_require_daemon_setter_probe():
+    import ui.dialogs.scan_tuning as scan_tuning
+
+    values = scan_tuning._power_limit_control_values(
+        SimpleNamespace(
+            power_management_enabled=True,
+            power_limit_set_supported=False,
+            power_limit_min_w=40.0,
+            power_limit_max_w=80.0,
+            power_limit_default_w=55.0,
+            power_limit_w=55.0,
+        )
+    )
+
+    assert values is None
+
+
 def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -> None:
     import os
 
@@ -2022,6 +2146,7 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
         lambda selected: SimpleNamespace(
             power_draw_w=42.0,
             power_management_enabled=True,
+            power_limit_set_supported=True,
             power_limit_w=320.0,
             power_limit_default_w=350.0,
             power_limit_min_w=200.0,
@@ -2156,6 +2281,7 @@ def test_scan_tuning_enter_in_numeric_field_only_commits_value(monkeypatch) -> N
         lambda selected: SimpleNamespace(
             power_draw_w=42.0,
             power_management_enabled=True,
+            power_limit_set_supported=True,
             power_limit_w=360.0,
             power_limit_default_w=360.0,
             power_limit_min_w=330.0,
@@ -2262,6 +2388,7 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
         lambda selected: SimpleNamespace(
             power_draw_w=42.0,
             power_management_enabled=True,
+            power_limit_set_supported=True,
             power_limit_w=360.0,
             power_limit_default_w=360.0,
             power_limit_min_w=330.0,
@@ -2343,6 +2470,7 @@ def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
         lambda selected: SimpleNamespace(
             power_draw_w=42.0,
             power_management_enabled=True,
+            power_limit_set_supported=True,
             power_limit_w=360.0,
             power_limit_default_w=360.0,
             power_limit_min_w=None,

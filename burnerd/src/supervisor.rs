@@ -393,6 +393,10 @@ pub fn stop_profile_verification(sup: &Mutex<Supervisor>) -> StopResult {
     stop_child(sup, ChildKind::Verify)
 }
 
+pub fn active_child_kind(sup: &Mutex<Supervisor>) -> Option<ChildKind> {
+    guard(sup).child_running_kind()
+}
+
 /// Cooperative stop: write the kind's stop-request marker FIRST, then SIGINT
 /// (ordered protocol, parity with the Python daemon's scan stop).
 fn stop_child(sup: &Mutex<Supervisor>, kind: ChildKind) -> StopResult {

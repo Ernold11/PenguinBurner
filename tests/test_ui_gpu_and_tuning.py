@@ -258,6 +258,7 @@ def test_auto_uv_nvml_info_text_is_compact_and_tuning_relevant() -> None:
         AutoUvNvmlInfo(
             power_draw_w=42.25,
             power_management_enabled=True,
+            power_limit_set_supported=True,
             power_limit_w=320.0,
             power_limit_default_w=350.0,
             power_limit_min_w=200.0,
@@ -276,6 +277,7 @@ def test_auto_uv_nvml_info_text_is_compact_and_tuning_relevant() -> None:
     assert "Supported memory clocks: 810, 5001, 10501 MHz" in text
     assert "Supported core range: 210-3015 MHz (3 steps)" in text
     assert "Power management: enabled" in text
+    assert "Power limit writes: supported" in text
     assert "RTX" not in text
     assert "PCI" not in text
     assert "thermal" not in text.lower()
@@ -290,6 +292,34 @@ def test_auto_uv_nvml_info_text_summarizes_long_clock_lists() -> None:
     )
 
     assert text == "Supported memory clocks: 1000-6000 MHz (6 steps)"
+
+
+def test_power_limit_set_supported_uses_daemon_probe(monkeypatch) -> None:
+    from runtime import daemon_client
+
+    calls = []
+    monkeypatch.setattr(
+        daemon_client,
+        "probe_power_limit_support",
+        lambda gpu_index, **kwargs: calls.append((gpu_index, kwargs))
+        or {"supported": True},
+    )
+
+    assert tuning.power_limit_set_supported(2) is True
+    assert calls == [(2, {"timeout_s": 1.0})]
+
+
+def test_power_limit_set_supported_returns_false_when_daemon_probe_fails(
+    monkeypatch,
+) -> None:
+    from runtime import daemon_client
+
+    def fail_probe(*_args, **_kwargs):
+        raise RuntimeError("daemon down")
+
+    monkeypatch.setattr(daemon_client, "probe_power_limit_support", fail_probe)
+
+    assert tuning.power_limit_set_supported(0) is False
 
 
 class _FakeController:

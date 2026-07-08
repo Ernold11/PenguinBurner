@@ -580,8 +580,9 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
         env=stable_subprocess_env(),
         check=False,
     )
-    # Carry the migrated legacy autostart intent into the state file the native
-    # daemon reads on start (replaces the old base64 unit env).
+    # Drop stale state from older package/deployment paths, then carry the
+    # migrated legacy autostart intent into the native daemon state file.
+    clear_last_runtime_state()
     if autostart_argv:
         _persist_autostart_last_runtime(
             autostart_argv, _daemon_program_file_for_unit(program_file)
@@ -861,6 +862,7 @@ def _ensure_daemon_service_started(program_file, *, socket_path, log) -> None:
         log(f"{verb} {unit_path.name} at {unit_path}.")
     if wrote_unit:
         run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
+        clear_last_runtime_state()
     subprocess.run(
         [SYSTEMCTL, "reset-failed", unit_path.name],
         capture_output=True,

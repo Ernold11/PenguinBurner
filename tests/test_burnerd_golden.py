@@ -6,8 +6,8 @@ socket IS the parity contract: whatever the GUI/CLI send, the Rust daemon must
 answer byte-for-byte like the Python ``runtime/daemon_api.py`` did. These port the
 socket-observable behaviors that ``tests/test_daemon_api.py`` pins.
 
-The tests are skipped (module-level) when the binary isn't built; ``cargo build
---release`` in ``burnerd/`` makes them run.
+The tests are skipped (module-level) when the binary isn't built; ``cargo test``
+or ``cargo build`` in ``burnerd/`` makes them run.
 
 Behaviors from the Python daemon that are INTENTIONALLY NOT ported here, by
 design (documented so the omission is deliberate, not an oversight):
@@ -67,8 +67,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def _find_binary() -> Path | None:
     for rel in (
-        "burnerd/target/release/penguin-burnerd",
         "burnerd/target/debug/penguin-burnerd",
+        "burnerd/target/release/penguin-burnerd",
     ):
         candidate = _REPO_ROOT / rel
         if candidate.exists():

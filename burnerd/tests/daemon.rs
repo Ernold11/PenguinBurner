@@ -584,6 +584,15 @@ const MOCK_GPU: (&str, &str) = ("PENGUIN_BURNERD_TEST_MOCK_GPU", "1");
 fn gpu_writes_run_against_the_mock_and_echo_ops() {
     let daemon = Daemon::start(&[MOCK_GPU]);
 
+    let response = daemon.request(r#"{"method":"probe_power_limit_support","gpu_index":0}"#);
+    assert_eq!(response["ok"], Value::Bool(true));
+    assert_eq!(response["result"]["supported"], Value::Bool(true));
+    assert_eq!(response["result"]["probe_power_limit_w"], 300);
+    assert_eq!(
+        response["result"]["mock_ops"],
+        serde_json::json!(["ApplyPowerLimit { power_limit_w: 300 }"])
+    );
+
     let response = daemon.request(
         r#"{"method":"gpu_apply_vf_offsets","gpu_index":0,"offsets":[[12,150000],[13,-15000]]}"#,
     );
