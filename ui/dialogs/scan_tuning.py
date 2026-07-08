@@ -727,6 +727,8 @@ def _power_limit_control_values(info) -> tuple[int, int, int] | None:
         return None
     if getattr(info, "power_management_enabled", None) is False:
         return None
+    if getattr(info, "power_limit_set_supported", None) is not True:
+        return None
     min_w = _positive_rounded_int(getattr(info, "power_limit_min_w", None))
     max_w = _positive_rounded_int(getattr(info, "power_limit_max_w", None))
     if min_w is None or max_w is None or max_w < min_w:

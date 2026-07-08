@@ -265,6 +265,93 @@ def test_daemon_start_runtime_profile_rejects_unsupported_args() -> None:
         )
 
 
+def test_daemon_probe_power_limit_support_writes_current_limit(monkeypatch) -> None:
+    controllers = []
+
+    class FakeController:
+        def __init__(self, gpu_index: int) -> None:
+            self.gpu_index = int(gpu_index)
+            self.calls: list[int] = []
+            self.closed = False
+            controllers.append(self)
+
+        def query_power_limits(self):
+            return {
+                "power_limit_w": 43,
+                "power_limit_default_w": 61,
+                "power_limit_min_w": 35,
+                "power_limit_max_w": 80,
+            }
+
+        def apply_power_limit_w(self, power_limit_w):
+            self.calls.append(int(power_limit_w))
+            return int(power_limit_w)
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(
+        daemon_api,
+        "_new_gpu_policy_controller",
+        lambda gpu_index: FakeController(gpu_index),
+    )
+
+    result = daemon_api.handle_request(
+        {"method": "probe_power_limit_support", "gpu_index": 2}
+    )
+
+    assert result["supported"] is True
+    assert result["gpu_index"] == 2
+    assert result["probe_power_limit_w"] == 43
+    assert result["power_limits"]["power_limit_default_w"] == 61
+    assert controllers[0].calls == [43]
+    assert controllers[0].closed is True
+
+
+def test_daemon_probe_power_limit_support_reports_setter_rejection(
+    monkeypatch,
+) -> None:
+    class FakeController:
+        def query_power_limits(self):
+            return {
+                "power_limit_w": 43,
+                "power_limit_default_w": 61,
+                "power_limit_min_w": 35,
+                "power_limit_max_w": 80,
+            }
+
+        def apply_power_limit_w(self, power_limit_w):
+            raise RuntimeError(
+                "nvmlDeviceSetPowerManagementLimit failed with NVML error 3: "
+                "Not Supported"
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        daemon_api,
+        "_new_gpu_policy_controller",
+        lambda _gpu_index: FakeController(),
+    )
+
+    result = daemon_api.handle_request(
+        {"method": "probe_power_limit_support", "gpu_index": 0}
+    )
+
+    assert result["supported"] is False
+    assert result["probe_power_limit_w"] == 43
+    assert "Not Supported" in result["reason"]
+    assert result["power_limits"]["power_limit_min_w"] == 35
+
+
+def test_daemon_probe_power_limit_support_rejects_invalid_gpu_index() -> None:
+    with pytest.raises(ValueError, match="invalid gpu_index"):
+        daemon_api.handle_request(
+            {"method": "probe_power_limit_support", "gpu_index": -1}
+        )
+
+
 def test_daemon_load_last_runtime_rebases_missing_program_file(
     monkeypatch,
     tmp_path: Path,

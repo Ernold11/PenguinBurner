@@ -2056,6 +2056,24 @@ def test_scan_tuning_power_limit_controls_disabled_when_power_management_disable
     values = scan_tuning._power_limit_control_values(
         SimpleNamespace(
             power_management_enabled=False,
+            power_limit_set_supported=True,
+            power_limit_min_w=40.0,
+            power_limit_max_w=80.0,
+            power_limit_default_w=55.0,
+            power_limit_w=55.0,
+        )
+    )
+
+    assert values is None
+
+
+def test_scan_tuning_power_limit_controls_require_daemon_setter_probe():
+    import ui.dialogs.scan_tuning as scan_tuning
+
+    values = scan_tuning._power_limit_control_values(
+        SimpleNamespace(
+            power_management_enabled=True,
+            power_limit_set_supported=False,
             power_limit_min_w=40.0,
             power_limit_max_w=80.0,
             power_limit_default_w=55.0,
@@ -2127,6 +2145,7 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
         lambda selected: SimpleNamespace(
             power_draw_w=42.0,
             power_management_enabled=True,
+            power_limit_set_supported=True,
             power_limit_w=320.0,
             power_limit_default_w=350.0,
             power_limit_min_w=200.0,
@@ -2261,6 +2280,7 @@ def test_scan_tuning_enter_in_numeric_field_only_commits_value(monkeypatch) -> N
         lambda selected: SimpleNamespace(
             power_draw_w=42.0,
             power_management_enabled=True,
+            power_limit_set_supported=True,
             power_limit_w=360.0,
             power_limit_default_w=360.0,
             power_limit_min_w=330.0,
@@ -2367,6 +2387,7 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
         lambda selected: SimpleNamespace(
             power_draw_w=42.0,
             power_management_enabled=True,
+            power_limit_set_supported=True,
             power_limit_w=360.0,
             power_limit_default_w=360.0,
             power_limit_min_w=330.0,
@@ -2448,6 +2469,7 @@ def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
         lambda selected: SimpleNamespace(
             power_draw_w=42.0,
             power_management_enabled=True,
+            power_limit_set_supported=True,
             power_limit_w=360.0,
             power_limit_default_w=360.0,
             power_limit_min_w=None,

@@ -88,6 +88,7 @@ class AutoUvPreset:
 class AutoUvNvmlInfo:
     power_draw_w: float | None = None
     power_management_enabled: bool | None = None
+    power_limit_set_supported: bool | None = None
     power_limit_w: float | None = None
     power_limit_default_w: float | None = None
     power_limit_min_w: float | None = None
@@ -328,6 +329,7 @@ def read_auto_uv_nvml_info(gpu_index: int) -> AutoUvNvmlInfo:
     return AutoUvNvmlInfo(
         power_draw_w=getattr(power, "power_draw_w", None),
         power_management_enabled=getattr(power, "power_management_enabled", None),
+        power_limit_set_supported=power_limit_set_supported(gpu_index),
         power_limit_w=getattr(power, "power_limit_w", None),
         power_limit_default_w=getattr(power, "power_limit_default_w", None),
         power_limit_min_w=getattr(power, "power_limit_min_w", None),
@@ -353,9 +355,20 @@ def auto_uv_nvml_info_text(info: AutoUvNvmlInfo | None) -> str:
         _supported_memory_clocks_text(info.supported_memory_clocks_mhz),
         _supported_core_range_text(info.supported_graphics_clock_steps_mhz),
         _power_management_text(info.power_management_enabled),
+        _power_limit_set_text(info.power_limit_set_supported),
     ]
     text = "\n".join(row for row in rows if row)
     return text or "NVML read-only info unavailable"
+
+
+def power_limit_set_supported(gpu_index: int) -> bool:
+    try:
+        from runtime.daemon_client import probe_power_limit_support
+
+        result = probe_power_limit_support(int(gpu_index), timeout_s=1.0)
+    except Exception:
+        return False
+    return bool(result.get("supported"))
 
 
 def memory_offset_mhz_range() -> tuple[int, int]:
@@ -498,6 +511,12 @@ def _power_management_text(enabled: bool | None) -> str:
     if enabled is None:
         return ""
     return f"Power management: {'enabled' if enabled else 'disabled'}"
+
+
+def _power_limit_set_text(supported: bool | None) -> str:
+    if supported is None:
+        return ""
+    return f"Power limit writes: {'supported' if supported else 'unavailable'}"
 
 
 def _clock_list_text(clocks_mhz: tuple[int, ...]) -> str:

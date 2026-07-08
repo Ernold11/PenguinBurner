@@ -12,7 +12,7 @@ import subprocess
 import struct
 import sys
 import threading
-from typing import Any
+from typing import Any, cast
 
 
 DEFAULT_DAEMON_SOCKET = "/run/penguin-burnerd.sock"
@@ -102,6 +102,8 @@ def handle_request(payload: object) -> dict[str, Any]:
     allowed = {"method"}
     if method == "start_runtime_profile":
         allowed.add("argv")
+    if method == "probe_power_limit_support":
+        allowed.add("gpu_index")
     unknown = sorted(set(payload) - allowed)
     if unknown:
         raise ValueError(f"unknown request field: {', '.join(unknown)}")
@@ -113,6 +115,8 @@ def handle_request(payload: object) -> dict[str, Any]:
         return start_runtime_profile(payload.get("argv"))
     if method == "stop_runtime_profile":
         return stop_runtime_profile()
+    if method == "probe_power_limit_support":
+        return probe_power_limit_support(payload.get("gpu_index"))
     if not isinstance(method, str) or not method:
         raise ValueError("request method is required")
     raise ValueError(f"unknown daemon method: {method}")
@@ -276,6 +280,86 @@ def stop_runtime_profile() -> dict[str, Any]:
         return {"stopped": False, "state": "idle"}
     _stop_autostart_runtime_for_scan()
     return {"stopped": True, "pid": process.pid}
+
+
+def probe_power_limit_support(gpu_index: object = None) -> dict[str, Any]:
+    gpu = _gpu_index_value(gpu_index)
+    with _ACTIVE_SCAN_LOCK:
+        if _scan_running():
+            return {
+                "gpu_index": gpu,
+                "supported": False,
+                "reason": "auto-uv-scan-running",
+            }
+    controller = None
+    try:
+        controller = _new_gpu_policy_controller(gpu)
+        power_limits = controller.query_power_limits()
+        current_w = _positive_power_limit_w(power_limits.get("power_limit_w"))
+        if current_w is None:
+            return {
+                "gpu_index": gpu,
+                "supported": False,
+                "reason": "current-power-limit-unavailable",
+                "power_limits": power_limits,
+            }
+        try:
+            applied_w = controller.apply_power_limit_w(int(current_w))
+        except Exception as exc:
+            return {
+                "gpu_index": gpu,
+                "supported": False,
+                "reason": str(exc),
+                "probe_power_limit_w": int(current_w),
+                "power_limits": power_limits,
+            }
+        readback = controller.query_power_limits()
+        return {
+            "gpu_index": gpu,
+            "supported": True,
+            "probe_power_limit_w": int(applied_w),
+            "power_limits": readback,
+        }
+    except Exception as exc:
+        return {
+            "gpu_index": gpu,
+            "supported": False,
+            "reason": str(exc),
+        }
+    finally:
+        if controller is not None:
+            try:
+                controller.close()
+            except Exception:
+                pass
+
+
+def _new_gpu_policy_controller(gpu_index: int):
+    from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
+
+    return NvmlGpuPolicyController(gpu_index=int(gpu_index))
+
+
+def _gpu_index_value(value: object) -> int:
+    if value in (None, ""):
+        return 0
+    try:
+        gpu_index = int(cast(Any, value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid gpu_index: {value!r}") from exc
+    if gpu_index < 0:
+        raise ValueError(f"invalid gpu_index: {value!r}")
+    return gpu_index
+
+
+def _positive_power_limit_w(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        power_limit_w = int(round(float(cast(Any, value))))
+    except (TypeError, ValueError):
+        return None
+    return power_limit_w if power_limit_w > 0 else None
 
 
 def _is_start_auto_uv_scan_request(request: object) -> bool:
