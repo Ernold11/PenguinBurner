@@ -1,8 +1,6 @@
 # NVAPI shim — release-readiness plan
 
-> **Status 2026-07-01: AUDIT of branch `nvapi_shim`** (`064a4ab` shim added,
-> `57a0410` FIFO-path output + re-front watcher + hardening, `d992f18` dead
-> marker-log detection removed + default-on policy). Capture architecture is
+> **Status 2026-07-01: audited and merged to `main`.** Capture architecture is
 > validated (Talos 2, RE9 — both DX12 + Streamline + DLSS-G) and sound.
 > **Not ready for average-user release**: one likely showstopper (B1), one
 > distribution gap (B2), plus hardening items. This file is the work plan to
@@ -190,9 +188,9 @@ prefix (log shows `nvapi shim: installed …`).
   into the FIFO (discarded by the bridge). `PROTON_LOG=1` file logging still
   works; add a support-doc note, optionally tee non-marker lines when a debug
   env is set.
-- **Branch policy**: the shim is the chosen direction — merge `nvapi_shim` to
-  `main` once Phases 1–3 land (B1/B2 fixed, correctness items done, suite
-  green in a clean checkout).
+- **Branch policy**: the shim is the chosen direction and the old
+  `nvapi_shim` branch has been merged to `main`; keep future work on `main` or
+  a fresh topic branch.
 - **Validation matrix (re-run before tagging)**:
   - FG + Streamline (Talos 2, RE9) → `quality=reflex-marker-sim-present`,
     sane sim→oob-present.
