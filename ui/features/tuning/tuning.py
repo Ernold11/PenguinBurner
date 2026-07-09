@@ -305,12 +305,29 @@ def read_auto_uv_nvml_info(gpu_index: int) -> AutoUvNvmlInfo:
     clocks = None
     supported_memory_clocks: list[int] = []
     supported_graphics_steps: list[int] = []
+    fixed_power_limit_excluded = False
+
+    try:
+        from drivers.nvidia.nvml_gpu_policy import fixed_power_limit_excluded_by_identity
+        from drivers.nvidia.nvml_identity import query_nvml_gpu_identity
+
+        identity = query_nvml_gpu_identity(int(gpu_index))
+        fixed_power_limit_excluded = fixed_power_limit_excluded_by_identity(
+            gpu_name=getattr(identity, "name", None),
+            pci_device_id=getattr(identity, "pci_device_id", None),
+        )
+    except Exception:
+        fixed_power_limit_excluded = False
 
     try:
         from drivers.nvidia.nvml_power import NvmlPowerSession
+        from drivers.nvidia.nvml_power import NvmlPowerTelemetry
 
         with NvmlPowerSession(int(gpu_index)) as session:
-            power = session.telemetry()
+            if fixed_power_limit_excluded:
+                power = NvmlPowerTelemetry(power_draw_w=session.power_draw_w())
+            else:
+                power = session.telemetry()
     except Exception:
         power = None
 
@@ -326,10 +343,18 @@ def read_auto_uv_nvml_info(gpu_index: int) -> AutoUvNvmlInfo:
         supported_memory_clocks = []
         supported_graphics_steps = []
 
+    if fixed_power_limit_excluded:
+        power_limit_set_supported_value = False
+    else:
+        power_limit_set_supported_value = (
+            power_limit_set_supported(gpu_index)
+            if _power_limit_set_probe_applicable(power)
+            else None
+        )
     return AutoUvNvmlInfo(
         power_draw_w=getattr(power, "power_draw_w", None),
         power_management_enabled=getattr(power, "power_management_enabled", None),
-        power_limit_set_supported=power_limit_set_supported(gpu_index),
+        power_limit_set_supported=power_limit_set_supported_value,
         power_limit_w=getattr(power, "power_limit_w", None),
         power_limit_default_w=getattr(power, "power_limit_default_w", None),
         power_limit_min_w=getattr(power, "power_limit_min_w", None),
@@ -342,6 +367,17 @@ def read_auto_uv_nvml_info(gpu_index: int) -> AutoUvNvmlInfo:
         supported_graphics_clock_steps_mhz=tuple(
             sorted({int(clock) for clock in supported_graphics_steps})
         ),
+    )
+
+
+def _power_limit_set_probe_applicable(power: object | None) -> bool:
+    if power is None:
+        return False
+    if getattr(power, "power_management_enabled", None) is False:
+        return False
+    return (
+        getattr(power, "power_limit_min_w", None) is not None
+        and getattr(power, "power_limit_max_w", None) is not None
     )
 
 
@@ -516,7 +552,7 @@ def _power_management_text(enabled: bool | None) -> str:
 def _power_limit_set_text(supported: bool | None) -> str:
     if supported is None:
         return ""
-    return f"Power limit writes: {'supported' if supported else 'unavailable'}"
+    return f"Fixed power-limit writes: {'supported' if supported else 'unavailable'}"
 
 
 def _clock_list_text(clocks_mhz: tuple[int, ...]) -> str:

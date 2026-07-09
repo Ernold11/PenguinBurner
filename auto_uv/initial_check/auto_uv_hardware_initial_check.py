@@ -8,7 +8,7 @@ from __future__ import annotations
 import ctypes
 from dataclasses import dataclass
 import re
-from typing import Callable
+from typing import Any, Callable, cast
 
 from drivers.nvidia.hidden_nvapi_vf import (
     create_hidden_vf_curve_reader,
@@ -19,7 +19,7 @@ from drivers.nvidia.hidden_nvapi_voltage import (
     get_hidden_voltage_reader_last_error,
 )
 from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
-from drivers.nvidia.nvml_identity import query_nvml_gpu_identities
+from drivers.nvidia.nvml_identity import query_nvml_gpu_identity_result
 
 
 MINIMUM_NVIDIA_DRIVER_VERSION = (580, 0)
@@ -60,6 +60,13 @@ class InitialCheckGpuInfo:
             int(self.architecture),
             f"unknown ({int(self.architecture)})",
         )
+
+
+@dataclass(frozen=True, slots=True)
+class InitialCheckNvmlGpuQuery:
+    rows: tuple[InitialCheckGpuInfo, ...]
+    error: str = ""
+    attempts: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,8 +123,29 @@ def run_auto_uv_initial_check(
 ) -> InitialCheckResult:
     issues: list[InitialCheckIssue] = []
     gpu = None
-    gpu_rows = _query_nvml_gpus()
+    gpu_query = _query_nvml_gpus()
+    if isinstance(gpu_query, InitialCheckNvmlGpuQuery):
+        gpu_rows = list(gpu_query.rows)
+        gpu_query_error = str(gpu_query.error or "")
+    else:
+        # Tests and older callers may monkeypatch _query_nvml_gpus to return
+        # the historical plain list.
+        gpu_rows = list(cast(Any, gpu_query))
+        gpu_query_error = ""
     if not gpu_rows:
+        if gpu_query_error:
+            issues.append(
+                InitialCheckIssue(
+                    "error",
+                    "nvml-gpu-list",
+                    "NVML GPU listing failed",
+                    "NVML could not list physical GPUs before Auto-UV start: "
+                    f"{gpu_query_error}",
+                    "Confirm the Nvidia driver is loaded and that the same "
+                    "root daemon/scan process can run NVML queries.",
+                )
+            )
+            return InitialCheckResult(None, tuple(issues))
         issues.append(
             InitialCheckIssue(
                 "error",
@@ -220,9 +248,10 @@ def require_auto_uv_initial_check(
     raise RuntimeError(message)
 
 
-def _query_nvml_gpus() -> list[InitialCheckGpuInfo]:
+def _query_nvml_gpus() -> InitialCheckNvmlGpuQuery:
     rows = []
-    for identity in query_nvml_gpu_identities():
+    result = query_nvml_gpu_identity_result(attempts=2, delay_s=0.05)
+    for identity in result.identities:
         rows.append(
             InitialCheckGpuInfo(
                 index=int(identity.index),
@@ -232,7 +261,11 @@ def _query_nvml_gpus() -> list[InitialCheckGpuInfo]:
                 uuid=identity.uuid,
             )
         )
-    return rows
+    return InitialCheckNvmlGpuQuery(
+        rows=tuple(rows),
+        error=str(result.error or ""),
+        attempts=int(result.attempts),
+    )
 
 
 def _select_gpu(rows: list[InitialCheckGpuInfo], gpu_index: int) -> InitialCheckGpuInfo | None:
@@ -279,11 +312,12 @@ def _query_nvml_architecture(
     nvml_library_factory: Callable[[], object] | None = None,
 ) -> tuple[int | None, InitialCheckIssue | None]:
     try:
-        nvml = (
+        nvml_source = (
             nvml_library_factory()
             if nvml_library_factory
             else ctypes.CDLL("libnvidia-ml.so.1")
         )
+        nvml = cast(Any, nvml_source)
     except OSError as exc:
         return None, InitialCheckIssue(
             "error",
@@ -500,7 +534,7 @@ def _validate_nvml_clock_lock(
     gpu_index: int,
     gpu_policy_factory: Callable[[int], object],
 ) -> list[InitialCheckIssue]:
-    controller = None
+    controller: Any | None = None
     try:
         controller = gpu_policy_factory(int(gpu_index))
         supported_steps = list(controller.get_supported_core_clock_steps_mhz())
@@ -561,7 +595,7 @@ def _reader_last_raw_microvolts(reader) -> int | None:
     if raw is None:
         return None
     try:
-        return int(raw)
+        return int(cast(Any, raw))
     except (TypeError, ValueError):
         return None
 

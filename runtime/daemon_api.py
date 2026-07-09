@@ -293,12 +293,52 @@ def probe_power_limit_support(gpu_index: object = None) -> dict[str, Any]:
             }
     controller = None
     try:
+        from drivers.nvidia.nvml_gpu_policy import (
+            fixed_power_limit_excluded_by_identity,
+            power_limit_setter_probe_risky,
+        )
+
         controller = _new_gpu_policy_controller(gpu)
+        query_gpu_name = getattr(controller, "query_gpu_name", None)
+        gpu_name = str(query_gpu_name() or "") if callable(query_gpu_name) else ""
+        query_pci_device_id = getattr(controller, "query_pci_device_id", None)
+        pci_device_id = (
+            str(query_pci_device_id() or "")
+            if callable(query_pci_device_id)
+            else ""
+        )
+        if fixed_power_limit_excluded_by_identity(
+            gpu_name=gpu_name,
+            pci_device_id=pci_device_id,
+        ):
+            return {
+                "gpu_index": gpu,
+                "gpu_name": gpu_name,
+                "pci_device_id": pci_device_id,
+                "supported": False,
+                "reason": "mobile-fixed-power-limit-skipped",
+                "power_limits": {},
+            }
         power_limits = controller.query_power_limits()
+        if power_limit_setter_probe_risky(
+            gpu_name=gpu_name,
+            pci_device_id=pci_device_id,
+            power_limits=power_limits,
+        ):
+            return {
+                "gpu_index": gpu,
+                "gpu_name": gpu_name,
+                "pci_device_id": pci_device_id,
+                "supported": False,
+                "reason": "mobile-or-low-tgp-power-limit-probe-skipped",
+                "power_limits": power_limits,
+            }
         current_w = _positive_power_limit_w(power_limits.get("power_limit_w"))
         if current_w is None:
             return {
                 "gpu_index": gpu,
+                "gpu_name": gpu_name,
+                "pci_device_id": pci_device_id,
                 "supported": False,
                 "reason": "current-power-limit-unavailable",
                 "power_limits": power_limits,
@@ -308,6 +348,8 @@ def probe_power_limit_support(gpu_index: object = None) -> dict[str, Any]:
         except Exception as exc:
             return {
                 "gpu_index": gpu,
+                "gpu_name": gpu_name,
+                "pci_device_id": pci_device_id,
                 "supported": False,
                 "reason": str(exc),
                 "probe_power_limit_w": int(current_w),
@@ -316,6 +358,8 @@ def probe_power_limit_support(gpu_index: object = None) -> dict[str, Any]:
         readback = controller.query_power_limits()
         return {
             "gpu_index": gpu,
+            "gpu_name": gpu_name,
+            "pci_device_id": pci_device_id,
             "supported": True,
             "probe_power_limit_w": int(applied_w),
             "power_limits": readback,

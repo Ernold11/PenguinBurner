@@ -6,6 +6,7 @@ from pathlib import Path
 
 from common.penguin_burner_paths import claim_desktop_user_ownership
 from drivers.nvidia.nvml_gpu_policy import apply_translated_gpu_policy
+from drivers.nvidia.nvml_gpu_policy import fixed_power_limit_excluded_by_identity
 
 
 def apply_plan(reader, plan: list[dict]) -> None:
@@ -50,7 +51,11 @@ def backup_current_offsets(reader, backup_path, policy_controller=None):
         ],
     }
     if policy_controller is not None:
-        power_limits = policy_controller.query_power_limits()
+        power_limits = (
+            {}
+            if _fixed_power_limit_excluded(policy_controller)
+            else policy_controller.query_power_limits()
+        )
         clock_offsets = policy_controller.get_clock_offsets()
         payload["gpu_policy"] = {
             "power_limit_w": power_limits.get("power_limit_w"),
@@ -70,5 +75,28 @@ def restore_offsets(reader, backup_path, policy_controller=None):
     payload = load_offsets_payload(backup_path)
     gpu_policy = payload.get("gpu_policy")
     if policy_controller is not None and isinstance(gpu_policy, dict):
+        if _fixed_power_limit_excluded(policy_controller):
+            gpu_policy = dict(gpu_policy)
+            gpu_policy.pop("power_limit_w", None)
+            gpu_policy.pop("power_limit_default_w", None)
+            gpu_policy.pop("power_limit_min_w", None)
+            gpu_policy.pop("power_limit_max_w", None)
         apply_translated_gpu_policy(policy_controller, gpu_policy)
     return apply_offsets_payload(reader, payload)
+
+
+def _fixed_power_limit_excluded(policy_controller) -> bool:
+    query_gpu_name = getattr(policy_controller, "query_gpu_name", None)
+    query_pci_device_id = getattr(policy_controller, "query_pci_device_id", None)
+    try:
+        gpu_name = query_gpu_name() if callable(query_gpu_name) else None
+    except Exception:
+        gpu_name = None
+    try:
+        pci_device_id = query_pci_device_id() if callable(query_pci_device_id) else None
+    except Exception:
+        pci_device_id = None
+    return fixed_power_limit_excluded_by_identity(
+        gpu_name=gpu_name,
+        pci_device_id=pci_device_id,
+    )

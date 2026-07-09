@@ -147,6 +147,55 @@ def test_configure_runtime_vf_curve_policy_applies_auto_uv_profile_power_limit()
     assert any("Applied auto-UV profile power limit: 360W" in m for m in logs)
 
 
+def test_configure_runtime_vf_curve_policy_stock_skips_mobile_power_limit():
+    logs = []
+    calls = []
+
+    class FakePolicyController:
+        def query_gpu_name(self):
+            return "NVIDIA GeForce RTX 5060"
+
+        def query_pci_device_id(self):
+            return "0x2D1910DE"
+
+        def reset_locked_core_clocks(self):
+            calls.append("reset-core")
+
+        def reset_locked_memory_clocks(self):
+            calls.append("reset-memory")
+
+        def apply_clock_offsets(self, **kwargs):
+            calls.append(("offsets", kwargs))
+
+        def query_power_limits(self):
+            raise AssertionError("mobile fixed power-limit getters must not run")
+
+        def apply_power_limit_w(self, _watts):
+            raise AssertionError("mobile fixed power-limit setter must not run")
+
+    deps = RuntimeVfCurvePolicyDependencies(
+        apply_gpu_base_policy=lambda **_kwargs: None,
+        log=logs.append,
+    )
+
+    result = configure_runtime_vf_curve_policy(
+        gpu_index=0,
+        enable_persistence_mode=True,
+        auto_uv_profile_selector="__stock__",
+        vf_curve_reader=None,
+        gpu_policy_controller=FakePolicyController(),
+        dependencies=deps,
+    )
+
+    assert result.active_vf_curve_source == "stock"
+    assert "reset-core" in calls
+    assert "reset-memory" in calls
+    assert any(
+        "keep-stock: fixed power-limit reset skipped on mobile GPU" in message
+        for message in logs
+    )
+
+
 def test_configure_runtime_vf_curve_policy_skips_curve_when_no_auto_uv_profile():
     logs = []
     base_policy_calls = []

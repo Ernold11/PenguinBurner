@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 from dataclasses import dataclass
+import time
 
 
 NVML_SUCCESS = 0
@@ -52,6 +53,13 @@ class NvmlGpuMemoryInfo:
     used_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class NvmlGpuIdentityQueryResult:
+    identities: tuple[NvmlGpuIdentity, ...]
+    error: str = ""
+    attempts: int = 1
+
+
 class NvmlIdentitySession:
     def __init__(self, *, nvml_library=None):
         self._nvml = (
@@ -70,6 +78,9 @@ class NvmlIdentitySession:
 
         self._nvml.nvmlInit_v2.restype = ctypes.c_int
         self._nvml.nvmlShutdown.restype = ctypes.c_int
+        if hasattr(self._nvml, "nvmlErrorString"):
+            self._nvml.nvmlErrorString.argtypes = [ctypes.c_int]
+            self._nvml.nvmlErrorString.restype = ctypes.c_char_p
         self._nvml.nvmlDeviceGetHandleByIndex_v2.argtypes = [
             c_uint,
             ctypes.POINTER(c_void_p),
@@ -106,7 +117,9 @@ class NvmlIdentitySession:
     def _initialize_session(self) -> None:
         rc = int(self._nvml.nvmlInit_v2())
         if rc != NVML_SUCCESS:
-            raise RuntimeError(f"nvmlInit_v2 failed with NVML error {rc}")
+            raise RuntimeError(
+                f"nvmlInit_v2 failed with NVML error {rc}: {self._error_text(rc)}"
+            )
         self._initialized = True
 
     def close(self) -> None:
@@ -123,7 +136,10 @@ class NvmlIdentitySession:
         count = ctypes.c_uint()
         rc = int(getter(ctypes.byref(count)))
         if rc != NVML_SUCCESS:
-            raise RuntimeError(f"NVML device count query failed with error {rc}")
+            raise RuntimeError(
+                "NVML device count query failed with "
+                f"error {rc}: {self._error_text(rc)}"
+            )
         return int(count.value)
 
     def identity(self, gpu_index: int) -> NvmlGpuIdentity:
@@ -178,9 +194,17 @@ class NvmlIdentitySession:
         )
         if rc != NVML_SUCCESS:
             raise RuntimeError(
-                f"nvmlDeviceGetHandleByIndex_v2 failed with NVML error {rc}"
+                "nvmlDeviceGetHandleByIndex_v2 failed with "
+                f"NVML error {rc}: {self._error_text(rc)}"
             )
         return device
+
+    def _error_text(self, rc: int) -> str:
+        if hasattr(self._nvml, "nvmlErrorString"):
+            text = self._nvml.nvmlErrorString(int(rc))
+            if text:
+                return text.decode(errors="replace")
+        return f"error={int(rc)}"
 
     def _read_string(self, device, getter_name: str, size: int) -> str:
         getter = getattr(self._nvml, getter_name, None)
@@ -237,16 +261,44 @@ def query_nvml_gpu_identity(gpu_index: int) -> NvmlGpuIdentity | None:
 
 
 def query_nvml_gpu_identities() -> list[NvmlGpuIdentity]:
-    try:
-        session = NvmlIdentitySession()
-    except Exception:
-        return []
-    try:
-        return session.identities()
-    except Exception:
-        return []
-    finally:
-        session.close()
+    return list(query_nvml_gpu_identity_result().identities)
+
+
+def query_nvml_gpu_identity_result(
+    *,
+    attempts: int = 2,
+    delay_s: float = 0.05,
+    nvml_library_factory=None,
+) -> NvmlGpuIdentityQueryResult:
+    total_attempts = max(1, int(attempts))
+    last_error = ""
+    for attempt in range(1, total_attempts + 1):
+        session = None
+        try:
+            session = NvmlIdentitySession(
+                nvml_library=(
+                    nvml_library_factory() if nvml_library_factory else None
+                )
+            )
+            return NvmlGpuIdentityQueryResult(
+                identities=tuple(session.identities()),
+                attempts=attempt,
+            )
+        except Exception as exc:
+            last_error = str(exc) or type(exc).__name__
+        finally:
+            if session is not None:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+        if attempt < total_attempts and delay_s > 0:
+            time.sleep(float(delay_s))
+    return NvmlGpuIdentityQueryResult(
+        identities=(),
+        error=last_error,
+        attempts=total_attempts,
+    )
 
 
 def query_nvml_gpu_memory_info(gpu_index: int) -> NvmlGpuMemoryInfo | None:

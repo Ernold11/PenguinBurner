@@ -277,10 +277,10 @@ def test_daemon_probe_power_limit_support_writes_current_limit(monkeypatch) -> N
 
         def query_power_limits(self):
             return {
-                "power_limit_w": 43,
-                "power_limit_default_w": 61,
-                "power_limit_min_w": 35,
-                "power_limit_max_w": 80,
+                "power_limit_w": 360,
+                "power_limit_default_w": 360,
+                "power_limit_min_w": 300,
+                "power_limit_max_w": 390,
             }
 
         def apply_power_limit_w(self, power_limit_w):
@@ -302,9 +302,9 @@ def test_daemon_probe_power_limit_support_writes_current_limit(monkeypatch) -> N
 
     assert result["supported"] is True
     assert result["gpu_index"] == 2
-    assert result["probe_power_limit_w"] == 43
-    assert result["power_limits"]["power_limit_default_w"] == 61
-    assert controllers[0].calls == [43]
+    assert result["probe_power_limit_w"] == 360
+    assert result["power_limits"]["power_limit_default_w"] == 360
+    assert controllers[0].calls == [360]
     assert controllers[0].closed is True
 
 
@@ -314,10 +314,10 @@ def test_daemon_probe_power_limit_support_reports_setter_rejection(
     class FakeController:
         def query_power_limits(self):
             return {
-                "power_limit_w": 43,
-                "power_limit_default_w": 61,
-                "power_limit_min_w": 35,
-                "power_limit_max_w": 80,
+                "power_limit_w": 360,
+                "power_limit_default_w": 360,
+                "power_limit_min_w": 300,
+                "power_limit_max_w": 390,
             }
 
         def apply_power_limit_w(self, power_limit_w):
@@ -340,9 +340,58 @@ def test_daemon_probe_power_limit_support_reports_setter_rejection(
     )
 
     assert result["supported"] is False
-    assert result["probe_power_limit_w"] == 43
+    assert result["probe_power_limit_w"] == 360
     assert "Not Supported" in result["reason"]
-    assert result["power_limits"]["power_limit_min_w"] == 35
+    assert result["power_limits"]["power_limit_min_w"] == 300
+
+
+def test_daemon_probe_power_limit_support_skips_mobile_setter_probe(
+    monkeypatch,
+) -> None:
+    controllers = []
+
+    class FakeController:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+            self.closed = False
+            controllers.append(self)
+
+        def query_gpu_name(self):
+            return "NVIDIA GeForce RTX 5060"
+
+        def query_pci_device_id(self):
+            return "0x2D1910DE"
+
+        def query_power_limits(self):
+            raise AssertionError("mobile power-limit getters must not run")
+
+        def apply_power_limit_w(self, power_limit_w):
+            self.calls.append(int(power_limit_w))
+            raise AssertionError("mobile setter probe must not run")
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(
+        daemon_api,
+        "_new_gpu_policy_controller",
+        lambda _gpu_index: FakeController(),
+    )
+
+    result = daemon_api.handle_request(
+        {"method": "probe_power_limit_support", "gpu_index": 0}
+    )
+
+    assert result == {
+        "gpu_index": 0,
+        "gpu_name": "NVIDIA GeForce RTX 5060",
+        "pci_device_id": "0x2D1910DE",
+        "supported": False,
+        "reason": "mobile-fixed-power-limit-skipped",
+        "power_limits": {},
+    }
+    assert controllers[0].calls == []
+    assert controllers[0].closed is True
 
 
 def test_daemon_probe_power_limit_support_rejects_invalid_gpu_index() -> None:

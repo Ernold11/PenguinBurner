@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable, cast
 
+from drivers.nvidia.nvml_gpu_policy import fixed_power_limit_excluded_by_identity
 from runtime.support.runtime_debug import log as runtime_log
 from runtime.support.vf_curve_plan import apply_plan
 from runtime.support.nvidia_runtime_defaults import build_runtime_default_plan
@@ -135,14 +136,17 @@ def _reset_gpu_to_stock(*, vf_curve_reader, gpu_policy_controller, deps) -> None
             )
         except Exception as exc:
             deps.log(f"keep-stock: VF offset reset skipped: {exc}")
-        try:
-            default_w = gpu_policy_controller.query_power_limits().get(
-                "power_limit_default_w"
-            )
-            if default_w:
-                gpu_policy_controller.apply_power_limit_w(int(default_w))
-        except Exception as exc:
-            deps.log(f"keep-stock: power-limit reset skipped: {exc}")
+        if _fixed_power_limit_excluded(gpu_policy_controller):
+            deps.log("keep-stock: fixed power-limit reset skipped on mobile GPU")
+        else:
+            try:
+                default_w = gpu_policy_controller.query_power_limits().get(
+                    "power_limit_default_w"
+                )
+                if default_w:
+                    gpu_policy_controller.apply_power_limit_w(int(default_w))
+            except Exception as exc:
+                deps.log(f"keep-stock: power-limit reset skipped: {exc}")
     if vf_curve_reader is not None:
         try:
             if hasattr(vf_curve_reader, "refresh_points"):
@@ -151,6 +155,23 @@ def _reset_gpu_to_stock(*, vf_curve_reader, gpu_policy_controller, deps) -> None
         except Exception as exc:
             deps.log(f"keep-stock: V/F curve reset skipped: {exc}")
     deps.log("keep-stock: GPU reset to factory V/F; no undervolt applied")
+
+
+def _fixed_power_limit_excluded(gpu_policy_controller) -> bool:
+    query_gpu_name = getattr(gpu_policy_controller, "query_gpu_name", None)
+    query_pci_device_id = getattr(gpu_policy_controller, "query_pci_device_id", None)
+    try:
+        gpu_name = query_gpu_name() if callable(query_gpu_name) else None
+    except Exception:
+        gpu_name = None
+    try:
+        pci_device_id = query_pci_device_id() if callable(query_pci_device_id) else None
+    except Exception:
+        pci_device_id = None
+    return fixed_power_limit_excluded_by_identity(
+        gpu_name=gpu_name,
+        pci_device_id=pci_device_id,
+    )
 
 
 def _apply_auto_uv_final_curve(
@@ -246,12 +267,13 @@ def _apply_clock_ceiling(
                 policy_controller=gpu_policy_controller,
             )
         )
-        result.clock_ceiling_controller.apply()
+        clock_ceiling_controller = cast(Any, result.clock_ceiling_controller)
+        clock_ceiling_controller.apply()
     except Exception as exc:
         result.clock_ceiling_controller = None
         deps.log(f"Skipping {label_prefix} clock ceiling: {context} error={exc}")
     else:
         deps.log(
             f"Configured {label_prefix} clock ceiling: "
-            f"{result.clock_ceiling_controller.describe()}."
+            f"{clock_ceiling_controller.describe()}."
         )

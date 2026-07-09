@@ -277,7 +277,7 @@ def test_auto_uv_nvml_info_text_is_compact_and_tuning_relevant() -> None:
     assert "Supported memory clocks: 810, 5001, 10501 MHz" in text
     assert "Supported core range: 210-3015 MHz (3 steps)" in text
     assert "Power management: enabled" in text
-    assert "Power limit writes: supported" in text
+    assert "Fixed power-limit writes: supported" in text
     assert "RTX" not in text
     assert "PCI" not in text
     assert "thermal" not in text.lower()
@@ -320,6 +320,81 @@ def test_power_limit_set_supported_returns_false_when_daemon_probe_fails(
     monkeypatch.setattr(daemon_client, "probe_power_limit_support", fail_probe)
 
     assert tuning.power_limit_set_supported(0) is False
+
+
+def test_read_auto_uv_nvml_info_skips_setter_probe_without_power_limits(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "drivers.nvidia.nvml_power.NvmlPowerSession",
+        lambda _gpu_index: (_ for _ in ()).throw(RuntimeError("nvml down")),
+    )
+    monkeypatch.setattr(
+        "drivers.nvidia.nvml_clock.NvmlClockSession",
+        lambda _gpu_index: (_ for _ in ()).throw(RuntimeError("clock down")),
+    )
+    monkeypatch.setattr(
+        tuning,
+        "power_limit_set_supported",
+        lambda _gpu_index: (_ for _ in ()).throw(
+            AssertionError("setter probe should not run")
+        ),
+    )
+
+    info = tuning.read_auto_uv_nvml_info(0)
+
+    assert info.power_limit_set_supported is None
+    assert info.power_limit_min_w is None
+    assert info.power_limit_max_w is None
+
+
+def test_read_auto_uv_nvml_info_skips_mobile_power_limit_getters(
+    monkeypatch,
+) -> None:
+    class FakePowerSession:
+        def __init__(self, _gpu_index):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return None
+
+        def power_draw_w(self):
+            return 42.0
+
+        def telemetry(self):
+            raise AssertionError("mobile fixed power-limit telemetry must not run")
+
+    monkeypatch.setattr(
+        "drivers.nvidia.nvml_identity.query_nvml_gpu_identity",
+        lambda _gpu_index: SimpleNamespace(
+            name="NVIDIA GeForce RTX 5060",
+            pci_device_id="0x2D1910DE",
+        ),
+    )
+    monkeypatch.setattr("drivers.nvidia.nvml_power.NvmlPowerSession", FakePowerSession)
+    monkeypatch.setattr(
+        "drivers.nvidia.nvml_clock.NvmlClockSession",
+        lambda _gpu_index: (_ for _ in ()).throw(RuntimeError("clock down")),
+    )
+    monkeypatch.setattr(
+        tuning,
+        "power_limit_set_supported",
+        lambda _gpu_index: (_ for _ in ()).throw(
+            AssertionError("mobile setter probe must not run")
+        ),
+    )
+
+    info = tuning.read_auto_uv_nvml_info(0)
+
+    assert info.power_draw_w == 42.0
+    assert info.power_limit_set_supported is False
+    assert info.power_limit_w is None
+    assert info.power_limit_default_w is None
+    assert info.power_limit_min_w is None
+    assert info.power_limit_max_w is None
 
 
 class _FakeController:

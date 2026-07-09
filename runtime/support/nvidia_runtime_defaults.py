@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable, cast
 
 from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
 from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
+from drivers.nvidia.nvml_gpu_policy import fixed_power_limit_excluded_by_identity
+from drivers.nvidia.nvml_gpu_policy import power_limit_setter_probe_risky
 from runtime.support.vf_curve_plan import apply_plan
 
 
@@ -77,8 +79,6 @@ def reset_nvidia_runtime_defaults(
                 f"GPU policy helper unavailable: {exc}"
             ) from exc
 
-        power_limits = policy_controller.query_power_limits()
-        default_power_limit_w = power_limits.get("power_limit_default_w")
         try:
             gpu_name = policy_controller.query_gpu_name()
             if gpu_name:
@@ -86,6 +86,27 @@ def reset_nvidia_runtime_defaults(
         except Exception as exc:
             gpu_name = None
             log(f"Reset defaults: GPU name read skipped: {exc}")
+        try:
+            pci_device_id = policy_controller.query_pci_device_id()
+        except Exception as exc:
+            pci_device_id = None
+            log(f"Reset defaults: PCI device ID read skipped: {exc}")
+
+        fixed_power_limit_excluded = fixed_power_limit_excluded_by_identity(
+            gpu_name=gpu_name,
+            pci_device_id=pci_device_id,
+        )
+        power_limits = {}
+        default_power_limit_w = None
+        effective_power_limit_w = None
+        if fixed_power_limit_excluded:
+            log("Reset defaults: fixed power-limit reset skipped on mobile GPU")
+        else:
+            power_limits = policy_controller.query_power_limits()
+            default_power_limit_w = power_limits.get("power_limit_default_w")
+            effective_power_limit_w = _positive_power_limit_w(
+                power_limits.get("power_limit_w")
+            )
 
         try:
             before_offsets = policy_controller.get_clock_offsets()
@@ -159,35 +180,59 @@ def reset_nvidia_runtime_defaults(
             f"matched={len(plan)} changed={changed_points}"
         )
 
-        target_power_limit_w = (
-            int(default_power_limit_w) if default_power_limit_w is not None else None
-        )
+        target_power_limit_w = _positive_power_limit_w(default_power_limit_w)
         if target_power_limit_w is not None:
-            try:
-                policy_controller.apply_power_limit_w(target_power_limit_w)
-                if default_power_limit_w is not None and int(
-                    target_power_limit_w
-                ) == int(default_power_limit_w):
-                    log(
-                        "Reset defaults: restored power limit "
-                        f"to default {int(target_power_limit_w)}W"
+            if power_limit_setter_probe_risky(
+                gpu_name=gpu_name,
+                pci_device_id=pci_device_id,
+                power_limits=power_limits,
+            ):
+                log(
+                    "Reset defaults: power-limit reset skipped on "
+                    "mobile/low-TGP GPU"
+                )
+            else:
+                try:
+                    applied_power_limit_w = policy_controller.apply_power_limit_w(
+                        target_power_limit_w
                     )
-                else:
-                    log(
-                        "Reset defaults: applied power limit "
-                        f"{int(target_power_limit_w)}W"
-                    )
-            except Exception as exc:
-                log(f"Reset defaults: power-limit reset skipped: {exc}")
+                    effective_power_limit_w = _positive_power_limit_w(
+                        applied_power_limit_w
+                    ) or target_power_limit_w
+                    if default_power_limit_w is not None and int(
+                        target_power_limit_w
+                    ) == int(default_power_limit_w):
+                        log(
+                            "Reset defaults: restored power limit "
+                            f"to default {int(target_power_limit_w)}W"
+                        )
+                    else:
+                        log(
+                            "Reset defaults: applied power limit "
+                            f"{int(target_power_limit_w)}W"
+                        )
+                except Exception as exc:
+                    log(f"Reset defaults: power-limit reset skipped: {exc}")
 
         return {
             "plan": plan,
             "gpu_name": gpu_name,
+            "pci_device_id": pci_device_id,
             "power_limits": power_limits,
-            "power_limit_w": target_power_limit_w,
+            "power_limit_w": effective_power_limit_w,
             "source": "runtime-defaults",
         }
     finally:
         reader.close()
         if policy_controller is not None:
             policy_controller.close()
+
+
+def _positive_power_limit_w(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        power_limit_w = int(round(float(cast(Any, value))))
+    except (TypeError, ValueError):
+        return None
+    return power_limit_w if power_limit_w > 0 else None

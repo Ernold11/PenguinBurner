@@ -13,6 +13,7 @@ from drivers.nvidia.nvml_gpu_policy import (
     driver_memory_offset_limit_mhz,
 )
 from common.penguin_burner_errors import NvmlError
+from drivers.nvidia.nvml_gpu_policy import fixed_power_limit_excluded_by_identity
 
 from .profile_tiers import profile_tier_summary_fields
 from .profile_store import STOCK_PROFILE_SELECTOR, resolve_auto_uv_profile
@@ -166,6 +167,8 @@ def apply_auto_uv_profile_power_limit(
             f"{int(power_limit)} W for {profile_label}: "
             "Linux GPU policy helper is unavailable"
         )
+    if _fixed_power_limit_excluded(gpu_policy_controller):
+        return {}
     try:
         gpu_policy_controller.apply_power_limit_w(int(power_limit))
     except Exception as exc:
@@ -175,6 +178,23 @@ def apply_auto_uv_profile_power_limit(
             f"driver rejected nvmlDeviceSetPowerManagementLimit: {exc}"
         ) from exc
     return {"power_limit_w": int(power_limit)}
+
+
+def _fixed_power_limit_excluded(gpu_policy_controller) -> bool:
+    query_gpu_name = getattr(gpu_policy_controller, "query_gpu_name", None)
+    query_pci_device_id = getattr(gpu_policy_controller, "query_pci_device_id", None)
+    try:
+        gpu_name = query_gpu_name() if callable(query_gpu_name) else None
+    except Exception:
+        gpu_name = None
+    try:
+        pci_device_id = query_pci_device_id() if callable(query_pci_device_id) else None
+    except Exception:
+        pci_device_id = None
+    return fixed_power_limit_excluded_by_identity(
+        gpu_name=gpu_name,
+        pci_device_id=pci_device_id,
+    )
 
 
 def apply_auto_uv_profile_memory_offset(

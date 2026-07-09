@@ -161,6 +161,158 @@ def test_open_live_gpu_applier_defers_reduced_auto_uv_power_limit_until_final(
     assert logs[-1] == "Auto-UV power limit: applied 319W for final verification"
 
 
+def test_open_live_gpu_applier_skips_mobile_power_limit_write(monkeypatch) -> None:
+    logs: list[str] = []
+    controllers: list[FakePolicyController] = []
+
+    class FakeReader:
+        def refresh_points(self) -> None:
+            return None
+
+    class FakePolicyController:
+        def __init__(self, *, gpu_index: int) -> None:
+            self.gpu_index = int(gpu_index)
+            self.power_limit_calls: list[int] = []
+            controllers.append(self)
+
+        def apply_power_limit_w(self, power_limit_w):
+            self.power_limit_calls.append(int(power_limit_w))
+            raise AssertionError("mobile Auto-UV must not write the power limit")
+
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "create_hidden_vf_curve_reader",
+        lambda gpu_index: FakeReader(),
+    )
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "reset_nvidia_runtime_defaults",
+        lambda **_kwargs: {
+            "plan": [{"index": 0, "voltage_mv": 900, "target_mhz": 2500}],
+            "gpu_name": "NVIDIA GeForce RTX 5060 Laptop GPU",
+            "power_limit_w": 43,
+            "power_limits": {
+                "power_limit_w": 43,
+                "power_limit_default_w": 61,
+                "power_limit_min_w": 35,
+                "power_limit_max_w": 80,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "NvmlGpuPolicyController",
+        FakePolicyController,
+    )
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "LiveNvmlVoltageReader",
+        lambda gpu_index: SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(gpu_vf_curve_applier, "apply_plan", lambda *_args: None)
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "assert_zero_runtime_vf_offsets",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "auto_uv_memory_offset_mhz",
+        lambda *_args, **_kwargs: (None, None),
+    )
+
+    applier = gpu_vf_curve_applier.open_live_gpu_vf_curve_applier(
+        gpu_index=0,
+        runtime_options={"auto_uv_power_limit_w": 43},
+        log=logs.append,
+    )
+
+    assert controllers[0].power_limit_calls == []
+    assert applier.power_limit_w is None
+    assert applier.baseline_power_limit_w == 43
+    assert applier.requested_power_limit_w is None
+    assert "power_limit_w" not in applier.translated_gpu_policy
+    assert logs == [
+        "Auto-UV power limit: skipped requested power-limit write on "
+        "mobile/low-TGP GPU; continuing without saved power limit"
+    ]
+
+
+def test_open_live_gpu_applier_skips_mobile_power_limit_write_by_pci_id(
+    monkeypatch,
+) -> None:
+    logs: list[str] = []
+    controllers: list[FakePolicyController] = []
+
+    class FakeReader:
+        def refresh_points(self) -> None:
+            return None
+
+    class FakePolicyController:
+        def __init__(self, *, gpu_index: int) -> None:
+            self.gpu_index = int(gpu_index)
+            self.power_limit_calls: list[int] = []
+            controllers.append(self)
+
+        def apply_power_limit_w(self, power_limit_w):
+            self.power_limit_calls.append(int(power_limit_w))
+            raise AssertionError("mobile Auto-UV must not write the power limit")
+
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "create_hidden_vf_curve_reader",
+        lambda gpu_index: FakeReader(),
+    )
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "reset_nvidia_runtime_defaults",
+        lambda **_kwargs: {
+            "plan": [{"index": 0, "voltage_mv": 900, "target_mhz": 2500}],
+            "gpu_name": "NVIDIA GeForce RTX 5060",
+            "pci_device_id": "0x2D1910DE",
+            "power_limit_w": None,
+            "power_limits": {},
+        },
+    )
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "NvmlGpuPolicyController",
+        FakePolicyController,
+    )
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "LiveNvmlVoltageReader",
+        lambda gpu_index: SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(gpu_vf_curve_applier, "apply_plan", lambda *_args: None)
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "assert_zero_runtime_vf_offsets",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "auto_uv_memory_offset_mhz",
+        lambda *_args, **_kwargs: (None, None),
+    )
+
+    applier = gpu_vf_curve_applier.open_live_gpu_vf_curve_applier(
+        gpu_index=0,
+        runtime_options={"auto_uv_power_limit_w": 43},
+        log=logs.append,
+    )
+
+    assert controllers[0].power_limit_calls == []
+    assert applier.power_limit_w is None
+    assert applier.requested_power_limit_w is None
+    assert applier.translated_gpu_policy["pci_device_id"] == "0x2D1910DE"
+    assert "power_limit_w" not in applier.translated_gpu_policy
+    assert logs == [
+        "Auto-UV power limit: skipped requested power-limit write on "
+        "mobile/low-TGP GPU; continuing without saved power limit"
+    ]
+
+
 def test_open_live_gpu_applier_continues_when_raised_power_limit_is_rejected(
     monkeypatch,
 ) -> None:
@@ -275,6 +427,45 @@ def test_final_power_limit_rejection_is_not_fatal_and_not_saved() -> None:
         "continuing without saved power limit: "
         "nvmlDeviceSetPowerManagementLimit failed with NVML error 3: "
         "Not Supported"
+    ]
+
+
+def test_final_power_limit_write_is_skipped_on_mobile_gpu() -> None:
+    logs: list[str] = []
+
+    class FakePolicyController:
+        def __init__(self) -> None:
+            self.power_limit_calls: list[int] = []
+
+        def apply_power_limit_w(self, power_limit_w):
+            self.power_limit_calls.append(int(power_limit_w))
+            raise AssertionError("mobile final power-limit write must not run")
+
+    policy_controller = FakePolicyController()
+    applier = gpu_vf_curve_applier.LiveGpuVfCurveApplier(
+        gpu_index=0,
+        reader=object(),
+        policy_controller=cast(Any, policy_controller),
+        live_voltage_reader=cast(Any, SimpleNamespace(close=lambda: None)),
+        runtime_default_plan=[],
+        translated_gpu_policy={
+            "gpu_name": "NVIDIA GeForce RTX 5060 Laptop GPU",
+            "pci_device_id": "0x2D1910DE",
+            "power_limit_w": 43,
+        },
+        baseline_power_limit_w=43,
+        requested_power_limit_w=35,
+    )
+
+    assert applier.apply_requested_power_limit(log=logs.append) is None
+
+    assert policy_controller.power_limit_calls == []
+    assert applier.power_limit_w is None
+    assert applier.requested_power_limit_w is None
+    assert "power_limit_w" not in applier.translated_gpu_policy
+    assert logs == [
+        "Auto-UV power limit: skipped final power-limit write on "
+        "mobile/low-TGP GPU; continuing without saved power limit"
     ]
 
 

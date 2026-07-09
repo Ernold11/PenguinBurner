@@ -361,9 +361,10 @@ def select_scan_tuning(
         text="Power limit",
         widget=power_limit_widget,
         tooltip=(
-            "Power limit in watts applied during this Auto-UV scan and saved "
-            "with the final profile. The range comes from NVML for the selected "
-            "GPU; the default position is the card's NVML default limit."
+            "Fixed manual power limit in watts, applied during this Auto-UV "
+            "scan and saved with the final profile only when the NVML setter "
+            "is confirmed usable. Laptops may expose read-only NVML limits "
+            "while using Dynamic Boost instead of manual caps."
         ),
     )
     advanced_layout.addWidget(preset_advanced_stack)

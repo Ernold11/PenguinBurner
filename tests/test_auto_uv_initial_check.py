@@ -142,6 +142,35 @@ def test_initial_check_passes_when_driver_and_capability_probes_are_sane(monkeyp
     assert result.gpu.driver_version == "595.58.03"
 
 
+def test_initial_check_reports_nvml_listing_error_instead_of_missing_gpu(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        initial_check,
+        "_query_nvml_gpus",
+        lambda: initial_check.InitialCheckNvmlGpuQuery(
+            rows=(),
+            error="nvmlInit_v2 failed with NVML error 9: Driver Not Loaded",
+            attempts=2,
+        ),
+    )
+
+    def fail_if_called(gpu_index):
+        raise AssertionError("capability probes should not run without a GPU row")
+
+    result = initial_check.run_auto_uv_initial_check(
+        vf_reader_factory=fail_if_called,
+        gpu_policy_factory=lambda gpu_index: fail_if_called(gpu_index),
+    )
+
+    ids = _issue_ids(result)
+    assert "nvml-gpu-list" in ids
+    assert "nvidia-gpu-missing" not in ids
+    message = result.format_for_user()
+    assert "NVML GPU listing failed" in message
+    assert "Driver Not Loaded" in message
+
+
 def test_initial_check_rejects_old_driver_even_when_capability_probes_pass(monkeypatch):
     _patch_probe_dependencies(monkeypatch, driver_version="575.64.03")
 

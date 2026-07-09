@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ctypes
+from typing import Any, cast
 
+from drivers.nvidia.nvml_identity import NvmlPciInfo
 from integrations.afterburner.policy import (
     MAX_AFTERBURNER_MEM_OFFSET_MHZ,
     afterburner_offset_khz_to_mhz,
@@ -16,6 +18,35 @@ from integrations.afterburner.policy import (
 
 NVML_SUCCESS = 0
 NVML_FEATURE_ENABLED = 1
+FIXED_POWER_LIMIT_MOBILE_NAME_TOKENS = (
+    "laptop",
+    "mobile",
+    "notebook",
+    "max-q",
+    "max q",
+)
+FIXED_POWER_LIMIT_MOBILE_PCI_DEVICE_IDS = frozenset(
+    {
+        # Blackwell notebook IDs from NVIDIA supported-chip tables.
+        "2BB4",
+        "2C18",
+        "2C19",
+        "2C38",
+        "2C39",
+        "2C58",
+        "2C59",
+        "2D18",
+        "2D19",
+        "2D39",
+        "2D58",
+        "2D59",
+        "2DB8",
+        "2DB9",
+        "2F18",
+        "2F38",
+        "2F58",
+    }
+)
 
 __all__ = [
     "MAX_AFTERBURNER_MEM_OFFSET_MHZ",
@@ -26,6 +57,8 @@ __all__ = [
     "clamp_afterburner_mem_offset_mhz",
     "describe_translated_gpu_policy",
     "driver_memory_offset_limit_mhz",
+    "fixed_power_limit_excluded_by_identity",
+    "power_limit_setter_probe_risky",
     "translate_afterburner_gpu_policy",
     "translate_afterburner_power_limit_pct",
 ]
@@ -49,6 +82,86 @@ def driver_memory_offset_limit_mhz(policy_controller=None) -> int:
             except (TypeError, ValueError):
                 pass
     return MAX_AFTERBURNER_MEM_OFFSET_MHZ
+
+
+def power_limit_setter_probe_risky(
+    *,
+    gpu_name: object | None = None,
+    pci_device_id: object | None = None,
+    power_limits: dict | None = None,
+) -> bool:
+    """Avoid fixed power-limit writes on mobile/low-TGP GPUs.
+
+    Some Nvidia notebook drivers expose readable power-limit fields or
+    constraints while rejecting the fixed manual setter. On those systems
+    nvidia-powerd/Dynamic Boost can be the supported power-budget path instead
+    of a stable nvidia-smi -pl style cap. A no-op setter call is only a
+    capability probe, not required for Auto-UV itself, so prefer disabling the
+    fixed power-limit control over poking that setter on hardware that looks
+    mobile or notebook-class.
+    """
+
+    if fixed_power_limit_excluded_by_identity(
+        gpu_name=gpu_name,
+        pci_device_id=pci_device_id,
+    ):
+        return True
+    limits = power_limits if isinstance(power_limits, dict) else {}
+    default_w = _positive_power_limit_w(limits.get("power_limit_default_w"))
+    max_w = _positive_power_limit_w(limits.get("power_limit_max_w"))
+    current_w = _positive_power_limit_w(limits.get("power_limit_w"))
+    reference_w = default_w or current_w
+    return reference_w is not None and reference_w <= 100 and (
+        max_w is None or max_w <= 150
+    )
+
+
+def fixed_power_limit_excluded_by_identity(
+    *,
+    gpu_name: object | None = None,
+    pci_device_id: object | None = None,
+) -> bool:
+    name = str(gpu_name or "").lower()
+    if any(token in name for token in FIXED_POWER_LIMIT_MOBILE_NAME_TOKENS):
+        return True
+    return _normalize_pci_device_id(pci_device_id) in (
+        FIXED_POWER_LIMIT_MOBILE_PCI_DEVICE_IDS
+    )
+
+
+def _normalize_pci_device_id(value: object | None) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    text = (
+        text.replace("0X", "")
+        .replace(":", " ")
+        .replace("-", " ")
+        .replace("_", " ")
+    )
+    parts = [
+        "".join(ch for ch in part if ch in "0123456789ABCDEF")
+        for part in text.split()
+    ]
+    parts = [part for part in parts if part]
+    if len(parts) >= 2 and parts[0] == "10DE":
+        return parts[1][-4:].zfill(4)
+    token = parts[0] if parts else ""
+    if len(token) >= 8 and token.endswith("10DE"):
+        return token[:4]
+    if len(token) >= 8 and token.startswith("10DE"):
+        return token[4:8]
+    return token[-4:].zfill(4) if token else ""
+
+
+def _positive_power_limit_w(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        watts = int(round(float(cast(Any, value))))
+    except (TypeError, ValueError):
+        return None
+    return watts if watts > 0 else None
 
 
 class NvmlGpuPolicyController:
@@ -79,6 +192,11 @@ class NvmlGpuPolicyController:
                 c_uint,
             ]
             self._nvml.nvmlDeviceGetName.restype = c_int
+        for name in ("nvmlDeviceGetPciInfo_v3", "nvmlDeviceGetPciInfo_v2"):
+            getter = getattr(self._nvml, name, None)
+            if getter is not None:
+                getter.argtypes = [c_void_p, ctypes.POINTER(NvmlPciInfo)]
+                getter.restype = c_int
 
         if hasattr(self._nvml, "nvmlErrorString"):
             self._nvml.nvmlErrorString.argtypes = [c_int]
@@ -219,7 +337,24 @@ class NvmlGpuPolicyController:
         value = buf.value.decode(errors="replace").strip()
         return value or None
 
+    def query_pci_device_id(self):
+        getter = getattr(self._nvml, "nvmlDeviceGetPciInfo_v3", None) or getattr(
+            self._nvml,
+            "nvmlDeviceGetPciInfo_v2",
+            None,
+        )
+        if getter is None:
+            return None
+        info = NvmlPciInfo()
+        rc = int(getter(self._device, ctypes.byref(info)))
+        if rc != NVML_SUCCESS or int(info.pciDeviceId) == 0:
+            return None
+        return f"0x{int(info.pciDeviceId):08X}"
+
     def query_power_limits(self):
+        # These getters can legitimately be unsupported on laptops. Treat
+        # failures as absent read-only telemetry; setter support is probed
+        # separately and is not implied by min/max-looking values.
         info = {
             "power_limit_w": self._read_power_value_w(
                 "nvmlDeviceGetPowerManagementLimit"

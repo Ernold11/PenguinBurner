@@ -320,6 +320,24 @@ def test_apply_power_limit_with_controller_success():
     assert calls["watts"] == 360
 
 
+def test_apply_power_limit_skips_mobile_controller():
+    calls = []
+    controller = SimpleNamespace(
+        query_gpu_name=lambda: "NVIDIA GeForce RTX 5060",
+        query_pci_device_id=lambda: "0x2D1910DE",
+        apply_power_limit_w=lambda _watts: calls.append(_watts),
+    )
+
+    result = runtime.apply_auto_uv_profile_power_limit(
+        profile_label="L",
+        power_limit_w=43,
+        gpu_policy_controller=controller,
+    )
+
+    assert result == {}
+    assert calls == []
+
+
 def test_apply_power_limit_with_controller_failure_raises():
     def _apply(power_limit_w):
         raise RuntimeError("driver said no")
