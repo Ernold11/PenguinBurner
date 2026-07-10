@@ -2,7 +2,7 @@
 //! `runtime/gpu_control/flattened_clock_ceiling.py`. Hides exact-lock vs
 //! range-ceiling driver calls from the loop; `retarget` swaps on a tier switch.
 
-use super::profile_store::FlattenTarget;
+use super::runtime_spec::FlattenTarget;
 use crate::gpu::GpuBackend;
 
 /// `describe_afterburner_dynamic_lock` (integrations/afterburner/vfcurve_describe.py).

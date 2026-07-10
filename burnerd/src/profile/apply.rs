@@ -18,10 +18,7 @@ use crate::gpu::GpuBackend;
 
 use super::ceiling::FlattenedClockCeilingController;
 use super::guard::select_expected_vf_samples;
-use super::profile_store::{
-    clamp_memory_offset_to_driver, load_auto_uv_final_curve, LoadedCurve, PlanItem,
-    STOCK_PROFILE_SELECTOR,
-};
+use super::runtime_spec::{LoadedCurve, PlanItem, RuntimeMode};
 
 /// `apply_plan`: MHz→kHz ×1000, then a single `SetControl` write. The engine
 /// does the ×1000 here (coordinator answer, matches Python `apply_plan`).
@@ -87,41 +84,82 @@ fn apply_gpu_base_policy(
     }
 }
 
-fn reset_gpu_to_stock(backend: &dyn GpuBackend, log: &mut dyn FnMut(&str)) {
+pub(super) fn reset_gpu_to_stock(
+    backend: &dyn GpuBackend,
+    log: &mut dyn FnMut(&str),
+) -> Result<(), String> {
+    let mut failures = Vec::new();
     if let Err(exc) = backend.reset_locked_core_clocks() {
-        log(&format!(
-            "keep-stock: locked core clocks reset skipped: {exc}"
-        ));
+        failures.push(format!("locked core clocks: {exc}"));
     }
+    // The runtime does not create a memory-clock lock, so this legacy cleanup
+    // remains best-effort for drivers that do not expose the reset call.
     if let Err(exc) = backend.reset_locked_memory_clocks() {
         log(&format!(
             "keep-stock: locked memory clocks reset skipped: {exc}"
         ));
     }
-    if let Err(exc) = backend.apply_clock_offsets(Some(0), Some(0)) {
-        log(&format!("keep-stock: VF offset reset skipped: {exc}"));
+    match backend.apply_clock_offsets(Some(0), Some(0)) {
+        Ok(applied)
+            if applied.gpc_clk_vf_offset_readback_mhz == Some(0)
+                && applied.mem_clk_vf_offset_readback_mhz == Some(0) => {}
+        Ok(applied) => failures.push(format!(
+            "clock offsets readback: gpc={:?} memory={:?}",
+            applied.gpc_clk_vf_offset_readback_mhz, applied.mem_clk_vf_offset_readback_mhz
+        )),
+        Err(exc) => failures.push(format!("clock offsets: {exc}")),
     }
     let default_w = backend.query_power_limits().power_limit_default_w;
     if let Some(default_w) = default_w {
         if default_w != 0 {
             if let Err(exc) = backend.apply_power_limit_w(default_w) {
-                log(&format!("keep-stock: power-limit reset skipped: {exc}"));
+                failures.push(format!("power limit: {exc}"));
+            } else {
+                let readback = backend.query_power_limits();
+                if readback.power_limit_w != Some(default_w)
+                    && readback.enforced_power_limit_w != Some(default_w)
+                {
+                    failures.push(format!(
+                        "power limit readback: current={:?} enforced={:?} expected={default_w}",
+                        readback.power_limit_w, readback.enforced_power_limit_w
+                    ));
+                }
             }
         }
     }
-    // Zero every editable point's freq offset (a default plan).
-    let zero_offsets: Vec<(u32, i32)> = backend
-        .editable_core_vf_points()
-        .iter()
-        .map(|p| (p.index, 0))
-        .collect();
-    if let Err(exc) = backend
-        .refresh_vf_points()
-        .and_then(|_| backend.apply_vf_offsets_khz(&zero_offsets))
-    {
-        log(&format!("keep-stock: V/F curve reset skipped: {exc}"));
+    if backend.vf_curve_available() {
+        if let Err(exc) = backend.refresh_vf_points() {
+            failures.push(format!("V/F refresh before reset: {exc}"));
+        } else {
+            let zero_offsets: Vec<(u32, i32)> = backend
+                .editable_core_vf_points()
+                .iter()
+                .map(|point| (point.index, 0))
+                .collect();
+            if let Err(exc) = backend.apply_vf_offsets_khz(&zero_offsets) {
+                failures.push(format!("V/F reset: {exc}"));
+            } else if let Err(exc) = backend.refresh_vf_points() {
+                failures.push(format!("V/F refresh after reset: {exc}"));
+            } else if let Some(point) = backend
+                .editable_core_vf_points()
+                .into_iter()
+                .find(|point| point.current_offset_khz != 0)
+            {
+                failures.push(format!(
+                    "V/F point {} read back {:+} kHz after reset",
+                    point.index, point.current_offset_khz
+                ));
+            }
+        }
+    }
+    if !failures.is_empty() {
+        return Err(format!(
+            "stock GPU reset incomplete: {}",
+            failures.join("; ")
+        ));
     }
     log("keep-stock: GPU reset to factory V/F; no undervolt applied");
+    Ok(())
 }
 
 fn apply_power_limit(
@@ -132,11 +170,20 @@ fn apply_power_limit(
     let Some(power) = power_limit_w.filter(|&p| p > 0) else {
         return Ok(None);
     };
-    backend.apply_power_limit_w(power).map_err(|exc| {
+    let applied = backend.apply_power_limit_w(power).map_err(|exc| {
         format!(
             "failed to apply saved profile power limit {power} W for {label}: driver rejected nvmlDeviceSetPowerManagementLimit: {exc}"
         )
     })?;
+    let readback = backend.query_power_limits();
+    if applied != power
+        || (readback.power_limit_w != Some(power) && readback.enforced_power_limit_w != Some(power))
+    {
+        return Err(format!(
+            "failed to verify saved profile power limit {power} W for {label}: current={:?} enforced={:?}",
+            readback.power_limit_w, readback.enforced_power_limit_w
+        ));
+    }
     Ok(Some(power))
 }
 
@@ -152,11 +199,19 @@ fn apply_memory_offset(
         .memory_clock_offset_range_mhz()
         .map(|(_, max)| i64::from(max));
     let offset = clamp_memory_offset_to_driver(raw, driver_max);
-    backend.apply_clock_offsets(None, Some(offset as i32)).map_err(|exc| {
-        format!(
-            "failed to apply saved profile memory offset {offset:+} MHz for {label}: driver rejected nvmlDeviceSetMemClkVfOffset: {exc}"
-        )
-    })?;
+    let applied = backend
+        .apply_clock_offsets(None, Some(offset as i32))
+        .map_err(|exc| {
+            format!(
+                "failed to apply saved profile memory offset {offset:+} MHz for {label}: driver rejected nvmlDeviceSetMemClkVfOffset: {exc}"
+            )
+        })?;
+    if applied.mem_clk_vf_offset_readback_mhz != Some(offset as i32) {
+        return Err(format!(
+            "failed to verify saved profile memory offset {offset:+} MHz for {label}: readback={:?}",
+            applied.mem_clk_vf_offset_readback_mhz
+        ));
+    }
     Ok(Some(offset))
 }
 
@@ -184,33 +239,47 @@ pub fn apply_memory_offset_then_vf_plan(
     let memory = apply_memory_offset(backend, label, memory_offset_mhz)?;
     apply_plan(backend, plan).map_err(|e| e.to_string())?;
     backend.refresh_vf_points().map_err(|e| e.to_string())?;
+    verify_vf_plan(backend, label, plan)?;
     Ok(memory)
 }
 
-/// `configure_runtime_vf_curve_policy`. Fatal `Err` = initial power-limit /
-/// memory-offset failure (spec 02 §6.4); everything else logs-and-continues.
-pub fn configure_runtime_vf_curve_policy<'a>(
+fn verify_vf_plan(backend: &dyn GpuBackend, label: &str, plan: &[PlanItem]) -> Result<(), String> {
+    let points = backend.vf_points();
+    for item in plan {
+        let expected_khz = item.new_offset_mhz * 1000;
+        let Some(point) = points.iter().find(|point| point.index == item.index) else {
+            return Err(format!(
+                "failed to verify V/F curve for {label}: point {} is missing after apply",
+                item.index
+            ));
+        };
+        if point.current_offset_khz != expected_khz {
+            return Err(format!(
+                "failed to verify V/F curve for {label}: point {} expected {expected_khz:+} kHz read back {:+} kHz",
+                item.index, point.current_offset_khz
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Apply the fully resolved profile embedded in a RuntimeSpec.
+pub fn configure_runtime_spec_policy<'a>(
     backend: &'a dyn GpuBackend,
     enable_persistence_mode: bool,
-    selector: &str,
+    mode: RuntimeMode,
+    curve: Option<&LoadedCurve>,
     log: &mut dyn FnMut(&str),
 ) -> Result<VfPolicyResult<'a>, String> {
     let mut result = VfPolicyResult::default();
 
-    if selector.trim() == STOCK_PROFILE_SELECTOR {
+    if mode == RuntimeMode::Stock {
         apply_gpu_base_policy(backend, enable_persistence_mode, log);
-        reset_gpu_to_stock(backend, log);
+        reset_gpu_to_stock(backend, log)?;
         result.active_vf_curve_source = Some("stock".to_string());
         return Ok(result);
     }
-
-    match load_auto_uv_final_curve(selector) {
-        Ok(curve) => result.auto_uv_final_curve = curve,
-        Err(exc) => {
-            log(&format!("Skipping auto-UV final curve: error={exc}"));
-            result.auto_uv_final_curve = None;
-        }
-    }
+    result.auto_uv_final_curve = curve.cloned();
 
     apply_gpu_base_policy(backend, enable_persistence_mode, log);
 
@@ -220,6 +289,11 @@ pub fn configure_runtime_vf_curve_policy<'a>(
 
     apply_auto_uv_final_curve(&mut result, backend, log)?;
     Ok(result)
+}
+
+fn clamp_memory_offset_to_driver(offset_mhz: i64, driver_range_max: Option<i64>) -> i64 {
+    let upper = driver_range_max.unwrap_or(2000).max(0);
+    offset_mhz.clamp(0, upper)
 }
 
 fn apply_auto_uv_final_curve<'a>(
@@ -242,16 +316,14 @@ fn apply_auto_uv_final_curve<'a>(
     result.auto_uv_profile_gpu_policy.mem_clk_vf_offset_mhz = memory;
 
     // Mem already applied above → pass None; the helper does the VF plan + readback.
-    if let Err(exc) =
-        apply_memory_offset_then_vf_plan(backend, "auto-UV final curve", None, &curve.plan)
-    {
-        log(&format!(
-            "Skipping auto-UV final curve apply: path={} error={exc}",
-            curve.path.display()
-        ));
-        result.auto_uv_final_curve = None;
-        return Ok(());
-    }
+    apply_memory_offset_then_vf_plan(backend, "auto-UV final curve", None, &curve.plan).map_err(
+        |exc| {
+            format!(
+                "failed to apply auto-UV final curve {}: {exc}",
+                curve.path.display()
+            )
+        },
+    )?;
 
     result.vf_apply_plan = Some(curve.plan.clone());
     result.active_vf_curve_source = Some("auto-uv-final".to_string());
@@ -286,11 +358,10 @@ fn apply_auto_uv_final_curve<'a>(
             result.clock_ceiling_controller = Some(controller);
         }
         Err(exc) => {
-            log(&format!(
-                "Skipping auto-UV clock ceiling: path={} error={exc}",
+            return Err(format!(
+                "failed to configure auto-UV clock ceiling {}: {exc}",
                 curve.path.display()
             ));
-            result.clock_ceiling_controller = None;
         }
     }
     // keep the loaded curve on the result
@@ -353,6 +424,7 @@ mod tests {
         let mut mock = MockGpu::new();
         mock.vf_available = true;
         mock.power_limits.power_limit_default_w = Some(300);
+        mock.power_limits.power_limit_w = Some(300);
         mock.vf_points = vec![crate::gpu::VfPoint {
             index: 5,
             type_: 0,
@@ -360,7 +432,8 @@ mod tests {
             ..Default::default()
         }];
         let mut log = |_: &str| {};
-        let result = configure_runtime_vf_curve_policy(&mock, true, "__stock__", &mut log).unwrap();
+        let result =
+            configure_runtime_spec_policy(&mock, true, RuntimeMode::Stock, None, &mut log).unwrap();
         assert_eq!(result.active_vf_curve_source.as_deref(), Some("stock"));
         let ops = mock.recorded();
         // persistence → reset core (ONCE) → reset mem → offsets 0/0 → power default
@@ -424,10 +497,18 @@ mod tests {
     /// Power limit stays after the VF writes.
     #[test]
     fn adaptive_curve_applies_mem_before_vf_then_power() {
-        use super::super::profile_store::FlattenTarget;
+        use super::super::runtime_spec::FlattenTarget;
 
         let mut mock = MockGpu::new();
         mock.mem_offset_range = Some((-2000, 6000));
+        mock.power_limits.power_limit_w = Some(320);
+        mock.vf_points = vec![crate::gpu::VfPoint {
+            index: 12,
+            type_: 0,
+            voltage_based: 1,
+            current_offset_khz: 240_000,
+            ..Default::default()
+        }];
         let curve = LoadedCurve {
             path: std::path::PathBuf::new(),
             profile_id: "adaptive-test".to_string(),

@@ -9,21 +9,15 @@ socket-observable behaviors that ``tests/test_daemon_api.py`` pins.
 The tests are skipped (module-level) when the binary isn't built; ``cargo test``
 or ``cargo build`` in ``burnerd/`` makes them run.
 
-Behaviors from the Python daemon that are INTENTIONALLY NOT ported here, by
-design (documented so the omission is deliberate, not an oversight):
+Some internals are intentionally covered by Rust tests rather than duplicated
+in this Python socket suite:
 
 * **Base64-env autostart** (``PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64``): dropped
-  in the Rust port (DESIGN.md §Supervisor / Simplifications). The only autostart
-  mechanism is the ``last-runtime.json`` state file, which
-  ``test_autostart_runs_the_persisted_runtime_profile`` covers. There is no unit-env
-  autostart path left to test.
-* **The ``*_stopped`` states** (``auto_uv_scan_stopped`` /
-  ``runtime_profile_stopped``) and the runtime-profile ``returncode == 1``
-  (engine-error) path. Reaching them requires the engine to exit on its own; the
-  A1 stub engine only stops on command, so at the socket level a profile goes
-  ``idle -> running -> idle``. Deferred to A3 (real engine).
+  in the Rust port. Typed current-session and boot RuntimeSpec files replace it;
+  ``test_autostart_runs_the_persisted_runtime_profile`` covers replay.
 * **Engine-side GPU behavior** (VF curve, fan loop, adaptive tiers, telemetry):
-  A3, not protocol. The stub engine here just idles until stopped.
+  covered by Rust unit tests and live verification; this suite checks the socket
+  contract with the inert test backend.
 * **Peer-UID (SO_PEERCRED) denial**: the daemon writes the denial line and closes
   the connection *before* reading any request, so driving it through the writing
   client (``daemon_status``) races the close into a connection reset. It is covered
@@ -53,11 +47,11 @@ from typing import BinaryIO
 import pytest
 
 from runtime.daemon_client import (
+    apply_runtime_spec,
     daemon_payload_request,
     daemon_request,
     daemon_status,
     daemon_stream_request,
-    start_runtime_profile,
     stop_runtime_profile,
 )
 
@@ -278,6 +272,44 @@ def _raw_request(socket_path: Path, payload: bytes) -> dict:
     return json.loads(line.decode("utf-8"))
 
 
+def _runtime_spec(*, gpu_uuid: str = "GPU-inert-test") -> dict:
+    return {
+        "format_version": 1,
+        "gpu": {
+            "uuid": gpu_uuid,
+            "index_at_resolution": 0,
+            "pci_bus_id": "0000:01:00.0",
+            "name": "Inert test GPU",
+        },
+        "mode": "stock",
+        "static_profile": None,
+        "adaptive": None,
+        "fan": {
+            "enabled": False,
+            "config": {
+                "poll_interval_s": 2.0,
+                "curve": [[55.0, 30.0], [80.0, 45.0]],
+                "hysteresis_c": 2.0,
+                "mode": "linear",
+                "min_fan_speed_pct": 20,
+                "max_fan_speed_pct": 100,
+                "max_step_up_pct_per_s": 25.0,
+                "max_step_down_pct_per_s": 15.0,
+                "manual_enable_temp_c": 55.0,
+                "auto_restore_temp_c": 50.0,
+                "emergency_auto_override_temp_c": 80.0,
+                "emergency_auto_resume_temp_c": 75.0,
+                "force_update_every_poll": False,
+                "curve_source": None,
+                "curve_source_path": None,
+            },
+            "notice": "",
+        },
+        "policy": {"enable_persistence_mode": False},
+        "overlay": {"enabled": False, "update_interval_s": 1},
+    }
+
+
 # --- status ------------------------------------------------------------------
 
 
@@ -287,19 +319,28 @@ def test_status_idle_shape(make_daemon):
     assert status["state"] == "idle"
     assert status["active_job"] is None
     assert isinstance(status["version"], str) and status["version"]
+    assert status["protocol_major"] == 2
+    assert status["protocol_minor"] == 0
+    assert "gpu-capabilities-v1" in status["capabilities"]
 
 
 # --- runtime profile: start / stop / state file ------------------------------
 
 
-def test_start_runtime_profile_tracks_process_and_state_file(make_daemon):
+def test_apply_runtime_spec_tracks_process_and_state_file(make_daemon):
     daemon = make_daemon()
-    argv = ["--auto-uv-profile", "profile-a", "--silent-fan-curve"]
+    spec = _runtime_spec()
 
-    result = start_runtime_profile(argv, socket_path=daemon.socket_path)
+    result = apply_runtime_spec(spec, socket_path=daemon.socket_path)
     # In-process engine: the "job pid" is the daemon's own pid (design change vs the
     # Python child; spec 08 confirms no caller reads this pid for behavior).
-    assert result == {"started": True, "pid": daemon.proc.pid, "argv": argv}
+    assert result == {
+        "started": True,
+        "pid": daemon.proc.pid,
+        "profile_id": "",
+        "runtime_mode": "stock",
+        "gpu_uuid": "GPU-inert-test",
+    }
 
     status = daemon_status(socket_path=daemon.socket_path)
     assert status["state"] == "runtime_profile_running"
@@ -307,31 +348,26 @@ def test_start_runtime_profile_tracks_process_and_state_file(make_daemon):
     assert job["type"] == "runtime_profile"
     assert job["pid"] == daemon.proc.pid
     assert job["returncode"] is None
-    assert job["argv"] == argv
+    assert job["runtime_mode"] == "stock"
+    assert job["gpu_uuid"] == "GPU-inert-test"
+    assert job["silent_fan_curve"] is False
 
-    # State file persisted with the argv round-tripped + a program_file key.
+    # Current-session state is the validated spec itself, not replayable argv.
     state = json.loads(daemon.state_file.read_text(encoding="utf-8"))
-    assert state["argv"] == argv
-    assert isinstance(state["program_file"], str) and state["program_file"]
+    assert state == spec
 
 
-def test_start_runtime_profile_accepts_inline_equals_forms(make_daemon):
+def test_apply_runtime_spec_rejects_unknown_nested_fields(make_daemon):
     daemon = make_daemon()
-    argv = ["--auto-uv-profile=latest", "--gpu-index=1"]
-
-    result = start_runtime_profile(argv, socket_path=daemon.socket_path)
-    assert result["started"] is True
-    assert result["argv"] == argv
-
-    status = daemon_status(socket_path=daemon.socket_path)
-    assert status["state"] == "runtime_profile_running"
-    assert status["active_job"]["argv"] == argv
+    spec = _runtime_spec()
+    spec["gpu"]["unexpected"] = True
+    with pytest.raises(RuntimeError, match="unknown field.*unexpected"):
+        apply_runtime_spec(spec, socket_path=daemon.socket_path)
 
 
-def test_stop_runtime_profile_returns_to_idle_but_keeps_state_file(make_daemon):
+def test_stop_runtime_profile_returns_to_idle_and_clears_session_state(make_daemon):
     daemon = make_daemon()
-    argv = ["--auto-uv-profile", "profile-a"]
-    start_runtime_profile(argv, socket_path=daemon.socket_path)
+    apply_runtime_spec(_runtime_spec(), socket_path=daemon.socket_path)
 
     stop = stop_runtime_profile(socket_path=daemon.socket_path)
     assert stop["stopped"] is True
@@ -339,8 +375,7 @@ def test_stop_runtime_profile_returns_to_idle_but_keeps_state_file(make_daemon):
 
     status = daemon_status(socket_path=daemon.socket_path)
     assert status["state"] == "idle"
-    # Parity: stop does NOT clear the state file (a restart re-runs the last action).
-    assert daemon.state_file.exists()
+    assert not daemon.state_file.exists()
 
 
 def test_stop_runtime_profile_when_idle(make_daemon):
@@ -349,45 +384,25 @@ def test_stop_runtime_profile_when_idle(make_daemon):
     assert stop == {"stopped": False, "state": "idle"}
 
 
-# --- runtime profile: argv whitelist rejections (byte-exact) ------------------
+# --- runtime spec validation --------------------------------------------------
 
 
-def test_start_runtime_profile_rejects_unsupported_arg(make_daemon):
+def test_apply_runtime_spec_requires_object(make_daemon):
     daemon = make_daemon()
-    with pytest.raises(RuntimeError, match="^unsupported runtime profile argument: --daemon-api$"):
-        start_runtime_profile(["--daemon-api", "/tmp/x"], socket_path=daemon.socket_path)
+    for bad in ([], "stock", None):
+        with pytest.raises(RuntimeError, match="^spec must be an object$"):
+            daemon_payload_request(
+                {"method": "apply_runtime_spec", "spec": bad},
+                socket_path=daemon.socket_path,
+            )
 
 
-def test_start_runtime_profile_rejects_value_form_of_bare_flag(make_daemon):
+def test_apply_runtime_spec_rejects_mode_field_mismatch(make_daemon):
     daemon = make_daemon()
-    # `--silent-fan-curve=x` is neither a value flag nor an `=`-prefixed whitelist form.
-    with pytest.raises(
-        RuntimeError,
-        match="^unsupported runtime profile argument: --silent-fan-curve=x$",
-    ):
-        start_runtime_profile(["--silent-fan-curve=x"], socket_path=daemon.socket_path)
-
-
-def test_start_runtime_profile_requires_value_for_value_flag(make_daemon):
-    daemon = make_daemon()
-    with pytest.raises(RuntimeError, match="^--auto-uv-profile requires a value$"):
-        # daemon_payload_request preserves the argv exactly (no client-side coercion).
-        daemon_payload_request(
-            {"method": "start_runtime_profile", "argv": ["--auto-uv-profile"]},
-            socket_path=daemon.socket_path,
-        )
-
-
-def test_start_runtime_profile_rejects_non_string_list(make_daemon):
-    daemon = make_daemon()
-    for bad in ("notalist", [1, 2], None):
-        payload: dict[str, object] = {"method": "start_runtime_profile"}
-        if bad is not None:
-            payload["argv"] = bad
-        with pytest.raises(
-            RuntimeError, match="^runtime profile argv must be a JSON string list$"
-        ):
-            daemon_payload_request(payload, socket_path=daemon.socket_path)
+    spec = _runtime_spec()
+    spec["mode"] = "static"
+    with pytest.raises(RuntimeError, match="mode does not match"):
+        apply_runtime_spec(spec, socket_path=daemon.socket_path)
 
 
 # --- request validation error strings (byte-exact) ---------------------------
@@ -621,12 +636,7 @@ def test_kill_ladder_terminates_a_sigint_ignoring_scan(make_daemon):
 
 
 def test_autostart_runs_the_persisted_runtime_profile(make_daemon):
-    daemon = make_daemon(
-        seed_state={
-            "argv": ["--auto-uv-profile", "seeded"],
-            "program_file": "/does/not/matter",
-        }
-    )
+    daemon = make_daemon(seed_state=_runtime_spec())
     status = daemon_status(socket_path=daemon.socket_path)
     assert status["state"] == "runtime_profile_running"
-    assert status["active_job"]["argv"] == ["--auto-uv-profile", "seeded"]
+    assert status["active_job"]["runtime_mode"] == "stock"

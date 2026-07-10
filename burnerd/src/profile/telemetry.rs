@@ -5,15 +5,17 @@
 //! stickiness are reproduced exactly; the C++ Vulkan layer and the Python GUI
 //! parse it in-process.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
+
+use tempfile::NamedTempFile;
 
 use crate::gpu::{ClockType, GpuBackend, VfPoint};
 use crate::paths;
 
-use super::config::{self, load_overlay_config};
 use super::cpu::ProcessCpuUsageSampler;
 use super::floor_div;
-use super::profile_store::profile_tier_label;
+use super::runtime_spec::profile_tier_label;
 use super::LatencySnapshot;
 
 // --- overlay-state.txt path resolution --------------------------------------
@@ -133,13 +135,10 @@ pub fn write_overlay_state(state: &OverlayState, path: &Path) -> std::io::Result
         std::fs::create_dir_all(parent)?;
         claim_desktop_user_ownership(parent, true);
     }
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("overlay-state.txt");
-    let temp_path = path.with_file_name(format!("{file_name}.tmp"));
-    std::fs::write(&temp_path, text.as_bytes())?;
-    std::fs::rename(&temp_path, path)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temp = NamedTempFile::new_in(parent)?;
+    temp.write_all(text.as_bytes())?;
+    temp.persist(path).map_err(|error| error.error)?;
     claim_desktop_user_ownership(path, false);
     Ok(())
 }
@@ -265,10 +264,7 @@ fn uv_offset_mv(
 // --- overlay state publisher ------------------------------------------------
 
 fn hold_ns_from_interval(interval_s: f64, min_hold_s: f64) -> i64 {
-    let interval = interval_s.clamp(
-        config::MIN_OVERLAY_UPDATE_INTERVAL_S as f64,
-        config::MAX_OVERLAY_UPDATE_INTERVAL_S as f64,
-    );
+    let interval = interval_s.clamp(1.0, 10.0);
     let hold_s = if min_hold_s > 0.0 {
         (interval * 3.0).clamp(min_hold_s, 10.0)
     } else {
@@ -286,7 +282,6 @@ pub struct OverlayStatePublisher {
     pub profile_id: String,
     pub adaptive: bool,
     pub path: Option<PathBuf>,
-    pub config_path: Option<PathBuf>,
     process_cpu_sampler: Option<ProcessCpuUsageSampler>,
 
     last_cpu_util_pct: Option<i64>,
@@ -320,7 +315,6 @@ impl OverlayStatePublisher {
         profile_id: String,
         adaptive: bool,
         process_cpu_sampler: Option<ProcessCpuUsageSampler>,
-        config_path: Option<PathBuf>,
     ) -> Self {
         OverlayStatePublisher {
             gpu_index,
@@ -331,7 +325,6 @@ impl OverlayStatePublisher {
             profile_id,
             adaptive,
             path: None,
-            config_path,
             process_cpu_sampler,
             last_cpu_util_pct: None,
             last_cpu_peak_thread_pct: None,
@@ -366,15 +359,6 @@ impl OverlayStatePublisher {
     #[allow(clippy::misnamed_getters)]
     pub fn last_cpu_peak_thread_pct(&self) -> Option<i64> {
         self.last_published_cpu_peak_thread_pct
-    }
-
-    pub fn refresh_config(&mut self) {
-        let Some(path) = self.config_path.clone() else {
-            return;
-        };
-        let config = load_overlay_config(&path);
-        self.enabled = config.enabled;
-        self.update_interval_s = config.update_interval_s as f64;
     }
 
     /// Build the `OverlayState` for one tick and write it (the loop gates

@@ -3,56 +3,55 @@ from __future__ import annotations
 from overlay.telemetry.nvapi_marker_bridge import (
     NV_MARKER_INPUT_SAMPLE,
     NV_MARKER_OUT_OF_BAND_PRESENT_END,
-    NV_MARKER_PRESENT_END,
     NV_MARKER_SIMULATION_START,
-    _parse_line,
+    _parse_line_with_pid,
     run,
 )
 
 
 def test_parse_line_accepts_input_sample_marker() -> None:
-    assert _parse_line(
+    assert _parse_line_with_pid(
         "123.456:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
         "({version=1,frameID=42,markerType=INPUT_SAMPLE,rsvd})"
-    ) == (42, NV_MARKER_INPUT_SAMPLE, 123456000)
+    ) == (42, NV_MARKER_INPUT_SAMPLE, 123456000, None)
 
 
 def test_parse_line_accepts_stock_dxvk_nvapi_trace_marker() -> None:
-    assert _parse_line(
+    assert _parse_line_with_pid(
         "123.456:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
         "({version=1,frameID=42,markerType=SIMULATION_START,rsvd})"
-    ) == (42, NV_MARKER_SIMULATION_START, 123456000)
+    ) == (42, NV_MARKER_SIMULATION_START, 123456000, None)
 
 
 def test_parse_line_accepts_stock_dxvk_nvapi_oob_present_marker() -> None:
-    assert _parse_line(
+    assert _parse_line_with_pid(
         "123.456:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
         "({version=1,frameID=42,markerType=OUT_OF_BAND_PRESENT_END,rsvd})"
-    ) == (42, NV_MARKER_OUT_OF_BAND_PRESENT_END, 123456000)
+    ) == (42, NV_MARKER_OUT_OF_BAND_PRESENT_END, 123456000, None)
 
 
 def test_parse_line_accepts_stock_dxvk_nvapi_async_frame_marker() -> None:
-    assert _parse_line(
+    assert _parse_line_with_pid(
         "123.456:trace:nvapi64:NvAPI_D3D12_SetAsyncFrameMarker "
         "({version=1,frameID=42,markerType=OUT_OF_BAND_PRESENT_END,"
         "presentFrameID=77,rsvd})"
-    ) == (42, NV_MARKER_OUT_OF_BAND_PRESENT_END, 123456000)
+    ) == (42, NV_MARKER_OUT_OF_BAND_PRESENT_END, 123456000, None)
 
 
 def test_parse_line_accepts_dxvk_nvapi_marker_only_log() -> None:
-    assert _parse_line(
+    assert _parse_line_with_pid(
         "123.456:1abc:2def:latency-marker:nvapi64:"
         "qpcUs=987654321 api=d3d frameID=42 markerType=SIMULATION_START "
         "markerValue=0"
-    ) == (42, NV_MARKER_SIMULATION_START, 987654321)
+    ) == (42, NV_MARKER_SIMULATION_START, 987654321, 0x1ABC)
 
 
 def test_parse_line_accepts_dxvk_nvapi_marker_only_async_log() -> None:
-    assert _parse_line(
+    assert _parse_line_with_pid(
         "123.456:1abc:2def:latency-marker:nvapi64:"
         "qpcUs=987654321 api=d3d12_async frameID=42 "
         "markerType=OUT_OF_BAND_PRESENT_END markerValue=12 presentFrameID=77"
-    ) == (42, NV_MARKER_OUT_OF_BAND_PRESENT_END, 987654321)
+    ) == (42, NV_MARKER_OUT_OF_BAND_PRESENT_END, 987654321, 0x1ABC)
 
 
 def test_bridge_uses_marker_only_log_process_id(monkeypatch, tmp_path) -> None:
@@ -326,7 +325,6 @@ def test_drainer_main_cleans_up_fifo(tmp_path, monkeypatch) -> None:
 
 
 def test_spawn_detached_drainer_argv(monkeypatch, tmp_path) -> None:
-    import subprocess
     import sys
     import overlay.telemetry.nvapi_marker_bridge as bridge
 

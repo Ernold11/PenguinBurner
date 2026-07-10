@@ -3,7 +3,7 @@
 //! largest expected offsets and reports which voltage bins drifted.
 
 use super::floor_div;
-use super::profile_store::PlanItem;
+use super::runtime_spec::PlanItem;
 use crate::gpu::VfPoint;
 
 /// The non-zero-offset plan points, sorted by `|new_offset_mhz|` descending,

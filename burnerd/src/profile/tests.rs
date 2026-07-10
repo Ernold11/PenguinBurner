@@ -8,9 +8,9 @@ use std::sync::Arc;
 use crate::gpu::mock::{MockGpu, MockOp};
 use crate::gpu::VfPoint;
 
-use super::apply::configure_runtime_vf_curve_policy;
+use super::apply::configure_runtime_spec_policy;
 use super::fan::FanConfig;
-use super::profile_store::PlanItem;
+use super::runtime_spec::{FlattenTarget, LoadedCurve, PlanItem, RuntimeMode};
 use super::{run_fan_control_loop, VfPolicyResult};
 
 fn editable_point(index: u32, freq_khz: i64, voltage_uv: i64, offset_khz: i64) -> VfPoint {
@@ -56,12 +56,6 @@ fn loop_reapplies_vf_curve_when_driver_resets_offsets() {
         ..VfPolicyResult::default()
     };
 
-    let gpu_cfg = super::config::RuntimeGpuConfig {
-        index: 0,
-        enable_persistence_mode: false,
-    };
-    let _ = gpu_cfg; // documents the disabled-fan / no-persistence path
-
     let stop = Arc::new(AtomicBool::new(false));
     // Fan control disabled → poll_interval only; cooldown = max(poll, 10) but the
     // first reapply has last=0 and loop_started≈0, so it needs > cooldown. Use a
@@ -77,7 +71,6 @@ fn loop_reapplies_vf_curve_when_driver_resets_offsets() {
         String::new(),
         false,
         None,
-        None,
     );
 
     let result = run_fan_control_loop(
@@ -92,6 +85,7 @@ fn loop_reapplies_vf_curve_when_driver_resets_offsets() {
         None,
         stop,
         Some(1),
+        &mut None,
     );
     assert!(result.is_ok());
     let ops = mock.recorded();
@@ -161,7 +155,6 @@ fn run_one_vf_guard_iteration(mock: &MockGpu, policy: VfPolicyResult<'_>) {
         String::new(),
         false,
         None,
-        None,
     );
     let stop = Arc::new(AtomicBool::new(false));
     let result = run_fan_control_loop(
@@ -176,6 +169,7 @@ fn run_one_vf_guard_iteration(mock: &MockGpu, policy: VfPolicyResult<'_>) {
         None,
         stop,
         Some(1),
+        &mut None,
     );
     assert!(result.is_ok());
 }
@@ -268,7 +262,6 @@ fn loop_manual_fan_control_and_restore_on_exit() {
         String::new(),
         false,
         None,
-        None,
     );
     let stop = Arc::new(AtomicBool::new(false));
     let result = run_fan_control_loop(
@@ -283,6 +276,7 @@ fn loop_manual_fan_control_and_restore_on_exit() {
         None,
         stop,
         Some(2),
+        &mut None,
     );
     assert!(result.is_ok());
     let ops = mock.recorded();
@@ -330,7 +324,6 @@ fn loop_stop_during_backend_read_skips_gpu_writes() {
         String::new(),
         false,
         None,
-        None,
     );
     let result = run_fan_control_loop(
         &mock,
@@ -344,6 +337,7 @@ fn loop_stop_during_backend_read_skips_gpu_writes() {
         None,
         stop,
         Some(5),
+        &mut None,
     );
     assert!(result.is_ok());
     let ops = mock.recorded();
@@ -394,7 +388,6 @@ fn loop_stop_during_vf_read_skips_vf_and_mem_writes() {
         String::new(),
         false,
         None,
-        None,
     );
     let result = run_fan_control_loop(
         &mock,
@@ -408,6 +401,7 @@ fn loop_stop_during_vf_read_skips_vf_and_mem_writes() {
         None,
         stop,
         Some(3),
+        &mut None,
     );
     assert!(result.is_ok());
     let ops = mock.recorded();
@@ -434,7 +428,7 @@ fn early_setup_error_releases_clock_ceiling() {
     mock.supported_core_clocks = vec![2400, 2500, 2600, 2640, 2700];
 
     let mut ceiling = super::ceiling::FlattenedClockCeilingController::new(
-        super::profile_store::FlattenTarget {
+        FlattenTarget {
             source: "auto-uv-final".into(),
             lock_clock_mhz: 2640,
             lock_voltage_mv: Some(875),
@@ -460,7 +454,6 @@ fn early_setup_error_releases_clock_ceiling() {
         String::new(),
         false,
         None,
-        None,
     );
     let stop = Arc::new(AtomicBool::new(false));
     let result = run_fan_control_loop(
@@ -475,6 +468,7 @@ fn early_setup_error_releases_clock_ceiling() {
         None,
         stop,
         Some(1),
+        &mut None,
     );
     assert_eq!(
         result.unwrap_err(),
@@ -502,33 +496,40 @@ fn configure_auto_uv_final_apply_ordering() {
     mock.vf_available = true;
     mock.supported_core_clocks = vec![2400, 2500, 2600, 2640, 2700];
     mock.mem_offset_range = Some((-2000, 6000));
+    mock.power_limits.power_limit_w = Some(320);
     mock.vf_points = vec![editable_point(12, 2_640_000, 875_000, 240_000)];
 
-    // Write a saved profile to a temp home so the loader reads it.
-    let home = std::env::temp_dir().join(format!("pb-prof-{}", std::process::id()));
-    let profiles_dir = home.join(".config/PenguinBurner/auto-uv-profiles");
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(&profiles_dir).unwrap();
-    let profile = r#"{
-  "format_version": 1,
-  "final_verified": true,
-  "profile_id": "test-895",
-  "lock_clock_mhz": 2640,
-  "candidate_voltage_mv": 875,
-  "power_limit_w": 320,
-  "memory_offset_mhz": 1500,
-  "points": [
-    {"index": 12, "voltage_mv": 875, "base_mhz": 2400, "target_mhz": 2640, "new_offset_mhz": 240}
-  ]
-}"#;
-    std::fs::write(profiles_dir.join("auto-uv-profile-test-895.json"), profile).unwrap();
-
-    let _guard = crate::profile::tests::env_lock();
-    std::env::set_var("PENGUIN_BURNER_HOME", &home);
+    let curve = LoadedCurve {
+        path: "auto-uv-profile-test-895.json".into(),
+        profile_id: "test-895".into(),
+        profile_tier: "Balanced".into(),
+        profile_tier_key: "balanced".into(),
+        plan: vec![PlanItem {
+            index: 12,
+            voltage_mv: 875,
+            base_mhz: 2400,
+            target_mhz: 2640,
+            new_offset_mhz: 240,
+        }],
+        lock_clock_mhz: 2640,
+        candidate_voltage_mv: 875,
+        memory_offset_mhz: Some(1500),
+        power_limit_w: Some(320),
+        flatten_target: FlattenTarget {
+            source: "auto-uv-final".into(),
+            lock_clock_mhz: 2640,
+            lock_voltage_mv: Some(875),
+            end_voltage_mv: Some(875),
+            tail_point_count: Some(1),
+            ceiling_clock_mhz: None,
+            tail_rise_bins: None,
+        },
+    };
 
     let mut log = |_: &str| {};
-    let result = configure_runtime_vf_curve_policy(&mock, true, "test-895", &mut log).unwrap();
-    std::env::remove_var("PENGUIN_BURNER_HOME");
+    let result =
+        configure_runtime_spec_policy(&mock, true, RuntimeMode::Static, Some(&curve), &mut log)
+            .unwrap();
 
     assert_eq!(
         result.active_vf_curve_source.as_deref(),
@@ -586,57 +587,6 @@ fn configure_auto_uv_final_apply_ordering() {
     assert_eq!(curve.flatten_target.ceiling_clock_mhz, None);
     assert_eq!(curve.profile_tier, "Balanced");
     assert_eq!(curve.profile_tier_key, "balanced");
-    let _ = std::fs::remove_dir_all(&home);
-}
-
-/// Loader legacy aliases — `plan` (not `points`), `mem_clk_vf_offset_mhz` (not
-/// `memory_offset_mhz`), and nested `flatten_target.tail_rise_bins` (spec 06 §8.7).
-/// Expected values verified against the Python loader:
-///   PENGUIN_BURNER_HOME=<tmp> python3 -c 'from profiles.uv.runtime_auto_uv_profile
-///   import load_auto_uv_final_curve; print(load_auto_uv_final_curve("latest"))'
-/// (canonical `lock_clock_mhz`/`candidate_voltage_mv` are required by the loader —
-/// the `clock_mhz`/`voltage_mv` aliases are visibility-only; Python raises without
-/// the canonical keys, matching this implementation.)
-#[test]
-fn loads_legacy_alias_profile() {
-    let home = std::env::temp_dir().join(format!("pb-legacy-{}", std::process::id()));
-    let profiles_dir = home.join(".config/PenguinBurner/auto-uv-profiles");
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(&profiles_dir).unwrap();
-    let legacy = r#"{
-  "final_verified": true,
-  "candidate_voltage_mv": 900,
-  "lock_clock_mhz": 2700,
-  "mem_clk_vf_offset_mhz": 1000,
-  "flatten_target": {"tail_rise_bins": 5},
-  "plan": [
-    {"index": 5, "voltage_mv": 900, "base_mhz": 2500, "target_mhz": 2700, "new_offset_mhz": 200}
-  ]
-}"#;
-    std::fs::write(profiles_dir.join("auto-uv-profile-legacy.json"), legacy).unwrap();
-
-    let _guard = env_lock();
-    std::env::set_var("PENGUIN_BURNER_HOME", &home);
-    let curve = super::profile_store::load_auto_uv_final_curve("latest")
-        .unwrap()
-        .unwrap();
-    std::env::remove_var("PENGUIN_BURNER_HOME");
-
-    assert_eq!(curve.lock_clock_mhz, 2700);
-    assert_eq!(curve.candidate_voltage_mv, 900);
-    assert_eq!(curve.memory_offset_mhz, Some(1000)); // mem_clk_vf_offset_mhz alias
-    assert_eq!(curve.plan[0].new_offset_mhz, 200); // read from `plan`
-    assert_eq!(curve.flatten_target.tail_rise_bins, Some(5)); // nested alias
-    assert_eq!(curve.flatten_target.end_voltage_mv, Some(900));
-    assert_eq!(curve.flatten_target.tail_point_count, Some(1));
-    let _ = std::fs::remove_dir_all(&home);
-}
-
-// Serialize env-var-mutating tests (env is process-global).
-use std::sync::Mutex;
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 /// Live read-only telemetry-formatting smoke against the real GPU (no writes).

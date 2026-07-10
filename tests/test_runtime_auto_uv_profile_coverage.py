@@ -283,58 +283,6 @@ def test_profile_power_limit_invalid_returns_none():
     assert runtime.profile_power_limit_w(None) is None
 
 
-# --- apply_auto_uv_profile_power_limit -------------------------------------
-
-
-def test_apply_power_limit_none_returns_empty():
-    assert (
-        runtime.apply_auto_uv_profile_power_limit(
-            profile_label="L", power_limit_w=None, gpu_policy_controller=None
-        )
-        == {}
-    )
-
-
-def test_apply_power_limit_without_controller_raises():
-    with pytest.raises(NvmlError, match="Linux GPU policy helper is unavailable"):
-        runtime.apply_auto_uv_profile_power_limit(
-            profile_label="L",
-            power_limit_w=360,
-            gpu_policy_controller=None,
-        )
-
-
-def test_apply_power_limit_with_controller_success():
-    calls = {}
-
-    def _apply(power_limit_w):
-        calls["watts"] = power_limit_w
-
-    controller = SimpleNamespace(apply_power_limit_w=_apply)
-    result = runtime.apply_auto_uv_profile_power_limit(
-        profile_label="L",
-        power_limit_w=360,
-        gpu_policy_controller=controller,
-    )
-    assert result == {"power_limit_w": 360}
-    assert calls["watts"] == 360
-
-
-def test_apply_power_limit_with_controller_failure_raises():
-    def _apply(power_limit_w):
-        raise RuntimeError("driver said no")
-
-    controller = SimpleNamespace(apply_power_limit_w=_apply)
-    with pytest.raises(
-        NvmlError, match="driver rejected nvmlDeviceSetPowerManagementLimit"
-    ):
-        runtime.apply_auto_uv_profile_power_limit(
-            profile_label="L",
-            power_limit_w=360,
-            gpu_policy_controller=controller,
-        )
-
-
 # --- apply_auto_uv_profile_memory_offset -----------------------------------
 
 

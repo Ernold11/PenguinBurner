@@ -9,100 +9,69 @@
 use std::env;
 use std::fs;
 use std::fs::File;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, ExitStatus};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
-use serde::Serialize;
 use serde_json::Value;
+use shared_child::unix::SharedChildExt;
+use shared_child::SharedChild;
+use tempfile::NamedTempFile;
 
 use crate::api::{ActiveJob, StartResult, StatusResult, StopResult};
 use crate::logging;
 use crate::paths;
-use crate::profile::{self, EngineHandle, EngineOptions, StopOutcome};
+use crate::profile::{self, EngineHandle, RuntimeSpec, StopOutcome};
 
 const PROGRAM_FILE_ENV: &str = "PENGUIN_BURNER_DAEMON_PROGRAM_FILE";
-/// Test-only override for the last-runtime state file (production uses the fixed
-/// path below). Set by the integration tests to avoid touching `/var/lib`.
+/// Test-only overrides for the typed runtime-state files.
 const STATE_FILE_ENV: &str = "PENGUIN_BURNERD_TEST_STATE_FILE";
-const LAST_RUNTIME_STATE_PATH: &str = "/var/lib/penguin-burner/last-runtime.json";
+const BOOT_STATE_FILE_ENV: &str = "PENGUIN_BURNERD_TEST_BOOT_STATE_FILE";
+const ACTIVE_RUNTIME_STATE_PATH: &str = "/run/penguin-burner/active-runtime.json";
+const BOOT_RUNTIME_STATE_PATH: &str = "/var/lib/penguin-burner/boot-runtime.json";
 const ENGINE_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A spawned child process with a cached return code, mirroring `Popen.poll()`'s
-/// caching so status can still report the exit code after the child is reaped.
+/// Concurrent child handle with cached exit status and PID-reuse-safe signals.
 pub struct ChildProc {
-    child: Mutex<Child>,
-    pid: u32,
-    returncode: Mutex<Option<i32>>,
+    child: SharedChild,
 }
 
 impl ChildProc {
-    pub fn new(child: Child) -> Self {
-        let pid = child.id();
-        ChildProc {
-            child: Mutex::new(child),
-            pid,
-            returncode: Mutex::new(None),
-        }
+    pub fn new(child: Child) -> std::io::Result<Self> {
+        SharedChild::new(child).map(|child| ChildProc { child })
     }
 
     pub fn pid(&self) -> u32 {
-        self.pid
+        self.child.id()
     }
 
     /// Non-blocking `poll()`: `None` if still running, else the (cached) code.
     pub fn poll(&self) -> Option<i32> {
-        // Always lock child first, then returncode, to keep a single lock order.
-        let mut child = self.child.lock().unwrap_or_else(|p| p.into_inner());
-        let mut returncode = self.returncode.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(code) = *returncode {
-            return Some(code);
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let code = exit_code(status);
-                *returncode = Some(code);
-                Some(code)
-            }
-            _ => None,
-        }
+        self.child.try_wait().ok().flatten().map(exit_code)
     }
 
     /// Block until the child exits and return its code.
     pub fn wait(&self) -> i32 {
-        loop {
-            if let Some(code) = self.poll() {
-                return code;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        self.child.wait().map(exit_code).unwrap_or(-1)
     }
 
     /// Wait up to `timeout`; `None` on timeout, else the exit code.
     pub fn wait_timeout(&self, timeout: Duration) -> Option<i32> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(code) = self.poll() {
-                return Some(code);
-            }
-            if Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        self.child
+            .wait_timeout(timeout)
+            .ok()
+            .flatten()
+            .map(exit_code)
     }
 
     /// Send a signal, guarded like `Popen.send_signal` so a reaped (possibly
     /// reused) pid is never signalled. Errors are ignored (parity).
     pub fn signal(&self, sig: i32) {
-        if self.poll().is_some() {
-            return;
-        }
-        // SAFETY: kill() on our own child pid; a bad pid just returns an error.
-        unsafe {
-            libc::kill(self.pid as libc::pid_t, sig);
-        }
+        let _ = self.child.send_signal(sig);
     }
 }
 
@@ -153,7 +122,7 @@ pub struct ChildJob {
 
 struct ProfileJob {
     engine: EngineHandle,
-    argv: Vec<String>,
+    spec: RuntimeSpec,
 }
 
 pub struct Supervisor {
@@ -272,60 +241,95 @@ pub fn daemon_program_file() -> String {
         .unwrap_or_default()
 }
 
-fn state_file_path() -> PathBuf {
+fn active_state_file_path() -> PathBuf {
     if let Some(path) = env::var_os(STATE_FILE_ENV) {
         if !path.is_empty() {
             return PathBuf::from(path);
         }
     }
-    PathBuf::from(LAST_RUNTIME_STATE_PATH)
+    PathBuf::from(ACTIVE_RUNTIME_STATE_PATH)
 }
 
-/// Persist the last runtime action (best-effort). `program_file` is written for
-/// downgrade compatibility with the Python daemon and ignored on read.
-fn persist_last_runtime(argv: &[String]) {
-    #[derive(Serialize)]
-    struct State<'a> {
-        argv: &'a [String],
-        program_file: String,
+fn boot_state_file_path() -> PathBuf {
+    if let Some(path) = env::var_os(BOOT_STATE_FILE_ENV) {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
     }
-    let path = state_file_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let state = State {
-        argv,
-        program_file: daemon_program_file(),
+    PathBuf::from(BOOT_RUNTIME_STATE_PATH)
+}
+
+fn persist_runtime_spec(path: &PathBuf, spec: &RuntimeSpec) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("runtime state path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "failed to create runtime state directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let mut temp = NamedTempFile::new_in(parent).map_err(|error| {
+        format!(
+            "failed to create temporary runtime state in {}: {error}",
+            parent.display()
+        )
+    })?;
+    serde_json::to_writer(&mut temp, spec)
+        .map_err(|error| format!("failed to serialize runtime state: {error}"))?;
+    temp.write_all(b"\n")
+        .map_err(|error| format!("failed to write runtime state: {error}"))?;
+    temp.as_file()
+        .sync_all()
+        .map_err(|error| format!("failed to sync runtime state: {error}"))?;
+    temp.persist(path).map_err(|error| {
+        format!(
+            "failed to replace runtime state {}: {}",
+            path.display(),
+            error.error
+        )
+    })?;
+    Ok(())
+}
+
+fn load_runtime_spec(path: &PathBuf) -> Result<Option<RuntimeSpec>, String> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to read runtime state {}: {error}",
+                path.display()
+            ))
+        }
     };
-    if let Ok(text) = serde_json::to_string(&state) {
-        let _ = fs::write(&path, text);
+    let spec: RuntimeSpec = serde_json::from_str(&text)
+        .map_err(|error| format!("invalid runtime state {}: {error}", path.display()))?;
+    spec.validate()
+        .map_err(|error| format!("invalid runtime state {}: {error}", path.display()))?;
+    Ok(Some(spec))
+}
+
+fn persist_active_runtime(spec: &RuntimeSpec) {
+    if let Err(error) = persist_runtime_spec(&active_state_file_path(), spec) {
+        logging::error(&error);
     }
 }
 
-/// Read the persisted last runtime argv (or `None` on any error/invalid file).
-fn load_last_runtime() -> Option<Vec<String>> {
-    let text = fs::read_to_string(state_file_path()).ok()?;
-    let data: Value = serde_json::from_str(&text).ok()?;
-    let object = data.as_object()?;
-    let program_file = object
-        .get("program_file")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    if program_file.is_empty() {
-        return None;
+fn clear_active_runtime() {
+    let path = active_state_file_path();
+    if let Err(error) = fs::remove_file(&path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            logging::error(&format!(
+                "failed to clear active runtime state {}: {error}",
+                path.display()
+            ));
+        }
     }
-    let array = object.get("argv")?.as_array()?;
-    let mut argv = Vec::with_capacity(array.len());
-    for item in array {
-        argv.push(item.as_str()?.to_string());
-    }
-    Some(argv)
 }
 
 pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
     let supervisor = guard(sup);
-    let version = env!("CARGO_PKG_VERSION").to_string();
 
     if let Some(job) = &supervisor.child {
         let returncode = job.proc.poll();
@@ -346,16 +350,19 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
         } else {
             stopped_state
         };
-        return StatusResult {
-            state: state.to_string(),
-            active_job: Some(ActiveJob {
+        return StatusResult::new(
+            state,
+            Some(ActiveJob {
                 job_type,
                 argv: job.argv.clone(),
+                profile_id: None,
+                runtime_mode: None,
+                gpu_uuid: None,
+                silent_fan_curve: None,
                 pid: job.proc.pid(),
                 returncode,
             }),
-            version,
-        };
+        );
     }
 
     if let Some(job) = &supervisor.profile {
@@ -365,24 +372,23 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
         } else {
             "runtime_profile_stopped"
         };
-        return StatusResult {
-            state: state.to_string(),
-            active_job: Some(ActiveJob {
+        return StatusResult::new(
+            state,
+            Some(ActiveJob {
                 job_type: "runtime_profile",
-                argv: job.argv.clone(),
+                argv: Vec::new(),
+                profile_id: Some(job.spec.active_profile_id()),
+                runtime_mode: Some(job.spec.mode_name().to_string()),
+                gpu_uuid: Some(job.spec.gpu.uuid.clone()),
+                silent_fan_curve: Some(job.spec.fan.enabled),
                 // The engine is in-process, so the "job pid" is the daemon's pid.
                 pid: std::process::id(),
                 returncode,
             }),
-            version,
-        };
+        );
     }
 
-    StatusResult {
-        state: "idle".to_string(),
-        active_job: None,
-        version,
-    }
+    StatusResult::new("idle", None)
 }
 
 pub fn stop_auto_uv_scan(sup: &Mutex<Supervisor>) -> StopResult {
@@ -412,40 +418,128 @@ fn stop_child(sup: &Mutex<Supervisor>, kind: ChildKind) -> StopResult {
     }
 }
 
-pub fn start_runtime_profile(
+pub fn apply_runtime_spec(
     sup: &Mutex<Supervisor>,
-    argv: Vec<String>,
+    spec: RuntimeSpec,
 ) -> Result<StartResult, String> {
-    {
-        let mut supervisor = guard(sup);
-        match supervisor.child_running_kind() {
-            Some(ChildKind::Scan) => {
-                return Err(
-                    "cannot start a runtime profile while Auto-UV scan is running".to_string(),
-                );
-            }
-            Some(ChildKind::Verify) => {
-                return Err(
-                    "cannot start a runtime profile while profile verification is running"
-                        .to_string(),
-                );
-            }
-            None => {}
+    spec.validate()?;
+    let profile_id = spec.active_profile_id();
+    let runtime_mode = spec.mode_name().to_string();
+    let gpu_uuid = spec.gpu.uuid.clone();
+
+    let mut supervisor = guard(sup);
+    match supervisor.child_running_kind() {
+        Some(ChildKind::Scan) => {
+            return Err("cannot apply a runtime spec while Auto-UV scan is running".to_string());
         }
-        supervisor.stop_engine_for_child("a new runtime profile")?;
-        let engine = profile::start(EngineOptions::from_argv(&argv)).map_err(|e| e.to_string())?;
-        supervisor.profile = Some(ProfileJob {
-            engine,
-            argv: argv.clone(),
-        });
+        Some(ChildKind::Verify) => {
+            return Err(
+                "cannot apply a runtime spec while profile verification is running".to_string(),
+            );
+        }
+        None => {}
     }
-    // Persist outside the lock (best-effort), like the Python daemon.
-    persist_last_runtime(&argv);
-    Ok(StartResult {
-        started: true,
-        pid: std::process::id(),
-        argv,
-    })
+
+    let previous_spec = supervisor.profile.as_ref().map(|job| job.spec.clone());
+    supervisor.stop_engine_for_child("a new runtime spec")?;
+    match profile::start(spec.clone()) {
+        Ok(engine) => {
+            supervisor.profile = Some(ProfileJob {
+                engine,
+                spec: spec.clone(),
+            });
+            drop(supervisor);
+            persist_active_runtime(&spec);
+            Ok(StartResult {
+                started: true,
+                pid: std::process::id(),
+                profile_id,
+                runtime_mode,
+                gpu_uuid,
+            })
+        }
+        Err(error) => {
+            let (apply_error, failed_engine) = error.into_parts();
+            if let Some(engine) = failed_engine {
+                supervisor.profile = Some(ProfileJob {
+                    engine,
+                    spec: spec.clone(),
+                });
+                return Err(format!(
+                    "failed to apply runtime spec: {apply_error}; refusing rollback while the failed engine may still be running"
+                ));
+            }
+            let mut recovery = "no fallback runtime could be started".to_string();
+            let mut recovered_spec = None;
+            let mut recovery_engine_wedged = false;
+
+            if let Some(previous) = previous_spec {
+                match profile::start(previous.clone()) {
+                    Ok(engine) => {
+                        supervisor.profile = Some(ProfileJob {
+                            engine,
+                            spec: previous.clone(),
+                        });
+                        recovery = "previous runtime restored".to_string();
+                        recovered_spec = Some(previous);
+                    }
+                    Err(restore_error) => {
+                        let (message, failed_engine) = restore_error.into_parts();
+                        logging::error(&format!(
+                            "failed to restore previous runtime after apply failure: {message}"
+                        ));
+                        if let Some(engine) = failed_engine {
+                            supervisor.profile = Some(ProfileJob {
+                                engine,
+                                spec: previous.clone(),
+                            });
+                            recovered_spec = Some(previous);
+                            recovery = "previous runtime restore is still stopping".to_string();
+                            recovery_engine_wedged = true;
+                        }
+                    }
+                }
+            }
+
+            if recovered_spec.is_none() && !recovery_engine_wedged {
+                let stock = spec.stock_fallback();
+                match profile::start(stock.clone()) {
+                    Ok(engine) => {
+                        supervisor.profile = Some(ProfileJob {
+                            engine,
+                            spec: stock.clone(),
+                        });
+                        recovery = "stock fallback applied".to_string();
+                        recovered_spec = Some(stock);
+                    }
+                    Err(stock_error) => {
+                        let (message, failed_engine) = stock_error.into_parts();
+                        logging::error(&format!(
+                            "failed to apply stock fallback after runtime apply failure: {message}"
+                        ));
+                        if let Some(engine) = failed_engine {
+                            supervisor.profile = Some(ProfileJob {
+                                engine,
+                                spec: stock.clone(),
+                            });
+                            recovery = "stock fallback is still stopping".to_string();
+                            recovery_engine_wedged = true;
+                        }
+                    }
+                }
+            }
+
+            drop(supervisor);
+            if let Some(recovered) = recovered_spec {
+                persist_active_runtime(&recovered);
+            } else if !recovery_engine_wedged {
+                clear_active_runtime();
+            }
+            Err(format!(
+                "failed to apply runtime spec: {apply_error}; {recovery}"
+            ))
+        }
+    }
 }
 
 pub fn stop_runtime_profile(sup: &Mutex<Supervisor>) -> Result<StopResult, String> {
@@ -457,7 +551,9 @@ pub fn stop_runtime_profile(sup: &Mutex<Supervisor>) -> Result<StopResult, Strin
             match job.engine.stop(stop_timeout) {
                 StopOutcome::Stopped => {
                     supervisor.profile = None;
-                    Ok(StopResult::stopped(pid))
+                    drop(supervisor);
+                    clear_active_runtime();
+                    return Ok(StopResult::stopped(pid));
                 }
                 // Wedged engine: keep the job (so future scan/verification/
                 // profile starts still see it and refuse) and tell the client
@@ -468,13 +564,15 @@ pub fn stop_runtime_profile(sup: &Mutex<Supervisor>) -> Result<StopResult, Strin
                         "runtime profile engine did not stop within timeout (wedged GPU call?)"
                             .to_string();
                     logging::error(&message);
-                    Err(message)
+                    return Err(message);
                 }
             }
         }
-        // None or already-exited: do NOT clear the file (parity), report idle.
-        _ => Ok(StopResult::idle()),
+        _ => {}
     }
+    drop(supervisor);
+    clear_active_runtime();
+    Ok(StopResult::idle())
 }
 
 /// Result of the atomic child-start critical section.
@@ -514,8 +612,12 @@ pub fn begin_child(
         Err(err) => return ChildStart::SpawnFailed(err.to_string()),
     };
     let generation = supervisor.next_child_generation();
+    let proc = match ChildProc::new(child) {
+        Ok(proc) => proc,
+        Err(err) => return ChildStart::SpawnFailed(err.to_string()),
+    };
     let job = Arc::new(ChildJob {
-        proc: ChildProc::new(child),
+        proc,
         argv,
         generation,
         kind,
@@ -542,22 +644,131 @@ pub fn finish_child(sup: &Arc<Mutex<Supervisor>>, job: &Arc<ChildJob>) {
     }
 }
 
-/// Start the engine from the persisted last-runtime state, if any. Idempotent:
-/// does nothing when a profile job is already present (parity).
+pub fn set_boot_runtime_spec(spec: RuntimeSpec) -> Result<Value, String> {
+    spec.validate()?;
+    persist_runtime_spec(&boot_state_file_path(), &spec)?;
+    Ok(serde_json::json!({
+        "saved": true,
+        "profile_id": spec.active_profile_id(),
+        "runtime_mode": spec.mode_name(),
+        "gpu_uuid": spec.gpu.uuid,
+    }))
+}
+
+pub fn clear_boot_runtime_spec() -> Result<Value, String> {
+    let path = boot_state_file_path();
+    let cleared = match fs::remove_file(&path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(format!(
+                "failed to clear boot runtime state {}: {error}",
+                path.display()
+            ))
+        }
+    };
+    Ok(serde_json::json!({"cleared": cleared}))
+}
+
+pub fn boot_runtime_spec_summary() -> Result<Value, String> {
+    let Some(spec) = load_runtime_spec(&boot_state_file_path())? else {
+        return Ok(serde_json::json!({"configured": false}));
+    };
+    Ok(serde_json::json!({
+        "configured": true,
+        "profile_id": spec.active_profile_id(),
+        "runtime_mode": spec.mode_name(),
+        "gpu_uuid": spec.gpu.uuid,
+        "silent_fan_curve": spec.fan.enabled,
+    }))
+}
+
+/// Recover the current-session runtime first, then the explicit boot runtime.
+/// The `/run` state naturally disappears at reboot; boot persistence is a
+/// separate opt-in API instead of an accidental consequence of applying once.
+/// Once a valid spec reaches the GPU, failure recovery stays on that same GPU:
+/// start its stock fallback instead of trying an older spec that may identify a
+/// different GPU. Persisting the stock fallback shadows the broken intent only
+/// for the current boot; the explicit boot spec is retried after reboot.
 pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
     let mut supervisor = guard(sup);
     if supervisor.profile.is_some() {
         return;
     }
-    let Some(argv) = load_last_runtime() else {
-        return;
-    };
-    match profile::start(EngineOptions::from_argv(&argv)) {
-        Ok(engine) => {
-            logging::info(&format!("autostart runtime profile: {}", argv.join(" ")));
-            supervisor.profile = Some(ProfileJob { engine, argv });
+
+    let candidates = [
+        ("active-session", active_state_file_path()),
+        ("boot", boot_state_file_path()),
+    ];
+    for (source, path) in candidates {
+        let spec = match load_runtime_spec(&path) {
+            Ok(Some(spec)) => spec,
+            Ok(None) => continue,
+            Err(error) => {
+                logging::error(&error);
+                continue;
+            }
+        };
+        match profile::start(spec.clone()) {
+            Ok(engine) => {
+                logging::info(&format!(
+                    "recovered {source} runtime: mode={} profile={} gpu={}",
+                    spec.mode_name(),
+                    spec.active_profile_id(),
+                    spec.gpu.uuid
+                ));
+                supervisor.profile = Some(ProfileJob {
+                    engine,
+                    spec: spec.clone(),
+                });
+                drop(supervisor);
+                persist_active_runtime(&spec);
+                return;
+            }
+            Err(error) => {
+                let (message, failed_engine) = error.into_parts();
+                logging::error(&format!(
+                    "failed to recover {source} runtime from {}: {message}",
+                    path.display()
+                ));
+                if let Some(engine) = failed_engine {
+                    supervisor.profile = Some(ProfileJob { engine, spec });
+                    return;
+                }
+
+                if spec.mode_name() == "stock" {
+                    return;
+                }
+                let stock = spec.stock_fallback();
+                match profile::start(stock.clone()) {
+                    Ok(engine) => {
+                        logging::warn(&format!(
+                            "recovered failed {source} runtime with stock fallback for gpu={}",
+                            stock.gpu.uuid
+                        ));
+                        supervisor.profile = Some(ProfileJob {
+                            engine,
+                            spec: stock.clone(),
+                        });
+                        drop(supervisor);
+                        persist_active_runtime(&stock);
+                    }
+                    Err(stock_error) => {
+                        let (stock_message, failed_engine) = stock_error.into_parts();
+                        logging::error(&format!(
+                            "failed to apply stock fallback after {source} recovery failure: {stock_message}"
+                        ));
+                        if let Some(engine) = failed_engine {
+                            supervisor.profile = Some(ProfileJob {
+                                engine,
+                                spec: stock,
+                            });
+                        }
+                    }
+                }
+                return;
+            }
         }
-        Err(err) => logging::error(&format!("failed to start autostart runtime: {err}")),
     }
 }
 
@@ -584,20 +795,25 @@ mod tests {
     static STATE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct StateEnvGuard {
+        name: &'static str,
         previous: Option<std::ffi::OsString>,
     }
     impl StateEnvGuard {
         fn new(path: &std::path::Path) -> Self {
-            let previous = env::var_os(STATE_FILE_ENV);
-            env::set_var(STATE_FILE_ENV, path);
-            StateEnvGuard { previous }
+            Self::named(STATE_FILE_ENV, path)
+        }
+
+        fn named(name: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = env::var_os(name);
+            env::set_var(name, value);
+            StateEnvGuard { name, previous }
         }
     }
     impl Drop for StateEnvGuard {
         fn drop(&mut self) {
             match &self.previous {
-                Some(value) => env::set_var(STATE_FILE_ENV, value),
-                None => env::remove_var(STATE_FILE_ENV),
+                Some(value) => env::set_var(self.name, value),
+                None => env::remove_var(self.name),
             }
         }
     }
@@ -612,7 +828,7 @@ mod tests {
         let sup = Mutex::new(Supervisor::with_stop_timeout(stop_timeout));
         guard(&sup).profile = Some(ProfileJob {
             engine: profile::wedged_engine_for_test(wedge),
-            argv: vec!["--auto-uv-profile".to_string(), "test".to_string()],
+            spec: RuntimeSpec::test_stock("GPU-test"),
         });
         sup
     }
@@ -658,13 +874,9 @@ mod tests {
     }
 
     #[test]
-    fn start_runtime_profile_refuses_when_engine_stop_times_out() {
+    fn apply_runtime_spec_refuses_when_engine_stop_times_out() {
         let sup = wedged_supervisor(Duration::from_secs(5), Duration::from_millis(50));
-        let err = start_runtime_profile(
-            &sup,
-            vec!["--auto-uv-profile".to_string(), "other".to_string()],
-        )
-        .unwrap_err();
+        let err = apply_runtime_spec(&sup, RuntimeSpec::test_stock("GPU-other")).unwrap_err();
         assert!(err.contains("did not stop"), "{err}");
         assert!(guard(&sup).profile.is_some());
     }
@@ -744,49 +956,77 @@ mod tests {
     }
 
     #[test]
-    fn last_runtime_round_trip() {
+    fn active_runtime_round_trip() {
         let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = env::temp_dir().join(format!("pb-state-a-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
-        let path = dir.join("last-runtime.json");
+        let path = dir.join("active-runtime.json");
         let _guard = StateEnvGuard::new(&path);
 
-        let argv = vec![
-            "--auto-uv-profile".to_string(),
-            "profile-a".to_string(),
-            "--silent-fan-curve".to_string(),
-        ];
-        persist_last_runtime(&argv);
-        assert_eq!(load_last_runtime(), Some(argv));
+        let spec = RuntimeSpec::test_stock("GPU-round-trip");
+        persist_runtime_spec(&active_state_file_path(), &spec).unwrap();
+        let loaded = load_runtime_spec(&active_state_file_path())
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.gpu.uuid, "GPU-round-trip");
+        assert_eq!(loaded.mode_name(), "stock");
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn last_runtime_missing_program_file_is_none() {
+    fn legacy_argv_runtime_state_is_rejected() {
         let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = env::temp_dir().join(format!("pb-state-b-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
-        let path = dir.join("last-runtime.json");
+        let path = dir.join("active-runtime.json");
         let _guard = StateEnvGuard::new(&path);
 
         fs::write(&path, r#"{"argv":["--gpu-index","0"]}"#).unwrap();
-        assert_eq!(load_last_runtime(), None);
+        let error = load_runtime_spec(&active_state_file_path()).unwrap_err();
+        assert!(error.contains("invalid runtime state"), "{error}");
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn last_runtime_malformed_is_none() {
+    fn malformed_runtime_state_is_rejected() {
         let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = env::temp_dir().join(format!("pb-state-c-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
-        let path = dir.join("last-runtime.json");
+        let path = dir.join("active-runtime.json");
         let _guard = StateEnvGuard::new(&path);
 
         fs::write(&path, "{not json").unwrap();
-        assert_eq!(load_last_runtime(), None);
+        assert!(load_runtime_spec(&active_state_file_path()).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
-        fs::write(&path, r#"{"argv":[1,2],"program_file":"/x"}"#).unwrap();
-        assert_eq!(load_last_runtime(), None);
+    #[test]
+    fn autostart_apply_failure_recovers_to_stock_for_current_boot() {
+        let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = env::temp_dir().join(format!("pb-state-d-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let active_path = dir.join("active-runtime.json");
+        let boot_path = dir.join("boot-runtime.json");
+        let _active_guard = StateEnvGuard::new(&active_path);
+        let _boot_guard = StateEnvGuard::named(BOOT_STATE_FILE_ENV, &boot_path);
+        let _inert_guard = StateEnvGuard::named("PENGUIN_BURNERD_TEST_INERT_ENGINE", "1");
+        let _failure_guard =
+            StateEnvGuard::named("PENGUIN_BURNERD_TEST_FAIL_PROFILE_ID", "profile-that-fails");
+
+        let requested = RuntimeSpec::test_static("GPU-recovery", "profile-that-fails");
+        persist_runtime_spec(&active_path, &requested).unwrap();
+        let supervisor = Arc::new(Mutex::new(Supervisor::new()));
+
+        start_autostart_if_configured(&supervisor);
+
+        let running = guard(&supervisor);
+        let recovered = &running.profile.as_ref().expect("stock fallback").spec;
+        assert_eq!(recovered.mode_name(), "stock");
+        assert_eq!(recovered.gpu.uuid, "GPU-recovery");
+        drop(running);
+        let persisted = load_runtime_spec(&active_path).unwrap().unwrap();
+        assert_eq!(persisted.mode_name(), "stock");
+        shutdown(&supervisor);
         let _ = fs::remove_dir_all(&dir);
     }
 }

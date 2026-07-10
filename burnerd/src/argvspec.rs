@@ -3,19 +3,6 @@
 
 use serde_json::Value;
 
-/// Runtime-profile flags that take a following value.
-const RUNTIME_VALUE_FLAGS: &[&str] = &["--auto-uv-profile", "--gpu-index"];
-
-/// Runtime-profile bare option flags (no value). Kept in sync with the flags
-/// parsed by `profile::EngineOptions::from_argv` (the whitelist gates what the
-/// engine parser can receive).
-const RUNTIME_OPTION_FLAGS: &[&str] = &[
-    "--auto-uv-profile",
-    "--silent-fan-curve",
-    "--adaptive-auto-uv",
-    "--gpu-index",
-];
-
 /// Auto-UV option key → CLI flag, in the exact order the daemon emits them.
 /// Order is load-bearing: it fixes the argv order of the scan command.
 pub const AUTO_UV_OPTION_FLAGS: &[(&str, &str)] = &[
@@ -29,44 +16,6 @@ pub const AUTO_UV_OPTION_FLAGS: &[(&str, &str)] = &[
     ("auto_oc_target_voltage_mv", "--auto-oc-target-voltage-mv"),
     ("auto_oc_target_clock_mhz", "--auto-oc-target-clock-mhz"),
 ];
-
-/// Validate + normalize the runtime-profile argv (`_runtime_profile_argv`).
-/// Returns the argv unchanged on success, or the exact Python error string.
-pub fn parse_runtime_argv(argv: Option<&Value>) -> Result<Vec<String>, String> {
-    let array = match argv {
-        Some(Value::Array(items)) => items,
-        _ => return Err("runtime profile argv must be a JSON string list".to_string()),
-    };
-    let mut clean = Vec::with_capacity(array.len());
-    for item in array {
-        match item.as_str() {
-            Some(text) => clean.push(text.to_string()),
-            None => return Err("runtime profile argv must be a JSON string list".to_string()),
-        }
-    }
-
-    let mut index = 0;
-    while index < clean.len() {
-        let item = &clean[index];
-        if RUNTIME_VALUE_FLAGS.contains(&item.as_str()) {
-            if index + 1 >= clean.len() {
-                return Err(format!("{item} requires a value"));
-            }
-            index += 2;
-            continue;
-        }
-        if item.starts_with("--auto-uv-profile=") || item.starts_with("--gpu-index=") {
-            index += 1;
-            continue;
-        }
-        if RUNTIME_OPTION_FLAGS.contains(&item.as_str()) {
-            index += 1;
-            continue;
-        }
-        return Err(format!("unsupported runtime profile argument: {item}"));
-    }
-    Ok(clean)
-}
 
 /// Profile-verification option key → CLI flag, in the exact argv order of
 /// `ui/commands.py::profile_verify_command` (after the fixed `--stability-test`
@@ -365,64 +314,6 @@ mod tests {
         assert_eq!(
             profile_verify_option_args(&json!({"gpu_index": [1]})).unwrap_err(),
             "profile verification option gpu_index must be scalar"
-        );
-    }
-
-    #[test]
-    fn runtime_argv_accepts_whitelisted_forms() {
-        let argv = json!([
-            "--auto-uv-profile",
-            "profile-a",
-            "--silent-fan-curve",
-            "--adaptive-auto-uv",
-            "--gpu-index",
-            "0",
-        ]);
-        let parsed = parse_runtime_argv(Some(&argv)).unwrap();
-        assert_eq!(parsed.len(), 6);
-
-        let inline = json!(["--auto-uv-profile=latest", "--gpu-index=1"]);
-        assert_eq!(
-            parse_runtime_argv(Some(&inline)).unwrap(),
-            vec!["--auto-uv-profile=latest", "--gpu-index=1"]
-        );
-    }
-
-    #[test]
-    fn runtime_argv_rejects_unsupported() {
-        let err = parse_runtime_argv(Some(&json!(["--daemon-api", "/tmp/x"]))).unwrap_err();
-        assert_eq!(err, "unsupported runtime profile argument: --daemon-api");
-    }
-
-    #[test]
-    fn runtime_argv_rejects_missing_value() {
-        let err = parse_runtime_argv(Some(&json!(["--auto-uv-profile"]))).unwrap_err();
-        assert_eq!(err, "--auto-uv-profile requires a value");
-    }
-
-    #[test]
-    fn runtime_argv_rejects_non_list() {
-        assert_eq!(
-            parse_runtime_argv(None).unwrap_err(),
-            "runtime profile argv must be a JSON string list"
-        );
-        assert_eq!(
-            parse_runtime_argv(Some(&json!("x"))).unwrap_err(),
-            "runtime profile argv must be a JSON string list"
-        );
-        assert_eq!(
-            parse_runtime_argv(Some(&json!([1]))).unwrap_err(),
-            "runtime profile argv must be a JSON string list"
-        );
-    }
-
-    #[test]
-    fn runtime_argv_value_form_silent_fan_is_rejected() {
-        // `--silent-fan-curve=x` is not a value flag nor an `=`-prefixed one.
-        let err = parse_runtime_argv(Some(&json!(["--silent-fan-curve=x"]))).unwrap_err();
-        assert_eq!(
-            err,
-            "unsupported runtime profile argument: --silent-fan-curve=x"
         );
     }
 }

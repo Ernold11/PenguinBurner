@@ -11,16 +11,37 @@ use std::sync::Mutex;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::argvspec;
 use crate::delete;
 use crate::gpu_rpc;
+use crate::profile::RuntimeSpec;
 use crate::supervisor::{self, Supervisor};
+
+pub const PROTOCOL_MAJOR: u32 = 2;
+pub const PROTOCOL_MINOR: u32 = 0;
+pub const DAEMON_CAPABILITIES: &[&str] = &[
+    "gpu-capabilities-v1",
+    "gpu-telemetry-v1",
+    "gpu-vf-snapshot-v1",
+    "gpu-writes-v1",
+    "runtime-spec-v1",
+    "scan-stream-v1",
+    "verification-stream-v1",
+];
 
 #[derive(Debug, Serialize)]
 pub struct ActiveJob {
     #[serde(rename = "type")]
     pub job_type: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub argv: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_uuid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub silent_fan_curve: Option<bool>,
     pub pid: u32,
     pub returncode: Option<i32>,
 }
@@ -30,13 +51,31 @@ pub struct StatusResult {
     pub state: String,
     pub active_job: Option<ActiveJob>,
     pub version: String,
+    pub protocol_major: u32,
+    pub protocol_minor: u32,
+    pub capabilities: &'static [&'static str],
+}
+
+impl StatusResult {
+    pub fn new(state: impl Into<String>, active_job: Option<ActiveJob>) -> Self {
+        Self {
+            state: state.into(),
+            active_job,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: PROTOCOL_MINOR,
+            capabilities: DAEMON_CAPABILITIES,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
 pub struct StartResult {
     pub started: bool,
     pub pid: u32,
-    pub argv: Vec<String>,
+    pub profile_id: String,
+    pub runtime_mode: String,
+    pub gpu_uuid: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -187,7 +226,8 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
 
     let method = object.get("method").and_then(Value::as_str);
     let allowed_fields: &[&str] = match method {
-        Some("start_runtime_profile") => &["argv"],
+        Some("apply_runtime_spec") => &["spec"],
+        Some("set_boot_runtime_spec") => &["spec"],
         Some("delete_auto_uv_profiles") => &["paths"],
         Some(name) if gpu_rpc::is_gpu_method(name) => gpu_rpc::allowed_fields(name),
         _ => &[],
@@ -212,9 +252,19 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
         Some("stop_profile_verification") => Ok(MethodResult::Stop(
             supervisor::stop_profile_verification(sup),
         )),
-        Some("start_runtime_profile") => {
-            let argv = argvspec::parse_runtime_argv(object.get("argv"))?;
-            supervisor::start_runtime_profile(sup, argv).map(MethodResult::Start)
+        Some("apply_runtime_spec") => {
+            let spec = parse_runtime_spec(object.get("spec"))?;
+            supervisor::apply_runtime_spec(sup, spec).map(MethodResult::Start)
+        }
+        Some("set_boot_runtime_spec") => {
+            let spec = parse_runtime_spec(object.get("spec"))?;
+            supervisor::set_boot_runtime_spec(spec).map(MethodResult::Value)
+        }
+        Some("clear_boot_runtime_spec") => {
+            supervisor::clear_boot_runtime_spec().map(MethodResult::Value)
+        }
+        Some("boot_runtime_spec") => {
+            supervisor::boot_runtime_spec_summary().map(MethodResult::Value)
         }
         Some("stop_runtime_profile") => {
             supervisor::stop_runtime_profile(sup).map(MethodResult::Stop)
@@ -244,6 +294,17 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
     }
 }
 
+fn parse_runtime_spec(value: Option<&Value>) -> Result<RuntimeSpec, String> {
+    let value = value.ok_or_else(|| "spec must be an object".to_string())?;
+    if !value.is_object() {
+        return Err("spec must be an object".to_string());
+    }
+    let spec: RuntimeSpec = serde_json::from_value(value.clone())
+        .map_err(|error| format!("invalid runtime spec: {error}"))?;
+    spec.validate()?;
+    Ok(spec)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,8 +322,8 @@ mod tests {
         assert_eq!(
             text,
             format!(
-                "{{\"ok\":true,\"result\":{{\"state\":\"idle\",\"active_job\":null,\"version\":\"{}\"}}}}",
-                env!("CARGO_PKG_VERSION")
+                "{{\"ok\":true,\"result\":{{\"state\":\"idle\",\"active_job\":null,\"version\":\"{}\",\"protocol_major\":2,\"protocol_minor\":0,\"capabilities\":[\"gpu-capabilities-v1\",\"gpu-telemetry-v1\",\"gpu-vf-snapshot-v1\",\"gpu-writes-v1\",\"runtime-spec-v1\",\"scan-stream-v1\",\"verification-stream-v1\"]}}}}",
+                env!("CARGO_PKG_VERSION"),
             )
         );
     }
@@ -308,14 +369,28 @@ mod tests {
     }
 
     #[test]
-    fn start_runtime_profile_validates_argv_before_dispatch() {
+    fn legacy_runtime_argv_method_is_rejected() {
         let sup = fresh();
         let err = handle_request(
             &sup,
             &json!({"method": "start_runtime_profile", "argv": ["--daemon-api", "/tmp/x"]}),
         )
         .unwrap_err();
-        assert_eq!(err, "unsupported runtime profile argument: --daemon-api");
+        assert_eq!(err, "unknown request field: argv");
+    }
+
+    #[test]
+    fn apply_runtime_spec_requires_a_typed_object() {
+        let sup = fresh();
+        let error = handle_request(&sup, &json!({"method": "apply_runtime_spec"})).unwrap_err();
+        assert_eq!(error, "spec must be an object");
+
+        let error = handle_request(
+            &sup,
+            &json!({"method": "apply_runtime_spec", "spec": ["--gpu-index", "0"]}),
+        )
+        .unwrap_err();
+        assert_eq!(error, "spec must be an object");
     }
 
     #[test]

@@ -6,7 +6,22 @@ Afterburner-style cap only applies when the driver does not expose a range.
 
 from __future__ import annotations
 
-from drivers.nvidia.nvml_gpu_policy import driver_memory_offset_limit_mhz
+from integrations.afterburner.policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
+
+
+def driver_memory_offset_limit_mhz(policy_controller=None) -> int:
+    """Use the driver range when exposed, otherwise the proven fallback cap."""
+    if policy_controller is not None:
+        try:
+            driver_range = policy_controller.get_memory_clock_offset_range_mhz()
+        except Exception:
+            driver_range = None
+        if driver_range:
+            try:
+                return max(0, int(driver_range[1]))
+            except (TypeError, ValueError):
+                pass
+    return MAX_AFTERBURNER_MEM_OFFSET_MHZ
 
 
 def auto_uv_memory_offset_mhz(

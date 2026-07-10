@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import stat
 from pathlib import Path
@@ -36,6 +35,26 @@ FLATPAK_ACTIVE_SITE_PACKAGES = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_live_daemon_runtime_calls(monkeypatch):
+    monkeypatch.setattr(
+        runtime_service,
+        "_stop_active_runtime_before_daemon_restart",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        runtime_service,
+        "_apply_runtime",
+        lambda _argv, **_kwargs: ({"pid": 4321}, {"format_version": 1}),
+    )
+    monkeypatch.setattr(
+        runtime_service,
+        "_apply_persistent_runtime",
+        lambda _argv, **_kwargs: {"pid": 4321},
+    )
+    monkeypatch.setattr(runtime_service, "clear_boot_runtime_spec", lambda **_kwargs: {})
+
+
 def _write_fake_elf(path: Path, payload: bytes = b"daemon") -> None:
     path.write_bytes(b"\x7fELF" + payload)
 
@@ -68,7 +87,7 @@ def test_daemon_systemd_unit_uses_rust_binary_and_program_file(
     assert (
         f"Environment=PENGUIN_BURNER_DAEMON_PROGRAM_FILE={program.resolve()}" in unit
     )
-    assert "Environment=PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=60" in unit
+    assert "PENGUIN_BURNER_ADAPTIVE_TARGET_FPS" not in unit
     assert "PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64" not in unit
     assert "--daemon-api" not in unit
     assert "penguin_burner.sh" not in unit
@@ -252,7 +271,7 @@ def test_atomic_daemon_install_failure_keeps_old_binary(
     assert not list(destination.parent.glob(".penguin-burnerd.*"))
 
 
-def test_daemon_systemd_unit_uses_adaptive_target_fps_env(
+def test_daemon_systemd_unit_does_not_freeze_adaptive_policy_in_environment(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -265,7 +284,7 @@ def test_daemon_systemd_unit_uses_adaptive_target_fps_env(
         binary_path=RUST_DAEMON_BINARY,
     )
 
-    assert "Environment=PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=50" in unit
+    assert "PENGUIN_BURNER_ADAPTIVE_TARGET_FPS" not in unit
 
 
 def test_daemon_api_unit_uses_daemon_socket_and_program_file(
@@ -288,7 +307,7 @@ def test_daemon_api_unit_uses_daemon_socket_and_program_file(
     assert (
         f"Environment=PENGUIN_BURNER_DAEMON_PROGRAM_FILE={program.resolve()}" in unit
     )
-    # Autostart no longer travels as a unit env; it is seeded to last-runtime.json.
+    # Boot persistence is a typed spec sent over the socket, not a unit env.
     assert "PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64" not in unit
     assert "PenguinBurner.service" not in unit
 
@@ -315,7 +334,7 @@ def test_daemon_api_unit_preserves_desktop_profile_environment(
     assert "Environment=PENGUIN_BURNER_HOME=/home/jp" in unit
     assert "Environment=PENGUIN_BURNER_Q2RTX_UID=1000" in unit
     assert "Environment=PENGUIN_BURNER_Q2RTX_GID=1000" in unit
-    assert "Environment=PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=60" in unit
+    assert "PENGUIN_BURNER_ADAPTIVE_TARGET_FPS" not in unit
 
 
 def test_parse_runtime_argv_from_legacy_unit() -> None:
@@ -446,6 +465,12 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
     )
     monkeypatch.setattr(
         runtime_service,
+        "_apply_persistent_runtime",
+        lambda argv, **_kwargs: actions.append(("persist-runtime", list(argv)))
+        or {"pid": 4321},
+    )
+    monkeypatch.setattr(
+        runtime_service,
         "legacy_systemd_service_unit_path",
         lambda: legacy_unit,
     )
@@ -465,10 +490,10 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
         log=logs.append,
     )
 
-    assert actions[0] == (
+    assert (
         "run",
         ["/bin/systemctl", "disable", "--now", "PenguinBurner.service"],
-    )
+    ) in actions
     assert (
         "checked",
         ["/bin/systemctl", "enable", "penguin-burnerd.service"],
@@ -477,11 +502,7 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
         "checked",
         ["/bin/systemctl", "restart", "penguin-burnerd.service"],
     ) in actions
-    assert actions.index(
-        ("checked", ["/bin/systemctl", "daemon-reload"])
-    ) < actions.index(
-        ("clear-last-runtime", [])
-    ) < actions.index(
+    assert actions.index(("clear-last-runtime", [])) < actions.index(
         (
             "checked",
             ["/bin/systemctl", "restart", "penguin-burnerd.service"],
@@ -492,10 +513,10 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
         "ExecStart=/usr/libexec/penguin-burnerd --socket /run/penguin-burnerd.sock"
     ) in unit
     assert "PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64" not in unit
-    # Autostart now rides the seeded last-runtime.json state file, not a unit env.
-    seeded = json.loads(state_file.read_text(encoding="utf-8"))
-    assert seeded["argv"] == ["--auto-uv-profile", "profile-a"]
-    assert seeded["program_file"] == str(program.resolve())
+    assert ("persist-runtime", ["--auto-uv-profile", "profile-a"]) in actions
+    assert actions.index(
+        ("checked", ["/bin/systemctl", "restart", "penguin-burnerd.service"])
+    ) < actions.index(("persist-runtime", ["--auto-uv-profile", "profile-a"]))
     assert any("persistent service install" in message for message in logs)
 
 
@@ -536,6 +557,12 @@ def test_install_systemd_service_restarts_active_daemon_after_unit_update(
     )
     monkeypatch.setattr(
         runtime_service,
+        "_apply_persistent_runtime",
+        lambda argv, **_kwargs: actions.append(("persist-runtime", list(argv)))
+        or {"pid": 4321},
+    )
+    monkeypatch.setattr(
+        runtime_service,
         "legacy_systemd_service_unit_path",
         lambda: legacy_unit,
     )
@@ -567,14 +594,11 @@ def test_install_systemd_service_restarts_active_daemon_after_unit_update(
         "checked",
         ["/bin/systemctl", "enable", "--now", "penguin-burnerd.service"],
     ) not in actions
-    assert actions.index(
-        ("checked", ["/bin/systemctl", "daemon-reload"])
-    ) < actions.index(
-        ("clear-last-runtime", [])
-    ) < actions.index(
+    assert actions.index(("clear-last-runtime", [])) < actions.index(
         ("checked", ["/bin/systemctl", "restart", "penguin-burnerd.service"])
     )
     assert waited == [runtime_service.DEFAULT_DAEMON_SOCKET]
+    assert ("persist-runtime", ["--auto-uv-profile", "profile-a"]) in actions
 
 
 def test_migrate_to_daemon_service_disables_legacy_after_daemon_reachable(
@@ -620,6 +644,12 @@ def test_migrate_to_daemon_service_disables_legacy_after_daemon_reachable(
     )
     monkeypatch.setattr(
         runtime_service,
+        "_apply_persistent_runtime",
+        lambda argv, **_kwargs: actions.append(("persist-runtime", list(argv)))
+        or {"pid": 4321},
+    )
+    monkeypatch.setattr(
+        runtime_service,
         "legacy_systemd_service_unit_path",
         lambda: legacy_unit,
     )
@@ -644,10 +674,10 @@ def test_migrate_to_daemon_service_disables_legacy_after_daemon_reachable(
         "ExecStart=/usr/libexec/penguin-burnerd --socket /tmp/penguin-burnerd.sock"
     ) in unit_text
     assert "PENGUIN_BURNER_DAEMON_AUTOSTART_ARGV_B64" not in unit_text
-    # The migrated legacy autostart argv is seeded to the native daemon state file.
-    seeded = json.loads(state_file.read_text(encoding="utf-8"))
-    assert seeded["argv"] == ["--auto-uv-profile", "profile-a", "--adaptive-auto-uv"]
-    assert seeded["program_file"] == str(program.resolve())
+    assert (
+        "persist-runtime",
+        ["--auto-uv-profile", "profile-a", "--adaptive-auto-uv"],
+    ) in actions
     assert (
         "checked",
         ["/bin/systemctl", "enable", "penguin-burnerd.service"],
@@ -660,6 +690,11 @@ def test_migrate_to_daemon_service_disables_legacy_after_daemon_reachable(
         ("clear-last-runtime", [])
     ) < actions.index(
         ("checked", ["/bin/systemctl", "restart", "penguin-burnerd.service"])
+    ) < actions.index(
+        (
+            "persist-runtime",
+            ["--auto-uv-profile", "profile-a", "--adaptive-auto-uv"],
+        )
     ) < actions.index(
         ("run", ["/bin/systemctl", "disable", "--now", "PenguinBurner.service"])
     )
@@ -759,8 +794,11 @@ def test_daemonize_starts_daemon_service_and_runtime_profile(tmp_path, monkeypat
     monkeypatch.setattr(runtime_service, "_wait_for_daemon_status", lambda *_args: None)
     monkeypatch.setattr(
         runtime_service,
-        "start_runtime_profile",
-        lambda argv, **_kwargs: starts.append(list(argv)) or {"pid": 4321},
+        "_apply_runtime",
+        lambda argv, **_kwargs: (
+            starts.append(list(argv)) or {"pid": 4321},
+            {"format_version": 1},
+        ),
     )
 
     def fake_run(args, **_kwargs):
@@ -787,7 +825,7 @@ def test_daemonize_starts_daemon_service_and_runtime_profile(tmp_path, monkeypat
     assert not any("systemd-run" in " ".join(call) for call in calls)
     assert starts == [["--adaptive-auto-uv"]]
     unit = daemon_unit.read_text(encoding="utf-8")
-    assert "Environment=PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=120" in unit
+    assert "PENGUIN_BURNER_ADAPTIVE_TARGET_FPS" not in unit
     assert "Started runtime profile through penguin-burnerd.service" in "\n".join(logs)
 
 
@@ -828,8 +866,8 @@ def test_daemonize_restarts_only_when_existing_binary_changed(
     monkeypatch.setattr(runtime_service, "_wait_for_daemon_status", lambda *_args: None)
     monkeypatch.setattr(
         runtime_service,
-        "start_runtime_profile",
-        lambda *_args, **_kwargs: {"pid": 4321},
+        "_apply_runtime",
+        lambda *_args, **_kwargs: ({"pid": 4321}, {"format_version": 1}),
     )
     monkeypatch.setattr(
         runtime_service.subprocess,
@@ -893,8 +931,8 @@ def test_daemonize_preserves_pkexec_desktop_user_env(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(runtime_service, "_wait_for_daemon_status", lambda *_args: None)
     monkeypatch.setattr(
         runtime_service,
-        "start_runtime_profile",
-        lambda argv, **_kwargs: {"pid": 4321},
+        "_apply_runtime",
+        lambda argv, **_kwargs: ({"pid": 4321}, {"format_version": 1}),
     )
 
     def fake_run(args, **_kwargs):

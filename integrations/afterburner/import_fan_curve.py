@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import math
 from pathlib import Path
 import tomllib
@@ -10,6 +9,7 @@ import tomllib
 from common.penguin_burner_paths import (
     claim_desktop_user_ownership,
 )
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from .fan_curve import (
     highest_point_temperature_at_or_below_speed,
     highest_zero_speed_temperature,
@@ -74,45 +74,15 @@ def load_config(config_path: Path):
 
 
 def query_device_fan_limits(gpu_index: int):
-    nvml = ctypes.CDLL("libnvidia-ml.so.1")
-    c_uint = ctypes.c_uint
-    c_void_p = ctypes.c_void_p
-
-    nvml.nvmlInit_v2.restype = ctypes.c_int
-    nvml.nvmlShutdown.restype = ctypes.c_int
-    nvml.nvmlDeviceGetHandleByIndex_v2.argtypes = [c_uint, ctypes.POINTER(c_void_p)]
-    nvml.nvmlDeviceGetHandleByIndex_v2.restype = ctypes.c_int
-    nvml.nvmlDeviceGetMinMaxFanSpeed.argtypes = [
-        c_void_p,
-        ctypes.POINTER(c_uint),
-        ctypes.POINTER(c_uint),
-    ]
-    nvml.nvmlDeviceGetMinMaxFanSpeed.restype = ctypes.c_int
-
-    device = c_void_p()
-    fan_min = c_uint()
-    fan_max = c_uint()
-
-    rc = nvml.nvmlInit_v2()
-    if rc != 0:
-        return None, None
-
     try:
-        rc = nvml.nvmlDeviceGetHandleByIndex_v2(c_uint(gpu_index), ctypes.byref(device))
-        if rc != 0:
-            return None, None
-
-        rc = nvml.nvmlDeviceGetMinMaxFanSpeed(
-            device,
-            ctypes.byref(fan_min),
-            ctypes.byref(fan_max),
-        )
-        if rc != 0 or fan_max.value < fan_min.value:
-            return None, None
-
-        return float(fan_min.value), float(fan_max.value)
-    finally:
-        nvml.nvmlShutdown()
+        fan = DaemonGpuClient(int(gpu_index)).capabilities().fan
+    except Exception:
+        return None, None
+    minimum = fan.minimum_speed_pct
+    maximum = fan.maximum_speed_pct
+    if minimum is None or maximum is None or maximum < minimum:
+        return None, None
+    return float(minimum), float(maximum)
 
 
 def _toml_scalar(value):

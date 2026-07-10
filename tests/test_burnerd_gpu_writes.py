@@ -28,11 +28,11 @@ from typing import BinaryIO
 import pytest
 
 import runtime.daemon_client as daemon_client
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from drivers.nvidia.hidden_nvapi_vf import (
     ClockClientClkVfPointsControlV1,
     HiddenNvapiVfCurveReader,
 )
-from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
 from runtime.support.vf_curve_plan import apply_plan
 
 
@@ -100,7 +100,9 @@ def _wait_for_socket(handle: DaemonHandle) -> None:
         if handle.socket_path.exists():
             return
         if handle.proc.poll() is not None:
-            log_text = Path(handle.log.name).read_text(encoding="utf-8", errors="replace")
+            log_text = Path(handle.log.name).read_text(
+                encoding="utf-8", errors="replace"
+            )
             raise AssertionError(
                 f"daemon exited early (rc={handle.proc.returncode}):\n{log_text}"
             )
@@ -196,12 +198,9 @@ def rpc_spy(monkeypatch):
     return calls
 
 
-def _policy_controller(gpu_index: int = 0) -> NvmlGpuPolicyController:
-    """A controller whose write half never touches local NVML: the re-pointed
-    write methods only need ``_gpu_index`` (reads are not exercised here)."""
-    controller = NvmlGpuPolicyController.__new__(NvmlGpuPolicyController)
-    controller._gpu_index = int(gpu_index)
-    return controller
+def _policy_controller(gpu_index: int = 0) -> DaemonGpuClient:
+    """The client is lazy, so write-only tests require no setup read."""
+    return DaemonGpuClient(gpu_index)
 
 
 def _vf_reader(gpu_index: int = 0) -> HiddenNvapiVfCurveReader:
@@ -210,7 +209,9 @@ def _vf_reader(gpu_index: int = 0) -> HiddenNvapiVfCurveReader:
     return reader
 
 
-def _control_with_offsets(offsets_khz: dict[int, int]) -> ClockClientClkVfPointsControlV1:
+def _control_with_offsets(
+    offsets_khz: dict[int, int],
+) -> ClockClientClkVfPointsControlV1:
     """A control struct with exactly ``offsets_khz``'s indices masked and their
     ``freq_offset_khz`` values set (what a GET+mutate would produce)."""
     control = ClockClientClkVfPointsControlV1()
@@ -220,7 +221,55 @@ def _control_with_offsets(offsets_khz: dict[int, int]) -> ClockClientClkVfPoints
     return control
 
 
-# --- NvmlGpuPolicyController writes ------------------------------------------
+# --- DaemonGpuClient writes --------------------------------------------------
+
+
+def test_typed_gpu_read_snapshots_route_through_daemon(make_daemon, rpc_spy):
+    make_daemon()
+
+    status = daemon_client.require_daemon_capabilities(
+        "gpu-capabilities-v1",
+        "gpu-telemetry-v1",
+        "gpu-vf-snapshot-v1",
+    )
+    capabilities = daemon_client.gpu_capabilities(0)
+    telemetry = daemon_client.gpu_telemetry(0)
+    vf_snapshot = daemon_client.gpu_vf_snapshot(0)
+
+    assert status["protocol_major"] == 2
+    assert capabilities["identity"]["uuid"] == "GPU-mock-0"
+    assert capabilities["gpu_count"] == 1
+    assert capabilities["supported_core_clock_steps_mhz"] == [1800, 1900, 2000, 2100]
+    assert telemetry["temperature_c"] == 55.0
+    assert telemetry["fan_speeds_pct"] == [42, 43]
+    assert telemetry["voltage_mv"] == 900
+    assert vf_snapshot["points"] == [
+        {
+            "index": 12,
+            "type": 0,
+            "voltage_based": 1,
+            "freq_khz": 2_800_000,
+            "voltage_uv": 900_000,
+            "base_freq_khz": 2_680_000,
+            "base_voltage_uv": 900_000,
+            "current_offset_khz": 120_000,
+        }
+    ]
+    assert [request["method"] for request, _result in rpc_spy] == [
+        "status",
+        "gpu_capabilities",
+        "gpu_telemetry",
+        "gpu_vf_snapshot",
+    ]
+
+
+def test_daemon_capability_gate_rejects_missing_feature(make_daemon):
+    make_daemon()
+    with pytest.raises(
+        daemon_client.DaemonCompatibilityError,
+        match="missing required capabilities: future-feature-v9",
+    ):
+        daemon_client.require_daemon_capabilities("future-feature-v9")
 
 
 def test_apply_power_limit_routes_watts_through_daemon(make_daemon, rpc_spy):
@@ -371,6 +420,18 @@ def test_reset_locked_clocks_route_through_daemon(make_daemon, rpc_spy):
     assert rpc_spy[1][1]["mock_ops"] == ["ResetLockedMemoryClocks"]
 
 
+def test_reset_fans_routes_through_daemon(make_daemon, rpc_spy):
+    make_daemon()
+
+    result = daemon_client.gpu_reset_fans(0)
+
+    assert result["reset"] is True
+    assert result["fan_count"] == 2
+    request, response = rpc_spy[-1]
+    assert request == {"method": "gpu_reset_fans", "gpu_index": 0}
+    assert response["mock_ops"] == ["SetAllFansDefault { fan_count: 2 }"]
+
+
 def test_apply_clock_offsets_units_and_readback(make_daemon, rpc_spy):
     make_daemon()
     controller = _policy_controller()
@@ -499,8 +560,12 @@ def test_apply_plan_produces_byte_identical_offsets(make_daemon, rpc_spy):
 # Editable tail curve: indices ascend with voltage, so the TAIL (highest
 # voltages) is the top of the mask -- the high-voltage end the sweep raises.
 _TAIL_BASE_CURVE = [
-    {"index": 10 + i, "voltage_mv": 800 + 15 * i, "base_mhz": 2100 + 20 * i,
-     "target_mhz": 2100 + 20 * i}
+    {
+        "index": 10 + i,
+        "voltage_mv": 800 + 15 * i,
+        "base_mhz": 2100 + 20 * i,
+        "target_mhz": 2100 + 20 * i,
+    }
     for i in range(12)
 ]
 _TAIL_LOCK_CLOCK_MHZ = 2400

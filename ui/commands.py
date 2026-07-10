@@ -282,14 +282,13 @@ def _host_equivalent_command(command: list[str]) -> list[str]:
 
 def daemon_migration_command() -> list[str]:
     if running_in_flatpak():
-        return _flatpak_daemon_install_command(autostart_argv=None)
+        return _flatpak_daemon_install_command(autostart_intent=None)
     return privileged_command([*cli_base_command(), "--migrate-to-daemon-service"])
 
 
 def _flatpak_daemon_restart_and_wait_script() -> str:
     return r"""
 daemon_socket=/run/penguin-burnerd.sock
-last_runtime_state=/var/lib/penguin-burner/last-runtime.json
 
 wait_for_penguin_burnerd() {
     attempt=0
@@ -353,6 +352,12 @@ def runtime_profile_command(
     adaptive_auto_uv: bool = False,
     gpu_index: int | None = None,
 ) -> list[str]:
+    intent = {
+        "profile_selector": str(profile_selector or "").strip(),
+        "silent_fan_curve": bool(silent_fan_curve),
+        "adaptive_auto_uv": bool(adaptive_auto_uv),
+        "gpu_index": None if gpu_index is None else max(0, int(gpu_index)),
+    }
     runtime_argv: list[str] = []
     if action == "daemonize":
         service_flag = "--daemonize"
@@ -371,33 +376,39 @@ def runtime_profile_command(
     if gpu_index is not None:
         runtime_argv.extend(["--gpu-index", str(max(0, int(gpu_index)))])
     if action == "daemonize":
-        return _daemon_runtime_profile_command(runtime_argv)
+        return _daemon_runtime_profile_command(intent)
     if running_in_flatpak():
-        return _flatpak_systemd_profile_command(action, runtime_argv)
+        return _flatpak_systemd_profile_command(action, runtime_argv, intent)
     command = [*cli_base_command(), service_flag, *runtime_argv]
     return privileged_command(command)
 
 
-def _daemon_runtime_profile_command(runtime_argv: list[str]) -> list[str]:
+def _daemon_runtime_profile_command(intent: dict) -> list[str]:
     return [
         sys.executable,
         "-m",
         "runtime.daemon_client",
-        "start-runtime-profile",
-        json.dumps(list(runtime_argv), separators=(",", ":")),
+        "apply-runtime-intent",
+        json.dumps(intent, separators=(",", ":")),
     ]
 
 
-def _flatpak_systemd_profile_command(action: str, runtime_argv: list[str]) -> list[str]:
+def _flatpak_systemd_profile_command(
+    action: str,
+    runtime_argv: list[str],
+    intent: dict,
+) -> list[str]:
     if action == "install-systemd":
-        return _flatpak_daemon_install_command(autostart_argv=list(runtime_argv))
+        return _flatpak_daemon_install_command(
+            autostart_intent=dict(intent) if runtime_argv else {}
+        )
     if action == "uninstall-systemd":
         return _flatpak_uninstall_systemd_command()
     raise ValueError(f"unknown runtime profile action: {action}")
 
 
 def _flatpak_daemon_install_command(
-    *, autostart_argv: list[str] | None
+    *, autostart_intent: dict | None
 ) -> list[str]:
     """Elevated host-side install of the Rust daemon from a Flatpak sandbox.
 
@@ -408,17 +419,18 @@ def _flatpak_daemon_install_command(
     /etc/systemd/system, and enables+restarts it. ExecStart points at the fixed
     /usr/libexec path, so unit generation needs no flatpak-specific ExecStart.
 
-    ``autostart_argv`` is None for the migrate/repair flow (clear stale
-    last-runtime state from old deployments); a list (possibly empty) means
-    "persist THIS profile": clear the state file, then seed it so the daemon
-    replays the installed profile on boot.
+    ``autostart_intent`` is None for migration/repair, an empty dict for no boot
+    runtime, or a semantic intent that the newly installed daemon resolves and
+    persists through its typed API.
     """
     from runtime.support.runtime_service import (
+        BOOT_RUNTIME_STATE_PATH,
         LAST_RUNTIME_STATE_PATH,
         LIBEXEC_DAEMON_BINARY,
         build_daemon_api_service_unit,
         flatpak_host_app_path,
         flatpak_host_cli_program_file,
+        flatpak_host_site_packages_path,
     )
 
     program_file = flatpak_host_cli_program_file()
@@ -433,33 +445,23 @@ def _flatpak_daemon_install_command(
         f"PENGUIN_BURNER_DAEMON_BINARY_SRC={daemon_binary_src}",
         f"PENGUIN_BURNER_SYSTEMD_UNIT_B64={encoded_unit}",
     ]
-    state_block = 'rm -f "$last_runtime_state"\n'
-    if autostart_argv is not None:
-        state_json = (
-            json.dumps(
-                {
-                    "argv": [str(arg) for arg in autostart_argv],
-                    "program_file": str(program_file),
-                },
-                separators=(",", ":"),
-            )
-            if autostart_argv
-            else ""
-        )
+    runtime_block = ""
+    if autostart_intent:
+        intent_json = json.dumps(autostart_intent, separators=(",", ":"))
         environment.extend(
             [
-                f"PENGUIN_BURNER_LAST_RUNTIME_PATH={LAST_RUNTIME_STATE_PATH}",
-                "PENGUIN_BURNER_LAST_RUNTIME_B64="
-                + base64.b64encode(state_json.encode("utf-8")).decode("ascii"),
+                "PENGUIN_BURNER_RUNTIME_INTENT_B64="
+                + base64.b64encode(intent_json.encode("utf-8")).decode("ascii"),
+                f"PENGUIN_BURNER_RUNTIME_PYTHONPATH={flatpak_host_site_packages_path()}",
+                f"PENGUIN_BURNER_RUNTIME_HOME={_desktop_user_home()}",
             ]
         )
-        state_block = (
-            'rm -f "$PENGUIN_BURNER_LAST_RUNTIME_PATH"\n'
-            'if [ -n "${PENGUIN_BURNER_LAST_RUNTIME_B64:-}" ]; then\n'
-            '    mkdir -p "$(dirname "$PENGUIN_BURNER_LAST_RUNTIME_PATH")"\n'
-            "    printf '%s' \"$PENGUIN_BURNER_LAST_RUNTIME_B64\" | base64 -d "
-            '> "$PENGUIN_BURNER_LAST_RUNTIME_PATH"\n'
-            "fi\n"
+        runtime_block = (
+            "\nintent_json=\"$(printf '%s' \"$PENGUIN_BURNER_RUNTIME_INTENT_B64\" | base64 -d)\"\n"
+            "env PYTHONPATH=\"$PENGUIN_BURNER_RUNTIME_PYTHONPATH\" "
+            "PENGUIN_BURNER_HOME=\"$PENGUIN_BURNER_RUNTIME_HOME\" "
+            "/usr/bin/python3 -m runtime.daemon_client apply-runtime-intent "
+            "--boot \"$intent_json\"\n"
         )
 
     script = "\n".join(
@@ -511,13 +513,20 @@ if [ -f "$legacy_unit" ]; then
 fi
 trap - EXIT HUP INT TERM
 """
-                + state_block
+                + (
+                    f'\nrm -f "{LAST_RUNTIME_STATE_PATH}" '
+                    f'"{BOOT_RUNTIME_STATE_PATH}" '
+                    '/run/penguin-burner/active-runtime.json\n'
+                )
                 + r"""
 systemctl daemon-reload
 systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
 systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
 systemctl enable penguin-burnerd.service
 restart_penguin_burnerd
+"""
+                + runtime_block
+                + r"""
 echo "Copied penguin-burnerd to /usr/libexec/penguin-burnerd."
 echo "Installed and enabled penguin-burnerd.service at $unit."
 echo "Follow the journal with: journalctl -u penguin-burnerd.service --since \"-4 hours\" -f"
@@ -542,9 +551,11 @@ def _flatpak_uninstall_systemd_command() -> list[str]:
 legacy_unit=/etc/systemd/system/PenguinBurner.service
 daemon_unit=/etc/systemd/system/penguin-burnerd.service
 last_runtime_state=/var/lib/penguin-burner/last-runtime.json
+boot_runtime_state=/var/lib/penguin-burner/boot-runtime.json
+active_runtime_state=/run/penguin-burner/active-runtime.json
 systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
 systemctl disable --now penguin-burnerd.service >/dev/null 2>&1 || true
-rm -f "$legacy_unit" "$daemon_unit" "$last_runtime_state"
+rm -f "$legacy_unit" "$daemon_unit" "$last_runtime_state" "$boot_runtime_state" "$active_runtime_state"
 systemctl daemon-reload
 systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
 systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true

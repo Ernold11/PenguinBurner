@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import json
 import shlex
 import subprocess
 
@@ -12,8 +11,8 @@ from profiles.uv.profile_store import read_auto_uv_profile_summaries
 from profiles.uv.profile_tiers import available_adaptive_tiers
 from profiles.uv.profile_tiers import profile_tier_label
 from profiles.uv.profile_tiers import resolve_profile_tier_profiles
+from runtime.daemon_client import boot_runtime_spec
 from runtime.daemon_client import daemon_status
-from runtime.support.runtime_service import LAST_RUNTIME_STATE_PATH
 from runtime.support.runtime_service import LEGACY_PENGUIN_BURNER_UNIT_NAME
 from runtime.support.runtime_service import PENGUIN_BURNER_UNIT_NAME
 from runtime.support.runtime_service import SYSTEMCTL
@@ -221,10 +220,11 @@ def runner_status_text(
 def systemd_autostart_profile_info() -> dict[str, object]:
     if not systemd_service_is_enabled():
         return _legacy_systemd_autostart_profile_info()
-    argv = _daemon_unit_autostart_argv()
-    if argv:
-        return profile_info_from_command_parts(argv)
-    return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+    try:
+        summary = boot_runtime_spec(timeout_s=1.0)
+    except Exception:
+        summary = {}
+    return _profile_info_from_runtime_summary(summary, require_configured=True)
 
 
 def running_auto_uv_profile_info() -> dict[str, object]:
@@ -367,20 +367,6 @@ def _command_parts(command_text: str) -> list[str]:
         return str(command_text or "").split()
 
 
-def _daemon_unit_autostart_argv() -> list[str]:
-    # The native Rust daemon carries the autostart intent in the world-readable
-    # last-runtime state file (not a base64 unit env), so the unprivileged GUI
-    # reads the argv from there. Missing/unreadable -> no autostart argv.
-    try:
-        data = json.loads(LAST_RUNTIME_STATE_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    argv = data.get("argv") if isinstance(data, dict) else None
-    if isinstance(argv, list) and all(isinstance(item, str) for item in argv):
-        return list(argv)
-    return []
-
-
 def _legacy_systemd_unit_exec_start() -> str:
     try:
         text = legacy_systemd_service_unit_path().read_text(
@@ -462,10 +448,31 @@ def _daemon_running_profile_info() -> dict[str, object]:
     if str(payload.get("state") or "") != "runtime_profile_running":
         return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
     active_job = payload.get("active_job")
+    if isinstance(active_job, dict) and str(active_job.get("runtime_mode") or ""):
+        return _profile_info_from_runtime_summary(active_job)
     argv = active_job.get("argv") if isinstance(active_job, dict) else []
     if isinstance(argv, list) and all(isinstance(item, str) for item in argv):
         return profile_info_from_command_parts(list(argv), default_if_present=True)
     return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+
+
+def _profile_info_from_runtime_summary(
+    summary: dict,
+    *,
+    require_configured: bool = False,
+) -> dict[str, object]:
+    if not isinstance(summary, dict) or (
+        require_configured and not bool(summary.get("configured"))
+    ):
+        return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+    mode = str(summary.get("runtime_mode") or "").strip().lower()
+    profile_id = str(summary.get("profile_id") or "").strip()
+    selector = STOCK_PROFILE_SELECTOR if mode == "stock" else profile_id
+    return {
+        "selector": selector,
+        "silent_fan_curve": bool(summary.get("silent_fan_curve")),
+        "adaptive_auto_uv": mode == "adaptive",
+    }
 
 
 def _daemon_status_payload() -> dict[str, object]:

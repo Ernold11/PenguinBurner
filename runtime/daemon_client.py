@@ -23,6 +23,12 @@ DAEMON_SOCKET_ENV = "PENGUIN_BURNER_DAEMON_SOCKET"
 # VF-curve get-mutate-set) and serialize under the daemon's backend mutex, so
 # they get a far larger budget than the 3 s control-plane default.
 GPU_WRITE_TIMEOUT_S = 30.0
+GPU_READ_TIMEOUT_S = 10.0
+DAEMON_PROTOCOL_MAJOR = 2
+
+
+class DaemonCompatibilityError(RuntimeError):
+    """The reachable daemon cannot serve this client's required protocol."""
 
 
 def _resolved_socket_path(socket_path: str | Path | None) -> str | Path:
@@ -126,6 +132,91 @@ def daemon_status(
     return daemon_request("status", socket_path=socket_path, timeout_s=timeout_s)
 
 
+def require_daemon_capabilities(
+    *required: str,
+    socket_path: str | Path | None = None,
+    timeout_s: float = 3.0,
+) -> dict[str, Any]:
+    """Return status only when the daemon protocol and capabilities match."""
+    status = daemon_status(
+        socket_path=_resolved_socket_path(socket_path),
+        timeout_s=timeout_s,
+    )
+    raw_protocol_major = status.get("protocol_major")
+    if raw_protocol_major is None:
+        raise DaemonCompatibilityError(
+            "PenguinBurner hardware service predates the versioned protocol"
+        )
+    try:
+        protocol_major = int(raw_protocol_major)
+    except (TypeError, ValueError) as exc:
+        raise DaemonCompatibilityError(
+            "PenguinBurner hardware service predates the versioned protocol"
+        ) from exc
+    if protocol_major != DAEMON_PROTOCOL_MAJOR:
+        raise DaemonCompatibilityError(
+            "PenguinBurner hardware service protocol mismatch: "
+            f"client={DAEMON_PROTOCOL_MAJOR}, daemon={protocol_major}"
+        )
+    available = {
+        str(item)
+        for item in status.get("capabilities", [])
+        if str(item).strip()
+    }
+    missing = sorted({str(item) for item in required if str(item)} - available)
+    if missing:
+        raise DaemonCompatibilityError(
+            "PenguinBurner hardware service is missing required capabilities: "
+            + ", ".join(missing)
+        )
+    return status
+
+
+def gpu_capabilities(
+    gpu_index: int,
+    *,
+    socket_path: str | Path | None = None,
+    timeout_s: float = GPU_READ_TIMEOUT_S,
+) -> dict[str, Any]:
+    return _gpu_request(
+        "gpu_capabilities",
+        gpu_index,
+        {},
+        socket_path=socket_path,
+        timeout_s=timeout_s,
+    )
+
+
+def gpu_telemetry(
+    gpu_index: int,
+    *,
+    socket_path: str | Path | None = None,
+    timeout_s: float = GPU_READ_TIMEOUT_S,
+) -> dict[str, Any]:
+    return _gpu_request(
+        "gpu_telemetry",
+        gpu_index,
+        {},
+        socket_path=socket_path,
+        timeout_s=timeout_s,
+    )
+
+
+def gpu_vf_snapshot(
+    gpu_index: int,
+    *,
+    socket_path: str | Path | None = None,
+    timeout_s: float = GPU_READ_TIMEOUT_S,
+) -> dict[str, Any]:
+    return _gpu_request(
+        "gpu_vf_snapshot",
+        gpu_index,
+        {},
+        socket_path=socket_path,
+        timeout_s=timeout_s,
+    )
+
+
 def probe_power_limit_support(
     gpu_index: int,
     *,
@@ -139,14 +230,51 @@ def probe_power_limit_support(
     )
 
 
-def start_runtime_profile(
-    argv: list[str],
+def apply_runtime_spec(
+    spec: dict[str, Any],
+    *,
+    socket_path: str | Path = DEFAULT_DAEMON_SOCKET,
+    timeout_s: float = 45.0,
+) -> dict[str, Any]:
+    return daemon_payload_request(
+        {"method": "apply_runtime_spec", "spec": dict(spec)},
+        socket_path=socket_path,
+        timeout_s=timeout_s,
+    )
+
+
+def set_boot_runtime_spec(
+    spec: dict[str, Any],
+    *,
+    socket_path: str | Path = DEFAULT_DAEMON_SOCKET,
+    timeout_s: float = 10.0,
+) -> dict[str, Any]:
+    return daemon_payload_request(
+        {"method": "set_boot_runtime_spec", "spec": dict(spec)},
+        socket_path=socket_path,
+        timeout_s=timeout_s,
+    )
+
+
+def clear_boot_runtime_spec(
+    *,
+    socket_path: str | Path = DEFAULT_DAEMON_SOCKET,
+    timeout_s: float = 10.0,
+) -> dict[str, Any]:
+    return daemon_request(
+        "clear_boot_runtime_spec",
+        socket_path=socket_path,
+        timeout_s=timeout_s,
+    )
+
+
+def boot_runtime_spec(
     *,
     socket_path: str | Path = DEFAULT_DAEMON_SOCKET,
     timeout_s: float = 3.0,
 ) -> dict[str, Any]:
-    return daemon_payload_request(
-        {"method": "start_runtime_profile", "argv": list(argv)},
+    return daemon_request(
+        "boot_runtime_spec",
         socket_path=socket_path,
         timeout_s=timeout_s,
     )
@@ -325,6 +453,36 @@ def gpu_reset_locked_memory_clocks(
     )
 
 
+def gpu_reset_defaults(
+    gpu_index,
+    *,
+    socket_path: str | Path | None = None,
+    timeout_s: float = GPU_WRITE_TIMEOUT_S,
+) -> dict[str, Any]:
+    return _gpu_request(
+        "gpu_reset_defaults",
+        gpu_index,
+        {},
+        socket_path=socket_path,
+        timeout_s=timeout_s,
+    )
+
+
+def gpu_reset_fans(
+    gpu_index,
+    *,
+    socket_path: str | Path | None = None,
+    timeout_s: float = GPU_WRITE_TIMEOUT_S,
+) -> dict[str, Any]:
+    return _gpu_request(
+        "gpu_reset_fans",
+        gpu_index,
+        {},
+        socket_path=socket_path,
+        timeout_s=timeout_s,
+    )
+
+
 def gpu_enable_persistence_mode(
     gpu_index,
     *,
@@ -478,8 +636,14 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("stop-profile-verification")
     start = subparsers.add_parser("start-auto-uv")
     start.add_argument("options_json")
-    runtime = subparsers.add_parser("start-runtime-profile")
-    runtime.add_argument("argv_json")
+    runtime = subparsers.add_parser("apply-runtime-intent")
+    runtime.add_argument("--boot", action="store_true")
+    runtime.add_argument("intent_json")
+    runtime_spec = subparsers.add_parser("apply-runtime-spec")
+    runtime_spec.add_argument("spec_json")
+    boot_spec = subparsers.add_parser("set-boot-runtime-spec")
+    boot_spec.add_argument("spec_json")
+    subparsers.add_parser("clear-boot-runtime-spec")
     verify = subparsers.add_parser("start-profile-verification")
     verify.add_argument("options_json")
     delete = subparsers.add_parser("delete-auto-uv-profiles")
@@ -542,17 +706,33 @@ def main(argv: list[str] | None = None) -> int:
             label = "profile" if count == 1 else "profiles"
             print(f"Deleted {count} saved Auto-UV {label}.", flush=True)
             return 0
-        if args.command == "start-runtime-profile":
-            runtime_argv = json.loads(args.argv_json)
-            if not isinstance(runtime_argv, list) or not all(
-                isinstance(item, str) for item in runtime_argv
-            ):
-                raise RuntimeError("runtime profile argv JSON must be a string list")
+        if args.command == "apply-runtime-intent":
+            intent = json.loads(args.intent_json)
+            from runtime.runtime_spec import build_runtime_spec_from_intent
+
+            spec = build_runtime_spec_from_intent(intent)
+            result = apply_runtime_spec(spec, socket_path=args.socket)
+            if args.boot:
+                set_boot_runtime_spec(spec, socket_path=args.socket)
             print(
-                json.dumps(
-                    start_runtime_profile(runtime_argv, socket_path=args.socket),
-                    indent=2,
-                ),
+                json.dumps(result, indent=2),
+                flush=True,
+            )
+            return 0
+        if args.command in {"apply-runtime-spec", "set-boot-runtime-spec"}:
+            spec = json.loads(args.spec_json)
+            if not isinstance(spec, dict):
+                raise RuntimeError("runtime spec JSON must be an object")
+            result = (
+                apply_runtime_spec(spec, socket_path=args.socket)
+                if args.command == "apply-runtime-spec"
+                else set_boot_runtime_spec(spec, socket_path=args.socket)
+            )
+            print(json.dumps(result, indent=2), flush=True)
+            return 0
+        if args.command == "clear-boot-runtime-spec":
+            print(
+                json.dumps(clear_boot_runtime_spec(socket_path=args.socket), indent=2),
                 flush=True,
             )
             return 0

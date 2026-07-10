@@ -6,7 +6,6 @@ from runtime.support.adaptive_target_fps import (
     adaptive_target_fps_from_config,
     adaptive_target_fps_from_env,
     adaptive_target_ms_from_fps,
-    format_adaptive_target_fps,
     parse_adaptive_target_fps,
 )
 from cli.runtime_config_file import persist_adaptive_target_fps_to_runtime_config
@@ -93,8 +92,3 @@ def test_adaptive_target_fps_rejects_invalid_values() -> None:
     assert parse_adaptive_target_fps("0") == DEFAULT_ADAPTIVE_TARGET_FPS
     assert parse_adaptive_target_fps("nan") == DEFAULT_ADAPTIVE_TARGET_FPS
     assert parse_adaptive_target_fps("fast") == DEFAULT_ADAPTIVE_TARGET_FPS
-
-
-def test_format_adaptive_target_fps_keeps_unit_clean() -> None:
-    assert format_adaptive_target_fps(60.0) == "60"
-    assert format_adaptive_target_fps(59.94) == "59.94"

@@ -55,21 +55,6 @@ class FlattenedClockCeilingController:
             return int(self.target_clock_mhz)
         return int(self._range_lock["applied_min_clock_mhz"])
 
-    def telemetry_text(self):
-        if not self._active:
-            return ""
-
-        clock_text = (
-            f"{self.requested_max_clock_mhz}MHz"
-            if self.requested_max_clock_mhz == self.applied_max_clock_mhz
-            else f"{self.requested_max_clock_mhz}->{self.applied_max_clock_mhz}MHz"
-        )
-        voltage_mv = self.target_voltage_mv
-        if voltage_mv is not None:
-            clock_text += f"@{voltage_mv}mV"
-        field = "clk_lock" if self._exact_lock else "clk_ceiling"
-        return f"{field}={clock_text} "
-
     def describe(self):
         snap_text = ""
         if (

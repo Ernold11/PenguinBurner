@@ -8,11 +8,11 @@ from __future__ import annotations
 import json
 
 from auto_uv.curve.rising_tail import tail_ceiling_clock_mhz
-from drivers.nvidia.nvml_gpu_policy import (
-    MAX_AFTERBURNER_MEM_OFFSET_MHZ,
+from auto_uv.gpu.memory_clock_offset_user_option import (
     driver_memory_offset_limit_mhz,
 )
 from common.penguin_burner_errors import NvmlError
+from integrations.afterburner.policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 
 from .profile_tiers import profile_tier_summary_fields
 from .profile_store import STOCK_PROFILE_SELECTOR, resolve_auto_uv_profile
@@ -149,32 +149,6 @@ def profile_power_limit_w(payload):
     except (TypeError, ValueError):
         return None
     return power_limit if power_limit > 0 else None
-
-
-def apply_auto_uv_profile_power_limit(
-    *,
-    profile_label: str,
-    power_limit_w,
-    gpu_policy_controller,
-) -> dict:
-    power_limit = profile_power_limit_w({"power_limit_w": power_limit_w})
-    if power_limit is None:
-        return {}
-    if gpu_policy_controller is None:
-        raise NvmlError(
-            "failed to apply saved profile power limit "
-            f"{int(power_limit)} W for {profile_label}: "
-            "Linux GPU policy helper is unavailable"
-        )
-    try:
-        gpu_policy_controller.apply_power_limit_w(int(power_limit))
-    except Exception as exc:
-        raise NvmlError(
-            "failed to apply saved profile power limit "
-            f"{int(power_limit)} W for {profile_label}: "
-            f"driver rejected nvmlDeviceSetPowerManagementLimit: {exc}"
-        ) from exc
-    return {"power_limit_w": int(power_limit)}
 
 
 def apply_auto_uv_profile_memory_offset(

@@ -45,7 +45,9 @@ from ui.dialogs.error_details import process_failure_details as _process_failure
 from ui.dialogs.final_choice import candidate_number as _candidate_number
 from ui.dialogs.final_choice import candidate_oc_text as _candidate_oc_text
 from ui.dialogs.final_choice import candidate_status_text as _candidate_status_text
-from ui.dialogs.final_choice import final_choice_sort_values as _final_choice_sort_values
+from ui.dialogs.final_choice import (
+    final_choice_sort_values as _final_choice_sort_values,
+)
 from ui.features.curves.fan_profiles import (
     fan_curve_target_point_from_payload as _fan_curve_target_point_from_payload,
     fan_measurement_point as _fan_measurement_point,
@@ -57,18 +59,32 @@ from ui.features.curves.fan_profiles import (
     profile_id_from_archive_path as _profile_id_from_archive_path,
     sorted_unique_fan_points as _sorted_unique_fan_points,
 )
-from ui.features.integrations.lact_export import lact_export_output_path as _lact_export_output_path
-from ui.features.integrations.lact_export import lact_gpu_id_from_config as _lact_gpu_id_from_config
+from ui.features.integrations.lact_export import (
+    lact_export_output_path as _lact_export_output_path,
+)
+from ui.features.integrations.lact_export import (
+    lact_gpu_id_from_config as _lact_gpu_id_from_config,
+)
 from ui.models import candidate_id_from_payload as _candidate_id_from_result
 from ui.models import event_base_points as _event_base_points
 from ui.models import stage_title as _stage_title
 from ui.models import status_value as _status_value
 from ui.models import top_status_text as _top_status_text
-from ui.features.profiles.profiles import delete_confirmation_text as _profile_delete_confirmation_text
-from ui.features.profiles.profiles import adaptive_profile_tier_labels as _adaptive_profile_tier_labels
-from ui.features.profiles.profiles import profile_info_from_command_text as _profile_info_from_command_text
-from ui.features.profiles.profiles import profile_delete_autostart_action as _profile_delete_autostart_action
-from ui.features.profiles.profiles import profile_verify_selector as _profile_verify_selector
+from ui.features.profiles.profiles import (
+    delete_confirmation_text as _profile_delete_confirmation_text,
+)
+from ui.features.profiles.profiles import (
+    adaptive_profile_tier_labels as _adaptive_profile_tier_labels,
+)
+from ui.features.profiles.profiles import (
+    profile_info_from_command_text as _profile_info_from_command_text,
+)
+from ui.features.profiles.profiles import (
+    profile_delete_autostart_action as _profile_delete_autostart_action,
+)
+from ui.features.profiles.profiles import (
+    profile_verify_selector as _profile_verify_selector,
+)
 from ui.features.profiles.profiles import runner_status_text as _runner_status_text
 from ui.features.profiles.profiles import (
     selected_profile_ids_include_selector as _selected_profile_ids_include_selector,
@@ -188,31 +204,34 @@ def test_profile_metric_delta_text_and_color_vs_base() -> None:
     )
     assert _profile_metric_delta_color(0.75, 0.50) == "#55d27a"
 
-    assert _format_profile_metric_with_delta(
-        875,
-        1000,
-        precision=0,
-        lower_is_better=True,
-    ) == "875 (-12.50%)"
-    assert _format_profile_metric_with_delta(
-        2600.0,
-        2650.0,
-        precision=2,
-    ) == "2600.00 (-1.89%)"
-    assert _format_profile_metric_with_delta(
-        240.0,
-        300.0,
-        precision=2,
-        lower_is_better=True,
-    ) == "240.00 (-20.00%)"
     assert (
-        _profile_metric_delta_color(240.0, 300.0, lower_is_better=True)
-        == "#55d27a"
+        _format_profile_metric_with_delta(
+            875,
+            1000,
+            precision=0,
+            lower_is_better=True,
+        )
+        == "875 (-12.50%)"
     )
     assert (
-        _profile_metric_delta_color(330.0, 300.0, lower_is_better=True)
-        == "#ff6b6b"
+        _format_profile_metric_with_delta(
+            2600.0,
+            2650.0,
+            precision=2,
+        )
+        == "2600.00 (-1.89%)"
     )
+    assert (
+        _format_profile_metric_with_delta(
+            240.0,
+            300.0,
+            precision=2,
+            lower_is_better=True,
+        )
+        == "240.00 (-20.00%)"
+    )
+    assert _profile_metric_delta_color(240.0, 300.0, lower_is_better=True) == "#55d27a"
+    assert _profile_metric_delta_color(330.0, 300.0, lower_is_better=True) == "#ff6b6b"
 
 
 def test_profile_table_headers_and_sorting_scope() -> None:
@@ -586,10 +605,7 @@ def test_profile_base_metric_reads_saved_base_fields() -> None:
 
     assert _profile_base_metric(profile, "candidate_voltage_mv") == 1000
     assert _profile_base_metric(profile, "avg_core_clock_mhz") == 2650.0
-    assert (
-        _profile_base_metric(profile, "efficiency_fps_per_w")
-        == 0.50
-    )
+    assert _profile_base_metric(profile, "efficiency_fps_per_w") == 0.50
     assert _profile_base_metric(profile, "avg_power_w") == 300.0
 
 
@@ -807,9 +823,7 @@ def test_runtime_profile_precheck_allows_user_edited_drafts_for_verification(
     )
 
     assert resolve_auto_uv_profile(str(stored_path)) is None
-    assert not allow_unverified_from_argv(
-        ["--auto-uv-profile", str(stored_path)]
-    )
+    assert not allow_unverified_from_argv(["--auto-uv-profile", str(stored_path)])
     assert allow_unverified_from_argv(
         ["--stability-test", "--auto-uv-profile", str(stored_path)]
     )
@@ -828,7 +842,9 @@ def test_profile_verification_stop_request_uses_immediate_user_stop_reason(
     tmp_path,
 ) -> None:
     stop_path = tmp_path / "verify.stop"
-    callback = profile_verification_rules.stability_stop_request_abort_callback(stop_path)
+    callback = profile_verification_rules.stability_stop_request_abort_callback(
+        stop_path
+    )
 
     assert callback({}) is None
     stop_path.write_text("stop\n", encoding="utf-8")
@@ -836,21 +852,27 @@ def test_profile_verification_stop_request_uses_immediate_user_stop_reason(
 
 
 def test_profile_verify_selector_uses_exact_json_path() -> None:
-    assert _profile_verify_selector(
-        {
-            "profile_id": "draft-profile",
-            "profile_source": "user-edited",
-            "requires_verification": True,
-            "path": "/tmp/draft.json",
-        }
-    ) == "/tmp/draft.json"
-    assert _profile_verify_selector(
-        {
-            "profile_id": "verified-profile",
-            "profile_source": "auto-uv-final",
-            "path": "/tmp/verified.json",
-        }
-    ) == "/tmp/verified.json"
+    assert (
+        _profile_verify_selector(
+            {
+                "profile_id": "draft-profile",
+                "profile_source": "user-edited",
+                "requires_verification": True,
+                "path": "/tmp/draft.json",
+            }
+        )
+        == "/tmp/draft.json"
+    )
+    assert (
+        _profile_verify_selector(
+            {
+                "profile_id": "verified-profile",
+                "profile_source": "auto-uv-final",
+                "path": "/tmp/verified.json",
+            }
+        )
+        == "/tmp/verified.json"
+    )
 
 
 def test_profile_id_from_archive_path_strips_store_filename() -> None:
@@ -966,7 +988,6 @@ def test_profile_verification_can_reapply_curve_after_clock_lock(monkeypatch) ->
     )
     controller.apply()
     assert policy.exact_calls[0][0] == 2865
-    assert controller.telemetry_text().startswith("clk_lock=")
     assert reader.offset_mhz == 0
 
     profile_verification_runner.apply_and_verify_profile_vf_plan(
@@ -992,7 +1013,9 @@ def test_runtime_clock_ceiling_uses_saved_rising_tail_ceiling() -> None:
             max_clock_mhz,
             **kwargs,
         ):
-            self.range_calls.append((int(min_clock_mhz), int(max_clock_mhz), dict(kwargs)))
+            self.range_calls.append(
+                (int(min_clock_mhz), int(max_clock_mhz), dict(kwargs))
+            )
             return {
                 "requested_min_clock_mhz": int(min_clock_mhz),
                 "requested_max_clock_mhz": int(max_clock_mhz),
@@ -1020,7 +1043,6 @@ def test_runtime_clock_ceiling_uses_saved_rising_tail_ceiling() -> None:
     controller.apply()
 
     assert policy.range_calls[0][1] == 2630
-    assert controller.telemetry_text().startswith("clk_ceiling=2630MHz@900mV")
 
 
 def test_profile_verification_metrics_from_q2rtx_result() -> None:
@@ -1106,7 +1128,10 @@ def test_user_edited_profile_with_missing_base_metrics_needs_baseline(
         }
     )
 
-    assert profile_verification_rules.profile_needs_verify_baseline(str(stored_path)) is True
+    assert (
+        profile_verification_rules.profile_needs_verify_baseline(str(stored_path))
+        is True
+    )
 
     mark_auto_uv_profile_verified(
         str(stored_path),
@@ -1118,7 +1143,10 @@ def test_user_edited_profile_with_missing_base_metrics_needs_baseline(
         },
     )
 
-    assert profile_verification_rules.profile_needs_verify_baseline(str(stored_path)) is False
+    assert (
+        profile_verification_rules.profile_needs_verify_baseline(str(stored_path))
+        is False
+    )
 
 
 def test_mark_auto_uv_profile_verification_failed_blocks_user_edited_apply(
@@ -1148,7 +1176,10 @@ def test_mark_auto_uv_profile_verification_failed_blocks_user_edited_apply(
 
     marked_path = profile_store.mark_auto_uv_profile_verification_failed(
         str(stored_path),
-        failure={"reason": "fatal-q2rtx-output", "fatal_output_matches": ["device lost"]},
+        failure={
+            "reason": "fatal-q2rtx-output",
+            "fatal_output_matches": ["device lost"],
+        },
     )
 
     assert marked_path == stored_path
@@ -1185,12 +1216,8 @@ def test_profile_verification_promotes_verified_profile(
         }
     )
 
-    class FakeReader:
-        def close(self) -> None:
-            pass
-
-    class FakePolicy:
-        def close(self) -> None:
+    class FakeGpuClient:
+        def refresh_points(self) -> None:
             pass
 
     config = SimpleNamespace(abort_callback=None)
@@ -1237,12 +1264,13 @@ def test_profile_verification_promotes_verified_profile(
 
     deps = profile_verification_runner.ProfileVerificationDependencies(
         stop_existing_penguin_burner_runtime=lambda **_kwargs: None,
-        create_hidden_vf_curve_reader=lambda **_kwargs: FakeReader(),
-        gpu_policy_controller_factory=lambda **_kwargs: FakePolicy(),
+        gpu_client_factory=lambda **_kwargs: FakeGpuClient(),
         backup_current_offsets=lambda *_args, **_kwargs: None,
         restore_offsets=lambda *_args, **_kwargs: None,
         build_stability_config=lambda *_args, **_kwargs: config,
-        build_long_stability_test_config=lambda stability_config, **_kwargs: stability_config,
+        build_long_stability_test_config=lambda stability_config, **_kwargs: (
+            stability_config
+        ),
         attach_stdout_progress=lambda _config: None,
         run_q2rtx_stability_test=lambda _config: result,
         print_q2rtx_stability_result=lambda _result: None,
@@ -1296,7 +1324,9 @@ def test_profile_verification_voltage_abort_requires_sustained_busy_mismatch() -
         )
         is None
     )
-    for _ in range(profile_verification_rules.PROFILE_VERIFY_VOLTAGE_MISMATCH_STREAK - 1):
+    for _ in range(
+        profile_verification_rules.PROFILE_VERIFY_VOLTAGE_MISMATCH_STREAK - 1
+    ):
         assert (
             callback({"progress_elapsed_s": 10.0, "latest_sample": high_voltage_sample})
             is None
@@ -1549,7 +1579,9 @@ def test_adaptive_profile_delete_switches_systemd_when_one_profile_remains() -> 
     }
 
 
-def test_adaptive_profile_delete_switches_when_remaining_profiles_share_one_tier() -> None:
+def test_adaptive_profile_delete_switches_when_remaining_profiles_share_one_tier() -> (
+    None
+):
     profiles = [
         {
             "profile_id": "bal",
@@ -1608,7 +1640,9 @@ def test_adaptive_profile_delete_removes_systemd_when_no_profile_remains() -> No
     }
 
 
-def test_non_adaptive_profile_delete_removes_systemd_for_selected_startup_profile() -> None:
+def test_non_adaptive_profile_delete_removes_systemd_for_selected_startup_profile() -> (
+    None
+):
     profiles = [
         {"profile_id": "profile-a", "candidate_id": "875mv-2610mhz"},
         {"profile_id": "profile-b", "candidate_id": "865mv-2625mhz"},
@@ -1944,9 +1978,7 @@ def test_top_status_text_rounds_gui_decimals_to_two_places() -> None:
     assert _status_value(2625.12345) == "2625.12"
     assert _status_value(865.0) == "865"
     assert (
-        _top_status_text(
-            "candidate 865.0000mV measured=2625.123456MHz fps=178.98765"
-        )
+        _top_status_text("candidate 865.0000mV measured=2625.123456MHz fps=178.98765")
         == "candidate 865.00mV measured=2625.12MHz fps=178.99"
     )
 
@@ -2052,9 +2084,7 @@ def test_mark_verified_raises_when_profile_unreadable(tmp_path, monkeypatch) -> 
         mark_auto_uv_profile_verified("anything")
 
 
-def test_mark_verified_merges_existing_verification_dict(
-    tmp_path, monkeypatch
-) -> None:
+def test_mark_verified_merges_existing_verification_dict(tmp_path, monkeypatch) -> None:
     stored = _archive_in(
         tmp_path,
         monkeypatch,
@@ -2176,9 +2206,7 @@ def test_load_profile_files_skips_unreadable(tmp_path) -> None:
     )
     bad = tmp_path / "bad.json"
     bad.write_text("{ broken", encoding="utf-8")
-    profiles = profile_store._load_profile_files(
-        [bad, good], source="profile-store"
-    )
+    profiles = profile_store._load_profile_files([bad, good], source="profile-store")
     assert len(profiles) == 1
     assert profiles[0]["lock_clock_mhz"] == 2600
 

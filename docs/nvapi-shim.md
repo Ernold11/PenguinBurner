@@ -192,9 +192,8 @@ game stderr write could do the same). Fixed on both sides:
    (`_NO_WRITER_GRACE_S`) — a FIFO reader gets *no* poll event until a writer
    has connected at least once. Crash leftovers are swept at the next launch
    (`launcher._sweep_stale_marker_fifos`: `ENXIO` on a non-blocking write-only
-   open = no reader = stale). The **in-app** bridge reader is now off by
-   default (exactly one reader must exist); re-enable for debugging with
-   `PENGUIN_BURNER_INAPP_MARKER_BRIDGE=1`.
+   open = no reader = stale). The detached drainer is the only FIFO reader;
+   runtime telemetry is received by the Rust daemon over the latency socket.
 2. **The shim can no longer block regardless (belt and braces).** `emit_raw`
    only copies the line into a fixed in-DLL ring (256×192 B) under the lock; a
    dedicated writer thread does the blocking `_write`. If the output stalls
@@ -255,8 +254,6 @@ process), and the shim's ring would drop rather than stall even if it died.
 - `PENGUIN_BURNER_MARKER_FIFO` — set by the launcher: this launch's marker FIFO
   path (`nvapi-trace.<sessionpid>.fifo`), shared by the stderr route, the shim
   wine path and the detached drainer.
-- `PENGUIN_BURNER_INAPP_MARKER_BRIDGE=1` — debug-only: also start the legacy
-  in-app FIFO reader (normally off; exactly one reader must exist).
 
 ## Remaining / enhancements
 

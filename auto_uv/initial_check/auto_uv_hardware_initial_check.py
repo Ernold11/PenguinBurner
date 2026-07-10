@@ -5,21 +5,11 @@ This package is outside auto_uv because it validates system readiness, not the u
 
 from __future__ import annotations
 
-import ctypes
 from dataclasses import dataclass
 import re
-from typing import Callable
+from typing import Any, Callable, Protocol, cast
 
-from drivers.nvidia.hidden_nvapi_vf import (
-    create_hidden_vf_curve_reader,
-    get_hidden_vf_curve_reader_last_error,
-)
-from drivers.nvidia.hidden_nvapi_voltage import (
-    create_hidden_voltage_reader,
-    get_hidden_voltage_reader_last_error,
-)
-from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
-from drivers.nvidia.nvml_identity import query_nvml_gpu_identities
+from drivers.nvidia.daemon_gpu import DaemonGpuClient, VfPoint
 
 
 MINIMUM_NVIDIA_DRIVER_VERSION = (580, 0)
@@ -33,6 +23,29 @@ NVML_DEVICE_ARCH_NAMES = {
     NVML_DEVICE_ARCH_BLACKWELL: "Blackwell",
 }
 
+
+class _VoltageReader(Protocol):
+    def read_microvolts(self) -> int | None: ...
+
+    def last_raw_microvolts(self) -> int | None: ...
+
+
+class _GpuControl(_VoltageReader, Protocol):
+    def editable_core_points(self) -> list[VfPoint]: ...
+
+    def apply_offsets_khz(self, offsets: list[tuple[int, int]]) -> None: ...
+
+    def get_supported_core_clock_steps_mhz(self) -> list[int]: ...
+
+    def apply_locked_core_clock_range_mhz(
+        self,
+        min_clock_mhz: int,
+        max_clock_mhz: int,
+        *,
+        snap_to_supported: bool = True,
+    ) -> object: ...
+
+    def reset_locked_core_clocks(self) -> object: ...
 
 @dataclass(frozen=True, slots=True)
 class InitialCheckIssue:
@@ -110,9 +123,7 @@ class InitialCheckResult:
 def run_auto_uv_initial_check(
     *,
     gpu_index: int = 0,
-    vf_reader_factory: Callable[[int], object | None] = create_hidden_vf_curve_reader,
-    gpu_policy_factory: Callable[[int], object] = NvmlGpuPolicyController,
-    nvml_library_factory: Callable[[], object] | None = None,
+    gpu_client_factory: Callable[[int], _GpuControl] = DaemonGpuClient,
 ) -> InitialCheckResult:
     issues: list[InitialCheckIssue] = []
     gpu = None
@@ -143,57 +154,39 @@ def run_auto_uv_initial_check(
         )
         return InitialCheckResult(None, tuple(issues))
 
-    architecture, architecture_issue = _query_nvml_architecture(
-        gpu_index,
-        nvml_library_factory=nvml_library_factory,
-    )
+    architecture_issue = _validate_architecture(gpu.architecture)
     if architecture_issue is not None:
         issues.append(architecture_issue)
-    gpu = InitialCheckGpuInfo(
-        index=gpu.index,
-        name=gpu.name,
-        driver_version=gpu.driver_version,
-        pci_device_id=gpu.pci_device_id,
-        uuid=gpu.uuid,
-        architecture=architecture,
-    )
 
     driver_issues = _validate_driver(gpu.driver_version)
     issues.extend(driver_issues)
     if any(issue.severity == "error" for issue in driver_issues):
         return InitialCheckResult(gpu, tuple(issues))
 
-    issues.extend(_validate_nvapi_voltage_reader(gpu_index))
-    reader_error = None
     try:
-        reader = vf_reader_factory(int(gpu_index))
+        client = gpu_client_factory(int(gpu_index))
     except Exception as exc:
-        reader = None
-        reader_error = exc
-    if reader is None:
-        last_error = reader_error or get_hidden_vf_curve_reader_last_error()
-        detail = f" NVAPI error: {last_error}" if last_error is not None else ""
+        client = None
+        client_error = exc
+    else:
+        client_error = None
+    if client is None:
         issues.append(
             InitialCheckIssue(
                 "error",
                 "nvapi-vf-reader",
-                "NVAPI V/F curve reader is unavailable",
-                "PenguinBurner could not open the Linux NVAPI V/F helper."
-                f"{detail}",
+                "Daemon GPU client is unavailable",
+                "PenguinBurner could not open the daemon GPU API."
+                f" Error: {client_error}",
                 "Use an RTX 50-series, RTX 40-series, or RTX 30-series card with "
                 "driver 580.xx or newer.",
             )
         )
     else:
-        try:
-            issues.extend(_validate_vf_curve(reader))
-            issues.extend(_validate_nvapi_vf_setter(reader))
-        finally:
-            close = getattr(reader, "close", None)
-            if callable(close):
-                close()
-
-    issues.extend(_validate_nvml_clock_lock(gpu_index, gpu_policy_factory))
+        issues.extend(_validate_nvapi_voltage_reader(client))
+        issues.extend(_validate_vf_curve(client))
+        issues.extend(_validate_nvapi_vf_setter(client))
+        issues.extend(_validate_nvml_clock_lock(client))
     return InitialCheckResult(gpu, tuple(issues))
 
 
@@ -222,7 +215,12 @@ def require_auto_uv_initial_check(
 
 def _query_nvml_gpus() -> list[InitialCheckGpuInfo]:
     rows = []
-    for identity in query_nvml_gpu_identities():
+    try:
+        capabilities = DaemonGpuClient.discover_capabilities()
+    except Exception:
+        capabilities = []
+    for item in capabilities:
+        identity = item.identity
         rows.append(
             InitialCheckGpuInfo(
                 index=int(identity.index),
@@ -230,12 +228,15 @@ def _query_nvml_gpus() -> list[InitialCheckGpuInfo]:
                 driver_version=identity.driver_version,
                 pci_device_id=identity.pci_device_id,
                 uuid=identity.uuid,
+                architecture=item.architecture,
             )
         )
     return rows
 
 
-def _select_gpu(rows: list[InitialCheckGpuInfo], gpu_index: int) -> InitialCheckGpuInfo | None:
+def _select_gpu(
+    rows: list[InitialCheckGpuInfo], gpu_index: int
+) -> InitialCheckGpuInfo | None:
     for row in rows:
         if int(row.index) == int(gpu_index):
             return row
@@ -273,139 +274,60 @@ def _validate_driver(driver_version: str) -> list[InitialCheckIssue]:
     ]
 
 
-def _query_nvml_architecture(
-    gpu_index: int,
-    *,
-    nvml_library_factory: Callable[[], object] | None = None,
-) -> tuple[int | None, InitialCheckIssue | None]:
-    try:
-        nvml = (
-            nvml_library_factory()
-            if nvml_library_factory
-            else ctypes.CDLL("libnvidia-ml.so.1")
-        )
-    except OSError as exc:
-        return None, InitialCheckIssue(
-            "error",
-            "nvml-library",
-            "NVML library is unavailable",
-            str(exc),
-            "Install the Nvidia proprietary driver.",
-        )
-    if not hasattr(nvml, "nvmlDeviceGetArchitecture"):
-        return None, InitialCheckIssue(
+def _validate_architecture(architecture: int | None) -> InitialCheckIssue | None:
+    if architecture is None:
+        return InitialCheckIssue(
             "warning",
             "nvml-architecture-unavailable",
             "NVML architecture query is unavailable",
-            "The installed NVML library does not expose nvmlDeviceGetArchitecture.",
+            "The Nvidia driver did not report a GPU architecture.",
         )
     try:
-        nvml.nvmlInit_v2.restype = ctypes.c_int
-        nvml.nvmlShutdown.restype = ctypes.c_int
-        nvml.nvmlDeviceGetHandleByIndex_v2.argtypes = [
-            ctypes.c_uint,
-            ctypes.POINTER(ctypes.c_void_p),
-        ]
-        nvml.nvmlDeviceGetHandleByIndex_v2.restype = ctypes.c_int
-        nvml.nvmlDeviceGetArchitecture.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_uint),
-        ]
-        nvml.nvmlDeviceGetArchitecture.restype = ctypes.c_int
-        rc = int(nvml.nvmlInit_v2())
-        if rc != 0:
-            return None, InitialCheckIssue(
-                "error",
-                "nvml-init",
-                "NVML failed to initialize",
-                f"nvmlInit_v2 returned {rc}.",
-            )
-        device = ctypes.c_void_p()
-        rc = int(
-            nvml.nvmlDeviceGetHandleByIndex_v2(
-                ctypes.c_uint(int(gpu_index)),
-                ctypes.byref(device),
-            )
+        int(architecture)
+    except (TypeError, ValueError):
+        return InitialCheckIssue(
+            "warning",
+            "nvml-architecture-failed",
+            "NVML architecture query failed",
+            f"The hardware service returned {architecture!r}.",
         )
-        if rc != 0:
-            return None, InitialCheckIssue(
-                "error",
-                "nvml-device",
-                "NVML could not open the selected GPU",
-                f"nvmlDeviceGetHandleByIndex_v2 returned {rc}.",
-            )
-        arch = ctypes.c_uint(0)
-        rc = int(nvml.nvmlDeviceGetArchitecture(device, ctypes.byref(arch)))
-        if rc != 0:
-            return None, InitialCheckIssue(
-                "warning",
-                "nvml-architecture-failed",
-                "NVML architecture query failed",
-                f"nvmlDeviceGetArchitecture returned {rc}.",
-            )
-        return int(arch.value), None
-    finally:
-        try:
-            nvml.nvmlShutdown()
-        except Exception:
-            pass
+    return None
 
 
-def _validate_nvapi_voltage_reader(gpu_index: int) -> list[InitialCheckIssue]:
-    reader = create_hidden_voltage_reader(gpu_index=int(gpu_index))
-    if reader is None:
-        last_error = get_hidden_voltage_reader_last_error()
-        detail = f" NVAPI error: {last_error}" if last_error is not None else ""
+def _validate_nvapi_voltage_reader(reader: _VoltageReader) -> list[InitialCheckIssue]:
+    try:
+        voltage_uv = reader.read_microvolts()
+    except Exception as exc:
         return [
             InitialCheckIssue(
                 "error",
                 "nvapi-voltage-reader",
-                "NVAPI voltage reader is unavailable",
-                "The undocumented Linux NVAPI live voltage query could not be "
-                f"resolved.{detail}",
-                "Use an RTX 50-series, RTX 40-series, or RTX 30-series card "
-                "with driver 580.xx or newer. If this started after a driver "
-                "upgrade, report the driver version and GPU model.",
+                "NVAPI voltage reader failed",
+                str(exc),
+                "The driver exposed the voltage query but the call did not "
+                "return a usable status.",
             )
         ]
-
-    try:
-        try:
-            voltage_uv = reader.read_microvolts()
-        except Exception as exc:
-            return [
-                InitialCheckIssue(
-                    "error",
-                    "nvapi-voltage-reader",
-                    "NVAPI voltage reader failed",
-                    str(exc),
-                    "The driver exposed the NVAPI voltage query but the call did "
-                    "not return a usable status.",
-                )
-            ]
-        if voltage_uv is None:
-            raw_voltage_uv = _reader_last_raw_microvolts(reader)
-            raw_detail = (
-                f" Raw NVAPI sample: {raw_voltage_uv / 1000.0:.0f}mV."
-                if raw_voltage_uv is not None
-                else ""
-            )
-            return [
-                InitialCheckIssue(
-                    "warning",
-                    "nvapi-voltage-reader",
-                    "NVAPI voltage reader returned no plausible idle voltage",
-                    "PenguinBurner could not read a plausible live GPU voltage "
-                    f"before starting a workload.{raw_detail}",
-                    "Auto-UV will continue and try to collect voltage telemetry "
-                    "under load. If live voltage stays unavailable, report the "
-                    "raw sample, driver version, GPU model, and whether LACT "
-                    "shows live GPU voltage on the same card.",
-                )
-            ]
+    if voltage_uv is not None:
         return []
-    finally:
-        reader.close()
+    raw_voltage_uv = _reader_last_raw_microvolts(reader)
+    raw_detail = (
+        f" Raw NVAPI sample: {raw_voltage_uv / 1000.0:.0f}mV."
+        if raw_voltage_uv is not None
+        else ""
+    )
+    return [
+        InitialCheckIssue(
+            "warning",
+            "nvapi-voltage-reader",
+            "NVAPI voltage reader returned no plausible idle voltage",
+            "PenguinBurner could not read a plausible live GPU voltage "
+            f"before starting a workload.{raw_detail}",
+            "Auto-UV will continue and try to collect voltage telemetry under "
+            "load. If it stays unavailable, report the raw sample, driver "
+            "version, GPU model, and whether LACT shows voltage on this card.",
+        )
+    ]
 
 
 def _validate_vf_curve(reader) -> list[InitialCheckIssue]:
@@ -472,37 +394,39 @@ def _validate_vf_curve(reader) -> list[InitialCheckIssue]:
     return issues
 
 
-def _validate_nvapi_vf_setter(reader) -> list[InitialCheckIssue]:
+def _validate_nvapi_vf_setter(
+    reader: _GpuControl,
+) -> list[InitialCheckIssue]:
     try:
-        control = reader.get_control_struct()
-        reader.set_control_struct(control)
+        offsets = [
+            (int(point["index"]), int(point.get("current_offset_khz", 0) or 0))
+            for point in reader.editable_core_points()
+        ]
+        reader.apply_offsets_khz(offsets)
     except Exception as exc:
         permission_error = _looks_like_permission_error(exc)
         return [
             InitialCheckIssue(
                 "error",
                 "nvapi-vf-setter",
-                "NVAPI V/F curve setter needs elevated privileges"
+                "Root daemon was denied access to the NVAPI V/F curve setter"
                 if permission_error
-                else "NVAPI V/F curve setter failed",
-                f"Writing the current V/F control state back as a no-op failed: {exc}",
-                "Start Auto Undervolt from the GUI so PenguinBurner can request "
-                "privileges, or run the CLI with sudo."
+                else "Daemon V/F curve setter failed",
+                f"Writing the current point offsets back as a no-op failed: {exc}",
+                "Restart or reinstall penguin-burnerd; GPU writes must go through "
+                "the running root daemon."
                 if permission_error
-                else "Auto-UV needs working NVAPI V/F setters before it can safely "
-                "edit candidate curves.",
+                else "Auto-UV needs the daemon's NVAPI V/F setter before it can "
+                "safely edit candidate curves.",
             )
         ]
     return []
 
 
 def _validate_nvml_clock_lock(
-    gpu_index: int,
-    gpu_policy_factory: Callable[[int], object],
+    controller: _GpuControl,
 ) -> list[InitialCheckIssue]:
-    controller = None
     try:
-        controller = gpu_policy_factory(int(gpu_index))
         supported_steps = list(controller.get_supported_core_clock_steps_mhz())
         if not supported_steps:
             return [
@@ -526,12 +450,12 @@ def _validate_nvml_clock_lock(
             InitialCheckIssue(
                 "error",
                 "nvml-clock-lock",
-                "NVML GPU clock locking needs elevated privileges"
+                "Root daemon was denied access to NVML GPU clock locking"
                 if permission_error
                 else "NVML GPU clock locking is unsupported",
                 str(exc),
-                "Start Auto Undervolt from the GUI so PenguinBurner can request "
-                "privileges, or run the CLI with sudo."
+                "Restart or reinstall penguin-burnerd; GPU writes must go through "
+                "the running root daemon."
                 if permission_error
                 else "Auto-UV cannot run without nvmlDeviceSetGpuLockedClocks. This "
                 "is a common failure mode on older or unsupported GPU/driver "
@@ -539,14 +463,10 @@ def _validate_nvml_clock_lock(
             )
         ]
     finally:
-        if controller is not None:
-            try:
-                controller.reset_locked_core_clocks()
-            except Exception:
-                pass
-            close = getattr(controller, "close", None)
-            if callable(close):
-                close()
+        try:
+            controller.reset_locked_core_clocks()
+        except Exception:
+            pass
     return []
 
 
@@ -561,7 +481,7 @@ def _reader_last_raw_microvolts(reader) -> int | None:
     if raw is None:
         return None
     try:
-        return int(raw)
+        return int(cast(Any, raw))
     except (TypeError, ValueError):
         return None
 

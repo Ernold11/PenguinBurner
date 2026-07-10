@@ -1,7 +1,7 @@
 """Coverage for ui/gpu_selection.py and ui/tuning.py.
 
-gpu_selection parsing/fallback is pure; the NVML-backed tuning helpers are
-exercised with a fake NvmlGpuPolicyController so no real GPU is required.
+gpu_selection parsing/fallback is pure; daemon-backed tuning helpers are
+exercised with a fake client so no real GPU is required.
 """
 
 from __future__ import annotations
@@ -37,8 +37,7 @@ class _FakeVfReader:
 
     def editable_core_points(self):
         return [
-            {"voltage_uv": v * 1000, "base_freq_khz": c * 1000}
-            for v, c in self._points
+            {"voltage_uv": v * 1000, "base_freq_khz": c * 1000} for v, c in self._points
         ]
 
     def close(self):
@@ -74,14 +73,16 @@ def test_gpu_choices_from_nvml_identities_skips_bad_rows_and_dupes() -> None:
 
 
 def test_detected_gpu_choices_empty_without_nvml_identities(monkeypatch) -> None:
-    monkeypatch.setattr(gpu_selection, "query_nvml_gpu_identities", lambda: [])
+    monkeypatch.setattr(
+        gpu_selection.DaemonGpuClient, "discover_identities", lambda: []
+    )
     assert gpu_selection.detected_gpu_choices() == []
 
 
 def test_detected_gpu_choices_reads_nvml_identities(monkeypatch) -> None:
     monkeypatch.setattr(
-        gpu_selection,
-        "query_nvml_gpu_identities",
+        gpu_selection.DaemonGpuClient,
+        "discover_identities",
         lambda: [
             SimpleNamespace(
                 index=2,
@@ -124,7 +125,9 @@ def test_runtime_gpu_index_reads_config_and_defaults(tmp_path, monkeypatch) -> N
 
 def test_persist_runtime_gpu_index_writes_selected(tmp_path, monkeypatch) -> None:
     written = {}
-    monkeypatch.setattr(gpu_selection, "load_raw_runtime_config", lambda _p: {"other": 1})
+    monkeypatch.setattr(
+        gpu_selection, "load_raw_runtime_config", lambda _p: {"other": 1}
+    )
     monkeypatch.setattr(
         gpu_selection, "write_config", lambda path, cfg: written.update(cfg)
     )
@@ -301,8 +304,9 @@ def test_power_limit_set_supported_uses_daemon_probe(monkeypatch) -> None:
     monkeypatch.setattr(
         daemon_client,
         "probe_power_limit_support",
-        lambda gpu_index, **kwargs: calls.append((gpu_index, kwargs))
-        or {"supported": True},
+        lambda gpu_index, **kwargs: (
+            calls.append((gpu_index, kwargs)) or {"supported": True}
+        ),
     )
 
     assert tuning.power_limit_set_supported(2) is True
@@ -326,28 +330,29 @@ class _FakeController:
     def __init__(self, *, gpu_index, raise_on_query=False, driver_range=(0, 1500)):
         self._raise = raise_on_query
         self._range = driver_range
-        self.closed = False
+        self.gpu_index = int(gpu_index)
 
-    def get_memory_clock_offset_range_mhz(self):
+    def capabilities(self):
         if self._raise:
             raise RuntimeError("nvml down")
-        return self._range
-
-    def close(self):
-        self.closed = True
+        return SimpleNamespace(memory_clock_offset_range_mhz=self._range)
 
 
 def test_memory_offset_range_clamps_driver_max(monkeypatch) -> None:
     monkeypatch.setattr(
-        "drivers.nvidia.nvml_gpu_policy.NvmlGpuPolicyController",
-        lambda *, gpu_index: _FakeController(gpu_index=gpu_index, driver_range=(0, 1500)),
+        tuning,
+        "DaemonGpuClient",
+        lambda *, gpu_index: _FakeController(
+            gpu_index=gpu_index, driver_range=(0, 1500)
+        ),
     )
     assert memory_offset_mhz_range() == (0, 1500)
 
 
 def test_memory_offset_range_falls_back_on_error(monkeypatch) -> None:
     monkeypatch.setattr(
-        "drivers.nvidia.nvml_gpu_policy.NvmlGpuPolicyController",
+        tuning,
+        "DaemonGpuClient",
         lambda *, gpu_index: _FakeController(gpu_index=gpu_index, raise_on_query=True),
     )
     assert memory_offset_mhz_range() == (0, 2000)
@@ -355,7 +360,8 @@ def test_memory_offset_range_falls_back_on_error(monkeypatch) -> None:
 
 def test_memory_offset_range_falls_back_on_empty_range(monkeypatch) -> None:
     monkeypatch.setattr(
-        "drivers.nvidia.nvml_gpu_policy.NvmlGpuPolicyController",
+        tuning,
+        "DaemonGpuClient",
         lambda *, gpu_index: _FakeController(gpu_index=gpu_index, driver_range=()),
     )
     assert memory_offset_mhz_range() == (0, 2000)
@@ -366,17 +372,18 @@ def test_voltage_floor_range_knee_from_curve(monkeypatch) -> None:
     # (3000/2 = 1500): 750 mV -> 757 (below), 800 mV -> 1875 (at/above) -> knee 800.
     points = [(700, 180), (750, 757), (800, 1875), (850, 2167), (1200, 3000)]
     monkeypatch.setattr(
-        "drivers.nvidia.hidden_nvapi_vf.create_hidden_vf_curve_reader",
+        tuning,
+        "DaemonGpuClient",
         lambda *, gpu_index: _FakeVfReader(points),
     )
     assert auto_uv_voltage_floor_range_mv(gpu_index=0) == (800, 1200)
 
 
 def test_voltage_floor_range_falls_back_without_curve(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "drivers.nvidia.hidden_nvapi_vf.create_hidden_vf_curve_reader",
-        lambda *, gpu_index: None,
-    )
+    def fail_client(*, gpu_index):
+        raise RuntimeError(f"GPU {gpu_index} unavailable")
+
+    monkeypatch.setattr(tuning, "DaemonGpuClient", fail_client)
     assert auto_uv_voltage_floor_range_mv(gpu_index=0) == (800, 1250)
 
 

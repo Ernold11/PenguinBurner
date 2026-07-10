@@ -9,7 +9,6 @@
 
 mod backend;
 mod nvapi;
-mod nvml_raw;
 
 // Compiled into the binary (not test-gated) because it also backs the
 // `PENGUIN_BURNERD_TEST_MOCK_GPU` RPC seam in `gpu_rpc` — production code never
@@ -36,12 +35,6 @@ pub enum ClockType {
     Sm = 1,
     Memory = 2,
     Video = 3,
-}
-
-impl ClockType {
-    fn as_uint(self) -> u32 {
-        self as u32
-    }
 }
 
 /// Public NVML identity of the bound device (`nvml_identity.py`).
@@ -74,7 +67,9 @@ pub struct GpuMemoryInfo {
 /// corresponding getter is missing or fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PowerLimits {
+    pub power_management_enabled: Option<bool>,
     pub power_limit_w: Option<i64>,
+    pub enforced_power_limit_w: Option<i64>,
     pub power_limit_default_w: Option<i64>,
     pub power_limit_min_w: Option<i64>,
     pub power_limit_max_w: Option<i64>,
@@ -194,14 +189,6 @@ impl GpuError {
         }
     }
 
-    /// Missing required NVML symbol at bind time.
-    pub(crate) fn missing_required(name: &str) -> Self {
-        Self {
-            rc: 0,
-            message: format!("libnvidia-ml is missing required symbol {name}"),
-        }
-    }
-
     /// Hidden-NVAPI call failure shape: `"{context} failed with status {rc}:
     /// {text}"` where `text` is `NvAPI_GetErrorMessage(rc)`.
     pub(crate) fn nvapi(context: &str, rc: i64, text: &str) -> Self {
@@ -246,6 +233,7 @@ pub trait GpuBackend {
     fn identity(&self) -> GpuIdentity;
     fn gpu_name(&self) -> Option<String>;
     fn memory_info(&self) -> Option<GpuMemoryInfo>;
+    fn architecture(&self) -> Option<u32>;
 
     // --- telemetry reads (best-effort → Option, unless the Python raises) --
     fn temperature_c(&self) -> GpuResult<f64>;
@@ -263,6 +251,7 @@ pub trait GpuBackend {
     fn enable_persistence_mode(&self) -> GpuResult<()>;
 
     // --- supported clocks + locked-clock control --------------------------
+    fn supported_memory_clock_steps_mhz(&self) -> Vec<u32>;
     fn supported_core_clock_steps_mhz(&self) -> Vec<u32>;
     fn apply_locked_core_clock_mhz(
         &self,
@@ -351,16 +340,6 @@ pub(crate) fn w_to_mw_round(w: f64) -> i64 {
 /// The core-voltage validity window (`read_microvolts`).
 pub(crate) fn voltage_uv_in_window(uv: i64) -> bool {
     (300_000..=1_500_000).contains(&uv)
-}
-
-/// First present symbol from a fallback chain. Pure so the exact chain ordering
-/// (`_v2`→plain, `_v3`→`_v2`, ThrottleReasons→EventReasons) is testable without
-/// a GPU.
-pub(crate) fn first_available<'a>(
-    candidates: &[&'a str],
-    present: impl Fn(&str) -> bool,
-) -> Option<&'a str> {
-    candidates.iter().copied().find(|name| present(name))
 }
 
 /// Snap a single requested core clock to the supported step list (§8).
@@ -525,38 +504,6 @@ mod tests {
     }
 
     #[test]
-    fn fallback_chain_selection() {
-        const COUNT: &[&str] = &["nvmlDeviceGetCount_v2", "nvmlDeviceGetCount"];
-        const PCI: &[&str] = &["nvmlDeviceGetPciInfo_v3", "nvmlDeviceGetPciInfo_v2"];
-        const THROTTLE: &[&str] = &[
-            "nvmlDeviceGetCurrentClocksThrottleReasons",
-            "nvmlDeviceGetCurrentClocksEventReasons",
-        ];
-
-        // Both present -> first wins.
-        assert_eq!(
-            first_available(COUNT, |_| true),
-            Some("nvmlDeviceGetCount_v2")
-        );
-        // Only the legacy one present -> falls back.
-        assert_eq!(
-            first_available(COUNT, |n| n == "nvmlDeviceGetCount"),
-            Some("nvmlDeviceGetCount")
-        );
-        assert_eq!(
-            first_available(PCI, |n| n == "nvmlDeviceGetPciInfo_v2"),
-            Some("nvmlDeviceGetPciInfo_v2")
-        );
-        // Newer rename only -> falls back to it.
-        assert_eq!(
-            first_available(THROTTLE, |n| n == "nvmlDeviceGetCurrentClocksEventReasons"),
-            Some("nvmlDeviceGetCurrentClocksEventReasons")
-        );
-        // Neither present -> None.
-        assert_eq!(first_available(COUNT, |_| false), None);
-    }
-
-    #[test]
     fn snap_exact_and_floor_and_ceil() {
         let steps = [1800u32, 1900, 2000, 2100, 2200];
 
@@ -628,10 +575,6 @@ mod tests {
         assert_eq!(
             GpuError::unavailable("nvmlDeviceSetGpuLockedClocks").to_string(),
             "nvmlDeviceSetGpuLockedClocks is not available on this system"
-        );
-        assert_eq!(
-            GpuError::missing_required("nvmlDeviceGetTemperature").to_string(),
-            "libnvidia-ml is missing required symbol nvmlDeviceGetTemperature"
         );
         assert_eq!(
             GpuError::nvapi("ClockClientClkVfPointsGetInfo", 5, "some text").to_string(),

@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import pwd
 import configparser
-import json
 import shlex
 import shutil
 import stat
@@ -13,22 +12,12 @@ import tempfile
 import time
 
 from runtime.daemon_client import DEFAULT_DAEMON_SOCKET
+from runtime.daemon_client import apply_runtime_spec
+from runtime.daemon_client import clear_boot_runtime_spec
 from runtime.daemon_client import daemon_status
-from runtime.daemon_client import start_runtime_profile
-from .adaptive_target_fps import (
-    ADAPTIVE_TARGET_FPS_ENV,
-    adaptive_target_fps_from_env,
-    format_adaptive_target_fps,
-)
-from runtime.gpu_control.adaptive_profile_policy import (
-    ADAPTIVE_COMFORT_WINDOWS_ENV,
-    ADAPTIVE_DEMOTE_DWELL_S_ENV,
-    ADAPTIVE_NEAR_SLOW_WINDOWS_ENV,
-    ADAPTIVE_PERFORMANCE_COMFORT_WINDOWS_ENV,
-    ADAPTIVE_PERFORMANCE_DEMOTE_DWELL_S_ENV,
-    ADAPTIVE_TARGET_SLOW_WINDOWS_ENV,
-    AdaptiveProfilePolicyConfig,
-)
+from runtime.daemon_client import set_boot_runtime_spec
+from runtime.daemon_client import stop_runtime_profile
+from runtime.runtime_spec import build_runtime_spec_from_intent, runtime_intent_from_argv
 from common.subprocess_locale import stable_subprocess_env
 
 
@@ -40,11 +29,9 @@ PENGUIN_BURNER_FOREGROUND_ENV = "PENGUIN_BURNER_FOREGROUND"
 ALLOWED_UID_ENV = "PENGUIN_BURNER_DAEMON_ALLOWED_UID"
 AUTOSTART_PROGRAM_FILE_ENV = "PENGUIN_BURNER_DAEMON_PROGRAM_FILE"
 
-# Persisted "last runtime action" so a daemon restart / reboot re-runs exactly
-# what the user last applied -- including "reset to stock". The root daemon owns
-# this file (default world-readable mode); install/uninstall clear it so an
-# explicit "persist THIS profile" re-seeds it.
+# Legacy cleanup path from pre-RuntimeSpec releases.
 LAST_RUNTIME_STATE_PATH = Path("/var/lib/penguin-burner/last-runtime.json")
+BOOT_RUNTIME_STATE_PATH = Path("/var/lib/penguin-burner/boot-runtime.json")
 DEFAULT_JOURNAL_HOURS = 4
 FLATPAK_ID_ENV = "FLATPAK_ID"
 FLATPAK_INFO_PATH = Path("/.flatpak-info")
@@ -318,33 +305,6 @@ def runtime_python_env_assignments(program_file) -> list[str]:
     ]
 
 
-def adaptive_policy_env_assignments(env: dict[str, str] | None = None) -> list[str]:
-    target_fps = adaptive_target_fps_from_env(env)
-    config = AdaptiveProfilePolicyConfig.for_target_fps(target_fps, env=env)
-    return [
-        f"{ADAPTIVE_TARGET_FPS_ENV}={format_adaptive_target_fps(target_fps)}",
-        f"{ADAPTIVE_TARGET_SLOW_WINDOWS_ENV}={int(config.target_slow_windows)}",
-        f"{ADAPTIVE_NEAR_SLOW_WINDOWS_ENV}={int(config.near_slow_windows)}",
-        f"{ADAPTIVE_COMFORT_WINDOWS_ENV}={int(config.comfort_windows)}",
-        (
-            f"{ADAPTIVE_PERFORMANCE_COMFORT_WINDOWS_ENV}="
-            f"{int(config.performance_comfort_windows)}"
-        ),
-        f"{ADAPTIVE_DEMOTE_DWELL_S_ENV}={_format_env_float(config.demote_dwell_s)}",
-        (
-            f"{ADAPTIVE_PERFORMANCE_DEMOTE_DWELL_S_ENV}="
-            f"{_format_env_float(config.performance_demote_dwell_s)}"
-        ),
-    ]
-
-
-def _format_env_float(value: float) -> str:
-    value = float(value)
-    if value.is_integer():
-        return str(int(value))
-    return f"{value:.3f}".rstrip("0").rstrip(".")
-
-
 def run_checked_subprocess(args):
     result = subprocess.run(
         args,
@@ -558,40 +518,41 @@ def _daemon_program_file_for_unit(program_file) -> Path:
 
     Flatpak maps it to the host deployment path; otherwise it is the resolved
     program file. This is what the unit's PENGUIN_BURNER_DAEMON_PROGRAM_FILE env
-    and the seeded last-runtime.json ``program_file`` both point at.
+    and daemon-spawned scan children use.
     """
     if running_in_flatpak():
         return flatpak_host_cli_program_file(program_file)
     return Path(program_file).resolve()
 
 
-def _persist_autostart_last_runtime(argv, program_file) -> None:
-    """Seed ``/var/lib/penguin-burner/last-runtime.json`` so the native daemon
-    autostarts the just-installed profile.
-
-    The Rust daemon reads this state file (not a base64 unit env) for autostart,
-    so the install/migrate flows write the intended runtime argv here directly.
-    Best-effort, mirroring the daemon's own persistence — install already runs as
-    root, so ``/var/lib`` is writable.
-    """
-    try:
-        LAST_RUNTIME_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        LAST_RUNTIME_STATE_PATH.write_text(
-            json.dumps({"argv": list(argv), "program_file": str(program_file)}),
-            encoding="utf-8",
-        )
-    except OSError:
-        pass
-
-
 def clear_last_runtime_state() -> None:
-    """Forget the persisted last action (used by install/uninstall-systemd)."""
+    """Clear boot state during the privileged service lifecycle."""
+    for path in (LAST_RUNTIME_STATE_PATH, BOOT_RUNTIME_STATE_PATH):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
+def _stop_active_runtime_before_daemon_restart() -> None:
     try:
-        LAST_RUNTIME_STATE_PATH.unlink()
-    except FileNotFoundError:
+        stop_runtime_profile(socket_path=DEFAULT_DAEMON_SOCKET, timeout_s=3)
+    except Exception:
         pass
-    except OSError:
-        pass
+
+
+def _apply_runtime(argv, *, socket_path=DEFAULT_DAEMON_SOCKET) -> tuple[dict, dict]:
+    spec = build_runtime_spec_from_intent(runtime_intent_from_argv(argv))
+    result = apply_runtime_spec(spec, socket_path=socket_path, timeout_s=45)
+    return result, spec
+
+
+def _apply_persistent_runtime(argv, *, socket_path=DEFAULT_DAEMON_SOCKET) -> dict:
+    result, spec = _apply_runtime(argv, socket_path=socket_path)
+    set_boot_runtime_spec(spec, socket_path=socket_path, timeout_s=10)
+    return result
 
 
 def build_daemon_api_service_unit(
@@ -607,13 +568,12 @@ def build_daemon_api_service_unit(
         for assignment in [
             *desktop_runtime_env_assignments(),
             *runtime_python_env_assignments(program_file),
-            *adaptive_policy_env_assignments(),
         ]
     )
 
-    # The compiled Rust penguin-burnerd binary. Autostart is carried by the seeded
-    # last-runtime.json state file, not a unit env. Type=notify + WatchdogSec: the
-    # daemon sends READY=1 and heartbeats WATCHDOG=1. Flatpak callers may pass
+    # The compiled Rust penguin-burnerd binary. Boot intent is stored separately
+    # through the typed daemon API. Type=notify + WatchdogSec: the daemon sends
+    # READY=1 and heartbeats WATCHDOG=1. Flatpak callers may pass
     # binary_path=/usr/libexec/penguin-burnerd explicitly, but every unit is
     # constrained to that same root-owned path.
     binary = daemon_binary_path(program_file, binary_path=binary_path)
@@ -655,6 +615,8 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
         )
 
     install_daemon_binary(program_file)
+    _stop_active_runtime_before_daemon_restart()
+    clear_last_runtime_state()
     clear_existing_penguin_burner_unit_for_install(log=log)
     unit_path = daemon_systemd_service_unit_path()
     unit_path.write_text(
@@ -671,15 +633,12 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
         env=stable_subprocess_env(),
         check=False,
     )
-    # Explicit "persist THIS profile": drop any prior last-action state, then seed
-    # this install's autostart argv so the native daemon replays it on start. The
-    # Rust daemon reads last-runtime.json (not a unit env), so the argv is written
-    # to the state file here instead of baked into the unit.
-    clear_last_runtime_state()
-    if argv:
-        _persist_autostart_last_runtime(argv, _daemon_program_file_for_unit(program_file))
     _enable_and_start_or_restart_daemon_unit(unit_path.name)
     _wait_for_daemon_status(DEFAULT_DAEMON_SOCKET)
+    if argv:
+        _apply_persistent_runtime(argv)
+    else:
+        clear_boot_runtime_spec(socket_path=DEFAULT_DAEMON_SOCKET)
     log(f"Installed and enabled {unit_path.name} at {unit_path}.")
     log(f"Follow the journal with: {journalctl_follow_command(journal_hours)}")
 
@@ -708,6 +667,8 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
             "leaving the legacy service unchanged"
         )
     install_daemon_binary(program_file)
+    _stop_active_runtime_before_daemon_restart()
+    clear_last_runtime_state()
     unit_path = daemon_systemd_service_unit_path()
     unit_path.write_text(
         build_daemon_api_service_unit(program_file, socket_path=socket_path),
@@ -723,15 +684,12 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
         env=stable_subprocess_env(),
         check=False,
     )
-    # Drop stale state from older package/deployment paths, then carry the
-    # migrated legacy autostart intent into the native daemon state file.
-    clear_last_runtime_state()
-    if autostart_argv:
-        _persist_autostart_last_runtime(
-            autostart_argv, _daemon_program_file_for_unit(program_file)
-        )
     _enable_and_start_or_restart_daemon_unit(unit_path.name)
     _wait_for_daemon_status(socket_path)
+    if autostart_argv:
+        _apply_persistent_runtime(autostart_argv, socket_path=socket_path)
+    else:
+        clear_boot_runtime_spec(socket_path=socket_path)
     log(f"Installed and started {unit_path.name} at {unit_path}.")
 
     if legacy_state["exists"]:
@@ -857,6 +815,7 @@ def uninstall_systemd_service(*, log):
             "systemd service uninstall requires root privileges. Re-run with sudo."
         )
 
+    _stop_active_runtime_before_daemon_restart()
     clear_last_runtime_state()  # nothing to re-run once the service is gone
     unit_paths = (
         daemon_systemd_service_unit_path(),
@@ -974,11 +933,7 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
         binary_changed=binary_changed,
         log=log,
     )
-    result = start_runtime_profile(
-        list(argv),
-        socket_path=DEFAULT_DAEMON_SOCKET,
-        timeout_s=3,
-    )
+    result, _spec = _apply_runtime(argv, socket_path=DEFAULT_DAEMON_SOCKET)
     log(
         "Started runtime profile through "
         f"{PENGUIN_BURNER_DAEMON_UNIT_NAME}.service"

@@ -85,8 +85,8 @@ def _scan_daemon_options(command: list[str]) -> dict:
     return json.loads(command[4])
 
 
-def _runtime_profile_daemon_argv(command: list[str]) -> list[str]:
-    assert command[1:4] == ["-m", "runtime.daemon_client", "start-runtime-profile"]
+def _runtime_profile_daemon_intent(command: list[str]) -> dict:
+    assert command[1:4] == ["-m", "runtime.daemon_client", "apply-runtime-intent"]
     return json.loads(command[4])
 
 
@@ -96,14 +96,9 @@ def _assert_flatpak_daemon_script_waits_for_api(
     success_message: str,
 ) -> None:
     assert "daemon_socket=/run/penguin-burnerd.sock" in script
-    assert "last_runtime_state=/var/lib/penguin-burner/last-runtime.json" in script
     assert 'client.sendall(b\'{"method":"status"}\\n\')' in script
     assert 'rm -f "$daemon_socket"' in script
-    state_clear = (
-        'rm -f "$last_runtime_state"'
-        if 'rm -f "$last_runtime_state"' in script
-        else 'rm -f "$PENGUIN_BURNER_LAST_RUNTIME_PATH"'
-    )
+    state_clear = 'rm -f "/var/lib/penguin-burner/last-runtime.json"'
     assert state_clear in script
     assert "restart_penguin_burnerd" in script
     assert "systemctl status --no-pager penguin-burnerd.service" in script
@@ -220,12 +215,14 @@ def _flatpak_daemon_install_env(monkeypatch, tmp_path) -> None:
 
 def _command_env_value(command: list[str], name: str) -> str:
     prefix = f"{name}="
-    values = [part[len(prefix):] for part in command if part.startswith(prefix)]
+    values = [part[len(prefix) :] for part in command if part.startswith(prefix)]
     assert len(values) == 1, f"expected exactly one {name} assignment"
     return values[0]
 
 
-def test_daemon_migration_command_installs_flatpak_daemon(monkeypatch, tmp_path) -> None:
+def test_daemon_migration_command_installs_flatpak_daemon(
+    monkeypatch, tmp_path
+) -> None:
     # B4b: the sandbox-built /app/libexec binary is copied onto the host's
     # root-owned /usr/libexec by the one pkexec elevation; the repair flow clears
     # stale last-runtime state from old deployments before restarting.
@@ -261,9 +258,9 @@ def test_daemon_migration_command_installs_flatpak_daemon(monkeypatch, tmp_path)
     )
     _assert_flatpak_daemon_binary_installed_atomically(script)
     assert "systemctl enable penguin-burnerd.service" in script
-    assert 'rm -f "$last_runtime_state"' in script
-    # Repair/migrate clears stale state but does not seed a new autostart payload.
-    assert "PENGUIN_BURNER_LAST_RUNTIME_B64" not in " ".join(command)
+    assert 'rm -f "/var/lib/penguin-burner/last-runtime.json"' in script
+    # Repair/migrate clears stale state but does not apply a boot intent.
+    assert "PENGUIN_BURNER_RUNTIME_INTENT_B64" not in " ".join(command)
     unit = base64.b64decode(
         _command_env_value(command, "PENGUIN_BURNER_SYSTEMD_UNIT_B64")
     ).decode("utf-8")
@@ -295,25 +292,20 @@ def test_flatpak_runtime_profile_install_copies_daemon_and_seeds_autostart(
     ]
     script = command[command.index("-c") + 1]
     _assert_flatpak_daemon_binary_installed_atomically(script)
-    # "Persist THIS profile": the state file is cleared, then re-seeded so the
-    # Rust daemon replays the installed profile on boot.
-    assert 'rm -f "$PENGUIN_BURNER_LAST_RUNTIME_PATH"' in script
-    assert _command_env_value(command, "PENGUIN_BURNER_LAST_RUNTIME_PATH") == (
-        "/var/lib/penguin-burner/last-runtime.json"
-    )
-    state = json.loads(
+    # The new daemon resolves this semantic intent, applies it, then stores the
+    # validated RuntimeSpec as explicit boot state.
+    assert "apply-runtime-intent --boot" in script
+    intent = json.loads(
         base64.b64decode(
-            _command_env_value(command, "PENGUIN_BURNER_LAST_RUNTIME_B64")
+            _command_env_value(command, "PENGUIN_BURNER_RUNTIME_INTENT_B64")
         ).decode("utf-8")
     )
-    assert state["argv"] == [
-        "--auto-uv-profile",
-        "profile-a",
-        "--silent-fan-curve",
-        "--gpu-index",
-        "0",
-    ]
-    assert state["program_file"].endswith("penguin_burner.py")
+    assert intent == {
+        "profile_selector": "profile-a",
+        "silent_fan_curve": True,
+        "adaptive_auto_uv": False,
+        "gpu_index": 0,
+    }
     unit = base64.b64decode(
         _command_env_value(command, "PENGUIN_BURNER_SYSTEMD_UNIT_B64")
     ).decode("utf-8")
@@ -366,18 +358,17 @@ def test_flatpak_runtime_profile_daemonize_uses_daemon_client(
         silent_fan_curve=True,
         gpu_index=0,
     )
-    runtime_argv = _runtime_profile_daemon_argv(command)
+    intent = _runtime_profile_daemon_intent(command)
 
     assert "/usr/bin/systemd-run" not in command
     assert "PenguinBurner" not in command
     assert "/usr/bin/flatpak" not in command
-    assert runtime_argv == [
-        "--auto-uv-profile",
-        "profile-a",
-        "--silent-fan-curve",
-        "--gpu-index",
-        "0",
-    ]
+    assert intent == {
+        "profile_selector": "profile-a",
+        "silent_fan_curve": True,
+        "adaptive_auto_uv": False,
+        "gpu_index": 0,
+    }
 
 
 def test_flatpak_systemd_uninstall_clears_last_runtime_state(
@@ -510,67 +501,91 @@ def test_gui_new_ui_argument_is_hidden_from_qt_args() -> None:
 
 
 def test_probe_failure_labels_distinguish_recoverable_and_fatal_reasons() -> None:
-    assert _probe_decision_label(
-        {
-            "decision": "fail",
-            "failure_kind": "low-clock",
-            "reason": "average busy core clock below floor",
-        }
-    ) == "Failed"
-    assert _probe_failure_label(
-        {
-            "decision": "fail",
-            "failure_kind": "fps-regression",
-            "reason": "single-run FPS below floor current=79 floor=80",
-        }
-    ) == "Single run FPS low"
-    assert _probe_failure_label(
-        {
-            "decision": "fail",
-            "failure_kind": "fps-regression",
-            "reason": "benchmark average FPS below floor current=89 floor=90",
-        }
-    ) == "Average FPS low"
-    assert _probe_failure_label(
-        {
-            "decision": "fail",
-            "failure_kind": "fatal-output",
-            "fatal_output_matches": ["VK_ERROR_DEVICE_LOST"],
-        }
-    ) == "Vulkan device lost"
-    assert _probe_failure_label(
-        {
-            "decision": "fail",
-            "failure_kind": "nvidia-xid",
-        }
-    ) == "Nvidia Xid fail"
-    assert _probe_failure_label(
-        {
-            "decision": "fail",
-            "failure_kind": "load-lost",
-        }
-    ) == "GPU load too low"
+    assert (
+        _probe_decision_label(
+            {
+                "decision": "fail",
+                "failure_kind": "low-clock",
+                "reason": "average busy core clock below floor",
+            }
+        )
+        == "Failed"
+    )
+    assert (
+        _probe_failure_label(
+            {
+                "decision": "fail",
+                "failure_kind": "fps-regression",
+                "reason": "single-run FPS below floor current=79 floor=80",
+            }
+        )
+        == "Single run FPS low"
+    )
+    assert (
+        _probe_failure_label(
+            {
+                "decision": "fail",
+                "failure_kind": "fps-regression",
+                "reason": "benchmark average FPS below floor current=89 floor=90",
+            }
+        )
+        == "Average FPS low"
+    )
+    assert (
+        _probe_failure_label(
+            {
+                "decision": "fail",
+                "failure_kind": "fatal-output",
+                "fatal_output_matches": ["VK_ERROR_DEVICE_LOST"],
+            }
+        )
+        == "Vulkan device lost"
+    )
+    assert (
+        _probe_failure_label(
+            {
+                "decision": "fail",
+                "failure_kind": "nvidia-xid",
+            }
+        )
+        == "Nvidia Xid fail"
+    )
+    assert (
+        _probe_failure_label(
+            {
+                "decision": "fail",
+                "failure_kind": "load-lost",
+            }
+        )
+        == "GPU load too low"
+    )
 
 
 def test_probe_failure_severity_controls_table_row_state() -> None:
-    assert _row_state(
-        {
-            "decision": "fail",
-            "failure_kind": "low-clock",
-            "failure_severity": "recoverable",
-            "reason": "average busy core clock below floor",
-        },
-        running=False,
-    ) == "warning"
-    assert _row_state(
-        {
-            "decision": "fail",
-            "failure_kind": "fatal-output",
-            "failure_severity": "critical",
-            "fatal_output_matches": ["VK_ERROR_DEVICE_LOST"],
-        },
-        running=False,
-    ) == "error"
+    assert (
+        _row_state(
+            {
+                "decision": "fail",
+                "failure_kind": "low-clock",
+                "failure_severity": "recoverable",
+                "reason": "average busy core clock below floor",
+            },
+            running=False,
+        )
+        == "warning"
+    )
+    assert (
+        _row_state(
+            {
+                "decision": "fail",
+                "failure_kind": "fatal-output",
+                "failure_severity": "critical",
+                "fatal_output_matches": ["VK_ERROR_DEVICE_LOST"],
+            },
+            running=False,
+        )
+        == "error"
+    )
 
 
 def test_runs_table_power_delta_keeps_raw_sign() -> None:
@@ -630,12 +645,12 @@ def test_runs_table_compacts_metric_delta_columns() -> None:
     assert table.widget.item(0, table.FPS_COLUMN).text() == "150.00 (ref)"
     assert table.widget.item(1, table.FPS_COLUMN).text() == "160.00 (+6.67%)"
     assert table.widget.item(1, table.POWER_COLUMN).text() == "270.00 (-10.00%)"
-    assert table.widget.item(1, table.PERF_CAP_COLUMN).text() == (
-        "sw-power+hw-thermal"
-    )
+    assert table.widget.item(1, table.PERF_CAP_COLUMN).text() == ("sw-power+hw-thermal")
     assert table.widget.item(1, table.FPSW_COLUMN).text() == "0.75 (+50.00%)"
-    assert table.widget.item(1, table.POWER_COLUMN).toolTip().startswith(
-        "Power W -10.00% vs base"
+    assert (
+        table.widget.item(1, table.POWER_COLUMN)
+        .toolTip()
+        .startswith("Power W -10.00% vs base")
     )
 
 
@@ -654,7 +669,9 @@ def test_ui_profile_delete_command_uses_daemon_client(monkeypatch) -> None:
     assert "pkexec" not in " ".join(command)
 
 
-def test_ui_runtime_command_uses_auto_uv_profile_without_afterburner_flag(monkeypatch) -> None:
+def test_ui_runtime_command_uses_auto_uv_profile_without_afterburner_flag(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
 
     command = commands.runtime_profile_command(
@@ -663,16 +680,18 @@ def test_ui_runtime_command_uses_auto_uv_profile_without_afterburner_flag(monkey
         silent_fan_curve=True,
         gpu_index=1,
     )
-    runtime_argv = _runtime_profile_daemon_argv(command)
+    intent = _runtime_profile_daemon_intent(command)
 
     assert "--daemonize" not in command
     assert "--prefer-afterburner-curve" not in command
-    assert "--silent-fan-curve" in runtime_argv
-    assert runtime_argv[runtime_argv.index("--auto-uv-profile") + 1] == "profile-a"
-    assert runtime_argv[runtime_argv.index("--gpu-index") + 1] == "1"
+    assert intent["silent_fan_curve"] is True
+    assert intent["profile_selector"] == "profile-a"
+    assert intent["gpu_index"] == 1
 
 
-def test_ui_runtime_command_adds_adaptive_for_transient_and_persistent(monkeypatch) -> None:
+def test_ui_runtime_command_adds_adaptive_for_transient_and_persistent(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
 
     persistent = commands.runtime_profile_command(
@@ -685,9 +704,9 @@ def test_ui_runtime_command_adds_adaptive_for_transient_and_persistent(monkeypat
     )
 
     assert "--adaptive-auto-uv" in persistent
-    assert "--adaptive-auto-uv" in _runtime_profile_daemon_argv(transient)
+    assert _runtime_profile_daemon_intent(transient)["adaptive_auto_uv"] is True
     assert "--auto-uv-profile" not in persistent
-    assert "--auto-uv-profile" not in _runtime_profile_daemon_argv(transient)
+    assert _runtime_profile_daemon_intent(transient)["profile_selector"] == ""
 
 
 def test_final_choice_performance_mode_sorts_by_fps() -> None:
@@ -714,9 +733,7 @@ def test_final_choice_performance_mode_sorts_by_fps() -> None:
         "fast",
         "efficient",
     ]
-    assert _best_final_choice_candidate_id(sorted_candidates, "performance") == (
-        "fast"
-    )
+    assert _best_final_choice_candidate_id(sorted_candidates, "performance") == ("fast")
     assert _final_choice_sort_column_for_mode("performance") == (
         FINAL_CHOICE_FPS_SORT_COLUMN
     )
@@ -951,12 +968,16 @@ def test_final_choice_table_default_sort_and_header_toggles() -> None:
             for row in range(table.rowCount())
         ]
 
-    assert table.horizontalHeader().sortIndicatorSection() == FINAL_CHOICE_FPS_SORT_COLUMN
+    assert (
+        table.horizontalHeader().sortIndicatorSection() == FINAL_CHOICE_FPS_SORT_COLUMN
+    )
     assert table.horizontalHeader().sortIndicatorOrder() == QtCore.Qt.DescendingOrder
     assert row_ids() == ["fast", "efficient"]
 
     table.horizontalHeader().sectionClicked.emit(FINAL_CHOICE_FPSW_SORT_COLUMN)
-    assert table.horizontalHeader().sortIndicatorSection() == FINAL_CHOICE_FPSW_SORT_COLUMN
+    assert (
+        table.horizontalHeader().sortIndicatorSection() == FINAL_CHOICE_FPSW_SORT_COLUMN
+    )
     assert table.horizontalHeader().sortIndicatorOrder() == QtCore.Qt.DescendingOrder
     assert row_ids() == ["efficient", "fast"]
 
@@ -1436,18 +1457,27 @@ def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
     advanced_checkboxes = advanced_group.findChildren(QtWidgets.QCheckBox)
     advanced_labels = [checkbox.text() for checkbox in advanced_checkboxes]
     assert advanced_labels == [ITEM_LABELS[item] for item in ADVANCED_OVERLAY_ITEM_IDS]
-    assert advanced_group.findChild(
-        QtWidgets.QCheckBox,
-        "overlayItemCheckbox_gpu_util_pct",
-    ).text() == "GPU %"
-    assert advanced_group.findChild(
-        QtWidgets.QCheckBox,
-        "overlayItemCheckbox_cpu_util_pct",
-    ).text() == "CPU %"
-    assert advanced_group.findChild(
-        QtWidgets.QCheckBox,
-        "overlayItemCheckbox_cpu_peak_thread_pct",
-    ).text() == "CPU-T %"
+    assert (
+        advanced_group.findChild(
+            QtWidgets.QCheckBox,
+            "overlayItemCheckbox_gpu_util_pct",
+        ).text()
+        == "GPU %"
+    )
+    assert (
+        advanced_group.findChild(
+            QtWidgets.QCheckBox,
+            "overlayItemCheckbox_cpu_util_pct",
+        ).text()
+        == "CPU %"
+    )
+    assert (
+        advanced_group.findChild(
+            QtWidgets.QCheckBox,
+            "overlayItemCheckbox_cpu_peak_thread_pct",
+        ).text()
+        == "CPU-T %"
+    )
 
     window.tabs.setCurrentIndex(window.auto_uv_tab_index)
     assert not window.table_panel.isHidden()
@@ -1555,18 +1585,13 @@ def test_overlay_panel_launch_box_latency_is_default_on(tmp_path) -> None:
     assert "latency_ms" in panel.config.enabled_item_ids
     assert panel.launch_line.text() == STEAM_LAUNCH_OPTION_WITH_LATENCY
     panel._copy_launch_option()
-    assert (
-        QtWidgets.QApplication.clipboard().text() == STEAM_LAUNCH_OPTION_WITH_LATENCY
-    )
+    assert QtWidgets.QApplication.clipboard().text() == STEAM_LAUNCH_OPTION_WITH_LATENCY
 
     # Hiding the Latency item only changes rendering, not launch env fallback.
     panel._set_item_enabled("latency_ms", False)
     assert panel.launch_line.text() == STEAM_LAUNCH_OPTION_WITH_LATENCY
     panel._copy_launch_option()
-    assert (
-        QtWidgets.QApplication.clipboard().text()
-        == STEAM_LAUNCH_OPTION_WITH_LATENCY
-    )
+    assert QtWidgets.QApplication.clipboard().text() == STEAM_LAUNCH_OPTION_WITH_LATENCY
 
 
 def test_running_status_with_duration_uses_seconds_progress() -> None:
@@ -1940,9 +1965,9 @@ def test_runs_table_row_click_toggles_single_candidate_selection() -> None:
     table._handle_cell_clicked(1, 0)
     assert selected[-1] == "890mv-2610mhz"
     assert table.selected_candidate_id() == "890mv-2610mhz"
-    assert [
-        index.row() for index in table.widget.selectionModel().selectedRows()
-    ] == [1]
+    assert [index.row() for index in table.widget.selectionModel().selectedRows()] == [
+        1
+    ]
 
     table._handle_cell_clicked(1, 0)
     assert selected[-1] is None
@@ -2116,7 +2141,7 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_voltage_drop_default",
-        lambda gpu_index=None: SimpleNamespace(
+        lambda gpu_name=None: SimpleNamespace(
             gpu_name="NVIDIA GeForce RTX 5080",
             value_pct=15.0,
         ),
@@ -2124,7 +2149,7 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_clock_drop_default",
-        lambda gpu_index=None, preset_id=None: SimpleNamespace(
+        lambda gpu_name=None, preset_id=None: SimpleNamespace(
             value_pct={
                 AUTO_UV_PRESET_EFFICIENCY: 11.1,
                 AUTO_UV_PRESET_BALANCED: 6.0,
@@ -2135,14 +2160,16 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_power_limit_default",
-        lambda max_w=None, min_w=None, default_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
-            watts={
-                AUTO_UV_PRESET_EFFICIENCY: 383,
-                AUTO_UV_PRESET_BALANCED: 405,
-                AUTO_UV_PRESET_PERFORMANCE: 450,
-            }.get(preset_id, 405),
-            pct=None,
-            preset_matched=True,
+        lambda max_w=None, min_w=None, default_w=None, gpu_name=None, preset_id=None: (
+            SimpleNamespace(
+                watts={
+                    AUTO_UV_PRESET_EFFICIENCY: 383,
+                    AUTO_UV_PRESET_BALANCED: 405,
+                    AUTO_UV_PRESET_PERFORMANCE: 450,
+                }.get(preset_id, 405),
+                pct=None,
+                preset_matched=True,
+            )
         ),
     )
     monkeypatch.setattr(
@@ -2150,8 +2177,16 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
         "gpu_choices_with_fallback",
         lambda selected_index=None: (
             [
-                SimpleNamespace(index=0, label="GPU 0 - NVIDIA GeForce RTX 4090"),
-                SimpleNamespace(index=1, label="GPU 1 - NVIDIA GeForce RTX 5090"),
+                SimpleNamespace(
+                    index=0,
+                    name="NVIDIA GeForce RTX 4090",
+                    label="GPU 0 - NVIDIA GeForce RTX 4090",
+                ),
+                SimpleNamespace(
+                    index=1,
+                    name="NVIDIA GeForce RTX 5090",
+                    label="GPU 1 - NVIDIA GeForce RTX 5090",
+                ),
             ],
             1 if selected_index is None else selected_index,
         ),
@@ -2159,7 +2194,7 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     monkeypatch.setattr(
         scan_tuning,
         "read_auto_uv_nvml_info",
-        lambda selected: SimpleNamespace(
+        lambda selected, gpu_client=None: SimpleNamespace(
             power_draw_w=42.0,
             power_management_enabled=True,
             power_limit_set_supported=True,
@@ -2266,7 +2301,7 @@ def test_scan_tuning_enter_in_numeric_field_only_commits_value(monkeypatch) -> N
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_voltage_drop_default",
-        lambda gpu_index=None: SimpleNamespace(
+        lambda gpu_name=None: SimpleNamespace(
             gpu_name="NVIDIA GeForce RTX 5080",
             value_pct=15.0,
             floor_voltage_mv=850,
@@ -2275,7 +2310,7 @@ def test_scan_tuning_enter_in_numeric_field_only_commits_value(monkeypatch) -> N
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_clock_drop_default",
-        lambda gpu_index=None, preset_id=None: SimpleNamespace(
+        lambda gpu_name=None, preset_id=None: SimpleNamespace(
             value_pct={
                 AUTO_UV_PRESET_EFFICIENCY: 11.1,
                 AUTO_UV_PRESET_BALANCED: 6.0,
@@ -2287,14 +2322,20 @@ def test_scan_tuning_enter_in_numeric_field_only_commits_value(monkeypatch) -> N
         scan_tuning,
         "gpu_choices_with_fallback",
         lambda selected_index=None: (
-            [SimpleNamespace(index=0, label="GPU 0 - NVIDIA GeForce RTX 5080")],
+            [
+                SimpleNamespace(
+                    index=0,
+                    name="NVIDIA GeForce RTX 5080",
+                    label="GPU 0 - NVIDIA GeForce RTX 5080",
+                )
+            ],
             0,
         ),
     )
     monkeypatch.setattr(
         scan_tuning,
         "read_auto_uv_nvml_info",
-        lambda selected: SimpleNamespace(
+        lambda selected, gpu_client=None: SimpleNamespace(
             power_draw_w=42.0,
             power_management_enabled=True,
             power_limit_set_supported=True,
@@ -2370,7 +2411,7 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_voltage_drop_default",
-        lambda gpu_index=None: SimpleNamespace(
+        lambda gpu_name=None: SimpleNamespace(
             gpu_name="NVIDIA GeForce RTX 5080",
             value_pct=15.0,
             floor_voltage_mv=850,
@@ -2379,29 +2420,37 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_clock_drop_default",
-        lambda gpu_index=None, preset_id=None: SimpleNamespace(value_pct=6.0),
+        lambda gpu_name=None, preset_id=None: SimpleNamespace(value_pct=6.0),
     )
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_power_limit_default",
-        lambda max_w=None, min_w=None, default_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
-            watts=351,
-            pct=90.0,
-            preset_matched=True,
+        lambda max_w=None, min_w=None, default_w=None, gpu_name=None, preset_id=None: (
+            SimpleNamespace(
+                watts=351,
+                pct=90.0,
+                preset_matched=True,
+            )
         ),
     )
     monkeypatch.setattr(
         scan_tuning,
         "gpu_choices_with_fallback",
         lambda selected_index=None: (
-            [SimpleNamespace(index=0, label="GPU 0 - NVIDIA GeForce RTX 5080")],
+            [
+                SimpleNamespace(
+                    index=0,
+                    name="NVIDIA GeForce RTX 5080",
+                    label="GPU 0 - NVIDIA GeForce RTX 5080",
+                )
+            ],
             0,
         ),
     )
     monkeypatch.setattr(
         scan_tuning,
         "read_auto_uv_nvml_info",
-        lambda selected: SimpleNamespace(
+        lambda selected, gpu_client=None: SimpleNamespace(
             power_draw_w=42.0,
             power_management_enabled=True,
             power_limit_set_supported=True,
@@ -2456,34 +2505,40 @@ def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_voltage_drop_default",
-        lambda gpu_index=None: SimpleNamespace(
+        lambda gpu_name=None: SimpleNamespace(
             gpu_name="NVIDIA GeForce RTX 5080", value_pct=15.0, floor_voltage_mv=850
         ),
     )
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_clock_drop_default",
-        lambda gpu_index=None, preset_id=None: SimpleNamespace(value_pct=6.0),
+        lambda gpu_name=None, preset_id=None: SimpleNamespace(value_pct=6.0),
     )
     monkeypatch.setattr(
         scan_tuning,
         "auto_uv_power_limit_default",
-        lambda max_w=None, min_w=None, default_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
-            watts=None, pct=None, preset_matched=False
+        lambda max_w=None, min_w=None, default_w=None, gpu_name=None, preset_id=None: (
+            SimpleNamespace(watts=None, pct=None, preset_matched=False)
         ),
     )
     monkeypatch.setattr(
         scan_tuning,
         "gpu_choices_with_fallback",
         lambda selected_index=None: (
-            [SimpleNamespace(index=0, label="GPU 0 - NVIDIA GeForce RTX 5080")],
+            [
+                SimpleNamespace(
+                    index=0,
+                    name="NVIDIA GeForce RTX 5080",
+                    label="GPU 0 - NVIDIA GeForce RTX 5080",
+                )
+            ],
             0,
         ),
     )
     monkeypatch.setattr(
         scan_tuning,
         "read_auto_uv_nvml_info",
-        lambda selected: SimpleNamespace(
+        lambda selected, gpu_client=None: SimpleNamespace(
             power_draw_w=42.0,
             power_management_enabled=True,
             power_limit_set_supported=True,
@@ -2498,7 +2553,9 @@ def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
         ),
     )
     # Driver NVML offset range is MT/s; the box works in MHz (half of it).
-    monkeypatch.setattr(scan_tuning, "memory_offset_mhz_range", lambda: (0, 4000))
+    monkeypatch.setattr(
+        scan_tuning, "memory_offset_mhz_range", lambda **_kwargs: (0, 4000)
+    )
 
     def accept_with_memory_offset(dialog):
         spin = dialog.findChild(QtWidgets.QSpinBox, "memoryOffsetSpin")

@@ -6,9 +6,8 @@ from pathlib import Path
 from typing import Callable
 import tempfile
 
-from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
-from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
 from common.penguin_burner_errors import NvmlError
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from runtime.support.vf_curve_plan import (
     apply_plan,
     backup_current_offsets,
@@ -54,8 +53,7 @@ class ProfileVerificationDependencies:
     stop_existing_penguin_burner_runtime: Callable = (
         stop_existing_penguin_burner_runtime
     )
-    create_hidden_vf_curve_reader: Callable = create_hidden_vf_curve_reader
-    gpu_policy_controller_factory: Callable = NvmlGpuPolicyController
+    gpu_client_factory: Callable = DaemonGpuClient
     backup_current_offsets: Callable = backup_current_offsets
     restore_offsets: Callable = restore_offsets
     apply_plan: Callable = apply_plan
@@ -83,11 +81,15 @@ def run_profile_verification(
         raise NvmlError("profile verification requires --auto-uv-profile")
 
     deps.stop_existing_penguin_burner_runtime(log=deps.log)
-    vf_curve_reader = deps.create_hidden_vf_curve_reader(gpu_index=gpu_index)
-    if vf_curve_reader is None:
-        raise NvmlError("could not open the live Nvidia V/F curve reader")
+    try:
+        gpu_client = deps.gpu_client_factory(gpu_index=gpu_index)
+        gpu_client.refresh_points()
+    except Exception as exc:
+        raise NvmlError(f"could not open the daemon GPU client: {exc}") from exc
+    vf_curve_reader = gpu_client
+    gpu_policy_controller = gpu_client
 
-    clock_ceiling_controller: object | None = None
+    clock_ceiling_controller: FlattenedClockCeilingController | None = None
 
     def close_clock_ceiling() -> None:
         nonlocal clock_ceiling_controller
@@ -100,18 +102,6 @@ def run_profile_verification(
         clock_ceiling_controller = None
 
     with contextlib.ExitStack() as stack:
-        stack.callback(vf_curve_reader.close)
-
-        try:
-            gpu_policy_controller = deps.gpu_policy_controller_factory(
-                gpu_index=gpu_index
-            )
-        except Exception as exc:
-            gpu_policy_controller = None
-            deps.log(f"Linux GPU policy helper unavailable: {exc}")
-        if gpu_policy_controller is not None:
-            stack.callback(gpu_policy_controller.close)
-
         backup_file = tempfile.NamedTemporaryFile(
             prefix="penguin-burner-verify-", suffix=".json", delete=False
         )
@@ -122,7 +112,13 @@ def run_profile_verification(
             backup_path,
             policy_controller=gpu_policy_controller,
         )
-        stack.callback(_restore_and_unlink_backup, deps, vf_curve_reader, backup_path, gpu_policy_controller)
+        stack.callback(
+            _restore_and_unlink_backup,
+            deps,
+            vf_curve_reader,
+            backup_path,
+            gpu_policy_controller,
+        )
         stack.callback(close_clock_ceiling)
 
         label, flatten_target, verify_plan = apply_verify_auto_uv_profile(
@@ -178,9 +174,11 @@ def run_profile_verification(
             total_duration_s=duration_s,
         )
         if flatten_target is not None:
-            stability_config.abort_callback = profile_verification_voltage_abort_callback(
-                flatten_target,
-                previous_callback=stability_config.abort_callback,
+            stability_config.abort_callback = (
+                profile_verification_voltage_abort_callback(
+                    flatten_target,
+                    previous_callback=stability_config.abort_callback,
+                )
             )
         stop_request_path = stability_stop_request_path(args)
         if stop_request_path is not None:
@@ -214,7 +212,9 @@ def run_profile_verification(
                             f"path={failed_path} reason={result.reason}"
                         )
                 except Exception as exc:
-                    deps.log(f"Warning: failed to mark profile verification failed: {exc}")
+                    deps.log(
+                        f"Warning: failed to mark profile verification failed: {exc}"
+                    )
             raise NvmlError(
                 f"profile verification failed: {result.reason}; log={result.log_path}"
             )
@@ -358,23 +358,21 @@ def run_profile_verification_baseline_probe(
             f"duration={int(duration_s)}s "
             f"{stability_workload_split_label(duration_s)}."
         )
-        baseline_reader = deps.create_hidden_vf_curve_reader(gpu_index=gpu_index)
-        if baseline_reader is None:
-            raise NvmlError("could not open the live Nvidia V/F curve reader")
-        try:
-            apply_and_verify_profile_vf_plan(
-                baseline_reader,
-                base_plan,
-                context="baseline profile",
-                dependencies=deps,
-            )
-        finally:
-            baseline_reader.close()
+        baseline_reader = deps.gpu_client_factory(gpu_index=gpu_index)
+        baseline_reader.refresh_points()
+        apply_and_verify_profile_vf_plan(
+            baseline_reader,
+            base_plan,
+            context="baseline profile",
+            dependencies=deps,
+        )
         if gpu_policy_controller is not None:
             try:
                 gpu_policy_controller.apply_clock_offsets(mem_clk_vf_offset_mhz=0)
             except Exception as exc:
-                deps.log(f"Warning: failed to reset memory offset for baseline probe: {exc}")
+                deps.log(
+                    f"Warning: failed to reset memory offset for baseline probe: {exc}"
+                )
         stability_config = deps.build_stability_config(
             args,
             gpu_index=gpu_index,

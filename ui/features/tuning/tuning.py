@@ -15,6 +15,7 @@ from auto_uv.scan_mode.uv_limits import (
     voltage_drop_pct,
 )
 from common.penguin_burner_paths import default_runtime_config_path
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 
 from ui.features.tuning.gpu_selection import runtime_gpu_index
 
@@ -300,47 +301,37 @@ def auto_uv_performance_preset_tooltip(_preview=None) -> str:
     )
 
 
-def read_auto_uv_nvml_info(gpu_index: int) -> AutoUvNvmlInfo:
-    power = None
-    clocks = None
-    supported_memory_clocks: list[int] = []
-    supported_graphics_steps: list[int] = []
-
+def read_auto_uv_nvml_info(
+    gpu_index: int,
+    *,
+    gpu_client: DaemonGpuClient | None = None,
+) -> AutoUvNvmlInfo:
     try:
-        from drivers.nvidia.nvml_power import NvmlPowerSession
-
-        with NvmlPowerSession(int(gpu_index)) as session:
-            power = session.telemetry()
+        client = gpu_client or DaemonGpuClient(int(gpu_index))
+        snapshot = client.snapshot(refresh=True)
     except Exception:
-        power = None
+        snapshot = None
 
-    try:
-        from drivers.nvidia.nvml_clock import NvmlClockSession
-
-        with NvmlClockSession(int(gpu_index)) as session:
-            clocks = session.current_clocks()
-            supported_memory_clocks = session.supported_memory_clocks_mhz()
-            supported_graphics_steps = session.supported_graphics_clock_steps_mhz()
-    except Exception:
-        clocks = None
-        supported_memory_clocks = []
-        supported_graphics_steps = []
+    capabilities = snapshot.capabilities if snapshot is not None else None
+    telemetry = snapshot.telemetry if snapshot is not None else None
+    power = capabilities.power if capabilities is not None else None
+    clocks = telemetry.clocks if telemetry is not None else None
 
     return AutoUvNvmlInfo(
-        power_draw_w=getattr(power, "power_draw_w", None),
-        power_management_enabled=getattr(power, "power_management_enabled", None),
+        power_draw_w=getattr(telemetry, "power_draw_w", None),
+        power_management_enabled=getattr(power, "management_enabled", None),
         power_limit_set_supported=power_limit_set_supported(gpu_index),
-        power_limit_w=getattr(power, "power_limit_w", None),
-        power_limit_default_w=getattr(power, "power_limit_default_w", None),
-        power_limit_min_w=getattr(power, "power_limit_min_w", None),
-        power_limit_max_w=getattr(power, "power_limit_max_w", None),
-        graphics_clock_mhz=getattr(clocks, "graphics_clock_mhz", None),
-        memory_clock_mhz=getattr(clocks, "memory_clock_mhz", None),
-        supported_memory_clocks_mhz=tuple(
-            sorted({int(clock) for clock in supported_memory_clocks})
+        power_limit_w=getattr(power, "current_w", None),
+        power_limit_default_w=getattr(power, "default_w", None),
+        power_limit_min_w=getattr(power, "minimum_w", None),
+        power_limit_max_w=getattr(power, "maximum_w", None),
+        graphics_clock_mhz=getattr(clocks, "graphics_mhz", None),
+        memory_clock_mhz=getattr(clocks, "memory_mhz", None),
+        supported_memory_clocks_mhz=(
+            capabilities.supported_memory_clocks_mhz if capabilities else ()
         ),
-        supported_graphics_clock_steps_mhz=tuple(
-            sorted({int(clock) for clock in supported_graphics_steps})
+        supported_graphics_clock_steps_mhz=(
+            capabilities.supported_core_clocks_mhz if capabilities else ()
         ),
     )
 
@@ -371,24 +362,22 @@ def power_limit_set_supported(gpu_index: int) -> bool:
     return bool(result.get("supported"))
 
 
-def memory_offset_mhz_range() -> tuple[int, int]:
+def memory_offset_mhz_range(
+    gpu_index: int | None = None,
+    *,
+    gpu_client: DaemonGpuClient | None = None,
+) -> tuple[int, int]:
     fallback = (0, 2000)
-    controller = None
     try:
-        from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
-
-        controller = NvmlGpuPolicyController(
-            gpu_index=runtime_gpu_index(default_runtime_config_path())
+        index = (
+            runtime_gpu_index(default_runtime_config_path())
+            if gpu_index is None
+            else int(gpu_index)
         )
-        driver_range = controller.get_memory_clock_offset_range_mhz()
+        client = gpu_client or DaemonGpuClient(gpu_index=index)
+        driver_range = client.capabilities().memory_clock_offset_range_mhz
     except Exception:
         return fallback
-    finally:
-        if controller is not None:
-            try:
-                controller.close()
-            except Exception:
-                pass
     if not driver_range:
         return fallback
     _driver_min, driver_max = driver_range
@@ -401,7 +390,11 @@ def memory_offset_mhz_range() -> tuple[int, int]:
     return 0, max(0, max_mhz)
 
 
-def auto_uv_voltage_floor_range_mv(gpu_index: int | None = None) -> tuple[int, int]:
+def auto_uv_voltage_floor_range_mv(
+    gpu_index: int | None = None,
+    *,
+    gpu_client: DaemonGpuClient | None = None,
+) -> tuple[int, int]:
     """Settable voltage-floor range (mV), derived from the live V/F curve.
 
     Lower bound = the curve "knee": the lowest voltage that still holds a real
@@ -417,25 +410,14 @@ def auto_uv_voltage_floor_range_mv(gpu_index: int | None = None) -> tuple[int, i
         if gpu_index is None
         else int(gpu_index)
     )
-    reader = None
     try:
-        from drivers.nvidia.hidden_nvapi_vf import create_hidden_vf_curve_reader
-
-        reader = create_hidden_vf_curve_reader(gpu_index=index)
-        if reader is None:
-            return fallback
+        client = gpu_client or DaemonGpuClient(gpu_index=index)
         points = [
             (int(p["voltage_uv"]) // 1000, int(p["base_freq_khz"]) // 1000)
-            for p in reader.editable_core_points()
+            for p in client.editable_core_points()
         ]
     except Exception:
         return fallback
-    finally:
-        if reader is not None:
-            try:
-                reader.close()
-            except Exception:
-                pass
     points = [(v, c) for v, c in points if v > 0 and c > 0]
     if not points:
         return fallback
@@ -450,23 +432,15 @@ def auto_uv_voltage_floor_range_mv(gpu_index: int | None = None) -> tuple[int, i
 
 
 def _query_gpu_name(gpu_index: int | None = None) -> str | None:
-    controller = None
     try:
-        from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
-
-        index = int(gpu_index) if gpu_index is not None else runtime_gpu_index(
-            default_runtime_config_path()
+        index = (
+            int(gpu_index)
+            if gpu_index is not None
+            else runtime_gpu_index(default_runtime_config_path())
         )
-        controller = NvmlGpuPolicyController(gpu_index=index)
-        name = controller.query_gpu_name()
+        name = DaemonGpuClient(gpu_index=index).capabilities().identity.name
     except Exception:
         return None
-    finally:
-        if controller is not None:
-            try:
-                controller.close()
-            except Exception:
-                pass
     return str(name).strip() if name else None
 
 

@@ -168,8 +168,7 @@ def test_q2rtx_release_metadata_uses_latest_penguinburner_binary(monkeypatch) ->
     assert tag_name == "pb-benchmark-v0.1.1"
     assert asset_name == "q2rtx-penguinburner-pb-benchmark-v0.1.1-linux-x86_64.tar.gz"
     assert (
-        asset_url
-        == "https://github.com/jpietek/Q2RTX-headless/releases/download/"
+        asset_url == "https://github.com/jpietek/Q2RTX-headless/releases/download/"
         "pb-benchmark-v0.1.1/"
         "q2rtx-penguinburner-pb-benchmark-v0.1.1-linux-x86_64.tar.gz"
     )
@@ -467,13 +466,17 @@ def test_q2rtx_runtime_env_binds_selected_gpu_from_runtime_identity() -> None:
 def test_q2rtx_selected_gpu_identity_is_derived_from_nvml(monkeypatch) -> None:
     monkeypatch.setattr(
         q2rtx_gpu_binding,
-        "query_nvml_gpu_identity",
+        "DaemonGpuClient",
         lambda gpu_index: SimpleNamespace(
-            index=int(gpu_index),
-            name="NVIDIA GeForce RTX 5090",
-            pci_bus_id="00000000:03:00.0",
-            pci_device_id="0x2C0210DE",
-            uuid="GPU-test",
+            capabilities=lambda: SimpleNamespace(
+                identity=SimpleNamespace(
+                    index=int(gpu_index),
+                    name="NVIDIA GeForce RTX 5090",
+                    pci_bus_id="00000000:03:00.0",
+                    pci_device_id="0x2C0210DE",
+                    uuid="GPU-test",
+                )
+            )
         ),
     )
 
@@ -638,19 +641,9 @@ def test_cuda_companion_abort_preserves_abort_reason(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    class DummyVoltageSession:
-        def __init__(self, gpu_index: int) -> None:
-            self.gpu_index = int(gpu_index)
-
-        def close(self) -> None:
-            pass
-
     monkeypatch.setattr(
-        q2rtx_runtime,
-        "_HiddenNvmlVoltageSession",
-        DummyVoltageSession,
+        q2rtx_runtime, "query_gpu_metrics", lambda *args, **kwargs: None
     )
-    monkeypatch.setattr(q2rtx_runtime, "query_gpu_metrics", lambda *args, **kwargs: None)
     monkeypatch.setattr(q2rtx_runtime, "_query_xid_messages_since", lambda _start: [])
 
     result = q2rtx_runtime.run_cuda_stability_test(
@@ -705,19 +698,9 @@ def test_cuda_stability_aborts_immediately_on_fatal_output(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    class DummyVoltageSession:
-        def __init__(self, gpu_index: int) -> None:
-            self.gpu_index = int(gpu_index)
-
-        def close(self) -> None:
-            pass
-
     monkeypatch.setattr(
-        q2rtx_runtime,
-        "_HiddenNvmlVoltageSession",
-        DummyVoltageSession,
+        q2rtx_runtime, "query_gpu_metrics", lambda *args, **kwargs: None
     )
-    monkeypatch.setattr(q2rtx_runtime, "query_gpu_metrics", lambda *args, **kwargs: None)
     monkeypatch.setattr(q2rtx_runtime, "_query_xid_messages_since", lambda _start: [])
     monkeypatch.setattr(
         q2rtx_runtime,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import math
 import os
 from pathlib import Path
@@ -38,15 +39,15 @@ def parse_adaptive_target_fps(
 
 
 def adaptive_target_fps_from_env(
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
     *,
     default: float = DEFAULT_ADAPTIVE_TARGET_FPS,
     config_path: str | Path | None = None,
 ) -> float:
     explicit_env = env is not None
-    env = os.environ if env is None else env
+    resolved_env = os.environ if env is None else env
     for name in ADAPTIVE_TARGET_FPS_ENV_NAMES:
-        raw = str(env.get(name) or "").strip()
+        raw = str(resolved_env.get(name) or "").strip()
         if raw:
             return parse_adaptive_target_fps(raw, default=default)
     if not explicit_env or config_path is not None:
@@ -84,10 +85,3 @@ def adaptive_target_fps_from_config(
 def adaptive_target_ms_from_fps(fps: object) -> float:
     target_fps = parse_adaptive_target_fps(fps)
     return 1000.0 / target_fps
-
-
-def format_adaptive_target_fps(fps: object) -> str:
-    target_fps = parse_adaptive_target_fps(fps)
-    if target_fps.is_integer():
-        return str(int(target_fps))
-    return f"{target_fps:.3f}".rstrip("0").rstrip(".")

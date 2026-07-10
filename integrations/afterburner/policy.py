@@ -1,7 +1,7 @@
 """Pure Afterburner -> Linux GPU-policy translation.
 
 These helpers map MSI Afterburner profile settings onto the concrete power and
-clock actions applied by :class:`nvml_gpu_policy.NvmlGpuPolicyController`. They
+clock actions applied by ``DaemonGpuClient``. They
 hold no NVML/ctypes state, so they live apart from the controller and stay
 trivially unit-testable.
 """

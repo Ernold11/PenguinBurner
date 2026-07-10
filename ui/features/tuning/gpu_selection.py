@@ -6,7 +6,7 @@ from pathlib import Path
 from integrations.afterburner.import_fan_curve import write_config
 from cli.runtime_config_file import load_raw_runtime_config
 from common.penguin_burner_paths import default_runtime_config_path
-from drivers.nvidia.nvml_identity import query_nvml_gpu_identities
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,11 @@ class GpuChoice:
 
 
 def detected_gpu_choices() -> list[GpuChoice]:
-    return gpu_choices_from_nvml_identities(query_nvml_gpu_identities())
+    try:
+        identities = DaemonGpuClient.discover_identities()
+    except Exception:
+        identities = []
+    return gpu_choices_from_nvml_identities(identities)
 
 
 def gpu_choices_from_nvml_identities(identities) -> list[GpuChoice]:

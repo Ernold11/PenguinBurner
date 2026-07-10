@@ -177,6 +177,48 @@ fn read_line<R: BufRead>(reader: &mut R) -> Option<String> {
     }
 }
 
+fn test_runtime_spec() -> Value {
+    serde_json::json!({
+        "format_version": 1,
+        "gpu": {
+            "uuid": "GPU-inert-test",
+            "index_at_resolution": 0,
+            "pci_bus_id": "0000:01:00.0",
+            "name": "Inert test GPU"
+        },
+        "mode": "stock",
+        "static_profile": null,
+        "adaptive": null,
+        "fan": {
+            "enabled": false,
+            "config": {
+                "poll_interval_s": 2.0,
+                "curve": [[55.0, 30.0], [80.0, 45.0]],
+                "hysteresis_c": 2.0,
+                "mode": "linear",
+                "min_fan_speed_pct": 20,
+                "max_fan_speed_pct": 100,
+                "max_step_up_pct_per_s": 25.0,
+                "max_step_down_pct_per_s": 15.0,
+                "manual_enable_temp_c": 55.0,
+                "auto_restore_temp_c": 50.0,
+                "emergency_auto_override_temp_c": 80.0,
+                "emergency_auto_resume_temp_c": 75.0,
+                "force_update_every_poll": false,
+                "curve_source": null,
+                "curve_source_path": null
+            },
+            "notice": ""
+        },
+        "policy": {"enable_persistence_mode": false},
+        "overlay": {"enabled": false, "update_interval_s": 1}
+    })
+}
+
+fn apply_runtime_request() -> String {
+    serde_json::json!({"method": "apply_runtime_spec", "spec": test_runtime_spec()}).to_string()
+}
+
 fn pid_alive(pid: u32) -> bool {
     // SAFETY: kill(pid, 0) only probes for existence.
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
@@ -371,21 +413,17 @@ fn kill_ladder_terminates_a_sigint_ignoring_scan() {
 }
 
 #[test]
-fn runtime_profile_start_stop_transitions_and_state_file() {
+fn runtime_spec_apply_stop_transitions_and_state_file() {
     let daemon = Daemon::start(&[]);
     let daemon_pid = daemon.child.id();
 
-    let start = daemon.request(
-        r#"{"method":"start_runtime_profile","argv":["--auto-uv-profile","profile-a","--silent-fan-curve"]}"#,
-    );
+    let start = daemon.request(&apply_runtime_request());
     assert_eq!(start["ok"], Value::Bool(true));
     let result = &start["result"];
     assert_eq!(result["started"], Value::Bool(true));
     assert_eq!(result["pid"], daemon_pid);
-    assert_eq!(
-        result["argv"],
-        serde_json::json!(["--auto-uv-profile", "profile-a", "--silent-fan-curve"])
-    );
+    assert_eq!(result["runtime_mode"], "stock");
+    assert_eq!(result["gpu_uuid"], "GPU-inert-test");
 
     let status = daemon.request(r#"{"method":"status"}"#);
     let status_result = &status["result"];
@@ -394,26 +432,22 @@ fn runtime_profile_start_stop_transitions_and_state_file() {
     assert_eq!(job["type"], "runtime_profile");
     assert_eq!(job["pid"], daemon_pid);
     assert_eq!(job["returncode"], Value::Null);
-    assert_eq!(
-        job["argv"],
-        serde_json::json!(["--auto-uv-profile", "profile-a", "--silent-fan-curve"])
-    );
+    assert_eq!(job["runtime_mode"], "stock");
+    assert_eq!(job["gpu_uuid"], "GPU-inert-test");
+    assert_eq!(job["silent_fan_curve"], Value::Bool(false));
 
-    // State file persisted with the argv.
+    // State file persists the validated typed spec.
     let state: Value =
         serde_json::from_str(&std::fs::read_to_string(&daemon.state_file).unwrap()).unwrap();
-    assert_eq!(
-        state["argv"],
-        serde_json::json!(["--auto-uv-profile", "profile-a", "--silent-fan-curve"])
-    );
-    assert!(state["program_file"].is_string());
+    assert_eq!(state["mode"], "stock");
+    assert_eq!(state["gpu"]["uuid"], "GPU-inert-test");
 
-    // Stop → idle, but the state file is NOT cleared (parity).
+    // Explicit stop clears current-session recovery state.
     let stop = daemon.request(r#"{"method":"stop_runtime_profile"}"#);
     assert_eq!(stop["result"]["stopped"], Value::Bool(true));
     let status = daemon.request(r#"{"method":"status"}"#);
     assert_eq!(status["result"]["state"], "idle");
-    assert!(daemon.state_file.exists());
+    assert!(!daemon.state_file.exists());
 }
 
 #[test]
@@ -422,11 +456,7 @@ fn autostart_runs_the_persisted_runtime_profile() {
     let dir = std::env::temp_dir().join(format!("pb-seed-{}-{}", std::process::id(), n));
     std::fs::create_dir_all(&dir).unwrap();
     let state_file = dir.join("state.json");
-    std::fs::write(
-        &state_file,
-        r#"{"argv":["--auto-uv-profile","seeded"],"program_file":"/does/not/matter"}"#,
-    )
-    .unwrap();
+    std::fs::write(&state_file, test_runtime_spec().to_string()).unwrap();
 
     let daemon = Daemon::start(&[(
         "PENGUIN_BURNERD_TEST_STATE_FILE",
@@ -434,10 +464,7 @@ fn autostart_runs_the_persisted_runtime_profile() {
     )]);
     let status = daemon.request(r#"{"method":"status"}"#);
     assert_eq!(status["result"]["state"], "runtime_profile_running");
-    assert_eq!(
-        status["result"]["active_job"]["argv"],
-        serde_json::json!(["--auto-uv-profile", "seeded"])
-    );
+    assert_eq!(status["result"]["active_job"]["runtime_mode"], "stock");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -453,11 +480,7 @@ fn sigterm_with_autostart_engine_runs_clean_shutdown() {
     let dir = std::env::temp_dir().join(format!("pb-sigterm-{}-{}", std::process::id(), n));
     std::fs::create_dir_all(&dir).unwrap();
     let state_file = dir.join("state.json");
-    std::fs::write(
-        &state_file,
-        r#"{"argv":["--auto-uv-profile","seeded"],"program_file":"/does/not/matter"}"#,
-    )
-    .unwrap();
+    std::fs::write(&state_file, test_runtime_spec().to_string()).unwrap();
 
     let mut daemon = Daemon::start(&[(
         "PENGUIN_BURNERD_TEST_STATE_FILE",
@@ -880,10 +903,10 @@ fn scan_and_verification_refuse_each_other() {
         refused["error"],
         "cannot start profile verification while Auto-UV scan is running"
     );
-    let refused = daemon.request(r#"{"method":"start_runtime_profile","argv":[]}"#);
+    let refused = daemon.request(&apply_runtime_request());
     assert_eq!(
         refused["error"],
-        "cannot start a runtime profile while Auto-UV scan is running"
+        "cannot apply a runtime spec while Auto-UV scan is running"
     );
 }
 
@@ -901,10 +924,10 @@ fn verification_refuses_scan_second_verification_and_profile() {
     let refused =
         daemon.request(r#"{"method":"start_profile_verification","options":{"gpu_index":0}}"#);
     assert_eq!(refused["error"], "profile verification is already running");
-    let refused = daemon.request(r#"{"method":"start_runtime_profile","argv":[]}"#);
+    let refused = daemon.request(&apply_runtime_request());
     assert_eq!(
         refused["error"],
-        "cannot start a runtime profile while profile verification is running"
+        "cannot apply a runtime spec while profile verification is running"
     );
 }
 

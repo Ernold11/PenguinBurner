@@ -1,7 +1,8 @@
 import auto_uv.initial_check.auto_uv_hardware_initial_check as initial_check
+from drivers.nvidia.daemon_gpu import VfPoint
 
 
-def _good_points(count=16):
+def _good_points(count: int = 16) -> list[VfPoint]:
     return [
         {
             "index": index,
@@ -11,12 +12,13 @@ def _good_points(count=16):
             "voltage_uv": 700_000 + index * 25_000,
             "base_freq_khz": 1_650_000 + index * 15_000,
             "base_voltage_uv": 700_000 + index * 25_000,
+            "current_offset_khz": index * 1_000,
         }
         for index in range(count)
     ]
 
 
-def _bad_zero_points(count=16):
+def _bad_zero_points(count: int = 16) -> list[VfPoint]:
     return [
         {
             "index": index,
@@ -26,38 +28,38 @@ def _bad_zero_points(count=16):
             "voltage_uv": 450_000 if index % 2 == 0 else 0,
             "base_freq_khz": 0,
             "base_voltage_uv": 450_000 if index % 2 == 0 else 0,
+            "current_offset_khz": 0,
         }
         for index in range(count)
     ]
 
 
-class FakeVfReader:
-    def __init__(self, points=None, *, setter_error=None):
+class FakeGpuClient:
+    def __init__(
+        self,
+        points=None,
+        *,
+        setter_error=None,
+        steps=None,
+        lock_error=None,
+        voltage_uv=900_000,
+        raw_voltage_uv=900_000,
+    ):
         self._points = points if points is not None else _good_points()
         self._setter_error = setter_error
-        self.closed = False
-
-    def editable_core_points(self):
-        return list(self._points)
-
-    def get_control_struct(self):
-        return object()
-
-    def set_control_struct(self, control):
-        if self._setter_error is not None:
-            raise RuntimeError(self._setter_error)
-        return 0
-
-    def close(self):
-        self.closed = True
-
-
-class FakePolicy:
-    def __init__(self, gpu_index, *, steps=None, lock_error=None):
-        self.gpu_index = int(gpu_index)
         self._steps = list(steps if steps is not None else [300, 600, 1_200, 2_400])
         self._lock_error = lock_error
-        self.closed = False
+        self._voltage_uv = voltage_uv
+        self._raw_voltage_uv = raw_voltage_uv
+        self.applied_offsets = None
+
+    def editable_core_points(self) -> list[VfPoint]:
+        return list(self._points)
+
+    def apply_offsets_khz(self, offsets):
+        if self._setter_error is not None:
+            raise RuntimeError(self._setter_error)
+        self.applied_offsets = list(offsets)
 
     def get_supported_core_clock_steps_mhz(self):
         return list(self._steps)
@@ -79,15 +81,11 @@ class FakePolicy:
     def reset_locked_core_clocks(self):
         return True
 
-    def close(self):
-        self.closed = True
+    def read_microvolts(self):
+        return self._voltage_uv
 
-
-def _policy_factory(*, steps=None, lock_error=None):
-    def factory(gpu_index):
-        return FakePolicy(gpu_index, steps=steps, lock_error=lock_error)
-
-    return factory
+    def last_raw_microvolts(self):
+        return self._raw_voltage_uv
 
 
 def _patch_probe_dependencies(
@@ -109,18 +107,14 @@ def _patch_probe_dependencies(
                 driver_version=driver_version,
                 pci_device_id=pci_device_id,
                 uuid="GPU-test",
+                architecture=architecture,
             )
         ],
     )
     monkeypatch.setattr(
         initial_check,
-        "_query_nvml_architecture",
-        lambda gpu_index, nvml_library_factory=None: (architecture, None),
-    )
-    monkeypatch.setattr(
-        initial_check,
         "_validate_nvapi_voltage_reader",
-        lambda gpu_index, nvml_library_factory=None: list(voltage_issues or []),
+        lambda _client: list(voltage_issues or []),
     )
 
 
@@ -132,8 +126,7 @@ def test_initial_check_passes_when_driver_and_capability_probes_are_sane(monkeyp
     _patch_probe_dependencies(monkeypatch)
 
     result = initial_check.run_auto_uv_initial_check(
-        vf_reader_factory=lambda gpu_index: FakeVfReader(),
-        gpu_policy_factory=_policy_factory(),
+        gpu_client_factory=lambda _gpu_index: FakeGpuClient(),
     )
 
     assert result.ok
@@ -151,12 +144,11 @@ def test_initial_check_rejects_old_driver_even_when_capability_probes_pass(monke
     monkeypatch.setattr(
         initial_check,
         "_validate_nvapi_voltage_reader",
-        lambda gpu_index, nvml_library_factory=None: fail_if_called(gpu_index),
+        lambda client: fail_if_called(client),
     )
 
     result = initial_check.run_auto_uv_initial_check(
-        vf_reader_factory=fail_if_called,
-        gpu_policy_factory=lambda gpu_index: fail_if_called(gpu_index),
+        gpu_client_factory=fail_if_called,
     )
 
     assert "driver-version" in _issue_ids(result)
@@ -173,9 +165,9 @@ def test_initial_check_rejects_old_gpu_by_failed_probes_not_by_name(monkeypatch)
     )
 
     result = initial_check.run_auto_uv_initial_check(
-        vf_reader_factory=lambda gpu_index: FakeVfReader(_bad_zero_points()),
-        gpu_policy_factory=_policy_factory(
-            lock_error="nvmlDeviceSetGpuLockedClocks failed with NVML error 3: Not Supported"
+        gpu_client_factory=lambda _gpu_index: FakeGpuClient(
+            _bad_zero_points(),
+            lock_error="nvmlDeviceSetGpuLockedClocks failed with NVML error 3: Not Supported",
         ),
     )
 
@@ -207,8 +199,7 @@ def test_initial_check_rejects_nvapi_voltage_reader_failure(monkeypatch):
     )
 
     result = initial_check.run_auto_uv_initial_check(
-        vf_reader_factory=lambda gpu_index: FakeVfReader(),
-        gpu_policy_factory=_policy_factory(),
+        gpu_client_factory=lambda _gpu_index: FakeGpuClient(),
     )
 
     assert "nvapi-voltage-reader" in _issue_ids(result)
@@ -217,41 +208,28 @@ def test_initial_check_rejects_nvapi_voltage_reader_failure(monkeypatch):
 
 def test_nvapi_voltage_idle_implausible_sample_is_warning(monkeypatch):
     class FakeVoltageReader:
-        closed = False
-
         def read_microvolts(self):
             return None
 
         def last_raw_microvolts(self):
             return 0
 
-        def close(self):
-            self.closed = True
-
     reader = FakeVoltageReader()
-    monkeypatch.setattr(
-        initial_check,
-        "create_hidden_voltage_reader",
-        lambda gpu_index: reader,
-    )
-
-    issues = initial_check._validate_nvapi_voltage_reader(0)
+    issues = initial_check._validate_nvapi_voltage_reader(reader)
 
     assert len(issues) == 1
     assert issues[0].severity == "warning"
     assert "idle voltage" in issues[0].title
     assert "0mV" in issues[0].detail
-    assert reader.closed is True
 
 
 def test_initial_check_rejects_nvapi_setter_failure(monkeypatch):
     _patch_probe_dependencies(monkeypatch)
 
     result = initial_check.run_auto_uv_initial_check(
-        vf_reader_factory=lambda gpu_index: FakeVfReader(
+        gpu_client_factory=lambda _gpu_index: FakeGpuClient(
             setter_error="ClockClientClkVfPointsSetControl failed"
         ),
-        gpu_policy_factory=_policy_factory(),
     )
 
     assert "nvapi-vf-setter" in _issue_ids(result)
@@ -265,8 +243,7 @@ def test_initial_check_rejects_nvapi_reader_factory_exception(monkeypatch):
         raise RuntimeError("nvapi_QueryInterface returned NULL")
 
     result = initial_check.run_auto_uv_initial_check(
-        vf_reader_factory=failing_reader,
-        gpu_policy_factory=_policy_factory(),
+        gpu_client_factory=failing_reader,
     )
 
     assert "nvapi-vf-reader" in _issue_ids(result)
@@ -277,8 +254,7 @@ def test_initial_check_rejects_too_few_vf_points(monkeypatch):
     _patch_probe_dependencies(monkeypatch)
 
     result = initial_check.run_auto_uv_initial_check(
-        vf_reader_factory=lambda gpu_index: FakeVfReader(_good_points(4)),
-        gpu_policy_factory=_policy_factory(),
+        gpu_client_factory=lambda _gpu_index: FakeGpuClient(_good_points(4)),
     )
 
     assert "nvapi-vf-point-count" in _issue_ids(result)

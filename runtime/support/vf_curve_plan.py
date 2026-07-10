@@ -5,10 +5,17 @@ import time
 from pathlib import Path
 
 from common.penguin_burner_paths import claim_desktop_user_ownership
-from drivers.nvidia.nvml_gpu_policy import apply_translated_gpu_policy
+from integrations.afterburner.policy import apply_translated_gpu_policy
 
 
 def apply_plan(reader, plan: list[dict]) -> None:
+    offsets = [
+        (int(item["index"]), int(item["new_offset_mhz"]) * 1000) for item in plan
+    ]
+    apply_offsets = getattr(reader, "apply_offsets_khz", None)
+    if callable(apply_offsets):
+        apply_offsets(offsets)
+        return
     control = reader.get_control_struct()
     for item in plan:
         control.vf_points[item["index"]].prog.freq_offset_khz = (
@@ -26,6 +33,15 @@ def apply_offsets_payload(reader, payload):
         int(item["index"]): int(item["current_offset_mhz"])
         for item in payload["points"]
     }
+    planned_offsets = [
+        (int(point["index"]), offsets.get(int(point["index"]), 0) * 1000)
+        for point in reader.editable_core_points()
+    ]
+    apply_offsets = getattr(reader, "apply_offsets_khz", None)
+    if callable(apply_offsets):
+        apply_offsets(planned_offsets)
+        return len(offsets)
+
     control = reader.get_control_struct()
     for point in reader.editable_core_points():
         control.vf_points[point["index"]].prog.freq_offset_khz = (
@@ -50,20 +66,24 @@ def backup_current_offsets(reader, backup_path, policy_controller=None):
         ],
     }
     if policy_controller is not None:
-        power_limits = policy_controller.query_power_limits()
-        clock_offsets = policy_controller.get_clock_offsets()
+        capabilities = policy_controller.capabilities()
+        power = capabilities.power
         payload["gpu_policy"] = {
-            "power_limit_w": power_limits.get("power_limit_w"),
-            "power_limit_default_w": power_limits.get("power_limit_default_w"),
-            "power_limit_min_w": power_limits.get("power_limit_min_w"),
-            "power_limit_max_w": power_limits.get("power_limit_max_w"),
-            "mem_clk_vf_offset_mhz": clock_offsets.get("mem_clk_vf_offset_mhz"),
+            "power_limit_w": _rounded_watts(power.current_w),
+            "power_limit_default_w": _rounded_watts(power.default_w),
+            "power_limit_min_w": _rounded_watts(power.minimum_w),
+            "power_limit_max_w": _rounded_watts(power.maximum_w),
+            "mem_clk_vf_offset_mhz": capabilities.clock_offsets.memory_mhz,
         }
     backup_path.parent.mkdir(parents=True, exist_ok=True)
     claim_desktop_user_ownership(backup_path.parent, include_parents=True)
     backup_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     claim_desktop_user_ownership(backup_path)
     return backup_path
+
+
+def _rounded_watts(value) -> int | None:
+    return None if value is None else int(round(float(value)))
 
 
 def restore_offsets(reader, backup_path, policy_controller=None):

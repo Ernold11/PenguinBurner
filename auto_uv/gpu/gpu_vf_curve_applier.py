@@ -8,16 +8,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, cast
 
-from drivers.nvidia.hidden_nvapi_vf import (
-    create_hidden_vf_curve_reader,
-    get_hidden_vf_curve_reader_last_error,
-)
-from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from runtime.support.vf_curve_plan import apply_plan
 from runtime.support.nvidia_runtime_defaults import reset_nvidia_runtime_defaults
 
 from auto_uv.domain.types import AutoUvError
-from .live_nvml_voltage_reader import LiveNvmlVoltageReader
 from .memory_clock_offset_user_option import auto_uv_memory_offset_mhz
 from .probe_clock_ceiling import ProbeClockCeilingController
 from .runtime_vf_offset_reset_check import assert_zero_runtime_vf_offsets
@@ -26,14 +21,24 @@ from .runtime_vf_offset_reset_check import assert_zero_runtime_vf_offsets
 @dataclass(slots=True)
 class LiveGpuVfCurveApplier:
     gpu_index: int
-    reader: object
-    policy_controller: NvmlGpuPolicyController
-    live_voltage_reader: LiveNvmlVoltageReader
+    gpu: DaemonGpuClient
     runtime_default_plan: list[dict]
     translated_gpu_policy: dict
     baseline_power_limit_w: int | None = None
     requested_power_limit_w: int | None = None
     clock_ceiling: ProbeClockCeilingController | None = None
+
+    @property
+    def reader(self) -> DaemonGpuClient:
+        return self.gpu
+
+    @property
+    def policy_controller(self) -> DaemonGpuClient:
+        return self.gpu
+
+    @property
+    def live_voltage_reader(self) -> DaemonGpuClient:
+        return self.gpu
 
     @property
     def power_limit_w(self) -> int | None:
@@ -83,7 +88,6 @@ class LiveGpuVfCurveApplier:
     def close(self) -> None:
         if self.clock_ceiling is not None:
             self.clock_ceiling.close()
-        self.live_voltage_reader.close()
 
 
 def open_live_gpu_vf_curve_applier(
@@ -92,24 +96,26 @@ def open_live_gpu_vf_curve_applier(
     runtime_options: dict,
     log: Callable[[str], None],
 ) -> LiveGpuVfCurveApplier:
-    reader = create_hidden_vf_curve_reader(gpu_index=int(gpu_index))
-    if reader is None:
-        last_error = get_hidden_vf_curve_reader_last_error()
-        detail = f": {last_error}" if last_error is not None else ""
+    gpu = DaemonGpuClient(gpu_index=int(gpu_index))
+    try:
+        gpu.refresh_points()
+    except Exception as exc:
         raise AutoUvError(
             "failed to create Linux NVAPI VF helper"
-            f"{detail}. This driver/GPU combination may not expose editable voltage-based V/F points."
-        )
+            f": {exc}. This driver/GPU combination may not expose editable "
+            "voltage-based V/F points."
+        ) from exc
 
-    policy_controller = NvmlGpuPolicyController(gpu_index=int(gpu_index))
-    live_voltage_reader = LiveNvmlVoltageReader(gpu_index=int(gpu_index))
     runtime_reset = reset_nvidia_runtime_defaults(
         gpu_index=int(gpu_index),
         log=log,
     )
     runtime_default_plan = list(runtime_reset["plan"])
-    apply_plan(reader, runtime_default_plan)
-    assert_zero_runtime_vf_offsets(reader)
+    # The semantic daemon reset already applied and verified this zero plan.
+    # Refresh the reader created above so the scan starts from that live state
+    # without issuing the same privileged V/F write a second time.
+    gpu.refresh_points()
+    assert_zero_runtime_vf_offsets(gpu)
 
     baseline_power_limit_w = _positive_power_limit_w(runtime_reset.get("power_limit_w"))
     translated_gpu_policy = {
@@ -122,7 +128,7 @@ def open_live_gpu_vf_curve_applier(
         or int(requested_power_limit_w) >= int(baseline_power_limit_w)
     ):
         try:
-            applied_power_limit_w = policy_controller.apply_power_limit_w(
+            applied_power_limit_w = gpu.apply_power_limit_w(
                 int(requested_power_limit_w)
             )
         except Exception as exc:
@@ -147,7 +153,7 @@ def open_live_gpu_vf_curve_applier(
 
     memory_offset_mhz, memory_offset_limit_mhz = auto_uv_memory_offset_mhz(
         runtime_options,
-        policy_controller=policy_controller,
+        policy_controller=gpu,
     )
     if memory_offset_mhz is not None:
         translated_gpu_policy["mem_clk_vf_offset_mhz"] = int(memory_offset_mhz)
@@ -167,7 +173,7 @@ def open_live_gpu_vf_curve_applier(
                 f"(limit {int(memory_offset_limit_mhz)} MHz)"
             )
         if int(memory_offset_mhz) != 0:
-            applied_memory_offset = policy_controller.apply_clock_offsets(
+            applied_memory_offset = gpu.apply_clock_offsets(
                 mem_clk_vf_offset_mhz=int(memory_offset_mhz)
             )
             readback_mhz = applied_memory_offset.get("mem_clk_vf_offset_readback_mhz")
@@ -190,9 +196,7 @@ def open_live_gpu_vf_curve_applier(
 
     return LiveGpuVfCurveApplier(
         gpu_index=int(gpu_index),
-        reader=reader,
-        policy_controller=policy_controller,
-        live_voltage_reader=live_voltage_reader,
+        gpu=gpu,
         runtime_default_plan=runtime_default_plan,
         translated_gpu_policy=translated_gpu_policy,
         baseline_power_limit_w=baseline_power_limit_w,

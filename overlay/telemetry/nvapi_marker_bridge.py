@@ -83,15 +83,6 @@ _TRACE_MARKER_NAMES = {
 }
 
 
-def _parse_line(line: str):
-    """Return (frame, nv_marker, t_us) for a marker line, else None."""
-    parsed = _parse_line_with_pid(line)
-    if parsed is None:
-        return None
-    frame, marker, t_us, _source_pid = parsed
-    return frame, marker, t_us
-
-
 def _parse_line_with_pid(line: str):
     """Return (frame, nv_marker, t_us, source_pid) for a marker line."""
     m = _MARKER_LOG_RE.search(line)
@@ -486,60 +477,6 @@ def run(
                         awaiting_oob.pop(0)
     finally:
         sock.close()
-
-
-class NvapiMarkerBridge:
-    """In-process dxvk-nvapi marker FIFO reader.
-
-    The Steam wrapper only writes to this FIFO when
-    ``PENGUIN_BURNER_INGAME_LATENCY=1``/``PB_INGAME_LATENCY=1`` is present in
-    the launch options. Keeping this reader inside the main runtime avoids a
-    second service while leaving trace/marker logging explicitly opt-in.
-    """
-
-    def __init__(
-        self,
-        *,
-        log_path: Path | None = None,
-        poll_interval_s: float = 0.25,
-        log=None,
-    ) -> None:
-        self.log_path = log_path if log_path is not None else default_log_path()
-        self.poll_interval_s = float(poll_interval_s)
-        self.log = log
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> "NvapiMarkerBridge":
-        if self._thread is not None:
-            return self
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        if self.log is not None:
-            self.log(f"Latency marker FIFO: {self.log_path}")
-        self._thread = threading.Thread(
-            target=self._run,
-            name="penguin-burner-nvapi-marker-bridge",
-            daemon=True,
-        )
-        self._thread.start()
-        return self
-
-    def close(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
-
-    def _run(self) -> None:
-        try:
-            run(
-                self.log_path,
-                poll_interval_s=self.poll_interval_s,
-                stop_event=self._stop,
-            )
-        except Exception as exc:
-            if self.log is not None:
-                self.log(f"Latency marker FIFO unavailable: {exc}")
 
 
 def spawn_detached_drainer(

@@ -1,14 +1,13 @@
-//! Journal line formatting — a faithful port of `common/log_format.py` and
-//! `common/runtime_log_lines.py`. These strings are machine-read by the Python
-//! log parsers/tests, so the grammar (tag column width 6, `" | "` joins,
-//! dropped-empty sections, bucketed status signature) is load-bearing.
+//! Stable, compact journal-line formatting for the runtime engine.
+//!
+//! The grammar uses a six-character tag column, `" | "` joins, dropped empty
+//! sections, and a bucketed status signature to avoid steady-state log spam.
 
 use crate::gpu::round_half_even;
 
 const TAG_WIDTH: usize = 6;
 
-/// `single_line_text`: flatten embedded newlines into `" | "`-joined non-empty
-/// stripped parts (Python `str.splitlines()` + strip).
+/// Flatten embedded newlines into `" | "`-joined non-empty stripped parts.
 pub fn single_line_text(value: &str) -> String {
     value
         .split('\n')
@@ -18,8 +17,7 @@ pub fn single_line_text(value: &str) -> String {
         .join(" | ")
 }
 
-/// `format_log_line(tag, *sections)`: drop None/empty sections, join with
-/// `" | "`, prefix the tag left-padded to width 6.
+/// Drop empty sections, join with `" | "`, and left-pad the tag to width 6.
 pub fn format_log_line(tag: &str, sections: &[Option<String>]) -> String {
     let body = sections
         .iter()
@@ -42,7 +40,7 @@ fn int_round(value: f64) -> i64 {
     round_half_even(value) as i64
 }
 
-/// `format_clock_voltage`: `"2642MHz @ 860mV"` (or one side, or empty).
+/// Render `"2642MHz @ 860mV"` (or one side, or empty).
 pub fn format_clock_voltage(core_clock_mhz: Option<f64>, voltage_mv: Option<f64>) -> String {
     let clock = core_clock_mhz.map(|c| format!("{}MHz", int_round(c)));
     let volt = voltage_mv.map(|v| format!("{}mV", int_round(v)));
@@ -54,7 +52,7 @@ pub fn format_clock_voltage(core_clock_mhz: Option<f64>, voltage_mv: Option<f64>
     }
 }
 
-/// `format_fan_section`: `"fan 35% manual"` / `"fan auto"` / `"fan off"`.
+/// Render `"fan 35% manual"` / `"fan auto"` / `"fan off"`.
 pub fn format_fan_section(fan_pct: Option<f64>, fan_mode: &str) -> String {
     let mode = fan_mode.trim();
     if mode == "disabled" {

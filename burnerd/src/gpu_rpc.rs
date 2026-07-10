@@ -22,10 +22,14 @@
 
 use std::env;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
 
-use crate::gpu::{mock::MockGpu, GpuBackend, GpuError, NvmlBackend};
+use crate::gpu::{
+    mock::MockGpu, ClockType, GpuBackend, GpuError, GpuIdentity, GpuMemoryInfo, NvmlBackend,
+    VfPoint,
+};
 
 const MOCK_ENV: &str = "PENGUIN_BURNERD_TEST_MOCK_GPU";
 const MOCK_FAIL_ENV: &str = "PENGUIN_BURNERD_TEST_MOCK_GPU_FAIL";
@@ -33,6 +37,9 @@ const MOCK_FAIL_ENV: &str = "PENGUIN_BURNERD_TEST_MOCK_GPU_FAIL";
 /// method → request fields allowed besides `method`. Also the method registry:
 /// a name missing here is "unknown daemon method".
 const METHODS: &[(&str, &[&str])] = &[
+    ("gpu_capabilities", &["gpu_index"]),
+    ("gpu_telemetry", &["gpu_index"]),
+    ("gpu_vf_snapshot", &["gpu_index"]),
     ("probe_power_limit_support", &["gpu_index"]),
     ("gpu_apply_vf_offsets", &["gpu_index", "offsets"]),
     ("gpu_apply_power_limit", &["gpu_index", "power_limit_w"]),
@@ -65,6 +72,8 @@ const METHODS: &[(&str, &[&str])] = &[
     ),
     ("gpu_reset_locked_core_clocks", &["gpu_index"]),
     ("gpu_reset_locked_memory_clocks", &["gpu_index"]),
+    ("gpu_reset_defaults", &["gpu_index"]),
+    ("gpu_reset_fans", &["gpu_index"]),
     ("gpu_enable_persistence_mode", &["gpu_index"]),
 ];
 
@@ -85,8 +94,8 @@ pub fn request_gpu_index(request: &Map<String, Value>) -> Result<u32, String> {
 }
 
 enum RpcBackend {
-    Real(NvmlBackend),
-    Mock(MockGpu),
+    Real(Box<NvmlBackend>),
+    Mock(Box<MockGpu>),
 }
 
 // SAFETY: the registry `Mutex` serializes every access, so the backend is only
@@ -108,12 +117,59 @@ fn open_backend(gpu_index: u32) -> Result<RpcBackend, String> {
         let mut mock = MockGpu::new();
         mock.gpu_index = gpu_index;
         mock.power_limits = crate::gpu::PowerLimits {
+            power_management_enabled: Some(true),
             power_limit_w: Some(300),
+            enforced_power_limit_w: Some(300),
             power_limit_default_w: Some(300),
             power_limit_min_w: Some(150),
             power_limit_max_w: Some(450),
         };
+        mock.identity = GpuIdentity {
+            index: gpu_index,
+            name: "Mock NVIDIA GPU".to_string(),
+            driver_version: "999.0".to_string(),
+            pci_bus_id: format!("00000000:{:02X}:00.0", gpu_index + 1),
+            pci_device_id: "0x000010DE".to_string(),
+            uuid: format!("GPU-mock-{gpu_index}"),
+        };
+        mock.gpu_name = Some(mock.identity.name.clone());
+        mock.memory_info = Some(GpuMemoryInfo {
+            index: gpu_index,
+            total_bytes: 16 * 1024 * 1024 * 1024,
+            free_bytes: 12 * 1024 * 1024 * 1024,
+            used_bytes: 4 * 1024 * 1024 * 1024,
+        });
+        mock.architecture = Some(10);
+        mock.temperature_c = 55.0;
+        mock.fan_count = 2;
+        mock.fan_limits = (Some(30), Some(100));
+        mock.reported_fan_speeds = Some(vec![42, 43]);
+        mock.power_draw_w = Some(200.5);
+        mock.utilization_pct = Some(97);
+        mock.graphics_clock_mhz = Some(2_800);
+        mock.sm_clock_mhz = Some(2_800);
+        mock.memory_clock_mhz = Some(12_000);
+        mock.video_clock_mhz = Some(1_500);
+        mock.throttle_mask = Some(0);
         mock.supported_core_clocks = vec![1800, 1900, 2000, 2100];
+        mock.supported_memory_clocks = vec![10_000, 12_000];
+        mock.clock_offsets = crate::gpu::ClockOffsets {
+            gpc_clk_vf_offset_mhz: Some(120),
+            mem_clk_vf_offset_mhz: Some(1_500),
+        };
+        mock.mem_offset_range = Some((-2_000, 3_000));
+        mock.voltage_uv = Some(900_000);
+        mock.vf_available = true;
+        mock.vf_points = vec![VfPoint {
+            index: 12,
+            type_: 0,
+            voltage_based: 1,
+            freq_khz: 2_800_000,
+            voltage_uv: 900_000,
+            base_freq_khz: 2_680_000,
+            base_voltage_uv: 900_000,
+            current_offset_khz: 120_000,
+        }];
         if let Ok(method) = env::var(MOCK_FAIL_ENV) {
             if !method.is_empty() {
                 let message = format!("{method} mock failure");
@@ -123,10 +179,10 @@ fn open_backend(gpu_index: u32) -> Result<RpcBackend, String> {
                 );
             }
         }
-        return Ok(RpcBackend::Mock(mock));
+        return Ok(RpcBackend::Mock(Box::new(mock)));
     }
     NvmlBackend::open(gpu_index)
-        .map(RpcBackend::Real)
+        .map(|backend| RpcBackend::Real(Box::new(backend)))
         .map_err(|err| err.to_string())
 }
 
@@ -152,6 +208,8 @@ enum GpuWrite {
     },
     ResetLockedCore,
     ResetLockedMemory,
+    ResetDefaults,
+    ResetFans,
     EnablePersistence,
 }
 
@@ -166,6 +224,9 @@ pub fn handle(method: &str, request: &Map<String, Value>) -> Result<Value, Strin
     // so a bad request never pays an NVML init nor masks the field error with
     // an NVML-open error on a GPU-less machine.
     let gpu_index = require_u32(request, "gpu_index")?;
+    if is_read_method(method) {
+        return read(gpu_index, method);
+    }
     let write = parse(method, request)?;
 
     let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -178,12 +239,12 @@ pub fn handle(method: &str, request: &Map<String, Value>) -> Result<Value, Strin
     };
 
     match &registry[position].1 {
-        RpcBackend::Real(backend) => execute(backend, write),
+        RpcBackend::Real(backend) => execute(backend.as_ref(), write),
         // Test seam only: echo the ops recorded during this call back to the
         // integration test (its sole cross-process channel). Never runs in prod.
         RpcBackend::Mock(mock) => {
             let before = mock.recorded().len();
-            let mut result = execute(mock, write)?;
+            let mut result = execute(mock.as_ref(), write)?;
             let ops: Vec<Value> = mock.recorded()[before..]
                 .iter()
                 .map(|op| Value::String(format!("{op:?}")))
@@ -194,6 +255,163 @@ pub fn handle(method: &str, request: &Map<String, Value>) -> Result<Value, Strin
             Ok(result)
         }
     }
+}
+
+fn is_read_method(method: &str) -> bool {
+    matches!(
+        method,
+        "gpu_capabilities" | "gpu_telemetry" | "gpu_vf_snapshot"
+    )
+}
+
+fn read(gpu_index: u32, method: &str) -> Result<Value, String> {
+    let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
+    let position = match registry.iter().position(|(index, _)| *index == gpu_index) {
+        Some(position) => position,
+        None => {
+            registry.push((gpu_index, open_backend(gpu_index)?));
+            registry.len() - 1
+        }
+    };
+    let backend: &dyn GpuBackend = match &registry[position].1 {
+        RpcBackend::Real(backend) => backend.as_ref(),
+        RpcBackend::Mock(backend) => backend.as_ref(),
+    };
+    match method {
+        "gpu_capabilities" => capabilities(backend),
+        "gpu_telemetry" => telemetry(backend),
+        "gpu_vf_snapshot" => vf_snapshot(backend),
+        other => Err(format!("unknown daemon method: {other}")),
+    }
+}
+
+fn capabilities(backend: &dyn GpuBackend) -> Result<Value, String> {
+    let gpu_count = backend.gpu_count().map_err(|err| err.to_string())?;
+    let identity = backend.identity();
+    let memory = backend.memory_info();
+    let fan_count = backend.fan_count().ok();
+    let (fan_min_speed_pct, fan_max_speed_pct) = backend.fan_speed_limits();
+    let power_limits = backend.query_power_limits();
+    let clock_offsets = backend.clock_offsets();
+    let memory_offset_range = backend.memory_clock_offset_range_mhz();
+    let summary = backend.vf_summary();
+    Ok(json!({
+        "gpu_index": backend.gpu_index(),
+        "gpu_count": gpu_count,
+        "identity": identity_json(identity),
+        "memory": memory.map(memory_json),
+        "architecture": backend.architecture(),
+        "power_limits": power_limits_json(power_limits),
+        "supported_memory_clock_steps_mhz": backend.supported_memory_clock_steps_mhz(),
+        "supported_core_clock_steps_mhz": backend.supported_core_clock_steps_mhz(),
+        "clock_offset_ranges_mhz": {
+            "memory": memory_offset_range.map(|(min, max)| [min, max]),
+        },
+        "clock_offsets_mhz": {
+            "gpc": clock_offsets.gpc_clk_vf_offset_mhz,
+            "memory": clock_offsets.mem_clk_vf_offset_mhz,
+        },
+        "fan": {
+            "count": fan_count,
+            "min_speed_pct": fan_min_speed_pct,
+            "max_speed_pct": fan_max_speed_pct,
+        },
+        "features": {
+            "vf_curve": backend.vf_curve_available(),
+            "voltage": backend.read_voltage_uv().is_some(),
+        },
+        "vf_summary": {
+            "active_points": summary.active_points,
+            "editable_core_points": summary.editable_core_points,
+        },
+    }))
+}
+
+fn telemetry(backend: &dyn GpuBackend) -> Result<Value, String> {
+    let temperature_c = backend.temperature_c().map_err(|err| err.to_string())?;
+    let fan_count = backend.fan_count().ok();
+    let fan_speeds_pct = fan_count.and_then(|count| backend.reported_fan_speeds(count));
+    let voltage_uv = backend.read_voltage_uv();
+    let offsets = backend.clock_offsets();
+    Ok(json!({
+        "gpu_index": backend.gpu_index(),
+        "updated_unix_ns": unix_time_ns(),
+        "temperature_c": temperature_c,
+        "fan_speeds_pct": fan_speeds_pct,
+        "power_draw_w": backend.power_draw_w(),
+        "gpu_utilization_pct": backend.gpu_utilization_pct(),
+        "clocks_mhz": {
+            "graphics": backend.clock_info_mhz(ClockType::Graphics),
+            "sm": backend.clock_info_mhz(ClockType::Sm),
+            "memory": backend.clock_info_mhz(ClockType::Memory),
+            "video": backend.clock_info_mhz(ClockType::Video),
+        },
+        "voltage_uv": voltage_uv,
+        "voltage_mv": voltage_uv.map(|value| value / 1_000),
+        "throttle_reason_mask": backend.throttle_reason_mask(),
+        "clock_offsets_mhz": {
+            "gpc": offsets.gpc_clk_vf_offset_mhz,
+            "memory": offsets.mem_clk_vf_offset_mhz,
+        },
+    }))
+}
+
+fn vf_snapshot(backend: &dyn GpuBackend) -> Result<Value, String> {
+    if !backend.vf_curve_available() {
+        return Err("hidden NVIDIA V/F curve is unavailable for this GPU".to_string());
+    }
+    backend.refresh_vf_points().map_err(|err| err.to_string())?;
+    let points = backend.vf_points();
+    let summary = backend.vf_summary();
+    Ok(json!({
+        "gpu_index": backend.gpu_index(),
+        "updated_unix_ns": unix_time_ns(),
+        "points": points.into_iter().map(vf_point_json).collect::<Vec<_>>(),
+        "summary": {
+            "active_points": summary.active_points,
+            "editable_core_points": summary.editable_core_points,
+        },
+    }))
+}
+
+fn identity_json(identity: GpuIdentity) -> Value {
+    json!({
+        "index": identity.index,
+        "name": identity.name,
+        "driver_version": identity.driver_version,
+        "pci_bus_id": identity.pci_bus_id,
+        "pci_device_id": identity.pci_device_id,
+        "uuid": identity.uuid,
+    })
+}
+
+fn memory_json(memory: GpuMemoryInfo) -> Value {
+    json!({
+        "index": memory.index,
+        "total_bytes": memory.total_bytes,
+        "free_bytes": memory.free_bytes,
+        "used_bytes": memory.used_bytes,
+    })
+}
+
+fn vf_point_json(point: VfPoint) -> Value {
+    json!({
+        "index": point.index,
+        "type": point.type_,
+        "voltage_based": point.voltage_based,
+        "freq_khz": point.freq_khz,
+        "voltage_uv": point.voltage_uv,
+        "base_freq_khz": point.base_freq_khz,
+        "base_voltage_uv": point.base_voltage_uv,
+        "current_offset_khz": point.current_offset_khz,
+    })
+}
+
+fn unix_time_ns() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 /// Probe whether the driver accepts power-limit writes by re-applying the
@@ -221,10 +439,10 @@ pub fn probe_power_limit_support(request: &Map<String, Value>) -> Result<Value, 
     };
 
     match &registry[position].1 {
-        RpcBackend::Real(backend) => probe_power_limit_backend(gpu_index, backend),
+        RpcBackend::Real(backend) => probe_power_limit_backend(gpu_index, backend.as_ref()),
         RpcBackend::Mock(mock) => {
             let before = mock.recorded().len();
-            let mut result = probe_power_limit_backend(gpu_index, mock)?;
+            let mut result = probe_power_limit_backend(gpu_index, mock.as_ref())?;
             let ops: Vec<Value> = mock.recorded()[before..]
                 .iter()
                 .map(|op| Value::String(format!("{op:?}")))
@@ -269,7 +487,9 @@ fn probe_power_limit_backend(gpu_index: u32, backend: &dyn GpuBackend) -> Result
 
 fn power_limits_json(power_limits: crate::gpu::PowerLimits) -> Value {
     json!({
+        "power_management_enabled": power_limits.power_management_enabled,
         "power_limit_w": power_limits.power_limit_w,
+        "enforced_power_limit_w": power_limits.enforced_power_limit_w,
         "power_limit_default_w": power_limits.power_limit_default_w,
         "power_limit_min_w": power_limits.power_limit_min_w,
         "power_limit_max_w": power_limits.power_limit_max_w,
@@ -298,6 +518,8 @@ fn parse(method: &str, request: &Map<String, Value>) -> Result<GpuWrite, String>
         },
         "gpu_reset_locked_core_clocks" => GpuWrite::ResetLockedCore,
         "gpu_reset_locked_memory_clocks" => GpuWrite::ResetLockedMemory,
+        "gpu_reset_defaults" => GpuWrite::ResetDefaults,
+        "gpu_reset_fans" => GpuWrite::ResetFans,
         "gpu_enable_persistence_mode" => GpuWrite::EnablePersistence,
         other => return Err(format!("unknown daemon method: {other}")),
     })
@@ -375,6 +597,33 @@ fn execute(backend: &dyn GpuBackend, write: GpuWrite) -> Result<Value, String> {
                 .reset_locked_memory_clocks()
                 .map_err(|err| err.to_string())?;
             Ok(json!({ "reset": true }))
+        }
+        GpuWrite::ResetDefaults => {
+            crate::profile::reset_gpu_to_stock(backend)?;
+            let identity = backend.identity();
+            let power_limits = backend.query_power_limits();
+            let clock_offsets = backend.clock_offsets();
+            Ok(json!({
+                "reset": true,
+                "gpu_name": identity.name,
+                "power_limits": power_limits_json(power_limits),
+                "clock_offsets_mhz": {
+                    "gpc": clock_offsets.gpc_clk_vf_offset_mhz,
+                    "memory": clock_offsets.mem_clk_vf_offset_mhz,
+                },
+                "points": backend
+                    .editable_core_vf_points()
+                    .into_iter()
+                    .map(vf_point_json)
+                    .collect::<Vec<_>>(),
+            }))
+        }
+        GpuWrite::ResetFans => {
+            let fan_count = backend.fan_count().map_err(|err| err.to_string())?;
+            backend
+                .set_all_fans_default(fan_count)
+                .map_err(|err| err.to_string())?;
+            Ok(json!({ "reset": true, "fan_count": fan_count }))
         }
         GpuWrite::EnablePersistence => {
             backend
@@ -464,7 +713,66 @@ mod tests {
 
     fn mock() -> MockGpu {
         let mut mock = MockGpu::new();
+        mock.supported_memory_clocks = vec![10_000, 12_000];
         mock.supported_core_clocks = vec![1800, 1900, 2000, 2100];
+        mock
+    }
+
+    fn readable_mock() -> MockGpu {
+        let mut mock = mock();
+        mock.gpu_index = 1;
+        mock.gpu_count = 2;
+        mock.identity = GpuIdentity {
+            index: 1,
+            name: "Mock RTX".into(),
+            driver_version: "999.1".into(),
+            pci_bus_id: "00000000:02:00.0".into(),
+            pci_device_id: "0x123410DE".into(),
+            uuid: "GPU-readable".into(),
+        };
+        mock.memory_info = Some(GpuMemoryInfo {
+            index: 1,
+            total_bytes: 16_000,
+            free_bytes: 12_000,
+            used_bytes: 4_000,
+        });
+        mock.architecture = Some(10);
+        mock.temperature_c = 61.5;
+        mock.fan_count = 2;
+        mock.fan_limits = (Some(30), Some(100));
+        mock.reported_fan_speeds = Some(vec![40, 42]);
+        mock.power_draw_w = Some(250.25);
+        mock.utilization_pct = Some(98);
+        mock.graphics_clock_mhz = Some(2_800);
+        mock.sm_clock_mhz = Some(2_790);
+        mock.memory_clock_mhz = Some(12_000);
+        mock.video_clock_mhz = Some(1_500);
+        mock.throttle_mask = Some(8);
+        mock.power_limits = crate::gpu::PowerLimits {
+            power_management_enabled: Some(true),
+            power_limit_w: Some(300),
+            enforced_power_limit_w: Some(295),
+            power_limit_default_w: Some(360),
+            power_limit_min_w: Some(180),
+            power_limit_max_w: Some(450),
+        };
+        mock.clock_offsets = crate::gpu::ClockOffsets {
+            gpc_clk_vf_offset_mhz: Some(120),
+            mem_clk_vf_offset_mhz: Some(1_500),
+        };
+        mock.mem_offset_range = Some((-2_000, 3_000));
+        mock.voltage_uv = Some(900_000);
+        mock.vf_available = true;
+        mock.vf_points = vec![VfPoint {
+            index: 12,
+            type_: 0,
+            voltage_based: 1,
+            freq_khz: 2_800_000,
+            voltage_uv: 900_000,
+            base_freq_khz: 2_680_000,
+            base_voltage_uv: 900_000,
+            current_offset_khz: 120_000,
+        }];
         mock
     }
 
@@ -480,6 +788,11 @@ mod tests {
 
     #[test]
     fn method_registry_and_fields() {
+        assert!(is_gpu_method("gpu_capabilities"));
+        assert!(is_gpu_method("gpu_telemetry"));
+        assert!(is_gpu_method("gpu_vf_snapshot"));
+        assert!(is_gpu_method("gpu_reset_defaults"));
+        assert!(is_gpu_method("gpu_reset_fans"));
         assert!(is_gpu_method("probe_power_limit_support"));
         assert!(is_gpu_method("gpu_apply_vf_offsets"));
         assert!(is_gpu_method("gpu_enable_persistence_mode"));
@@ -493,10 +806,77 @@ mod tests {
     }
 
     #[test]
+    fn capability_snapshot_is_coarse_and_typed() {
+        let mock = readable_mock();
+        let result = capabilities(&mock).unwrap();
+
+        assert_eq!(result["gpu_index"], 1);
+        assert_eq!(result["gpu_count"], 2);
+        assert_eq!(result["identity"]["uuid"], "GPU-readable");
+        assert_eq!(result["identity"]["pci_bus_id"], "00000000:02:00.0");
+        assert_eq!(result["memory"]["total_bytes"], 16_000);
+        assert_eq!(result["architecture"], 10);
+        assert_eq!(result["fan"]["count"], 2);
+        assert_eq!(result["power_limits"]["power_limit_max_w"], 450);
+        assert_eq!(result["power_limits"]["power_management_enabled"], true);
+        assert_eq!(result["power_limits"]["enforced_power_limit_w"], 295);
+        assert_eq!(
+            result["supported_memory_clock_steps_mhz"],
+            json!([10_000, 12_000])
+        );
+        assert_eq!(
+            result["supported_core_clock_steps_mhz"],
+            json!([1800, 1900, 2000, 2100])
+        );
+        assert_eq!(
+            result["clock_offset_ranges_mhz"]["memory"],
+            json!([-2000, 3000])
+        );
+        assert_eq!(result["features"]["vf_curve"], true);
+        assert_eq!(result["vf_summary"]["editable_core_points"], 1);
+    }
+
+    #[test]
+    fn telemetry_snapshot_uses_one_backend_sample() {
+        let mock = readable_mock();
+        let result = telemetry(&mock).unwrap();
+
+        assert_eq!(result["gpu_index"], 1);
+        assert!(result["updated_unix_ns"].as_u64().unwrap() > 0);
+        assert_eq!(result["temperature_c"], 61.5);
+        assert_eq!(result["fan_speeds_pct"], json!([40, 42]));
+        assert_eq!(result["power_draw_w"], 250.25);
+        assert_eq!(result["clocks_mhz"]["graphics"], 2_800);
+        assert_eq!(result["voltage_uv"], 900_000);
+        assert_eq!(result["voltage_mv"], 900);
+        assert_eq!(result["clock_offsets_mhz"]["memory"], 1_500);
+    }
+
+    #[test]
+    fn vf_snapshot_refreshes_and_preserves_raw_units() {
+        let mock = readable_mock();
+        let result = vf_snapshot(&mock).unwrap();
+
+        assert_eq!(result["summary"]["active_points"], 1);
+        assert_eq!(result["points"][0]["index"], 12);
+        assert_eq!(result["points"][0]["type"], 0);
+        assert_eq!(result["points"][0]["voltage_uv"], 900_000);
+        assert_eq!(result["points"][0]["current_offset_khz"], 120_000);
+
+        let unavailable = MockGpu::new();
+        assert_eq!(
+            vf_snapshot(&unavailable).unwrap_err(),
+            "hidden NVIDIA V/F curve is unavailable for this GPU"
+        );
+    }
+
+    #[test]
     fn probe_power_limit_support_reapplies_current_limit() {
         let mut mock = mock();
         mock.power_limits = crate::gpu::PowerLimits {
+            power_management_enabled: Some(true),
             power_limit_w: Some(320),
+            enforced_power_limit_w: Some(320),
             power_limit_default_w: Some(360),
             power_limit_min_w: Some(200),
             power_limit_max_w: Some(450),
@@ -510,7 +890,9 @@ mod tests {
                 "supported": true,
                 "probe_power_limit_w": 320,
                 "power_limits": {
+                    "power_management_enabled": true,
                     "power_limit_w": 320,
+                    "enforced_power_limit_w": 320,
                     "power_limit_default_w": 360,
                     "power_limit_min_w": 200,
                     "power_limit_max_w": 450,
@@ -559,7 +941,9 @@ mod tests {
                 "supported": false,
                 "reason": "current-power-limit-unavailable",
                 "power_limits": {
+                    "power_management_enabled": null,
                     "power_limit_w": null,
+                    "enforced_power_limit_w": null,
                     "power_limit_default_w": null,
                     "power_limit_min_w": null,
                     "power_limit_max_w": null,
@@ -611,6 +995,40 @@ mod tests {
         let req = request(r#"{"gpu_index":0,"offsets":[]}"#);
         let result = dispatch(&mock, "gpu_apply_vf_offsets", &req).unwrap();
         assert_eq!(result, json!({"applied": 0}));
+    }
+
+    #[test]
+    fn semantic_defaults_reset_reuses_profile_stock_pipeline() {
+        let mut mock = readable_mock();
+        mock.power_limits.power_limit_w = Some(360);
+        mock.power_limits.enforced_power_limit_w = Some(360);
+        mock.clock_offsets = crate::gpu::ClockOffsets {
+            gpc_clk_vf_offset_mhz: Some(0),
+            mem_clk_vf_offset_mhz: Some(0),
+        };
+        mock.vf_points[0].current_offset_khz = 0;
+
+        let result = dispatch(&mock, "gpu_reset_defaults", &request(r#"{"gpu_index":1}"#)).unwrap();
+
+        assert_eq!(result["reset"], true);
+        assert_eq!(result["gpu_name"], "Mock RTX");
+        assert_eq!(result["power_limits"]["power_limit_default_w"], 360);
+        assert_eq!(result["points"][0]["index"], 12);
+        assert_eq!(
+            mock.recorded(),
+            vec![
+                crate::gpu::mock::MockOp::ResetLockedCoreClocks,
+                crate::gpu::mock::MockOp::ResetLockedMemoryClocks,
+                crate::gpu::mock::MockOp::ApplyClockOffsets {
+                    gpc_mhz: Some(0),
+                    mem_mhz: Some(0),
+                },
+                crate::gpu::mock::MockOp::ApplyPowerLimit { power_limit_w: 360 },
+                crate::gpu::mock::MockOp::ApplyVfOffsets {
+                    offsets: vec![(12, 0)],
+                },
+            ]
+        );
     }
 
     #[test]
@@ -811,6 +1229,19 @@ mod tests {
                 crate::gpu::mock::MockOp::ResetLockedMemoryClocks,
                 crate::gpu::mock::MockOp::EnablePersistence,
             ]
+        );
+    }
+
+    #[test]
+    fn fan_reset_uses_detected_fan_count() {
+        let mut mock = mock();
+        mock.fan_count = 2;
+        let result = dispatch(&mock, "gpu_reset_fans", json!({}).as_object().unwrap()).unwrap();
+
+        assert_eq!(result, json!({ "reset": true, "fan_count": 2 }));
+        assert_eq!(
+            mock.recorded(),
+            vec![crate::gpu::mock::MockOp::SetAllFansDefault { fan_count: 2 }]
         );
     }
 

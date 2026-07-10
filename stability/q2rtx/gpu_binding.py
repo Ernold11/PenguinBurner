@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from drivers.nvidia.nvml_identity import query_nvml_gpu_identity
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 
 
 def _nvidia_pci_bus_id_to_dri_prime(bus_id: str) -> str:
@@ -36,8 +36,9 @@ def _nvidia_pci_device_id_selectors(pci_device_id: str) -> tuple[str, str]:
 
 
 def _query_selected_nvidia_gpu(gpu_index: int) -> dict[str, str]:
-    identity = query_nvml_gpu_identity(int(gpu_index))
-    if identity is None:
+    try:
+        identity = DaemonGpuClient(int(gpu_index)).capabilities().identity
+    except Exception:
         return {}
     dri_prime = _nvidia_pci_bus_id_to_dri_prime(identity.pci_bus_id)
     vk_loader_select, mesa_vk_select = _nvidia_pci_device_id_selectors(
@@ -103,9 +104,7 @@ def _selected_gpu_log_lines(
         "MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE",
     ]
     values = [
-        f"{key}={child_env[key]}"
-        for key in keys
-        if str(child_env.get(key, "")).strip()
+        f"{key}={child_env[key]}" for key in keys if str(child_env.get(key, "")).strip()
     ]
     if values:
         lines.append("# q2rtx_gpu_binding_env=" + " ".join(values))

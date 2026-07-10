@@ -4,7 +4,6 @@ status text, and the systemd query wrappers (subprocess monkeypatched).
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 import ui.features.profiles.profiles as profiles
@@ -199,37 +198,35 @@ def test_legacy_running_exec_start(monkeypatch) -> None:
 
 
 def test_daemon_unit_autostart_and_entry_exists(monkeypatch, tmp_path) -> None:
-    # Native Rust daemon: autostart argv comes from the world-readable
-    # last-runtime state file; the persistent entry is the installed unit file.
-    state_file = tmp_path / "last-runtime.json"
-    state_file.write_text(
-        json.dumps(
-            {
-                "argv": ["--auto-uv-profile", "p4", "--silent-fan-curve"],
-                "program_file": "/x/penguin_burner.py",
-            }
-        ),
-        encoding="utf-8",
-    )
+    # Boot intent is reported by the daemon; the persistent entry remains the
+    # installed unit file.
     unit = tmp_path / "pb.service"
     unit.write_text("[Service]\n", encoding="utf-8")
     legacy = tmp_path / "legacy.service"
-    monkeypatch.setattr(profiles, "LAST_RUNTIME_STATE_PATH", state_file)
+    monkeypatch.setattr(profiles, "systemd_service_is_enabled", lambda: True)
+    monkeypatch.setattr(
+        profiles,
+        "boot_runtime_spec",
+        lambda **_kwargs: {
+            "configured": True,
+            "profile_id": "p4",
+            "runtime_mode": "static",
+            "silent_fan_curve": True,
+        },
+    )
     monkeypatch.setattr(profiles, "systemd_service_unit_path", lambda: unit)
     monkeypatch.setattr(profiles, "legacy_systemd_service_unit_path", lambda: legacy)
-    assert profiles._daemon_unit_autostart_argv() == [
-        "--auto-uv-profile",
-        "p4",
-        "--silent-fan-curve",
-    ]
+    assert profiles.systemd_autostart_profile_info() == {
+        "selector": "p4",
+        "silent_fan_curve": True,
+        "adaptive_auto_uv": False,
+    }
     assert profiles.systemd_unit_entry_exists() is True
 
-    # No state file and no unit files -> no autostart argv, no persistent entry.
-    monkeypatch.setattr(profiles, "LAST_RUNTIME_STATE_PATH", tmp_path / "missing.json")
+    # No unit files -> no persistent entry.
     monkeypatch.setattr(
         profiles, "systemd_service_unit_path", lambda: tmp_path / "missing.service"
     )
-    assert profiles._daemon_unit_autostart_argv() == []
     assert profiles.systemd_unit_entry_exists() is False
 
 
@@ -248,8 +245,13 @@ def test_autostart_and_running_info(monkeypatch) -> None:
     monkeypatch.setattr(profiles, "systemd_service_is_enabled", lambda: True)
     monkeypatch.setattr(
         profiles,
-        "_daemon_unit_autostart_argv",
-        lambda: ["--auto-uv-profile", "p5", "--silent-fan-curve"],
+        "boot_runtime_spec",
+        lambda **_kwargs: {
+            "configured": True,
+            "profile_id": "p5",
+            "runtime_mode": "static",
+            "silent_fan_curve": True,
+        },
     )
     assert profiles.systemd_autostart_profile_info()["selector"] == "p5"
 
@@ -270,7 +272,9 @@ def test_running_info_uses_daemon_status(monkeypatch) -> None:
             "state": "runtime_profile_running",
             "active_job": {
                 "type": "runtime_profile",
-                "argv": ["--auto-uv-profile", "p6", "--adaptive-auto-uv"],
+                "profile_id": "p6",
+                "runtime_mode": "adaptive",
+                "silent_fan_curve": False,
             },
         },
     )

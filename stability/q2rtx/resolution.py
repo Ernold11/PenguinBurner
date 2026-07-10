@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from drivers.nvidia.nvml_identity import query_nvml_gpu_memory_info
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 
 from .constants import DEFAULT_HEIGHT, DEFAULT_WIDTH
 
@@ -50,10 +50,11 @@ def resolve_q2rtx_render_resolution(
             auto_selected=False,
         )
 
-    memory_info = query_nvml_gpu_memory_info(int(gpu_index))
-    total_bytes = (
-        int(memory_info.total_bytes) if memory_info is not None else None
-    )
+    try:
+        memory_info = DaemonGpuClient(int(gpu_index)).capabilities().memory
+    except Exception:
+        memory_info = None
+    total_bytes = int(memory_info.total_bytes) if memory_info is not None else None
     if total_bytes is not None and total_bytes <= AUTO_RESOLUTION_MAX_1440P_BYTES:
         return Q2RTXResolutionChoice(
             width=LOW_VRAM_WIDTH,
@@ -65,11 +66,7 @@ def resolve_q2rtx_render_resolution(
     return Q2RTXResolutionChoice(
         width=DEFAULT_WIDTH,
         height=DEFAULT_HEIGHT,
-        reason=(
-            "auto-vram-gt8gib"
-            if total_bytes is not None
-            else "auto-vram-unknown"
-        ),
+        reason=("auto-vram-gt8gib" if total_bytes is not None else "auto-vram-unknown"),
         vram_total_bytes=total_bytes,
         auto_selected=True,
     )

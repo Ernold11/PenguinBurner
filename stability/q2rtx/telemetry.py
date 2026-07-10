@@ -4,12 +4,13 @@ from datetime import datetime, timedelta
 import shutil
 import subprocess
 
-from drivers.nvidia.hidden_nvapi_voltage import create_hidden_voltage_reader
-from drivers.nvidia.nvml_perf_cap_reason import NvmlPerfCapReasonReader
 from common.subprocess_locale import stable_subprocess_env
+from drivers.nvidia.daemon_gpu import (
+    DaemonGpuClient,
+    format_perf_cap_reason_mask,
+)
 
 from .models import TelemetrySample
-from .nvml_telemetry import NvmlTelemetrySession, create_nvml_telemetry_session
 
 
 def _xid_message_is_at_or_after(line: str, started_at: datetime) -> bool:
@@ -29,107 +30,37 @@ def _xid_message_is_at_or_after(line: str, started_at: datetime) -> bool:
     return message_time >= cutoff
 
 
-class _HiddenNvmlVoltageSession:
-    def __init__(self, gpu_index: int):
-        self._gpu_index = int(gpu_index)
-        self._voltage_reader = None
-        self._perf_cap_reader = None
-        try:
-            self._voltage_reader = create_hidden_voltage_reader(
-                gpu_index=self._gpu_index
-            )
-        except Exception:
-            self._voltage_reader = None
-        try:
-            self._perf_cap_reader = NvmlPerfCapReasonReader(gpu_index=self._gpu_index)
-        except Exception:
-            self._perf_cap_reader = None
-
-    def read_live_voltage_mv(self) -> float | None:
-        if self._voltage_reader is None:
-            return None
-        try:
-            voltage_uv = self._voltage_reader.read_microvolts()
-        except Exception:
-            return None
-        if voltage_uv is None:
-            return None
-        return float(int(voltage_uv) / 1000.0)
-
-    def read_perf_cap_reason(self) -> str | None:
-        if self._perf_cap_reader is None:
-            return None
-        try:
-            return self._perf_cap_reader.read_reason()
-        except Exception:
-            return None
-
-    def close(self) -> None:
-        if self._voltage_reader is not None:
-            try:
-                self._voltage_reader.close()
-            except Exception:
-                pass
-        self._voltage_reader = None
-        if self._perf_cap_reader is not None:
-            try:
-                self._perf_cap_reader.close()
-            except Exception:
-                pass
-        self._perf_cap_reader = None
-
-
 def query_gpu_metrics(
     gpu_index: int,
     *,
-    voltage_session: _HiddenNvmlVoltageSession | None = None,
-    telemetry_session: NvmlTelemetrySession | None = None,
+    gpu_client: DaemonGpuClient | None = None,
 ) -> TelemetrySample | None:
-    voltage_mv = (
-        voltage_session.read_live_voltage_mv() if voltage_session is not None else None
-    )
-    perf_cap_reason = (
-        voltage_session.read_perf_cap_reason() if voltage_session is not None else None
-    )
-    own_session = None
-    session = telemetry_session
-    if session is None:
-        own_session = create_nvml_telemetry_session(int(gpu_index))
-        session = own_session
-    if session is None:
-        if voltage_mv is None and perf_cap_reason is None:
-            return None
-        return TelemetrySample(
-            elapsed_s=0.0,
-            gpu_util_pct=None,
-            power_w=None,
-            core_clock_mhz=None,
-            temperature_c=None,
-            voltage_mv=voltage_mv,
-            fan_speed_pct=None,
-            perf_cap_reason=perf_cap_reason,
-        )
+    client = gpu_client or DaemonGpuClient(int(gpu_index))
     try:
-        return session.read_sample(
-            voltage_mv=voltage_mv,
-            perf_cap_reason=perf_cap_reason,
-        )
+        telemetry = client.telemetry(refresh=True)
     except Exception:
-        if voltage_mv is None and perf_cap_reason is None:
-            return None
-        return TelemetrySample(
-            elapsed_s=0.0,
-            gpu_util_pct=None,
-            power_w=None,
-            core_clock_mhz=None,
-            temperature_c=None,
-            voltage_mv=voltage_mv,
-            fan_speed_pct=None,
-            perf_cap_reason=perf_cap_reason,
-        )
-    finally:
-        if own_session is not None:
-            own_session.close()
+        return None
+    voltage_mv = (
+        telemetry.voltage_mv
+        if telemetry.voltage_uv is None or 300_000 <= telemetry.voltage_uv <= 1_500_000
+        else None
+    )
+    return TelemetrySample(
+        elapsed_s=0.0,
+        gpu_util_pct=telemetry.utilization_pct,
+        power_w=telemetry.power_draw_w,
+        core_clock_mhz=telemetry.clocks.graphics_mhz,
+        temperature_c=telemetry.temperature_c,
+        voltage_mv=voltage_mv,
+        fan_speed_pct=(
+            telemetry.fan_speeds_pct[0] if telemetry.fan_speeds_pct else None
+        ),
+        perf_cap_reason=(
+            format_perf_cap_reason_mask(telemetry.throttle_reason_mask)
+            if telemetry.throttle_reason_mask is not None
+            else None
+        ),
+    )
 
 
 def _query_xid_messages_since(started_at: datetime) -> list[str]:

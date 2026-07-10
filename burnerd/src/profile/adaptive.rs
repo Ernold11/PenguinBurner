@@ -5,19 +5,16 @@
 //! per-tier curves and applies switches to the GPU.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use crate::gpu::GpuBackend;
 
 use super::apply::apply_adaptive_curve;
 use super::ceiling::FlattenedClockCeilingController;
-use super::config;
 use super::guard::select_expected_vf_samples;
 use super::logfmt::tier_switch_line;
-use super::profile_store::{
-    self, available_adaptive_tiers, load_auto_uv_final_curve, profile_tier_label,
-    read_auto_uv_profiles, resolve_profile_tier_profiles, LoadedCurve, PlanItem, PROFILE_TIERS,
-    PROFILE_TIER_BALANCED, PROFILE_TIER_PERFORMANCE,
+use super::runtime_spec::{
+    normalize_profile_tier, profile_tier_label, AdaptivePolicySpec, LoadedCurve, PlanItem,
+    PROFILE_TIERS, PROFILE_TIER_BALANCED, PROFILE_TIER_PERFORMANCE,
 };
 use super::telemetry::OverlayStatePublisher;
 use super::LatencySnapshot;
@@ -63,95 +60,33 @@ impl Default for PolicyConfig {
     }
 }
 
-/// Parse `$name`, accepting it only when it falls in `[min, max]`; otherwise
-/// (unset, empty, unparseable, or out of range) return `default`. Replaces the
-/// former `env_int` (`[1, 120]`) and `env_float` (`[0.0, 3600.0]`) helpers.
-fn env_clamped<T: std::str::FromStr + PartialOrd>(name: &str, default: T, min: T, max: T) -> T {
-    let Ok(raw) = std::env::var(name) else {
-        return default;
-    };
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return default;
-    }
-    match raw.parse::<T>() {
-        Ok(v) if v >= min && v <= max => v,
-        _ => default,
-    }
-}
-
 impl PolicyConfig {
     pub fn for_target_fps(fps: f64) -> Self {
         let default = PolicyConfig::default();
-        let target_ms = config::adaptive_target_ms_from_fps(fps);
+        let target_ms = 1000.0 / fps;
         let scale = target_ms / default.target_ms;
-        let config = PolicyConfig {
+        PolicyConfig {
             comfort_ms: default.comfort_ms * scale,
             target_ms,
             near_slow_ms: default.near_slow_ms * scale,
             badly_slow_ms: default.badly_slow_ms * scale,
             ..default
-        };
-        config.with_env_overrides()
+        }
     }
 
-    fn with_env_overrides(self) -> Self {
+    fn from_spec(spec: &AdaptivePolicySpec) -> Self {
+        let scaled = Self::for_target_fps(spec.target_fps);
         PolicyConfig {
-            target_slow_windows: env_clamped(
-                "PENGUIN_BURNER_ADAPTIVE_TARGET_SLOW_WINDOWS",
-                self.target_slow_windows,
-                1,
-                120,
-            ),
-            near_slow_windows: env_clamped(
-                "PENGUIN_BURNER_ADAPTIVE_NEAR_SLOW_WINDOWS",
-                self.near_slow_windows,
-                1,
-                120,
-            ),
-            comfort_windows: env_clamped(
-                "PENGUIN_BURNER_ADAPTIVE_COMFORT_WINDOWS",
-                self.comfort_windows,
-                1,
-                120,
-            ),
-            performance_comfort_windows: env_clamped(
-                "PENGUIN_BURNER_ADAPTIVE_PERFORMANCE_COMFORT_WINDOWS",
-                self.performance_comfort_windows,
-                1,
-                120,
-            ),
-            demote_dwell_s: env_clamped(
-                "PENGUIN_BURNER_ADAPTIVE_DEMOTE_DWELL_S",
-                self.demote_dwell_s,
-                0.0,
-                3600.0,
-            ),
-            performance_demote_dwell_s: env_clamped(
-                "PENGUIN_BURNER_ADAPTIVE_PERFORMANCE_DEMOTE_DWELL_S",
-                self.performance_demote_dwell_s,
-                0.0,
-                3600.0,
-            ),
-            cpu_bound_gpu_util_max_pct: env_clamped(
-                "PENGUIN_BURNER_ADAPTIVE_CPU_BOUND_GPU_UTIL_MAX",
-                self.cpu_bound_gpu_util_max_pct,
-                0.0,
-                3600.0,
-            ),
-            cpu_bound_peak_thread_min_pct: env_clamped(
-                "PENGUIN_BURNER_ADAPTIVE_CPU_BOUND_PEAK_THREAD_MIN",
-                self.cpu_bound_peak_thread_min_pct,
-                0.0,
-                3600.0,
-            ),
-            cpu_bound_process_util_min_pct: env_clamped(
-                "PENGUIN_BURNER_ADAPTIVE_CPU_BOUND_PROCESS_UTIL_MIN",
-                self.cpu_bound_process_util_min_pct,
-                0.0,
-                3600.0,
-            ),
-            ..self
+            target_slow_windows: spec.target_slow_windows,
+            near_slow_windows: spec.near_slow_windows,
+            comfort_windows: spec.comfort_windows,
+            performance_comfort_windows: spec.performance_comfort_windows,
+            demote_dwell_s: spec.demote_dwell_s,
+            performance_demote_dwell_s: spec.performance_demote_dwell_s,
+            cpu_bound_gpu_util_max_pct: spec.cpu_bound_gpu_util_max_pct,
+            cpu_bound_peak_thread_min_pct: spec.cpu_bound_peak_thread_min_pct,
+            cpu_bound_process_util_min_pct: spec.cpu_bound_process_util_min_pct,
+            ..scaled
         }
     }
 }
@@ -180,10 +115,7 @@ pub struct AdaptiveProfileController {
 }
 
 fn ordered_available_tiers(raw: &[String]) -> Vec<String> {
-    let normalized: Vec<String> = raw
-        .iter()
-        .map(|t| profile_store::normalize_profile_tier(t, ""))
-        .collect();
+    let normalized: Vec<String> = raw.iter().map(|t| normalize_profile_tier(t, "")).collect();
     PROFILE_TIERS
         .iter()
         .filter(|tier| normalized.iter().any(|n| n == *tier))
@@ -225,10 +157,7 @@ impl AdaptiveProfileController {
         AdaptiveProfileController {
             config,
             state: PolicyState {
-                current_tier: profile_store::normalize_profile_tier(
-                    initial_tier,
-                    PROFILE_TIER_BALANCED,
-                ),
+                current_tier: normalize_profile_tier(initial_tier, PROFILE_TIER_BALANCED),
                 last_switch_monotonic: 0.0,
                 target_slow_count: 0,
                 near_slow_count: 0,
@@ -243,11 +172,6 @@ impl AdaptiveProfileController {
 
     fn restore_state(&mut self, state: &PolicyState) {
         self.state = state.clone();
-    }
-
-    pub fn reconfigure(&mut self, config: PolicyConfig) {
-        self.config = config;
-        self.reset_counts();
     }
 
     fn reset_counts(&mut self) {
@@ -398,8 +322,7 @@ impl AdaptiveProfileController {
         cpu_util_pct: Option<f64>,
         cpu_peak_thread_pct: Option<f64>,
     ) -> Decision {
-        let target_tier =
-            profile_store::normalize_profile_tier(&target_tier, &self.state.current_tier);
+        let target_tier = normalize_profile_tier(&target_tier, &self.state.current_tier);
         if !self.performance_promotion_cpu_bound(
             &target_tier,
             gpu_util_pct,
@@ -427,7 +350,7 @@ impl AdaptiveProfileController {
         cpu_util_pct: Option<f64>,
         cpu_peak_thread_pct: Option<f64>,
     ) -> bool {
-        if profile_store::normalize_profile_tier(target_tier, "") != PROFILE_TIER_PERFORMANCE {
+        if normalize_profile_tier(target_tier, "") != PROFILE_TIER_PERFORMANCE {
             return false;
         }
         let Some(gpu) = gpu_util_pct else {
@@ -444,8 +367,7 @@ impl AdaptiveProfileController {
     }
 
     fn switch(&mut self, target_tier: String, now_monotonic: f64, reason: &str) -> Decision {
-        let target_tier =
-            profile_store::normalize_profile_tier(&target_tier, &self.state.current_tier);
+        let target_tier = normalize_profile_tier(&target_tier, &self.state.current_tier);
         if target_tier == self.state.current_tier {
             self.reset_counts();
             return Decision {
@@ -479,8 +401,6 @@ pub struct AdaptiveAutoUvRuntimeController {
     policy: AdaptiveProfileController,
     tier_curves: HashMap<String, LoadedCurve>,
     available_tiers: Vec<String>,
-    adaptive_target_fps: f64,
-    runtime_config_path: Option<PathBuf>,
     last_tier_label: Option<String>,
     last_cpu_bound_guard_log: f64,
     vf_curve_available: bool,
@@ -491,10 +411,10 @@ impl AdaptiveAutoUvRuntimeController {
     pub fn new(
         current_tier: &str,
         vf_curve_available: bool,
-        runtime_config_path: Option<PathBuf>,
+        tier_curves: HashMap<String, LoadedCurve>,
+        policy_spec: &AdaptivePolicySpec,
         log: &mut dyn FnMut(&str),
     ) -> Self {
-        let tier_curves = Self::load_tier_curves(log);
         // available tiers: PROFILE_TIERS order, deduped by profile_id.
         let mut available_tiers = Vec::new();
         let mut seen: Vec<String> = Vec::new();
@@ -515,8 +435,8 @@ impl AdaptiveAutoUvRuntimeController {
         } else {
             available_tiers.first().cloned().unwrap_or_default()
         };
-        let adaptive_target_fps = config::adaptive_target_fps_from_env();
-        let policy_config = PolicyConfig::for_target_fps(adaptive_target_fps);
+        let adaptive_target_fps = policy_spec.target_fps;
+        let policy_config = PolicyConfig::from_spec(policy_spec);
         let policy = AdaptiveProfileController::new(&initial_tier, policy_config);
         let last_tier_label = if initial_tier.is_empty() {
             None
@@ -533,7 +453,7 @@ impl AdaptiveAutoUvRuntimeController {
             log(&format!("Adaptive Auto-UV enabled for tiers: {labels}."));
             log(&format!(
                 "Adaptive Auto-UV target: {} FPS ({:.2} ms p95).",
-                config::format_adaptive_target_fps(adaptive_target_fps),
+                format_target_fps(adaptive_target_fps),
                 policy_config.target_ms
             ));
         } else {
@@ -544,44 +464,10 @@ impl AdaptiveAutoUvRuntimeController {
             policy,
             tier_curves,
             available_tiers,
-            adaptive_target_fps,
-            runtime_config_path,
             last_tier_label,
             last_cpu_bound_guard_log: -1_000_000_000.0,
             vf_curve_available,
         }
-    }
-
-    fn load_tier_curves(log: &mut dyn FnMut(&str)) -> HashMap<String, LoadedCurve> {
-        let profiles = read_auto_uv_profiles(true);
-        let resolved = resolve_profile_tier_profiles(&profiles);
-        // available_adaptive_tiers is unused here (we dedup below) but kept in
-        // profile_store for parity with the Python surface.
-        let _ = available_adaptive_tiers(&resolved);
-        let mut curves = HashMap::new();
-        for (tier, profile) in resolved {
-            let Some(profile) = profile else { continue };
-            let profile_id = profile
-                .get("profile_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if profile_id.is_empty() {
-                continue;
-            }
-            match load_auto_uv_final_curve(&profile_id) {
-                Ok(Some(curve)) => {
-                    curves.insert(tier, curve);
-                }
-                Ok(None) => {}
-                Err(exc) => log(&format!(
-                    "Adaptive Auto-UV skipped {} tier: {exc}",
-                    profile_tier_label(&tier)
-                )),
-            }
-        }
-        curves
     }
 
     pub fn enabled(&self) -> bool {
@@ -601,7 +487,6 @@ impl AdaptiveAutoUvRuntimeController {
         if !self.enabled() {
             return None;
         }
-        self.refresh_adaptive_target_fps(log);
         let present_ms = latency_snapshot.and_then(|s| s.base_present_frametime_p95_ms);
         let policy_state = self.policy.snapshot_state();
         let gpu = publisher.last_gpu_util_pct().map(|v| v as f64);
@@ -698,26 +583,6 @@ impl AdaptiveAutoUvRuntimeController {
         })
     }
 
-    fn refresh_adaptive_target_fps(&mut self, log: &mut dyn FnMut(&str)) {
-        let Some(path) = self.runtime_config_path.clone() else {
-            return;
-        };
-        let target = config::adaptive_target_fps_from_config(&path, self.adaptive_target_fps);
-        let target =
-            config::parse_adaptive_target_fps(&format!("{target}"), self.adaptive_target_fps);
-        if target == self.adaptive_target_fps {
-            return;
-        }
-        self.adaptive_target_fps = target;
-        let policy_config = PolicyConfig::for_target_fps(target);
-        self.policy.reconfigure(policy_config);
-        log(&format!(
-            "Adaptive Auto-UV target updated: {} FPS ({:.2} ms p95).",
-            config::format_adaptive_target_fps(target),
-            policy_config.target_ms
-        ));
-    }
-
     fn maybe_log_cpu_bound_guard(
         &mut self,
         decision: &Decision,
@@ -747,6 +612,17 @@ fn metric_text(value: Option<f64>) -> String {
     match value {
         Some(v) => (super::round_half_even(v) as i64).to_string(),
         None => "n/a".to_string(),
+    }
+}
+
+fn format_target_fps(fps: f64) -> String {
+    if fps.fract().abs() < f64::EPSILON {
+        format!("{fps:.0}")
+    } else {
+        format!("{fps:.3}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 
@@ -854,15 +730,25 @@ mod tests {
     }
 
     #[test]
-    fn env_override_windows() {
-        std::env::set_var("PENGUIN_BURNER_ADAPTIVE_TARGET_SLOW_WINDOWS", "2");
-        let config = PolicyConfig::for_target_fps(60.0);
+    fn runtime_spec_policy_values_are_used() {
+        let spec = AdaptivePolicySpec {
+            target_fps: 60.0,
+            target_slow_windows: 2,
+            near_slow_windows: 4,
+            comfort_windows: 7,
+            performance_comfort_windows: 11,
+            demote_dwell_s: 50.0,
+            performance_demote_dwell_s: 40.0,
+            cpu_bound_gpu_util_max_pct: 80.0,
+            cpu_bound_peak_thread_min_pct: 75.0,
+            cpu_bound_process_util_min_pct: 15.0,
+        };
+        let config = PolicyConfig::from_spec(&spec);
         assert_eq!(config.target_slow_windows, 2);
-        std::env::remove_var("PENGUIN_BURNER_ADAPTIVE_TARGET_SLOW_WINDOWS");
-        // Out-of-range ignored.
-        std::env::set_var("PENGUIN_BURNER_ADAPTIVE_TARGET_SLOW_WINDOWS", "500");
-        let config = PolicyConfig::for_target_fps(60.0);
-        assert_eq!(config.target_slow_windows, 3);
-        std::env::remove_var("PENGUIN_BURNER_ADAPTIVE_TARGET_SLOW_WINDOWS");
+        assert_eq!(config.near_slow_windows, 4);
+        assert_eq!(config.comfort_windows, 7);
+        assert_eq!(config.performance_comfort_windows, 11);
+        assert_eq!(config.demote_dwell_s, 50.0);
+        assert_eq!(config.cpu_bound_gpu_util_max_pct, 80.0);
     }
 }

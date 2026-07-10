@@ -6,8 +6,3 @@ Small modules raise these errors so the CLI can present one consistent failure p
 
 class NvmlError(RuntimeError):
     pass
-
-
-class FanCurveBlockedError(NvmlError):
-    pass
-

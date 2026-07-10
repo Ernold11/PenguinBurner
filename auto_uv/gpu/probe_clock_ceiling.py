@@ -5,15 +5,15 @@ The ceiling keeps the driver from boosting past the flattened target clock.
 
 from __future__ import annotations
 
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from integrations.afterburner.vfcurve_describe import describe_afterburner_dynamic_lock
-from drivers.nvidia.nvml_gpu_policy import NvmlGpuPolicyController
 
 
 class ProbeClockCeilingController:
     def __init__(
         self,
         flatten_target: dict,
-        policy_controller: NvmlGpuPolicyController,
+        policy_controller: DaemonGpuClient,
     ):
         self._flatten_target = dict(flatten_target)
         self._policy_controller = policy_controller
@@ -58,7 +58,9 @@ class ProbeClockCeilingController:
         self._flatten_target["lock_clock_mhz"] = int(lock_clock_mhz)
         if lock_voltage_mv is not None:
             self._flatten_target["lock_voltage_mv"] = int(lock_voltage_mv)
-        if ceiling_clock_mhz is not None and int(ceiling_clock_mhz) > int(lock_clock_mhz):
+        if ceiling_clock_mhz is not None and int(ceiling_clock_mhz) > int(
+            lock_clock_mhz
+        ):
             self._flatten_target["ceiling_clock_mhz"] = int(ceiling_clock_mhz)
         else:
             self._flatten_target.pop("ceiling_clock_mhz", None)

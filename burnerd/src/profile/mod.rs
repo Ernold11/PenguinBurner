@@ -2,27 +2,27 @@
 //! (VF curve, power/memory/persistence, locked clock ceiling), runs the fan +
 //! adaptive + guard + telemetry loop, and restores fans/clock-lock on exit.
 //!
-//! The facade the supervisor talks to is FROZEN: [`EngineOptions`] fields,
-//! [`start`], [`EngineHandle::stop`]/`is_running`/`returncode`. Everything below
-//! that surface is the wave-A3 port of the Python runtime child (specs 02/04/05).
+//! The supervisor passes one validated immutable [`RuntimeSpec`] to [`start`].
 
 mod adaptive;
 mod apply;
 mod ceiling;
-mod config;
 mod cpu;
 mod fan;
 mod guard;
 mod latency_rx;
 mod logfmt;
-mod profile_store;
+mod runtime_spec;
 mod telemetry;
 
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
+use std::fmt;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -43,13 +43,21 @@ use logfmt::{
     emergency_line, fan_event_line, format_log_line, single_line_text, status_line,
     status_signature, warn_line, StatusSignature,
 };
-use profile_store::PlanItem;
+use runtime_spec::{profile_tier_label, PlanItem, RuntimeMode};
 use telemetry::{format_telemetry, telemetry_number, OverlayStatePublisher};
+
+pub use runtime_spec::RuntimeSpec;
+
+/// One semantic stock reset for scan/verification clients.  The mutation and
+/// strict readback sequence stays shared with stock RuntimeSpec application.
+pub(crate) fn reset_gpu_to_stock(backend: &dyn GpuBackend) -> Result<(), String> {
+    let mut log = |message: &str| logging::info(message);
+    apply::reset_gpu_to_stock(backend, &mut log)
+}
 
 /// The overlay "truthy" set — `{1, true, yes, on, active}` after strip+lowercase.
 /// Shared by the overlay flag parser (`telemetry::flag_enabled`) and the latency
-/// marker truthy check (`latency_rx::truthy_value`); `profile_store`'s narrower
-/// `{1, true, yes, on}` set is intentionally separate.
+/// marker truthy check (`latency_rx::truthy_value`).
 pub(crate) fn truthy_str(text: &str) -> bool {
     matches!(
         text.trim().to_lowercase().as_str(),
@@ -86,59 +94,6 @@ pub struct LatencySnapshot {
     pub pid: Option<String>,
 }
 
-/// Whitelisted runtime-profile argv parsed into the knobs the engine needs.
-#[derive(Debug, Clone, Default)]
-pub struct EngineOptions {
-    pub tier: String,
-    pub silent_fan_curve: bool,
-    pub adaptive: bool,
-    pub gpu_index: Option<u32>,
-}
-
-impl EngineOptions {
-    /// Parse an already-validated runtime argv. The flags handled below mirror
-    /// `argvspec::RUNTIME_OPTION_FLAGS`/`RUNTIME_VALUE_FLAGS` (the daemon-side
-    /// whitelist that gates what can reach this parser).
-    pub fn from_argv(argv: &[String]) -> Self {
-        let mut options = EngineOptions::default();
-        let mut index = 0;
-        while index < argv.len() {
-            let arg = &argv[index];
-            if arg == "--auto-uv-profile" {
-                if let Some(value) = argv.get(index + 1) {
-                    options.tier = value.clone();
-                }
-                index += 2;
-                continue;
-            }
-            if let Some(value) = arg.strip_prefix("--auto-uv-profile=") {
-                options.tier = value.to_string();
-                index += 1;
-                continue;
-            }
-            if arg == "--gpu-index" {
-                if let Some(value) = argv.get(index + 1) {
-                    options.gpu_index = value.parse().ok();
-                }
-                index += 2;
-                continue;
-            }
-            if let Some(value) = arg.strip_prefix("--gpu-index=") {
-                options.gpu_index = value.parse().ok();
-                index += 1;
-                continue;
-            }
-            if arg == "--silent-fan-curve" {
-                options.silent_fan_curve = true;
-            } else if arg == "--adaptive-auto-uv" {
-                options.adaptive = true;
-            }
-            index += 1;
-        }
-        options
-    }
-}
-
 /// Outcome of `EngineHandle::stop`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum StopOutcome {
@@ -159,6 +114,49 @@ pub struct EngineHandle {
     /// for the full timeout on every retry would starve the systemd watchdog.
     timed_out: bool,
 }
+
+pub struct EngineStartError {
+    message: String,
+    engine: Option<EngineHandle>,
+}
+
+impl EngineStartError {
+    fn stopped(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            engine: None,
+        }
+    }
+
+    fn wedged(message: impl Into<String>, engine: EngineHandle) -> Self {
+        Self {
+            message: message.into(),
+            engine: Some(engine),
+        }
+    }
+
+    pub fn into_parts(self) -> (String, Option<EngineHandle>) {
+        (self.message, self.engine)
+    }
+}
+
+impl fmt::Display for EngineStartError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl fmt::Debug for EngineStartError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EngineStartError")
+            .field("message", &self.message)
+            .field("engine_still_running", &self.engine.is_some())
+            .finish()
+    }
+}
+
+impl std::error::Error for EngineStartError {}
 
 impl EngineHandle {
     pub fn returncode(&self) -> Option<i32> {
@@ -212,11 +210,13 @@ impl EngineHandle {
     }
 }
 
-/// Start the engine thread. Always returns `Ok` (the child's success/failure is
-/// reported through `returncode`, parity with the Python daemon's spawn).
-pub fn start(options: EngineOptions) -> anyhow::Result<EngineHandle> {
+/// Start the engine and wait until initial GPU apply + validation has completed.
+/// A timed-out initializer is returned inside [`EngineStartError`] so the
+/// supervisor can retain it and refuse competing GPU work until it really exits.
+pub fn start(spec: RuntimeSpec) -> Result<EngineHandle, EngineStartError> {
     let stop_flag = Arc::new(AtomicBool::new(false));
     let returncode = Arc::new(Mutex::new(None));
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let thread_flag = stop_flag.clone();
     let thread_returncode = returncode.clone();
     let thread = std::thread::Builder::new()
@@ -227,7 +227,7 @@ pub fn start(options: EngineOptions) -> anyhow::Result<EngineHandle> {
             // unwinding (DESIGN §Threading model / panic policy).
             let flag = thread_flag.clone();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_engine(options, flag)
+                run_engine(spec, flag, ready_tx)
             }));
             let code = match result {
                 Ok(code) => code,
@@ -242,13 +242,33 @@ pub fn start(options: EngineOptions) -> anyhow::Result<EngineHandle> {
             if stored.is_none() {
                 *stored = Some(code);
             }
-        })?;
-    Ok(EngineHandle {
+        })
+        .map_err(|error| EngineStartError::stopped(error.to_string()))?;
+    let mut handle = EngineHandle {
         stop_flag,
         returncode,
         thread: Some(thread),
         timed_out: false,
-    })
+    };
+
+    let ready = ready_rx.recv_timeout(Duration::from_secs(30));
+    let failure = match ready {
+        Ok(Ok(())) => return Ok(handle),
+        Ok(Err(error)) => error,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            "runtime profile initial apply timed out after 30 seconds".to_string()
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            "runtime profile engine exited before initial apply completed".to_string()
+        }
+    };
+    match handle.stop(Duration::from_secs(10)) {
+        StopOutcome::Stopped => Err(EngineStartError::stopped(failure)),
+        StopOutcome::TimedOut => Err(EngineStartError::wedged(
+            format!("{failure}; engine did not stop after initialization failure"),
+            handle,
+        )),
+    }
 }
 
 /// Test-only engine whose thread ignores the stop flag for `wedge_for` (a
@@ -347,26 +367,55 @@ fn run_inert(stop_flag: Arc<AtomicBool>) -> i32 {
     0
 }
 
-fn run_engine(options: EngineOptions, stop_flag: Arc<AtomicBool>) -> i32 {
+fn run_engine(
+    spec: RuntimeSpec,
+    stop_flag: Arc<AtomicBool>,
+    ready_tx: SyncSender<Result<(), String>>,
+) -> i32 {
+    #[cfg(test)]
+    if std::env::var("PENGUIN_BURNERD_TEST_FAIL_PROFILE_ID")
+        .is_ok_and(|profile_id| profile_id == spec.active_profile_id())
+    {
+        let message = "injected runtime profile initial apply failure".to_string();
+        let _ = ready_tx.send(Err(message));
+        return 1;
+    }
+
     if test_inert_engine() {
+        let _ = ready_tx.send(Ok(()));
         return run_inert(stop_flag);
     }
 
-    let doc = config::load_runtime_config_doc();
-    let gpu_cfg = config::gpu_config(&doc);
-    let gpu_index = options.gpu_index.unwrap_or(gpu_cfg.index);
+    let gpu_index = spec.gpu.index_at_resolution;
 
     let backend = match crate::gpu::NvmlBackend::open(gpu_index) {
         Ok(backend) => backend,
         Err(err) => {
-            logging::error(&format!("runtime profile engine init failed: {err}"));
+            let message = format!("runtime profile engine init failed: {err}");
+            let _ = ready_tx.send(Err(message.clone()));
+            logging::error(&message);
             return 1;
         }
     };
 
-    match run_with_backend(&backend, &options, &gpu_cfg, &doc, stop_flag, None) {
+    let live_uuid = backend.identity().uuid;
+    if live_uuid != spec.gpu.uuid {
+        let message = format!(
+            "runtime profile GPU mismatch: expected={} index={} observed={}",
+            spec.gpu.uuid, gpu_index, live_uuid
+        );
+        let _ = ready_tx.send(Err(message.clone()));
+        logging::error(&message);
+        return 1;
+    }
+
+    let mut ready = Some(ready_tx);
+    match run_with_backend(&backend, &spec, stop_flag, None, &mut ready) {
         Ok(()) => 0,
         Err(err) => {
+            if let Some(sender) = ready.take() {
+                let _ = sender.send(Err(err.clone()));
+            }
             logging::error(&format!("runtime profile engine error: {err}"));
             1
         }
@@ -376,52 +425,64 @@ fn run_engine(options: EngineOptions, stop_flag: Arc<AtomicBool>) -> i32 {
 /// The assembly + loop, generic over the backend (driven by `MockGpu` in tests).
 fn run_with_backend(
     backend: &dyn GpuBackend,
-    options: &EngineOptions,
-    gpu_cfg: &config::RuntimeGpuConfig,
-    doc: &config::TomlDoc,
+    spec: &RuntimeSpec,
     stop_flag: Arc<AtomicBool>,
     max_iterations: Option<u64>,
+    ready: &mut Option<SyncSender<Result<(), String>>>,
 ) -> Result<(), String> {
-    let gpu_index = options.gpu_index.unwrap_or(gpu_cfg.index);
+    let gpu_index = spec.gpu.index_at_resolution;
     let mut log = |m: &str| engine_log(m);
 
-    // Fan source (silent curve or config), with the parity downgrade messages.
-    let base_fan = FanConfig::from_runtime_config(doc);
-    let (fan_config, fan_control_enabled) =
-        fan::prepare_fan_source(&base_fan, options.silent_fan_curve, &mut log);
+    let fan_config = spec.fan.config.clone();
+    let fan_control_enabled = spec.fan.enabled;
+    if !spec.fan.notice.is_empty() {
+        log(&spec.fan.notice);
+    }
+
+    let initial_curve = match spec.mode {
+        RuntimeMode::Stock => None,
+        RuntimeMode::Static => spec.static_profile.as_ref(),
+        RuntimeMode::Adaptive => spec
+            .adaptive
+            .as_ref()
+            .and_then(|adaptive| adaptive.profiles.get(&adaptive.initial_tier)),
+    };
 
     // VF-curve policy: persistence → memory → VF → power → clock ceiling
     // (mem before VF: a mem-offset write wipes the per-point VF table).
-    let vf_policy = apply::configure_runtime_vf_curve_policy(
+    let vf_policy = apply::configure_runtime_spec_policy(
         backend,
-        gpu_cfg.enable_persistence_mode,
-        &options.tier,
+        spec.policy.enable_persistence_mode,
+        spec.mode,
+        initial_curve,
         &mut log,
     )?;
 
-    // Overlay publisher.
-    let overlay_config_path = config::default_overlay_config_path();
-    let overlay_config = config::load_overlay_config(&overlay_config_path);
     let mut publisher = OverlayStatePublisher::new(
         i64::from(gpu_index),
-        overlay_config.enabled,
-        overlay_config.update_interval_s as f64,
+        spec.overlay.enabled,
+        spec.overlay.update_interval_s as f64,
         vf_policy.active_profile_tier.clone(),
         vf_policy.active_profile_tier_key.clone(),
         vf_policy.active_profile_id.clone(),
-        options.adaptive,
+        spec.mode == RuntimeMode::Adaptive,
         Some(ProcessCpuUsageSampler::new()),
-        Some(overlay_config_path),
     );
 
     // Adaptive controller (only for an Auto-UV profile source).
     let mut adaptive_ctrl: Option<AdaptiveAutoUvRuntimeController> = None;
-    if options.adaptive {
+    if let Some(adaptive) = spec.adaptive.as_ref() {
         if vf_policy.active_vf_curve_source.as_deref() == Some("auto-uv-final") {
+            let tier_curves: HashMap<_, _> = adaptive
+                .profiles
+                .iter()
+                .map(|(tier, curve)| (tier.clone(), curve.clone()))
+                .collect();
             adaptive_ctrl = Some(AdaptiveAutoUvRuntimeController::new(
-                &vf_policy.active_profile_tier_key,
+                &adaptive.initial_tier,
                 backend.vf_curve_available(),
-                Some(config::default_runtime_config_path()),
+                tier_curves,
+                &adaptive.policy,
                 &mut log,
             ));
         } else {
@@ -438,7 +499,7 @@ fn run_with_backend(
     run_fan_control_loop(
         backend,
         gpu_index,
-        gpu_cfg.enable_persistence_mode,
+        spec.policy.enable_persistence_mode,
         fan_config,
         fan_control_enabled,
         vf_policy,
@@ -447,6 +508,7 @@ fn run_with_backend(
         latency_receiver.as_ref(),
         stop_flag,
         max_iterations,
+        ready,
     )
 }
 
@@ -499,6 +561,7 @@ fn run_fan_control_loop(
     latency_receiver: Option<&latency_rx::LatencyReceiver>,
     stop_flag: Arc<AtomicBool>,
     max_iterations: Option<u64>,
+    ready: &mut Option<SyncSender<Result<(), String>>>,
 ) -> Result<(), String> {
     let mut settings = RuntimeFanSettings::build(&fan_config, fan_control_enabled)?;
     let poll_interval_s = settings.poll_interval_s;
@@ -548,6 +611,9 @@ fn run_fan_control_loop(
         &settings,
         &current_tier_label,
     );
+    if let Some(sender) = ready.take() {
+        let _ = sender.send(Ok(()));
+    }
 
     // Loop state (runtime_loop.py §5.4). `loop_started` uses an absolute
     // CLOCK_MONOTONIC clock like Python's `time.monotonic()`, so the `0.0`-init
@@ -577,7 +643,6 @@ fn run_fan_control_loop(
         iteration_count += 1;
         let loop_started = monotonic_now();
 
-        publisher.refresh_config();
         let overlay_interval_s = overlay_update_interval_s(publisher);
 
         // Aggregate the current in-game telemetry window (None when no receiver /
@@ -600,7 +665,7 @@ fn run_fan_control_loop(
                 publisher,
                 &mut |m| engine_log(m),
             ) {
-                current_tier_label = profile_store::profile_tier_label(&update.tier);
+                current_tier_label = profile_tier_label(&update.tier);
                 if update.changed {
                     if let Some(plan) = update.vf_apply_plan {
                         vf_apply_plan = Some(plan);
@@ -653,7 +718,7 @@ fn run_fan_control_loop(
         // `overlay_publish_failed` latch) and do NOT advance the publish marker
         // (Python retried every tick, silently).
         let publish_due =
-            last_overlay_publish.map_or(true, |last| loop_started - last >= overlay_interval_s);
+            last_overlay_publish.is_none_or(|last| loop_started - last >= overlay_interval_s);
         if publisher.enabled && publish_due {
             match publisher.publish(backend, latency_snapshot, now_unix_ns()) {
                 Ok(()) => last_overlay_publish = Some(loop_started),
@@ -837,7 +902,7 @@ fn vf_policy_tier_label(vf_policy: &VfPolicyResult<'_>) -> String {
     if key.is_empty() {
         String::new()
     } else {
-        profile_store::profile_tier_label(key)
+        profile_tier_label(key)
     }
 }
 

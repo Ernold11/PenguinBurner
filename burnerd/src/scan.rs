@@ -14,7 +14,6 @@ use std::ffi::{CString, OsString};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -22,6 +21,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use nix::fcntl::OFlag;
+use nix::unistd::pipe2;
+use nix::unistd::Gid;
 use serde_json::Value;
 
 use crate::api::{write_json_line, StreamError, StreamFinished, StreamLine, StreamStarted};
@@ -495,24 +497,9 @@ fn existing_runtime_dir(uid: u32) -> Option<PathBuf> {
 /// The target user's full supplementary group list via `getgrouplist`, resolved
 /// in the parent so the post-fork hook only needs the raw `setgroups` syscall.
 fn supplementary_groups(user: &CString, gid: libc::gid_t) -> Result<Vec<libc::gid_t>, String> {
-    let mut count: libc::c_int = 16;
-    loop {
-        let mut groups = vec![0 as libc::gid_t; count as usize];
-        let mut ngroups = count;
-        // SAFETY: `groups` has capacity `ngroups`; getgrouplist writes at most
-        // that many entries and updates `ngroups` to the real count.
-        let rc =
-            unsafe { libc::getgrouplist(user.as_ptr(), gid, groups.as_mut_ptr(), &mut ngroups) };
-        if rc >= 0 {
-            groups.truncate(ngroups as usize);
-            return Ok(groups);
-        }
-        if ngroups <= count {
-            // No capacity progress: the lookup failed outright.
-            return Err(format!("getgrouplist failed for user {user:?}"));
-        }
-        count = ngroups;
-    }
+    nix::unistd::getgrouplist(user.as_c_str(), Gid::from_raw(gid))
+        .map(|groups| groups.into_iter().map(Gid::as_raw).collect())
+        .map_err(|error| format!("getgrouplist failed for user {user:?}: {error}"))
 }
 
 /// Build the full drop plan from the daemon env, or `None` when no drop applies.
@@ -576,10 +563,7 @@ fn ensure_child_config_dirs(config_dirs: &[CString]) -> io::Result<()> {
         let fd = unsafe {
             libc::open(
                 dir.as_ptr(),
-                libc::O_RDONLY
-                    | libc::O_DIRECTORY
-                    | libc::O_NOFOLLOW
-                    | libc::O_CLOEXEC,
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             )
         };
         if fd < 0 {
@@ -602,21 +586,9 @@ fn spawn_child(
     argv: &[String],
     drop: Option<&DropPlan>,
 ) -> std::io::Result<(Child, File)> {
-    let mut fds = [0i32; 2];
-    // SAFETY: pipe2 fills `fds` with a (read, write) pair; both are O_CLOEXEC so
-    // they never leak into the child except via the explicit stdio dup below.
-    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
-    if rc != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let read_fd = fds[0];
-    let write_fd = fds[1];
-
-    // Own both ends immediately so they are always closed on any early return.
-    // SAFETY: we exclusively own these freshly-created fds.
-    let reader = unsafe { File::from_raw_fd(read_fd) };
-    // SAFETY: same.
-    let write_file = unsafe { File::from_raw_fd(write_fd) };
+    let (read_fd, write_fd) = pipe2(OFlag::O_CLOEXEC).map_err(io::Error::from)?;
+    let reader = File::from(read_fd);
+    let write_file = File::from(write_fd);
     let write_clone = write_file.try_clone()?;
 
     let mut command = Command::new(python);
@@ -640,24 +612,17 @@ fn spawn_child(
     // The post-fork/pre-exec data must be owned by the closure and applied
     // without allocating (fork of a multithreaded process: only
     // async-signal-safe calls are legal until exec).
-    let drop_spec: Option<(
-        libc::uid_t,
-        libc::gid_t,
-        Vec<libc::gid_t>,
-        Vec<CString>,
-    )> = drop.map(|plan| {
-        (
-            plan.uid,
-            plan.gid,
-            plan.groups.clone(),
-            plan.config_dirs.clone(),
-        )
-    });
+    let drop_spec: Option<(libc::uid_t, libc::gid_t, Vec<libc::gid_t>, Vec<CString>)> =
+        drop.map(|plan| {
+            (
+                plan.uid,
+                plan.gid,
+                plan.groups.clone(),
+                plan.config_dirs.clone(),
+            )
+        });
 
-    // The daemon blocks SIGINT/SIGTERM process-wide (signal thread) and the
-    // mask survives exec — without a reset the child would never receive the
-    // stop SIGINT (the Python daemon's children inherited a default mask).
-    // With a drop plan, privileges are then dropped in the mandatory order
+    // With a drop plan, privileges are dropped in the mandatory order
     // setsid → setgroups → setgid → setuid (gid before uid: after setuid the
     // process can no longer change its gid). Every step fails CLOSED: an
     // `Err` here aborts the spawn, so the child can never exec with root or
@@ -667,9 +632,6 @@ fn spawn_child(
     unsafe {
         use std::os::unix::process::CommandExt;
         command.pre_exec(move || {
-            let mut set: libc::sigset_t = std::mem::zeroed();
-            libc::sigemptyset(&mut set);
-            libc::sigprocmask(libc::SIG_SETMASK, &set, std::ptr::null_mut());
             if let Some((uid, gid, groups, config_dirs)) = drop_spec.as_ref() {
                 if libc::setsid() < 0 {
                     return Err(io::Error::last_os_error());
@@ -987,8 +949,7 @@ mod tests {
     fn child_config_dirs_are_created_and_symlinks_rejected() {
         use std::os::unix::fs::symlink;
 
-        let root = std::env::temp_dir()
-            .join(format!("pb-child-config-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("pb-child-config-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
         let dot_config = root.join(".config");
@@ -1120,7 +1081,7 @@ mod tests {
         let pid = child.id();
         let sup = Arc::new(Mutex::new(Supervisor::new()));
         let job = Arc::new(ChildJob {
-            proc: ChildProc::new(child),
+            proc: ChildProc::new(child).unwrap(),
             argv: Vec::new(),
             generation: 1,
             kind: ChildKind::Scan,

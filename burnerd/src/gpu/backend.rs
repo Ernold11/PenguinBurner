@@ -1,380 +1,68 @@
-//! `NvmlBackend`: the real [`GpuBackend`], tying the raw NVML library
-//! ([`nvml_raw`]) to the two optional hidden-NVAPI sessions ([`nvapi`]).
-//!
-//! One NVML init + one long-lived device handle back the whole backend
-//! (consolidating the several per-purpose Python sessions into one); the NVAPI
-//! voltage and VF-curve readers are best-effort (`None` when the library or GPU
-//! doesn't support them), exactly like the Python `create_hidden_*` factories.
+//! Real GPU backend: documented NVML through `nvml-wrapper`, with raw FFI
+//! confined to the undocumented Linux NVAPI implementation in `nvapi`.
 
-use std::ffi::CStr;
-use std::os::raw::{c_char, c_int, c_uint};
+use nvml_wrapper::enum_wrappers::device::{Clock, PerformanceState, TemperatureSensor};
+use nvml_wrapper::enums::device::GpuLockedClocksSetting;
+use nvml_wrapper::error::NvmlError;
+use nvml_wrapper::{Device, Nvml};
 
 use super::nvapi::{NvapiVfSession, NvapiVoltageSession};
-use super::nvml_raw::{
-    Device, FnDev, FnDevClockOffset, FnDevIIout2, FnDevIin, FnDevIout, FnDevUUin, FnDevUUout,
-    FnDevUUout2, FnDevUin, FnDevUout, NvmlClockOffset, NvmlLib, NvmlMemoryInfo, NvmlPciInfo,
-    NvmlUtilization, NVML_CLOCK_GRAPHICS, NVML_CLOCK_MEM,
-};
 use super::{
-    decode_cstr, mw_to_w_float, mw_to_w_round, snap_core_clock_mhz, snap_core_clock_range,
-    w_to_mw_round, AppliedOffsets, ClockOffsets, ClockType, GpuBackend, GpuError, GpuIdentity,
-    GpuMemoryInfo, GpuResult, PowerLimits, RangeSnapResult, SnapResult, VfPoint, VfSummary,
+    mw_to_w_float, mw_to_w_round, snap_core_clock_mhz, snap_core_clock_range, w_to_mw_round,
+    AppliedOffsets, ClockOffsets, ClockType, GpuBackend, GpuError, GpuIdentity, GpuMemoryInfo,
+    GpuResult, PowerLimits, RangeSnapResult, SnapResult, VfPoint, VfSummary,
 };
-
-const NVML_TEMPERATURE_GPU: c_uint = 0;
-const NVML_FEATURE_ENABLED: c_uint = 1;
-#[allow(dead_code)] // identity string buffers (milestone-B identity read)
-const NAME_BUFFER: usize = 96;
-#[allow(dead_code)]
-const UUID_BUFFER: usize = 96;
-#[allow(dead_code)]
-const DRIVER_BUFFER: usize = 80;
-const MEM_CLOCK_CAPACITY: usize = 64;
-const CORE_CLOCK_CAPACITY: usize = 512;
-
-/// Select the per-pstate `nvmlDevice{Get,Set}ClockOffsets` family (R555+) only
-/// when BOTH symbols resolved, so a set and its mandatory read-back can never
-/// mix API families within one session (spec 17 R6). `None` falls back to the
-/// deprecated per-domain VF-offset calls — the only route on drivers < 555,
-/// and a one-line revert lever if a future driver regresses the new semantics.
-fn per_pstate_offset_fns<T: Copy>(get: Option<T>, set: Option<T>) -> Option<(T, T)> {
-    Some((get?, set?))
-}
 
 pub struct NvmlBackend {
-    lib: NvmlLib,
-    #[allow(dead_code)] // reported via identity() (milestone-B)
+    nvml: Nvml,
     gpu_index: u32,
-    device: Device,
     voltage: Option<NvapiVoltageSession>,
     vf: Option<NvapiVfSession>,
-    initialized: bool,
 }
 
 impl NvmlBackend {
-    /// Open the backend for `gpu_index`: NVML init + device handle (fatal on
-    /// failure, runtime-session error shape), then best-effort NVAPI readers.
     pub fn open(gpu_index: u32) -> GpuResult<Self> {
-        let lib = NvmlLib::load()?;
-
-        // SAFETY: `init_v2` is the resolved nvmlInit_v2.
-        let rc = unsafe { (lib.init_v2)() };
-        if rc != 0 {
-            return Err(GpuError::nvml("nvmlInit_v2", i64::from(rc)));
-        }
-
-        let mut device: Device = std::ptr::null_mut();
-        // SAFETY: valid out-pointer for the device handle.
-        let rc = unsafe { (lib.handle_by_index)(gpu_index, &mut device) };
-        if rc != 0 {
-            // SAFETY: pairs with the successful init before we bail.
-            unsafe { (lib.shutdown)() };
-            return Err(GpuError::nvml(
-                "nvmlDeviceGetHandleByIndex_v2",
-                i64::from(rc),
-            ));
-        }
-
-        let mut backend = Self {
-            lib,
+        let nvml = Nvml::init().map_err(|error| runtime_error("nvmlInit_v2", error))?;
+        let pci_bus_id = {
+            let device = nvml
+                .device_by_index(gpu_index)
+                .map_err(|error| runtime_error("nvmlDeviceGetHandleByIndex_v2", error))?;
+            device
+                .pci_info()
+                .map(|info| info.bus_id)
+                .unwrap_or_default()
+        };
+        Ok(Self {
+            nvml,
             gpu_index,
-            device,
-            voltage: None,
-            vf: None,
-            initialized: true,
-        };
-
-        // The hidden readers select their GPU by matching the NVML PCI bus id.
-        let pci_bus_id = backend.read_pci_bus_id();
-        backend.voltage = NvapiVoltageSession::open(gpu_index, &pci_bus_id).ok();
-        backend.vf = NvapiVfSession::open(gpu_index, &pci_bus_id).ok();
-        Ok(backend)
+            voltage: NvapiVoltageSession::open(gpu_index, &pci_bus_id).ok(),
+            vf: NvapiVfSession::open(gpu_index, &pci_bus_id).ok(),
+        })
     }
 
-    // --- error text (policy-controller shape only) ------------------------
-    fn error_text(&self, rc: i64) -> String {
-        if let Some(f) = self.lib.error_string {
-            // SAFETY: nvmlErrorString returns a pointer to a static C string.
-            let ptr = unsafe { f(rc as c_int) };
-            if !ptr.is_null() {
-                // SAFETY: `ptr` is a valid NUL-terminated string owned by NVML.
-                let text = unsafe { CStr::from_ptr(ptr) }.to_string_lossy();
-                if !text.is_empty() {
-                    return text.into_owned();
-                }
-            }
-        }
-        format!("error={rc}")
+    fn device(&self) -> GpuResult<Device<'_>> {
+        self.nvml
+            .device_by_index(self.gpu_index)
+            .map_err(|error| runtime_error("nvmlDeviceGetHandleByIndex_v2", error))
     }
 
-    fn policy_err(&self, name: &str, rc: i64) -> GpuError {
-        let text = self.error_text(rc);
-        GpuError::nvml_with_text(name, rc, &text)
+    fn read_clock_offset(&self, clock: Clock) -> Option<i32> {
+        self.device()
+            .ok()?
+            .clock_offset(clock, PerformanceState::Zero)
+            .ok()
+            .map(|offset| offset.clock_offset_mhz)
     }
 
-    // --- typed FFI call helpers (unsafe confined here) --------------------
-    fn call_uout(&self, f: FnDevUout) -> (c_int, u32) {
-        let mut out: c_uint = 0;
-        // SAFETY: `device` is a valid handle; `out` is a valid out-pointer.
-        let rc = unsafe { f(self.device, &mut out) };
-        (rc, out)
-    }
-
-    fn call_uuout(&self, f: FnDevUUout, arg: c_uint) -> (c_int, u32) {
-        let mut out: c_uint = 0;
-        // SAFETY: `device` valid; `out` a valid out-pointer.
-        let rc = unsafe { f(self.device, arg, &mut out) };
-        (rc, out)
-    }
-
-    fn call_uout2(&self, f: FnDevUUout2) -> (c_int, u32, u32) {
-        let (mut a, mut b): (c_uint, c_uint) = (0, 0);
-        // SAFETY: `device` valid; two valid out-pointers.
-        let rc = unsafe { f(self.device, &mut a, &mut b) };
-        (rc, a, b)
-    }
-
-    fn call_iout(&self, f: FnDevIout) -> (c_int, i32) {
-        let mut out: c_int = 0;
-        // SAFETY: `device` valid; `out` a valid out-pointer.
-        let rc = unsafe { f(self.device, &mut out) };
-        (rc, out)
-    }
-
-    fn call_iout2(&self, f: FnDevIIout2) -> (c_int, i32, i32) {
-        let (mut a, mut b): (c_int, c_int) = (0, 0);
-        // SAFETY: `device` valid; two valid out-pointers.
-        let rc = unsafe { f(self.device, &mut a, &mut b) };
-        (rc, a, b)
-    }
-
-    fn call_uin(&self, f: FnDevUin, arg: c_uint) -> c_int {
-        // SAFETY: `device` valid; scalar argument.
-        unsafe { f(self.device, arg) }
-    }
-
-    fn call_uuin(&self, f: FnDevUUin, a: c_uint, b: c_uint) -> c_int {
-        // SAFETY: `device` valid; scalar arguments.
-        unsafe { f(self.device, a, b) }
-    }
-
-    fn call_iin(&self, f: FnDevIin, arg: c_int) -> c_int {
-        // SAFETY: `device` valid; scalar argument.
-        unsafe { f(self.device, arg) }
-    }
-
-    fn call_dev(&self, f: FnDev) -> c_int {
-        // SAFETY: `device` valid.
-        unsafe { f(self.device) }
-    }
-
-    // --- string / struct reads -------------------------------------------
-    #[allow(dead_code)] // identity strings (milestone-B)
-    fn read_device_string(
-        &self,
-        getter: Option<super::nvml_raw::FnDevCharU>,
-        size: usize,
-    ) -> String {
-        let Some(f) = getter else {
-            return String::new();
-        };
-        let mut buf = vec![0u8; size];
-        // SAFETY: `device` valid; `buf` holds `size` bytes for the C string.
-        let rc = unsafe {
-            f(
-                self.device,
-                buf.as_mut_ptr().cast::<c_char>(),
-                size as c_uint,
-            )
-        };
-        if rc != 0 {
-            return String::new();
-        }
-        decode_cstr(&buf)
-    }
-
-    #[allow(dead_code)] // identity string (milestone-B)
-    fn driver_version(&self) -> String {
-        let Some(f) = self.lib.get_driver else {
-            return String::new();
-        };
-        let mut buf = vec![0u8; DRIVER_BUFFER];
-        // SAFETY: `buf` holds DRIVER_BUFFER bytes for the C string.
-        let rc = unsafe { f(buf.as_mut_ptr().cast::<c_char>(), DRIVER_BUFFER as c_uint) };
-        if rc != 0 {
-            return String::new();
-        }
-        decode_cstr(&buf)
-    }
-
-    fn read_pci_info(&self) -> Option<NvmlPciInfo> {
-        let f = self.lib.get_pci_info?;
-        // SAFETY: POD struct; all-zero is a valid initial value.
-        let mut info: NvmlPciInfo = unsafe { std::mem::zeroed() };
-        // SAFETY: `device` valid; `info` is a correctly-sized nvmlPciInfo_t.
-        let rc = unsafe { f(self.device, &mut info) };
-        if rc != 0 {
-            return None;
-        }
-        Some(info)
-    }
-
-    fn read_pci_bus_id(&self) -> String {
-        let Some(info) = self.read_pci_info() else {
-            return String::new();
-        };
-        let bus_id = decode_cstr(&info.bus_id);
-        if !bus_id.is_empty() {
-            return bus_id;
-        }
-        let legacy = decode_cstr(&info.bus_id_legacy);
-        if !legacy.is_empty() {
-            return legacy;
-        }
-        format!("{:08x}:{:02x}:{:02x}.0", info.domain, info.bus, info.device)
-    }
-
-    // --- clock lists ------------------------------------------------------
-    fn read_mem_clock_list(&self) -> Vec<u32> {
-        let Some(f) = self.lib.get_supported_mem_clocks else {
-            return Vec::new();
-        };
-        let mut count: c_uint = MEM_CLOCK_CAPACITY as c_uint;
-        let mut values = vec![0u32; MEM_CLOCK_CAPACITY];
-        // SAFETY: `device` valid; `count` preloaded with the buffer capacity;
-        // `values` holds MEM_CLOCK_CAPACITY slots the driver fills.
-        let rc = unsafe { f(self.device, &mut count, values.as_mut_ptr()) };
-        if rc != 0 {
-            return Vec::new();
-        }
-        values.truncate((count as usize).min(MEM_CLOCK_CAPACITY));
-        values
-    }
-
-    fn read_core_clock_list(&self, memory_clock_mhz: u32) -> Vec<u32> {
-        let Some(f) = self.lib.get_supported_gfx_clocks else {
-            return Vec::new();
-        };
-        let mut count: c_uint = CORE_CLOCK_CAPACITY as c_uint;
-        let mut values = vec![0u32; CORE_CLOCK_CAPACITY];
-        // SAFETY: `device` valid; `count` preloaded with capacity; `values`
-        // holds CORE_CLOCK_CAPACITY slots the driver fills.
-        let rc = unsafe {
-            f(
-                self.device,
-                memory_clock_mhz,
-                &mut count,
-                values.as_mut_ptr(),
-            )
-        };
-        if rc != 0 {
-            return Vec::new();
-        }
-        values.truncate((count as usize).min(CORE_CLOCK_CAPACITY));
-        values
-    }
-
-    fn read_clock_offset(&self, getter: Option<FnDevIout>) -> Option<i32> {
-        let f = getter?;
-        let (rc, out) = self.call_iout(f);
-        (rc == 0).then_some(out)
-    }
-
-    // --- per-pstate clock offsets (spec 17) --------------------------------
-    /// The modern offset family, or `None` → the deprecated fallback.
-    fn clock_offset_v2(&self) -> Option<(FnDevClockOffset, FnDevClockOffset)> {
-        per_pstate_offset_fns(self.lib.get_clock_offsets_v1, self.lib.set_clock_offsets_v1)
-    }
-
-    /// `nvmlDeviceGetClockOffsets` at P0 → (cur, min, max) signed MHz. On this
-    /// driver family one value is mirrored across every supported pstate, so
-    /// the P0 read agrees with the old whole-curve getters for both value and
-    /// range (proven live 2026-07-07, driver 610.43.02).
-    fn read_clock_offset_v2(
-        &self,
-        get: FnDevClockOffset,
-        clock_type: c_int,
-    ) -> Option<(i32, i32, i32)> {
-        let mut info = NvmlClockOffset::query_p0(clock_type);
-        // SAFETY: `device` valid; `info` a correctly-sized, version-tagged
-        // nvmlClockOffset_v1_t the driver fills.
-        let rc = unsafe { get(self.device, &mut info) };
-        (rc == 0).then_some((
-            info.clock_offset_mhz,
-            info.min_clock_offset_mhz,
-            info.max_clock_offset_mhz,
-        ))
-    }
-
-    /// Read one coarse-offset domain's current value, preferring the modern
-    /// per-pstate family and falling back to the deprecated per-domain getter.
-    /// This is the single READ selection point every trait read shares with the
-    /// write path (`apply_one_clock_offset`), so a set and its read-back never
-    /// split across API families (spec 17 R6).
-    fn read_offset_or_legacy(
-        &self,
-        clock_type: c_int,
-        legacy_get: Option<FnDevIout>,
-    ) -> Option<i32> {
-        if let Some((get, _)) = self.clock_offset_v2() {
-            return self
-                .read_clock_offset_v2(get, clock_type)
-                .map(|(cur, ..)| cur);
-        }
-        self.read_clock_offset(legacy_get)
-    }
-
-    /// Write one coarse offset domain and read it back (issue #20:
-    /// NVML_SUCCESS does not guarantee the offset stuck; the engine compares
-    /// the read-back against the request). A `SetClockOffsets(P0)` write
-    /// MIRRORS to every supported pstate (proven live 2026-07-07: P8/5/3/1/0
-    /// all read the written value), so the single P0 write is semantically
-    /// equivalent to the old whole-curve setter — do not loop pstates.
-    fn apply_one_clock_offset(
-        &self,
-        clock_type: c_int,
-        offset_mhz: i32,
-        legacy_set: Option<FnDevIin>,
-        legacy_get: Option<FnDevIout>,
-        legacy_name: &str,
-    ) -> GpuResult<Option<i32>> {
-        if let Some((get, set)) = self.clock_offset_v2() {
-            let mut info = NvmlClockOffset::query_p0(clock_type);
-            info.clock_offset_mhz = offset_mhz;
-            // SAFETY: `device` valid; `info` a correctly-sized, version-tagged
-            // nvmlClockOffset_v1_t carrying the offset.
-            let rc = unsafe { set(self.device, &mut info) };
-            if rc != 0 {
-                return Err(self.policy_err("nvmlDeviceSetClockOffsets", i64::from(rc)));
-            }
-            return Ok(self
-                .read_clock_offset_v2(get, clock_type)
-                .map(|(cur, ..)| cur));
-        }
-        let Some(f) = legacy_set else {
-            return Err(GpuError::unavailable(legacy_name));
-        };
-        let rc = self.call_iin(f, offset_mhz);
-        if rc != 0 {
-            return Err(self.policy_err(legacy_name, i64::from(rc)));
-        }
-        Ok(self.read_clock_offset(legacy_get))
-    }
-
-    fn read_power_w_round(&self, getter: Option<FnDevUout>) -> Option<i64> {
-        let f = getter?;
-        let (rc, mw) = self.call_uout(f);
-        (rc == 0).then(|| mw_to_w_round(mw))
-    }
-}
-
-impl Drop for NvmlBackend {
-    fn drop(&mut self) {
-        if self.initialized {
-            // SAFETY: pairs with the nvmlInit_v2 done in `open`.
-            unsafe { (self.lib.shutdown)() };
-            self.initialized = false;
-        }
+    fn apply_one_clock_offset(&self, clock: Clock, offset_mhz: i32) -> GpuResult<Option<i32>> {
+        let mut device = self.device()?;
+        device
+            .set_clock_offset(clock, PerformanceState::Zero, offset_mhz)
+            .map_err(|error| policy_error("nvmlDeviceSetClockOffsets", error))?;
+        Ok(device
+            .clock_offset(clock, PerformanceState::Zero)
+            .ok()
+            .map(|offset| offset.clock_offset_mhz))
     }
 }
 
@@ -384,52 +72,47 @@ impl GpuBackend for NvmlBackend {
     }
 
     fn gpu_count(&self) -> GpuResult<u32> {
-        let Some(f) = self.lib.get_count else {
-            return Err(GpuError::other(
-                "NVML device count query is not available",
-                0,
-            ));
-        };
-        let mut count: c_uint = 0;
-        // SAFETY: `count` is a valid out-pointer.
-        let rc = unsafe { f(&mut count) };
-        if rc != 0 {
-            return Err(GpuError::other(
-                format!("NVML device count query failed with error {rc}"),
-                i64::from(rc),
-            ));
-        }
-        Ok(count)
+        self.nvml.device_count().map_err(|error| {
+            let (code, text) = error_parts(error);
+            GpuError::other(format!("NVML device count query failed: {text}"), code)
+        })
     }
 
     fn identity(&self) -> GpuIdentity {
-        let info = self.read_pci_info();
-        let pci_device_id = match &info {
-            Some(i) if i.pci_device_id != 0 => format!("0x{:08X}", i.pci_device_id),
-            _ => String::new(),
+        let Ok(device) = self.device() else {
+            return GpuIdentity {
+                index: self.gpu_index,
+                ..GpuIdentity::default()
+            };
         };
+        let pci = device.pci_info().ok();
         GpuIdentity {
             index: self.gpu_index,
-            name: self.read_device_string(self.lib.get_name, NAME_BUFFER),
-            driver_version: self.driver_version(),
-            pci_bus_id: self.read_pci_bus_id(),
-            pci_device_id,
-            uuid: self.read_device_string(self.lib.get_uuid, UUID_BUFFER),
+            name: device.name().unwrap_or_default(),
+            driver_version: self.nvml.sys_driver_version().unwrap_or_default(),
+            pci_bus_id: pci
+                .as_ref()
+                .map(|info| info.bus_id.clone())
+                .unwrap_or_default(),
+            pci_device_id: pci
+                .filter(|info| info.pci_device_id != 0)
+                .map(|info| format!("0x{:08X}", info.pci_device_id))
+                .unwrap_or_default(),
+            uuid: device.uuid().unwrap_or_default(),
         }
     }
 
     fn gpu_name(&self) -> Option<String> {
-        let name = self.read_device_string(self.lib.get_name, NAME_BUFFER);
-        (!name.is_empty()).then_some(name)
+        self.device()
+            .ok()?
+            .name()
+            .ok()
+            .filter(|name| !name.is_empty())
     }
 
     fn memory_info(&self) -> Option<GpuMemoryInfo> {
-        let f = self.lib.get_mem_info?;
-        // SAFETY: POD struct; all-zero valid.
-        let mut info: NvmlMemoryInfo = unsafe { std::mem::zeroed() };
-        // SAFETY: `device` valid; `info` a correctly-sized nvmlMemory_t.
-        let rc = unsafe { f(self.device, &mut info) };
-        (rc == 0).then_some(GpuMemoryInfo {
+        let info = self.device().ok()?.memory_info().ok()?;
+        Some(GpuMemoryInfo {
             index: self.gpu_index,
             total_bytes: info.total,
             free_bytes: info.free,
@@ -437,134 +120,135 @@ impl GpuBackend for NvmlBackend {
         })
     }
 
+    fn architecture(&self) -> Option<u32> {
+        self.device()
+            .ok()?
+            .architecture()
+            .ok()
+            .map(|architecture| architecture.as_c())
+    }
+
     fn temperature_c(&self) -> GpuResult<f64> {
-        let (rc, temp) = self.call_uuout(self.lib.get_temperature, NVML_TEMPERATURE_GPU);
-        if rc != 0 {
-            return Err(GpuError::nvml("nvmlDeviceGetTemperature", i64::from(rc)));
-        }
-        Ok(f64::from(temp))
+        self.device()?
+            .temperature(TemperatureSensor::Gpu)
+            .map(f64::from)
+            .map_err(|error| runtime_error("nvmlDeviceGetTemperature", error))
     }
 
     fn fan_count(&self) -> GpuResult<u32> {
-        let (rc, count) = self.call_uout(self.lib.get_num_fans);
-        if rc != 0 {
-            return Err(GpuError::nvml("nvmlDeviceGetNumFans", i64::from(rc)));
-        }
-        Ok(count)
+        self.device()?
+            .num_fans()
+            .map_err(|error| runtime_error("nvmlDeviceGetNumFans", error))
     }
 
     fn fan_speed_limits(&self) -> (Option<u32>, Option<u32>) {
-        let Some(f) = self.lib.get_minmax_fan else {
-            return (None, None);
-        };
-        let (rc, min, max) = self.call_uout2(f);
-        if rc == 0 && max >= min {
-            (Some(min), Some(max))
-        } else {
-            (None, None)
+        match self.device().and_then(|device| {
+            device
+                .min_max_fan_speed()
+                .map_err(|error| runtime_error("nvmlDeviceGetMinMaxFanSpeed", error))
+        }) {
+            Ok((min, max)) if max >= min => (Some(min), Some(max)),
+            _ => (None, None),
         }
     }
 
     fn reported_fan_speeds(&self, fan_count: u32) -> Option<Vec<u32>> {
-        let mut speeds = Vec::new();
-        for idx in 0..fan_count {
-            let (rc, speed) = self.call_uuout(self.lib.get_fan_speed_v2, idx);
-            if rc != 0 {
-                speeds.clear();
-                break;
-            }
-            speeds.push(speed);
-        }
-        if !speeds.is_empty() {
-            return Some(speeds);
-        }
-        if fan_count == 1 {
-            let (rc, speed) = self.call_uout(self.lib.get_fan_speed);
-            if rc == 0 {
-                return Some(vec![speed]);
-            }
-        }
-        None
+        let device = self.device().ok()?;
+        let speeds: Result<Vec<_>, _> = (0..fan_count)
+            .map(|index| device.fan_speed(index))
+            .collect();
+        speeds.ok().filter(|values| !values.is_empty())
     }
 
     fn power_draw_w(&self) -> Option<f64> {
-        let (rc, mw) = self.call_uout(self.lib.get_power_usage);
-        (rc == 0).then(|| mw_to_w_float(mw))
+        self.device().ok()?.power_usage().ok().map(mw_to_w_float)
     }
 
     fn gpu_utilization_pct(&self) -> Option<u32> {
-        let f = self.lib.get_util?;
-        // SAFETY: POD struct; all-zero valid.
-        let mut util: NvmlUtilization = unsafe { std::mem::zeroed() };
-        // SAFETY: `device` valid; `util` a correctly-sized nvmlUtilization_t.
-        let rc = unsafe { f(self.device, &mut util) };
-        (rc == 0).then_some(util.gpu)
+        self.device()
+            .ok()?
+            .utilization_rates()
+            .ok()
+            .map(|util| util.gpu)
     }
 
     fn clock_info_mhz(&self, clock_type: ClockType) -> Option<u32> {
-        let (rc, mhz) = self.call_uuout(self.lib.get_clock_info, clock_type.as_uint());
-        (rc == 0).then_some(mhz)
+        self.device()
+            .ok()?
+            .clock_info(wrapper_clock(clock_type))
+            .ok()
     }
 
     fn throttle_reason_mask(&self) -> Option<u64> {
-        let f = self.lib.get_throttle?;
-        let mut mask: std::os::raw::c_ulonglong = 0;
-        // SAFETY: `device` valid; `mask` a valid out-pointer.
-        let rc = unsafe { f(self.device, &mut mask) };
-        (rc == 0).then_some(mask)
+        self.device()
+            .ok()?
+            .current_throttle_reasons()
+            .ok()
+            .map(|reasons| reasons.bits())
     }
 
+    #[allow(deprecated)]
     fn query_power_limits(&self) -> PowerLimits {
-        let (min, max) = match self.lib.get_pm_constraints {
-            Some(f) => {
-                let (rc, min_mw, max_mw) = self.call_uout2(f);
-                if rc == 0 {
-                    (Some(mw_to_w_round(min_mw)), Some(mw_to_w_round(max_mw)))
-                } else {
-                    (None, None)
-                }
-            }
-            None => (None, None),
+        let Ok(device) = self.device() else {
+            return PowerLimits::default();
         };
+        let constraints = device.power_management_limit_constraints().ok();
         PowerLimits {
-            power_limit_w: self.read_power_w_round(self.lib.get_pm_limit),
-            power_limit_default_w: self.read_power_w_round(self.lib.get_pm_default),
-            power_limit_min_w: min,
-            power_limit_max_w: max,
+            power_management_enabled: device.is_power_management_algo_active().ok(),
+            power_limit_w: device.power_management_limit().ok().map(mw_to_w_round),
+            enforced_power_limit_w: device.enforced_power_limit().ok().map(mw_to_w_round),
+            power_limit_default_w: device
+                .power_management_limit_default()
+                .ok()
+                .map(mw_to_w_round),
+            power_limit_min_w: constraints
+                .as_ref()
+                .map(|limits| mw_to_w_round(limits.min_limit)),
+            power_limit_max_w: constraints
+                .as_ref()
+                .map(|limits| mw_to_w_round(limits.max_limit)),
         }
     }
 
     fn apply_power_limit_w(&self, power_limit_w: i64) -> GpuResult<i64> {
-        let Some(f) = self.lib.set_pm_limit else {
-            return Err(GpuError::unavailable("nvmlDeviceSetPowerManagementLimit"));
-        };
-        let target_mw = w_to_mw_round(power_limit_w as f64) as c_uint;
-        let rc = self.call_uin(f, target_mw);
-        if rc != 0 {
-            return Err(self.policy_err("nvmlDeviceSetPowerManagementLimit", i64::from(rc)));
-        }
+        let target_mw = u32::try_from(w_to_mw_round(power_limit_w as f64))
+            .map_err(|_| GpuError::other("power limit is outside the NVML range", 0))?;
+        self.device()?
+            .set_power_management_limit(target_mw)
+            .map_err(|error| policy_error("nvmlDeviceSetPowerManagementLimit", error))?;
         Ok(power_limit_w)
     }
 
     fn enable_persistence_mode(&self) -> GpuResult<()> {
-        let Some(f) = self.lib.set_persistence else {
-            return Err(GpuError::unavailable("nvmlDeviceSetPersistenceMode"));
-        };
-        let rc = self.call_uin(f, NVML_FEATURE_ENABLED);
-        if rc != 0 {
-            return Err(self.policy_err("nvmlDeviceSetPersistenceMode", i64::from(rc)));
-        }
-        Ok(())
+        self.device()?
+            .set_persistent(true)
+            .map_err(|error| policy_error("nvmlDeviceSetPersistenceMode", error))
     }
 
-    fn supported_core_clock_steps_mhz(&self) -> Vec<u32> {
-        let mut steps: Vec<u32> = Vec::new();
-        for mem in self.read_mem_clock_list() {
-            steps.extend(self.read_core_clock_list(mem));
-        }
+    fn supported_memory_clock_steps_mhz(&self) -> Vec<u32> {
+        let mut steps = self
+            .device()
+            .ok()
+            .and_then(|device| device.supported_memory_clocks().ok())
+            .unwrap_or_default();
         steps.sort_unstable();
         steps.dedup();
         steps
+    }
+
+    fn supported_core_clock_steps_mhz(&self) -> Vec<u32> {
+        let Ok(device) = self.device() else {
+            return Vec::new();
+        };
+        let mut nvml_steps = Vec::new();
+        for memory_clock in self.supported_memory_clock_steps_mhz() {
+            if let Ok(clocks) = device.supported_graphics_clocks(memory_clock) {
+                nvml_steps.extend(clocks);
+            }
+        }
+        nvml_steps.sort_unstable();
+        nvml_steps.dedup();
+        nvml_steps
     }
 
     fn apply_locked_core_clock_mhz(
@@ -573,12 +257,12 @@ impl GpuBackend for NvmlBackend {
         prefer_not_above: bool,
         snap_to_supported: bool,
     ) -> GpuResult<SnapResult> {
-        let Some(f) = self.lib.set_locked_clocks else {
-            return Err(GpuError::unavailable("nvmlDeviceSetGpuLockedClocks"));
-        };
         let snap = if snap_to_supported {
-            let steps = self.supported_core_clock_steps_mhz();
-            snap_core_clock_mhz(clock_mhz, &steps, prefer_not_above)
+            snap_core_clock_mhz(
+                clock_mhz,
+                &self.supported_core_clock_steps_mhz(),
+                prefer_not_above,
+            )
         } else {
             SnapResult {
                 requested_clock_mhz: clock_mhz,
@@ -587,11 +271,14 @@ impl GpuBackend for NvmlBackend {
                 supported_steps_mhz: Vec::new(),
             }
         };
-        let applied = snap.applied_clock_mhz as c_uint;
-        let rc = self.call_uuin(f, applied, applied);
-        if rc != 0 {
-            return Err(self.policy_err("nvmlDeviceSetGpuLockedClocks", i64::from(rc)));
-        }
+        let applied = u32::try_from(snap.applied_clock_mhz)
+            .map_err(|_| GpuError::other("locked core clock is outside the NVML range", 0))?;
+        self.device()?
+            .set_gpu_locked_clocks(GpuLockedClocksSetting::Numeric {
+                min_clock_mhz: applied,
+                max_clock_mhz: applied,
+            })
+            .map_err(|error| policy_error("nvmlDeviceSetGpuLockedClocks", error))?;
         Ok(snap)
     }
 
@@ -602,12 +289,13 @@ impl GpuBackend for NvmlBackend {
         prefer_max_not_above: bool,
         snap_to_supported: bool,
     ) -> GpuResult<RangeSnapResult> {
-        let Some(f) = self.lib.set_locked_clocks else {
-            return Err(GpuError::unavailable("nvmlDeviceSetGpuLockedClocks"));
-        };
         let range = if snap_to_supported {
-            let steps = self.supported_core_clock_steps_mhz();
-            snap_core_clock_range(min_clock_mhz, max_clock_mhz, &steps, prefer_max_not_above)
+            snap_core_clock_range(
+                min_clock_mhz,
+                max_clock_mhz,
+                &self.supported_core_clock_steps_mhz(),
+                prefer_max_not_above,
+            )
         } else {
             RangeSnapResult {
                 requested_min_clock_mhz: min_clock_mhz,
@@ -619,56 +307,44 @@ impl GpuBackend for NvmlBackend {
                 supported_steps_mhz: Vec::new(),
             }
         };
-        let rc = self.call_uuin(
-            f,
-            range.applied_min_clock_mhz as c_uint,
-            range.applied_max_clock_mhz as c_uint,
-        );
-        if rc != 0 {
-            return Err(self.policy_err("nvmlDeviceSetGpuLockedClocks", i64::from(rc)));
-        }
+        let min = u32::try_from(range.applied_min_clock_mhz)
+            .map_err(|_| GpuError::other("minimum core clock is outside the NVML range", 0))?;
+        let max = u32::try_from(range.applied_max_clock_mhz)
+            .map_err(|_| GpuError::other("maximum core clock is outside the NVML range", 0))?;
+        self.device()?
+            .set_gpu_locked_clocks(GpuLockedClocksSetting::Numeric {
+                min_clock_mhz: min,
+                max_clock_mhz: max,
+            })
+            .map_err(|error| policy_error("nvmlDeviceSetGpuLockedClocks", error))?;
         Ok(range)
     }
 
     fn reset_locked_core_clocks(&self) -> GpuResult<()> {
-        let Some(f) = self.lib.reset_locked_core else {
-            return Err(GpuError::unavailable("nvmlDeviceResetGpuLockedClocks"));
-        };
-        let rc = self.call_dev(f);
-        if rc != 0 {
-            return Err(self.policy_err("nvmlDeviceResetGpuLockedClocks", i64::from(rc)));
-        }
-        Ok(())
+        self.device()?
+            .reset_gpu_locked_clocks()
+            .map_err(|error| policy_error("nvmlDeviceResetGpuLockedClocks", error))
     }
 
     fn reset_locked_memory_clocks(&self) -> GpuResult<()> {
-        let Some(f) = self.lib.reset_locked_mem else {
-            return Err(GpuError::unavailable("nvmlDeviceResetMemoryLockedClocks"));
-        };
-        let rc = self.call_dev(f);
-        if rc != 0 {
-            return Err(self.policy_err("nvmlDeviceResetMemoryLockedClocks", i64::from(rc)));
-        }
-        Ok(())
+        self.device()?
+            .reset_mem_locked_clocks()
+            .map_err(|error| policy_error("nvmlDeviceResetMemoryLockedClocks", error))
     }
 
     fn clock_offsets(&self) -> ClockOffsets {
         ClockOffsets {
-            gpc_clk_vf_offset_mhz: self
-                .read_offset_or_legacy(NVML_CLOCK_GRAPHICS, self.lib.get_gpc_vf),
-            mem_clk_vf_offset_mhz: self.read_offset_or_legacy(NVML_CLOCK_MEM, self.lib.get_mem_vf),
+            gpc_clk_vf_offset_mhz: self.read_clock_offset(Clock::Graphics),
+            mem_clk_vf_offset_mhz: self.read_clock_offset(Clock::Memory),
         }
     }
 
     fn memory_clock_offset_range_mhz(&self) -> Option<(i32, i32)> {
-        if let Some((get, _)) = self.clock_offset_v2() {
-            return self
-                .read_clock_offset_v2(get, NVML_CLOCK_MEM)
-                .map(|(_, min, max)| (min, max));
-        }
-        let f = self.lib.get_mem_minmax_vf?;
-        let (rc, min, max) = self.call_iout2(f);
-        (rc == 0).then_some((min, max))
+        self.device()
+            .ok()?
+            .clock_offset(Clock::Memory, PerformanceState::Zero)
+            .ok()
+            .map(|offset| (offset.min_clock_offset_mhz, offset.max_clock_offset_mhz))
     }
 
     fn apply_clock_offsets(
@@ -677,74 +353,50 @@ impl GpuBackend for NvmlBackend {
         mem_clk_vf_offset_mhz: Option<i32>,
     ) -> GpuResult<AppliedOffsets> {
         let mut applied = AppliedOffsets::default();
-
         if let Some(gpc) = gpc_clk_vf_offset_mhz {
-            applied.gpc_clk_vf_offset_readback_mhz = self.apply_one_clock_offset(
-                NVML_CLOCK_GRAPHICS,
-                gpc,
-                self.lib.set_gpc_vf,
-                self.lib.get_gpc_vf,
-                "nvmlDeviceSetGpcClkVfOffset",
-            )?;
+            applied.gpc_clk_vf_offset_readback_mhz =
+                self.apply_one_clock_offset(Clock::Graphics, gpc)?;
             applied.gpc_clk_vf_offset_mhz = Some(gpc);
         }
-
-        if let Some(mem) = mem_clk_vf_offset_mhz {
-            // A coarse MEM write WIPES the per-point VF table on BOTH API
-            // families (proven 2026-07-07 on driver 610.43.02: SetClockOffsets
-            // zeroed 61 shaped points, same as the old setter) — the engine's
-            // mem-before-VF ordering stays load-bearing on the new path too.
-            applied.mem_clk_vf_offset_readback_mhz = self.apply_one_clock_offset(
-                NVML_CLOCK_MEM,
-                mem,
-                self.lib.set_mem_vf,
-                self.lib.get_mem_vf,
-                "nvmlDeviceSetMemClkVfOffset",
-            )?;
-            applied.mem_clk_vf_offset_mhz = Some(mem);
+        if let Some(memory) = mem_clk_vf_offset_mhz {
+            // A coarse memory write clears shaped per-point offsets, so the
+            // engine's memory-before-V/F ordering remains load-bearing.
+            applied.mem_clk_vf_offset_readback_mhz =
+                self.apply_one_clock_offset(Clock::Memory, memory)?;
+            applied.mem_clk_vf_offset_mhz = Some(memory);
         }
-
         Ok(applied)
     }
 
     fn set_fan_speed(&self, fan_idx: u32, speed_pct: u32) -> GpuResult<()> {
-        let Some(f) = self.lib.set_fan_speed_v2 else {
-            return Err(GpuError::unavailable("nvmlDeviceSetFanSpeed_v2"));
-        };
-        let rc = self.call_uuin(f, fan_idx, speed_pct);
-        if rc != 0 {
-            return Err(GpuError::nvml(
-                &format!("nvmlDeviceSetFanSpeed_v2 fan {fan_idx}"),
-                i64::from(rc),
-            ));
-        }
-        Ok(())
+        self.device()?
+            .set_fan_speed(fan_idx, speed_pct)
+            .map_err(|error| {
+                runtime_error(&format!("nvmlDeviceSetFanSpeed_v2 fan {fan_idx}"), error)
+            })
     }
 
     fn set_all_fans_speed(&self, fan_count: u32, speed_pct: u32) -> GpuResult<()> {
-        for idx in 0..fan_count {
-            self.set_fan_speed(idx, speed_pct)?;
+        for fan_idx in 0..fan_count {
+            self.set_fan_speed(fan_idx, speed_pct)?;
         }
         Ok(())
     }
 
     fn set_default_fan_speed(&self, fan_idx: u32) -> GpuResult<()> {
-        let Some(f) = self.lib.set_default_fan else {
-            return Err(GpuError::unavailable("nvmlDeviceSetDefaultFanSpeed_v2"));
-        };
-        let rc = self.call_uin(f, fan_idx);
-        if rc != 0 {
-            return Err(GpuError::nvml(
-                &format!("nvmlDeviceSetDefaultFanSpeed_v2 fan {fan_idx}"),
-                i64::from(rc),
-            ));
-        }
-        Ok(())
+        self.device()?
+            .set_default_fan_speed(fan_idx)
+            .map_err(|error| {
+                runtime_error(
+                    &format!("nvmlDeviceSetDefaultFanSpeed_v2 fan {fan_idx}"),
+                    error,
+                )
+            })
     }
 
     fn set_all_fans_default(&self, fan_count: u32) -> GpuResult<()> {
-        for idx in 0..fan_count {
-            self.set_default_fan_speed(idx)?;
+        for fan_idx in 0..fan_count {
+            self.set_default_fan_speed(fan_idx)?;
         }
         Ok(())
     }
@@ -765,13 +417,15 @@ impl GpuBackend for NvmlBackend {
     }
 
     fn refresh_vf_points(&self) -> GpuResult<()> {
-        match &self.vf {
-            Some(vf) => vf.refresh_points(),
-            None => Err(GpuError::other(
-                "hidden NVAPI VF curve is not available on this system",
-                0,
-            )),
-        }
+        self.vf.as_ref().map_or_else(
+            || {
+                Err(GpuError::other(
+                    "hidden NVAPI VF curve is not available on this system",
+                    0,
+                ))
+            },
+            NvapiVfSession::refresh_points,
+        )
     }
 
     fn editable_core_vf_points(&self) -> Vec<VfPoint> {
@@ -795,42 +449,64 @@ impl GpuBackend for NvmlBackend {
     }
 
     fn apply_vf_offsets_khz(&self, offsets: &[(u32, i32)]) -> GpuResult<()> {
-        match &self.vf {
-            Some(vf) => vf.apply_offsets_khz(offsets),
-            None => Err(GpuError::other(
-                "hidden NVAPI VF curve is not available on this system",
-                0,
-            )),
-        }
+        self.vf.as_ref().map_or_else(
+            || {
+                Err(GpuError::other(
+                    "hidden NVAPI VF curve is not available on this system",
+                    0,
+                ))
+            },
+            |vf| vf.apply_offsets_khz(offsets),
+        )
     }
+}
+
+fn wrapper_clock(clock: ClockType) -> Clock {
+    match clock {
+        ClockType::Graphics => Clock::Graphics,
+        ClockType::Sm => Clock::SM,
+        ClockType::Memory => Clock::Memory,
+        ClockType::Video => Clock::Video,
+    }
+}
+
+fn error_parts(error: NvmlError) -> (i64, String) {
+    let text = error.to_string();
+    let code: u32 = error.into();
+    (i64::from(code), text)
+}
+
+fn runtime_error(name: &str, error: NvmlError) -> GpuError {
+    if matches!(
+        &error,
+        NvmlError::FailedToLoadSymbol(_) | NvmlError::FunctionNotFound
+    ) {
+        return GpuError::unavailable(name);
+    }
+    let (code, _) = error_parts(error);
+    GpuError::nvml(name, code)
+}
+
+fn policy_error(name: &str, error: NvmlError) -> GpuError {
+    if matches!(
+        &error,
+        NvmlError::FailedToLoadSymbol(_) | NvmlError::FunctionNotFound
+    ) {
+        return GpuError::unavailable(name);
+    }
+    let (code, text) = error_parts(error);
+    GpuError::nvml_with_text(name, code, &text)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Routing for the coarse-offset methods: the per-pstate `ClockOffsets`
-    /// family only when BOTH its symbols resolved (a set and its read-back
-    /// never mix API families); anything less → the deprecated per-domain
-    /// calls. Pure selection, pinned like the `first_available` chain tests.
     #[test]
-    fn per_pstate_family_requires_both_symbols() {
+    fn wrapper_errors_keep_numeric_policy_shape() {
         assert_eq!(
-            per_pstate_offset_fns(Some("get"), Some("set")),
-            Some(("get", "set"))
-        );
-        assert_eq!(per_pstate_offset_fns(Some("get"), None), None);
-        assert_eq!(per_pstate_offset_fns(None, Some("set")), None);
-        assert_eq!(per_pstate_offset_fns::<&str>(None, None), None);
-    }
-
-    /// A new-API failure relays the same policy-controller error shape the
-    /// Python sweep pattern-matches, just with the modern symbol name.
-    #[test]
-    fn new_api_error_text_keeps_policy_shape() {
-        assert_eq!(
-            GpuError::nvml_with_text("nvmlDeviceSetClockOffsets", 3, "Not Supported").to_string(),
-            "nvmlDeviceSetClockOffsets failed with NVML error 3: Not Supported"
+            policy_error("nvmlDeviceSetClockOffsets", NvmlError::NotSupported).to_string(),
+            "nvmlDeviceSetClockOffsets failed with NVML error 3: the requested operation is not available on the target device"
         );
     }
 }
@@ -839,10 +515,6 @@ mod tests {
 mod smoke {
     use super::*;
 
-    /// Live read-only smoke test against the real GPU. Reads identity, temp,
-    /// clocks, power, voltage, VF summary and min/max offsets, and prints them.
-    /// ABSOLUTELY NO write calls. Run with:
-    ///   cargo test -p penguin-burnerd --lib gpu::backend::smoke -- --ignored --nocapture
     #[test]
     #[ignore = "requires a live NVIDIA GPU; read-only"]
     fn live_read_only() {
@@ -855,49 +527,23 @@ mod smoke {
         println!("pci_device_id  = {}", ident.pci_device_id);
         println!("uuid           = {}", ident.uuid);
         println!("memory_info    = {:?}", backend.memory_info());
+        println!("architecture   = {:?}", backend.architecture());
         println!("temperature_c  = {:?}", backend.temperature_c());
         println!("fan_count      = {:?}", backend.fan_count());
         println!("fan_limits     = {:?}", backend.fan_speed_limits());
-        if let Ok(n) = backend.fan_count() {
-            println!("fan_speeds     = {:?}", backend.reported_fan_speeds(n));
-        }
         println!("power_draw_w   = {:?}", backend.power_draw_w());
         println!("util_pct       = {:?}", backend.gpu_utilization_pct());
-        println!(
-            "clocks(g/s/m/v)= {:?}/{:?}/{:?}/{:?}",
-            backend.clock_info_mhz(ClockType::Graphics),
-            backend.clock_info_mhz(ClockType::Sm),
-            backend.clock_info_mhz(ClockType::Memory),
-            backend.clock_info_mhz(ClockType::Video),
-        );
-        println!("throttle_mask  = {:?}", backend.throttle_reason_mask());
         println!("power_limits   = {:?}", backend.query_power_limits());
         println!("clock_offsets  = {:?}", backend.clock_offsets());
-        println!(
-            "mem_off_range  = {:?}",
-            backend.memory_clock_offset_range_mhz()
-        );
-        // Old-vs-new getter agreement (reads only): the trait methods above go
-        // through GetClockOffsets(P0) when present; these are the legacy reads.
-        println!(
-            "legacy_offsets = gpc={:?} mem={:?}",
-            backend.read_clock_offset(backend.lib.get_gpc_vf),
-            backend.read_clock_offset(backend.lib.get_mem_vf),
-        );
         println!("voltage_uv     = {:?}", backend.read_voltage_uv());
-        println!("vf_available   = {}", backend.vf_curve_available());
         println!("vf_summary     = {:?}", backend.vf_summary());
-        let editable = backend.editable_core_vf_points();
-        println!("vf_editable    = {}", editable.len());
-        if let Some(first) = editable.first() {
-            println!("vf_first_edit  = {first:?}");
-        }
-        let steps = backend.supported_core_clock_steps_mhz();
+        let core_steps = backend.supported_core_clock_steps_mhz();
         println!(
-            "core_steps     = {} (min={:?}, max={:?})",
-            steps.len(),
-            steps.first(),
-            steps.last()
+            "core_steps     = {} (min={:?}, max={:?}, around_2698={:?})",
+            core_steps.len(),
+            core_steps.first(),
+            core_steps.last(),
+            snap_core_clock_mhz(2698, &core_steps, true).applied_clock_mhz,
         );
     }
 }

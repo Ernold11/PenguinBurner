@@ -1,15 +1,10 @@
-"""Coverage for pure overlay telemetry helpers.
-
-Socket-path resolution is env-driven and timing-sample normalization is pure,
-so both are tested without sockets or hardware.
-"""
+"""Coverage for environment-driven overlay latency socket paths."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from overlay.telemetry.samples import normalize_timing_sample
 from overlay.telemetry.sockets import latency_socket_path
 from overlay.telemetry.sockets import latency_socket_paths
 
@@ -47,38 +42,3 @@ def test_socket_paths_adds_home_cache_and_dedupes() -> None:
     assert Path("/run/user/1000/penguin-burner/latency.sock") in paths
     assert Path("/home/penguin/.cache/penguin-burner/latency.sock") in paths
     assert len(paths) == len(set(str(p) for p in paths))  # no duplicates
-
-
-# --- timing-sample normalization ----------------------------------------------
-
-
-def test_normalize_passes_through_non_timing() -> None:
-    sample = {"type": "frame", "value": 1}
-    assert normalize_timing_sample(sample) is sample
-
-
-def test_normalize_derives_gpu_render_span() -> None:
-    out = normalize_timing_sample(
-        {"type": "timing", "gpu_render_start_us": 100, "gpu_render_end_us": 250}
-    )
-    assert out["gpu_render_us"] == 150
-
-
-def test_normalize_derives_render_present_span() -> None:
-    out = normalize_timing_sample(
-        {"type": "timing", "present_start_us": 50, "gpu_render_end_us": 200}
-    )
-    assert out.get("render_present_us") and out["render_present_us"] > 0
-
-
-def test_normalize_keeps_existing_positive_values() -> None:
-    out = normalize_timing_sample(
-        {
-            "type": "timing",
-            "gpu_render_us": 99,
-            "gpu_render_start_us": 100,
-            "gpu_render_end_us": 250,
-        }
-    )
-    # An already-present positive span is not overwritten.
-    assert out["gpu_render_us"] == 99

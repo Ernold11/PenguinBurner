@@ -11,6 +11,7 @@ import subprocess
 import time
 
 from common.penguin_burner_paths import claim_desktop_user_ownership
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 
 from .assets import _validate_demo_name, resolve_q2rtx_executable, resolve_workload
 from .constants import (
@@ -45,11 +46,9 @@ from .process_harness import (
     _wrap_command_for_live_output,
 )
 from .telemetry import (
-    _HiddenNvmlVoltageSession,
     _query_xid_messages_since,
     query_gpu_metrics,
 )
-from .nvml_telemetry import create_nvml_telemetry_session
 from .resolution import resolve_q2rtx_render_resolution
 
 
@@ -449,8 +448,7 @@ def _run_companion_process(
     log_file,
     run_start_monotonic: float,
     cuda_telemetry_samples: list[TelemetrySample],
-    voltage_session: _HiddenNvmlVoltageSession,
-    telemetry_session,
+    gpu_client: DaemonGpuClient,
     section_name: str,
     workload_name: str,
     log_path: Path,
@@ -483,8 +481,7 @@ def _run_companion_process(
             if now_monotonic >= next_sample_monotonic:
                 latest_sample = query_gpu_metrics(
                     config.gpu_index,
-                    voltage_session=voltage_session,
-                    telemetry_session=telemetry_session,
+                    gpu_client=gpu_client,
                 )
                 if latest_sample is not None:
                     latest_sample.elapsed_s = pass_elapsed_s
@@ -582,29 +579,22 @@ def run_cuda_stability_test(config: Q2RTXStabilityConfig) -> Q2RTXStabilityResul
     claim_desktop_user_ownership(log_path)
 
     cuda_telemetry_samples: list[TelemetrySample] = []
-    voltage_session = _HiddenNvmlVoltageSession(config.gpu_index)
-    telemetry_session = create_nvml_telemetry_session(config.gpu_index)
+    gpu_client = DaemonGpuClient(config.gpu_index)
     run_start_monotonic = time.monotonic()
     exit_code = None
     abort_reason = None
-    try:
-        with log_path.open("a", encoding="utf-8", errors="replace") as log_file:
-            exit_code, abort_reason = _run_companion_process(
-                config=config,
-                command=command,
-                log_file=log_file,
-                run_start_monotonic=run_start_monotonic,
-                cuda_telemetry_samples=cuda_telemetry_samples,
-                voltage_session=voltage_session,
-                telemetry_session=telemetry_session,
-                section_name="cuda-compute",
-                workload_name="CUDA compute",
-                log_path=log_path,
-            )
-    finally:
-        if telemetry_session is not None:
-            telemetry_session.close()
-        voltage_session.close()
+    with log_path.open("a", encoding="utf-8", errors="replace") as log_file:
+        exit_code, abort_reason = _run_companion_process(
+            config=config,
+            command=command,
+            log_file=log_file,
+            run_start_monotonic=run_start_monotonic,
+            cuda_telemetry_samples=cuda_telemetry_samples,
+            gpu_client=gpu_client,
+            section_name="cuda-compute",
+            workload_name="CUDA compute",
+            log_path=log_path,
+        )
     observed_duration_s = time.monotonic() - run_start_monotonic
     fatal_output_matches = _scan_output_for_fatal_patterns(log_path)
     xid_messages = _query_xid_messages_since(started_at)
@@ -657,8 +647,7 @@ def _run_benchmark_process(
     runtime_env: dict[str, str],
 ) -> _Q2RTXProcessRun:
     telemetry_samples: list[TelemetrySample] = []
-    voltage_session = _HiddenNvmlVoltageSession(config.gpu_index)
-    telemetry_session = create_nvml_telemetry_session(config.gpu_index)
+    gpu_client = DaemonGpuClient(config.gpu_index)
     selected_gpu = _query_selected_nvidia_gpu(config.gpu_index)
     q2rtx_env = _apply_nvidia_render_offload_env(
         runtime_env,
@@ -821,7 +810,9 @@ def _run_benchmark_process(
                 if (
                     event_closed
                     and process_exit_code is None
-                    and not any(event.get("event") == "done" for event in benchmark_events)
+                    and not any(
+                        event.get("event") == "done" for event in benchmark_events
+                    )
                 ):
                     _terminate_process_group(process)
                     process_exit_code = process.returncode
@@ -842,20 +833,15 @@ def _run_benchmark_process(
                 if now_monotonic >= next_sample_monotonic:
                     sample = query_gpu_metrics(
                         config.gpu_index,
-                        voltage_session=voltage_session,
-                        telemetry_session=telemetry_session,
+                        gpu_client=gpu_client,
                     )
                     if sample is not None:
                         sample.elapsed_s = pass_elapsed_s
                         telemetry_samples.append(sample)
-                    benchmark_summary = _benchmark_summary_from_events(
-                        benchmark_events
-                    )
-                    benchmark_telemetry_samples = (
-                        _benchmark_window_telemetry_samples(
-                            telemetry_samples,
-                            benchmark_summary,
-                        )
+                    benchmark_summary = _benchmark_summary_from_events(benchmark_events)
+                    benchmark_telemetry_samples = _benchmark_window_telemetry_samples(
+                        telemetry_samples,
+                        benchmark_summary,
                     )
                     fatal_output_matches = sorted(fatal_output_matches_seen)
                     net_elapsed_s = (
@@ -955,8 +941,7 @@ def _run_benchmark_process(
                     log_file=log_file,
                     run_start_monotonic=run_start_monotonic,
                     cuda_telemetry_samples=cuda_telemetry_samples,
-                    voltage_session=voltage_session,
-                    telemetry_session=telemetry_session,
+                    gpu_client=gpu_client,
                     section_name=section_name,
                     workload_name=workload_name,
                     log_path=log_path,
@@ -981,9 +966,6 @@ def _run_benchmark_process(
             except OSError:
                 pass
         _terminate_process_group(process)
-        if telemetry_session is not None:
-            telemetry_session.close()
-        voltage_session.close()
 
     if companion_abort_reason and exit_reason == "completed":
         exit_reason = str(companion_abort_reason)
@@ -1094,8 +1076,7 @@ def _run_benchmark_session(
     elif benchmark_summary is None:
         early_failure_reason = "benchmark-summary-missing"
     elif (
-        benchmark_summary.measure_start_elapsed_s is None
-        or not has_measure_start_event
+        benchmark_summary.measure_start_elapsed_s is None or not has_measure_start_event
     ):
         early_failure_reason = "benchmark-measure-start-missing"
     elif (
@@ -1104,11 +1085,9 @@ def _run_benchmark_session(
         or float(benchmark_summary.fps_avg) <= 0.0
     ):
         early_failure_reason = "benchmark-metrics-invalid"
-    elif (
-        benchmark_summary.target_s is not None
-        and float(benchmark_summary.measured_s) + 0.001
-        < float(benchmark_summary.target_s)
-    ):
+    elif benchmark_summary.target_s is not None and float(
+        benchmark_summary.measured_s
+    ) + 0.001 < float(benchmark_summary.target_s):
         early_failure_reason = "benchmark-duration-short"
 
     xid_messages = _query_xid_messages_since(started_at)

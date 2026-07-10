@@ -1,34 +1,18 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any, cast
 
 from auto_uv.gpu import gpu_vf_curve_applier
+from runtime.support import nvidia_runtime_defaults as runtime_defaults
 
 
-def test_open_live_gpu_applier_applies_raised_auto_uv_power_limit(monkeypatch) -> None:
-    logs: list[str] = []
-    controllers: list[FakePolicyController] = []
+_POWER_LIMIT_ERROR = (
+    "nvmlDeviceSetPowerManagementLimit failed with NVML error 3: Not Supported"
+)
 
-    class FakeReader:
-        def refresh_points(self) -> None:
-            return None
 
-    class FakePolicyController:
-        def __init__(self, *, gpu_index: int) -> None:
-            self.gpu_index = int(gpu_index)
-            self.power_limit_calls: list[int] = []
-            controllers.append(self)
-
-        def apply_power_limit_w(self, power_limit_w):
-            self.power_limit_calls.append(int(power_limit_w))
-            return int(power_limit_w)
-
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "create_hidden_vf_curve_reader",
-        lambda gpu_index: FakeReader(),
-    )
+def _patch_applier_environment(monkeypatch, gpu_client_type) -> None:
+    monkeypatch.setattr(gpu_vf_curve_applier, "DaemonGpuClient", gpu_client_type)
     monkeypatch.setattr(
         gpu_vf_curve_applier,
         "reset_nvidia_runtime_defaults",
@@ -38,27 +22,42 @@ def test_open_live_gpu_applier_applies_raised_auto_uv_power_limit(monkeypatch) -
             "power_limit_w": 360,
         },
     )
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "NvmlGpuPolicyController",
-        FakePolicyController,
-    )
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "LiveNvmlVoltageReader",
-        lambda gpu_index: SimpleNamespace(close=lambda: None),
-    )
     monkeypatch.setattr(gpu_vf_curve_applier, "apply_plan", lambda *_args: None)
     monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "assert_zero_runtime_vf_offsets",
-        lambda *_args: None,
+        gpu_vf_curve_applier, "assert_zero_runtime_vf_offsets", lambda *_args: None
     )
+
+
+def _patch_power_environment(monkeypatch, *, error: str | None = None):
+    clients = []
+
+    class FakeGpuClient:
+        def __init__(self, *, gpu_index: int) -> None:
+            self.gpu_index = int(gpu_index)
+            self.power_limit_calls: list[int] = []
+            clients.append(self)
+
+        def refresh_points(self) -> None:
+            pass
+
+        def apply_power_limit_w(self, power_limit_w):
+            self.power_limit_calls.append(int(power_limit_w))
+            if error is not None:
+                raise RuntimeError(error)
+            return int(power_limit_w)
+
+    _patch_applier_environment(monkeypatch, FakeGpuClient)
     monkeypatch.setattr(
         gpu_vf_curve_applier,
         "auto_uv_memory_offset_mhz",
         lambda *_args, **_kwargs: (None, None),
     )
+    return clients
+
+
+def test_open_live_gpu_applier_applies_raised_auto_uv_power_limit(monkeypatch) -> None:
+    logs: list[str] = []
+    controllers = _patch_power_environment(monkeypatch)
 
     applier = gpu_vf_curve_applier.open_live_gpu_vf_curve_applier(
         gpu_index=0,
@@ -85,57 +84,7 @@ def test_open_live_gpu_applier_defers_reduced_auto_uv_power_limit_until_final(
     monkeypatch,
 ) -> None:
     logs: list[str] = []
-    controllers: list[FakePolicyController] = []
-
-    class FakeReader:
-        def refresh_points(self) -> None:
-            return None
-
-    class FakePolicyController:
-        def __init__(self, *, gpu_index: int) -> None:
-            self.gpu_index = int(gpu_index)
-            self.power_limit_calls: list[int] = []
-            controllers.append(self)
-
-        def apply_power_limit_w(self, power_limit_w):
-            self.power_limit_calls.append(int(power_limit_w))
-            return int(power_limit_w)
-
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "create_hidden_vf_curve_reader",
-        lambda gpu_index: FakeReader(),
-    )
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "reset_nvidia_runtime_defaults",
-        lambda **_kwargs: {
-            "plan": [{"index": 0, "voltage_mv": 900, "target_mhz": 2500}],
-            "gpu_name": "NVIDIA GeForce RTX 5080",
-            "power_limit_w": 360,
-        },
-    )
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "NvmlGpuPolicyController",
-        FakePolicyController,
-    )
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "LiveNvmlVoltageReader",
-        lambda gpu_index: SimpleNamespace(close=lambda: None),
-    )
-    monkeypatch.setattr(gpu_vf_curve_applier, "apply_plan", lambda *_args: None)
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "assert_zero_runtime_vf_offsets",
-        lambda *_args: None,
-    )
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "auto_uv_memory_offset_mhz",
-        lambda *_args, **_kwargs: (None, None),
-    )
+    controllers = _patch_power_environment(monkeypatch)
 
     applier = gpu_vf_curve_applier.open_live_gpu_vf_curve_applier(
         gpu_index=0,
@@ -165,60 +114,7 @@ def test_open_live_gpu_applier_continues_when_raised_power_limit_is_rejected(
     monkeypatch,
 ) -> None:
     logs: list[str] = []
-    controllers: list[FakePolicyController] = []
-
-    class FakeReader:
-        def refresh_points(self) -> None:
-            return None
-
-    class FakePolicyController:
-        def __init__(self, *, gpu_index: int) -> None:
-            self.gpu_index = int(gpu_index)
-            self.power_limit_calls: list[int] = []
-            controllers.append(self)
-
-        def apply_power_limit_w(self, power_limit_w):
-            self.power_limit_calls.append(int(power_limit_w))
-            raise RuntimeError(
-                "nvmlDeviceSetPowerManagementLimit failed with NVML error 3: "
-                "Not Supported"
-            )
-
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "create_hidden_vf_curve_reader",
-        lambda gpu_index: FakeReader(),
-    )
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "reset_nvidia_runtime_defaults",
-        lambda **_kwargs: {
-            "plan": [{"index": 0, "voltage_mv": 900, "target_mhz": 2500}],
-            "gpu_name": "NVIDIA GeForce RTX 5080",
-            "power_limit_w": 360,
-        },
-    )
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "NvmlGpuPolicyController",
-        FakePolicyController,
-    )
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "LiveNvmlVoltageReader",
-        lambda gpu_index: SimpleNamespace(close=lambda: None),
-    )
-    monkeypatch.setattr(gpu_vf_curve_applier, "apply_plan", lambda *_args: None)
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "assert_zero_runtime_vf_offsets",
-        lambda *_args: None,
-    )
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "auto_uv_memory_offset_mhz",
-        lambda *_args, **_kwargs: (None, None),
-    )
+    controllers = _patch_power_environment(monkeypatch, error=_POWER_LIMIT_ERROR)
 
     applier = gpu_vf_curve_applier.open_live_gpu_vf_curve_applier(
         gpu_index=0,
@@ -255,9 +151,7 @@ def test_final_power_limit_rejection_is_not_fatal_and_not_saved() -> None:
     policy_controller = FakePolicyController()
     applier = gpu_vf_curve_applier.LiveGpuVfCurveApplier(
         gpu_index=0,
-        reader=object(),
-        policy_controller=cast(Any, policy_controller),
-        live_voltage_reader=cast(Any, SimpleNamespace(close=lambda: None)),
+        gpu=cast(Any, policy_controller),
         runtime_default_plan=[],
         translated_gpu_policy={"power_limit_w": 360},
         baseline_power_limit_w=360,
@@ -278,43 +172,6 @@ def test_final_power_limit_rejection_is_not_fatal_and_not_saved() -> None:
     ]
 
 
-def _patch_applier_environment(monkeypatch, policy_controller_cls) -> None:
-    class FakeReader:
-        def refresh_points(self) -> None:
-            return None
-
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "create_hidden_vf_curve_reader",
-        lambda gpu_index: FakeReader(),
-    )
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "reset_nvidia_runtime_defaults",
-        lambda **_kwargs: {
-            "plan": [{"index": 0, "voltage_mv": 900, "target_mhz": 2500}],
-            "gpu_name": "NVIDIA GeForce RTX 5080",
-            "power_limit_w": 360,
-        },
-    )
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "NvmlGpuPolicyController",
-        policy_controller_cls,
-    )
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "LiveNvmlVoltageReader",
-        lambda gpu_index: SimpleNamespace(close=lambda: None),
-    )
-    monkeypatch.setattr(gpu_vf_curve_applier, "apply_plan", lambda *_args: None)
-    monkeypatch.setattr(
-        gpu_vf_curve_applier,
-        "assert_zero_runtime_vf_offsets",
-        lambda *_args: None,
-    )
-
-
 class _MemoryOffsetPolicyController:
     readback_mhz: int | None = None
 
@@ -324,6 +181,9 @@ class _MemoryOffsetPolicyController:
 
     def get_memory_clock_offset_range_mhz(self):
         return (-2000, 6000)
+
+    def refresh_points(self) -> None:
+        return None
 
     def apply_clock_offsets(self, **kwargs):
         self.clock_offset_calls.append(kwargs)
@@ -355,12 +215,10 @@ def test_open_live_gpu_applier_logs_memory_offset_clamp_and_readback(
         {"mem_clk_vf_offset_mhz": 6000}
     ]
     assert (
-        "Auto-UV memory offset: requested 8000 MHz clamped to 6000 MHz "
-        "(limit 6000 MHz)"
+        "Auto-UV memory offset: requested 8000 MHz clamped to 6000 MHz (limit 6000 MHz)"
     ) in logs
     assert (
-        "Auto-UV memory offset: applied +6000 MHz, "
-        "NVML read-back confirms +6000 MHz"
+        "Auto-UV memory offset: applied +6000 MHz, NVML read-back confirms +6000 MHz"
     ) in logs
 
 
@@ -403,6 +261,67 @@ def test_open_live_gpu_applier_logs_memory_offset_readback_unsupported(
     )
 
     assert (
-        "Auto-UV memory offset: applied +1000 MHz "
-        "(driver does not support read-back)"
+        "Auto-UV memory offset: applied +1000 MHz (driver does not support read-back)"
     ) in logs
+
+
+def test_runtime_defaults_are_derived_from_semantic_daemon_reset(monkeypatch) -> None:
+    logs: list[str] = []
+    monkeypatch.setattr(
+        runtime_defaults,
+        "gpu_reset_defaults",
+        lambda gpu_index: {
+            "reset": True,
+            "gpu_name": "NVIDIA GeForce RTX 5080",
+            "power_limits": {"power_limit_default_w": 360},
+            "points": [
+                {
+                    "index": 12,
+                    "type": 0,
+                    "voltage_based": 1,
+                    "voltage_uv": 900_000,
+                    "base_freq_khz": 2_680_000,
+                    "current_offset_khz": 0,
+                }
+            ],
+        },
+    )
+
+    result = runtime_defaults.reset_nvidia_runtime_defaults(
+        gpu_index=0,
+        log=logs.append,
+    )
+
+    assert result["power_limit_w"] == 360
+    assert result["plan"] == [
+        {
+            "index": 12,
+            "voltage_mv": 900,
+            "base_mhz": 2680,
+            "target_mhz": 2680,
+            "current_offset_mhz": 0,
+            "new_offset_mhz": 0,
+            "preserve_base": False,
+        }
+    ]
+    assert logs == [
+        "Reset defaults through penguin-burnerd: "
+        "gpu=NVIDIA GeForce RTX 5080 points=1 power_limit=360W"
+    ]
+
+
+def test_runtime_defaults_reject_daemon_reset_without_editable_points(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_defaults,
+        "gpu_reset_defaults",
+        lambda gpu_index: {"reset": True, "points": []},
+    )
+
+    try:
+        runtime_defaults.reset_nvidia_runtime_defaults(gpu_index=0)
+    except runtime_defaults.NvidiaRuntimeDefaultsError as exc:
+        assert "no editable V/F points" in str(exc)
+    else:
+        raise AssertionError("missing editable V/F points must fail Auto-UV startup")

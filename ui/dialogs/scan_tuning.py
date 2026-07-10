@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from ..assets import asset_image_path
 from ui.features.tuning.gpu_selection import gpu_choices_with_fallback
 from ui.features.tuning.tuning import AUTO_UV_PRESET_EFFICIENCY
@@ -46,9 +47,32 @@ def select_scan_tuning(
     gpu_choices, selected_gpu_index = gpu_choices_with_fallback(
         selected_index=gpu_index
     )
-    voltage_drop_default = auto_uv_voltage_drop_default(gpu_index=selected_gpu_index)
+    gpu_clients: dict[int, DaemonGpuClient] = {}
+
+    def gpu_client_for(index: int) -> DaemonGpuClient:
+        selected = int(index)
+        if selected not in gpu_clients:
+            gpu_clients[selected] = DaemonGpuClient(selected)
+        return gpu_clients[selected]
+
+    def gpu_name_for(index: int) -> str | None:
+        try:
+            name = gpu_client_for(index).capabilities().identity.name.strip()
+        except Exception:
+            return None
+        return name or None
+
+    selected_gpu_name = next(
+        (
+            choice.name
+            for choice in gpu_choices
+            if int(choice.index) == int(selected_gpu_index)
+        ),
+        None,
+    )
+    voltage_drop_default = auto_uv_voltage_drop_default(gpu_name=selected_gpu_name)
     clock_drop_default = auto_uv_clock_drop_default(
-        gpu_index=selected_gpu_index,
+        gpu_name=selected_gpu_name,
         preset_id=DEFAULT_AUTO_UV_PRESET,
     )
     gpu_combo = QtWidgets.QComboBox()
@@ -93,9 +117,23 @@ def select_scan_tuning(
 
     def sync_gpu_nvml_info() -> None:
         selected = _selected_gpu_index(gpu_combo, selected_gpu_index)
-        info = read_auto_uv_nvml_info(selected)
+        client = gpu_client_for(selected)
+        info = read_auto_uv_nvml_info(selected, gpu_client=client)
         gpu_nvml_info.setText(auto_uv_nvml_info_text(info))
         power_limit_controls["info"] = info
+        floor_lo, floor_hi = auto_uv_voltage_floor_range_mv(
+            gpu_index=selected,
+            gpu_client=client,
+        )
+        voltage_floor_spin.setRange(floor_lo, floor_hi)
+        memory_min_mt_s, memory_max_mt_s = memory_offset_mhz_range(
+            gpu_index=selected,
+            gpu_client=client,
+        )
+        memory_offset_spin.setRange(
+            int(memory_min_mt_s) // 2,
+            int(memory_max_mt_s) // 2,
+        )
         _sync_power_limit_controls(power_limit_controls, info)
         sync_power_limit_default()
 
@@ -198,7 +236,10 @@ def select_scan_tuning(
     # Derive the settable floor from the live V/F curve: lower bound = the knee
     # (lowest voltage with a real boost clock), upper = curve max. Below the knee
     # the card sits on its idle shelf, so exposing e.g. 700 mV was meaningless.
-    floor_lo, floor_hi = auto_uv_voltage_floor_range_mv(gpu_index=selected_gpu_index)
+    floor_lo, floor_hi = auto_uv_voltage_floor_range_mv(
+        gpu_index=selected_gpu_index,
+        gpu_client=gpu_client_for(selected_gpu_index),
+    )
     voltage_floor_spin.setRange(floor_lo, floor_hi)
     voltage_floor_spin.setSuffix(" mV")
     voltage_floor_spin.setSingleStep(5)
@@ -211,7 +252,10 @@ def select_scan_tuning(
     # (MT/s); the realized memory clock moves by half. The user picks the memory
     # clock (MHz) here, so the box works in MHz (half the MT/s range) and the
     # equivalent MT/s is shown alongside. Converted back to MT/s on accept.
-    memory_min_mt_s, memory_max_mt_s = memory_offset_mhz_range()
+    memory_min_mt_s, memory_max_mt_s = memory_offset_mhz_range(
+        gpu_index=selected_gpu_index,
+        gpu_client=gpu_client_for(selected_gpu_index),
+    )
     memory_offset_spin.setRange(int(memory_min_mt_s) // 2, int(memory_max_mt_s) // 2)
     memory_offset_spin.setSuffix(" MHz")
     memory_offset_spin.setSingleStep(25)
@@ -392,7 +436,7 @@ def select_scan_tuning(
             return
         selected = _selected_gpu_index(gpu_combo, selected_gpu_index)
         default = auto_uv_clock_drop_default(
-            gpu_index=selected,
+            gpu_name=gpu_name_for(selected),
             preset_id=checked_preset_id(),
         )
         clock_drop_syncing["active"] = True
@@ -419,7 +463,7 @@ def select_scan_tuning(
             max_w=getattr(info, "power_limit_max_w", None),
             min_w=getattr(info, "power_limit_min_w", None),
             default_w=getattr(info, "power_limit_default_w", None),
-            gpu_index=selected,
+            gpu_name=gpu_name_for(selected),
             preset_id=checked_preset_id(),
         )
         if default.watts is None:
@@ -443,7 +487,9 @@ def select_scan_tuning(
     sync_gpu_nvml_info()
 
     buttons = QtWidgets.QDialogButtonBox()
-    role_enum = getattr(QtWidgets.QDialogButtonBox, "ButtonRole", QtWidgets.QDialogButtonBox)
+    role_enum = getattr(
+        QtWidgets.QDialogButtonBox, "ButtonRole", QtWidgets.QDialogButtonBox
+    )
     standard_enum = getattr(
         QtWidgets.QDialogButtonBox,
         "StandardButton",
@@ -598,7 +644,9 @@ def _advanced_form_layout(*, QtCore, QtWidgets):
     form.setVerticalSpacing(10)
     form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldsStayAtSizeHint)
     form.setFormAlignment(qt_flags(QtCore.Qt, "AlignmentFlag", "AlignLeft", "AlignTop"))
-    form.setLabelAlignment(qt_flags(QtCore.Qt, "AlignmentFlag", "AlignLeft", "AlignVCenter"))
+    form.setLabelAlignment(
+        qt_flags(QtCore.Qt, "AlignmentFlag", "AlignLeft", "AlignVCenter")
+    )
     return form
 
 
@@ -618,7 +666,9 @@ def _double_spin(QtWidgets, minimum: float, maximum: float, value: float, suffix
     return spin
 
 
-def _install_spinbox_enter_commit_filter(*, QtCore, QtWidgets, parent, spinboxes) -> None:
+def _install_spinbox_enter_commit_filter(
+    *, QtCore, QtWidgets, parent, spinboxes
+) -> None:
     event_type = getattr(getattr(QtCore.QEvent, "Type", QtCore.QEvent), "KeyPress")
     key_enum = getattr(QtCore.Qt, "Key", QtCore.Qt)
     enter_keys = {

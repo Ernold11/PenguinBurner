@@ -66,6 +66,7 @@ pub struct MockGpu {
     pub identity: GpuIdentity,
     pub gpu_name: Option<String>,
     pub memory_info: Option<GpuMemoryInfo>,
+    pub architecture: Option<u32>,
 
     pub temperature_c: f64,
     pub fan_count: u32,
@@ -80,6 +81,7 @@ pub struct MockGpu {
     pub throttle_mask: Option<u64>,
 
     pub power_limits: PowerLimits,
+    pub supported_memory_clocks: Vec<u32>,
     pub supported_core_clocks: Vec<u32>,
     pub clock_offsets: ClockOffsets,
     pub mem_offset_range: Option<(i32, i32)>,
@@ -109,6 +111,7 @@ impl Default for MockGpu {
             identity: GpuIdentity::default(),
             gpu_name: None,
             memory_info: None,
+            architecture: None,
             temperature_c: 0.0,
             fan_count: 0,
             fan_limits: (None, None),
@@ -121,6 +124,7 @@ impl Default for MockGpu {
             video_clock_mhz: None,
             throttle_mask: None,
             power_limits: PowerLimits::default(),
+            supported_memory_clocks: Vec::new(),
             supported_core_clocks: Vec::new(),
             clock_offsets: ClockOffsets::default(),
             mem_offset_range: None,
@@ -192,6 +196,10 @@ impl GpuBackend for MockGpu {
         self.memory_info
     }
 
+    fn architecture(&self) -> Option<u32> {
+        self.architecture
+    }
+
     fn temperature_c(&self) -> GpuResult<f64> {
         if let Some(hook) = self.on_temperature.borrow().as_ref() {
             hook();
@@ -247,6 +255,13 @@ impl GpuBackend for MockGpu {
     fn enable_persistence_mode(&self) -> GpuResult<()> {
         self.record(MockOp::EnablePersistence);
         self.fail("enable_persistence_mode")
+    }
+
+    fn supported_memory_clock_steps_mhz(&self) -> Vec<u32> {
+        let mut steps = self.supported_memory_clocks.clone();
+        steps.sort_unstable();
+        steps.dedup();
+        steps
     }
 
     fn supported_core_clock_steps_mhz(&self) -> Vec<u32> {

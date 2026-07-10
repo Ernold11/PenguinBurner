@@ -10,7 +10,7 @@
 
 | # | Finding | Severity | Phase | Status |
 |---|---------|----------|-------|--------|
-| B1 | No guaranteed FIFO drainer → game freeze when the app is closed | Blocker | 1 | **DONE 2026-07-01** — detached per-game drainer + per-launch FIFO + shim drop-on-full ring; in-app reader off by default. Manual matrix pending. |
+| B1 | No guaranteed FIFO drainer → game freeze when the app is closed | Blocker | 1 | **DONE 2026-07-01** — detached per-game drainer + per-launch FIFO + shim drop-on-full ring. Manual matrix pending. |
 | B2 | Shim DLL not built in any release channel (Flatpak/arch/deb/rpm) | Blocker | 2 | **PREPARED 2026-07-01 (all channels, unpublished)** — Flatpak (mingw SDK extension, DLL verified in-app), wheel (EPEL mingw in the cibuildwheel container, DLL verified in-wheel), arch/deb/rpm build-deps, `REQUIRE_NVAPI_SHIM=1` everywhere, marker-source startup diagnostic. Distro packages need one real build each to verify dep names; nothing published yet. |
 | H1 | `_file_contains` 1 MB chunk scan can miss the needle → sidecar destruction | High (latent) | 3 | open |
 | H2 | Bridge pairs markers by frameID only → cross-game mispairing | High | 3 | largely mooted by per-launch FIFOs (one game per pipe); `(pid, frame)` keying still worthwhile |
@@ -32,21 +32,18 @@
 > **Status 2026-07-01: IMPLEMENTED** (plan items 2 + 3, plus per-launch FIFOs).
 > The wrapper spawns `nvapi_marker_bridge` as a detached per-game drainer
 > (`--session-pid`/`--cleanup`); each launch gets its own
-> `nvapi-trace.<sessionpid>.fifo`; the in-app reader is off by default
-> (`PENGUIN_BURNER_INAPP_MARKER_BRIDGE=1` re-enables); the shim's emit path is a
-> ring buffer + writer thread that drops on a stalled pipe instead of blocking.
+> `nvapi-trace.<sessionpid>.fifo`; the shim's emit path is a ring buffer + writer
+> thread that drops on a stalled pipe instead of blocking.
 > See docs/nvapi-shim.md "The freeze hazard". Remaining: the manual validation
 > matrix below (app closed at launch / closed mid-game / started mid-game).
 
-**Finding.** The only drainer of `nvapi-trace.fifo` is `NvapiMarkerBridge`,
-which lives inside the app runtime (`cli/normal_runtime.py:114` →
-`overlay/telemetry/receiver.py:798`). The wrapper redirects the game's stderr
-into the FIFO (`launcher.py:_route_trace_to_fifo`) and the shim writes markers
-to it by path. A FIFO's kernel buffer is 64 KB and the launcher's O_RDWR fd
-keeps it open without consuming; at ~2–5 marker lines (~100 B) per frame a
-Reflex title fills it in seconds. Then the shim's blocking `_write` stalls
-inside `wrap_set_latency_marker` while holding `g_emit_lock` — the game's
-simulation thread freezes until the app is started and drains the pipe.
+**Original finding.** Before the detached drainer existed, the only reader lived
+inside the app runtime. The wrapper redirected the game's stderr into the FIFO
+and the shim wrote markers to it by path. A FIFO's kernel buffer is 64 KB and
+the launcher's O_RDWR fd kept it open without consuming; at ~2–5 marker lines
+(~100 B) per frame a Reflex title filled it in seconds. Then the shim's blocking
+`_write` stalled inside `wrap_set_latency_marker` while holding `g_emit_lock` —
+the game's simulation thread froze until the app started and drained the pipe.
 The wrapper lives permanently in Steam launch options, so "game launched while
 PenguinBurner is closed" is a normal average-user state. `d992f18` made the
 redirect default-on for every wrapped launch (the wrapper setdefaults the

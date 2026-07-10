@@ -9,7 +9,7 @@ import argparse
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODES
-from drivers.nvidia.nvml_gpu_policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
+from integrations.afterburner.policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from common.penguin_burner_paths import default_runtime_config_path
 from runtime.support.runtime_service import DEFAULT_JOURNAL_HOURS
 
@@ -24,9 +24,7 @@ def parse_arguments(argv):
     parser = argparse.ArgumentParser(
         prog="penguin_burner.py",
         usage="penguin_burner.py [options]",
-        description=(
-            "PenguinBurner Auto-UV scan and runtime profile utility."
-        ),
+        description=("PenguinBurner Auto-UV scan and runtime profile utility."),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 

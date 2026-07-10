@@ -9,7 +9,7 @@ import struct
 from collections import Counter
 from pathlib import Path
 
-from drivers.nvidia.nvml_identity import query_nvml_gpu_identities
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from common.penguin_burner_paths import (
     afterburner_global_profile,
     default_afterburner_device_profile,
@@ -52,7 +52,11 @@ def _parse_afterburner_device_profile_name(path):
 
 def _detect_active_nvidia_gpus():
     detected = []
-    for identity in query_nvml_gpu_identities():
+    try:
+        identities = DaemonGpuClient.discover_identities()
+    except Exception:
+        identities = []
+    for identity in identities:
         pci_device_id = _parse_pci_device_id(identity.pci_device_id)
         bus_decimal = _bus_decimal_from_pci_bus_id(identity.pci_bus_id)
         if pci_device_id is None or bus_decimal is None:

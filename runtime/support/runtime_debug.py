@@ -9,7 +9,7 @@ import time
 import traceback
 from pathlib import Path
 
-from drivers.nvidia.nvml_identity import NvmlIdentitySession
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 
 DEBUG_LOG_ENABLED = False
 DEBUG_LOG_PATH = None
@@ -252,23 +252,18 @@ def _debug_log_runtime_environment():
     )
 
     try:
-        identity_session = NvmlIdentitySession()
+        identities = DaemonGpuClient.discover_identities()
+        debug_log(f"nvml-gpu-query count={len(identities)}")
+        for identity in identities:
+            debug_log(
+                "nvml-gpu="
+                f"index={identity.index} "
+                f"name={identity.name} "
+                f"driver={identity.driver_version} "
+                f"pci_bus_id={identity.pci_bus_id}"
+            )
     except Exception as exc:
         debug_exception("failed to query NVML GPU metadata", exc)
-    else:
-        try:
-            identities = identity_session.identities()
-            debug_log(f"nvml-gpu-query count={len(identities)}")
-            for identity in identities:
-                debug_log(
-                    "nvml-gpu="
-                    f"index={identity.index} "
-                    f"name={identity.name} "
-                    f"driver={identity.driver_version} "
-                    f"pci_bus_id={identity.pci_bus_id}"
-                )
-        finally:
-            identity_session.close()
 
 
 def debug_effective_runtime_options(*, config_path, gpu_index, auto_uv_runtime_options):

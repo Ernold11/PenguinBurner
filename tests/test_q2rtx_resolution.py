@@ -16,12 +16,18 @@ def _memory(total_bytes: int):
     )
 
 
-def test_auto_resolution_uses_1440p_at_8gib_or_less(monkeypatch) -> None:
+def _patch_memory(monkeypatch, memory) -> None:
     monkeypatch.setattr(
         q2rtx_resolution,
-        "query_nvml_gpu_memory_info",
-        lambda _gpu_index: _memory(8 * 1024**3),
+        "DaemonGpuClient",
+        lambda _gpu_index: SimpleNamespace(
+            capabilities=lambda: SimpleNamespace(memory=memory)
+        ),
     )
+
+
+def test_auto_resolution_uses_1440p_at_8gib_or_less(monkeypatch) -> None:
+    _patch_memory(monkeypatch, _memory(8 * 1024**3))
 
     choice = q2rtx_resolution.resolve_q2rtx_render_resolution(gpu_index=0)
 
@@ -31,11 +37,7 @@ def test_auto_resolution_uses_1440p_at_8gib_or_less(monkeypatch) -> None:
 
 
 def test_auto_resolution_uses_4k_above_8gib(monkeypatch) -> None:
-    monkeypatch.setattr(
-        q2rtx_resolution,
-        "query_nvml_gpu_memory_info",
-        lambda _gpu_index: _memory(8 * 1024**3 + 1),
-    )
+    _patch_memory(monkeypatch, _memory(8 * 1024**3 + 1))
 
     choice = q2rtx_resolution.resolve_q2rtx_render_resolution(gpu_index=0)
 
@@ -45,11 +47,7 @@ def test_auto_resolution_uses_4k_above_8gib(monkeypatch) -> None:
 
 
 def test_auto_resolution_falls_back_to_4k_when_vram_unknown(monkeypatch) -> None:
-    monkeypatch.setattr(
-        q2rtx_resolution,
-        "query_nvml_gpu_memory_info",
-        lambda _gpu_index: None,
-    )
+    _patch_memory(monkeypatch, None)
 
     choice = q2rtx_resolution.resolve_q2rtx_render_resolution(gpu_index=0)
 
@@ -59,11 +57,7 @@ def test_auto_resolution_falls_back_to_4k_when_vram_unknown(monkeypatch) -> None
 
 
 def test_manual_resolution_overrides_vram_auto(monkeypatch) -> None:
-    monkeypatch.setattr(
-        q2rtx_resolution,
-        "query_nvml_gpu_memory_info",
-        lambda _gpu_index: _memory(8 * 1024**3),
-    )
+    _patch_memory(monkeypatch, _memory(8 * 1024**3))
 
     choice = q2rtx_resolution.resolve_q2rtx_render_resolution(
         gpu_index=0,
@@ -77,11 +71,7 @@ def test_manual_resolution_overrides_vram_auto(monkeypatch) -> None:
 
 
 def test_standalone_q2rtx_cli_defaults_to_vram_auto(monkeypatch) -> None:
-    monkeypatch.setattr(
-        q2rtx_resolution,
-        "query_nvml_gpu_memory_info",
-        lambda _gpu_index: _memory(8 * 1024**3),
-    )
+    _patch_memory(monkeypatch, _memory(8 * 1024**3))
     args = q2rtx_cli.parse_q2rtx_stability_args([])
 
     config = q2rtx_cli.config_from_args(args)

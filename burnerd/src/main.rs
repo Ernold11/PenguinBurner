@@ -12,13 +12,14 @@ mod supervisor;
 
 use std::env;
 use std::fs;
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+use sd_notify::NotifyState;
+use signal_hook::consts::{SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
 
 use supervisor::Supervisor;
 
@@ -30,14 +31,6 @@ fn main() {
 }
 
 fn run() -> i32 {
-    // Block SIGINT/SIGTERM before ANY thread is spawned. Threads inherit the
-    // signal mask at spawn, and the sigwait design only works when every other
-    // thread blocks these signals: a thread spawned earlier (the autostart
-    // engine and everything it spawns) would receive a process-directed SIGTERM
-    // directly and kill the process with NO cleanup — no fan-auto restore, no
-    // clock-lock release, no socket unlink.
-    block_termination_signals();
-
     let socket_path = match parse_args() {
         Ok(path) => path,
         Err(message) => {
@@ -51,6 +44,16 @@ fn run() -> i32 {
         env!("CARGO_PKG_VERSION")
     ));
 
+    // Register before spawning the autostart engine so every termination
+    // signal is routed to the cleanup thread.
+    let signals = match Signals::new([SIGINT, SIGTERM]) {
+        Ok(signals) => signals,
+        Err(err) => {
+            logging::error(&format!("failed to register termination signals: {err}"));
+            return 1;
+        }
+    };
+
     let sup = Arc::new(Mutex::new(Supervisor::new()));
 
     // Start the persisted runtime profile before binding the socket (parity with
@@ -63,7 +66,7 @@ fn run() -> i32 {
         let socket_path = socket_path.clone();
         thread::Builder::new()
             .name("penguin-burner-signals".to_string())
-            .spawn(move || wait_and_shutdown(&sup, &socket_path))
+            .spawn(move || wait_and_shutdown(signals, &sup, &socket_path))
             .expect("spawn signal thread");
     }
 
@@ -76,14 +79,11 @@ fn run() -> i32 {
     };
     logging::info(&format!("listening on {}", socket_path.display()));
 
-    sd_notify("READY=1");
-    {
-        let sup = sup.clone();
-        thread::Builder::new()
-            .name("penguin-burner-watchdog".to_string())
-            .spawn(move || watchdog_loop(&sup))
-            .expect("spawn watchdog thread");
-    }
+    let _ = sd_notify::notify(&[NotifyState::Ready]);
+    thread::Builder::new()
+        .name("penguin-burner-watchdog".to_string())
+        .spawn(watchdog_loop)
+        .expect("spawn watchdog thread");
 
     // Blocks forever; the process exits via the signal thread.
     server::serve(listener, sup);
@@ -113,35 +113,10 @@ fn parse_args() -> Result<PathBuf, String> {
 
 // --- signal handling ---------------------------------------------------------
 
-fn termination_sigset() -> libc::sigset_t {
-    // SAFETY: sigemptyset/sigaddset operate on the owned, zeroed set.
-    unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, libc::SIGINT);
-        libc::sigaddset(&mut set, libc::SIGTERM);
-        set
-    }
-}
-
-/// Block SIGINT/SIGTERM in every thread so only the dedicated `sigwait` thread
-/// receives them (clean cleanup runs in normal thread context, not a handler).
-fn block_termination_signals() {
-    let set = termination_sigset();
-    // SAFETY: standard process-wide signal-mask update.
-    unsafe {
-        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
-    }
-}
-
-fn wait_and_shutdown(sup: &Arc<Mutex<Supervisor>>, socket_path: &Path) -> ! {
-    let set = termination_sigset();
-    let mut received: libc::c_int = 0;
-    // SAFETY: `set` and `received` are valid for the call.
-    unsafe {
-        libc::sigwait(&set, &mut received);
-    }
+fn wait_and_shutdown(mut signals: Signals, sup: &Arc<Mutex<Supervisor>>, socket_path: &Path) -> ! {
+    let received = signals.forever().next().unwrap_or(SIGTERM);
     logging::info(&format!("received signal {received}, shutting down"));
+    let _ = sd_notify::notify(&[NotifyState::Stopping]);
     supervisor::shutdown(sup);
     let _ = fs::remove_file(socket_path);
     std::process::exit(0);
@@ -149,40 +124,17 @@ fn wait_and_shutdown(sup: &Arc<Mutex<Supervisor>>, socket_path: &Path) -> ! {
 
 // --- systemd sd_notify + watchdog -------------------------------------------
 
-fn watchdog_loop(sup: &Arc<Mutex<Supervisor>>) {
+fn watchdog_loop() {
     if env::var_os("NOTIFY_SOCKET").is_none() {
         return;
     }
     loop {
         thread::sleep(WATCHDOG_INTERVAL);
-        // Health = the supervisor mutex is acquirable (not wedged mid-operation).
-        let healthy = !matches!(sup.try_lock(), Err(std::sync::TryLockError::WouldBlock));
-        if healthy {
-            sd_notify("WATCHDOG=1");
-        }
-    }
-}
-
-/// `sd_notify` datagram via std (no libsystemd). Best-effort — every failure is
-/// a silent no-op; supports both filesystem and abstract (`@` or NUL prefix)
-/// `$NOTIFY_SOCKET` addresses.
-fn sd_notify(message: &str) {
-    let address = match env::var_os("NOTIFY_SOCKET") {
-        Some(value) if !value.is_empty() => value,
-        _ => return,
-    };
-    let raw = address.as_bytes();
-    let Ok(socket) = UnixDatagram::unbound() else {
-        return;
-    };
-    if matches!(raw.first(), Some(&b'@') | Some(&0)) {
-        // Abstract namespace: strip the marker byte; the kernel address is a
-        // leading NUL plus the name, which `from_abstract_name` builds for us.
-        let Ok(addr) = SocketAddr::from_abstract_name(&raw[1..]) else {
-            return;
-        };
-        let _ = socket.send_to_addr(message.as_bytes(), &addr);
-    } else {
-        let _ = socket.send_to(message.as_bytes(), Path::new(&address));
+        // Runtime apply is a bounded synchronous transaction and may hold the
+        // supervisor lock during slow driver readback. That is healthy work,
+        // not a daemon hang. Engine initialization has its own timeout and the
+        // supervisor retains a timed-out writer, so the process watchdog only
+        // reports process/thread liveness here.
+        let _ = sd_notify::notify(&[NotifyState::Watchdog]);
     }
 }

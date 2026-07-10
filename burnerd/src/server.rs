@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 use serde_json::Value;
 
 use crate::api::{self, StreamError};
@@ -189,22 +190,7 @@ fn peer_uid_allowed(stream: &UnixStream) -> bool {
 /// Read the connecting peer's uid via SO_PEERCRED (mirrors the Python daemon's
 /// `struct.unpack("3i", ...)` on the same option).
 fn peer_uid(stream: &UnixStream) -> Option<u32> {
-    use std::os::unix::io::AsRawFd;
-    // SAFETY: an all-zero ucred is a valid initial value; it is filled below.
-    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: getsockopt writes a ucred of `len` bytes into `cred`.
-    let rc = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            &mut cred as *mut libc::ucred as *mut libc::c_void,
-            &mut len,
-        )
-    };
-    if rc != 0 {
-        return None;
-    }
-    Some(cred.uid as u32)
+    getsockopt(stream, PeerCredentials)
+        .ok()
+        .map(|credentials| credentials.uid())
 }

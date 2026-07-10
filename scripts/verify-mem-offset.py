@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """Manual diagnostic for issue #20: does the memory-clock V/F offset actually land?
 
-The production apply path (``NvmlGpuPolicyController.apply_clock_offsets``) only
+The production apply path (``DaemonGpuClient.apply_clock_offsets``) only
 checks the NVML *return code* — it never reads the offset back, so a driver that
 returns NVML_SUCCESS while silently clamping/ignoring the request is
 indistinguishable from success. This script closes that gap: it applies the
 value and reads it straight back with ``nvmlDeviceGetMemClkVfOffset``, and it
 shows the driver's own min/max window plus PenguinBurner's app-level clamp.
 
-Run ON the affected GPU (needs libnvidia-ml + write perms, i.e. root or the
-nvidia coolbits/persistence setup you normally use):
+Run on the affected GPU with ``penguin-burnerd`` active:
 
-    sudo python3 scripts/verify-mem-offset.py                 # probe only, no writes
-    sudo python3 scripts/verify-mem-offset.py --apply 1000    # apply +1000 then read back
-    sudo python3 scripts/verify-mem-offset.py --gpu 0 --apply 2000
+    python3 scripts/verify-mem-offset.py                 # probe only, no writes
+    python3 scripts/verify-mem-offset.py --apply 1000    # apply +1000 then read back
+    python3 scripts/verify-mem-offset.py --gpu 0 --apply 2000
 
 It restores the offset to whatever it was before (or 0) on exit. This file is a
 throwaway diagnostic; delete it once #20 is understood.
@@ -27,10 +26,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from drivers.nvidia.nvml_clock import NvmlClockSession  # noqa: E402
-from drivers.nvidia.nvml_gpu_policy import (  # noqa: E402
+from drivers.nvidia.daemon_gpu import DaemonGpuClient  # noqa: E402
+from integrations.afterburner.policy import (  # noqa: E402
     MAX_AFTERBURNER_MEM_OFFSET_MHZ,
-    NvmlGpuPolicyController,
 )
 
 
@@ -57,44 +55,62 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    controller = NvmlGpuPolicyController(gpu_index=args.gpu)
-    clocks = NvmlClockSession(args.gpu)
+    controller = DaemonGpuClient(gpu_index=args.gpu)
+    before: int | None = None
+    restore_needed = False
     try:
-        name = controller.query_gpu_name() or "<unknown>"
+        capabilities = controller.capabilities()
+        name = capabilities.identity.name or "<unknown>"
         driver_range = None
         try:
-            driver_range = controller.get_memory_clock_offset_range_mhz()
+            driver_range = capabilities.memory_clock_offset_range_mhz
         except Exception as exc:  # noqa: BLE001
             print(f"  get_memory_clock_offset_range_mhz raised: {exc}")
-        before = controller.get_clock_offsets().get("mem_clk_vf_offset_mhz")
+        before = capabilities.clock_offsets.memory_mhz
 
         print(f"GPU {args.gpu}: {name}")
-        print(f"  app cap (MAX_AFTERBURNER_MEM_OFFSET_MHZ) : {MAX_AFTERBURNER_MEM_OFFSET_MHZ}")
+        print(
+            f"  app cap (MAX_AFTERBURNER_MEM_OFFSET_MHZ) : {MAX_AFTERBURNER_MEM_OFFSET_MHZ}"
+        )
         print(
             "  driver range (nvmlDeviceGetMemClkMinMaxVfOffset): "
-            + (f"min={driver_range[0]} max={driver_range[1]}" if driver_range else "UNSUPPORTED / None")
+            + (
+                f"min={driver_range[0]} max={driver_range[1]}"
+                if driver_range
+                else "UNSUPPORTED / None"
+            )
         )
         print(f"  current mem VF offset (read back)        : {before}")
-        print(f"  current MEM clock (idle unless loaded)   : {clocks.clock_info_mhz(2)} MHz")
+        memory_clock = controller.telemetry(refresh=True).clocks.memory_mhz
+        print(f"  current MEM clock (idle unless loaded)   : {memory_clock} MHz")
 
         if args.apply is None:
-            print("\nProbe only (no --apply). What the app WOULD do for a few requests:")
+            print(
+                "\nProbe only (no --apply). What the app WOULD do for a few requests:"
+            )
             for raw in (500, 1000, 2000, 3000):
                 clamped, eff_max = _app_clamp(raw, driver_range)
                 note = "" if clamped == raw else "  <-- CLAMPED"
-                print(f"    request {raw:>4} -> applies {clamped:>4} (effective_max={eff_max}){note}")
+                print(
+                    f"    request {raw:>4} -> applies {clamped:>4} (effective_max={eff_max}){note}"
+                )
             return 0
 
         clamped, eff_max = _app_clamp(args.apply, driver_range)
-        print(f"\nRequested {args.apply} MHz -> app would clamp to {clamped} MHz (effective_max={eff_max})")
-        print(f"Applying RAW {args.apply} MHz via nvmlDeviceSetMemClkVfOffset (bypassing app clamp)...")
+        print(
+            f"\nRequested {args.apply} MHz -> app would clamp to {clamped} MHz (effective_max={eff_max})"
+        )
+        print(
+            f"Applying RAW {args.apply} MHz via nvmlDeviceSetMemClkVfOffset (bypassing app clamp)..."
+        )
+        restore_needed = True
         try:
             controller.apply_clock_offsets(mem_clk_vf_offset_mhz=int(args.apply))
             print("  Set call returned NVML_SUCCESS")
         except Exception as exc:  # noqa: BLE001
             print(f"  Set call FAILED: {exc}")
 
-        readback = controller.get_clock_offsets().get("mem_clk_vf_offset_mhz")
+        readback = controller.capabilities().clock_offsets.memory_mhz
         print(f"  read back after apply                    : {readback}")
         if readback == args.apply:
             verdict = "driver ACCEPTED the full offset"
@@ -103,14 +119,14 @@ def main() -> int:
         else:
             verdict = f"driver CLAMPED it to {readback}"
         print(f"  verdict                                  : {verdict}")
-        print(f"  MEM clock now (idle unless loaded)       : {clocks.clock_info_mhz(2)} MHz")
+        memory_clock = controller.telemetry(refresh=True).clocks.memory_mhz
+        print(f"  MEM clock now (idle unless loaded)       : {memory_clock} MHz")
 
-        restore = int(before) if before is not None else 0
-        controller.apply_clock_offsets(mem_clk_vf_offset_mhz=restore)
-        print(f"  restored offset to {restore}")
     finally:
-        clocks.close()
-        controller.close()
+        if restore_needed:
+            restore = int(before) if before is not None else 0
+            controller.apply_clock_offsets(mem_clk_vf_offset_mhz=restore)
+            print(f"  restored offset to {restore}")
 
     print(
         "\nCAVEATS:\n"

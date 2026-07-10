@@ -6,12 +6,14 @@
 //! Python resolution order exactly or files land in the wrong place.
 
 use std::env;
-use std::ffi::{CStr, CString, OsStr};
+use std::ffi::{CString, OsStr};
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Component, Path, PathBuf};
+
+use nix::unistd::{Uid, User};
 
 /// The peercred-gate uid the systemd unit sets — also the fallback drop target
 /// for the scan/verification child (`scan.rs`), so the name lives once.
@@ -37,68 +39,26 @@ pub(crate) struct PwEntry {
     pub gid: u32,
 }
 
-/// Run a reentrant passwd lookup (`getpw*_r`), growing the buffer on `ERANGE`.
-/// `call(pwd, buf, len, result)` performs the actual `getpwnam_r`/`getpwuid_r`.
-fn pw_lookup(
-    mut call: impl FnMut(
-        *mut libc::passwd,
-        *mut libc::c_char,
-        usize,
-        *mut *mut libc::passwd,
-    ) -> libc::c_int,
-) -> Option<PwEntry> {
-    let mut buf = vec![0u8; 4096];
-    loop {
-        // SAFETY: an all-zero passwd is a valid initial value.
-        let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
-        let mut result: *mut libc::passwd = std::ptr::null_mut();
-        let rc = call(
-            &mut pwd,
-            buf.as_mut_ptr() as *mut libc::c_char,
-            buf.len(),
-            &mut result,
-        );
-        if rc == libc::ERANGE {
-            buf.resize(buf.len() * 2, 0);
-            continue;
-        }
-        if rc != 0 || result.is_null() {
-            return None;
-        }
-        // glibc always fills pw_dir/pw_name, but a broken third-party NSS module
-        // may return NULL — dereferencing that would be UB in a root daemon.
-        if pwd.pw_dir.is_null() || pwd.pw_name.is_null() {
-            return None;
-        }
-        // SAFETY: pw_dir/pw_name are non-NULL (checked above) and point at
-        // NUL-terminated C strings backed by `buf`, which is still alive.
-        let dir = unsafe { CStr::from_ptr(pwd.pw_dir) };
-        // SAFETY: same.
-        let name = unsafe { CStr::from_ptr(pwd.pw_name) };
-        return Some(PwEntry {
-            name: String::from_utf8_lossy(name.to_bytes()).into_owned(),
-            dir: PathBuf::from(OsStr::from_bytes(dir.to_bytes())),
-            uid: pwd.pw_uid,
-            gid: pwd.pw_gid,
-        });
+fn pw_entry(user: User) -> PwEntry {
+    PwEntry {
+        name: user.name,
+        dir: user.dir,
+        uid: user.uid.as_raw(),
+        gid: user.gid.as_raw(),
     }
 }
 
 /// Look up a passwd entry by name (`pwd.getpwnam(...)`).
 pub(crate) fn pw_by_name(name: &str) -> Option<PwEntry> {
-    let c_name = CString::new(name).ok()?;
-    pw_lookup(|pwd, buf, len, result| {
-        // SAFETY: all pointers/lengths are valid for the call.
-        unsafe { libc::getpwnam_r(c_name.as_ptr(), pwd, buf, len, result) }
-    })
+    User::from_name(name).ok().flatten().map(pw_entry)
 }
 
 /// Look up a passwd entry by uid (`pwd.getpwuid(...)`).
 pub(crate) fn pw_by_uid(uid: u32) -> Option<PwEntry> {
-    pw_lookup(|pwd, buf, len, result| {
-        // SAFETY: all pointers/lengths are valid for the call.
-        unsafe { libc::getpwuid_r(uid as libc::uid_t, pwd, buf, len, result) }
-    })
+    User::from_uid(Uid::from_raw(uid))
+        .ok()
+        .flatten()
+        .map(pw_entry)
 }
 
 /// Equivalent of `Path.home()` == `os.path.expanduser("~")`: `$HOME` if present,
@@ -107,8 +67,7 @@ fn home_fallback() -> PathBuf {
     if let Some(home) = env::var_os("HOME") {
         return PathBuf::from(home);
     }
-    // SAFETY: getuid is always safe.
-    let uid = unsafe { libc::getuid() };
+    let uid = Uid::current().as_raw();
     pw_by_uid(uid)
         .map(|e| e.dir)
         .unwrap_or_else(|| PathBuf::from("/"))
@@ -283,8 +242,7 @@ fn clear_marker(path: &Path) -> io::Result<()> {
 // files back to it. Shared by the telemetry writer and the latency receiver.
 
 pub(crate) fn geteuid_is_root() -> bool {
-    // SAFETY: geteuid is always safe.
-    unsafe { libc::geteuid() == 0 }
+    Uid::effective().is_root()
 }
 
 fn parse_positive_int(text: &str) -> Option<u32> {
@@ -424,8 +382,8 @@ const OPEN_DIR_FLAGS: libc::c_int =
     libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_RDONLY;
 
 fn open_optional_dir_at(parent: &fs::File, name: &OsStr) -> Result<Option<fs::File>, String> {
-    let name = CString::new(name.as_bytes())
-        .map_err(|_| "directory name contains NUL".to_string())?;
+    let name =
+        CString::new(name.as_bytes()).map_err(|_| "directory name contains NUL".to_string())?;
     // SAFETY: openat on an owned directory fd with a NUL-terminated relative name.
     let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), OPEN_DIR_FLAGS) };
     if fd >= 0 {
@@ -451,8 +409,7 @@ fn directory_owner_uid(dir: &fs::File) -> io::Result<u32> {
 }
 
 fn require_directory_owner(dir: &fs::File, uid: u32, label: &str) -> Result<(), String> {
-    let owner =
-        directory_owner_uid(dir).map_err(|err| format!("cannot inspect {label}: {err}"))?;
+    let owner = directory_owner_uid(dir).map_err(|err| format!("cannot inspect {label}: {err}"))?;
     if owner == uid {
         Ok(())
     } else {
@@ -508,8 +465,7 @@ fn write_marker_at(
     uid: u32,
     gid: u32,
 ) -> Result<(), String> {
-    let name = CString::new(name.as_bytes())
-        .map_err(|_| "marker name contains NUL".to_string())?;
+    let name = CString::new(name.as_bytes()).map_err(|_| "marker name contains NUL".to_string())?;
     let temp = CString::new(format!(".{}.tmp", name.to_string_lossy()))
         .map_err(|_| "temporary marker name contains NUL".to_string())?;
     // A fixed temporary name is safe here: unlinkat/renameat never follow its
@@ -518,15 +474,13 @@ fn write_marker_at(
     unsafe {
         libc::unlinkat(config_dir.as_raw_fd(), temp.as_ptr(), 0);
     }
+    // SAFETY: `directory` is an owned NUL-terminated path and all flags/mode
+    // are valid for Linux open(2); the returned fd is immediately wrapped.
     let fd = unsafe {
         libc::openat(
             config_dir.as_raw_fd(),
             temp.as_ptr(),
-            libc::O_WRONLY
-                | libc::O_CREAT
-                | libc::O_EXCL
-                | libc::O_NOFOLLOW
-                | libc::O_CLOEXEC,
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             0o600,
         )
     };
@@ -766,11 +720,7 @@ mod tests {
 
         let victim_file = root.join("must-not-be-overwritten");
         fs::write(&victim_file, "precious").unwrap();
-        symlink(
-            &victim_file,
-            config_dir_path.join("auto-uv-stop-requested"),
-        )
-        .unwrap();
+        symlink(&victim_file, config_dir_path.join("auto-uv-stop-requested")).unwrap();
         write_marker_at(
             &config_dir,
             OsStr::new("auto-uv-stop-requested"),

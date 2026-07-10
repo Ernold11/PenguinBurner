@@ -6,10 +6,10 @@ import ctypes
 
 from runtime.daemon_client import gpu_apply_vf_offsets
 
+from .daemon_gpu import DaemonGpuClient
 from .hidden_nvapi_gpu_selection import (
     pci_bus_number_from_bus_id,
 )
-from .nvml_identity import query_nvml_pci_bus_id
 
 
 NvAPI_Status = ctypes.c_int32
@@ -98,6 +98,13 @@ class ClockClientClkVfPointsControlV1(ctypes.Structure):
     ]
 
 
+def _daemon_pci_bus_id(gpu_index: int) -> str:
+    try:
+        return DaemonGpuClient(gpu_index).capabilities().identity.pci_bus_id
+    except Exception:
+        return ""
+
+
 class HiddenNvapiVfCurveReader:
     _QUERY_INITIALIZE = 0x0150E828
     _QUERY_UNLOAD = 0xD22BDD7E
@@ -107,14 +114,12 @@ class HiddenNvapiVfCurveReader:
     _QUERY_GET_VF_INFO = 0x507B4B59
     _QUERY_GET_VF_STATUS = 0x21537AD4
     _QUERY_GET_VF_CONTROL = 0x23F1B133
-    _QUERY_SET_VF_CONTROL = 0x0733E009
 
     def __init__(self, gpu_index=0, *, pci_bus_id: str = ""):
         self._gpu_index = int(gpu_index)
-        self._requested_pci_bus_id = (
-            str(pci_bus_id or "").strip()
-            or query_nvml_pci_bus_id(self._gpu_index)
-        )
+        self._requested_pci_bus_id = str(
+            pci_bus_id or ""
+        ).strip() or _daemon_pci_bus_id(self._gpu_index)
         self._requested_bus_number = pci_bus_number_from_bus_id(
             self._requested_pci_bus_id
         )
@@ -153,12 +158,6 @@ class HiddenNvapiVfCurveReader:
         )
         self._get_vf_control = self._query_interface(
             self._QUERY_GET_VF_CONTROL,
-            NvAPI_Status,
-            NvPhysicalGpuHandle,
-            ctypes.POINTER(ClockClientClkVfPointsControlV1),
-        )
-        self._set_vf_control = self._query_interface(
-            self._QUERY_SET_VF_CONTROL,
             NvAPI_Status,
             NvPhysicalGpuHandle,
             ctypes.POINTER(ClockClientClkVfPointsControlV1),
@@ -339,24 +338,6 @@ class HiddenNvapiVfCurveReader:
             "editable_core_points": len(editable),
         }
 
-    def find_nearest_point(self, core_clock_mhz, voltage_uv):
-        if core_clock_mhz is None or voltage_uv is None:
-            return None
-
-        points = self.editable_core_points()
-        if not points:
-            return None
-
-        target_freq_khz = int(core_clock_mhz) * 1000
-        target_voltage_uv = int(voltage_uv)
-        return min(
-            points,
-            key=lambda point: (
-                abs(point["freq_khz"] - target_freq_khz)
-                + abs(point["voltage_uv"] - target_voltage_uv)
-            ),
-        )
-
     def refresh_points(self):
         self._points = self._read_points()
         return self._points
@@ -367,19 +348,8 @@ class HiddenNvapiVfCurveReader:
             self._initialized = False
 
 
-_LAST_CREATE_ERROR: Exception | None = None
-
-
-def get_hidden_vf_curve_reader_last_error() -> Exception | None:
-    return _LAST_CREATE_ERROR
-
-
 def create_hidden_vf_curve_reader(gpu_index=0):
-    global _LAST_CREATE_ERROR
     try:
-        reader = HiddenNvapiVfCurveReader(gpu_index=gpu_index)
-        _LAST_CREATE_ERROR = None
-        return reader
-    except Exception as exc:
-        _LAST_CREATE_ERROR = exc
+        return HiddenNvapiVfCurveReader(gpu_index=gpu_index)
+    except Exception:
         return None
