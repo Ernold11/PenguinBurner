@@ -13,6 +13,7 @@ use std::env;
 use std::ffi::{CString, OsString};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -137,10 +138,18 @@ fn run_child(
             plan.uid,
             plan.gid
         ));
-        // Hand any root-owned `~/.config/PenguinBurner` leftovers (stop markers,
-        // pre-B3 scans a root daemon created) to the drop target so the de-rooted
-        // child can create/replace files there. Best-effort.
-        paths::claim_config_tree_for(plan.uid, plan.gid);
+        // The child owns its config. Reject symlinked/root-owned paths instead of
+        // letting the root daemon repair or traverse user-controlled directories.
+        if let Err(err) = paths::validate_config_tree_for(&plan.config_home, plan.uid) {
+            write_json_line(
+                writer,
+                &StreamError::new(format!(
+                    "failed to launch {}: unsafe desktop config directory: {err}",
+                    launch_label(kind)
+                )),
+            );
+            return;
+        }
     }
 
     // The whole check-clear-stop-spawn-install runs atomically under the lock.
@@ -362,6 +371,8 @@ struct DropPlan {
     groups: Vec<libc::gid_t>,
     env: Vec<(&'static str, OsString)>,
     user: String,
+    config_home: PathBuf,
+    config_dirs: Vec<CString>,
 }
 
 /// Resolve the drop target from the daemon's environment. `Ok(None)` means
@@ -526,13 +537,58 @@ fn child_drop_plan() -> Result<Option<DropPlan>, String> {
         existing_runtime_dir(identity.uid).as_deref(),
         env::var_os("XAUTHORITY").is_some(),
     );
+    let config_home = paths::effective_home();
+    let config_dirs = [
+        config_home.join(".config"),
+        config_home.join(".config/PenguinBurner"),
+    ]
+    .into_iter()
+    .map(|path| {
+        CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| format!("child config path contains NUL: {}", path.display()))
+    })
+    .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(DropPlan {
         uid: identity.uid,
         gid: identity.gid,
         groups,
         env,
         user: identity.user,
+        config_home,
+        config_dirs,
     }))
+}
+
+/// Create and validate the child's config directories using only raw,
+/// async-signal-safe syscalls. Called after setuid in `pre_exec`, so newly
+/// created directories belong to the desktop user without any root chown.
+fn ensure_child_config_dirs(config_dirs: &[CString]) -> io::Result<()> {
+    for dir in config_dirs {
+        // SAFETY: `dir` is a stable NUL-terminated path built before fork.
+        if unsafe { libc::mkdir(dir.as_ptr(), 0o700) } != 0 {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::EEXIST) {
+                return Err(err);
+            }
+        }
+        // SAFETY: read-only validation of the same stable path; O_NOFOLLOW
+        // rejects a final symlink and O_DIRECTORY rejects a regular file.
+        let fd = unsafe {
+            libc::open(
+                dir.as_ptr(),
+                libc::O_RDONLY
+                    | libc::O_DIRECTORY
+                    | libc::O_NOFOLLOW
+                    | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `fd` is the descriptor just returned by open.
+        unsafe { libc::close(fd) };
+    }
+    Ok(())
 }
 
 /// Spawn the child with stdout and stderr merged onto one pipe, `cwd="/"`.
@@ -584,8 +640,19 @@ fn spawn_child(
     // The post-fork/pre-exec data must be owned by the closure and applied
     // without allocating (fork of a multithreaded process: only
     // async-signal-safe calls are legal until exec).
-    let drop_spec: Option<(libc::uid_t, libc::gid_t, Vec<libc::gid_t>)> =
-        drop.map(|plan| (plan.uid, plan.gid, plan.groups.clone()));
+    let drop_spec: Option<(
+        libc::uid_t,
+        libc::gid_t,
+        Vec<libc::gid_t>,
+        Vec<CString>,
+    )> = drop.map(|plan| {
+        (
+            plan.uid,
+            plan.gid,
+            plan.groups.clone(),
+            plan.config_dirs.clone(),
+        )
+    });
 
     // The daemon blocks SIGINT/SIGTERM process-wide (signal thread) and the
     // mask survives exec — without a reset the child would never receive the
@@ -603,7 +670,7 @@ fn spawn_child(
             let mut set: libc::sigset_t = std::mem::zeroed();
             libc::sigemptyset(&mut set);
             libc::sigprocmask(libc::SIG_SETMASK, &set, std::ptr::null_mut());
-            if let Some((uid, gid, groups)) = drop_spec.as_ref() {
+            if let Some((uid, gid, groups, config_dirs)) = drop_spec.as_ref() {
                 if libc::setsid() < 0 {
                     return Err(io::Error::last_os_error());
                 }
@@ -616,6 +683,10 @@ fn spawn_child(
                 if libc::setuid(*uid) != 0 {
                     return Err(io::Error::last_os_error());
                 }
+                // Create the two config directories only after dropping uid/gid,
+                // so a fresh first run can always receive an immediate stop
+                // marker without the root daemon creating/chowning user files.
+                ensure_child_config_dirs(config_dirs)?;
             }
             Ok(())
         });
@@ -913,6 +984,35 @@ mod tests {
     // --- the drop itself (B3) ---------------------------------------------------
 
     #[test]
+    fn child_config_dirs_are_created_and_symlinks_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir()
+            .join(format!("pb-child-config-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let dot_config = root.join(".config");
+        let app_config = dot_config.join("PenguinBurner");
+        let dirs = [&dot_config, &app_config]
+            .into_iter()
+            .map(|path| CString::new(path.to_string_lossy().as_bytes()).unwrap())
+            .collect::<Vec<_>>();
+
+        ensure_child_config_dirs(&dirs).unwrap();
+        assert!(dot_config.is_dir());
+        assert!(app_config.is_dir());
+
+        fs::remove_dir(&app_config).unwrap();
+        let victim = root.join("victim");
+        fs::create_dir(&victim).unwrap();
+        symlink(&victim, &app_config).unwrap();
+        assert!(ensure_child_config_dirs(&dirs).is_err());
+        assert!(victim.is_dir());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn supplementary_groups_include_primary_gid() {
         // SAFETY: getuid is always safe.
         let uid = unsafe { libc::getuid() };
@@ -943,6 +1043,8 @@ mod tests {
             groups: vec![1],
             env: Vec::new(),
             user: "daemon".to_string(),
+            config_home: dir.clone(),
+            config_dirs: Vec::new(),
         };
         let result = spawn_child(
             Path::new("/bin/sh"),
@@ -977,6 +1079,8 @@ mod tests {
             groups,
             env: Vec::new(),
             user: entry.name.clone(),
+            config_home: entry.dir.clone(),
+            config_dirs: Vec::new(),
         };
         let (child, reader) = spawn_child(
             Path::new("/bin/sh"),

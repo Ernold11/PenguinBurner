@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
 # Build the PenguinBurner root daemon (Rust crate in burnerd/) for local/dev
-# use. When no packaged /usr/libexec/penguin-burnerd is installed,
-# runtime/support/runtime_service.py falls back to the cargo release build this
-# script produces at burnerd/target/release/penguin-burnerd.
+# use. The elevated service setup copies this release build atomically to the
+# root-owned /usr/libexec/penguin-burnerd path; the unit never executes the
+# checkout copy directly.
 
 set -euo pipefail
 

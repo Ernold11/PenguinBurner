@@ -469,18 +469,47 @@ def _flatpak_daemon_install_command(
                 r"""
 legacy_unit=/etc/systemd/system/PenguinBurner.service
 unit=/etc/systemd/system/penguin-burnerd.service
+daemon_dir=/usr/libexec
+daemon_target="$daemon_dir/penguin-burnerd"
+daemon_tmp=
+unit_tmp=
+cleanup_install_temps() {
+    if [ -n "$daemon_tmp" ]; then rm -f -- "$daemon_tmp"; fi
+    if [ -n "$unit_tmp" ]; then rm -f -- "$unit_tmp"; fi
+}
+trap cleanup_install_temps EXIT
+trap 'exit 1' HUP INT TERM
+if [ ! -e "$daemon_dir" ]; then
+    mkdir -m0755 "$daemon_dir"
+fi
+if [ ! -d "$daemon_dir" ] || [ -L "$daemon_dir" ] || \
+   [ "$(stat -c %u "$daemon_dir")" != 0 ] || \
+   [ $((0$(stat -c %a "$daemon_dir") & 0022)) -ne 0 ]; then
+    echo "$daemon_dir is not a safe root-owned install directory." >&2
+    exit 1
+fi
+daemon_tmp="$(mktemp "$daemon_dir/.penguin-burnerd.XXXXXX")"
+dd if="$PENGUIN_BURNER_DAEMON_BINARY_SRC" of="$daemon_tmp" \
+   iflag=nofollow,fullblock,nonblock oflag=nofollow conv=fsync status=none
+if [ "$(od -An -tx1 -N4 "$daemon_tmp" | tr -d '[:space:]')" != 7f454c46 ]; then
+    echo "PenguinBurner daemon install source is not an ELF binary." >&2
+    exit 1
+fi
+chown root:root "$daemon_tmp"
+chmod 0755 "$daemon_tmp"
+unit_tmp="$(mktemp /etc/systemd/system/.penguin-burnerd.service.XXXXXX)"
+printf '%s' "$PENGUIN_BURNER_SYSTEMD_UNIT_B64" | base64 -d > "$unit_tmp"
+chmod 0644 "$unit_tmp"
+mv -f -- "$daemon_tmp" "$daemon_target"
+daemon_tmp=
+mv -f -- "$unit_tmp" "$unit"
+unit_tmp=
 systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
 if [ -f "$legacy_unit" ]; then
     rm -f "$legacy_unit"
     echo "Removed existing static PenguinBurner.service."
 fi
-install -Dm0755 "$PENGUIN_BURNER_DAEMON_BINARY_SRC" /usr/libexec/penguin-burnerd
-tmp="$(mktemp /etc/systemd/system/.penguin-burnerd.service.XXXXXX)"
-trap 'rm -f "$tmp"' EXIT
-printf '%s' "$PENGUIN_BURNER_SYSTEMD_UNIT_B64" | base64 -d > "$tmp"
-chmod 0644 "$tmp"
-mv "$tmp" "$unit"
-trap - EXIT
+trap - EXIT HUP INT TERM
 """
                 + state_block
                 + r"""

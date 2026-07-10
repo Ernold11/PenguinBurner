@@ -112,6 +112,28 @@ def _assert_flatpak_daemon_script_waits_for_api(
     assert script.rindex("restart_penguin_burnerd") < script.index(success_message)
 
 
+def _assert_flatpak_daemon_binary_installed_atomically(script: str) -> None:
+    stage = 'daemon_tmp="$(mktemp "$daemon_dir/.penguin-burnerd.XXXXXX")"'
+    copy = 'dd if="$PENGUIN_BURNER_DAEMON_BINARY_SRC" of="$daemon_tmp"'
+    commit = 'mv -f -- "$daemon_tmp" "$daemon_target"'
+    legacy_mutation = "systemctl disable --now PenguinBurner.service"
+    assert stage in script
+    assert copy in script
+    assert "iflag=nofollow,fullblock" in script
+    assert "nonblock" in script
+    assert "oflag=nofollow" in script
+    assert "conv=fsync" in script
+    assert "7f454c46" in script
+    assert 'chown root:root "$daemon_tmp"' in script
+    assert 'chmod 0755 "$daemon_tmp"' in script
+    assert commit in script
+    assert "install -Dm0755" not in script
+    assert "trap cleanup_install_temps EXIT" in script
+    assert "trap 'exit 1' HUP INT TERM" in script
+    assert script.index(stage) < script.index(copy) < script.index(commit)
+    assert script.index(commit) < script.index(legacy_mutation)
+
+
 def test_ui_scan_command_uses_daemon_client_without_pkexec(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(commands.os, "getuid", lambda: 1000)
@@ -237,10 +259,7 @@ def test_daemon_migration_command_installs_flatpak_daemon(monkeypatch, tmp_path)
         command[-2],
         success_message='echo "Installed and enabled penguin-burnerd.service at $unit."',
     )
-    assert (
-        'install -Dm0755 "$PENGUIN_BURNER_DAEMON_BINARY_SRC" '
-        "/usr/libexec/penguin-burnerd" in script
-    )
+    _assert_flatpak_daemon_binary_installed_atomically(script)
     assert "systemctl enable penguin-burnerd.service" in script
     assert 'rm -f "$last_runtime_state"' in script
     # Repair/migrate clears stale state but does not seed a new autostart payload.
@@ -275,10 +294,7 @@ def test_flatpak_runtime_profile_install_copies_daemon_and_seeds_autostart(
         "/usr/bin/env",
     ]
     script = command[command.index("-c") + 1]
-    assert (
-        'install -Dm0755 "$PENGUIN_BURNER_DAEMON_BINARY_SRC" '
-        "/usr/libexec/penguin-burnerd" in script
-    )
+    _assert_flatpak_daemon_binary_installed_atomically(script)
     # "Persist THIS profile": the state file is cleared, then re-seeded so the
     # Rust daemon replays the installed profile on boot.
     assert 'rm -f "$PENGUIN_BURNER_LAST_RUNTIME_PATH"' in script

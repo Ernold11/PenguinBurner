@@ -86,8 +86,10 @@ once with:
 scripts/build-daemon.sh   # cargo build --release --locked in burnerd/
 ```
 
-The installer discovers the daemon in this order: the root-owned
-`/usr/libexec/penguin-burnerd` (what the systemd unit execs), then the
-wheel-bundled `runtime/daemon_bin/penguin-burnerd` copy (which the elevated
-install step copies into `/usr/libexec`), then the dev build at
-`burnerd/target/release/penguin-burnerd`.
+The systemd unit always executes the root-owned
+`/usr/libexec/penguin-burnerd`; it never points into a user-writable wheel or
+checkout. During the one elevated service setup, the installer atomically
+copies the current wheel-bundled `runtime/daemon_bin/penguin-burnerd`, or the
+dev build at `burnerd/target/release/penguin-burnerd`, into that fixed path. An
+existing safe `/usr/libexec` copy is used only when a distro package provides no
+separate source payload.

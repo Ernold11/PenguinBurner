@@ -604,8 +604,7 @@ def test_native_packages_build_and_install_rust_daemon() -> None:
         assert "cargo build --release --locked" in text
         assert "burnerd/Cargo.toml" in text
 
-    # ... and installs the binary to the fixed root-owned discovery path
-    # (runtime/support/runtime_service.py looks at /usr/libexec first).
+    # ... and installs the binary to the fixed root-owned execution path.
     assert "install -Dm755 burnerd/target/release/penguin-burnerd" in arch_pkgbuild
     assert "usr/libexec/penguin-burnerd" in arch_pkgbuild
     assert "usr/libexec/penguin-burnerd" in debian_rules
@@ -707,15 +706,16 @@ def test_pypi_wheel_build_installs_rust_toolchain_and_requires_daemon() -> None:
 def test_daemon_discovery_includes_packaged_site_packages_copy() -> None:
     service = Path("runtime/support/runtime_service.py").read_text(encoding="utf-8")
 
-    # daemon_binary_path resolves, in order: /usr/libexec (root-owned, the unit's
-    # ExecStart), then the wheel-bundled runtime/daemon_bin copy (install source),
-    # then the dev cargo build.
+    # Unit execution is fixed at root-owned /usr/libexec. Install-source discovery
+    # prefers the current wheel payload, then a dev build, with an existing
+    # libexec copy only as the distro-package fallback.
     assert "def _packaged_daemon_binary" in service
     assert '"daemon_bin"' in service
-    libexec = service.index("LIBEXEC_DAEMON_BINARY,\n")
+    assert "return str(LIBEXEC_DAEMON_BINARY)" in service
     packaged = service.index("_packaged_daemon_binary(),")
     dev = service.index("_dev_daemon_binary(program_file),")
-    assert libexec < packaged < dev
+    libexec = service.index("LIBEXEC_DAEMON_BINARY,\n", dev)
+    assert packaged < dev < libexec
 
 
 def test_flatpak_build_scripts_install_rust_stable_extension() -> None:

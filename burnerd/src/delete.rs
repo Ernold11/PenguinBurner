@@ -18,8 +18,8 @@
 use std::ffi::CString;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::{AsRawFd, FromRawFd};
-use std::path::{Component, Path, PathBuf};
+use std::os::unix::io::AsRawFd;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
@@ -104,7 +104,7 @@ fn delete_profile_files(profiles_dir: &Path, requested: &[String]) -> Result<Vec
     // Pin the directory via a symlink-free walk, then unlink by basename
     // relative to the pinned fd, so neither an intermediate nor the final
     // component can be redirected by a symlink swapped in after validation.
-    let dir = open_dir_nofollow(&canonical_dir)
+    let dir = paths::open_dir_nofollow(&canonical_dir)
         .map_err(|err| format!("cannot open the Auto-UV profiles directory: {err}"))?;
 
     let mut deleted = Vec::with_capacity(targets.len());
@@ -134,42 +134,6 @@ fn delete_profile_files(profiles_dir: &Path, requested: &[String]) -> Result<Vec
         deleted.push(canonical.display().to_string());
     }
     Ok(deleted)
-}
-
-/// Open `dir` (an absolute, already-canonicalized, symlink-free path) as a
-/// directory fd WITHOUT following any symlink along the way: walk it component
-/// by component with `O_NOFOLLOW` from `/`. If a component was swapped for a
-/// symlink after canonicalization, the corresponding `openat` fails (`ELOOP`)
-/// and the deletion is refused — closing the parent-swap TOCTOU that a single
-/// full-path `open` (which follows intermediate symlinks) would leave open.
-fn open_dir_nofollow(dir: &Path) -> std::io::Result<fs::File> {
-    let flags = libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_RDONLY;
-    let root = CString::new("/").expect("no interior NUL");
-    // SAFETY: opening "/" read-only as a directory; `/` is never a symlink.
-    let fd = unsafe { libc::open(root.as_ptr(), flags) };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: we exclusively own the freshly-opened fd.
-    let mut current = unsafe { fs::File::from_raw_fd(fd) };
-    for component in dir.components() {
-        let name = match component {
-            Component::RootDir => continue,
-            Component::Normal(name) => name,
-            // canonicalize() yields only RootDir + Normal for an absolute path.
-            _ => return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
-        };
-        let cname = CString::new(name.as_bytes())
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-        // SAFETY: openat on an owned dir fd with a NUL-terminated relative name.
-        let fd = unsafe { libc::openat(current.as_raw_fd(), cname.as_ptr(), flags) };
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        // SAFETY: we own the new fd; the assignment drops (closes) the old one.
-        current = unsafe { fs::File::from_raw_fd(fd) };
-    }
-    Ok(current)
 }
 
 #[cfg(test)]
@@ -376,7 +340,7 @@ mod tests {
         let fixture = Fixture::new();
         let real = fixture.canonical_profiles_dir();
         // The real symlink-free path opens fine.
-        assert!(open_dir_nofollow(&real).is_ok());
+        assert!(paths::open_dir_nofollow(&real).is_ok());
 
         // Point an alternate `.config` at the real one, so `<root>/alt-config`
         // is a symlink an intermediate component of the walk would traverse.
@@ -386,7 +350,7 @@ mod tests {
         // The path RESOLVES (canonicalize would follow it), but the O_NOFOLLOW
         // walk refuses the symlinked component — the TOCTOU guard.
         assert!(fs::canonicalize(&through_symlink).is_ok());
-        assert!(open_dir_nofollow(&through_symlink).is_err());
+        assert!(paths::open_dir_nofollow(&through_symlink).is_err());
     }
 
     #[test]

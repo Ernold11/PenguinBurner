@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from runtime.support import runtime_service
 
@@ -30,6 +34,10 @@ FLATPAK_ACTIVE_APP_PATH = (
 FLATPAK_ACTIVE_SITE_PACKAGES = (
     f"{FLATPAK_ACTIVE_APP_PATH}/lib/python3.13/site-packages"
 )
+
+
+def _write_fake_elf(path: Path, payload: bytes = b"daemon") -> None:
+    path.write_bytes(b"\x7fELF" + payload)
 
 
 def test_daemon_systemd_unit_uses_rust_binary_and_program_file(
@@ -65,6 +73,183 @@ def test_daemon_systemd_unit_uses_rust_binary_and_program_file(
     assert "--daemon-api" not in unit
     assert "penguin_burner.sh" not in unit
     assert "SyslogIdentifier=penguin-burnerd" in unit
+
+
+def test_daemon_unit_never_executes_packaged_or_dev_binary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    program = tmp_path / "checkout" / "penguin_burner.py"
+    packaged = tmp_path / "user-site" / "penguin-burnerd"
+    program.parent.mkdir()
+    packaged.parent.mkdir()
+    program.write_text("# program\n", encoding="utf-8")
+    _write_fake_elf(packaged)
+    monkeypatch.setattr(
+        runtime_service, "_packaged_daemon_binary", lambda: packaged
+    )
+
+    unit = runtime_service.build_daemon_api_service_unit(program)
+
+    assert "ExecStart=/usr/libexec/penguin-burnerd " in unit
+    assert str(packaged) not in unit
+    with pytest.raises(RuntimeError, match="must be installed at"):
+        runtime_service.build_daemon_api_service_unit(
+            program,
+            binary_path=packaged,
+        )
+
+
+def test_daemon_install_source_prefers_current_payload_over_installed_copy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    packaged = tmp_path / "packaged" / "penguin-burnerd"
+    dev = tmp_path / "dev" / "penguin-burnerd"
+    installed = tmp_path / "libexec" / "penguin-burnerd"
+    for path in (packaged, dev, installed):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_fake_elf(path, path.parent.name.encode("ascii"))
+    monkeypatch.setattr(runtime_service, "_packaged_daemon_binary", lambda: packaged)
+    monkeypatch.setattr(runtime_service, "_dev_daemon_binary", lambda _program: dev)
+    monkeypatch.setattr(runtime_service, "LIBEXEC_DAEMON_BINARY", installed)
+
+    assert runtime_service.daemon_install_source_path("program.py") == packaged
+    packaged.unlink()
+    assert runtime_service.daemon_install_source_path("program.py") == dev
+    dev.unlink()
+    assert runtime_service.daemon_install_source_path("program.py") == installed
+
+
+def test_atomic_daemon_install_updates_bytes_and_normalizes_mode(tmp_path: Path) -> None:
+    source = tmp_path / "source" / "penguin-burnerd"
+    destination = tmp_path / "libexec" / "penguin-burnerd"
+    source.parent.mkdir()
+    _write_fake_elf(source, b"new daemon")
+    owner = os.geteuid()
+    group = os.getegid()
+
+    assert runtime_service._atomic_install_daemon_binary(
+        source,
+        destination,
+        owner_uid=owner,
+        owner_gid=group,
+    )
+    assert destination.read_bytes() == source.read_bytes()
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o755
+    assert not runtime_service._atomic_install_daemon_binary(
+        source,
+        destination,
+        owner_uid=owner,
+        owner_gid=group,
+    )
+
+    destination.chmod(0o775)
+    assert runtime_service._atomic_install_daemon_binary(
+        source,
+        destination,
+        owner_uid=owner,
+        owner_gid=group,
+    )
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o755
+    assert not list(destination.parent.glob(".penguin-burnerd.*"))
+
+
+def test_existing_daemon_fallback_rejects_writable_mode(tmp_path: Path) -> None:
+    installed = tmp_path / "libexec" / "penguin-burnerd"
+    installed.parent.mkdir()
+    _write_fake_elf(installed)
+    installed.chmod(0o775)
+
+    with pytest.raises(RuntimeError, match="safe ELF executable"):
+        runtime_service._atomic_install_daemon_binary(
+            installed,
+            installed,
+            owner_uid=os.geteuid(),
+            owner_gid=os.getegid(),
+        )
+
+    installed.chmod(0o750)
+    assert not runtime_service._atomic_install_daemon_binary(
+        installed,
+        installed,
+        owner_uid=os.geteuid(),
+        owner_gid=os.getegid(),
+    )
+
+
+def test_atomic_daemon_install_replaces_symlink_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source" / "penguin-burnerd"
+    victim = tmp_path / "victim"
+    destination = tmp_path / "libexec" / "penguin-burnerd"
+    source.parent.mkdir()
+    destination.parent.mkdir()
+    _write_fake_elf(source, b"same bytes")
+    victim.write_bytes(source.read_bytes())
+    destination.symlink_to(victim)
+
+    assert runtime_service._atomic_install_daemon_binary(
+        source,
+        destination,
+        owner_uid=os.geteuid(),
+        owner_gid=os.getegid(),
+    )
+    assert victim.read_bytes() == source.read_bytes()
+    assert not destination.is_symlink()
+    assert destination.read_bytes() == source.read_bytes()
+
+
+def test_atomic_daemon_install_rejects_source_symlink(tmp_path: Path) -> None:
+    real_source = tmp_path / "real-source"
+    source = tmp_path / "source-link"
+    destination = tmp_path / "libexec" / "penguin-burnerd"
+    destination.parent.mkdir()
+    _write_fake_elf(real_source, b"new")
+    _write_fake_elf(destination, b"old")
+    destination.chmod(0o755)
+    source.symlink_to(real_source)
+    old_bytes = destination.read_bytes()
+
+    with pytest.raises(RuntimeError, match="cannot safely open"):
+        runtime_service._atomic_install_daemon_binary(
+            source,
+            destination,
+            owner_uid=os.geteuid(),
+            owner_gid=os.getegid(),
+        )
+
+    assert destination.read_bytes() == old_bytes
+
+
+def test_atomic_daemon_install_failure_keeps_old_binary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source" / "penguin-burnerd"
+    destination = tmp_path / "libexec" / "penguin-burnerd"
+    source.parent.mkdir()
+    destination.parent.mkdir()
+    _write_fake_elf(source, b"new")
+    _write_fake_elf(destination, b"old")
+    destination.chmod(0o755)
+    old_bytes = destination.read_bytes()
+
+    def fail_before_replace(_descriptor: int) -> None:
+        raise OSError("injected copy failure")
+
+    monkeypatch.setattr(runtime_service.os, "fsync", fail_before_replace)
+    with pytest.raises(RuntimeError, match="injected copy failure"):
+        runtime_service._atomic_install_daemon_binary(
+            source,
+            destination,
+            owner_uid=os.geteuid(),
+            owner_gid=os.getegid(),
+        )
+
+    assert destination.read_bytes() == old_bytes
+    assert not list(destination.parent.glob(".penguin-burnerd.*"))
 
 
 def test_daemon_systemd_unit_uses_adaptive_target_fps_env(
@@ -150,6 +335,81 @@ ExecStart=/usr/bin/python3 /opt/pb/penguin_burner.py --auto-uv-profile profile-a
     ]
 
 
+@pytest.mark.parametrize("operation", ["install", "migrate", "daemonize"])
+def test_daemon_binary_install_failure_precedes_service_mutation(
+    operation: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    program = tmp_path / "penguin_burner.py"
+    legacy_unit = tmp_path / "PenguinBurner.service"
+    daemon_unit = tmp_path / "penguin-burnerd.service"
+    state_file = tmp_path / "last-runtime.json"
+    program.write_text("# program\n", encoding="utf-8")
+    legacy_unit.write_text("legacy marker\n", encoding="utf-8")
+    daemon_unit.write_text("daemon marker\n", encoding="utf-8")
+    state_file.write_text("state marker\n", encoding="utf-8")
+    monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
+    monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(runtime_service, "LAST_RUNTIME_STATE_PATH", state_file)
+    monkeypatch.setattr(
+        runtime_service, "legacy_systemd_service_unit_path", lambda: legacy_unit
+    )
+    monkeypatch.setattr(
+        runtime_service, "daemon_systemd_service_unit_path", lambda: daemon_unit
+    )
+    monkeypatch.setattr(
+        runtime_service,
+        "read_legacy_service_state",
+        lambda: {
+            "exists": True,
+            "enabled": True,
+            "active": True,
+            "runtime_argv": ["--auto-uv-profile", "profile-a"],
+        },
+    )
+
+    def fail_install(*_args, **_kwargs):
+        raise RuntimeError("injected daemon copy failure")
+
+    monkeypatch.setattr(runtime_service, "install_daemon_binary", fail_install)
+    monkeypatch.setattr(
+        runtime_service.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("systemctl ran after copy failure"),
+    )
+    monkeypatch.setattr(
+        runtime_service,
+        "run_checked_subprocess",
+        lambda *_args, **_kwargs: pytest.fail("systemctl ran after copy failure"),
+    )
+
+    with pytest.raises(RuntimeError, match="injected daemon copy failure"):
+        if operation == "install":
+            runtime_service.install_systemd_service(
+                program,
+                ["--auto-uv-profile", "profile-a"],
+                journal_hours=4,
+                log=lambda _message: None,
+            )
+        elif operation == "migrate":
+            runtime_service.migrate_to_daemon_service(
+                program,
+                log=lambda _message: None,
+            )
+        else:
+            runtime_service.daemonize_with_systemd(
+                program,
+                ["--auto-uv-profile", "profile-a"],
+                journal_hours=4,
+                log=lambda _message: None,
+            )
+
+    assert legacy_unit.read_text(encoding="utf-8") == "legacy marker\n"
+    assert daemon_unit.read_text(encoding="utf-8") == "daemon marker\n"
+    assert state_file.read_text(encoding="utf-8") == "state marker\n"
+
+
 def test_install_systemd_service_replaces_transient_unit_before_enabling(
     tmp_path: Path,
     monkeypatch,
@@ -175,9 +435,7 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(
-        runtime_service, "daemon_binary_path", lambda *a, **k: RUST_DAEMON_BINARY
-    )
+    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
     monkeypatch.setattr(
         runtime_service, "LAST_RUNTIME_STATE_PATH", state_file
     )
@@ -267,9 +525,7 @@ def test_install_systemd_service_restarts_active_daemon_after_unit_update(
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(
-        runtime_service, "daemon_binary_path", lambda *a, **k: RUST_DAEMON_BINARY
-    )
+    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
     monkeypatch.setattr(
         runtime_service, "LAST_RUNTIME_STATE_PATH", state_file
     )
@@ -353,9 +609,7 @@ def test_migrate_to_daemon_service_disables_legacy_after_daemon_reachable(
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(
-        runtime_service, "daemon_binary_path", lambda *a, **k: RUST_DAEMON_BINARY
-    )
+    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
     monkeypatch.setattr(
         runtime_service, "LAST_RUNTIME_STATE_PATH", state_file
     )
@@ -491,9 +745,7 @@ def test_daemonize_starts_daemon_service_and_runtime_profile(tmp_path, monkeypat
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(
-        runtime_service, "daemon_binary_path", lambda *a, **k: RUST_DAEMON_BINARY
-    )
+    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
     monkeypatch.setattr(
         runtime_service,
         "daemon_systemd_service_unit_path",
@@ -539,6 +791,83 @@ def test_daemonize_starts_daemon_service_and_runtime_profile(tmp_path, monkeypat
     assert "Started runtime profile through penguin-burnerd.service" in "\n".join(logs)
 
 
+@pytest.mark.parametrize(
+    ("binary_changed", "expected_verb"),
+    [(True, "restart"), (False, "start")],
+)
+def test_daemonize_restarts_only_when_existing_binary_changed(
+    binary_changed: bool,
+    expected_verb: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    program = tmp_path / "penguin_burner.py"
+    daemon_unit = tmp_path / "penguin-burnerd.service"
+    program.write_text("# program\n", encoding="utf-8")
+    daemon_unit.write_text(
+        runtime_service.build_daemon_api_service_unit(program),
+        encoding="utf-8",
+    )
+    checked_calls = []
+    monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
+    monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
+    monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        runtime_service,
+        "install_daemon_binary",
+        lambda *_args, **_kwargs: binary_changed,
+    )
+    monkeypatch.setattr(
+        runtime_service,
+        "clear_existing_penguin_burner_unit_for_daemonize",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        runtime_service, "daemon_systemd_service_unit_path", lambda: daemon_unit
+    )
+    monkeypatch.setattr(runtime_service, "_wait_for_daemon_status", lambda *_args: None)
+    monkeypatch.setattr(
+        runtime_service,
+        "start_runtime_profile",
+        lambda *_args, **_kwargs: {"pid": 4321},
+    )
+    monkeypatch.setattr(
+        runtime_service.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout="", stderr=""
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_service,
+        "run_checked_subprocess",
+        lambda args: checked_calls.append(list(args))
+        or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    runtime_service.daemonize_with_systemd(
+        program,
+        ["--auto-uv-profile", "profile-a"],
+        journal_hours=4,
+        log=lambda _message: None,
+    )
+
+    expected = [
+        "/bin/systemctl",
+        expected_verb,
+        "penguin-burnerd.service",
+    ]
+    assert expected in checked_calls
+    assert ["/bin/systemctl", "enable", "penguin-burnerd.service"] not in checked_calls
+    assert ["/bin/systemctl", "daemon-reload"] not in checked_calls
+    other_verb = "start" if expected_verb == "restart" else "restart"
+    assert [
+        "/bin/systemctl",
+        other_verb,
+        "penguin-burnerd.service",
+    ] not in checked_calls
+
+
 def test_daemonize_preserves_pkexec_desktop_user_env(tmp_path, monkeypatch) -> None:
     calls = []
     logs = []
@@ -550,9 +879,7 @@ def test_daemonize_preserves_pkexec_desktop_user_env(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(
-        runtime_service, "daemon_binary_path", lambda *a, **k: RUST_DAEMON_BINARY
-    )
+    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
     monkeypatch.setattr(
         runtime_service,
         "daemon_systemd_service_unit_path",

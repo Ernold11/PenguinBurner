@@ -197,10 +197,11 @@ class build_py(_build_py):
         # Compile the root daemon (burnerd/ Rust crate) and stage the release
         # binary inside the package at runtime/daemon_bin/penguin-burnerd so the
         # elevated systemd-install step has a copy to place at
-        # /usr/libexec/penguin-burnerd (runtime_service.daemon_binary_path finds
-        # it as the install source). Optional: without a cargo toolchain a plain
-        # `pip install .` still yields a working GUI/CLI, so a missing toolchain
-        # is a warning unless REQUIRE_DAEMON forces it (release/native builds do).
+        # /usr/libexec/penguin-burnerd. The unit always executes that root-owned
+        # target; the bundled file is only an install source. Without cargo, a
+        # plain `pip install .` still yields a working GUI/CLI, so a missing
+        # toolchain is a warning unless REQUIRE_DAEMON forces it (release/native
+        # builds do).
         if _env_flag_disabled("PENGUIN_BURNER_BUILD_DAEMON"):
             return
         require_daemon = _env_flag_enabled("PENGUIN_BURNER_REQUIRE_DAEMON")

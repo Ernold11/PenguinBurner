@@ -8,9 +8,10 @@
 use std::env;
 use std::ffi::{CStr, CString, OsStr};
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::path::{Component, Path, PathBuf};
 
 /// The peercred-gate uid the systemd unit sets — also the fallback drop target
 /// for the scan/verification child (`scan.rs`), so the name lives once.
@@ -218,18 +219,24 @@ pub fn write_auto_uv_stop_request(abort_final_choice: bool) {
     );
 }
 
-/// Best-effort marker write: create the parent dir, then write `content`. All
-/// errors are swallowed (parity with the Python daemon's marker writers). The
-/// root daemon then hands the marker (and any config dirs it just created) to
-/// the desktop user: the de-rooted scan/verification child must be able to
-/// create files next to it, so nothing root-owned may be left in
-/// `~/.config/PenguinBurner`. No-op when the daemon is not root.
+/// Best-effort marker write. A root daemon opens the existing user-owned config
+/// directory and marker with `O_NOFOLLOW`; a non-root dev daemon uses the normal
+/// path writer.
 fn write_marker(path: &Path, content: &str) {
+    if geteuid_is_root() {
+        let Some(name) = path.file_name() else {
+            return;
+        };
+        let Ok(Some((config_dir, uid, gid))) = root_config_dir() else {
+            return;
+        };
+        let _ = write_marker_at(&config_dir, name, content, uid, gid);
+        return;
+    }
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
     let _ = fs::write(path, content);
-    claim_desktop_user_ownership(path, true);
 }
 
 /// Remove the stop-request marker. `NotFound` is treated as success (parity with
@@ -240,6 +247,29 @@ pub fn clear_auto_uv_stop_request() -> io::Result<()> {
 }
 
 fn clear_marker(path: &Path) -> io::Result<()> {
+    if geteuid_is_root() {
+        let Some(name) = path.file_name() else {
+            return Err(io::Error::from(io::ErrorKind::InvalidInput));
+        };
+        let Some((config_dir, _, _)) = root_config_dir().map_err(io::Error::other)? else {
+            return Ok(());
+        };
+        let name = CString::new(name.as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // SAFETY: unlinkat removes the fixed name relative to a pinned,
+        // no-follow config directory. It removes a final symlink itself rather
+        // than following it.
+        let rc = unsafe { libc::unlinkat(config_dir.as_raw_fd(), name.as_ptr(), 0) };
+        if rc == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        return if err.kind() == io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(err)
+        };
+    }
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -304,6 +334,39 @@ pub(crate) fn cpath(path: &Path) -> Option<CString> {
     CString::new(path.as_os_str().as_bytes()).ok()
 }
 
+/// Open an absolute, canonical directory without following a symlink in any
+/// component. Walking from `/` with `openat` also pins every parent while the
+/// next component is opened, so a user cannot swap a checked directory for a
+/// symlink between validation and use.
+pub(crate) fn open_dir_nofollow(dir: &Path) -> io::Result<fs::File> {
+    let flags = libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_RDONLY;
+    let root = CString::new("/").expect("no interior NUL");
+    // SAFETY: opening "/" read-only as a directory; `/` is never a symlink.
+    let fd = unsafe { libc::open(root.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: we exclusively own the freshly-opened fd.
+    let mut current = unsafe { fs::File::from_raw_fd(fd) };
+    for component in dir.components() {
+        let name = match component {
+            Component::RootDir => continue,
+            Component::Normal(name) => name,
+            _ => return Err(io::Error::from(io::ErrorKind::InvalidInput)),
+        };
+        let name = CString::new(name.as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // SAFETY: openat on an owned directory fd with a NUL-terminated name.
+        let fd = unsafe { libc::openat(current.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: we own the new fd; assignment closes the previous one.
+        current = unsafe { fs::File::from_raw_fd(fd) };
+    }
+    Ok(current)
+}
+
 fn lchown(path: &Path, uid: u32, gid: u32) {
     if let Some(c) = cpath(path) {
         // SAFETY: lchown on a valid path; errors are ignored (best-effort).
@@ -320,8 +383,7 @@ pub(crate) fn claim_desktop_user_ownership(path: &Path, include_parents: bool) {
     // Fast-path the non-root (dev/test) daemon before the env/NSS identity
     // ladder: this sits on the per-tick telemetry/overlay writers, and there is
     // nothing to chown when we are not root. `claim_ownership_for` re-checks the
-    // same gate (the drop-plan hand-off calls it directly), so root behavior is
-    // unchanged — both paths end in the identical no-op when not root.
+    // same gate, keeping direct callers fail-safe too.
     if !geteuid_is_root() {
         return;
     }
@@ -332,9 +394,7 @@ pub(crate) fn claim_desktop_user_ownership(path: &Path, include_parents: bool) {
 }
 
 /// Chown a root-created path under the desktop user's home to explicit ids
-/// (best-effort, root-only). The child privilege drop passes its RESOLVED
-/// target ids so the hand-off cannot disagree with the env chown-back ladder
-/// (which, e.g., cannot see `PENGUIN_BURNER_DAEMON_ALLOWED_UID`).
+/// (best-effort, root-only).
 pub(crate) fn claim_ownership_for(path: &Path, uid: u32, gid: u32, include_parents: bool) {
     if !geteuid_is_root() {
         return;
@@ -360,23 +420,152 @@ pub(crate) fn claim_ownership_for(path: &Path, uid: u32, gid: u32, include_paren
     lchown(path, uid, gid);
 }
 
-/// Hand `~/.config/PenguinBurner` and its immediate subdirectories to the drop
-/// target (`uid`/`gid`) so a de-rooted scan/verification child can create or
-/// replace files there. A root daemon (this or an earlier version) may have left
-/// root-owned dirs behind (stop markers, pre-B3 scans); writes go via rename, so
-/// handing over the DIRS is sufficient. Uses the resolved plan ids directly (not
-/// the env chown-back ladder) so the hand-off cannot disagree with the drop
-/// plan. Best-effort; the inner `claim_ownership_for` no-ops when not root.
-pub(crate) fn claim_config_tree_for(uid: u32, gid: u32) {
-    let config_dir = user_config_dir();
-    claim_ownership_for(&config_dir, uid, gid, true);
-    if let Ok(entries) = fs::read_dir(&config_dir) {
-        for entry in entries.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                claim_ownership_for(&entry.path(), uid, gid, false);
-            }
-        }
+const OPEN_DIR_FLAGS: libc::c_int =
+    libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_RDONLY;
+
+fn open_optional_dir_at(parent: &fs::File, name: &OsStr) -> Result<Option<fs::File>, String> {
+    let name = CString::new(name.as_bytes())
+        .map_err(|_| "directory name contains NUL".to_string())?;
+    // SAFETY: openat on an owned directory fd with a NUL-terminated relative name.
+    let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), OPEN_DIR_FLAGS) };
+    if fd >= 0 {
+        // SAFETY: we exclusively own the freshly-opened fd.
+        return Ok(Some(unsafe { fs::File::from_raw_fd(fd) }));
     }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::NotFound {
+        Ok(None)
+    } else {
+        Err(err.to_string())
+    }
+}
+
+fn directory_owner_uid(dir: &fs::File) -> io::Result<u32> {
+    // SAFETY: an all-zero stat is a valid output buffer for fstat.
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: `dir` is an open fd and `stat` points to writable storage.
+    if unsafe { libc::fstat(dir.as_raw_fd(), &mut stat) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(stat.st_uid)
+}
+
+fn require_directory_owner(dir: &fs::File, uid: u32, label: &str) -> Result<(), String> {
+    let owner =
+        directory_owner_uid(dir).map_err(|err| format!("cannot inspect {label}: {err}"))?;
+    if owner == uid {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing unsafe {label}: expected uid {uid}, found uid {owner}"
+        ))
+    }
+}
+
+/// Validate the real `~/.config/PenguinBurner` path before a de-rooted child is
+/// launched. The home comes from passwd, and each existing directory is opened
+/// relative to a pinned parent with `O_NOFOLLOW`. Missing directories are fine:
+/// the unprivileged child creates them. Symlinked or root/foreign-owned config
+/// directories are rejected instead of repaired by the root daemon.
+fn open_config_dir_for(home: &Path, uid: u32) -> Result<Option<fs::File>, String> {
+    let canonical_home = fs::canonicalize(home)
+        .map_err(|err| format!("cannot resolve desktop home {}: {err}", home.display()))?;
+    let home_dir = open_dir_nofollow(&canonical_home)
+        .map_err(|err| format!("cannot safely open desktop home {}: {err}", home.display()))?;
+    require_directory_owner(&home_dir, uid, "desktop home")?;
+
+    let Some(dot_config) = open_optional_dir_at(&home_dir, OsStr::new(".config"))
+        .map_err(|err| format!("refusing unsafe .config directory: {err}"))?
+    else {
+        return Ok(None);
+    };
+    require_directory_owner(&dot_config, uid, ".config directory")?;
+
+    let Some(config_dir) = open_optional_dir_at(&dot_config, OsStr::new("PenguinBurner"))
+        .map_err(|err| format!("refusing unsafe PenguinBurner config directory: {err}"))?
+    else {
+        return Ok(None);
+    };
+    require_directory_owner(&config_dir, uid, "PenguinBurner config directory")?;
+    Ok(Some(config_dir))
+}
+
+pub(crate) fn validate_config_tree_for(home: &Path, uid: u32) -> Result<(), String> {
+    open_config_dir_for(home, uid).map(|_| ())
+}
+
+fn root_config_dir() -> Result<Option<(fs::File, u32, u32)>, String> {
+    let (uid, gid) = effective_desktop_user_ids()
+        .ok_or_else(|| "desktop user identity is unavailable".to_string())?;
+    let config_dir = open_config_dir_for(&effective_home(), uid)?;
+    Ok(config_dir.map(|dir| (dir, uid, gid)))
+}
+
+fn write_marker_at(
+    config_dir: &fs::File,
+    name: &OsStr,
+    content: &str,
+    uid: u32,
+    gid: u32,
+) -> Result<(), String> {
+    let name = CString::new(name.as_bytes())
+        .map_err(|_| "marker name contains NUL".to_string())?;
+    let temp = CString::new(format!(".{}.tmp", name.to_string_lossy()))
+        .map_err(|_| "temporary marker name contains NUL".to_string())?;
+    // A fixed temporary name is safe here: unlinkat/renameat never follow its
+    // final symlink, and O_EXCL turns a replacement race into a harmless error.
+    // SAFETY: all names are relative to the pinned config directory.
+    unsafe {
+        libc::unlinkat(config_dir.as_raw_fd(), temp.as_ptr(), 0);
+    }
+    let fd = unsafe {
+        libc::openat(
+            config_dir.as_raw_fd(),
+            temp.as_ptr(),
+            libc::O_WRONLY
+                | libc::O_CREAT
+                | libc::O_EXCL
+                | libc::O_NOFOLLOW
+                | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(format!(
+            "cannot safely create stop marker: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: we exclusively own the freshly-opened fd.
+    let mut marker = unsafe { fs::File::from_raw_fd(fd) };
+    // SAFETY: fchown targets the newly-created, pinned marker inode.
+    if unsafe { libc::fchown(marker.as_raw_fd(), uid, gid) } != 0 {
+        return Err(format!(
+            "cannot prepare stop marker: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    marker
+        .write_all(content.as_bytes())
+        .map_err(|err| format!("cannot write stop marker: {err}"))?;
+    drop(marker);
+    // SAFETY: renameat atomically replaces the marker basename itself; an
+    // attacker-supplied destination symlink is not followed.
+    if unsafe {
+        libc::renameat(
+            config_dir.as_raw_fd(),
+            temp.as_ptr(),
+            config_dir.as_raw_fd(),
+            name.as_ptr(),
+        )
+    } != 0
+    {
+        return Err(format!(
+            "cannot install stop marker: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 /// The `/run/user/<uid>/penguin-burner` directory when the process runs as root
@@ -430,6 +619,7 @@ pub(crate) fn desktop_cache_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::symlink;
     use std::sync::Mutex;
 
     // Env is process-global; serialize the env-mutating tests.
@@ -528,6 +718,74 @@ mod tests {
         assert_eq!(parse_positive_int("4294967297"), None);
         assert_eq!(parse_positive_int("99999999999999999999"), None);
         assert_eq!(parse_positive_int("abc"), None);
+    }
+
+    #[test]
+    fn config_operations_do_not_follow_symlinks() {
+        let root = std::env::temp_dir().join(format!("pb-handoff-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let home = root.join("home");
+        let dot_config = home.join(".config");
+        let victim = root.join("victim");
+        fs::create_dir_all(&dot_config).unwrap();
+        fs::create_dir(dot_config.join("PenguinBurner")).unwrap();
+        fs::create_dir_all(victim.join("must-stay-owned")).unwrap();
+        // SAFETY: getuid is always safe.
+        let uid = unsafe { libc::getuid() };
+        assert!(validate_config_tree_for(&home, uid).is_ok());
+
+        fs::remove_dir(dot_config.join("PenguinBurner")).unwrap();
+        symlink(&victim, dot_config.join("PenguinBurner")).unwrap();
+
+        let error = validate_config_tree_for(&home, uid).unwrap_err();
+        assert!(
+            error.contains("unsafe PenguinBurner config directory"),
+            "unexpected error: {error}"
+        );
+        assert!(victim.join("must-stay-owned").is_dir());
+
+        fs::remove_file(dot_config.join("PenguinBurner")).unwrap();
+        let config_dir_path = dot_config.join("PenguinBurner");
+        fs::create_dir(&config_dir_path).unwrap();
+        let config_dir = open_config_dir_for(&home, uid).unwrap().unwrap();
+        // SAFETY: getgid is always safe.
+        let gid = unsafe { libc::getgid() };
+        write_marker_at(
+            &config_dir,
+            OsStr::new("auto-uv-stop-requested"),
+            "safe marker\n",
+            uid,
+            gid,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(config_dir_path.join("auto-uv-stop-requested")).unwrap(),
+            "safe marker\n"
+        );
+        fs::remove_file(config_dir_path.join("auto-uv-stop-requested")).unwrap();
+
+        let victim_file = root.join("must-not-be-overwritten");
+        fs::write(&victim_file, "precious").unwrap();
+        symlink(
+            &victim_file,
+            config_dir_path.join("auto-uv-stop-requested"),
+        )
+        .unwrap();
+        write_marker_at(
+            &config_dir,
+            OsStr::new("auto-uv-stop-requested"),
+            "stop\n",
+            uid,
+            gid,
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&victim_file).unwrap(), "precious");
+        assert_eq!(
+            fs::read_to_string(config_dir_path.join("auto-uv-stop-requested")).unwrap(),
+            "stop\n"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

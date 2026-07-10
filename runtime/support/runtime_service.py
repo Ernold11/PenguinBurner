@@ -7,7 +7,9 @@ import configparser
 import json
 import shlex
 import shutil
+import stat
 import subprocess
+import tempfile
 import time
 
 from runtime.daemon_client import DEFAULT_DAEMON_SOCKET
@@ -52,8 +54,8 @@ DESKTOP_RUNTIME_ENV_NAMES = (
     "PENGUIN_BURNER_Q2RTX_UID",
     "PENGUIN_BURNER_Q2RTX_GID",
 )
-# Packaged install location for the compiled Rust daemon; a dev checkout falls
-# back to the cargo release build next to the sources (see daemon_binary_path).
+# The only executable path permitted in the root systemd unit. Wheel/dev copies
+# are installation sources, never persistent root execution paths.
 LIBEXEC_DAEMON_BINARY = Path("/usr/libexec/penguin-burnerd")
 
 
@@ -384,31 +386,171 @@ def _dev_daemon_binary(program_file) -> Path:
 
 
 def daemon_binary_path(program_file, *, binary_path=None) -> str:
-    """Resolve the compiled penguin-burnerd binary the unit's ExecStart runs.
+    """Return the sole root-service executable path.
 
-    Discovery order: an explicit override, then the root-owned packaged
-    ``/usr/libexec/penguin-burnerd`` (what the unit actually execs), then the
-    copy bundled in the installed wheel at ``runtime/daemon_bin/`` (the install
-    *source* — the elevated install step copies it into /usr/libexec), then the
-    dev cargo build under ``<repo>/burnerd/target/release/``. Errors clearly if
-    none is present.
+    ``binary_path`` survives only for the Flatpak unit builder; it must name the
+    same fixed host path. A unit can never point into site-packages or a checkout.
     """
-    if binary_path:
-        return str(binary_path)
-    candidates = [
-        LIBEXEC_DAEMON_BINARY,
-        _packaged_daemon_binary(),
-        _dev_daemon_binary(program_file),
-    ]
+    del program_file
+    if binary_path is not None and Path(binary_path) != LIBEXEC_DAEMON_BINARY:
+        raise RuntimeError(
+            "penguin-burnerd service binary must be installed at "
+            f"{LIBEXEC_DAEMON_BINARY}, not {binary_path}"
+        )
+    return str(LIBEXEC_DAEMON_BINARY)
+
+
+def daemon_install_source_path(program_file, *, source_path=None) -> Path:
+    """Select bytes for the privileged copy into ``/usr/libexec``.
+
+    Prefer the current wheel/dev payload over an older installed daemon so a
+    repair also performs an update. A safe existing libexec binary is the final
+    fallback for distro packages that do not bundle a second copy.
+    """
+    candidates = (
+        [Path(source_path)]
+        if source_path is not None
+        else [
+            _packaged_daemon_binary(),
+            _dev_daemon_binary(program_file),
+            LIBEXEC_DAEMON_BINARY,
+        ]
+    )
     for candidate in candidates:
         if candidate.exists():
-            return str(candidate)
+            return candidate
     searched = ", ".join(str(candidate) for candidate in candidates)
     raise RuntimeError(
-        "penguin-burnerd binary not found (looked in: "
-        f"{searched}). Install the daemon package or build it with "
+        "penguin-burnerd install source not found (looked in: "
+        f"{searched}). Install a daemon-bearing package or build it with "
         "`cargo build --release` in burnerd/."
     )
+
+
+def _daemon_metadata_is_safe(metadata, *, owner_uid=0) -> bool:
+    mode = metadata.st_mode
+    return (
+        stat.S_ISREG(mode)
+        and metadata.st_uid == owner_uid
+        and mode & 0o100 != 0
+        and mode & 0o022 == 0
+    )
+
+
+def _installed_daemon_is_safe(path: Path, *, owner_uid=0) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return _daemon_metadata_is_safe(metadata, owner_uid=owner_uid)
+
+
+def _read_daemon_install_source(source: Path) -> bytes:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(source, flags)
+    except OSError as exc:
+        raise RuntimeError(
+            f"cannot safely open daemon install source {source}: {exc}"
+        ) from exc
+    payload = b""
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RuntimeError(f"daemon install source is not a regular file: {source}")
+        with os.fdopen(descriptor, "rb") as source_file:
+            descriptor = -1
+            payload = source_file.read()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not payload.startswith(b"\x7fELF"):
+        raise RuntimeError(f"daemon install source is not an ELF binary: {source}")
+    return payload
+
+
+def _atomic_install_daemon_binary(
+    source: Path,
+    destination: Path,
+    *,
+    owner_uid=0,
+    owner_gid=0,
+) -> bool:
+    """Install ``source`` atomically; return whether destination changed."""
+    source = Path(source)
+    destination = Path(destination)
+    payload = _read_daemon_install_source(source)
+    parent = destination.parent
+    try:
+        parent.mkdir(parents=True, mode=0o755, exist_ok=True)
+        parent_metadata = parent.lstat()
+    except OSError as exc:
+        raise RuntimeError(f"cannot create daemon install directory {parent}: {exc}") from exc
+    if (
+        not stat.S_ISDIR(parent_metadata.st_mode)
+        or parent_metadata.st_uid != owner_uid
+        or parent_metadata.st_mode & 0o022
+    ):
+        raise RuntimeError(f"daemon install directory is not safely owned: {parent}")
+
+    temporary_fd = -1
+    temporary_path = None
+    try:
+        if source == destination:
+            if not _installed_daemon_is_safe(
+                destination, owner_uid=owner_uid
+            ):
+                raise RuntimeError(
+                    f"installed daemon is not a safe ELF executable: {destination}"
+                )
+            return False
+
+        if _installed_daemon_is_safe(
+            destination, owner_uid=owner_uid
+        ) and destination.read_bytes() == payload:
+            return False
+
+        temporary_fd, temp_path = tempfile.mkstemp(
+            prefix=".penguin-burnerd.", dir=parent
+        )
+        temporary_path = Path(temp_path)
+        with os.fdopen(temporary_fd, "wb") as temporary_file:
+            temporary_fd = -1
+            temporary_file.write(payload)
+            temporary_file.flush()
+            os.fchown(temporary_file.fileno(), owner_uid, owner_gid)
+            os.fchmod(temporary_file.fileno(), 0o755)
+            os.fsync(temporary_file.fileno())
+
+        os.replace(temporary_path, destination)
+        temporary_path = None
+        return True
+    except OSError as exc:
+        raise RuntimeError(
+            f"could not atomically install {source} at {destination}: {exc}"
+        ) from exc
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass
+        if temporary_fd >= 0:
+            try:
+                os.close(temporary_fd)
+            except OSError:
+                pass
+
+
+def install_daemon_binary(program_file, *, source_path=None) -> bool:
+    if os.geteuid() != 0:
+        raise RuntimeError("installing penguin-burnerd requires root privileges")
+    source = daemon_install_source_path(program_file, source_path=source_path)
+    return _atomic_install_daemon_binary(source, LIBEXEC_DAEMON_BINARY)
 
 
 def _daemon_program_file_for_unit(program_file) -> Path:
@@ -471,10 +613,9 @@ def build_daemon_api_service_unit(
 
     # The compiled Rust penguin-burnerd binary. Autostart is carried by the seeded
     # last-runtime.json state file, not a unit env. Type=notify + WatchdogSec: the
-    # daemon sends READY=1 and heartbeats WATCHDOG=1. Flatpak callers pass
-    # binary_path=/usr/libexec/penguin-burnerd explicitly (the elevated install
-    # step copies the sandbox-built /app/libexec binary there), since discovery
-    # cannot see the host's /usr/libexec from inside the sandbox.
+    # daemon sends READY=1 and heartbeats WATCHDOG=1. Flatpak callers may pass
+    # binary_path=/usr/libexec/penguin-burnerd explicitly, but every unit is
+    # constrained to that same root-owned path.
     binary = daemon_binary_path(program_file, binary_path=binary_path)
     exec_start = _format_systemd_exec([binary, "--socket", str(socket_path)])
     program_file_env = (
@@ -513,6 +654,7 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
             "systemd service install requires root privileges. Re-run with sudo."
         )
 
+    install_daemon_binary(program_file)
     clear_existing_penguin_burner_unit_for_install(log=log)
     unit_path = daemon_systemd_service_unit_path()
     unit_path.write_text(
@@ -565,6 +707,7 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
             "existing enabled PenguinBurner.service could not be parsed; "
             "leaving the legacy service unchanged"
         )
+    install_daemon_binary(program_file)
     unit_path = daemon_systemd_service_unit_path()
     unit_path.write_text(
         build_daemon_api_service_unit(program_file, socket_path=socket_path),
@@ -823,10 +966,12 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
             "Re-run PenguinBurner with sudo."
         )
 
+    binary_changed = install_daemon_binary(program_file)
     clear_existing_penguin_burner_unit_for_daemonize(log=log)
     _ensure_daemon_service_started(
         program_file,
         socket_path=DEFAULT_DAEMON_SOCKET,
+        binary_changed=binary_changed,
         log=log,
     )
     result = start_runtime_profile(
@@ -846,7 +991,9 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
     log(f"Follow the journal with: {journalctl_follow_command(journal_hours)}")
 
 
-def _ensure_daemon_service_started(program_file, *, socket_path, log) -> None:
+def _ensure_daemon_service_started(
+    program_file, *, socket_path, binary_changed, log
+) -> None:
     unit_path = daemon_systemd_service_unit_path()
     unit_text = build_daemon_api_service_unit(program_file, socket_path=socket_path)
     wrote_unit = False
@@ -874,6 +1021,7 @@ def _ensure_daemon_service_started(program_file, *, socket_path, log) -> None:
     )
     if wrote_unit:
         run_checked_subprocess([SYSTEMCTL, "enable", unit_path.name])
+    if wrote_unit or binary_changed:
         run_checked_subprocess([SYSTEMCTL, "restart", unit_path.name])
     else:
         run_checked_subprocess([SYSTEMCTL, "start", unit_path.name])
