@@ -12,7 +12,6 @@ from cli.runtime_config_file import (
 from common.penguin_burner_paths import default_user_config_dir
 
 from ui.features.integrations.afterburner_workflow import AfterburnerImportWorkflow
-from ui.commands import runtime_profile_command
 from ui.commands import scan_command
 from ui.components.curve_plot import CurvePlot
 from ui.components.log_view import LogView
@@ -32,7 +31,6 @@ from ui.dialogs.scan_tuning import select_scan_tuning
 from .error_reporting import ErrorReporter
 from ui.features.tuning.gpu_selection import persist_runtime_gpu_index
 from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
-from ui.features.curves.fan_profiles import sync_profile_fan_payload
 from ui.features.tuning.final_choice_controller import handle_final_choice_request
 from .models import candidate_id_from_payload
 from .models import event_base_points
@@ -43,7 +41,6 @@ from .models import top_status_text
 from ui.features.profiles.profiles import load_profile_summaries
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 from ui.features.profiles.profiles import penguin_burner_runtime_is_active
-from ui.features.profiles.profiles import profile_for_selector
 from ui.features.profiles.profiles import runner_status_text
 from ui.features.profiles.profiles import running_auto_uv_profile_info
 from ui.features.profiles.profiles import systemd_autostart_profile_info
@@ -66,7 +63,6 @@ class MainWindow(ProfileActionsMixin):
         self.pending_final_result_payload: dict | None = None
         self.final_choice_discarded = False
         self.final_choice_aborted = False
-        self._pre_scan_autostart: dict | None = None
         self.last_auto_uv_candidate_id = ""
         # True once the user restored stock GPU settings and nothing has been
         # applied since; drives the "Currently running profile: default" status.
@@ -292,15 +288,6 @@ class MainWindow(ProfileActionsMixin):
         self.last_auto_uv_candidate_id = ""
         # A scan applies its own curves, so the GPU is no longer at stock.
         self._defaults_restored = False
-        # Snapshot the autostart that the scan is about to disable so an aborted
-        # run can restore it (profile + silent fan curve + adaptive setting). An
-        # empty selector means nothing was autostarting -> nothing to restore.
-        autostart_info = systemd_autostart_profile_info()
-        self._pre_scan_autostart = (
-            dict(autostart_info)
-            if str(autostart_info.get("selector", "")).strip()
-            else None
-        )
         self.controls.hide_dependency_progress()
         self.log_view.append("$ " + " ".join(shlex.quote(part) for part in command) + "\n")
         self.header.set_stage("Starting")
@@ -460,54 +447,14 @@ class MainWindow(ProfileActionsMixin):
         self.controls.set_running(False)
         self.controls.hide_dependency_progress()
         self.profile_list.set_runtime_actions_enabled(False)
-        was_aborted = self.final_choice_aborted
         self.pending_final_result_payload = None
         self.final_choice_discarded = False
         self.final_choice_aborted = False
+        # The root daemon suspended the exact active RuntimeSpec before starting
+        # the scan and restores it before the streaming command exits. That spec
+        # may be a transient selected profile or Adaptive mode and can differ from
+        # the boot/autostart profile, so the UI must not apply a second fallback.
         self._load_profiles()
-        if was_aborted:
-            self._restore_pre_scan_autostart()
-
-    def _restore_pre_scan_autostart(self) -> None:
-        # On abort, bring back the autostart profile the scan disabled through
-        # the already-root daemon. Reinstalling the systemd unit here would ask
-        # for pkexec again after every cancelled scan.
-        snapshot = self._pre_scan_autostart
-        self._pre_scan_autostart = None
-        if not snapshot:
-            return
-        selector = str(snapshot.get("selector", "")).strip()
-        if not selector:
-            return
-        adaptive = bool(snapshot.get("adaptive_auto_uv"))
-        silent_fan = bool(snapshot.get("silent_fan_curve"))
-        # "__systemd_default__" means the unit pinned no explicit profile (it ran
-        # the latest profile); restore that by passing an empty selector so the
-        # CLI falls back to its default again.
-        restore_selector = "" if selector == "__systemd_default__" else selector
-        if silent_fan and not adaptive:
-            profile = profile_for_selector(self.profile_summaries, selector)
-            if profile:
-                # The daemon needs the fan payload on disk before it starts.
-                sync_profile_fan_payload(profile)
-        command = runtime_profile_command(
-            "daemonize",
-            profile_selector=restore_selector,
-            silent_fan_curve=silent_fan,
-            adaptive_auto_uv=adaptive,
-            gpu_index=self.gpu_index,
-        )
-        self._persist_silent_fan_preference(silent_fan)
-        self._persist_startup_preference(True)
-        self.log_view.append(
-            "\nRestoring the previous autostart profile through the hardware service after abort.\n"
-        )
-        self._set_profile_actions_enabled(False)
-        self.command_controller.start(
-            "adaptive-daemonize" if adaptive else "daemonize",
-            command,
-            fail_text="Failed to restore the previous autostart profile.",
-        )
 
     def _close_dynamic_tab(self, index: int) -> None:
         self.curve_tabs.close_tab(index)

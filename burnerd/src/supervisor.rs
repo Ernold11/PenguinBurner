@@ -627,7 +627,9 @@ pub fn begin_child(
 }
 
 /// Clear the child slot if it still holds `job` (identity guard) and, if so,
-/// restart the persisted runtime profile now that the GPU is free.
+/// restore the persisted current-session RuntimeSpec now that the GPU is free.
+/// This is the exact fixed/adaptive runtime that was active before the child;
+/// the boot RuntimeSpec is only a fallback when no current-session state exists.
 pub fn finish_child(sup: &Arc<Mutex<Supervisor>>, job: &Arc<ChildJob>) {
     let restart = {
         let mut supervisor = guard(sup);

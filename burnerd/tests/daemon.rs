@@ -61,6 +61,7 @@ impl Daemon {
         std::fs::create_dir_all(&home).unwrap();
         let socket = dir.join("sock");
         let state_file = dir.join("state.json");
+        let boot_state_file = dir.join("boot-state.json");
         let stub = dir.join("scan_stub.py");
         std::fs::write(&stub, STUB).unwrap();
 
@@ -71,6 +72,7 @@ impl Daemon {
             .env("PENGUIN_BURNER_DAEMON_PROGRAM_FILE", &stub)
             .env("PENGUIN_BURNER_HOME", &home)
             .env("PENGUIN_BURNERD_TEST_STATE_FILE", &state_file)
+            .env("PENGUIN_BURNERD_TEST_BOOT_STATE_FILE", &boot_state_file)
             .env("PENGUIN_BURNERD_TEST_INERT_ENGINE", "1")
             .env("PENGUIN_BURNERD_TEST_TIMINGS", "1")
             .env_remove("PENGUIN_BURNER_DAEMON_ALLOWED_UID")
@@ -215,8 +217,91 @@ fn test_runtime_spec() -> Value {
     })
 }
 
+fn test_runtime_profile(profile_id: &str, tier: &str, target_mhz: i64) -> Value {
+    serde_json::json!({
+        "path": format!("/tmp/{profile_id}.json"),
+        "profile_id": profile_id,
+        "profile_tier": match tier {
+            "efficiency" => "Efficiency",
+            "performance" => "Performance",
+            _ => "Balanced",
+        },
+        "profile_tier_key": tier,
+        "plan": [{
+            "index": 12,
+            "voltage_mv": 900,
+            "base_mhz": 2500,
+            "target_mhz": target_mhz,
+            "new_offset_mhz": target_mhz - 2500,
+        }],
+        "lock_clock_mhz": target_mhz,
+        "candidate_voltage_mv": 900,
+        "memory_offset_mhz": 1000,
+        "power_limit_w": 319,
+        "flatten_target": {
+            "source": "auto-uv-final",
+            "lock_clock_mhz": target_mhz,
+            "lock_voltage_mv": 900,
+            "end_voltage_mv": 1100,
+            "tail_point_count": 6,
+            "ceiling_clock_mhz": null,
+            "tail_rise_bins": 0,
+        },
+    })
+}
+
+fn test_static_runtime_spec(profile_id: &str) -> Value {
+    let mut spec = test_runtime_spec();
+    spec["mode"] = Value::String("static".to_string());
+    spec["static_profile"] = test_runtime_profile(profile_id, "balanced", 2722);
+    spec
+}
+
+fn test_adaptive_runtime_spec() -> Value {
+    let mut spec = test_runtime_spec();
+    spec["mode"] = Value::String("adaptive".to_string());
+    spec["adaptive"] = serde_json::json!({
+        "initial_tier": "balanced",
+        "profiles": {
+            "efficiency": test_runtime_profile("adaptive-efficiency", "efficiency", 2550),
+            "balanced": test_runtime_profile("adaptive-balanced", "balanced", 2722),
+            "performance": test_runtime_profile("adaptive-performance", "performance", 2900),
+        },
+        "policy": {
+            "target_fps": 90.0,
+            "target_slow_windows": 3,
+            "near_slow_windows": 3,
+            "comfort_windows": 3,
+            "performance_comfort_windows": 3,
+            "demote_dwell_s": 5.0,
+            "performance_demote_dwell_s": 5.0,
+            "cpu_bound_gpu_util_max_pct": 80.0,
+            "cpu_bound_peak_thread_min_pct": 80.0,
+            "cpu_bound_process_util_min_pct": 50.0,
+        },
+    });
+    spec
+}
+
+fn runtime_spec_request(method: &str, spec: &Value) -> String {
+    serde_json::json!({"method": method, "spec": spec}).to_string()
+}
+
 fn apply_runtime_request() -> String {
-    serde_json::json!({"method": "apply_runtime_spec", "spec": test_runtime_spec()}).to_string()
+    runtime_spec_request("apply_runtime_spec", &test_runtime_spec())
+}
+
+fn finish_successful_scan(daemon: &Daemon) {
+    let (_stream, mut reader, _pid) =
+        daemon.start_streaming(r#"{"method":"start_auto_uv_scan","options":{"gpu_index":0}}"#);
+    let mut exit_code = None;
+    while let Some(line) = read_line(&mut reader) {
+        let frame: Value = serde_json::from_str(&line).unwrap();
+        if frame["control"] == "finished" {
+            exit_code = frame["exit_code"].as_i64();
+        }
+    }
+    assert_eq!(exit_code, Some(0));
 }
 
 fn pid_alive(pid: u32) -> bool {
@@ -466,6 +551,64 @@ fn autostart_runs_the_persisted_runtime_profile() {
     assert_eq!(status["result"]["state"], "runtime_profile_running");
     assert_eq!(status["result"]["active_job"]["runtime_mode"], "stock");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn completed_scan_restores_exact_selected_profile_instead_of_boot_profile() {
+    let daemon = Daemon::start(&[("SCAN_STUB_EXIT_AFTER_LINES", "1")]);
+    let boot = test_static_runtime_spec("boot-profile");
+    let selected = test_static_runtime_spec("selected-custom-profile");
+
+    assert_eq!(
+        daemon.request(&runtime_spec_request("set_boot_runtime_spec", &boot))["ok"],
+        Value::Bool(true)
+    );
+    assert_eq!(
+        daemon.request(&runtime_spec_request("apply_runtime_spec", &selected))["ok"],
+        Value::Bool(true)
+    );
+
+    finish_successful_scan(&daemon);
+
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(status["result"]["state"], "runtime_profile_running");
+    assert_eq!(status["result"]["active_job"]["runtime_mode"], "static");
+    assert_eq!(
+        status["result"]["active_job"]["profile_id"],
+        "selected-custom-profile"
+    );
+    let restored: Value =
+        serde_json::from_str(&std::fs::read_to_string(&daemon.state_file).unwrap()).unwrap();
+    assert_eq!(restored, selected);
+}
+
+#[test]
+fn completed_scan_restores_exact_adaptive_runtime_instead_of_boot_profile() {
+    let daemon = Daemon::start(&[("SCAN_STUB_EXIT_AFTER_LINES", "1")]);
+    let boot = test_static_runtime_spec("boot-profile");
+    let adaptive = test_adaptive_runtime_spec();
+
+    assert_eq!(
+        daemon.request(&runtime_spec_request("set_boot_runtime_spec", &boot))["ok"],
+        Value::Bool(true)
+    );
+    assert_eq!(
+        daemon.request(&runtime_spec_request("apply_runtime_spec", &adaptive))["ok"],
+        Value::Bool(true)
+    );
+
+    finish_successful_scan(&daemon);
+
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(status["result"]["state"], "runtime_profile_running");
+    assert_eq!(status["result"]["active_job"]["runtime_mode"], "adaptive");
+    assert_eq!(
+        status["result"]["active_job"]["profile_id"],
+        "adaptive-balanced"
+    );
+    let restored: Value =
+        serde_json::from_str(&std::fs::read_to_string(&daemon.state_file).unwrap()).unwrap();
+    assert_eq!(restored, adaptive);
 }
 
 /// F1 regression: the autostart engine thread spawns before the signal thread,
