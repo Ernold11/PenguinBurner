@@ -24,8 +24,8 @@ from auto_uv.domain.types import (
     AutoUvFinalChoiceDiscarded,
     AutoUvProbeSummary,
 )
+from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
 from auto_uv.run.lower_voltage_probe_target import scan_clock_floor_mhz
-from .ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
 from auto_uv.curve.vf_curve_flattening import build_flattened_plan
 
 
@@ -372,7 +372,7 @@ def request_final_choice_candidate(
     if isinstance(recovery_decision, dict) and recovery_decision:
         request_payload["recovery_decision"] = dict(recovery_decision)
     safe_json_write(request_path, request_payload)
-    emit_ui_json_event(event_callback, "final_choice_request", **request_payload)
+    emit_auto_uv_event(event_callback, "final_choice_request", **request_payload)
     log(
         "Auto-UV phase=final-choice "
         f"waiting-for-ui-selection default={default_id} sort={sort_label} "
@@ -382,7 +382,7 @@ def request_final_choice_candidate(
     response = wait_for_final_choice_response(response_path)
     if final_choice_aborted(response):
         log("Auto-UV phase=final-choice aborted-by-user")
-        emit_ui_json_event(
+        emit_auto_uv_event(
             event_callback,
             "final_choice_discarded",
             reason="user-aborted",
@@ -394,7 +394,7 @@ def request_final_choice_candidate(
             log("Auto-UV phase=final-choice discarded-by-user; starting new scan")
             return None, int(final_verification_duration_s)
         log("Auto-UV phase=final-choice discarded-by-user; final verification skipped")
-        emit_ui_json_event(
+        emit_auto_uv_event(
             event_callback,
             "final_choice_discarded",
             reason="user-discarded",

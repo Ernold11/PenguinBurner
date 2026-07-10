@@ -1,16 +1,18 @@
+"""Build generic Q2RTX workload configurations and dependency setup."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
-from stability.q2rtx.constants import DEFAULT_DEMO_NAME
-from stability.q2rtx.install import (
+from .constants import DEFAULT_DEMO_NAME
+from .install import (
     default_q2rtx_install_data_dir,
     fetch_latest_q2rtx_release_metadata,
     install_latest_q2rtx,
 )
-from stability.q2rtx.long_stability_config import long_stability_workload_durations
-from stability.q2rtx.models import Q2RTXStabilityConfig, StabilityTestError
-from stability.q2rtx.resolution import (
+from .long_stability_config import long_stability_workload_durations
+from .models import Q2RTXStabilityConfig, StabilityTestError
+from .resolution import (
     format_q2rtx_resolution_choice,
     resolve_q2rtx_render_resolution,
 )

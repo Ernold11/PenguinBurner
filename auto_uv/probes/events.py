@@ -7,13 +7,12 @@ stream live telemetry into it, then replace it with the final measured result.
 from __future__ import annotations
 
 from auto_uv.domain.types import VfCurveCandidate
-from .probe_summary_ui_payload import probe_summary_ui_payload
-from .ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
-from .vf_curve_ui_points import vf_curve_ui_points
+from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
+from .event_payload import probe_summary_event_payload, vf_curve_event_points
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 
 
-def emit_ui_voltage_probe_started(
+def emit_voltage_probe_started(
     event_callback: AutoUvEventCallback | None,
     candidate: VfCurveCandidate,
     *,
@@ -21,22 +20,22 @@ def emit_ui_voltage_probe_started(
     max_clock_drop_pct: float | int | None = None,
     target_duration_s: float | int | None = None,
 ) -> None:
-    identity = ui_voltage_probe_identity(
+    identity = voltage_probe_identity(
         candidate,
         stage=stage,
         max_clock_drop_pct=max_clock_drop_pct,
         target_duration_s=target_duration_s,
     )
-    emit_ui_json_event(
+    emit_auto_uv_event(
         event_callback,
         "candidate_curve",
         **identity,
-        points=vf_curve_ui_points(candidate.flattened_plan),
+        points=vf_curve_event_points(candidate.flattened_plan),
     )
-    emit_ui_json_event(event_callback, "probe_start", **identity)
+    emit_auto_uv_event(event_callback, "probe_start", **identity)
 
 
-def emit_ui_voltage_probe_finished(
+def emit_voltage_probe_finished(
     event_callback: AutoUvEventCallback | None,
     candidate: VfCurveCandidate,
     outcome: VoltageProbeOutcome,
@@ -44,10 +43,10 @@ def emit_ui_voltage_probe_finished(
     stage: str,
     max_clock_drop_pct: float | int | None = None,
 ) -> None:
-    emit_ui_json_event(
+    emit_auto_uv_event(
         event_callback,
         "probe_result",
-        **ui_voltage_probe_result_payload(
+        **voltage_probe_result_payload(
             candidate,
             outcome,
             stage=stage,
@@ -56,7 +55,7 @@ def emit_ui_voltage_probe_finished(
     )
 
 
-def ui_voltage_probe_identity(
+def voltage_probe_identity(
     candidate: VfCurveCandidate,
     *,
     stage: str,
@@ -78,7 +77,7 @@ def ui_voltage_probe_identity(
     return payload
 
 
-def ui_voltage_probe_result_payload(
+def voltage_probe_result_payload(
     candidate: VfCurveCandidate,
     outcome: VoltageProbeOutcome,
     *,
@@ -87,16 +86,16 @@ def ui_voltage_probe_result_payload(
 ) -> dict:
     decision = outcome.decision
     if outcome.raw_probe is not None:
-        payload = probe_summary_ui_payload(
+        payload = probe_summary_event_payload(
             outcome.raw_probe,
             stage=str(stage),
             decision="pass" if bool(decision.passed) else "fail",
             reason=str(decision.reason or decision.failure_kind.value),
         )
-        payload.update(ui_probe_decision_payload(decision, result=outcome.raw_result))
+        payload.update(probe_decision_payload(decision, result=outcome.raw_result))
         return payload
     payload = {
-        **ui_voltage_probe_identity(
+        **voltage_probe_identity(
             candidate,
             stage=stage,
             max_clock_drop_pct=max_clock_drop_pct,
@@ -106,11 +105,11 @@ def ui_voltage_probe_result_payload(
         "decision": "pass" if bool(decision.passed) else "fail",
         "reason": str(decision.reason or decision.failure_kind.value),
     }
-    payload.update(ui_probe_decision_payload(decision, result=outcome.raw_result))
+    payload.update(probe_decision_payload(decision, result=outcome.raw_result))
     return payload
 
 
-def ui_probe_decision_payload(decision, *, result=None) -> dict:
+def probe_decision_payload(decision, *, result=None) -> dict:
     return {
         "failure_kind": str(decision.failure_kind.value),
         "failure_severity": str(decision.severity.value),

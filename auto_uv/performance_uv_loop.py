@@ -16,7 +16,7 @@ from auto_uv.curve.performance_sweep_profile import (
     build_performance_sweep_profile_candidate,
 )
 from auto_uv.domain.scan_settings import AutoUvScanSettings
-from auto_uv.q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
+from auto_uv.probes.runner import AutoUvProbeRunner
 from auto_uv.run.voltage_sweep_state import LowerVoltageSweepResult, VoltageProbeOutcome
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
 
@@ -61,7 +61,7 @@ def select_performance_auto_oc_candidate(
     stable_lock_clock_mhz: int,
     stable_probe: AutoUvProbeSummary | None,
     stable_history: list[AutoUvProbeSummary] | None,
-    runner: Q2RtxCudaProbeRunner,
+    runner: AutoUvProbeRunner,
     gpu_name: object | None,
     clock_ceiling,
     probe_history: list[AutoUvProbeSummary],

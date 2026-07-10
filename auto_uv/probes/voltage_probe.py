@@ -1,3 +1,5 @@
+"""Apply one Auto-UV candidate and exercise it with the generic stability runner."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -24,22 +26,22 @@ from ..persistence.probe_in_progress_marker_file import (
     clear_probe_in_progress_marker,
     write_probe_in_progress_marker,
 )
-from .probe_runtime_guardrails import (
+from .runtime_guardrails import (
     percent,
     probe_failure_should_mark_voltage_unsafe,
     target_core_clock_floor,
     telemetry_sample_is_busy,
 )
-from .q2rtx_live_abort_rules import (
+from .live_abort import (
     telemetry_live_abort_reason,
 )
-from .q2rtx_probe_summary import (
+from .summary import (
     saturated_probe_tail_samples,
     summarize_q2rtx_cuda_probe,
 )
-from ui.features.auto_uv.ui_json_event_writer import (
+from auto_uv.domain.events import (
     AutoUvEventCallback,
-    emit_ui_json_event,
+    emit_auto_uv_event,
 )
 from ..persistence.unsafe_voltage_blacklist_file import record_unsafe_voltage
 
@@ -478,7 +480,7 @@ def emit_live_telemetry_event(
     latest_sample = state.get("latest_sample")
     if latest_sample is None:
         return
-    emit_ui_json_event(
+    emit_auto_uv_event(
         event_callback,
         "load_telemetry",
         stage=str(stage),

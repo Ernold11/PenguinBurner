@@ -7,15 +7,15 @@ from stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.domain.types import AutoUvProbeSummary, FailureKind, VfCurveCandidate
 from auto_uv.curve.vf_curve_flattening import build_flattened_plan
-from auto_uv.q2rtx.q2rtx_cuda_probe_runner import (
-    Q2RtxCudaProbeRunner,
+from auto_uv.probes.runner import (
+    AutoUvProbeRunner,
     probe_runner_marker_details,
 )
 from auto_uv_test_data import base_curve
 
 
 def test_probe_runner_emits_candidate_table_start_and_result(monkeypatch) -> None:
-    from auto_uv.q2rtx import q2rtx_cuda_probe_runner as module
+    from auto_uv.probes import runner as module
 
     events: list[tuple[str, dict]] = []
     captured: dict[str, object] = {}
@@ -70,7 +70,7 @@ def test_probe_runner_emits_candidate_table_start_and_result(monkeypatch) -> Non
         fake_probe_voltage_candidate,
     )
 
-    runner = Q2RtxCudaProbeRunner(
+    runner = AutoUvProbeRunner(
         reader=object(),
         live_voltage_reader=object(),
         q2rtx_config=object(),
@@ -132,7 +132,7 @@ def test_probe_runner_marker_details_add_candidate_tier_metadata() -> None:
 
 
 def test_probe_runner_discovery_doubles_q2rtx_and_skips_cuda(monkeypatch) -> None:
-    from auto_uv.q2rtx import q2rtx_cuda_probe_runner as module
+    from auto_uv.probes import runner as module
 
     captured: dict[str, object] = {}
     summary = _summary(1000, 2500, used_companion_load=False)
@@ -160,7 +160,7 @@ def test_probe_runner_discovery_doubles_q2rtx_and_skips_cuda(monkeypatch) -> Non
 
 
 def test_probe_runner_baseline_skips_cuda_companion(monkeypatch) -> None:
-    from auto_uv.q2rtx import q2rtx_cuda_probe_runner as module
+    from auto_uv.probes import runner as module
 
     captured: dict[str, object] = {}
     summary = _summary(1000, 2500, used_companion_load=False)
@@ -227,7 +227,7 @@ def test_probe_runner_evaluates_cuda_from_per_voltage_config() -> None:
             {"power_w": 180.0, "core_clock_mhz": 2400.0, "gpu_util_pct": 99.0}
         ],
     }
-    runner = Q2RtxCudaProbeRunner(
+    runner = AutoUvProbeRunner(
         reader=object(),
         live_voltage_reader=object(),
         q2rtx_config=SimpleNamespace(companion_command=None),
@@ -264,7 +264,7 @@ def test_probe_runner_uses_original_baseline_clock_for_final_clock_floor() -> No
             {"power_w": 180.0, "core_clock_mhz": 2425.0, "gpu_util_pct": 99.0}
         ],
     }
-    runner = Q2RtxCudaProbeRunner(
+    runner = AutoUvProbeRunner(
         reader=object(),
         live_voltage_reader=object(),
         q2rtx_config=SimpleNamespace(companion_command=None),
@@ -301,7 +301,7 @@ def test_probe_runner_can_disable_clock_floor_for_voltage_descent() -> None:
             {"power_w": 180.0, "core_clock_mhz": 2325.0, "gpu_util_pct": 99.0}
         ],
     }
-    runner = Q2RtxCudaProbeRunner(
+    runner = AutoUvProbeRunner(
         reader=object(),
         live_voltage_reader=object(),
         q2rtx_config=SimpleNamespace(companion_command=None),
@@ -346,10 +346,10 @@ def test_probe_sweep_candidate_can_run_without_live_clock_floor(monkeypatch) -> 
         return summary, result
 
     monkeypatch.setattr(
-        "auto_uv.q2rtx.q2rtx_cuda_probe_runner.probe_voltage_candidate",
+        "auto_uv.probes.runner.probe_voltage_candidate",
         fake_probe_voltage_candidate,
     )
-    runner = Q2RtxCudaProbeRunner(
+    runner = AutoUvProbeRunner(
         reader=object(),
         live_voltage_reader=object(),
         q2rtx_config=Q2RTXStabilityConfig(
@@ -425,8 +425,8 @@ def _runner(
     q2rtx_config,
     short_probe_base_duration_s: int,
     start_voltage_mv: int = 1000,
-) -> Q2RtxCudaProbeRunner:
-    return Q2RtxCudaProbeRunner(
+) -> AutoUvProbeRunner:
+    return AutoUvProbeRunner(
         reader=object(),
         live_voltage_reader=object(),
         q2rtx_config=q2rtx_config,

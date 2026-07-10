@@ -6,6 +6,10 @@ The loop either proves the selected curve or raises voltage to the next stable b
 from __future__ import annotations
 
 from runtime.support.vf_curve_plan import apply_plan
+from stability.q2rtx.long_stability_config import (
+    build_long_stability_test_config,
+    long_stability_workload_durations,
+)
 
 from auto_uv.domain.console_log import log_benchmark, log_phase, log_user_stage
 from auto_uv.domain.types import (
@@ -15,19 +19,19 @@ from auto_uv.domain.types import (
     VfCurveCandidate,
 )
 from ..curve.rising_tail import tail_ceiling_clock_mhz
-from ..q2rtx.probe_stability_decision import (
+from auto_uv.probes.stability_decision import (
     StabilityThresholds,
     evaluate_stable_run,
 )
-from ui.features.auto_uv.ui_json_event_writer import (
+from auto_uv.domain.events import (
     AutoUvEventCallback,
-    emit_ui_json_event,
+    emit_auto_uv_event,
 )
-from ui.features.auto_uv.ui_voltage_probe_events import (
-    emit_ui_voltage_probe_finished,
-    emit_ui_voltage_probe_started,
+from auto_uv.probes.events import (
+    emit_voltage_probe_finished,
+    emit_voltage_probe_started,
 )
-from ui.features.auto_uv.vf_curve_ui_points import vf_curve_ui_points
+from auto_uv.probes.event_payload import vf_curve_event_points
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from .crash_marker import (
     final_probe_crash_marker_details,
@@ -36,10 +40,6 @@ from .crash_marker import (
 from .fan_curve import (
     FinalVerificationFanCurveResult,
     write_final_verification_fan_curve_payload,
-)
-from .probe_config import (
-    final_q2rtx_cuda_duration_s,
-    final_q2rtx_cuda_probe_config,
 )
 from .result_files import (
     write_final_stable_result,
@@ -99,11 +99,11 @@ def run_final_verification_and_save(
     log_phase(log, "final", f"last-stable-saved={last_stable_path}")
     apply_plan_and_refresh(reader, final_plan)
 
-    final_config = final_q2rtx_cuda_probe_config(
+    final_config = build_long_stability_test_config(
         q2rtx_config,
         total_duration_s=int(final_verification_duration_s),
     )
-    q2rtx_duration_s, cuda_duration_s = final_q2rtx_cuda_duration_s(
+    q2rtx_duration_s, cuda_duration_s = long_stability_workload_durations(
         int(final_verification_duration_s)
     )
     candidate = final_candidate(
@@ -112,7 +112,7 @@ def run_final_verification_and_save(
         lock_clock_mhz=int(final_lock_clock_mhz),
         metadata=auto_oc_metadata,
     )
-    emit_ui_voltage_probe_started(
+    emit_voltage_probe_started(
         event_callback,
         candidate,
         stage="final-verify",
@@ -185,7 +185,7 @@ def run_final_verification_and_save(
         raw_probe=final_probe,
         raw_result=raw_result,
     )
-    emit_ui_voltage_probe_finished(
+    emit_voltage_probe_finished(
         event_callback,
         candidate,
         outcome,
@@ -259,13 +259,13 @@ def run_final_verification_and_save(
         final_status=final_status,
         final_probe=final_comparison_probe,
     )
-    emit_ui_json_event(
+    emit_auto_uv_event(
         event_callback,
         "candidate_curve",
         stage="final",
         voltage_mv=int(final_voltage_mv),
         clock_mhz=int(final_lock_clock_mhz),
-        points=vf_curve_ui_points(final_plan),
+        points=vf_curve_event_points(final_plan),
     )
     return build_voltage_scan_result(
         final_voltage_mv=int(final_voltage_mv),
@@ -393,7 +393,7 @@ def log_fan_curve_result(
         "fan-tune",
         f"curve-saved={fan_result.path} points={len(fan_result.curve)}",
     )
-    emit_ui_json_event(
+    emit_auto_uv_event(
         event_callback,
         "fan_curve_suggested",
         curve=fan_result.curve,

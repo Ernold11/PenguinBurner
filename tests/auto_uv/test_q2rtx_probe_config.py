@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from stability.q2rtx.models import Q2RTXStabilityConfig
 
-from auto_uv.q2rtx.q2rtx_cuda_probe_config import cuda_companion_enabled_for_voltage_band
-from auto_uv.q2rtx.q2rtx_cuda_probe_config import q2rtx_cuda_probe_config_for_voltage_band
-from auto_uv.q2rtx.q2rtx_cuda_probe_config import q2rtx_only_probe_config_for_voltage_band
-from auto_uv.q2rtx.q2rtx_cuda_probe_config import reference_discovery_q2rtx_probe_config
-from auto_uv.q2rtx.q2rtx_cuda_probe_config import short_q2rtx_probe_config
-from auto_uv.q2rtx.q2rtx_cuda_probe_config import tiered_cuda_probe_duration_s
-from auto_uv.q2rtx.q2rtx_cuda_probe_config import tiered_q2rtx_probe_duration_s
+from auto_uv.probes.config import cuda_companion_enabled_for_voltage_band
+from auto_uv.probes.config import q2rtx_cuda_probe_config_for_voltage_band
+from auto_uv.probes.config import q2rtx_only_probe_config_for_voltage_band
+from auto_uv.probes.config import reference_discovery_q2rtx_probe_config
+from auto_uv.probes.config import short_q2rtx_probe_config
+from auto_uv.probes.config import tiered_cuda_probe_duration_s
+from auto_uv.probes.config import tiered_q2rtx_probe_duration_s
 from auto_uv.run.scan_runtime_settings import read_scan_runtime_settings
 
 

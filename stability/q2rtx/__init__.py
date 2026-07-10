@@ -1,1 +1,1 @@
-"""Q2RTX stability workload helpers."""
+"""Generic Q2RTX installation, execution, telemetry, and reporting."""

@@ -17,8 +17,8 @@ from auto_uv.persistence.unsafe_voltage_blacklist_file import load_unsafe_voltag
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
 from auto_uv.shared.positive_int import positive_int
 from ui.features.auto_uv.candidate_choice import candidate_plan_from_record
-from ui.features.auto_uv.probe_summary_ui_payload import probe_summary_ui_payload
-from ui.features.auto_uv.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
+from auto_uv.probes.event_payload import probe_summary_event_payload
+from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
 
 
 class CrashCacheEntries(list):
@@ -531,10 +531,10 @@ def replay_recovered_resume_probe_rows(
     stable_probe: AutoUvProbeSummary | None,
 ) -> None:
     if base_probe is not None:
-        emit_ui_json_event(
+        emit_auto_uv_event(
             event_callback,
             "probe_result",
-            **probe_summary_ui_payload(
+            **probe_summary_event_payload(
                 base_probe,
                 stage="base-baseline",
                 decision="pass",
@@ -542,10 +542,10 @@ def replay_recovered_resume_probe_rows(
             ),
         )
     if stable_probe is not None:
-        emit_ui_json_event(
+        emit_auto_uv_event(
             event_callback,
             "probe_result",
-            **probe_summary_ui_payload(
+            **probe_summary_event_payload(
                 stable_probe,
                 stage="candidate",
                 decision="pass",

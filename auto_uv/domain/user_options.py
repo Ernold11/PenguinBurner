@@ -62,10 +62,8 @@ class AutoUvMetricTuning:
 @dataclass(frozen=True, slots=True)
 class AutoUvProbeTuning:
     tiered_cuda_duration_s: int = 5
-    long_cuda_duration_s: int = 15
     timeout_multiplier: float = 2.0
     short_timeout_buffer_s: float = 15.0
-    long_timeout_buffer_s: float = 60.0
     high_voltage_pct: float = 95.0
     medium_voltage_pct: float = 90.0
 

@@ -836,6 +836,7 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     assert "auto_uv.efficiency_tune" in packages
     assert "auto_uv.scan_mode" in packages
     assert "auto_uv.final_verification" in packages
+    assert "auto_uv.probes" in packages
     assert "stability" in packages
     assert "stability.q2rtx" in packages
     assert "curve_editors" in packages
@@ -845,7 +846,7 @@ def test_package_installs_auto_uv_subpackages_and_initial_check() -> None:
     assert "integrations.lact" in packages
     assert "runtime" in packages
     assert "runtime.gpu_control" in packages
-    assert "runtime.stability_test" in packages
+    assert "runtime.stability_test" not in packages
     assert "profiles" in packages
     assert "profiles.verification" in packages
     assert "profiles.uv" in packages

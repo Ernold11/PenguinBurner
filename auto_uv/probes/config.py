@@ -1,12 +1,12 @@
+"""Choose Auto-UV probe durations and companion load for generic Q2RTX configs."""
+
 from __future__ import annotations
 
 from dataclasses import replace
 import math
-from pathlib import Path
-import sys
 
-import stability.cuda_bruteforce as cuda_bruteforce
 from stability.q2rtx.constants import DEFAULT_SINGLE_PASS_TIMEOUT_S
+from stability.q2rtx.cuda_companion import cuda_bruteforce_companion_command
 from stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS, AUTO_UV_PROBE_TUNING
@@ -197,23 +197,3 @@ def base_q2rtx_probe_duration_s(base_duration_s: int | None = None) -> int:
     if base_duration_s is None:
         return int(AUTO_UV_DEFAULTS.probe_duration_s)
     return max(10, int(base_duration_s))
-
-
-def cuda_bruteforce_companion_command(
-    *,
-    gpu_index: int,
-    duration_s: int,
-) -> tuple[str, ...]:
-    script_path = cuda_bruteforce_script_path()
-    return (
-        str(sys.executable),
-        str(script_path),
-        "--gpu-index",
-        str(int(gpu_index)),
-        "--duration-seconds",
-        str(max(1, int(duration_s))),
-    )
-
-
-def cuda_bruteforce_script_path() -> Path:
-    return Path(cuda_bruteforce.__file__).resolve()

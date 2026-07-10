@@ -65,13 +65,13 @@ from auto_uv.performance_uv_loop import (
     run_performance_uv_loop,
     select_performance_auto_oc_candidate,
 )
-from auto_uv.q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
-from auto_uv.q2rtx.q2rtx_cuda_voltage_probe import probe_voltage_candidate
+from auto_uv.probes.runner import AutoUvProbeRunner
+from auto_uv.probes.voltage_probe import probe_voltage_candidate
 from auto_uv.run.scan_runtime_settings import read_scan_runtime_settings
 from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
     derive_efficiency_stop_streak_from_fps_variance,
 )
-from ui.features.auto_uv.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
+from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
 from auto_uv.persistence.verified_candidate_result_file import (
     read_verified_candidates,
 )
@@ -80,7 +80,7 @@ from auto_uv.persistence.auto_uv_persisted_json_files import (
     clear_auto_uv_stop_request,
 )
 from auto_uv.curve.vf_curve_flattening import build_flatten_target_for_plan
-from ui.features.auto_uv.vf_curve_ui_points import vf_curve_ui_points
+from auto_uv.probes.event_payload import vf_curve_event_points
 from auto_uv.run.voltage_sweep_state import (
     LowerVoltageSweepEvent,
     LowerVoltageSweepResult,
@@ -137,10 +137,10 @@ def run_voltage_frequency_undervolt_main_loop(
         cleanup_managed_q2rtx_processes(q2rtx_config, log=log)
         base_curve = list(gpu.runtime_default_plan)
         validate_base_vf_curve(base_curve)
-        emit_ui_json_event(
+        emit_auto_uv_event(
             event_callback,
             "base_curve",
-            points=vf_curve_ui_points(base_curve),
+            points=vf_curve_event_points(base_curve),
         )
         # The applied NVML memory offset is a transfer rate (MT/s); the realized
         # memory clock moves by half. Surface the clock delta so the status bar
@@ -148,7 +148,7 @@ def run_voltage_frequency_undervolt_main_loop(
         applied_memory_offset_mt_s = int(
             gpu.translated_gpu_policy.get("mem_clk_vf_offset_mhz") or 0
         )
-        emit_ui_json_event(
+        emit_auto_uv_event(
             event_callback,
             "memory_offset_applied",
             offset_mt_s=int(applied_memory_offset_mt_s),
@@ -321,7 +321,7 @@ def run_voltage_frequency_undervolt_main_loop(
                 tail_rise_bins=int(tail_rise_bins),
             )
         )
-        runner = Q2RtxCudaProbeRunner(
+        runner = AutoUvProbeRunner(
             reader=gpu.reader,
             live_voltage_reader=gpu.live_voltage_reader,
             q2rtx_config=q2rtx_config,
@@ -393,7 +393,7 @@ def run_voltage_frequency_undervolt_main_loop(
                 AUTO_UV_METRIC_TUNING.efficiency_stop_high_variance_streak
             ),
         )
-        emit_ui_json_event(
+        emit_auto_uv_event(
             event_callback,
             "derived_defaults",
             efficiency_stop_streak=int(efficiency_stop_streak_default.value),
@@ -1013,7 +1013,7 @@ def run_recovered_previous_crash_selection(
         settings,
         tail_rise_bins=int(recovery_tail_rise_bins),
     )
-    runner = Q2RtxCudaProbeRunner(
+    runner = AutoUvProbeRunner(
         reader=gpu.reader,
         live_voltage_reader=gpu.live_voltage_reader,
         q2rtx_config=q2rtx_config,

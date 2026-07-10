@@ -11,24 +11,24 @@ from typing import Callable
 from stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.domain.types import AutoUvProbeSummary, VfCurveCandidate
-from .probe_stability_decision import StabilityThresholds, evaluate_stable_run
-from .q2rtx_cuda_voltage_probe import probe_voltage_candidate
-from .q2rtx_cuda_voltage_probe import companion_duration_s_from_command
-from .q2rtx_cuda_probe_config import (
+from .stability_decision import StabilityThresholds, evaluate_stable_run
+from .voltage_probe import probe_voltage_candidate
+from .voltage_probe import companion_duration_s_from_command
+from .config import (
     q2rtx_cuda_probe_config_for_voltage_band,
     q2rtx_only_probe_config_for_voltage_band,
     reference_discovery_q2rtx_probe_config,
 )
-from ui.features.auto_uv.ui_json_event_writer import AutoUvEventCallback
-from ui.features.auto_uv.ui_voltage_probe_events import (
-    emit_ui_voltage_probe_finished,
-    emit_ui_voltage_probe_started,
+from auto_uv.domain.events import AutoUvEventCallback
+from .events import (
+    emit_voltage_probe_finished,
+    emit_voltage_probe_started,
 )
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 
 
 @dataclass(frozen=True, slots=True)
-class Q2RtxCudaProbeRunner:
+class AutoUvProbeRunner:
     reader: object
     live_voltage_reader: object
     q2rtx_config: Q2RTXStabilityConfig
@@ -127,7 +127,7 @@ class Q2RtxCudaProbeRunner:
             candidate_voltage_mv=int(candidate.voltage_mv),
             base_duration_s=int(self.short_probe_base_duration_s),
         )
-        emit_ui_voltage_probe_started(
+        emit_voltage_probe_started(
             self.event_callback,
             candidate,
             stage=str(phase_label),
@@ -162,7 +162,7 @@ class Q2RtxCudaProbeRunner:
             q2rtx_config=config,
             enforce_core_clock_floor=bool(enforce_target_core_clock_floor),
         )
-        emit_ui_voltage_probe_finished(
+        emit_voltage_probe_finished(
             self.event_callback,
             candidate,
             outcome,

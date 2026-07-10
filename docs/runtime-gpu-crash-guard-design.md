@@ -54,7 +54,7 @@ regressing a genuinely stable profile on a one-off event.
 | Xid reader (timestamp-filtered) | `stability/q2rtx/runtime.py` `_query_xid_messages_since` | detection source at runtime |
 | Adaptive runtime controller (already swaps tier curves live) | `runtime/gpu_control/adaptive_profile_runtime.py` `AdaptiveAutoUvRuntimeController` | the polling loop + curve-apply path |
 | Tier curves + safer-tier ladder | `auto_uv/scan_mode/uv_limits.py`, `auto_uv/run/crash_recovery.py` | the reaction ladder |
-| Confirm-before-acting discipline | `auto_uv/q2rtx/q2rtx_cuda_voltage_probe.py` `run_probe_with_hang_confirmation` | false-positive philosophy |
+| Confirm-before-acting discipline | `auto_uv/probes/voltage_probe.py` `run_probe_with_hang_confirmation` | false-positive philosophy |
 | Live V/F apply | `auto_uv/gpu/gpu_vf_curve_applier.py`, NVML/NVAPI helpers | applying a downstep |
 
 The controller already runs a periodic `update()` and owns curve application, so

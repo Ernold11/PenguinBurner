@@ -1,9 +1,11 @@
+"""Build transport-neutral payloads for Auto-UV probe events."""
+
 from __future__ import annotations
 
 from auto_uv.shared.probe_data_fields import read_field
 
 
-def probe_summary_ui_payload(
+def probe_summary_event_payload(
     probe,
     *,
     stage: str,
@@ -62,3 +64,19 @@ def _string_or_empty(value) -> str:
     if value in (None, ""):
         return ""
     return str(value)
+
+
+def vf_curve_event_points(plan: list[dict]) -> list[dict]:
+    points = []
+    for item in sorted(plan, key=lambda value: int(value["voltage_mv"])):
+        target_mhz = int(item["target_mhz"])
+        base_mhz = int(item["base_mhz"])
+        points.append(
+            {
+                "voltage_mv": int(item["voltage_mv"]),
+                "clock_mhz": target_mhz,
+                "base_mhz": base_mhz,
+                "offset_mhz": target_mhz - base_mhz,
+            }
+        )
+    return points

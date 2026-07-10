@@ -16,19 +16,19 @@ from auto_uv.domain.user_options import (
     AUTO_UV_DEFAULTS,
     AUTO_UV_STALL_TUNING,
 )
-from auto_uv.q2rtx.q2rtx_cuda_probe_config import (
+from auto_uv.probes.config import (
     base_q2rtx_probe_duration_s,
     cuda_companion_enabled_for_voltage_band,
     tiered_q2rtx_probe_duration_s,
 )
-from auto_uv.q2rtx.probe_runtime_guardrails import (
+from auto_uv.probes.runtime_guardrails import (
     core_clock_below_floor,
     percent,
     probe_failure_should_mark_voltage_unsafe,
     target_core_clock_floor,
     telemetry_sample_is_busy,
 )
-from auto_uv.q2rtx.q2rtx_probe_summary import (
+from auto_uv.probes.summary import (
     loaded_telemetry_diagnostics,
     loaded_telemetry_means,
     saturated_probe_tail_samples,
@@ -95,7 +95,7 @@ def test_base_probe_duration_clamps_to_minimum_ten() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# probe_runtime_guardrails.py
+# runtime_guardrails.py
 # --------------------------------------------------------------------------- #
 
 
@@ -180,7 +180,7 @@ def test_probe_failure_unknown_reason_marks_unsafe() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# q2rtx_probe_summary.py
+# summary.py
 # --------------------------------------------------------------------------- #
 
 

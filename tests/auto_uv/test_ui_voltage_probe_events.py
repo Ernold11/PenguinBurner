@@ -6,9 +6,9 @@ from auto_uv.domain.types import (
     StableRunDecision,
     VfCurveCandidate,
 )
-from ui.features.auto_uv.ui_voltage_probe_events import (
-    emit_ui_voltage_probe_finished,
-    emit_ui_voltage_probe_started,
+from auto_uv.probes.events import (
+    emit_voltage_probe_finished,
+    emit_voltage_probe_started,
 )
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from auto_uv_test_data import base_curve
@@ -23,7 +23,7 @@ def test_ui_probe_start_events_create_curve_and_table_row() -> None:
         flattened_plan=base_curve(900, 1000, 25, 2200, 20),
     )
 
-    emit_ui_voltage_probe_started(
+    emit_voltage_probe_started(
         lambda name, payload: events.append((name, payload)),
         candidate,
         stage="candidate",
@@ -55,7 +55,7 @@ def test_ui_probe_start_events_include_auto_oc_progress_metadata() -> None:
         },
     )
 
-    emit_ui_voltage_probe_started(
+    emit_voltage_probe_started(
         lambda name, payload: events.append((name, payload)),
         candidate,
         stage="candidate",
@@ -90,7 +90,7 @@ def test_ui_probe_result_payload_contains_measured_table_values() -> None:
         measured_voltage_mv=947.8,
     )
 
-    emit_ui_voltage_probe_finished(
+    emit_voltage_probe_finished(
         lambda name, payload: events.append((name, payload)),
         candidate,
         outcome,

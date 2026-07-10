@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import auto_uv.q2rtx.q2rtx_cuda_voltage_probe as probe_module
-from auto_uv.q2rtx.q2rtx_cuda_voltage_probe import run_probe_with_hang_confirmation
+import auto_uv.probes.voltage_probe as probe_module
+from auto_uv.probes.voltage_probe import run_probe_with_hang_confirmation
 from stability.q2rtx.runtime import FRAME_HANG_WATCHDOG_REASON
 
 

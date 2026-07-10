@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from auto_uv.q2rtx.q2rtx_cuda_voltage_probe import (
+from auto_uv.probes.voltage_probe import (
     probe_crash_marker_details,
     probe_unsafe_details,
 )

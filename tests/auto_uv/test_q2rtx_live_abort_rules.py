@@ -5,10 +5,10 @@ from auto_uv.domain.user_options import (
     AUTO_UV_METRIC_TUNING,
     AUTO_UV_STALL_TUNING,
 )
-from auto_uv.q2rtx.probe_runtime_guardrails import (
+from auto_uv.probes.runtime_guardrails import (
     probe_failure_should_mark_voltage_unsafe,
 )
-from auto_uv.q2rtx.q2rtx_live_abort_rules import (
+from auto_uv.probes.live_abort import (
     low_live_clock_abort_reason,
     selected_nvidia_gpu_idle_abort_reason,
     telemetry_live_abort_reason,

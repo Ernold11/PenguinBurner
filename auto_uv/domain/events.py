@@ -1,4 +1,4 @@
-"""Emit Auto-UV JSON events to the UI callback.
+"""Emit compact Auto-UV events to an optional consumer callback.
 
 The writer strips None values so every UI payload stays compact and predictable.
 """
@@ -11,7 +11,7 @@ from collections.abc import Callable
 AutoUvEventCallback = Callable[[str, dict], None]
 
 
-def emit_ui_json_event(
+def emit_auto_uv_event(
     callback: AutoUvEventCallback | None,
     event: str,
     **payload,

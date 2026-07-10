@@ -3,15 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from stability.q2rtx.long_stability_config import (
+    build_long_stability_test_config,
+    long_stability_workload_durations,
+)
 from stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.domain.types import AutoUvProbeSummary
 from auto_uv.final_verification import fan_curve, result_files
 from auto_uv.final_verification.main_loop import final_candidate
-from auto_uv.final_verification.probe_config import (
-    final_q2rtx_cuda_duration_s,
-    final_q2rtx_cuda_probe_config,
-)
 from auto_uv.persistence import auto_uv_persisted_json_files as persisted_files
 from auto_uv_test_data import wide_base_curve
 
@@ -51,7 +51,7 @@ def _summary(
 
 
 def test_final_probe_duration_split_keeps_cuda_inside_total_budget() -> None:
-    q2rtx_s, cuda_s = final_q2rtx_cuda_duration_s(300)
+    q2rtx_s, cuda_s = long_stability_workload_durations(300)
 
     assert (q2rtx_s, cuda_s) == (225, 75)
 
@@ -76,7 +76,7 @@ def test_stop_request_abort_final_choice_marker(tmp_path, monkeypatch) -> None:
 
 
 def test_final_probe_config_adds_cuda_and_long_timeout() -> None:
-    config = final_q2rtx_cuda_probe_config(
+    config = build_long_stability_test_config(
         Q2RTXStabilityConfig(gpu_index=2, single_pass_timeout_s=9999.0),
         total_duration_s=300,
     )

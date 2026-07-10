@@ -14,7 +14,7 @@ import stability.q2rtx.install as q2rtx_install
 import stability.q2rtx.runtime as q2rtx_runtime
 import stability.q2rtx.assets as q2rtx_assets
 from stability.q2rtx.assets import resolve_q2rtx_executable
-import runtime.stability_test.q2rtx_cuda_workload_config as q2rtx_workload_config
+import stability.q2rtx.config as q2rtx_workload_config
 from stability.q2rtx.constants import (
     PB_Q2RTX_ASSET_PREFIX,
     PB_Q2RTX_ASSET_SUFFIX,
@@ -934,7 +934,7 @@ def test_frame_watchdog_threshold_zero_disables() -> None:
 
 
 def test_hang_watchdog_reason_classifies_as_critical_gpu_hang() -> None:
-    from auto_uv.q2rtx.probe_stability_decision import classify_failed_result
+    from auto_uv.probes.stability_decision import classify_failed_result
     from auto_uv.domain.types import FailureKind, FailureSeverity
 
     decision = classify_failed_result(

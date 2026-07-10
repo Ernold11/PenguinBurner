@@ -1,4 +1,4 @@
-"""Summarize Q2RTX/CUDA probe output into the Auto-UV probe data model.
+"""Summarize generic stability output into the Auto-UV probe data model.
 
 The summary uses only loaded telemetry samples so flattening and stability checks reflect actual GPU load.
 """

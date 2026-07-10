@@ -3,7 +3,7 @@
 Targets previously-uncovered branches in:
 - auto_uv/curve/performance_sweep_profile.py
 - auto_uv/shared/probe_data_fields.py
-- ui/features/auto_uv/probe_summary_ui_payload.py
+- auto_uv/probes/event_payload.py
 - auto_uv/cli_runtime.py
 """
 
@@ -33,7 +33,7 @@ from auto_uv.curve.performance_sweep_profile import (
 )
 from auto_uv.curve.vf_curve_flattening import FlatteningRules
 from auto_uv.shared.probe_data_fields import numeric_values, percent, read_field
-from ui.features.auto_uv.probe_summary_ui_payload import probe_summary_ui_payload
+from auto_uv.probes.event_payload import probe_summary_event_payload
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 from common.penguin_burner_errors import NvmlError
 
@@ -169,11 +169,11 @@ def test_read_field_dict_and_object_and_percent() -> None:
 
 
 # ---------------------------------------------------------------------------
-# probe_summary_ui_payload.py
+# event_payload.py
 # ---------------------------------------------------------------------------
 
 
-def test_probe_summary_ui_payload_reads_dict_probe() -> None:
+def test_probe_summary_event_payload_reads_dict_probe() -> None:
     """Line 55: dict-backed probe goes through the dict.get() branch."""
     probe = {
         "candidate_voltage_mv": 925,
@@ -186,7 +186,7 @@ def test_probe_summary_ui_payload_reads_dict_probe() -> None:
         "perf_cap_reason": None,
         "log_path": "/tmp/run.log",
     }
-    payload = probe_summary_ui_payload(probe, stage="probe", decision="keep")
+    payload = probe_summary_event_payload(probe, stage="probe", decision="keep")
 
     assert payload["voltage_mv"] == 925
     assert payload["clock_mhz"] == 2700

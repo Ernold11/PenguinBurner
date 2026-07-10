@@ -6,12 +6,12 @@ from types import SimpleNamespace
 import pytest
 
 from auto_uv.persistence.verified_candidate_result_file import probe_metrics
-from auto_uv.q2rtx.q2rtx_probe_summary import (
+from auto_uv.probes.summary import (
     loaded_telemetry_means,
     summarize_loaded_perf_cap_reason,
     summarize_q2rtx_cuda_probe,
 )
-from ui.features.auto_uv.probe_summary_ui_payload import probe_summary_ui_payload
+from auto_uv.probes.event_payload import probe_summary_event_payload
 from stability.q2rtx.models import Q2RTXBenchmarkSummary
 
 
@@ -85,7 +85,7 @@ def test_probe_summary_records_loaded_median_and_p90_diagnostics() -> None:
     assert summary.observed_vdroop_mv == 10.0
     assert summary.perf_cap_reason == "sw-power+hw-thermal"
 
-    payload = probe_summary_ui_payload(summary, stage="probe")
+    payload = probe_summary_event_payload(summary, stage="probe")
     metrics = probe_metrics(summary)
     assert payload["loaded_median_core_clock_mhz"] == 2400.0
     assert payload["perf_cap_reason"] == "sw-power+hw-thermal"

@@ -27,10 +27,10 @@ from auto_uv.curve.vf_curve_flattening import (
     build_flattened_plan,
 )
 from auto_uv.persistence.verified_candidate_result_file import write_latest_verified_candidate
-from auto_uv.q2rtx.q2rtx_cuda_probe_config import reference_discovery_q2rtx_duration_s
-from auto_uv.q2rtx.q2rtx_cuda_probe_runner import Q2RtxCudaProbeRunner
-from ui.features.auto_uv.probe_summary_ui_payload import probe_summary_ui_payload
-from ui.features.auto_uv.ui_json_event_writer import AutoUvEventCallback, emit_ui_json_event
+from auto_uv.probes.config import reference_discovery_q2rtx_duration_s
+from auto_uv.probes.runner import AutoUvProbeRunner
+from auto_uv.probes.event_payload import probe_summary_event_payload
+from auto_uv.domain.events import AutoUvEventCallback, emit_auto_uv_event
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
 
 
@@ -75,7 +75,7 @@ def run_discovery_probe(
             "baseline load reference power-limit="
             f"{int(reference_power_limit_w)}W scan-power-limit={int(scan_power_limit_w)}W",
         )
-    runner = Q2RtxCudaProbeRunner(
+    runner = AutoUvProbeRunner(
         reader=gpu.reader,
         live_voltage_reader=gpu.live_voltage_reader,
         q2rtx_config=q2rtx_config,
@@ -89,7 +89,7 @@ def run_discovery_probe(
         marker_details=marker_details,
         event_callback=event_callback,
     )
-    emit_ui_json_event(
+    emit_auto_uv_event(
         event_callback,
         "probe_start",
         stage="base-baseline",
@@ -106,10 +106,10 @@ def run_discovery_probe(
         label_voltage_mv=int(point.voltage_mv),
         label_clock_mhz=int(point.target_mhz),
     )
-    emit_ui_json_event(
+    emit_auto_uv_event(
         event_callback,
         "probe_result",
-        **probe_summary_ui_payload(
+        **probe_summary_event_payload(
             summary,
             stage="base-baseline",
             decision="pass" if getattr(result, "success", False) else "fail",

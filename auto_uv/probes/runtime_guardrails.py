@@ -1,4 +1,4 @@
-"""Live abort rules for a running Q2RTX/CUDA voltage probe.
+"""Runtime guardrails for an Auto-UV candidate probe.
 
 These checks stop probes early on hard evidence: lost load, idle selected GPU,
 or clocks below floor.

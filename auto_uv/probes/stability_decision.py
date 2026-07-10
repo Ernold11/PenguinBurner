@@ -1,3 +1,5 @@
+"""Convert generic stability results into Auto-UV candidate decisions."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

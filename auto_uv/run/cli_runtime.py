@@ -32,7 +32,7 @@ from runtime.support.runtime_service import (
     daemonize_with_systemd,
     install_systemd_service,
 )
-from runtime.stability_test.q2rtx_cuda_workload_config import build_stability_config
+from stability.q2rtx.config import build_stability_config
 
 
 def _noop_emit_json_event(_enabled: bool, _event: str, **_payload) -> None:

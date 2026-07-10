@@ -90,15 +90,15 @@ def test_discovery_probe_runner_uses_live_voltage_reader_keyword(monkeypatch) ->
             captured["label_clock_mhz"] = label_clock_mhz
             return object(), type("Result", (), {"success": True, "reason": "ok"})()
 
-    monkeypatch.setattr(baseline_probe, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(baseline_probe, "AutoUvProbeRunner", FakeRunner)
     monkeypatch.setattr(
         baseline_probe,
-        "emit_ui_json_event",
+        "emit_auto_uv_event",
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
         baseline_probe,
-        "probe_summary_ui_payload",
+        "probe_summary_event_payload",
         lambda *args, **kwargs: {},
     )
     monkeypatch.setattr(baseline_probe, "log_benchmark", lambda *args, **kwargs: None)
@@ -154,15 +154,15 @@ def test_discovery_probe_logs_selected_gpu_light_load_diagnostic(monkeypatch) ->
                 ),
             )
 
-    monkeypatch.setattr(baseline_probe, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(baseline_probe, "AutoUvProbeRunner", FakeRunner)
     monkeypatch.setattr(
         baseline_probe,
-        "emit_ui_json_event",
+        "emit_auto_uv_event",
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
         baseline_probe,
-        "probe_summary_ui_payload",
+        "probe_summary_event_payload",
         lambda *args, **kwargs: {},
     )
 
@@ -345,7 +345,7 @@ def test_auto_uv_final_choice_runs_before_final_verification(monkeypatch) -> Non
             SimpleNamespace(measured_clock_mhz=2200.0),
         ),
     )
-    monkeypatch.setattr(undervolt_main_loop, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(undervolt_main_loop, "AutoUvProbeRunner", FakeRunner)
     monkeypatch.setattr(
         undervolt_main_loop,
         "adjust_baseline_to_measured_clock",
@@ -558,7 +558,7 @@ def test_final_verification_failure_offers_safer_sorted_candidates(
             SimpleNamespace(measured_clock_mhz=2753.0),
         ),
     )
-    monkeypatch.setattr(undervolt_main_loop, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(undervolt_main_loop, "AutoUvProbeRunner", FakeRunner)
     monkeypatch.setattr(
         undervolt_main_loop,
         "adjust_baseline_to_measured_clock",
@@ -769,7 +769,7 @@ def test_performance_auto_oc_runs_before_final_choice(monkeypatch) -> None:
             SimpleNamespace(measured_clock_mhz=2745.0),
         ),
     )
-    monkeypatch.setattr(undervolt_main_loop, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(undervolt_main_loop, "AutoUvProbeRunner", FakeRunner)
     monkeypatch.setattr(
         undervolt_main_loop,
         "adjust_baseline_to_measured_clock",
@@ -1026,7 +1026,7 @@ def test_previous_crash_resume_starts_auto_oc_from_next_saved_voltage(
             SimpleNamespace(measured_clock_mhz=2700.0),
         ),
     )
-    monkeypatch.setattr(undervolt_main_loop, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(undervolt_main_loop, "AutoUvProbeRunner", FakeRunner)
     monkeypatch.setattr(
         undervolt_main_loop,
         "adjust_baseline_to_measured_clock",
@@ -1201,7 +1201,7 @@ def test_auto_uv_user_stop_offers_stable_history_for_final_choice(monkeypatch) -
             SimpleNamespace(measured_clock_mhz=2200.0),
         ),
     )
-    monkeypatch.setattr(undervolt_main_loop, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(undervolt_main_loop, "AutoUvProbeRunner", FakeRunner)
     monkeypatch.setattr(
         undervolt_main_loop,
         "adjust_baseline_to_measured_clock",
@@ -2256,7 +2256,7 @@ def test_orchestration_raises_when_baseline_probe_fails(monkeypatch) -> None:
             SimpleNamespace(measured_clock_mhz=2200.0),
         ),
     )
-    monkeypatch.setattr(undervolt_main_loop, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(undervolt_main_loop, "AutoUvProbeRunner", FakeRunner)
     monkeypatch.setattr(
         undervolt_main_loop,
         "build_flatten_target_for_plan",
@@ -2319,7 +2319,7 @@ def test_orchestration_keyboard_interrupt_reraises_without_final_choice(
             SimpleNamespace(measured_clock_mhz=2200.0),
         ),
     )
-    monkeypatch.setattr(undervolt_main_loop, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(undervolt_main_loop, "AutoUvProbeRunner", FakeRunner)
     monkeypatch.setattr(
         undervolt_main_loop,
         "adjust_baseline_to_measured_clock",
@@ -2440,7 +2440,7 @@ def test_orchestration_sweep_hooks_probe_and_record_candidates(monkeypatch) -> N
             SimpleNamespace(measured_clock_mhz=2200.0),
         ),
     )
-    monkeypatch.setattr(undervolt_main_loop, "Q2RtxCudaProbeRunner", FakeRunner)
+    monkeypatch.setattr(undervolt_main_loop, "AutoUvProbeRunner", FakeRunner)
     monkeypatch.setattr(
         undervolt_main_loop,
         "adjust_baseline_to_measured_clock",

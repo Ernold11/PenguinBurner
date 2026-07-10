@@ -10,8 +10,8 @@ from auto_uv.domain.user_options import (
     AUTO_UV_METRIC_TUNING,
     AUTO_UV_STALL_TUNING,
 )
-from .probe_runtime_guardrails import core_clock_below_floor, telemetry_sample_is_busy
-from .q2rtx_probe_summary import mean
+from .runtime_guardrails import core_clock_below_floor, telemetry_sample_is_busy
+from .summary import mean
 
 
 def telemetry_live_abort_reason(

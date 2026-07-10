@@ -3,17 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from auto_uv.domain.types import FailureKind, FailureSeverity
-from auto_uv.q2rtx.q2rtx_cuda_probe_config import (
+from stability.q2rtx.cuda_companion import (
     cuda_bruteforce_companion_command,
 )
-from auto_uv.q2rtx.probe_stability_decision import (
+from auto_uv.probes.stability_decision import (
     classify_failed_result,
     evaluate_cuda_companion,
     evaluate_loaded_telemetry,
     evaluate_stable_run,
     sample_is_busy,
 )
-from auto_uv.q2rtx.probe_stability_decision import StabilityThresholds
+from auto_uv.probes.stability_decision import StabilityThresholds
 from auto_uv_test_data import stable_probe_result
 
 
