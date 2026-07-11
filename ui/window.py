@@ -32,6 +32,7 @@ from .error_reporting import ErrorReporter
 from ui.features.tuning.gpu_selection import persist_runtime_gpu_index
 from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
 from ui.features.tuning.final_choice_controller import handle_final_choice_request
+from . import theme
 from .models import candidate_id_from_payload
 from .models import event_base_points
 from .models import event_points
@@ -370,6 +371,27 @@ class MainWindow(ProfileActionsMixin):
             self.header.set_stage("Complete")
             self.header.set_candidate(_probe_text(payload))
             self._load_profiles()
+        elif event == "tier_confirmed":
+            tier_name = str(payload.get("tier", ""))
+            self.controls.set_status_text(
+                f"{tier_name.title()} tier confirmed: "
+                f"{payload.get('voltage_mv')}mV @ {payload.get('target_mhz')}MHz"
+            )
+            tier_points = event_points(payload)
+            tier_color = _TIER_CURVE_COLORS.get(tier_name)
+            if tier_points and tier_color:
+                self.vf_plot.add_comparison_points(
+                    tier_points,
+                    name=f"{tier_name.title()} tier",
+                    color=tier_color,
+                    alpha=220,
+                    width=2,
+                )
+        elif event == "tier_skipped":
+            self.controls.set_status_text(
+                f"{str(payload.get('tier', '')).title()} tier skipped: "
+                f"{payload.get('reason') or 'no stable candidate found'}"
+            )
 
     def _handle_human_line(self, line: str) -> None:
         lower = line.lower()
@@ -593,6 +615,13 @@ def _probe_text(payload: dict) -> str:
     voltage = status_value(payload.get("voltage_mv") or payload.get("candidate_voltage_mv"))
     clock = status_value(payload.get("clock_mhz") or payload.get("lock_clock_mhz"))
     return f"{voltage or 'n/a'} mV @ {clock or 'n/a'} MHz"
+
+
+_TIER_CURVE_COLORS = {
+    "efficiency": theme.TIER_CURVE_EFFICIENCY,
+    "balanced": theme.TIER_CURVE_BALANCED,
+    "performance": theme.TIER_CURVE_PERFORMANCE,
+}
 
 
 def _memory_offset_status_text(offset_mhz) -> str:

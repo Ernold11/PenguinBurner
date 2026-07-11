@@ -103,6 +103,14 @@ QPushButton#autoUvPresetButton[presetId="performance"]:checked {{
 QPushButton#autoUvPresetButton[presetId="performance"]:checked:hover {{
     border-color: #fff0f0;
 }}
+QPushButton#autoUvPresetButton[presetId="adaptive"]:checked {{
+    background: {theme.PRIMARY_BUTTON_BG};
+    border-color: {theme.PRIMARY_BUTTON_BORDER};
+    color: {theme.PRIMARY_BUTTON_TEXT};
+}}
+QPushButton#autoUvPresetButton[presetId="adaptive"]:checked:hover {{
+    border-color: {theme.PRIMARY_BUTTON_HOVER_BORDER};
+}}
 QPushButton#startAutoUvButton {{
     background: {theme.AUTO_UV_BUTTON_BG};
     border-color: {theme.AUTO_UV_BUTTON_BORDER};

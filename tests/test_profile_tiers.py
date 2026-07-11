@@ -13,6 +13,7 @@ from profiles.uv.profile_tiers import (
     generated_profile_tier,
     load_profile_tier_disabled_profile_ids,
     load_profile_tier_assignments,
+    normalize_profile_tier,
     profile_tier_disabled,
     profile_tier_summary_fields,
     profile_tier_label,
@@ -49,6 +50,13 @@ def test_profile_tier_infers_legacy_balanced_from_tail_shape() -> None:
     assert generated_profile_tier({"auto_uv_mode": "efficiency", "tail_rise_bins": 4}) == PROFILE_TIER_BALANCED
     assert generated_profile_tier({"auto_uv_mode": "efficiency", "tail_rise_bins": 0}) == PROFILE_TIER_EFFICIENCY
     assert profile_tier_label("perf") == "Performance"
+
+
+def test_normalize_profile_tier_keeps_adaptive_unmapped() -> None:
+    # 'adaptive' is a scan mode, not one of the three tiers; adaptive runs are
+    # made tier-agnostic at the crash-marker boundary (auto_uv_run_profile_tier
+    # and the unsafe-cache readers), not by mapping the mode to a tier here.
+    assert normalize_profile_tier("adaptive") == ""
 
 
 def test_profile_tier_assignment_is_one_tier_per_profile(tmp_path) -> None:

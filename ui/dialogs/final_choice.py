@@ -54,6 +54,8 @@ def candidate_status_text(
             parts.append("Resume from here")
         elif reason == "final-verification-failed":
             parts.append("Next safer pick")
+        elif reason.startswith("adaptive-"):
+            parts.append("Tier suggestion")
         else:
             parts.append(
                 "Highest FPS"
@@ -110,7 +112,11 @@ def select_final_candidate(
     by_id = {
         str(candidate.get("candidate_id", "")): candidate for candidate in candidates
     }
-    if previous_crash and requested_default_id in by_id:
+    # Crash resume and adaptive tiers preselect the backend's requested
+    # candidate (the failed point / the tier's confirmed point), not the
+    # mode-metric best.
+    honors_requested_default = previous_crash or reason.startswith("adaptive-")
+    if honors_requested_default and requested_default_id in by_id:
         default_candidate_id = requested_default_id
     else:
         default_candidate_id = (
@@ -118,13 +124,16 @@ def select_final_candidate(
             or requested_default_id
         )
     dialog = QtWidgets.QDialog(parent)
-    dialog.setWindowTitle(
-        "Resume Auto-UV Candidate"
-        if previous_crash
-        else "Choose Safer Auto-UV Candidate"
-        if final_verification_failed
-        else "Choose Final verification candidate"
-    )
+    if reason.startswith("adaptive-"):
+        tier_name = reason.removeprefix("adaptive-").title()
+        window_title = f"Tune {tier_name} profile candidate"
+    elif previous_crash:
+        window_title = "Resume Auto-UV Candidate"
+    elif final_verification_failed:
+        window_title = "Choose Safer Auto-UV Candidate"
+    else:
+        window_title = "Choose Final verification candidate"
+    dialog.setWindowTitle(window_title)
     dialog.setMinimumWidth(900)
     dialog.setMinimumHeight(360)
     layout = QtWidgets.QVBoxLayout(dialog)
@@ -239,6 +248,12 @@ def final_choice_intro_text(
     recovery_decision: dict | None = None,
 ) -> str:
     reason = str(request_reason or "").strip().lower()
+    if reason.startswith("adaptive-"):
+        return (
+            "The adaptive sweep is complete. This tier's confirmed candidate "
+            "is selected for the long Final verification; pick another passed "
+            "candidate to tune this tier's profile."
+        )
     stopped = reason == "user-stop"
     previous_crash = reason == "previous-crash"
     final_verification_failed = reason == "final-verification-failed"

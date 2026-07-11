@@ -1700,6 +1700,54 @@ def test_auto_uv_run_profile_tier_uses_tail_bins_for_balanced_mode() -> None:
     )
 
 
+def test_auto_uv_run_profile_tier_is_tier_agnostic_for_adaptive_runs() -> None:
+    # Adaptive runs sweep all three tiers; falling into tail-bins inference
+    # would mislabel their crash markers as efficiency history.
+    settings = SimpleNamespace(auto_uv_mode="adaptive")
+
+    assert (
+        undervolt_main_loop.auto_uv_run_profile_tier(
+            {"auto_uv_requested_mode": "adaptive", "auto_uv_mode": "adaptive"},
+            settings,
+            tail_rise_bins=0,
+        )
+        == ""
+    )
+    assert (
+        undervolt_main_loop.auto_uv_run_profile_tier(
+            {},
+            settings,
+            tail_rise_bins=0,
+        )
+        == ""
+    )
+
+
+def test_recovery_records_after_adaptive_crash_offer_any_tier() -> None:
+    records = [
+        {
+            "candidate_id": "perf-905",
+            "candidate_voltage_mv": 905,
+            "lock_clock_mhz": 2910,
+            "generated_profile_tier": "performance",
+            "plan": [{"voltage_mv": 905, "new_offset_mhz": 0}],
+        },
+    ]
+
+    performance_run = undervolt_main_loop.recovery_candidate_records_for_failed_run(
+        records,
+        crash_recovery_entry={
+            "candidate_voltage_mv": 875,
+            "details": {
+                "marker_details": {"auto_uv_mode": "adaptive", "tail_rise_bins": 0}
+            },
+        },
+        target_profile_tier="performance",
+    )
+
+    assert [record["candidate_id"] for record in performance_run] == ["perf-905"]
+
+
 def test_crash_recovery_decision_reads_previous_device_lost_log(tmp_path) -> None:
     log_path = tmp_path / "q2rtx.log"
     log_path.write_text(
@@ -2477,3 +2525,117 @@ def test_orchestration_sweep_hooks_probe_and_record_candidates(monkeypatch) -> N
     )
     # The candidate's clock ceiling was retargeted for the sweep candidate.
     assert captured.get("retargets")
+
+
+def test_adaptive_tier_power_limit_scales_from_the_balanced_anchor() -> None:
+    from auto_uv.main_loop import adaptive_tier_power_limit_w
+
+    # No table entry for this GPU: the scan-wide request passes through.
+    assert (
+        adaptive_tier_power_limit_w(
+            power_limit_pct=None,
+            baseline_power_limit_w=360,
+            scan_request_w=320,
+            balanced_pct=None,
+        )
+        == 320
+    )
+    # Untouched slider: each tier gets its uv_limits share of the stock
+    # budget (5080: efficiency 77.44% of 360W).
+    assert (
+        adaptive_tier_power_limit_w(
+            power_limit_pct=77.44,
+            baseline_power_limit_w=360,
+            scan_request_w=None,
+            balanced_pct=88.72,
+        )
+        == 279
+    )
+    # A manual slider value is the balanced anchor: every tier scales
+    # proportionally around it.
+    assert (
+        adaptive_tier_power_limit_w(
+            power_limit_pct=77.44,
+            baseline_power_limit_w=360,
+            scan_request_w=300,
+            balanced_pct=88.72,
+        )
+        == 262
+    )
+    # Never above the stock board budget.
+    assert (
+        adaptive_tier_power_limit_w(
+            power_limit_pct=100.0,
+            baseline_power_limit_w=360,
+            scan_request_w=400,
+            balanced_pct=88.72,
+        )
+        == 360
+    )
+
+
+def test_adaptive_tier_order_and_descent_tails() -> None:
+    from auto_uv.main_loop import (
+        ADAPTIVE_TIER_ORDER,
+        adaptive_tier_descent_tail_rise_bins,
+    )
+    from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
+
+    # Efficiency first: it descends deepest (most fragile), so it soaks the
+    # full final duration while shallower tiers get the graduated confirm.
+    assert ADAPTIVE_TIER_ORDER == ("efficiency", "balanced", "performance")
+    # Each tier descends WITH its own tail — the tail compounds through the
+    # measured-clock ratchet, so it cannot be decorated on after a tail-less
+    # descent. Efficiency descends tail-less in pass 1 (its loop raises +2 in
+    # the tail-tune pass); balanced/performance carry their full tail.
+    assert adaptive_tier_descent_tail_rise_bins("efficiency") == int(
+        AUTO_UV_DEFAULTS.tail_rise_bins
+    )
+    assert adaptive_tier_descent_tail_rise_bins("balanced") == int(
+        AUTO_UV_DEFAULTS.balanced_tail_rise_bins
+    )
+    assert adaptive_tier_descent_tail_rise_bins("performance") == int(
+        AUTO_UV_DEFAULTS.performance_tail_rise_bins
+    )
+
+
+def test_clamp_power_limit_keeps_request_inside_card_range() -> None:
+    from auto_uv.gpu.gpu_vf_curve_applier import LiveGpuVfCurveApplier
+
+    applier = LiveGpuVfCurveApplier(
+        gpu_index=0,
+        gpu=SimpleNamespace(),
+        runtime_default_plan=[],
+        translated_gpu_policy={"power_limit_w": 360},
+        min_power_limit_w=300,
+        max_power_limit_w=390,
+    )
+    # An efficiency tier's 279W computed cap clamps UP to the 300W hardware
+    # floor instead of being rejected by NVML.
+    assert applier.clamp_power_limit_w(279) == 300
+    assert applier.clamp_power_limit_w(420) == 390
+    assert applier.clamp_power_limit_w(330) == 330
+
+
+def test_graduated_final_verification_durations() -> None:
+    from auto_uv.main_loop import (
+        final_verification_duration_for_tier,
+        SECONDARY_FINAL_VERIFICATION_S,
+    )
+
+    # The deepest (index 0) profile soaks the full configured duration; the
+    # shallower tiers get the shorter confirm, never longer than configured.
+    assert final_verification_duration_for_tier(0, configured_final_duration_s=300) == 300
+    assert (
+        final_verification_duration_for_tier(1, configured_final_duration_s=300)
+        == SECONDARY_FINAL_VERIFICATION_S
+    )
+    assert final_verification_duration_for_tier(2, configured_final_duration_s=60) == 60
+    # The Auto-OC tier's climbed point is new territory, never a re-proven
+    # trunk edge, so it always soaks the full configured duration.
+    assert (
+        final_verification_duration_for_tier(
+            2, configured_final_duration_s=300, runs_auto_oc=True
+        )
+        == 300
+    )

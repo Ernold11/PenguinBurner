@@ -5,6 +5,8 @@ import html
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from ..assets import asset_image_path
 from ui.features.tuning.gpu_selection import gpu_choices_with_fallback
+from ui.features.tuning.tuning import AUTO_UV_PRESET_ADAPTIVE
+from ui.features.tuning.tuning import AUTO_UV_PRESET_BALANCED
 from ui.features.tuning.tuning import AUTO_UV_PRESET_EFFICIENCY
 from ui.features.tuning.tuning import AUTO_UV_PRESET_PERFORMANCE
 from ui.features.tuning.tuning import DEFAULT_AUTO_UV_PRESET
@@ -181,6 +183,12 @@ def select_scan_tuning(
             "the tail of the curve goes 4 V/F bins up."
         ),
         "performance": auto_uv_performance_preset_tooltip(),
+        "adaptive": (
+            "One sweep discovers Efficiency, Balanced and Performance at "
+            "once (about the time of a single classic scan). Each tier "
+            "keeps its usual shape and you can still tune every profile "
+            "individually before it is verified and saved."
+        ),
     }
     for preset in auto_uv_presets():
         label = (
@@ -358,9 +366,41 @@ def select_scan_tuning(
         tooltip="Editable core clock cap for the internal Performance Auto-OC pass.",
     )
 
+    adaptive_page = QtWidgets.QWidget()
+    adaptive_form = _advanced_form_layout(QtCore=QtCore, QtWidgets=QtWidgets)
+    adaptive_page.setLayout(adaptive_form)
+    # The adaptive page mirrors the per-tier fields so the values the user
+    # tunes here propagate to the shared canonical spins (and vice versa) —
+    # one sweep still honors every tier-specific option.
+    _add_form_row(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        form_layout=adaptive_form,
+        text="Efficiency min voltage",
+        widget=_mirrored_spin(QtWidgets, voltage_floor_spin),
+        tooltip="Lowest V/F voltage bin the shared sweep may try (efficiency depth).",
+    )
+    _add_form_row(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        form_layout=adaptive_form,
+        text="Auto-OC voltage target",
+        widget=_mirrored_spin(QtWidgets, performance_voltage_spin),
+        tooltip="Voltage bin the Performance tier's Auto-OC pass targets.",
+    )
+    _add_form_row(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        form_layout=adaptive_form,
+        text="Auto-OC clock target",
+        widget=_mirrored_spin(QtWidgets, performance_clock_spin),
+        tooltip="Core clock cap for the Performance tier's Auto-OC pass.",
+    )
+
     advanced_pages[AUTO_UV_PRESET_EFFICIENCY] = efficiency_page
-    advanced_pages[DEFAULT_AUTO_UV_PRESET] = balanced_page
+    advanced_pages[AUTO_UV_PRESET_BALANCED] = balanced_page
     advanced_pages[AUTO_UV_PRESET_PERFORMANCE] = performance_page
+    advanced_pages[AUTO_UV_PRESET_ADAPTIVE] = adaptive_page
     for page in advanced_pages.values():
         preset_advanced_stack.addWidget(page)
     preset_advanced_stack.setMinimumHeight(
@@ -555,7 +595,44 @@ def select_scan_tuning(
                 "auto_oc_target_clock_mhz": int(performance_clock_spin.value()),
             }
         )
+    if preset.preset_id == AUTO_UV_PRESET_ADAPTIVE:
+        # One scan, three per-tier descents: the efficiency minimum voltage
+        # bounds the deepest descent and the Auto-OC targets steer the
+        # performance tier's climb.
+        options.update(
+            {
+                "auto_uv_min_voltage_mv": int(voltage_floor_spin.value()),
+                "auto_oc_target_voltage_mv": int(performance_voltage_spin.value()),
+                "auto_oc_target_clock_mhz": int(performance_clock_spin.value()),
+            }
+        )
     return options
+
+
+def _mirrored_spin(QtWidgets, source_spin):
+    """A spin box two-way synced with a canonical one on another page.
+
+    Qt widgets have a single parent, so the adaptive page cannot host the
+    per-tier spins directly; it hosts mirrors whose values stay identical.
+    """
+    mirror = QtWidgets.QSpinBox()
+    mirror.setRange(source_spin.minimum(), source_spin.maximum())
+    mirror.setSuffix(source_spin.suffix())
+    mirror.setSingleStep(source_spin.singleStep())
+    mirror.setFixedWidth(136)
+    mirror.setValue(source_spin.value())
+    syncing = {"active": False}
+
+    def _push(value: int, target) -> None:
+        if syncing["active"]:
+            return
+        syncing["active"] = True
+        target.setValue(int(value))
+        syncing["active"] = False
+
+    mirror.valueChanged.connect(lambda value: _push(value, source_spin))
+    source_spin.valueChanged.connect(lambda value: _push(value, mirror))
+    return mirror
 
 
 def _gpu_combo_index(gpu_combo, gpu_index: int) -> int:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from stability.q2rtx.models import Q2RTXStabilityConfig
@@ -113,6 +114,14 @@ def max_drop_pct() -> float:
 
 
 def final_verification_duration_s() -> int:
+    # Fast-iteration override (developer validation runs): shorten the
+    # final-verification soak so a scan's tier results surface in minutes.
+    override = os.environ.get("PENGUIN_BURNER_AUTO_UV_FINAL_SECONDS")
+    if override:
+        try:
+            return max(1, int(override))
+        except ValueError:
+            pass
     return max(1, int(AUTO_UV_DEFAULTS.final_duration_s))
 
 

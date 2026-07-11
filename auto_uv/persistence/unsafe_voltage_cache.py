@@ -224,11 +224,23 @@ def explicit_cache_profile_tier(payload: dict) -> str:
     if mode:
         return mode
 
+    if adaptive_scan_payload(payload):
+        return ""
+
     tail_rise_bins = int_or_none(payload.get("tail_rise_bins"))
     if tail_rise_bins is not None:
         return generated_profile_tier({"tail_rise_bins": int(tail_rise_bins)})
 
     return ""
+
+
+def adaptive_scan_payload(payload: dict) -> bool:
+    # Adaptive scans sweep all three tiers in one run, so their markers stay
+    # tier-agnostic instead of letting flat tail bins read as efficiency.
+    return any(
+        str(payload.get(key) or "").strip().lower() == "adaptive"
+        for key in ("auto_uv_requested_mode", "auto_uv_mode")
+    )
 
 
 def cache_profile_tier(value: object | None) -> str:

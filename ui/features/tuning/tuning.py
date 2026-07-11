@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
+from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_ADAPTIVE
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_BALANCED
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_EFFICIENCY
 from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
@@ -29,7 +30,9 @@ DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS = AUTO_UV_DEFAULTS.performance_tail_r
 AUTO_UV_PRESET_EFFICIENCY = "efficiency"
 AUTO_UV_PRESET_BALANCED = "balanced"
 AUTO_UV_PRESET_PERFORMANCE = "performance"
-DEFAULT_AUTO_UV_PRESET = AUTO_UV_PRESET_BALANCED
+AUTO_UV_PRESET_ADAPTIVE = "adaptive"
+# One click, three profiles: the adaptive all-tiers scan is the default.
+DEFAULT_AUTO_UV_PRESET = AUTO_UV_PRESET_ADAPTIVE
 GPU_UNDERVOLTING_PURPOSE_TEXT = (
     "GPU undervolting is meant to make your graphics card consume significantly "
     "less power while giving up as little performance as possible. The practical "
@@ -116,6 +119,15 @@ def auto_uv_preset(preset_id: object) -> AutoUvPreset:
             auto_uv_mode=AUTO_UV_MODE_PERFORMANCE,
             tail_rise_bins=DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS,
         )
+    if normalized == AUTO_UV_PRESET_ADAPTIVE:
+        # One sweep discovering all three tier profiles; each tier carries
+        # its own rising tail, so the preset itself has none to configure.
+        return AutoUvPreset(
+            preset_id=AUTO_UV_PRESET_ADAPTIVE,
+            label="All tiers (adaptive)",
+            auto_uv_mode=AUTO_UV_MODE_ADAPTIVE,
+            tail_rise_bins=DEFAULT_AUTO_UV_TAIL_RISE_BINS,
+        )
     return AutoUvPreset(
         preset_id=AUTO_UV_PRESET_BALANCED,
         label="Balanced",
@@ -129,6 +141,7 @@ def auto_uv_presets() -> tuple[AutoUvPreset, ...]:
         auto_uv_preset(AUTO_UV_PRESET_EFFICIENCY),
         auto_uv_preset(AUTO_UV_PRESET_BALANCED),
         auto_uv_preset(AUTO_UV_PRESET_PERFORMANCE),
+        auto_uv_preset(AUTO_UV_PRESET_ADAPTIVE),
     )
 
 
@@ -182,7 +195,10 @@ def auto_uv_clock_drop_default(
     preset = auto_uv_preset(preset_id)
     value_pct = uv_limit_clock_drop_pct_for_gpu(
         detected_name,
-        profile_id=preset.preset_id,
+        # The adaptive scan's three per-tier descents share this one slider;
+        # the efficiency tier descends deepest, so the dialog defaults to its
+        # (loosest) clock-drop allowance.
+        profile_id=_defaults_profile_id(preset, AUTO_UV_PRESET_EFFICIENCY),
     )
     target = uv_limit_profile_target_for_gpu(detected_name, "efficiency")
     if value_pct is None:
@@ -229,7 +245,13 @@ def auto_uv_power_limit_default(
             gpu_family=None,
             preset_matched=False,
         )
-    pct = uv_limit_power_limit_pct_for_gpu(detected_name, profile_id=preset.preset_id)
+    # An adaptive scan runs one shared sweep: the balanced power budget is
+    # the middle ground the three tiers share (per-tier caps are applied to
+    # the saved profiles, not the sweep).
+    pct = uv_limit_power_limit_pct_for_gpu(
+        detected_name,
+        profile_id=_defaults_profile_id(preset, AUTO_UV_PRESET_BALANCED),
+    )
     if pct is None:
         return AutoUvPowerLimitDefault(
             watts=int(round(base_watts)),
@@ -251,6 +273,12 @@ def auto_uv_power_limit_default(
         gpu_family=None,
         preset_matched=True,
     )
+
+
+def _defaults_profile_id(preset: AutoUvPreset, adaptive_fallback: str) -> str:
+    if preset.preset_id == AUTO_UV_PRESET_ADAPTIVE:
+        return adaptive_fallback
+    return preset.preset_id
 
 
 def _positive_float(value: object) -> float | None:

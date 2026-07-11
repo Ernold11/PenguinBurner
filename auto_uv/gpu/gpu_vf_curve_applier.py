@@ -26,6 +26,8 @@ class LiveGpuVfCurveApplier:
     translated_gpu_policy: dict
     baseline_power_limit_w: int | None = None
     requested_power_limit_w: int | None = None
+    min_power_limit_w: int | None = None
+    max_power_limit_w: int | None = None
     clock_ceiling: ProbeClockCeilingController | None = None
 
     @property
@@ -58,11 +60,26 @@ class LiveGpuVfCurveApplier:
         )
         self.clock_ceiling.apply()
 
+    def clamp_power_limit_w(self, watts: int) -> int:
+        """Keep a requested board-power cap inside the card's [min, max].
+
+        The NVML driver rejects a limit below the hardware minimum (e.g. a
+        5080's 300W floor), so an efficiency tier's computed cap must clamp
+        up rather than fail the apply."""
+        clamped = int(watts)
+        if self.min_power_limit_w is not None:
+            clamped = max(clamped, int(self.min_power_limit_w))
+        if self.max_power_limit_w is not None:
+            clamped = min(clamped, int(self.max_power_limit_w))
+        return clamped
+
     def apply_requested_power_limit(self, *, log: Callable[[str], None]) -> int | None:
         requested_w = _positive_power_limit_w(self.requested_power_limit_w)
         if requested_w is None:
             return self.power_limit_w
+        requested_w = self.clamp_power_limit_w(int(requested_w))
         if self.power_limit_w == requested_w:
+            self.requested_power_limit_w = None
             return self.power_limit_w
         try:
             applied_power_limit_w = self.policy_controller.apply_power_limit_w(
@@ -79,6 +96,9 @@ class LiveGpuVfCurveApplier:
             )
             return None
         self.translated_gpu_policy["power_limit_w"] = int(applied_power_limit_w)
+        # Consume the request so a subsequent tier's apply starts clean and
+        # never mistakes this tier's applied cap for a fresh scan-wide one.
+        self.requested_power_limit_w = None
         log(
             "Auto-UV power limit: applied "
             f"{int(applied_power_limit_w)}W for final verification"
@@ -118,6 +138,14 @@ def open_live_gpu_vf_curve_applier(
     assert_zero_runtime_vf_offsets(gpu)
 
     baseline_power_limit_w = _positive_power_limit_w(runtime_reset.get("power_limit_w"))
+    reset_power_limits = runtime_reset.get("power_limits")
+    reset_power_limits = reset_power_limits if isinstance(reset_power_limits, dict) else {}
+    min_power_limit_w = _positive_power_limit_w(
+        reset_power_limits.get("power_limit_min_w")
+    )
+    max_power_limit_w = _positive_power_limit_w(
+        reset_power_limits.get("power_limit_max_w")
+    )
     translated_gpu_policy = {
         "gpu_name": runtime_reset.get("gpu_name"),
         "power_limit_w": baseline_power_limit_w,
@@ -197,6 +225,8 @@ def open_live_gpu_vf_curve_applier(
     return LiveGpuVfCurveApplier(
         gpu_index=int(gpu_index),
         gpu=gpu,
+        min_power_limit_w=min_power_limit_w,
+        max_power_limit_w=max_power_limit_w,
         runtime_default_plan=runtime_default_plan,
         translated_gpu_policy=translated_gpu_policy,
         baseline_power_limit_w=baseline_power_limit_w,

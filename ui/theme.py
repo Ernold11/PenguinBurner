@@ -63,3 +63,7 @@ PLOT_CANDIDATE = "#5ef38c"
 PLOT_COMPARISON = "#dfe4ea"
 PLOT_MANUAL_SELECTION = "#2f6f55"
 PLOT_BADGE = "#ffe5b1"
+# Adaptive scan: every tier's confirmed curve stays on the plot, color-coded.
+TIER_CURVE_EFFICIENCY = "#9fe6a8"
+TIER_CURVE_BALANCED = "#8ecbef"
+TIER_CURVE_PERFORMANCE = "#e05c5c"

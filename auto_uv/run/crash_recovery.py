@@ -14,7 +14,11 @@ from auto_uv.persistence.interrupted_probe_crash_cache import (
     consume_interrupted_probe_crash_marker,
 )
 from auto_uv.persistence.unsafe_voltage_blacklist_file import load_unsafe_voltage_blacklist
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.persistence.unsafe_voltage_cache import adaptive_scan_payload
+from auto_uv.scan_mode.auto_uv_mode import (
+    AUTO_UV_MODE_ADAPTIVE,
+    AUTO_UV_MODE_PERFORMANCE,
+)
 from auto_uv.shared.positive_int import positive_int
 from ui.features.auto_uv.candidate_choice import candidate_plan_from_record
 from auto_uv.probes.event_payload import probe_summary_event_payload
@@ -283,6 +287,8 @@ def explicit_profile_tier(payload: dict) -> str:
     mode = normalize_profile_tier(payload.get("auto_uv_mode"))
     if mode == AUTO_UV_MODE_PERFORMANCE:
         return AUTO_UV_MODE_PERFORMANCE
+    if adaptive_scan_payload(payload):
+        return ""
     tail_rise_bins = _int_or_none(payload.get("tail_rise_bins"))
     if tail_rise_bins is not None:
         return generated_profile_tier({"tail_rise_bins": int(tail_rise_bins)})
@@ -309,6 +315,11 @@ def auto_uv_run_profile_tier(
     )
     if requested:
         return requested
+    # Adaptive runs sweep all three tiers in one scan: no single tier, so
+    # crash markers and the pre-scan recovery filter stay tier-agnostic
+    # instead of falling into tail-bins inference (flat tail = efficiency).
+    if _adaptive_auto_uv_run(options, settings):
+        return ""
     runtime_mode = normalize_profile_tier(options.get("auto_uv_mode"))
     if runtime_mode == AUTO_UV_MODE_PERFORMANCE:
         return AUTO_UV_MODE_PERFORMANCE
@@ -324,6 +335,18 @@ def auto_uv_run_profile_tier(
             "tail_rise_bins": int(tail_rise_bins),
         }
     )
+
+
+def _adaptive_auto_uv_run(options: dict, settings) -> bool:
+    for value in (
+        options.get("auto_uv_requested_mode"),
+        options.get("auto_uv_mode"),
+        getattr(settings, "auto_uv_requested_mode", None),
+        getattr(settings, "auto_uv_mode", None),
+    ):
+        if str(value or "").strip().lower() == AUTO_UV_MODE_ADAPTIVE:
+            return True
+    return False
 
 
 def auto_uv_run_marker_details(

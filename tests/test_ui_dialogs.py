@@ -31,6 +31,9 @@ def test_candidate_status_text() -> None:
     assert "Highest FPS" in fc.candidate_status_text(
         {}, True, auto_uv_mode="performance"
     )
+    assert "Tier suggestion" in fc.candidate_status_text(
+        {}, True, request_reason="adaptive-balanced"
+    )
     assert fc.candidate_status_text({}, False) == "Passed short probe"
 
 
@@ -74,6 +77,9 @@ def test_final_choice_intro_text() -> None:
     assert "stopped" in fc.final_choice_intro_text("efficiency", request_reason="user-stop")
     assert "best FPS/W" in fc.final_choice_intro_text("efficiency")
     assert "highest FPS" in fc.final_choice_intro_text("performance")
+    assert "tier's confirmed candidate" in fc.final_choice_intro_text(
+        "efficiency", request_reason="adaptive-efficiency"
+    )
 
 
 # --- error_details pure helpers -----------------------------------------------
@@ -159,6 +165,46 @@ def test_select_final_candidate_paths(qt) -> None:
         default_candidate_id="c1", auto_uv_mode="efficiency",
     )
     assert isinstance(result, tuple) and len(result) == 3
+
+
+def _tier_choice_candidates() -> list[dict]:
+    # 900mV is the FPS/W best; 850mV is the tier's confirmed candidate.
+    return [
+        {"candidate_id": "900mv-2700mhz", "candidate_voltage_mv": 900,
+         "lock_clock_mhz": 2700, "avg_fps": 150.0, "efficiency_fps_per_w": 0.75},
+        {"candidate_id": "850mv-2430mhz", "candidate_voltage_mv": 850,
+         "lock_clock_mhz": 2430, "avg_fps": 120.0, "efficiency_fps_per_w": 0.60},
+    ]
+
+
+def test_select_final_candidate_adaptive_preselects_tier_candidate(qt, monkeypatch) -> None:
+    qtcore, qtgui, qtwidgets, _pg = qt
+    monkeypatch.setattr(qtwidgets.QDialog, "exec", lambda self: qtwidgets.QDialog.Accepted)
+
+    selected, _duration, action = fc.select_final_candidate(
+        QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets, parent=None,
+        candidates=_tier_choice_candidates(),
+        default_candidate_id="850mv-2430mhz",
+        auto_uv_mode="efficiency", request_reason="adaptive-efficiency",
+    )
+
+    assert action == "select"
+    assert selected is not None and selected["candidate_id"] == "850mv-2430mhz"
+
+
+def test_select_final_candidate_classic_keeps_metric_best_default(qt, monkeypatch) -> None:
+    qtcore, qtgui, qtwidgets, _pg = qt
+    monkeypatch.setattr(qtwidgets.QDialog, "exec", lambda self: qtwidgets.QDialog.Accepted)
+
+    selected, _duration, action = fc.select_final_candidate(
+        QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets, parent=None,
+        candidates=_tier_choice_candidates(),
+        default_candidate_id="850mv-2430mhz",
+        auto_uv_mode="efficiency", request_reason="sweep-complete",
+    )
+
+    assert action == "select"
+    assert selected is not None and selected["candidate_id"] == "900mv-2700mhz"
 
 
 def test_select_afterburner_import_builds(qt) -> None:

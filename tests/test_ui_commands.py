@@ -9,9 +9,11 @@ import pytest
 
 import ui.commands as commands
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
+from auto_uv.run.crash_recovery import probe_summary_from_candidate_record
 from auto_uv.run.scan_runtime_settings import (
     short_probe_base_duration_s as _short_probe_base_duration_s,
 )
+import ui.features.auto_uv.candidate_choice as candidate_choice
 from ui.features.auto_uv.candidate_choice import (
     candidate_selection_summary as _candidate_selection_summary,
     sorted_final_choice_candidates as _sorted_backend_final_choice_candidates,
@@ -882,6 +884,101 @@ def test_backend_final_choice_efficiency_mode_sorts_by_fps_per_w() -> None:
     ]
 
 
+def _final_choice_base_curve() -> list[dict]:
+    return [
+        {
+            "index": index,
+            "voltage_mv": voltage_mv,
+            "base_mhz": 2200 + index * 90,
+            "target_mhz": 2200 + index * 90,
+            "new_offset_mhz": 0,
+        }
+        for index, voltage_mv in enumerate(range(850, 1025, 25))
+    ]
+
+
+def _final_choice_probe(voltage_mv: int, clock_mhz: int, *, fps: float, fpsw: float):
+    return probe_summary_from_candidate_record(
+        {
+            "candidate_voltage_mv": int(voltage_mv),
+            "lock_clock_mhz": int(clock_mhz),
+            "avg_core_clock_mhz": float(clock_mhz),
+            "avg_fps": float(fps),
+            "efficiency_fps_per_w": float(fpsw),
+        }
+    )
+
+
+def _run_backend_final_choice(tmp_path, monkeypatch, *, request_reason: str):
+    request_path = tmp_path / "final-choice-request.json"
+    response_path = tmp_path / "final-choice-response.json"
+    monkeypatch.setattr(
+        candidate_choice, "final_choice_request_path", lambda: request_path
+    )
+    monkeypatch.setattr(
+        candidate_choice, "final_choice_response_path", lambda: response_path
+    )
+    # An empty UI response means the backend keeps the request's default.
+    monkeypatch.setattr(
+        candidate_choice, "wait_for_final_choice_response", lambda _path: {}
+    )
+    curve = _final_choice_base_curve()
+    tier_probe = _final_choice_probe(850, 2430, fps=120.0, fpsw=0.60)
+    history = [_final_choice_probe(900, 2700, fps=150.0, fpsw=0.75), tier_probe]
+
+    (
+        _plan,
+        selected_voltage_mv,
+        selected_lock_clock_mhz,
+        _probe,
+        _duration_s,
+    ) = candidate_choice.choose_final_verification_candidate(
+        log=lambda _message: None,
+        event_callback=None,
+        auto_uv_mode="efficiency",
+        base_probe=None,
+        stable_plan=curve,
+        stable_voltage_mv=850,
+        stable_lock_clock_mhz=2430,
+        stable_probe=tier_probe,
+        stable_history=history,
+        base_curve=curve,
+        final_verification_duration_s=300,
+        initial_target_voltage_mv=1000,
+        short_probe_base_duration_s=10,
+        request_reason=request_reason,
+    )
+    payload = json.loads(request_path.read_text(encoding="utf-8"))
+    return payload, (int(selected_voltage_mv), int(selected_lock_clock_mhz))
+
+
+def test_backend_adaptive_final_choice_defaults_to_tier_candidate(
+    tmp_path, monkeypatch
+) -> None:
+    payload, selected = _run_backend_final_choice(
+        tmp_path,
+        monkeypatch,
+        request_reason="adaptive-efficiency",
+    )
+
+    assert payload["request_reason"] == "adaptive-efficiency"
+    assert payload["default_candidate_id"] == "850mv-2430mhz"
+    assert selected == (850, 2430)
+
+
+def test_backend_classic_final_choice_defaults_to_metric_best(
+    tmp_path, monkeypatch
+) -> None:
+    payload, selected = _run_backend_final_choice(
+        tmp_path,
+        monkeypatch,
+        request_reason="sweep-complete",
+    )
+
+    assert payload["default_candidate_id"] == "900mv-2700mhz"
+    assert selected == (900, 2700)
+
+
 def test_backend_final_choice_summary_includes_baseline_delta_metrics() -> None:
     summary = _candidate_selection_summary(
         {
@@ -1275,7 +1372,8 @@ def test_ui_profile_verify_command_can_override_runtime_gpu_index(monkeypatch) -
 
 
 def test_auto_uv_preset_defaults_and_gpu_table_default() -> None:
-    assert DEFAULT_AUTO_UV_PRESET == AUTO_UV_PRESET_BALANCED
+    # One click, three profiles: the adaptive all-tiers scan is the default.
+    assert DEFAULT_AUTO_UV_PRESET == "adaptive"
     assert DEFAULT_AUTO_UV_MAX_DROP_PCT == 10.0
     assert AUTO_UV_DROP_REFERENCE_VOLTAGE_MV == 1000
     assert DEFAULT_AUTO_UV_MAX_CLOCK_DROP_PCT == 12.5
@@ -2244,7 +2342,9 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     assert power_limit_slider is not None
     assert power_limit_spin is not None
     assert max_clock_drop_spin is not None
-    assert max_clock_drop_spin.value() == pytest.approx(6.0)
+    # The adaptive default preset needs the efficiency (loosest) clock-drop
+    # allowance because its shared trunk descends to the efficiency floor.
+    assert max_clock_drop_spin.value() == pytest.approx(11.1, abs=0.05)
     assert power_limit_slider.minimum() == 200
     assert power_limit_slider.maximum() == 450
     # Balanced preset targets a reduced default board-power cap, not the raw
@@ -2260,7 +2360,8 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     assert "Memory Offset" in advanced_labels
     assert "Power limit" in advanced_labels
     assert stack is not None
-    assert stack.count() == 3
+    # efficiency, balanced, performance + the adaptive all-tiers page
+    assert stack.count() == 4
     assert stack.minimumHeight() >= max(
         stack.widget(index).sizeHint().height() for index in range(stack.count())
     )

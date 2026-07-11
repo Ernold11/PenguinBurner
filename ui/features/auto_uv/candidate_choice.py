@@ -91,6 +91,13 @@ def choose_final_verification_candidate(
     default_id = (
         str(candidates[0].get("candidate_id", "")) if candidates else current_stable_id
     )
+    # Adaptive tiers preselect the tier's confirmed candidate, not the
+    # mode-metric best, so accepting the default saves this tier's own point.
+    if str(request_reason or "").startswith("adaptive-") and any(
+        str(candidate.get("candidate_id", "")) == current_stable_id
+        for candidate in candidates
+    ):
+        default_id = current_stable_id
     selected, selected_final_duration_s = request_final_choice_candidate(
         log=log,
         event_callback=event_callback,

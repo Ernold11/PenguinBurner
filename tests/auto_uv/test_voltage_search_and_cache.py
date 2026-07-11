@@ -339,6 +339,32 @@ def test_unsafe_entry_profile_tier_reads_zero_tail_as_efficiency() -> None:
     assert unsafe_entry_profile_tier({"details": {"tail_rise_bins": 0}}) == "efficiency"
 
 
+def test_unsafe_entry_from_adaptive_scan_stays_tier_agnostic() -> None:
+    # Adaptive scans sweep every tier, so their flat-tail crash markers must
+    # not masquerade as efficiency history: they block all tiers instead.
+    entry = {
+        "candidate_voltage_mv": 875,
+        "lock_clock_mhz": 2900,
+        "reason": "previous-run-abruptly-ended",
+        "details": {
+            "marker_details": {
+                "auto_uv_mode": "adaptive",
+                "generated_profile_tier": "",
+                "tail_rise_bins": 0,
+            }
+        },
+    }
+
+    assert unsafe_entry_profile_tier(entry) == ""
+    for tier in ("efficiency", "balanced", "performance"):
+        assert unsafe_entry_blocks_voltage_candidate(
+            entry,
+            candidate_voltage_mv=875,
+            lock_clock_mhz=2900,
+            profile_tier=tier,
+        )
+
+
 def test_cache_profile_tier_normalizes_efficiency_tail_tune() -> None:
     assert cache_profile_tier("efficiency-tail-tune") == "efficiency"
 

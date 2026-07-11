@@ -6,7 +6,7 @@ user final choice, final verification, and cleanup.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Callable, cast
 
@@ -15,6 +15,7 @@ from stability.q2rtx.process_harness import cleanup_managed_q2rtx_processes
 
 from auto_uv.domain.types import (
     AutoUvError,
+    AutoUvFinalChoiceDiscarded,
     AutoUvProbeSummary,
     AutoUvVoltageScanResult,
     VfCurveCandidate,
@@ -66,6 +67,9 @@ from auto_uv.performance_uv_loop import (
     select_performance_auto_oc_candidate,
 )
 from auto_uv.probes.runner import AutoUvProbeRunner
+from auto_uv.probes.runtime_guardrails import (
+    probe_failure_should_mark_voltage_unsafe,
+)
 from auto_uv.probes.voltage_probe import probe_voltage_candidate
 from auto_uv.run.scan_runtime_settings import read_scan_runtime_settings
 from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
@@ -89,13 +93,11 @@ from auto_uv.run.voltage_sweep_state import (
 from auto_uv.final_verification.main_loop import run_final_verification_and_save
 from auto_uv.scan_mode.auto_uv_mode import (
     AUTO_UV_MODE_ADAPTIVE,
+    AUTO_UV_MODE_BALANCED,
     AUTO_UV_MODE_EFFICIENCY,
     AUTO_UV_MODE_PERFORMANCE,
 )
-from auto_uv.adaptive_main import (
-    final_verification_duration_for_tier,
-    run_adaptive_uv_scan,
-)
+from auto_uv.scan_mode.uv_limits import uv_limit_power_limit_pct_for_gpu
 
 
 @dataclass(frozen=True, slots=True)
@@ -526,6 +528,7 @@ def run_voltage_frequency_undervolt_main_loop(
             )
 
         user_stop_final_choice = False
+        adaptive_tier_phase = False
         try:
             if not bool(resumed_previous_crash):
                 base_loop_settings = AutoUvScanSettings(
@@ -553,116 +556,36 @@ def run_voltage_frequency_undervolt_main_loop(
                     raw_result=baseline_outcome.raw_result,
                 )
                 if settings.auto_uv_mode == AUTO_UV_MODE_ADAPTIVE:
-                    adaptive_result = run_adaptive_uv_scan(
-                        base_curve,
-                        unsafe_voltages_mv=unsafe_entry_voltages(unsafe_entries),
-                        gpu_name=gpu.translated_gpu_policy.get("gpu_name"),
-                        probe_candidate=probe_candidate,
-                        mark_unsafe_candidate=loop_io.mark_unsafe_candidate,
-                        write_verified_candidate=loop_io.write_verified_candidate,
-                        initial_stable_candidate=stable_candidate,
+                    # A stop anywhere in the adaptive run must abort cleanly:
+                    # the classic user-stop final-choice fallback would save a
+                    # fourth, tier-less profile shadowing the confirmed ones,
+                    # so the guard is armed before the first tier's descent.
+                    adaptive_tier_phase = True
+                    return run_adaptive_tier_scans(
+                        base_curve=base_curve,
+                        gpu=gpu,
+                        runner=runner,
+                        settings=settings,
+                        runtime_options=runtime_options,
+                        base_loop_settings=base_loop_settings,
+                        baseline_candidate=baseline_candidate,
                         initial_stable_outcome=initial_stable_outcome,
-                        start_voltage_mv=int(baseline_candidate.voltage_mv),
-                        min_search_voltage_mv=int(effective_min_search_voltage_mv),
-                        baseline_core_clock_mhz=float(
-                            baseline_target.measured_clock_mhz
+                        stable_probe=stable_probe,
+                        discovery_summary=discovery_summary,
+                        probe_history=probe_history,
+                        baseline_target=baseline_target,
+                        effective_min_search_voltage_mv=int(
+                            effective_min_search_voltage_mv
                         ),
-                        min_core_clock_pct=float(
-                            settings.min_performance_core_clock_pct
+                        final_verification_duration_s=int(
+                            final_verification_duration_s
                         ),
-                        efficiency_stop_streak=int(
-                            efficiency_stop_streak_default.value
-                        ),
-                        min_efficiency_stop_voltage_drop_pct=float(
-                            getattr(
-                                settings,
-                                "min_efficiency_stop_voltage_drop_pct",
-                                10.0,
-                            )
-                        ),
+                        unsafe_entries=unsafe_entries,
+                        probe_candidate=probe_candidate,
+                        finish_with_final_verification=finish_with_final_verification,
                         event_callback=event_callback,
                         log=log,
                     )
-                    primary_scan_result = None
-                    last_tier_error: AutoUvError | None = None
-                    for tier_index, tier in enumerate(adaptive_result.tier_results):
-                        final_plan = tier.candidate.flattened_plan
-                        final_voltage_mv = int(tier.candidate.voltage_mv)
-                        final_clock_mhz = int(tier.candidate.target_mhz)
-                        final_probe = require_probe_summary(tier.confirm_outcome)
-                        final_tail = int(tier.spec.tail_rise_bins)
-                        final_oc_metadata = None
-                        if tier.spec.tier == AUTO_UV_MODE_PERFORMANCE:
-                            (
-                                final_plan,
-                                final_voltage_mv,
-                                final_clock_mhz,
-                                oc_probe,
-                                final_oc_metadata,
-                            ) = select_performance_auto_oc_candidate(
-                                base_curve,
-                                auto_uv_mode=AUTO_UV_MODE_PERFORMANCE,
-                                stable_plan=final_plan,
-                                stable_voltage_mv=final_voltage_mv,
-                                stable_lock_clock_mhz=final_clock_mhz,
-                                stable_probe=final_probe,
-                                stable_history=stable_history,
-                                runner=runner,
-                                gpu_name=gpu.translated_gpu_policy.get("gpu_name"),
-                                clock_ceiling=gpu.clock_ceiling,
-                                probe_history=probe_history,
-                                log=log,
-                                tail_rise_bins=final_tail,
-                                target_voltage_mv=runtime_options.get(
-                                    "auto_oc_target_voltage_mv"
-                                ),
-                                target_clock_mhz=runtime_options.get(
-                                    "auto_oc_target_clock_mhz"
-                                ),
-                                measured_baseline_clock_mhz=float(
-                                    baseline_target.measured_clock_mhz
-                                ),
-                            )
-                            if oc_probe is not None:
-                                final_probe = oc_probe
-                        try:
-                            tier_scan_result = finish_with_final_verification(
-                                final_stable_plan=final_plan,
-                                final_stable_voltage_mv=int(final_voltage_mv),
-                                final_stable_lock_clock_mhz=int(final_clock_mhz),
-                                final_stable_probe=final_probe,
-                                selected_final_verification_duration_s=(
-                                    final_verification_duration_for_tier(
-                                        tier_index,
-                                        configured_final_duration_s=int(
-                                            final_verification_duration_s
-                                        ),
-                                    )
-                                ),
-                                final_tail_rise_bins=final_tail,
-                                final_auto_oc_metadata=final_oc_metadata,
-                                final_auto_uv_mode=str(tier.spec.tier),
-                                final_profile_tier=str(tier.spec.tier),
-                            )
-                        except AutoUvError as tier_error:
-                            # One tier's failed final must not discard the
-                            # remaining (shallower, safer) tiers' profiles.
-                            last_tier_error = tier_error
-                            log_phase(
-                                log,
-                                "auto-uv",
-                                f"adaptive {tier.spec.tier} final verification "
-                                f"failed: {tier_error}; continuing with the "
-                                "remaining tiers",
-                            )
-                            continue
-                        if primary_scan_result is None:
-                            primary_scan_result = tier_scan_result
-                    if primary_scan_result is None:
-                        raise last_tier_error or AutoUvError(
-                            "adaptive scan produced no verified profile"
-                        )
-                    return primary_scan_result
                 loop_result = run_preset_uv_loop(
                     base_curve,
                     settings=base_loop_settings,
@@ -684,6 +607,13 @@ def run_voltage_frequency_undervolt_main_loop(
                 if selected_probe is not None:
                     stable_probe = selected_probe
         except KeyboardInterrupt:
+            if adaptive_tier_phase:
+                # A stop during the per-tier dialogs/finals aborts cleanly;
+                # the past-candidates fallback below is for stops during
+                # the sweep itself and would save a fourth, tier-less
+                # profile shadowing the confirmed ones.
+                clear_auto_uv_stop_request()
+                raise
             if auto_uv_stop_request_aborts_final_choice():
                 clear_auto_uv_stop_request()
                 raise
@@ -826,17 +756,391 @@ def run_preset_uv_loop(
     )
 
 
-def unsafe_entry_voltages(unsafe_entries: list[dict] | None) -> tuple[int, ...]:
-    """Voltages the crash cache condemned, for seeding the adaptive sweep."""
-    voltages = []
-    for entry in unsafe_entries or []:
+def run_adaptive_tier_scans(
+    *,
+    base_curve: list[dict],
+    gpu,
+    runner: AutoUvProbeRunner,
+    settings,
+    runtime_options: dict,
+    base_loop_settings: AutoUvScanSettings,
+    baseline_candidate: VfCurveCandidate,
+    initial_stable_outcome: VoltageProbeOutcome | None,
+    stable_probe: AutoUvProbeSummary | None,
+    discovery_summary: AutoUvProbeSummary,
+    probe_history: list,
+    baseline_target,
+    effective_min_search_voltage_mv: int,
+    final_verification_duration_s: int,
+    unsafe_entries: list[dict] | None,
+    probe_candidate: Callable[[VfCurveCandidate], VoltageProbeOutcome],
+    finish_with_final_verification: Callable[..., AutoUvVoltageScanResult],
+    event_callback: AutoUvEventCallback | None,
+    log: Callable[[str], None],
+) -> AutoUvVoltageScanResult:
+    """One scan, three profiles: run the proven per-tier descent for each tier.
+
+    A single tail-less sweep cannot reproduce the per-tier held clocks — the
+    rising tail compounds through the measured-clock ratchet, so each tier
+    must descend with its OWN tail (efficiency +2 tail-tune to the floor,
+    balanced +4 to the FPS/W wall, performance +6 then the Auto-OC climb).
+    The tiers share this one baseline and accumulate genuinely-unsafe voltages
+    so a later tier never re-crashes a point an earlier tier condemned. The
+    first verified (deepest) profile soaks the full final duration; shallower
+    tiers get the graduated confirm. Raises on producing no profile at all.
+    """
+    primary_scan_result: AutoUvVoltageScanResult | None = None
+    last_tier_error: AutoUvError | None = None
+    any_tier_discarded = False
+    accumulated_unsafe: list[dict] = list(unsafe_entries or [])
+    stock_power_limit_w = positive_int(gpu.power_limit_w)
+    # The original scan-wide power request (a manual slider, or None from a
+    # plain CLI run) — captured once so each tier scales from it, never from
+    # the previous tier's applied cap.
+    scan_power_limit_request_w = positive_int(gpu.requested_power_limit_w)
+    balanced_power_limit_pct = uv_limit_power_limit_pct_for_gpu(
+        gpu.translated_gpu_policy.get("gpu_name"),
+        AUTO_UV_MODE_BALANCED,
+    )
+    for tier_index, tier_mode in enumerate(ADAPTIVE_TIER_ORDER):
+        tier_candidate, tier_final_tail, tier_probe, tier_history = (
+            run_adaptive_tier_descent(
+                base_curve,
+                tier_mode=str(tier_mode),
+                base_loop_settings=base_loop_settings,
+                baseline_candidate=baseline_candidate,
+                initial_stable_outcome=initial_stable_outcome,
+                fallback_probe=stable_probe,
+                discovery_summary=discovery_summary,
+                accumulated_unsafe=accumulated_unsafe,
+                effective_min_search_voltage_mv=int(effective_min_search_voltage_mv),
+                probe_candidate=probe_candidate,
+                stock_power_limit_w=stock_power_limit_w,
+                gpu=gpu,
+                event_callback=event_callback,
+                log=log,
+            )
+        )
+        runs_auto_oc = tier_mode == AUTO_UV_MODE_PERFORMANCE
+        apply_adaptive_tier_power_limit(
+            gpu,
+            tier_mode=str(tier_mode),
+            stock_power_limit_w=stock_power_limit_w,
+            scan_request_w=scan_power_limit_request_w,
+            balanced_pct=balanced_power_limit_pct,
+        )
+        # The deepest still-unsaved tier soaks the full duration; once one
+        # profile has passed its full final, shallower tiers get the graduated
+        # confirm (the OC tier always soaks fully — its point is new).
+        tier_final_duration = final_verification_duration_for_tier(
+            0 if primary_scan_result is None else tier_index,
+            configured_final_duration_s=int(final_verification_duration_s),
+            runs_auto_oc=runs_auto_oc,
+        )
         try:
-            voltage_mv = int(entry.get("candidate_voltage_mv") or 0)
-        except (TypeError, ValueError):
+            tier_selection = select_final_scan_candidate(
+                base_curve=base_curve,
+                settings=settings,
+                runtime_options=runtime_options,
+                stable_plan=tier_candidate.flattened_plan,
+                stable_voltage_mv=int(tier_candidate.voltage_mv),
+                stable_lock_clock_mhz=int(tier_candidate.target_mhz),
+                stable_probe=tier_probe,
+                stable_history=tier_history,
+                runner=runner,
+                gpu=gpu,
+                probe_history=probe_history,
+                log=log,
+                tail_rise_bins=int(tier_final_tail),
+                measured_baseline_clock_mhz=float(
+                    baseline_target.measured_clock_mhz
+                ),
+                discovery_summary=discovery_summary,
+                baseline_candidate=baseline_candidate,
+                final_verification_duration_s=int(tier_final_duration),
+                event_callback=event_callback,
+                run_performance_auto_oc=runs_auto_oc,
+                request_reason=f"adaptive-{tier_mode}",
+                auto_uv_mode_override=str(tier_mode),
+            )
+            tier_scan_result = finish_with_final_verification(
+                final_stable_plan=tier_selection.plan,
+                final_stable_voltage_mv=int(tier_selection.voltage_mv),
+                final_stable_lock_clock_mhz=int(tier_selection.lock_clock_mhz),
+                final_stable_probe=tier_selection.probe,
+                selected_final_verification_duration_s=int(
+                    tier_selection.verification_duration_s
+                ),
+                final_tail_rise_bins=int(tier_selection.tail_rise_bins),
+                final_auto_oc_metadata=tier_selection.auto_oc_metadata,
+                final_auto_uv_mode=str(tier_mode),
+                final_profile_tier=str(tier_mode),
+            )
+        except AutoUvFinalChoiceDiscarded:
+            any_tier_discarded = True
+            log_phase(
+                log,
+                "auto-uv",
+                f"adaptive {tier_mode} discarded by user; "
+                "continuing with the remaining tiers",
+            )
+            emit_auto_uv_event(
+                event_callback, "tier_skipped", tier=str(tier_mode), reason="discarded"
+            )
             continue
-        if voltage_mv > 0:
-            voltages.append(voltage_mv)
-    return tuple(sorted(set(voltages)))
+        except AutoUvError as tier_error:
+            # One tier's failed selection or final must not discard the
+            # other tiers' profiles.
+            last_tier_error = tier_error
+            log_phase(
+                log,
+                "auto-uv",
+                f"adaptive {tier_mode} verification failed: {tier_error}; "
+                "continuing with the remaining tiers",
+            )
+            emit_auto_uv_event(
+                event_callback,
+                "tier_skipped",
+                tier=str(tier_mode),
+                reason="verification-failed",
+            )
+            continue
+        if primary_scan_result is None:
+            primary_scan_result = tier_scan_result
+    if primary_scan_result is not None:
+        return primary_scan_result
+    if last_tier_error is not None:
+        raise last_tier_error
+    if any_tier_discarded:
+        # Every tier's candidate was discarded at its dialog — a deliberate
+        # user choice, not a scan failure.
+        raise AutoUvFinalChoiceDiscarded(
+            "all adaptive tiers were discarded by the user"
+        )
+    raise AutoUvError("adaptive scan produced no verified profile")
+
+
+def run_adaptive_tier_descent(
+    base_curve: list[dict],
+    *,
+    tier_mode: str,
+    base_loop_settings: AutoUvScanSettings,
+    baseline_candidate: VfCurveCandidate,
+    initial_stable_outcome: VoltageProbeOutcome | None,
+    fallback_probe: AutoUvProbeSummary | None,
+    discovery_summary: AutoUvProbeSummary,
+    accumulated_unsafe: list[dict],
+    effective_min_search_voltage_mv: int,
+    probe_candidate: Callable[[VfCurveCandidate], VoltageProbeOutcome],
+    stock_power_limit_w: int | None,
+    gpu,
+    event_callback: AutoUvEventCallback | None,
+    log: Callable[[str], None],
+) -> tuple[VfCurveCandidate, int, AutoUvProbeSummary | None, list[AutoUvProbeSummary]]:
+    """Run one tier's tailed descent at stock power and return its candidate.
+
+    Returns ``(candidate, final_tail_rise_bins, probe, tier_history)``. The
+    tier's verified/passed probes land in the returned ``tier_history`` (kept
+    per tier so one tier's candidates never pollute another's final choice).
+    """
+    tier_descent_tail = adaptive_tier_descent_tail_rise_bins(tier_mode)
+    tier_settings = replace(
+        base_loop_settings,
+        auto_uv_mode=tier_mode,
+        tail_rise_bins=int(tier_descent_tail),
+    )
+    tier_history: list[AutoUvProbeSummary] = []
+
+    def tier_write_verified(candidate, outcome) -> None:
+        summary = require_probe_summary(outcome)
+        tier_history.append(summary)
+        write_verified_candidate(
+            candidate,
+            summary,
+            discovery_summary=discovery_summary,
+            tail_rise_bins=int(
+                candidate.metadata.get("tail_rise_bins", tier_descent_tail)
+            ),
+        )
+
+    def tier_mark_unsafe(candidate, outcome) -> None:
+        # A tier's GENUINE hard fail seeds the shared cache so the remaining
+        # tiers skip that voltage/clock band. Controlled/environmental
+        # failures (launcher errors, FPS regressions) are exempt — the same
+        # gate the persistent blacklist applies — so a transient event never
+        # floors the other tiers.
+        reason = str(getattr(outcome.decision, "reason", "") or "")
+        if not probe_failure_should_mark_voltage_unsafe(reason):
+            return
+        accumulated_unsafe.append(
+            {
+                "candidate_voltage_mv": int(candidate.voltage_mv),
+                "lock_clock_mhz": int(candidate.target_mhz),
+                "reason": reason or "stability-probe-failed",
+            }
+        )
+
+    def tier_record_passed(candidate, outcome) -> None:
+        tier_history.append(require_probe_summary(outcome))
+
+    tier_loop_io = BaseUvLoopIO(
+        probe_candidate=probe_candidate,
+        write_verified_candidate=tier_write_verified,
+        mark_unsafe_candidate=tier_mark_unsafe,
+        record_passed_candidate=tier_record_passed,
+    )
+    # Descend at STOCK power like the classic scan: a previous tier's reduced
+    # final-verification cap must not throttle this tier's descent (that
+    # dragged the measured-clock ratchet — and the balanced result — ~200MHz
+    # low). Each tier's own reduced cap is applied later, at final verification.
+    reset_power_limit_to_stock(gpu, stock_power_limit_w, log=log)
+    loop_result = run_preset_uv_loop(
+        base_curve,
+        settings=tier_settings,
+        initial_stable_candidate=baseline_candidate,
+        io=tier_loop_io,
+        unsafe_entries=accumulated_unsafe,
+        initial_stable_outcome=initial_stable_outcome,
+        min_search_voltage_mv=int(effective_min_search_voltage_mv),
+        initial_tail_rise_bins=int(tier_descent_tail),
+        log=log,
+    )
+    log_lower_voltage_sweep_events(log, loop_result.events)
+    tier_candidate = loop_result.stable_candidate
+    tier_final_tail = int(
+        tier_candidate.metadata.get("tail_rise_bins", tier_descent_tail)
+    )
+    tier_probe = (
+        require_probe_summary(loop_result.stable_outcome)
+        if loop_result.stable_outcome is not None
+        else fallback_probe
+    )
+    emit_auto_uv_event(
+        event_callback,
+        "tier_confirmed",
+        tier=tier_mode,
+        voltage_mv=int(tier_candidate.voltage_mv),
+        target_mhz=int(tier_candidate.target_mhz),
+        points=vf_curve_event_points(tier_candidate.flattened_plan),
+    )
+    return tier_candidate, tier_final_tail, tier_probe, tier_history
+
+
+def apply_adaptive_tier_power_limit(
+    gpu,
+    *,
+    tier_mode: str,
+    stock_power_limit_w: int | None,
+    scan_request_w: int | None,
+    balanced_pct: float | None,
+) -> None:
+    """Request this tier's board-power cap for its final verification.
+
+    A manual scan-wide request is a hard ceiling: the per-tier balanced-anchor
+    scaling may not push a tier above what the user explicitly asked for.
+    """
+    tier_watts = adaptive_tier_power_limit_w(
+        power_limit_pct=uv_limit_power_limit_pct_for_gpu(
+            gpu.translated_gpu_policy.get("gpu_name"), tier_mode
+        ),
+        baseline_power_limit_w=stock_power_limit_w,
+        scan_request_w=scan_request_w,
+        balanced_pct=balanced_pct,
+    )
+    if tier_watts is None:
+        return
+    if scan_request_w is not None:
+        tier_watts = min(int(tier_watts), int(scan_request_w))
+    gpu.requested_power_limit_w = gpu.clamp_power_limit_w(int(tier_watts))
+
+
+ADAPTIVE_TIER_ORDER = (
+    AUTO_UV_MODE_EFFICIENCY,
+    AUTO_UV_MODE_BALANCED,
+    AUTO_UV_MODE_PERFORMANCE,
+)
+# The first (deepest, most fragile) profile soaks the full final duration;
+# shallower profiles sit on already-proven edges and get a shorter confirm.
+# The Auto-OC tier is the exception — its climbed point is new territory.
+SECONDARY_FINAL_VERIFICATION_S = 120
+
+
+def final_verification_duration_for_tier(
+    tier_index: int,
+    *,
+    configured_final_duration_s: int,
+    runs_auto_oc: bool = False,
+) -> int:
+    if int(tier_index) == 0 or runs_auto_oc:
+        return int(configured_final_duration_s)
+    return min(int(configured_final_duration_s), SECONDARY_FINAL_VERIFICATION_S)
+
+
+def reset_power_limit_to_stock(
+    gpu,
+    stock_power_limit_w: int | None,
+    *,
+    log: Callable[[str], None],
+) -> None:
+    """Return the board-power cap to stock before a tier's descent.
+
+    The adaptive scan applies each tier's reduced cap only at that tier's
+    final verification; between tiers the descent must run at the full stock
+    budget so it is not throttled by the previous tier's saved cap."""
+    if stock_power_limit_w is None:
+        return
+    stock_w = int(stock_power_limit_w)
+    if positive_int(gpu.power_limit_w) == stock_w:
+        return
+    apply_power_limit_w = getattr(gpu.gpu, "apply_power_limit_w", None)
+    if not callable(apply_power_limit_w):
+        return
+    try:
+        applied = int(cast(Any, apply_power_limit_w)(stock_w))
+    except Exception as exc:
+        log(f"Auto-UV: could not restore stock power limit for descent: {exc}")
+        return
+    gpu.translated_gpu_policy["power_limit_w"] = applied
+    gpu.requested_power_limit_w = None
+    log(f"Auto-UV: restored {applied}W stock power limit for tier descent")
+
+
+def adaptive_tier_descent_tail_rise_bins(tier_mode: str) -> int:
+    """The rising tail each tier descends WITH.
+
+    Efficiency descends tail-less in pass 1 and raises the tail by two bins
+    in its tail-tune pass (run_efficiency_uv_loop). Balanced and performance
+    descend with their full tail the whole way — the tail is what holds the
+    measured clock up through the ratchet, so it must be applied on descent,
+    not decorated on afterward."""
+    if tier_mode == AUTO_UV_MODE_BALANCED:
+        return int(AUTO_UV_DEFAULTS.balanced_tail_rise_bins)
+    if tier_mode == AUTO_UV_MODE_PERFORMANCE:
+        return int(AUTO_UV_DEFAULTS.performance_tail_rise_bins)
+    return int(AUTO_UV_DEFAULTS.tail_rise_bins)
+
+
+def adaptive_tier_power_limit_w(
+    *,
+    power_limit_pct: float | None,
+    baseline_power_limit_w: int | None,
+    scan_request_w: int | None,
+    balanced_pct: float | None,
+) -> int | None:
+    """Each adaptive tier's board-power budget for its final and profile.
+
+    The scan dialog's single slider is the balanced anchor: a manual value
+    scales every tier proportionally; untouched, each tier gets its
+    uv_limits percentage of the stock budget. GPUs without a table entry
+    keep the scan-wide request unchanged.
+    """
+    if power_limit_pct is None or not baseline_power_limit_w:
+        return scan_request_w
+    if scan_request_w is not None and balanced_pct:
+        watts = float(scan_request_w) * float(power_limit_pct) / float(balanced_pct)
+    else:
+        watts = float(baseline_power_limit_w) * float(power_limit_pct) / 100.0
+    return min(int(round(watts)), int(baseline_power_limit_w))
 
 
 def log_lower_voltage_sweep_events(
@@ -871,7 +1175,11 @@ def select_final_scan_candidate(
     event_callback: AutoUvEventCallback | None,
     run_performance_auto_oc: bool,
     request_reason: str,
+    auto_uv_mode_override: str | None = None,
 ) -> FinalScanCandidate:
+    # Adaptive scans select per tier: the tier name overrides the scan-wide
+    # mode so the OC pass and the choice dialog see the tier, not "adaptive".
+    selection_mode = str(auto_uv_mode_override or settings.auto_uv_mode)
     final_plan = stable_plan
     final_voltage_mv = int(stable_voltage_mv)
     final_lock_clock_mhz = int(stable_lock_clock_mhz)
@@ -887,7 +1195,7 @@ def select_final_scan_candidate(
             final_auto_oc_metadata,
         ) = select_performance_auto_oc_candidate(
             base_curve,
-            auto_uv_mode=settings.auto_uv_mode,
+            auto_uv_mode=selection_mode,
             stable_plan=final_plan,
             stable_voltage_mv=int(final_voltage_mv),
             stable_lock_clock_mhz=int(final_lock_clock_mhz),
@@ -918,7 +1226,7 @@ def select_final_scan_candidate(
         ) = choose_final_verification_candidate(
             log=log,
             event_callback=event_callback,
-            auto_uv_mode=settings.auto_uv_mode,
+            auto_uv_mode=selection_mode,
             base_probe=discovery_summary,
             stable_plan=final_plan,
             stable_voltage_mv=int(final_voltage_mv),
