@@ -6,10 +6,13 @@ from __future__ import annotations
 AUTO_UV_MODE_EFFICIENCY = "efficiency"
 AUTO_UV_MODE_BALANCED = "balanced"
 AUTO_UV_MODE_PERFORMANCE = "performance"
+# One scan discovering all three tier profiles at once.
+AUTO_UV_MODE_ADAPTIVE = "adaptive"
 AUTO_UV_MODES = (
     AUTO_UV_MODE_EFFICIENCY,
     AUTO_UV_MODE_BALANCED,
     AUTO_UV_MODE_PERFORMANCE,
+    AUTO_UV_MODE_ADAPTIVE,
 )
 
 _AUTO_UV_MODE_ALIASES = {
@@ -18,6 +21,8 @@ _AUTO_UV_MODE_ALIASES = {
     "efficiency": AUTO_UV_MODE_EFFICIENCY,
     "aggressive": AUTO_UV_MODE_PERFORMANCE,
     "performance": AUTO_UV_MODE_PERFORMANCE,
+    "adaptive": AUTO_UV_MODE_ADAPTIVE,
+    "all": AUTO_UV_MODE_ADAPTIVE,
 }
 
 

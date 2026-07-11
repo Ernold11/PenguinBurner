@@ -68,6 +68,10 @@ class Q2RTXStabilityConfig:
     progress_callback: Callable[[dict], None] | None = None
     abort_callback: Callable[[dict], str | None] | None = None
     companion_command: tuple[str, ...] | None = None
+    # Run the CUDA companion alongside the q2rtx benchmark instead of as a
+    # serialized section afterwards. The combined load stresses render and
+    # compute units at once and removes the companion's wall-clock cost.
+    companion_concurrent: bool = False
 
 
 @dataclass(slots=True)

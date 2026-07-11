@@ -441,6 +441,41 @@ def _fatal_output_abort_reason(
     return "fatal-q2rtx-output"
 
 
+def _reap_concurrent_companion(
+    companion: subprocess.Popen,
+    *,
+    companion_log_path: Path,
+    q2rtx_succeeded: bool,
+    grace_s: float = 30.0,
+) -> tuple[int | None, str | None]:
+    """Collect a concurrently-running CUDA companion once the benchmark ends.
+
+    On a failed benchmark the companion is simply killed — the probe verdict
+    is already decided. On success we give an aligned-duration companion a
+    short grace to finish; a straggler killed at the grace deadline is not a
+    failure (the probe's stress window is over), but a nonzero self-exit or a
+    fatal pattern in its log is.
+    """
+    if not q2rtx_succeeded:
+        _terminate_process_group(companion)
+        return companion.poll(), None
+    deadline = time.monotonic() + float(grace_s)
+    while companion.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.2)
+    straggler = companion.poll() is None
+    if straggler:
+        _terminate_process_group(companion)
+    # Always scan the companion log: a marginal undervolt often prints an
+    # Xid/fatal line and then hangs, so the straggler path must not skip it.
+    fatal_reason = _fatal_output_abort_reason(
+        list(_scan_output_for_fatal_patterns(companion_log_path)),
+        running="cuda",
+    )
+    if straggler:
+        return None, fatal_reason
+    return companion.poll(), fatal_reason
+
+
 def _run_companion_process(
     *,
     config: Q2RTXStabilityConfig,
@@ -681,6 +716,9 @@ def _run_benchmark_process(
     output_buffer = ""
     event_closed = False
     output_closed = False
+    concurrent_companion = None
+    companion_log_file = None
+    companion_log_path = log_path.with_name(f"{log_path.name}.cuda")
 
     try:
         with log_path.open("a", encoding="utf-8", errors="replace") as log_file:
@@ -760,6 +798,26 @@ def _run_benchmark_process(
             if process.stdout is not None:
                 os.set_blocking(process.stdout.fileno(), False)
 
+            if config.companion_command is not None and config.companion_concurrent:
+                # The companion writes to its own log so its output never
+                # interleaves with the benchmark's; fatal-pattern scanning
+                # reads that file separately.
+                companion_log_file = companion_log_path.open(
+                    "a", encoding="utf-8", errors="replace"
+                )
+                companion_env = dict(os.environ)
+                companion_env["PYTHONUNBUFFERED"] = "1"
+                concurrent_companion = subprocess.Popen(
+                    _wrap_command_for_live_output(list(config.companion_command)),
+                    stdout=companion_log_file,
+                    stderr=subprocess.STDOUT,
+                    env=companion_env,
+                    start_new_session=True,
+                )
+                log_file.write(f"# cuda_companion_log={companion_log_path}\n")
+                log_file.write("# cuda_companion_mode=concurrent\n")
+                log_file.flush()
+
             while True:
                 now_monotonic = time.monotonic()
                 pass_elapsed_s = now_monotonic - run_start_monotonic
@@ -777,6 +835,19 @@ def _run_benchmark_process(
                     )
                 _refresh_benchmark_state()
                 process_exit_code = process.poll()
+                if concurrent_companion is not None:
+                    companion_exit_code = concurrent_companion.poll()
+                    if companion_exit_code not in (None, 0):
+                        # The compute half of the combined load died: that is
+                        # an instability verdict, not a companion detail —
+                        # end the probe immediately like a fatal q2rtx event.
+                        _terminate_process_group(process)
+                        process_exit_code = process.returncode
+                        observed_duration_s = time.monotonic() - run_start_monotonic
+                        exit_reason = (
+                            f"cuda-bruteforce-failed exit={int(companion_exit_code)}"
+                        )
+                        break
                 if process_exit_code is None and frame_watchdog.tripped(now_monotonic):
                     _terminate_process_group(process)
                     process_exit_code = process.returncode
@@ -838,6 +909,11 @@ def _run_benchmark_process(
                     if sample is not None:
                         sample.elapsed_s = pass_elapsed_s
                         telemetry_samples.append(sample)
+                        if (
+                            concurrent_companion is not None
+                            and concurrent_companion.poll() is None
+                        ):
+                            cuda_telemetry_samples.append(sample)
                     benchmark_summary = _benchmark_summary_from_events(benchmark_events)
                     benchmark_telemetry_samples = _benchmark_window_telemetry_samples(
                         telemetry_samples,
@@ -879,6 +955,11 @@ def _run_benchmark_process(
                         fatal_output_matches,
                         running="q2rtx",
                     )
+                    if fatal_abort_reason is None and concurrent_companion is not None:
+                        fatal_abort_reason = _fatal_output_abort_reason(
+                            list(_scan_output_for_fatal_patterns(companion_log_path)),
+                            running="cuda",
+                        )
                     if fatal_abort_reason is not None:
                         _terminate_process_group(process)
                         process_exit_code = process.returncode
@@ -925,7 +1006,27 @@ def _run_benchmark_process(
             _refresh_benchmark_state()
             log_file.flush()
 
-            if (
+            if concurrent_companion is not None:
+                companion_exit_code, companion_abort_reason = (
+                    _reap_concurrent_companion(
+                        concurrent_companion,
+                        companion_log_path=companion_log_path,
+                        q2rtx_succeeded=(
+                            process_exit_code == 0 and exit_reason == "completed"
+                        ),
+                    )
+                )
+                # observed_duration_s keeps the benchmark-loop value: the
+                # companion reap grace is not benchmark time.
+                if companion_abort_reason:
+                    if exit_reason == "completed":
+                        exit_reason = str(companion_abort_reason)
+                elif companion_exit_code not in (None, 0):
+                    if exit_reason == "completed":
+                        exit_reason = (
+                            f"cuda-bruteforce-failed exit={int(companion_exit_code)}"
+                        )
+            elif (
                 process_exit_code == 0
                 and exit_reason == "completed"
                 and config.companion_command is not None
@@ -963,6 +1064,13 @@ def _run_benchmark_process(
         if event_read_fd != -1:
             try:
                 os.close(event_read_fd)
+            except OSError:
+                pass
+        if concurrent_companion is not None:
+            _terminate_process_group(concurrent_companion)
+        if companion_log_file is not None:
+            try:
+                companion_log_file.close()
             except OSError:
                 pass
         _terminate_process_group(process)
