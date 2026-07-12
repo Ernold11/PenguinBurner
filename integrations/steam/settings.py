@@ -19,15 +19,16 @@ from common.penguin_burner_paths import default_user_config_dir
 from profiles.uv.profile_tiers import PROFILE_TIERS, normalize_profile_tier
 
 
-# "default" = no per-game choice: the game follows whatever standing profile
-# the user applied in the Profiles tab, and nothing is persisted. Explicit
-# choices — INCLUDING explicit stock — persist and are enforced per game
-# (stock pins the GPU to factory for that game even while a standing
-# adaptive/tier profile is active).
+# Steam integration is opt-in per game. New games keep the wrapper disabled,
+# preselect Adaptive, and keep overlay visibility off. Hidden legacy modes stay
+# readable and migrate to Adaptive.
+GAME_MODE_NONE = "none"
 GAME_MODE_DEFAULT = "default"
 GAME_MODE_STOCK = "stock"
 GAME_MODE_ADAPTIVE = "adaptive"
-GAME_MODES = (GAME_MODE_DEFAULT, GAME_MODE_STOCK, GAME_MODE_ADAPTIVE, *PROFILE_TIERS)
+# Modes a stored per-game setting may hold. Stock is a real choice: pin the
+# factory GPU state for this game while the system-wide profile stays tuned.
+GAME_MODES = (GAME_MODE_ADAPTIVE, *PROFILE_TIERS, GAME_MODE_STOCK)
 
 STEAM_GAME_SETTINGS_FILENAME = "steam-game-settings.json"
 

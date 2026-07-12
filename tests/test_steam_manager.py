@@ -177,19 +177,24 @@ def test_proton_selection_uses_steam_and_default_is_not_forced(manager) -> None:
     assert _FakeCdpClient.compat_tool[APP_ID] == ""
 
 
-def test_back_to_default_restores_original_and_drops_setting(
-    manager, tmp_path
-) -> None:
+def test_disabling_penguin_burner_restores_original_command(manager, tmp_path) -> None:
     manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
     manager.set_game_mode(APP_ID, "balanced")
-    result = manager.set_game_mode(APP_ID, GAME_MODE_DEFAULT)
+    result = manager.set_game_enabled(APP_ID, False)
     assert result.ok
     assert _FakeCdpClient.launch_options[APP_ID] == "gamemoderun %command%"
-    assert load_steam_game_settings(tmp_path / "steam-game-settings.json") == {}
+    stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
+    assert stored[ACCOUNT_ID][APP_ID].enabled is False
 
 
-def test_explicit_stock_persists_and_injects(manager, tmp_path) -> None:
+def test_stock_choice_persists_per_game(manager, tmp_path) -> None:
+    """Stock is a first-class per-game mode: the system-wide profile stays
+    tuned while this game pins the factory GPU state. It must round-trip,
+    not silently migrate to Adaptive (which read as the combo snapping
+    back when the user picked Stock)."""
     manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
     result = manager.set_game_mode(APP_ID, GAME_MODE_STOCK)
     assert result.ok
     assert result.launch_options == (
