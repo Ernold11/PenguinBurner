@@ -8,7 +8,7 @@ button for that selection. Changes still apply immediately through
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 import textwrap
 import threading
@@ -135,6 +135,7 @@ class SteamPanel:
         self._standing_mode_label = "Stock"
         self._default_mode_label = "Default"
         self._live_ready = False
+        self._compat_tool_live_ready = False
         self._tracked: dict[str, _TrackedGame] = {}
 
         self.widget = QtWidgets.QWidget()
@@ -247,6 +248,19 @@ class SteamPanel:
         self.game_metadata.setWordWrap(True)
         details_layout.addWidget(self.game_metadata)
 
+        proton_label = QtWidgets.QLabel("Compatibility tool")
+        proton_label.setObjectName("steamFieldLabel")
+        details_layout.addWidget(proton_label)
+        self.proton_combo = QtWidgets.QComboBox()
+        self.proton_combo.setObjectName("steamCompatTool")
+        self.proton_combo.setToolTip(
+            _wrapped_tooltip(
+                "Keeps Steam's current choice by default. Selecting another entry "
+                "uses Steam's own compatibility-tool setting for this game."
+            )
+        )
+        details_layout.addWidget(self.proton_combo)
+
         command_label = QtWidgets.QLabel("Steam command line")
         command_label.setObjectName("steamFieldLabel")
         details_layout.addWidget(command_label)
@@ -314,6 +328,7 @@ class SteamPanel:
         self.restart_steam_button.clicked.connect(self._confirm_restart_steam)
         self.sort_combo.currentIndexChanged.connect(self._sort_changed)
         self.game_list.currentItemChanged.connect(self._selection_changed)
+        self.proton_combo.currentIndexChanged.connect(self._proton_changed)
         self.mode_combo.currentIndexChanged.connect(self._mode_changed)
         self.overlay_checkbox.toggled.connect(self._overlay_changed)
         self.launch_edit.editingFinished.connect(self._launch_options_edited)
@@ -485,6 +500,8 @@ class SteamPanel:
             if row is None:
                 self.game_title.setText("Select a game")
                 self.game_metadata.setText("")
+                self.proton_combo.clear()
+                self.proton_combo.addItem("Steam default", "")
                 self.launch_edit.clear()
                 self.mode_combo.setCurrentIndex(
                     max(0, self.mode_combo.findData(GAME_MODE_DEFAULT))
@@ -497,6 +514,16 @@ class SteamPanel:
                     f"App {row.game.app_id} · {runtime} · "
                     f"{last_played_text(row.game.last_played)}"
                 )
+                tools = self.manager.available_compat_tools(row.game.app_id)
+                self.proton_combo.clear()
+                self.proton_combo.addItem("Steam default", "")
+                for name, display in tools:
+                    self.proton_combo.addItem(display, name)
+                compat_index = self.proton_combo.findData(row.game.compat_tool)
+                if row.game.compat_tool and compat_index < 0:
+                    self.proton_combo.addItem(row.game.compat_tool, row.game.compat_tool)
+                    compat_index = self.proton_combo.count() - 1
+                self.proton_combo.setCurrentIndex(max(0, compat_index))
                 self.launch_edit.setText(row.launch_options)
                 # QLineEdit leaves the cursor at the end after setText(), which
                 # horizontally scrolls long Steam commands away from their
@@ -518,6 +545,9 @@ class SteamPanel:
         self.launch_edit.setEnabled(has_selection)
         self.launch_edit.setReadOnly(not editable)
         self.mode_combo.setEnabled(editable)
+        self.proton_combo.setEnabled(
+            has_selection and self._compat_tool_live_ready and not self._scan_running
+        )
         self.overlay_checkbox.setEnabled(editable)
         # Playing does not mutate Steam configuration, so it remains available
         # even before live launch-option apply has been initialized.
@@ -572,6 +602,7 @@ class SteamPanel:
         else:
             self.init_banner.setVisible(False)
         self._live_ready = cdp_ready or not running
+        self._compat_tool_live_ready = cdp_ready
         self._sync_interaction_state()
         self._sync_status()
 
@@ -597,6 +628,27 @@ class SteamPanel:
         result = self.manager.set_game_mode(app_id, self.mode_combo.currentData())
         hot = self.manager.hot_reapply(app_id) if result.ok else None
         self._after_apply(app_id, result, extra=hot)
+
+    def _proton_changed(self, _index: int) -> None:
+        if self._syncing:
+            return
+        app_id = self._current_app_id()
+        if not app_id:
+            return
+        tool_name = str(self.proton_combo.currentData() or "")
+        result = self.manager.set_game_compat_tool(app_id, tool_name)
+        if not result.ok:
+            self._sync_status(f"Proton: FAILED ({result.message})")
+            self._sync_selected_details()
+            return
+        row = self._rows.get(app_id)
+        if row is not None:
+            self._rows[app_id] = SteamGameRow(
+                game=replace(row.game, compat_tool=tool_name),
+                setting=row.setting,
+                launch_options=row.launch_options,
+            )
+        self._sync_status(result.message)
 
     def _overlay_changed(self, checked: bool) -> None:
         if self._syncing:

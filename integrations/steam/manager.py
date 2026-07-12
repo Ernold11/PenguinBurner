@@ -62,6 +62,7 @@ class SteamIntegrationManager:
         self._home = home
         self._settings_path = settings_path
         self._launch_options: dict[str, str] = {}
+        self._compat_tools: dict[str, tuple[tuple[str, str], ...]] = {}
 
     # -- status ------------------------------------------------------------
 
@@ -212,6 +213,41 @@ class SteamIntegrationManager:
     def set_game_overlay(self, app_id: str, overlay: bool) -> ApplyResult:
         setting = self._setting(app_id)
         return self._apply(app_id, replace(setting, overlay=bool(overlay)))
+
+    def available_compat_tools(self, app_id: str) -> tuple[tuple[str, str], ...]:
+        if app_id in self._compat_tools:
+            return self._compat_tools[app_id]
+        try:
+            with SteamCdpClient(timeout_s=5.0) as client:
+                if not client.compat_tool_selection_supported():
+                    return ()
+                tools = client.available_compat_tools(app_id)
+        except SteamCdpError:
+            return ()
+        self._compat_tools[app_id] = tools
+        return tools
+
+    def set_game_compat_tool(self, app_id: str, tool_name: str) -> ApplyResult:
+        """Change Proton through Steam itself; empty restores Steam Default."""
+        if not str(app_id).isdigit():
+            return ApplyResult(False, "invalid app id")
+        tool_name = str(tool_name).strip()
+        available = {name for name, _display in self.available_compat_tools(app_id)}
+        if tool_name and tool_name not in available:
+            return ApplyResult(False, "selected compatibility tool is unavailable")
+        try:
+            with SteamCdpClient(timeout_s=5.0) as client:
+                if not client.compat_tool_selection_supported():
+                    return ApplyResult(False, "this Steam build cannot change Proton live")
+                client.specify_compat_tool(app_id, tool_name)
+        except SteamCdpError as error:
+            return ApplyResult(False, f"Proton change failed: {error}")
+        return ApplyResult(
+            True,
+            "Using Steam default compatibility tool."
+            if not tool_name
+            else f"Compatibility tool changed to {tool_name}.",
+        )
 
     def set_raw_launch_options(self, app_id: str, text: str) -> ApplyResult:
         """User-edited launch string: validate, write verbatim, resync setting."""

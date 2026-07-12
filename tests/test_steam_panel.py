@@ -58,6 +58,7 @@ class _FakeManager:
         self.rows = rows
         self.running: set[str] = set()
         self.stop_requests: list[str] = []
+        self.compat_changes: list[tuple[str, str]] = []
         self.stop_ok = True
 
     def refresh(self, *, read_launch_options: bool = True):
@@ -77,6 +78,17 @@ class _FakeManager:
 
     def cdp_ready(self) -> bool:
         return True
+
+    def available_compat_tools(self, app_id: str):
+        del app_id
+        return (
+            ("proton_experimental", "Proton Experimental"),
+            ("GE-Proton10-34", "GE-Proton10-34"),
+        )
+
+    def set_game_compat_tool(self, app_id: str, tool_name: str):
+        self.compat_changes.append((app_id, tool_name))
+        return SimpleNamespace(ok=True, message=f"Compatibility tool changed to {tool_name}.")
 
     def game_running(self, app_id: str) -> bool:
         return app_id in self.running

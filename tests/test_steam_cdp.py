@@ -138,6 +138,7 @@ def fake_steam():
     state = {
         "launch_options": {"1089130": "gamemoderun %command%"},
         "terminated": [],
+        "compat_tool": {"1089130": "proton_experimental"},
     }
 
     def evaluate(expression):
@@ -145,6 +146,21 @@ def fake_steam():
             return True
         if "typeof SteamClient?.Apps?.TerminateApp" in expression:
             return True
+        if "typeof SteamClient?.Apps?.GetAvailableCompatTools" in expression:
+            return True
+        if "GetAvailableCompatTools(" in expression:
+            return [
+                {
+                    "strToolName": "proton_experimental",
+                    "strDisplayName": "Proton Experimental",
+                },
+                {"strToolName": "GE-Proton10-34", "strDisplayName": "GE-Proton10-34"},
+            ]
+        if "SpecifyCompatTool(" in expression:
+            args = expression.partition("SpecifyCompatTool(")[2].rpartition(")")[0]
+            app_id, _, value = args.partition(",")
+            state["compat_tool"][app_id.strip()] = json.loads(value.strip())
+            return None
         if "TerminateApp(" in expression:
             state["terminated"].append(
                 expression.partition("TerminateApp(")[2].partition(",")[0].strip()
@@ -206,6 +222,18 @@ def test_terminate_app_uses_steam_stop_api(fake_steam) -> None:
         assert client.terminate_app_supported()
         client.terminate_app("1089130")
     assert state["terminated"] == ["String(1089130)"]
+
+
+def test_compat_tools_are_listed_and_changed_through_steam(fake_steam) -> None:
+    server, state = fake_steam
+    with SteamCdpClient(port=server.http_port) as client:
+        assert client.compat_tool_selection_supported()
+        assert client.available_compat_tools("1089130") == (
+            ("proton_experimental", "Proton Experimental"),
+            ("GE-Proton10-34", "GE-Proton10-34"),
+        )
+        client.specify_compat_tool("1089130", "GE-Proton10-34")
+    assert state["compat_tool"]["1089130"] == "GE-Proton10-34"
 
 
 def test_marker_management(tmp_path) -> None:

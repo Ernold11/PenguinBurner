@@ -1,3 +1,5 @@
+import pytest
+
 from integrations.steam.launch_options import (
     inject_launch_options,
     injection_state,
@@ -132,3 +134,47 @@ def test_problems_flags_unbalanced_quotes_and_double_tokens() -> None:
         "more than one %command% token",
     )
     assert launch_options_problems("gamemoderun %command%") == ()
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        # Valve Proton runtime overrides.
+        "PROTON_LOG=1 PROTON_NO_ESYNC=1 %command% -novid",
+        'WINEDLLOVERRIDES="winhttp=n,b" DXVK_CONFIG_FILE="/tmp/My Config.conf" %command%',
+        # Common command-prefix tools and combinations seen in Linux gaming.
+        "gamemoderun %command%",
+        "mangohud gamemoderun %command%",
+        "obs-gamecapture gamemoderun %command%",
+        "prime-run gamemoderun %command%",
+        "taskset -c 0-7 gamemoderun %command%",
+        # Vulkan layers and explicit preload chains.
+        "ENABLE_VKBASALT=1 VKBASALT_CONFIG_FILE=/tmp/vkBasalt.conf %command%",
+        'LD_PRELOAD="$LD_PRELOAD:/usr/$LIB/libgamemodeauto.so.0" %command%',
+        # Gamescope owns everything before --; PB must remain in its child argv.
+        "gamescope -W 2560 -H 1440 -r 120 -f -- %command%",
+        "gamescope --hdr-enabled --mangoapp -- gamemoderun %command%",
+        (
+            "gamescope --backend headless -W 2560 -H 1440 -- "
+            "env SDL_AUDIODRIVER=dummy OBS_VKCAPTURE=1 obs-gamecapture %command%"
+        ),
+        # Shell control flow and arguments after Steam's command placeholder.
+        "echo preparing && gamemoderun %command% -windowed && echo finished",
+    ],
+)
+def test_popular_linux_gaming_launch_chains_survive_pb_round_trip(
+    original: str,
+) -> None:
+    injected = inject_launch_options(original, overlay=True)
+
+    assert launch_options_problems(injected) == ()
+    assert injected.count("PENGUIN_BURNER") == 1
+    assert remove_injection(
+        injected,
+        stored_original=original,
+        stored_injected=injected,
+    ) == original
+
+    # Toggling PB visualization only changes PB's own flag.
+    overlay_off = inject_launch_options(injected, overlay=False)
+    assert overlay_off == injected.replace("--pb-overlay=1", "--pb-overlay=0")

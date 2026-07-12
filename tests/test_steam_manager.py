@@ -19,6 +19,7 @@ APP_ID = "10"
 class _FakeCdpClient:
     launch_options: dict[str, str] = {}
     terminated: list[str] = []
+    compat_tool: dict[str, str] = {}
     fail = False
 
     def __init__(self, **kwargs):
@@ -43,6 +44,18 @@ class _FakeCdpClient:
 
     def terminate_app(self, app_id):
         type(self).terminated.append(str(app_id))
+
+    def compat_tool_selection_supported(self):
+        return True
+
+    def available_compat_tools(self, app_id):
+        return (
+            ("proton_experimental", "Proton Experimental"),
+            ("GE-Proton10-34", "GE-Proton10-34"),
+        )
+
+    def specify_compat_tool(self, app_id, tool_name):
+        type(self).compat_tool[str(app_id)] = str(tool_name)
 
 
 @pytest.fixture()
@@ -70,6 +83,7 @@ def steam_home(tmp_path: Path) -> Path:
 def manager(steam_home: Path, tmp_path: Path, monkeypatch) -> SteamIntegrationManager:
     _FakeCdpClient.launch_options = {APP_ID: "gamemoderun %command%"}
     _FakeCdpClient.terminated = []
+    _FakeCdpClient.compat_tool = {}
     _FakeCdpClient.fail = False
     monkeypatch.setattr(manager_module, "SteamCdpClient", _FakeCdpClient)
     monkeypatch.setattr(manager_module, "steam_running", lambda: True)
@@ -147,6 +161,20 @@ def test_overlay_toggle_updates_tokens(manager) -> None:
     assert result.launch_options == (
         "gamemoderun PENGUIN_BURNER --pb-overlay=1 %command%"
     )
+
+
+def test_proton_selection_uses_steam_and_default_is_not_forced(manager) -> None:
+    assert manager.available_compat_tools(APP_ID)[0] == (
+        "proton_experimental",
+        "Proton Experimental",
+    )
+    result = manager.set_game_compat_tool(APP_ID, "GE-Proton10-34")
+    assert result.ok
+    assert _FakeCdpClient.compat_tool[APP_ID] == "GE-Proton10-34"
+
+    result = manager.set_game_compat_tool(APP_ID, "")
+    assert result.ok
+    assert _FakeCdpClient.compat_tool[APP_ID] == ""
 
 
 def test_back_to_default_restores_original_and_drops_setting(

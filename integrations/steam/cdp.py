@@ -313,6 +313,40 @@ class SteamCdpClient:
             is True
         )
 
+    def compat_tool_selection_supported(self) -> bool:
+        return (
+            self.evaluate(
+                "typeof SteamClient?.Apps?.GetAvailableCompatTools === 'function'"
+                " && typeof SteamClient?.Apps?.SpecifyCompatTool === 'function'"
+            )
+            is True
+        )
+
+    def available_compat_tools(self, app_id: str) -> tuple[tuple[str, str], ...]:
+        value = self.evaluate(
+            f"SteamClient.Apps.GetAvailableCompatTools({int(app_id)})"
+        )
+        if not isinstance(value, list):
+            return ()
+        tools: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for entry in value:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("strToolName") or "").strip()
+            display = str(entry.get("strDisplayName") or name).strip()
+            if name and name not in seen:
+                tools.append((name, display or name))
+                seen.add(name)
+        return tuple(tools)
+
+    def specify_compat_tool(self, app_id: str, tool_name: str) -> None:
+        """Set a per-app tool through Steam; empty restores Steam default."""
+        self.evaluate(
+            f"SteamClient.Apps.SpecifyCompatTool({int(app_id)},"
+            f" {json.dumps(str(tool_name))})"
+        )
+
     def terminate_app(self, app_id: str) -> None:
         """Ask Steam to shut the running game down (the Stop button in
         Steam's own UI). TerminateApp takes the gameid as a string; for
