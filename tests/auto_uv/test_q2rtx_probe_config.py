@@ -40,7 +40,9 @@ def test_q2rtx_only_voltage_band_probe_clears_cuda() -> None:
         base_duration_s=10,
     )
 
-    assert config.duration_s == 20
+    # Moderate sweep: the mid/deep band soaks 1.5x base (15s), not 2x — the
+    # 300s final does the real verification.
+    assert config.duration_s == 15
     assert config.companion_command is None
 
 
@@ -82,11 +84,16 @@ def test_voltage_band_probe_adds_cuda_after_five_percent_drop() -> None:
         base_duration_s=10,
     )
 
-    assert config.duration_s == 20
+    # Moderate sweep: 15s q2rtx (1.5x base) with the 5s CUDA companion.
+    assert config.duration_s == 15
     assert _companion_duration_s(config.companion_command) == 5
 
 
-def test_deeper_voltage_probe_shifts_time_from_q2rtx_to_cuda() -> None:
+def test_moderate_sweep_mid_and_deep_bands_soak_fifteen_seconds() -> None:
+    # Moderate sweep: both the mid (>=90%) and deep (<90%) bands run a 15s
+    # q2rtx probe with a 5s CUDA companion. (Previously the deep band shifted
+    # up to 25s q2rtx + 10s CUDA for a full soak at every rung; that soak is
+    # now the job of the 300s final verification, so the sweep is uniform.)
     medium_cuda_s = tiered_cuda_probe_duration_s(
         initial_target_voltage_mv=1000,
         candidate_voltage_mv=920,
@@ -104,7 +111,7 @@ def test_deeper_voltage_probe_shifts_time_from_q2rtx_to_cuda() -> None:
             base_duration_s=10,
         ),
         medium_cuda_s,
-    ) == (20, 5)
+    ) == (15, 5)
     assert (
         tiered_q2rtx_probe_duration_s(
             initial_target_voltage_mv=1000,
@@ -112,7 +119,7 @@ def test_deeper_voltage_probe_shifts_time_from_q2rtx_to_cuda() -> None:
             base_duration_s=10,
         ),
         deep_cuda_s,
-    ) == (25, 10)
+    ) == (15, 5)
 
     config = q2rtx_cuda_probe_config_for_voltage_band(
         Q2RTXStabilityConfig(gpu_index=2),
@@ -121,8 +128,8 @@ def test_deeper_voltage_probe_shifts_time_from_q2rtx_to_cuda() -> None:
         base_duration_s=10,
     )
 
-    assert config.duration_s == 25
-    assert _companion_duration_s(config.companion_command) == 10
+    assert config.duration_s == 15
+    assert _companion_duration_s(config.companion_command) == 5
 
 
 def test_scan_runtime_settings_keep_duration_config() -> None:

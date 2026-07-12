@@ -13,8 +13,14 @@ from auto_uv.domain.user_options import AUTO_UV_DEFAULTS, AUTO_UV_PROBE_TUNING
 from ..shared.probe_data_fields import percent
 
 REFERENCE_DISCOVERY_Q2RTX_DURATION_MULTIPLIER = 2
-DEEP_VOLTAGE_Q2RTX_DURATION_MULTIPLIER = 2.5
-DEEP_VOLTAGE_CUDA_DURATION_MULTIPLIER = 2
+# Descent (sweep) probe durations. The descent only has to FIND the stable
+# edge — the real stability proof is the 300s final verification, which these
+# multipliers do NOT feed. So the sweep runs short soaks (a marginal candidate
+# that slips through is caught by the final, which then re-selects). Was
+# 2.5x/2.0x for a full-length soak at every rung; trimmed for a faster sweep.
+MEDIUM_VOLTAGE_Q2RTX_DURATION_MULTIPLIER = 1.5
+DEEP_VOLTAGE_Q2RTX_DURATION_MULTIPLIER = 1.5
+DEEP_VOLTAGE_CUDA_DURATION_MULTIPLIER = 1
 
 
 def short_q2rtx_probe_config(
@@ -147,7 +153,15 @@ def tiered_q2rtx_probe_duration_s(
     if voltage_ratio >= percent(AUTO_UV_PROBE_TUNING.high_voltage_pct):
         return int(base_probe_duration_s)
     elif voltage_ratio >= percent(AUTO_UV_PROBE_TUNING.medium_voltage_pct):
-        return int(base_probe_duration_s) * 2
+        return max(
+            1,
+            int(
+                math.ceil(
+                    float(base_probe_duration_s)
+                    * float(MEDIUM_VOLTAGE_Q2RTX_DURATION_MULTIPLIER)
+                )
+            ),
+        )
     else:
         return max(
             1,
@@ -177,6 +191,8 @@ def tiered_cuda_probe_duration_s(
             )
         ),
     )
+    if initial_target_voltage_mv is None or candidate_voltage_mv is None:
+        return int(cuda_duration_s)
     try:
         initial_voltage = int(initial_target_voltage_mv)
         candidate_voltage = int(candidate_voltage_mv)
