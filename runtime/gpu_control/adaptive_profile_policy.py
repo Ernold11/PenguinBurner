@@ -47,9 +47,14 @@ class AdaptiveProfilePolicyConfig:
     performance_comfort_windows: int = 10
     demote_dwell_s: float = 60.0
     performance_demote_dwell_s: float = 45.0
-    cpu_bound_gpu_util_max_pct: float = 85.0
-    cpu_bound_peak_thread_min_pct: float = 70.0
-    cpu_bound_process_util_min_pct: float = 12.0
+    # "CPU-bound, promoting the GPU tier cannot help" must mean exactly that:
+    # the GPU clearly underused AND the CPU genuinely saturated (one pegged
+    # thread, or very high overall process load). The old 85/70/12 defaults
+    # held promotion for nearly every real game — a render thread idling at
+    # 70% and 12% process CPU are both normal for GPU-bound gameplay.
+    cpu_bound_gpu_util_max_pct: float = 60.0
+    cpu_bound_peak_thread_min_pct: float = 97.0
+    cpu_bound_process_util_min_pct: float = 60.0
 
     @classmethod
     def for_target_fps(

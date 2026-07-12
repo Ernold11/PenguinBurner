@@ -53,9 +53,9 @@ impl Default for PolicyConfig {
             performance_comfort_windows: 10,
             demote_dwell_s: 60.0,
             performance_demote_dwell_s: 45.0,
-            cpu_bound_gpu_util_max_pct: 85.0,
-            cpu_bound_peak_thread_min_pct: 70.0,
-            cpu_bound_process_util_min_pct: 12.0,
+            cpu_bound_gpu_util_max_pct: 60.0,
+            cpu_bound_peak_thread_min_pct: 97.0,
+            cpu_bound_process_util_min_pct: 60.0,
         }
     }
 }
@@ -109,9 +109,21 @@ struct PolicyState {
     comfort_count: i64,
 }
 
+/// How far back the cpu-bound guard looks when judging utilization.
+const CPU_BOUND_WINDOW_S: f64 = 8.0;
+
+#[derive(Debug, Clone, Copy)]
+struct UtilSample {
+    at: f64,
+    gpu: Option<f64>,
+    cpu: Option<f64>,
+    peak_thread: Option<f64>,
+}
+
 pub struct AdaptiveProfileController {
     config: PolicyConfig,
     state: PolicyState,
+    util_samples: std::collections::VecDeque<UtilSample>,
 }
 
 fn ordered_available_tiers(raw: &[String]) -> Vec<String> {
@@ -163,6 +175,7 @@ impl AdaptiveProfileController {
                 near_slow_count: 0,
                 comfort_count: 0,
             },
+            util_samples: std::collections::VecDeque::new(),
         }
     }
 
@@ -190,6 +203,12 @@ impl AdaptiveProfileController {
         cpu_util_pct: Option<f64>,
         cpu_peak_thread_pct: Option<f64>,
     ) -> Decision {
+        self.record_util_sample(
+            now_monotonic,
+            gpu_util_pct,
+            cpu_util_pct,
+            cpu_peak_thread_pct,
+        );
         let ordered = ordered_available_tiers(available_tiers);
         if ordered.len() < 2 {
             let tier = ordered
@@ -343,6 +362,36 @@ impl AdaptiveProfileController {
         }
     }
 
+    fn record_util_sample(
+        &mut self,
+        now_monotonic: f64,
+        gpu_util_pct: Option<f64>,
+        cpu_util_pct: Option<f64>,
+        cpu_peak_thread_pct: Option<f64>,
+    ) {
+        self.util_samples.push_back(UtilSample {
+            at: now_monotonic,
+            gpu: gpu_util_pct,
+            cpu: cpu_util_pct,
+            peak_thread: cpu_peak_thread_pct,
+        });
+        while let Some(front) = self.util_samples.front() {
+            if now_monotonic - front.at > CPU_BOUND_WINDOW_S {
+                self.util_samples.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn windowed_avg(&self, pick: impl Fn(&UtilSample) -> Option<f64>) -> Option<f64> {
+        let values: Vec<f64> = self.util_samples.iter().filter_map(&pick).collect();
+        if values.is_empty() {
+            return None;
+        }
+        Some(values.iter().sum::<f64>() / values.len() as f64)
+    }
+
     fn performance_promotion_cpu_bound(
         &self,
         target_tier: &str,
@@ -353,16 +402,23 @@ impl AdaptiveProfileController {
         if normalize_profile_tier(target_tier, "") != PROFILE_TIER_PERFORMANCE {
             return false;
         }
-        let Some(gpu) = gpu_util_pct else {
+        // Judge the last few seconds, not the instant the promotion fires: a
+        // menu shader-compile spike (or one calm tick right after it) must
+        // not decide a gameplay tier. Falls back to the instantaneous values
+        // while the window is still filling.
+        let gpu_avg = self.windowed_avg(|s| s.gpu).or(gpu_util_pct);
+        let cpu_avg = self.windowed_avg(|s| s.cpu).or(cpu_util_pct);
+        let peak_avg = self.windowed_avg(|s| s.peak_thread).or(cpu_peak_thread_pct);
+        let Some(gpu) = gpu_avg else {
             return false;
         };
         if gpu > self.config.cpu_bound_gpu_util_max_pct {
             return false;
         }
         let peak_busy =
-            cpu_peak_thread_pct.is_some_and(|v| v >= self.config.cpu_bound_peak_thread_min_pct);
+            peak_avg.is_some_and(|v| v >= self.config.cpu_bound_peak_thread_min_pct);
         let process_busy =
-            cpu_util_pct.is_some_and(|v| v >= self.config.cpu_bound_process_util_min_pct);
+            cpu_avg.is_some_and(|v| v >= self.config.cpu_bound_process_util_min_pct);
         peak_busy || process_busy
     }
 
@@ -679,17 +735,46 @@ mod tests {
     }
 
     #[test]
+    fn cpu_bound_window_forgets_shader_compile_spike() {
+        // Menu shader compilation (GPU idle, one thread pegged) must not
+        // poison the gameplay decision once the utilization window has
+        // moved on: after ~8s of real GPU-bound gameplay samples the
+        // promotion goes through.
+        let mut c = controller();
+        for i in 0..4 {
+            let t = 100.0 + i as f64 * 2.0;
+            let d = c.update(Some(30.0), &tiers(), t, Some(5.0), Some(80.0), Some(99.0));
+            assert_ne!(d.tier, "performance", "shader-compile spike must hold");
+        }
+        // Gameplay: GPU pegged, CPU relaxed. Old samples age out of the
+        // 8s window; the badly-slow promotion is then allowed.
+        let mut promoted = false;
+        for i in 0..8 {
+            let t = 108.0 + i as f64 * 2.0;
+            let d = c.update(Some(30.0), &tiers(), t, Some(92.0), Some(30.0), Some(60.0));
+            if d.tier == "performance" {
+                promoted = true;
+                break;
+            }
+        }
+        assert!(promoted, "gameplay window must lift the cpu-bound hold");
+    }
+
+    #[test]
     fn cpu_bound_blocks_performance_promotion() {
         let mut c = controller();
         c.state.current_tier = "balanced".into();
-        // badly-slow would jump to performance, but low GPU + busy thread caps it.
+        // badly-slow would jump to performance, but an idle GPU with a truly
+        // pegged thread caps it. (Thresholds are deliberately conservative:
+        // gpu <= 60, thread >= 97 — a render thread at 70-90% is normal for
+        // GPU-bound gameplay and must NOT hold the promotion.)
         let d = c.update(
             Some(30.0),
             &tiers(),
             1.0,
-            Some(50.0),
             Some(20.0),
-            Some(90.0),
+            Some(30.0),
+            Some(99.0),
         );
         assert!(!d.changed);
         assert_eq!(d.reason, "cpu-bound-performance-block");
