@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 import tomllib
 
@@ -145,7 +146,14 @@ def write_config(config_path: Path, config: dict):
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     claim_desktop_user_ownership(config_path.parent, include_parents=True)
-    config_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    # Atomic replace: several PenguinBurner processes (GUI, CLI, overlay,
+    # Flatpak) share this file, and an in-place truncating write lets a
+    # concurrent reader see a torn/empty config — which read-modify-write
+    # callers would then "repair" by rewriting the file without the sections
+    # they never saw, silently dropping user preferences.
+    temp_path = config_path.with_name(config_path.name + ".tmp")
+    temp_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    os.replace(temp_path, config_path)
     claim_desktop_user_ownership(config_path)
 
 

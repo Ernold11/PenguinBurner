@@ -363,3 +363,26 @@ def test_persist_drops_q2rtx_override_keys(tmp_path: Path) -> None:
     stability = written.get("stability", {})
     assert "q2rtx_dir" not in stability
     assert "q2rtx_binary" not in stability
+
+
+def test_write_config_replaces_atomically_and_leaves_no_temp_file(
+    tmp_path: Path,
+) -> None:
+    """The config is shared by several live processes (GUI, CLI, overlay,
+    Flatpak); an in-place truncating write lets a concurrent reader observe a
+    torn file, and read-modify-write callers would then rewrite it without the
+    sections they never saw. write_config must land via atomic rename."""
+    import tomllib
+
+    from integrations.afterburner.import_fan_curve import write_config
+
+    config_path = tmp_path / "penguin_burner.toml"
+    write_config(
+        config_path,
+        {"gpu": {"index": 1}, "ui": {"persist_on_startup": True}},
+    )
+
+    written = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert written["ui"]["persist_on_startup"] is True
+    assert written["gpu"]["index"] == 1
+    assert list(tmp_path.iterdir()) == [config_path]  # no .tmp left behind

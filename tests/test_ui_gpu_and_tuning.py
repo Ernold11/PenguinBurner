@@ -148,18 +148,26 @@ def test_persist_runtime_gpu_index_writes_selected(tmp_path, monkeypatch) -> Non
     assert written["other"] == 1
 
 
-def test_persist_runtime_gpu_index_handles_load_failure(tmp_path, monkeypatch) -> None:
-    written = {}
+def test_persist_runtime_gpu_index_never_rewrites_an_unreadable_config(
+    tmp_path, monkeypatch
+) -> None:
+    """A torn/corrupt read must not become a destructive full rewrite.
+
+    Rewriting from {} would drop every section the reader never saw — the
+    user-visible symptom was the [ui] persist-on-startup toggle deselecting
+    itself after a scan start (which persists the GPU index on this path).
+    """
+    written = []
 
     def _boom(_p):
         raise RuntimeError("bad config")
 
     monkeypatch.setattr(gpu_selection, "load_raw_runtime_config", _boom)
     monkeypatch.setattr(
-        gpu_selection, "write_config", lambda path, cfg: written.update(cfg)
+        gpu_selection, "write_config", lambda path, cfg: written.append(cfg)
     )
     assert persist_runtime_gpu_index(-1, config_path=tmp_path / "c.toml") == 0
-    assert written["gpu"]["index"] == 0
+    assert written == []
 
 
 # --- ui/tuning.py -------------------------------------------------------------

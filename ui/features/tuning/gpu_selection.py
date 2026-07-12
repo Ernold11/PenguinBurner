@@ -94,7 +94,11 @@ def persist_runtime_gpu_index(
     try:
         config = load_raw_runtime_config(path)
     except Exception:
-        config = {}
+        # An unreadable config must not become a destructive full rewrite:
+        # continuing with {} would re-emit the file with only [gpu], silently
+        # dropping every other section ([ui] persist-on-startup, [fan], ...).
+        # Keep the file as-is; the selected index still applies this session.
+        return selected
     updated = dict(config)
     gpu = dict(updated.get("gpu", {}))
     gpu["index"] = selected
