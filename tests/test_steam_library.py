@@ -12,6 +12,7 @@ def _write_manifest(
     name: str,
     *,
     state_flags: int = 4,
+    last_played: str = "0",
 ) -> None:
     (steamapps / f"appmanifest_{app_id}.acf").write_text(
         "\n".join(
@@ -21,6 +22,7 @@ def _write_manifest(
                 f'\t"appid"\t\t"{app_id}"',
                 f'\t"name"\t\t"{name}"',
                 f'\t"StateFlags"\t\t"{state_flags}"',
+                f'\t"LastPlayed"\t\t"{last_played}"',
                 f'\t"installdir"\t\t"{name}"',
                 "}",
             ]
@@ -84,6 +86,28 @@ def test_reads_compat_tool_mapping(tmp_path: Path) -> None:
     games = {game.app_id: game for game in installed_steam_games(tmp_path)}
     assert games["10"].is_proton and games["10"].compat_tool == "proton_experimental"
     assert not games["20"].is_proton
+
+
+def test_reads_last_played_timestamp_from_manifest(tmp_path: Path) -> None:
+    root = _steam_home(tmp_path)
+    _write_manifest(
+        root / "steamapps", "10", "Recently Played", last_played="1783870852"
+    )
+    _write_manifest(root / "steamapps", "20", "Never Played")
+
+    games = {game.app_id: game for game in installed_steam_games(tmp_path)}
+
+    assert games["10"].last_played == 1783870852
+    assert games["20"].last_played == 0
+
+
+def test_invalid_last_played_timestamp_is_treated_as_never_played(
+    tmp_path: Path,
+) -> None:
+    root = _steam_home(tmp_path)
+    _write_manifest(root / "steamapps", "10", "Broken Date", last_played="nope")
+
+    assert installed_steam_games(tmp_path)[0].last_played == 0
 
 
 def test_icon_prefers_small_library_cache_jpg(tmp_path: Path) -> None:

@@ -53,10 +53,58 @@ QLabel#autoUvScanEstimate {{
 QGroupBox#advancedTuningGroup {{
     margin-top: 12px;
 }}
-QLineEdit, QPlainTextEdit, QTableWidget {{
+QLineEdit, QPlainTextEdit, QTableWidget, QListWidget, QComboBox {{
     background: {theme.SURFACE_BG};
     border: 1px solid {theme.BORDER};
     color: {theme.TEXT};
+}}
+QFrame#steamInitBanner {{
+    background: {theme.ROW_WARNING_BG};
+    border: 1px solid {theme.WARNING};
+    border-radius: 6px;
+}}
+QFrame#steamLibraryPane, QFrame#steamGameDetailsPane {{
+    background: {theme.SURFACE_BG};
+    border: 1px solid {theme.BORDER};
+    border-radius: 7px;
+}}
+QLabel#steamPaneTitle {{
+    color: {theme.TEXT_STRONG};
+    font-size: 14px;
+    font-weight: 700;
+}}
+QLabel#steamGameTitle {{
+    color: {theme.TEXT_PROGRESS};
+    font-size: 21px;
+    font-weight: 700;
+}}
+QLabel#steamGameMetadata {{
+    color: {theme.TEXT_MUTED};
+}}
+QLabel#steamFieldLabel {{
+    color: {theme.TEXT_STRONG};
+    font-weight: 600;
+}}
+QListWidget#steamGameList {{
+    outline: 0;
+}}
+QListWidget#steamGameList::item {{
+    border-radius: 5px;
+    padding: 5px 7px;
+}}
+QListWidget#steamGameList::item:hover {{
+    background: {theme.CONTROL_HOVER_BG};
+}}
+QListWidget#steamGameList::item:selected {{
+    background: {theme.PROFILE_SELECTED_BG};
+    color: {theme.TEXT_STRONG};
+}}
+QComboBox#steamGameSort, QComboBox#steamAutoUvMode {{
+    padding: 5px 8px;
+}}
+QLineEdit#steamLaunchOptions {{
+    font-family: monospace;
+    padding: 8px;
 }}
 QGroupBox {{
     border: 1px solid {theme.BORDER};
@@ -80,6 +128,20 @@ QPushButton:hover, QToolButton:hover {{
 }}
 QPushButton:disabled, QToolButton:disabled {{
     color: {theme.TEXT_DISABLED};
+}}
+QPushButton#steamPlayButton {{
+    background: {theme.PRIMARY_BUTTON_BG};
+    border-color: {theme.PRIMARY_BUTTON_BORDER};
+    color: {theme.PRIMARY_BUTTON_TEXT};
+    font-size: 14px;
+    font-weight: 700;
+}}
+QPushButton#steamPlayButton:hover {{
+    border-color: {theme.PRIMARY_BUTTON_HOVER_BORDER};
+}}
+QPushButton#steamPlayButton:pressed {{
+    background: {theme.PRIMARY_BUTTON_PRESSED_BG};
+    border-color: {theme.PRIMARY_BUTTON_PRESSED_BORDER};
 }}
 QPushButton#autoUvPresetButton {{
     min-width: 108px;
