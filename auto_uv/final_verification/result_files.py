@@ -99,6 +99,17 @@ def write_final_verified_profile(
     auto_uv_mode: str = "",
     generated_profile_tier: str = "",
 ) -> Path:
+    # Smooth the below-lock region with probe-passed points from this GPU's
+    # archive before archiving: the lock and tail stay exactly as verified,
+    # while bins the descent already proved stop shipping stock values (the
+    # 2200->2800 style discontinuity next to the lock).
+    from auto_uv.curve.verified_envelope import apply_verified_envelope_below_lock
+
+    plan, _raised = apply_verified_envelope_below_lock(
+        plan,
+        lock_voltage_mv=int(voltage_mv),
+        lock_clock_mhz=int(lock_clock_mhz),
+    )
     payload = verified_candidate_payload(
         plan=plan,
         lock_clock_mhz=int(lock_clock_mhz),
