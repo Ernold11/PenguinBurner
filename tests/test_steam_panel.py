@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 import threading
 from types import SimpleNamespace
@@ -11,13 +12,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6 import QtWidgets
 
 from integrations.steam.library import InstalledSteamGame
+from integrations.steam.launch_options import inject_launch_options, remove_injection
 from integrations.steam.manager import SteamGameRow, SteamIntegrationManager
-from integrations.steam.settings import (
-    GAME_MODE_ADAPTIVE,
-    GAME_MODE_DEFAULT,
-    GAME_MODE_STOCK,
-    SteamGameSetting,
-)
+from integrations.steam.settings import GAME_MODE_ADAPTIVE, SteamGameSetting
 from ui.components.steam_panel import (
     SORT_ALPHABETICAL,
     SORT_RECENT,
@@ -60,9 +57,16 @@ class _FakeManager:
         self.stop_requests: list[str] = []
         self.compat_changes: list[tuple[str, str]] = []
         self.launch_changes: list[tuple[str, str]] = []
+        self.enabled_changes: list[tuple[str, bool]] = []
         self.stop_ok = True
 
-    def refresh(self, *, read_launch_options: bool = True):
+    def refresh(
+        self,
+        *,
+        read_launch_options: bool = True,
+        initialize_defaults: bool = False,
+    ):
+        del read_launch_options, initialize_defaults
         return self.rows
 
     def standing_mode_label(self) -> str:
@@ -94,6 +98,37 @@ class _FakeManager:
     def set_raw_launch_options(self, app_id: str, text: str):
         self.launch_changes.append((app_id, text))
         return SimpleNamespace(ok=True, message="Applied live.")
+
+    def set_game_enabled(self, app_id: str, enabled: bool):
+        self.enabled_changes.append((app_id, enabled))
+        updated = []
+        launch_options = ""
+        for row in self.rows:
+            if row.game.app_id != app_id:
+                updated.append(row)
+                continue
+            launch_options = (
+                inject_launch_options(row.launch_options, overlay=False)
+                if enabled
+                else remove_injection(row.launch_options)
+            )
+            updated.append(
+                replace(
+                    row,
+                    setting=replace(row.setting, enabled=enabled, overlay=False),
+                    launch_options=launch_options,
+                )
+            )
+        self.rows = tuple(updated)
+        return SimpleNamespace(
+            ok=True,
+            message="Applied live.",
+            launch_options=launch_options,
+        )
+
+    def hot_reapply(self, app_id: str):
+        del app_id
+        return None
 
     def game_running(self, app_id: str) -> bool:
         return app_id in self.running
@@ -133,25 +168,18 @@ def test_recent_sort_uses_last_played_and_puts_never_played_last(
     assert last_played_text(0) == "Never played on this PC"
 
 
-def test_stock_standing_mode_is_only_listed_once_at_the_top() -> None:
+def test_mode_menu_contains_adaptive_tiers_and_stock() -> None:
     mode_keys = _mode_keys_for_standing_mode("Stock")
 
-    assert mode_keys[0] == GAME_MODE_DEFAULT
-    assert GAME_MODE_STOCK not in mode_keys
-
-
-def test_explicit_stock_remains_available_when_default_is_not_stock() -> None:
-    mode_keys = _mode_keys_for_standing_mode("Balanced")
-
-    assert mode_keys[0] == GAME_MODE_DEFAULT
-    assert mode_keys[-1] == GAME_MODE_STOCK
-
-
-def test_adaptive_standing_mode_is_only_listed_once_as_default() -> None:
-    mode_keys = _mode_keys_for_standing_mode("Adaptive")
-
-    assert mode_keys[0] == GAME_MODE_DEFAULT
-    assert GAME_MODE_ADAPTIVE not in mode_keys
+    # Per-game Stock stays available: the standing profile can be tuned
+    # system-wide while one game pins the factory GPU state.
+    assert mode_keys == (
+        GAME_MODE_ADAPTIVE,
+        "efficiency",
+        "balanced",
+        "performance",
+        "stock",
+    )
 
 
 def test_explicit_adaptive_remains_available_when_default_is_not_adaptive() -> None:
@@ -200,6 +228,20 @@ def test_panel_keeps_library_left_and_one_selected_game_editor(
     assert panel.game_title.text() == "Zeta"
     assert panel.launch_edit.toPlainText() == "zeta %command%"
     assert panel.launch_edit.textCursor().position() == 0
+    assert panel.mode_combo.currentData() == GAME_MODE_ADAPTIVE
+    assert panel.enabled_checkbox.text() == "Enable PenguinBurner per-game profiles"
+    assert panel.enabled_checkbox.isChecked() is False
+    assert panel.mode_label.isEnabled() is False
+    assert panel.mode_combo.isEnabled() is False
+    assert panel.overlay_checkbox.isChecked() is False
+    assert panel.overlay_checkbox.isEnabled() is False
+
+    panel.enabled_checkbox.click()
+    assert manager.enabled_changes == [("30", True)]
+    assert panel.enabled_checkbox.isChecked() is True
+    assert panel.mode_label.isEnabled() is True
+    assert panel.mode_combo.isEnabled() is True
+    assert panel.overlay_checkbox.isEnabled() is True
 
     panel.launch_edit.setPlainText("gamemoderun %command%")
     qtbot.waitUntil(lambda: bool(manager.launch_changes), timeout=1500)

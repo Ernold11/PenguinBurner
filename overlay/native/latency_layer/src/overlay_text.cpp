@@ -571,7 +571,14 @@ bool overlay_parse_fps_value(const std::string& raw_value, double* out) {
 }
 
 std::string compact_profile_tier(const std::string& value) {
-    const std::string tier = trim_ascii(value).empty() ? "Balanced" : trim_ascii(value);
+    // No tier means stock/default GPU state (Restore Defaults, per-game
+    // Stock/Default): show DEF, never masquerade as a tuned tier.
+    const std::string trimmed = trim_ascii(value);
+    if (trimmed.empty() || trimmed == "stock" || trimmed == "Stock"
+        || trimmed == "default" || trimmed == "Default") {
+        return "DEF";
+    }
+    const std::string tier = trimmed;
     std::string lower = tier;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));

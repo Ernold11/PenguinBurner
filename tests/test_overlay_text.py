@@ -239,7 +239,9 @@ def test_overlay_text_omits_missing_latency() -> None:
 
 
 def test_overlay_text_handles_missing_values() -> None:
-    assert format_overlay_text({}) == "n/a FPS n/a MHz n/a mV n/a W BAL"
+    # An absent tier is stock/default GPU state and must read DEF — showing
+    # BAL would claim a tuned profile that is not applied.
+    assert format_overlay_text({}) == "n/a FPS n/a MHz n/a mV n/a W DEF"
 
 
 def test_overlay_text_hides_missing_advanced_values() -> None:

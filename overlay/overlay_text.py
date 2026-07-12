@@ -223,8 +223,12 @@ def _flag_enabled(value: object) -> bool:
 
 
 def _compact_tier(value: object) -> str:
-    text = str(value or "").strip() or "Balanced"
+    # No tier means stock/default GPU state (Restore Defaults, per-game
+    # Stock/Default): show DEF, never masquerade as a tuned tier.
+    text = str(value or "").strip()
     lower = text.lower()
+    if not text or lower in ("stock", "default"):
+        return "DEF"
     if lower == "balanced":
         return "BAL"
     if lower == "efficiency":

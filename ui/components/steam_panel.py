@@ -15,25 +15,30 @@ import threading
 import time
 
 from integrations.steam.manager import SteamGameRow, SteamIntegrationManager
+from integrations.steam.launch_options import injection_state
 from integrations.steam.process import launch_steam_game, restart_steam
 from integrations.steam.settings import (
     GAME_MODE_ADAPTIVE,
-    GAME_MODE_DEFAULT,
     GAME_MODE_STOCK,
     normalize_game_mode,
 )
 from profiles.uv.profile_tiers import PROFILE_TIER_LABELS, PROFILE_TIERS
 
 
-# "Default" (no per-game choice, follows the Profiles-tab standing action)
-# leads; an explicit mode is omitted when Default already resolves to it.
+# Wrapper enablement is separate from mode selection. The menu contains only
+# Adaptive, concrete profile tiers, and per-game Stock: the standing profile
+# can stay tuned system-wide (e.g. Balanced) while this one game pins the
+# factory GPU state for its whole session.
 _MODE_LABELS = {
-    GAME_MODE_DEFAULT: "Default",
     GAME_MODE_ADAPTIVE: "Adaptive",
     **PROFILE_TIER_LABELS,
-    GAME_MODE_STOCK: "Stock",
+    GAME_MODE_STOCK: "Stock (factory GPU state)",
 }
-_MODE_KEYS = (GAME_MODE_DEFAULT, GAME_MODE_ADAPTIVE, *PROFILE_TIERS, GAME_MODE_STOCK)
+_MODE_KEYS = (
+    GAME_MODE_ADAPTIVE,
+    *PROFILE_TIERS,
+    GAME_MODE_STOCK,
+)
 
 SORT_RECENT = "recent"
 SORT_ALPHABETICAL = "alphabetical"
@@ -71,10 +76,7 @@ def _wrapped_tooltip(text: str) -> str:
 
 
 def _mode_keys_for_standing_mode(standing_mode_label: str) -> tuple[str, ...]:
-    standing_mode = standing_mode_label.casefold()
-    for mode in (GAME_MODE_ADAPTIVE, GAME_MODE_STOCK):
-        if standing_mode == _MODE_LABELS[mode].casefold():
-            return tuple(key for key in _MODE_KEYS if key != mode)
+    _ = standing_mode_label
     return _MODE_KEYS
 
 
@@ -132,8 +134,6 @@ class SteamPanel:
         self._restart_result: bool | None = None
         self._rescan_thread: threading.Thread | None = None
         self._rescan_rows: tuple[SteamGameRow, ...] | None = None
-        self._standing_mode_label = "Stock"
-        self._default_mode_label = "Default"
         self._live_ready = False
         self._compat_tool_live_ready = False
         self._tracked: dict[str, _TrackedGame] = {}
@@ -160,7 +160,9 @@ class SteamPanel:
         self.rescan_button.setToolTip(
             _wrapped_tooltip(
                 "Re-read the installed-game list, last-played timestamps, and "
-                "each game's launch options from Steam."
+                "each game's launch options from Steam. Newly discovered games "
+                "keep PenguinBurner disabled, with Adaptive preselected and "
+                "the overlay off."
             )
         )
         header_row.addWidget(self.rescan_button)
@@ -292,14 +294,20 @@ class SteamPanel:
         )
         details_layout.addWidget(self.launch_edit)
 
-        mode_label = QtWidgets.QLabel("Auto-UV mode")
-        mode_label.setObjectName("steamFieldLabel")
-        details_layout.addWidget(mode_label)
+        self.mode_label = QtWidgets.QLabel("Auto-UV mode")
+        self.mode_label.setObjectName("steamFieldLabel")
+        details_layout.addWidget(self.mode_label)
         self.mode_combo = QtWidgets.QComboBox()
         self.mode_combo.setObjectName("steamAutoUvMode")
         for key in _MODE_KEYS:
             self.mode_combo.addItem(_MODE_LABELS[key], key)
         details_layout.addWidget(self.mode_combo)
+
+        self.enabled_checkbox = QtWidgets.QCheckBox(
+            "Enable PenguinBurner per-game profiles"
+        )
+        self.enabled_checkbox.setObjectName("steamPenguinBurnerToggle")
+        details_layout.addWidget(self.enabled_checkbox)
 
         self.overlay_checkbox = QtWidgets.QCheckBox("Enable In-Game overlay")
         self.overlay_checkbox.setObjectName("steamOverlayToggle")
@@ -322,6 +330,7 @@ class SteamPanel:
         self.game_list.currentItemChanged.connect(self._selection_changed)
         self.proton_combo.currentIndexChanged.connect(self._proton_changed)
         self.mode_combo.currentIndexChanged.connect(self._mode_changed)
+        self.enabled_checkbox.toggled.connect(self._enabled_changed)
         self.overlay_checkbox.toggled.connect(self._overlay_changed)
         self._launch_edit_timer = QtCore.QTimer(self.widget)
         self._launch_edit_timer.setSingleShot(True)
@@ -341,12 +350,20 @@ class SteamPanel:
         self._game_state_timer.timeout.connect(self._poll_game_states)
 
         self._sync_selected_details()
-        self.rescan()
+        # Startup discovery is read-only. Only an explicit Rescan button click
+        # records the disabled, Adaptive-preselected defaults for new games.
+        self.rescan(initialize_defaults=False)
 
     # -- refresh ------------------------------------------------------------
 
-    def rescan(self) -> None:
+    def rescan(
+        self,
+        _checked: bool = False,
+        *,
+        initialize_defaults: bool = True,
+    ) -> None:
         """Refresh the library and Steam command lines outside the UI thread."""
+        _ = _checked
         if self._rescan_thread is not None and self._rescan_thread.is_alive():
             return
         if not self._flush_pending_launch_edit():
@@ -358,7 +375,10 @@ class SteamPanel:
         self._rescan_rows = None
 
         def run() -> None:
-            self._rescan_rows = self.manager.refresh(read_launch_options=True)
+            self._rescan_rows = self.manager.refresh(
+                read_launch_options=True,
+                initialize_defaults=initialize_defaults,
+            )
 
         self._rescan_thread = threading.Thread(target=run, daemon=True)
         self._rescan_thread.start()
@@ -411,22 +431,15 @@ class SteamPanel:
         self._sync_status()
 
     def _sync_default_mode_label(self) -> None:
-        self._standing_mode_label = self.manager.standing_mode_label()
-        self._default_mode_label = f"Default ({self._standing_mode_label})"
-        mode_keys = _mode_keys_for_standing_mode(self._standing_mode_label)
+        mode_keys = _mode_keys_for_standing_mode("")
         current_mode = normalize_game_mode(self.mode_combo.currentData())
         if current_mode not in mode_keys:
-            current_mode = GAME_MODE_DEFAULT
+            current_mode = GAME_MODE_ADAPTIVE
         signals_were_blocked = self.mode_combo.blockSignals(True)
         try:
             self.mode_combo.clear()
             for key in mode_keys:
-                label = (
-                    self._default_mode_label
-                    if key == GAME_MODE_DEFAULT
-                    else _MODE_LABELS[key]
-                )
-                self.mode_combo.addItem(label, key)
+                self.mode_combo.addItem(_MODE_LABELS[key], key)
             self.mode_combo.setCurrentIndex(mode_keys.index(current_mode))
         finally:
             self.mode_combo.blockSignals(signals_were_blocked)
@@ -440,8 +453,8 @@ class SteamPanel:
         if not adaptive_ok:
             self.mode_combo.setToolTip(
                 _wrapped_tooltip(
-                    "Adaptive needs at least two verified Auto-UV tiers; run "
-                    "Auto-UV scans first."
+                    "Adaptive needs at least one verified Auto-UV profile; run "
+                    "an Auto-UV scan first."
                 )
             )
         else:
@@ -514,8 +527,9 @@ class SteamPanel:
                 self.proton_combo.addItem("Steam default", "")
                 self.launch_edit.clear()
                 self.mode_combo.setCurrentIndex(
-                    max(0, self.mode_combo.findData(GAME_MODE_DEFAULT))
+                    max(0, self.mode_combo.findData(GAME_MODE_ADAPTIVE))
                 )
+                self.enabled_checkbox.setChecked(False)
                 self.overlay_checkbox.setChecked(False)
             else:
                 self.game_title.setText(row.game.name)
@@ -539,6 +553,7 @@ class SteamPanel:
                 self._resize_launch_editor()
                 mode_index = self.mode_combo.findData(normalize_game_mode(row.setting.mode))
                 self.mode_combo.setCurrentIndex(max(0, mode_index))
+                self.enabled_checkbox.setChecked(row.setting.enabled)
                 self.overlay_checkbox.setChecked(row.setting.overlay)
         finally:
             self._syncing = was_syncing
@@ -551,11 +566,14 @@ class SteamPanel:
         editable = has_selection and self._live_ready and not self._scan_running
         self.launch_edit.setEnabled(has_selection)
         self.launch_edit.setReadOnly(not editable)
-        self.mode_combo.setEnabled(editable)
+        self.enabled_checkbox.setEnabled(editable)
+        wrapper_enabled = editable and self.enabled_checkbox.isChecked()
+        self.mode_label.setEnabled(wrapper_enabled)
+        self.mode_combo.setEnabled(wrapper_enabled)
         self.proton_combo.setEnabled(
             has_selection and self._compat_tool_live_ready and not self._scan_running
         )
-        self.overlay_checkbox.setEnabled(editable)
+        self.overlay_checkbox.setEnabled(wrapper_enabled)
         # Playing does not mutate Steam configuration, so it remains available
         # even before live launch-option apply has been initialized.
         self.play_button.setEnabled(has_selection)
@@ -614,7 +632,11 @@ class SteamPanel:
         self._sync_status()
 
     def _sync_status(self, message: str = "") -> None:
-        configured = sum(1 for row in self._rows.values() if row.setting.active)
+        configured = sum(
+            1
+            for row in self._rows.values()
+            if injection_state(row.launch_options).wrapped
+        )
         parts = [f"{len(self._rows)} games", f"{configured} configured"]
         if self._live_ready:
             parts.append("live apply" if self.manager.steam_running() else "Steam stopped")
@@ -635,6 +657,18 @@ class SteamPanel:
         if not app_id:
             return
         result = self.manager.set_game_mode(app_id, self.mode_combo.currentData())
+        hot = self.manager.hot_reapply(app_id) if result.ok else None
+        self._after_apply(app_id, result, extra=hot)
+
+    def _enabled_changed(self, checked: bool) -> None:
+        if self._syncing:
+            return
+        if not self._flush_pending_launch_edit():
+            return
+        app_id = self._current_app_id()
+        if not app_id:
+            return
+        result = self.manager.set_game_enabled(app_id, checked)
         hot = self.manager.hot_reapply(app_id) if result.ok else None
         self._after_apply(app_id, result, extra=hot)
 
