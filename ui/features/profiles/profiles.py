@@ -178,6 +178,7 @@ def runner_status_text(
     profiles: list[dict],
     *,
     running_selector: str = "",
+    running_adaptive: bool = False,
     autostart_selector: str = "",
     running_silent_fan: bool = False,
     autostart_silent_fan: bool = False,
@@ -190,16 +191,19 @@ def runner_status_text(
     # clock/voltage numbers -- those are the V/F ceiling, not the live point).
     if defaults_restored or running_selector == STOCK_PROFILE_SELECTOR:
         autostarts = "Yes" if autostart_selector else "No"
-        return f"Currently running profile: Default; Systemd autostart: {autostarts}."
+        return f"Currently running profile: Default; Autostart: {autostarts}."
     if running_selector:
         autostarts = _profile_selectors_match(
             profiles,
             running_selector,
             autostart_selector,
         )
+        running_label = profile_status_label(profiles, running_selector)
+        if running_adaptive:
+            running_label = f"{running_label} (Adaptive)"
         parts = [
-            f"Currently running profile: {profile_status_label(profiles, running_selector)}",
-            f"Systemd autostart: {'Yes' if autostarts else 'No'}",
+            f"Currently running profile: {running_label}",
+            f"Autostart: {'Yes' if autostarts else 'No'}",
             f"Silent fan curve: {_on_off(running_silent_fan)}",
         ]
         if autostart_selector and not autostarts:
@@ -210,7 +214,7 @@ def runner_status_text(
     if autostart_selector:
         return (
             f"Autostart profile: {profile_status_label(profiles, autostart_selector)}; "
-            "Systemd autostart: Yes; "
+            "Autostart: Yes; "
             f"Silent fan curve: {_on_off(autostart_silent_fan)}; "
             "Not running now."
         )

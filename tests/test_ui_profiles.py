@@ -117,12 +117,12 @@ def test_runner_status_text_branches() -> None:
         catalog, running_selector="p1", autostart_selector="p1", running_silent_fan=True
     )
     assert "Currently running profile" in running_match
-    assert "Systemd autostart: Yes" in running_match
+    assert "Autostart: Yes" in running_match
 
     running_diff = profiles.runner_status_text(
         catalog, running_selector="p1", autostart_selector="p2"
     )
-    assert "Autostart profile" in running_diff and "Systemd autostart: No" in running_diff
+    assert "Autostart profile" in running_diff and "Autostart: No" in running_diff
 
     autostart_only = profiles.runner_status_text(catalog, autostart_selector="p2")
     assert "Not running now." in autostart_only

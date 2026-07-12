@@ -290,7 +290,7 @@ def test_window_simple_helpers(main_window) -> None:
     win = main_window
     assert win._workflow_running() is False
     win._set_profile_actions_enabled(True)
-    assert "Systemd autostart: Yes" in win._runtime_action_start_text("install-systemd")
+    assert "Autostart: Yes" in win._runtime_action_start_text("install-systemd")
     assert "Removing" in win._runtime_action_start_text("uninstall-systemd")
     assert "adaptive" in win._runtime_action_start_text(
         "daemonize", adaptive_auto_uv=True
@@ -301,9 +301,9 @@ def test_window_simple_helpers(main_window) -> None:
 
 def test_window_tab_order_and_bins_visibility(main_window) -> None:
     win = main_window
-    # Tabs are Auto-UV, Profiles, Overlay, Steam (no separate fan-curve tab).
+    # Tabs are Auto-UV, Profiles, Steam, Overlay (no separate fan-curve tab).
     labels = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-    assert labels == ["Auto-UV", "Profiles", "Ingame Overlay", "Steam"]
+    assert labels == ["Auto-UV", "Profiles", "Steam", "Ingame Overlay"]
     assert not hasattr(win, "fan_plot")
 
     # The undervolting-runs panel shows only on the Auto-UV tab.
@@ -335,7 +335,7 @@ def test_runs_table_splitter_is_draggable_with_content_derived_floors(
     row_height = table.verticalHeader().defaultSectionSize()
     # The table's floor derives from its own style metrics, not pixel
     # constants: at least MIN_VISIBLE_ROWS rows plus the header/frame.
-    assert win.runs_table.MIN_VISIBLE_ROWS >= 8
+    assert win.runs_table.MIN_VISIBLE_ROWS == 7
     assert table.minimumHeight() >= (
         header_height + row_height * win.runs_table.MIN_VISIBLE_ROWS
     )

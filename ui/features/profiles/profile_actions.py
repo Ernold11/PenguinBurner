@@ -618,14 +618,14 @@ class ProfileActionsMixin:
         )
         if adaptive_auto_uv:
             if persists:
-                return "Starting adaptive Auto-UV; Systemd autostart: Yes."
-            return "Starting adaptive Auto-UV; Systemd autostart: No."
+                return "Starting adaptive Auto-UV; Autostart: Yes."
+            return "Starting adaptive Auto-UV; Autostart: No."
         selected = self.profile_list.selected_profile_name() or "none"
         if persists:
-            return f"Starting profile: {selected}; Systemd autostart: Yes."
+            return f"Starting profile: {selected}; Autostart: Yes."
         if action in {"clear-boot", "uninstall-systemd"}:
             return "Removing Systemd autostart entry."
-        return f"Starting profile: {selected}; Systemd autostart: No."
+        return f"Starting profile: {selected}; Autostart: No."
 
 
 def _manual_curve_control_voltage_mvs(manual_edit) -> tuple[int, ...]:

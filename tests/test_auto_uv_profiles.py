@@ -1750,8 +1750,26 @@ def test_runner_status_text_shows_running_profile_and_autostart_state() -> None:
     )
 
     assert "Currently running profile: 2610 MHz 875 mV" in status
-    assert "Systemd autostart: Yes" in status
+    assert "Autostart: Yes" in status
     assert "Silent fan curve: On" in status
+
+
+def test_runner_status_text_marks_adaptive_running_profile() -> None:
+    profiles = [
+        {
+            "profile_id": "profile-a",
+            "candidate_voltage_mv": 875,
+            "lock_clock_mhz": 2610,
+        }
+    ]
+
+    status = _runner_status_text(
+        profiles,
+        running_selector="profile-a",
+        running_adaptive=True,
+    )
+
+    assert "Currently running profile: 2610 MHz 875 mV (Adaptive)" in status
 
 
 def test_runner_status_text_has_clear_empty_state() -> None:
