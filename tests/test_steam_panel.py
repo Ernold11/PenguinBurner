@@ -59,6 +59,7 @@ class _FakeManager:
         self.running: set[str] = set()
         self.stop_requests: list[str] = []
         self.compat_changes: list[tuple[str, str]] = []
+        self.launch_changes: list[tuple[str, str]] = []
         self.stop_ok = True
 
     def refresh(self, *, read_launch_options: bool = True):
@@ -89,6 +90,10 @@ class _FakeManager:
     def set_game_compat_tool(self, app_id: str, tool_name: str):
         self.compat_changes.append((app_id, tool_name))
         return SimpleNamespace(ok=True, message=f"Compatibility tool changed to {tool_name}.")
+
+    def set_raw_launch_options(self, app_id: str, text: str):
+        self.launch_changes.append((app_id, text))
+        return SimpleNamespace(ok=True, message="Applied live.")
 
     def game_running(self, app_id: str) -> bool:
         return app_id in self.running
@@ -173,11 +178,12 @@ def test_panel_keeps_library_left_and_one_selected_game_editor(
         _row(tmp_path, "20", "Beta", 0, command="beta %command%"),
         _row(tmp_path, "30", "Zeta", 300, command="zeta %command%"),
     )
+    manager = _FakeManager(rows)
     panel = SteamPanel(
         QtCore=QtCore,
         QtGui=QtGui,
         QtWidgets=QtWidgetsModule,
-        manager=cast(SteamIntegrationManager, _FakeManager(rows)),
+        manager=cast(SteamIntegrationManager, manager),
     )
     qtbot.addWidget(panel.widget)
     qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
@@ -192,10 +198,15 @@ def test_panel_keeps_library_left_and_one_selected_game_editor(
         "Beta",
     ]
     assert panel.game_title.text() == "Zeta"
-    assert panel.launch_edit.text() == "zeta %command%"
-    assert panel.launch_edit.cursorPosition() == 0
+    assert panel.launch_edit.toPlainText() == "zeta %command%"
+    assert panel.launch_edit.textCursor().position() == 0
+
+    panel.launch_edit.setPlainText("gamemoderun %command%")
+    qtbot.waitUntil(lambda: bool(manager.launch_changes), timeout=1500)
+    assert manager.launch_changes == [("30", "gamemoderun %command%")]
 
     line_edits = panel.widget.findChildren(QtWidgets.QLineEdit)
+    plain_text_edits = panel.widget.findChildren(QtWidgets.QPlainTextEdit)
     tables = panel.widget.findChildren(QtWidgets.QTableWidget)
     play_buttons = [
         button
@@ -212,7 +223,8 @@ def test_panel_keeps_library_left_and_one_selected_game_editor(
         for button in panel.widget.findChildren(QtWidgets.QPushButton)
         if button.text() == "Reset"
     ]
-    assert line_edits == [panel.launch_edit]
+    assert line_edits == []
+    assert plain_text_edits == [panel.launch_edit]
     assert tables == []
     assert play_buttons == [panel.play_button]
     assert stop_buttons == [panel.stop_button]
@@ -229,8 +241,8 @@ def test_panel_keeps_library_left_and_one_selected_game_editor(
     ]
     # Sorting changes position, not the selected game or its editor state.
     assert panel.game_title.text() == "Zeta"
-    assert panel.launch_edit.text() == "zeta %command%"
-    assert panel.launch_edit.cursorPosition() == 0
+    assert panel.launch_edit.toPlainText() == "gamemoderun %command%"
+    assert panel.launch_edit.textCursor().position() == 0
 
     panel._sync_timer.stop()
 

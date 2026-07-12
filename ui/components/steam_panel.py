@@ -164,15 +164,6 @@ class SteamPanel:
             )
         )
         header_row.addWidget(self.rescan_button)
-        self.restart_steam_button = QtWidgets.QPushButton("Restart Steam")
-        self.restart_steam_button.setToolTip(
-            _wrapped_tooltip(
-                "Cleanly shut down the Steam client and relaunch it. Needed "
-                "once after initialization, and any time you want Steam "
-                "restarted without touching your session."
-            )
-        )
-        header_row.addWidget(self.restart_steam_button)
         layout.addLayout(header_row)
 
         self.init_banner = QtWidgets.QFrame()
@@ -233,10 +224,34 @@ class SteamPanel:
         details_layout.setContentsMargins(22, 18, 22, 18)
         details_layout.setSpacing(12)
 
+        title_row = QtWidgets.QHBoxLayout()
+        title_row.setSpacing(10)
         self.game_title = QtWidgets.QLabel("Select a game")
         self.game_title.setObjectName("steamGameTitle")
         self.game_title.setWordWrap(True)
-        details_layout.addWidget(self.game_title)
+        self.game_title.setMaximumWidth(560)
+        title_row.addWidget(self.game_title)
+        self.play_button = QtWidgets.QPushButton("Play")
+        self.play_button.setObjectName("steamPlayButton")
+        self.play_button.setToolTip(
+            _wrapped_tooltip(
+                "Launch the selected game through Steam. The command line, "
+                "Auto-UV mode, and overlay choice below are used for the launch."
+            )
+        )
+        title_row.addWidget(self.play_button)
+        self.stop_button = QtWidgets.QPushButton("Stop")
+        self.stop_button.setObjectName("steamStopButton")
+        self.stop_button.setEnabled(False)
+        self.stop_button.setToolTip(
+            _wrapped_tooltip(
+                "Ask Steam to shut the running game down cleanly — the same "
+                "action as Steam's own Stop button."
+            )
+        )
+        title_row.addWidget(self.stop_button)
+        title_row.addStretch(1)
+        details_layout.addLayout(title_row)
 
         self.game_status = QtWidgets.QLabel("")
         self.game_status.setObjectName("steamGameStatus")
@@ -264,9 +279,11 @@ class SteamPanel:
         command_label = QtWidgets.QLabel("Steam command line")
         command_label.setObjectName("steamFieldLabel")
         details_layout.addWidget(command_label)
-        self.launch_edit = QtWidgets.QLineEdit()
+        self.launch_edit = QtWidgets.QPlainTextEdit()
         self.launch_edit.setObjectName("steamLaunchOptions")
         self.launch_edit.setPlaceholderText("%command%")
+        self.launch_edit.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+        self.launch_edit.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.launch_edit.setToolTip(
             _wrapped_tooltip(
                 "The selected game's one Steam launch-options command line. "
@@ -289,30 +306,6 @@ class SteamPanel:
         details_layout.addWidget(self.overlay_checkbox)
 
         details_layout.addStretch(1)
-        action_row = QtWidgets.QHBoxLayout()
-        action_row.setSpacing(10)
-        self.play_button = QtWidgets.QPushButton("Play")
-        self.play_button.setObjectName("steamPlayButton")
-        self.play_button.setToolTip(
-            _wrapped_tooltip(
-                "Launch the selected game through Steam. The command line, "
-                "Auto-UV mode, and overlay choice above are used for the launch."
-            )
-        )
-        action_row.addWidget(self.play_button)
-        self.stop_button = QtWidgets.QPushButton("Stop")
-        self.stop_button.setObjectName("steamStopButton")
-        self.stop_button.setEnabled(False)
-        self.stop_button.setToolTip(
-            _wrapped_tooltip(
-                "Ask Steam to shut the running game down cleanly — the same "
-                "action as Steam's own Stop button. Available while a game "
-                "launched from here is running."
-            )
-        )
-        action_row.addWidget(self.stop_button)
-        action_row.addStretch(1)
-        details_layout.addLayout(action_row)
         self.splitter.addWidget(self.details_pane)
         self.splitter.setCollapsible(1, False)
         self.splitter.setStretchFactor(0, 0)
@@ -325,13 +318,16 @@ class SteamPanel:
 
         self.rescan_button.clicked.connect(self.rescan)
         self.init_button.clicked.connect(self._initialize)
-        self.restart_steam_button.clicked.connect(self._confirm_restart_steam)
         self.sort_combo.currentIndexChanged.connect(self._sort_changed)
         self.game_list.currentItemChanged.connect(self._selection_changed)
         self.proton_combo.currentIndexChanged.connect(self._proton_changed)
         self.mode_combo.currentIndexChanged.connect(self._mode_changed)
         self.overlay_checkbox.toggled.connect(self._overlay_changed)
-        self.launch_edit.editingFinished.connect(self._launch_options_edited)
+        self._launch_edit_timer = QtCore.QTimer(self.widget)
+        self._launch_edit_timer.setSingleShot(True)
+        self._launch_edit_timer.setInterval(600)
+        self._launch_edit_timer.timeout.connect(self._launch_options_edited)
+        self.launch_edit.textChanged.connect(self._launch_options_changed)
         self.play_button.clicked.connect(self._play_game)
         self.stop_button.clicked.connect(self._stop_game)
 
@@ -352,6 +348,8 @@ class SteamPanel:
     def rescan(self) -> None:
         """Refresh the library and Steam command lines outside the UI thread."""
         if self._rescan_thread is not None and self._rescan_thread.is_alive():
+            return
+        if not self._flush_pending_launch_edit():
             return
         self._scan_running = True
         self.rescan_button.setEnabled(False)
@@ -380,6 +378,8 @@ class SteamPanel:
     def _auto_sync(self) -> None:
         """Track installs and updated LastPlayed values without a full CDP read."""
         if self._rescan_thread is not None and self._rescan_thread.is_alive():
+            return
+        if not self._flush_pending_launch_edit():
             return
         rows = self.manager.refresh(read_launch_options=False)
         if self._row_signature(rows) != self._row_signature(tuple(self._rows.values())):
@@ -482,11 +482,21 @@ class SteamPanel:
         return str(item.data(self.QtCore.Qt.UserRole) or "") if item is not None else ""
 
     def _selection_changed(self, _current, _previous) -> None:
-        if not self._syncing:
-            self._sync_selected_details()
+        if self._syncing:
+            return
+        if not self._flush_pending_launch_edit(self._selected_app_id):
+            signals_were_blocked = self.game_list.blockSignals(True)
+            try:
+                self.game_list.setCurrentItem(_previous)
+            finally:
+                self.game_list.blockSignals(signals_were_blocked)
+            return
+        self._sync_selected_details()
 
     def _sort_changed(self, _index: int) -> None:
         if self._syncing:
+            return
+        if not self._flush_pending_launch_edit():
             return
         self._refresh_game_list(preferred_app_id=self._current_app_id())
 
@@ -509,10 +519,8 @@ class SteamPanel:
                 self.overlay_checkbox.setChecked(False)
             else:
                 self.game_title.setText(row.game.name)
-                runtime = row.game.compat_tool if row.game.is_proton else "Native Linux"
                 self.game_metadata.setText(
-                    f"App {row.game.app_id} · {runtime} · "
-                    f"{last_played_text(row.game.last_played)}"
+                    f"App {row.game.app_id} · {last_played_text(row.game.last_played)}"
                 )
                 tools = self.manager.available_compat_tools(row.game.app_id)
                 self.proton_combo.clear()
@@ -524,12 +532,11 @@ class SteamPanel:
                     self.proton_combo.addItem(row.game.compat_tool, row.game.compat_tool)
                     compat_index = self.proton_combo.count() - 1
                 self.proton_combo.setCurrentIndex(max(0, compat_index))
-                self.launch_edit.setText(row.launch_options)
-                # QLineEdit leaves the cursor at the end after setText(), which
-                # horizontally scrolls long Steam commands away from their
-                # beginning. Each freshly displayed command should start at the
-                # left edge; editing still moves the cursor normally afterward.
-                self.launch_edit.setCursorPosition(0)
+                self.launch_edit.setPlainText(row.launch_options)
+                cursor = self.launch_edit.textCursor()
+                cursor.setPosition(0)
+                self.launch_edit.setTextCursor(cursor)
+                self._resize_launch_editor()
                 mode_index = self.mode_combo.findData(normalize_game_mode(row.setting.mode))
                 self.mode_combo.setCurrentIndex(max(0, mode_index))
                 self.overlay_checkbox.setChecked(row.setting.overlay)
@@ -622,6 +629,8 @@ class SteamPanel:
     def _mode_changed(self, _index: int) -> None:
         if self._syncing:
             return
+        if not self._flush_pending_launch_edit():
+            return
         app_id = self._current_app_id()
         if not app_id:
             return
@@ -631,6 +640,8 @@ class SteamPanel:
 
     def _proton_changed(self, _index: int) -> None:
         if self._syncing:
+            return
+        if not self._flush_pending_launch_edit():
             return
         app_id = self._current_app_id()
         if not app_id:
@@ -653,24 +664,54 @@ class SteamPanel:
     def _overlay_changed(self, checked: bool) -> None:
         if self._syncing:
             return
+        if not self._flush_pending_launch_edit():
+            return
         app_id = self._current_app_id()
         if not app_id:
             return
         result = self.manager.set_game_overlay(app_id, checked)
         self._after_apply(app_id, result)
 
-    def _launch_options_edited(self) -> None:
+    def _launch_options_edited(self) -> bool:
         if self._syncing:
-            return
-        app_id = self._current_app_id()
+            return True
+        return self._save_launch_options(self._current_app_id())
+
+    def _save_launch_options(self, app_id: str) -> bool:
         row = self._rows.get(app_id)
-        text = self.launch_edit.text().strip()
+        text = self.launch_edit.toPlainText().strip()
         if row is None or text == row.launch_options:
-            return
+            return True
         result = self.manager.set_raw_launch_options(app_id, text)
-        self._after_apply(app_id, result)
+        if not result.ok:
+            self._sync_status(f"{row.game.name}: FAILED: {result.message}")
+            return False
+        self._rows[app_id] = SteamGameRow(
+            game=row.game,
+            setting=row.setting,
+            launch_options=text,
+        )
+        self._sync_status(f"{row.game.name}: {result.message}")
+        return True
+
+    def _flush_pending_launch_edit(self, app_id: str | None = None) -> bool:
+        if not self._launch_edit_timer.isActive():
+            return True
+        self._launch_edit_timer.stop()
+        return self._save_launch_options(app_id or self._current_app_id())
+
+    def _launch_options_changed(self) -> None:
+        self._resize_launch_editor()
+        if not self._syncing:
+            self._launch_edit_timer.start()
+
+    def _resize_launch_editor(self) -> None:
+        document_height = int(self.launch_edit.document().size().height())
+        self.launch_edit.setFixedHeight(max(72, document_height + 18))
 
     def _play_game(self, _checked: bool = False) -> None:
+        if not self._flush_pending_launch_edit():
+            return
         app_id = self._current_app_id()
         row = self._rows.get(app_id)
         if row is None:
@@ -777,7 +818,10 @@ class SteamPanel:
         )
         if answer != QtWidgets.QMessageBox.Yes:
             return
-        self.restart_steam_button.setEnabled(False)
+        if not self._flush_pending_launch_edit():
+            self._sync_status("Steam restart cancelled: command-line save failed.")
+            return
+        self.init_button.setEnabled(False)
         self._sync_status("Restarting Steam…")
         self._restart_result = None
 
@@ -793,7 +837,7 @@ class SteamPanel:
         if thread is not None and thread.is_alive():
             self.QtCore.QTimer.singleShot(500, self._poll_restart)
             return
-        self.restart_steam_button.setEnabled(True)
+        self.init_button.setEnabled(True)
         if self._restart_result:
             self._sync_status("Steam restarted.")
         else:

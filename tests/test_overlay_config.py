@@ -104,3 +104,72 @@ def test_set_overlay_scale_preserves_other_fields() -> None:
     assert updated.enabled is True
     assert updated.update_interval_s == 7
     assert updated.enabled_item_ids == ("base_fps", "latency_ms")
+
+
+def test_overlay_panel_samples_keep_only_basic_example_values() -> None:
+    from ui.components.overlay_config import _sample_text
+
+    telemetry = {
+        "present_fps": "22",
+        "framegen_fps": "44",
+        "latency_ms": "88",
+    }
+
+    assert _sample_text("base_fps", telemetry) == "60 FPS"
+    assert _sample_text("fg_fps", telemetry) == "120 FG"
+    assert _sample_text("latency_ms", telemetry) == "40 ms"
+
+
+def test_overlay_panel_values_use_live_telemetry_or_dash() -> None:
+    from ui.components.overlay_config import _sample_text
+
+    telemetry = {
+        "clock_mhz": "607",
+        "profile_tier": "Performance",
+        "gpu_util_pct": "33",
+        "cpu_peak_thread_pct": "",
+    }
+
+    assert _sample_text("clock_mhz", telemetry) == "607 MHz"
+    assert _sample_text("profile", telemetry) == "PERF"
+    assert _sample_text("gpu_util_pct", telemetry) == "GPU 33%"
+    assert _sample_text("cpu_peak_thread_pct", telemetry) == "-"
+    assert _sample_text("voltage_mv", telemetry) == "-"
+
+
+def test_overlay_panel_refreshes_value_rows_from_current_telemetry(monkeypatch) -> None:
+    from ui.components import overlay_config
+
+    class Label:
+        def __init__(self) -> None:
+            self.text = ""
+            self.enabled = False
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+        def setEnabled(self, enabled: bool) -> None:
+            self.enabled = enabled
+
+    panel = object.__new__(overlay_config.OverlayConfigPanel)
+    panel.config = OverlayConfig(
+        enabled=True,
+        enabled_item_ids=("clock_mhz",),
+    )
+    panel.preview_label = Label()
+    panel.item_value_labels = {
+        "clock_mhz": Label(),
+        "cpu_peak_thread_pct": Label(),
+    }
+    monkeypatch.setattr(
+        overlay_config,
+        "read_overlay_state",
+        lambda: {"clock_mhz": "607", "cpu_peak_thread_pct": ""},
+    )
+
+    panel.refresh_preview()
+
+    assert panel.preview_label.text == "607 MHz"
+    assert panel.preview_label.enabled is True
+    assert panel.item_value_labels["clock_mhz"].text == "607 MHz"
+    assert panel.item_value_labels["cpu_peak_thread_pct"].text == "-"

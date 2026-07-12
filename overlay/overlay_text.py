@@ -6,8 +6,8 @@ from .config import normalize_overlay_config
 
 
 SAMPLE_OVERLAY_VALUES = {
-    "present_fps": "119",
-    "framegen_fps": "176",
+    "present_fps": "60",
+    "framegen_fps": "120",
     "framegen_active": "1",
     "clock_mhz": "2820",
     "voltage_mv": "925",
@@ -18,8 +18,8 @@ SAMPLE_OVERLAY_VALUES = {
     "cpu_peak_thread_pct": "98",
     "fan_pct": "62",
     "temperature_c": "67",
-    "latency_ms": "23",
-    "display_latency_ms": "4",
+    "latency_ms": "40",
+    "display_latency_ms": "",
     "uv_offset_mv": "-75",
 }
 
@@ -32,10 +32,15 @@ def format_overlay_text(
     config = normalize_overlay_config(config or default_overlay_config(enabled=True))
     parts = []
     for item_id in config.enabled_item_ids:
-        part = _format_overlay_item(item_id, values)
+        part = format_overlay_item(item_id, values)
         if part:
             parts.append(part)
     return " ".join(parts) if parts else "PB waiting"
+
+
+def format_overlay_item(item_id: str, values: dict[str, str]) -> str:
+    """Format one overlay metric using current telemetry values."""
+    return _format_overlay_item(item_id, values)
 
 
 def preview_overlay_text(

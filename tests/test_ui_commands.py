@@ -1728,6 +1728,11 @@ def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
         ).text()
         == "CPU-T %"
     )
+    value_labels = list(window.overlay_config.item_value_labels.values())
+    assert len({label.width() for label in value_labels}) == 1
+    assert value_labels[0].width() >= value_labels[0].fontMetrics().horizontalAdvance(
+        "UV -9999 mV"
+    )
 
     window.tabs.setCurrentIndex(window.auto_uv_tab_index)
     assert not window.table_panel.isHidden()

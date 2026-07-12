@@ -328,5 +328,5 @@ def test_overlay_preview_keeps_sample_fg_when_live_state_is_inactive() -> None:
             },
             config=config,
         )
-        == "60 FPS 176 FG 2700 MHz"
+        == "60 FPS 120 FG 2700 MHz"
     )

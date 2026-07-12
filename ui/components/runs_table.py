@@ -36,9 +36,9 @@ class RunsTable:
     FPSW_COLUMN = 10
     DECISION_COLUMN = 11
     STATUS_COLUMN = 12
-    # The old fixed-height panel showed 5 rows; the pending row at the tail
-    # regularly needed scrolling. Guarantee three more.
-    MIN_VISIBLE_ROWS = 8
+    # Keep two more rows than the old five-row panel while giving the plot a
+    # little more default height. The table still follows the newest run.
+    MIN_VISIBLE_ROWS = 7
 
     def __init__(self, *, QtCore, QtGui, QtWidgets):
         self.QtCore = QtCore

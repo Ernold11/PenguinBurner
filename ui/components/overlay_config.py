@@ -24,6 +24,7 @@ from overlay.config import set_overlay_scale
 from overlay.config import set_overlay_update_interval_s
 from overlay.config import snap_overlay_scale
 from overlay.overlay_text import SAMPLE_OVERLAY_VALUES
+from overlay.overlay_text import format_overlay_item
 from overlay.overlay_text import preview_overlay_text
 from overlay.state import read_overlay_state
 
@@ -43,6 +44,28 @@ ITEM_LABELS = {
     "latency_ms": "Latency ms",
     "uv_offset_mv": "UV offset mV",
 }
+
+ITEM_TELEMETRY_KEYS = {
+    "clock_mhz": "clock_mhz",
+    "voltage_mv": "voltage_mv",
+    "power_w": "power_w",
+    "profile": "profile_tier",
+    "gpu_util_pct": "gpu_util_pct",
+    "cpu_util_pct": "cpu_util_pct",
+    "cpu_peak_thread_pct": "cpu_peak_thread_pct",
+    "fan_pct": "fan_pct",
+    "temperature_c": "temperature_c",
+    "uv_offset_mv": "uv_offset_mv",
+}
+
+ITEM_VALUE_WIDTH_EXAMPLES = (
+    "9999 FPS",
+    "9999 MHz",
+    "9999 mV",
+    "CPU-T 9999%",
+    "T 9999 C",
+    "UV -9999 mV",
+)
 
 ITEM_TOOLTIPS = {
     "base_fps": (
@@ -108,6 +131,7 @@ class OverlayConfigPanel:
         )
         self._syncing = False
         self.item_checkboxes = {}
+        self.item_value_labels = {}
 
         self.widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(self.widget)
@@ -300,13 +324,16 @@ class OverlayConfigPanel:
             checkbox = self.QtWidgets.QCheckBox(ITEM_LABELS[item_id])
             checkbox.setObjectName(f"overlayItemCheckbox_{item_id}")
             checkbox.setToolTip(_wrapped_tooltip(ITEM_TOOLTIPS[item_id]))
-            sample = self.QtWidgets.QLabel(_sample_text(item_id))
+            sample = self.QtWidgets.QLabel(_sample_text(item_id, {}))
+            sample.setObjectName(f"overlayItemValue_{item_id}")
+            sample.setFixedWidth(_item_value_width(sample))
             sample.setToolTip(_wrapped_tooltip(ITEM_TOOLTIPS[item_id]))
             info_button = self._info_button(ITEM_TOOLTIPS[item_id])
             checkbox.toggled.connect(
                 lambda checked, item=item_id: self._set_item_enabled(item, checked)
             )
             self.item_checkboxes[item_id] = checkbox
+            self.item_value_labels[item_id] = sample
             layout.addWidget(checkbox, row, 0)
             layout.addWidget(sample, row, 1)
             layout.addWidget(info_button, row, 2)
@@ -405,10 +432,13 @@ class OverlayConfigPanel:
             self._syncing = False
 
     def refresh_preview(self) -> None:
+        values = read_overlay_state()
         self.preview_label.setText(
-            preview_overlay_text(read_overlay_state(), config=self.config)
+            preview_overlay_text(values, config=self.config)
         )
         self.preview_label.setEnabled(bool(self.config.enabled))
+        for item_id, label in self.item_value_labels.items():
+            label.setText(_sample_text(item_id, values))
 
     def _launch_option_text(self) -> str:
         # The copied Steam line stays native-only. Overlay item visibility only
@@ -421,35 +451,19 @@ class OverlayConfigPanel:
         self.status_label.setText("Copied Steam launch options.")
 
 
-def _sample_text(item_id: str) -> str:
+def _sample_text(item_id: str, telemetry: dict[str, str]) -> str:
     values = SAMPLE_OVERLAY_VALUES
     if item_id == "base_fps":
         return f"{values['present_fps']} FPS"
     if item_id == "fg_fps":
         return f"{values['framegen_fps']} FG"
-    if item_id == "clock_mhz":
-        return f"{values['clock_mhz']} MHz"
-    if item_id == "voltage_mv":
-        return f"{values['voltage_mv']} mV"
-    if item_id == "power_w":
-        return f"{values['power_w']} W"
-    if item_id == "profile":
-        return "BAL"
-    if item_id == "gpu_util_pct":
-        return f"GPU {values['gpu_util_pct']}%"
-    if item_id == "cpu_util_pct":
-        return f"CPU {values['cpu_util_pct']}%"
-    if item_id == "cpu_peak_thread_pct":
-        return f"CPU-T {values['cpu_peak_thread_pct']}%"
-    if item_id == "fan_pct":
-        return f"Fan {values['fan_pct']}%"
-    if item_id == "temperature_c":
-        return f"T {values['temperature_c']} C"
     if item_id == "latency_ms":
         return f"{values['latency_ms']} ms"
-    if item_id == "uv_offset_mv":
-        return f"UV {values['uv_offset_mv']} mV"
-    return ""
+    telemetry_key = ITEM_TELEMETRY_KEYS.get(item_id)
+    live_value = str(telemetry.get(telemetry_key or "") or "").strip()
+    if not telemetry_key or not live_value or live_value.lower() == "n/a":
+        return "-"
+    return format_overlay_item(item_id, telemetry) or "-"
 
 
 def _scale_option_label(option: float) -> str:
@@ -461,6 +475,11 @@ def _target_fps_spin_width(spin) -> int:
         f"{int(MAX_ADAPTIVE_TARGET_FPS)} FPS"
     )
     return max(84, max_text_width + 36)
+
+
+def _item_value_width(label) -> int:
+    metrics = label.fontMetrics()
+    return max(metrics.horizontalAdvance(text) for text in ITEM_VALUE_WIDTH_EXAMPLES) + 6
 
 
 def _wrapped_tooltip(text: str) -> str:
