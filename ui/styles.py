@@ -43,12 +43,80 @@ QLabel#gpuNvmlInfo {{
 QGroupBox#autoUvPresetGroup {{
     margin-top: 6px;
 }}
-QGroupBox#autoUvScanTargetGroup {{
-    margin-top: 2px;
+QGroupBox#autoUvScanScopeGroup {{
+    margin-top: 6px;
 }}
 QLabel#autoUvScanEstimate {{
     color: {theme.TEXT_MUTED};
     font-size: 11px;
+}}
+QLabel#autoUvPresetSequence {{
+    color: {theme.TEXT_MUTED};
+    font-size: 11px;
+}}
+QFrame#autoUvTierProgress {{
+    background: transparent;
+    border: 0;
+}}
+QLabel#autoUvTierProgressTitle {{
+    color: {theme.TEXT_MUTED};
+    font-size: 11px;
+    font-weight: 700;
+    padding: 0 4px;
+}}
+QLabel#autoUvTierProgressStep {{
+    background: {theme.CONTROL_BG};
+    border: 1px solid {theme.BORDER_STRONG};
+    border-radius: 5px;
+    color: {theme.TEXT_MUTED};
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 8px;
+    qproperty-alignment: AlignCenter;
+}}
+QLabel#autoUvTierProgressStep[profileTier="efficiency"] {{
+    border-color: {theme.TIER_CURVE_EFFICIENCY};
+}}
+QLabel#autoUvTierProgressStep[profileTier="balanced"] {{
+    border-color: {theme.TIER_CURVE_BALANCED};
+}}
+QLabel#autoUvTierProgressStep[profileTier="performance"] {{
+    border-color: {theme.TIER_CURVE_PERFORMANCE};
+}}
+QLabel#autoUvTierProgressStep[profileTier="efficiency"][progressState="active"] {{
+    background: {theme.TIER_CURVE_EFFICIENCY};
+    color: {theme.TEXT_ON_LIGHT};
+    border-width: 2px;
+}}
+QLabel#autoUvTierProgressStep[profileTier="balanced"][progressState="active"] {{
+    background: {theme.TIER_CURVE_BALANCED};
+    color: {theme.TEXT_ON_LIGHT};
+    border-width: 2px;
+}}
+QLabel#autoUvTierProgressStep[profileTier="performance"][progressState="active"] {{
+    background: {theme.TIER_CURVE_PERFORMANCE};
+    color: {theme.TEXT_ON_ERROR};
+    border-width: 2px;
+}}
+QLabel#autoUvTierProgressStep[profileTier="efficiency"][progressState="complete"] {{
+    background: {theme.ROW_GOOD_BG};
+    color: {theme.TIER_CURVE_EFFICIENCY};
+}}
+QLabel#autoUvTierProgressStep[profileTier="balanced"][progressState="complete"] {{
+    background: {theme.ROW_RUNNING_BG};
+    color: {theme.TIER_CURVE_BALANCED};
+}}
+QLabel#autoUvTierProgressStep[profileTier="performance"][progressState="complete"] {{
+    background: {theme.ROW_ERROR_BG};
+    color: {theme.ERROR_TEXT};
+}}
+QLabel#autoUvTierProgressStep[progressState="skipped"],
+QLabel#autoUvTierProgressStep[progressState="stopped"],
+QLabel#autoUvTierProgressStep[progressState="failed"],
+QLabel#autoUvTierProgressStep[progressState="not-run"] {{
+    background: {theme.SURFACE_BG};
+    color: {theme.TEXT_DISABLED};
+    border-color: {theme.BORDER};
 }}
 QGroupBox#advancedTuningGroup {{
     margin-top: 12px;
@@ -129,6 +197,15 @@ QPushButton:hover, QToolButton:hover {{
 QPushButton:disabled, QToolButton:disabled {{
     color: {theme.TEXT_DISABLED};
 }}
+QPushButton#autoUvScopeButton {{
+    min-width: 180px;
+    padding: 8px 14px;
+}}
+QPushButton#autoUvScopeButton:checked {{
+    background: {theme.PRIMARY_BUTTON_BG};
+    border-color: {theme.PRIMARY_BUTTON_BORDER};
+    color: {theme.PRIMARY_BUTTON_TEXT};
+}}
 QPushButton#steamPlayButton {{
     background: {theme.PRIMARY_BUTTON_BG};
     border-color: {theme.PRIMARY_BUTTON_BORDER};
@@ -147,38 +224,30 @@ QPushButton#autoUvPresetButton {{
     min-width: 108px;
     padding: 7px 12px;
 }}
-QPushButton#autoUvPresetButton:checked {{
+QPushButton#autoUvPresetButton[scanIncluded="true"] {{
     color: {theme.TEXT_ON_LIGHT};
 }}
-QPushButton#autoUvPresetButton[presetId="efficiency"]:checked {{
-    background: {theme.GOOD};
+QPushButton#autoUvPresetButton[presetId="efficiency"][scanIncluded="true"] {{
+    background: {theme.TIER_CURVE_EFFICIENCY};
     border-color: {theme.GOOD_BRIGHT};
 }}
-QPushButton#autoUvPresetButton[presetId="efficiency"]:checked:hover {{
+QPushButton#autoUvPresetButton[presetId="efficiency"][scanIncluded="true"]:hover {{
     border-color: {theme.GOOD_TEXT};
 }}
-QPushButton#autoUvPresetButton[presetId="balanced"]:checked {{
-    background: {theme.WARNING};
-    border-color: {theme.WARNING_TEXT};
+QPushButton#autoUvPresetButton[presetId="balanced"][scanIncluded="true"] {{
+    background: {theme.TIER_CURVE_BALANCED};
+    border-color: #c7eaff;
 }}
-QPushButton#autoUvPresetButton[presetId="balanced"]:checked:hover {{
-    border-color: #fff0c7;
+QPushButton#autoUvPresetButton[presetId="balanced"][scanIncluded="true"]:hover {{
+    border-color: #e7f7ff;
 }}
-QPushButton#autoUvPresetButton[presetId="performance"]:checked {{
-    background: {theme.ERROR};
+QPushButton#autoUvPresetButton[presetId="performance"][scanIncluded="true"] {{
+    background: {theme.TIER_CURVE_PERFORMANCE};
     border-color: {theme.ERROR_TEXT};
     color: {theme.TEXT_ON_ERROR};
 }}
-QPushButton#autoUvPresetButton[presetId="performance"]:checked:hover {{
+QPushButton#autoUvPresetButton[presetId="performance"][scanIncluded="true"]:hover {{
     border-color: #fff0f0;
-}}
-QPushButton#autoUvPresetButton[presetId="adaptive"]:checked {{
-    background: {theme.PRIMARY_BUTTON_BG};
-    border-color: {theme.PRIMARY_BUTTON_BORDER};
-    color: {theme.PRIMARY_BUTTON_TEXT};
-}}
-QPushButton#autoUvPresetButton[presetId="adaptive"]:checked:hover {{
-    border-color: {theme.PRIMARY_BUTTON_HOVER_BORDER};
 }}
 QPushButton#startAutoUvButton {{
     background: {theme.AUTO_UV_BUTTON_BG};
@@ -289,7 +358,6 @@ QTabBar::tab:selected {{
     color: {theme.TEXT_STRONG};
 }}
 """
-
 
 def curve_editor_legend_stylesheet(object_prefix: str) -> str:
     return f"""

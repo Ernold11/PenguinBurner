@@ -85,37 +85,28 @@ def test_start_scan_runs(win) -> None:
     assert fake.started  # scan command launched
 
 
-def test_start_scan_uses_profile_tier_selected_before_button_click(win) -> None:
+def test_full_scan_shows_tier_progress_but_selected_profile_scan_hides_it(win) -> None:
     window, monkeypatch = win
-    captured = {}
-    window.controls.set_selected_scan_preset("performance")
-
-    def choose_scan_tuning(**kwargs):
-        captured["initial_preset_id"] = kwargs["initial_preset_id"]
-        return {
-            "gpu_index": 0,
-            "auto_uv_mode": kwargs["initial_preset_id"],
-        }
-
-    def build_scan_command(options):
-        captured["options"] = dict(options)
-        return ["echo", "scan"]
-
-    monkeypatch.setattr(window_mod, "select_scan_tuning", choose_scan_tuning)
+    selected_options = {"gpu_index": 0, "auto_uv_mode": "adaptive"}
+    monkeypatch.setattr(
+        window_mod, "select_scan_tuning", lambda **_kwargs: dict(selected_options)
+    )
     monkeypatch.setattr(window_mod, "persist_runtime_gpu_index", lambda idx: int(idx))
     monkeypatch.setattr(
         window_mod,
         "ensure_daemon_ready_for_privileged_action",
         lambda **_kwargs: True,
     )
-    monkeypatch.setattr(window_mod, "scan_command", build_scan_command)
+    monkeypatch.setattr(window_mod, "scan_command", lambda options: ["echo", "scan"])
     window.scan_controller = _FakeController()
 
     window.start_scan()
+    assert not window.auto_uv_tier_progress.widget.isHidden()
+    assert window.auto_uv_tier_progress.state("efficiency") == "pending"
 
-    assert captured["initial_preset_id"] == "performance"
-    assert captured["options"]["auto_uv_mode"] == "performance"
-    assert window.scan_controller.started
+    selected_options["auto_uv_mode"] = "balanced"
+    window.start_scan()
+    assert window.auto_uv_tier_progress.widget.isHidden()
 
 
 def test_start_scan_runs_daemon_migration_gate_before_scan(win) -> None:

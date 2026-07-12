@@ -13,6 +13,7 @@ from common.penguin_burner_paths import default_user_config_dir
 
 from ui.features.integrations.afterburner_workflow import AfterburnerImportWorkflow
 from ui.commands import scan_command
+from ui.components.auto_uv_tier_progress import AutoUvTierProgress
 from ui.components.curve_plot import CurvePlot
 from ui.components.log_view import LogView
 from ui.components.overlay_config import OverlayConfigPanel
@@ -123,6 +124,7 @@ class MainWindow(ProfileActionsMixin):
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
         )
+        self.auto_uv_tier_progress = AutoUvTierProgress(QtWidgets=self.QtWidgets)
         self.overlay_config = OverlayConfigPanel(
             QtCore=self.QtCore,
             QtWidgets=self.QtWidgets,
@@ -146,13 +148,6 @@ class MainWindow(ProfileActionsMixin):
         auto_uv_view.addWidget(self.log_view.widget)
         auto_uv_view.setSizes([760, 440])
 
-        auto_uv_page = self.QtWidgets.QWidget()
-        auto_uv_layout = self.QtWidgets.QVBoxLayout(auto_uv_page)
-        auto_uv_layout.setContentsMargins(8, 8, 8, 8)
-        auto_uv_layout.setSpacing(8)
-        auto_uv_layout.addWidget(self.controls.scan_target_widget)
-        auto_uv_layout.addWidget(auto_uv_view, 1)
-
         self.steam_panel = SteamPanel(
             QtCore=self.QtCore,
             QtGui=self.QtGui,
@@ -164,7 +159,7 @@ class MainWindow(ProfileActionsMixin):
         )
 
         self.tabs = self.QtWidgets.QTabWidget()
-        self.auto_uv_tab_index = self.tabs.addTab(auto_uv_page, "Auto-UV")
+        self.auto_uv_tab_index = self.tabs.addTab(auto_uv_view, "Auto-UV")
         self.profiles_tab_index = self.tabs.addTab(self.profile_list.widget, "Profiles")
         self.overlay_tab_index = self.tabs.addTab(
             self.overlay_config.widget,
@@ -208,6 +203,7 @@ class MainWindow(ProfileActionsMixin):
         self.table_panel.setMinimumHeight(220)
         table_layout = self.QtWidgets.QVBoxLayout(self.table_panel)
         table_layout.setContentsMargins(10, 18, 10, 10)
+        table_layout.addWidget(self.auto_uv_tier_progress.widget)
         table_layout.addWidget(self.runs_table.widget)
 
         layout.addWidget(self.header.widget)
@@ -279,13 +275,9 @@ class MainWindow(ProfileActionsMixin):
             QtWidgets=self.QtWidgets,
             parent=self.window,
             gpu_index=self.gpu_index,
-            initial_preset_id=self.controls.selected_scan_preset(),
         )
         if options is None:
             return
-        self.controls.set_selected_scan_preset(
-            options.get("auto_uv_mode", self.controls.selected_scan_preset())
-        )
         try:
             self.gpu_index = persist_runtime_gpu_index(options.get("gpu_index", 0))
         except Exception as exc:
@@ -306,6 +298,10 @@ class MainWindow(ProfileActionsMixin):
         self.tabs.setCurrentIndex(self.auto_uv_tab_index)
         command = scan_command(options)
         self.runs_table.clear()
+        if str(options.get("auto_uv_mode") or "") == "adaptive":
+            self.auto_uv_tier_progress.start()
+        else:
+            self.auto_uv_tier_progress.clear()
         self.vf_plot.clear()
         self.pending_final_result_payload = None
         self.final_choice_discarded = False
@@ -330,6 +326,7 @@ class MainWindow(ProfileActionsMixin):
         self.controls.set_running(True)
         self.profile_list.set_runtime_actions_enabled(False)
         if not self.scan_controller.start(command):
+            self.auto_uv_tier_progress.mark_unfinished("failed")
             self.controls.set_running(False)
             self._set_profile_actions_enabled(True)
 
@@ -395,6 +392,14 @@ class MainWindow(ProfileActionsMixin):
             self.header.set_stage("Complete")
             self.header.set_candidate(_probe_text(payload))
             self._load_profiles()
+        elif event == "tier_started":
+            tier_name = str(payload.get("tier", ""))
+            tier_position = _tier_position_text(payload)
+            self.auto_uv_tier_progress.set_active(tier_name)
+            self.header.set_stage(f"{tier_name.title()} scan{tier_position}")
+            self.controls.set_status_text(
+                f"Scanning {tier_name.title()} profile{tier_position}."
+            )
         elif event == "tier_confirmed":
             tier_name = str(payload.get("tier", ""))
             self.controls.set_status_text(
@@ -411,10 +416,29 @@ class MainWindow(ProfileActionsMixin):
                     alpha=220,
                     width=2,
                 )
-        elif event == "tier_skipped":
+        elif event == "tier_completed":
+            tier_name = str(payload.get("tier", ""))
+            next_tier = str(payload.get("next_tier", ""))
+            self.auto_uv_tier_progress.set_completed(tier_name)
+            self.header.set_stage(
+                f"{tier_name.title()} complete{_tier_position_text(payload)}"
+            )
             self.controls.set_status_text(
-                f"{str(payload.get('tier', '')).title()} tier skipped: "
+                f"{tier_name.title()} profile complete."
+                + (
+                    f" Continuing with {next_tier.title()}."
+                    if next_tier
+                    else " All selected profiles are complete."
+                )
+            )
+        elif event == "tier_skipped":
+            tier_name = str(payload.get("tier", ""))
+            next_tier = str(payload.get("next_tier", ""))
+            self.auto_uv_tier_progress.set_skipped(tier_name)
+            self.controls.set_status_text(
+                f"{tier_name.title()} tier skipped: "
                 f"{payload.get('reason') or 'no stable candidate found'}"
+                + (f". Continuing with {next_tier.title()}." if next_tier else "")
             )
 
     def _handle_human_line(self, line: str) -> None:
@@ -468,10 +492,12 @@ class MainWindow(ProfileActionsMixin):
                 label="Aborted", row_state="warning"
             )
             self.controls.set_status_text("Auto-UV aborted by user.")
+            self.auto_uv_tier_progress.mark_unfinished("stopped")
         elif failed:
             self.header.set_stage("Error")
             self.runs_table.mark_running_rows_stopped(label="Failed")
             self.controls.set_status_text("Auto-UV failed.")
+            self.auto_uv_tier_progress.mark_unfinished("failed")
             self.errors.show_process(
                 title="Auto-UV failed",
                 action_label="Auto-UV scan",
@@ -488,6 +514,7 @@ class MainWindow(ProfileActionsMixin):
         elif stopped_by_user:
             self.header.set_stage("Stopped")
             self.runs_table.mark_running_rows_stopped(label="Stopped")
+            self.auto_uv_tier_progress.mark_unfinished("stopped")
         else:
             self.header.set_stage("Idle")
         self.controls.set_running(False)
@@ -657,6 +684,17 @@ def _memory_offset_status_text(offset_mhz) -> str:
     if mhz == 0:
         return "Memory offset: none"
     return f"Memory offset: {mhz:+d} MHz memory clock"
+
+
+def _tier_position_text(payload: dict) -> str:
+    try:
+        position = int(payload.get("position") or 0)
+        total = int(payload.get("total") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if position <= 0 or total <= 0:
+        return ""
+    return f" ({position}/{total})"
 
 
 def _stop_request_path() -> Path:

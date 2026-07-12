@@ -2219,46 +2219,6 @@ def test_scan_controls_include_about_button_after_import_afterburner() -> None:
     assert "QPushButton#aboutButton" in STYLESHEET
 
 
-def test_scan_controls_offer_single_tiers_and_full_scan_before_start() -> None:
-    import os
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    pytest.importorskip("PySide6")
-    from PySide6 import QtWidgets
-
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    _ = app
-
-    from ui.components.scan_controls import ScanControls
-
-    controls = ScanControls(QtWidgets=QtWidgets)
-    buttons = {
-        str(button.property("presetId")): button
-        for button in controls.scan_target_widget.findChildren(QtWidgets.QPushButton)
-        if button.property("presetId")
-    }
-
-    assert set(buttons) == {
-        AUTO_UV_PRESET_EFFICIENCY,
-        AUTO_UV_PRESET_BALANCED,
-        AUTO_UV_PRESET_PERFORMANCE,
-        AUTO_UV_PRESET_ADAPTIVE,
-    }
-    assert controls.selected_scan_preset() == AUTO_UV_PRESET_ADAPTIVE
-    assert "Full scan (3 tiers)" in buttons[AUTO_UV_PRESET_ADAPTIVE].text()
-    assert "~25-35 min scan" in buttons[AUTO_UV_PRESET_ADAPTIVE].text()
-    assert "~10-20 min scan" in buttons[AUTO_UV_PRESET_EFFICIENCY].text()
-    assert controls.scan_target_widget.isAncestorOf(controls.start_button)
-
-    buttons[AUTO_UV_PRESET_PERFORMANCE].click()
-    assert controls.selected_scan_preset() == AUTO_UV_PRESET_PERFORMANCE
-    assert "only the Performance profile" in controls.scan_target_description.text()
-
-    controls.set_running(True)
-    assert not controls.start_button.isEnabled()
-    assert all(not button.isEnabled() for button in buttons.values())
-
-
 def test_application_version_is_available_for_about_dialog() -> None:
     assert _application_version()
 
@@ -2288,7 +2248,9 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
     assert 'presetId="balanced"' in STYLESHEET
     assert 'presetId="performance"' in STYLESHEET
     source = Path("ui/dialogs/scan_tuning.py").read_text(encoding="utf-8")
-    assert "auto_uv_presets" in source
+    assert "SCAN_SCOPE_FULL" in source
+    assert "SCAN_SCOPE_SELECTED_PROFILE" in source
+    assert "Full scan (up to 35 min)" in source
     assert "auto_uv_voltage_drop_default" in source
     assert "auto-filled for" not in source
     assert "efficiency floor" not in source
@@ -2478,6 +2440,7 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     gpu_combo = dialog.findChild(QtWidgets.QComboBox, "gpuSelector")
     nvml_info = dialog.findChild(QtWidgets.QLabel, "gpuNvmlInfo")
     advanced_group = dialog.findChild(QtWidgets.QGroupBox, "advancedTuningGroup")
+    preset_group = dialog.findChild(QtWidgets.QGroupBox, "autoUvPresetGroup")
     power_limit_slider = dialog.findChild(QtWidgets.QSlider, "powerLimitSlider")
     power_limit_spin = dialog.findChild(QtWidgets.QSpinBox, "powerLimitSpin")
     max_clock_drop_spin = dialog.findChild(QtWidgets.QDoubleSpinBox, "maxClockDropSpin")
@@ -2492,6 +2455,7 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     assert "Clocks now: core 2100 MHz | memory 10501 MHz" in nvml_info.text()
     assert "RTX" not in nvml_info.text()
     assert advanced_group is not None
+    assert preset_group is not None
     assert power_limit_slider is not None
     assert power_limit_spin is not None
     assert max_clock_drop_spin is not None
@@ -2524,8 +2488,56 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
         for button in dialog.findChildren(QtWidgets.QPushButton)
         if button.property("presetId")
     }
+    scope_buttons = {
+        str(button.property("scopeId")): button
+        for button in dialog.findChildren(QtWidgets.QPushButton)
+        if button.property("scopeId")
+    }
+    scan_estimate_note = dialog.findChild(QtWidgets.QLabel, "autoUvScanEstimate")
+    assert set(scope_buttons) == {
+        scan_tuning.SCAN_SCOPE_FULL,
+        scan_tuning.SCAN_SCOPE_SELECTED_PROFILE,
+    }
+    assert scope_buttons[scan_tuning.SCAN_SCOPE_FULL].isChecked()
+    assert "Full scan (up to 35 min)" in scope_buttons[
+        scan_tuning.SCAN_SCOPE_FULL
+    ].text()
+    assert preset_group.isEnabled()
+    assert stack.currentIndex() == 3
+    assert set(buttons) == {
+        AUTO_UV_PRESET_EFFICIENCY,
+        AUTO_UV_PRESET_BALANCED,
+        AUTO_UV_PRESET_PERFORMANCE,
+    }
+    assert AUTO_UV_PRESET_ADAPTIVE not in buttons
+    assert "~10-20 min scan" in buttons[AUTO_UV_PRESET_EFFICIENCY].text()
+    assert "~10-20 min scan" in buttons[AUTO_UV_PRESET_BALANCED].text()
+    assert "~15-25 min scan" in buttons[AUTO_UV_PRESET_PERFORMANCE].text()
+    assert buttons[AUTO_UV_PRESET_EFFICIENCY].text().startswith("1. Efficiency")
+    assert buttons[AUTO_UV_PRESET_BALANCED].text().startswith("2. Balanced")
+    assert buttons[AUTO_UV_PRESET_PERFORMANCE].text().startswith("3. Performance")
+    assert all(not button.isEnabled() for button in buttons.values())
+    assert all(
+        button.property("scanIncluded") == "true" for button in buttons.values()
+    )
+    sequence_note = dialog.findChild(QtWidgets.QLabel, "autoUvPresetSequence")
+    assert sequence_note is not None
+    assert sequence_note.text() == (
+        "Full scan order: Efficiency → Balanced → Performance"
+    )
+    assert scan_estimate_note is not None
+    assert "exclude final verification" in scan_estimate_note.text()
 
+    scope_buttons[scan_tuning.SCAN_SCOPE_SELECTED_PROFILE].click()
+    assert preset_group.isEnabled()
+    assert all(button.isEnabled() for button in buttons.values())
+    assert buttons[AUTO_UV_PRESET_BALANCED].property("scanIncluded") == "true"
+    assert buttons[AUTO_UV_PRESET_EFFICIENCY].property("scanIncluded") == "false"
+    assert sequence_note.text() == "Choose one profile to scan."
+    assert stack.currentIndex() == 1
     buttons[AUTO_UV_PRESET_PERFORMANCE].click()
+    assert buttons[AUTO_UV_PRESET_PERFORMANCE].property("scanIncluded") == "true"
+    assert buttons[AUTO_UV_PRESET_BALANCED].property("scanIncluded") == "false"
     assert dialog.size() == initial_size
     assert max_clock_drop_spin.value() == pytest.approx(5.4)
     # Switching presets retargets the default power cap until the user overrides.
@@ -2540,25 +2552,13 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     assert power_limit_spin.value() == 390
     buttons[AUTO_UV_PRESET_BALANCED].click()
     assert power_limit_spin.value() == 390
-
-    scan_tuning.select_scan_tuning(
-        QtCore=QtCore,
-        QtGui=QtGui,
-        QtWidgets=QtWidgets,
-        parent=None,
-        gpu_index=1,
-        initial_preset_id=AUTO_UV_PRESET_PERFORMANCE,
+    scope_buttons[scan_tuning.SCAN_SCOPE_FULL].click()
+    assert preset_group.isEnabled()
+    assert all(not button.isEnabled() for button in buttons.values())
+    assert all(
+        button.property("scanIncluded") == "true" for button in buttons.values()
     )
-    performance_dialog = dialogs[-1]
-    performance_buttons = {
-        str(button.property("presetId")): button
-        for button in performance_dialog.findChildren(QtWidgets.QPushButton)
-        if button.property("presetId")
-    }
-    assert performance_buttons[AUTO_UV_PRESET_PERFORMANCE].isChecked()
-    assert performance_dialog.findChild(
-        QtWidgets.QDoubleSpinBox, "maxClockDropSpin"
-    ).value() == pytest.approx(5.4)
+    assert stack.currentIndex() == 3
 
 
 def test_scan_tuning_enter_in_numeric_field_only_commits_value(monkeypatch) -> None:
@@ -2633,9 +2633,15 @@ def test_scan_tuning_enter_in_numeric_field_only_commits_value(monkeypatch) -> N
             for button in dialog.findChildren(QtWidgets.QPushButton)
             if button.property("presetId")
         }
+        scope_buttons = {
+            str(button.property("scopeId")): button
+            for button in dialog.findChildren(QtWidgets.QPushButton)
+            if button.property("scopeId")
+        }
         for button in buttons.values():
             assert not button.autoDefault()
             assert not button.isDefault()
+        scope_buttons[scan_tuning.SCAN_SCOPE_SELECTED_PROFILE].click()
         buttons[AUTO_UV_PRESET_PERFORMANCE].click()
         assert buttons[AUTO_UV_PRESET_PERFORMANCE].isChecked()
 
@@ -2759,6 +2765,7 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
     )
 
     assert options is not None
+    assert options["auto_uv_mode"] == "adaptive"
     assert options["auto_uv_power_limit_w"] == 390
 
 
@@ -2831,6 +2838,12 @@ def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
     )
 
     def accept_with_memory_offset(dialog):
+        scope_buttons = {
+            str(button.property("scopeId")): button
+            for button in dialog.findChildren(QtWidgets.QPushButton)
+            if button.property("scopeId")
+        }
+        scope_buttons[scan_tuning.SCAN_SCOPE_SELECTED_PROFILE].click()
         spin = dialog.findChild(QtWidgets.QSpinBox, "memoryOffsetSpin")
         label = dialog.findChild(QtWidgets.QLabel, "memoryOffsetClockLabel")
         assert spin is not None and label is not None
@@ -2848,6 +2861,7 @@ def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
     )
 
     assert options is not None
+    assert options["auto_uv_mode"] == "balanced"
     # Selected 500 MHz clock -> applied NVML offset is 1000 MT/s.
     assert options["auto_uv_memory_offset_mhz"] == 1000
 

@@ -122,6 +122,47 @@ def test_window_handles_scan_events(main_window, monkeypatch) -> None:
     assert win.pending_final_result_payload is not None
 
 
+def test_window_shows_chronological_full_scan_profile_progress(main_window) -> None:
+    win = main_window
+    win.auto_uv_tier_progress.start()
+
+    win._handle_scan_event(
+        {
+            "event": "tier_started",
+            "tier": "efficiency",
+            "position": 1,
+            "total": 3,
+            "next_tier": "balanced",
+        }
+    )
+    assert win.auto_uv_tier_progress.state("efficiency") == "active"
+    assert win.header.stage() == "Efficiency scan (1/3)"
+
+    win._handle_scan_event(
+        {
+            "event": "tier_completed",
+            "tier": "efficiency",
+            "position": 1,
+            "total": 3,
+            "next_tier": "balanced",
+        }
+    )
+    assert win.auto_uv_tier_progress.state("efficiency") == "complete"
+    assert "Continuing with Balanced" in win.controls.status_label.text()
+
+    win._handle_scan_event(
+        {
+            "event": "tier_started",
+            "tier": "balanced",
+            "position": 2,
+            "total": 3,
+            "next_tier": "performance",
+        }
+    )
+    assert win.auto_uv_tier_progress.state("balanced") == "active"
+    assert win.auto_uv_tier_progress.state("performance") == "pending"
+
+
 def test_memory_offset_status_text_formats() -> None:
     from ui.window import _memory_offset_status_text
 
@@ -264,13 +305,6 @@ def test_window_tab_order_and_bins_visibility(main_window) -> None:
     labels = [win.tabs.tabText(i) for i in range(win.tabs.count())]
     assert labels == ["Auto-UV", "Profiles", "Ingame Overlay", "Steam"]
     assert not hasattr(win, "fan_plot")
-
-    # The scan target and its start button are visible inside the Auto-UV tab,
-    # so the user chooses one tier or the full scan before opening setup.
-    auto_uv_page = win.tabs.widget(win.auto_uv_tab_index)
-    assert auto_uv_page.isAncestorOf(win.controls.scan_target_widget)
-    assert auto_uv_page.isAncestorOf(win.controls.start_button)
-    assert win.controls.selected_scan_preset() == "adaptive"
 
     # The undervolting-runs panel shows only on the Auto-UV tab.
     win.tabs.setCurrentIndex(win.auto_uv_tab_index)

@@ -2599,6 +2599,98 @@ def test_adaptive_tier_order_and_descent_tails() -> None:
     )
 
 
+def test_adaptive_tier_progress_events_are_chronological(monkeypatch) -> None:
+    import auto_uv.main_loop as main_loop
+
+    events = []
+    tier_index = {
+        "efficiency": 0,
+        "balanced": 1,
+        "performance": 2,
+    }
+
+    def fake_descent(_base_curve, *, tier_mode, **_kwargs):
+        index = tier_index[tier_mode]
+        candidate = VfCurveCandidate(
+            tier_mode,
+            900 + index * 10,
+            2500 + index * 20,
+            [],
+        )
+        return candidate, index * 2, object(), []
+
+    def fake_selection(**kwargs):
+        return SimpleNamespace(
+            plan=list(kwargs["stable_plan"]),
+            voltage_mv=int(kwargs["stable_voltage_mv"]),
+            lock_clock_mhz=int(kwargs["stable_lock_clock_mhz"]),
+            probe=kwargs["stable_probe"],
+            verification_duration_s=int(kwargs["final_verification_duration_s"]),
+            tail_rise_bins=int(kwargs["tail_rise_bins"]),
+            auto_oc_metadata={},
+        )
+
+    def fake_finish(**kwargs):
+        return SimpleNamespace(
+            final_voltage_mv=int(kwargs["final_stable_voltage_mv"]),
+            lock_clock_mhz=int(kwargs["final_stable_lock_clock_mhz"]),
+        )
+
+    monkeypatch.setattr(main_loop, "run_adaptive_tier_descent", fake_descent)
+    monkeypatch.setattr(main_loop, "select_final_scan_candidate", fake_selection)
+    monkeypatch.setattr(
+        main_loop, "apply_adaptive_tier_power_limit", lambda *_args, **_kwargs: None
+    )
+
+    result = main_loop.run_adaptive_tier_scans(
+        base_curve=[],
+        gpu=SimpleNamespace(
+            power_limit_w=360,
+            requested_power_limit_w=None,
+            translated_gpu_policy={"gpu_name": "Test GPU"},
+        ),
+        runner=object(),
+        settings=SimpleNamespace(),
+        runtime_options={},
+        base_loop_settings=SimpleNamespace(),
+        baseline_candidate=VfCurveCandidate("baseline", 1000, 2400, []),
+        initial_stable_outcome=None,
+        stable_probe=None,
+        discovery_summary=object(),
+        probe_history=[],
+        baseline_target=SimpleNamespace(measured_clock_mhz=2400),
+        effective_min_search_voltage_mv=800,
+        final_verification_duration_s=300,
+        unsafe_entries=[],
+        probe_candidate=lambda _candidate: None,
+        finish_with_final_verification=fake_finish,
+        event_callback=lambda event, payload: events.append((event, payload)),
+        log=lambda _message: None,
+    )
+
+    assert result.final_voltage_mv == 900
+    assert [event for event, _payload in events] == [
+        "tier_started",
+        "tier_completed",
+        "tier_started",
+        "tier_completed",
+        "tier_started",
+        "tier_completed",
+    ]
+    started = [payload for event, payload in events if event == "tier_started"]
+    assert [payload["tier"] for payload in started] == [
+        "efficiency",
+        "balanced",
+        "performance",
+    ]
+    assert [payload["position"] for payload in started] == [1, 2, 3]
+    assert [payload.get("next_tier", "") for payload in started] == [
+        "balanced",
+        "performance",
+        "",
+    ]
+
+
 def test_clamp_power_limit_keeps_request_inside_card_range() -> None:
     from auto_uv.gpu.gpu_vf_curve_applier import LiveGpuVfCurveApplier
 

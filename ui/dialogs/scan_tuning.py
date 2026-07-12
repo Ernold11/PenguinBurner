@@ -19,12 +19,16 @@ from ui.features.tuning.tuning import auto_uv_performance_preset_tooltip
 from ui.features.tuning.tuning import auto_uv_performance_target_default
 from ui.features.tuning.tuning import auto_uv_power_limit_default
 from ui.features.tuning.tuning import auto_uv_preset
-from ui.features.tuning.tuning import auto_uv_presets
+from ui.features.tuning.tuning import auto_uv_scan_estimate_minutes
 from ui.features.tuning.tuning import auto_uv_scan_estimate_text
 from ui.features.tuning.tuning import auto_uv_voltage_drop_default
 from ui.features.tuning.tuning import memory_offset_mhz_range
 from ui.features.tuning.tuning import read_auto_uv_nvml_info
 from .error_details import qt_flags
+
+
+SCAN_SCOPE_FULL = "full"
+SCAN_SCOPE_SELECTED_PROFILE = "selected-profile"
 
 
 def select_scan_tuning(
@@ -34,7 +38,6 @@ def select_scan_tuning(
     QtWidgets,
     parent,
     gpu_index: int | None = None,
-    initial_preset_id: object = DEFAULT_AUTO_UV_PRESET,
 ) -> dict | None:
     dialog = QtWidgets.QDialog(parent)
     dialog.setWindowTitle("Automatic undervolt behavior")
@@ -75,10 +78,9 @@ def select_scan_tuning(
         None,
     )
     voltage_drop_default = auto_uv_voltage_drop_default(gpu_name=selected_gpu_name)
-    initial_preset = auto_uv_preset(initial_preset_id)
     clock_drop_default = auto_uv_clock_drop_default(
         gpu_name=selected_gpu_name,
-        preset_id=initial_preset.preset_id,
+        preset_id=DEFAULT_AUTO_UV_PRESET,
     )
     gpu_combo = QtWidgets.QComboBox()
     gpu_combo.setObjectName("gpuSelector")
@@ -155,6 +157,48 @@ def select_scan_tuning(
         ),
     )
 
+    scope_group = QtWidgets.QGroupBox("Scan scope")
+    scope_group.setObjectName("autoUvScanScopeGroup")
+    scope_layout = QtWidgets.QHBoxLayout(scope_group)
+    scope_layout.setContentsMargins(14, 18, 14, 12)
+    scope_layout.setSpacing(10)
+    scope_button_group = QtWidgets.QButtonGroup(dialog)
+    scope_button_group.setExclusive(True)
+    full_scan_button = QtWidgets.QPushButton("Full scan (up to 35 min)")
+    full_scan_button.setObjectName("autoUvScopeButton")
+    full_scan_button.setCheckable(True)
+    full_scan_button.setProperty("scopeId", SCAN_SCOPE_FULL)
+    full_scan_button.setToolTip(
+        _wrapped_tooltip(
+            "Scan Efficiency, Balanced, and Performance in one run. The "
+            f"scan-only estimate is {auto_uv_scan_estimate_text(AUTO_UV_PRESET_ADAPTIVE)}."
+        )
+    )
+    selected_profile_button = QtWidgets.QPushButton("Selected profile")
+    selected_profile_button.setObjectName("autoUvScopeButton")
+    selected_profile_button.setCheckable(True)
+    selected_profile_button.setProperty(
+        "scopeId", SCAN_SCOPE_SELECTED_PROFILE
+    )
+    selected_profile_button.setToolTip(
+        _wrapped_tooltip(
+            "Scan only the Efficiency, Balanced, or Performance preset selected below."
+        )
+    )
+    for scope_button in (full_scan_button, selected_profile_button):
+        scope_button.setAutoDefault(False)
+        scope_button.setDefault(False)
+        scope_button.setToolTipDuration(20000)
+        scope_button_group.addButton(scope_button)
+        scope_layout.addWidget(scope_button, 1)
+    full_scan_button.setChecked(True)
+    scan_estimate_note = QtWidgets.QLabel(
+        "Scan estimates exclude final verification; you choose its duration later."
+    )
+    scan_estimate_note.setObjectName("autoUvScanEstimate")
+    scan_estimate_note.setWordWrap(True)
+    scope_layout.addWidget(scan_estimate_note, 1)
+
     preset_group = QtWidgets.QGroupBox("Auto-UV preset")
     preset_group.setObjectName("autoUvPresetGroup")
     preset_layout = QtWidgets.QHBoxLayout(preset_group)
@@ -186,33 +230,49 @@ def select_scan_tuning(
             "the tail of the curve goes 4 V/F bins up."
         ),
         "performance": auto_uv_performance_preset_tooltip(),
-        "adaptive": (
-            "One full scan runs separate Efficiency, Balanced and Performance "
-            f"descents ({auto_uv_scan_estimate_text(AUTO_UV_PRESET_ADAPTIVE)} "
-            "before verification). Each tier keeps its usual shape and you can "
-            "still tune every profile individually before it is verified and "
-            "saved."
-        ),
     }
-    for preset in auto_uv_presets():
+    preset_order = (
+        AUTO_UV_PRESET_EFFICIENCY,
+        AUTO_UV_PRESET_BALANCED,
+        AUTO_UV_PRESET_PERFORMANCE,
+    )
+    preset_labels = {}
+    preset_estimates = {}
+    for preset_id in preset_order:
+        preset = auto_uv_preset(preset_id)
+        minimum, maximum = auto_uv_scan_estimate_minutes(preset.preset_id)
         label = (
             auto_uv_performance_preset_label()
-            if preset.preset_id == "performance"
+            if preset.preset_id == AUTO_UV_PRESET_PERFORMANCE
             else preset.label
         )
-        button = QtWidgets.QPushButton(label)
+        preset_labels[preset.preset_id] = label
+        preset_estimates[preset.preset_id] = (minimum, maximum)
+        button = QtWidgets.QPushButton(f"{label}\n~{minimum}-{maximum} min scan")
         button.setObjectName("autoUvPresetButton")
         button.setCheckable(True)
         button.setAutoDefault(False)
         button.setDefault(False)
         button.setProperty("presetId", preset.preset_id)
+        button.setProperty("scanIncluded", "false")
         button.setToolTip(_wrapped_tooltip(preset_tooltips[preset.preset_id]))
         button.setToolTipDuration(20000)
         preset_button_group.addButton(button)
         preset_buttons[preset.preset_id] = button
         preset_buttons_layout.addWidget(button)
-    preset_buttons[initial_preset.preset_id].setChecked(True)
-    preset_layout.addLayout(preset_buttons_layout, 1)
+    preset_buttons[AUTO_UV_PRESET_BALANCED].setChecked(True)
+    preset_center = QtWidgets.QWidget()
+    preset_center_layout = QtWidgets.QVBoxLayout(preset_center)
+    preset_center_layout.setContentsMargins(0, 0, 0, 0)
+    preset_center_layout.setSpacing(5)
+    preset_center_layout.addLayout(preset_buttons_layout)
+    preset_sequence_note = QtWidgets.QLabel()
+    preset_sequence_note.setObjectName("autoUvPresetSequence")
+    preset_sequence_note.setAlignment(
+        qt_flags(QtCore.Qt, "AlignmentFlag", "AlignCenter")
+    )
+    preset_center_layout.addWidget(preset_sequence_note)
+    preset_layout.addWidget(preset_center, 1)
     preset_layout.addWidget(
         _bias_icon(
             QtCore=QtCore,
@@ -222,7 +282,6 @@ def select_scan_tuning(
             tooltip="Performance",
         )
     )
-
     advanced_group = QtWidgets.QGroupBox("Advanced")
     advanced_group.setObjectName("advancedTuningGroup")
     advanced_layout = QtWidgets.QVBoxLayout(advanced_group)
@@ -458,10 +517,14 @@ def select_scan_tuning(
     advanced_layout.addWidget(common_advanced)
 
     def checked_preset_id() -> str:
+        if full_scan_button.isChecked():
+            return AUTO_UV_PRESET_ADAPTIVE
         checked_button = preset_button_group.checkedButton()
         if checked_button is None:
-            return DEFAULT_AUTO_UV_PRESET
-        return str(checked_button.property("presetId") or DEFAULT_AUTO_UV_PRESET)
+            return AUTO_UV_PRESET_BALANCED
+        return str(
+            checked_button.property("presetId") or AUTO_UV_PRESET_BALANCED
+        )
 
     def sync_preset_specific_fields() -> None:
         preset_advanced_stack.setCurrentWidget(
@@ -523,11 +586,41 @@ def select_scan_tuning(
         sync_clock_drop_default()
         sync_power_limit_default()
 
+    def sync_preset_highlights() -> None:
+        combined_scan = full_scan_button.isChecked()
+        for position, preset_id in enumerate(preset_order, start=1):
+            button = preset_buttons[preset_id]
+            included = combined_scan or button.isChecked()
+            button.setEnabled(not combined_scan)
+            button.setProperty("scanIncluded", "true" if included else "false")
+            minimum, maximum = preset_estimates[preset_id]
+            sequence_prefix = f"{position}. " if combined_scan else ""
+            button.setText(
+                f"{sequence_prefix}{preset_labels[preset_id]}\n"
+                f"~{minimum}-{maximum} min scan"
+            )
+            button.style().unpolish(button)
+            button.style().polish(button)
+        preset_sequence_note.setText(
+            "Full scan order: Efficiency → Balanced → Performance"
+            if combined_scan
+            else "Choose one profile to scan."
+        )
+
+    def sync_scan_scope() -> None:
+        sync_preset_highlights()
+        sync_preset_defaults()
+
+    def sync_selected_preset() -> None:
+        sync_preset_highlights()
+        sync_preset_defaults()
+
     max_clock_drop_spin.valueChanged.connect(mark_clock_drop_manual_override)
     power_limit_controls["spin"].valueChanged.connect(mark_power_limit_manual_override)
     gpu_combo.currentIndexChanged.connect(lambda _index: sync_clock_drop_default())
-    preset_button_group.buttonClicked.connect(lambda _button: sync_preset_defaults())
-    sync_preset_specific_fields()
+    preset_button_group.buttonClicked.connect(lambda _button: sync_selected_preset())
+    scope_button_group.buttonClicked.connect(lambda _button: sync_scan_scope())
+    sync_scan_scope()
     sync_gpu_nvml_info()
 
     buttons = QtWidgets.QDialogButtonBox()
@@ -563,6 +656,7 @@ def select_scan_tuning(
 
     layout.addWidget(purpose)
     layout.addWidget(gpu_group)
+    layout.addWidget(scope_group)
     layout.addWidget(preset_group)
     layout.addWidget(advanced_group)
     layout.addWidget(buttons)
@@ -571,13 +665,7 @@ def select_scan_tuning(
     if dialog.exec() != QtWidgets.QDialog.Accepted:
         return None
 
-    checked_button = preset_button_group.checkedButton()
-    preset_id = (
-        checked_button.property("presetId")
-        if checked_button is not None
-        else DEFAULT_AUTO_UV_PRESET
-    )
-    preset = auto_uv_preset(preset_id)
+    preset = auto_uv_preset(checked_preset_id())
     options = {
         "gpu_index": _selected_gpu_index(gpu_combo, selected_gpu_index),
         "auto_uv_mode": preset.auto_uv_mode,

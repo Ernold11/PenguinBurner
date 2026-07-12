@@ -803,6 +803,18 @@ def run_adaptive_tier_scans(
         AUTO_UV_MODE_BALANCED,
     )
     for tier_index, tier_mode in enumerate(ADAPTIVE_TIER_ORDER):
+        next_tier = (
+            str(ADAPTIVE_TIER_ORDER[tier_index + 1])
+            if tier_index + 1 < len(ADAPTIVE_TIER_ORDER)
+            else ""
+        )
+        tier_event_details = {
+            "tier": str(tier_mode),
+            "position": int(tier_index) + 1,
+            "total": len(ADAPTIVE_TIER_ORDER),
+            "next_tier": next_tier,
+        }
+        emit_auto_uv_event(event_callback, "tier_started", **tier_event_details)
         tier_candidate, tier_final_tail, tier_probe, tier_history = (
             run_adaptive_tier_descent(
                 base_curve,
@@ -885,7 +897,10 @@ def run_adaptive_tier_scans(
                 "continuing with the remaining tiers",
             )
             emit_auto_uv_event(
-                event_callback, "tier_skipped", tier=str(tier_mode), reason="discarded"
+                event_callback,
+                "tier_skipped",
+                **tier_event_details,
+                reason="discarded",
             )
             continue
         except AutoUvError as tier_error:
@@ -901,10 +916,17 @@ def run_adaptive_tier_scans(
             emit_auto_uv_event(
                 event_callback,
                 "tier_skipped",
-                tier=str(tier_mode),
+                **tier_event_details,
                 reason="verification-failed",
             )
             continue
+        emit_auto_uv_event(
+            event_callback,
+            "tier_completed",
+            **tier_event_details,
+            voltage_mv=int(tier_scan_result.final_voltage_mv),
+            target_mhz=int(tier_scan_result.lock_clock_mhz),
+        )
         if primary_scan_result is None:
             primary_scan_result = tier_scan_result
     if primary_scan_result is not None:

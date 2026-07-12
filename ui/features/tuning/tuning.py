@@ -164,22 +164,6 @@ def auto_uv_scan_estimate_text(preset_id: object) -> str:
     return f"about {minimum}-{maximum} minutes"
 
 
-def auto_uv_scan_target_description(preset_id: object) -> str:
-    preset = auto_uv_preset(preset_id)
-    estimate = auto_uv_scan_estimate_text(preset.preset_id)
-    if preset.preset_id == AUTO_UV_PRESET_ADAPTIVE:
-        return (
-            "Full scan: create Efficiency, Balanced, and Performance profiles "
-            f"in one run. Estimated scan time: {estimate}, plus the verification "
-            "duration you choose."
-        )
-    return (
-        f"Single-profile scan: create only the {preset.label} profile. "
-        f"Estimated scan time: {estimate}, plus the verification duration you "
-        "choose."
-    )
-
-
 def auto_uv_voltage_drop_default(
     *,
     gpu_name: object | None = None,
