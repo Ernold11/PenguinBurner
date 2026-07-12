@@ -29,6 +29,7 @@ class InstalledSteamGame:
     install_dir: str
     steamapps_dir: Path
     state_flags: int
+    last_played: int
     icon_path: Path | None
     compat_tool: str
 
@@ -91,12 +92,17 @@ def _game_from_manifest(
         state_flags = int(str(vdf_lookup(state, "StateFlags") or 0))
     except ValueError:
         state_flags = 0
+    try:
+        last_played = max(0, int(str(vdf_lookup(state, "LastPlayed") or 0)))
+    except ValueError:
+        last_played = 0
     return InstalledSteamGame(
         app_id=app_id,
         name=name,
         install_dir=str(vdf_lookup(state, "installdir") or "").strip(),
         steamapps_dir=steamapps_dir,
         state_flags=state_flags,
+        last_played=last_played,
         icon_path=game_icon_path(app_id, steam_root=steam_root),
         compat_tool=compat_tools.get(app_id, ""),
     )
