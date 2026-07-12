@@ -521,7 +521,7 @@ def test_new_standing_action_mid_game_survives_game_exit(make_daemon):
             game.wait(timeout=5)
 
 
-def test_game_runtime_waits_for_all_watched_games_before_restore(make_daemon):
+def test_game_runtime_keeps_first_game_as_owner(make_daemon):
     daemon = make_daemon()
     apply_runtime_spec(
         _runtime_spec(gpu_uuid="GPU-standing"), socket_path=daemon.socket_path
@@ -535,28 +535,16 @@ def test_game_runtime_waits_for_all_watched_games_before_restore(make_daemon):
             app_id="1",
             socket_path=daemon.socket_path,
         )
-        start_game_runtime_spec(
+        second_result = start_game_runtime_spec(
             _runtime_spec(gpu_uuid="GPU-game-b"),
             watch_pid=second.pid,
             app_id="2",
             socket_path=daemon.socket_path,
         )
+        assert second_result["started"] is False
+        assert second_result["ignored"] is True
+        assert second_result["reason"] == "first-game-runtime-active"
         first.wait(timeout=5)
-        assert _wait_until(
-            lambda: [
-                entry["app_id"]
-                for entry in daemon_status(socket_path=daemon.socket_path)[
-                    "game_runtime"
-                ]["watched"]
-            ]
-            == ["2"],
-            timeout=5,
-        )
-        assert (
-            daemon_status(socket_path=daemon.socket_path)["active_job"]["gpu_uuid"]
-            == "GPU-game-b"
-        )
-        second.wait(timeout=5)
         assert _wait_until(
             lambda: "game_runtime"
             not in daemon_status(socket_path=daemon.socket_path),
@@ -566,6 +554,7 @@ def test_game_runtime_waits_for_all_watched_games_before_restore(make_daemon):
             daemon_status(socket_path=daemon.socket_path)["active_job"]["gpu_uuid"]
             == "GPU-standing"
         )
+        second.wait(timeout=5)
     finally:
         for game in (first, second):
             if game.poll() is None:

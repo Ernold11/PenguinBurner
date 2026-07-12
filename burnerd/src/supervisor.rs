@@ -647,6 +647,23 @@ pub fn start_game_runtime_profile(
         None => {}
     }
 
+    // One GPU and one overlay telemetry stream can only have one game owner.
+    // Keep the first live Steam session authoritative; a later game launch must
+    // not replace its profile or make its FPS drive the adaptive controller.
+    if !supervisor.game_runtime.watches.is_empty()
+        && !supervisor.game_runtime.watches.contains_key(&watch_pid)
+    {
+        return Ok(serde_json::json!({
+            "started": false,
+            "ignored": true,
+            "reason": "first-game-runtime-active",
+            "watching_pid": watch_pid,
+            "profile_id": profile_id,
+            "runtime_mode": runtime_mode,
+            "gpu_uuid": gpu_uuid,
+        }));
+    }
+
     let first_watch = supervisor.game_runtime.watches.is_empty();
     let standing_spec = if first_watch {
         supervisor
