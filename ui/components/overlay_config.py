@@ -11,14 +11,11 @@ from runtime.support.adaptive_target_fps import (
 from cli.runtime_config_file import persist_adaptive_target_fps_to_runtime_config
 from overlay.config import ADVANCED_OVERLAY_ITEM_IDS
 from overlay.config import BASIC_OVERLAY_ITEM_IDS
-from overlay.config import STEAM_LAUNCH_OPTION_OVERLAY
-from overlay.config import steam_launch_option
 from overlay.config import MAX_OVERLAY_UPDATE_INTERVAL_S
 from overlay.config import MIN_OVERLAY_UPDATE_INTERVAL_S
 from overlay.config import OVERLAY_SCALE_OPTIONS
 from overlay.config import load_overlay_config
 from overlay.config import save_overlay_config
-from overlay.config import set_overlay_enabled
 from overlay.config import set_overlay_item_enabled
 from overlay.config import set_overlay_scale
 from overlay.config import set_overlay_update_interval_s
@@ -138,19 +135,8 @@ class OverlayConfigPanel:
         layout.setContentsMargins(12, 18, 12, 12)
         layout.setSpacing(14)
 
-        self.enable_checkbox = QtWidgets.QCheckBox("Enable overlay")
-        self.enable_checkbox.setObjectName("overlayEnableCheckbox")
-        self.enable_checkbox.setToolTip(
-            _wrapped_tooltip(
-                "Controls whether PenguinBurner's native in-game overlay is "
-                "enabled for Steam launches through the generated wrapper path. "
-                "Changes update the running native overlay live."
-            )
-        )
-        enable_row = QtWidgets.QHBoxLayout()
-        enable_row.setSpacing(8)
-        enable_row.addWidget(self.enable_checkbox)
-        enable_row.addSpacing(18)
+        settings_row = QtWidgets.QHBoxLayout()
+        settings_row.setSpacing(8)
         interval_label = QtWidgets.QLabel("Update interval")
         interval_tooltip = _wrapped_tooltip(
             "Controls how often the daemon refreshes the overlay state. Range is "
@@ -166,8 +152,8 @@ class OverlayConfigPanel:
         )
         self.update_interval_spin.setSuffix(" s")
         self.update_interval_spin.setToolTip(interval_tooltip)
-        enable_row.addWidget(interval_label)
-        enable_row.addWidget(self.update_interval_spin)
+        settings_row.addWidget(interval_label)
+        settings_row.addWidget(self.update_interval_spin)
 
         scale_label = QtWidgets.QLabel("Overlay scale")
         scale_tooltip = _wrapped_tooltip(
@@ -182,9 +168,9 @@ class OverlayConfigPanel:
         for option in OVERLAY_SCALE_OPTIONS:
             self.scale_combo.addItem(_scale_option_label(option))
         self.scale_combo.setToolTip(scale_tooltip)
-        enable_row.addSpacing(14)
-        enable_row.addWidget(scale_label)
-        enable_row.addWidget(self.scale_combo)
+        settings_row.addSpacing(14)
+        settings_row.addWidget(scale_label)
+        settings_row.addWidget(self.scale_combo)
 
         target_fps_label = QtWidgets.QLabel("Adaptive UV Target")
         target_fps_tooltip = _wrapped_tooltip(
@@ -205,11 +191,11 @@ class OverlayConfigPanel:
         self.target_fps_spin.setSuffix(" FPS")
         self.target_fps_spin.setFixedWidth(_target_fps_spin_width(self.target_fps_spin))
         self.target_fps_spin.setToolTip(target_fps_tooltip)
-        enable_row.addSpacing(14)
-        enable_row.addWidget(target_fps_label)
-        enable_row.addWidget(self.target_fps_spin)
-        enable_row.addStretch(1)
-        layout.addLayout(enable_row)
+        settings_row.addSpacing(14)
+        settings_row.addWidget(target_fps_label)
+        settings_row.addWidget(self.target_fps_spin)
+        settings_row.addStretch(1)
+        layout.addLayout(settings_row)
 
         preview_group = QtWidgets.QGroupBox("Preview")
         preview_layout = QtWidgets.QVBoxLayout(preview_group)
@@ -226,34 +212,6 @@ class OverlayConfigPanel:
         self.preview_label.setFont(preview_font)
         preview_layout.addWidget(self.preview_label)
 
-        launch_hint = QtWidgets.QLabel(
-            "Paste this as the command-line Steam game launch option:"
-        )
-        launch_hint.setObjectName("overlaySteamLaunchHint")
-        launch_hint.setWordWrap(True)
-        preview_layout.addWidget(launch_hint)
-
-        launch_layout = QtWidgets.QHBoxLayout()
-        launch_layout.setSpacing(6)
-        self.launch_line = QtWidgets.QLineEdit(self._launch_option_text())
-        self.launch_line.setReadOnly(True)
-        self.launch_line.setObjectName("overlaySteamLaunchLine")
-        self.launch_line.setToolTip(
-            "Steam launch options. Latency uses the native Vulkan marker path "
-            "by default; PB_INGAME_LATENCY=1 is only an explicit marker test."
-        )
-        # Size to the default launch string so the field never reflows.
-        launch_width = self.launch_line.fontMetrics().horizontalAdvance(
-            STEAM_LAUNCH_OPTION_OVERLAY
-        )
-        self.launch_line.setFixedWidth(launch_width + 34)
-        self.copy_button = QtWidgets.QPushButton("Copy")
-        self.copy_button.setObjectName("overlayCopyLaunchButton")
-        self.copy_button.setToolTip("Copy Steam launch options")
-        launch_layout.addWidget(self.launch_line)
-        launch_layout.addWidget(self.copy_button)
-        launch_layout.addStretch(1)
-        preview_layout.addLayout(launch_layout)
         layout.addWidget(preview_group)
 
         options_widget = QtWidgets.QWidget()
@@ -294,11 +252,9 @@ class OverlayConfigPanel:
         options_scroll.setWidget(options_widget)
         layout.addWidget(options_scroll, 1)
 
-        self.enable_checkbox.toggled.connect(self._set_overlay_enabled)
         self.update_interval_spin.valueChanged.connect(self._set_update_interval)
         self.scale_combo.currentIndexChanged.connect(self._set_overlay_scale)
         self.target_fps_spin.valueChanged.connect(self._set_adaptive_target_fps)
-        self.copy_button.clicked.connect(self._copy_launch_option)
 
         self.timer = self.QtCore.QTimer(self.widget)
         self.timer.timeout.connect(self.refresh_preview)
@@ -357,12 +313,6 @@ class OverlayConfigPanel:
         button.clicked.connect(show_tooltip)
         return button
 
-    def _set_overlay_enabled(self, enabled: bool) -> None:
-        if self._syncing:
-            return
-        self.config = set_overlay_enabled(self.config, bool(enabled))
-        self._save("Saved. Running overlay updates live.")
-
     def _set_item_enabled(self, item_id: str, enabled: bool) -> None:
         if self._syncing:
             return
@@ -418,7 +368,6 @@ class OverlayConfigPanel:
     def _sync_widgets(self) -> None:
         self._syncing = True
         try:
-            self.enable_checkbox.setChecked(bool(self.config.enabled))
             self.update_interval_spin.setValue(int(self.config.update_interval_s))
             self.scale_combo.setCurrentIndex(
                 OVERLAY_SCALE_OPTIONS.index(snap_overlay_scale(self.config.scale))
@@ -427,7 +376,6 @@ class OverlayConfigPanel:
             enabled_items = set(self.config.enabled_item_ids)
             for item_id, checkbox in self.item_checkboxes.items():
                 checkbox.setChecked(item_id in enabled_items)
-            self.launch_line.setText(self._launch_option_text())
         finally:
             self._syncing = False
 
@@ -439,17 +387,6 @@ class OverlayConfigPanel:
         self.preview_label.setEnabled(bool(self.config.enabled))
         for item_id, label in self.item_value_labels.items():
             label.setText(_sample_text(item_id, values))
-
-    def _launch_option_text(self) -> str:
-        # The copied Steam line stays native-only. Overlay item visibility only
-        # changes what is rendered, not whether dxvk-nvapi marker parsing runs.
-        return steam_launch_option()
-
-    def _copy_launch_option(self) -> None:
-        clipboard = self.QtWidgets.QApplication.clipboard()
-        clipboard.setText(self._launch_option_text())
-        self.status_label.setText("Copied Steam launch options.")
-
 
 def _sample_text(item_id: str, telemetry: dict[str, str]) -> str:
     values = SAMPLE_OVERLAY_VALUES

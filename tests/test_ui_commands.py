@@ -35,7 +35,6 @@ from ui.models import top_status_text as _top_status_text
 from ui.models import probe_decision_label as _probe_decision_label
 from ui.models import probe_failure_label as _probe_failure_label
 from ui.styles import STYLESHEET
-from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 from ui.features.tuning.tuning import (
     AUTO_UV_PRESET_ADAPTIVE,
     AUTO_UV_PRESET_BALANCED,
@@ -1687,6 +1686,20 @@ def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
     assert window.table_panel.isHidden()
     assert (
         window.overlay_config.widget.findChild(
+            QtWidgets.QCheckBox,
+            "overlayEnableCheckbox",
+        )
+        is None
+    )
+    assert (
+        window.steam_panel.widget.findChild(
+            QtWidgets.QCheckBox,
+            "steamOverlayToggle",
+        )
+        is not None
+    )
+    assert (
+        window.overlay_config.widget.findChild(
             QtWidgets.QScrollArea,
             "overlayOptionsScroll",
         )
@@ -1807,7 +1820,7 @@ def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
     assert "scale = 2.0" in config_path.read_text(encoding="utf-8")
 
 
-def test_overlay_panel_launch_box_latency_is_default_on(tmp_path) -> None:
+def test_overlay_panel_has_no_steam_launch_controls(tmp_path) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1817,10 +1830,6 @@ def test_overlay_panel_launch_box_latency_is_default_on(tmp_path) -> None:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     _ = app
 
-    from overlay.config import (
-        STEAM_LAUNCH_OPTION_OVERLAY,
-        STEAM_LAUNCH_OPTION_WITH_LATENCY,
-    )
     from ui.components.overlay_config import OverlayConfigPanel
 
     panel = OverlayConfigPanel(
@@ -1830,23 +1839,9 @@ def test_overlay_panel_launch_box_latency_is_default_on(tmp_path) -> None:
         runtime_config_path=tmp_path / "penguin_burner.toml",
     )
 
-    # Latency is default-on through the native layer; dxvk-nvapi parsing is not.
-    assert STEAM_LAUNCH_OPTION_WITH_LATENCY == (
-        f"PB_OVERLAY=1 {PENGUIN_BURNER_WRAPPER} %command%"
-    )
-    assert STEAM_LAUNCH_OPTION_OVERLAY == STEAM_LAUNCH_OPTION_WITH_LATENCY
-
-    # Default config has latency visible, but the copied line stays native-only.
-    assert "latency_ms" in panel.config.enabled_item_ids
-    assert panel.launch_line.text() == STEAM_LAUNCH_OPTION_WITH_LATENCY
-    panel._copy_launch_option()
-    assert QtWidgets.QApplication.clipboard().text() == STEAM_LAUNCH_OPTION_WITH_LATENCY
-
-    # Hiding the Latency item only changes rendering, not launch env fallback.
-    panel._set_item_enabled("latency_ms", False)
-    assert panel.launch_line.text() == STEAM_LAUNCH_OPTION_WITH_LATENCY
-    panel._copy_launch_option()
-    assert QtWidgets.QApplication.clipboard().text() == STEAM_LAUNCH_OPTION_WITH_LATENCY
+    assert panel.widget.findChild(QtWidgets.QLabel, "overlaySteamLaunchHint") is None
+    assert panel.widget.findChild(QtWidgets.QLineEdit, "overlaySteamLaunchLine") is None
+    assert panel.widget.findChild(QtWidgets.QPushButton, "overlayCopyLaunchButton") is None
 
 
 def test_running_status_with_duration_uses_seconds_progress() -> None:
