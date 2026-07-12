@@ -8,9 +8,11 @@ button for that selection. Changes still apply immediately through
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 import textwrap
 import threading
+import time
 
 from integrations.steam.manager import SteamGameRow, SteamIntegrationManager
 from integrations.steam.process import launch_steam_game, restart_steam
@@ -24,7 +26,7 @@ from profiles.uv.profile_tiers import PROFILE_TIER_LABELS, PROFILE_TIERS
 
 
 # "Default" (no per-game choice, follows the Profiles-tab standing action)
-# leads; explicit Stock is last unless the standing action is already Stock.
+# leads; an explicit mode is omitted when Default already resolves to it.
 _MODE_LABELS = {
     GAME_MODE_DEFAULT: "Default",
     GAME_MODE_ADAPTIVE: "Adaptive",
@@ -39,14 +41,40 @@ SORT_ALPHABETICAL = "alphabetical"
 _AUTO_SYNC_INTERVAL_MS = 10000
 _ROW_HEIGHT = 42
 
+# Per-game launch lifecycle, tracked only for games the user played from this
+# panel. "launching" (play clicked, session not seen yet) reads as Running per
+# the visible contract; it exists so a slow start is not mistaken for an exit.
+_GAME_STATE_POLL_MS = 1500
+_PENDING_LAUNCH_S = 120.0  # for the Steam session to appear after Play
+_PENDING_STOP_S = 30.0  # for a stop request to take effect
+_CONFIRMED_GONE_POLLS = 2  # consecutive not-running polls before Stopped
+_GAME_STATE_LABELS = {
+    "launching": "Running",
+    "running": "Running",
+    "stopping": "Stopping",
+    "stopped": "Stopped",
+}
+_ACTIVE_GAME_STATES = ("launching", "running", "stopping")
+
+
+@dataclass
+class _TrackedGame:
+    """Launch lifecycle of one game the user played from this panel."""
+
+    state: str
+    deadline: float = 0.0  # monotonic grace cutoff while launching/stopping
+    misses: int = 0  # consecutive polls that did not see the session
+
 
 def _wrapped_tooltip(text: str) -> str:
     return "\n".join(textwrap.wrap(text, width=72))
 
 
 def _mode_keys_for_standing_mode(standing_mode_label: str) -> tuple[str, ...]:
-    if standing_mode_label.casefold() == _MODE_LABELS[GAME_MODE_STOCK].casefold():
-        return _MODE_KEYS[:-1]
+    standing_mode = standing_mode_label.casefold()
+    for mode in (GAME_MODE_ADAPTIVE, GAME_MODE_STOCK):
+        if standing_mode == _MODE_LABELS[mode].casefold():
+            return tuple(key for key in _MODE_KEYS if key != mode)
     return _MODE_KEYS
 
 
@@ -107,6 +135,7 @@ class SteamPanel:
         self._standing_mode_label = "Stock"
         self._default_mode_label = "Default"
         self._live_ready = False
+        self._tracked: dict[str, _TrackedGame] = {}
 
         self.widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(self.widget)
@@ -208,6 +237,11 @@ class SteamPanel:
         self.game_title.setWordWrap(True)
         details_layout.addWidget(self.game_title)
 
+        self.game_status = QtWidgets.QLabel("")
+        self.game_status.setObjectName("steamGameStatus")
+        self.game_status.setVisible(False)
+        details_layout.addWidget(self.game_status)
+
         self.game_metadata = QtWidgets.QLabel("")
         self.game_metadata.setObjectName("steamGameMetadata")
         self.game_metadata.setWordWrap(True)
@@ -241,16 +275,30 @@ class SteamPanel:
         details_layout.addWidget(self.overlay_checkbox)
 
         details_layout.addStretch(1)
+        action_row = QtWidgets.QHBoxLayout()
+        action_row.setSpacing(10)
         self.play_button = QtWidgets.QPushButton("Play")
         self.play_button.setObjectName("steamPlayButton")
-        self.play_button.setMinimumHeight(44)
         self.play_button.setToolTip(
             _wrapped_tooltip(
                 "Launch the selected game through Steam. The command line, "
                 "Auto-UV mode, and overlay choice above are used for the launch."
             )
         )
-        details_layout.addWidget(self.play_button)
+        action_row.addWidget(self.play_button)
+        self.stop_button = QtWidgets.QPushButton("Stop")
+        self.stop_button.setObjectName("steamStopButton")
+        self.stop_button.setEnabled(False)
+        self.stop_button.setToolTip(
+            _wrapped_tooltip(
+                "Ask Steam to shut the running game down cleanly — the same "
+                "action as Steam's own Stop button. Available while a game "
+                "launched from here is running."
+            )
+        )
+        action_row.addWidget(self.stop_button)
+        action_row.addStretch(1)
+        details_layout.addLayout(action_row)
         self.splitter.addWidget(self.details_pane)
         self.splitter.setCollapsible(1, False)
         self.splitter.setStretchFactor(0, 0)
@@ -270,11 +318,16 @@ class SteamPanel:
         self.overlay_checkbox.toggled.connect(self._overlay_changed)
         self.launch_edit.editingFinished.connect(self._launch_options_edited)
         self.play_button.clicked.connect(self._play_game)
+        self.stop_button.clicked.connect(self._stop_game)
 
         self._sync_timer = QtCore.QTimer(self.widget)
         self._sync_timer.setInterval(_AUTO_SYNC_INTERVAL_MS)
         self._sync_timer.timeout.connect(self._auto_sync)
         self._sync_timer.start()
+
+        self._game_state_timer = QtCore.QTimer(self.widget)
+        self._game_state_timer.setInterval(_GAME_STATE_POLL_MS)
+        self._game_state_timer.timeout.connect(self._poll_game_states)
 
         self._sync_selected_details()
         self.rescan()
@@ -445,6 +498,11 @@ class SteamPanel:
                     f"{last_played_text(row.game.last_played)}"
                 )
                 self.launch_edit.setText(row.launch_options)
+                # QLineEdit leaves the cursor at the end after setText(), which
+                # horizontally scrolls long Steam commands away from their
+                # beginning. Each freshly displayed command should start at the
+                # left edge; editing still moves the cursor normally afterward.
+                self.launch_edit.setCursorPosition(0)
                 mode_index = self.mode_combo.findData(normalize_game_mode(row.setting.mode))
                 self.mode_combo.setCurrentIndex(max(0, mode_index))
                 self.overlay_checkbox.setChecked(row.setting.overlay)
@@ -464,6 +522,28 @@ class SteamPanel:
         # Playing does not mutate Steam configuration, so it remains available
         # even before live launch-option apply has been initialized.
         self.play_button.setEnabled(has_selection)
+        self._sync_game_status()
+
+    def _sync_game_status(self) -> None:
+        """Show the launch lifecycle of the selected game under its title.
+
+        Only games the user played from this panel carry a state; everything
+        else keeps the status line hidden.
+        """
+        track = self._tracked.get(self._selected_app_id)
+        state = track.state if track is not None else ""
+        label = _GAME_STATE_LABELS.get(state, "")
+        self.game_status.setText(label)
+        self.game_status.setVisible(bool(label))
+        if self.game_status.property("gameState") != state:
+            self.game_status.setProperty("gameState", state)
+            style = self.game_status.style()
+            style.unpolish(self.game_status)
+            style.polish(self.game_status)
+        # Stop only once the session is confirmed: TerminateApp on a game
+        # Steam has not spawned yet is a silent no-op that would strand the
+        # tracker in "stopping" while the game then launches anyway.
+        self.stop_button.setEnabled(state == "running")
 
     # -- header / status ----------------------------------------------------
 
@@ -544,11 +624,72 @@ class SteamPanel:
         if row is None:
             return
         if launch_steam_game(app_id):
+            self._set_game_state(app_id, "launching")
             self._sync_status(f"{row.game.name}: launching via Steam…")
         else:
             self._sync_status(
                 f"{row.game.name}: FAILED to launch (steam not available)"
             )
+
+    def _stop_game(self, _checked: bool = False) -> None:
+        app_id = self._current_app_id()
+        row = self._rows.get(app_id)
+        if row is None:
+            return
+        result = self.manager.stop_game(app_id)
+        if result.ok:
+            self._set_game_state(app_id, "stopping")
+            self._sync_status(f"{row.game.name}: stopping…")
+        else:
+            self._sync_status(f"{row.game.name}: FAILED to stop ({result.message})")
+
+    def _set_game_state(self, app_id: str, state: str) -> None:
+        grace = {"launching": _PENDING_LAUNCH_S, "stopping": _PENDING_STOP_S}
+        self._tracked[app_id] = _TrackedGame(
+            state, time.monotonic() + grace.get(state, 0.0)
+        )
+        if state in _ACTIVE_GAME_STATES and not self._game_state_timer.isActive():
+            self._game_state_timer.start()
+        self._sync_game_status()
+
+    def _poll_game_states(self) -> None:
+        """Advance every tracked game's lifecycle from the live process state."""
+        now = time.monotonic()
+        for app_id, track in self._tracked.items():
+            if track.state not in _ACTIVE_GAME_STATES:
+                continue
+            if self.manager.game_running(app_id):
+                track.misses = 0
+                if track.state == "launching":
+                    track.state = "running"
+                elif track.state == "stopping" and now > track.deadline:
+                    # Steam declined to stop it (save dialog, hung shutdown);
+                    # surface the truth and re-arm the Stop button.
+                    track.state = "running"
+                    self._transition_message(app_id, "did not stop; still running")
+                continue
+            track.misses += 1
+            if track.state == "launching":
+                # Not appearing yet is normal while Steam spins the game up;
+                # only a fully expired grace window means the launch is dead
+                # (cancelled or failed inside Steam).
+                if now > track.deadline:
+                    track.state = "stopped"
+                    self._transition_message(app_id, "never started")
+            elif track.misses >= _CONFIRMED_GONE_POLLS:
+                # Consecutive polls agree the session is gone, so one failed
+                # or timed-out process check cannot misreport a live game.
+                track.state = "stopped"
+                self._transition_message(app_id, "stopped")
+        if not any(
+            track.state in _ACTIVE_GAME_STATES for track in self._tracked.values()
+        ):
+            self._game_state_timer.stop()
+        self._sync_game_status()
+
+    def _transition_message(self, app_id: str, event: str) -> None:
+        row = self._rows.get(app_id)
+        self._sync_status(f"{row.game.name if row is not None else app_id}: {event}.")
 
     def _after_apply(self, app_id: str, result, extra=None) -> None:
         rows = self.manager.refresh(read_launch_options=False)

@@ -65,12 +65,10 @@ def _steam_command(*args: str) -> list[str] | None:
     return _flatpak_host_command(command) if running_in_flatpak() else command
 
 
-def steam_running() -> bool:
-    # ~/.steam/steam.pid goes stale after exit; a live process check is the
-    # only reliable signal. Flatpak has its own PID namespace, so query the
-    # unprivileged host session through flatpak-spawn instead of looking inside
-    # the sandbox.
-    command = [HOST_PGREP, "-x", "steam"]
+def _pgrep(*args: str) -> bool:
+    # Flatpak has its own PID namespace, so query the unprivileged host
+    # session through flatpak-spawn instead of looking inside the sandbox.
+    command = [HOST_PGREP, *args]
     if running_in_flatpak():
         command = _flatpak_host_command(command) or []
     if not command:
@@ -86,6 +84,27 @@ def steam_running() -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0
+
+
+def steam_running() -> bool:
+    # ~/.steam/steam.pid goes stale after exit; a live process check is the
+    # only reliable signal.
+    return _pgrep("-x", "steam")
+
+
+def steam_game_running(app_id: str) -> bool:
+    """A Steam game session for this app is alive right now.
+
+    Steam launches every game (native and Proton) under its reaper process,
+    whose command line carries ``SteamLaunch AppId=<id>`` for the whole
+    session lifetime — the one stable signal for "this game is running".
+    The ``[S]`` class keeps the regex from matching a command line that
+    carries the pattern itself (our own flatpak-spawn helper, a sibling
+    checker): the pattern text never matches the pattern.
+    """
+    if not str(app_id).isdigit():
+        return False
+    return _pgrep("-f", rf"[S]teamLaunch AppId={app_id}([^0-9]|$)")
 
 
 def steam_available() -> bool:

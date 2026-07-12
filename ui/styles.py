@@ -149,6 +149,17 @@ QLabel#steamGameTitle {{
 QLabel#steamGameMetadata {{
     color: {theme.TEXT_MUTED};
 }}
+QLabel#steamGameStatus {{
+    color: {theme.TEXT_MUTED};
+    font-weight: 600;
+}}
+QLabel#steamGameStatus[gameState="launching"],
+QLabel#steamGameStatus[gameState="running"] {{
+    color: {theme.GOOD};
+}}
+QLabel#steamGameStatus[gameState="stopping"] {{
+    color: {theme.WARNING};
+}}
 QLabel#steamFieldLabel {{
     color: {theme.TEXT_STRONG};
     font-weight: 600;

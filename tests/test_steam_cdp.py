@@ -135,11 +135,21 @@ class _FakeSteamCdp:
 
 @pytest.fixture()
 def fake_steam():
-    state = {"launch_options": {"1089130": "gamemoderun %command%"}}
+    state = {
+        "launch_options": {"1089130": "gamemoderun %command%"},
+        "terminated": [],
+    }
 
     def evaluate(expression):
         if "typeof SteamClient?.Apps?.SetAppLaunchOptions" in expression:
             return True
+        if "typeof SteamClient?.Apps?.TerminateApp" in expression:
+            return True
+        if "TerminateApp(" in expression:
+            state["terminated"].append(
+                expression.partition("TerminateApp(")[2].partition(",")[0].strip()
+            )
+            return None
         if "SetAppLaunchOptions(" in expression:
             app_id, _, value = expression.partition("SetAppLaunchOptions(")[2].rpartition(
                 ")"
@@ -188,6 +198,14 @@ def test_write_verifies_by_read_back(fake_steam) -> None:
     assert state["launch_options"]["1089130"] == (
         "gamemoderun PENGUIN_BURNER %command%"
     )
+
+
+def test_terminate_app_uses_steam_stop_api(fake_steam) -> None:
+    server, state = fake_steam
+    with SteamCdpClient(port=server.http_port) as client:
+        assert client.terminate_app_supported()
+        client.terminate_app("1089130")
+    assert state["terminated"] == ["String(1089130)"]
 
 
 def test_marker_management(tmp_path) -> None:

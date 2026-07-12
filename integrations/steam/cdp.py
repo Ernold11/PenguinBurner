@@ -307,6 +307,20 @@ class SteamCdpClient:
             is True
         )
 
+    def terminate_app_supported(self) -> bool:
+        return (
+            self.evaluate("typeof SteamClient?.Apps?.TerminateApp === 'function'")
+            is True
+        )
+
+    def terminate_app(self, app_id: str) -> None:
+        """Ask Steam to shut the running game down (the Stop button in
+        Steam's own UI). TerminateApp takes the gameid as a string; for
+        regular Steam apps that is the app id."""
+        self.evaluate(
+            f"SteamClient.Apps.TerminateApp(String({int(app_id)}), false)"
+        )
+
     def app_launch_options(self, app_id: str, *, timeout_s: float = 2.0) -> str | None:
         """The user's launch-options string, live from the running client.
 

@@ -26,7 +26,7 @@ from .launch_options import (
     remove_injection,
 )
 from .library import InstalledSteamGame, installed_steam_games
-from .process import steam_running
+from .process import steam_game_running, steam_running
 from .settings import (
     GAME_MODE_DEFAULT,
     SteamGameSetting,
@@ -80,6 +80,39 @@ class SteamIntegrationManager:
     def live_apply_ready(self) -> bool:
         """Writes can land right now: CDP up, or Steam stopped (disk path)."""
         return self.cdp_ready() or not self.steam_running()
+
+    def game_running(self, app_id: str) -> bool:
+        return steam_game_running(app_id)
+
+    def stop_game(self, app_id: str) -> ApplyResult:
+        """Ask the running Steam client to shut the game down cleanly.
+
+        Steam exposes no stop equivalent of ``-applaunch``; TerminateApp over
+        the CDP channel is the client's own Stop button, so stopping needs
+        live apply to be initialized.
+        """
+        # isdecimal, not isdigit: it admits exactly the strings int() accepts,
+        # so terminate_app's int() below can never raise past this guard.
+        if not str(app_id).isdecimal():
+            return ApplyResult(False, "invalid app id")
+        try:
+            with SteamCdpClient(timeout_s=3.0) as client:
+                if not client.terminate_app_supported():
+                    return ApplyResult(
+                        False, "this Steam build does not expose TerminateApp"
+                    )
+                client.terminate_app(app_id)
+                return ApplyResult(True, "Stop requested via Steam.")
+        except SteamCdpError as error:
+            if not self.steam_running():
+                return ApplyResult(False, "Steam is not running")
+            if not self.cdp_ready():
+                return ApplyResult(
+                    False,
+                    "stopping needs live apply; initialize the Steam "
+                    "integration (one Steam restart) first",
+                )
+            return ApplyResult(False, f"stop failed: {error}")
 
     def standing_mode_label(self) -> str:
         """What an unconfigured game runs under: the user's standing action
@@ -242,11 +275,26 @@ class SteamIntegrationManager:
         ]
         if not pids:
             return None
-        argv = profile_argv_for_setting(self._setting(app_id))
+        setting = self._setting(app_id)
+        argv = profile_argv_for_setting(setting)
         if argv is None:
-            return ApplyResult(
-                True, "Running game keeps its profile; default applies on exit."
-            )
+            game_runtime = status.get("game_runtime") or {}
+            standing_mode = str(game_runtime.get("standing_runtime_mode") or "")
+            standing_profile_id = str(
+                game_runtime.get("standing_profile_id") or ""
+            ).strip()
+            if standing_mode == "adaptive":
+                argv = [
+                    "--auto-uv-profile",
+                    standing_profile_id or "latest",
+                    "--adaptive-auto-uv",
+                ]
+            elif standing_mode == "static" and standing_profile_id:
+                argv = ["--auto-uv-profile", standing_profile_id]
+            elif standing_mode == "stock":
+                argv = ["--auto-uv-profile", STOCK_PROFILE_SELECTOR]
+            else:
+                return ApplyResult(False, "standing Default profile is unavailable")
         try:
             start_game_runtime_profile(argv, watch_pid=pids[0], app_id=app_id)
         except Exception as error:

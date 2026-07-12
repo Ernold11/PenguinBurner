@@ -18,6 +18,7 @@ APP_ID = "10"
 
 class _FakeCdpClient:
     launch_options: dict[str, str] = {}
+    terminated: list[str] = []
     fail = False
 
     def __init__(self, **kwargs):
@@ -36,6 +37,12 @@ class _FakeCdpClient:
     def set_app_launch_options(self, app_id, value, **kwargs):
         type(self).launch_options[app_id] = value
         return True
+
+    def terminate_app_supported(self):
+        return True
+
+    def terminate_app(self, app_id):
+        type(self).terminated.append(str(app_id))
 
 
 @pytest.fixture()
@@ -62,6 +69,7 @@ def steam_home(tmp_path: Path) -> Path:
 @pytest.fixture()
 def manager(steam_home: Path, tmp_path: Path, monkeypatch) -> SteamIntegrationManager:
     _FakeCdpClient.launch_options = {APP_ID: "gamemoderun %command%"}
+    _FakeCdpClient.terminated = []
     _FakeCdpClient.fail = False
     monkeypatch.setattr(manager_module, "SteamCdpClient", _FakeCdpClient)
     monkeypatch.setattr(manager_module, "steam_running", lambda: True)
@@ -271,6 +279,43 @@ def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> Non
     assert calls == [(["--auto-uv-profile", "profile-9"], 4242, APP_ID)]
 
 
+def test_hot_reapply_default_resolves_standing_adaptive(manager, monkeypatch) -> None:
+    import runtime.daemon_client as daemon_client
+
+    manager.refresh()
+    manager.set_game_mode(APP_ID, GAME_MODE_DEFAULT)
+    monkeypatch.setattr(
+        daemon_client,
+        "daemon_status",
+        lambda **kwargs: {
+            "game_runtime": {
+                "active": True,
+                "watched": [{"pid": 4242, "app_id": APP_ID}],
+                "standing_runtime_mode": "adaptive",
+                "standing_profile_id": "performance-9",
+            }
+        },
+    )
+    calls = []
+
+    def fake_start(argv, *, watch_pid, app_id="", **kwargs):
+        calls.append((list(argv), watch_pid, app_id))
+        return {"started": True}
+
+    monkeypatch.setattr(daemon_client, "start_game_runtime_profile", fake_start)
+
+    result = manager.hot_reapply(APP_ID)
+
+    assert result is not None and result.ok
+    assert calls == [
+        (
+            ["--auto-uv-profile", "performance-9", "--adaptive-auto-uv"],
+            4242,
+            APP_ID,
+        )
+    ]
+
+
 def test_hot_reapply_tolerates_grace_window_exit(manager, monkeypatch) -> None:
     import runtime.daemon_client as daemon_client
 
@@ -294,3 +339,48 @@ def test_hot_reapply_tolerates_grace_window_exit(manager, monkeypatch) -> None:
     result = manager.hot_reapply(APP_ID)
     assert result is not None and result.ok
     assert "next launch" in result.message
+
+
+def test_stop_game_terminates_via_cdp(manager) -> None:
+    result = manager.stop_game(APP_ID)
+
+    assert result.ok
+    assert _FakeCdpClient.terminated == [APP_ID]
+
+
+def test_stop_game_needs_live_apply(manager, monkeypatch) -> None:
+    _FakeCdpClient.fail = True
+    monkeypatch.setattr(manager_module, "cdp_available", lambda **kwargs: False)
+
+    result = manager.stop_game(APP_ID)
+
+    assert not result.ok
+    assert "live apply" in result.message
+    assert _FakeCdpClient.terminated == []
+
+
+def test_stop_game_reports_steam_not_running(manager, monkeypatch) -> None:
+    _FakeCdpClient.fail = True
+    monkeypatch.setattr(manager_module, "steam_running", lambda: False)
+
+    result = manager.stop_game(APP_ID)
+
+    assert not result.ok
+    assert result.message == "Steam is not running"
+
+
+def test_stop_game_surfaces_real_cdp_error_when_live(manager, monkeypatch) -> None:
+    # CDP is up (live apply initialized) but the call itself failed: the user
+    # must see the actual error, not be told to initialize again.
+    _FakeCdpClient.fail = True
+    monkeypatch.setattr(manager_module, "cdp_available", lambda **kwargs: True)
+
+    result = manager.stop_game(APP_ID)
+
+    assert not result.ok
+    assert "no endpoint" in result.message
+
+
+def test_stop_game_rejects_bad_app_id(manager) -> None:
+    assert not manager.stop_game("rm -rf /").ok
+    assert _FakeCdpClient.terminated == []
