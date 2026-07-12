@@ -163,15 +163,6 @@ def test_explicit_stock_persists_and_injects(manager, tmp_path) -> None:
     assert stored[ACCOUNT_ID][APP_ID].mode == GAME_MODE_STOCK
 
 
-def test_reset_game_round_trips(manager, tmp_path) -> None:
-    manager.refresh()
-    manager.set_game_overlay(APP_ID, True)
-    result = manager.reset_game(APP_ID)
-    assert result.ok
-    assert _FakeCdpClient.launch_options[APP_ID] == "gamemoderun %command%"
-    assert load_steam_game_settings(tmp_path / "steam-game-settings.json") == {}
-
-
 def test_raw_edit_validates_and_syncs_setting(manager, tmp_path) -> None:
     manager.refresh()
     manager.set_game_mode(APP_ID, "balanced")

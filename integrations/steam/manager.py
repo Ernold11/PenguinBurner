@@ -256,23 +256,6 @@ class SteamIntegrationManager:
             return ApplyResult(False, f"live profile re-apply failed: {error}")
         return ApplyResult(True, "Profile re-applied to the running game.")
 
-    def reset_game(self, app_id: str) -> ApplyResult:
-        """Back to default: restore the pre-injection launch string, drop the preset."""
-        setting = self._setting(app_id)
-        current = self._launch_options.get(app_id, "")
-        restored = remove_injection(
-            current,
-            stored_original=setting.original_launch_options or None,
-            stored_injected=setting.injected_launch_options or None,
-        )
-        write = self._write_launch_options(app_id, restored)
-        if not write.ok:
-            return write
-        remove_steam_game_setting(
-            self._account_id(), app_id, path=self._settings_path
-        )
-        return ApplyResult(True, "Reset to default.", launch_options=restored)
-
     def _apply(self, app_id: str, setting: SteamGameSetting) -> ApplyResult:
         current = self._launch_options.get(app_id, "")
         if setting.active:

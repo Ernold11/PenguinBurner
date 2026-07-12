@@ -23,7 +23,7 @@ from profiles.uv.profile_tiers import PROFILE_TIER_LABELS, PROFILE_TIERS
 
 
 # "Default" (no per-game choice, follows the Profiles-tab standing action)
-# leads; explicit Stock is the last resort at the bottom.
+# leads; explicit Stock is last unless the standing action is already Stock.
 _MODE_LABELS = {
     GAME_MODE_DEFAULT: "Default",
     GAME_MODE_ADAPTIVE: "Adaptive",
@@ -40,14 +40,19 @@ def _wrapped_tooltip(text: str) -> str:
     return "\n".join(textwrap.wrap(text, width=72))
 
 
+def _mode_keys_for_standing_mode(standing_mode_label: str) -> tuple[str, ...]:
+    if standing_mode_label.casefold() == _MODE_LABELS[GAME_MODE_STOCK].casefold():
+        return _MODE_KEYS[:-1]
+    return _MODE_KEYS
+
+
 class SteamPanel:
-    COLUMNS = ["Game", "Auto-UV mode", "Overlay", "Launch options", "", ""]
+    COLUMNS = ["Game", "Auto UV", "Overlay", "Launch options", ""]
     GAME_COLUMN = 0
     MODE_COLUMN = 1
     OVERLAY_COLUMN = 2
     LAUNCH_OPTIONS_COLUMN = 3
     PLAY_COLUMN = 4
-    RESET_COLUMN = 5
 
     def __init__(
         self,
@@ -69,6 +74,7 @@ class SteamPanel:
         self._restart_result: bool | None = None
         self._rescan_thread: threading.Thread | None = None
         self._rescan_rows: tuple[SteamGameRow, ...] | None = None
+        self._standing_mode_label = "Stock"
         self._default_mode_label = "Default"
 
         self.widget = QtWidgets.QWidget()
@@ -199,7 +205,8 @@ class SteamPanel:
         self._syncing = True
         try:
             self._rows = {row.game.app_id: row for row in rows}
-            self._default_mode_label = f"Default ({self.manager.standing_mode_label()})"
+            self._standing_mode_label = self.manager.standing_mode_label()
+            self._default_mode_label = f"Default ({self._standing_mode_label})"
             self.table.setRowCount(len(rows))
             for index, row in enumerate(rows):
                 self._populate_row(index, row)
@@ -220,14 +227,15 @@ class SteamPanel:
         self.table.setItem(index, self.GAME_COLUMN, game_item)
 
         mode_combo = QtWidgets.QComboBox()
+        mode_keys = _mode_keys_for_standing_mode(self._standing_mode_label)
         adaptive_ok = bool(self.adaptive_available())
-        for key in _MODE_KEYS:
+        for key in mode_keys:
             label = (
                 self._default_mode_label if key == GAME_MODE_DEFAULT else _MODE_LABELS[key]
             )
             mode_combo.addItem(label, key)
         if not adaptive_ok:
-            model_item = mode_combo.model().item(_MODE_KEYS.index(GAME_MODE_ADAPTIVE))
+            model_item = mode_combo.model().item(mode_keys.index(GAME_MODE_ADAPTIVE))
             model_item.setEnabled(False)
             mode_combo.setToolTip(
                 _wrapped_tooltip(
@@ -235,9 +243,10 @@ class SteamPanel:
                     "Auto-UV scans first."
                 )
             )
-        mode_combo.setCurrentIndex(
-            _MODE_KEYS.index(normalize_game_mode(row.setting.mode))
-        )
+        current_mode = normalize_game_mode(row.setting.mode)
+        if current_mode not in mode_keys:
+            current_mode = GAME_MODE_DEFAULT
+        mode_combo.setCurrentIndex(mode_keys.index(current_mode))
         mode_combo.currentIndexChanged.connect(
             lambda _index, app_id=app_id, combo=mode_combo: self._mode_changed(
                 app_id, combo
@@ -282,19 +291,6 @@ class SteamPanel:
             lambda _checked=False, app_id=app_id: self._play_game(app_id)
         )
         self.table.setCellWidget(index, self.PLAY_COLUMN, play_button)
-
-        reset_button = QtWidgets.QPushButton("Reset")
-        reset_button.setToolTip(
-            _wrapped_tooltip(
-                "Back to default: restore the game's original launch options "
-                "and drop its PenguinBurner preset (the game then follows "
-                "the standing profile from the Profiles tab)."
-            )
-        )
-        reset_button.clicked.connect(
-            lambda _checked=False, app_id=app_id: self._reset_game(app_id)
-        )
-        self.table.setCellWidget(index, self.RESET_COLUMN, reset_button)
 
     # -- header / status ------------------------------------------------------
 
@@ -366,12 +362,6 @@ class SteamPanel:
         if row is not None and text == row.launch_options:
             return
         result = self.manager.set_raw_launch_options(app_id, text)
-        self._after_apply(app_id, result)
-
-    def _reset_game(self, app_id: str) -> None:
-        if self._syncing:
-            return
-        result = self.manager.reset_game(app_id)
         self._after_apply(app_id, result)
 
     def _play_game(self, app_id: str) -> None:
