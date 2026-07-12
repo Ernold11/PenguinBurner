@@ -310,6 +310,9 @@ class MainWindow(ProfileActionsMixin):
             parent=self.window,
             log=self.log_view.append,
             action_label="Starting Auto-UV",
+            # The scan streams through the daemon; a stale daemon without this
+            # capability must land in the repair prompt, not fail at scan start.
+            required_capabilities=("scan-stream-v1",),
         ):
             return
         options = {**options, "gpu_index": int(self.gpu_index)}

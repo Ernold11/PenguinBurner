@@ -4,7 +4,7 @@ import shlex
 import subprocess
 from typing import Callable
 
-from runtime.daemon_client import daemon_status
+from runtime.daemon_client import DaemonCompatibilityError, require_daemon_capabilities
 from ui.commands import daemon_migration_command
 
 
@@ -14,25 +14,45 @@ def ensure_daemon_ready_for_privileged_action(
     parent,
     log,
     action_label: str,
-    status_check: Callable[[], dict] = daemon_status,
+    required_capabilities: tuple[str, ...] = (),
+    status_check: Callable[[], dict] | None = None,
     command_factory: Callable[[], list[str]] = daemon_migration_command,
     run_command: Callable = subprocess.run,
 ) -> bool:
+    # Reachability alone is not readiness: a daemon left running from a
+    # previous install still answers status but speaks an older protocol, and
+    # the action would then fail mid-flight with a raw daemon error. Check the
+    # protocol handshake (plus the action's capabilities) up front so a stale
+    # daemon lands in the repair prompt instead.
+    check = status_check or (
+        lambda: require_daemon_capabilities(*required_capabilities)
+    )
+
     try:
-        status_check()
+        check()
         return True
+    except DaemonCompatibilityError as exc:
+        unavailable_reason = str(exc)
+        prompt = (
+            f"{action_label} needs a newer PenguinBurner root hardware "
+            "service than the one currently running.\n\n"
+            f"({unavailable_reason})\n\n"
+            "PenguinBurner can update and restart it now. This may ask for "
+            "your administrator password once."
+        )
     except Exception as exc:
         unavailable_reason = str(exc)
-
-    answer = QtWidgets.QMessageBox.question(
-        parent,
-        "PenguinBurner Hardware Service",
-        (
+        prompt = (
             f"{action_label} requires the PenguinBurner root hardware service.\n\n"
             "PenguinBurner can install or repair it now. If an older "
             "PenguinBurner.service exists, it will be migrated once. This may "
             "ask for your administrator password once."
-        ),
+        )
+
+    answer = QtWidgets.QMessageBox.question(
+        parent,
+        "PenguinBurner Hardware Service",
+        prompt,
         QtWidgets.QMessageBox.StandardButton.Yes
         | QtWidgets.QMessageBox.StandardButton.No,
         QtWidgets.QMessageBox.StandardButton.Yes,
@@ -71,12 +91,13 @@ def ensure_daemon_ready_for_privileged_action(
         return False
 
     try:
-        status_check()
+        check()
     except Exception as exc:
         QtWidgets.QMessageBox.critical(
             parent,
             "PenguinBurner Hardware Service",
-            "The hardware service command finished, but the daemon is not reachable.\n\n"
+            "The hardware service command finished, but the daemon is not "
+            "ready (unreachable or still incompatible).\n\n"
             f"{exc}",
         )
         return False
