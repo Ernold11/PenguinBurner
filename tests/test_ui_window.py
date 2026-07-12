@@ -304,6 +304,9 @@ def test_window_tab_order_and_bins_visibility(main_window) -> None:
     # Tabs are Auto-UV, Profiles, Steam, Overlay (no separate fan-curve tab).
     labels = [win.tabs.tabText(i) for i in range(win.tabs.count())]
     assert labels == ["Auto-UV", "Profiles", "Steam", "Ingame Overlay"]
+    assert win.tabs.iconSize().width() == 18
+    assert win.tabs.iconSize().height() == 18
+    assert all(not win.tabs.tabIcon(i).isNull() for i in range(win.tabs.count()))
     assert not hasattr(win, "fan_plot")
 
     # The undervolting-runs panel shows only on the Auto-UV tab.

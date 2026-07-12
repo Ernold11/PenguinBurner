@@ -12,6 +12,7 @@ from cli.runtime_config_file import (
 from common.penguin_burner_paths import default_user_config_dir
 
 from ui.features.integrations.afterburner_workflow import AfterburnerImportWorkflow
+from ui.assets import asset_image_path
 from ui.commands import scan_command
 from ui.components.auto_uv_tier_progress import AutoUvTierProgress
 from ui.components.curve_plot import CurvePlot
@@ -159,13 +160,28 @@ class MainWindow(ProfileActionsMixin):
         )
 
         self.tabs = self.QtWidgets.QTabWidget()
-        self.auto_uv_tab_index = self.tabs.addTab(auto_uv_view, "Auto-UV")
-        self.profiles_tab_index = self.tabs.addTab(self.profile_list.widget, "Profiles")
+        self.tabs.setIconSize(self.QtCore.QSize(18, 18))
+        tab_icon = lambda filename: self.QtGui.QIcon(str(asset_image_path(filename)))
+        self.auto_uv_tab_index = self.tabs.addTab(
+            auto_uv_view,
+            tab_icon("tab-auto-uv.png"),
+            "Auto-UV",
+        )
+        self.profiles_tab_index = self.tabs.addTab(
+            self.profile_list.widget,
+            tab_icon("tab-profiles.png"),
+            "Profiles",
+        )
+        self.steam_tab_index = self.tabs.addTab(
+            self.steam_panel.widget,
+            tab_icon("tab-steam.png"),
+            "Steam",
+        )
         self.overlay_tab_index = self.tabs.addTab(
             self.overlay_config.widget,
+            tab_icon("tab-overlay.png"),
             "Ingame Overlay",
         )
-        self.steam_tab_index = self.tabs.addTab(self.steam_panel.widget, "Steam")
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self._close_dynamic_tab)
         self.errors = ErrorReporter(
