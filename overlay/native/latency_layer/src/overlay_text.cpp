@@ -39,6 +39,8 @@ bool value_is_false(const std::string& value) {
     return text == "0" || text == "false" || text == "no" || text == "off";
 }
 
+std::string overlay_runtime_path(const char* env_name, const char* file_name);
+
 std::string overlay_env_value() {
     if (const char* value = std::getenv(kOverlayEnableEnv)) {
         return trim_ascii(value);
@@ -50,8 +52,39 @@ std::string overlay_env_value() {
 }
 
 bool overlay_enabled() {
-    static const bool enabled = !value_is_false(overlay_env_value());
-    return enabled;
+    // Launch-time default from the wrapper env, overridable LIVE by a small
+    // runtime file the UI writes ("1"/"0"): the layer is always loaded, so
+    // visibility can flip on a running game without a restart. The file is
+    // re-checked at most once a second; the wrapper clears it at launch so a
+    // stale override never leaks into the next game.
+    static const bool env_default = !value_is_false(overlay_env_value());
+    static std::mutex override_mutex;
+    static std::chrono::steady_clock::time_point last_check{};
+    static int override_state = -1;  // -1 unknown/absent, 0 off, 1 on
+
+    std::lock_guard<std::mutex> lock(override_mutex);
+    const auto now = std::chrono::steady_clock::now();
+    if (last_check.time_since_epoch().count() == 0
+        || now - last_check >= std::chrono::seconds(1)) {
+        last_check = now;
+        override_state = -1;
+        static const std::string override_path = overlay_runtime_path(
+            kOverlayOverrideEnv, "overlay-override");
+        std::ifstream stream(override_path);
+        if (stream.good()) {
+            std::string value;
+            std::getline(stream, value);
+            if (value_is_true(value)) {
+                override_state = 1;
+            } else if (value_is_false(value)) {
+                override_state = 0;
+            }
+        }
+    }
+    if (override_state >= 0) {
+        return override_state == 1;
+    }
+    return env_default;
 }
 
 bool overlay_env_fallback_enabled() {

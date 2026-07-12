@@ -10,6 +10,7 @@ OVERLAY_STATE_ENV = "PENGUIN_BURNER_OVERLAY_STATE"
 OVERLAY_TEXT_ENV = "PENGUIN_BURNER_OVERLAY_TEXT"
 OVERLAY_ENABLE_ENV = "PENGUIN_BURNER_OVERLAY"
 OVERLAY_ENABLE_ENV_ALIAS = "PB_OVERLAY"
+OVERLAY_OVERRIDE_ENV = "PENGUIN_BURNER_OVERLAY_OVERRIDE"
 
 
 def _home_overlay_dir(env: Mapping[str, str]) -> Path | None:
@@ -93,6 +94,42 @@ def overlay_text_path(env: Mapping[str, str] | None = None) -> Path:
         return Path(explicit).expanduser()
     state_path = overlay_state_path(resolved_env)
     return state_path.with_name("overlay-text.txt")
+
+
+def overlay_override_path(env: Mapping[str, str] | None = None) -> Path:
+    """The live overlay visibility override the native layer polls (~1s).
+
+    "1"/"0" wins over the game's launch-time env; absent means "follow the
+    launch setting". The wrapper clears it at every launch so a stale
+    override never leaks into the next game session.
+    """
+    resolved_env = os.environ if env is None else env
+    explicit = str(resolved_env.get(OVERLAY_OVERRIDE_ENV) or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    return overlay_state_path(resolved_env).with_name("overlay-override")
+
+
+def write_overlay_override(enabled: bool, path: str | Path | None = None) -> bool:
+    target = overlay_override_path() if path is None else Path(path)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp = target.with_name(target.name + ".tmp")
+        temp.write_text("1" if enabled else "0", encoding="ascii")
+        temp.replace(target)
+    except OSError:
+        return False
+    return True
+
+
+def clear_overlay_override(path: str | Path | None = None) -> None:
+    target = overlay_override_path() if path is None else Path(path)
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
 
 
 def read_overlay_state(path: str | Path | None = None) -> dict[str, str]:

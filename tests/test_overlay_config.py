@@ -115,9 +115,16 @@ def test_overlay_panel_samples_keep_only_basic_example_values() -> None:
         "latency_ms": "88",
     }
 
-    assert _sample_text("base_fps", telemetry) == "60 FPS"
-    assert _sample_text("fg_fps", telemetry) == "120 FG"
-    assert _sample_text("latency_ms", telemetry) == "40 ms"
+    # Real in-game numbers lead; the 60/120/40 demo values are only the
+    # fallback when no wrapped game is publishing telemetry.
+    assert _sample_text("base_fps", telemetry) == "22 FPS"
+    assert _sample_text("fg_fps", telemetry) == "44 FG"
+    assert _sample_text("latency_ms", telemetry) == "88 ms"
+
+    assert _sample_text("base_fps", {}) == "60 FPS"
+    assert _sample_text("fg_fps", {}) == "120 FG"
+    assert _sample_text("latency_ms", {}) == "40 ms"
+    assert _sample_text("base_fps", {"present_fps": "n/a"}) == "60 FPS"
 
 
 def test_overlay_panel_values_use_live_telemetry_or_dash() -> None:
@@ -173,3 +180,29 @@ def test_overlay_panel_refreshes_value_rows_from_current_telemetry(monkeypatch) 
     assert panel.preview_label.enabled is True
     assert panel.item_value_labels["clock_mhz"].text == "607 MHz"
     assert panel.item_value_labels["cpu_peak_thread_pct"].text == "-"
+
+
+def test_overlay_override_write_clear_roundtrip(tmp_path) -> None:
+    """The live-toggle override file the native layer polls: atomic writes,
+    idempotent clear, env-pinned path."""
+    from overlay.state import (
+        clear_overlay_override,
+        overlay_override_path,
+        write_overlay_override,
+    )
+
+    target = tmp_path / "overlay-override"
+    assert write_overlay_override(True, target)
+    assert target.read_text() == "1"
+    assert write_overlay_override(False, target)
+    assert target.read_text() == "0"
+    assert not list(tmp_path.glob("*.tmp"))  # atomic replace, no leftovers
+
+    clear_overlay_override(target)
+    assert not target.exists()
+    clear_overlay_override(target)  # idempotent
+
+    env = {"PENGUIN_BURNER_OVERLAY_OVERRIDE": str(tmp_path / "explicit")}
+    assert overlay_override_path(env) == tmp_path / "explicit"
+    home_env = {"HOME": str(tmp_path)}
+    assert overlay_override_path(home_env).name == "overlay-override"

@@ -670,6 +670,22 @@ class SteamPanel:
         if not app_id:
             return
         result = self.manager.set_game_overlay(app_id, checked)
+        if result.ok and self.manager.game_running(app_id):
+            # The native layer polls the override file about once a second,
+            # so the running game's overlay follows the checkbox live — no
+            # restart. The wrapper clears the override on the next launch,
+            # where the persisted launch options take over again.
+            from overlay.state import write_overlay_override
+
+            if write_overlay_override(bool(checked)):
+                row = self._rows.get(app_id)
+                name = row.game.name if row is not None else app_id
+                self._after_apply(app_id, result)
+                self._sync_status(
+                    f"{name}: overlay switched "
+                    f"{'on' if checked else 'off'} live in the running game."
+                )
+                return
         self._after_apply(app_id, result)
 
     def _launch_options_edited(self) -> bool:

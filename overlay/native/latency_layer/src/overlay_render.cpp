@@ -349,9 +349,16 @@ bool init_overlay_resources(
         return false;
     }
 
+    // A disabled overlay must NOT consume the one-shot init: the live toggle
+    // can enable it later in this same process, and resources then still need
+    // their first (and only) initialization attempt.
+    if (!overlay_enabled()) {
+        return false;
+    }
+
     overlay.attempted = true;
     overlay.queue_family_index = queue_family_index;
-    if (!overlay_enabled() || !overlay_device_functions_available(device_context)
+    if (!overlay_device_functions_available(device_context)
         || queue_family_index == UINT32_MAX
         || swapchain_context.image_format == VK_FORMAT_UNDEFINED
         || swapchain_context.image_extent.width == 0

@@ -389,18 +389,29 @@ class OverlayConfigPanel:
             label.setText(_sample_text(item_id, values))
 
 def _sample_text(item_id: str, telemetry: dict[str, str]) -> str:
-    values = SAMPLE_OVERLAY_VALUES
+    # Real in-game numbers lead whenever a wrapped game is publishing them;
+    # the canned demo values (60 FPS / 120 FG / 40 ms) are only the
+    # no-game-running fallback.
+    demo = SAMPLE_OVERLAY_VALUES
     if item_id == "base_fps":
-        return f"{values['present_fps']} FPS"
+        live = _live_value(telemetry, "present_fps")
+        return f"{live or demo['present_fps']} FPS"
     if item_id == "fg_fps":
-        return f"{values['framegen_fps']} FG"
+        live = _live_value(telemetry, "framegen_fps")
+        return f"{live or demo['framegen_fps']} FG"
     if item_id == "latency_ms":
-        return f"{values['latency_ms']} ms"
+        live = _live_value(telemetry, "latency_ms")
+        return f"{live or demo['latency_ms']} ms"
     telemetry_key = ITEM_TELEMETRY_KEYS.get(item_id)
-    live_value = str(telemetry.get(telemetry_key or "") or "").strip()
-    if not telemetry_key or not live_value or live_value.lower() == "n/a":
+    live_value = _live_value(telemetry, telemetry_key or "")
+    if not telemetry_key or not live_value:
         return "-"
     return format_overlay_item(item_id, telemetry) or "-"
+
+
+def _live_value(telemetry: dict[str, str], key: str) -> str:
+    value = str(telemetry.get(key) or "").strip()
+    return "" if value.lower() == "n/a" else value
 
 
 def _scale_option_label(option: float) -> str:

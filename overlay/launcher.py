@@ -17,6 +17,7 @@ from .state import (
     OVERLAY_ENABLE_ENV,
     OVERLAY_STATE_ENV,
     OVERLAY_TEXT_ENV,
+    clear_overlay_override,
     overlay_state_path,
     overlay_text_path,
 )
@@ -79,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     env = dict(os.environ)
     args = _consume_wrapper_flags(args, env)
+    # Every launch starts from its own launch-time overlay setting: a live
+    # override left behind by a previous session must not leak into this one.
+    clear_overlay_override()
     if not args:
         print(
             f"Usage: {PENGUIN_BURNER_WRAPPER} %command%\n"

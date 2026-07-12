@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <fstream>
 #include <cctype>
 #include <cinttypes>
 #include <condition_variable>
@@ -49,6 +50,7 @@ constexpr const char* kEnableEnv = "PENGUIN_BURNER_LATENCY_LAYER";
 constexpr const char* kOverlayEnableEnv = "PENGUIN_BURNER_OVERLAY";
 constexpr const char* kOverlayEnableEnvAlias = "PB_OVERLAY";
 constexpr const char* kOverlayStateEnv = "PENGUIN_BURNER_OVERLAY_STATE";
+constexpr const char* kOverlayOverrideEnv = "PENGUIN_BURNER_OVERLAY_OVERRIDE";
 constexpr const char* kOverlayTextEnv = "PENGUIN_BURNER_OVERLAY_TEXT";
 constexpr const char* kOverlayConfigEnv = "PENGUIN_BURNER_OVERLAY_CONFIG";
 constexpr const char* kRecoveryResetEnv = "PENGUIN_BURNER_LATENCY_RECOVERY_RESET";
