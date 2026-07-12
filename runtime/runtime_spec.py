@@ -268,6 +268,14 @@ def _profile_spec(curve: dict[str, Any]) -> dict[str, Any]:
         "candidate_voltage_mv": int(curve.get("candidate_voltage_mv") or 0),
         "memory_offset_mhz": _optional_int(curve.get("memory_offset_mhz")),
         "power_limit_w": _optional_int(curve.get("power_limit_w")),
+        # Scan-measured load power for this profile and its stock baseline:
+        # the daemon's energy-saved accounting rate. Included only when the
+        # profile carries them, so older specs keep their exact shape.
+        **{
+            key: value
+            for key in ("avg_power_w", "base_avg_power_w")
+            if (value := _optional_float(curve.get(key))) is not None
+        },
         "flatten_target": {
             "source": str(flatten.get("source") or "auto-uv-final"),
             "lock_clock_mhz": int(
@@ -408,6 +416,16 @@ def _optional_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
     return int(round(float(value)))
+
+
+def _optional_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) and parsed > 0 else None
 
 
 def _nonnegative_int(value: Any, *, default: int) -> int:

@@ -19,6 +19,7 @@ use crate::supervisor::{self, Supervisor};
 pub const PROTOCOL_MAJOR: u32 = 2;
 pub const PROTOCOL_MINOR: u32 = 0;
 pub const DAEMON_CAPABILITIES: &[&str] = &[
+    "energy-savings-v1",
     "game-runtime-v1",
     "gpu-capabilities-v1",
     "gpu-telemetry-v1",
@@ -57,6 +58,16 @@ pub struct StatusResult {
     pub capabilities: &'static [&'static str],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub game_runtime: Option<GameRuntimeStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_savings: Option<EnergySavingsStatus>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EnergySavingsStatus {
+    /// Seconds a PenguinBurner profile spent under an active GPU workload.
+    pub active_seconds: f64,
+    /// Accumulated energy saved versus stock, in watt-seconds (joules).
+    pub saved_watt_seconds: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,11 +94,17 @@ impl StatusResult {
             protocol_minor: PROTOCOL_MINOR,
             capabilities: DAEMON_CAPABILITIES,
             game_runtime: None,
+            energy_savings: None,
         }
     }
 
     pub fn with_game_runtime(mut self, game_runtime: Option<GameRuntimeStatus>) -> Self {
         self.game_runtime = game_runtime;
+        self
+    }
+
+    pub fn with_energy_savings(mut self, energy_savings: Option<EnergySavingsStatus>) -> Self {
+        self.energy_savings = energy_savings;
         self
     }
 }
@@ -362,13 +379,19 @@ mod tests {
 
     #[test]
     fn status_idle_shape() {
+        // Byte-exact golden: pin the savings state to a nonexistent path so a
+        // live /var/lib counter on the build host cannot leak into the shape.
+        std::env::set_var(
+            crate::profile::savings::SAVINGS_STATE_FILE_ENV,
+            "/nonexistent/penguin-burnerd-test-savings.json",
+        );
         let sup = fresh();
         let result = handle_request(&sup, &json!({"method": "status"})).unwrap();
         let text = serde_json::to_string(&OkEnvelope { ok: true, result }).unwrap();
         assert_eq!(
             text,
             format!(
-                "{{\"ok\":true,\"result\":{{\"state\":\"idle\",\"active_job\":null,\"version\":\"{}\",\"protocol_major\":2,\"protocol_minor\":0,\"capabilities\":[\"game-runtime-v1\",\"gpu-capabilities-v1\",\"gpu-telemetry-v1\",\"gpu-vf-snapshot-v1\",\"gpu-writes-v1\",\"runtime-spec-v1\",\"scan-stream-v1\",\"verification-stream-v1\"]}}}}",
+                "{{\"ok\":true,\"result\":{{\"state\":\"idle\",\"active_job\":null,\"version\":\"{}\",\"protocol_major\":2,\"protocol_minor\":0,\"capabilities\":[\"energy-savings-v1\",\"game-runtime-v1\",\"gpu-capabilities-v1\",\"gpu-telemetry-v1\",\"gpu-vf-snapshot-v1\",\"gpu-writes-v1\",\"runtime-spec-v1\",\"scan-stream-v1\",\"verification-stream-v1\"]}}}}",
                 env!("CARGO_PKG_VERSION"),
             )
         );

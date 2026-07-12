@@ -242,3 +242,29 @@ def test_runtime_intent_argv_bridge_is_python_only_and_strict() -> None:
     }
     with pytest.raises(RuntimeError, match="unsupported runtime profile argument"):
         runtime_spec.runtime_intent_from_argv(["--daemon-api"])
+
+
+def test_profile_spec_carries_power_metrics_only_when_present(monkeypatch) -> None:
+    """The daemon's energy-saved accounting rate rides in the spec; profiles
+    without scan power metrics keep the exact old spec shape."""
+    with_power = _curve("with-power")
+    with_power["avg_power_w"] = 309.15
+    with_power["base_avg_power_w"] = 338.64
+    _stub_runtime_sources(monkeypatch, curve=with_power)
+    spec = runtime_spec.build_runtime_spec(profile_selector="with-power")
+    assert spec["static_profile"]["avg_power_w"] == 309.15
+    assert spec["static_profile"]["base_avg_power_w"] == 338.64
+
+    _stub_runtime_sources(monkeypatch, curve=_curve("no-power"))
+    spec = runtime_spec.build_runtime_spec(profile_selector="no-power")
+    assert "avg_power_w" not in spec["static_profile"]
+    assert "base_avg_power_w" not in spec["static_profile"]
+
+    # Junk values (zero, negative, non-numeric) are dropped, not sent.
+    junk = _curve("junk-power")
+    junk["avg_power_w"] = 0
+    junk["base_avg_power_w"] = "n/a"
+    _stub_runtime_sources(monkeypatch, curve=junk)
+    spec = runtime_spec.build_runtime_spec(profile_selector="junk-power")
+    assert "avg_power_w" not in spec["static_profile"]
+    assert "base_avg_power_w" not in spec["static_profile"]

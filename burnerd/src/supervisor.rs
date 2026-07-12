@@ -24,7 +24,8 @@ use shared_child::SharedChild;
 use tempfile::NamedTempFile;
 
 use crate::api::{
-    ActiveJob, GameRuntimeStatus, GameWatchStatus, StartResult, StatusResult, StopResult,
+    ActiveJob, EnergySavingsStatus, GameRuntimeStatus, GameWatchStatus, StartResult, StatusResult,
+    StopResult,
 };
 use crate::logging;
 use crate::paths;
@@ -522,9 +523,21 @@ fn clear_active_runtime() {
     }
 }
 
+fn energy_savings_status() -> Option<EnergySavingsStatus> {
+    let totals = profile::savings::load_totals(&profile::savings::savings_state_path());
+    if totals.active_seconds <= 0.0 {
+        return None;
+    }
+    Some(EnergySavingsStatus {
+        active_seconds: totals.active_seconds,
+        saved_watt_seconds: totals.saved_watt_seconds,
+    })
+}
+
 pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
     let supervisor = guard(sup);
     let game_runtime = supervisor.game_runtime_status();
+    let energy_savings = energy_savings_status();
 
     if let Some(job) = &supervisor.child {
         let returncode = job.proc.poll();
@@ -558,7 +571,8 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
                 returncode,
             }),
         )
-        .with_game_runtime(game_runtime);
+        .with_game_runtime(game_runtime)
+        .with_energy_savings(energy_savings);
     }
 
     if let Some(job) = &supervisor.profile {
@@ -582,10 +596,13 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
                 returncode,
             }),
         )
-        .with_game_runtime(game_runtime);
+        .with_game_runtime(game_runtime)
+        .with_energy_savings(energy_savings);
     }
 
-    StatusResult::new("idle", None).with_game_runtime(game_runtime)
+    StatusResult::new("idle", None)
+        .with_game_runtime(game_runtime)
+        .with_energy_savings(energy_savings)
 }
 
 pub fn stop_auto_uv_scan(sup: &Mutex<Supervisor>) -> StopResult {

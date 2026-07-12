@@ -32,6 +32,12 @@ QLabel#purposeText {{
     font-weight: 400;
     line-height: 1.25;
 }}
+QLabel#aboutSavings {{
+    color: {theme.GOOD};
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.4;
+}}
 QLabel#gpuNvmlInfo {{
     background: {theme.SURFACE_BG};
     border: 1px solid {theme.BORDER};

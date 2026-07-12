@@ -219,3 +219,44 @@ def test_select_scan_tuning_builds(qt) -> None:
     assert scan_tuning_dialog.select_scan_tuning(
         QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets, parent=None, gpu_index=0
     ) is None
+
+
+def test_energy_savings_formatting_uptime_and_units() -> None:
+    assert about_dialog.format_total_runtime(9) == "9s"
+    assert about_dialog.format_total_runtime(75) == "1m 15s"
+    assert about_dialog.format_total_runtime(3 * 3600 + 62) == "3h 1m 2s"
+    assert about_dialog.format_total_runtime(2 * 86400 + 3 * 3600 + 5) == (
+        "2d 3h 0m 5s"
+    )
+
+    assert about_dialog.format_energy_saved(0) == "0.0 Wh"
+    assert about_dialog.format_energy_saved(30.0 * 3600) == "30.0 Wh"
+    assert about_dialog.format_energy_saved(1_240 * 3600) == "1.24 kWh"
+    assert about_dialog.format_energy_saved(1_020_000 * 3600) == "1.02 MWh"
+
+
+def test_energy_savings_lines_from_daemon_status() -> None:
+    status = {
+        "energy_savings": {
+            "active_seconds": 3 * 3600.0,
+            "saved_watt_seconds": 30.0 * 3600 * 3,
+        }
+    }
+    text = about_dialog.energy_savings_lines(status)
+    assert text == "Total runtime: 3h 0m 0s\nEnergy saved: 90.0 Wh"
+
+    # No counter yet, malformed payloads, missing block: no stats line.
+    assert about_dialog.energy_savings_lines({}) == ""
+    assert about_dialog.energy_savings_lines({"energy_savings": None}) == ""
+    assert (
+        about_dialog.energy_savings_lines(
+            {"energy_savings": {"active_seconds": 0}}
+        )
+        == ""
+    )
+    assert (
+        about_dialog.energy_savings_lines(
+            {"energy_savings": {"active_seconds": "junk"}}
+        )
+        == ""
+    )

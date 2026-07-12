@@ -71,6 +71,15 @@ pub struct RuntimeProfile {
     pub candidate_voltage_mv: i64,
     pub memory_offset_mhz: Option<i64>,
     pub power_limit_w: Option<i64>,
+    // Scan-measured average power under load for this profile and the same
+    // scan's stock baseline; their difference drives the energy-savings
+    // accounting. Optional both ways: older specs and profiles predate the
+    // fields, and absent fields round-trip byte-identically (persisted
+    // boot/active runtime state keeps its old shape).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_power_w: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_avg_power_w: Option<f64>,
     pub flatten_target: FlattenTarget,
 }
 
@@ -250,6 +259,8 @@ impl RuntimeSpec {
             candidate_voltage_mv: 900,
             memory_offset_mhz: None,
             power_limit_w: None,
+            avg_power_w: None,
+            base_avg_power_w: None,
             flatten_target: FlattenTarget {
                 source: "auto-uv-final".to_string(),
                 lock_clock_mhz: 2600,

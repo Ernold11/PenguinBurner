@@ -13,6 +13,7 @@ mod guard;
 mod latency_rx;
 mod logfmt;
 mod runtime_spec;
+pub(crate) mod savings;
 mod telemetry;
 
 #[cfg(test)]
@@ -496,6 +497,11 @@ fn run_with_backend(
     // path — including error return and panic unwind — closing the sockets.
     let latency_receiver = latency_rx::LatencyReceiver::start(&mut log);
 
+    // Energy-saved accounting (issue #23): None when the applied profiles
+    // carry no scan power metrics. Drop flushes the totals on every exit path.
+    let mut savings_tracker =
+        savings::SavingsTracker::from_spec(spec, savings::savings_state_path());
+
     run_fan_control_loop(
         backend,
         gpu_index,
@@ -506,6 +512,7 @@ fn run_with_backend(
         &mut publisher,
         adaptive_ctrl.as_mut(),
         latency_receiver.as_ref(),
+        savings_tracker.as_mut(),
         stop_flag,
         max_iterations,
         ready,
@@ -559,6 +566,7 @@ fn run_fan_control_loop(
     publisher: &mut OverlayStatePublisher,
     mut adaptive_ctrl: Option<&mut AdaptiveAutoUvRuntimeController>,
     latency_receiver: Option<&latency_rx::LatencyReceiver>,
+    mut savings_tracker: Option<&mut savings::SavingsTracker>,
     stop_flag: Arc<AtomicBool>,
     max_iterations: Option<u64>,
     ready: &mut Option<SyncSender<Result<(), String>>>,
@@ -592,6 +600,7 @@ fn run_fan_control_loop(
     let profile_clock_mhz = vf_policy.profile_clock_mhz;
     let profile_voltage_mv = vf_policy.profile_voltage_mv;
     let mut current_tier_label = vf_policy_tier_label(&vf_policy);
+    let mut current_tier_key = vf_policy.active_profile_tier_key.clone();
     let gpu_policy_text = vf_policy.auto_uv_profile_gpu_policy.describe();
 
     let mut cleanup = EngineCleanup {
@@ -666,6 +675,7 @@ fn run_fan_control_loop(
                 &mut |m| engine_log(m),
             ) {
                 current_tier_label = profile_tier_label(&update.tier);
+                current_tier_key = update.tier.clone();
                 if update.changed {
                     if let Some(plan) = update.vf_apply_plan {
                         vf_apply_plan = Some(plan);
@@ -693,6 +703,17 @@ fn run_fan_control_loop(
         );
         let telemetry_clock = telemetry_number(&telemetry_text, "gpu_clock", "MHz");
         let telemetry_voltage = telemetry_number(&telemetry_text, "voltage", "mV");
+
+        // Energy-saved accounting: credit this tick when the GPU is under a
+        // real workload while the profile (current adaptive tier) is applied.
+        if let Some(tracker) = savings_tracker.as_deref_mut() {
+            tracker.record(
+                loop_started,
+                backend.gpu_utilization_pct(),
+                telemetry_clock,
+                &current_tier_key,
+            );
+        }
         let status_core_clock = profile_clock_mhz.filter(|&c| c != 0.0).or(telemetry_clock);
         let status_voltage = profile_voltage_mv
             .filter(|&v| v != 0.0)

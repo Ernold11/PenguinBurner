@@ -519,6 +519,8 @@ mod tests {
             candidate_voltage_mv: 875,
             memory_offset_mhz: Some(1500),
             power_limit_w: Some(320),
+            avg_power_w: None,
+            base_avg_power_w: None,
             flatten_target: FlattenTarget {
                 source: "auto-uv-final".to_string(),
                 lock_clock_mhz: 2640,
