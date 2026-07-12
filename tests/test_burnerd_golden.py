@@ -682,6 +682,35 @@ def test_scan_streams_started_line_finished(make_daemon, tmp_path):
     ]
 
 
+def test_verification_spawn_permission_failure_restores_standing_runtime(make_daemon):
+    """A worker EACCES must not leave the user's profile silently stopped."""
+    spec = _runtime_spec()
+    daemon = make_daemon(
+        seed_state=spec,
+        extra_env={"PENGUIN_BURNER_DAEMON_PYTHON": "/"},
+    )
+    assert daemon_status(socket_path=daemon.socket_path)["state"] == (
+        "runtime_profile_running"
+    )
+
+    frames = list(
+        daemon_stream_request(
+            {
+                "method": "start_profile_verification",
+                "options": {"stability_seconds": 5, "gpu_index": 0},
+            },
+            socket_path=daemon.socket_path,
+        )
+    )
+
+    assert len(frames) == 1
+    assert frames[0]["ok"] is False
+    assert "Permission denied" in frames[0]["error"]
+    status = daemon_status(socket_path=daemon.socket_path)
+    assert status["state"] == "runtime_profile_running"
+    assert json.loads(daemon.state_file.read_text(encoding="utf-8")) == spec
+
+
 def test_scan_value_formatting_skips_null_empty_and_formats_float(make_daemon, tmp_path):
     argv_file = tmp_path / "scan-argv-values.json"
     daemon = make_daemon(exit_after_lines=True, argv_file=argv_file)

@@ -32,6 +32,28 @@ use crate::logging;
 use crate::paths;
 use crate::supervisor::{self, ChildJob, ChildKind, ChildStart, Supervisor};
 
+/// Sandbox/elevation state must never leak into the de-rooted worker. In
+/// particular, a Flatpak child launched from a system daemon must be a plain
+/// host Python process, not something that can accidentally re-enter bwrap via
+/// inherited Flatpak or dynamic-loader state.
+const CHILD_ENV_REMOVE: &[&str] = &[
+    "FLATPAK_ID",
+    "FLATPAK_SANDBOX_DIR",
+    "container",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "PYTHONHOME",
+    "VIRTUAL_ENV",
+    "NOTIFY_SOCKET",
+    "LISTEN_FDS",
+    "LISTEN_FDNAMES",
+    "LISTEN_PID",
+];
+
+// Linux close_range(2): mark every non-stdio descriptor close-on-exec without
+// closing Rust's exec-error pipe before `execve` has succeeded.
+const CLOSE_RANGE_CLOEXEC_FLAG: libc::c_uint = 1 << 2;
+
 /// Kill-ladder timings. Shrunk by the undocumented `PENGUIN_BURNERD_TEST_TIMINGS`
 /// env (integration tests only) so the ladder can be exercised quickly.
 struct Timings {
@@ -153,6 +175,13 @@ fn run_child(
             return;
         }
     }
+    if let Err(err) = validate_child_program_file(&program_file) {
+        write_json_line(
+            writer,
+            &StreamError::new(format!("failed to launch {}: {err}", launch_label(kind))),
+        );
+        return;
+    }
 
     // The whole check-clear-stop-spawn-install runs atomically under the lock.
     let (job, reader) = match supervisor::begin_child(sup, kind, argv, |argv| {
@@ -177,6 +206,10 @@ fn run_child(
             return;
         }
         ChildStart::SpawnFailed(err) => {
+            // `begin_child` already stopped the active profile before spawn.
+            // A permission/path failure must not leave the user's standing
+            // runtime silently disabled.
+            supervisor::start_autostart_if_configured(sup);
             write_json_line(
                 writer,
                 &StreamError::new(format!("failed to launch {}: {err}", launch_label(kind))),
@@ -575,6 +608,62 @@ fn ensure_child_config_dirs(config_dirs: &[CString]) -> io::Result<()> {
     Ok(())
 }
 
+fn validate_child_program_file(program_file: &str) -> io::Result<()> {
+    let metadata = std::fs::metadata(program_file).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("daemon worker {program_file} is not accessible: {error}"),
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("daemon worker {program_file} is not a regular file"),
+        ));
+    }
+    Ok(())
+}
+
+/// Explicitly prevent inherited systemd/Flatpak descriptors (for example the
+/// `/proc/self/fd/17` seen in the Bazzite failure) from surviving exec.
+fn mark_inherited_fds_cloexec() -> io::Result<()> {
+    // SAFETY: close_range receives scalar bounds/flags only. CLOEXEC does not
+    // close descriptors in the pre-exec process; it applies on successful exec.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_close_range,
+            3_u32,
+            u32::MAX,
+            CLOSE_RANGE_CLOEXEC_FLAG,
+        )
+    };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if matches!(
+        error.raw_os_error(),
+        Some(libc::ENOSYS) | Some(libc::EINVAL)
+    ) {
+        // Old kernels lack close_range/CLOEXEC. Rust-created daemon descriptors
+        // are already O_CLOEXEC, so retain that baseline instead of breaking
+        // otherwise supported systems.
+        return Ok(());
+    }
+    Err(error)
+}
+
+fn verify_child_program_readable(program_file: &CString) -> io::Result<()> {
+    // SAFETY: `program_file` is a stable NUL-terminated path built before fork.
+    let fd = unsafe { libc::open(program_file.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is the descriptor just returned by open.
+    unsafe { libc::close(fd) };
+    Ok(())
+}
+
 /// Spawn the child with stdout and stderr merged onto one pipe, `cwd="/"`.
 /// Returns the child and the read end of the pipe. `python` is the pre-resolved
 /// interpreter and `drop` the pre-resolved privilege-drop plan (both resolved
@@ -586,6 +675,13 @@ fn spawn_child(
     argv: &[String],
     drop: Option<&DropPlan>,
 ) -> std::io::Result<(Child, File)> {
+    let program_file_c =
+        CString::new(Path::new(program_file).as_os_str().as_bytes()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "worker path contains a NUL byte",
+            )
+        })?;
     let (read_fd, write_fd) = pipe2(OFlag::O_CLOEXEC).map_err(io::Error::from)?;
     let reader = File::from(read_fd);
     let write_file = File::from(write_fd);
@@ -596,9 +692,13 @@ fn spawn_child(
         .arg(program_file)
         .args(argv)
         .current_dir("/")
+        .stdin(Stdio::null())
         .stdout(Stdio::from(write_file))
         .stderr(Stdio::from(write_clone));
-    // stdin is inherited (parity: the Python daemon does not redirect it).
+
+    for key in CHILD_ENV_REMOVE {
+        command.env_remove(key);
+    }
 
     // De-rooted child: point HOME/USER/XDG at the desktop user so the child
     // resolves the same `~/.config/PenguinBurner` it did as root. The rest of
@@ -632,6 +732,7 @@ fn spawn_child(
     unsafe {
         use std::os::unix::process::CommandExt;
         command.pre_exec(move || {
+            mark_inherited_fds_cloexec()?;
             if let Some((uid, gid, groups, config_dirs)) = drop_spec.as_ref() {
                 if libc::setsid() < 0 {
                     return Err(io::Error::last_os_error());
@@ -650,11 +751,20 @@ fn spawn_child(
                 // marker without the root daemon creating/chowning user files.
                 ensure_child_config_dirs(config_dirs)?;
             }
+            // Open after setuid so root cannot mask an unreadable Flatpak
+            // deployment. Failure is reported as a spawn error before the
+            // daemon emits a misleading `started` frame.
+            verify_child_program_readable(&program_file_c)?;
             Ok(())
         });
     }
 
-    let child = command.spawn()?;
+    let child = command.spawn().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("cannot execute daemon worker {program_file} as the desktop user: {error}"),
+        )
+    })?;
     // The parent's copies of the write end were moved into `command` and are now
     // closed; only the child holds it, so `reader` sees EOF when the child exits.
     Ok((child, reader))
@@ -1043,10 +1153,20 @@ mod tests {
             config_home: entry.dir.clone(),
             config_dirs: Vec::new(),
         };
+        let script = std::env::temp_dir().join(format!(
+            "pb-root-drop-{}-{}.sh",
+            std::process::id(),
+            entry.uid
+        ));
+        fs::write(&script, "#!/bin/sh\nid -u\nid -g\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let (child, reader) = spawn_child(
             Path::new("/bin/sh"),
-            "-c",
-            &["id -u; id -g".to_string()],
+            script.to_str().unwrap(),
+            &[],
             Some(&plan),
         )
         .expect("spawn with drop");
@@ -1061,6 +1181,52 @@ mod tests {
             vec![entry.uid.to_string(), entry.gid.to_string()],
             "the child must run as the drop target, not root"
         );
+        let _ = fs::remove_file(script);
+    }
+
+    #[test]
+    fn spawn_child_closes_inherited_non_stdio_descriptors_on_exec() {
+        use std::os::fd::{AsRawFd, FromRawFd};
+
+        let dir = std::env::temp_dir().join(format!("pb-fd-sanitize-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("check_fd.py");
+        fs::write(
+            &script,
+            concat!(
+                "import os, sys\n",
+                "try:\n    target = os.readlink('/proc/self/fd/' + sys.argv[1])\n",
+                "except OSError:\n    target = ''\n",
+                "print('inherited' if target == sys.argv[2] else 'closed')\n",
+            ),
+        )
+        .unwrap();
+
+        let marker = dir.join("inherited-marker");
+        fs::write(&marker, "marker").unwrap();
+        let base = File::open(&marker).unwrap();
+        // SAFETY: fcntl duplicates a valid owned fd; on success the returned
+        // descriptor is independent and intentionally lacks FD_CLOEXEC.
+        let raw_fd = unsafe { libc::fcntl(base.as_raw_fd(), libc::F_DUPFD, 3) };
+        assert!(raw_fd >= 3);
+        // SAFETY: `raw_fd` is the new descriptor returned by F_DUPFD.
+        let inherited = unsafe { File::from_raw_fd(raw_fd) };
+
+        let (mut child, reader) = spawn_child(
+            Path::new("python3"),
+            script.to_str().unwrap(),
+            &[raw_fd.to_string(), marker.display().to_string()],
+            None,
+        )
+        .unwrap();
+        let mut output = String::new();
+        let mut reader = BufReader::new(reader);
+        reader.read_to_string(&mut output).unwrap();
+        assert!(child.wait().unwrap().success());
+        assert_eq!(output.trim(), "closed");
+        drop(inherited);
+        let _ = fs::remove_dir_all(dir);
     }
 
     // --- kill-ladder reap (F6) ------------------------------------------------

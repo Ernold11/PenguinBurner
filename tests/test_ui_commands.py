@@ -1346,6 +1346,29 @@ def test_ui_profile_verify_command_uses_selected_auto_uv_profile(monkeypatch) ->
     assert "/tmp/verify.stop" not in " ".join(command)
 
 
+def test_ui_profile_verify_command_never_reenters_flatpak_or_pkexec(monkeypatch) -> None:
+    """Bazzite regression: verification is one daemon RPC, not nested bwrap."""
+    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+
+    command = commands.profile_verify_command(
+        profile_selector="profile-a",
+        duration_s=300,
+        stop_request_path="/tmp/verify.stop",
+    )
+
+    joined = " ".join(command)
+    assert command[1:4] == [
+        "-m",
+        "runtime.daemon_client",
+        "start-profile-verification",
+    ]
+    assert "flatpak-spawn" not in joined
+    assert "flatpak run" not in joined
+    assert "pkexec" not in joined
+    assert "/proc/self/fd" not in joined
+
+
 def test_ui_profile_verify_command_uses_fixed_q2rtx_cuda_workload(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
 
