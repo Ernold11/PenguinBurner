@@ -544,7 +544,10 @@ def _stop_active_runtime_before_daemon_restart() -> None:
 
 
 def _apply_runtime(argv, *, socket_path=DEFAULT_DAEMON_SOCKET) -> tuple[dict, dict]:
-    spec = build_runtime_spec_from_intent(runtime_intent_from_argv(argv))
+    spec = build_runtime_spec_from_intent(
+        runtime_intent_from_argv(argv),
+        socket_path=socket_path,
+    )
     result = apply_runtime_spec(spec, socket_path=socket_path, timeout_s=45)
     return result, spec
 

@@ -6,23 +6,26 @@
 //! Free functions take `&Mutex<Supervisor>` / `&Arc<Mutex<Supervisor>>` and manage
 //! locking themselves so lock scopes stay tiny (parity with `_ACTIVE_SCAN_LOCK`).
 
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::fs::File;
 use std::io::Write;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::process::{Child, ExitStatus};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
-#[cfg(test)]
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use shared_child::unix::SharedChildExt;
 use shared_child::SharedChild;
 use tempfile::NamedTempFile;
 
-use crate::api::{ActiveJob, StartResult, StatusResult, StopResult};
+use crate::api::{
+    ActiveJob, GameRuntimeStatus, GameWatchStatus, StartResult, StatusResult, StopResult,
+};
 use crate::logging;
 use crate::paths;
 use crate::profile::{self, EngineHandle, RuntimeSpec, StopOutcome};
@@ -34,6 +37,10 @@ const BOOT_STATE_FILE_ENV: &str = "PENGUIN_BURNERD_TEST_BOOT_STATE_FILE";
 const ACTIVE_RUNTIME_STATE_PATH: &str = "/run/penguin-burner/active-runtime.json";
 const BOOT_RUNTIME_STATE_PATH: &str = "/var/lib/penguin-burner/boot-runtime.json";
 const ENGINE_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+const GAME_RESTORE_GRACE: Duration = Duration::from_secs(3);
+const GAME_WATCH_INTERVAL: Duration = Duration::from_millis(250);
+const TEST_GAME_RESTORE_GRACE: Duration = Duration::from_millis(50);
+const TEST_GAME_WATCH_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Concurrent child handle with cached exit status and PID-reuse-safe signals.
 pub struct ChildProc {
@@ -125,11 +132,26 @@ struct ProfileJob {
     spec: RuntimeSpec,
 }
 
+struct GameWatch {
+    app_id: String,
+    pidfd: Option<OwnedFd>,
+    process_start_time: Option<u64>,
+    exited_at: Option<Instant>,
+}
+
+#[derive(Default)]
+struct GameRuntimeState {
+    watches: BTreeMap<u32, GameWatch>,
+    standing_spec: Option<RuntimeSpec>,
+    override_active: bool,
+}
+
 pub struct Supervisor {
     profile: Option<ProfileJob>,
     child: Option<Arc<ChildJob>>,
     child_generation: u64,
     stop_timeout: Duration,
+    game_runtime: GameRuntimeState,
 }
 
 impl Default for Supervisor {
@@ -145,6 +167,7 @@ impl Supervisor {
             child: None,
             child_generation: 0,
             stop_timeout: ENGINE_STOP_TIMEOUT,
+            game_runtime: GameRuntimeState::default(),
         }
     }
 
@@ -224,6 +247,177 @@ fn child_refusal(running: ChildKind, requested: ChildKind) -> String {
 
 fn guard(sup: &Mutex<Supervisor>) -> MutexGuard<'_, Supervisor> {
     sup.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+fn test_timings_enabled() -> bool {
+    env::var_os("PENGUIN_BURNERD_TEST_TIMINGS").is_some()
+}
+
+fn game_restore_grace() -> Duration {
+    if test_timings_enabled() {
+        TEST_GAME_RESTORE_GRACE
+    } else {
+        GAME_RESTORE_GRACE
+    }
+}
+
+fn game_watch_interval() -> Duration {
+    if test_timings_enabled() {
+        TEST_GAME_WATCH_INTERVAL
+    } else {
+        GAME_WATCH_INTERVAL
+    }
+}
+
+fn process_start_time(pid: u32) -> Option<u64> {
+    let pid = i32::try_from(pid).ok()?;
+    procfs::process::Process::new(pid)
+        .ok()?
+        .stat()
+        .ok()
+        .map(|stat| stat.starttime)
+}
+
+impl GameWatch {
+    fn open(pid: u32, app_id: String) -> Result<Self, String> {
+        // SAFETY: pidfd_open has no pointer arguments; `pid` and flags are
+        // validated scalar values, and a nonnegative result is a new fd.
+        let raw_fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+        let pidfd = if raw_fd >= 0 {
+            // SAFETY: pidfd_open returned a new owned descriptor on success.
+            Some(unsafe { OwnedFd::from_raw_fd(raw_fd as i32) })
+        } else {
+            None
+        };
+        let process_start_time = if pidfd.is_none() {
+            process_start_time(pid)
+        } else {
+            None
+        };
+        if pidfd.is_none() && process_start_time.is_none() {
+            return Err(format!("watch_pid {pid} is not a running process"));
+        }
+        Ok(Self {
+            app_id,
+            pidfd,
+            process_start_time,
+            exited_at: None,
+        })
+    }
+
+    fn running(&self, pid: u32) -> bool {
+        if let Some(pidfd) = &self.pidfd {
+            let mut pollfd = libc::pollfd {
+                fd: pidfd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `pollfd` points to one initialized entry for the full
+            // duration of this nonblocking call.
+            let result = unsafe { libc::poll(&mut pollfd, 1, 0) };
+            return result == 0
+                || (result < 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR));
+        }
+        process_start_time(pid) == self.process_start_time
+    }
+}
+
+impl Supervisor {
+    fn game_runtime_status(&self) -> Option<GameRuntimeStatus> {
+        if self.game_runtime.watches.is_empty() {
+            return None;
+        }
+        Some(GameRuntimeStatus {
+            active: self.game_runtime.override_active,
+            watched: self
+                .game_runtime
+                .watches
+                .iter()
+                .map(|(&pid, watch)| GameWatchStatus {
+                    pid,
+                    app_id: watch.app_id.clone(),
+                })
+                .collect(),
+            standing_profile_id: self
+                .game_runtime
+                .standing_spec
+                .as_ref()
+                .map(RuntimeSpec::active_profile_id),
+            standing_runtime_mode: self
+                .game_runtime
+                .standing_spec
+                .as_ref()
+                .map(|spec| spec.mode_name().to_string()),
+        })
+    }
+}
+
+/// Start the process-lifetime monitor used by Steam per-game profiles. A pidfd
+/// guards against PID reuse where the kernel supports it; the `/proc` start time
+/// is the fallback on older kernels.
+pub fn start_game_watch_monitor(sup: &Arc<Mutex<Supervisor>>) {
+    let weak = Arc::downgrade(sup);
+    thread::Builder::new()
+        .name("penguin-burner-game-watch".to_string())
+        .spawn(move || loop {
+            thread::sleep(game_watch_interval());
+            let Some(sup) = weak.upgrade() else {
+                return;
+            };
+            reap_game_watches(&sup);
+        })
+        .expect("spawn game watch thread");
+}
+
+fn reap_game_watches(sup: &Mutex<Supervisor>) {
+    let now = Instant::now();
+    let grace = game_restore_grace();
+    let mut supervisor = guard(sup);
+    if supervisor.game_runtime.watches.is_empty() {
+        return;
+    }
+    for (&pid, watch) in &mut supervisor.game_runtime.watches {
+        if watch.exited_at.is_none() && !watch.running(pid) {
+            watch.exited_at = Some(now);
+        }
+    }
+    supervisor.game_runtime.watches.retain(|_, watch| {
+        watch
+            .exited_at
+            .is_none_or(|exited_at| now.duration_since(exited_at) < grace)
+    });
+    if !supervisor.game_runtime.watches.is_empty() {
+        return;
+    }
+
+    let should_restore = supervisor.game_runtime.override_active;
+    supervisor.game_runtime.override_active = false;
+    let standing_spec = supervisor.game_runtime.standing_spec.take();
+    if !should_restore || supervisor.child_running_kind().is_some() {
+        return;
+    }
+    if let Err(error) = supervisor.stop_engine_for_child("the standing runtime after game exit") {
+        logging::error(&error);
+        return;
+    }
+    let Some(spec) = standing_spec else {
+        return;
+    };
+    match profile::start(spec.clone()) {
+        Ok(engine) => {
+            supervisor.profile = Some(ProfileJob { engine, spec });
+        }
+        Err(error) => {
+            let (message, failed_engine) = error.into_parts();
+            logging::error(&format!(
+                "failed to restore standing runtime after game exit: {message}"
+            ));
+            if let Some(engine) = failed_engine {
+                supervisor.profile = Some(ProfileJob { engine, spec });
+            }
+        }
+    }
 }
 
 /// `PENGUIN_BURNER_DAEMON_PROGRAM_FILE` resolved absolute, else this binary's path.
@@ -330,6 +524,7 @@ fn clear_active_runtime() {
 
 pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
     let supervisor = guard(sup);
+    let game_runtime = supervisor.game_runtime_status();
 
     if let Some(job) = &supervisor.child {
         let returncode = job.proc.poll();
@@ -362,7 +557,8 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
                 pid: job.proc.pid(),
                 returncode,
             }),
-        );
+        )
+        .with_game_runtime(game_runtime);
     }
 
     if let Some(job) = &supervisor.profile {
@@ -385,10 +581,11 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
                 pid: std::process::id(),
                 returncode,
             }),
-        );
+        )
+        .with_game_runtime(game_runtime);
     }
 
-    StatusResult::new("idle", None)
+    StatusResult::new("idle", None).with_game_runtime(game_runtime)
 }
 
 pub fn stop_auto_uv_scan(sup: &Mutex<Supervisor>) -> StopResult {
@@ -418,6 +615,139 @@ fn stop_child(sup: &Mutex<Supervisor>, kind: ChildKind) -> StopResult {
     }
 }
 
+/// Apply a resolved per-game RuntimeSpec without replacing the persisted
+/// standing action. The watch is registered only after the GPU transition
+/// succeeds; the monitor restores the original standing spec after the last
+/// watched launcher/game process exits.
+pub fn start_game_runtime_profile(
+    sup: &Mutex<Supervisor>,
+    spec: RuntimeSpec,
+    watch_pid: u32,
+    app_id: String,
+) -> Result<Value, String> {
+    spec.validate()?;
+    let watch = GameWatch::open(watch_pid, app_id)?;
+    let profile_id = spec.active_profile_id();
+    let runtime_mode = spec.mode_name().to_string();
+    let gpu_uuid = spec.gpu.uuid.clone();
+
+    let mut supervisor = guard(sup);
+    match supervisor.child_running_kind() {
+        Some(ChildKind::Scan) => {
+            return Err(
+                "cannot start a game runtime profile while Auto-UV scan is running".to_string(),
+            );
+        }
+        Some(ChildKind::Verify) => {
+            return Err(
+                "cannot start a game runtime profile while profile verification is running"
+                    .to_string(),
+            );
+        }
+        None => {}
+    }
+
+    let first_watch = supervisor.game_runtime.watches.is_empty();
+    let standing_spec = if first_watch {
+        supervisor
+            .profile
+            .as_ref()
+            .filter(|job| job.engine.is_running())
+            .map(|job| job.spec.clone())
+    } else {
+        None
+    };
+    let previous_spec = supervisor.profile.as_ref().map(|job| job.spec.clone());
+    supervisor.stop_engine_for_child("a game runtime profile")?;
+
+    match profile::start(spec.clone()) {
+        Ok(engine) => {
+            supervisor.profile = Some(ProfileJob {
+                engine,
+                spec: spec.clone(),
+            });
+            if first_watch {
+                supervisor.game_runtime.standing_spec = standing_spec;
+            }
+            supervisor.game_runtime.watches.insert(watch_pid, watch);
+            supervisor.game_runtime.override_active = true;
+            Ok(serde_json::json!({
+                "started": true,
+                "pid": std::process::id(),
+                "watching_pid": watch_pid,
+                "profile_id": profile_id,
+                "runtime_mode": runtime_mode,
+                "gpu_uuid": gpu_uuid,
+            }))
+        }
+        Err(error) => {
+            let (apply_error, failed_engine) = error.into_parts();
+            if let Some(engine) = failed_engine {
+                supervisor.profile = Some(ProfileJob {
+                    engine,
+                    spec: spec.clone(),
+                });
+                return Err(format!(
+                    "failed to apply game runtime spec: {apply_error}; refusing rollback while the failed engine may still be running"
+                ));
+            }
+
+            let mut recovery = "no fallback runtime could be started".to_string();
+            if let Some(previous) = previous_spec {
+                match profile::start(previous.clone()) {
+                    Ok(engine) => {
+                        supervisor.profile = Some(ProfileJob {
+                            engine,
+                            spec: previous,
+                        });
+                        recovery = "previous runtime restored".to_string();
+                    }
+                    Err(restore_error) => {
+                        let (message, failed_engine) = restore_error.into_parts();
+                        logging::error(&format!(
+                            "failed to restore previous runtime after game apply failure: {message}"
+                        ));
+                        if let Some(engine) = failed_engine {
+                            supervisor.profile = Some(ProfileJob {
+                                engine,
+                                spec: previous,
+                            });
+                            recovery = "previous runtime restore is still stopping".to_string();
+                        }
+                    }
+                }
+            } else {
+                let stock = spec.stock_fallback();
+                match profile::start(stock.clone()) {
+                    Ok(engine) => {
+                        supervisor.profile = Some(ProfileJob {
+                            engine,
+                            spec: stock,
+                        });
+                        recovery = "stock fallback applied".to_string();
+                    }
+                    Err(stock_error) => {
+                        let (message, failed_engine) = stock_error.into_parts();
+                        logging::error(&format!(
+                            "failed to apply stock fallback after game runtime failure: {message}"
+                        ));
+                        if let Some(engine) = failed_engine {
+                            supervisor.profile = Some(ProfileJob {
+                                engine,
+                                spec: stock,
+                            });
+                            recovery = "stock fallback is still stopping".to_string();
+                        }
+                    }
+                }
+            }
+            Err(format!(
+                "failed to apply game runtime spec: {apply_error}; {recovery}"
+            ))
+        }
+    }
+}
+
 pub fn apply_runtime_spec(
     sup: &Mutex<Supervisor>,
     spec: RuntimeSpec,
@@ -440,6 +770,8 @@ pub fn apply_runtime_spec(
         None => {}
     }
 
+    let preserve_persisted_standing =
+        !supervisor.game_runtime.watches.is_empty() && supervisor.game_runtime.override_active;
     let previous_spec = supervisor.profile.as_ref().map(|job| job.spec.clone());
     supervisor.stop_engine_for_child("a new runtime spec")?;
     match profile::start(spec.clone()) {
@@ -448,6 +780,14 @@ pub fn apply_runtime_spec(
                 engine,
                 spec: spec.clone(),
             });
+            if !supervisor.game_runtime.watches.is_empty() {
+                // A Profiles-tab action while a game is watched becomes the
+                // new standing action immediately. Keep the watch for Steam
+                // hot re-apply/status, but do not tear this action down when
+                // the game exits unless another game override replaces it.
+                supervisor.game_runtime.standing_spec = Some(spec.clone());
+                supervisor.game_runtime.override_active = false;
+            }
             drop(supervisor);
             persist_active_runtime(&spec);
             Ok(StartResult {
@@ -530,10 +870,12 @@ pub fn apply_runtime_spec(
             }
 
             drop(supervisor);
-            if let Some(recovered) = recovered_spec {
-                persist_active_runtime(&recovered);
-            } else if !recovery_engine_wedged {
-                clear_active_runtime();
+            if !preserve_persisted_standing {
+                if let Some(recovered) = recovered_spec {
+                    persist_active_runtime(&recovered);
+                } else if !recovery_engine_wedged {
+                    clear_active_runtime();
+                }
             }
             Err(format!(
                 "failed to apply runtime spec: {apply_error}; {recovery}"
@@ -551,6 +893,10 @@ pub fn stop_runtime_profile(sup: &Mutex<Supervisor>) -> Result<StopResult, Strin
             match job.engine.stop(stop_timeout) {
                 StopOutcome::Stopped => {
                     supervisor.profile = None;
+                    if !supervisor.game_runtime.watches.is_empty() {
+                        supervisor.game_runtime.standing_spec = None;
+                        supervisor.game_runtime.override_active = false;
+                    }
                     drop(supervisor);
                     clear_active_runtime();
                     return Ok(StopResult::stopped(pid));
@@ -569,6 +915,10 @@ pub fn stop_runtime_profile(sup: &Mutex<Supervisor>) -> Result<StopResult, Strin
             }
         }
         _ => {}
+    }
+    if !supervisor.game_runtime.watches.is_empty() {
+        supervisor.game_runtime.standing_spec = None;
+        supervisor.game_runtime.override_active = false;
     }
     drop(supervisor);
     clear_active_runtime();
@@ -723,6 +1073,10 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
                     engine,
                     spec: spec.clone(),
                 });
+                if !supervisor.game_runtime.watches.is_empty() {
+                    supervisor.game_runtime.standing_spec = Some(spec.clone());
+                    supervisor.game_runtime.override_active = false;
+                }
                 drop(supervisor);
                 persist_active_runtime(&spec);
                 return;
@@ -752,6 +1106,10 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
                             engine,
                             spec: stock.clone(),
                         });
+                        if !supervisor.game_runtime.watches.is_empty() {
+                            supervisor.game_runtime.standing_spec = Some(stock.clone());
+                            supervisor.game_runtime.override_active = false;
+                        }
                         drop(supervisor);
                         persist_active_runtime(&stock);
                     }
@@ -972,6 +1330,71 @@ mod tests {
             .unwrap();
         assert_eq!(loaded.gpu.uuid, "GPU-round-trip");
         assert_eq!(loaded.mode_name(), "stock");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_standing_apply_during_game_preserves_persisted_standing() {
+        let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = env::temp_dir().join(format!("pb-state-game-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("active-runtime.json");
+        let _state_guard = StateEnvGuard::new(&path);
+        let _inert_guard = StateEnvGuard::named("PENGUIN_BURNERD_TEST_INERT_ENGINE", "1");
+        let _failure_guard =
+            StateEnvGuard::named("PENGUIN_BURNERD_TEST_FAIL_PROFILE_ID", "profile-that-fails");
+
+        let standing = RuntimeSpec::test_stock("GPU-standing");
+        persist_runtime_spec(&path, &standing).unwrap();
+        let game = RuntimeSpec::test_stock("GPU-game");
+        let game_engine = profile::start(game.clone()).unwrap();
+        let sup = Mutex::new(Supervisor::new());
+        {
+            let mut running = guard(&sup);
+            running.profile = Some(ProfileJob {
+                engine: game_engine,
+                spec: game.clone(),
+            });
+            running.game_runtime.standing_spec = Some(standing.clone());
+            running.game_runtime.override_active = true;
+            running.game_runtime.watches.insert(
+                std::process::id(),
+                GameWatch {
+                    app_id: "42".to_string(),
+                    pidfd: None,
+                    process_start_time: process_start_time(std::process::id()),
+                    exited_at: None,
+                },
+            );
+        }
+
+        let error = apply_runtime_spec(
+            &sup,
+            RuntimeSpec::test_static("GPU-failed-standing", "profile-that-fails"),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("injected runtime profile initial apply failure"),
+            "{error}"
+        );
+        let persisted = load_runtime_spec(&path).unwrap().unwrap();
+        assert_eq!(persisted.gpu.uuid, "GPU-standing");
+        {
+            let running = guard(&sup);
+            assert_eq!(running.profile.as_ref().unwrap().spec.gpu.uuid, "GPU-game");
+            assert!(running.game_runtime.override_active);
+            assert_eq!(
+                running
+                    .game_runtime
+                    .standing_spec
+                    .as_ref()
+                    .unwrap()
+                    .gpu
+                    .uuid,
+                "GPU-standing"
+            );
+        }
+        shutdown(&sup);
         let _ = fs::remove_dir_all(&dir);
     }
 

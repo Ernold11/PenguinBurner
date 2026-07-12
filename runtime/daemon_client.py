@@ -280,6 +280,58 @@ def boot_runtime_spec(
     )
 
 
+def start_game_runtime_profile(
+    argv: list[str],
+    *,
+    watch_pid: int,
+    app_id: str = "",
+    socket_path: str | Path | None = None,
+    timeout_s: float = 45.0,
+) -> dict[str, Any]:
+    """Resolve legacy profile argv as the unprivileged user, then apply it.
+
+    The Rust daemon receives only an immutable RuntimeSpec; it never reads the
+    user's mutable profile/config files and it never revives the removed Python
+    daemon implementation.
+    """
+    from runtime.runtime_spec import (
+        build_runtime_spec_from_intent,
+        runtime_intent_from_argv,
+    )
+
+    spec = build_runtime_spec_from_intent(
+        runtime_intent_from_argv(argv),
+        socket_path=socket_path,
+    )
+    return start_game_runtime_spec(
+        spec,
+        watch_pid=watch_pid,
+        app_id=app_id,
+        socket_path=socket_path,
+        timeout_s=timeout_s,
+    )
+
+
+def start_game_runtime_spec(
+    spec: dict[str, Any],
+    *,
+    watch_pid: int,
+    app_id: str = "",
+    socket_path: str | Path | None = None,
+    timeout_s: float = 45.0,
+) -> dict[str, Any]:
+    return daemon_payload_request(
+        {
+            "method": "start_game_runtime_profile",
+            "spec": dict(spec),
+            "watch_pid": int(watch_pid),
+            "app_id": str(app_id),
+        },
+        socket_path=_resolved_socket_path(socket_path),
+        timeout_s=timeout_s,
+    )
+
+
 def stop_runtime_profile(
     *,
     socket_path: str | Path = DEFAULT_DAEMON_SOCKET,
@@ -710,7 +762,7 @@ def main(argv: list[str] | None = None) -> int:
             intent = json.loads(args.intent_json)
             from runtime.runtime_spec import build_runtime_spec_from_intent
 
-            spec = build_runtime_spec_from_intent(intent)
+            spec = build_runtime_spec_from_intent(intent, socket_path=args.socket)
             result = apply_runtime_spec(spec, socket_path=args.socket)
             if args.boot:
                 set_boot_runtime_spec(spec, socket_path=args.socket)

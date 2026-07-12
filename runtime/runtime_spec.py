@@ -92,7 +92,11 @@ def runtime_intent_from_argv(argv) -> dict[str, Any]:
     )
 
 
-def build_runtime_spec_from_intent(intent: dict[str, Any]) -> dict[str, Any]:
+def build_runtime_spec_from_intent(
+    intent: dict[str, Any],
+    *,
+    socket_path: str | Path | None = None,
+) -> dict[str, Any]:
     if not isinstance(intent, dict):
         raise RuntimeError("runtime intent JSON must be an object")
     unknown = sorted(
@@ -106,7 +110,7 @@ def build_runtime_spec_from_intent(intent: dict[str, Any]) -> dict[str, Any]:
     )
     if unknown:
         raise RuntimeError(f"unknown runtime intent field: {', '.join(unknown)}")
-    return build_runtime_spec(**runtime_intent(**intent))
+    return build_runtime_spec(**runtime_intent(**intent), socket_path=socket_path)
 
 
 def build_runtime_spec(
@@ -115,8 +119,13 @@ def build_runtime_spec(
     silent_fan_curve: bool = False,
     adaptive_auto_uv: bool = False,
     gpu_index: int | None = None,
+    socket_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    require_daemon_capabilities(RUNTIME_SPEC_CAPABILITY, "gpu-capabilities-v1")
+    require_daemon_capabilities(
+        RUNTIME_SPEC_CAPABILITY,
+        "gpu-capabilities-v1",
+        socket_path=socket_path,
+    )
     config, _config_path = load_runtime_config()
     configured_gpu = config.get("gpu", {}) if isinstance(config, dict) else {}
     selected_index = (
@@ -124,7 +133,7 @@ def build_runtime_spec(
         if gpu_index is None
         else max(0, int(gpu_index))
     )
-    capabilities = gpu_capabilities(selected_index)
+    capabilities = gpu_capabilities(selected_index, socket_path=socket_path)
     identity = capabilities.get("identity")
     if not isinstance(identity, dict) or not str(identity.get("uuid") or "").strip():
         raise RuntimeError(f"GPU {selected_index} did not report a stable UUID")

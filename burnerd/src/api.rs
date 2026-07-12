@@ -19,6 +19,7 @@ use crate::supervisor::{self, Supervisor};
 pub const PROTOCOL_MAJOR: u32 = 2;
 pub const PROTOCOL_MINOR: u32 = 0;
 pub const DAEMON_CAPABILITIES: &[&str] = &[
+    "game-runtime-v1",
     "gpu-capabilities-v1",
     "gpu-telemetry-v1",
     "gpu-vf-snapshot-v1",
@@ -54,6 +55,22 @@ pub struct StatusResult {
     pub protocol_major: u32,
     pub protocol_minor: u32,
     pub capabilities: &'static [&'static str],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub game_runtime: Option<GameRuntimeStatus>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GameRuntimeStatus {
+    pub active: bool,
+    pub watched: Vec<GameWatchStatus>,
+    pub standing_profile_id: Option<String>,
+    pub standing_runtime_mode: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GameWatchStatus {
+    pub pid: u32,
+    pub app_id: String,
 }
 
 impl StatusResult {
@@ -65,7 +82,13 @@ impl StatusResult {
             protocol_major: PROTOCOL_MAJOR,
             protocol_minor: PROTOCOL_MINOR,
             capabilities: DAEMON_CAPABILITIES,
+            game_runtime: None,
         }
+    }
+
+    pub fn with_game_runtime(mut self, game_runtime: Option<GameRuntimeStatus>) -> Self {
+        self.game_runtime = game_runtime;
+        self
     }
 }
 
@@ -227,6 +250,7 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
     let method = object.get("method").and_then(Value::as_str);
     let allowed_fields: &[&str] = match method {
         Some("apply_runtime_spec") => &["spec"],
+        Some("start_game_runtime_profile") => &["spec", "watch_pid", "app_id"],
         Some("set_boot_runtime_spec") => &["spec"],
         Some("delete_auto_uv_profiles") => &["paths"],
         Some(name) if gpu_rpc::is_gpu_method(name) => gpu_rpc::allowed_fields(name),
@@ -255,6 +279,17 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
         Some("apply_runtime_spec") => {
             let spec = parse_runtime_spec(object.get("spec"))?;
             supervisor::apply_runtime_spec(sup, spec).map(MethodResult::Start)
+        }
+        Some("start_game_runtime_profile") => {
+            let spec = parse_runtime_spec(object.get("spec"))?;
+            let watch_pid = parse_watch_pid(object.get("watch_pid"))?;
+            let app_id = match object.get("app_id") {
+                None => String::new(),
+                Some(Value::String(value)) => value.clone(),
+                Some(_) => return Err("app_id must be a string".to_string()),
+            };
+            supervisor::start_game_runtime_profile(sup, spec, watch_pid, app_id)
+                .map(MethodResult::Value)
         }
         Some("set_boot_runtime_spec") => {
             let spec = parse_runtime_spec(object.get("spec"))?;
@@ -305,6 +340,17 @@ fn parse_runtime_spec(value: Option<&Value>) -> Result<RuntimeSpec, String> {
     Ok(spec)
 }
 
+fn parse_watch_pid(value: Option<&Value>) -> Result<u32, String> {
+    let pid = value
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "watch_pid must be an integer".to_string())?;
+    if pid <= 1 {
+        return Err(format!("watch_pid {pid} is not a running process"));
+    }
+    Ok(pid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,7 +368,7 @@ mod tests {
         assert_eq!(
             text,
             format!(
-                "{{\"ok\":true,\"result\":{{\"state\":\"idle\",\"active_job\":null,\"version\":\"{}\",\"protocol_major\":2,\"protocol_minor\":0,\"capabilities\":[\"gpu-capabilities-v1\",\"gpu-telemetry-v1\",\"gpu-vf-snapshot-v1\",\"gpu-writes-v1\",\"runtime-spec-v1\",\"scan-stream-v1\",\"verification-stream-v1\"]}}}}",
+                "{{\"ok\":true,\"result\":{{\"state\":\"idle\",\"active_job\":null,\"version\":\"{}\",\"protocol_major\":2,\"protocol_minor\":0,\"capabilities\":[\"game-runtime-v1\",\"gpu-capabilities-v1\",\"gpu-telemetry-v1\",\"gpu-vf-snapshot-v1\",\"gpu-writes-v1\",\"runtime-spec-v1\",\"scan-stream-v1\",\"verification-stream-v1\"]}}}}",
                 env!("CARGO_PKG_VERSION"),
             )
         );

@@ -45,12 +45,12 @@ def _stub_runtime_sources(monkeypatch, *, curve=None) -> None:
     monkeypatch.setattr(
         runtime_spec,
         "require_daemon_capabilities",
-        lambda *required: {"capabilities": list(required)},
+        lambda *required, **kwargs: {"capabilities": list(required)},
     )
     monkeypatch.setattr(
         runtime_spec,
         "gpu_capabilities",
-        lambda index: {
+        lambda index, **kwargs: {
             "identity": {
                 "uuid": f"GPU-test-{index}",
                 "pci_bus_id": "0000:02:00.0",
@@ -86,6 +86,35 @@ def test_build_static_runtime_spec_resolves_gpu_and_profile(monkeypatch) -> None
     assert spec["static_profile"]["plan"][0]["new_offset_mhz"] == 100
     assert spec["policy"]["enable_persistence_mode"] is False
     assert spec["overlay"] == {"enabled": True, "update_interval_s": 2}
+
+
+def test_build_runtime_spec_uses_requested_daemon_socket(monkeypatch) -> None:
+    _stub_runtime_sources(monkeypatch, curve=None)
+    calls: list[tuple[str, object]] = []
+
+    def fake_require(*required, socket_path=None, **kwargs):
+        calls.append(("require", socket_path))
+        return {"capabilities": list(required)}
+
+    def fake_capabilities(index, *, socket_path=None, **kwargs):
+        calls.append(("gpu", socket_path))
+        return {
+            "identity": {
+                "uuid": f"GPU-test-{index}",
+                "pci_bus_id": "0000:02:00.0",
+                "name": "Test GPU",
+            }
+        }
+
+    monkeypatch.setattr(runtime_spec, "require_daemon_capabilities", fake_require)
+    monkeypatch.setattr(runtime_spec, "gpu_capabilities", fake_capabilities)
+
+    runtime_spec.build_runtime_spec(socket_path="/tmp/test-burnerd.sock")
+
+    assert calls == [
+        ("require", "/tmp/test-burnerd.sock"),
+        ("gpu", "/tmp/test-burnerd.sock"),
+    ]
 
 
 def test_adaptive_runtime_keeps_explicit_old_profile_as_initial_tier(monkeypatch) -> None:

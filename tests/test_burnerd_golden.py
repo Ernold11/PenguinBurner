@@ -39,6 +39,7 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,7 @@ from runtime.daemon_client import (
     daemon_request,
     daemon_status,
     daemon_stream_request,
+    start_game_runtime_spec,
     stop_runtime_profile,
 )
 
@@ -321,6 +323,7 @@ def test_status_idle_shape(make_daemon):
     assert isinstance(status["version"], str) and status["version"]
     assert status["protocol_major"] == 2
     assert status["protocol_minor"] == 0
+    assert "game-runtime-v1" in status["capabilities"]
     assert "gpu-capabilities-v1" in status["capabilities"]
 
 
@@ -382,6 +385,202 @@ def test_stop_runtime_profile_when_idle(make_daemon):
     daemon = make_daemon()
     stop = stop_runtime_profile(socket_path=daemon.socket_path)
     assert stop == {"stopped": False, "state": "idle"}
+
+
+# --- Steam per-game runtime override -----------------------------------------
+
+
+def _short_game(seconds: float = 0.35) -> "subprocess.Popen[bytes]":
+    return subprocess.Popen(
+        [sys.executable, "-c", f"import time; time.sleep({seconds})"]
+    )
+
+
+def test_game_runtime_restores_standing_spec_after_watched_pid_exits(make_daemon):
+    daemon = make_daemon()
+    standing = _runtime_spec(gpu_uuid="GPU-standing")
+    game_spec = _runtime_spec(gpu_uuid="GPU-game")
+    apply_runtime_spec(standing, socket_path=daemon.socket_path)
+    game = _short_game()
+    try:
+        result = start_game_runtime_spec(
+            game_spec,
+            watch_pid=game.pid,
+            app_id="1089130",
+            socket_path=daemon.socket_path,
+        )
+        assert result["started"] is True
+        assert result["watching_pid"] == game.pid
+        status = daemon_status(socket_path=daemon.socket_path)
+        assert status["active_job"]["gpu_uuid"] == "GPU-game"
+        assert status["game_runtime"] == {
+            "active": True,
+            "watched": [{"pid": game.pid, "app_id": "1089130"}],
+            "standing_profile_id": "",
+            "standing_runtime_mode": "stock",
+        }
+        game.wait(timeout=5)
+        assert _wait_until(
+            lambda: "game_runtime"
+            not in daemon_status(socket_path=daemon.socket_path),
+            timeout=5,
+        )
+        restored = daemon_status(socket_path=daemon.socket_path)
+        assert restored["active_job"]["gpu_uuid"] == "GPU-standing"
+        assert json.loads(daemon.state_file.read_text(encoding="utf-8")) == standing
+    finally:
+        if game.poll() is None:
+            game.kill()
+            game.wait(timeout=5)
+
+
+def test_game_runtime_exit_stays_idle_without_a_standing_action(make_daemon):
+    daemon = make_daemon()
+    game = _short_game()
+    try:
+        start_game_runtime_spec(
+            _runtime_spec(gpu_uuid="GPU-game"),
+            watch_pid=game.pid,
+            app_id="42",
+            socket_path=daemon.socket_path,
+        )
+        game.wait(timeout=5)
+        assert _wait_until(
+            lambda: daemon_status(socket_path=daemon.socket_path)["state"] == "idle",
+            timeout=5,
+        )
+        status = daemon_status(socket_path=daemon.socket_path)
+        assert "game_runtime" not in status
+        assert not daemon.state_file.exists()
+    finally:
+        if game.poll() is None:
+            game.kill()
+            game.wait(timeout=5)
+
+
+def test_stopping_a_runtime_mid_game_is_not_undone_on_exit(make_daemon):
+    daemon = make_daemon()
+    apply_runtime_spec(
+        _runtime_spec(gpu_uuid="GPU-standing"), socket_path=daemon.socket_path
+    )
+    game = _short_game()
+    try:
+        start_game_runtime_spec(
+            _runtime_spec(gpu_uuid="GPU-game"),
+            watch_pid=game.pid,
+            app_id="42",
+            socket_path=daemon.socket_path,
+        )
+        assert stop_runtime_profile(socket_path=daemon.socket_path)["stopped"] is True
+        game.wait(timeout=5)
+        assert _wait_until(
+            lambda: "game_runtime"
+            not in daemon_status(socket_path=daemon.socket_path),
+            timeout=5,
+        )
+        assert daemon_status(socket_path=daemon.socket_path)["state"] == "idle"
+        assert not daemon.state_file.exists()
+    finally:
+        if game.poll() is None:
+            game.kill()
+            game.wait(timeout=5)
+
+
+def test_new_standing_action_mid_game_survives_game_exit(make_daemon):
+    daemon = make_daemon()
+    apply_runtime_spec(
+        _runtime_spec(gpu_uuid="GPU-standing-old"), socket_path=daemon.socket_path
+    )
+    game = _short_game()
+    try:
+        start_game_runtime_spec(
+            _runtime_spec(gpu_uuid="GPU-game"),
+            watch_pid=game.pid,
+            app_id="42",
+            socket_path=daemon.socket_path,
+        )
+        new_standing = _runtime_spec(gpu_uuid="GPU-standing-new")
+        apply_runtime_spec(new_standing, socket_path=daemon.socket_path)
+        status = daemon_status(socket_path=daemon.socket_path)
+        assert status["active_job"]["gpu_uuid"] == "GPU-standing-new"
+        assert status["game_runtime"]["active"] is False
+        game.wait(timeout=5)
+        assert _wait_until(
+            lambda: "game_runtime"
+            not in daemon_status(socket_path=daemon.socket_path),
+            timeout=5,
+        )
+        assert (
+            daemon_status(socket_path=daemon.socket_path)["active_job"]["gpu_uuid"]
+            == "GPU-standing-new"
+        )
+        assert json.loads(daemon.state_file.read_text(encoding="utf-8")) == new_standing
+    finally:
+        if game.poll() is None:
+            game.kill()
+            game.wait(timeout=5)
+
+
+def test_game_runtime_waits_for_all_watched_games_before_restore(make_daemon):
+    daemon = make_daemon()
+    apply_runtime_spec(
+        _runtime_spec(gpu_uuid="GPU-standing"), socket_path=daemon.socket_path
+    )
+    first = _short_game(0.3)
+    second = _short_game(0.9)
+    try:
+        start_game_runtime_spec(
+            _runtime_spec(gpu_uuid="GPU-game-a"),
+            watch_pid=first.pid,
+            app_id="1",
+            socket_path=daemon.socket_path,
+        )
+        start_game_runtime_spec(
+            _runtime_spec(gpu_uuid="GPU-game-b"),
+            watch_pid=second.pid,
+            app_id="2",
+            socket_path=daemon.socket_path,
+        )
+        first.wait(timeout=5)
+        assert _wait_until(
+            lambda: [
+                entry["app_id"]
+                for entry in daemon_status(socket_path=daemon.socket_path)[
+                    "game_runtime"
+                ]["watched"]
+            ]
+            == ["2"],
+            timeout=5,
+        )
+        assert (
+            daemon_status(socket_path=daemon.socket_path)["active_job"]["gpu_uuid"]
+            == "GPU-game-b"
+        )
+        second.wait(timeout=5)
+        assert _wait_until(
+            lambda: "game_runtime"
+            not in daemon_status(socket_path=daemon.socket_path),
+            timeout=5,
+        )
+        assert (
+            daemon_status(socket_path=daemon.socket_path)["active_job"]["gpu_uuid"]
+            == "GPU-standing"
+        )
+    finally:
+        for game in (first, second):
+            if game.poll() is None:
+                game.kill()
+                game.wait(timeout=5)
+
+
+def test_game_runtime_rejects_a_non_running_watch_pid(make_daemon):
+    daemon = make_daemon()
+    with pytest.raises(RuntimeError, match="not a running process"):
+        start_game_runtime_spec(
+            _runtime_spec(),
+            watch_pid=2**30,
+            socket_path=daemon.socket_path,
+        )
 
 
 # --- runtime spec validation --------------------------------------------------

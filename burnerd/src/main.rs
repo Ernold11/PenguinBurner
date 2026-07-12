@@ -59,6 +59,7 @@ fn run() -> i32 {
     // Start the persisted runtime profile before binding the socket (parity with
     // `serve_daemon_api`, which runs autostart first).
     supervisor::start_autostart_if_configured(&sup);
+    supervisor::start_game_watch_monitor(&sup);
 
     // Route SIGINT/SIGTERM to a dedicated thread that performs a clean shutdown.
     {

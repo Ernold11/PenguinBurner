@@ -90,6 +90,7 @@ packages = [
   "integrations",
   "integrations.afterburner",
   "integrations.lact",
+  "integrations.steam",
   "drivers",
   "drivers.nvidia",
   "overlay",
