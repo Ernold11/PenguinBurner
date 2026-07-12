@@ -687,6 +687,9 @@ class MainWindow(ProfileActionsMixin):
                 running_silent_fan=bool(running_info["silent_fan_curve"]),
                 autostart_silent_fan=bool(autostart_info["silent_fan_curve"]),
                 defaults_restored=self._defaults_restored,
+                game_override=bool(running_info.get("game_override")),
+                standing_selector=str(running_info.get("standing_selector") or ""),
+                standing_adaptive=bool(running_info.get("standing_adaptive")),
             )
         )
 

@@ -317,3 +317,38 @@ def test_running_info_uses_daemon_status(monkeypatch) -> None:
     info = profiles.running_auto_uv_profile_info()
     assert info["selector"] == "p6"
     assert info["adaptive_auto_uv"] is True
+
+
+def test_runner_status_text_shows_per_game_override_and_standing() -> None:
+    """Two writers, one truthful line: the Steam tab's per-game override is
+    labeled as such, the standing profile is shown alongside, and autostart
+    is judged against the STANDING profile (the override is transient)."""
+    summaries = [
+        {"profile_id": "game-prof", "candidate_voltage_mv": 920, "lock_clock_mhz": 2970},
+        {"profile_id": "standing-prof", "candidate_voltage_mv": 850, "lock_clock_mhz": 2664},
+    ]
+
+    status = profiles.runner_status_text(
+        summaries,
+        running_selector="game-prof",
+        running_adaptive=True,
+        autostart_selector="standing-prof",
+        game_override=True,
+        standing_selector="standing-prof",
+    )
+
+    assert "Currently running profile: 2970 MHz 920 mV (Adaptive, per-game)" in status
+    assert "Standing: 2664 MHz 850 mV" in status
+    assert "Autostart: Yes" in status
+
+    # Standing stock: reads as Default; autostart mismatch reads No.
+    status = profiles.runner_status_text(
+        summaries,
+        running_selector="game-prof",
+        autostart_selector="standing-prof",
+        game_override=True,
+        standing_selector="__stock__",
+    )
+    assert "(per-game)" in status
+    assert "Standing: Default" in status
+    assert "Autostart: No" in status

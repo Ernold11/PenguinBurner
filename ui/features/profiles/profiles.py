@@ -183,9 +183,13 @@ def runner_status_text(
     running_silent_fan: bool = False,
     autostart_silent_fan: bool = False,
     defaults_restored: bool = False,
+    game_override: bool = False,
+    standing_selector: str = "",
+    standing_adaptive: bool = False,
 ) -> str:
     running_selector = str(running_selector or "").strip()
     autostart_selector = str(autostart_selector or "").strip()
+    standing_selector = str(standing_selector or "").strip()
     # Daemon running the reserved stock runtime, or a just-completed restore:
     # the GPU is at stock, so report it plainly as Default (no misleading
     # clock/voltage numbers -- those are the V/F ceiling, not the live point).
@@ -199,14 +203,32 @@ def runner_status_text(
             autostart_selector,
         )
         running_label = profile_status_label(profiles, running_selector)
-        if running_adaptive:
-            running_label = f"{running_label} (Adaptive)"
-        parts = [
-            f"Currently running profile: {running_label}",
-            f"Autostart: {'Yes' if autostarts else 'No'}",
-            f"Silent fan curve: {_on_off(running_silent_fan)}",
-        ]
-        if autostart_selector and not autostarts:
+        markers = ["Adaptive"] if running_adaptive else []
+        if game_override:
+            # Two writers exist: the Profiles tab sets the standing/boot
+            # profile, the Steam tab swaps a per-game one in while the game
+            # runs. Show both layers, and judge autostart against the
+            # STANDING profile -- the per-game override is transient.
+            markers.append("per-game")
+        if markers:
+            running_label = f"{running_label} ({', '.join(markers)})"
+        parts = [f"Currently running profile: {running_label}"]
+        if game_override:
+            if standing_selector and standing_selector != STOCK_PROFILE_SELECTOR:
+                standing_label = profile_status_label(profiles, standing_selector)
+                if standing_adaptive:
+                    standing_label = f"{standing_label} (Adaptive)"
+            else:
+                standing_label = "Default"
+            parts.append(f"Standing: {standing_label}")
+            autostarts = _profile_selectors_match(
+                profiles,
+                standing_selector,
+                autostart_selector,
+            )
+        parts.append(f"Autostart: {'Yes' if autostarts else 'No'}")
+        parts.append(f"Silent fan curve: {_on_off(running_silent_fan)}")
+        if autostart_selector and not autostarts and not game_override:
             parts.append(
                 f"Autostart profile: {profile_status_label(profiles, autostart_selector)}"
             )
@@ -243,8 +265,17 @@ def running_auto_uv_profile_info() -> dict[str, object]:
     command = _legacy_systemd_running_exec_start()
     info = profile_info_from_command_text(command, default_if_present=True)
     if str(info["selector"]):
-        return info
-    return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+        return _with_override_defaults(info)
+    return _with_override_defaults(
+        {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+    )
+
+
+def _with_override_defaults(info: dict[str, object]) -> dict[str, object]:
+    info.setdefault("game_override", False)
+    info.setdefault("standing_selector", "")
+    info.setdefault("standing_adaptive", False)
+    return info
 
 
 def profile_info_from_command_text(
@@ -455,14 +486,33 @@ def _daemon_runtime_profile_running() -> bool:
 def _daemon_running_profile_info() -> dict[str, object]:
     payload = _daemon_status_payload()
     if str(payload.get("state") or "") != "runtime_profile_running":
-        return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+        return _with_override_defaults(
+            {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+        )
     active_job = payload.get("active_job")
     if isinstance(active_job, dict) and str(active_job.get("runtime_mode") or ""):
-        return _profile_info_from_runtime_summary(active_job)
+        info = _profile_info_from_runtime_summary(active_job)
+        # The Steam tab's per-game override layer: active_job is the live
+        # (possibly per-game) spec; game_runtime carries the standing one
+        # that returns when the game exits.
+        game_runtime = payload.get("game_runtime")
+        if isinstance(game_runtime, dict) and bool(game_runtime.get("active")):
+            info["game_override"] = True
+            info["standing_selector"] = str(
+                game_runtime.get("standing_profile_id") or ""
+            )
+            info["standing_adaptive"] = (
+                str(game_runtime.get("standing_runtime_mode") or "") == "adaptive"
+            )
+        return _with_override_defaults(info)
     argv = active_job.get("argv") if isinstance(active_job, dict) else []
     if isinstance(argv, list) and all(isinstance(item, str) for item in argv):
-        return profile_info_from_command_parts(list(argv), default_if_present=True)
-    return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+        return _with_override_defaults(
+            profile_info_from_command_parts(list(argv), default_if_present=True)
+        )
+    return _with_override_defaults(
+        {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+    )
 
 
 def _profile_info_from_runtime_summary(
