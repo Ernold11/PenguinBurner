@@ -301,7 +301,7 @@ class SteamPanel:
             self.mode_combo.addItem(_MODE_LABELS[key], key)
         details_layout.addWidget(self.mode_combo)
 
-        self.overlay_checkbox = QtWidgets.QCheckBox("Enable ingame overlay")
+        self.overlay_checkbox = QtWidgets.QCheckBox("Enable In-Game overlay")
         self.overlay_checkbox.setObjectName("steamOverlayToggle")
         details_layout.addWidget(self.overlay_checkbox)
 

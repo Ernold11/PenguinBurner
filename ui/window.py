@@ -180,7 +180,7 @@ class MainWindow(ProfileActionsMixin):
         self.overlay_tab_index = self.tabs.addTab(
             self.overlay_config.widget,
             tab_icon("tab-overlay.png"),
-            "Ingame Overlay",
+            "In-Game Overlay",
         )
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self._close_dynamic_tab)
