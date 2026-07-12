@@ -33,6 +33,15 @@ AUTO_UV_PRESET_PERFORMANCE = "performance"
 AUTO_UV_PRESET_ADAPTIVE = "adaptive"
 # One click, three profiles: the adaptive all-tiers scan is the default.
 DEFAULT_AUTO_UV_PRESET = AUTO_UV_PRESET_ADAPTIVE
+# Wall-clock ranges cover discovery and descent only. Final verification is
+# excluded because the user chooses its duration after the sweep. The exact
+# scan length still depends on the GPU's voltage bins and stability retries.
+AUTO_UV_SCAN_ESTIMATE_MINUTES = {
+    AUTO_UV_PRESET_EFFICIENCY: (10, 20),
+    AUTO_UV_PRESET_BALANCED: (10, 20),
+    AUTO_UV_PRESET_PERFORMANCE: (15, 25),
+    AUTO_UV_PRESET_ADAPTIVE: (25, 35),
+}
 GPU_UNDERVOLTING_PURPOSE_TEXT = (
     "GPU undervolting is meant to make your graphics card consume significantly "
     "less power while giving up as little performance as possible. The practical "
@@ -120,8 +129,8 @@ def auto_uv_preset(preset_id: object) -> AutoUvPreset:
             tail_rise_bins=DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS,
         )
     if normalized == AUTO_UV_PRESET_ADAPTIVE:
-        # One sweep discovering all three tier profiles; each tier carries
-        # its own rising tail, so the preset itself has none to configure.
+        # One full run generates all three tier profiles. Each per-tier descent
+        # carries its own rising tail, so the preset itself has none to configure.
         return AutoUvPreset(
             preset_id=AUTO_UV_PRESET_ADAPTIVE,
             label="All tiers (adaptive)",
@@ -142,6 +151,32 @@ def auto_uv_presets() -> tuple[AutoUvPreset, ...]:
         auto_uv_preset(AUTO_UV_PRESET_BALANCED),
         auto_uv_preset(AUTO_UV_PRESET_PERFORMANCE),
         auto_uv_preset(AUTO_UV_PRESET_ADAPTIVE),
+    )
+
+
+def auto_uv_scan_estimate_minutes(preset_id: object) -> tuple[int, int]:
+    preset = auto_uv_preset(preset_id)
+    return AUTO_UV_SCAN_ESTIMATE_MINUTES[preset.preset_id]
+
+
+def auto_uv_scan_estimate_text(preset_id: object) -> str:
+    minimum, maximum = auto_uv_scan_estimate_minutes(preset_id)
+    return f"about {minimum}-{maximum} minutes"
+
+
+def auto_uv_scan_target_description(preset_id: object) -> str:
+    preset = auto_uv_preset(preset_id)
+    estimate = auto_uv_scan_estimate_text(preset.preset_id)
+    if preset.preset_id == AUTO_UV_PRESET_ADAPTIVE:
+        return (
+            "Full scan: create Efficiency, Balanced, and Performance profiles "
+            f"in one run. Estimated scan time: {estimate}, plus the verification "
+            "duration you choose."
+        )
+    return (
+        f"Single-profile scan: create only the {preset.label} profile. "
+        f"Estimated scan time: {estimate}, plus the verification duration you "
+        "choose."
     )
 
 
@@ -245,9 +280,8 @@ def auto_uv_power_limit_default(
             gpu_family=None,
             preset_matched=False,
         )
-    # An adaptive scan runs one shared sweep: the balanced power budget is
-    # the middle ground the three tiers share (per-tier caps are applied to
-    # the saved profiles, not the sweep).
+    # The full scan's shared power-limit control starts at the balanced budget;
+    # each tier derives its own final/profile cap from that scan-wide ceiling.
     pct = uv_limit_power_limit_pct_for_gpu(
         detected_name,
         profile_id=_defaults_profile_id(preset, AUTO_UV_PRESET_BALANCED),

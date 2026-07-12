@@ -196,16 +196,17 @@ def parse_arguments(argv):
         "--daemonize",
         action="store_true",
         help=(
-            "Launch normal runtime as a transient systemd service after an "
-            "Auto-UV final curve exists. Auto-UV scans remain foreground-only."
+            "Apply normal runtime through the running penguin-burnerd service "
+            "after an Auto-UV final curve exists. Auto-UV scans remain "
+            "foreground-only."
         ),
     )
     daemon_group.add_argument(
         "--install-systemd-service",
         action="store_true",
         help=(
-            "Install and start the persistent boot-time PenguinBurner systemd "
-            "service for the current checkout."
+            "Install the PenguinBurner daemon service when absent, or update "
+            "its persistent boot profile through the running daemon."
         ),
     )
     daemon_group.add_argument(

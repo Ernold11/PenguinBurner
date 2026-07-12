@@ -146,6 +146,13 @@ class MainWindow(ProfileActionsMixin):
         auto_uv_view.addWidget(self.log_view.widget)
         auto_uv_view.setSizes([760, 440])
 
+        auto_uv_page = self.QtWidgets.QWidget()
+        auto_uv_layout = self.QtWidgets.QVBoxLayout(auto_uv_page)
+        auto_uv_layout.setContentsMargins(8, 8, 8, 8)
+        auto_uv_layout.setSpacing(8)
+        auto_uv_layout.addWidget(self.controls.scan_target_widget)
+        auto_uv_layout.addWidget(auto_uv_view, 1)
+
         self.steam_panel = SteamPanel(
             QtCore=self.QtCore,
             QtGui=self.QtGui,
@@ -157,7 +164,7 @@ class MainWindow(ProfileActionsMixin):
         )
 
         self.tabs = self.QtWidgets.QTabWidget()
-        self.auto_uv_tab_index = self.tabs.addTab(auto_uv_view, "Auto-UV")
+        self.auto_uv_tab_index = self.tabs.addTab(auto_uv_page, "Auto-UV")
         self.profiles_tab_index = self.tabs.addTab(self.profile_list.widget, "Profiles")
         self.overlay_tab_index = self.tabs.addTab(
             self.overlay_config.widget,
@@ -222,7 +229,7 @@ class MainWindow(ProfileActionsMixin):
             self._persist_silent_fan_preference
         )
         self.profile_list.remove_button.clicked.connect(
-            lambda: self._run_runtime_action("uninstall-systemd")
+            lambda: self._run_runtime_action("clear-boot")
         )
         self.profile_list.restore_defaults_button.clicked.connect(
             self._restore_gpu_defaults
@@ -272,9 +279,13 @@ class MainWindow(ProfileActionsMixin):
             QtWidgets=self.QtWidgets,
             parent=self.window,
             gpu_index=self.gpu_index,
+            initial_preset_id=self.controls.selected_scan_preset(),
         )
         if options is None:
             return
+        self.controls.set_selected_scan_preset(
+            options.get("auto_uv_mode", self.controls.selected_scan_preset())
+        )
         try:
             self.gpu_index = persist_runtime_gpu_index(options.get("gpu_index", 0))
         except Exception as exc:

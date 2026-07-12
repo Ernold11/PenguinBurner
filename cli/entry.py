@@ -14,14 +14,15 @@ from common.cli_output import enable_cli_output_wrapping
 from runtime.support.runtime_debug import debug_exception, log
 from runtime.support.runtime_service import (
     DEFAULT_DAEMON_SOCKET,
-    daemonize_with_systemd,
     install_systemd_service,
     migrate_to_daemon_service,
     parse_runtime_flags,
     running_under_systemd_service,
     uninstall_systemd_service,
 )
+from runtime.daemon_client import apply_runtime_intent
 from runtime.daemon_client import daemon_status
+from runtime.runtime_spec import runtime_intent_from_argv
 from profiles.uv.profile_store import read_auto_uv_profiles, resolve_auto_uv_profile
 from profiles.uv.profile_tiers import (
     available_adaptive_tiers,
@@ -61,21 +62,21 @@ def dispatch_cli(
         _require_adaptive_profiles_available(runtime_flags, runtime_argv)
         _reject_auto_uv_scan_in_background(runtime_flags, runtime_argv)
         if runtime_flags["install_systemd_service"]:
-            install_systemd_service(
-                program_file,
-                runtime_argv,
-                journal_hours=runtime_flags["journal_hours"],
-                log=log,
-            )
+            try:
+                daemon_status(socket_path=DEFAULT_DAEMON_SOCKET)
+            except Exception:
+                install_systemd_service(
+                    program_file,
+                    runtime_argv,
+                    journal_hours=runtime_flags["journal_hours"],
+                    log=log,
+                )
+            else:
+                _apply_runtime_through_daemon(runtime_argv, persist_on_startup=True)
         elif runtime_flags["uninstall_systemd_service"]:
             uninstall_systemd_service(log=log)
-        elif runtime_flags["daemonize"] and not running_under_systemd_service():
-            daemonize_with_systemd(
-                program_file,
-                runtime_argv,
-                journal_hours=runtime_flags["journal_hours"],
-                log=log,
-            )
+        elif runtime_flags["daemonize"]:
+            _apply_runtime_through_daemon(runtime_argv, persist_on_startup=False)
         else:
             main_callback(runtime_argv, journal_hours=runtime_flags["journal_hours"])
     except KeyboardInterrupt:
@@ -86,6 +87,19 @@ def dispatch_cli(
         print(f"error: {exc}", file=sys.stderr, flush=True)
         return 1
     return 0
+
+
+def _apply_runtime_through_daemon(
+    runtime_argv: list[str],
+    *,
+    persist_on_startup: bool,
+) -> None:
+    result = apply_runtime_intent(
+        runtime_intent_from_argv(runtime_argv),
+        persist_on_startup=bool(persist_on_startup),
+        socket_path=DEFAULT_DAEMON_SOCKET,
+    )
+    print(json.dumps(result, indent=2), flush=True)
 
 
 def _require_selected_profile_exists(runtime_argv: list[str]) -> None:

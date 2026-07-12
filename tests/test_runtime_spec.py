@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from cli.runtime_config_file import default_runtime_config
+from runtime import daemon_client
 from runtime import runtime_spec
 
 
@@ -115,6 +116,38 @@ def test_build_runtime_spec_uses_requested_daemon_socket(monkeypatch) -> None:
         ("require", "/tmp/test-burnerd.sock"),
         ("gpu", "/tmp/test-burnerd.sock"),
     ]
+
+
+def test_apply_runtime_intent_uses_daemon_for_apply_and_boot(monkeypatch) -> None:
+    calls = []
+    spec = {"format_version": 1, "mode": "stock"}
+    monkeypatch.setattr(
+        runtime_spec,
+        "build_runtime_spec_from_intent",
+        lambda intent, **kwargs: calls.append(("resolve", intent, kwargs)) or spec,
+    )
+    monkeypatch.setattr(
+        daemon_client,
+        "apply_runtime_spec",
+        lambda payload, **kwargs: calls.append(("apply", payload, kwargs))
+        or {"started": True},
+    )
+    monkeypatch.setattr(
+        daemon_client,
+        "set_boot_runtime_spec",
+        lambda payload, **kwargs: calls.append(("boot", payload, kwargs))
+        or {"saved": True},
+    )
+
+    result = daemon_client.apply_runtime_intent(
+        {"profile_selector": "__stock__"},
+        persist_on_startup=True,
+        socket_path="/tmp/burnerd.sock",
+    )
+
+    assert result == {"started": True}
+    assert [call[0] for call in calls] == ["resolve", "apply", "boot"]
+    assert all(call[2]["socket_path"] == "/tmp/burnerd.sock" for call in calls)
 
 
 def test_adaptive_runtime_keeps_explicit_old_profile_as_initial_tier(monkeypatch) -> None:

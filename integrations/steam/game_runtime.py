@@ -10,6 +10,7 @@ a daemon problem must never block a game launch.
 
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
 import sys
@@ -102,6 +103,7 @@ def apply_game_runtime_profile(
     *,
     home: Path | None = None,
     settings_path: str | Path | None = None,
+    watch_pid: int | None = None,
 ) -> bool:
     resolved = game_runtime_profile_argv(env, home=home, settings_path=settings_path)
     if resolved is None:
@@ -112,7 +114,7 @@ def apply_game_runtime_profile(
     try:
         start_game_runtime_profile(
             argv,
-            watch_pid=os.getpid(),
+            watch_pid=os.getpid() if watch_pid is None else int(watch_pid),
             app_id=app_id,
             timeout_s=45.0,
         )
@@ -123,3 +125,42 @@ def apply_game_runtime_profile(
         )
         return False
     return True
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Apply a Steam game profile for a host wrapper PID.
+
+    The Flatpak-generated host wrapper runs this module inside the sandbox
+    before it execs Steam's real game command. The root daemon watches the
+    host wrapper PID, which remains stable across that exec and therefore
+    identifies the complete Proton/game session.
+    """
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--watch-pid", required=True, type=int)
+    parser.add_argument("--app-id", required=True)
+    parser.add_argument("--account-name", default="")
+    args = parser.parse_args(argv)
+    if args.watch_pid <= 0 or not str(args.app_id).isdigit():
+        print(
+            "penguin-burner: invalid Steam game runtime request",
+            file=sys.stderr,
+        )
+        return 2
+
+    env = dict(os.environ)
+    env["SteamAppId"] = str(args.app_id)
+    if args.account_name:
+        env["SteamUser"] = str(args.account_name)
+    try:
+        apply_game_runtime_profile(env, watch_pid=args.watch_pid)
+    except Exception as error:
+        # The wrapper must never trade a game launch for profile automation.
+        print(
+            f"penguin-burner: per-game profile apply skipped: {error}",
+            file=sys.stderr,
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

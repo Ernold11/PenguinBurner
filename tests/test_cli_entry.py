@@ -6,6 +6,11 @@ import cli.entry as entry
 def test_dispatch_cli_allows_adaptive_systemd_install_with_two_tiers(monkeypatch) -> None:
     installed = []
 
+    monkeypatch.setattr(
+        entry,
+        "daemon_status",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("not installed")),
+    )
     monkeypatch.setattr(entry, "read_auto_uv_profiles", lambda: [{"profile_id": "p1"}])
     monkeypatch.setattr(
         entry,
@@ -69,3 +74,77 @@ def test_dispatch_cli_rejects_adaptive_systemd_install_with_one_tier(
 
     assert exit_code == 1
     assert "requires at least two saved verified Auto-UV profiles" in capsys.readouterr().err
+
+
+def test_dispatch_cli_daemonize_applies_through_running_daemon(monkeypatch) -> None:
+    applied = []
+    monkeypatch.setattr(
+        entry,
+        "apply_runtime_intent",
+        lambda intent, **kwargs: applied.append((intent, kwargs))
+        or {"started": True, "runtime_mode": "static"},
+    )
+
+    exit_code = entry.dispatch_cli(
+        program_file="/tmp/penguin_burner.py",
+        main_callback=lambda *_args, **_kwargs: None,
+        argv=["--daemonize", "--auto-uv-profile", "latest", "--gpu-index", "1"],
+    )
+
+    assert exit_code == 0
+    assert applied == [
+        (
+            {
+                "profile_selector": "latest",
+                "silent_fan_curve": False,
+                "adaptive_auto_uv": False,
+                "gpu_index": 1,
+            },
+            {
+                "persist_on_startup": False,
+                "socket_path": entry.DEFAULT_DAEMON_SOCKET,
+            },
+        )
+    ]
+
+
+def test_dispatch_cli_persistent_update_uses_running_daemon(monkeypatch) -> None:
+    applied = []
+    installed = []
+    monkeypatch.setattr(entry, "daemon_status", lambda **_kwargs: {"state": "idle"})
+    monkeypatch.setattr(
+        entry,
+        "apply_runtime_intent",
+        lambda intent, **kwargs: applied.append((intent, kwargs))
+        or {"started": True, "runtime_mode": "adaptive"},
+    )
+    monkeypatch.setattr(
+        entry,
+        "install_systemd_service",
+        lambda *args, **kwargs: installed.append((args, kwargs)),
+    )
+    monkeypatch.setattr(entry, "read_auto_uv_profiles", lambda: [{"profile_id": "p1"}])
+    monkeypatch.setattr(
+        entry,
+        "resolve_profile_tier_profiles",
+        lambda profiles: {
+            "efficiency": {"profile_id": "p1"},
+            "performance": {"profile_id": "p2"},
+        },
+    )
+    monkeypatch.setattr(
+        entry,
+        "available_adaptive_tiers",
+        lambda _resolved: ["efficiency", "performance"],
+    )
+
+    exit_code = entry.dispatch_cli(
+        program_file="/tmp/penguin_burner.py",
+        main_callback=lambda *_args, **_kwargs: None,
+        argv=["--install-systemd-service", "--adaptive-auto-uv"],
+    )
+
+    assert exit_code == 0
+    assert installed == []
+    assert applied[0][0]["adaptive_auto_uv"] is True
+    assert applied[0][1]["persist_on_startup"] is True

@@ -124,16 +124,16 @@ The CLI Auto-UV scan flags mirror the options exposed by the GUI tuning modal.
 Runtime and daemon mode prefer the saved curve automatically:
 
 ```bash
-sudo ./penguin_burner.sh --daemonize --auto-uv-profile latest
-sudo ./penguin_burner.sh --daemonize --auto-uv-profile latest --silent-fan-curve
+./penguin_burner.sh --daemonize --auto-uv-profile latest
+./penguin_burner.sh --daemonize --auto-uv-profile latest --silent-fan-curve
 ```
 
-For boot autostart, install the latest verified profile into the persistent
-systemd service:
+After the daemon's one-time installation, persist the latest verified profile
+for boot through its socket API:
 
 ```bash
-sudo ./penguin_burner.sh --install-systemd-service --auto-uv-profile latest
-sudo ./penguin_burner.sh --install-systemd-service --auto-uv-profile latest --silent-fan-curve
+./penguin_burner.sh --install-systemd-service --auto-uv-profile latest
+./penguin_burner.sh --install-systemd-service --auto-uv-profile latest --silent-fan-curve
 ```
 
 Export a saved curve to [LACT](https://github.com/ilya-zlobintsev/LACT) from the

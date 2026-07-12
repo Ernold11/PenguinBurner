@@ -85,6 +85,39 @@ def test_start_scan_runs(win) -> None:
     assert fake.started  # scan command launched
 
 
+def test_start_scan_uses_profile_tier_selected_before_button_click(win) -> None:
+    window, monkeypatch = win
+    captured = {}
+    window.controls.set_selected_scan_preset("performance")
+
+    def choose_scan_tuning(**kwargs):
+        captured["initial_preset_id"] = kwargs["initial_preset_id"]
+        return {
+            "gpu_index": 0,
+            "auto_uv_mode": kwargs["initial_preset_id"],
+        }
+
+    def build_scan_command(options):
+        captured["options"] = dict(options)
+        return ["echo", "scan"]
+
+    monkeypatch.setattr(window_mod, "select_scan_tuning", choose_scan_tuning)
+    monkeypatch.setattr(window_mod, "persist_runtime_gpu_index", lambda idx: int(idx))
+    monkeypatch.setattr(
+        window_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(window_mod, "scan_command", build_scan_command)
+    window.scan_controller = _FakeController()
+
+    window.start_scan()
+
+    assert captured["initial_preset_id"] == "performance"
+    assert captured["options"]["auto_uv_mode"] == "performance"
+    assert window.scan_controller.started
+
+
 def test_start_scan_runs_daemon_migration_gate_before_scan(win) -> None:
     window, monkeypatch = win
     gate_calls = []
@@ -213,6 +246,68 @@ def test_run_runtime_action_launches(win) -> None:
     window.command_controller = fake
     window._run_runtime_action("daemonize")
     assert fake.started  # runtime command launched
+
+
+def test_apply_adaptive_with_persistence_stays_on_daemon_path(win) -> None:
+    window, monkeypatch = win
+    captured: list[tuple[tuple, dict]] = []
+    window.profile_summaries = [
+        {"profile_id": "eff", "final_verified": True, "profile_tier": "Efficiency"},
+        {"profile_id": "perf", "final_verified": True, "profile_tier": "Performance"},
+    ]
+    monkeypatch.setattr(window.profile_list, "persist_on_startup_enabled", lambda: True)
+    monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: False)
+    monkeypatch.setattr(
+        actions_mod,
+        "adaptive_profile_tier_labels",
+        lambda _profiles: ["Efficiency", "Performance"],
+    )
+    monkeypatch.setattr(
+        actions_mod,
+        "profile_for_selector",
+        lambda _profiles, _selector: window.profile_summaries[-1],
+    )
+    monkeypatch.setattr(
+        actions_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        actions_mod,
+        "runtime_profile_command",
+        lambda *args, **kwargs: captured.append((args, kwargs)) or ["daemon-client"],
+    )
+    window.command_controller = _FakeController()
+
+    window._run_adaptive_profiles()
+
+    assert captured
+    args, kwargs = captured[0]
+    assert args == ("daemonize",)
+    assert kwargs["adaptive_auto_uv"] is True
+    assert kwargs["persist_on_startup"] is True
+
+
+def test_remove_autostart_clears_daemon_boot_state(win) -> None:
+    window, monkeypatch = win
+    captured: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: False)
+    monkeypatch.setattr(
+        actions_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        actions_mod,
+        "runtime_profile_command",
+        lambda *args, **kwargs: captured.append((args, kwargs)) or ["daemon-client"],
+    )
+    window.command_controller = _FakeController()
+
+    window._run_runtime_action("clear-boot")
+
+    assert captured
+    assert captured[0][0] == ("clear-boot",)
 
 
 def test_run_runtime_action_runs_daemon_migration_gate_before_apply(win) -> None:

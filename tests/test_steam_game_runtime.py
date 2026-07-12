@@ -154,6 +154,61 @@ def test_apply_calls_daemon_with_own_pid(
     ]
 
 
+def test_apply_accepts_host_wrapper_pid(
+    steam_home: Path, tmp_path: Path, monkeypatch
+) -> None:
+    settings_path = tmp_path / "steam-game-settings.json"
+    store_steam_game_setting(
+        ACCOUNT_ID,
+        "1089130",
+        SteamGameSetting(mode="adaptive"),
+        path=settings_path,
+    )
+    calls = []
+
+    import runtime.daemon_client as daemon_client
+
+    monkeypatch.setattr(
+        daemon_client,
+        "start_game_runtime_profile",
+        lambda argv, **kwargs: calls.append((argv, kwargs)),
+    )
+
+    assert apply_game_runtime_profile(
+        {"SteamAppId": "1089130", "SteamUser": "jan_pietek"},
+        home=steam_home,
+        settings_path=settings_path,
+        watch_pid=4242,
+    )
+    assert calls[0][1]["watch_pid"] == 4242
+
+
+def test_flatpak_runtime_helper_passes_explicit_game_identity(monkeypatch) -> None:
+    seen = []
+    monkeypatch.setattr(
+        game_runtime,
+        "apply_game_runtime_profile",
+        lambda env, **kwargs: seen.append((env, kwargs)) or True,
+    )
+
+    assert (
+        game_runtime.main(
+            [
+                "--watch-pid",
+                "4242",
+                "--app-id",
+                "1089130",
+                "--account-name",
+                "jan_pietek",
+            ]
+        )
+        == 0
+    )
+    assert seen[0][0]["SteamAppId"] == "1089130"
+    assert seen[0][0]["SteamUser"] == "jan_pietek"
+    assert seen[0][1]["watch_pid"] == 4242
+
+
 def test_apply_soft_fails_when_daemon_unreachable(
     steam_home: Path, tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -223,6 +278,7 @@ def test_client_resolves_and_applies_game_spec_on_the_same_socket(monkeypatch) -
 def test_launch_steam_game_validates_app_id(monkeypatch) -> None:
     import integrations.steam.process as process
 
+    monkeypatch.setattr(process, "running_in_flatpak", lambda: False)
     monkeypatch.setattr(process.shutil, "which", lambda name: "/usr/bin/steam")
     launched = []
     monkeypatch.setattr(
@@ -233,6 +289,66 @@ def test_launch_steam_game_validates_app_id(monkeypatch) -> None:
     from integrations.steam.process import launch_steam_game
 
     assert launch_steam_game("3606110")
-    assert launched == [["steam", "-applaunch", "3606110"]]
+    assert launched == [["/usr/bin/steam", "-applaunch", "3606110"]]
     assert not launch_steam_game("rm -rf /")
     assert len(launched) == 1
+
+
+def test_flatpak_steam_process_control_runs_on_host(monkeypatch) -> None:
+    import integrations.steam.process as process
+
+    monkeypatch.setattr(process, "running_in_flatpak", lambda: True)
+    monkeypatch.setattr(
+        process.shutil,
+        "which",
+        lambda name: "/usr/bin/flatpak-spawn" if name == "flatpak-spawn" else None,
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[-3:] == ["/usr/bin/sh", "-c", "command -v steam"]:
+            return process.subprocess.CompletedProcess(
+                command, 0, stdout="/usr/bin/steam\n", stderr=""
+            )
+        return process.subprocess.CompletedProcess(command, 0)
+
+    launched = []
+    monkeypatch.setattr(process.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        process.subprocess,
+        "Popen",
+        lambda command, **kwargs: launched.append((command, kwargs)),
+    )
+
+    assert process.steam_running()
+    assert process.steam_available()
+    assert process.launch_steam_game("3606110")
+
+    assert calls[0][0] == [
+        "/usr/bin/flatpak-spawn",
+        "--host",
+        "--directory=/tmp",
+        "/usr/bin/pgrep",
+        "-x",
+        "steam",
+    ]
+    assert launched[0][0] == [
+        "/usr/bin/flatpak-spawn",
+        "--host",
+        "--directory=/tmp",
+        "/usr/bin/steam",
+        "-applaunch",
+        "3606110",
+    ]
+
+
+def test_flatpak_steam_control_fails_closed_without_host_bridge(monkeypatch) -> None:
+    import integrations.steam.process as process
+
+    monkeypatch.setattr(process, "running_in_flatpak", lambda: True)
+    monkeypatch.setattr(process.shutil, "which", lambda _name: None)
+
+    assert not process.steam_running()
+    assert not process.steam_available()
+    assert not process.launch_steam_game("3606110")

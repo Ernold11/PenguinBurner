@@ -350,8 +350,16 @@ def runtime_profile_command(
     profile_selector: str = "",
     silent_fan_curve: bool = False,
     adaptive_auto_uv: bool = False,
+    persist_on_startup: bool = False,
     gpu_index: int | None = None,
 ) -> list[str]:
+    if action == "clear-boot":
+        return [
+            sys.executable,
+            "-m",
+            "runtime.daemon_client",
+            "clear-boot-runtime-spec",
+        ]
     intent = {
         "profile_selector": str(profile_selector or "").strip(),
         "silent_fan_curve": bool(silent_fan_curve),
@@ -376,21 +384,31 @@ def runtime_profile_command(
     if gpu_index is not None:
         runtime_argv.extend(["--gpu-index", str(max(0, int(gpu_index)))])
     if action == "daemonize":
-        return _daemon_runtime_profile_command(intent)
+        return _daemon_runtime_profile_command(
+            intent,
+            persist_on_startup=persist_on_startup,
+        )
     if running_in_flatpak():
         return _flatpak_systemd_profile_command(action, runtime_argv, intent)
     command = [*cli_base_command(), service_flag, *runtime_argv]
     return privileged_command(command)
 
 
-def _daemon_runtime_profile_command(intent: dict) -> list[str]:
-    return [
+def _daemon_runtime_profile_command(
+    intent: dict,
+    *,
+    persist_on_startup: bool = False,
+) -> list[str]:
+    command = [
         sys.executable,
         "-m",
         "runtime.daemon_client",
         "apply-runtime-intent",
-        json.dumps(intent, separators=(",", ":")),
     ]
+    if persist_on_startup:
+        command.append("--boot")
+    command.append(json.dumps(intent, separators=(",", ":")))
+    return command
 
 
 def _flatpak_systemd_profile_command(
@@ -458,7 +476,8 @@ def _flatpak_daemon_install_command(
         )
         runtime_block = (
             "\nintent_json=\"$(printf '%s' \"$PENGUIN_BURNER_RUNTIME_INTENT_B64\" | base64 -d)\"\n"
-            "env PYTHONPATH=\"$PENGUIN_BURNER_RUNTIME_PYTHONPATH\" "
+            "env PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 "
+            "PYTHONPATH=\"$PENGUIN_BURNER_RUNTIME_PYTHONPATH\" "
             "PENGUIN_BURNER_HOME=\"$PENGUIN_BURNER_RUNTIME_HOME\" "
             "/usr/bin/python3 -m runtime.daemon_client apply-runtime-intent "
             "--boot \"$intent_json\"\n"

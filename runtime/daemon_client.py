@@ -243,6 +243,23 @@ def apply_runtime_spec(
     )
 
 
+def apply_runtime_intent(
+    intent: dict[str, Any],
+    *,
+    persist_on_startup: bool = False,
+    socket_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Resolve and apply a user runtime intent through the root daemon."""
+    from runtime.runtime_spec import build_runtime_spec_from_intent
+
+    resolved_socket = _resolved_socket_path(socket_path)
+    spec = build_runtime_spec_from_intent(intent, socket_path=resolved_socket)
+    result = apply_runtime_spec(spec, socket_path=resolved_socket)
+    if persist_on_startup:
+        set_boot_runtime_spec(spec, socket_path=resolved_socket)
+    return result
+
+
 def set_boot_runtime_spec(
     spec: dict[str, Any],
     *,
@@ -760,12 +777,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "apply-runtime-intent":
             intent = json.loads(args.intent_json)
-            from runtime.runtime_spec import build_runtime_spec_from_intent
-
-            spec = build_runtime_spec_from_intent(intent, socket_path=args.socket)
-            result = apply_runtime_spec(spec, socket_path=args.socket)
-            if args.boot:
-                set_boot_runtime_spec(spec, socket_path=args.socket)
+            result = apply_runtime_intent(
+                intent,
+                persist_on_startup=bool(args.boot),
+                socket_path=args.socket,
+            )
             print(
                 json.dumps(result, indent=2),
                 flush=True,

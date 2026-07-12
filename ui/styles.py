@@ -43,6 +43,13 @@ QLabel#gpuNvmlInfo {{
 QGroupBox#autoUvPresetGroup {{
     margin-top: 6px;
 }}
+QGroupBox#autoUvScanTargetGroup {{
+    margin-top: 2px;
+}}
+QLabel#autoUvScanEstimate {{
+    color: {theme.TEXT_MUTED};
+    font-size: 11px;
+}}
 QGroupBox#advancedTuningGroup {{
     margin-top: 12px;
 }}
@@ -220,6 +227,7 @@ QTabBar::tab:selected {{
     color: {theme.TEXT_STRONG};
 }}
 """
+
 
 def curve_editor_legend_stylesheet(object_prefix: str) -> str:
     return f"""

@@ -37,6 +37,7 @@ from ui.models import probe_failure_label as _probe_failure_label
 from ui.styles import STYLESHEET
 from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 from ui.features.tuning.tuning import (
+    AUTO_UV_PRESET_ADAPTIVE,
     AUTO_UV_PRESET_BALANCED,
     AUTO_UV_PRESET_EFFICIENCY,
     AUTO_UV_PRESET_PERFORMANCE,
@@ -89,7 +90,7 @@ def _scan_daemon_options(command: list[str]) -> dict:
 
 def _runtime_profile_daemon_intent(command: list[str]) -> dict:
     assert command[1:4] == ["-m", "runtime.daemon_client", "apply-runtime-intent"]
-    return json.loads(command[4])
+    return json.loads(command[-1])
 
 
 def _assert_flatpak_daemon_script_waits_for_api(
@@ -297,6 +298,7 @@ def test_flatpak_runtime_profile_install_copies_daemon_and_seeds_autostart(
     # The new daemon resolves this semantic intent, applies it, then stores the
     # validated RuntimeSpec as explicit boot state.
     assert "apply-runtime-intent --boot" in script
+    assert "PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1" in script
     intent = json.loads(
         base64.b64decode(
             _command_env_value(command, "PENGUIN_BURNER_RUNTIME_INTENT_B64")
@@ -709,6 +711,94 @@ def test_ui_runtime_command_adds_adaptive_for_transient_and_persistent(
     assert _runtime_profile_daemon_intent(transient)["adaptive_auto_uv"] is True
     assert "--auto-uv-profile" not in persistent
     assert _runtime_profile_daemon_intent(transient)["profile_selector"] == ""
+
+
+def test_ui_adaptive_boot_apply_uses_daemon_without_pkexec(monkeypatch) -> None:
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+
+    command = commands.runtime_profile_command(
+        "daemonize",
+        adaptive_auto_uv=True,
+        persist_on_startup=True,
+        gpu_index=0,
+    )
+
+    assert command[1:5] == [
+        "-m",
+        "runtime.daemon_client",
+        "apply-runtime-intent",
+        "--boot",
+    ]
+    assert "pkexec" not in " ".join(command)
+    assert "sudo" not in " ".join(command)
+    assert _runtime_profile_daemon_intent(command) == {
+        "profile_selector": "",
+        "silent_fan_curve": False,
+        "adaptive_auto_uv": True,
+        "gpu_index": 0,
+    }
+
+
+def test_ui_clear_boot_uses_daemon_without_pkexec(monkeypatch) -> None:
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+
+    command = commands.runtime_profile_command("clear-boot")
+
+    assert command[1:] == [
+        "-m",
+        "runtime.daemon_client",
+        "clear-boot-runtime-spec",
+    ]
+    assert "pkexec" not in " ".join(command)
+    assert "sudo" not in " ".join(command)
+
+
+def test_flatpak_normal_operations_never_request_elevation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    flatpak_info = tmp_path / ".flatpak-info"
+    flatpak_info.write_text("[Application]\n", encoding="utf-8")
+    monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        commands.shutil,
+        "which",
+        lambda name: "/usr/bin/flatpak-spawn" if name == "flatpak-spawn" else None,
+    )
+
+    normal_commands = [
+        commands.scan_command({"gpu_index": 0}),
+        commands.runtime_profile_command(
+            "daemonize",
+            profile_selector="profile-a",
+            gpu_index=0,
+        ),
+        commands.runtime_profile_command(
+            "daemonize",
+            adaptive_auto_uv=True,
+            persist_on_startup=True,
+            gpu_index=0,
+        ),
+        commands.runtime_profile_command(
+            "daemonize",
+            profile_selector="__stock__",
+            gpu_index=0,
+        ),
+        commands.runtime_profile_command("clear-boot"),
+        commands.profile_verify_command(
+            profile_selector="profile-a",
+            gpu_index=0,
+        ),
+        commands.delete_profiles_command(["/home/user/profile.json"]),
+    ]
+
+    for command in normal_commands:
+        joined = " ".join(command)
+        assert "pkexec" not in joined
+        assert "sudo" not in joined
+        assert "flatpak-spawn" not in joined
+        assert "systemctl" not in joined
 
 
 def test_final_choice_performance_mode_sorts_by_fps() -> None:
@@ -2129,6 +2219,46 @@ def test_scan_controls_include_about_button_after_import_afterburner() -> None:
     assert "QPushButton#aboutButton" in STYLESHEET
 
 
+def test_scan_controls_offer_single_tiers_and_full_scan_before_start() -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    from ui.components.scan_controls import ScanControls
+
+    controls = ScanControls(QtWidgets=QtWidgets)
+    buttons = {
+        str(button.property("presetId")): button
+        for button in controls.scan_target_widget.findChildren(QtWidgets.QPushButton)
+        if button.property("presetId")
+    }
+
+    assert set(buttons) == {
+        AUTO_UV_PRESET_EFFICIENCY,
+        AUTO_UV_PRESET_BALANCED,
+        AUTO_UV_PRESET_PERFORMANCE,
+        AUTO_UV_PRESET_ADAPTIVE,
+    }
+    assert controls.selected_scan_preset() == AUTO_UV_PRESET_ADAPTIVE
+    assert "Full scan (3 tiers)" in buttons[AUTO_UV_PRESET_ADAPTIVE].text()
+    assert "~25-35 min scan" in buttons[AUTO_UV_PRESET_ADAPTIVE].text()
+    assert "~10-20 min scan" in buttons[AUTO_UV_PRESET_EFFICIENCY].text()
+    assert controls.scan_target_widget.isAncestorOf(controls.start_button)
+
+    buttons[AUTO_UV_PRESET_PERFORMANCE].click()
+    assert controls.selected_scan_preset() == AUTO_UV_PRESET_PERFORMANCE
+    assert "only the Performance profile" in controls.scan_target_description.text()
+
+    controls.set_running(True)
+    assert not controls.start_button.isEnabled()
+    assert all(not button.isEnabled() for button in buttons.values())
+
+
 def test_application_version_is_available_for_about_dialog() -> None:
     assert _application_version()
 
@@ -2410,6 +2540,25 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     assert power_limit_spin.value() == 390
     buttons[AUTO_UV_PRESET_BALANCED].click()
     assert power_limit_spin.value() == 390
+
+    scan_tuning.select_scan_tuning(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgets,
+        parent=None,
+        gpu_index=1,
+        initial_preset_id=AUTO_UV_PRESET_PERFORMANCE,
+    )
+    performance_dialog = dialogs[-1]
+    performance_buttons = {
+        str(button.property("presetId")): button
+        for button in performance_dialog.findChildren(QtWidgets.QPushButton)
+        if button.property("presetId")
+    }
+    assert performance_buttons[AUTO_UV_PRESET_PERFORMANCE].isChecked()
+    assert performance_dialog.findChild(
+        QtWidgets.QDoubleSpinBox, "maxClockDropSpin"
+    ).value() == pytest.approx(5.4)
 
 
 def test_scan_tuning_enter_in_numeric_field_only_commits_value(monkeypatch) -> None:

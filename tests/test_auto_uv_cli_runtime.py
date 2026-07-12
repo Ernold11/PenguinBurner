@@ -8,7 +8,6 @@ import pytest
 from auto_uv.domain.types import AutoUvError, AutoUvFinalChoiceDiscarded
 from auto_uv.run.cli_runtime import (
     AutoUvForegroundDependencies,
-    format_privileged_runtime_command,
     format_auto_uv_final_state,
     run_auto_uv_foreground_command,
     run_auto_uv_voltage_scan,
@@ -280,8 +279,7 @@ def test_auto_uv_foreground_command_prompts_to_start_and_install_single_profile(
         json_events=False,
     )
     prompts = []
-    daemonized = []
-    installed = []
+    applied = []
 
     def fake_runner(**_kwargs):
         return SimpleNamespace(
@@ -313,12 +311,8 @@ def test_auto_uv_foreground_command_prompts_to_start_and_install_single_profile(
             build_stability_config=lambda *_args, **_kwargs: object(),
             run_voltage_frequency_undervolt_main_loop=fake_runner,
             read_auto_uv_profiles=lambda: [],
-            is_root=lambda: True,
-            daemonize_with_systemd=lambda *args, **kwargs: daemonized.append(
-                (args, kwargs)
-            ),
-            install_systemd_service=lambda *args, **kwargs: installed.append(
-                (args, kwargs)
+            apply_runtime_intent=lambda intent, **kwargs: applied.append(
+                (intent, kwargs)
             ),
             log=lambda *_args: None,
         ),
@@ -326,11 +320,28 @@ def test_auto_uv_foreground_command_prompts_to_start_and_install_single_profile(
 
     assert prompts == [
         ("Start PenguinBurner runtime now with single profile 850mv-2762mhz?", True),
-        ("Install single profile 850mv-2762mhz as systemd autostart?", False),
+        ("Persist single profile 850mv-2762mhz for startup?", False),
     ]
-    assert daemonized[0][0][1] == ["--auto-uv-profile", "850mv-2762mhz"]
-    assert daemonized[0][1]["journal_hours"] == 6
-    assert installed[0][0][1] == ["--auto-uv-profile", "850mv-2762mhz"]
+    assert applied == [
+        (
+            {
+                "profile_selector": "850mv-2762mhz",
+                "silent_fan_curve": False,
+                "adaptive_auto_uv": False,
+                "gpu_index": None,
+            },
+            {"persist_on_startup": False},
+        ),
+        (
+            {
+                "profile_selector": "850mv-2762mhz",
+                "silent_fan_curve": False,
+                "adaptive_auto_uv": False,
+                "gpu_index": None,
+            },
+            {"persist_on_startup": True},
+        ),
+    ]
 
 
 def test_auto_uv_foreground_command_offers_optional_adaptive_when_two_tiers_exist() -> None:
@@ -340,8 +351,7 @@ def test_auto_uv_foreground_command_offers_optional_adaptive_when_two_tiers_exis
     )
     logs = []
     prompts = []
-    daemonized = []
-    installed = []
+    applied = []
     answers = iter([True, True, False])
 
     def fake_runner(**_kwargs):
@@ -381,12 +391,8 @@ def test_auto_uv_foreground_command_offers_optional_adaptive_when_two_tiers_exis
             },
             available_adaptive_tiers=lambda _resolved: ["efficiency", "performance"],
             profile_tier_label=lambda tier: str(tier).title(),
-            is_root=lambda: True,
-            daemonize_with_systemd=lambda *args, **kwargs: daemonized.append(
-                (args, kwargs)
-            ),
-            install_systemd_service=lambda *args, **kwargs: installed.append(
-                (args, kwargs)
+            apply_runtime_intent=lambda intent, **kwargs: applied.append(
+                (intent, kwargs)
             ),
             log=logs.append,
         ),
@@ -398,21 +404,21 @@ def test_auto_uv_foreground_command_offers_optional_adaptive_when_two_tiers_exis
         False,
     )
     assert prompts[1] == ("Start PenguinBurner runtime now with adaptive Auto-UV?", True)
-    assert prompts[2] == ("Install adaptive Auto-UV as systemd autostart?", False)
-    assert daemonized[0][0][1] == ["--adaptive-auto-uv"]
-    assert installed == []
+    assert prompts[2] == ("Persist adaptive Auto-UV for startup?", False)
+    assert applied[0][0]["adaptive_auto_uv"] is True
+    assert applied[0][1]["persist_on_startup"] is False
     output = "\n".join(logs)
     assert "Adaptive Auto-UV is also available" in output
     assert f"{PENGUIN_BURNER_WRAPPER} %command%" in output
 
 
-def test_auto_uv_foreground_command_prints_privileged_command_when_not_root() -> None:
+def test_auto_uv_foreground_command_applies_through_daemon_without_root() -> None:
     args = SimpleNamespace(
         auto_uv_voltage_scan=True,
         json_events=False,
     )
     logs = []
-    daemonized = []
+    applied = []
 
     def fake_runner(**_kwargs):
         return SimpleNamespace(
@@ -439,33 +445,38 @@ def test_auto_uv_foreground_command_prints_privileged_command_when_not_root() ->
             build_stability_config=lambda *_args, **_kwargs: object(),
             run_voltage_frequency_undervolt_main_loop=fake_runner,
             read_auto_uv_profiles=lambda: [],
-            is_root=lambda: False,
-            daemonize_with_systemd=lambda *args, **kwargs: daemonized.append(
-                (args, kwargs)
+            apply_runtime_intent=lambda intent, **kwargs: applied.append(
+                (intent, kwargs)
             ),
             log=logs.append,
         ),
     )
 
-    assert daemonized == []
-    output = "\n".join(logs)
-    assert "Root privileges are required" in output
-    assert "pkexec env" in output
-    assert "--daemonize --auto-uv-profile 875mv-2700mhz" in output
+    assert applied[0][0]["profile_selector"] == "875mv-2700mhz"
+    assert applied[0][1]["persist_on_startup"] is False
+    assert "pkexec" not in "\n".join(logs)
 
 
-def test_format_privileged_runtime_command_includes_user_home(monkeypatch) -> None:
-    monkeypatch.setenv("USER", "tester")
-
-    command = format_privileged_runtime_command(
-        "/tmp/penguin_burner.py",
-        ["--install-systemd-service", "--auto-uv-profile", "850mv-2762mhz"],
+def test_auto_uv_optional_runtime_failure_mentions_burnerd() -> None:
+    logs = []
+    dependencies = AutoUvForegroundDependencies(
+        apply_runtime_intent=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("socket unavailable")
+        ),
+        log=logs.append,
     )
 
-    assert command.startswith("pkexec env ")
-    assert "PENGUIN_BURNER_HOME=" in command
-    assert "PENGUIN_BURNER_Q2RTX_USER=tester" in command
-    assert "/tmp/penguin_burner.py --install-systemd-service" in command
+    from auto_uv.run.cli_runtime import _run_optional_runtime_action
+
+    _run_optional_runtime_action(
+        persist_on_startup=False,
+        runtime_argv=["--auto-uv-profile", "profile-a"],
+        deps=dependencies,
+    )
+
+    assert logs == [
+        "Could not apply optional runtime action through burnerd: socket unavailable"
+    ]
 
 
 def test_format_auto_uv_final_state_uses_na_for_missing_metrics() -> None:

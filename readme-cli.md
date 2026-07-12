@@ -12,8 +12,8 @@ verification, and applying saved Auto-UV profiles as daemon runtime.
 Privileged GPU writes are performed by the root hardware service
 (`penguin-burnerd.service`, a compiled Rust daemon); the CLI itself and Auto-UV
 scans run as your regular user and talk to it over a local socket. `sudo` is
-only needed for the service lifecycle commands (`--install-systemd-service`,
-`--uninstall-systemd-service`, `--daemonize`, `--migrate-to-daemon-service`).
+only needed to install, repair, migrate, or explicitly uninstall the root
+service. Runtime/profile and boot-profile changes use the running daemon.
 
 ## Install
 
@@ -171,20 +171,24 @@ List saved Auto-UV profiles:
 Apply the latest saved Auto-UV profile as a daemon after a final curve exists:
 
 ```bash
-sudo ./penguin_burner.sh --daemonize --auto-uv-profile latest
+./penguin_burner.sh --daemonize --auto-uv-profile latest
 ```
 
-Install the latest verified Auto-UV profile as the persistent boot-time service:
+Persist the latest verified Auto-UV profile for boot through the installed daemon:
 
 ```bash
-sudo ./penguin_burner.sh --install-systemd-service --auto-uv-profile latest
+./penguin_burner.sh --install-systemd-service --auto-uv-profile latest
 ```
 
-Install it with the saved silent fan curve too:
+Persist it with the saved silent fan curve too:
 
 ```bash
-sudo ./penguin_burner.sh --install-systemd-service --auto-uv-profile latest --silent-fan-curve
+./penguin_burner.sh --install-systemd-service --auto-uv-profile latest --silent-fan-curve
 ```
+
+If the daemon has not had its one-time installation yet, use the migration
+command from the Install section first; changing the boot profile afterward
+does not reinstall the service or ask for another password.
 
 Remove the persistent boot-time service:
 
@@ -197,19 +201,19 @@ the GPU driver. Add `--silent-fan-curve` to opt into PenguinBurner's saved
 Auto-UV fan curve:
 
 ```bash
-sudo ./penguin_burner.sh --daemonize --auto-uv-profile latest --silent-fan-curve
+./penguin_burner.sh --daemonize --auto-uv-profile latest --silent-fan-curve
 ```
 
 Adaptive Auto-UV can switch between saved verified profile tiers:
 
 ```bash
-sudo ./penguin_burner.sh --daemonize --adaptive-auto-uv
+./penguin_burner.sh --daemonize --adaptive-auto-uv
 ```
 
 For persistent adaptive boot autostart:
 
 ```bash
-sudo ./penguin_burner.sh --install-systemd-service --adaptive-auto-uv
+./penguin_burner.sh --install-systemd-service --adaptive-auto-uv
 ```
 
 Generated Efficiency, Balanced, and Performance scans are tiered automatically.

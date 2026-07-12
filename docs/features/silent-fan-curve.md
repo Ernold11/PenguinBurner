@@ -14,7 +14,7 @@ quiet fan curve practical. PenguinBurner can generate one for you.
 - It is **not applied by default**. Opt in at runtime:
 
   ```bash
-  sudo ./penguin_burner.sh --daemonize --silent-fan-curve
+  ./penguin_burner.sh --daemonize --silent-fan-curve
   ```
 
   Or toggle **Silent fan curve** in the Profiles tab.

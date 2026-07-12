@@ -40,13 +40,13 @@ Enable it from the Profiles tab with **Apply Adaptive**, or on the command line
 with `--adaptive-auto-uv` in runtime/daemon mode:
 
 ```bash
-sudo ./penguin_burner.sh --daemonize --adaptive-auto-uv
+./penguin_burner.sh --daemonize --adaptive-auto-uv
 ```
 
 For persistent boot autostart:
 
 ```bash
-sudo ./penguin_burner.sh --install-systemd-service --adaptive-auto-uv
+./penguin_burner.sh --install-systemd-service --adaptive-auto-uv
 ```
 
 PenguinBurner watches the **base present-frame p95 pacing** and compares it to a

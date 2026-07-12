@@ -20,6 +20,7 @@ from ui.features.tuning.tuning import auto_uv_performance_target_default
 from ui.features.tuning.tuning import auto_uv_power_limit_default
 from ui.features.tuning.tuning import auto_uv_preset
 from ui.features.tuning.tuning import auto_uv_presets
+from ui.features.tuning.tuning import auto_uv_scan_estimate_text
 from ui.features.tuning.tuning import auto_uv_voltage_drop_default
 from ui.features.tuning.tuning import memory_offset_mhz_range
 from ui.features.tuning.tuning import read_auto_uv_nvml_info
@@ -33,6 +34,7 @@ def select_scan_tuning(
     QtWidgets,
     parent,
     gpu_index: int | None = None,
+    initial_preset_id: object = DEFAULT_AUTO_UV_PRESET,
 ) -> dict | None:
     dialog = QtWidgets.QDialog(parent)
     dialog.setWindowTitle("Automatic undervolt behavior")
@@ -73,9 +75,10 @@ def select_scan_tuning(
         None,
     )
     voltage_drop_default = auto_uv_voltage_drop_default(gpu_name=selected_gpu_name)
+    initial_preset = auto_uv_preset(initial_preset_id)
     clock_drop_default = auto_uv_clock_drop_default(
         gpu_name=selected_gpu_name,
-        preset_id=DEFAULT_AUTO_UV_PRESET,
+        preset_id=initial_preset.preset_id,
     )
     gpu_combo = QtWidgets.QComboBox()
     gpu_combo.setObjectName("gpuSelector")
@@ -184,10 +187,11 @@ def select_scan_tuning(
         ),
         "performance": auto_uv_performance_preset_tooltip(),
         "adaptive": (
-            "One sweep discovers Efficiency, Balanced and Performance at "
-            "once (about the time of a single classic scan). Each tier "
-            "keeps its usual shape and you can still tune every profile "
-            "individually before it is verified and saved."
+            "One full scan runs separate Efficiency, Balanced and Performance "
+            f"descents ({auto_uv_scan_estimate_text(AUTO_UV_PRESET_ADAPTIVE)} "
+            "before verification). Each tier keeps its usual shape and you can "
+            "still tune every profile individually before it is verified and "
+            "saved."
         ),
     }
     for preset in auto_uv_presets():
@@ -207,7 +211,7 @@ def select_scan_tuning(
         preset_button_group.addButton(button)
         preset_buttons[preset.preset_id] = button
         preset_buttons_layout.addWidget(button)
-    preset_buttons[DEFAULT_AUTO_UV_PRESET].setChecked(True)
+    preset_buttons[initial_preset.preset_id].setChecked(True)
     preset_layout.addLayout(preset_buttons_layout, 1)
     preset_layout.addWidget(
         _bias_icon(
@@ -371,14 +375,14 @@ def select_scan_tuning(
     adaptive_page.setLayout(adaptive_form)
     # The adaptive page mirrors the per-tier fields so the values the user
     # tunes here propagate to the shared canonical spins (and vice versa) —
-    # one sweep still honors every tier-specific option.
+    # one full scan still honors every tier-specific option.
     _add_form_row(
         QtCore=QtCore,
         QtWidgets=QtWidgets,
         form_layout=adaptive_form,
         text="Efficiency min voltage",
         widget=_mirrored_spin(QtWidgets, voltage_floor_spin),
-        tooltip="Lowest V/F voltage bin the shared sweep may try (efficiency depth).",
+        tooltip="Lowest V/F voltage bin the full run may try (efficiency depth).",
     )
     _add_form_row(
         QtCore=QtCore,

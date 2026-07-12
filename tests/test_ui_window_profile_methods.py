@@ -166,6 +166,11 @@ def test_verify_profile_guards_and_runs(win) -> None:
         actions_mod, "select_verify_options",
         lambda **k: {"duration_s": 60},
     )
+    monkeypatch.setattr(
+        actions_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: True,
+    )
     monkeypatch.setattr(actions_mod, "profile_verify_command", lambda **k: ["echo", "verify"])
     fake = _FakeController()
     window.verify_controller = fake

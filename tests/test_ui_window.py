@@ -265,6 +265,13 @@ def test_window_tab_order_and_bins_visibility(main_window) -> None:
     assert labels == ["Auto-UV", "Profiles", "Ingame Overlay", "Steam"]
     assert not hasattr(win, "fan_plot")
 
+    # The scan target and its start button are visible inside the Auto-UV tab,
+    # so the user chooses one tier or the full scan before opening setup.
+    auto_uv_page = win.tabs.widget(win.auto_uv_tab_index)
+    assert auto_uv_page.isAncestorOf(win.controls.scan_target_widget)
+    assert auto_uv_page.isAncestorOf(win.controls.start_button)
+    assert win.controls.selected_scan_preset() == "adaptive"
+
     # The undervolting-runs panel shows only on the Auto-UV tab.
     win.tabs.setCurrentIndex(win.auto_uv_tab_index)
     assert not win.table_panel.isHidden()

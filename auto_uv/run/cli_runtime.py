@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 from pathlib import Path
-import shlex
-import sys
 from typing import Callable
 
 from auto_uv.domain.types import AutoUvError, AutoUvFinalChoiceDiscarded
@@ -26,24 +23,15 @@ from profiles.uv.profile_tiers import (
     profile_tier_label,
     resolve_profile_tier_profiles,
 )
+from runtime.daemon_client import apply_runtime_intent
+from runtime.runtime_spec import runtime_intent_from_argv
 from runtime.support.runtime_debug import log as runtime_log
-from runtime.support.runtime_service import (
-    DEFAULT_JOURNAL_HOURS,
-    daemonize_with_systemd,
-    install_systemd_service,
-)
+from runtime.support.runtime_service import DEFAULT_JOURNAL_HOURS
 from stability.q2rtx.config import build_stability_config
 
 
 def _noop_emit_json_event(_enabled: bool, _event: str, **_payload) -> None:
     return None
-
-
-def _process_is_root() -> bool:
-    try:
-        return os.geteuid() == 0
-    except AttributeError:
-        return False
 
 
 @dataclass(slots=True)
@@ -55,13 +43,12 @@ class AutoUvForegroundDependencies:
     )
     emit_json_event: Callable[..., None] = _noop_emit_json_event
     final_choice_input: Callable[[str], str] = input
-    daemonize_with_systemd: Callable = daemonize_with_systemd
-    install_systemd_service: Callable = install_systemd_service
+    apply_runtime_intent: Callable = apply_runtime_intent
+    runtime_intent_from_argv: Callable = runtime_intent_from_argv
     read_auto_uv_profiles: Callable = read_auto_uv_profiles
     resolve_profile_tier_profiles: Callable = resolve_profile_tier_profiles
     available_adaptive_tiers: Callable = available_adaptive_tiers
     profile_tier_label: Callable = profile_tier_label
-    is_root: Callable[[], bool] = _process_is_root
     clear_auto_uv_stop_request: Callable = clear_auto_uv_stop_request
     log: Callable[[str], None] = runtime_log
 
@@ -224,23 +211,19 @@ def maybe_prompt_post_scan_runtime_actions(
         f"Start PenguinBurner runtime now with {mode_label}?",
         default=True,
     ):
-        _run_optional_systemd_action(
-            "daemonize",
-            program_file=program_file,
+        _run_optional_runtime_action(
+            persist_on_startup=False,
             runtime_argv=runtime_argv,
-            journal_hours=journal_hours,
             deps=deps,
         )
 
     if prompt_yes_no(
-        f"Install {mode_label} as systemd autostart?",
+        f"Persist {mode_label} for startup?",
         default=False,
     ):
-        _run_optional_systemd_action(
-            "install",
-            program_file=program_file,
+        _run_optional_runtime_action(
+            persist_on_startup=True,
             runtime_argv=runtime_argv,
-            journal_hours=journal_hours,
             deps=deps,
         )
 
@@ -272,69 +255,20 @@ def _available_adaptive_tier_labels(deps: AutoUvForegroundDependencies) -> list[
     return labels
 
 
-def _run_optional_systemd_action(
-    action: str,
+def _run_optional_runtime_action(
     *,
-    program_file: str | Path,
+    persist_on_startup: bool,
     runtime_argv: list[str],
-    journal_hours: int | float,
     deps: AutoUvForegroundDependencies,
 ) -> None:
-    action_flag = "--daemonize" if action == "daemonize" else "--install-systemd-service"
-    command = format_privileged_runtime_command(
-        program_file,
-        [action_flag, *runtime_argv, "--journal-hours", str(int(float(journal_hours)))],
-    )
-    if not deps.is_root():
-        deps.log(
-            "Root privileges are required for systemd runtime changes. Run:\n"
-            f"  {command}"
-        )
-        return
     try:
-        if action == "daemonize":
-            deps.daemonize_with_systemd(
-                program_file,
-                runtime_argv,
-                journal_hours=journal_hours,
-                log=deps.log,
-            )
-        else:
-            deps.install_systemd_service(
-                program_file,
-                runtime_argv,
-                journal_hours=journal_hours,
-                log=deps.log,
-            )
+        intent = deps.runtime_intent_from_argv(runtime_argv)
+        deps.apply_runtime_intent(
+            intent,
+            persist_on_startup=bool(persist_on_startup),
+        )
     except Exception as exc:
-        deps.log(f"Could not apply optional systemd action: {exc}")
-        deps.log(f"Equivalent command:\n  {command}")
-
-
-def format_privileged_runtime_command(
-    program_file: str | Path,
-    argv: list[str],
-) -> str:
-    python = sys.executable or "python3"
-    env = [
-        f"PENGUIN_BURNER_HOME={Path.home()}",
-    ]
-    user = (
-        os.environ.get("SUDO_USER", "").strip()
-        or os.environ.get("PENGUIN_BURNER_Q2RTX_USER", "").strip()
-        or os.environ.get("USER", "").strip()
-    )
-    if user:
-        env.append(f"PENGUIN_BURNER_Q2RTX_USER={user}")
-    command = [
-        "pkexec",
-        "env",
-        *env,
-        python,
-        str(Path(program_file).resolve()),
-        *argv,
-    ]
-    return " ".join(shlex.quote(str(part)) for part in command)
+        deps.log(f"Could not apply optional runtime action through burnerd: {exc}")
 
 
 def emit_auto_uv_final_result(

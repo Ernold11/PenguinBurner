@@ -218,12 +218,12 @@ def runner_status_text(
 
 
 def systemd_autostart_profile_info() -> dict[str, object]:
-    if not systemd_service_is_enabled():
-        return _legacy_systemd_autostart_profile_info()
     try:
         summary = boot_runtime_spec(timeout_s=1.0)
     except Exception:
-        summary = {}
+        if not systemd_service_is_enabled():
+            return _legacy_systemd_autostart_profile_info()
+        return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
     return _profile_info_from_runtime_summary(summary, require_configured=True)
 
 
@@ -271,6 +271,11 @@ def systemd_unit_entry_exists() -> bool:
     # A persistent PenguinBurner entry means the native daemon unit is installed
     # (or a legacy unit survives) -- more robust than reading the state file,
     # which is briefly absent for a stock/no-argv autostart.
+    try:
+        boot_runtime_spec(timeout_s=1.0)
+        return True
+    except Exception:
+        pass
     try:
         return (
             systemd_service_unit_path().is_file()

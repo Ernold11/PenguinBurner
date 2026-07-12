@@ -174,14 +174,15 @@ def test_flatpak_cli_wrapper_installer_is_conservative() -> None:
     assert "$ROOT/scripts/install-flatpak-cli-wrappers.sh" not in build_script
 
 
-def test_flatpak_cli_wrappers_forward_to_flatpak_but_steam_wrapper_does_not() -> None:
+def test_flatpak_steam_wrapper_only_uses_flatpak_for_runtime_handoff() -> None:
     from common.flatpak_wrappers import _wrapper_text
 
     cli_wrapper = _wrapper_text("pburn-cli")
     steam_wrapper = _wrapper_text("PENGUIN_BURNER")
 
     assert "exec /usr/bin/flatpak run --user --command=pburn-cli" in cli_wrapper
-    assert "flatpak run" not in steam_wrapper
+    assert 'run_flatpak_clean run --cwd=/app --command=python3 "$app_id"' in steam_wrapper
+    assert "exec flatpak run" not in steam_wrapper
     assert 'exec "$@"' in steam_wrapper
     assert "VK_ADD_IMPLICIT_LAYER_PATH" in steam_wrapper
     assert "PENGUIN_BURNER_NATIVE_LAYER_DIR" in steam_wrapper
@@ -205,12 +206,11 @@ def test_flatpak_steam_wrapper_launches_game_on_host_when_layer_missing(tmp_path
     env = {
         **os.environ,
         "HOME": str(tmp_path),
-        "PB_OVERLAY": "1",
         "PB_INGAME_LATENCY": "1",
         "PENGUIN_BURNER_FLATPAK_APP_PATH": str(tmp_path / "missing-app-files"),
     }
     result = subprocess.run(
-        [str(wrapper), str(game)],
+        [str(wrapper), "--pb-overlay=1", str(game)],
         env=env,
         capture_output=True,
         text=True,
@@ -226,6 +226,18 @@ def test_flatpak_steam_wrapper_launches_game_on_host_when_layer_missing(tmp_path
     assert "PENGUIN_BURNER_LATENCY_LAYER=1\n" in captured
     assert "PENGUIN_BURNER_LATENCY_DISPLAY=1\n" in captured
     assert "VK_ADD_IMPLICIT_LAYER_PATH=" not in captured
+
+
+def test_flatpak_steam_wrapper_contains_game_runtime_host_handoff() -> None:
+    from common.flatpak_wrappers import _wrapper_text
+
+    wrapper = _wrapper_text("PENGUIN_BURNER")
+
+    assert "-m integrations.steam.game_runtime" in wrapper
+    assert '--watch-pid "$$" --app-id "$steam_app_id"' in wrapper
+    assert 'run_flatpak_clean run --cwd=/app --command=python3 "$app_id"' in wrapper
+    assert "unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT" in wrapper
+    assert 'exec /usr/bin/flatpak "$@"' in wrapper
 
 
 def test_flatpak_steam_wrapper_routes_ingame_latency_stderr_to_fifo(tmp_path) -> None:

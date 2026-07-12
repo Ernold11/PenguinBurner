@@ -26,6 +26,8 @@ from ui.features.tuning.tuning import (
     auto_uv_performance_preset_tooltip,
     auto_uv_performance_target_default,
     auto_uv_power_limit_default,
+    auto_uv_scan_estimate_minutes,
+    auto_uv_scan_target_description,
     auto_uv_voltage_floor_range_mv,
     memory_offset_mhz_range,
 )
@@ -52,6 +54,21 @@ def test_gpu_choice_label_with_and_without_bus() -> None:
         "GPU 0 - RTX 4090 (01:00.0)"
     )
     assert GpuChoice(1, "").label == "GPU 1 - NVIDIA GPU"
+
+
+def test_auto_uv_scan_estimates_cover_single_profiles_and_full_scan() -> None:
+    assert auto_uv_scan_estimate_minutes("efficiency") == (10, 20)
+    assert auto_uv_scan_estimate_minutes("balanced") == (10, 20)
+    assert auto_uv_scan_estimate_minutes("performance") == (15, 25)
+    assert auto_uv_scan_estimate_minutes("adaptive") == (25, 35)
+
+    assert "only the Efficiency profile" in auto_uv_scan_target_description(
+        "efficiency"
+    )
+    full_description = auto_uv_scan_target_description("adaptive")
+    assert "Efficiency, Balanced, and Performance" in full_description
+    assert "25-35 minutes" in full_description
+    assert "verification duration you choose" in full_description
 
 
 def test_gpu_choices_from_nvml_identities_skips_bad_rows_and_dupes() -> None:

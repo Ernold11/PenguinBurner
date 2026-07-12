@@ -223,15 +223,49 @@ def test_daemon_unit_autostart_and_entry_exists(monkeypatch, tmp_path) -> None:
     }
     assert profiles.systemd_unit_entry_exists() is True
 
-    # No unit files -> no persistent entry.
+    # If the daemon API is unavailable, fall back to visible host unit files.
+    monkeypatch.setattr(
+        profiles,
+        "boot_runtime_spec",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("unavailable")),
+    )
     monkeypatch.setattr(
         profiles, "systemd_service_unit_path", lambda: tmp_path / "missing.service"
     )
     assert profiles.systemd_unit_entry_exists() is False
 
 
+def test_autostart_info_uses_daemon_inside_flatpak_without_systemctl(monkeypatch) -> None:
+    monkeypatch.setattr(
+        profiles,
+        "systemd_service_is_enabled",
+        lambda: (_ for _ in ()).throw(AssertionError("must not query systemctl")),
+    )
+    monkeypatch.setattr(
+        profiles,
+        "boot_runtime_spec",
+        lambda **_kwargs: {
+            "configured": True,
+            "profile_id": "adaptive-profile",
+            "runtime_mode": "adaptive",
+            "silent_fan_curve": True,
+        },
+    )
+
+    assert profiles.systemd_autostart_profile_info() == {
+        "selector": "adaptive-profile",
+        "silent_fan_curve": True,
+        "adaptive_auto_uv": True,
+    }
+
+
 def test_autostart_and_running_info(monkeypatch) -> None:
     monkeypatch.setattr(profiles, "systemd_service_is_enabled", lambda: False)
+    monkeypatch.setattr(
+        profiles,
+        "boot_runtime_spec",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("unavailable")),
+    )
     monkeypatch.setattr(
         profiles,
         "_legacy_systemd_autostart_profile_info",
