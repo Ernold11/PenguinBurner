@@ -47,7 +47,6 @@ def win(qapp, monkeypatch):
         lambda: {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False},
     )
     monkeypatch.setattr(window_mod, "penguin_burner_runtime_is_active", lambda: False)
-    monkeypatch.setattr(window_mod, "persist_on_startup_from_runtime_config", lambda default=False: default)
     monkeypatch.setattr(window_mod, "silent_fan_curve_from_runtime_config", lambda: False)
     monkeypatch.setattr(window_mod, "silent_fan_curve_to_runtime_config", lambda v: v)
     modules = import_qt()
@@ -231,7 +230,6 @@ def test_apply_profile_persists_silent_fan_choice(win, monkeypatch) -> None:
     window, _mp = win
     saved: list[bool] = []
     monkeypatch.setattr(window_mod, "silent_fan_curve_to_runtime_config", lambda v: saved.append(bool(v)))
-    monkeypatch.setattr(window_mod, "persist_on_startup_to_runtime_config", lambda v: v)
     monkeypatch.setattr(actions_mod, "profile_for_selector", lambda summaries, pid: dict(PROFILE))
     monkeypatch.setattr(actions_mod, "profile_can_apply", lambda p: True)
     monkeypatch.setattr(actions_mod, "sync_profile_fan_payload", lambda p: True)

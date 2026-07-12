@@ -32,6 +32,10 @@ QLabel#purposeText {{
     font-weight: 400;
     line-height: 1.25;
 }}
+QLabel#profilesAdaptiveNote {{
+    color: {theme.TEXT_MUTED};
+    font-size: 12px;
+}}
 QLabel#aboutSavings {{
     color: {theme.GOOD};
     font-size: 15px;

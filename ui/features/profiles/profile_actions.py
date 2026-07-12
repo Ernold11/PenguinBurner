@@ -51,13 +51,8 @@ class ProfileActionsMixin:
         # the one allowed systemd lifecycle elevation before this request runs.
         return "daemonize"
 
-    def _run_selected_profile(self) -> None:
+    def _run_profiles(self) -> None:
         self._run_runtime_action(self._apply_profile_action())
-
-    def _run_adaptive_profiles(self) -> None:
-        self._run_runtime_action(
-            self._apply_profile_action(), adaptive_auto_uv=True
-        )
 
     def _run_runtime_action(
         self,
@@ -73,12 +68,12 @@ class ProfileActionsMixin:
         selected_profile = None
         if action not in no_profile_actions and adaptive_auto_uv:
             tiers = adaptive_profile_tier_labels(self.profile_summaries)
-            if len(tiers) < 2:
+            if not tiers:
                 available = ", ".join(tiers) if tiers else "none"
                 self.errors.show(
                     "Adaptive Auto-UV unavailable",
-                    "Adaptive Auto-UV requires at least two verified Auto-UV "
-                    f"profile tiers. Available tiers: {available}.",
+                    "Adaptive Auto-UV requires at least one verified Auto-UV "
+                    f"profile. Available tiers: {available}.",
                 )
                 return
             selected_profile = profile_for_selector(self.profile_summaries, "latest")
@@ -120,13 +115,10 @@ class ProfileActionsMixin:
             ),
         ):
             return
-        persist_on_startup = (
-            action == "install-systemd"
-            or (
-                action == "daemonize"
-                and self.profile_list.persist_on_startup_enabled()
-            )
-        )
+        # Applying IS persisting: the applied profile always becomes the boot
+        # profile (no autostart/current dualism). "Remove Autostart Entry" is
+        # the explicit opt-out.
+        persist_on_startup = action not in no_profile_actions
         command = runtime_profile_command(
             action,
             profile_selector="" if action in no_profile_actions else profile_id,
@@ -137,10 +129,6 @@ class ProfileActionsMixin:
         )
         if action not in no_profile_actions:
             self._persist_silent_fan_preference(self.profile_list.silent_fan_enabled())
-        if action == "install-systemd":
-            self._persist_startup_preference(True)
-        elif action in no_profile_actions:
-            self._persist_startup_preference(False)
         if action not in no_profile_actions:
             # A profile is now in effect, so the GPU is no longer at stock.
             self._defaults_restored = False
@@ -206,7 +194,6 @@ class ProfileActionsMixin:
                     "\nAdaptive Auto-UV now has fewer than two usable tiers; "
                     "switching Systemd autostart to the remaining profile.\n"
                 )
-                self.profile_list.install_button.setChecked(True)
                 self._run_runtime_action(
                     "daemonize",
                     profile_selector=switch_profile_id,
@@ -578,7 +565,6 @@ class ProfileActionsMixin:
         elif chosen == fan_action:
             self._edit_profile_fan_curve(profile)
         elif chosen == apply_action:
-            self.profile_list.install_button.setChecked(True)
             self._run_runtime_action("daemonize")
         elif chosen == verify_action:
             self._verify_profile(profile)
@@ -624,7 +610,7 @@ class ProfileActionsMixin:
         if persists:
             return f"Starting profile: {selected}; Autostart: Yes."
         if action in {"clear-boot", "uninstall-systemd"}:
-            return "Removing Systemd autostart entry."
+            return "Removing autostart entry."
         return f"Starting profile: {selected}; Autostart: No."
 
 

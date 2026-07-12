@@ -415,7 +415,7 @@ def test_profile_list_preserves_silent_fan_toggle_for_same_selection_refresh() -
     assert profile_list.silent_fan_enabled() is True
 
 
-def test_profile_list_uses_apply_adaptive_button_instead_of_toggle() -> None:
+def test_profile_list_uses_one_apply_button() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -423,42 +423,40 @@ def test_profile_list_uses_apply_adaptive_button_instead_of_toggle() -> None:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     _ = app
     profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
-
-    profile_list.set_profiles([{"profile_id": "profile-a", "final_verified": True}])
-
-    assert profile_list.adaptive_button.text() == "Apply Adaptive"
-    assert not hasattr(profile_list, "adaptive_checkbox")
-    assert profile_list.adaptive_button.isEnabled()
-    assert profile_list.install_button.isEnabled()
-
-
-def test_profile_list_persist_toggle_is_global_not_per_profile() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    pytest.importorskip("PySide6")
-    from PySide6 import QtCore, QtGui, QtWidgets
-
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    _ = app
-    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
-    profiles = [
-        {"profile_id": "profile-a", "final_verified": True},
-        {"profile_id": "profile-b", "final_verified": True},
-    ]
 
     profile_list.set_profiles(
-        profiles,
-        systemd_selector="profile-a",
-        has_systemd_entry=True,
-        persist_on_startup_checked=True,
+        [{"profile_id": "profile-a", "final_verified": True}],
     )
-    profile_list.select_profile("profile-b")
 
-    assert profile_list.persist_on_startup_enabled() is True
+    assert profile_list.daemonize_button.text() == "Apply"
+    assert not hasattr(profile_list, "adaptive_button")
+    assert not hasattr(profile_list, "adaptive_checkbox")
+    assert not profile_list.daemonize_button.isEnabled()
+    # Applying always persists: there is no separate persist toggle anymore.
+    assert not hasattr(profile_list, "install_button")
 
-    profile_list.install_button.setChecked(False)
     profile_list.select_profile("profile-a")
+    assert profile_list.daemonize_button.isEnabled()
 
-    assert profile_list.persist_on_startup_enabled() is False
+
+def test_profile_list_has_no_persist_toggle_and_ignores_stale_kwargs() -> None:
+    """Applying IS persisting now: the old Persist-on-Startup checkbox is gone
+    and set_profiles no longer takes toggle-sync arguments."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+
+    assert not hasattr(profile_list, "install_button")
+    assert not hasattr(profile_list, "persist_on_startup_enabled")
+    with pytest.raises(TypeError):
+        profile_list.set_profiles(
+            [{"profile_id": "profile-a", "final_verified": True}],
+            persist_on_startup_checked=True,
+        )
 
 
 def test_adaptive_profile_tier_labels_need_distinct_verified_tiers() -> None:

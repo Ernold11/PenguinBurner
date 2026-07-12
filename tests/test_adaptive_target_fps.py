@@ -9,8 +9,6 @@ from runtime.support.adaptive_target_fps import (
     parse_adaptive_target_fps,
 )
 from cli.runtime_config_file import persist_adaptive_target_fps_to_runtime_config
-from cli.runtime_config_file import persist_on_startup_from_runtime_config
-from cli.runtime_config_file import persist_on_startup_to_runtime_config
 from cli.runtime_config_file import silent_fan_curve_from_runtime_config
 from cli.runtime_config_file import silent_fan_curve_to_runtime_config
 
@@ -53,22 +51,6 @@ def test_adaptive_target_fps_persists_to_runtime_config(tmp_path) -> None:
     assert "poll_interval_s = 3" in text
     assert "[adaptive]" in text
     assert "target_fps = 90" in text
-
-
-def test_persist_on_startup_preference_round_trips_runtime_config(tmp_path) -> None:
-    path = tmp_path / "penguin_burner.toml"
-    path.write_text("[adaptive]\ntarget_fps = 72\n", encoding="utf-8")
-
-    assert persist_on_startup_from_runtime_config(path, default=True) is True
-    assert persist_on_startup_to_runtime_config(False, path) is False
-    assert persist_on_startup_from_runtime_config(path, default=True) is False
-    assert persist_on_startup_to_runtime_config(True, path) is True
-    assert persist_on_startup_from_runtime_config(path, default=False) is True
-    text = path.read_text(encoding="utf-8")
-    assert "[adaptive]" in text
-    assert "target_fps = 72" in text
-    assert "[ui]" in text
-    assert "persist_on_startup = true" in text
 
 
 def test_silent_fan_curve_preference_round_trips_runtime_config(tmp_path) -> None:

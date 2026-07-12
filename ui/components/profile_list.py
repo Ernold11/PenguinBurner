@@ -64,12 +64,10 @@ class ProfileList:
 
         top = QtWidgets.QHBoxLayout()
         self.silent_fan_checkbox = QtWidgets.QCheckBox("Silent fan curve")
-        self.install_button = QtWidgets.QCheckBox("Persist on Startup")
-        self.adaptive_button = QtWidgets.QPushButton("Apply Adaptive")
-        self.adaptive_button.setToolTip(
-            "Apply dynamic Auto-UV switching between saved profile tiers."
+        self.daemonize_button = QtWidgets.QPushButton("Apply")
+        self.daemonize_button.setToolTip(
+            "Apply the single selected profile."
         )
-        self.daemonize_button = QtWidgets.QPushButton("Apply Selected")
         self.delete_button = QtWidgets.QToolButton()
         self.delete_button.setObjectName("deleteProfilesButton")
         self.delete_button.setIcon(_standard_trash_icon(QtWidgets, self.widget))
@@ -85,8 +83,6 @@ class ProfileList:
         top.addWidget(QtWidgets.QLabel("Stored undervolt profiles"))
         top.addStretch(1)
         top.addWidget(self.silent_fan_checkbox)
-        top.addWidget(self.install_button)
-        top.addWidget(self.adaptive_button)
         top.addWidget(self.daemonize_button)
         top.addWidget(self.delete_button)
         top.addWidget(self.remove_button)
@@ -124,8 +120,15 @@ class ProfileList:
 
         layout.addLayout(top)
         layout.addWidget(self.table, 1)
+        adaptive_note = QtWidgets.QLabel(
+            "Applying a profile also makes it the boot profile. Per-game "
+            "adaptive profiles with a target pre-frame-gen FPS are managed "
+            "in the Steam tab."
+        )
+        adaptive_note.setObjectName("profilesAdaptiveNote")
+        adaptive_note.setWordWrap(True)
+        layout.addWidget(adaptive_note)
         self.table.itemSelectionChanged.connect(self._sync_action_state)
-        self.install_button.toggled.connect(lambda _checked: self._sync_action_state())
         self._sync_action_state()
 
     def set_profiles(
@@ -134,16 +137,13 @@ class ProfileList:
         *,
         systemd_selector: str = "",
         has_systemd_entry: bool | None = None,
-        persist_on_startup_checked: bool | None = None,
         preferred_candidate_id: str = "",
         preferred_profile_id: str = "",
         select_preferred: bool = False,
-        preserve_persist_toggle: bool = True,
         silent_fan_checked: bool | None = None,
         preserve_silent_fan_toggle: bool = True,
     ) -> None:
         selected_profile_ids = self.selected_profile_ids()
-        persist_toggle_checked = self.install_button.isChecked()
         silent_fan_checked_before = self.silent_fan_checkbox.isChecked()
         sort_column = self._active_sort_column()
         sort_order = self._sort_order
@@ -298,10 +298,6 @@ class ProfileList:
                 pass
         finally:
             self.table.blockSignals(table_signals_blocked)
-        if persist_on_startup_checked is not None:
-            self._set_persist_toggle_checked(bool(persist_on_startup_checked))
-        elif preserve_persist_toggle:
-            self._set_persist_toggle_checked(persist_toggle_checked)
         should_preserve_silent_fan_toggle = (
             preserve_silent_fan_toggle
             and _should_preserve_single_selection_toggle(
@@ -386,9 +382,6 @@ class ProfileList:
     def silent_fan_enabled(self) -> bool:
         return bool(self.silent_fan_checkbox.isChecked())
 
-    def persist_on_startup_enabled(self) -> bool:
-        return bool(self.install_button.isChecked())
-
     def selected_profile_name(self) -> str:
         rows = self._selected_rows()
         if not rows:
@@ -454,23 +447,11 @@ class ProfileList:
             and all(self._row_is_deletable(row) for row in selected_rows)
         )
         self.daemonize_button.setEnabled(has_apply_selection)
-        self.adaptive_button.setEnabled(self._runtime_actions_available)
-        self.install_button.setEnabled(
-            self._runtime_actions_available
-            and (has_apply_selection or self.table.rowCount() > 0)
-        )
         self.delete_button.setEnabled(has_delete_selection)
         self.remove_button.setEnabled(
             self._runtime_actions_available and self._has_systemd_service
         )
         self.restore_defaults_button.setEnabled(self._runtime_actions_available)
-
-    def _set_persist_toggle_checked(self, checked: bool) -> None:
-        signals_blocked = self.install_button.blockSignals(True)
-        try:
-            self.install_button.setChecked(bool(checked))
-        finally:
-            self.install_button.blockSignals(signals_blocked)
 
     def _set_silent_fan_checked(self, checked: bool) -> None:
         signals_blocked = self.silent_fan_checkbox.blockSignals(True)

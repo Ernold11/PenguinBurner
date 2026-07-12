@@ -48,7 +48,6 @@ def win(qapp, monkeypatch):
         lambda: {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False},
     )
     monkeypatch.setattr(window_mod, "penguin_burner_runtime_is_active", lambda: False)
-    monkeypatch.setattr(window_mod, "persist_on_startup_from_runtime_config", lambda default=False: default)
     monkeypatch.setattr(window_mod, "silent_fan_curve_from_runtime_config", lambda: False)
     monkeypatch.setattr(window_mod, "silent_fan_curve_to_runtime_config", lambda v: v)
     modules = import_qt()
@@ -239,20 +238,15 @@ def test_run_runtime_action_launches(win) -> None:
     assert fake.started  # runtime command launched
 
 
-def test_apply_adaptive_with_persistence_stays_on_daemon_path(win) -> None:
+def test_apply_selected_profile_with_persistence_stays_on_daemon_path(win) -> None:
     window, monkeypatch = win
     captured: list[tuple[tuple, dict]] = []
     window.profile_summaries = [
         {"profile_id": "eff", "final_verified": True, "profile_tier": "Efficiency"},
         {"profile_id": "perf", "final_verified": True, "profile_tier": "Performance"},
     ]
-    monkeypatch.setattr(window.profile_list, "persist_on_startup_enabled", lambda: True)
     monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: False)
-    monkeypatch.setattr(
-        actions_mod,
-        "adaptive_profile_tier_labels",
-        lambda _profiles: ["Efficiency", "Performance"],
-    )
+    monkeypatch.setattr(window.profile_list, "selected_profile_id", lambda: "perf")
     monkeypatch.setattr(
         actions_mod,
         "profile_for_selector",
@@ -270,12 +264,13 @@ def test_apply_adaptive_with_persistence_stays_on_daemon_path(win) -> None:
     )
     window.command_controller = _FakeController()
 
-    window._run_adaptive_profiles()
+    window._run_profiles()
 
     assert captured
     args, kwargs = captured[0]
     assert args == ("daemonize",)
-    assert kwargs["adaptive_auto_uv"] is True
+    assert kwargs["adaptive_auto_uv"] is False
+    assert kwargs["profile_selector"] == "perf"
     assert kwargs["persist_on_startup"] is True
 
 
@@ -362,9 +357,9 @@ def test_run_runtime_action_blocked_when_busy(win) -> None:
     assert busy.started == []
 
 
-def test_run_adaptive_insufficient_tiers(win) -> None:
+def test_run_adaptive_requires_at_least_one_tier(win) -> None:
     window, monkeypatch = win
-    monkeypatch.setattr(actions_mod, "adaptive_profile_tier_labels", lambda profs: ["Efficiency"])
+    monkeypatch.setattr(actions_mod, "adaptive_profile_tier_labels", lambda profs: [])
     shown: list = []
     monkeypatch.setattr(window.errors, "show", lambda title, msg: shown.append(title))
     fake = _FakeController()

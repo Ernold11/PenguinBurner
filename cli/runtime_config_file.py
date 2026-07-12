@@ -18,7 +18,8 @@ from runtime.support.adaptive_target_fps import (
 from common.penguin_burner_paths import default_runtime_config_path
 
 UI_CONFIG_SECTION = "ui"
-PERSIST_ON_STARTUP_CONFIG_KEY = "persist_on_startup"
+# Retired 2026-07 (applying a profile now always persists it as the boot
+# profile); a stale key in existing configs is simply ignored.
 SILENT_FAN_CURVE_CONFIG_KEY = "silent_fan_curve"
 
 
@@ -57,7 +58,6 @@ def default_runtime_config() -> dict:
             "target_fps": DEFAULT_ADAPTIVE_TARGET_FPS,
         },
         UI_CONFIG_SECTION: {
-            PERSIST_ON_STARTUP_CONFIG_KEY: False,
             SILENT_FAN_CURVE_CONFIG_KEY: False,
         },
     }
@@ -100,45 +100,6 @@ def persist_adaptive_target_fps_to_runtime_config(
     normalized = parse_adaptive_target_fps(target_fps)
     adaptive[ADAPTIVE_TARGET_FPS_CONFIG_KEY] = normalized
     config[ADAPTIVE_TARGET_FPS_CONFIG_SECTION] = adaptive
-    write_runtime_config(path, config)
-    return normalized
-
-
-def persist_on_startup_from_runtime_config(
-    config_path=None,
-    *,
-    default: bool = False,
-) -> bool:
-    path = (
-        default_config_path()
-        if config_path is None
-        else Path(config_path).expanduser()
-    )
-    config = load_raw_runtime_config(path)
-    raw_ui = config.get(UI_CONFIG_SECTION, {})
-    if not isinstance(raw_ui, dict):
-        return bool(default)
-    value = raw_ui.get(PERSIST_ON_STARTUP_CONFIG_KEY)
-    if value is None:
-        return bool(default)
-    return _config_bool(value, default=default)
-
-
-def persist_on_startup_to_runtime_config(
-    enabled,
-    config_path=None,
-) -> bool:
-    path = (
-        default_config_path()
-        if config_path is None
-        else Path(config_path).expanduser()
-    )
-    config = load_raw_runtime_config(path)
-    raw_ui = config.get(UI_CONFIG_SECTION, {})
-    ui = dict(raw_ui) if isinstance(raw_ui, dict) else {}
-    normalized = bool(enabled)
-    ui[PERSIST_ON_STARTUP_CONFIG_KEY] = normalized
-    config[UI_CONFIG_SECTION] = ui
     write_runtime_config(path, config)
     return normalized
 

@@ -78,9 +78,6 @@ def main_window(qapp, monkeypatch):
         lambda: {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False},
     )
     monkeypatch.setattr(window_mod, "penguin_burner_runtime_is_active", lambda: False)
-    monkeypatch.setattr(
-        window_mod, "persist_on_startup_from_runtime_config", lambda default=False: default
-    )
     monkeypatch.setattr(window_mod, "silent_fan_curve_from_runtime_config", lambda: False)
     monkeypatch.setattr(window_mod, "silent_fan_curve_to_runtime_config", lambda v: v)
     qt_modules = import_qt()

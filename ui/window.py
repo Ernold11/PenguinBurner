@@ -4,8 +4,6 @@ from pathlib import Path
 import shlex
 
 from cli.runtime_config_file import (
-    persist_on_startup_from_runtime_config,
-    persist_on_startup_to_runtime_config,
     silent_fan_curve_from_runtime_config,
     silent_fan_curve_to_runtime_config,
 )
@@ -156,7 +154,7 @@ class MainWindow(ProfileActionsMixin):
             adaptive_available=lambda: len(
                 adaptive_profile_tier_labels(self.profile_summaries)
             )
-            >= 2,
+            >= 1,
         )
 
         self.tabs = self.QtWidgets.QTabWidget()
@@ -250,12 +248,8 @@ class MainWindow(ProfileActionsMixin):
         self.controls.stop_button.clicked.connect(self.stop_scan)
         self.controls.about_button.clicked.connect(self.show_about)
         self.controls.import_afterburner_button.clicked.connect(self.afterburner_import.run)
-        self.profile_list.adaptive_button.clicked.connect(self._run_adaptive_profiles)
-        self.profile_list.daemonize_button.clicked.connect(self._run_selected_profile)
+        self.profile_list.daemonize_button.clicked.connect(self._run_profiles)
         self.profile_list.delete_button.clicked.connect(self._delete_selected_profiles)
-        self.profile_list.install_button.toggled.connect(
-            self._persist_startup_preference
-        )
         self.profile_list.silent_fan_checkbox.toggled.connect(
             self._persist_silent_fan_preference
         )
@@ -523,6 +517,7 @@ class MainWindow(ProfileActionsMixin):
             self.last_auto_uv_candidate_id = result.selected_candidate_id
 
     def _scan_finished(self, exit_code, exit_status, stopped_by_user: bool) -> None:
+        apply_final_profile = False
         status_name = "finished" if int(exit_code) == 0 else "stopped"
         self.log_view.append(f"\nAuto-UV process {status_name}: exit_code={exit_code}\n")
         failed = int(exit_code) != 0 and not stopped_by_user
@@ -553,6 +548,7 @@ class MainWindow(ProfileActionsMixin):
             self.header.set_stage("Complete")
             self.controls.set_status_text("Final verification complete.")
             self.tabs.setCurrentIndex(self.profiles_tab_index)
+            apply_final_profile = True
         elif stopped_by_user:
             self.header.set_stage("Stopped")
             self.runs_table.mark_running_rows_stopped(label="Stopped")
@@ -570,6 +566,16 @@ class MainWindow(ProfileActionsMixin):
         # may be a transient selected profile or Adaptive mode and can differ from
         # the boot/autostart profile, so the UI must not apply a second fallback.
         self._load_profiles()
+        if apply_final_profile:
+            # The freshly verified profile becomes the running AND boot
+            # profile (applying is persisting; no autostart dualism), so the
+            # daemon simply runs from the user's first completed scan onward.
+            # Deferred one event-loop turn so the scan controller has fully
+            # released before the apply command starts. One static preset:
+            # adaptivity is a per-game (Steam tab) choice, not a standing one.
+            self.QtCore.QTimer.singleShot(
+                0, lambda: self._run_runtime_action("daemonize")
+            )
 
     def _close_dynamic_tab(self, index: int) -> None:
         self.curve_tabs.close_tab(index)
@@ -627,9 +633,6 @@ class MainWindow(ProfileActionsMixin):
             self.profile_summaries,
             systemd_selector=systemd_selector,
             has_systemd_entry=has_systemd_entry,
-            persist_on_startup_checked=persist_on_startup_from_runtime_config(
-                default=has_systemd_entry,
-            ),
             preferred_candidate_id=self.last_auto_uv_candidate_id,
             select_preferred=bool(self.last_auto_uv_candidate_id),
             # The silent-fan tick is sticky: the user's persisted choice is
@@ -679,15 +682,13 @@ class MainWindow(ProfileActionsMixin):
             runner_status_text(
                 self.profile_summaries,
                 running_selector=str(running_info["selector"]),
+                running_adaptive=bool(running_info["adaptive_auto_uv"]),
                 autostart_selector=str(autostart_info["selector"]),
                 running_silent_fan=bool(running_info["silent_fan_curve"]),
                 autostart_silent_fan=bool(autostart_info["silent_fan_curve"]),
                 defaults_restored=self._defaults_restored,
             )
         )
-
-    def _persist_startup_preference(self, checked: bool) -> None:
-        persist_on_startup_to_runtime_config(bool(checked))
 
     def _persist_silent_fan_preference(self, checked: bool) -> None:
         # Remember the silent-fan choice durably so the "latest profile setup"
