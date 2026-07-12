@@ -18,8 +18,8 @@ from runtime.support.adaptive_target_fps import (
 from common.penguin_burner_paths import default_runtime_config_path
 
 UI_CONFIG_SECTION = "ui"
-# Retired 2026-07 (applying a profile now always persists it as the boot
-# profile); a stale key in existing configs is simply ignored.
+# Retired 2026-07: standing Apply and Restore defaults now always persist an
+# explicit profile or stock state for boot. Stale toggle keys are ignored.
 SILENT_FAN_CURVE_CONFIG_KEY = "silent_fan_curve"
 
 

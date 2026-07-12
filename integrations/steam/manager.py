@@ -28,11 +28,10 @@ from .launch_options import (
 from .library import InstalledSteamGame, installed_steam_games
 from .process import steam_game_running, steam_running
 from .settings import (
-    GAME_MODE_DEFAULT,
+    GAME_MODE_ADAPTIVE,
     SteamGameSetting,
     load_steam_game_settings,
     normalize_game_mode,
-    remove_steam_game_setting,
     store_steam_game_setting,
 )
 from .users import SteamUser, active_steam_user
@@ -159,7 +158,12 @@ class SteamIntegrationManager:
 
     # -- rows ----------------------------------------------------------------
 
-    def refresh(self, *, read_launch_options: bool = True) -> tuple[SteamGameRow, ...]:
+    def refresh(
+        self,
+        *,
+        read_launch_options: bool = True,
+        initialize_defaults: bool = False,
+    ) -> tuple[SteamGameRow, ...]:
         games = installed_steam_games(self._home)
         if read_launch_options:
             self._read_all_launch_options(games)
@@ -169,6 +173,13 @@ class SteamIntegrationManager:
             if user is not None
             else {}
         )
+        if initialize_defaults:
+            self._initialize_discovered_games(games, settings)
+            settings = (
+                load_steam_game_settings(self._settings_path).get(user.account_id, {})
+                if user is not None
+                else {}
+            )
         return tuple(
             SteamGameRow(
                 game=game,
@@ -177,6 +188,31 @@ class SteamIntegrationManager:
             )
             for game in games
         )
+
+    def _initialize_discovered_games(
+        self,
+        games: tuple[InstalledSteamGame, ...],
+        settings: dict[str, SteamGameSetting],
+    ) -> None:
+        """Give each newly scanned game the safe PenguinBurner defaults."""
+        for game in games:
+            if game.app_id in settings:
+                continue
+            current = self._launch_options.get(game.app_id, "")
+            state = injection_state(current)
+            if state.wrapped:
+                self._store(
+                    game.app_id,
+                    SteamGameSetting(
+                        enabled=True,
+                        mode=GAME_MODE_ADAPTIVE,
+                        overlay=state.overlay,
+                        original_launch_options=remove_injection(current),
+                        injected_launch_options=current,
+                    ),
+                )
+                continue
+            self._apply(game.app_id, SteamGameSetting())
 
     def _read_all_launch_options(self, games: tuple[InstalledSteamGame, ...]) -> None:
         try:
@@ -209,6 +245,17 @@ class SteamIntegrationManager:
         mode = normalize_game_mode(mode)
         setting = self._setting(app_id)
         return self._apply(app_id, replace(setting, mode=mode))
+
+    def set_game_enabled(self, app_id: str, enabled: bool) -> ApplyResult:
+        setting = self._setting(app_id)
+        return self._apply(
+            app_id,
+            replace(
+                setting,
+                enabled=bool(enabled),
+                overlay=setting.overlay if enabled else False,
+            ),
+        )
 
     def set_game_overlay(self, app_id: str, overlay: bool) -> ApplyResult:
         setting = self._setting(app_id)
@@ -280,7 +327,8 @@ class SteamIntegrationManager:
                 app_id,
                 replace(
                     setting,
-                    mode=GAME_MODE_DEFAULT,
+                    enabled=False,
+                    mode=GAME_MODE_ADAPTIVE,
                     overlay=False,
                     original_launch_options=text,
                     injected_launch_options="",
@@ -346,7 +394,7 @@ class SteamIntegrationManager:
             desired = inject_launch_options(current, overlay=setting.overlay)
             original = (
                 setting.original_launch_options
-                if setting.original_launch_options or self._setting(app_id).active
+                if setting.original_launch_options
                 else remove_injection(current)
             )
         else:
@@ -372,16 +420,19 @@ class SteamIntegrationManager:
                 ),
             )
         else:
-            remove_steam_game_setting(
-                self._account_id(), app_id, path=self._settings_path
+            # Disabled is a durable per-game choice. Keep the preselected mode
+            # while restoring the original command and removing our wrapper.
+            self._store(
+                app_id,
+                replace(
+                    setting,
+                    original_launch_options=desired,
+                    injected_launch_options="",
+                ),
             )
         return ApplyResult(True, message, launch_options=desired)
 
     # -- helpers -------------------------------------------------------------
-
-    def _account_id(self) -> str:
-        user = self.active_user()
-        return user.account_id if user is not None else ""
 
     def _store(self, app_id: str, setting: SteamGameSetting) -> None:
         user = self.active_user()

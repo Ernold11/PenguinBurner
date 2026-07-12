@@ -47,7 +47,6 @@ from ui.features.profiles.profiles import penguin_burner_runtime_is_active
 from ui.features.profiles.profiles import runner_status_text
 from ui.features.profiles.profiles import running_auto_uv_profile_info
 from ui.features.profiles.profiles import systemd_autostart_profile_info
-from ui.features.profiles.profiles import systemd_unit_entry_exists
 from ui.features.tuning.verify import stop_request_path as verify_stop_request_path
 from ui.features.profiles.profile_actions import ProfileActionsMixin
 from .styles import STYLESHEET
@@ -70,7 +69,7 @@ class MainWindow(ProfileActionsMixin):
         # True once the user restored stock GPU settings and nothing has been
         # applied since; drives the "Currently running profile: default" status.
         self._defaults_restored = False
-        self._delete_remove_systemd = False
+        self._delete_restore_stock = False
         self._delete_switch_systemd_profile_id = ""
 
         self.window = self.QtWidgets.QMainWindow()
@@ -252,9 +251,6 @@ class MainWindow(ProfileActionsMixin):
         self.profile_list.delete_button.clicked.connect(self._delete_selected_profiles)
         self.profile_list.silent_fan_checkbox.toggled.connect(
             self._persist_silent_fan_preference
-        )
-        self.profile_list.remove_button.clicked.connect(
-            lambda: self._run_runtime_action("clear-boot")
         )
         self.profile_list.restore_defaults_button.clicked.connect(
             self._restore_gpu_defaults
@@ -567,9 +563,7 @@ class MainWindow(ProfileActionsMixin):
         # the boot/autostart profile, so the UI must not apply a second fallback.
         self._load_profiles()
         if apply_final_profile:
-            # The freshly verified profile becomes the running AND boot
-            # profile (applying is persisting; no autostart dualism), so the
-            # daemon simply runs from the user's first completed scan onward.
+            # Apply the freshly verified profile now and save it for boot.
             # Deferred one event-loop turn so the scan controller has fully
             # released before the apply command starts. One static preset:
             # adaptivity is a per-game (Steam tab) choice, not a standing one.
@@ -615,24 +609,13 @@ class MainWindow(ProfileActionsMixin):
     def _load_profiles(self) -> None:
         self.profile_summaries = load_profile_summaries()
         autostart_info = systemd_autostart_profile_info()
-        has_systemd_entry = systemd_unit_entry_exists()
         running_info = (
             running_auto_uv_profile_info()
             if penguin_burner_runtime_is_active()
             else {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
         )
-        systemd_selector = str(autostart_info["selector"])
-        if systemd_selector in {"active", "latest", "__systemd_default__"}:
-            systemd_selector = str(
-                (self.profile_summaries[0] if self.profile_summaries else {}).get(
-                    "profile_id",
-                    "",
-                )
-            )
         self.profile_list.set_profiles(
             self.profile_summaries,
-            systemd_selector=systemd_selector,
-            has_systemd_entry=has_systemd_entry,
             preferred_candidate_id=self.last_auto_uv_candidate_id,
             select_preferred=bool(self.last_auto_uv_candidate_id),
             # The silent-fan tick is sticky: the user's persisted choice is

@@ -41,7 +41,6 @@ def win(qapp, monkeypatch):
     monkeypatch.setattr(
         window_mod, "systemd_autostart_profile_info", lambda: {"selector": "", "silent_fan_curve": False}
     )
-    monkeypatch.setattr(window_mod, "systemd_unit_entry_exists", lambda: False)
     monkeypatch.setattr(
         window_mod, "running_auto_uv_profile_info",
         lambda: {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False},
@@ -197,6 +196,21 @@ def test_delete_selected_profiles(win) -> None:
     monkeypatch.setattr(window.profile_list, "selected_profile_paths", lambda: [])
     monkeypatch.setattr(window.profile_list, "selected_profile_ids", lambda: [])
     window._delete_selected_profiles()
+
+
+def test_delete_boot_profile_falls_back_to_persisted_stock(win) -> None:
+    window, monkeypatch = win
+    restored: list[bool] = []
+    monkeypatch.setattr(
+        window,
+        "_restore_gpu_defaults",
+        lambda: restored.append(True),
+    )
+
+    handled = window._run_delete_autostart_followup(restore_stock=True)
+
+    assert handled is True
+    assert restored == [True]
 
 
 def test_silent_fan_tick_survives_discarded_run(win, monkeypatch) -> None:

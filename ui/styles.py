@@ -174,6 +174,9 @@ QLabel#steamFieldLabel {{
     color: {theme.TEXT_STRONG};
     font-weight: 600;
 }}
+QLabel#steamFieldLabel:disabled {{
+    color: {theme.TEXT_DISABLED};
+}}
 QListWidget#steamGameList {{
     outline: 0;
 }}
@@ -190,6 +193,11 @@ QListWidget#steamGameList::item:selected {{
 }}
 QComboBox#steamGameSort, QComboBox#steamAutoUvMode {{
     padding: 5px 8px;
+}}
+QComboBox#steamAutoUvMode:disabled {{
+    background: {theme.CONTROL_BG};
+    border-color: {theme.BORDER};
+    color: {theme.TEXT_DISABLED};
 }}
 QLineEdit#steamLaunchOptions {{
     font-family: monospace;

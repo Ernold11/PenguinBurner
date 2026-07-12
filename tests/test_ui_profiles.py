@@ -40,7 +40,7 @@ def test_selected_ids_include_selector() -> None:
 def test_delete_autostart_action_non_adaptive() -> None:
     info = {"selector": "p1", "adaptive_auto_uv": False}
     assert profiles.profile_delete_autostart_action([_P1], ["p1"], info) == {
-        "action": "remove-systemd"
+        "action": "restore-stock"
     }
     assert profiles.profile_delete_autostart_action([_P1, _P2], ["p2"], info) == {
         "action": "keep"
@@ -68,10 +68,10 @@ def test_delete_autostart_action_adaptive_branches(monkeypatch) -> None:
         "profile_id": "p2",
     }
 
-    # No remaining tiers -> remove systemd.
+    # No remaining tiers -> restore stock as the standing boot state.
     monkeypatch.setattr(profiles, "available_adaptive_tiers", lambda resolved: [])
     assert profiles.profile_delete_autostart_action([_P1], ["p1"], info)["action"] == (
-        "remove-systemd"
+        "restore-stock"
     )
 
 
@@ -152,14 +152,14 @@ def test_delete_confirmation_text_variants() -> None:
     assert "the selected profiles" in profiles.delete_confirmation_text([])
     assert "Auto-UV profile P1" in profiles.delete_confirmation_text(["P1"])
     assert "2 selected profiles" in profiles.delete_confirmation_text(["A", "B"])
-    assert "remove the Systemd autostart" in profiles.delete_confirmation_text(
-        ["P1"], removes_systemd=True
+    assert "restore stock now and at boot" in profiles.delete_confirmation_text(
+        ["P1"], restores_stock=True
     )
     assert "last usable Adaptive" in profiles.delete_confirmation_text(
-        ["P1"], removes_systemd=True, removes_last_usable_adaptive_profile=True
+        ["P1"], restores_stock=True, removes_last_usable_adaptive_profile=True
     )
     assert "last usable Adaptive Auto-UV profiles" in profiles.delete_confirmation_text(
-        ["A", "B"], removes_systemd=True, removes_last_usable_adaptive_profile=True
+        ["A", "B"], restores_stock=True, removes_last_usable_adaptive_profile=True
     )
     assert "switch it to" in profiles.delete_confirmation_text(
         ["A", "B"], switches_systemd_to_profile="p9"

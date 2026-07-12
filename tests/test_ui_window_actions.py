@@ -42,7 +42,6 @@ def win(qapp, monkeypatch):
     monkeypatch.setattr(
         window_mod, "systemd_autostart_profile_info", lambda: {"selector": "", "silent_fan_curve": False}
     )
-    monkeypatch.setattr(window_mod, "systemd_unit_entry_exists", lambda: False)
     monkeypatch.setattr(
         window_mod, "running_auto_uv_profile_info",
         lambda: {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False},
@@ -274,7 +273,7 @@ def test_apply_selected_profile_with_persistence_stays_on_daemon_path(win) -> No
     assert kwargs["persist_on_startup"] is True
 
 
-def test_remove_autostart_clears_daemon_boot_state(win) -> None:
+def test_restore_defaults_persists_stock_now_and_at_boot(win) -> None:
     window, monkeypatch = win
     captured: list[tuple[tuple, dict]] = []
     monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: False)
@@ -290,10 +289,14 @@ def test_remove_autostart_clears_daemon_boot_state(win) -> None:
     )
     window.command_controller = _FakeController()
 
-    window._run_runtime_action("clear-boot")
+    window._restore_gpu_defaults()
 
     assert captured
-    assert captured[0][0] == ("clear-boot",)
+    args, kwargs = captured[0]
+    assert args == ("daemonize",)
+    assert kwargs["profile_selector"] == "__stock__"
+    assert kwargs["persist_on_startup"] is True
+    assert "stock now and at boot" in window.controls.status_label.text()
 
 
 def test_run_runtime_action_runs_daemon_migration_gate_before_apply(win) -> None:

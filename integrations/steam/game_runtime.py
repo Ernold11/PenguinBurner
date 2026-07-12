@@ -21,6 +21,7 @@ from profiles.uv.profile_tiers import resolve_profile_tier_profiles
 from .settings import (
     GAME_MODE_ADAPTIVE,
     GAME_MODE_DEFAULT,
+    GAME_MODE_NONE,
     GAME_MODE_STOCK,
     SteamGameSetting,
     steam_game_setting,
@@ -55,15 +56,17 @@ def game_account_id(env: dict[str, str], *, home: Path | None = None) -> str:
 
 def profile_argv_for_setting(setting: SteamGameSetting) -> list[str] | None:
     """Daemon runtime argv for a preset; None when there is nothing to apply."""
-    if setting.mode == GAME_MODE_DEFAULT:
+    if not setting.enabled:
+        return None
+    if setting.mode in (GAME_MODE_NONE, GAME_MODE_DEFAULT):
         return None
     if setting.mode == GAME_MODE_STOCK:
         # Explicit per-game stock: pin factory GPU state while this game
         # runs, even when a standing adaptive/tier profile is active.
         return ["--auto-uv-profile", STOCK_PROFILE_SELECTOR]
     if setting.mode == GAME_MODE_ADAPTIVE:
-        # Same shape the UI's "Apply Adaptive" uses: newest profile as the
-        # starting point, tier switching driven by present-frame pacing.
+        # Start from the newest profile; the runtime resolves it to an
+        # available tier and switches using present-frame pacing.
         return ["--auto-uv-profile", "latest", "--adaptive-auto-uv"]
     resolved = resolve_profile_tier_profiles(read_auto_uv_profiles())
     profile = resolved.get(setting.mode)

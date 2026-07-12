@@ -39,21 +39,22 @@ def normalize_game_mode(
     text = str(value or "").strip().lower()
     if not text:
         return default
-    if text in (GAME_MODE_DEFAULT, GAME_MODE_STOCK, GAME_MODE_ADAPTIVE):
+    if text in (GAME_MODE_NONE, GAME_MODE_DEFAULT, GAME_MODE_STOCK, GAME_MODE_ADAPTIVE):
         return text
     return normalize_profile_tier(text, default=default)
 
 
 @dataclass(frozen=True)
 class SteamGameSetting:
-    mode: str = GAME_MODE_DEFAULT
+    enabled: bool = False
+    mode: str = GAME_MODE_ADAPTIVE
     overlay: bool = False
     original_launch_options: str = ""
     injected_launch_options: str = ""
 
     @property
     def active(self) -> bool:
-        return self.mode != GAME_MODE_DEFAULT or self.overlay
+        return self.enabled
 
 
 def steam_game_settings_path() -> Path:
@@ -77,11 +78,22 @@ def load_steam_game_settings(
         for app_id, entry in games.items():
             if not isinstance(entry, dict):
                 continue
+            stored_mode = normalize_game_mode(entry.get("mode"))
+            mode = stored_mode
+            if stored_mode not in GAME_MODES:
+                mode = GAME_MODE_ADAPTIVE
+            injected = str(entry.get("injected_launch_options") or "")
             parsed[str(app_id)] = SteamGameSetting(
-                mode=normalize_game_mode(entry.get("mode")),
+                enabled=bool(
+                    entry.get(
+                        "enabled",
+                        bool(injected) and stored_mode != GAME_MODE_NONE,
+                    )
+                ),
+                mode=mode,
                 overlay=bool(entry.get("overlay")),
                 original_launch_options=str(entry.get("original_launch_options") or ""),
-                injected_launch_options=str(entry.get("injected_launch_options") or ""),
+                injected_launch_options=injected,
             )
         if parsed:
             settings[str(account_id)] = parsed
@@ -174,6 +186,7 @@ def _write_settings(
                 ),
                 "games": {
                     app_id: {
+                        "enabled": setting.enabled,
                         "mode": setting.mode,
                         "overlay": setting.overlay,
                         "original_launch_options": setting.original_launch_options,

@@ -71,7 +71,6 @@ def main_window(qapp, monkeypatch):
         "systemd_autostart_profile_info",
         lambda: {"selector": "active", "silent_fan_curve": False},
     )
-    monkeypatch.setattr(window_mod, "systemd_unit_entry_exists", lambda: True)
     monkeypatch.setattr(
         window_mod,
         "running_auto_uv_profile_info",
@@ -288,7 +287,9 @@ def test_window_simple_helpers(main_window) -> None:
     assert win._workflow_running() is False
     win._set_profile_actions_enabled(True)
     assert "Autostart: Yes" in win._runtime_action_start_text("install-systemd")
-    assert "Removing" in win._runtime_action_start_text("uninstall-systemd")
+    assert "Disabling profile at boot" in win._runtime_action_start_text(
+        "uninstall-systemd"
+    )
     assert "adaptive" in win._runtime_action_start_text(
         "daemonize", adaptive_auto_uv=True
     ).lower()

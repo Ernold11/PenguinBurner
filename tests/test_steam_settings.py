@@ -1,8 +1,10 @@
 from pathlib import Path
+import json
 
 from integrations.steam.settings import (
     GAME_MODE_ADAPTIVE,
     GAME_MODE_DEFAULT,
+    GAME_MODE_NONE,
     GAME_MODE_STOCK,
     SteamGameSetting,
     load_steam_game_settings,
@@ -53,14 +55,41 @@ def test_normalize_game_mode_accepts_tier_aliases() -> None:
     assert normalize_game_mode("stock") == GAME_MODE_STOCK
     assert normalize_game_mode("eff") == "efficiency"
     assert normalize_game_mode("perf") == "performance"
+    assert normalize_game_mode("none") == GAME_MODE_NONE
     assert normalize_game_mode("bogus") == GAME_MODE_DEFAULT
     assert normalize_game_mode(None) == GAME_MODE_DEFAULT
 
 
 def test_setting_active_property() -> None:
-    # No choice (default) is inactive; every explicit choice -- including
-    # explicit stock -- persists and is active.
     assert not SteamGameSetting().active
-    assert SteamGameSetting(mode="balanced").active
-    assert SteamGameSetting(mode=GAME_MODE_STOCK).active
-    assert SteamGameSetting(overlay=True).active
+    assert SteamGameSetting(enabled=True).active
+
+
+def test_legacy_hidden_mode_loads_as_adaptive(tmp_path: Path) -> None:
+    path = tmp_path / "steam-game-settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "accounts": {
+                    "78675700": {
+                        "games": {
+                            "1089130": {
+                                "enabled": True,
+                                "mode": "default",
+                                "injected_launch_options": (
+                                    "PENGUIN_BURNER --pb-overlay=0 %command%"
+                                ),
+                            }
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    setting = steam_game_setting("78675700", "1089130", path=path)
+
+    assert setting is not None
+    assert setting.enabled is True
+    assert setting.mode == GAME_MODE_ADAPTIVE

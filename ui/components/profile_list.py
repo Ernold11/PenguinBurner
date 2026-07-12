@@ -54,7 +54,6 @@ class ProfileList:
         self.QtWidgets = QtWidgets
         self._item_class = _sortable_item_class(QtWidgets, self.SORT_VALUE_ROLE)
         self._runtime_actions_available = True
-        self._has_systemd_service = False
         self._sort_column = self.DATE_COLUMN
         self._sort_order = QtCore.Qt.DescendingOrder
         self.widget = QtWidgets.QWidget()
@@ -66,7 +65,7 @@ class ProfileList:
         self.silent_fan_checkbox = QtWidgets.QCheckBox("Silent fan curve")
         self.daemonize_button = QtWidgets.QPushButton("Apply")
         self.daemonize_button.setToolTip(
-            "Apply the single selected profile."
+            "Apply the single selected profile now and at boot."
         )
         self.delete_button = QtWidgets.QToolButton()
         self.delete_button.setObjectName("deleteProfilesButton")
@@ -74,18 +73,17 @@ class ProfileList:
         self.delete_button.setIconSize(QtCore.QSize(18, 18))
         self.delete_button.setToolTip("Delete Selected Profiles")
         self.delete_button.setAccessibleName("Delete Selected Profiles")
-        self.remove_button = QtWidgets.QPushButton("Remove Autostart Entry")
         self.restore_defaults_button = QtWidgets.QPushButton("Restore defaults")
         self.restore_defaults_button.setToolTip(
-            "Reset the GPU to stock clocks, voltage and memory (clear VF offsets, "
-            "release locked clocks, restore the default power limit)."
+            "Reset the GPU to stock now and at boot: clear core and memory "
+            "offsets, release locked clocks, restore the factory V/F curve, "
+            "and restore the default power limit."
         )
         top.addWidget(QtWidgets.QLabel("Stored undervolt profiles"))
         top.addStretch(1)
         top.addWidget(self.silent_fan_checkbox)
         top.addWidget(self.daemonize_button)
         top.addWidget(self.delete_button)
-        top.addWidget(self.remove_button)
         top.addWidget(self.restore_defaults_button)
 
         self.table = QtWidgets.QTableWidget(0, len(self.COLUMNS))
@@ -121,7 +119,8 @@ class ProfileList:
         layout.addLayout(top)
         layout.addWidget(self.table, 1)
         adaptive_note = QtWidgets.QLabel(
-            "Applying a profile also makes it the boot profile. Per-game "
+            "Apply saves the selected profile for boot. Restore defaults "
+            "makes stock the current and boot state. Per-game "
             "adaptive profiles with a target pre-frame-gen FPS are managed "
             "in the Steam tab."
         )
@@ -135,8 +134,6 @@ class ProfileList:
         self,
         profiles: list[dict],
         *,
-        systemd_selector: str = "",
-        has_systemd_entry: bool | None = None,
         preferred_candidate_id: str = "",
         preferred_profile_id: str = "",
         select_preferred: bool = False,
@@ -151,11 +148,6 @@ class ProfileList:
             profiles,
             preferred_candidate_id=preferred_candidate_id,
             preferred_profile_id=preferred_profile_id,
-        )
-        self._has_systemd_service = (
-            bool(has_systemd_entry)
-            if has_systemd_entry is not None
-            else bool(str(systemd_selector).strip())
         )
         table_signals_blocked = self.table.blockSignals(True)
         try:
@@ -448,9 +440,6 @@ class ProfileList:
         )
         self.daemonize_button.setEnabled(has_apply_selection)
         self.delete_button.setEnabled(has_delete_selection)
-        self.remove_button.setEnabled(
-            self._runtime_actions_available and self._has_systemd_service
-        )
         self.restore_defaults_button.setEnabled(self._runtime_actions_available)
 
     def _set_silent_fan_checked(self, checked: bool) -> None:

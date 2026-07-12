@@ -432,16 +432,18 @@ def test_profile_list_uses_one_apply_button() -> None:
     assert not hasattr(profile_list, "adaptive_button")
     assert not hasattr(profile_list, "adaptive_checkbox")
     assert not profile_list.daemonize_button.isEnabled()
-    # Applying always persists: there is no separate persist toggle anymore.
-    assert not hasattr(profile_list, "install_button")
+    assert "now and at boot" in profile_list.daemonize_button.toolTip()
+    assert not hasattr(profile_list, "boot_checkbox")
+    assert not hasattr(profile_list, "remove_button")
+    restore_tooltip = profile_list.restore_defaults_button.toolTip()
+    assert "core and memory offsets" in restore_tooltip
+    assert "default power limit" in restore_tooltip
 
     profile_list.select_profile("profile-a")
     assert profile_list.daemonize_button.isEnabled()
 
 
-def test_profile_list_has_no_persist_toggle_and_ignores_stale_kwargs() -> None:
-    """Applying IS persisting now: the old Persist-on-Startup checkbox is gone
-    and set_profiles no longer takes toggle-sync arguments."""
+def test_profile_list_has_no_separate_boot_toggle() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -450,13 +452,8 @@ def test_profile_list_has_no_persist_toggle_and_ignores_stale_kwargs() -> None:
     _ = app
     profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
 
-    assert not hasattr(profile_list, "install_button")
-    assert not hasattr(profile_list, "persist_on_startup_enabled")
-    with pytest.raises(TypeError):
-        profile_list.set_profiles(
-            [{"profile_id": "profile-a", "final_verified": True}],
-            persist_on_startup_checked=True,
-        )
+    assert not hasattr(profile_list, "boot_checkbox")
+    assert not hasattr(profile_list, "profile_at_boot_enabled")
 
 
 def test_adaptive_profile_tier_labels_need_distinct_verified_tiers() -> None:
@@ -1610,7 +1607,7 @@ def test_adaptive_profile_delete_switches_when_remaining_profiles_share_one_tier
     }
 
 
-def test_adaptive_profile_delete_removes_systemd_when_no_profile_remains() -> None:
+def test_adaptive_profile_delete_restores_stock_when_no_profile_remains() -> None:
     profiles = [
         {
             "profile_id": "eff",
@@ -1633,12 +1630,12 @@ def test_adaptive_profile_delete_removes_systemd_when_no_profile_remains() -> No
         ["eff", "perf"],
         autostart_info,
     ) == {
-        "action": "remove-systemd",
+        "action": "restore-stock",
         "reason": "last-usable-adaptive-profile",
     }
 
 
-def test_non_adaptive_profile_delete_removes_systemd_for_selected_startup_profile() -> (
+def test_non_adaptive_profile_delete_restores_stock_for_selected_startup_profile() -> (
     None
 ):
     profiles = [
@@ -1650,7 +1647,7 @@ def test_non_adaptive_profile_delete_removes_systemd_for_selected_startup_profil
         profiles,
         ["profile-b"],
         {"selector": "865mv-2625mhz", "adaptive_auto_uv": False},
-    ) == {"action": "remove-systemd"}
+    ) == {"action": "restore-stock"}
     assert _profile_delete_autostart_action(
         profiles,
         ["profile-a"],
@@ -1658,27 +1655,27 @@ def test_non_adaptive_profile_delete_removes_systemd_for_selected_startup_profil
     ) == {"action": "keep"}
 
 
-def test_profile_delete_confirmation_warns_when_systemd_entry_is_removed() -> None:
+def test_profile_delete_confirmation_warns_when_stock_will_be_restored() -> None:
     message = _profile_delete_confirmation_text(
         ["2625 MHz 865 mV"],
-        removes_systemd=True,
+        restores_stock=True,
     )
 
     assert "Delete Auto-UV profile 2625 MHz 865 mV?" in message
     assert "currently persisted on startup" in message
-    assert "remove the Systemd autostart entry" in message
+    assert "restore stock now and at boot" in message
 
 
 def test_profile_delete_confirmation_warns_for_last_usable_adaptive_profile() -> None:
     message = _profile_delete_confirmation_text(
         ["2625 MHz 865 mV"],
-        removes_systemd=True,
+        restores_stock=True,
         removes_last_usable_adaptive_profile=True,
     )
 
     assert "Delete Auto-UV profile 2625 MHz 865 mV?" in message
     assert "last usable Adaptive Auto-UV profile" in message
-    assert "remove the Systemd autostart entry" in message
+    assert "restore stock now and at boot" in message
 
 
 def test_profile_delete_confirmation_describes_adaptive_startup_fallback() -> None:
@@ -1690,7 +1687,7 @@ def test_profile_delete_confirmation_describes_adaptive_startup_fallback() -> No
     assert "Delete Auto-UV profile 2625 MHz 865 mV?" in message
     assert "Adaptive Auto-UV will have fewer than two usable tiers" in message
     assert "switch it to profile 2610 MHz 875 mV" in message
-    assert "remove the Systemd autostart entry" not in message
+    assert "restore stock now and at boot" not in message
 
 
 def test_lact_export_output_uses_lact_config_filename(tmp_path) -> None:

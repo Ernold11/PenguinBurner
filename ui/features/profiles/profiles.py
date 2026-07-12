@@ -86,11 +86,11 @@ def profile_delete_autostart_action(
                         "profile_id": profile_id,
                     }
         return {
-            "action": "remove-systemd",
+            "action": "restore-stock",
             "reason": "last-usable-adaptive-profile",
         }
     if selected_profile_ids_include_selector(profiles, list(selected), selector):
-        return {"action": "remove-systemd"}
+        return {"action": "restore-stock"}
     return {"action": "keep"}
 
 
@@ -333,7 +333,7 @@ def penguin_burner_runtime_is_active() -> bool:
 def delete_confirmation_text(
     names: list[str],
     *,
-    removes_systemd: bool = False,
+    restores_stock: bool = False,
     removes_last_usable_adaptive_profile: bool = False,
     switches_systemd_to_profile: str = "",
 ) -> str:
@@ -345,21 +345,21 @@ def delete_confirmation_text(
     else:
         subject = f"{len(clean_names)} selected profiles"
     message = f"Delete {subject}?"
-    if removes_systemd and removes_last_usable_adaptive_profile:
+    if restores_stock and removes_last_usable_adaptive_profile:
         if len(clean_names) == 1:
             message += (
                 "\n\nThis is the last usable Adaptive Auto-UV profile. "
-                "Deleting it will remove the Systemd autostart entry too."
+                "Deleting it will restore stock now and at boot."
             )
         else:
             message += (
                 "\n\nThese are the last usable Adaptive Auto-UV profiles. "
-                "Deleting them will remove the Systemd autostart entry too."
+                "Deleting them will restore stock now and at boot."
             )
-    elif removes_systemd:
+    elif restores_stock:
         message += (
             "\n\nThis profile is currently persisted on startup. Deleting it will "
-            "remove the Systemd autostart entry too."
+            "restore stock now and at boot."
         )
     switch_profile = str(switches_systemd_to_profile or "").strip()
     if switch_profile:

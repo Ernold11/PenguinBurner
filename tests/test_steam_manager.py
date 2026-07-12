@@ -5,7 +5,9 @@ import pytest
 import integrations.steam.manager as manager_module
 from integrations.steam.manager import SteamIntegrationManager
 from integrations.steam.settings import (
+    GAME_MODE_ADAPTIVE,
     GAME_MODE_DEFAULT,
+    GAME_MODE_NONE,
     GAME_MODE_STOCK,
     load_steam_game_settings,
 )
@@ -97,7 +99,52 @@ def test_refresh_merges_library_settings_and_launch_options(manager) -> None:
     rows = manager.refresh()
     assert [row.game.app_id for row in rows] == [APP_ID]
     assert rows[0].launch_options == "gamemoderun %command%"
-    assert rows[0].setting.mode == GAME_MODE_DEFAULT
+    assert rows[0].setting.mode == GAME_MODE_ADAPTIVE
+    assert rows[0].setting.enabled is False
+    assert rows[0].setting.overlay is False
+
+
+def test_library_scan_initializes_disabled_adaptive_without_overlay(manager, tmp_path) -> None:
+    rows = manager.refresh(initialize_defaults=True)
+
+    assert rows[0].launch_options == "gamemoderun %command%"
+    assert _FakeCdpClient.launch_options[APP_ID] == rows[0].launch_options
+    stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
+    setting = stored[ACCOUNT_ID][APP_ID]
+    assert setting.mode == GAME_MODE_ADAPTIVE
+    assert setting.enabled is False
+    assert setting.overlay is False
+    assert setting.original_launch_options == "gamemoderun %command%"
+
+
+def test_library_scan_adopts_existing_wrapper_as_enabled_adaptive_choice(
+    manager,
+    tmp_path,
+) -> None:
+    _FakeCdpClient.launch_options[APP_ID] = (
+        "gamemoderun PENGUIN_BURNER --pb-overlay=1 %command%"
+    )
+
+    rows = manager.refresh(initialize_defaults=True)
+
+    assert rows[0].setting.enabled is True
+    assert rows[0].setting.mode == GAME_MODE_ADAPTIVE
+    assert rows[0].setting.overlay is True
+    stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
+    assert stored[ACCOUNT_ID][APP_ID] == rows[0].setting
+
+
+def test_library_scan_does_not_overwrite_existing_game_choice(manager, tmp_path) -> None:
+    manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
+    manager.set_game_mode(APP_ID, "balanced")
+
+    rows = manager.refresh(initialize_defaults=True)
+
+    assert rows[0].setting.mode == "balanced"
+    assert rows[0].launch_options == (
+        "gamemoderun PENGUIN_BURNER --pb-overlay=0 %command%"
+    )
 
 
 def test_standing_mode_label_uses_rust_daemon_status(manager, monkeypatch) -> None:
@@ -141,6 +188,7 @@ def test_standing_mode_label_keeps_pre_game_action(manager, monkeypatch) -> None
 
 def test_set_mode_injects_and_persists(manager, tmp_path) -> None:
     manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
     result = manager.set_game_mode(APP_ID, "balanced")
     assert result.ok
     assert result.launch_options == (
@@ -155,12 +203,33 @@ def test_set_mode_injects_and_persists(manager, tmp_path) -> None:
 
 def test_overlay_toggle_updates_tokens(manager) -> None:
     manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
     manager.set_game_mode(APP_ID, "adaptive")
     result = manager.set_game_overlay(APP_ID, True)
     assert result.ok
     assert result.launch_options == (
         "gamemoderun PENGUIN_BURNER --pb-overlay=1 %command%"
     )
+
+
+def test_overlay_off_keeps_penguin_burner_wrapper_active(manager, tmp_path) -> None:
+    manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
+    enabled = manager.set_game_overlay(APP_ID, True)
+    assert enabled.ok
+
+    disabled = manager.set_game_overlay(APP_ID, False)
+
+    assert disabled.ok
+    assert disabled.launch_options == (
+        "gamemoderun PENGUIN_BURNER --pb-overlay=0 %command%"
+    )
+    stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
+    setting = stored[ACCOUNT_ID][APP_ID]
+    assert setting.mode == GAME_MODE_ADAPTIVE
+    assert setting.enabled is True
+    assert setting.overlay is False
+    assert setting.active is True
 
 
 def test_proton_selection_uses_steam_and_default_is_not_forced(manager) -> None:
@@ -206,6 +275,7 @@ def test_stock_choice_persists_per_game(manager, tmp_path) -> None:
 
 def test_raw_edit_validates_and_syncs_setting(manager, tmp_path) -> None:
     manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
     manager.set_game_mode(APP_ID, "balanced")
     bad = manager.set_raw_launch_options(APP_ID, '%command% "broken')
     assert not bad.ok and "unbalanced" in bad.message
@@ -219,17 +289,19 @@ def test_raw_edit_validates_and_syncs_setting(manager, tmp_path) -> None:
 
 def test_raw_edit_removing_wrapper_deactivates_mode(manager, tmp_path) -> None:
     manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
     manager.set_game_mode(APP_ID, "balanced")
     result = manager.set_raw_launch_options(APP_ID, "gamemoderun %command%")
     assert result.ok
     stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
-    assert stored[ACCOUNT_ID][APP_ID].mode == GAME_MODE_DEFAULT
+    assert stored[ACCOUNT_ID][APP_ID].enabled is False
+    assert stored[ACCOUNT_ID][APP_ID].mode == GAME_MODE_ADAPTIVE
 
 
 def test_write_blocked_while_steam_runs_without_cdp(manager) -> None:
     manager.refresh()
     _FakeCdpClient.fail = True
-    result = manager.set_game_mode(APP_ID, "balanced")
+    result = manager.set_game_enabled(APP_ID, True)
     assert not result.ok and "live apply" in result.message
 
 
@@ -259,7 +331,7 @@ def test_write_falls_back_to_disk_when_steam_stopped(
         "\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n",
         encoding="utf-8",
     )
-    result = manager.set_game_mode(APP_ID, "balanced")
+    result = manager.set_game_enabled(APP_ID, True)
     assert result.ok and "config" in result.message
     assert "PENGUIN_BURNER --pb-overlay=0 %command%" in localconfig.read_text(
         encoding="utf-8"
@@ -280,6 +352,7 @@ def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> Non
     import integrations.steam.game_runtime as game_runtime
 
     manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
     manager.set_game_mode(APP_ID, "balanced")
     monkeypatch.setattr(
         daemon_client,
@@ -312,10 +385,11 @@ def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> Non
     assert calls == [(["--auto-uv-profile", "profile-9"], 4242, APP_ID)]
 
 
-def test_hot_reapply_default_resolves_standing_adaptive(manager, monkeypatch) -> None:
+def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -> None:
     import runtime.daemon_client as daemon_client
 
     manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
     manager.set_game_mode(APP_ID, GAME_MODE_DEFAULT)
     monkeypatch.setattr(
         daemon_client,
@@ -342,7 +416,7 @@ def test_hot_reapply_default_resolves_standing_adaptive(manager, monkeypatch) ->
     assert result is not None and result.ok
     assert calls == [
         (
-            ["--auto-uv-profile", "performance-9", "--adaptive-auto-uv"],
+            ["--auto-uv-profile", "latest", "--adaptive-auto-uv"],
             4242,
             APP_ID,
         )
@@ -353,6 +427,7 @@ def test_hot_reapply_tolerates_grace_window_exit(manager, monkeypatch) -> None:
     import runtime.daemon_client as daemon_client
 
     manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
     manager.set_game_mode(APP_ID, "adaptive")
     monkeypatch.setattr(
         daemon_client,

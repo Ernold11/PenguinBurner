@@ -105,7 +105,7 @@ class ProfileActionsMixin:
             parent=self.window,
             log=self.log_view.append,
             action_label=(
-                "Removing the boot profile"
+                "Disabling the boot profile"
                 if action == "clear-boot"
                 else (
                     "Applying adaptive Auto-UV"
@@ -115,9 +115,8 @@ class ProfileActionsMixin:
             ),
         ):
             return
-        # Applying IS persisting: the applied profile always becomes the boot
-        # profile (no autostart/current dualism). "Remove Autostart Entry" is
-        # the explicit opt-out.
+        # A standing action is always complete: Apply persists the selected
+        # profile for boot, while Restore defaults persists the stock runtime.
         persist_on_startup = action not in no_profile_actions
         command = runtime_profile_command(
             action,
@@ -165,10 +164,11 @@ class ProfileActionsMixin:
             "daemonize",
             profile_selector=STOCK_PROFILE_SELECTOR,
             silent_fan_curve=self.profile_list.silent_fan_enabled(),
+            persist_on_startup=True,
             gpu_index=self.gpu_index,
         )
         self.controls.set_status_text(
-            "Restoring GPU to stock (daemon keeps running, no undervolt)."
+            "Restoring GPU to stock now and at boot (daemon keeps running)."
         )
         self._set_profile_actions_enabled(False)
         self.controls.start_button.setEnabled(False)
@@ -181,11 +181,11 @@ class ProfileActionsMixin:
     def _run_delete_autostart_followup(
         self,
         *,
-        remove_systemd: bool,
+        restore_stock: bool,
         switch_systemd_profile_id: str = "",
     ) -> bool:
         switch_profile_id = str(switch_systemd_profile_id or "").strip()
-        self._delete_remove_systemd = False
+        self._delete_restore_stock = False
         self._delete_switch_systemd_profile_id = ""
         if switch_profile_id:
             profile = profile_for_selector(self.profile_summaries, switch_profile_id)
@@ -199,9 +199,9 @@ class ProfileActionsMixin:
                     profile_selector=switch_profile_id,
                 )
                 return True
-            remove_systemd = True
-        if remove_systemd:
-            self._run_runtime_action("clear-boot")
+            restore_stock = True
+        if restore_stock:
+            self._restore_gpu_defaults()
             return True
         return False
 
@@ -383,14 +383,14 @@ class ProfileActionsMixin:
             list(selected_ids),
             autostart_info,
         )
-        remove_systemd = autostart_action.get("action") == "remove-systemd"
+        restore_stock = autostart_action.get("action") == "restore-stock"
         switch_systemd_profile_id = (
             str(autostart_action.get("profile_id", "")).strip()
             if autostart_action.get("action") == "switch-profile"
             else ""
         )
         if not self._confirm_profile_delete(
-            remove_systemd=remove_systemd,
+            restore_stock=restore_stock,
             removes_last_usable_adaptive_profile=(
                 autostart_action.get("reason") == "last-usable-adaptive-profile"
             ),
@@ -403,7 +403,7 @@ class ProfileActionsMixin:
             self._run_privileged_profile_delete(
                 selected_paths,
                 selected_ids,
-                remove_systemd=remove_systemd,
+                restore_stock=restore_stock,
                 switch_systemd_profile_id=switch_systemd_profile_id,
             )
             return
@@ -413,7 +413,7 @@ class ProfileActionsMixin:
         self.controls.set_status_text(f"Deleted {count} saved {label}.")
         self._load_profiles()
         self._run_delete_autostart_followup(
-            remove_systemd=remove_systemd,
+            restore_stock=restore_stock,
             switch_systemd_profile_id=switch_systemd_profile_id,
         )
 
@@ -422,7 +422,7 @@ class ProfileActionsMixin:
         selected_paths: list[str],
         selected_ids: set[str],
         *,
-        remove_systemd: bool,
+        restore_stock: bool,
         switch_systemd_profile_id: str = "",
     ) -> None:
         if not ensure_daemon_ready_for_privileged_action(
@@ -432,7 +432,7 @@ class ProfileActionsMixin:
             action_label="Deleting saved Auto-UV profiles",
         ):
             return
-        self._delete_remove_systemd = bool(remove_systemd)
+        self._delete_restore_stock = bool(restore_stock)
         self._delete_switch_systemd_profile_id = str(switch_systemd_profile_id)
         self._set_profile_actions_enabled(False)
         self.controls.start_button.setEnabled(False)
@@ -454,7 +454,7 @@ class ProfileActionsMixin:
                 self.controls.set_status_text("Selected Auto-UV profiles deleted.")
                 self._load_profiles()
                 if self._run_delete_autostart_followup(
-                    remove_systemd=self._delete_remove_systemd,
+                    restore_stock=self._delete_restore_stock,
                     switch_systemd_profile_id=self._delete_switch_systemd_profile_id,
                 ):
                     return
@@ -466,7 +466,7 @@ class ProfileActionsMixin:
                     exit_code=exit_code,
                     exit_status=exit_status,
                 )
-            self._delete_remove_systemd = False
+            self._delete_restore_stock = False
             self._delete_switch_systemd_profile_id = ""
             self._load_profiles()
             return
@@ -490,7 +490,7 @@ class ProfileActionsMixin:
     def _confirm_profile_delete(
         self,
         *,
-        remove_systemd: bool,
+        restore_stock: bool,
         removes_last_usable_adaptive_profile: bool = False,
         switch_systemd_profile_id: str = "",
     ) -> bool:
@@ -503,7 +503,7 @@ class ProfileActionsMixin:
             "Delete Profiles",
             delete_confirmation_text(
                 self.profile_list.selected_profile_names(),
-                removes_systemd=remove_systemd,
+                restores_stock=restore_stock,
                 removes_last_usable_adaptive_profile=(
                     removes_last_usable_adaptive_profile
                 ),
@@ -610,7 +610,7 @@ class ProfileActionsMixin:
         if persists:
             return f"Starting profile: {selected}; Autostart: Yes."
         if action in {"clear-boot", "uninstall-systemd"}:
-            return "Removing autostart entry."
+            return "Disabling profile at boot."
         return f"Starting profile: {selected}; Autostart: No."
 
 
@@ -640,8 +640,8 @@ def _runtime_action_label(action: str) -> str:
         "adaptive-daemonize": "Apply adaptive Auto-UV",
         "install-systemd": "Install startup profile",
         "adaptive-install-systemd": "Install adaptive startup profile",
-        "clear-boot": "Remove autostart entry",
-        "uninstall-systemd": "Remove autostart entry",
+        "clear-boot": "Disable profile at boot",
+        "uninstall-systemd": "Disable profile at boot",
         "delete-profiles": "Delete selected profiles",
         "restore-defaults": "Restore GPU defaults",
         "restore-keep-stock": "Keep GPU at stock",

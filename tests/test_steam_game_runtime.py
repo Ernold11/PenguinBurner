@@ -11,6 +11,7 @@ from integrations.steam.game_runtime import (
     profile_argv_for_setting,
 )
 from integrations.steam.settings import (
+    GAME_MODE_NONE,
     SteamGameSetting,
     store_steam_game_setting,
 )
@@ -52,16 +53,17 @@ def test_game_account_id_matches_steam_user_env(steam_home: Path) -> None:
 
 
 def test_profile_argv_for_default_is_none() -> None:
-    assert profile_argv_for_setting(SteamGameSetting(mode="default")) is None
+    assert profile_argv_for_setting(SteamGameSetting(enabled=True, mode="default")) is None
+    assert profile_argv_for_setting(SteamGameSetting(enabled=True, mode=GAME_MODE_NONE)) is None
 
 
 def test_profile_argv_for_explicit_stock_pins_factory_state() -> None:
-    argv = profile_argv_for_setting(SteamGameSetting(mode="stock"))
+    argv = profile_argv_for_setting(SteamGameSetting(enabled=True, mode="stock"))
     assert argv == ["--auto-uv-profile", "__stock__"]
 
 
 def test_profile_argv_for_adaptive() -> None:
-    argv = profile_argv_for_setting(SteamGameSetting(mode="adaptive"))
+    argv = profile_argv_for_setting(SteamGameSetting(enabled=True, mode="adaptive"))
     assert argv == ["--auto-uv-profile", "latest", "--adaptive-auto-uv"]
 
 
@@ -72,7 +74,7 @@ def test_profile_argv_for_fixed_tier_resolves_profile(monkeypatch) -> None:
         "resolve_profile_tier_profiles",
         lambda profiles: {"balanced": {"profile_id": "profile-123"}},
     )
-    argv = profile_argv_for_setting(SteamGameSetting(mode="balanced"))
+    argv = profile_argv_for_setting(SteamGameSetting(enabled=True, mode="balanced"))
     assert argv == ["--auto-uv-profile", "profile-123"]
 
 
@@ -83,7 +85,9 @@ def test_profile_argv_for_unresolved_tier_is_none(monkeypatch) -> None:
         "resolve_profile_tier_profiles",
         lambda profiles: {"balanced": None},
     )
-    assert profile_argv_for_setting(SteamGameSetting(mode="balanced")) is None
+    assert profile_argv_for_setting(
+        SteamGameSetting(enabled=True, mode="balanced")
+    ) is None
 
 
 def test_game_runtime_profile_argv_reads_setting(
@@ -93,7 +97,7 @@ def test_game_runtime_profile_argv_reads_setting(
     store_steam_game_setting(
         ACCOUNT_ID,
         "1089130",
-        SteamGameSetting(mode="adaptive", overlay=True),
+        SteamGameSetting(enabled=True, mode="adaptive", overlay=True),
         path=settings_path,
     )
     env = {"SteamAppId": "1089130", "SteamUser": "jan_pietek"}
@@ -127,7 +131,7 @@ def test_apply_calls_daemon_with_own_pid(
     store_steam_game_setting(
         ACCOUNT_ID,
         "1089130",
-        SteamGameSetting(mode="adaptive"),
+        SteamGameSetting(enabled=True, mode="adaptive"),
         path=settings_path,
     )
     calls: list[dict] = []
@@ -161,7 +165,7 @@ def test_apply_accepts_host_wrapper_pid(
     store_steam_game_setting(
         ACCOUNT_ID,
         "1089130",
-        SteamGameSetting(mode="adaptive"),
+        SteamGameSetting(enabled=True, mode="adaptive"),
         path=settings_path,
     )
     calls = []
@@ -216,7 +220,7 @@ def test_apply_soft_fails_when_daemon_unreachable(
     store_steam_game_setting(
         ACCOUNT_ID,
         "1089130",
-        SteamGameSetting(mode="adaptive"),
+        SteamGameSetting(enabled=True, mode="adaptive"),
         path=settings_path,
     )
     import runtime.daemon_client as daemon_client

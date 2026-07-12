@@ -16,11 +16,13 @@ Power W, and Memory offset. Sort by any column to compare runs.
 
 Top bar:
 
-- **Apply Selected** — run the highlighted profile now.
-- **Apply Adaptive** — let the daemon switch tiers at runtime (see
-  [adaptive-uv.md](./adaptive-uv.md)).
-- **Silent fan curve** / **Persist on Startup** — toggle fan control and autostart.
-- **Remove Autostart Entry** — stop applying a profile at boot.
+- **Apply** — run the highlighted profile now.
+- **Silent fan curve** — use the saved fan curve with the applied profile.
+- **Restore defaults** — return the GPU to stock now and at boot.
+
+Apply always saves the selected profile as the standing boot state. Restore
+defaults saves stock as that state instead. The `penguin-burnerd` service stays
+enabled and available in both cases.
 
 Right-click a profile:
 
