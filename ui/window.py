@@ -200,16 +200,35 @@ class MainWindow(ProfileActionsMixin):
         )
 
         self.table_panel = self.QtWidgets.QGroupBox("Undervolting runs")
-        self.table_panel.setMinimumHeight(220)
         table_layout = self.QtWidgets.QVBoxLayout(self.table_panel)
         table_layout.setContentsMargins(10, 18, 10, 10)
         table_layout.addWidget(self.auto_uv_tier_progress.widget)
         table_layout.addWidget(self.runs_table.widget)
 
+        # The plot/tabs area and the runs table share a draggable vertical
+        # splitter; window resizes grow only the plot side. No pixel
+        # constants: the table side floors at the runs table's own
+        # MIN_VISIBLE_ROWS content minimum, and the tab side floors at the
+        # tab bar plus the Auto-UV page's content minimum. An explicit tab
+        # minimum is required because the splitter would otherwise honor the
+        # LARGEST page's minimum-size hint (overlay/Steam), pinning the tab
+        # area tall; the table panel only shows on the Auto-UV tab.
+        self.auto_uv_split = self.QtWidgets.QSplitter(self.QtCore.Qt.Vertical)
+        self.auto_uv_split.setObjectName("autoUvVerticalSplit")
+        self.tabs.setMinimumHeight(
+            self.tabs.tabBar().sizeHint().height()
+            + auto_uv_view.minimumSizeHint().height()
+        )
+        self.auto_uv_split.addWidget(self.tabs)
+        self.auto_uv_split.addWidget(self.table_panel)
+        self.auto_uv_split.setStretchFactor(0, 1)
+        self.auto_uv_split.setStretchFactor(1, 0)
+        self.auto_uv_split.setCollapsible(0, False)
+        self.auto_uv_split.setCollapsible(1, False)
+
         layout.addWidget(self.header.widget)
         layout.addWidget(self.controls.widget)
-        layout.addWidget(self.tabs, 1)
-        layout.addWidget(self.table_panel)
+        layout.addWidget(self.auto_uv_split, 1)
 
         self.controls.start_button.clicked.connect(self.start_scan)
         self.controls.stop_button.clicked.connect(self.stop_scan)

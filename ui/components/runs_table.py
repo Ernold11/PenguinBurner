@@ -36,6 +36,9 @@ class RunsTable:
     FPSW_COLUMN = 10
     DECISION_COLUMN = 11
     STATUS_COLUMN = 12
+    # The old fixed-height panel showed 5 rows; the pending row at the tail
+    # regularly needed scrolling. Guarantee three more.
+    MIN_VISIBLE_ROWS = 8
 
     def __init__(self, *, QtCore, QtGui, QtWidgets):
         self.QtCore = QtCore
@@ -56,6 +59,15 @@ class RunsTable:
         self.widget.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.widget.setSortingEnabled(False)
         self.widget.cellClicked.connect(self._handle_cell_clicked)
+        # Content-derived height floor: the table always shows at least
+        # MIN_VISIBLE_ROWS runs. Everything scales with the style's real row
+        # and header metrics, so the floor stays correct across DPI/themes.
+        header_height = self.widget.horizontalHeader().sizeHint().height()
+        row_height = max(1, self.widget.verticalHeader().defaultSectionSize())
+        frame_height = 2 * self.widget.frameWidth()
+        self.widget.setMinimumHeight(
+            header_height + frame_height + row_height * self.MIN_VISIBLE_ROWS
+        )
         # Floors are deliberately small: real column widths come from the wider
         # of each header label and its widest expected value (samples below), so
         # every column fits its contents instead of reserving fixed dead space.
@@ -104,6 +116,16 @@ class RunsTable:
         row = self.widget.rowCount()
         self.widget.insertRow(row)
         self._write_row(row, payload, running=True)
+
+    def _scrolled_to_tail(self) -> bool:
+        """Whether the view is pinned to the newest row.
+
+        The one-row tolerance also recovers from scrollToItem's off-by-one:
+        under per-item scrolling with a fractional row visible it could land
+        one row short, leaving the newest pending row just below the fold.
+        """
+        bar = self.widget.verticalScrollBar()
+        return int(bar.value()) >= int(bar.maximum()) - 1
 
     def record_candidate_curve(self, payload: dict) -> None:
         if _is_base_baseline(payload):
@@ -576,12 +598,15 @@ class RunsTable:
         return f"{voltage}mv-{clock}mhz"
 
     def _scroll_to_latest(self, row: int) -> None:
-        item = self.widget.item(row, 0)
-        if item is not None:
-            self.widget.scrollToItem(
-                item,
-                self.QtWidgets.QAbstractItemView.PositionAtBottom,
-            )
+        # Follow only the newest (tail) row, and only while the user hasn't
+        # scrolled up to inspect earlier runs. scrollToBottom is exact under
+        # per-item scrolling, where scrollToItem(PositionAtBottom) can land
+        # one row short and hide the pending row below the fold.
+        if row != self.widget.rowCount() - 1:
+            return
+        if not self._scrolled_to_tail():
+            return
+        self.widget.scrollToBottom()
 
     def _set_oc_cell(
         self,

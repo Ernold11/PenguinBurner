@@ -315,3 +315,59 @@ def test_window_tab_order_and_bins_visibility(main_window) -> None:
     assert win.table_panel.isHidden()
     win.tabs.setCurrentIndex(win.steam_tab_index)
     assert win.table_panel.isHidden()
+
+
+def test_runs_table_splitter_is_draggable_with_content_derived_floors(
+    main_window,
+) -> None:
+    win = main_window
+    qt_widgets = win.QtWidgets
+    split = win.auto_uv_split
+    assert split.orientation() == win.QtCore.Qt.Vertical
+    assert split.widget(0) is win.tabs
+    assert split.widget(1) is win.table_panel
+    assert not split.childrenCollapsible() or (
+        not split.isCollapsible(0) and not split.isCollapsible(1)
+    )
+
+    table = win.runs_table.widget
+    header_height = table.horizontalHeader().sizeHint().height()
+    row_height = table.verticalHeader().defaultSectionSize()
+    # The table's floor derives from its own style metrics, not pixel
+    # constants: at least MIN_VISIBLE_ROWS rows plus the header/frame.
+    assert win.runs_table.MIN_VISIBLE_ROWS >= 8
+    assert table.minimumHeight() >= (
+        header_height + row_height * win.runs_table.MIN_VISIBLE_ROWS
+    )
+    # The tab side floors at its own content (tab bar + Auto-UV page), NOT at
+    # the largest other page's hint, so the splitter default can actually
+    # trade plot height for table rows.
+    assert win.tabs.minimumHeight() < win.tabs.minimumSizeHint().height()
+    _ = qt_widgets
+
+
+def test_runs_table_follows_newest_pending_row_unless_user_scrolled_up(
+    main_window,
+) -> None:
+    win = main_window
+    win.window.show()
+    table = win.runs_table.widget
+    for index in range(14):
+        win.runs_table.add_probe_start(
+            {"stage": "candidate", "voltage_mv": 900 - index, "clock_mhz": 2500}
+        )
+    bar = table.verticalScrollBar()
+    # The newest pending row is pinned into view (exact bottom, not one short).
+    assert bar.value() == bar.maximum()
+    # A user inspecting earlier runs is not yanked back by new rows...
+    bar.setValue(0)
+    win.runs_table.add_probe_start(
+        {"stage": "candidate", "voltage_mv": 777, "clock_mhz": 2500}
+    )
+    assert bar.value() == 0
+    # ...and returning to the tail resumes following.
+    bar.setValue(bar.maximum())
+    win.runs_table.add_probe_start(
+        {"stage": "candidate", "voltage_mv": 776, "clock_mhz": 2500}
+    )
+    assert bar.value() == bar.maximum()
