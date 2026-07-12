@@ -524,7 +524,10 @@ fn clear_active_runtime() {
 }
 
 fn energy_savings_status() -> Option<EnergySavingsStatus> {
-    let totals = profile::savings::load_totals(&profile::savings::savings_state_path());
+    let totals = profile::savings::load_freshest_totals(
+        &profile::savings::live_savings_state_path(),
+        &profile::savings::savings_state_path(),
+    );
     if totals.active_seconds <= 0.0 {
         return None;
     }

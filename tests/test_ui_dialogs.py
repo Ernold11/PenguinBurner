@@ -229,8 +229,9 @@ def test_energy_savings_formatting_uptime_and_units() -> None:
         "2d 3h 0m 5s"
     )
 
-    assert about_dialog.format_energy_saved(0) == "0.0 Wh"
-    assert about_dialog.format_energy_saved(30.0 * 3600) == "30.0 Wh"
+    assert about_dialog.format_energy_saved(0) == "0.00 Wh"
+    assert about_dialog.format_energy_saved(30.0 * 3600) == "30.00 Wh"
+    assert about_dialog.format_energy_saved(150.0 * 3600) == "150.0 Wh"
     assert about_dialog.format_energy_saved(1_240 * 3600) == "1.24 kWh"
     assert about_dialog.format_energy_saved(1_020_000 * 3600) == "1.02 MWh"
 
@@ -243,7 +244,7 @@ def test_energy_savings_lines_from_daemon_status() -> None:
         }
     }
     text = about_dialog.energy_savings_lines(status)
-    assert text == "Total runtime: 3h 0m 0s\nEnergy saved: 90.0 Wh"
+    assert text == "Total runtime: 3h 0m 0s\nEnergy saved: 90.00 Wh"
 
     # No counter yet, malformed payloads, missing block: no stats line.
     assert about_dialog.energy_savings_lines({}) == ""

@@ -36,13 +36,19 @@ def format_total_runtime(seconds: float) -> str:
 
 
 def format_energy_saved(watt_seconds: float) -> str:
-    """Wh, then kWh, then (one can dream) MWh."""
+    """Wh, then kWh, then (one can dream) MWh.
+
+    Two decimals below 100 Wh so the live counter visibly climbs while a
+    game is running instead of sitting on one number for minutes.
+    """
     watt_hours = max(0.0, float(watt_seconds)) / 3600.0
     if watt_hours >= 1_000_000:
         return f"{watt_hours / 1_000_000:.2f} MWh"
     if watt_hours >= 1_000:
         return f"{watt_hours / 1_000:.2f} kWh"
-    return f"{watt_hours:.1f} Wh"
+    if watt_hours >= 100:
+        return f"{watt_hours:.1f} Wh"
+    return f"{watt_hours:.2f} Wh"
 
 
 def energy_savings_lines(status: dict | None = None) -> str:
@@ -118,6 +124,19 @@ def show_about_dialog(*, QtCore, QtGui, QtWidgets, parent) -> None:
         savings.setAlignment(QtCore.Qt.AlignCenter)
         savings.setTextInteractionFlags(selectable_text_flags(QtCore))
         layout.addWidget(savings)
+
+        # Live tick: the daemon mirrors in-memory totals to tmpfs every
+        # engine tick, so polling once a second makes the counter climb
+        # while a game is running. The timer dies with the dialog.
+        def _refresh_savings() -> None:
+            text = energy_savings_lines()
+            if text and text != savings.text():
+                savings.setText(text)
+
+        refresh_timer = QtCore.QTimer(dialog)
+        refresh_timer.setInterval(1000)
+        refresh_timer.timeout.connect(_refresh_savings)
+        refresh_timer.start()
     else:
         purpose = QtWidgets.QLabel(GPU_UNDERVOLTING_PURPOSE_TEXT)
         purpose.setObjectName("purposeText")

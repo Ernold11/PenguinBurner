@@ -20,6 +20,10 @@ use crate::logging;
 use super::runtime_spec::{RuntimeProfile, RuntimeSpec};
 
 pub const SAVINGS_STATE_PATH: &str = "/var/lib/penguin-burner/energy-savings.json";
+/// Live totals mirror on tmpfs: refreshed every active tick so `status` (and
+/// the About dialog polling it) can show a smoothly climbing counter without
+/// grinding the durable file (and the disk under it) at tick rate.
+pub const LIVE_SAVINGS_STATE_PATH: &str = "/run/penguin-burner/energy-savings-live.json";
 pub const SAVINGS_STATE_FILE_ENV: &str = "PENGUIN_BURNERD_SAVINGS_STATE_FILE";
 const SAVINGS_FORMAT_VERSION: u32 = 1;
 
@@ -40,6 +44,32 @@ pub fn savings_state_path() -> PathBuf {
         }
     }
     PathBuf::from(SAVINGS_STATE_PATH)
+}
+
+/// The env override (tests) derives the live path from the durable one so a
+/// single variable pins both.
+pub fn live_savings_state_path() -> PathBuf {
+    if let Some(path) = env::var_os(SAVINGS_STATE_FILE_ENV) {
+        if !path.is_empty() {
+            let mut live = path.to_os_string();
+            live.push(".live");
+            return PathBuf::from(live);
+        }
+    }
+    PathBuf::from(LIVE_SAVINGS_STATE_PATH)
+}
+
+/// Freshest view for `status`: the live tmpfs mirror leads while an engine is
+/// accumulating; the durable file wins otherwise. `active_seconds` only ever
+/// grows, so "further along" is simply the larger one.
+pub fn load_freshest_totals(live_path: &Path, durable_path: &Path) -> SavingsTotals {
+    let live = load_totals(live_path);
+    let durable = load_totals(durable_path);
+    if live.active_seconds >= durable.active_seconds {
+        live
+    } else {
+        durable
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -86,6 +116,7 @@ fn profile_rate(profile: &RuntimeProfile) -> Option<SavingsRate> {
 /// engine loop; flushes throttled and once more on drop.
 pub struct SavingsTracker {
     path: PathBuf,
+    live_path: PathBuf,
     totals: SavingsTotals,
     rates: BTreeMap<String, SavingsRate>,
     last_tick: Option<f64>,
@@ -98,6 +129,15 @@ impl SavingsTracker {
     /// None when no applied profile carries scan power metrics (old profiles,
     /// stock mode) — there is nothing to account then.
     pub fn from_spec(spec: &RuntimeSpec, path: PathBuf) -> Option<Self> {
+        let live_path = live_savings_state_path();
+        Self::from_spec_with_paths(spec, path, live_path)
+    }
+
+    pub fn from_spec_with_paths(
+        spec: &RuntimeSpec,
+        path: PathBuf,
+        live_path: PathBuf,
+    ) -> Option<Self> {
         let mut rates = BTreeMap::new();
         if let Some(profile) = &spec.static_profile {
             if let Some(rate) = profile_rate(profile) {
@@ -114,9 +154,10 @@ impl SavingsTracker {
         if rates.is_empty() {
             return None;
         }
-        let totals = load_totals(&path);
+        let totals = load_freshest_totals(&live_path, &path);
         Some(Self {
             path,
+            live_path,
             totals,
             rates,
             last_tick: None,
@@ -158,6 +199,9 @@ impl SavingsTracker {
             self.totals.active_seconds += dt;
             self.totals.saved_watt_seconds += rate.saved_w * dt;
             self.dirty = true;
+            // tmpfs mirror every active tick: this is what makes the About
+            // counter climb live between the throttled durable flushes.
+            let _ = write_totals(&self.live_path, &self.totals);
         }
         self.maybe_flush(now);
     }
@@ -211,6 +255,9 @@ impl SavingsTracker {
 impl Drop for SavingsTracker {
     fn drop(&mut self) {
         self.flush();
+        // The durable file now holds the final totals; a lingering mirror
+        // would only go stale.
+        let _ = std::fs::remove_file(&self.live_path);
     }
 }
 
@@ -325,5 +372,42 @@ mod tests {
         tracker.record(1.0, Some(90), None, "performance");
         assert_eq!(tracker.totals().active_seconds, 1.0);
         assert_eq!(tracker.totals().saved_watt_seconds, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    use crate::profile::runtime_spec::RuntimeSpec;
+
+    #[test]
+    fn live_mirror_leads_and_is_removed_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let durable = dir.path().join("savings.json");
+        let live = dir.path().join("savings.json.live");
+        let mut spec = RuntimeSpec::test_static("GPU-test", "profile-1");
+        let profile = spec.static_profile.as_mut().unwrap();
+        profile.avg_power_w = Some(300.0);
+        profile.base_avg_power_w = Some(340.0);
+
+        {
+            let mut tracker =
+                SavingsTracker::from_spec_with_paths(&spec, durable.clone(), live.clone())
+                    .unwrap();
+            tracker.record(0.0, Some(90), None, "balanced");
+            tracker.record(2.0, Some(90), None, "balanced");
+            // The mirror is written per active tick; the durable flush is
+            // throttled, so the freshest view must come from the mirror.
+            let freshest = load_freshest_totals(&live, &durable);
+            assert_eq!(freshest.active_seconds, 2.0);
+            assert!(load_totals(&durable).active_seconds <= freshest.active_seconds);
+        } // drop: durable final flush + mirror removed
+
+        assert!(!live.exists());
+        assert_eq!(load_totals(&durable).active_seconds, 2.0);
+        assert_eq!(
+            load_freshest_totals(&live, &durable).active_seconds,
+            2.0
+        );
     }
 }
