@@ -483,6 +483,45 @@ def test_ui_scan_command_adds_auto_uv_tuning_options(monkeypatch) -> None:
     assert options["auto_uv_tail_rise_bins"] == 2
 
 
+def test_ui_scan_command_passes_per_tier_full_scan_options(monkeypatch) -> None:
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 0)
+
+    command = commands.scan_command(
+        {
+            "auto_uv_mode": "adaptive",
+            "auto_uv_min_voltage_mv": 850,
+            "auto_oc_target_voltage_mv": 925,
+            "auto_oc_target_clock_mhz": 2670,
+            "auto_uv_efficiency_max_clock_drop_pct": 15.0,
+            "auto_uv_efficiency_power_limit_w": 250,
+            "auto_uv_efficiency_memory_offset_mhz": 500,
+            "auto_uv_balanced_max_clock_drop_pct": 6.0,
+            "auto_uv_balanced_power_limit_w": 300,
+            "auto_uv_balanced_memory_offset_mhz": 0,
+            "auto_uv_performance_max_clock_drop_pct": 5.4,
+            "auto_uv_performance_power_limit_w": 360,
+            "auto_uv_performance_memory_offset_mhz": 1000,
+        }
+    )
+    options = _scan_daemon_options(command)
+
+    assert options["auto_uv_mode"] == "adaptive"
+    assert options["auto_uv_efficiency_max_clock_drop_pct"] == 15.0
+    assert options["auto_uv_efficiency_power_limit_w"] == 250
+    assert options["auto_uv_efficiency_memory_offset_mhz"] == 500
+    assert options["auto_uv_balanced_max_clock_drop_pct"] == 6.0
+    assert options["auto_uv_balanced_power_limit_w"] == 300
+    assert options["auto_uv_balanced_memory_offset_mhz"] == 0
+    assert options["auto_uv_performance_max_clock_drop_pct"] == 5.4
+    assert options["auto_uv_performance_power_limit_w"] == 360
+    assert options["auto_uv_performance_memory_offset_mhz"] == 1000
+    # The full scan carries no scan-wide tuning keys.
+    assert "auto_uv_max_clock_drop_pct" not in options
+    assert "auto_uv_memory_offset_mhz" not in options
+    assert "auto_uv_power_limit_w" not in options
+
+
 def test_ui_scan_command_can_override_runtime_gpu_index(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
     monkeypatch.setattr(commands, "runtime_gpu_index", lambda: 2)
@@ -2250,7 +2289,10 @@ def test_auto_uv_preset_control_has_breathing_room_and_autofill_note() -> None:
     source = Path("ui/dialogs/scan_tuning.py").read_text(encoding="utf-8")
     assert "SCAN_SCOPE_FULL" in source
     assert "SCAN_SCOPE_SELECTED_PROFILE" in source
-    assert "Full scan (up to 35 min)" in source
+    # The full-scan label derives from the estimate table instead of
+    # hardcoding a duration that silently goes stale.
+    assert 'f"Full scan (~{full_minimum}-{full_maximum} min)"' in source
+    assert "Full scan (up to" not in source
     assert "auto_uv_voltage_drop_default" in source
     assert "auto-filled for" not in source
     assert "efficiency floor" not in source
@@ -2459,29 +2501,35 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     assert power_limit_slider is not None
     assert power_limit_spin is not None
     assert max_clock_drop_spin is not None
-    # The adaptive default preset needs the efficiency (loosest) clock-drop
-    # allowance because its shared trunk descends to the efficiency floor.
-    assert max_clock_drop_spin.value() == pytest.approx(11.1, abs=0.05)
-    assert power_limit_slider.minimum() == 200
-    assert power_limit_slider.maximum() == 450
-    # Balanced preset targets a reduced default board-power cap, not the raw
-    # NVML default; the slider mirrors the spin box.
-    assert power_limit_slider.value() == 405
-    assert power_limit_spin.minimum() == 200
-    assert power_limit_spin.maximum() == 450
-    assert power_limit_spin.value() == 405
+    assert stack is not None
+    # One Advanced page per profile — no shared adaptive page.
+    assert stack.count() == 3
+    assert stack.minimumHeight() >= max(
+        stack.widget(index).sizeHint().height() for index in range(stack.count())
+    )
+
+    def page_control(preset_index: int, object_name: str, cls):
+        control = stack.widget(preset_index).findChild(cls, object_name)
+        assert control is not None
+        return control
+
+    # Every profile page carries its own preset-aware defaults.
+    for index, (expected_drop, expected_watts) in enumerate(
+        ((11.1, 383), (6.0, 405), (5.4, 450))
+    ):
+        assert page_control(
+            index, "maxClockDropSpin", QtWidgets.QDoubleSpinBox
+        ).value() == pytest.approx(expected_drop, abs=0.05)
+        power_spin_for_page = page_control(index, "powerLimitSpin", QtWidgets.QSpinBox)
+        assert power_spin_for_page.minimum() == 200
+        assert power_spin_for_page.maximum() == 450
+        assert power_spin_for_page.value() == expected_watts
     advanced_labels = {
         label.text() for label in advanced_group.findChildren(QtWidgets.QLabel)
     }
     assert "Max loaded clock drop" in advanced_labels
     assert "Memory Offset" in advanced_labels
     assert "Power limit" in advanced_labels
-    assert stack is not None
-    # efficiency, balanced, performance + the adaptive all-tiers page
-    assert stack.count() == 4
-    assert stack.minimumHeight() >= max(
-        stack.widget(index).sizeHint().height() for index in range(stack.count())
-    )
     initial_size = dialog.size()
     buttons = {
         str(button.property("presetId")): button
@@ -2499,11 +2547,13 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
         scan_tuning.SCAN_SCOPE_SELECTED_PROFILE,
     }
     assert scope_buttons[scan_tuning.SCAN_SCOPE_FULL].isChecked()
-    assert "Full scan (up to 35 min)" in scope_buttons[
+    # Label derives from the adaptive estimate table (25-35), not a hardcoded
+    # duration.
+    assert "Full scan (~25-35 min)" in scope_buttons[
         scan_tuning.SCAN_SCOPE_FULL
     ].text()
     assert preset_group.isEnabled()
-    assert stack.currentIndex() == 3
+    assert stack.currentIndex() == 1
     assert set(buttons) == {
         AUTO_UV_PRESET_EFFICIENCY,
         AUTO_UV_PRESET_BALANCED,
@@ -2516,49 +2566,59 @@ def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -
     assert buttons[AUTO_UV_PRESET_EFFICIENCY].text().startswith("1. Efficiency")
     assert buttons[AUTO_UV_PRESET_BALANCED].text().startswith("2. Balanced")
     assert buttons[AUTO_UV_PRESET_PERFORMANCE].text().startswith("3. Performance")
-    assert all(not button.isEnabled() for button in buttons.values())
+    # The profiles stay clickable in a full scan: each remains tuneable.
+    assert all(button.isEnabled() for button in buttons.values())
     assert all(
         button.property("scanIncluded") == "true" for button in buttons.values()
     )
     sequence_note = dialog.findChild(QtWidgets.QLabel, "autoUvPresetSequence")
     assert sequence_note is not None
     assert sequence_note.text() == (
-        "Full scan order: Efficiency → Balanced → Performance"
+        "Full scan order: Efficiency → Balanced → Performance — "
+        "click a profile to tune its settings."
     )
     assert scan_estimate_note is not None
     assert "exclude final verification" in scan_estimate_note.text()
 
-    scope_buttons[scan_tuning.SCAN_SCOPE_SELECTED_PROFILE].click()
-    assert preset_group.isEnabled()
-    assert all(button.isEnabled() for button in buttons.values())
-    assert buttons[AUTO_UV_PRESET_BALANCED].property("scanIncluded") == "true"
-    assert buttons[AUTO_UV_PRESET_EFFICIENCY].property("scanIncluded") == "false"
-    assert sequence_note.text() == "Choose one profile to scan."
-    assert stack.currentIndex() == 1
+    # Clicking a profile in full-scan mode switches its Advanced page while
+    # every profile stays included in the scan.
     buttons[AUTO_UV_PRESET_PERFORMANCE].click()
-    assert buttons[AUTO_UV_PRESET_PERFORMANCE].property("scanIncluded") == "true"
-    assert buttons[AUTO_UV_PRESET_BALANCED].property("scanIncluded") == "false"
+    assert stack.currentIndex() == 2
+    assert advanced_group.title() == "Advanced — Performance"
     assert dialog.size() == initial_size
-    assert max_clock_drop_spin.value() == pytest.approx(5.4)
-    # Switching presets retargets the default power cap until the user overrides.
-    assert power_limit_spin.value() == 450
-    buttons[AUTO_UV_PRESET_EFFICIENCY].click()
-    assert dialog.size() == initial_size
-    assert max_clock_drop_spin.value() == pytest.approx(11.1)
-    assert power_limit_spin.value() == 383
-
-    # A manual edit sticks: later preset switches no longer move the cap.
-    power_limit_slider.setValue(390)
-    assert power_limit_spin.value() == 390
-    buttons[AUTO_UV_PRESET_BALANCED].click()
-    assert power_limit_spin.value() == 390
-    scope_buttons[scan_tuning.SCAN_SCOPE_FULL].click()
-    assert preset_group.isEnabled()
-    assert all(not button.isEnabled() for button in buttons.values())
     assert all(
         button.property("scanIncluded") == "true" for button in buttons.values()
     )
-    assert stack.currentIndex() == 3
+    performance_power_spin = page_control(2, "powerLimitSpin", QtWidgets.QSpinBox)
+    efficiency_power_spin = page_control(0, "powerLimitSpin", QtWidgets.QSpinBox)
+    # A manual edit latches per profile: it never bleeds into the other pages.
+    performance_power_spin.setValue(420)
+    assert efficiency_power_spin.value() == 383
+    assert page_control(1, "powerLimitSpin", QtWidgets.QSpinBox).value() == 405
+    buttons[AUTO_UV_PRESET_EFFICIENCY].click()
+    assert stack.currentIndex() == 0
+    assert advanced_group.title() == "Advanced — Efficiency"
+    assert dialog.size() == initial_size
+    assert performance_power_spin.value() == 420
+
+    scope_buttons[scan_tuning.SCAN_SCOPE_SELECTED_PROFILE].click()
+    assert preset_group.isEnabled()
+    assert all(button.isEnabled() for button in buttons.values())
+    assert buttons[AUTO_UV_PRESET_EFFICIENCY].property("scanIncluded") == "true"
+    assert buttons[AUTO_UV_PRESET_BALANCED].property("scanIncluded") == "false"
+    assert sequence_note.text() == "Choose one profile to scan."
+    assert stack.currentIndex() == 0
+    buttons[AUTO_UV_PRESET_BALANCED].click()
+    assert buttons[AUTO_UV_PRESET_BALANCED].property("scanIncluded") == "true"
+    assert buttons[AUTO_UV_PRESET_EFFICIENCY].property("scanIncluded") == "false"
+    assert stack.currentIndex() == 1
+    scope_buttons[scan_tuning.SCAN_SCOPE_FULL].click()
+    assert preset_group.isEnabled()
+    assert all(button.isEnabled() for button in buttons.values())
+    assert all(
+        button.property("scanIncluded") == "true" for button in buttons.values()
+    )
+    assert stack.currentIndex() == 1
 
 
 def test_scan_tuning_enter_in_numeric_field_only_commits_value(monkeypatch) -> None:
@@ -2745,13 +2805,19 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
     )
 
     def accept_with_power_limit(dialog):
-        spin = dialog.findChild(QtWidgets.QSpinBox, "powerLimitSpin")
-        assert spin is not None
-        assert spin.minimum() == 330
-        assert spin.maximum() == 390
-        # Balanced preset default cap (patched), not the raw NVML default.
-        assert spin.value() == 351
-        spin.setValue(390)
+        stack = dialog.findChild(QtWidgets.QStackedWidget)
+        assert stack is not None
+        for index in range(stack.count()):
+            spin = stack.widget(index).findChild(QtWidgets.QSpinBox, "powerLimitSpin")
+            assert spin is not None
+            assert spin.minimum() == 330
+            assert spin.maximum() == 390
+            # Preset default cap (patched), not the raw NVML default.
+            assert spin.value() == 351
+        balanced_spin = stack.widget(1).findChild(
+            QtWidgets.QSpinBox, "powerLimitSpin"
+        )
+        balanced_spin.setValue(390)
         return QtWidgets.QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(QtWidgets.QDialog, "exec", accept_with_power_limit)
@@ -2766,7 +2832,20 @@ def test_scan_tuning_dialog_returns_power_limit_from_slider(monkeypatch) -> None
 
     assert options is not None
     assert options["auto_uv_mode"] == "adaptive"
-    assert options["auto_uv_power_limit_w"] == 390
+    # Full scan: no scan-wide power key; each tier carries its own value and
+    # the edited balanced page differs from the untouched siblings.
+    assert "auto_uv_power_limit_w" not in options
+    assert options["auto_uv_efficiency_power_limit_w"] == 351
+    assert options["auto_uv_balanced_power_limit_w"] == 390
+    assert options["auto_uv_performance_power_limit_w"] == 351
+    assert options["auto_uv_efficiency_max_clock_drop_pct"] == pytest.approx(6.0)
+    assert options["auto_uv_balanced_max_clock_drop_pct"] == pytest.approx(6.0)
+    assert options["auto_uv_performance_max_clock_drop_pct"] == pytest.approx(6.0)
+    assert options["auto_uv_efficiency_memory_offset_mhz"] == 0
+    assert "auto_uv_max_clock_drop_pct" not in options
+    assert "auto_uv_memory_offset_mhz" not in options
+    assert "auto_uv_tail_rise_bins" not in options
+    assert options["auto_uv_min_voltage_mv"] == 850
 
 
 def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
@@ -2844,8 +2923,13 @@ def test_scan_tuning_memory_offset_is_mhz_with_mt_s_shown_and_doubled(
             if button.property("scopeId")
         }
         scope_buttons[scan_tuning.SCAN_SCOPE_SELECTED_PROFILE].click()
-        spin = dialog.findChild(QtWidgets.QSpinBox, "memoryOffsetSpin")
-        label = dialog.findChild(QtWidgets.QLabel, "memoryOffsetClockLabel")
+        # The checked profile (Balanced) owns the visible Advanced page; its
+        # memory offset is the one a selected-profile scan submits.
+        stack = dialog.findChild(QtWidgets.QStackedWidget)
+        assert stack is not None
+        page = stack.currentWidget()
+        spin = page.findChild(QtWidgets.QSpinBox, "memoryOffsetSpin")
+        label = page.findChild(QtWidgets.QLabel, "memoryOffsetClockLabel")
         assert spin is not None and label is not None
         assert spin.suffix() == " MHz"
         assert spin.maximum() == 2000  # 4000 MT/s range -> 2000 MHz box

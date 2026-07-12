@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_BALANCED, normalize_auto_uv_mode
+from auto_uv.scan_mode.auto_uv_mode import (
+    ADAPTIVE_TIER_MODES,
+    AUTO_UV_MODE_BALANCED,
+    adaptive_tier_option_key,
+    normalize_auto_uv_mode,
+)
 
 
 def _positive_or_none(coerce):
@@ -37,6 +42,17 @@ _AUTO_UV_NUMERIC_OPTIONS = [
     ("auto_oc_target_voltage_mv", "auto_oc_target_voltage_mv", _INT_POS),
     ("auto_oc_target_clock_mhz", "auto_oc_target_clock_mhz", _INT_POS),
     ("auto_uv_max_clock_drop_pct", "auto_uv_max_clock_drop_pct", _float_nonnegative),
+] + [
+    # Per-tier full-scan overrides: each adaptive tier's clock-drop allowance,
+    # board-power cap, and memory offset (same units/semantics as the
+    # scan-wide keys above), keys derived from the canonical tier constants.
+    (key, key, transform)
+    for tier in ADAPTIVE_TIER_MODES
+    for key, transform in (
+        (adaptive_tier_option_key(tier, "max_clock_drop_pct"), _float_nonnegative),
+        (adaptive_tier_option_key(tier, "power_limit_w"), _INT_POS),
+        (adaptive_tier_option_key(tier, "memory_offset_mhz"), _memory_offset),
+    )
 ]
 
 

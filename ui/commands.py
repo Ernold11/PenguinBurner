@@ -9,6 +9,11 @@ import shutil
 import sys
 from typing import Mapping
 
+from auto_uv.scan_mode.auto_uv_mode import (
+    ADAPTIVE_TIER_MODES,
+    ADAPTIVE_TIER_OPTION_SUFFIXES,
+    adaptive_tier_option_key,
+)
 from ui.constants import DEFAULT_FINAL_VERIFICATION_DURATION_S
 from ui.features.tuning.gpu_selection import runtime_gpu_index
 
@@ -251,6 +256,14 @@ def scan_command(auto_uv_options: Mapping[str, object] | None = None) -> list[st
         "auto_uv_tail_rise_bins",
         "auto_oc_target_voltage_mv",
         "auto_oc_target_clock_mhz",
+        # Per-tier full-scan overrides (adaptive mode only), derived from the
+        # canonical tier/option constants so a new option cannot be silently
+        # dropped from the daemon payload.
+        *(
+            adaptive_tier_option_key(tier, suffix)
+            for tier in ADAPTIVE_TIER_MODES
+            for suffix in ADAPTIVE_TIER_OPTION_SUFFIXES
+        ),
     )
     for key in option_keys:
         value = options.get(key)

@@ -2648,8 +2648,11 @@ def test_adaptive_tier_progress_events_are_chronological(monkeypatch) -> None:
             power_limit_w=360,
             requested_power_limit_w=None,
             translated_gpu_policy={"gpu_name": "Test GPU"},
+            policy_controller=SimpleNamespace(
+                get_memory_clock_offset_range_mhz=lambda: (0, 4000)
+            ),
         ),
-        runner=object(),
+        configure_tier_probe_runner=lambda _min_core_clock_pct: object(),
         settings=SimpleNamespace(),
         runtime_options={},
         base_loop_settings=SimpleNamespace(),
@@ -2669,7 +2672,11 @@ def test_adaptive_tier_progress_events_are_chronological(monkeypatch) -> None:
     )
 
     assert result.final_voltage_mv == 900
-    assert [event for event, _payload in events] == [
+    # Each tier also announces its active memory offset; only the tier
+    # progress events matter for the chronology here.
+    assert [
+        event for event, _payload in events if event.startswith("tier_")
+    ] == [
         "tier_started",
         "tier_completed",
         "tier_started",
@@ -2731,3 +2738,339 @@ def test_graduated_final_verification_durations() -> None:
         )
         == 300
     )
+
+
+def test_adaptive_tier_clock_drop_margin_resolution_order() -> None:
+    from auto_uv.run.scan_runtime_settings import (
+        adaptive_tier_clock_drop_margin_pct,
+    )
+    from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
+
+    # The tier's own option wins over the scan-wide key.
+    assert (
+        adaptive_tier_clock_drop_margin_pct(
+            {
+                "auto_uv_balanced_max_clock_drop_pct": 6.0,
+                "auto_uv_max_clock_drop_pct": 15.0,
+            },
+            tier_mode="balanced",
+            gpu_name="Unknown GPU",
+        )
+        == 6.0
+    )
+    # Without a per-tier key the scan-wide key still applies to every tier.
+    assert (
+        adaptive_tier_clock_drop_margin_pct(
+            {"auto_uv_max_clock_drop_pct": 12.0},
+            tier_mode="performance",
+            gpu_name="Unknown GPU",
+        )
+        == 12.0
+    )
+    # No options at all: the GPU table per-tier limit, then the generic
+    # fallback for unknown GPUs.
+    assert adaptive_tier_clock_drop_margin_pct(
+        {},
+        tier_mode="efficiency",
+        gpu_name="Unknown GPU",
+    ) == float(AUTO_UV_DEFAULTS.max_core_clock_drop_pct)
+    # Known GPU: each tier resolves ITS table row, so balanced no longer
+    # inherits the efficiency (loosest) allowance.
+    from auto_uv.scan_mode.uv_limits import uv_limit_clock_drop_pct_for_gpu
+
+    gpu_name = "NVIDIA GeForce RTX 5080"
+    for tier in ("efficiency", "balanced", "performance"):
+        expected = uv_limit_clock_drop_pct_for_gpu(gpu_name, profile_id=tier)
+        if expected is None:
+            continue
+        assert adaptive_tier_clock_drop_margin_pct(
+            {},
+            tier_mode=tier,
+            gpu_name=gpu_name,
+        ) == float(expected)
+
+
+def test_apply_adaptive_tier_power_limit_explicit_watts_wins() -> None:
+    from auto_uv.main_loop import apply_adaptive_tier_power_limit
+
+    gpu = SimpleNamespace(
+        requested_power_limit_w=None,
+        clamp_power_limit_w=lambda watts: max(300, min(400, int(watts))),
+    )
+    # An explicit per-tier request bypasses the balanced-anchor scaling
+    # (clamped to the card's NVML range).
+    apply_adaptive_tier_power_limit(
+        gpu,
+        tier_mode="performance",
+        stock_power_limit_w=360,
+        scan_request_w=None,
+        balanced_pct=85.0,
+        explicit_watts=390,
+    )
+    assert gpu.requested_power_limit_w == 390
+
+    apply_adaptive_tier_power_limit(
+        gpu,
+        tier_mode="efficiency",
+        stock_power_limit_w=360,
+        scan_request_w=None,
+        balanced_pct=85.0,
+        explicit_watts=250,
+    )
+    assert gpu.requested_power_limit_w == 300  # NVML floor clamp
+
+    # A manual scan-wide request stays a hard ceiling even over an explicit
+    # per-tier flag: mixed CLI invocations may not exceed it.
+    apply_adaptive_tier_power_limit(
+        gpu,
+        tier_mode="performance",
+        stock_power_limit_w=360,
+        scan_request_w=320,
+        balanced_pct=85.0,
+        explicit_watts=390,
+    )
+    assert gpu.requested_power_limit_w == 320
+
+
+def test_full_scan_open_paths_fall_back_to_per_tier_options() -> None:
+    from auto_uv.gpu.gpu_vf_curve_applier import _auto_uv_power_limit_w
+    from auto_uv.gpu.memory_clock_offset_user_option import (
+        auto_uv_memory_offset_mhz,
+    )
+
+    # Scan open uses the HIGHEST per-tier power request when the scan-wide
+    # key is absent, so a raised cap holds during discovery and descents.
+    assert (
+        _auto_uv_power_limit_w(
+            {
+                "auto_uv_efficiency_power_limit_w": 250,
+                "auto_uv_balanced_power_limit_w": 300,
+                "auto_uv_performance_power_limit_w": 390,
+            }
+        )
+        == 390
+    )
+    assert _auto_uv_power_limit_w({"auto_uv_power_limit_w": 320}) == 320
+    assert _auto_uv_power_limit_w({}) is None
+
+    # Scan open applies the FIRST (efficiency) tier's memory offset when the
+    # scan-wide key is absent, so the shared baseline runs under tier one's
+    # memory clock.
+    offset, _limit = auto_uv_memory_offset_mhz(
+        {"auto_uv_efficiency_memory_offset_mhz": 500},
+        policy_controller=SimpleNamespace(
+            get_memory_clock_offset_range_mhz=lambda: (0, 4000)
+        ),
+    )
+    assert offset == 500
+    offset, _limit = auto_uv_memory_offset_mhz(
+        {},
+        policy_controller=SimpleNamespace(
+            get_memory_clock_offset_range_mhz=lambda: (0, 4000)
+        ),
+    )
+    assert offset is None
+
+
+def test_apply_adaptive_tier_memory_offset_applies_per_tier_value() -> None:
+    from auto_uv.main_loop import apply_adaptive_tier_memory_offset
+
+    applied = []
+    events = []
+    gpu = SimpleNamespace(
+        gpu=SimpleNamespace(
+            apply_clock_offsets=lambda mem_clk_vf_offset_mhz: applied.append(
+                mem_clk_vf_offset_mhz
+            )
+            or {"mem_clk_vf_offset_readback_mhz": mem_clk_vf_offset_mhz},
+        ),
+        translated_gpu_policy={"gpu_name": "Test GPU"},
+    )
+
+    def tier_offset(tier_mode, runtime_options, fallback_offset_mhz=0):
+        apply_adaptive_tier_memory_offset(
+            gpu,
+            tier_mode=tier_mode,
+            runtime_options=runtime_options,
+            fallback_offset_mhz=fallback_offset_mhz,
+            limit_mhz=4000,
+            event_callback=lambda event, payload: events.append((event, payload)),
+            log=lambda _message: None,
+        )
+
+    # Absent per-tier option with a matching zero fallback: no NVML write.
+    tier_offset("efficiency", {})
+    assert applied == []
+    assert gpu.translated_gpu_policy["mem_clk_vf_offset_mhz"] == 0
+
+    # Per-tier value: applied, recorded in the policy (so the tier's profile
+    # saves it), and clamped to the driver range.
+    tier_offset("balanced", {"auto_uv_balanced_memory_offset_mhz": 9999})
+    assert applied == [4000]
+    assert gpu.translated_gpu_policy["mem_clk_vf_offset_mhz"] == 4000
+    assert events[-1][0] == "memory_offset_applied"
+    assert events[-1][1]["offset_mt_s"] == 4000
+    assert events[-1][1]["tier"] == "balanced"
+
+    # A tier WITHOUT its own option restores the scan-open fallback instead of
+    # inheriting the previous tier's offset.
+    tier_offset("performance", {}, fallback_offset_mhz=500)
+    assert applied == [4000, 500]
+    assert gpu.translated_gpu_policy["mem_clk_vf_offset_mhz"] == 500
+    assert events[-1][1]["tier"] == "performance"
+
+    # Same value again: no redundant NVML write.
+    tier_offset("performance", {"auto_uv_performance_memory_offset_mhz": 500})
+    assert applied == [4000, 500]
+
+    # A zero offset after a nonzero one clears the applied offset.
+    tier_offset("performance", {"auto_uv_performance_memory_offset_mhz": 0})
+    assert applied == [4000, 500, 0]
+    assert gpu.translated_gpu_policy["mem_clk_vf_offset_mhz"] == 0
+
+
+def test_apply_adaptive_tier_memory_offset_records_readback_and_survives_errors() -> (
+    None
+):
+    from auto_uv.main_loop import apply_adaptive_tier_memory_offset
+
+    events = []
+    # Driver clamps the request: the policy and event must record the NVML
+    # read-back (what is actually live), not the requested value.
+    gpu = SimpleNamespace(
+        gpu=SimpleNamespace(
+            apply_clock_offsets=lambda mem_clk_vf_offset_mhz: {
+                "mem_clk_vf_offset_readback_mhz": 3000
+            },
+        ),
+        translated_gpu_policy={},
+    )
+    apply_adaptive_tier_memory_offset(
+        gpu,
+        tier_mode="balanced",
+        runtime_options={"auto_uv_balanced_memory_offset_mhz": 4000},
+        fallback_offset_mhz=0,
+        limit_mhz=6000,
+        event_callback=lambda event, payload: events.append((event, payload)),
+        log=lambda _message: None,
+    )
+    assert gpu.translated_gpu_policy["mem_clk_vf_offset_mhz"] == 3000
+    assert events[-1][1]["offset_mt_s"] == 3000
+
+    # An apply failure keeps the previous offset and does NOT raise: one
+    # tier's NVML hiccup must not abort the whole adaptive scan.
+    def raise_apply(**_kwargs):
+        raise RuntimeError("transient NVML error")
+
+    gpu = SimpleNamespace(
+        gpu=SimpleNamespace(apply_clock_offsets=raise_apply),
+        translated_gpu_policy={"mem_clk_vf_offset_mhz": 500},
+    )
+    apply_adaptive_tier_memory_offset(
+        gpu,
+        tier_mode="performance",
+        runtime_options={"auto_uv_performance_memory_offset_mhz": 1000},
+        fallback_offset_mhz=0,
+        limit_mhz=6000,
+        event_callback=lambda event, payload: events.append((event, payload)),
+        log=lambda _message: None,
+    )
+    assert gpu.translated_gpu_policy["mem_clk_vf_offset_mhz"] == 500
+
+
+def test_adaptive_tiers_flow_per_tier_limits_into_probe_and_selection(
+    monkeypatch,
+) -> None:
+    import auto_uv.main_loop as main_loop
+
+    configured_floors = []
+    selection_floors = []
+    finish_margins = []
+    tier_power_requests = []
+    events = []
+
+    def fake_descent(_base_curve, *, tier_mode, min_core_clock_pct, **_kwargs):
+        configured_floors.append((tier_mode, min_core_clock_pct))
+        return VfCurveCandidate(tier_mode, 900, 2500, []), 2, object(), []
+
+    def fake_selection(**kwargs):
+        selection_floors.append(kwargs["min_core_clock_pct_override"])
+        return SimpleNamespace(
+            plan=list(kwargs["stable_plan"]),
+            voltage_mv=int(kwargs["stable_voltage_mv"]),
+            lock_clock_mhz=int(kwargs["stable_lock_clock_mhz"]),
+            probe=kwargs["stable_probe"],
+            verification_duration_s=int(kwargs["final_verification_duration_s"]),
+            tail_rise_bins=int(kwargs["tail_rise_bins"]),
+            auto_oc_metadata={},
+        )
+
+    def fake_finish(**kwargs):
+        finish_margins.append(
+            (
+                kwargs["final_min_core_clock_pct"],
+                kwargs["final_clock_drop_margin_pct"],
+            )
+        )
+        tier_power_requests.append(gpu.requested_power_limit_w)
+        return SimpleNamespace(
+            final_voltage_mv=int(kwargs["final_stable_voltage_mv"]),
+            lock_clock_mhz=int(kwargs["final_stable_lock_clock_mhz"]),
+        )
+
+    monkeypatch.setattr(main_loop, "run_adaptive_tier_descent", fake_descent)
+    monkeypatch.setattr(main_loop, "select_final_scan_candidate", fake_selection)
+
+    gpu = SimpleNamespace(
+        power_limit_w=360,
+        requested_power_limit_w=None,
+        translated_gpu_policy={"gpu_name": "Unknown GPU"},
+        clamp_power_limit_w=lambda watts: int(watts),
+        policy_controller=SimpleNamespace(
+            get_memory_clock_offset_range_mhz=lambda: (0, 4000)
+        ),
+    )
+
+    main_loop.run_adaptive_tier_scans(
+        base_curve=[],
+        gpu=gpu,
+        configure_tier_probe_runner=lambda pct: SimpleNamespace(
+            min_performance_core_clock_pct=pct
+        ),
+        settings=SimpleNamespace(),
+        runtime_options={
+            "auto_uv_efficiency_max_clock_drop_pct": 15.0,
+            "auto_uv_balanced_max_clock_drop_pct": 6.0,
+            "auto_uv_performance_max_clock_drop_pct": 5.4,
+            "auto_uv_efficiency_power_limit_w": 250,
+            "auto_uv_balanced_power_limit_w": 300,
+            "auto_uv_performance_power_limit_w": 360,
+        },
+        base_loop_settings=SimpleNamespace(),
+        baseline_candidate=VfCurveCandidate("baseline", 1000, 2400, []),
+        initial_stable_outcome=None,
+        stable_probe=None,
+        discovery_summary=object(),
+        probe_history=[],
+        baseline_target=SimpleNamespace(measured_clock_mhz=2400),
+        effective_min_search_voltage_mv=800,
+        final_verification_duration_s=300,
+        unsafe_entries=[],
+        probe_candidate=lambda _candidate: None,
+        finish_with_final_verification=fake_finish,
+        event_callback=lambda event, payload: events.append((event, payload)),
+        log=lambda _message: None,
+    )
+
+    # Each tier's descent, probe runner, selection, and final verification all
+    # see the tier's OWN clock-drop allowance.
+    assert configured_floors == [
+        ("efficiency", 85.0),
+        ("balanced", 94.0),
+        ("performance", 94.6),
+    ]
+    assert selection_floors == [85.0, 94.0, 94.6]
+    assert [margin for _floor, margin in finish_margins] == [15.0, 6.0, 5.4]
+    assert [floor for floor, _margin in finish_margins] == [85.0, 94.0, 94.6]
+    # Each tier's explicit power request is applied before its verification.
+    assert tier_power_requests == [250, 300, 360]

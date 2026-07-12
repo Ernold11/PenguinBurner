@@ -315,11 +315,15 @@ class MainWindow(ProfileActionsMixin):
         self.header.set_candidate("Writing to main Auto-UV profile store")
         # Show the requested memory offset immediately; the scan later confirms
         # the actually-applied (post-clamp) value via a memory_offset_applied
-        # event. NVML offsets are transfer-rate units (MT/s); the memory clock
-        # moves by half.
-        requested_memory_offset_mhz = (
-            int(options.get("auto_uv_memory_offset_mhz") or 0) // 2
-        )
+        # event. Full scans carry per-tier offsets; the efficiency (first)
+        # tier's offset is what the scan opens with. NVML offsets are
+        # transfer-rate units (MT/s); the memory clock moves by half.
+        requested_memory_offset_mt_s = options.get("auto_uv_memory_offset_mhz")
+        if requested_memory_offset_mt_s in (None, ""):
+            requested_memory_offset_mt_s = options.get(
+                "auto_uv_efficiency_memory_offset_mhz"
+            )
+        requested_memory_offset_mhz = int(requested_memory_offset_mt_s or 0) // 2
         self.controls.set_status_text(
             _memory_offset_status_text(requested_memory_offset_mhz)
         )

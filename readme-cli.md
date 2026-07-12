@@ -68,6 +68,14 @@ Common scan controls, shown for every GUI preset:
 - `--auto-uv-memory-offset-mhz N`: memory clock V/F offset applied during the scan and saved with the final profile.
 - `--auto-uv-power-limit-w N`: power limit applied during the scan and saved with the final profile.
 
+Full-scan (`--auto-uv-mode adaptive`) per-tier overrides — each tier of the
+combined run can carry its own limits, mirroring the GUI's per-profile
+Advanced pages (`<tier>` is `efficiency`, `balanced`, or `performance`):
+
+- `--auto-uv-<tier>-max-clock-drop-pct N`: that tier's maximum loaded clock drop. Absent tiers fall back to `--auto-uv-max-clock-drop-pct`, then the GPU table.
+- `--auto-uv-<tier>-power-limit-w N`: that tier's power limit, applied at its final verification and saved with its profile.
+- `--auto-uv-<tier>-memory-offset-mhz N`: that tier's memory V/F offset, applied for its descent and saved with its profile.
+
 Efficiency preset controls:
 
 - `--auto-uv-mode efficiency`: use the GUI Efficiency preset path.

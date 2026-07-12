@@ -13,6 +13,10 @@ from runtime.support.vf_curve_plan import apply_plan
 from runtime.support.nvidia_runtime_defaults import reset_nvidia_runtime_defaults
 
 from auto_uv.domain.types import AutoUvError
+from auto_uv.scan_mode.auto_uv_mode import (
+    ADAPTIVE_TIER_MODES,
+    adaptive_tier_option_key,
+)
 from .memory_clock_offset_user_option import auto_uv_memory_offset_mhz
 from .probe_clock_ceiling import ProbeClockCeilingController
 from .runtime_vf_offset_reset_check import assert_zero_runtime_vf_offsets
@@ -237,7 +241,19 @@ def open_live_gpu_vf_curve_applier(
 def _auto_uv_power_limit_w(runtime_options: dict) -> int | None:
     value = runtime_options.get("auto_uv_power_limit_w")
     if value in (None, ""):
-        return None
+        # Full scans carry per-tier power limits instead of the scan-wide
+        # key. The HIGHEST tier request stands in as the scan-wide request so
+        # a raised cap (above the stock default) holds during the shared
+        # discovery and the descents, like the old single slider did; each
+        # tier's own (lower) cap still applies at its final verification.
+        tier_values = [
+            runtime_options.get(adaptive_tier_option_key(tier, "power_limit_w"))
+            for tier in ADAPTIVE_TIER_MODES
+        ]
+        tier_values = [item for item in tier_values if item not in (None, "")]
+        if not tier_values:
+            return None
+        value = max(float(cast(Any, item)) for item in tier_values)
     try:
         power_limit_w = int(round(float(cast(Any, value))))
     except (TypeError, ValueError) as exc:

@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 
 from auto_uv.domain.user_options import AUTO_UV_DEFAULTS
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODES
+from auto_uv.scan_mode.auto_uv_mode import ADAPTIVE_TIER_MODES, AUTO_UV_MODES
 from integrations.afterburner.policy import MAX_AFTERBURNER_MEM_OFFSET_MHZ
 from common.penguin_burner_paths import default_runtime_config_path
 from runtime.support.runtime_service import DEFAULT_JOURNAL_HOURS
@@ -163,6 +163,44 @@ def parse_arguments(argv):
             "are reported instead of treated as success."
         ),
     )
+    for tier in ADAPTIVE_TIER_MODES:
+        tier_label = tier.capitalize()
+        auto_uv_group.add_argument(
+            f"--auto-uv-{tier}-max-clock-drop-pct",
+            type=float,
+            default=None,
+            metavar="N",
+            help=(
+                f"Full-scan override: the {tier_label} tier's maximum loaded "
+                "clock drop. Only meaningful with --auto-uv-mode adaptive; "
+                "absent tiers fall back to --auto-uv-max-clock-drop-pct, then "
+                "the GPU table."
+            ),
+        )
+        auto_uv_group.add_argument(
+            f"--auto-uv-{tier}-power-limit-w",
+            type=int,
+            default=None,
+            metavar="W",
+            help=(
+                f"Full-scan override: the {tier_label} tier's power limit in "
+                "watts, applied at that tier's final verification and saved "
+                "with its profile. Only meaningful with --auto-uv-mode adaptive."
+            ),
+        )
+        auto_uv_group.add_argument(
+            f"--auto-uv-{tier}-memory-offset-mhz",
+            type=int,
+            default=None,
+            metavar="MHz",
+            help=(
+                f"Full-scan override: the {tier_label} tier's memory V/F "
+                "offset (NVML transfer-rate units, like "
+                "--auto-uv-memory-offset-mhz), applied for that tier's descent "
+                "and saved with its profile. Only meaningful with "
+                "--auto-uv-mode adaptive."
+            ),
+        )
     auto_uv_group.add_argument(
         "--auto-oc-target-voltage-mv",
         type=int,

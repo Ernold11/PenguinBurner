@@ -214,9 +214,9 @@ def auto_uv_clock_drop_default(
     preset = auto_uv_preset(preset_id)
     value_pct = uv_limit_clock_drop_pct_for_gpu(
         detected_name,
-        # The adaptive scan's three per-tier descents share this one slider;
-        # the efficiency tier descends deepest, so the dialog defaults to its
-        # (loosest) clock-drop allowance.
+        # Callers pass a real tier id (the dialog keeps one page per profile);
+        # a plain "adaptive" request falls back to the efficiency (loosest)
+        # allowance, which bounds the deepest descent.
         profile_id=_defaults_profile_id(preset, AUTO_UV_PRESET_EFFICIENCY),
     )
     target = uv_limit_profile_target_for_gpu(detected_name, "efficiency")
@@ -264,8 +264,8 @@ def auto_uv_power_limit_default(
             gpu_family=None,
             preset_matched=False,
         )
-    # The full scan's shared power-limit control starts at the balanced budget;
-    # each tier derives its own final/profile cap from that scan-wide ceiling.
+    # Callers pass a real tier id (the dialog keeps one page per profile);
+    # a plain "adaptive" request falls back to the balanced budget.
     pct = uv_limit_power_limit_pct_for_gpu(
         detected_name,
         profile_id=_defaults_profile_id(preset, AUTO_UV_PRESET_BALANCED),

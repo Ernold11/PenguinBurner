@@ -15,6 +15,43 @@ pub const AUTO_UV_OPTION_FLAGS: &[(&str, &str)] = &[
     ("auto_uv_tail_rise_bins", "--auto-uv-tail-rise-bins"),
     ("auto_oc_target_voltage_mv", "--auto-oc-target-voltage-mv"),
     ("auto_oc_target_clock_mhz", "--auto-oc-target-clock-mhz"),
+    // Per-tier full-scan overrides (adaptive mode only).
+    (
+        "auto_uv_efficiency_max_clock_drop_pct",
+        "--auto-uv-efficiency-max-clock-drop-pct",
+    ),
+    (
+        "auto_uv_efficiency_power_limit_w",
+        "--auto-uv-efficiency-power-limit-w",
+    ),
+    (
+        "auto_uv_efficiency_memory_offset_mhz",
+        "--auto-uv-efficiency-memory-offset-mhz",
+    ),
+    (
+        "auto_uv_balanced_max_clock_drop_pct",
+        "--auto-uv-balanced-max-clock-drop-pct",
+    ),
+    (
+        "auto_uv_balanced_power_limit_w",
+        "--auto-uv-balanced-power-limit-w",
+    ),
+    (
+        "auto_uv_balanced_memory_offset_mhz",
+        "--auto-uv-balanced-memory-offset-mhz",
+    ),
+    (
+        "auto_uv_performance_max_clock_drop_pct",
+        "--auto-uv-performance-max-clock-drop-pct",
+    ),
+    (
+        "auto_uv_performance_power_limit_w",
+        "--auto-uv-performance-power-limit-w",
+    ),
+    (
+        "auto_uv_performance_memory_offset_mhz",
+        "--auto-uv-performance-memory-offset-mhz",
+    ),
 ];
 
 /// Profile-verification option key → CLI flag, in the exact argv order of

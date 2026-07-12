@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Any, cast
 
 from stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.scan_mode.auto_uv_mode import (
+    ADAPTIVE_TIER_MODES,
     AUTO_UV_MODE_BALANCED,
     AUTO_UV_MODE_PERFORMANCE,
+    adaptive_tier_option_key,
     normalize_auto_uv_mode,
 )
 from auto_uv.domain.types import AutoUvError
@@ -72,16 +75,66 @@ def clock_drop_margin_pct(
     *,
     auto_uv_mode: str | None = None,
     gpu_name: object | None = None,
+    profile_id: str | None = None,
 ) -> float:
     value = runtime_options.get("auto_uv_max_clock_drop_pct")
     if value is None:
         value = uv_limit_clock_drop_pct_for_gpu(
             gpu_name,
-            profile_id=clock_drop_profile_id(runtime_options, auto_uv_mode=auto_uv_mode),
+            profile_id=(
+                profile_id
+                or clock_drop_profile_id(runtime_options, auto_uv_mode=auto_uv_mode)
+            ),
         )
     if value is None:
         value = AUTO_UV_DEFAULTS.max_core_clock_drop_pct
     return max(0.0, min(100.0, float(value)))
+
+
+def adaptive_tier_option(
+    runtime_options: dict,
+    *,
+    tier_mode: str,
+    option: str,
+) -> object | None:
+    """A per-tier scan option (``auto_uv_<tier>_<option>``), or None.
+
+    The full (adaptive) scan carries tier-specific values for options that a
+    single-profile scan expresses with one scan-wide key; empty values count
+    as absent so the caller can fall through to the scan-wide key.
+    """
+    tier = str(tier_mode).strip().lower()
+    if tier not in ADAPTIVE_TIER_MODES:
+        return None
+    value = runtime_options.get(adaptive_tier_option_key(tier, option))
+    return None if value in (None, "") else value
+
+
+def adaptive_tier_clock_drop_margin_pct(
+    runtime_options: dict,
+    *,
+    tier_mode: str,
+    gpu_name: object | None = None,
+) -> float:
+    """One adaptive tier's loaded clock-drop allowance in percent.
+
+    The tier's own option wins; otherwise the scan-wide chain resolves with
+    the tier's GPU-table row. Each tier descends with ITS margin — sharing
+    one scan-wide margin let the balanced tier descend with the efficiency
+    (loosest) allowance.
+    """
+    value = adaptive_tier_option(
+        runtime_options,
+        tier_mode=tier_mode,
+        option="max_clock_drop_pct",
+    )
+    if value is not None:
+        return max(0.0, min(100.0, float(cast(Any, value))))
+    return clock_drop_margin_pct(
+        runtime_options,
+        gpu_name=gpu_name,
+        profile_id=str(tier_mode).strip().lower(),
+    )
 
 
 def clock_drop_profile_id(
@@ -154,4 +207,4 @@ def tail_rise_bins(runtime_options: dict, *, auto_uv_mode: str) -> int:
 
 
 def optional_int(value: object) -> int | None:
-    return None if value is None else int(value)
+    return None if value is None else int(cast(Any, value))

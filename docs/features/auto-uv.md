@@ -116,6 +116,9 @@ so the benchmark and the curve writer target the same physical GPU.
 | `--auto-uv-power-limit-w N` | power limit applied during the scan and saved with the profile |
 | `--auto-uv-tail-rise-bins N` | bins above lock point that may rise (`0` = flat) |
 | `--auto-oc-target-voltage-mv N` / `--auto-oc-target-clock-mhz N` | Performance Auto-OC ceilings |
+| `--auto-uv-<tier>-max-clock-drop-pct N` | full-scan per-tier clock-drop override (`<tier>` = `efficiency`/`balanced`/`performance`) |
+| `--auto-uv-<tier>-power-limit-w N` | full-scan per-tier power limit |
+| `--auto-uv-<tier>-memory-offset-mhz N` | full-scan per-tier memory offset |
 
 The CLI Auto-UV scan flags mirror the options exposed by the GUI tuning modal.
 

@@ -71,7 +71,14 @@ from auto_uv.probes.runtime_guardrails import (
     probe_failure_should_mark_voltage_unsafe,
 )
 from auto_uv.probes.voltage_probe import probe_voltage_candidate
-from auto_uv.run.scan_runtime_settings import read_scan_runtime_settings
+from auto_uv.run.scan_runtime_settings import (
+    adaptive_tier_clock_drop_margin_pct,
+    adaptive_tier_option,
+    read_scan_runtime_settings,
+)
+from auto_uv.gpu.memory_clock_offset_user_option import (
+    driver_memory_offset_limit_mhz,
+)
 from auto_uv.scan_mode.efficiency_fps_per_w_policy import (
     derive_efficiency_stop_streak_from_fps_variance,
 )
@@ -488,6 +495,10 @@ def run_voltage_frequency_undervolt_main_loop(
             final_auto_oc_metadata: dict | None = None,
             final_auto_uv_mode: str | None = None,
             final_profile_tier: str | None = None,
+            # Adaptive tiers verify against THEIR clock-drop margin, not the
+            # scan-wide one; None keeps the scan-wide settings values.
+            final_min_core_clock_pct: float | None = None,
+            final_clock_drop_margin_pct: float | None = None,
         ):
             apply_requested_power_limit_for_final_verification(gpu, log=log)
             return run_final_verification_and_save(
@@ -512,10 +523,16 @@ def run_voltage_frequency_undervolt_main_loop(
                 discovery_summary=discovery_summary,
                 translated_gpu_policy=gpu.translated_gpu_policy,
                 min_performance_core_clock_pct=float(
-                    settings.min_performance_core_clock_pct
+                    final_min_core_clock_pct
+                    if final_min_core_clock_pct is not None
+                    else settings.min_performance_core_clock_pct
                 ),
                 runtime_default_plan=gpu.runtime_default_plan,
-                final_clock_drop_margin_pct=float(settings.final_clock_drop_margin_pct),
+                final_clock_drop_margin_pct=float(
+                    final_clock_drop_margin_pct
+                    if final_clock_drop_margin_pct is not None
+                    else settings.final_clock_drop_margin_pct
+                ),
                 tail_rise_bins=int(final_tail_rise_bins),
                 auto_uv_mode=str(final_auto_uv_mode or settings.auto_uv_mode),
                 generated_profile_tier=(
@@ -561,10 +578,26 @@ def run_voltage_frequency_undervolt_main_loop(
                     # fourth, tier-less profile shadowing the confirmed ones,
                     # so the guard is armed before the first tier's descent.
                     adaptive_tier_phase = True
+
+                    def configure_tier_probe_runner(
+                        min_core_clock_pct: float,
+                    ) -> AutoUvProbeRunner:
+                        # Rebinds the closed-over runner so probe_candidate
+                        # evaluates this tier's probes against the tier's own
+                        # clock floor (the runner dataclass is frozen).
+                        nonlocal runner
+                        runner = replace(
+                            runner,
+                            min_performance_core_clock_pct=float(
+                                min_core_clock_pct
+                            ),
+                        )
+                        return runner
+
                     return run_adaptive_tier_scans(
                         base_curve=base_curve,
                         gpu=gpu,
-                        runner=runner,
+                        configure_tier_probe_runner=configure_tier_probe_runner,
                         settings=settings,
                         runtime_options=runtime_options,
                         base_loop_settings=base_loop_settings,
@@ -760,7 +793,7 @@ def run_adaptive_tier_scans(
     *,
     base_curve: list[dict],
     gpu,
-    runner: AutoUvProbeRunner,
+    configure_tier_probe_runner: Callable[[float], AutoUvProbeRunner],
     settings,
     runtime_options: dict,
     base_loop_settings: AutoUvScanSettings,
@@ -802,6 +835,17 @@ def run_adaptive_tier_scans(
         gpu.translated_gpu_policy.get("gpu_name"),
         AUTO_UV_MODE_BALANCED,
     )
+    gpu_name = gpu.translated_gpu_policy.get("gpu_name")
+    # The offset applied at scan open (scan-wide request or zero) is every
+    # tier's fallback: a tier without its own option must never inherit the
+    # PREVIOUS tier's offset. The driver limit is a per-GPU constant, fetched
+    # once so mid-scan daemon hiccups can't clamp tiers inconsistently.
+    scan_open_memory_offset_mhz = int(
+        gpu.translated_gpu_policy.get("mem_clk_vf_offset_mhz") or 0
+    )
+    memory_offset_limit_mhz = int(
+        driver_memory_offset_limit_mhz(gpu.policy_controller)
+    )
     for tier_index, tier_mode in enumerate(ADAPTIVE_TIER_ORDER):
         next_tier = (
             str(ADAPTIVE_TIER_ORDER[tier_index + 1])
@@ -815,6 +859,30 @@ def run_adaptive_tier_scans(
             "next_tier": next_tier,
         }
         emit_auto_uv_event(event_callback, "tier_started", **tier_event_details)
+        # Each tier descends and verifies against ITS clock-drop allowance
+        # (per-tier option, scan-wide override, GPU table, generic fallback).
+        tier_clock_drop_margin_pct = adaptive_tier_clock_drop_margin_pct(
+            runtime_options,
+            tier_mode=str(tier_mode),
+            gpu_name=gpu_name,
+        )
+        tier_min_core_clock_pct = max(0.0, 100.0 - tier_clock_drop_margin_pct)
+        tier_runner = configure_tier_probe_runner(tier_min_core_clock_pct)
+        log_phase(
+            log,
+            "auto-uv",
+            f"adaptive {tier_mode} clock-drop allowance: "
+            f"{tier_clock_drop_margin_pct:.1f}%",
+        )
+        apply_adaptive_tier_memory_offset(
+            gpu,
+            tier_mode=str(tier_mode),
+            runtime_options=runtime_options,
+            fallback_offset_mhz=scan_open_memory_offset_mhz,
+            limit_mhz=memory_offset_limit_mhz,
+            event_callback=event_callback,
+            log=log,
+        )
         tier_candidate, tier_final_tail, tier_probe, tier_history = (
             run_adaptive_tier_descent(
                 base_curve,
@@ -828,6 +896,8 @@ def run_adaptive_tier_scans(
                 effective_min_search_voltage_mv=int(effective_min_search_voltage_mv),
                 probe_candidate=probe_candidate,
                 stock_power_limit_w=stock_power_limit_w,
+                min_core_clock_pct=float(tier_min_core_clock_pct),
+                tier_event_details=tier_event_details,
                 gpu=gpu,
                 event_callback=event_callback,
                 log=log,
@@ -840,6 +910,13 @@ def run_adaptive_tier_scans(
             stock_power_limit_w=stock_power_limit_w,
             scan_request_w=scan_power_limit_request_w,
             balanced_pct=balanced_power_limit_pct,
+            explicit_watts=positive_int(
+                adaptive_tier_option(
+                    runtime_options,
+                    tier_mode=str(tier_mode),
+                    option="power_limit_w",
+                )
+            ),
         )
         # The deepest still-unsaved tier soaks the full duration; once one
         # profile has passed its full final, shallower tiers get the graduated
@@ -859,7 +936,7 @@ def run_adaptive_tier_scans(
                 stable_lock_clock_mhz=int(tier_candidate.target_mhz),
                 stable_probe=tier_probe,
                 stable_history=tier_history,
-                runner=runner,
+                runner=tier_runner,
                 gpu=gpu,
                 probe_history=probe_history,
                 log=log,
@@ -874,6 +951,7 @@ def run_adaptive_tier_scans(
                 run_performance_auto_oc=runs_auto_oc,
                 request_reason=f"adaptive-{tier_mode}",
                 auto_uv_mode_override=str(tier_mode),
+                min_core_clock_pct_override=float(tier_min_core_clock_pct),
             )
             tier_scan_result = finish_with_final_verification(
                 final_stable_plan=tier_selection.plan,
@@ -887,6 +965,8 @@ def run_adaptive_tier_scans(
                 final_auto_oc_metadata=tier_selection.auto_oc_metadata,
                 final_auto_uv_mode=str(tier_mode),
                 final_profile_tier=str(tier_mode),
+                final_min_core_clock_pct=float(tier_min_core_clock_pct),
+                final_clock_drop_margin_pct=float(tier_clock_drop_margin_pct),
             )
         except AutoUvFinalChoiceDiscarded:
             any_tier_discarded = True
@@ -955,6 +1035,8 @@ def run_adaptive_tier_descent(
     effective_min_search_voltage_mv: int,
     probe_candidate: Callable[[VfCurveCandidate], VoltageProbeOutcome],
     stock_power_limit_w: int | None,
+    min_core_clock_pct: float,
+    tier_event_details: dict,
     gpu,
     event_callback: AutoUvEventCallback | None,
     log: Callable[[str], None],
@@ -970,6 +1052,7 @@ def run_adaptive_tier_descent(
         base_loop_settings,
         auto_uv_mode=tier_mode,
         tail_rise_bins=int(tier_descent_tail),
+        min_core_clock_pct=float(min_core_clock_pct),
     )
     tier_history: list[AutoUvProbeSummary] = []
 
@@ -1040,7 +1123,7 @@ def run_adaptive_tier_descent(
     emit_auto_uv_event(
         event_callback,
         "tier_confirmed",
-        tier=tier_mode,
+        **tier_event_details,
         voltage_mv=int(tier_candidate.voltage_mv),
         target_mhz=int(tier_candidate.target_mhz),
         points=vf_curve_event_points(tier_candidate.flattened_plan),
@@ -1055,12 +1138,21 @@ def apply_adaptive_tier_power_limit(
     stock_power_limit_w: int | None,
     scan_request_w: int | None,
     balanced_pct: float | None,
+    explicit_watts: int | None = None,
 ) -> None:
     """Request this tier's board-power cap for its final verification.
 
-    A manual scan-wide request is a hard ceiling: the per-tier balanced-anchor
-    scaling may not push a tier above what the user explicitly asked for.
+    An explicit per-tier request (the scan dialog's per-profile power slider)
+    wins over the balanced-anchor scaling. A manual scan-wide request stays a
+    hard ceiling in BOTH branches: neither scaling nor a per-tier flag may
+    push a tier above what the user explicitly asked for scan-wide.
     """
+    if explicit_watts is not None:
+        watts = int(explicit_watts)
+        if scan_request_w is not None:
+            watts = min(watts, int(scan_request_w))
+        gpu.requested_power_limit_w = gpu.clamp_power_limit_w(watts)
+        return
     tier_watts = adaptive_tier_power_limit_w(
         power_limit_pct=uv_limit_power_limit_pct_for_gpu(
             gpu.translated_gpu_policy.get("gpu_name"), tier_mode
@@ -1074,6 +1166,83 @@ def apply_adaptive_tier_power_limit(
     if scan_request_w is not None:
         tier_watts = min(int(tier_watts), int(scan_request_w))
     gpu.requested_power_limit_w = gpu.clamp_power_limit_w(int(tier_watts))
+
+
+def apply_adaptive_tier_memory_offset(
+    gpu,
+    *,
+    tier_mode: str,
+    runtime_options: dict,
+    fallback_offset_mhz: int,
+    limit_mhz: int,
+    event_callback: AutoUvEventCallback | None,
+    log: Callable[[str], None],
+) -> None:
+    """Resolve and apply this tier's memory V/F offset before its descent.
+
+    The tier's own option wins; absent, the scan-open offset (scan-wide or
+    zero) is RESTORED — an earlier tier's offset must never leak into a tier
+    that didn't ask for it. The offset that is actually live (NVML read-back
+    when it disagrees) lands in ``translated_gpu_policy`` so the tier's crash
+    markers and saved profile record reality. An apply failure keeps the
+    previous offset and lets the tier run — one tier's NVML hiccup must not
+    abort the whole adaptive scan.
+    """
+    raw = adaptive_tier_option(
+        runtime_options,
+        tier_mode=tier_mode,
+        option="memory_offset_mhz",
+    )
+    if raw is None:
+        target_mhz = max(0, min(int(fallback_offset_mhz), int(limit_mhz)))
+    else:
+        target_mhz = max(0, min(int(cast(Any, raw)), int(limit_mhz)))
+        if target_mhz != int(cast(Any, raw)):
+            log(
+                f"Auto-UV memory offset ({tier_mode}): requested "
+                f"{int(cast(Any, raw))} MHz clamped to {target_mhz} MHz "
+                f"(limit {int(limit_mhz)} MHz)"
+            )
+    current_mhz = int(gpu.translated_gpu_policy.get("mem_clk_vf_offset_mhz") or 0)
+    applied_mhz = target_mhz
+    if target_mhz != current_mhz:
+        try:
+            applied = gpu.gpu.apply_clock_offsets(
+                mem_clk_vf_offset_mhz=int(target_mhz)
+            )
+        except Exception as exc:
+            log(
+                f"Auto-UV memory offset ({tier_mode}): failed to apply "
+                f"{target_mhz:+d} MHz; keeping {current_mhz:+d} MHz: {exc}"
+            )
+            return
+        readback_mhz = (applied or {}).get("mem_clk_vf_offset_readback_mhz")
+        if readback_mhz is None:
+            log(
+                f"Auto-UV memory offset ({tier_mode}): applied {target_mhz:+d} MHz "
+                "(driver does not support read-back)"
+            )
+        elif int(readback_mhz) != int(target_mhz):
+            applied_mhz = int(readback_mhz)
+            log(
+                f"Auto-UV memory offset ({tier_mode}) MISMATCH: requested "
+                f"{target_mhz:+d} MHz but NVML reads back {applied_mhz:+d} MHz "
+                "-- the driver clamped or ignored it"
+            )
+        else:
+            log(
+                f"Auto-UV memory offset ({tier_mode}): applied {target_mhz:+d} MHz "
+                f"(was {current_mhz:+d} MHz)"
+            )
+    gpu.translated_gpu_policy["mem_clk_vf_offset_mhz"] = int(applied_mhz)
+    gpu.translated_gpu_policy["mem_clk_vf_offset_limit_mhz"] = int(limit_mhz)
+    emit_auto_uv_event(
+        event_callback,
+        "memory_offset_applied",
+        tier=str(tier_mode),
+        offset_mt_s=int(applied_mhz),
+        offset_mhz=int(applied_mhz) // 2,
+    )
 
 
 ADAPTIVE_TIER_ORDER = (
@@ -1198,10 +1367,17 @@ def select_final_scan_candidate(
     run_performance_auto_oc: bool,
     request_reason: str,
     auto_uv_mode_override: str | None = None,
+    min_core_clock_pct_override: float | None = None,
 ) -> FinalScanCandidate:
     # Adaptive scans select per tier: the tier name overrides the scan-wide
-    # mode so the OC pass and the choice dialog see the tier, not "adaptive".
+    # mode so the OC pass and the choice dialog see the tier, not "adaptive";
+    # the clock-floor override likewise carries the tier's own allowance.
     selection_mode = str(auto_uv_mode_override or settings.auto_uv_mode)
+    selection_min_core_clock_pct = float(
+        min_core_clock_pct_override
+        if min_core_clock_pct_override is not None
+        else settings.min_performance_core_clock_pct
+    )
     final_plan = stable_plan
     final_voltage_mv = int(stable_voltage_mv)
     final_lock_clock_mhz = int(stable_lock_clock_mhz)
@@ -1261,7 +1437,7 @@ def select_final_scan_candidate(
             short_probe_base_duration_s=int(settings.short_probe_base_duration_s),
             tail_rise_bins=int(tail_rise_bins),
             request_reason=str(request_reason or "sweep-complete"),
-            min_core_clock_pct=float(settings.min_performance_core_clock_pct),
+            min_core_clock_pct=float(selection_min_core_clock_pct),
         )
         final_verification_duration_s = int(selected_final_verification_duration_s)
         if selected_stable_probe is not None:

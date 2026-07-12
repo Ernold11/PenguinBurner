@@ -269,6 +269,16 @@ def _debug_log_runtime_environment():
 def debug_effective_runtime_options(*, config_path, gpu_index, auto_uv_runtime_options):
     if not DEBUG_LOG_ENABLED:
         return
+    # Full scans carry per-tier overrides instead of the scan-wide keys; dump
+    # whichever are set so debug logs show the values that drive each tier.
+    per_tier_options = " ".join(
+        f"{key.replace('_', '-')}={value}"
+        for key, value in sorted(auto_uv_runtime_options.items())
+        if key.startswith(
+            ("auto_uv_efficiency_", "auto_uv_balanced_", "auto_uv_performance_")
+        )
+        and value not in (None, "")
+    )
     debug_log(
         "effective-runtime="
         f"config-path={Path(config_path).expanduser().resolve()} "
@@ -276,4 +286,5 @@ def debug_effective_runtime_options(*, config_path, gpu_index, auto_uv_runtime_o
         f"auto-uv-mode={auto_uv_runtime_options.get('auto_uv_mode') or '(default)'} "
         f"auto-uv-min-voltage-mv={auto_uv_runtime_options.get('auto_uv_min_voltage_mv') or '(default)'} "
         f"auto-uv-max-clock-drop-pct={auto_uv_runtime_options.get('auto_uv_max_clock_drop_pct') or '(default)'}"
+        + (f" {per_tier_options}" if per_tier_options else "")
     )
