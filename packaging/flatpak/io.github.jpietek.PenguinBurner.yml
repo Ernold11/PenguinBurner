@@ -35,6 +35,10 @@ finish-args:
   - --socket=fallback-x11
   - --talk-name=org.freedesktop.Flatpak
   - --device=dri
+  # Steam libraries can live on any host mount named by libraryfolders.vdf.
+  # Read-only host visibility lets discovery follow those paths without giving
+  # PenguinBurner write access outside the existing home permission.
+  - --filesystem=host:ro
   - --filesystem=home
   - --filesystem=/run/penguin-burnerd.sock
 
