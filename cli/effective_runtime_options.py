@@ -41,6 +41,7 @@ _AUTO_UV_NUMERIC_OPTIONS = [
     ),
     ("auto_oc_target_voltage_mv", "auto_oc_target_voltage_mv", _INT_POS),
     ("auto_oc_target_clock_mhz", "auto_oc_target_clock_mhz", _INT_POS),
+    ("auto_uv_final_verification_s", "auto_uv_final_verification_s", _INT_POS),
     ("auto_uv_max_clock_drop_pct", "auto_uv_max_clock_drop_pct", _float_nonnegative),
 ] + [
     # Per-tier full-scan overrides: each adaptive tier's clock-drop allowance,

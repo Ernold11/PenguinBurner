@@ -154,6 +154,17 @@ def parse_arguments(argv):
             "undervolt point."
         ),
     )
+    auto_uv_group.add_argument(
+        "--auto-uv-final-verification-s",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Final verification soak per tier for this scan (every stage of "
+            "an adaptive 3-in-1 run uses the same duration). Default 300 "
+            "seconds; equivalent to PENGUIN_BURNER_AUTO_UV_FINAL_SECONDS."
+        ),
+    )
     steam_group.add_argument(
         "--set-steam-overlay-launch",
         metavar="APPID",

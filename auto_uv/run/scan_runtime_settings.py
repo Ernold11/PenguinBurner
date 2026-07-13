@@ -61,7 +61,7 @@ def read_scan_runtime_settings(
             runtime_options.get("auto_uv_min_voltage_mv")
         ),
         configured_max_drop_pct=max_drop_pct(),
-        final_verification_duration_s=final_verification_duration_s(),
+        final_verification_duration_s=final_verification_duration_s(runtime_options),
         short_probe_base_duration_s=short_probe_base_duration_s(),
         efficiency_stop_streak=efficiency_stop_streak(),
         derive_efficiency_stop_streak=derive_efficiency_stop_streak(),
@@ -155,7 +155,10 @@ def clock_drop_profile_id(
     value = runtime_options.get("auto_uv_tail_rise_bins")
     if value is not None:
         tail_bins = int(value)
-        if tail_bins >= int(AUTO_UV_DEFAULTS.performance_tail_rise_bins):
+        # Performance and balanced share the same default tail; only a tail
+        # explicitly above the balanced default signals a performance scan,
+        # so a shared value falls to the stricter balanced clock-drop limits.
+        if tail_bins > int(AUTO_UV_DEFAULTS.balanced_tail_rise_bins):
             return "performance"
         if tail_bins >= int(AUTO_UV_DEFAULTS.balanced_tail_rise_bins):
             return "balanced"
@@ -166,7 +169,15 @@ def max_drop_pct() -> float:
     return max(0.0, float(AUTO_UV_DEFAULTS.max_drop_pct))
 
 
-def final_verification_duration_s() -> int:
+def final_verification_duration_s(runtime_options: dict | None = None) -> int:
+    # Explicit per-scan request (--auto-uv-final-verification-s) wins; every
+    # stage of an adaptive 3-in-1 run uses the same duration.
+    requested = (runtime_options or {}).get("auto_uv_final_verification_s")
+    if requested is not None:
+        try:
+            return max(1, int(requested))
+        except (TypeError, ValueError):
+            pass
     # Fast-iteration override (developer validation runs): shorten the
     # final-verification soak so a scan's tier results surface in minutes.
     override = os.environ.get("PENGUIN_BURNER_AUTO_UV_FINAL_SECONDS")

@@ -226,7 +226,7 @@ def test_scan_runtime_tail_rise_defaults_follow_auto_uv_mode() -> None:
 
     assert efficiency.tail_rise_bins == 0
     assert balanced.tail_rise_bins == 4
-    assert performance.tail_rise_bins == 6
+    assert performance.tail_rise_bins == 4
     assert overridden.tail_rise_bins == 4
 
 
@@ -238,3 +238,16 @@ def _companion_duration_s(command: tuple[str, ...] | None) -> int | None:
         if part == "--duration-seconds":
             return int(parts[index + 1])
     return None
+
+
+def test_final_verification_duration_prefers_scan_option(monkeypatch) -> None:
+    from auto_uv.run import scan_runtime_settings as srs
+
+    monkeypatch.delenv("PENGUIN_BURNER_AUTO_UV_FINAL_SECONDS", raising=False)
+    assert srs.final_verification_duration_s({"auto_uv_final_verification_s": 60}) == 60
+    assert srs.final_verification_duration_s({}) == 300
+    assert srs.final_verification_duration_s(None) == 300
+    monkeypatch.setenv("PENGUIN_BURNER_AUTO_UV_FINAL_SECONDS", "45")
+    assert srs.final_verification_duration_s({}) == 45
+    # The explicit per-scan argument outranks the developer env override.
+    assert srs.final_verification_duration_s({"auto_uv_final_verification_s": 60}) == 60

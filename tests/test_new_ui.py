@@ -185,7 +185,7 @@ def test_new_ui_profile_and_tuning_helpers_cover_moved_workflows() -> None:
         running_selector="profile-a",
     )
     assert auto_uv_preset("balanced").tail_rise_bins == 4
-    assert auto_uv_preset("performance").tail_rise_bins == 6
+    assert auto_uv_preset("performance").tail_rise_bins == 4
     assert auto_uv_performance_preset_label() == "Performance"
     assert profile_verify_selector({"path": "/tmp/profile.json"}) == "/tmp/profile.json"
     assert workload_label() == "Q2RTX benchmark and CUDA compute test"

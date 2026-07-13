@@ -342,8 +342,9 @@ def auto_uv_performance_preset_label(_preview=None) -> str:
 
 def auto_uv_performance_preset_tooltip(_preview=None) -> str:
     return (
-        "Use the 6-bin tail curve, then run the Performance Auto-OC ladder "
-        "toward the configured voltage and clock targets."
+        f"Use the {DEFAULT_AUTO_UV_PERFORMANCE_TAIL_RISE_BINS}-bin tail "
+        "curve, then run the Performance Auto-OC ladder toward the "
+        "configured voltage and clock targets."
     )
 
 
