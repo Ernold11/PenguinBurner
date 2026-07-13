@@ -231,6 +231,12 @@ def select_scan_tuning(
         preset_button_group.addButton(button)
         preset_buttons[preset.preset_id] = button
         preset_buttons_layout.addWidget(button)
+    _install_hover_tooltip_filter(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        parent=dialog,
+        widgets=tuple(preset_buttons.values()),
+    )
     preset_buttons[AUTO_UV_PRESET_BALANCED].setChecked(True)
     preset_center = QtWidgets.QWidget()
     preset_center_layout = QtWidgets.QVBoxLayout(preset_center)
@@ -828,6 +834,46 @@ def _wrapped_tooltip(text: str) -> str:
     normalized = " ".join(str(text).split())
     escaped = html.escape(normalized)
     return f"<qt><table width='680'><tr><td>{escaped}</td></tr></table></qt>"
+
+
+def _install_hover_tooltip_filter(*, QtCore, QtWidgets, parent, widgets) -> None:
+    """Show important preset help on every pointer entry.
+
+    Qt's delayed native tooltip timer can remain asleep when the pointer moves
+    directly between adjacent buttons, especially under Wayland.  Showing the
+    same tooltip explicitly on Enter keeps all three preset explanations
+    dependable while leaving the buttons' normal hover and click events alone.
+    """
+    event_types = getattr(QtCore.QEvent, "Type", QtCore.QEvent)
+    enter_type = getattr(event_types, "Enter")
+    leave_type = getattr(event_types, "Leave")
+    targets = tuple(widgets)
+
+    class _HoverTooltipFilter(QtCore.QObject):
+        def eventFilter(self, watched, event):  # noqa: N802 - Qt override name
+            if watched not in targets:
+                return False
+            if event.type() == enter_type:
+                tooltip = str(watched.toolTip()).strip()
+                if tooltip:
+                    position = watched.mapToGlobal(watched.rect().bottomLeft())
+                    # A direct showText ignores setToolTipDuration unless the
+                    # duration is forwarded explicitly.
+                    QtWidgets.QToolTip.showText(
+                        position,
+                        tooltip,
+                        watched,
+                        QtCore.QRect(),
+                        watched.toolTipDuration(),
+                    )
+            elif event.type() == leave_type:
+                QtWidgets.QToolTip.hideText()
+            return False
+
+    event_filter = _HoverTooltipFilter(parent)
+    for widget in targets:
+        widget.installEventFilter(event_filter)
+    parent._penguin_burner_hover_tooltip_filter = event_filter
 
 
 def _double_spin(QtWidgets, minimum: float, maximum: float, value: float, suffix: str):

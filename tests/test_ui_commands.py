@@ -2381,6 +2381,56 @@ def test_scan_tuning_power_limit_controls_require_daemon_setter_probe():
     assert values is None
 
 
+def test_scan_tuning_preset_hover_always_shows_its_tooltip(monkeypatch) -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtWidgets
+
+    import ui.dialogs.scan_tuning as scan_tuning
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    parent = QtWidgets.QDialog()
+    efficiency = QtWidgets.QPushButton("Efficiency", parent)
+    balanced = QtWidgets.QPushButton("Balanced", parent)
+    efficiency.setToolTip("Efficiency help")
+    balanced.setToolTip("Balanced help")
+    efficiency.setToolTipDuration(20000)
+    balanced.setToolTipDuration(20000)
+    shown = []
+    hidden = []
+    monkeypatch.setattr(
+        QtWidgets.QToolTip,
+        "showText",
+        lambda position, text, widget, rect, duration: shown.append(
+            (position, text, widget, duration)
+        ),
+    )
+    monkeypatch.setattr(QtWidgets.QToolTip, "hideText", lambda: hidden.append(True))
+
+    scan_tuning._install_hover_tooltip_filter(
+        QtCore=QtCore,
+        QtWidgets=QtWidgets,
+        parent=parent,
+        widgets=(efficiency, balanced),
+    )
+
+    event_types = getattr(QtCore.QEvent, "Type", QtCore.QEvent)
+    enter_type = getattr(event_types, "Enter")
+    leave_type = getattr(event_types, "Leave")
+    QtWidgets.QApplication.sendEvent(efficiency, QtCore.QEvent(enter_type))
+    QtWidgets.QApplication.sendEvent(efficiency, QtCore.QEvent(leave_type))
+    QtWidgets.QApplication.sendEvent(balanced, QtCore.QEvent(enter_type))
+
+    assert [(text, widget, duration) for _position, text, widget, duration in shown] == [
+        ("Efficiency help", efficiency, 20000),
+        ("Balanced help", balanced, 20000),
+    ]
+    assert hidden == [True]
+
+
 def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -> None:
     import os
 
