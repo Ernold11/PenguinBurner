@@ -83,6 +83,34 @@ def _default_vulkan_manifest_path(home: Path | str | None = None) -> Path:
     )
 
 
+def _stabilize_flatpak_deploy_path(path: Path) -> Path:
+    """Rewrite a commit-specific flatpak deploy path to the stable ``active``
+    symlink.
+
+    A flatpak deploy path is ``.../<branch>/<commit-hash>/files/...``; the
+    Vulkan layer manifest must NOT bake in ``<commit-hash>``, because a
+    ``flatpak update`` swaps the active deploy to a new commit and prunes the
+    old one — leaving the manifest's library_path dangling and every wrapped
+    Vulkan game failing to load the layer. The sibling ``<branch>/active``
+    symlink always points at the current deploy, so pinning to it survives
+    updates with no wrapper reinstall. Falls back to the original path when the
+    ``active`` form does not resolve (e.g. a non-flatpak layout)."""
+    parts = list(path.parts)
+    try:
+        files_index = parts.index("files")
+    except ValueError:
+        return path
+    commit_index = files_index - 1
+    if commit_index <= 0:
+        return path
+    commit = parts[commit_index]
+    is_commit = len(commit) == 64 and all(c in "0123456789abcdef" for c in commit)
+    if not is_commit:
+        return path
+    stable = Path(*parts[:commit_index], "active", *parts[files_index:])
+    return stable if (stable / NATIVE_LAYER_LIBRARY).exists() else path
+
+
 def _host_vulkan_manifest_text(
     native_layer_dir: Path,
     *,
@@ -92,7 +120,9 @@ def _host_vulkan_manifest_text(
     manifest = source_layer_dir / NATIVE_LAYER_MANIFEST
     data = json.loads(manifest.read_text(encoding="utf-8"))
     layer = dict(data["layer"])
-    layer["library_path"] = str(native_layer_dir / NATIVE_LAYER_LIBRARY)
+    layer["library_path"] = str(
+        _stabilize_flatpak_deploy_path(native_layer_dir) / NATIVE_LAYER_LIBRARY
+    )
     layer["enable_environment"] = {VULKAN_LAYER_ENABLE_ENV: "1"}
     layer["disable_environment"] = {VULKAN_LAYER_DISABLE_ENV: ""}
     data["layer"] = layer

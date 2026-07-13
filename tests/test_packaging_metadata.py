@@ -548,6 +548,60 @@ def test_flatpak_wrapper_installer_uses_flatpak_app_path_for_layer(tmp_path) -> 
     assert not manifest["layer"]["library_path"].startswith("/app/")
 
 
+def test_flatpak_layer_manifest_pins_to_active_symlink_not_commit(tmp_path) -> None:
+    # A flatpak update swaps the active deploy to a new commit and prunes the
+    # old one. The layer manifest must point at the stable "active" symlink so
+    # it does not dangle after an update (which would hang every wrapped Vulkan
+    # game until the wrappers are reinstalled).
+    from common.flatpak_wrappers import install_vulkan_layer_manifest
+
+    branch_dir = (
+        tmp_path
+        / ".local/share/flatpak/app/io.github.jpietek.PenguinBurner/x86_64/master"
+    )
+    commit = "f" * 64
+    layer_dir = (
+        branch_dir
+        / commit
+        / "files/lib/python3.13/site-packages/overlay/native_layer"
+    )
+    layer_dir.mkdir(parents=True)
+    layer_dir.joinpath("VkLayer_PENGUINBURNER_latency.json").write_text(
+        json.dumps(
+            {
+                "file_format_version": "1.2.1",
+                "layer": {
+                    "name": "VK_LAYER_PENGUINBURNER_latency",
+                    "type": "GLOBAL",
+                    "api_version": "1.4.0",
+                    "library_path": "./libVkLayer_penguinburner_latency.so",
+                    "library_arch": "64",
+                    "implementation_version": "1",
+                    "description": "PenguinBurner latency telemetry observer",
+                    "functions": {
+                        "vkGetInstanceProcAddr": "vkGetInstanceProcAddr",
+                        "vkGetDeviceProcAddr": "vkGetDeviceProcAddr",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    layer_dir.joinpath("libVkLayer_penguinburner_latency.so").write_bytes(b"so")
+    (branch_dir / "active").symlink_to(commit)
+
+    target = install_vulkan_layer_manifest(home=tmp_path, layer_dirs=[layer_dir])
+
+    assert target is not None
+    library_path = json.loads(target.read_text(encoding="utf-8"))["layer"][
+        "library_path"
+    ]
+    assert "/active/" in library_path
+    assert commit not in library_path
+    # The active path resolves to the real library, so the layer loads.
+    assert Path(library_path).exists()
+
+
 def test_flatpak_shell_installer_registers_user_vulkan_layer_manifest() -> None:
     script = Path("scripts/install-flatpak-cli-wrappers.sh").read_text(
         encoding="utf-8"
