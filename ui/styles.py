@@ -335,17 +335,19 @@ QPushButton#stopButton:pressed {{
     background: {theme.DANGER_BUTTON_PRESSED_BG};
     border-color: {theme.DANGER_BUTTON_PRESSED_BORDER};
 }}
+/* A minor utility, not a primary action: muted like About, not the green
+   Setup-Auto-Undervolt call to action. */
 QPushButton#importAfterburnerButton {{
-    background: {theme.PRIMARY_BUTTON_BG};
-    border-color: {theme.PRIMARY_BUTTON_BORDER};
-    color: {theme.PRIMARY_BUTTON_TEXT};
+    background: {theme.ABOUT_BUTTON_BG};
+    border-color: {theme.ABOUT_BUTTON_BORDER};
+    color: {theme.TEXT_MUTED};
 }}
 QPushButton#importAfterburnerButton:hover {{
-    border-color: {theme.PRIMARY_BUTTON_HOVER_BORDER};
+    border-color: #7f93ad;
 }}
 QPushButton#importAfterburnerButton:pressed {{
-    background: {theme.PRIMARY_BUTTON_PRESSED_BG};
-    border-color: {theme.PRIMARY_BUTTON_PRESSED_BORDER};
+    background: {theme.ABOUT_BUTTON_PRESSED_BG};
+    border-color: #9fb1c7;
 }}
 QPushButton#aboutButton {{
     background: {theme.ABOUT_BUTTON_BG};
