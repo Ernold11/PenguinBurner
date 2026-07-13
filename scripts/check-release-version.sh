@@ -23,6 +23,17 @@ if [ "$requested_version" != "$package_version" ]; then
     exit 1
 fi
 
+# The Rust daemon reports its own crate version over the socket, so it must
+# track the release too (a drift here shipped a 0.7.2 build whose daemon still
+# reported 0.7.1).
+burnerd_version="$(
+    sed -n 's/^version = "\(.*\)"/\1/p' burnerd/Cargo.toml | head -1
+)"
+if [ "$requested_version" != "$burnerd_version" ]; then
+    echo "release version does not match burnerd/Cargo.toml: requested=$requested_version burnerd=$burnerd_version" >&2
+    exit 1
+fi
+
 if [ ! -f "docs/release-notes-$requested_version.md" ]; then
     echo "missing docs/release-notes-$requested_version.md" >&2
     exit 1
