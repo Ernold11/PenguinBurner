@@ -98,6 +98,10 @@ from auto_uv.run.voltage_sweep_state import (
     LowerVoltageSweepResult,
     VoltageProbeOutcome,
 )
+from auto_uv.curve.shipped_plan import (
+    restore_stock_below_validated_floor,
+    validated_floor_voltage_mv,
+)
 from auto_uv.final_verification.crash_marker import memory_offset_from_gpu_policy
 from auto_uv.final_verification.main_loop import run_final_verification_and_save
 from auto_uv.scan_mode.auto_uv_mode import (
@@ -1582,6 +1586,19 @@ def select_final_scan_candidate(
         if selected_stable_probe is not None:
             final_probe = selected_stable_probe
 
+    # Whatever plan leaves selection — descent candidate, Auto-OC sweep, or a
+    # dialog pick — bins below the lowest voltage this scan actually probed
+    # are scan machinery, not validated operating points; they ship as stock
+    # (the 0.6.6 contract). Applied before final verification so the soak
+    # tests the exact curve that ships.
+    final_plan = restore_stock_below_validated_floor(
+        final_plan,
+        floor_voltage_mv=validated_floor_voltage_mv(
+            stable_history,
+            fallback_voltage_mv=int(final_voltage_mv),
+        ),
+    )
+
     return FinalScanCandidate(
         plan=final_plan,
         voltage_mv=int(final_voltage_mv),
@@ -1694,6 +1711,15 @@ def choose_next_candidate_after_final_failure(
         "final-verify",
         "retrying saved candidate "
         f"{int(selected_voltage_mv)}mV@{int(selected_lock_clock_mhz)}MHz",
+    )
+    # Retry candidates ship under the same contract as first selections:
+    # stock below the scan's validated floor.
+    selected_plan = restore_stock_below_validated_floor(
+        selected_plan,
+        floor_voltage_mv=validated_floor_voltage_mv(
+            stable_history,
+            fallback_voltage_mv=int(selected_voltage_mv),
+        ),
     )
     return FinalScanCandidate(
         plan=selected_plan,

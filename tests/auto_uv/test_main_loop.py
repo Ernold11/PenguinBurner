@@ -2762,7 +2762,7 @@ def test_performance_can_reuse_balanced_descent_gate() -> None:
         )
 
     logs: list[str] = []
-    gate_kwargs = dict(
+    gate_kwargs: dict[str, Any] = dict(
         performance_min_core_clock_pct=94.6,
         measured_baseline_clock_mhz=2742.5,
         log=logs.append,

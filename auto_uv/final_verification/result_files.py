@@ -102,17 +102,15 @@ def write_final_verified_profile(
     auto_uv_mode: str = "",
     generated_profile_tier: str = "",
 ) -> Path:
-    # Smooth the below-lock region with probe-passed points from this GPU's
-    # archive before archiving: the lock and tail stay exactly as verified,
-    # while bins the descent already proved stop shipping stock values (the
-    # 2200->2800 style discontinuity next to the lock).
-    from auto_uv.curve.verified_envelope import apply_verified_envelope_below_lock
-
-    plan, _raised = apply_verified_envelope_below_lock(
-        plan,
-        lock_voltage_mv=int(voltage_mv),
-        lock_clock_mhz=int(lock_clock_mhz),
-    )
+    # The plan is archived EXACTLY as final verification proved it. The old
+    # save-time "verified envelope" raised below-lock bins to the best clock
+    # any archived probe had ever passed at that voltage — but the archive
+    # spans previous scans (other memory offsets, tails, days), so profiles
+    # shipped mid-ramp clocks up to ~150MHz beyond anything the current scan
+    # validated, and did so AFTER the final soak (which pins at the lock
+    # voltage and never operates those bins). Real games dip through the
+    # mid-ramp on every load transition and crashed there repeatedly
+    # (2026-07-13). Never decorate the shipped curve past verification.
     payload = verified_candidate_payload(
         plan=plan,
         lock_clock_mhz=int(lock_clock_mhz),
