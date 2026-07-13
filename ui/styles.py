@@ -277,6 +277,24 @@ QPushButton#steamPlayButton:pressed {{
     background: {theme.PRIMARY_BUTTON_PRESSED_BG};
     border-color: {theme.PRIMARY_BUTTON_PRESSED_BORDER};
 }}
+QPushButton#steamPlayButton[playState="running"] {{
+    background: {theme.DANGER_BUTTON_BG};
+    border-color: {theme.DANGER_BUTTON_BORDER};
+    color: {theme.DANGER_BUTTON_TEXT};
+}}
+QPushButton#steamPlayButton[playState="running"]:hover {{
+    border-color: {theme.DANGER_BUTTON_HOVER_BORDER};
+}}
+QPushButton#steamPlayButton[playState="running"]:pressed {{
+    background: {theme.DANGER_BUTTON_PRESSED_BG};
+    border-color: {theme.DANGER_BUTTON_PRESSED_BORDER};
+}}
+QPushButton#steamPlayButton[playState="starting"],
+QPushButton#steamPlayButton[playState="stopping"] {{
+    background: {theme.CONTROL_BG};
+    border-color: {theme.BORDER_STRONG};
+    color: {theme.TEXT_MUTED};
+}}
 QPushButton#autoUvPresetButton {{
     min-width: 108px;
     padding: 7px 12px;

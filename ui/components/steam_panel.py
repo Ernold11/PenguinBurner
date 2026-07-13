@@ -309,23 +309,16 @@ class SteamPanel:
         title_row.addWidget(self.game_title)
         self.play_button = QtWidgets.QPushButton("Play")
         self.play_button.setObjectName("steamPlayButton")
+        self.play_button.setProperty("playState", "idle")
         self.play_button.setToolTip(
             _wrapped_tooltip(
                 "Launch the selected game through Steam. The command line, "
-                "Auto-UV mode, and overlay choice below are used for the launch."
+                "Auto-UV mode, and overlay choice below are used for the "
+                "launch. While the game runs, this same button becomes Stop "
+                "— Steam's own clean shutdown."
             )
         )
         title_row.addWidget(self.play_button)
-        self.stop_button = QtWidgets.QPushButton("Stop")
-        self.stop_button.setObjectName("steamStopButton")
-        self.stop_button.setEnabled(False)
-        self.stop_button.setToolTip(
-            _wrapped_tooltip(
-                "Ask Steam to shut the running game down cleanly — the same "
-                "action as Steam's own Stop button."
-            )
-        )
-        title_row.addWidget(self.stop_button)
         title_row.addStretch(1)
         details_layout.addLayout(title_row)
 
@@ -435,8 +428,7 @@ class SteamPanel:
         self._launch_edit_timer.setInterval(600)
         self._launch_edit_timer.timeout.connect(self._launch_options_edited)
         self.launch_edit.textChanged.connect(self._launch_options_changed)
-        self.play_button.clicked.connect(self._play_game)
-        self.stop_button.clicked.connect(self._stop_game)
+        self.play_button.clicked.connect(self._play_stop_clicked)
 
         self._sync_timer = QtCore.QTimer(self.widget)
         self._sync_timer.setInterval(_AUTO_SYNC_INTERVAL_MS)
@@ -715,9 +707,8 @@ class SteamPanel:
             has_selection and self._compat_tool_live_ready and not self._scan_running
         )
         self.overlay_checkbox.setEnabled(wrapper_enabled)
-        # Playing does not mutate Steam configuration, so it remains available
-        # even before live launch-option apply has been initialized.
-        self.play_button.setEnabled(has_selection)
+        # The Play/Stop button state (including availability) is derived from
+        # the selected game's lifecycle in _sync_game_status.
         self._sync_game_status()
 
     def _sync_game_status(self) -> None:
@@ -736,10 +727,54 @@ class SteamPanel:
             style = self.game_status.style()
             style.unpolish(self.game_status)
             style.polish(self.game_status)
-        # Stop only once the session is confirmed: TerminateApp on a game
-        # Steam has not spawned yet is a silent no-op that would strand the
-        # tracker in "stopping" while the game then launches anyway.
-        self.stop_button.setEnabled(state == "running")
+        self._sync_play_stop_button(state)
+
+    def _sync_play_stop_button(self, state: str) -> None:
+        """One mutating Steam-style button: Play -> Starting… -> Stop ->
+        Stopping… -> Play.
+
+        The button is the state display, so a click can only mean what the
+        label shows: transitional states keep it disabled (TerminateApp on a
+        game Steam has not spawned yet is a silent no-op that would strand
+        the tracker in "stopping", and a second Play during a slow launch is
+        noise). All transitions run on the GUI thread; the launch/stop grace
+        deadlines in _apply_game_states guarantee a transitional state always
+        resolves back to Play or Stop.
+        """
+        has_selection = bool(
+            self._selected_app_id and self._selected_app_id in self._rows
+        )
+        if state == "launching":
+            text, enabled, play_state = "Starting…", False, "starting"
+        elif state == "running":
+            text, enabled, play_state = "Stop", True, "running"
+        elif state == "stopping":
+            text, enabled, play_state = "Stopping…", False, "stopping"
+        else:
+            # Playing does not mutate Steam configuration, so it remains
+            # available even before live launch-option apply is initialized.
+            text, enabled, play_state = "Play", has_selection, "idle"
+        self.play_button.setText(text)
+        self.play_button.setEnabled(enabled)
+        if self.play_button.property("playState") != play_state:
+            self.play_button.setProperty("playState", play_state)
+            style = self.play_button.style()
+            style.unpolish(self.play_button)
+            style.polish(self.play_button)
+
+    def _selected_game_state(self) -> str:
+        track = self._tracked.get(self._selected_app_id)
+        return track.state if track is not None else ""
+
+    def _play_stop_clicked(self, _checked: bool = False) -> None:
+        # Dispatch strictly on the tracked state so the click always performs
+        # the action the button displayed; transitional states are disabled
+        # and fall through to a no-op even if triggered programmatically.
+        state = self._selected_game_state()
+        if state == "running":
+            self._stop_game()
+        elif state not in _ACTIVE_GAME_STATES:
+            self._play_game()
 
     # -- header / status ----------------------------------------------------
 
