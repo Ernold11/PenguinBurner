@@ -42,7 +42,9 @@ pub fn bind(path: &Path) -> anyhow::Result<UnixListener> {
         fs::remove_file(path)?;
     }
     let listener = UnixListener::bind(path)?;
-    // World rw: access is gated by SO_PEERCRED, not file perms.
+    // 0o666 so the desktop user can connect without a shared group; the real
+    // access control is the SO_PEERCRED gate in peer_uid_allowed (which fails
+    // closed when the daemon runs as root with no allowed UID configured).
     fs::set_permissions(path, fs::Permissions::from_mode(0o666))?;
     Ok(listener)
 }
@@ -177,13 +179,45 @@ fn handle_start_stream(
 
 fn peer_uid_allowed(stream: &UnixStream) -> bool {
     let allowed = env::var(DAEMON_ALLOWED_UID_ENV).unwrap_or_default();
-    let allowed = allowed.trim();
+    let allowed = allowed.trim().to_string();
+    peer_uid_allowed_with(&allowed, crate::paths::geteuid_is_root(), || {
+        peer_uid(stream)
+    })
+}
+
+/// Split out for testing. The socket is world-connectable, so when the daemon
+/// runs as root the allowed-UID gate is the ONLY access control — an empty
+/// allowlist must therefore fail CLOSED (a root install that never resolved a
+/// desktop UID must not accept commands from every local user). An unprivileged
+/// daemon has nothing to protect, so it stays permissive.
+fn peer_uid_allowed_with(
+    allowed: &str,
+    running_as_root: bool,
+    peer_uid: impl FnOnce() -> Option<u32>,
+) -> bool {
     if allowed.is_empty() {
+        if running_as_root {
+            log_gate_disabled_once();
+            return false;
+        }
         return true;
     }
-    match peer_uid(stream) {
+    match peer_uid() {
         Some(uid) => uid == 0 || uid.to_string() == allowed,
         None => false,
+    }
+}
+
+fn log_gate_disabled_once() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static LOGGED: AtomicBool = AtomicBool::new(false);
+    if !LOGGED.swap(true, Ordering::Relaxed) {
+        crate::logging::error(
+            "refusing client connections: running as root with no \
+             PENGUIN_BURNER_DAEMON_ALLOWED_UID configured. Reinstall the \
+             service from the PenguinBurner UI (or set the allowed UID in the \
+             unit) so the peer-UID gate can enforce access.",
+        );
     }
 }
 
@@ -193,4 +227,31 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
     getsockopt(stream, PeerCredentials)
         .ok()
         .map(|credentials| credentials.uid())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::peer_uid_allowed_with;
+
+    #[test]
+    fn empty_allowlist_fails_closed_as_root() {
+        // The world-connectable socket + a root daemon means an empty gate
+        // must reject everyone, not accept everyone (the pre-fix hole).
+        assert!(!peer_uid_allowed_with("", true, || Some(1000)));
+        assert!(!peer_uid_allowed_with("", true, || Some(0)));
+    }
+
+    #[test]
+    fn empty_allowlist_is_permissive_when_unprivileged() {
+        // A non-root daemon holds no privilege worth gating.
+        assert!(peer_uid_allowed_with("", false, || Some(1000)));
+    }
+
+    #[test]
+    fn configured_allowlist_matches_uid_or_root() {
+        assert!(peer_uid_allowed_with("1000", true, || Some(1000)));
+        assert!(peer_uid_allowed_with("1000", true, || Some(0)));
+        assert!(!peer_uid_allowed_with("1000", true, || Some(1001)));
+        assert!(!peer_uid_allowed_with("1000", true, || None));
+    }
 }
