@@ -58,6 +58,7 @@ class _FakeManager:
         self.compat_changes: list[tuple[str, str]] = []
         self.launch_changes: list[tuple[str, str]] = []
         self.enabled_changes: list[tuple[str, bool]] = []
+        self.target_fps_changes: list[tuple[str, float | None]] = []
         self.stop_ok = True
         self.marker = True
         self.cdp = True
@@ -135,6 +136,16 @@ class _FakeManager:
             message="Applied live.",
             launch_options=launch_options,
         )
+
+    def set_game_target_fps(self, app_id: str, target_fps):
+        self.target_fps_changes.append((app_id, target_fps))
+        self.rows = tuple(
+            replace(row, setting=replace(row.setting, target_fps=target_fps))
+            if row.game.app_id == app_id
+            else row
+            for row in self.rows
+        )
+        return SimpleNamespace(ok=True, message="Applied live.")
 
     def hot_reapply(self, app_id: str):
         del app_id
@@ -319,6 +330,8 @@ def test_panel_keeps_library_left_and_one_selected_game_editor(
     assert panel.enabled_checkbox.isChecked() is False
     assert panel.mode_label.isEnabled() is False
     assert panel.mode_combo.isEnabled() is False
+    assert panel.target_fps_label.isEnabled() is False
+    assert panel.target_fps_spin.isEnabled() is False
     assert panel.overlay_checkbox.isChecked() is False
     assert panel.overlay_checkbox.isEnabled() is False
 
@@ -327,13 +340,20 @@ def test_panel_keeps_library_left_and_one_selected_game_editor(
     assert panel.enabled_checkbox.isChecked() is True
     assert panel.mode_label.isEnabled() is True
     assert panel.mode_combo.isEnabled() is True
+    assert panel.target_fps_label.isEnabled() is True
+    assert panel.target_fps_spin.isEnabled() is True
     assert panel.overlay_checkbox.isEnabled() is True
 
     panel.launch_edit.setPlainText("gamemoderun %command%")
     qtbot.waitUntil(lambda: bool(manager.launch_changes), timeout=1500)
     assert manager.launch_changes == [("30", "gamemoderun %command%")]
 
-    line_edits = panel.widget.findChildren(QtWidgets.QLineEdit)
+    line_edits = [
+        edit
+        for edit in panel.widget.findChildren(QtWidgets.QLineEdit)
+        # A QDoubleSpinBox carries an internal QLineEdit editor.
+        if not isinstance(edit.parent(), QtWidgets.QAbstractSpinBox)
+    ]
     plain_text_edits = panel.widget.findChildren(QtWidgets.QPlainTextEdit)
     tables = panel.widget.findChildren(QtWidgets.QTableWidget)
     play_buttons = [
@@ -371,6 +391,46 @@ def test_panel_keeps_library_left_and_one_selected_game_editor(
     assert panel.game_title.text() == "Zeta"
     assert panel.launch_edit.toPlainText() == "gamemoderun %command%"
     assert panel.launch_edit.textCursor().position() == 0
+
+    panel._sync_timer.stop()
+
+
+def test_target_fps_spin_stores_per_game_value(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import ui.components.steam_panel as steam_panel_module
+
+    monkeypatch.setattr(
+        steam_panel_module,
+        "adaptive_target_fps_from_env",
+        lambda **_kwargs: 60.0,
+    )
+    QtCore, QtGui, QtWidgetsModule, _pg = import_qt()
+    manager = _FakeManager((_row(tmp_path, "10", "Alpha", 100),))
+    panel = SteamPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgetsModule,
+        manager=cast(SteamIntegrationManager, manager),
+    )
+    qtbot.addWidget(panel.widget)
+    qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
+
+    # Unset per-game value shows the global default and stays grayed out
+    # until PenguinBurner is toggled on for the game.
+    assert panel.target_fps_spin.objectName() == "steamAdaptiveTargetFps"
+    assert panel.target_fps_spin.text() == "60 FPS"
+    assert panel.target_fps_spin.isEnabled() is False
+
+    panel.enabled_checkbox.click()
+    assert panel.target_fps_spin.isEnabled() is True
+
+    panel.target_fps_spin.setValue(120)
+
+    assert manager.target_fps_changes == [("10", 120.0)]
+    assert manager.rows[0].setting.target_fps == 120.0
 
     panel._sync_timer.stop()
 

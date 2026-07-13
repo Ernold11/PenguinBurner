@@ -12,11 +12,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import math
 from pathlib import Path
 
 from auto_uv.persistence.auto_uv_persisted_json_files import safe_json_write
 from common.penguin_burner_paths import default_user_config_dir
 from profiles.uv.profile_tiers import PROFILE_TIERS, normalize_profile_tier
+from runtime.support.adaptive_target_fps import (
+    MAX_ADAPTIVE_TARGET_FPS,
+    MIN_ADAPTIVE_TARGET_FPS,
+)
 
 
 # Steam integration is opt-in per game. New games keep the wrapper disabled,
@@ -44,6 +49,19 @@ def normalize_game_mode(
     return normalize_profile_tier(text, default=default)
 
 
+def normalize_game_target_fps(value: object | None) -> float | None:
+    """Per-game adaptive target FPS; None means "use the global default"."""
+    try:
+        fps = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(fps):
+        return None
+    if not MIN_ADAPTIVE_TARGET_FPS <= fps <= MAX_ADAPTIVE_TARGET_FPS:
+        return None
+    return fps
+
+
 @dataclass(frozen=True)
 class SteamGameSetting:
     enabled: bool = False
@@ -51,6 +69,8 @@ class SteamGameSetting:
     overlay: bool = False
     original_launch_options: str = ""
     injected_launch_options: str = ""
+    # None = follow the global [adaptive] target_fps from the runtime config.
+    target_fps: float | None = None
 
     @property
     def active(self) -> bool:
@@ -94,6 +114,7 @@ def load_steam_game_settings(
                 overlay=bool(entry.get("overlay")),
                 original_launch_options=str(entry.get("original_launch_options") or ""),
                 injected_launch_options=injected,
+                target_fps=normalize_game_target_fps(entry.get("target_fps")),
             )
         if parsed:
             settings[str(account_id)] = parsed
@@ -189,6 +210,11 @@ def _write_settings(
                         "enabled": setting.enabled,
                         "mode": setting.mode,
                         "overlay": setting.overlay,
+                        **(
+                            {"target_fps": setting.target_fps}
+                            if setting.target_fps is not None
+                            else {}
+                        ),
                         "original_launch_options": setting.original_launch_options,
                         "injected_launch_options": setting.injected_launch_options,
                     }

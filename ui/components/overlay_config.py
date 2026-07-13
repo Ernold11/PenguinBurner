@@ -3,12 +3,6 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from runtime.support.adaptive_target_fps import (
-    MAX_ADAPTIVE_TARGET_FPS,
-    MIN_ADAPTIVE_TARGET_FPS,
-    adaptive_target_fps_from_env,
-)
-from cli.runtime_config_file import persist_adaptive_target_fps_to_runtime_config
 from overlay.config import ADVANCED_OVERLAY_ITEM_IDS
 from overlay.config import BASIC_OVERLAY_ITEM_IDS
 from overlay.config import MAX_OVERLAY_UPDATE_INTERVAL_S
@@ -114,18 +108,11 @@ class OverlayConfigPanel:
         QtCore,
         QtWidgets,
         config_path: str | Path | None = None,
-        runtime_config_path: str | Path | None = None,
     ):
         self.QtCore = QtCore
         self.QtWidgets = QtWidgets
         self.config_path = Path(config_path).expanduser() if config_path else None
-        self.runtime_config_path = (
-            Path(runtime_config_path).expanduser() if runtime_config_path else None
-        )
         self.config = load_overlay_config(self.config_path)
-        self.adaptive_target_fps = adaptive_target_fps_from_env(
-            config_path=self.runtime_config_path
-        )
         self._syncing = False
         self.item_checkboxes = {}
         self.item_value_labels = {}
@@ -172,28 +159,6 @@ class OverlayConfigPanel:
         settings_row.addWidget(scale_label)
         settings_row.addWidget(self.scale_combo)
 
-        target_fps_label = QtWidgets.QLabel("Adaptive UV Target")
-        target_fps_tooltip = _wrapped_tooltip(
-            "Adaptive Auto-UV target base-present FPS. PenguinBurner uses this "
-            "to decide when adaptive profiles should promote or demote. Range "
-            "is 1 to 1000 FPS, default 60 FPS. Changes update the running "
-            "adaptive runtime live."
-        )
-        target_fps_label.setToolTip(target_fps_tooltip)
-        self.target_fps_spin = QtWidgets.QDoubleSpinBox()
-        self.target_fps_spin.setObjectName("overlayTargetFpsSpin")
-        self.target_fps_spin.setRange(
-            MIN_ADAPTIVE_TARGET_FPS,
-            MAX_ADAPTIVE_TARGET_FPS,
-        )
-        self.target_fps_spin.setDecimals(0)
-        self.target_fps_spin.setSingleStep(1.0)
-        self.target_fps_spin.setSuffix(" FPS")
-        self.target_fps_spin.setFixedWidth(_target_fps_spin_width(self.target_fps_spin))
-        self.target_fps_spin.setToolTip(target_fps_tooltip)
-        settings_row.addSpacing(14)
-        settings_row.addWidget(target_fps_label)
-        settings_row.addWidget(self.target_fps_spin)
         settings_row.addStretch(1)
         layout.addLayout(settings_row)
 
@@ -254,7 +219,6 @@ class OverlayConfigPanel:
 
         self.update_interval_spin.valueChanged.connect(self._set_update_interval)
         self.scale_combo.currentIndexChanged.connect(self._set_overlay_scale)
-        self.target_fps_spin.valueChanged.connect(self._set_adaptive_target_fps)
 
         self.timer = self.QtCore.QTimer(self.widget)
         self.timer.timeout.connect(self.refresh_preview)
@@ -339,21 +303,6 @@ class OverlayConfigPanel:
         self.config = set_overlay_scale(self.config, OVERLAY_SCALE_OPTIONS[index])
         self._save("Saved. Running overlay updates live.")
 
-    def _set_adaptive_target_fps(self, value: float) -> None:
-        if self._syncing:
-            return
-        try:
-            self.adaptive_target_fps = persist_adaptive_target_fps_to_runtime_config(
-                value,
-                self.runtime_config_path,
-            )
-        except OSError as exc:
-            self.status_label.setText(f"Adaptive UV Target save failed: {exc}")
-            self._sync_widgets()
-            return
-        self.status_label.setText("Saved. Running adaptive target updates live.")
-        self._sync_widgets()
-
     def _save(self, message: str) -> None:
         try:
             save_overlay_config(self.config, self.config_path)
@@ -372,7 +321,6 @@ class OverlayConfigPanel:
             self.scale_combo.setCurrentIndex(
                 OVERLAY_SCALE_OPTIONS.index(snap_overlay_scale(self.config.scale))
             )
-            self.target_fps_spin.setValue(float(self.adaptive_target_fps))
             enabled_items = set(self.config.enabled_item_ids)
             for item_id, checkbox in self.item_checkboxes.items():
                 checkbox.setChecked(item_id in enabled_items)
@@ -416,13 +364,6 @@ def _live_value(telemetry: dict[str, str], key: str) -> str:
 
 def _scale_option_label(option: float) -> str:
     return f"{float(option):g}x"
-
-
-def _target_fps_spin_width(spin) -> int:
-    max_text_width = spin.fontMetrics().horizontalAdvance(
-        f"{int(MAX_ADAPTIVE_TARGET_FPS)} FPS"
-    )
-    return max(84, max_text_width + 36)
 
 
 def _item_value_width(label) -> int:

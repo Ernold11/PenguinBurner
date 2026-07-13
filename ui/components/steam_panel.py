@@ -23,6 +23,11 @@ from integrations.steam.settings import (
     normalize_game_mode,
 )
 from profiles.uv.profile_tiers import PROFILE_TIER_LABELS, PROFILE_TIERS
+from runtime.support.adaptive_target_fps import (
+    MAX_ADAPTIVE_TARGET_FPS,
+    MIN_ADAPTIVE_TARGET_FPS,
+    adaptive_target_fps_from_env,
+)
 
 
 # Wrapper enablement is separate from mode selection. The menu contains only
@@ -337,6 +342,29 @@ class SteamPanel:
             self.mode_combo.addItem(_MODE_LABELS[key], key)
         details_layout.addWidget(self.mode_combo)
 
+        target_fps_tooltip = _wrapped_tooltip(
+            "Adaptive Auto-UV target base-present FPS for this game. "
+            "PenguinBurner uses it to decide when adaptive profiles should "
+            "promote or demote. Range is 15 to 1000 FPS, default 60 FPS. "
+            "Changes update a running game live."
+        )
+        self.target_fps_label = QtWidgets.QLabel("Adaptive target FPS")
+        self.target_fps_label.setObjectName("steamFieldLabel")
+        self.target_fps_label.setToolTip(target_fps_tooltip)
+        details_layout.addWidget(self.target_fps_label)
+        self.target_fps_spin = QtWidgets.QDoubleSpinBox()
+        self.target_fps_spin.setObjectName("steamAdaptiveTargetFps")
+        self.target_fps_spin.setRange(
+            MIN_ADAPTIVE_TARGET_FPS,
+            MAX_ADAPTIVE_TARGET_FPS,
+        )
+        self.target_fps_spin.setDecimals(0)
+        self.target_fps_spin.setSingleStep(1.0)
+        self.target_fps_spin.setSuffix(" FPS")
+        self.target_fps_spin.setValue(adaptive_target_fps_from_env())
+        self.target_fps_spin.setToolTip(target_fps_tooltip)
+        details_layout.addWidget(self.target_fps_spin)
+
         self.enabled_checkbox = QtWidgets.QCheckBox(
             "Enable PenguinBurner per-game profiles"
         )
@@ -364,6 +392,7 @@ class SteamPanel:
         self.game_list.currentItemChanged.connect(self._selection_changed)
         self.proton_combo.currentIndexChanged.connect(self._proton_changed)
         self.mode_combo.currentIndexChanged.connect(self._mode_changed)
+        self.target_fps_spin.valueChanged.connect(self._target_fps_changed)
         self.enabled_checkbox.toggled.connect(self._enabled_changed)
         self.overlay_checkbox.toggled.connect(self._overlay_changed)
         self._launch_edit_timer = QtCore.QTimer(self.widget)
@@ -590,6 +619,7 @@ class SteamPanel:
                 self.mode_combo.setCurrentIndex(
                     max(0, self.mode_combo.findData(GAME_MODE_ADAPTIVE))
                 )
+                self.target_fps_spin.setValue(adaptive_target_fps_from_env())
                 self.enabled_checkbox.setChecked(False)
                 self.overlay_checkbox.setChecked(False)
             else:
@@ -614,6 +644,11 @@ class SteamPanel:
                 self._resize_launch_editor()
                 mode_index = self.mode_combo.findData(normalize_game_mode(row.setting.mode))
                 self.mode_combo.setCurrentIndex(max(0, mode_index))
+                self.target_fps_spin.setValue(
+                    row.setting.target_fps
+                    if row.setting.target_fps is not None
+                    else adaptive_target_fps_from_env()
+                )
                 self.enabled_checkbox.setChecked(row.setting.enabled)
                 self.overlay_checkbox.setChecked(row.setting.overlay)
         finally:
@@ -635,6 +670,8 @@ class SteamPanel:
         wrapper_enabled = editable and self.enabled_checkbox.isChecked()
         self.mode_label.setEnabled(wrapper_enabled)
         self.mode_combo.setEnabled(wrapper_enabled)
+        self.target_fps_label.setEnabled(wrapper_enabled)
+        self.target_fps_spin.setEnabled(wrapper_enabled)
         self.proton_combo.setEnabled(
             has_selection and self._compat_tool_live_ready and not self._scan_running
         )
@@ -747,6 +784,18 @@ class SteamPanel:
         if not app_id:
             return
         result = self.manager.set_game_mode(app_id, self.mode_combo.currentData())
+        hot = self.manager.hot_reapply(app_id) if result.ok else None
+        self._after_apply(app_id, result, extra=hot)
+
+    def _target_fps_changed(self, value: float) -> None:
+        if self._syncing:
+            return
+        if not self._flush_pending_launch_edit():
+            return
+        app_id = self._current_app_id()
+        if not app_id:
+            return
+        result = self.manager.set_game_target_fps(app_id, float(value))
         hot = self.manager.hot_reapply(app_id) if result.ok else None
         self._after_apply(app_id, result, extra=hot)
 

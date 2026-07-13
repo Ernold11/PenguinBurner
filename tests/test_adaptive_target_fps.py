@@ -74,3 +74,8 @@ def test_adaptive_target_fps_rejects_invalid_values() -> None:
     assert parse_adaptive_target_fps("0") == DEFAULT_ADAPTIVE_TARGET_FPS
     assert parse_adaptive_target_fps("nan") == DEFAULT_ADAPTIVE_TARGET_FPS
     assert parse_adaptive_target_fps("fast") == DEFAULT_ADAPTIVE_TARGET_FPS
+    # Below 15 FPS pacing targets make no sense; fall back to the default.
+    assert parse_adaptive_target_fps("14") == DEFAULT_ADAPTIVE_TARGET_FPS
+    assert parse_adaptive_target_fps("1001") == DEFAULT_ADAPTIVE_TARGET_FPS
+    assert parse_adaptive_target_fps("15") == 15.0
+    assert parse_adaptive_target_fps("1000") == 1000.0

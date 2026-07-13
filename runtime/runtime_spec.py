@@ -26,7 +26,10 @@ from profiles.uv.profile_tiers import (
 from profiles.uv.runtime_auto_uv_profile import load_auto_uv_final_curve
 from runtime.daemon_client import gpu_capabilities, require_daemon_capabilities
 from runtime.gpu_control.adaptive_profile_policy import AdaptiveProfilePolicyConfig
-from runtime.support.adaptive_target_fps import adaptive_target_fps_from_env
+from runtime.support.adaptive_target_fps import (
+    adaptive_target_fps_from_env,
+    parse_adaptive_target_fps,
+)
 from ui.features.curves.fan_profiles import (
     auto_uv_fan_curve_payload_path,
     fan_curve_points_from_payload,
@@ -43,12 +46,16 @@ def runtime_intent(
     profile_selector: str = "",
     silent_fan_curve: bool = False,
     adaptive_auto_uv: bool = False,
+    adaptive_target_fps: float | None = None,
     gpu_index: int | None = None,
 ) -> dict[str, Any]:
     return {
         "profile_selector": str(profile_selector or "").strip(),
         "silent_fan_curve": bool(silent_fan_curve),
         "adaptive_auto_uv": bool(adaptive_auto_uv),
+        "adaptive_target_fps": (
+            None if adaptive_target_fps is None else float(adaptive_target_fps)
+        ),
         "gpu_index": None if gpu_index is None else max(0, int(gpu_index)),
     }
 
@@ -58,17 +65,20 @@ def runtime_intent_from_argv(argv) -> dict[str, Any]:
     selector = ""
     silent_fan_curve = False
     adaptive_auto_uv = False
+    adaptive_target_fps = None
     gpu_index = None
     values = list(argv or ())
     index = 0
     while index < len(values):
         item = str(values[index])
-        if item in {"--auto-uv-profile", "--gpu-index"}:
+        if item in {"--auto-uv-profile", "--gpu-index", "--adaptive-target-fps"}:
             if index + 1 >= len(values):
                 raise RuntimeError(f"{item} requires a value")
             value = values[index + 1]
             if item == "--auto-uv-profile":
                 selector = str(value)
+            elif item == "--adaptive-target-fps":
+                adaptive_target_fps = float(value)
             else:
                 gpu_index = max(0, int(value))
             index += 2
@@ -77,6 +87,8 @@ def runtime_intent_from_argv(argv) -> dict[str, Any]:
             selector = item.split("=", 1)[1]
         elif item.startswith("--gpu-index="):
             gpu_index = max(0, int(item.split("=", 1)[1]))
+        elif item.startswith("--adaptive-target-fps="):
+            adaptive_target_fps = float(item.split("=", 1)[1])
         elif item == "--silent-fan-curve":
             silent_fan_curve = True
         elif item == "--adaptive-auto-uv":
@@ -88,6 +100,7 @@ def runtime_intent_from_argv(argv) -> dict[str, Any]:
         profile_selector=selector,
         silent_fan_curve=silent_fan_curve,
         adaptive_auto_uv=adaptive_auto_uv,
+        adaptive_target_fps=adaptive_target_fps,
         gpu_index=gpu_index,
     )
 
@@ -105,6 +118,7 @@ def build_runtime_spec_from_intent(
             "profile_selector",
             "silent_fan_curve",
             "adaptive_auto_uv",
+            "adaptive_target_fps",
             "gpu_index",
         }
     )
@@ -118,6 +132,7 @@ def build_runtime_spec(
     profile_selector: str = "",
     silent_fan_curve: bool = False,
     adaptive_auto_uv: bool = False,
+    adaptive_target_fps: float | None = None,
     gpu_index: int | None = None,
     socket_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -151,7 +166,7 @@ def build_runtime_spec(
     static_profile = None
     adaptive = None
     if adaptive_auto_uv:
-        adaptive = _adaptive_spec(selected_curve)
+        adaptive = _adaptive_spec(selected_curve, target_fps_override=adaptive_target_fps)
         if adaptive is not None:
             mode = "adaptive"
     elif selected_curve is not None:
@@ -185,7 +200,11 @@ def build_runtime_spec(
     }
 
 
-def _adaptive_spec(selected_curve: dict | None) -> dict[str, Any] | None:
+def _adaptive_spec(
+    selected_curve: dict | None,
+    *,
+    target_fps_override: float | None = None,
+) -> dict[str, Any] | None:
     resolved = resolve_profile_tier_profiles(read_auto_uv_profiles())
     tier_profiles: dict[str, dict[str, Any]] = {}
     for tier in available_adaptive_tiers(resolved):
@@ -212,7 +231,11 @@ def _adaptive_spec(selected_curve: dict | None) -> dict[str, Any] | None:
         if selected_tier in tier_profiles
         else next(tier for tier in reversed(PROFILE_TIERS) if tier in tier_profiles)
     )
-    target_fps = adaptive_target_fps_from_env()
+    target_fps = (
+        parse_adaptive_target_fps(target_fps_override)
+        if target_fps_override is not None
+        else adaptive_target_fps_from_env()
+    )
     policy = AdaptiveProfilePolicyConfig.for_target_fps(target_fps)
     return {
         "initial_tier": initial_tier,

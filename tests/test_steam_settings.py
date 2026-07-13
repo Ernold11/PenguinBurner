@@ -9,6 +9,7 @@ from integrations.steam.settings import (
     SteamGameSetting,
     load_steam_game_settings,
     normalize_game_mode,
+    normalize_game_target_fps,
     remove_steam_game_setting,
     steam_game_setting,
     store_steam_game_setting,
@@ -63,6 +64,33 @@ def test_normalize_game_mode_accepts_tier_aliases() -> None:
 def test_setting_active_property() -> None:
     assert not SteamGameSetting().active
     assert SteamGameSetting(enabled=True).active
+
+
+def test_target_fps_roundtrip(tmp_path: Path) -> None:
+    path = tmp_path / "steam-game-settings.json"
+    setting = SteamGameSetting(enabled=True, target_fps=120.0)
+    store_steam_game_setting("78675700", "1089130", setting, path=path)
+    assert steam_game_setting("78675700", "1089130", path=path) == setting
+
+
+def test_target_fps_stays_unset_by_default(tmp_path: Path) -> None:
+    path = tmp_path / "steam-game-settings.json"
+    store_steam_game_setting("78675700", "1089130", SteamGameSetting(), path=path)
+    loaded = steam_game_setting("78675700", "1089130", path=path)
+    assert loaded is not None and loaded.target_fps is None
+    assert "target_fps" not in path.read_text(encoding="utf-8")
+
+
+def test_normalize_game_target_fps_bounds() -> None:
+    assert normalize_game_target_fps(None) is None
+    assert normalize_game_target_fps("bogus") is None
+    assert normalize_game_target_fps(float("nan")) is None
+    assert normalize_game_target_fps(0.5) is None
+    assert normalize_game_target_fps(14) is None
+    assert normalize_game_target_fps(2000) is None
+    assert normalize_game_target_fps(15) == 15.0
+    assert normalize_game_target_fps("120") == 120.0
+    assert normalize_game_target_fps(60) == 60.0
 
 
 def test_legacy_hidden_mode_loads_as_adaptive(tmp_path: Path) -> None:

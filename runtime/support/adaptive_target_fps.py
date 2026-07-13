@@ -16,7 +16,9 @@ ADAPTIVE_TARGET_FPS_ENV_NAMES = (
     ADAPTIVE_TARGET_FPS_ENV_ALIAS,
 )
 DEFAULT_ADAPTIVE_TARGET_FPS = 60.0
-MIN_ADAPTIVE_TARGET_FPS = 1.0
+# Below ~15 FPS present-frame pacing stops being meaningful for tier
+# decisions; out-of-range values fall back to the 60 FPS default.
+MIN_ADAPTIVE_TARGET_FPS = 15.0
 MAX_ADAPTIVE_TARGET_FPS = 1000.0
 ADAPTIVE_TARGET_FPS_CONFIG_SECTION = "adaptive"
 ADAPTIVE_TARGET_FPS_CONFIG_KEY = "target_fps"

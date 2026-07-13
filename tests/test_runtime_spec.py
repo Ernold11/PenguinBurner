@@ -270,6 +270,55 @@ def test_adaptive_without_explicit_profile_starts_at_fastest_available_tier(
     assert spec["adaptive"]["initial_tier"] == expected_initial
 
 
+def test_adaptive_runtime_uses_per_game_target_fps_override(monkeypatch) -> None:
+    only_curve = _curve("balanced-only")
+    _stub_runtime_sources(monkeypatch, curve=only_curve)
+    monkeypatch.setattr(runtime_spec, "read_auto_uv_profiles", lambda: [{}])
+    monkeypatch.setattr(
+        runtime_spec,
+        "resolve_profile_tier_profiles",
+        lambda _profiles: {"balanced": {"profile_id": "balanced-only"}},
+    )
+    monkeypatch.setattr(
+        runtime_spec,
+        "available_adaptive_tiers",
+        lambda _resolved: ["balanced"],
+    )
+
+    spec = runtime_spec.build_runtime_spec(
+        profile_selector="balanced-only",
+        adaptive_auto_uv=True,
+        adaptive_target_fps=120.0,
+    )
+
+    assert spec["mode"] == "adaptive"
+    assert spec["adaptive"]["policy"]["target_fps"] == 120.0
+
+
+def test_runtime_intent_from_argv_parses_adaptive_target_fps() -> None:
+    intent = runtime_spec.runtime_intent_from_argv(
+        [
+            "--auto-uv-profile",
+            "latest",
+            "--adaptive-auto-uv",
+            "--adaptive-target-fps",
+            "120",
+        ]
+    )
+
+    assert intent["adaptive_auto_uv"] is True
+    assert intent["adaptive_target_fps"] == 120.0
+    assert runtime_spec.runtime_intent_from_argv(
+        ["--adaptive-auto-uv", "--adaptive-target-fps=90"]
+    )["adaptive_target_fps"] == 90.0
+    assert (
+        runtime_spec.runtime_intent_from_argv(["--adaptive-auto-uv"])[
+            "adaptive_target_fps"
+        ]
+        is None
+    )
+
+
 def test_saved_fan_curve_is_resolved_before_daemon_apply(monkeypatch, tmp_path) -> None:
     path = tmp_path / "auto-uv-fan-curve.json"
     path.write_text(
@@ -318,6 +367,7 @@ def test_runtime_intent_argv_bridge_is_python_only_and_strict() -> None:
         "profile_selector": "profile-a",
         "silent_fan_curve": True,
         "adaptive_auto_uv": True,
+        "adaptive_target_fps": None,
         "gpu_index": 3,
     }
     with pytest.raises(RuntimeError, match="unsupported runtime profile argument"):

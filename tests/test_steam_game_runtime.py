@@ -67,6 +67,26 @@ def test_profile_argv_for_adaptive() -> None:
     assert argv == ["--auto-uv-profile", "latest", "--adaptive-auto-uv"]
 
 
+def test_profile_argv_for_adaptive_includes_per_game_target_fps() -> None:
+    argv = profile_argv_for_setting(
+        SteamGameSetting(enabled=True, mode="adaptive", target_fps=120.0)
+    )
+    assert argv == [
+        "--auto-uv-profile",
+        "latest",
+        "--adaptive-auto-uv",
+        "--adaptive-target-fps",
+        "120",
+    ]
+
+
+def test_profile_argv_for_non_adaptive_ignores_target_fps() -> None:
+    argv = profile_argv_for_setting(
+        SteamGameSetting(enabled=True, mode="stock", target_fps=120.0)
+    )
+    assert argv == ["--auto-uv-profile", "__stock__"]
+
+
 def test_profile_argv_for_fixed_tier_resolves_profile(monkeypatch) -> None:
     monkeypatch.setattr(game_runtime, "read_auto_uv_profiles", lambda: [])
     monkeypatch.setattr(

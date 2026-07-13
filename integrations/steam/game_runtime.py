@@ -67,7 +67,10 @@ def profile_argv_for_setting(setting: SteamGameSetting) -> list[str] | None:
     if setting.mode == GAME_MODE_ADAPTIVE:
         # Start from the newest profile; the runtime resolves it to an
         # available tier and switches using present-frame pacing.
-        return ["--auto-uv-profile", "latest", "--adaptive-auto-uv"]
+        argv = ["--auto-uv-profile", "latest", "--adaptive-auto-uv"]
+        if setting.target_fps is not None:
+            argv += ["--adaptive-target-fps", f"{float(setting.target_fps):g}"]
+        return argv
     resolved = resolve_profile_tier_profiles(read_auto_uv_profiles())
     profile = resolved.get(setting.mode)
     profile_id = (

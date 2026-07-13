@@ -1752,7 +1752,7 @@ def test_overlay_tab_hides_runs_panel_and_scrolls_options(monkeypatch) -> None:
     window.window.close()
 
 
-def test_overlay_panel_saves_adaptive_target_fps(tmp_path) -> None:
+def test_overlay_panel_has_no_adaptive_target_fps_control(tmp_path) -> None:
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1762,30 +1762,19 @@ def test_overlay_panel_saves_adaptive_target_fps(tmp_path) -> None:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     _ = app
 
-    from runtime.support.adaptive_target_fps import adaptive_target_fps_from_config
     from ui.components.overlay_config import OverlayConfigPanel
 
     panel = OverlayConfigPanel(
         QtCore=QtCore,
         QtWidgets=QtWidgets,
         config_path=tmp_path / "overlay.toml",
-        runtime_config_path=tmp_path / "penguin_burner.toml",
     )
 
+    # The adaptive target FPS moved to the Steam tab's per-game settings.
     assert panel.widget.layout().contentsMargins().top() >= 16
-    assert panel.target_fps_spin.objectName() == "overlayTargetFpsSpin"
-    assert panel.target_fps_spin.decimals() == 0
-    assert panel.target_fps_spin.text() == "60 FPS"
-    assert panel.target_fps_spin.maximumWidth() == panel.target_fps_spin.minimumWidth()
-    assert panel.target_fps_spin.maximumWidth() <= (
-        panel.target_fps_spin.fontMetrics().horizontalAdvance("1000 FPS") + 40
-    )
-
-    panel.target_fps_spin.setValue(90)
-
-    assert adaptive_target_fps_from_config(tmp_path / "penguin_burner.toml") == 90.0
-    assert "target_fps = 90" in (tmp_path / "penguin_burner.toml").read_text(
-        encoding="utf-8"
+    assert (
+        panel.widget.findChild(QtWidgets.QDoubleSpinBox, "overlayTargetFpsSpin")
+        is None
     )
 
 
@@ -1807,7 +1796,6 @@ def test_overlay_panel_saves_manual_scale(tmp_path) -> None:
         QtCore=QtCore,
         QtWidgets=QtWidgets,
         config_path=config_path,
-        runtime_config_path=tmp_path / "penguin_burner.toml",
     )
 
     # Defaults to the adaptive 1x option.
@@ -1836,7 +1824,6 @@ def test_overlay_panel_has_no_steam_launch_controls(tmp_path) -> None:
         QtCore=QtCore,
         QtWidgets=QtWidgets,
         config_path=tmp_path / "overlay.toml",
-        runtime_config_path=tmp_path / "penguin_burner.toml",
     )
 
     assert panel.widget.findChild(QtWidgets.QLabel, "overlaySteamLaunchHint") is None
