@@ -620,6 +620,16 @@ pub fn active_child_kind(sup: &Mutex<Supervisor>) -> Option<ChildKind> {
     guard(sup).child_running_kind()
 }
 
+/// True while an in-process profile engine is actively applying GPU state.
+/// During a scan/verification the engine is stopped, so this is false and the
+/// streaming child's raw GPU writes are the intended, unarbitrated caller.
+pub fn profile_engine_running(sup: &Mutex<Supervisor>) -> bool {
+    guard(sup)
+        .profile
+        .as_ref()
+        .is_some_and(|job| job.engine.returncode().is_none())
+}
+
 /// Cooperative stop: write the kind's stop-request marker FIRST, then SIGINT
 /// (ordered protocol, parity with the Python daemon's scan stop).
 fn stop_child(sup: &Mutex<Supervisor>, kind: ChildKind) -> StopResult {
@@ -1490,5 +1500,33 @@ mod tests {
         assert_eq!(persisted.mode_name(), "stock");
         shutdown(&supervisor);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn raw_gpu_writes_are_refused_while_a_profile_engine_runs() {
+        let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _inert_guard = StateEnvGuard::named("PENGUIN_BURNERD_TEST_INERT_ENGINE", "1");
+
+        let sup = Mutex::new(Supervisor::new());
+        // Idle: no engine -> not running, and the gate does not fire.
+        assert!(!profile_engine_running(&sup));
+
+        // Install a running (inert) profile engine.
+        let spec = RuntimeSpec::test_stock("GPU-gate");
+        let engine = profile::start(spec.clone()).unwrap();
+        guard(&sup).profile = Some(ProfileJob { engine, spec });
+        assert!(profile_engine_running(&sup));
+
+        // A raw GPU WRITE is refused with a clear reason (not two writers
+        // racing the GPU); the message names the method.
+        let err = crate::api::handle_request(
+            &sup,
+            &serde_json::json!({"method": "gpu_reset_fans", "gpu_index": 0}),
+        )
+        .unwrap_err();
+        assert!(err.contains("gpu_reset_fans"), "message: {err}");
+        assert!(err.contains("runtime profile is active"), "message: {err}");
+
+        shutdown(&sup);
     }
 }

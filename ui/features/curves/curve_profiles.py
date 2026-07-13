@@ -7,6 +7,7 @@ from pathlib import Path
 
 from curve_editors.uv.vf_curve_manual_editor import user_edited_profile_payload
 from profiles.uv.profile_store import archive_auto_uv_profile
+from common.atomic_write import atomic_write_json
 from common.penguin_burner_paths import default_runtime_config_path
 from common.penguin_burner_paths import default_user_config_dir
 
@@ -192,7 +193,9 @@ def save_cached_base_curve_points(points: list[tuple[float, float]]) -> None:
     path = base_curve_cache_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        # Atomic replace: a crash mid-write must not leave a torn cache that a
+        # later read then chokes on.
+        atomic_write_json(path, payload)
     except OSError:
         return
 

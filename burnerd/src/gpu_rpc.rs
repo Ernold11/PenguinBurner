@@ -257,7 +257,7 @@ pub fn handle(method: &str, request: &Map<String, Value>) -> Result<Value, Strin
     }
 }
 
-fn is_read_method(method: &str) -> bool {
+pub fn is_read_method(method: &str) -> bool {
     matches!(
         method,
         "gpu_capabilities" | "gpu_telemetry" | "gpu_vf_snapshot"

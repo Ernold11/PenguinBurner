@@ -339,6 +339,18 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
             gpu_rpc::probe_power_limit_support(object).map(MethodResult::Value)
         }
         Some(name) if gpu_rpc::is_gpu_method(name) => {
+            // Raw GPU WRITES must not race the in-process profile engine. It is
+            // stopped during a scan/verification (the streaming child is then
+            // the intended writer), and "Restore defaults" reaches stock via
+            // the arbitrated runtime-spec path, not a raw write — so a raw
+            // write while the engine runs has no legitimate caller. Reject it
+            // with a clear reason instead of two writers fighting for the GPU.
+            if !gpu_rpc::is_read_method(name) && supervisor::profile_engine_running(sup) {
+                return Err(format!(
+                    "{name} refused: a runtime profile is active; stop it \
+                     (or reset to stock) before raw GPU writes"
+                ));
+            }
             gpu_rpc::handle(name, object).map(MethodResult::Value)
         }
         Some(name) if !name.is_empty() => Err(format!("unknown daemon method: {name}")),

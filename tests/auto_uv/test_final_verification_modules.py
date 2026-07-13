@@ -171,3 +171,54 @@ def test_final_verified_profile_contains_fan_payload_and_memory_offset(
     assert payload["flatten_target"]["tail_rise_bins"] == 2
     assert payload["fan_curve_payload"]["fan"]["curve"][-1] == [90.0, 100.0]
     assert (tmp_path / "uv-result" / "auto-uv-verified-candidates.json").exists()
+
+
+def test_verified_candidate_payload_rejects_malformed_plan_point() -> None:
+    """A malformed plan point must fail as a clean AutoUvError (caught by the
+    scan loop, GPU restored) instead of a bare KeyError/TypeError traceback."""
+    import pytest
+
+    from auto_uv.domain.types import AutoUvError
+    from auto_uv.persistence.verified_candidate_result_file import (
+        verified_candidate_payload,
+    )
+
+    good = {
+        "index": 12,
+        "voltage_mv": 900,
+        "base_mhz": 2500,
+        "target_mhz": 2700,
+        "new_offset_mhz": 200,
+    }
+    # Sanity: a well-formed plan assembles.
+    payload = verified_candidate_payload(
+        plan=[good],
+        lock_clock_mhz=2700,
+        voltage_mv=900,
+        probe=None,
+        reason="r",
+        label="l",
+    )
+    assert payload["lock_clock_mhz"] == 2700
+
+    for bad in (
+        {**good, "target_mhz": None},
+        {**good, "voltage_mv": "n/a"},
+        {k: v for k, v in good.items() if k != "base_mhz"},
+        "not-a-dict",
+    ):
+        with pytest.raises(AutoUvError):
+            verified_candidate_payload(
+                plan=[bad],
+                lock_clock_mhz=2700,
+                voltage_mv=900,
+                probe=None,
+                reason="r",
+                label="l",
+            )
+
+    with pytest.raises(AutoUvError):
+        verified_candidate_payload(
+            plan=[], lock_clock_mhz=2700, voltage_mv=900,
+            probe=None, reason="r", label="l",
+        )

@@ -156,3 +156,20 @@ def test_save_edited_curve_profile(monkeypatch, tmp_path) -> None:
     )
     assert path == archived
     assert payload["edited"] is True
+
+
+def test_save_cached_base_curve_points_writes_atomically(tmp_path, monkeypatch) -> None:
+    """A crash mid-write must not leave a torn cache: the write lands via a
+    temp file + rename, so no partial file and no leftover .tmp."""
+    import json
+
+    import ui.features.curves.curve_profiles as cp
+
+    cache = tmp_path / "base-vf-curve.json"
+    monkeypatch.setattr(cp, "base_curve_cache_path", lambda: cache)
+    cp.save_cached_base_curve_points([(800.0, 2000.0), (900.0, 2500.0)])
+
+    data = json.loads(cache.read_text(encoding="utf-8"))
+    assert data["points"][1] == {"voltage_mv": 900.0, "clock_mhz": 2500.0}
+    # Atomic replace leaves no temporary file behind.
+    assert [p.name for p in tmp_path.iterdir()] == ["base-vf-curve.json"]

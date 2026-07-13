@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .auto_uv_persisted_json_files import safe_json_write, verified_candidates_path
 from .auto_uv_persisted_json_files import auto_uv_user_config_dir
-from auto_uv.domain.types import AutoUvProbeSummary
+from auto_uv.domain.types import AutoUvError, AutoUvProbeSummary
 from ..curve.base_vf_curve import read_base_vf_points
 from ..curve.vf_curve_flattening import build_flatten_target_for_plan
 
@@ -74,6 +74,42 @@ def read_verified_candidates() -> list[dict]:
     return [dict(item) for item in candidates if isinstance(item, dict)]
 
 
+_REQUIRED_PLAN_POINT_FIELDS = (
+    "index",
+    "voltage_mv",
+    "base_mhz",
+    "target_mhz",
+    "new_offset_mhz",
+)
+
+
+def _validate_plan_points(plan: list[dict]) -> None:
+    """Fail cleanly (not with a bare traceback) on a malformed plan point.
+
+    The downstream assembly does bare ``int(point["voltage_mv"])`` etc.; a
+    single None/missing field would otherwise raise an uncaught KeyError/
+    TypeError that tears the whole scan down. Turning it into an AutoUvError —
+    which the scan loop catches — means the run ends with a clear message and
+    the GPU is still restored by the caller's ``finally``. Plan points are
+    internally generated, so this is defense-in-depth, not an expected path.
+    """
+    if not isinstance(plan, list) or not plan:
+        raise AutoUvError("cannot assemble profile: empty or invalid V/F plan")
+    for position, point in enumerate(plan):
+        if not isinstance(point, dict):
+            raise AutoUvError(
+                f"cannot assemble profile: plan point {position} is not an object"
+            )
+        for field in _REQUIRED_PLAN_POINT_FIELDS:
+            try:
+                int(point[field])
+            except (KeyError, TypeError, ValueError) as error:
+                raise AutoUvError(
+                    "cannot assemble profile: plan point "
+                    f"{position} has an invalid {field!r} ({error})"
+                ) from error
+
+
 def verified_candidate_payload(
     *,
     plan: list[dict],
@@ -86,6 +122,7 @@ def verified_candidate_payload(
     final_verified: bool = False,
     tail_rise_bins: int = 0,
 ) -> dict:
+    _validate_plan_points(plan)
     flatten_target = build_flatten_target_for_plan(
         plan,
         plan,
