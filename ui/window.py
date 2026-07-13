@@ -280,6 +280,68 @@ class MainWindow(ProfileActionsMixin):
 
     def show(self) -> None:
         self.window.show()
+        # Run environment checks after the window paints, so a first launch or
+        # a post-upgrade launch guides the user instead of failing later.
+        self.QtCore.QTimer.singleShot(0, self._run_startup_checks)
+
+    def _run_startup_checks(self) -> None:
+        self._check_gpu_supported_on_startup()
+        self._check_daemon_upgrade_on_startup()
+
+    def _check_gpu_supported_on_startup(self) -> None:
+        """Warn immediately when no usable NVIDIA GPU is present.
+
+        Cheap, unprivileged, daemon-free: the NVIDIA kernel driver exposes
+        /dev/nvidia0. Catching "no NVIDIA GPU / driver" here means an
+        unsupported box gets a plain explanation up front instead of a cryptic
+        scan failure after a pointless root-service install. The deeper
+        architecture/driver validation still runs at scan start.
+        """
+        if Path("/dev/nvidia0").exists() or Path("/dev/nvidiactl").exists():
+            return
+        self.QtWidgets.QMessageBox.warning(
+            self.window,
+            "No NVIDIA GPU detected",
+            "PenguinBurner tunes NVIDIA GPUs and could not find one on this "
+            "system (no NVIDIA kernel driver is loaded).\n\n"
+            "Make sure a supported NVIDIA card and the proprietary driver are "
+            "installed, then restart PenguinBurner. Undervolt scans and profile "
+            "applies will not work until then.",
+        )
+
+    def _check_daemon_upgrade_on_startup(self) -> None:
+        """If a running daemon is an incompatible older version, offer to update
+        it now — the seamless post-0.6.x-upgrade path.
+
+        Only fires when a daemon is actually running AND speaks an incompatible
+        protocol (a stale 0.6.x daemon on the same socket). A brand-new user
+        with no daemon installed is left alone: the install prompt appears when
+        they first do something privileged, not on launch.
+        """
+        from runtime.daemon_client import (
+            DaemonCompatibilityError,
+            daemon_status,
+            require_daemon_capabilities,
+        )
+
+        try:
+            daemon_status(timeout_s=1.0)
+        except Exception:
+            return  # not running / not installed — do not nag a new user
+        try:
+            require_daemon_capabilities()
+            return  # running and compatible — nothing to do
+        except DaemonCompatibilityError:
+            pass
+        except Exception:
+            return
+        ensure_daemon_ready_for_privileged_action(
+            QtWidgets=self.QtWidgets,
+            parent=self.window,
+            log=self.log_view.append,
+            action_label="Updating the PenguinBurner hardware service",
+        )
+        self._load_profiles()
 
     def _sync_selected_tab_layout(self, index: int) -> None:
         # The undervolting-runs table belongs to the Auto-UV workflow only.

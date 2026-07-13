@@ -372,3 +372,65 @@ def test_runs_table_follows_newest_pending_row_unless_user_scrolled_up(
         {"stage": "candidate", "voltage_mv": 776, "clock_mhz": 2500}
     )
     assert bar.value() == bar.maximum()
+
+
+def test_startup_gpu_check_warns_when_no_nvidia_device(main_window, monkeypatch) -> None:
+    win = main_window
+    import ui.window as window_mod  # noqa: F811
+
+    warnings = []
+    monkeypatch.setattr(
+        win.QtWidgets.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: warnings.append(args),
+    )
+    # No NVIDIA device nodes present.
+    monkeypatch.setattr(window_mod.Path, "exists", lambda self: False)
+    win._check_gpu_supported_on_startup()
+    assert warnings and "NVIDIA" in warnings[0][2]
+
+    warnings.clear()
+    # Device present -> no warning.
+    monkeypatch.setattr(
+        window_mod.Path, "exists", lambda self: str(self) == "/dev/nvidia0"
+    )
+    win._check_gpu_supported_on_startup()
+    assert warnings == []
+
+
+def test_startup_daemon_check_only_prompts_for_incompatible_running_daemon(
+    main_window, monkeypatch
+) -> None:
+    win = main_window
+    from runtime import daemon_client
+
+    prompts = []
+    monkeypatch.setattr(
+        window_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **kwargs: prompts.append(kwargs.get("action_label")) or True,
+    )
+
+    # Not running -> no prompt (a new user is left alone).
+    monkeypatch.setattr(
+        daemon_client, "daemon_status",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no socket")),
+    )
+    win._check_daemon_upgrade_on_startup()
+    assert prompts == []
+
+    # Running and compatible -> no prompt.
+    monkeypatch.setattr(daemon_client, "daemon_status", lambda **kwargs: {"state": "idle"})
+    monkeypatch.setattr(
+        daemon_client, "require_daemon_capabilities", lambda *a, **k: {"state": "idle"}
+    )
+    win._check_daemon_upgrade_on_startup()
+    assert prompts == []
+
+    # Running but incompatible (stale 0.6.x) -> prompt to update.
+    def _incompatible(*a, **k):
+        raise daemon_client.DaemonCompatibilityError("predates the versioned protocol")
+
+    monkeypatch.setattr(daemon_client, "require_daemon_capabilities", _incompatible)
+    win._check_daemon_upgrade_on_startup()
+    assert prompts and "Updating the PenguinBurner hardware service" in prompts[0]
