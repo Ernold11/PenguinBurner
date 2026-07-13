@@ -455,7 +455,6 @@ def _flatpak_daemon_install_command(
     persists through its typed API.
     """
     from runtime.support.runtime_service import (
-        BOOT_RUNTIME_STATE_PATH,
         LAST_RUNTIME_STATE_PATH,
         LIBEXEC_DAEMON_BINARY,
         build_daemon_api_service_unit,
@@ -475,17 +474,15 @@ def _flatpak_daemon_install_command(
     environment = [
         f"PENGUIN_BURNER_DAEMON_BINARY_SRC={daemon_binary_src}",
         f"PENGUIN_BURNER_SYSTEMD_UNIT_B64={encoded_unit}",
+        f"PENGUIN_BURNER_RUNTIME_PYTHONPATH={flatpak_host_site_packages_path()}",
+        f"PENGUIN_BURNER_RUNTIME_HOME={_desktop_user_home()}",
     ]
     runtime_block = ""
     if autostart_intent:
         intent_json = json.dumps(autostart_intent, separators=(",", ":"))
-        environment.extend(
-            [
-                "PENGUIN_BURNER_RUNTIME_INTENT_B64="
-                + base64.b64encode(intent_json.encode("utf-8")).decode("ascii"),
-                f"PENGUIN_BURNER_RUNTIME_PYTHONPATH={flatpak_host_site_packages_path()}",
-                f"PENGUIN_BURNER_RUNTIME_HOME={_desktop_user_home()}",
-            ]
+        environment.append(
+            "PENGUIN_BURNER_RUNTIME_INTENT_B64="
+            + base64.b64encode(intent_json.encode("utf-8")).decode("ascii")
         )
         runtime_block = (
             "\nintent_json=\"$(printf '%s' \"$PENGUIN_BURNER_RUNTIME_INTENT_B64\" | base64 -d)\"\n"
@@ -494,6 +491,18 @@ def _flatpak_daemon_install_command(
             "PENGUIN_BURNER_HOME=\"$PENGUIN_BURNER_RUNTIME_HOME\" "
             "/usr/bin/python3 -m runtime.daemon_client apply-runtime-intent "
             "--boot \"$intent_json\"\n"
+        )
+    elif autostart_intent is None:
+        # Migration/repair: replay a 0.6.x last-runtime.json boot profile
+        # host-side, where /var/lib is visible (the sandbox cannot read it).
+        # The helper consumes the legacy file; an existing 0.7
+        # boot-runtime.json is preserved untouched either way.
+        runtime_block = (
+            "\nenv PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 "
+            "PYTHONPATH=\"$PENGUIN_BURNER_RUNTIME_PYTHONPATH\" "
+            "PENGUIN_BURNER_HOME=\"$PENGUIN_BURNER_RUNTIME_HOME\" "
+            "/usr/bin/python3 -m runtime.daemon_client "
+            "migrate-legacy-boot-intent\n"
         )
 
     script = "\n".join(
@@ -545,10 +554,20 @@ if [ -f "$legacy_unit" ]; then
 fi
 trap - EXIT HUP INT TERM
 """
+                # boot-runtime.json is deliberately preserved so a
+                # repair/reinstall keeps the user's boot profile (the daemon
+                # ignores an invalid spec). The legacy 0.6.x last-runtime.json
+                # is consumed by migrate-legacy-boot-intent on the migration
+                # path; an explicit intent supersedes it, so it is stale and
+                # removed here.
                 + (
-                    f'\nrm -f "{LAST_RUNTIME_STATE_PATH}" '
-                    f'"{BOOT_RUNTIME_STATE_PATH}" '
-                    '/run/penguin-burner/active-runtime.json\n'
+                    '\nrm -f '
+                    + (
+                        f'"{LAST_RUNTIME_STATE_PATH}" '
+                        if autostart_intent is not None
+                        else ""
+                    )
+                    + '/run/penguin-burner/active-runtime.json\n'
                 )
                 + r"""
 systemctl daemon-reload

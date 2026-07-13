@@ -96,16 +96,24 @@ def _assert_flatpak_daemon_script_waits_for_api(
     script: str,
     *,
     success_message: str,
+    clears_last_runtime: bool = True,
 ) -> None:
     assert "daemon_socket=/run/penguin-burnerd.sock" in script
     assert 'client.sendall(b\'{"method":"status"}\\n\')' in script
     assert 'rm -f "$daemon_socket"' in script
     state_clear = 'rm -f "/var/lib/penguin-burner/last-runtime.json"'
-    assert state_clear in script
+    if clears_last_runtime:
+        assert state_clear in script
+        assert script.rindex(state_clear) < script.rindex("restart_penguin_burnerd")
+    else:
+        # Migration consumes the legacy 0.6.x state via
+        # migrate-legacy-boot-intent instead of deleting it up front.
+        assert state_clear not in script
+    # The user's 0.7 boot profile must survive a repair/reinstall.
+    assert "boot-runtime.json" not in script
     assert "restart_penguin_burnerd" in script
     assert "systemctl status --no-pager penguin-burnerd.service" in script
     assert "journalctl -u penguin-burnerd.service -n 80 --no-pager" in script
-    assert script.rindex(state_clear) < script.rindex("restart_penguin_burnerd")
     assert script.rindex("restart_penguin_burnerd") < script.index(success_message)
 
 
@@ -257,11 +265,16 @@ def test_daemon_migration_command_installs_flatpak_daemon(
     _assert_flatpak_daemon_script_waits_for_api(
         command[-2],
         success_message='echo "Installed and enabled penguin-burnerd.service at $unit."',
+        clears_last_runtime=False,
     )
     _assert_flatpak_daemon_binary_installed_atomically(script)
     assert "systemctl enable penguin-burnerd.service" in script
-    assert 'rm -f "/var/lib/penguin-burner/last-runtime.json"' in script
-    # Repair/migrate clears stale state but does not apply a boot intent.
+    # Migration replays a 0.6.x boot profile host-side after the new daemon
+    # is up; it passes no client-built intent of its own.
+    assert "migrate-legacy-boot-intent" in script
+    assert script.index("restart_penguin_burnerd\n") < script.index(
+        "migrate-legacy-boot-intent"
+    )
     assert "PENGUIN_BURNER_RUNTIME_INTENT_B64" not in " ".join(command)
     unit = base64.b64decode(
         _command_env_value(command, "PENGUIN_BURNER_SYSTEMD_UNIT_B64")
@@ -272,6 +285,37 @@ def test_daemon_migration_command_installs_flatpak_daemon(
         "ExecStart=/usr/libexec/penguin-burnerd --socket /run/penguin-burnerd.sock"
         in unit
     )
+
+
+def test_daemon_migration_command_replays_legacy_boot_intent_host_side(
+    monkeypatch, tmp_path
+) -> None:
+    """The 0.6.x last-runtime.json lives under host /var/lib, which the
+    sandbox cannot read: migration must recover it host-side (elevated),
+    after the new daemon is reachable, with the host env the intent bridge
+    needs."""
+    _flatpak_daemon_install_env(monkeypatch, tmp_path)
+
+    command = commands.daemon_migration_command()
+
+    script = command[-2]
+    replay = (
+        'env PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 '
+        'PYTHONPATH="$PENGUIN_BURNER_RUNTIME_PYTHONPATH" '
+        'PENGUIN_BURNER_HOME="$PENGUIN_BURNER_RUNTIME_HOME" '
+        "/usr/bin/python3 -m runtime.daemon_client migrate-legacy-boot-intent"
+    )
+    assert replay in script
+    assert _command_env_value(command, "PENGUIN_BURNER_RUNTIME_PYTHONPATH") == (
+        FLATPAK_SITE_PACKAGES
+    )
+    assert _command_env_value(command, "PENGUIN_BURNER_RUNTIME_HOME") == (
+        "/home/desktop-user"
+    )
+    # The legacy file is consumed by the replay helper, never rm'd up front,
+    # and an existing 0.7 boot spec is preserved.
+    assert "last-runtime.json" not in script
+    assert "boot-runtime.json" not in script
 
 
 def test_flatpak_runtime_profile_install_copies_daemon_and_seeds_autostart(

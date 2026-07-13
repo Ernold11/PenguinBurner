@@ -735,8 +735,9 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
     _wait_for_daemon_status(socket_path)
     if autostart_argv:
         _apply_persistent_runtime(autostart_argv, socket_path=socket_path)
-    else:
-        clear_boot_runtime_spec(socket_path=socket_path)
+    # With nothing recovered, an existing 0.7 boot spec is preserved as-is
+    # (a repair/reinstall must not wipe the user's boot profile); the daemon
+    # re-read it on the restart above.
     log(f"Installed and started {unit_path.name} at {unit_path}.")
 
     if legacy_state["exists"]:

@@ -691,6 +691,47 @@ def stream_auto_uv_scan(
     return int(exit_code)
 
 
+def migrate_legacy_boot_intent(*, socket_path=None) -> int:
+    """Replay a 0.6.x last-runtime.json boot profile onto the new daemon.
+
+    Runs host-side (as root) from the elevated daemon install/migration
+    script, after the new daemon is reachable — the flatpak sandbox cannot
+    see host /var/lib, so this recovery cannot happen client-side. The
+    legacy file is consumed on success or when there is nothing worth
+    recovering; a failed apply keeps it for the next repair attempt and
+    never fails the daemon install itself.
+    """
+    import shlex
+
+    from runtime.runtime_spec import runtime_intent_from_argv
+    from runtime.support.runtime_service import (
+        LAST_RUNTIME_STATE_PATH,
+        read_legacy_last_runtime_argv,
+    )
+
+    argv = read_legacy_last_runtime_argv()
+    if not argv:
+        LAST_RUNTIME_STATE_PATH.unlink(missing_ok=True)
+        return 0
+    try:
+        intent = runtime_intent_from_argv(argv)
+        apply_runtime_intent(intent, persist_on_startup=True, socket_path=socket_path)
+    except Exception as error:
+        print(
+            "warning: could not migrate the 0.6.x apply-on-startup profile "
+            f"({shlex.join(argv)}): {error}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 0
+    LAST_RUNTIME_STATE_PATH.unlink(missing_ok=True)
+    print(
+        f"Migrated 0.6.x apply-on-startup profile: {shlex.join(argv)}",
+        flush=True,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="PenguinBurner daemon client")
     parser.add_argument(
@@ -708,6 +749,7 @@ def main(argv: list[str] | None = None) -> int:
     runtime = subparsers.add_parser("apply-runtime-intent")
     runtime.add_argument("--boot", action="store_true")
     runtime.add_argument("intent_json")
+    subparsers.add_parser("migrate-legacy-boot-intent")
     runtime_spec = subparsers.add_parser("apply-runtime-spec")
     runtime_spec.add_argument("spec_json")
     boot_spec = subparsers.add_parser("set-boot-runtime-spec")
@@ -787,6 +829,8 @@ def main(argv: list[str] | None = None) -> int:
                 flush=True,
             )
             return 0
+        if args.command == "migrate-legacy-boot-intent":
+            return migrate_legacy_boot_intent(socket_path=args.socket)
         if args.command in {"apply-runtime-spec", "set-boot-runtime-spec"}:
             spec = json.loads(args.spec_json)
             if not isinstance(spec, dict):

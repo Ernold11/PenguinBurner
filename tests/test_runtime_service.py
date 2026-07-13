@@ -1097,3 +1097,57 @@ def test_migrate_recovers_066_boot_profile_without_legacy_capitalized_unit(
         ["--auto-uv-profile", "profile-066", "--adaptive-auto-uv"],
     ) in actions
     assert any("Recovered apply-on-startup" in line for line in logs)
+
+
+def test_migrate_preserves_existing_boot_spec_when_nothing_recovered(
+    tmp_path: Path, monkeypatch
+) -> None:
+    program = tmp_path / "penguin_burner.py"
+    program.write_text("# program\n", encoding="utf-8")
+    daemon_unit = tmp_path / "penguin-burnerd.service"
+    missing_legacy = tmp_path / "PenguinBurner.service"
+    missing_state = tmp_path / "last-runtime.json"  # nothing to recover
+    actions = []
+
+    def fake_run(args, **_kwargs):
+        actions.append(("run", list(args)))
+        return SimpleNamespace(returncode=1, stdout="", stderr="")  # unit absent
+
+    monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
+    monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
+    monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
+    monkeypatch.setattr(runtime_service, "LAST_RUNTIME_STATE_PATH", missing_state)
+    monkeypatch.setattr(runtime_service, "clear_last_runtime_state", lambda: None)
+    monkeypatch.setattr(
+        runtime_service,
+        "_apply_persistent_runtime",
+        lambda argv, **_kwargs: actions.append(("persist-runtime", list(argv)))
+        or {"pid": 1},
+    )
+    monkeypatch.setattr(
+        runtime_service,
+        "clear_boot_runtime_spec",
+        lambda **_kwargs: actions.append(("clear-boot-runtime", [])),
+    )
+    monkeypatch.setattr(
+        runtime_service, "legacy_systemd_service_unit_path", lambda: missing_legacy
+    )
+    monkeypatch.setattr(
+        runtime_service, "daemon_systemd_service_unit_path", lambda: daemon_unit
+    )
+    monkeypatch.setattr(runtime_service, "daemon_status", lambda **_kwargs: {"state": "idle"})
+    monkeypatch.setattr(runtime_service.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        runtime_service, "run_checked_subprocess",
+        lambda args: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    logs = []
+    runtime_service.migrate_to_daemon_service(
+        program, socket_path="/tmp/s.sock", log=logs.append
+    )
+
+    # A repair/reinstall must not wipe an existing 0.7 boot profile.
+    assert ("clear-boot-runtime", []) not in actions
+    assert not any(action[0] == "persist-runtime" for action in actions)
