@@ -136,10 +136,38 @@ QLineEdit, QPlainTextEdit, QTableWidget, QListWidget, QComboBox {{
     border: 1px solid {theme.BORDER};
     color: {theme.TEXT};
 }}
-QFrame#steamInitBanner {{
-    background: {theme.ROW_WARNING_BG};
-    border: 1px solid {theme.WARNING};
-    border-radius: 6px;
+QFrame#steamLibrarySetupCard {{
+    background: {theme.SURFACE_BG};
+    border: 1px solid {theme.BORDER_STRONG};
+    border-radius: 12px;
+}}
+QLabel#steamLibrarySetupTitle {{
+    background: transparent;
+    border: 0;
+    color: {theme.TEXT_PROGRESS};
+    font-size: 24px;
+    font-weight: 700;
+}}
+QLabel#steamLibrarySetupText {{
+    background: transparent;
+    border: 0;
+    color: {theme.TEXT_MUTED};
+    font-size: 13px;
+}}
+QPushButton#steamLibrarySetupButton {{
+    background: {theme.PRIMARY_BUTTON_BG};
+    border-color: {theme.PRIMARY_BUTTON_BORDER};
+    color: {theme.PRIMARY_BUTTON_TEXT};
+    font-size: 15px;
+    font-weight: 700;
+    padding: 12px 24px;
+}}
+QPushButton#steamLibrarySetupButton:hover {{
+    border-color: {theme.PRIMARY_BUTTON_HOVER_BORDER};
+}}
+QPushButton#steamLibrarySetupButton:pressed {{
+    background: {theme.PRIMARY_BUTTON_PRESSED_BG};
+    border-color: {theme.PRIMARY_BUTTON_PRESSED_BORDER};
 }}
 QFrame#steamLibraryPane, QFrame#steamGameDetailsPane {{
     background: {theme.SURFACE_BG};

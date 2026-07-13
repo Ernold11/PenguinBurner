@@ -168,16 +168,46 @@ class SteamPanel:
         header_row.addWidget(self.rescan_button)
         layout.addLayout(header_row)
 
-        self.init_banner = QtWidgets.QFrame()
-        self.init_banner.setObjectName("steamInitBanner")
-        banner_layout = QtWidgets.QHBoxLayout(self.init_banner)
-        banner_layout.setContentsMargins(10, 8, 10, 8)
-        self.init_label = QtWidgets.QLabel("")
-        self.init_label.setWordWrap(True)
-        banner_layout.addWidget(self.init_label, 1)
-        self.init_button = QtWidgets.QPushButton("Initialize")
-        banner_layout.addWidget(self.init_button)
-        layout.addWidget(self.init_banner)
+        self.setup_view = QtWidgets.QWidget()
+        setup_view_layout = QtWidgets.QVBoxLayout(self.setup_view)
+        setup_view_layout.setContentsMargins(24, 24, 24, 24)
+        setup_view_layout.addStretch(1)
+
+        self.setup_card = QtWidgets.QFrame()
+        self.setup_card.setObjectName("steamLibrarySetupCard")
+        self.setup_card.setMaximumWidth(620)
+        setup_card_layout = QtWidgets.QVBoxLayout(self.setup_card)
+        setup_card_layout.setContentsMargins(42, 36, 42, 36)
+        setup_card_layout.setSpacing(16)
+
+        self.setup_title = QtWidgets.QLabel("Set up your Steam library")
+        self.setup_title.setObjectName("steamLibrarySetupTitle")
+        self.setup_title.setAlignment(QtCore.Qt.AlignCenter)
+        setup_card_layout.addWidget(self.setup_title)
+
+        self.setup_label = QtWidgets.QLabel("")
+        self.setup_label.setObjectName("steamLibrarySetupText")
+        self.setup_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.setup_label.setWordWrap(True)
+        setup_card_layout.addWidget(self.setup_label)
+
+        setup_button_row = QtWidgets.QHBoxLayout()
+        setup_button_row.addStretch(1)
+        self.setup_button = QtWidgets.QPushButton("Scan my Steam library")
+        self.setup_button.setObjectName("steamLibrarySetupButton")
+        self.setup_button.setMinimumWidth(260)
+        self.setup_button.setMinimumHeight(48)
+        self._setup_action = "scan"
+        setup_button_row.addWidget(self.setup_button)
+        setup_button_row.addStretch(1)
+        setup_card_layout.addLayout(setup_button_row)
+
+        setup_view_layout.addWidget(self.setup_card, 0, QtCore.Qt.AlignCenter)
+        setup_view_layout.addStretch(1)
+        layout.addWidget(self.setup_view, 1)
+        # Startup discovery runs in the background. Do not briefly paint an
+        # onboarding state before _sync_header() knows it is actually needed.
+        self.setup_view.setVisible(False)
 
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.splitter.setObjectName("steamLibrarySplitter")
@@ -325,7 +355,7 @@ class SteamPanel:
         layout.addWidget(self.status_label)
 
         self.rescan_button.clicked.connect(self.rescan)
-        self.init_button.clicked.connect(self._initialize)
+        self.setup_button.clicked.connect(self._setup_steam_library)
         self.sort_combo.currentIndexChanged.connect(self._sort_changed)
         self.game_list.currentItemChanged.connect(self._selection_changed)
         self.proton_combo.currentIndexChanged.connect(self._proton_changed)
@@ -563,6 +593,10 @@ class SteamPanel:
         has_selection = bool(self._selected_app_id and self._selected_app_id in self._rows)
         self.game_list.setEnabled(not self._scan_running)
         self.sort_combo.setEnabled(not self._scan_running)
+        restart_running = (
+            self._restart_thread is not None and self._restart_thread.is_alive()
+        )
+        self.setup_button.setEnabled(not self._scan_running and not restart_running)
         editable = has_selection and self._live_ready and not self._scan_running
         self.launch_edit.setEnabled(has_selection)
         self.launch_edit.setReadOnly(not editable)
@@ -611,21 +645,29 @@ class SteamPanel:
         running = self.manager.steam_running()
         cdp_ready = self.manager.cdp_ready() if marker and running else False
         if not marker:
-            self.init_label.setText(
-                "Live apply is not initialized. Initialization creates Steam's "
-                "remote-debugging marker file (a local-only control channel) "
-                "and needs one Steam restart."
+            self.setup_title.setText("Set up your Steam library")
+            self.setup_label.setText(
+                "Find your installed games and connect them to PenguinBurner "
+                "for simple per-game profiles."
             )
-            self.init_button.setText("Initialize")
-            self.init_banner.setVisible(True)
+            self.setup_button.setText("Scan my Steam library")
+            self._setup_action = "scan"
+            show_setup = True
         elif running and not cdp_ready:
-            self.init_label.setText(
-                "Restart Steam once to activate live apply of launch options."
+            self.setup_title.setText("Your library is ready")
+            self.setup_label.setText(
+                "Restart Steam once to finish connecting per-game profiles. "
+                "Your games and saved settings stay exactly as they are."
             )
-            self.init_button.setText("Restart Steam now")
-            self.init_banner.setVisible(True)
+            self.setup_button.setText("Restart Steam to finish")
+            self._setup_action = "restart"
+            show_setup = True
         else:
-            self.init_banner.setVisible(False)
+            show_setup = False
+        self.setup_view.setVisible(show_setup)
+        self.splitter.setVisible(not show_setup)
+        self.rescan_button.setVisible(not show_setup)
+        self.status_label.setVisible(not show_setup)
         self._live_ready = cdp_ready or not running
         self._compat_tool_live_ready = cdp_ready
         self._sync_interaction_state()
@@ -846,15 +888,22 @@ class SteamPanel:
             message += f" {extra.message}"
         self._sync_status(message)
 
-    # -- init / restart ----------------------------------------------------
+    # -- library setup / restart ------------------------------------------
 
-    def _initialize(self) -> None:
-        if self.init_button.text() == "Restart Steam now":
+    def _setup_steam_library(self) -> None:
+        if self._setup_action == "restart":
             self._confirm_restart_steam()
             return
         result = self.manager.initialize()
         self._sync_header()
         self._sync_status(result.message)
+        if result.ok:
+            self.rescan(initialize_defaults=True)
+        elif self.setup_view.isVisible():
+            self.setup_label.setText(
+                "PenguinBurner could not find your Steam installation. "
+                "Open Steam once, then try again."
+            )
 
     def _confirm_restart_steam(self) -> None:
         QtWidgets = self.QtWidgets
@@ -871,7 +920,10 @@ class SteamPanel:
         if not self._flush_pending_launch_edit():
             self._sync_status("Steam restart cancelled: command-line save failed.")
             return
-        self.init_button.setEnabled(False)
+        self.setup_button.setEnabled(False)
+        self.setup_label.setText(
+            "Restarting Steam… Your games and saved settings will stay in place."
+        )
         self._sync_status("Restarting Steam…")
         self._restart_result = None
 
@@ -887,9 +939,17 @@ class SteamPanel:
         if thread is not None and thread.is_alive():
             self.QtCore.QTimer.singleShot(500, self._poll_restart)
             return
-        self.init_button.setEnabled(True)
+        self._sync_header()
+        self.setup_button.setEnabled(True)
         if self._restart_result:
             self._sync_status("Steam restarted.")
+            if self.setup_view.isVisible():
+                self.setup_label.setText(
+                    "Steam is starting. Your library will open here automatically."
+                )
         else:
             self._sync_status("Steam restart failed.")
-        self._sync_header()
+            self.setup_label.setText(
+                "Steam could not be restarted automatically. Restart it manually, "
+                "then return here."
+            )

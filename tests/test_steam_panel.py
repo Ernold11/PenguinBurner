@@ -59,6 +59,10 @@ class _FakeManager:
         self.launch_changes: list[tuple[str, str]] = []
         self.enabled_changes: list[tuple[str, bool]] = []
         self.stop_ok = True
+        self.marker = True
+        self.cdp = True
+        self.initialize_calls = 0
+        self.initialize_defaults_calls: list[bool] = []
 
     def refresh(
         self,
@@ -66,7 +70,8 @@ class _FakeManager:
         read_launch_options: bool = True,
         initialize_defaults: bool = False,
     ):
-        del read_launch_options, initialize_defaults
+        del read_launch_options
+        self.initialize_defaults_calls.append(initialize_defaults)
         return self.rows
 
     def standing_mode_label(self) -> str:
@@ -76,13 +81,18 @@ class _FakeManager:
         return SimpleNamespace(display_name="jan.pietek")
 
     def marker_present(self) -> bool:
-        return True
+        return self.marker
 
     def steam_running(self) -> bool:
         return True
 
     def cdp_ready(self) -> bool:
-        return True
+        return self.cdp
+
+    def initialize(self):
+        self.initialize_calls += 1
+        self.marker = True
+        return SimpleNamespace(ok=True, message="Steam library connected.")
 
     def available_compat_tools(self, app_id: str):
         del app_id
@@ -148,6 +158,24 @@ class _NoRefreshManager(SteamIntegrationManager):
         raise AssertionError("auto-sync must not race the full rescan")
 
 
+class _BlockingRefreshManager(_FakeManager):
+    def __init__(self, rows: tuple[SteamGameRow, ...]) -> None:
+        super().__init__(rows)
+        self.release_refresh = threading.Event()
+
+    def refresh(
+        self,
+        *,
+        read_launch_options: bool = True,
+        initialize_defaults: bool = False,
+    ):
+        self.release_refresh.wait(timeout=2.0)
+        return super().refresh(
+            read_launch_options=read_launch_options,
+            initialize_defaults=initialize_defaults,
+        )
+
+
 def test_recent_sort_uses_last_played_and_puts_never_played_last(
     tmp_path: Path,
 ) -> None:
@@ -194,6 +222,61 @@ def test_auto_sync_skips_while_full_rescan_is_running() -> None:
     panel.manager = _NoRefreshManager()
 
     panel._auto_sync()
+
+
+def test_library_setup_stays_hidden_until_initial_scan_finishes(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    QtCore, QtGui, QtWidgetsModule, _pg = import_qt()
+    manager = _BlockingRefreshManager((_row(tmp_path, "10", "Alpha", 100),))
+    panel = SteamPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgetsModule,
+        manager=cast(SteamIntegrationManager, manager),
+    )
+    qtbot.addWidget(panel.widget)
+    panel.widget.show()
+
+    assert panel._scan_running
+    assert not panel.setup_view.isVisibleTo(panel.widget)
+
+    manager.release_refresh.set()
+    qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
+    assert not panel.setup_view.isVisibleTo(panel.widget)
+
+
+def test_uninitialized_steam_uses_centered_library_setup(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    QtCore, QtGui, QtWidgetsModule, _pg = import_qt()
+    manager = _FakeManager((_row(tmp_path, "10", "Alpha", 100),))
+    manager.marker = False
+    manager.cdp = False
+    panel = SteamPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgetsModule,
+        manager=cast(SteamIntegrationManager, manager),
+    )
+    qtbot.addWidget(panel.widget)
+    panel.widget.show()
+    qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
+
+    assert panel.setup_view.isVisibleTo(panel.widget)
+    assert not panel.splitter.isVisibleTo(panel.widget)
+    assert panel.setup_title.text() == "Set up your Steam library"
+    assert panel.setup_button.text() == "Scan my Steam library"
+
+    panel.setup_button.click()
+    qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
+
+    assert manager.initialize_calls == 1
+    assert manager.initialize_defaults_calls == [False, True]
+    assert panel.setup_title.text() == "Your library is ready"
+    assert panel.setup_button.text() == "Restart Steam to finish"
 
 
 def test_panel_keeps_library_left_and_one_selected_game_editor(
