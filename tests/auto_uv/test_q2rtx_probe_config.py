@@ -144,7 +144,9 @@ def test_scan_runtime_settings_keep_duration_config() -> None:
     assert settings.q2rtx_config is source_config
     assert settings.q2rtx_config.duration_s == 600
     assert settings.q2rtx_config.single_pass_timeout_s == 999.0
-    assert settings.final_verification_duration_s == 300
+    # Empty options resolve to the efficiency mode, whose per-tier final
+    # verification default is 60 s.
+    assert settings.final_verification_duration_s == 60
     assert round(settings.final_clock_drop_margin_pct, 4) == 11.1111
     assert round(settings.min_performance_core_clock_pct, 4) == 88.8889
     assert settings.derive_efficiency_stop_streak is True

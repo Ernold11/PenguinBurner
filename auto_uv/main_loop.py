@@ -74,6 +74,7 @@ from auto_uv.probes.voltage_probe import probe_voltage_candidate
 from auto_uv.run.scan_runtime_settings import (
     adaptive_tier_clock_drop_margin_pct,
     adaptive_tier_option,
+    final_verification_duration_s as resolve_final_verification_duration_s,
     read_scan_runtime_settings,
 )
 from auto_uv.gpu.memory_clock_offset_user_option import (
@@ -610,9 +611,6 @@ def run_voltage_frequency_undervolt_main_loop(
                         effective_min_search_voltage_mv=int(
                             effective_min_search_voltage_mv
                         ),
-                        final_verification_duration_s=int(
-                            final_verification_duration_s
-                        ),
                         unsafe_entries=unsafe_entries,
                         probe_candidate=probe_candidate,
                         finish_with_final_verification=finish_with_final_verification,
@@ -804,7 +802,6 @@ def run_adaptive_tier_scans(
     probe_history: list,
     baseline_target,
     effective_min_search_voltage_mv: int,
-    final_verification_duration_s: int,
     unsafe_entries: list[dict] | None,
     probe_candidate: Callable[[VfCurveCandidate], VoltageProbeOutcome],
     finish_with_final_verification: Callable[..., AutoUvVoltageScanResult],
@@ -918,13 +915,13 @@ def run_adaptive_tier_scans(
                 )
             ),
         )
-        # The deepest still-unsaved tier soaks the full duration; once one
-        # profile has passed its full final, shallower tiers get the graduated
-        # confirm (the OC tier always soaks fully — its point is new).
-        tier_final_duration = final_verification_duration_for_tier(
-            0 if primary_scan_result is None else tier_index,
-            configured_final_duration_s=int(final_verification_duration_s),
-            runs_auto_oc=runs_auto_oc,
+        # Per-tier final-verification soak: efficiency 1 min, balanced 3 min,
+        # performance 5 min by default (an explicit --auto-uv-final-verification-s
+        # overrides all tiers). The graduated per-tier lengths already give the
+        # aggressive tiers the longer confirmation the old primary/secondary
+        # split aimed for.
+        tier_final_duration = resolve_final_verification_duration_s(
+            runtime_options, auto_uv_mode=str(tier_mode)
         )
         try:
             tier_selection = select_final_scan_candidate(
@@ -1253,20 +1250,6 @@ ADAPTIVE_TIER_ORDER = (
 # The first (deepest, most fragile) profile soaks the full final duration;
 # shallower profiles sit on already-proven edges and get a shorter confirm.
 # The Auto-OC tier is the exception — its climbed point is new territory.
-SECONDARY_FINAL_VERIFICATION_S = 120
-
-
-def final_verification_duration_for_tier(
-    tier_index: int,
-    *,
-    configured_final_duration_s: int,
-    runs_auto_oc: bool = False,
-) -> int:
-    if int(tier_index) == 0 or runs_auto_oc:
-        return int(configured_final_duration_s)
-    return min(int(configured_final_duration_s), SECONDARY_FINAL_VERIFICATION_S)
-
-
 def reset_power_limit_to_stock(
     gpu,
     stock_power_limit_w: int | None,

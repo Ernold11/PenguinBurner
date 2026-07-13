@@ -34,8 +34,9 @@
 
 ## Other
 
-- New `--auto-uv-final-verification-s` sets one final-verification soak for every
-  stage of a scan.
+- Final verification now soaks longer for the more aggressive tiers by default:
+  efficiency 1 min, balanced 3 min, performance 5 min. `--auto-uv-final-verification-s`
+  still overrides every tier with a single duration.
 - The Rust daemon crate version now tracks the release (checked at release
   time), so the daemon reports the same version as the app.
 

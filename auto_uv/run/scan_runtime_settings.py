@@ -9,6 +9,7 @@ from stability.q2rtx.models import Q2RTXStabilityConfig
 from auto_uv.scan_mode.auto_uv_mode import (
     ADAPTIVE_TIER_MODES,
     AUTO_UV_MODE_BALANCED,
+    AUTO_UV_MODE_EFFICIENCY,
     AUTO_UV_MODE_PERFORMANCE,
     adaptive_tier_option_key,
     normalize_auto_uv_mode,
@@ -61,7 +62,9 @@ def read_scan_runtime_settings(
             runtime_options.get("auto_uv_min_voltage_mv")
         ),
         configured_max_drop_pct=max_drop_pct(),
-        final_verification_duration_s=final_verification_duration_s(runtime_options),
+        final_verification_duration_s=final_verification_duration_s(
+            runtime_options, auto_uv_mode=auto_uv_mode
+        ),
         short_probe_base_duration_s=short_probe_base_duration_s(),
         efficiency_stop_streak=efficiency_stop_streak(),
         derive_efficiency_stop_streak=derive_efficiency_stop_streak(),
@@ -169,23 +172,50 @@ def max_drop_pct() -> float:
     return max(0.0, float(AUTO_UV_DEFAULTS.max_drop_pct))
 
 
-def final_verification_duration_s(runtime_options: dict | None = None) -> int:
-    # Explicit per-scan request (--auto-uv-final-verification-s) wins; every
-    # stage of an adaptive 3-in-1 run uses the same duration.
+def explicit_final_verification_duration_s(
+    runtime_options: dict | None = None,
+) -> int | None:
+    """A scan-wide final-verification duration the user explicitly requested,
+    or None to fall back to the per-tier defaults.
+
+    The --auto-uv-final-verification-s option wins, then the developer env
+    override; both apply to every tier of a scan."""
     requested = (runtime_options or {}).get("auto_uv_final_verification_s")
     if requested is not None:
         try:
             return max(1, int(requested))
         except (TypeError, ValueError):
             pass
-    # Fast-iteration override (developer validation runs): shorten the
-    # final-verification soak so a scan's tier results surface in minutes.
     override = os.environ.get("PENGUIN_BURNER_AUTO_UV_FINAL_SECONDS")
     if override:
         try:
             return max(1, int(override))
         except ValueError:
             pass
+    return None
+
+
+_PER_TIER_FINAL_DURATION_S = {
+    AUTO_UV_MODE_EFFICIENCY: AUTO_UV_DEFAULTS.efficiency_final_duration_s,
+    AUTO_UV_MODE_BALANCED: AUTO_UV_DEFAULTS.balanced_final_duration_s,
+    AUTO_UV_MODE_PERFORMANCE: AUTO_UV_DEFAULTS.performance_final_duration_s,
+}
+
+
+def final_verification_duration_s(
+    runtime_options: dict | None = None,
+    *,
+    auto_uv_mode: str | None = None,
+) -> int:
+    # An explicit scan-wide request applies to every tier; otherwise the
+    # per-tier default (efficiency 60s, balanced 180s, performance 300s), or
+    # the plain 300s default for non-adaptive/unknown modes.
+    explicit = explicit_final_verification_duration_s(runtime_options)
+    if explicit is not None:
+        return explicit
+    per_tier = _PER_TIER_FINAL_DURATION_S.get(str(auto_uv_mode or ""))
+    if per_tier is not None:
+        return max(1, int(per_tier))
     return max(1, int(AUTO_UV_DEFAULTS.final_duration_s))
 
 

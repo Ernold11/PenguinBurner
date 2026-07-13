@@ -2663,7 +2663,6 @@ def test_adaptive_tier_progress_events_are_chronological(monkeypatch) -> None:
         probe_history=[],
         baseline_target=SimpleNamespace(measured_clock_mhz=2400),
         effective_min_search_voltage_mv=800,
-        final_verification_duration_s=300,
         unsafe_entries=[],
         probe_candidate=lambda _candidate: None,
         finish_with_final_verification=fake_finish,
@@ -2716,28 +2715,23 @@ def test_clamp_power_limit_keeps_request_inside_card_range() -> None:
     assert applier.clamp_power_limit_w(330) == 330
 
 
-def test_graduated_final_verification_durations() -> None:
-    from auto_uv.main_loop import (
-        final_verification_duration_for_tier,
-        SECONDARY_FINAL_VERIFICATION_S,
-    )
+def test_per_tier_final_verification_durations() -> None:
+    from auto_uv.run.scan_runtime_settings import final_verification_duration_s
 
-    # The deepest (index 0) profile soaks the full configured duration; the
-    # shallower tiers get the shorter confirm, never longer than configured.
-    assert final_verification_duration_for_tier(0, configured_final_duration_s=300) == 300
+    # Each tier soaks longer as it gets more aggressive: efficiency 1 min,
+    # balanced 3 min, performance 5 min by default.
+    assert final_verification_duration_s({}, auto_uv_mode="efficiency") == 60
+    assert final_verification_duration_s({}, auto_uv_mode="balanced") == 180
+    assert final_verification_duration_s({}, auto_uv_mode="performance") == 300
+    # An explicit scan-wide request overrides every tier.
     assert (
-        final_verification_duration_for_tier(1, configured_final_duration_s=300)
-        == SECONDARY_FINAL_VERIFICATION_S
-    )
-    assert final_verification_duration_for_tier(2, configured_final_duration_s=60) == 60
-    # The Auto-OC tier's climbed point is new territory, never a re-proven
-    # trunk edge, so it always soaks the full configured duration.
-    assert (
-        final_verification_duration_for_tier(
-            2, configured_final_duration_s=300, runs_auto_oc=True
+        final_verification_duration_s(
+            {"auto_uv_final_verification_s": 90}, auto_uv_mode="performance"
         )
-        == 300
+        == 90
     )
+    # A non-adaptive/unknown mode keeps the plain default.
+    assert final_verification_duration_s({}, auto_uv_mode="adaptive") == 300
 
 
 def test_adaptive_tier_clock_drop_margin_resolution_order() -> None:
@@ -3054,7 +3048,6 @@ def test_adaptive_tiers_flow_per_tier_limits_into_probe_and_selection(
         probe_history=[],
         baseline_target=SimpleNamespace(measured_clock_mhz=2400),
         effective_min_search_voltage_mv=800,
-        final_verification_duration_s=300,
         unsafe_entries=[],
         probe_candidate=lambda _candidate: None,
         finish_with_final_verification=fake_finish,

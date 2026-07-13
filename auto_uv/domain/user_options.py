@@ -8,6 +8,12 @@ class AutoUvDefaults:
     probe_duration_s: int = 10
     shape_probe_duration_s: int = 10
     final_duration_s: int = 300
+    # Per-tier final-verification soak: the deeper/more aggressive the tier,
+    # the longer the confirmation. An explicit --auto-uv-final-verification-s
+    # (or the env override) applies to every tier and takes precedence.
+    efficiency_final_duration_s: int = 60
+    balanced_final_duration_s: int = 180
+    performance_final_duration_s: int = 300
     max_drop_pct: float = 10.0
     max_core_clock_drop_pct: float = 12.5
     efficiency_stop_streak: int = 2
