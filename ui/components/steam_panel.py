@@ -137,6 +137,10 @@ class SteamPanel:
         self._live_ready = False
         self._compat_tool_live_ready = False
         self._tracked: dict[str, _TrackedGame] = {}
+        self._game_poll_thread: threading.Thread | None = None
+        self._game_poll_result: frozenset[str] | None = None
+        self._auto_sync_thread: threading.Thread | None = None
+        self._auto_sync_result: tuple[tuple[SteamGameRow, ...], dict] | None = None
 
         self.widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(self.widget)
@@ -426,17 +430,44 @@ class SteamPanel:
         self._sync_header()
 
     def _auto_sync(self) -> None:
-        """Track installs and updated LastPlayed values without a full CDP read."""
+        """Track installs and updated LastPlayed values without a full CDP read.
+
+        The library refresh (disk VDF reads) and header probe (pgrep + a CDP
+        HTTP connect, ~6 s worst case) run on a worker thread so a slow Steam
+        never freezes the window; the UI apply happens back on the GUI thread.
+        """
         if self._rescan_thread is not None and self._rescan_thread.is_alive():
+            return
+        if self._auto_sync_thread is not None and self._auto_sync_thread.is_alive():
             return
         if not self._flush_pending_launch_edit():
             return
-        rows = self.manager.refresh(read_launch_options=False)
+        self._auto_sync_result = None
+
+        def run() -> None:
+            self._auto_sync_result = (
+                self.manager.refresh(read_launch_options=False),
+                self._probe_header(),
+            )
+
+        self._auto_sync_thread = threading.Thread(target=run, daemon=True)
+        self._auto_sync_thread.start()
+        self._collect_auto_sync()
+
+    def _collect_auto_sync(self) -> None:
+        thread = self._auto_sync_thread
+        if thread is not None and thread.is_alive():
+            self.QtCore.QTimer.singleShot(150, self._collect_auto_sync)
+            return
+        result = self._auto_sync_result
+        if result is None:
+            return
+        rows, probe = result
         if self._row_signature(rows) != self._row_signature(tuple(self._rows.values())):
             self._populate(rows)
         else:
             self._sync_default_mode_label()
-        self._sync_header()
+        self._sync_header(probe)
 
     @staticmethod
     def _row_signature(rows: tuple[SteamGameRow, ...]) -> tuple[tuple[object, ...], ...]:
@@ -636,14 +667,31 @@ class SteamPanel:
 
     # -- header / status ----------------------------------------------------
 
-    def _sync_header(self) -> None:
-        user = self.manager.active_user()
+    def _probe_header(self) -> dict:
+        """Gather the header's live signals (may block: pgrep + CDP HTTP).
+
+        Kept separate from the UI apply so the 10 s auto-sync can run it on a
+        worker thread instead of freezing the window while Steam is slow.
+        """
+        marker = self.manager.marker_present()
+        running = self.manager.steam_running()
+        return {
+            "user": self.manager.active_user(),
+            "marker": marker,
+            "running": running,
+            "cdp_ready": self.manager.cdp_ready() if marker and running else False,
+        }
+
+    def _sync_header(self, probe: dict | None = None) -> None:
+        if probe is None:
+            probe = self._probe_header()
+        user = probe["user"]
         self.user_label.setText(
             f"Steam user: {user.display_name}" if user is not None else "Steam user: —"
         )
-        marker = self.manager.marker_present()
-        running = self.manager.steam_running()
-        cdp_ready = self.manager.cdp_ready() if marker and running else False
+        marker = probe["marker"]
+        running = probe["running"]
+        cdp_ready = probe["cdp_ready"]
         if not marker:
             self.setup_title.setText("Set up your Steam library")
             self.setup_label.setText(
@@ -838,12 +886,45 @@ class SteamPanel:
         self._sync_game_status()
 
     def _poll_game_states(self) -> None:
-        """Advance every tracked game's lifecycle from the live process state."""
+        """Kick off the running-games check on a worker thread.
+
+        The check shells out to pgrep (a flatpak-spawn host round-trip under
+        Flatpak) and can stall for seconds; running it on the GUI thread would
+        freeze the window, so it goes to a worker and the lifecycle transitions
+        are applied back on the GUI thread when it returns.
+        """
+        if self._game_poll_thread is not None and self._game_poll_thread.is_alive():
+            return
+        self._game_poll_result = None
+
+        def run() -> None:
+            self._game_poll_result = self.manager.running_game_ids()
+
+        self._game_poll_thread = threading.Thread(target=run, daemon=True)
+        self._game_poll_thread.start()
+        self._collect_game_poll()
+
+    def _collect_game_poll(self) -> None:
+        thread = self._game_poll_thread
+        if thread is not None and thread.is_alive():
+            self.QtCore.QTimer.singleShot(100, self._collect_game_poll)
+            return
+        self._apply_game_states(self._game_poll_result)
+
+    def _apply_game_states(self, running: frozenset[str] | None) -> None:
+        """Advance each tracked game's lifecycle from the running-games set.
+
+        ``running is None`` means the check failed this tick — hold every
+        state (do not count a miss) rather than misread a stalled probe as
+        every game having exited.
+        """
         now = time.monotonic()
         for app_id, track in self._tracked.items():
             if track.state not in _ACTIVE_GAME_STATES:
                 continue
-            if self.manager.game_running(app_id):
+            if running is None:
+                continue
+            if app_id in running:
                 track.misses = 0
                 if track.state == "launching":
                     track.state = "running"

@@ -326,6 +326,50 @@ def test_steam_game_running_matches_reaper_session(monkeypatch) -> None:
     assert len(calls) == 1
 
 
+def test_running_steam_game_ids_batches_one_pgrep(monkeypatch) -> None:
+    import integrations.steam.process as process
+
+    monkeypatch.setattr(process, "running_in_flatpak", lambda: False)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return process.subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=(
+                "4242 reaper SteamLaunch AppId=3606110 -- /game/a\n"
+                "4243 reaper SteamLaunch AppId=228980 -- /game/b\n"
+                "9 pgrep -af [S]teamLaunch AppId=\n"  # our own query, ignored
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(process.subprocess, "run", fake_run)
+
+    # One subprocess returns every running game's id.
+    assert process.running_steam_game_ids() == frozenset({"3606110", "228980"})
+    assert calls == [["/usr/bin/pgrep", "-af", r"[S]teamLaunch AppId="]]
+
+    # returncode 1 = ran fine, no games -> empty set (NOT a failure).
+    monkeypatch.setattr(
+        process.subprocess,
+        "run",
+        lambda command, **kwargs: process.subprocess.CompletedProcess(
+            command, 1, stdout="", stderr=""
+        ),
+    )
+    assert process.running_steam_game_ids() == frozenset()
+
+    # A timeout / non-0/1 exit is "couldn't tell" -> None, so a poller holds
+    # state instead of reading it as every game having exited.
+    def boom(command, **kwargs):
+        raise process.subprocess.TimeoutExpired(command, 3.0)
+
+    monkeypatch.setattr(process.subprocess, "run", boom)
+    assert process.running_steam_game_ids() is None
+
+
 def test_flatpak_steam_process_control_runs_on_host(monkeypatch) -> None:
     import integrations.steam.process as process
 

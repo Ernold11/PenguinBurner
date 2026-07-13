@@ -143,6 +143,9 @@ class _FakeManager:
     def game_running(self, app_id: str) -> bool:
         return app_id in self.running
 
+    def running_game_ids(self):
+        return frozenset(self.running)
+
     def stop_game(self, app_id: str):
         self.stop_requests.append(app_id)
         return SimpleNamespace(ok=self.stop_ok, message="Stop requested via Steam.")
@@ -406,10 +409,10 @@ def test_play_stop_lifecycle_status_under_title(
     assert panel._game_state_timer.isActive()
 
     # A slow launch stays Running; once the session appears it is confirmed.
-    panel._poll_game_states()
+    panel._apply_game_states(manager.running_game_ids())
     assert panel.game_status.text() == "Running"
     manager.running.add("30")
-    panel._poll_game_states()
+    panel._apply_game_states(manager.running_game_ids())
     assert panel._tracked["30"].state == "running"
     assert panel.stop_button.isEnabled()
 
@@ -418,15 +421,15 @@ def test_play_stop_lifecycle_status_under_title(
     assert manager.stop_requests == ["30"]
     assert panel.game_status.text() == "Stopping"
     assert not panel.stop_button.isEnabled()
-    panel._poll_game_states()
+    panel._apply_game_states(manager.running_game_ids())
     assert panel.game_status.text() == "Stopping"
 
     # The session went away: one poll could be a fluke (a timed-out process
     # check), two agreeing polls mean Stopped, and the timer winds down.
     manager.running.discard("30")
-    panel._poll_game_states()
+    panel._apply_game_states(manager.running_game_ids())
     assert panel.game_status.text() == "Stopping"
-    panel._poll_game_states()
+    panel._apply_game_states(manager.running_game_ids())
     assert panel.game_status.text() == "Stopped"
     assert not panel.stop_button.isEnabled()
     assert not panel._game_state_timer.isActive()
@@ -462,7 +465,7 @@ def test_failed_stop_keeps_running_status(qtbot, tmp_path: Path, monkeypatch) ->
 
     panel.play_button.click()
     manager.running.add("30")
-    panel._poll_game_states()
+    panel._apply_game_states(manager.running_game_ids())
     panel.stop_button.click()
 
     assert panel.game_status.text() == "Running"
@@ -493,7 +496,7 @@ def test_cancelled_launch_times_out_to_stopped(
     panel.play_button.click()
     assert panel.game_status.text() == "Running"
     panel._tracked["30"].deadline = 0.0  # fast-forward the launch grace window
-    panel._poll_game_states()
+    panel._apply_game_states(manager.running_game_ids())
 
     assert panel.game_status.text() == "Stopped"
     assert not panel._game_state_timer.isActive()
@@ -521,14 +524,14 @@ def test_refused_stop_falls_back_to_running(
 
     panel.play_button.click()
     manager.running.add("30")
-    panel._poll_game_states()
+    panel._apply_game_states(manager.running_game_ids())
     panel.stop_button.click()
     assert panel.game_status.text() == "Stopping"
 
     # The game ignored the stop request (save dialog, hung shutdown): past
     # the stop grace window the panel re-arms Stop instead of lying forever.
     panel._tracked["30"].deadline = 0.0
-    panel._poll_game_states()
+    panel._apply_game_states(manager.running_game_ids())
 
     assert panel.game_status.text() == "Running"
     assert panel.stop_button.isEnabled()

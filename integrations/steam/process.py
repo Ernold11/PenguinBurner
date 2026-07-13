@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import time
+
+
+_STEAM_LAUNCH_APPID_RE = re.compile(r"SteamLaunch AppId=(\d+)")
 
 
 FLATPAK_INFO_PATH = Path("/.flatpak-info")
@@ -105,6 +109,46 @@ def steam_game_running(app_id: str) -> bool:
     if not str(app_id).isdigit():
         return False
     return _pgrep("-f", rf"[S]teamLaunch AppId={app_id}([^0-9]|$)")
+
+
+def running_steam_game_ids() -> frozenset[str] | None:
+    """App ids of every Steam game session alive right now, in ONE subprocess.
+
+    A single ``pgrep -af`` returns all reaper command lines; parsing them out
+    means a poller checks once per tick regardless of how many games it is
+    tracking, instead of one subprocess per game. The ``[S]`` class keeps the
+    query's own command line (which contains the pattern) from matching.
+
+    Returns a (possibly empty) set of app ids on success, or ``None`` when the
+    check itself failed (timeout / no host bridge) so a caller can distinguish
+    "no games running" from "couldn't tell" instead of misreading a stalled
+    probe as every game having exited.
+    """
+    command = [HOST_PGREP, "-af", r"[S]teamLaunch AppId="]
+    if running_in_flatpak():
+        command = _flatpak_host_command(command) or []
+    if not command:
+        return None
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    # returncode 1 = ran fine, no matches (empty set); anything but 0/1 = the
+    # check failed and the result is not trustworthy.
+    if result.returncode not in (0, 1):
+        return None
+    ids: set[str] = set()
+    for line in result.stdout.splitlines():
+        match = _STEAM_LAUNCH_APPID_RE.search(line)
+        if match:
+            ids.add(match.group(1))
+    return frozenset(ids)
 
 
 def steam_available() -> bool:

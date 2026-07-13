@@ -26,7 +26,7 @@ from .launch_options import (
     remove_injection,
 )
 from .library import InstalledSteamGame, installed_steam_games
-from .process import steam_game_running, steam_running
+from .process import running_steam_game_ids, steam_game_running, steam_running
 from .settings import (
     GAME_MODE_ADAPTIVE,
     SteamGameSetting,
@@ -83,6 +83,13 @@ class SteamIntegrationManager:
 
     def game_running(self, app_id: str) -> bool:
         return steam_game_running(app_id)
+
+    def running_game_ids(self) -> frozenset[str] | None:
+        """Every running Steam game's app id in one subprocess (for polling).
+
+        None means the check failed (distinct from an empty set = no games).
+        """
+        return running_steam_game_ids()
 
     def stop_game(self, app_id: str) -> ApplyResult:
         """Ask the running Steam client to shut the game down cleanly.

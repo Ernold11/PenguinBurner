@@ -273,8 +273,10 @@ class MainWindow(ProfileActionsMixin):
         # exited, reboot). Lightweight: recomputes only the status text.
         self._status_timer = self.QtCore.QTimer(self.window)
         self._status_timer.setInterval(2000)
-        self._status_timer.timeout.connect(self._refresh_running_status)
+        self._status_timer.timeout.connect(self._poll_running_status)
         self._status_timer.start()
+        self._status_poll_thread = None
+        self._status_poll_result = None
 
     def show(self) -> None:
         self.window.show()
@@ -632,6 +634,44 @@ class MainWindow(ProfileActionsMixin):
         self._set_profile_actions_enabled(not self._workflow_running())
         self._refresh_running_status(running_info, autostart_info)
 
+    def _poll_running_status(self) -> None:
+        """Gather live daemon/systemd status OFF the GUI thread, then render.
+
+        The status gathering makes daemon socket calls and up to two systemctl
+        subprocesses; doing that on the GUI thread every 2 s freezes the window
+        whenever the daemon wedges. A worker fetches the two info dicts and the
+        cheap render is applied back on the GUI thread.
+        """
+        if self._workflow_running() or self.command_controller.is_running():
+            return
+        thread = self._status_poll_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._status_poll_result = None
+
+        def run() -> None:
+            running = (
+                running_auto_uv_profile_info()
+                if penguin_burner_runtime_is_active()
+                else {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+            )
+            self._status_poll_result = (running, systemd_autostart_profile_info())
+
+        import threading
+
+        self._status_poll_thread = threading.Thread(target=run, daemon=True)
+        self._status_poll_thread.start()
+        self._collect_status_poll()
+
+    def _collect_status_poll(self) -> None:
+        thread = self._status_poll_thread
+        if thread is not None and thread.is_alive():
+            self.QtCore.QTimer.singleShot(120, self._collect_status_poll)
+            return
+        result = self._status_poll_result
+        if result is not None:
+            self._refresh_running_status(result[0], result[1])
+
     def _refresh_running_status(
         self,
         running_info: dict | None = None,
@@ -639,9 +679,10 @@ class MainWindow(ProfileActionsMixin):
     ) -> None:
         """Recompute the 'Currently running profile' line from LIVE state.
 
-        Cheap enough to run on a timer so the line stays current even when the
-        daemon/GPU state changes outside the UI (external CLI, reboot, a profile
-        that exited). Skipped while a scan/command owns the status line.
+        Skipped while a scan/command owns the status line. When called with no
+        info dicts (rare — internal callers pass them), it falls back to a
+        synchronous gather; the periodic path uses ``_poll_running_status`` to
+        keep the daemon/systemctl I/O off the GUI thread.
         """
         if self._workflow_running() or self.command_controller.is_running():
             return
