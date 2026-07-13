@@ -329,6 +329,19 @@ def read_auto_uv_profiles(
 
 def apply_latest_final_verification_metrics(profiles: list[dict]) -> None:
     """Repair the latest pre-fix profile in memory from its matching long check."""
+    # Post-fix profiles embed their long-check metrics at write time
+    # (final_verification_metrics) and their Q2RTX-only clock must not be
+    # overwritten with the repair file's blended average; only a legacy
+    # profile still needs the repair, so skip the file read when none is
+    # present.
+    unrepaired = [
+        profile
+        for profile in profiles
+        if bool(profile.get("final_verified"))
+        and not bool(profile.get("final_verification_metrics"))
+    ]
+    if not unrepaired:
+        return
     latest = _read_json(
         default_user_config_dir() / "uv-result" / "auto-uv-latest-verified.json"
     )
@@ -340,9 +353,8 @@ def apply_latest_final_verification_metrics(profiles: list[dict]) -> None:
         return
     matches = [
         profile
-        for profile in profiles
-        if bool(profile.get("final_verified"))
-        and _candidate_id(profile) == candidate_id
+        for profile in unrepaired
+        if _candidate_id(profile) == candidate_id
         and _profile_matches_verification_time(profile, verified_at)
     ]
     if not matches:

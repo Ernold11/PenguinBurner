@@ -316,6 +316,58 @@ def test_existing_profile_uses_matching_latest_long_verification_clock(
     ] == 2830.0
 
 
+def test_post_fix_profile_keeps_its_own_long_verification_metrics(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """The repair must not touch profiles that embed long metrics at write time.
+
+    A post-fix profile's final_q2rtx_avg_core_clock_mhz is the Q2RTX-window
+    average; the repair file only carries the blended probe average and would
+    silently degrade it."""
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    profile_path = archive_auto_uv_profile(
+        {
+            "candidate_id": "925mv-2980mhz",
+            "candidate_voltage_mv": 925,
+            "lock_clock_mhz": 2980,
+            "avg_core_clock_mhz": 2888.06,
+            "final_q2rtx_avg_core_clock_mhz": 2910.0,
+            "final_verification_metrics": True,
+            "final_verified": True,
+            "points": [
+                {
+                    "index": 0,
+                    "voltage_mv": 925,
+                    "base_mhz": 2475,
+                    "target_mhz": 2980,
+                    "new_offset_mhz": 505,
+                }
+            ],
+        }
+    )
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    result_dir = tmp_path / "uv-result"
+    result_dir.mkdir(parents=True)
+    (result_dir / "auto-uv-latest-verified.json").write_text(
+        json.dumps(
+            {
+                "candidate_id": "925mv-2980mhz",
+                "candidate_voltage_mv": 925,
+                "lock_clock_mhz": 2980,
+                "avg_core_clock_mhz": 2860.0,
+                "verified_at": profile["profile_created_at"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = profile_store.read_auto_uv_profiles()
+
+    assert loaded[0]["final_q2rtx_avg_core_clock_mhz"] == 2910.0
+    assert loaded[0]["avg_core_clock_mhz"] == 2888.06
+
+
 def test_profile_non_sort_columns_have_no_sort_keys() -> None:
     sort_values = _profile_sort_values(
         {
