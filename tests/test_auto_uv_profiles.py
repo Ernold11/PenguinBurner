@@ -1676,18 +1676,6 @@ def test_profile_delete_confirmation_warns_for_last_usable_adaptive_profile() ->
     assert "restore stock now and at boot" in message
 
 
-def test_profile_delete_confirmation_describes_adaptive_startup_fallback() -> None:
-    message = _profile_delete_confirmation_text(
-        ["2625 MHz 865 mV"],
-        switches_systemd_to_profile="2610 MHz 875 mV",
-    )
-
-    assert "Delete Auto-UV profile 2625 MHz 865 mV?" in message
-    assert "Adaptive Auto-UV will have fewer than two usable tiers" in message
-    assert "switch it to profile 2610 MHz 875 mV" in message
-    assert "restore stock now and at boot" not in message
-
-
 def test_lact_export_output_uses_lact_config_filename(tmp_path) -> None:
     assert _lact_export_output_path(tmp_path) == tmp_path / "config.yaml"
 

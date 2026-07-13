@@ -178,28 +178,8 @@ class ProfileActionsMixin:
             fail_text="Failed to restore GPU to stock.",
         )
 
-    def _run_delete_autostart_followup(
-        self,
-        *,
-        restore_stock: bool,
-        switch_systemd_profile_id: str = "",
-    ) -> bool:
-        switch_profile_id = str(switch_systemd_profile_id or "").strip()
+    def _run_delete_autostart_followup(self, *, restore_stock: bool) -> bool:
         self._delete_restore_stock = False
-        self._delete_switch_systemd_profile_id = ""
-        if switch_profile_id:
-            profile = profile_for_selector(self.profile_summaries, switch_profile_id)
-            if profile_can_apply(profile or {}):
-                self.log_view.append(
-                    "\nAdaptive Auto-UV now has fewer than two usable tiers; "
-                    "switching Systemd autostart to the remaining profile.\n"
-                )
-                self._run_runtime_action(
-                    "daemonize",
-                    profile_selector=switch_profile_id,
-                )
-                return True
-            restore_stock = True
         if restore_stock:
             self._restore_gpu_defaults()
             return True
@@ -384,17 +364,11 @@ class ProfileActionsMixin:
             autostart_info,
         )
         restore_stock = autostart_action.get("action") == "restore-stock"
-        switch_systemd_profile_id = (
-            str(autostart_action.get("profile_id", "")).strip()
-            if autostart_action.get("action") == "switch-profile"
-            else ""
-        )
         if not self._confirm_profile_delete(
             restore_stock=restore_stock,
             removes_last_usable_adaptive_profile=(
                 autostart_action.get("reason") == "last-usable-adaptive-profile"
             ),
-            switch_systemd_profile_id=switch_systemd_profile_id,
         ):
             return
         try:
@@ -404,7 +378,6 @@ class ProfileActionsMixin:
                 selected_paths,
                 selected_ids,
                 restore_stock=restore_stock,
-                switch_systemd_profile_id=switch_systemd_profile_id,
             )
             return
         count = len(deleted)
@@ -412,10 +385,7 @@ class ProfileActionsMixin:
         self.log_view.append(f"\nDeleted {count} saved {label}.\n")
         self.controls.set_status_text(f"Deleted {count} saved {label}.")
         self._load_profiles()
-        self._run_delete_autostart_followup(
-            restore_stock=restore_stock,
-            switch_systemd_profile_id=switch_systemd_profile_id,
-        )
+        self._run_delete_autostart_followup(restore_stock=restore_stock)
 
     def _run_privileged_profile_delete(
         self,
@@ -423,7 +393,6 @@ class ProfileActionsMixin:
         selected_ids: set[str],
         *,
         restore_stock: bool,
-        switch_systemd_profile_id: str = "",
     ) -> None:
         if not ensure_daemon_ready_for_privileged_action(
             QtWidgets=self.QtWidgets,
@@ -433,7 +402,6 @@ class ProfileActionsMixin:
         ):
             return
         self._delete_restore_stock = bool(restore_stock)
-        self._delete_switch_systemd_profile_id = str(switch_systemd_profile_id)
         self._set_profile_actions_enabled(False)
         self.controls.start_button.setEnabled(False)
         self.controls.set_status_text("Deleting selected Auto-UV profiles.")
@@ -455,7 +423,6 @@ class ProfileActionsMixin:
                 self._load_profiles()
                 if self._run_delete_autostart_followup(
                     restore_stock=self._delete_restore_stock,
-                    switch_systemd_profile_id=self._delete_switch_systemd_profile_id,
                 ):
                     return
             else:
@@ -467,7 +434,6 @@ class ProfileActionsMixin:
                     exit_status=exit_status,
                 )
             self._delete_restore_stock = False
-            self._delete_switch_systemd_profile_id = ""
             self._load_profiles()
             return
         if kind == "restore-keep-stock" and success:
@@ -492,7 +458,6 @@ class ProfileActionsMixin:
         *,
         restore_stock: bool,
         removes_last_usable_adaptive_profile: bool = False,
-        switch_systemd_profile_id: str = "",
     ) -> bool:
         buttons = (
             self.QtWidgets.QMessageBox.StandardButton.Yes
@@ -506,11 +471,6 @@ class ProfileActionsMixin:
                 restores_stock=restore_stock,
                 removes_last_usable_adaptive_profile=(
                     removes_last_usable_adaptive_profile
-                ),
-                switches_systemd_to_profile=(
-                    profile_status_label(self.profile_summaries, switch_systemd_profile_id)
-                    if str(switch_systemd_profile_id).strip()
-                    else ""
                 ),
             ),
             buttons,

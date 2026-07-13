@@ -160,9 +160,6 @@ def test_delete_confirmation_text_variants() -> None:
     assert "last usable Adaptive Auto-UV profiles" in profiles.delete_confirmation_text(
         ["A", "B"], restores_stock=True, removes_last_usable_adaptive_profile=True
     )
-    assert "switch it to" in profiles.delete_confirmation_text(
-        ["A", "B"], switches_systemd_to_profile="p9"
-    )
 
 
 # --- systemd wrappers (subprocess + path monkeypatched) -----------------------

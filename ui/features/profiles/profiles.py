@@ -328,7 +328,6 @@ def delete_confirmation_text(
     *,
     restores_stock: bool = False,
     removes_last_usable_adaptive_profile: bool = False,
-    switches_systemd_to_profile: str = "",
 ) -> str:
     clean_names = [str(name).strip() for name in names if str(name).strip()]
     if not clean_names:
@@ -353,13 +352,6 @@ def delete_confirmation_text(
         message += (
             "\n\nThis profile is currently persisted on startup. Deleting it will "
             "restore stock now and at boot."
-        )
-    switch_profile = str(switches_systemd_to_profile or "").strip()
-    if switch_profile:
-        message += (
-            "\n\nAdaptive Auto-UV will have fewer than two usable tiers after this "
-            "delete. PenguinBurner will keep Systemd autostart and switch it to "
-            f"profile {switch_profile}."
         )
     return message
 
