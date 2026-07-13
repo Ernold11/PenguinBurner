@@ -111,7 +111,7 @@ Tag your saved profiles as **Efficiency**, **Balanced**, or **Performance**, and
 PenguinBurner switches between them while you play: efficient and silent when you
 have headroom, more clock when frames start to drop.
 
-![Profiles with the Assign Tier menu](docs/assets/profiles-management.png)
+![Stored undervolt profiles: one per tier with effective clocks, FPS/W, and power vs stock](docs/assets/profiles-management.png)
 
 [Read the guide](docs/features/adaptive-uv.md)
 
