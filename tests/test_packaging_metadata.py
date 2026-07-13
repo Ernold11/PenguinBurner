@@ -131,7 +131,16 @@ def test_flatpak_manifest_exposes_daemon_socket_host_files_and_spawn_portal() ->
     assert "--filesystem=/run/penguin-burnerd.sock" in manifest
     assert "--filesystem=host:ro" in manifest
     assert "--talk-name=org.freedesktop.Flatpak" in manifest
+    # A fresh flatpak install must ship all three moving parts, so the build
+    # gates them: the Rust daemon is compiled and installed to /app/libexec,
+    # and the native Vulkan layer + NVAPI shim fail the build loudly if absent
+    # rather than shipping the features hollow.
+    assert "cargo build --release --locked" in manifest
+    assert "install -Dm755 target/release/penguin-burnerd /app/libexec/penguin-burnerd" in (
+        manifest
+    )
     assert "PENGUIN_BURNER_REQUIRE_NATIVE_LAYER" in manifest
+    assert "PENGUIN_BURNER_REQUIRE_NVAPI_SHIM" in manifest
     assert "PENGUIN_BURNER_BUILD_NATIVE_LAYER: \"0\"" not in manifest
 
 
