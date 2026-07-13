@@ -187,10 +187,6 @@ def test_final_verified_profile_contains_fan_payload_and_memory_offset(
     assert payload["avg_core_clock_mhz"] == 2888.0
     assert payload["final_q2rtx_avg_core_clock_mhz"] == 2888.0
     assert payload["final_verification_metrics"] is True
-    assert payload["comparison_avg_core_clock_mhz"] == 2830.0
-    assert payload["comparison_avg_fps"] == 100.0
-    assert payload["comparison_avg_power_w"] == 200.0
-    assert payload["comparison_efficiency_fps_per_w"] == 0.5
     assert payload["flatten_target"]["tail_rise_bins"] == 2
     assert payload["fan_curve_payload"]["fan"]["curve"][-1] == [90.0, 100.0]
     assert (tmp_path / "uv-result" / "auto-uv-verified-candidates.json").exists()

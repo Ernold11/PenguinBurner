@@ -184,32 +184,22 @@ class ProfileList:
                         profile.get("avg_core_clock_mhz"),
                         _profile_base_metric(profile, "avg_core_clock_mhz"),
                         precision=2,
-                        comparison=_profile_comparison_metric(
-                            profile, "avg_core_clock_mhz"
-                        ),
                     ),
                     _format_profile_metric_with_delta(
                         profile.get("efficiency_fps_per_w"),
                         _profile_base_metric(profile, "efficiency_fps_per_w"),
                         precision=2,
-                        comparison=_profile_comparison_metric(
-                            profile, "efficiency_fps_per_w"
-                        ),
                     ),
                     _format_profile_metric_with_delta(
                         profile.get("avg_fps"),
                         _profile_base_metric(profile, "avg_fps"),
                         precision=2,
-                        comparison=_profile_comparison_metric(profile, "avg_fps"),
                     ),
                     _format_profile_metric_with_delta(
                         profile.get("avg_power_w"),
                         _profile_base_metric(profile, "avg_power_w"),
                         precision=2,
                         lower_is_better=True,
-                        comparison=_profile_comparison_metric(
-                            profile, "avg_power_w"
-                        ),
                     ),
                     _format_signed_memory_clock(
                         profile.get("memory_offset_mhz"),
@@ -249,9 +239,6 @@ class ProfileList:
                             profile.get("avg_core_clock_mhz"),
                             _profile_base_metric(profile, "avg_core_clock_mhz"),
                             label="Effective MHz",
-                            comparison=_profile_comparison_metric(
-                                profile, "avg_core_clock_mhz"
-                            ),
                         )
                     if column == self.FPSW_COLUMN:
                         _paint_profile_delta_item(
@@ -260,9 +247,6 @@ class ProfileList:
                             profile.get("efficiency_fps_per_w"),
                             _profile_base_metric(profile, "efficiency_fps_per_w"),
                             label="FPS/W",
-                            comparison=_profile_comparison_metric(
-                                profile, "efficiency_fps_per_w"
-                            ),
                         )
                     if column == self.FPS_COLUMN:
                         _paint_profile_delta_item(
@@ -271,9 +255,6 @@ class ProfileList:
                             profile.get("avg_fps"),
                             _profile_base_metric(profile, "avg_fps"),
                             label="FPS",
-                            comparison=_profile_comparison_metric(
-                                profile, "avg_fps"
-                            ),
                         )
                     if column == self.POWER_COLUMN:
                         _paint_profile_delta_item(
@@ -283,9 +264,6 @@ class ProfileList:
                             _profile_base_metric(profile, "avg_power_w"),
                             label="Power W",
                             lower_is_better=True,
-                            comparison=_profile_comparison_metric(
-                                profile, "avg_power_w"
-                            ),
                         )
                     if is_preferred:
                         item.setBackground(self.QtGui.QColor(theme.PROFILE_SELECTED_BG))
@@ -646,13 +624,12 @@ def _format_profile_metric_with_delta(
     *,
     precision: int,
     lower_is_better: bool = False,
-    comparison=None,
 ) -> str:
     value_text = _format_number(current, precision=precision)
     if not value_text:
         return ""
     delta = _metric_delta_percent(
-        current if comparison is None else comparison,
+        current,
         baseline,
     )
     if delta is None:
@@ -689,17 +666,14 @@ def _paint_profile_delta_item(
     *,
     label: str,
     lower_is_better: bool = False,
-    comparison=None,
 ) -> None:
-    uses_separate_comparison = comparison is not None
-    relative_value = current if comparison is None else comparison
     color = _profile_metric_delta_color(
-        relative_value,
+        current,
         baseline,
         lower_is_better=lower_is_better,
     )
     delta = _metric_delta_percent(
-        relative_value,
+        current,
         baseline,
     )
     if delta is None:
@@ -707,26 +681,15 @@ def _paint_profile_delta_item(
     if color:
         item.setForeground(QtGui.QColor(color))
     base_text = _format_number(baseline, precision=2)
-    scope = "short check " if uses_separate_comparison else ""
-    suffix = (
-        "; displayed value is long verification" if uses_separate_comparison else ""
-    )
     if lower_is_better:
         comparison_text = "lower" if delta < 0.0 else "higher"
         if label == "Power W" and delta < 0.0:
             comparison_text = "saved"
         item.setToolTip(
-            f"{label} {scope}{delta:+.2f}% {comparison_text} vs base {base_text}{suffix}"
+            f"{label} {delta:+.2f}% {comparison_text} vs base {base_text}"
         )
     else:
-        item.setToolTip(f"{label} {scope}{delta:+.2f}% vs base {base_text}{suffix}")
-
-
-def _profile_comparison_metric(profile: dict, metric: str):
-    value = profile.get(f"comparison_{metric}")
-    if _to_float(value) is not None:
-        return value
-    return None
+        item.setToolTip(f"{label} {delta:+.2f}% vs base {base_text}")
 
 
 def _profile_base_metric(profile: dict, metric: str):
