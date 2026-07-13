@@ -87,13 +87,19 @@ while the scan is progressing. Auto-UV needs the whole card to itself so its
 FPS-per-watt and stability measurements reflect the candidate curve, not a
 second workload competing for power, clocks, memory bandwidth, or VRAM.
 
-![Auto-UV candidate sweep](docs/assets/auto-uv-scan.png)
+![Auto-UV all-tiers sweep: green Efficiency, blue Balanced, red Performance](docs/assets/auto-uv-scan.png)
 
-Pick a bias (Efficiency, Balanced, or Performance) and it finds the matching
-sweet spot, then verifies it before saving.
+Pick a single bias (Efficiency, Balanced, or Performance), or run **All tiers**
+— one pass that discovers and verifies **all three profiles in a single scan**,
+sharing the sweep so you get a complete Efficiency/Balanced/Performance set (the
+green/blue/red curves above) ready for adaptive switching without three separate
+runs.
+
 You can also set a GPU board power limit for the scan; PenguinBurner reads the
 selected card's NVML power-limit range, applies the cap during Auto-UV, and
 saves it with the final profile so runtime/profile application restores it.
+On laptop GPUs with a fixed board power limit the control is grayed out and
+scans run at the stock limit automatically.
 
 ![Auto-UV setup: GPU, preset, and Auto-OC targets](docs/assets/auto-uv-setup.png)
 
@@ -109,6 +115,30 @@ have headroom, more clock when frames start to drop.
 
 [Read the guide](docs/features/adaptive-uv.md)
 
+## Steam Integration
+
+PenguinBurner discovers your installed Steam library and makes undervolting
+**per-game**. Pick a mode for each game — Adaptive, a fixed tier, or Stock — and
+PenguinBurner applies it automatically when the game launches and restores your
+standing profile when it exits, with no password prompt.
+
+![Steam tab: per-game mode, adaptive target FPS, and Play/Stop](docs/assets/steam-tab.png)
+
+Steam integration is what unlocks the fully customizable, **per-game** setup:
+
+- **Per-game profiles** — a different GPU behavior saved for each game.
+- **Per-game adaptive pre-frame-generation FPS target** — the adaptive engine's
+  promote/demote target, set individually per game (a 60 Hz story game and a
+  144 Hz shooter each get their own).
+- **In-game overlay** and **live launch/stop** from the tab.
+
+These per-game features **require the Steam integration** — they are delivered
+through the launch wrapper, so a game must be enabled on the Steam tab to get an
+adaptive per-game FPS target or the overlay. A one-click **All games** menu can
+enable or disable the wrapper across your whole library at once.
+
+[Read the Steam guide](docs/steam.md)
+
 ## PenguinBurner vs LACT (NVIDIA)
 
 [LACT](https://github.com/ilya-zlobintsev/LACT) is the broader, more established
@@ -120,7 +150,7 @@ switching. NVIDIA-only comparison, to the best of our knowledge:
 | Capability (NVIDIA) | PenguinBurner | LACT |
 | --- | :---: | :---: |
 | **Automatic** undervolt search (stability + perf verified) | ✅ Q2RTX + CUDA sweep | ❌ manual only |
-| Rust hardware daemon | 🚧 in progress | ✅ |
+| Rust hardware daemon | ✅ | ✅ |
 | **Adaptive** undervolt (switches tiers by frame rate) | ✅ | ❌ |
 | **In-game performance overlay** | ✅ | ❌ |
 | **PC latency meter** | ✅ | ❌ |
@@ -129,7 +159,7 @@ switching. NVIDIA-only comparison, to the best of our knowledge:
 | Fan curve control | ✅ auto silent curve + editor | ✅ custom curves |
 | Power limit | ✅ Auto-UV + saved profiles | ✅ |
 | Steam library import | ✅ auto-discovered library | ❌ |
-| Per-game tuning profiles | ✅ per-game mode + live launch | ❌ |
+| Per-game tuning profiles | ✅ per-game mode, adaptive FPS target, live launch | ❌ |
 | Runtime profile switching | ✅ by present-frame FPS pacing | ✅ by running process / gamemode |
 | MSI Afterburner import | ✅ | ❌ |
 | Historical telemetry charts | 🚧 planned (live overlay today) | ✅ charts + CSV export |
