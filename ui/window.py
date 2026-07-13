@@ -496,6 +496,14 @@ class MainWindow(ProfileActionsMixin):
             self.controls.set_status_text(
                 f"Scanning {tier_name.title()} profile{tier_position}."
             )
+        elif event == "tier_descent_reused":
+            tier_name = str(payload.get("tier", ""))
+            source_tier = str(payload.get("source_tier", ""))
+            self.controls.set_status_text(
+                f"{tier_name.title()} reuses the {source_tier.title()} "
+                f"downsweep ({payload.get('voltage_mv')}mV @ "
+                f"{payload.get('target_mhz')}MHz) — starting the Auto-OC climb."
+            )
         elif event == "tier_confirmed":
             tier_name = str(payload.get("tier", ""))
             self.controls.set_status_text(

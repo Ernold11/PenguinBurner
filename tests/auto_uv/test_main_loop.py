@@ -2617,13 +2617,28 @@ def test_adaptive_tier_progress_events_are_chronological(monkeypatch) -> None:
             2500 + index * 20,
             [],
         )
-        return candidate, index * 2, object(), []
+        # A measured endpoint clock above any floor from the 2400MHz baseline
+        # lets the performance tier reuse the balanced descent.
+        probe = SimpleNamespace(avg_core_clock_mhz=2500.0 + index * 20)
+        return candidate, index * 2, probe, []
 
     def fake_selection(**kwargs):
+        tier = kwargs["auto_uv_mode_override"]
+        if tier == "performance":
+            plan = [
+                {"voltage_mv": 850, "base_mhz": 2160, "target_mhz": 2595},
+                {"voltage_mv": 925, "base_mhz": 2475, "target_mhz": 2980},
+            ]
+            voltage_mv = 925
+            lock_clock_mhz = 2980
+        else:
+            plan = list(kwargs["stable_plan"])
+            voltage_mv = int(kwargs["stable_voltage_mv"])
+            lock_clock_mhz = int(kwargs["stable_lock_clock_mhz"])
         return SimpleNamespace(
-            plan=list(kwargs["stable_plan"]),
-            voltage_mv=int(kwargs["stable_voltage_mv"]),
-            lock_clock_mhz=int(kwargs["stable_lock_clock_mhz"]),
+            plan=plan,
+            voltage_mv=voltage_mv,
+            lock_clock_mhz=lock_clock_mhz,
             probe=kwargs["stable_probe"],
             verification_duration_s=int(kwargs["final_verification_duration_s"]),
             tail_rise_bins=int(kwargs["tail_rise_bins"]),
@@ -2672,15 +2687,21 @@ def test_adaptive_tier_progress_events_are_chronological(monkeypatch) -> None:
 
     assert result.final_voltage_mv == 900
     # Each tier also announces its active memory offset; only the tier
-    # progress events matter for the chronology here.
+    # progress events matter for the chronology here. Performance descends
+    # with the same tail and memory offset as balanced, so it reuses the
+    # balanced descent and announces that instead of sweeping again.
     assert [
         event for event, _payload in events if event.startswith("tier_")
     ] == [
         "tier_started",
+        "tier_confirmed",
         "tier_completed",
         "tier_started",
+        "tier_confirmed",
         "tier_completed",
         "tier_started",
+        "tier_descent_reused",
+        "tier_confirmed",
         "tier_completed",
     ]
     started = [payload for event, payload in events if event == "tier_started"]
@@ -2695,6 +2716,295 @@ def test_adaptive_tier_progress_events_are_chronological(monkeypatch) -> None:
         "performance",
         "",
     ]
+    confirmed = [payload for event, payload in events if event == "tier_confirmed"]
+    performance = confirmed[-1]
+    assert performance["tier"] == "performance"
+    assert performance["voltage_mv"] == 925
+    assert performance["target_mhz"] == 2980
+    assert performance["points"] == [
+        {
+            "voltage_mv": 850,
+            "clock_mhz": 2595,
+            "base_mhz": 2160,
+            "offset_mhz": 435,
+        },
+        {
+            "voltage_mv": 925,
+            "clock_mhz": 2980,
+            "base_mhz": 2475,
+            "offset_mhz": 505,
+        },
+    ]
+
+
+def test_performance_can_reuse_balanced_descent_gate() -> None:
+    from auto_uv.main_loop import (
+        BalancedDescentDonation,
+        adaptive_tier_descent_tail_rise_bins,
+        performance_can_reuse_balanced_descent,
+    )
+
+    performance_tail = adaptive_tier_descent_tail_rise_bins("performance")
+
+    def donation(
+        *,
+        descent_tail: int,
+        memory_offset_mhz: int,
+        probe: object | None = SimpleNamespace(avg_core_clock_mhz=2628.0),
+    ):
+        return BalancedDescentDonation(
+            candidate=VfCurveCandidate("balanced", 870, 2613, []),
+            tail_rise_bins=int(descent_tail),
+            probe=probe,
+            history=[],
+            descent_tail_rise_bins=int(descent_tail),
+            memory_offset_mhz=int(memory_offset_mhz),
+        )
+
+    logs: list[str] = []
+    gate_kwargs = dict(
+        performance_min_core_clock_pct=94.6,
+        measured_baseline_clock_mhz=2742.5,
+        log=logs.append,
+    )
+    # No balanced descent to donate (balanced never ran or crashed out).
+    assert not performance_can_reuse_balanced_descent(
+        None, performance_memory_offset_mhz=0, **gate_kwargs
+    )
+    # Matching tail/memory offset and an endpoint above performance's floor:
+    # the ladders are the same experiment.
+    assert performance_can_reuse_balanced_descent(
+        donation(descent_tail=performance_tail, memory_offset_mhz=6000),
+        performance_memory_offset_mhz=6000,
+        **gate_kwargs,
+    )
+    # A diverging per-tier memory offset changes the physics of the descent.
+    assert not performance_can_reuse_balanced_descent(
+        donation(descent_tail=performance_tail, memory_offset_mhz=6000),
+        performance_memory_offset_mhz=3000,
+        **gate_kwargs,
+    )
+    # A diverging tail shape holds different clocks through the ratchet.
+    assert not performance_can_reuse_balanced_descent(
+        donation(descent_tail=performance_tail + 2, memory_offset_mhz=0),
+        performance_memory_offset_mhz=0,
+        **gate_kwargs,
+    )
+    # Balanced descends under a looser clock-drop allowance, so an endpoint
+    # below performance's own floor must not be adopted (it would only fail
+    # performance's final verification later).
+    assert not performance_can_reuse_balanced_descent(
+        donation(
+            descent_tail=performance_tail,
+            memory_offset_mhz=0,
+            probe=SimpleNamespace(avg_core_clock_mhz=2500.0),
+        ),
+        performance_memory_offset_mhz=0,
+        **gate_kwargs,
+    )
+    # No probe evidence at all: be conservative and descend.
+    assert not performance_can_reuse_balanced_descent(
+        donation(
+            descent_tail=performance_tail, memory_offset_mhz=0, probe=None
+        ),
+        performance_memory_offset_mhz=0,
+        **gate_kwargs,
+    )
+    assert any("memory offset" in line for line in logs)
+    assert any("tail" in line for line in logs)
+    assert any("clock floor" in line for line in logs)
+
+
+def _adaptive_scan_kwargs(*, events, descent_calls, runtime_options=None):
+    """Shared fixture for run_adaptive_tier_scans reuse tests."""
+    import auto_uv.main_loop as main_loop
+
+    tier_index = {"efficiency": 0, "balanced": 1, "performance": 2}
+
+    def fake_descent(_base_curve, *, tier_mode, **_kwargs):
+        descent_calls.append(tier_mode)
+        index = tier_index[tier_mode]
+        candidate = VfCurveCandidate(
+            tier_mode,
+            900 + index * 10,
+            2500 + index * 20,
+            [],
+        )
+        # The donated endpoint carries its measured clock (well above any
+        # floor derived from the 2400MHz baseline) so the reuse gate's
+        # clock-floor check passes unless a test diverges the inputs.
+        probe = SimpleNamespace(avg_core_clock_mhz=2500.0 + index * 20)
+        return candidate, 4, probe, [object()]
+
+    def fake_finish(**kwargs):
+        return SimpleNamespace(
+            final_voltage_mv=int(kwargs["final_stable_voltage_mv"]),
+            lock_clock_mhz=int(kwargs["final_stable_lock_clock_mhz"]),
+        )
+
+    return main_loop, fake_descent, dict(
+        base_curve=[],
+        gpu=SimpleNamespace(
+            power_limit_w=360,
+            requested_power_limit_w=None,
+            translated_gpu_policy={"gpu_name": "Test GPU"},
+            policy_controller=SimpleNamespace(
+                get_memory_clock_offset_range_mhz=lambda: (0, 4000)
+            ),
+            gpu=SimpleNamespace(
+                apply_clock_offsets=lambda mem_clk_vf_offset_mhz: {
+                    "mem_clk_vf_offset_readback_mhz": int(mem_clk_vf_offset_mhz)
+                }
+            ),
+        ),
+        configure_tier_probe_runner=lambda _min_core_clock_pct: object(),
+        settings=SimpleNamespace(),
+        runtime_options=dict(runtime_options or {}),
+        base_loop_settings=SimpleNamespace(),
+        baseline_candidate=VfCurveCandidate("baseline", 1000, 2400, []),
+        initial_stable_outcome=None,
+        stable_probe=None,
+        discovery_summary=object(),
+        probe_history=[],
+        baseline_target=SimpleNamespace(measured_clock_mhz=2400),
+        effective_min_search_voltage_mv=800,
+        unsafe_entries=[],
+        probe_candidate=lambda _candidate: None,
+        finish_with_final_verification=fake_finish,
+        event_callback=lambda event, payload: events.append((event, payload)),
+        log=lambda _message: None,
+    )
+
+
+def test_adaptive_performance_reuses_balanced_descent(monkeypatch) -> None:
+    events: list = []
+    descent_calls: list[str] = []
+    selection_kwargs_by_tier: dict[str, dict] = {}
+    main_loop, fake_descent, kwargs = _adaptive_scan_kwargs(
+        events=events, descent_calls=descent_calls
+    )
+
+    def fake_selection(**selection_kwargs):
+        tier = selection_kwargs["auto_uv_mode_override"]
+        selection_kwargs_by_tier[tier] = selection_kwargs
+        return SimpleNamespace(
+            plan=list(selection_kwargs["stable_plan"]),
+            voltage_mv=int(selection_kwargs["stable_voltage_mv"]),
+            lock_clock_mhz=int(selection_kwargs["stable_lock_clock_mhz"]),
+            probe=selection_kwargs["stable_probe"],
+            verification_duration_s=int(
+                selection_kwargs["final_verification_duration_s"]
+            ),
+            tail_rise_bins=int(selection_kwargs["tail_rise_bins"]),
+            auto_oc_metadata={},
+        )
+
+    monkeypatch.setattr(main_loop, "run_adaptive_tier_descent", fake_descent)
+    monkeypatch.setattr(main_loop, "select_final_scan_candidate", fake_selection)
+    monkeypatch.setattr(
+        main_loop, "apply_adaptive_tier_power_limit", lambda *_a, **_k: None
+    )
+
+    main_loop.run_adaptive_tier_scans(**kwargs)
+
+    # Performance never descends: the balanced ladder is the same experiment.
+    assert descent_calls == ["efficiency", "balanced"]
+    reused = [payload for event, payload in events if event == "tier_descent_reused"]
+    assert len(reused) == 1
+    assert reused[0]["tier"] == "performance"
+    assert reused[0]["source_tier"] == "balanced"
+    assert reused[0]["voltage_mv"] == 910
+    assert reused[0]["target_mhz"] == 2520
+    # The Auto-OC pass starts from the balanced descent candidate, with the
+    # balanced history handed over as a COPY so performance's OC passes never
+    # append into balanced's list.
+    balanced = selection_kwargs_by_tier["balanced"]
+    performance = selection_kwargs_by_tier["performance"]
+    assert performance["stable_voltage_mv"] == balanced["stable_voltage_mv"] == 910
+    assert performance["stable_lock_clock_mhz"] == 2520
+    assert performance["run_performance_auto_oc"] is True
+    assert performance["stable_history"] == balanced["stable_history"]
+    assert performance["stable_history"] is not balanced["stable_history"]
+
+
+def test_adaptive_performance_descends_after_balanced_verification_failure(
+    monkeypatch,
+) -> None:
+    """A failed balanced soak condemns the donation; performance re-descends."""
+    events: list = []
+    descent_calls: list[str] = []
+    main_loop, fake_descent, kwargs = _adaptive_scan_kwargs(
+        events=events, descent_calls=descent_calls
+    )
+
+    def fake_selection(**selection_kwargs):
+        tier = selection_kwargs["auto_uv_mode_override"]
+        if tier == "balanced":
+            raise AutoUvError("final long verification failed: crashed")
+        return SimpleNamespace(
+            plan=list(selection_kwargs["stable_plan"]),
+            voltage_mv=int(selection_kwargs["stable_voltage_mv"]),
+            lock_clock_mhz=int(selection_kwargs["stable_lock_clock_mhz"]),
+            probe=selection_kwargs["stable_probe"],
+            verification_duration_s=int(
+                selection_kwargs["final_verification_duration_s"]
+            ),
+            tail_rise_bins=int(selection_kwargs["tail_rise_bins"]),
+            auto_oc_metadata={},
+        )
+
+    monkeypatch.setattr(main_loop, "run_adaptive_tier_descent", fake_descent)
+    monkeypatch.setattr(main_loop, "select_final_scan_candidate", fake_selection)
+    monkeypatch.setattr(
+        main_loop, "apply_adaptive_tier_power_limit", lambda *_a, **_k: None
+    )
+
+    main_loop.run_adaptive_tier_scans(**kwargs)
+
+    assert descent_calls == ["efficiency", "balanced", "performance"]
+    assert not [event for event, _ in events if event == "tier_descent_reused"]
+    skipped = [payload for event, payload in events if event == "tier_skipped"]
+    assert [payload["tier"] for payload in skipped] == ["balanced"]
+
+
+def test_adaptive_performance_descends_when_memory_offsets_differ(
+    monkeypatch,
+) -> None:
+    events: list = []
+    descent_calls: list[str] = []
+    main_loop, fake_descent, kwargs = _adaptive_scan_kwargs(
+        events=events,
+        descent_calls=descent_calls,
+        runtime_options={
+            "auto_uv_balanced_memory_offset_mhz": 3000,
+            "auto_uv_performance_memory_offset_mhz": 1500,
+        },
+    )
+
+    def fake_selection(**selection_kwargs):
+        return SimpleNamespace(
+            plan=list(selection_kwargs["stable_plan"]),
+            voltage_mv=int(selection_kwargs["stable_voltage_mv"]),
+            lock_clock_mhz=int(selection_kwargs["stable_lock_clock_mhz"]),
+            probe=selection_kwargs["stable_probe"],
+            verification_duration_s=int(
+                selection_kwargs["final_verification_duration_s"]
+            ),
+            tail_rise_bins=int(selection_kwargs["tail_rise_bins"]),
+            auto_oc_metadata={},
+        )
+
+    monkeypatch.setattr(main_loop, "run_adaptive_tier_descent", fake_descent)
+    monkeypatch.setattr(main_loop, "select_final_scan_candidate", fake_selection)
+    monkeypatch.setattr(
+        main_loop, "apply_adaptive_tier_power_limit", lambda *_a, **_k: None
+    )
+
+    main_loop.run_adaptive_tier_scans(**kwargs)
+
+    # A diverging performance memory offset falls back to the full descent.
+    assert descent_calls == ["efficiency", "balanced", "performance"]
+    assert not [event for event, _ in events if event == "tier_descent_reused"]
 
 
 def test_clamp_power_limit_keeps_request_inside_card_range() -> None:
@@ -3023,6 +3333,11 @@ def test_adaptive_tiers_flow_per_tier_limits_into_probe_and_selection(
         policy_controller=SimpleNamespace(
             get_memory_clock_offset_range_mhz=lambda: (0, 4000)
         ),
+        gpu=SimpleNamespace(
+            apply_clock_offsets=lambda mem_clk_vf_offset_mhz: {
+                "mem_clk_vf_offset_readback_mhz": int(mem_clk_vf_offset_mhz)
+            }
+        ),
     )
 
     main_loop.run_adaptive_tier_scans(
@@ -3039,6 +3354,11 @@ def test_adaptive_tiers_flow_per_tier_limits_into_probe_and_selection(
             "auto_uv_efficiency_power_limit_w": 250,
             "auto_uv_balanced_power_limit_w": 300,
             "auto_uv_performance_power_limit_w": 360,
+            # A diverging performance memory offset keeps performance on its
+            # own descent (no balanced-descent reuse) so every tier's floor
+            # is asserted through the full descent plumbing here; the reuse
+            # path has its own tests.
+            "auto_uv_performance_memory_offset_mhz": 1000,
         },
         base_loop_settings=SimpleNamespace(),
         baseline_candidate=VfCurveCandidate("baseline", 1000, 2400, []),

@@ -221,6 +221,77 @@ def test_select_scan_tuning_builds(qt) -> None:
     ) is None
 
 
+def test_select_scan_tuning_mirrors_balanced_and_performance_memory(
+    qt, monkeypatch
+) -> None:
+    """The full scan keeps the Balanced/Performance memory boxes identical.
+
+    Matching offsets are what let the scan reuse the Balanced downsweep for
+    Performance; Efficiency stays independent, and the single-profile scope
+    releases the mirror."""
+    qtcore, qtgui, qtwidgets, _pg = qt
+
+    checked: dict[str, bool] = {}
+
+    def exec_and_probe(self):
+        spins = [
+            spin
+            for spin in self.findChildren(qtwidgets.QSpinBox)
+            if spin.objectName() == "memoryOffsetSpin"
+        ]
+        assert len(spins) == 3  # one per profile page
+
+        def profile_of(spin):
+            # findChildren order follows the stack's raise order, not the
+            # profile order, so identify each memory box by the profile
+            # page it sits on (each page has a distinctive extra control).
+            page = spin
+            while not isinstance(
+                page.parentWidget(), qtwidgets.QStackedWidget
+            ):
+                page = page.parentWidget()
+            if page.findChild(qtwidgets.QSpinBox, "voltageFloorSpin"):
+                return "efficiency"
+            if page.findChild(qtwidgets.QSpinBox, "performanceVoltageSpin"):
+                return "performance"
+            return "balanced"
+
+        by_profile = {profile_of(spin): spin for spin in spins}
+        assert set(by_profile) == {"efficiency", "balanced", "performance"}
+        efficiency = by_profile["efficiency"]
+        balanced = by_profile["balanced"]
+        performance = by_profile["performance"]
+        for spin in spins:
+            spin.setValue(0)
+        # Full scan is the default scope: the two boxes mirror both ways.
+        balanced.setValue(1500)
+        checked["performance_follows_balanced"] = performance.value() == 1500
+        performance.setValue(750)
+        checked["balanced_follows_performance"] = balanced.value() == 750
+        checked["efficiency_untouched"] = efficiency.value() == 0
+        # The selected-profile scope releases the mirror.
+        scope_buttons = {
+            str(button.property("scopeId")): button
+            for button in self.findChildren(qtwidgets.QPushButton)
+            if button.objectName() == "autoUvScopeButton"
+        }
+        scope_buttons["selected-profile"].setChecked(True)
+        balanced.setValue(2000)
+        checked["independent_when_single"] = performance.value() == 750
+        return qtwidgets.QDialog.Rejected
+
+    monkeypatch.setattr(qtwidgets.QDialog, "exec", exec_and_probe)
+    assert scan_tuning_dialog.select_scan_tuning(
+        QtCore=qtcore, QtGui=qtgui, QtWidgets=qtwidgets, parent=None, gpu_index=0
+    ) is None
+    assert checked == {
+        "performance_follows_balanced": True,
+        "balanced_follows_performance": True,
+        "efficiency_untouched": True,
+        "independent_when_single": True,
+    }
+
+
 def test_energy_savings_formatting_uptime_and_units() -> None:
     assert about_dialog.format_total_runtime(9) == "9s"
     assert about_dialog.format_total_runtime(75) == "1m 15s"

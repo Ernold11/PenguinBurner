@@ -403,21 +403,28 @@ def select_scan_tuning(
         memory_layout.addWidget(memory_spin)
         memory_layout.addWidget(memory_clock_label)
         memory_layout.addStretch(1)
+        memory_tooltip = (
+            "Optional memory clock V/F offset applied while this profile "
+            "scans and saved with its final profile. You set the memory "
+            "clock rise in MHz; the equivalent NVML transfer-rate offset "
+            "(MT/s, like Afterburner/LACT), which is twice the clock, is "
+            "shown alongside. The range is read from the driver for this "
+            "GPU. Higher values can improve memory performance, but may "
+            "introduce instability; modify with care."
+        )
+        if preset_id in (AUTO_UV_PRESET_BALANCED, AUTO_UV_PRESET_PERFORMANCE):
+            memory_tooltip += (
+                " In a full scan, Balanced and Performance share this value "
+                "so Performance can reuse the Balanced downsweep instead of "
+                "re-running it."
+            )
         _add_form_row(
             QtCore=QtCore,
             QtWidgets=QtWidgets,
             form_layout=form,
             text="Memory Offset",
             widget=memory_widget,
-            tooltip=(
-                "Optional memory clock V/F offset applied while this profile "
-                "scans and saved with its final profile. You set the memory "
-                "clock rise in MHz; the equivalent NVML transfer-rate offset "
-                "(MT/s, like Afterburner/LACT), which is twice the clock, is "
-                "shown alongside. The range is read from the driver for this "
-                "GPU. Higher values can improve memory performance, but may "
-                "introduce instability; modify with care."
-            ),
+            tooltip=memory_tooltip,
         )
 
         power_slider = QtWidgets.QSlider(_horizontal_orientation(QtCore))
@@ -602,6 +609,28 @@ def select_scan_tuning(
         finally:
             defaults_syncing["active"] = False
 
+    # A full scan reuses the Balanced downsweep for Performance only when
+    # both tiers descend at the same memory clock, so in that scope the two
+    # memory boxes mirror each other. Efficiency stays independent, and the
+    # power limit and clock drop stay per-tier: descents run at stock power,
+    # and the engine gate validates the donated endpoint against
+    # Performance's clock floor itself, falling back to a full descent.
+    balanced_memory_spin = tier_controls[AUTO_UV_PRESET_BALANCED]["memory"]
+    performance_memory_spin = tier_controls[AUTO_UV_PRESET_PERFORMANCE]["memory"]
+
+    def _mirror_memory_offset(target_spin, value: int) -> None:
+        if not full_scan_button.isChecked():
+            return
+        if int(target_spin.value()) != int(value):
+            target_spin.setValue(int(value))
+
+    balanced_memory_spin.valueChanged.connect(
+        lambda value: _mirror_memory_offset(performance_memory_spin, value)
+    )
+    performance_memory_spin.valueChanged.connect(
+        lambda value: _mirror_memory_offset(balanced_memory_spin, value)
+    )
+
     def sync_preset_highlights() -> None:
         combined_scan = full_scan_button.isChecked()
         for position, preset_id in enumerate(_PRESET_ORDER, start=1):
@@ -626,6 +655,11 @@ def select_scan_tuning(
     def sync_scan_scope() -> None:
         sync_preset_highlights()
         sync_visible_preset_page()
+        # Entering the full scan reconciles the mirrored memory boxes;
+        # Balanced is the anchor when they disagree.
+        _mirror_memory_offset(
+            performance_memory_spin, int(balanced_memory_spin.value())
+        )
 
     gpu_combo.currentIndexChanged.connect(
         lambda _index: sync_gpu_dependent_defaults()

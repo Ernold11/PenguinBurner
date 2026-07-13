@@ -159,6 +159,29 @@ def test_window_shows_chronological_full_scan_profile_progress(main_window) -> N
     assert win.auto_uv_tier_progress.state("performance") == "pending"
 
 
+def test_window_plots_selected_performance_auto_oc_curve(main_window) -> None:
+    win = main_window
+    win._handle_scan_event(
+        {
+            "event": "tier_confirmed",
+            "tier": "performance",
+            "voltage_mv": 925,
+            "target_mhz": 2980,
+            "points": [
+                {"voltage_mv": 850, "clock_mhz": 2595},
+                {"voltage_mv": 925, "clock_mhz": 2980},
+            ],
+        }
+    )
+
+    assert win.controls.status_label.text() == (
+        "Performance tier confirmed: 925mV @ 2980MHz"
+    )
+    x_values, y_values = win.vf_plot.comparison_curves[-1].getData()
+    assert list(x_values) == [850.0, 925.0]
+    assert list(y_values) == [2595.0, 2980.0]
+
+
 def test_memory_offset_status_text_formats() -> None:
     from ui.window import _memory_offset_status_text
 
