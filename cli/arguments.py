@@ -282,7 +282,7 @@ def parse_arguments(argv):
         help=(
             "Runtime/daemon only: allow PenguinBurner to adapt between saved "
             "Auto-UV profile tiers from base present-frame p95 pacing. Requires "
-            "at least two available profile tiers. Target defaults to 60 FPS; "
+            "at least one saved verified profile tier. Target defaults to 60 FPS; "
             "override the service env PENGUIN_BURNER_ADAPTIVE_TARGET_FPS for "
             "30, 50, 60, 120, etc."
         ),

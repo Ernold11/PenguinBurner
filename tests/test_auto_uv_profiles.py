@@ -1541,7 +1541,7 @@ def test_adaptive_profile_delete_keeps_systemd_when_two_tiers_remain() -> None:
     }
 
 
-def test_adaptive_profile_delete_switches_systemd_when_one_profile_remains() -> None:
+def test_adaptive_profile_delete_keeps_adaptive_when_one_profile_remains() -> None:
     profiles = [
         {
             "profile_id": "eff",
@@ -1569,12 +1569,11 @@ def test_adaptive_profile_delete_switches_systemd_when_one_profile_remains() -> 
         ["bal", "perf"],
         autostart_info,
     ) == {
-        "action": "switch-profile",
-        "profile_id": "eff",
+        "action": "keep",
     }
 
 
-def test_adaptive_profile_delete_switches_when_remaining_profiles_share_one_tier() -> (
+def test_adaptive_profile_delete_keeps_adaptive_when_remaining_profiles_share_one_tier() -> (
     None
 ):
     profiles = [
@@ -1602,8 +1601,7 @@ def test_adaptive_profile_delete_switches_when_remaining_profiles_share_one_tier
         ["bal"],
         {"selector": "__systemd_default__", "adaptive_auto_uv": True},
     ) == {
-        "action": "switch-profile",
-        "profile_id": "perf-new",
+        "action": "keep",
     }
 
 

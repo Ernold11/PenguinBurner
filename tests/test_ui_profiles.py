@@ -61,11 +61,10 @@ def test_delete_autostart_action_adaptive_branches(monkeypatch) -> None:
         "action": "keep"
     }
 
-    # Exactly one remaining tier -> switch to that profile.
+    # Exactly one remaining tier -> keep; adaptive applies it without switching.
     monkeypatch.setattr(profiles, "available_adaptive_tiers", lambda resolved: ["balanced"])
     assert profiles.profile_delete_autostart_action([_P1, _P2], ["p1"], info) == {
-        "action": "switch-profile",
-        "profile_id": "p2",
+        "action": "keep"
     }
 
     # No remaining tiers -> restore stock as the standing boot state.

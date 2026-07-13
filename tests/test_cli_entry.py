@@ -43,7 +43,7 @@ def test_dispatch_cli_allows_adaptive_systemd_install_with_two_tiers(monkeypatch
     assert installed[0][1] == ["--adaptive-auto-uv"]
 
 
-def test_dispatch_cli_rejects_adaptive_systemd_install_with_one_tier(
+def test_dispatch_cli_allows_adaptive_systemd_install_with_one_tier(
     monkeypatch,
     capsys,
 ) -> None:
@@ -58,6 +58,38 @@ def test_dispatch_cli_rejects_adaptive_systemd_install_with_one_tier(
         "available_adaptive_tiers",
         lambda resolved: ["balanced"],
     )
+    installed = []
+    monkeypatch.setattr(
+        entry,
+        "daemon_status",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("not installed")),
+    )
+    monkeypatch.setattr(
+        entry,
+        "install_systemd_service",
+        lambda program_file, argv, **kwargs: installed.append(
+            (program_file, list(argv), kwargs)
+        ),
+    )
+
+    exit_code = entry.dispatch_cli(
+        program_file="/tmp/penguin_burner.py",
+        main_callback=lambda *_args, **_kwargs: None,
+        argv=["--install-systemd-service", "--adaptive-auto-uv"],
+    )
+
+    assert exit_code == 0
+    assert installed[0][1] == ["--adaptive-auto-uv"]
+    assert capsys.readouterr().err == ""
+
+
+def test_dispatch_cli_rejects_adaptive_systemd_install_with_no_tiers(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(entry, "read_auto_uv_profiles", lambda: [])
+    monkeypatch.setattr(entry, "resolve_profile_tier_profiles", lambda profiles: {})
+    monkeypatch.setattr(entry, "available_adaptive_tiers", lambda resolved: [])
     monkeypatch.setattr(
         entry,
         "install_systemd_service",
@@ -73,7 +105,9 @@ def test_dispatch_cli_rejects_adaptive_systemd_install_with_one_tier(
     )
 
     assert exit_code == 1
-    assert "requires at least two saved verified Auto-UV profiles" in capsys.readouterr().err
+    assert (
+        "requires at least one saved verified" in capsys.readouterr().err
+    )
 
 
 def test_dispatch_cli_daemonize_applies_through_running_daemon(monkeypatch) -> None:

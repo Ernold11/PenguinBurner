@@ -189,7 +189,7 @@ def maybe_prompt_post_scan_runtime_actions(
     mode_label = f"single profile {selector}"
 
     adaptive_tiers = _available_adaptive_tier_labels(deps)
-    if len(adaptive_tiers) >= 2:
+    if adaptive_tiers:
         deps.log(
             "Adaptive Auto-UV is also available from saved verified tiers: "
             + ", ".join(adaptive_tiers)

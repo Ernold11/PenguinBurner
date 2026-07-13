@@ -412,6 +412,65 @@ def test_auto_uv_foreground_command_offers_optional_adaptive_when_two_tiers_exis
     assert f"{PENGUIN_BURNER_WRAPPER} %command%" in output
 
 
+def test_auto_uv_foreground_command_offers_optional_adaptive_when_one_tier_exists() -> None:
+    args = SimpleNamespace(
+        auto_uv_voltage_scan=True,
+        json_events=False,
+    )
+    logs = []
+    prompts = []
+    applied = []
+    answers = iter([True, True, False])
+
+    def fake_runner(**_kwargs):
+        return SimpleNamespace(
+            success=True,
+            final_voltage_mv=900,
+            lock_clock_mhz=2800,
+            final_power_w=None,
+            final_temperature_c=None,
+            final_fan_speed_pct=None,
+            stop_reason="verified",
+            failed_candidate_voltage_mv=None,
+        )
+
+    def prompt_yes_no(prompt, *, default):
+        prompts.append((prompt, default))
+        return next(answers)
+
+    run_auto_uv_foreground_command(
+        args,
+        gpu_index=0,
+        config_path="/tmp/config.toml",
+        auto_uv_runtime_options={},
+        interactive=True,
+        program_file="/tmp/penguin_burner.py",
+        journal_hours=4,
+        prompt_yes_no=prompt_yes_no,
+        dependencies=AutoUvForegroundDependencies(
+            require_auto_uv_initial_check=lambda **_kwargs: None,
+            build_stability_config=lambda *_args, **_kwargs: object(),
+            run_voltage_frequency_undervolt_main_loop=fake_runner,
+            read_auto_uv_profiles=lambda: [{"profile_id": "bal"}],
+            resolve_profile_tier_profiles=lambda profiles: {"balanced": profiles[0]},
+            available_adaptive_tiers=lambda _resolved: ["balanced"],
+            profile_tier_label=lambda tier: str(tier).title(),
+            apply_runtime_intent=lambda intent, **kwargs: applied.append(
+                (intent, kwargs)
+            ),
+            log=logs.append,
+        ),
+    )
+
+    assert prompts[0] == (
+        "Use adaptive Auto-UV instead of the single discovered profile "
+        "for runtime/autostart?",
+        False,
+    )
+    assert applied[0][0]["adaptive_auto_uv"] is True
+    assert "Adaptive Auto-UV is also available" in "\n".join(logs)
+
+
 def test_auto_uv_foreground_command_applies_through_daemon_without_root() -> None:
     args = SimpleNamespace(
         auto_uv_voltage_scan=True,

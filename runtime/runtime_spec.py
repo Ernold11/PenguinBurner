@@ -140,8 +140,11 @@ def build_runtime_spec(
 
     selector = str(profile_selector or "").strip()
     selected_curve = (
+        # Static mode keeps the documented "empty selector = latest saved
+        # profile" contract; adaptive mode treats an empty selector as "no
+        # explicit tier" so the initial tier falls back to the fastest one.
         None
-        if selector == STOCK_PROFILE_SELECTOR
+        if selector == STOCK_PROFILE_SELECTOR or (adaptive_auto_uv and not selector)
         else load_auto_uv_final_curve(selector)
     )
     mode = "stock"
@@ -207,9 +210,7 @@ def _adaptive_spec(selected_curve: dict | None) -> dict[str, Any] | None:
     initial_tier = (
         selected_tier
         if selected_tier in tier_profiles
-        else PROFILE_TIER_BALANCED
-        if PROFILE_TIER_BALANCED in tier_profiles
-        else next(tier for tier in PROFILE_TIERS if tier in tier_profiles)
+        else next(tier for tier in reversed(PROFILE_TIERS) if tier in tier_profiles)
     )
     target_fps = adaptive_target_fps_from_env()
     policy = AdaptiveProfilePolicyConfig.for_target_fps(target_fps)

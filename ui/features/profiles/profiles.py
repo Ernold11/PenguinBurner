@@ -74,17 +74,10 @@ def profile_delete_autostart_action(
         ]
         resolved = resolve_profile_tier_profiles(remaining_profiles)
         remaining_tiers = available_adaptive_tiers(resolved)
-        if len(remaining_tiers) >= 2:
+        if remaining_tiers:
+            # Adaptive runtime is valid with a single remaining tier: it
+            # applies that tier's curve and simply has nothing to switch to.
             return {"action": "keep"}
-        if len(remaining_tiers) == 1:
-            profile = resolved.get(remaining_tiers[0])
-            if isinstance(profile, dict):
-                profile_id = str(profile.get("profile_id") or "").strip()
-                if profile_id:
-                    return {
-                        "action": "switch-profile",
-                        "profile_id": profile_id,
-                    }
         return {
             "action": "restore-stock",
             "reason": "last-usable-adaptive-profile",

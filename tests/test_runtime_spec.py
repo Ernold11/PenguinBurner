@@ -89,6 +89,17 @@ def test_build_static_runtime_spec_resolves_gpu_and_profile(monkeypatch) -> None
     assert spec["overlay"] == {"enabled": True, "update_interval_s": 2}
 
 
+def test_build_static_runtime_spec_resolves_latest_profile_for_empty_selector(
+    monkeypatch,
+) -> None:
+    _stub_runtime_sources(monkeypatch, curve=_curve("latest-profile"))
+
+    spec = runtime_spec.build_runtime_spec(profile_selector="")
+
+    assert spec["mode"] == "static"
+    assert spec["static_profile"]["profile_id"] == "latest-profile"
+
+
 def test_build_runtime_spec_uses_requested_daemon_socket(monkeypatch) -> None:
     _stub_runtime_sources(monkeypatch, curve=None)
     calls: list[tuple[str, object]] = []
@@ -188,6 +199,75 @@ def test_adaptive_runtime_keeps_explicit_old_profile_as_initial_tier(monkeypatch
     assert spec["adaptive"]["initial_tier"] == "balanced"
     assert spec["adaptive"]["profiles"]["balanced"]["profile_id"] == "balanced-old"
     assert spec["adaptive"]["profiles"]["efficiency"]["profile_id"] == "eff-new"
+
+
+def test_adaptive_runtime_accepts_one_profile_without_switching(monkeypatch) -> None:
+    only_curve = _curve("balanced-only")
+    _stub_runtime_sources(monkeypatch, curve=only_curve)
+    monkeypatch.setattr(runtime_spec, "read_auto_uv_profiles", lambda: [{}])
+    monkeypatch.setattr(
+        runtime_spec,
+        "resolve_profile_tier_profiles",
+        lambda _profiles: {"balanced": {"profile_id": "balanced-only"}},
+    )
+    monkeypatch.setattr(
+        runtime_spec,
+        "available_adaptive_tiers",
+        lambda _resolved: ["balanced"],
+    )
+
+    spec = runtime_spec.build_runtime_spec(
+        profile_selector="balanced-only",
+        adaptive_auto_uv=True,
+    )
+
+    assert spec["mode"] == "adaptive"
+    assert spec["adaptive"]["initial_tier"] == "balanced"
+    assert list(spec["adaptive"]["profiles"]) == ["balanced"]
+    assert spec["adaptive"]["profiles"]["balanced"]["profile_id"] == "balanced-only"
+
+
+@pytest.mark.parametrize(
+    ("tiers", "expected_initial"),
+    [
+        (["efficiency", "balanced", "performance"], "performance"),
+        (["efficiency", "balanced"], "balanced"),
+        (["efficiency"], "efficiency"),
+    ],
+)
+def test_adaptive_without_explicit_profile_starts_at_fastest_available_tier(
+    monkeypatch,
+    tiers,
+    expected_initial,
+) -> None:
+    curves = {tier: _curve(f"{tier}-profile", tier) for tier in tiers}
+    _stub_runtime_sources(monkeypatch)
+    monkeypatch.setattr(runtime_spec, "read_auto_uv_profiles", lambda: [{}])
+    monkeypatch.setattr(
+        runtime_spec,
+        "resolve_profile_tier_profiles",
+        lambda _profiles: {
+            tier: {"profile_id": f"{tier}-profile"} for tier in tiers
+        },
+    )
+    monkeypatch.setattr(
+        runtime_spec,
+        "available_adaptive_tiers",
+        lambda _resolved: tiers,
+    )
+    monkeypatch.setattr(
+        runtime_spec,
+        "load_auto_uv_final_curve",
+        lambda selector="": curves.get(selector.removesuffix("-profile")),
+    )
+
+    spec = runtime_spec.build_runtime_spec(
+        profile_selector="",
+        adaptive_auto_uv=True,
+    )
+
+    assert spec["mode"] == "adaptive"
+    assert spec["adaptive"]["initial_tier"] == expected_initial
 
 
 def test_saved_fan_curve_is_resolved_before_daemon_apply(monkeypatch, tmp_path) -> None:

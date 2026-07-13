@@ -26,7 +26,6 @@ from runtime.runtime_spec import runtime_intent_from_argv
 from profiles.uv.profile_store import read_auto_uv_profiles, resolve_auto_uv_profile
 from profiles.uv.profile_tiers import (
     available_adaptive_tiers,
-    profile_tier_label,
     resolve_profile_tier_profiles,
 )
 
@@ -131,17 +130,12 @@ def _require_adaptive_profiles_available(
         return
     profiles = read_auto_uv_profiles()
     tiers = available_adaptive_tiers(resolve_profile_tier_profiles(profiles))
-    if len(tiers) >= 2:
+    if tiers:
         return
-    tier_text = (
-        ", ".join(profile_tier_label(tier) for tier in tiers)
-        if tiers
-        else "none"
-    )
     raise RuntimeError(
-        "Adaptive Auto-UV systemd mode requires at least two saved verified "
-        "Auto-UV profiles in available adaptive tiers; currently available: "
-        f"{tier_text}. Run Auto-UV for another mode or assign profiles with "
+        "Adaptive Auto-UV systemd mode requires at least one saved verified "
+        "Auto-UV profile in an available adaptive tier; currently available: "
+        "none. Run Auto-UV or assign a profile with "
         "--assign-auto-uv-tier PROFILE TIER."
     )
 

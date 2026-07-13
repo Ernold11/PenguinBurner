@@ -512,8 +512,13 @@ impl AdaptiveAutoUvRuntimeController {
                 format_target_fps(adaptive_target_fps),
                 policy_config.target_ms
             ));
+        } else if available_tiers.len() == 1 {
+            log(&format!(
+                "Adaptive Auto-UV: single profile tier available ({}); applying it without tier switching.",
+                profile_tier_label(&available_tiers[0])
+            ));
         } else {
-            log("Adaptive Auto-UV disabled: fewer than two profile tiers are available.");
+            log("Adaptive Auto-UV disabled: no profile tiers are available.");
         }
 
         AdaptiveAutoUvRuntimeController {
