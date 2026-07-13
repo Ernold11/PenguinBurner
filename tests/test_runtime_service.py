@@ -995,3 +995,105 @@ def test_flatpak_site_packages_falls_back_to_local_app_relative_path(
         runtime_service.flatpak_host_site_packages_path()
         == host_app_path / "lib/python3.13/site-packages"
     )
+
+
+def test_read_legacy_last_runtime_argv_recovers_profile_not_stock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+
+    state_file = tmp_path / "last-runtime.json"
+    monkeypatch.setattr(runtime_service, "LAST_RUNTIME_STATE_PATH", state_file)
+
+    # A 0.6.x apply-on-startup profile is recovered verbatim.
+    state_file.write_text(
+        json.dumps(
+            {
+                "argv": ["--auto-uv-profile", "profile-x", "--silent-fan-curve"],
+                "program_file": "/x/penguin_burner.py",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert runtime_service.read_legacy_last_runtime_argv() == [
+        "--auto-uv-profile",
+        "profile-x",
+        "--silent-fan-curve",
+    ]
+
+    # A stock/reset action is NOT worth persisting as a boot profile.
+    from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
+
+    state_file.write_text(
+        json.dumps({"argv": ["--auto-uv-profile", STOCK_PROFILE_SELECTOR]}),
+        encoding="utf-8",
+    )
+    assert runtime_service.read_legacy_last_runtime_argv() == []
+
+    # An argv with no profile selector, junk, or a missing file -> nothing.
+    state_file.write_text(json.dumps({"argv": ["--gpu-index", "0"]}), encoding="utf-8")
+    assert runtime_service.read_legacy_last_runtime_argv() == []
+    state_file.unlink()
+    assert runtime_service.read_legacy_last_runtime_argv() == []
+
+
+def test_migrate_recovers_066_boot_profile_without_legacy_capitalized_unit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+
+    program = tmp_path / "penguin_burner.py"
+    program.write_text("# program\n", encoding="utf-8")
+    daemon_unit = tmp_path / "penguin-burnerd.service"
+    missing_legacy = tmp_path / "PenguinBurner.service"  # pre-0.6, absent
+    state_file = tmp_path / "last-runtime.json"
+    state_file.write_text(
+        json.dumps(
+            {"argv": ["--auto-uv-profile", "profile-066", "--adaptive-auto-uv"]}
+        ),
+        encoding="utf-8",
+    )
+    actions = []
+
+    def fake_run(args, **_kwargs):
+        actions.append(("run", list(args)))
+        return SimpleNamespace(returncode=1, stdout="", stderr="")  # unit absent
+
+    monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
+    monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
+    monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
+    monkeypatch.setattr(runtime_service, "LAST_RUNTIME_STATE_PATH", state_file)
+    monkeypatch.setattr(
+        runtime_service, "clear_last_runtime_state", lambda: None
+    )
+    monkeypatch.setattr(
+        runtime_service,
+        "_apply_persistent_runtime",
+        lambda argv, **_kwargs: actions.append(("persist-runtime", list(argv)))
+        or {"pid": 1},
+    )
+    monkeypatch.setattr(
+        runtime_service, "legacy_systemd_service_unit_path", lambda: missing_legacy
+    )
+    monkeypatch.setattr(
+        runtime_service, "daemon_systemd_service_unit_path", lambda: daemon_unit
+    )
+    monkeypatch.setattr(runtime_service, "daemon_status", lambda **_kwargs: {"state": "idle"})
+    monkeypatch.setattr(runtime_service.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        runtime_service, "run_checked_subprocess",
+        lambda args: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    logs = []
+    runtime_service.migrate_to_daemon_service(
+        program, socket_path="/tmp/s.sock", log=logs.append
+    )
+
+    # The 0.6.x boot profile survives the upgrade instead of falling to stock.
+    assert (
+        "persist-runtime",
+        ["--auto-uv-profile", "profile-066", "--adaptive-auto-uv"],
+    ) in actions
+    assert any("Recovered apply-on-startup" in line for line in logs)

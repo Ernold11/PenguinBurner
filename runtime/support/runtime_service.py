@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import pwd
 import configparser
+import json
 import shlex
 import shutil
 import stat
@@ -18,6 +19,7 @@ from runtime.daemon_client import daemon_status
 from runtime.daemon_client import set_boot_runtime_spec
 from runtime.daemon_client import stop_runtime_profile
 from runtime.runtime_spec import build_runtime_spec_from_intent, runtime_intent_from_argv
+from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 from common.subprocess_locale import stable_subprocess_env
 
 
@@ -525,6 +527,36 @@ def _daemon_program_file_for_unit(program_file) -> Path:
     return Path(program_file).resolve()
 
 
+def read_legacy_last_runtime_argv() -> list[str]:
+    """Recover a 0.6.x apply-on-startup intent before migration wipes it.
+
+    The 0.6.x Python daemon persisted the last runtime action as an argv list
+    in ``/var/lib/penguin-burner/last-runtime.json`` (``{"argv": [...]}``); the
+    0.7 Rust daemon reads a typed spec from a different file and never consults
+    it, so a straight migration silently drops the user's boot profile. This
+    reads that argv so the migration can rebuild it as the boot spec. Only an
+    argv that actually applies a profile is returned — a stock/reset argv (or
+    a bare autostart with no ``--auto-uv-profile``) is not worth persisting.
+    """
+    try:
+        data = json.loads(
+            LAST_RUNTIME_STATE_PATH.read_text(encoding="utf-8", errors="replace")
+        )
+    except (OSError, ValueError):
+        return []
+    argv = data.get("argv") if isinstance(data, dict) else None
+    if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
+        return []
+    argv = [str(item) for item in argv]
+    try:
+        selector = argv[argv.index("--auto-uv-profile") + 1]
+    except (ValueError, IndexError):
+        return []
+    if not selector or selector == STOCK_PROFILE_SELECTOR:
+        return []
+    return argv
+
+
 def clear_last_runtime_state() -> None:
     """Clear boot state during the privileged service lifecycle."""
     for path in (LAST_RUNTIME_STATE_PATH, BOOT_RUNTIME_STATE_PATH):
@@ -669,6 +701,18 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
             "existing enabled PenguinBurner.service could not be parsed; "
             "leaving the legacy service unchanged"
         )
+    # No pre-0.6 capitalized unit to inherit from? A 0.6.x install used this
+    # same unit name and persisted its apply-on-startup intent as argv in
+    # last-runtime.json — recover it (before clear_last_runtime_state wipes
+    # the file) so an upgrading user keeps their boot profile.
+    if not autostart_argv:
+        recovered = read_legacy_last_runtime_argv()
+        if recovered:
+            autostart_argv = recovered
+            log(
+                "Recovered apply-on-startup profile from the previous "
+                f"PenguinBurner version: {shlex.join(recovered)}"
+            )
     install_daemon_binary(program_file)
     _stop_active_runtime_before_daemon_restart()
     clear_last_runtime_state()
