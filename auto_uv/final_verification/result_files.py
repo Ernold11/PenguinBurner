@@ -21,6 +21,12 @@ from ..persistence.verified_candidate_result_file import (
 
 
 PROFILE_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+PROFILE_COMPARISON_METRIC_KEYS = (
+    "avg_core_clock_mhz",
+    "avg_fps",
+    "avg_power_w",
+    "efficiency_fps_per_w",
+)
 
 
 def write_last_stable_result_snapshot(
@@ -78,6 +84,7 @@ def write_final_stable_result(
             ),
         }
     )
+    _add_short_comparison_metrics(payload, probe)
     _add_long_verification_clock(payload, final_verification_probe)
     if power_limit_w is not None:
         payload["power_limit_w"] = int(power_limit_w)
@@ -124,6 +131,7 @@ def write_final_verified_profile(
         final_verified=True,
         tail_rise_bins=int(tail_rise_bins),
     )
+    _add_short_comparison_metrics(payload, probe)
     _add_long_verification_clock(payload, final_verification_probe)
     if isinstance(fan_curve_payload, dict):
         payload["fan_curve_payload"] = dict(fan_curve_payload)
@@ -151,6 +159,18 @@ def _add_long_verification_clock(
     if clock_mhz is not None:
         payload["final_q2rtx_avg_core_clock_mhz"] = float(clock_mhz)
         payload["final_verification_metrics"] = True
+
+
+def _add_short_comparison_metrics(
+    payload: dict,
+    probe: AutoUvProbeSummary | None,
+) -> None:
+    if probe is None:
+        return
+    for key in PROFILE_COMPARISON_METRIC_KEYS:
+        value = getattr(probe, key, None)
+        if value is not None:
+            payload[f"comparison_{key}"] = float(value)
 
 
 def archive_final_verified_profile(final_curve_payload: dict) -> Path:

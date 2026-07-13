@@ -227,6 +227,13 @@ _BASE_VERIFICATION_METRIC_KEYS = {
     "max_fan_speed_pct": "base_max_fan_speed_pct",
 }
 
+_PROFILE_COMPARISON_METRIC_KEYS = (
+    "avg_core_clock_mhz",
+    "avg_fps",
+    "avg_power_w",
+    "efficiency_fps_per_w",
+)
+
 
 def _normalize_profile_payload(
     payload: dict,
@@ -349,6 +356,10 @@ def apply_latest_final_verification_metrics(profiles: list[dict]) -> None:
     if not matches:
         return
     newest_match = max(matches, key=_profile_sort_time)
+    for key in _PROFILE_COMPARISON_METRIC_KEYS:
+        value = newest_match.get(key)
+        if value not in (None, ""):
+            newest_match[f"comparison_{key}"] = value
     for key in _VERIFICATION_METRIC_KEYS:
         value = latest.get(key)
         if value not in (None, ""):
@@ -382,9 +393,6 @@ def profile_summary(
     tier_assignments: dict[str, str] | None = None,
     disabled_profile_tier_ids: set[str] | None = None,
 ) -> dict:
-    long_metrics = bool(profile.get("final_verification_metrics")) or profile.get(
-        "final_q2rtx_avg_core_clock_mhz"
-    ) not in (None, "")
     summary = {
         "profile_id": str(profile.get("profile_id", "")),
         "candidate_id": str(profile.get("candidate_id", "")),
@@ -401,18 +409,20 @@ def profile_summary(
         "avg_fps": profile.get("avg_fps"),
         "avg_power_w": profile.get("avg_power_w"),
         "efficiency_fps_per_w": profile.get("efficiency_fps_per_w"),
+        "comparison_avg_core_clock_mhz": profile.get(
+            "comparison_avg_core_clock_mhz"
+        ),
+        "comparison_avg_fps": profile.get("comparison_avg_fps"),
+        "comparison_avg_power_w": profile.get("comparison_avg_power_w"),
+        "comparison_efficiency_fps_per_w": profile.get(
+            "comparison_efficiency_fps_per_w"
+        ),
         "base_candidate_voltage_mv": profile.get("base_candidate_voltage_mv"),
         "base_lock_clock_mhz": profile.get("base_lock_clock_mhz"),
-        "base_avg_core_clock_mhz": (
-            None if long_metrics else profile.get("base_avg_core_clock_mhz")
-        ),
-        "base_avg_fps": None if long_metrics else profile.get("base_avg_fps"),
-        "base_avg_power_w": (
-            None if long_metrics else profile.get("base_avg_power_w")
-        ),
-        "base_efficiency_fps_per_w": (
-            None if long_metrics else profile.get("base_efficiency_fps_per_w")
-        ),
+        "base_avg_core_clock_mhz": profile.get("base_avg_core_clock_mhz"),
+        "base_avg_fps": profile.get("base_avg_fps"),
+        "base_avg_power_w": profile.get("base_avg_power_w"),
+        "base_efficiency_fps_per_w": profile.get("base_efficiency_fps_per_w"),
         "final_verified": bool(profile.get("final_verified", False)),
         "requires_verification": bool(profile.get("requires_verification", False)),
         "verification_status": profile.get("verification_status"),

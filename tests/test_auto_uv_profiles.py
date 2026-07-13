@@ -203,6 +203,15 @@ def test_profile_metric_delta_text_and_color_vs_base() -> None:
         "0.75 (+50.00%)"
     )
     assert _profile_metric_delta_color(0.75, 0.50) == "#55d27a"
+    assert (
+        _format_profile_metric_with_delta(
+            67.161,
+            64.228,
+            precision=2,
+            comparison=63.456,
+        )
+        == "67.16 (-1.20%)"
+    )
 
     assert (
         _format_profile_metric_with_delta(
@@ -304,10 +313,14 @@ def test_existing_profile_uses_matching_latest_long_verification_clock(
     assert loaded[0]["avg_fps"] == 67.161
     assert loaded[0]["avg_power_w"] == 317.098
     assert loaded[0]["efficiency_fps_per_w"] == 0.211799
-    assert loaded[0]["base_avg_core_clock_mhz"] is None
-    assert loaded[0]["base_avg_fps"] is None
-    assert loaded[0]["base_avg_power_w"] is None
-    assert loaded[0]["base_efficiency_fps_per_w"] is None
+    assert loaded[0]["comparison_avg_core_clock_mhz"] == 2830.0
+    assert loaded[0]["comparison_avg_fps"] == 63.456
+    assert loaded[0]["comparison_avg_power_w"] == 299.53
+    assert loaded[0]["comparison_efficiency_fps_per_w"] == 0.21185
+    assert loaded[0]["base_avg_core_clock_mhz"] == 2743.6
+    assert loaded[0]["base_avg_fps"] == 64.228
+    assert loaded[0]["base_avg_power_w"] == 300.0
+    assert loaded[0]["base_efficiency_fps_per_w"] == 0.21409
     assert json.loads(profile_path.read_text(encoding="utf-8"))[
         "avg_core_clock_mhz"
     ] == 2830.0
@@ -402,6 +415,47 @@ def test_profile_table_keeps_regular_font_for_highlight_and_deltas() -> None:
         item = profile_list.table.item(0, column)
         assert item is not None
         assert not item.font().bold()
+
+
+def test_profile_table_keeps_relative_text_and_colors_with_long_values() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profile_list.set_profiles(
+        [
+            {
+                "avg_core_clock_mhz": 2888.06,
+                "comparison_avg_core_clock_mhz": 2829.54,
+                "base_avg_core_clock_mhz": 2743.59,
+                "efficiency_fps_per_w": 0.211799,
+                "comparison_efficiency_fps_per_w": 0.211853,
+                "base_efficiency_fps_per_w": 0.183359,
+                "avg_fps": 67.161,
+                "comparison_avg_fps": 63.456,
+                "base_avg_fps": 64.228,
+                "avg_power_w": 317.098,
+                "comparison_avg_power_w": 299.528,
+                "base_avg_power_w": 350.286,
+            }
+        ]
+    )
+
+    expected = {
+        profile_list.EFFECTIVE_MHZ_COLUMN: ("2888.06 (+3.13%)", "#55d27a"),
+        profile_list.FPSW_COLUMN: ("0.21 (+15.54%)", "#55d27a"),
+        profile_list.FPS_COLUMN: ("67.16 (-1.20%)", "#ff6b6b"),
+        profile_list.POWER_COLUMN: ("317.10 (-14.49%)", "#55d27a"),
+    }
+    for column, (text, color) in expected.items():
+        item = profile_list.table.item(0, column)
+        assert item.text() == text
+        assert item.foreground().color().name() == color
+        assert "short check" in item.toolTip()
+        assert "displayed value is long verification" in item.toolTip()
 
 
 def test_profile_table_defaults_to_newest_date_first() -> None:
