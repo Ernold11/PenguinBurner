@@ -224,7 +224,7 @@ class SteamPanel:
 
         self.library_pane = QtWidgets.QFrame()
         self.library_pane.setObjectName("steamLibraryPane")
-        self.library_pane.setMinimumWidth(230)
+        self.library_pane.setMinimumWidth(300)
         library_layout = QtWidgets.QVBoxLayout(self.library_pane)
         library_layout.setContentsMargins(10, 10, 10, 10)
         library_layout.setSpacing(8)
@@ -238,6 +238,10 @@ class SteamPanel:
         sort_row.addWidget(QtWidgets.QLabel("Sort"))
         self.sort_combo = QtWidgets.QComboBox()
         self.sort_combo.setObjectName("steamGameSort")
+        # Size to the longest label ("Recently played") so it never clips.
+        self.sort_combo.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents
+        )
         self.sort_combo.addItem("Recently played", SORT_RECENT)
         self.sort_combo.addItem("Alphabetical", SORT_ALPHABETICAL)
         self.sort_combo.setToolTip(
@@ -300,16 +304,27 @@ class SteamPanel:
         details_layout.setContentsMargins(22, 18, 22, 18)
         details_layout.setSpacing(12)
 
+        # Header: a wide title column on the left with the live status right
+        # beneath it, and the Play/Stop button pinned to the top-right so it
+        # holds one fixed spot no matter how long (or wrapped) the title is.
         title_row = QtWidgets.QHBoxLayout()
-        title_row.setSpacing(10)
+        title_row.setSpacing(14)
+        title_column = QtWidgets.QVBoxLayout()
+        title_column.setContentsMargins(0, 0, 0, 0)
+        title_column.setSpacing(6)
         self.game_title = QtWidgets.QLabel("Select a game")
         self.game_title.setObjectName("steamGameTitle")
         self.game_title.setWordWrap(True)
-        self.game_title.setMaximumWidth(560)
-        title_row.addWidget(self.game_title)
+        title_column.addWidget(self.game_title)
+        self.game_status = QtWidgets.QLabel("")
+        self.game_status.setObjectName("steamGameStatus")
+        self.game_status.setVisible(False)
+        title_column.addWidget(self.game_status)
+        title_row.addLayout(title_column, 1)
         self.play_button = QtWidgets.QPushButton("Play")
         self.play_button.setObjectName("steamPlayButton")
         self.play_button.setProperty("playState", "idle")
+        self.play_button.setMinimumWidth(96)
         self.play_button.setToolTip(
             _wrapped_tooltip(
                 "Launch the selected game through Steam. The command line, "
@@ -318,14 +333,8 @@ class SteamPanel:
                 "— Steam's own clean shutdown."
             )
         )
-        title_row.addWidget(self.play_button)
-        title_row.addStretch(1)
+        title_row.addWidget(self.play_button, 0, QtCore.Qt.AlignTop)
         details_layout.addLayout(title_row)
-
-        self.game_status = QtWidgets.QLabel("")
-        self.game_status.setObjectName("steamGameStatus")
-        self.game_status.setVisible(False)
-        details_layout.addWidget(self.game_status)
 
         self.game_metadata = QtWidgets.QLabel("")
         self.game_metadata.setObjectName("steamGameMetadata")
@@ -418,7 +427,7 @@ class SteamPanel:
         self.splitter.setCollapsible(1, False)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([300, 760])
+        self.splitter.setSizes([370, 760])
         layout.addWidget(self.splitter, 1)
 
         self.status_label = QtWidgets.QLabel("")
@@ -754,16 +763,27 @@ class SteamPanel:
         has_selection = bool(
             self._selected_app_id and self._selected_app_id in self._rows
         )
+        blocking = self._other_active_game_name()
         if state == "launching":
             text, enabled, play_state = "Starting…", False, "starting"
         elif state == "running":
             text, enabled, play_state = "Stop", True, "running"
         elif state == "stopping":
             text, enabled, play_state = "Stopping…", False, "stopping"
+        elif blocking:
+            # Only one game may run at a time: another game is already
+            # launching/running/stopping, so Play is blocked here until it
+            # exits.
+            text, enabled, play_state = "Play", False, "idle"
         else:
             # Playing does not mutate Steam configuration, so it remains
             # available even before live launch-option apply is initialized.
             text, enabled, play_state = "Play", has_selection, "idle"
+        self.play_button.setToolTip(
+            _wrapped_tooltip(f"{blocking} is still running. Stop it before launching another game.")
+            if blocking and state not in _ACTIVE_GAME_STATES
+            else ""
+        )
         self.play_button.setText(text)
         self.play_button.setEnabled(enabled)
         if self.play_button.property("playState") != play_state:
@@ -776,6 +796,19 @@ class SteamPanel:
         track = self._tracked.get(self._selected_app_id)
         return track.state if track is not None else ""
 
+    def _other_active_game_name(self) -> str:
+        """Name of another game that is launching/running/stopping, if any.
+
+        Only one game is allowed active at a time, so an active game other
+        than the selection blocks Play. Empty when nothing else is active."""
+        for app_id, track in self._tracked.items():
+            if app_id == self._selected_app_id:
+                continue
+            if track.state in _ACTIVE_GAME_STATES:
+                row = self._rows.get(app_id)
+                return row.game.name if row is not None else app_id
+        return ""
+
     def _play_stop_clicked(self, _checked: bool = False) -> None:
         # Dispatch strictly on the tracked state so the click always performs
         # the action the button displayed; transitional states are disabled
@@ -783,7 +816,7 @@ class SteamPanel:
         state = self._selected_game_state()
         if state == "running":
             self._stop_game()
-        elif state not in _ACTIVE_GAME_STATES:
+        elif state not in _ACTIVE_GAME_STATES and not self._other_active_game_name():
             self._play_game()
 
     # -- header / status ----------------------------------------------------

@@ -596,6 +596,60 @@ def test_play_stop_lifecycle_status_under_title(
     panel._game_state_timer.stop()
 
 
+def test_one_active_game_blocks_playing_another(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    QtCore, QtGui, QtWidgetsModule, _pg = import_qt()
+    rows = (
+        _row(tmp_path, "10", "Alpha", 100),
+        _row(tmp_path, "30", "Zeta", 300),
+    )
+    manager = _FakeManager(rows)
+    panel = SteamPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgetsModule,
+        manager=cast(SteamIntegrationManager, manager),
+    )
+    qtbot.addWidget(panel.widget)
+    qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
+    launched = []
+    monkeypatch.setattr(
+        "ui.components.steam_panel.launch_steam_game",
+        lambda app_id: launched.append(app_id) or True,
+    )
+
+    # Launch Zeta (the recently-played selection), confirm it as running.
+    assert panel.game_title.text() == "Zeta"
+    panel.play_button.click()
+    manager.running.add("30")
+    panel._apply_game_states(manager.running_game_ids())
+    assert panel._tracked["30"].state == "running"
+    assert panel.play_button.text() == "Stop"
+
+    # Select Alpha while Zeta runs: Play is blocked, not launchable.
+    panel.game_list.setCurrentItem(panel.game_list.item(1))
+    assert panel.game_title.text() == "Alpha"
+    assert panel.play_button.text() == "Play"
+    assert not panel.play_button.isEnabled()
+    assert "Zeta" in panel.play_button.toolTip()
+    # A programmatic click is a hard no-op too.
+    panel._play_stop_clicked()
+    assert launched == ["30"]
+
+    # Zeta exits -> Alpha becomes launchable again.
+    manager.running.discard("30")
+    panel._apply_game_states(manager.running_game_ids())
+    panel._apply_game_states(manager.running_game_ids())
+    panel.game_list.setCurrentItem(panel.game_list.item(1))
+    assert panel.play_button.isEnabled()
+
+    panel._sync_timer.stop()
+    panel._game_state_timer.stop()
+
+
 def test_failed_stop_keeps_running_status(qtbot, tmp_path: Path, monkeypatch) -> None:
     QtCore, QtGui, QtWidgetsModule, _pg = import_qt()
     manager = _FakeManager((_row(tmp_path, "30", "Zeta", 300),))
