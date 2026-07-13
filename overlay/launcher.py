@@ -43,6 +43,7 @@ DXVK_NVAPI_MARKER_LOG_ENV = "DXVK_NVAPI_LATENCY_MARKER_LOG"
 DXVK_NVAPI_TRACE_ENV = "DXVK_NVAPI_LOG_LEVEL"
 VK_LAYER_PATH_ENV = "VK_ADD_IMPLICIT_LAYER_PATH"
 VK_LAYER_ENABLE_ENV = "VK_LOADER_LAYERS_ENABLE"
+SESSION_HELPER_PYTHONPATH_ENV = "PENGUIN_BURNER_SESSION_HELPER_PYTHONPATH"
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSEY = {"0", "false", "no", "off"}
@@ -79,6 +80,9 @@ _DXVK_NVAPI_LAYER_NAME = "VK_LAYER_DXVK_NVAPI_reflex"
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     env = dict(os.environ)
+    session_helper_pythonpath = str(
+        env.pop(SESSION_HELPER_PYTHONPATH_ENV, "") or ""
+    ).strip()
     args = _consume_wrapper_flags(args, env)
     # Every launch starts from its own launch-time overlay setting: a live
     # override left behind by a previous session must not leak into this one.
@@ -106,7 +110,9 @@ def main(argv: list[str] | None = None) -> int:
         # Spawn it before _route_trace_to_fifo so the watcher inherits the
         # console stderr -- not the marker FIFO that fd 2 is about to become,
         # which would feed its diagnostics into the bridge as bogus markers.
-        spawn_refront_watcher(env)
+        spawn_refront_watcher(
+            _session_helper_environment(env, session_helper_pythonpath)
+        )
     if ingame_latency_enabled(env):
         # The FIFO must always have a drainer for as long as it can have
         # writers, or the 64 KB pipe fills and the shim's marker write (and any
@@ -117,11 +123,28 @@ def main(argv: list[str] | None = None) -> int:
         _sweep_stale_marker_fifos(env)
         if _create_marker_fifo(env):
             spawn_detached_drainer(
-                env, trace_fifo_path(env), session_pid=os.getpid()
+                _session_helper_environment(env, session_helper_pythonpath),
+                trace_fifo_path(env),
+                session_pid=os.getpid(),
             )
         _route_trace_to_fifo(env)
     os.execvpe(args[0], args, env)
     return 127
+
+
+def _session_helper_environment(
+    env: dict[str, str], package_path: str
+) -> dict[str, str]:
+    """Give detached Python helpers the Flatpak package path without leaking
+    it into Proton or the game process."""
+    if not package_path:
+        return env
+    helper_env = dict(env)
+    existing = str(helper_env.get("PYTHONPATH") or "").strip()
+    helper_env["PYTHONPATH"] = (
+        f"{package_path}{os.pathsep}{existing}" if existing else package_path
+    )
+    return helper_env
 
 
 def _consume_wrapper_flags(args: list[str], env: dict[str, str]) -> list[str]:

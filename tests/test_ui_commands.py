@@ -452,7 +452,11 @@ def test_flatpak_systemd_uninstall_clears_last_runtime_state(
     ]
     assert command[-1] == "penguin-burner-systemd-uninstall"
     assert "last_runtime_state=/var/lib/penguin-burner/last-runtime.json" in script
-    assert 'rm -f "$legacy_unit" "$daemon_unit" "$last_runtime_state"' in script
+    assert "daemon_binary=/usr/libexec/penguin-burnerd" in script
+    assert (
+        'rm -f "$legacy_unit" "$daemon_unit" "$daemon_binary" '
+        '"$last_runtime_state"' in script
+    )
 
 
 def test_daemon_migration_command_uses_privileged_cli(monkeypatch) -> None:

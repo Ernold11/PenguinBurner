@@ -109,7 +109,6 @@ Built signed PenguinBurner Flatpak repository:
 Local test:
   flatpak remote-add --user --if-not-exists penguinburner "$FLATPAKREPO_FILE"
   flatpak install --user -y penguinburner "$APP_ID"
-  flatpak run --user --command=penguin-burner-install-wrappers "$APP_ID"
   flatpak run "$APP_ID"
 
 Public hosting:

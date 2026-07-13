@@ -8,6 +8,8 @@ import tomllib
 import zlib
 from pathlib import Path
 
+import pytest
+
 
 def test_base_package_installs_gui_dependencies() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
@@ -178,94 +180,37 @@ def test_flatpak_cli_wrapper_installer_is_conservative() -> None:
     assert "refusing to overwrite existing command" in script
     assert "--force" in script
     assert "--uninstall" in script
-    assert "penguin-burner-install-wrappers" in build_script
+    assert "penguin-burner-install-wrappers" not in build_script
+    assert 'flatpak run "$APP_ID"' in build_script
     assert "install -m 0644" not in build_script
     assert "$ROOT/scripts/install-flatpak-cli-wrappers.sh" not in build_script
 
 
-def test_flatpak_steam_wrapper_only_uses_flatpak_for_runtime_handoff() -> None:
+def test_flatpak_steam_wrapper_hands_off_to_full_packaged_launcher() -> None:
     from common.flatpak_wrappers import _wrapper_text
 
     cli_wrapper = _wrapper_text("pburn-cli")
     steam_wrapper = _wrapper_text("PENGUIN_BURNER")
 
     assert "exec /usr/bin/flatpak run --user --command=pburn-cli" in cli_wrapper
-    assert 'run_flatpak_clean run --cwd=/app --command=python3 "$app_id"' in steam_wrapper
-    assert "exec flatpak run" not in steam_wrapper
-    assert 'exec "$@"' in steam_wrapper
-    assert "VK_ADD_IMPLICIT_LAYER_PATH" in steam_wrapper
-    assert "PENGUIN_BURNER_NATIVE_LAYER_DIR" in steam_wrapper
+    assert 'run_flatpak_clean info --user --show-location "$app_id"' in steam_wrapper
+    assert "sys.path.insert(0, sys.argv.pop(1))" in steam_wrapper
+    assert "export PYTHONPATH=" not in steam_wrapper
+    assert "PENGUIN_BURNER_SESSION_HELPER_PYTHONPATH" in steam_wrapper
+    assert 'PENGUIN_BURNER_NATIVE_LAYER_DIR="$site_packages/overlay/native_layer"' in steam_wrapper
+    assert 'PENGUIN_BURNER_NVAPI_SHIM_DIR="$site_packages/overlay/nvapi_shim"' in steam_wrapper
+    assert "from overlay.launcher import main" in steam_wrapper
+    assert 'exec "$host_python"' in steam_wrapper
 
 
-def test_flatpak_steam_wrapper_launches_game_on_host_when_layer_missing(tmp_path) -> None:
+def test_flatpak_steam_wrapper_refuses_incomplete_payload(tmp_path) -> None:
     from common.flatpak_wrappers import _wrapper_text
 
     wrapper = tmp_path / "PENGUIN_BURNER"
-    env_file = tmp_path / "env.txt"
     game = tmp_path / "game"
     wrapper.write_text(_wrapper_text("PENGUIN_BURNER"), encoding="utf-8")
     wrapper.chmod(0o755)
-    game.write_text(
-        "#!/usr/bin/env sh\n"
-        f"env | sort > {env_file}\n",
-        encoding="utf-8",
-    )
-    game.chmod(0o755)
-
-    env = {
-        **os.environ,
-        "HOME": str(tmp_path),
-        "PB_INGAME_LATENCY": "1",
-        "PENGUIN_BURNER_FLATPAK_APP_PATH": str(tmp_path / "missing-app-files"),
-    }
-    result = subprocess.run(
-        [str(wrapper), "--pb-overlay=1", str(game)],
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    captured = env_file.read_text(encoding="utf-8")
-    assert "PENGUIN_BURNER=1\n" in captured
-    assert "PENGUIN_BURNER_OVERLAY=1\n" in captured
-    assert "PENGUIN_BURNER_LATENCY_LAYER=1\n" in captured
-    assert "PENGUIN_BURNER_LATENCY_DISPLAY=1\n" in captured
-    assert "VK_ADD_IMPLICIT_LAYER_PATH=" not in captured
-
-
-def test_flatpak_steam_wrapper_contains_game_runtime_host_handoff() -> None:
-    from common.flatpak_wrappers import _wrapper_text
-
-    wrapper = _wrapper_text("PENGUIN_BURNER")
-
-    assert "-m integrations.steam.game_runtime" in wrapper
-    assert '--watch-pid "$$" --app-id "$steam_app_id"' in wrapper
-    assert 'run_flatpak_clean run --cwd=/app --command=python3 "$app_id"' in wrapper
-    assert "unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT" in wrapper
-    assert 'exec /usr/bin/flatpak "$@"' in wrapper
-
-
-def test_flatpak_steam_wrapper_routes_ingame_latency_stderr_to_fifo(tmp_path) -> None:
-    from common.flatpak_wrappers import _wrapper_text
-
-    wrapper = tmp_path / "PENGUIN_BURNER"
-    fd_file = tmp_path / "fd2.txt"
-    game = tmp_path / "game"
-    cache_home = tmp_path / "cache"
-    trace_fifo = cache_home / "penguin-burner" / "nvapi-trace.fifo"
-    wrapper.write_text(_wrapper_text("PENGUIN_BURNER"), encoding="utf-8")
-    wrapper.chmod(0o755)
-    game.write_text(
-        "#!/usr/bin/env sh\n"
-        f"test -p {trace_fifo}\n"
-        f"readlink /proc/$$/fd/2 > {fd_file}\n"
-        "printf 'nvapi marker line\\n' >&2\n",
-        encoding="utf-8",
-    )
+    game.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
     game.chmod(0o755)
 
     result = subprocess.run(
@@ -273,8 +218,6 @@ def test_flatpak_steam_wrapper_routes_ingame_latency_stderr_to_fifo(tmp_path) ->
         env={
             **os.environ,
             "HOME": str(tmp_path),
-            "XDG_CACHE_HOME": str(cache_home),
-            "PB_INGAME_LATENCY": "1",
             "PENGUIN_BURNER_FLATPAK_APP_PATH": str(tmp_path / "missing-app-files"),
         },
         capture_output=True,
@@ -284,133 +227,31 @@ def test_flatpak_steam_wrapper_routes_ingame_latency_stderr_to_fifo(tmp_path) ->
         check=False,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert result.stderr == ""
-    assert trace_fifo.is_fifo()
-    assert fd_file.read_text(encoding="utf-8").strip() == str(trace_fifo)
+    assert result.returncode == 127
+    assert "payload is incomplete" in result.stderr
 
 
-def test_flatpak_steam_wrapper_falls_back_to_trace_with_unpatched_nvapi(
-    tmp_path,
-) -> None:
-    from common.flatpak_wrappers import _wrapper_text
-
-    compat_data = tmp_path / "compatdata" / "game"
-    nvapi = compat_data / "pfx" / "drive_c" / "windows" / "system32" / "nvapi64.dll"
-    nvapi.parent.mkdir(parents=True)
-    nvapi.write_bytes(b"stock dxvk-nvapi")
-    wrapper = tmp_path / "PENGUIN_BURNER"
-    env_file = tmp_path / "env.txt"
-    game = tmp_path / "game"
-    wrapper.write_text(_wrapper_text("PENGUIN_BURNER"), encoding="utf-8")
-    wrapper.chmod(0o755)
-    game.write_text(
-        "#!/usr/bin/env sh\n"
-        f"env | sort > {env_file}\n",
-        encoding="utf-8",
-    )
-    game.chmod(0o755)
-
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key not in {"DXVK_NVAPI_LATENCY_MARKER_LOG", "DXVK_NVAPI_LOG_LEVEL"}
-    }
-    env.update(
-        {
-            "HOME": str(tmp_path),
-            "PB_INGAME_LATENCY": "1",
-            "STEAM_COMPAT_DATA_PATH": str(compat_data),
-            "PENGUIN_BURNER_FLATPAK_APP_PATH": str(tmp_path / "missing-app-files"),
-        }
-    )
-    result = subprocess.run(
-        [str(wrapper), str(game)],
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    captured = env_file.read_text(encoding="utf-8")
-    assert "DXVK_NVAPI_LOG_LEVEL=trace\n" in captured
-    assert "DXVK_NVAPI_LATENCY_MARKER_LOG=" not in captured
-
-
-def test_flatpak_steam_wrapper_prefers_marker_log_with_patched_nvapi(tmp_path) -> None:
-    from common.flatpak_wrappers import _wrapper_text
-
-    compat_data = tmp_path / "compatdata" / "game"
-    nvapi = compat_data / "pfx" / "drive_c" / "windows" / "system32" / "nvapi64.dll"
-    nvapi.parent.mkdir(parents=True)
-    nvapi.write_bytes(b"patched DXVK_NVAPI_LATENCY_MARKER_LOG dxvk-nvapi")
-    wrapper = tmp_path / "PENGUIN_BURNER"
-    env_file = tmp_path / "env.txt"
-    game = tmp_path / "game"
-    wrapper.write_text(_wrapper_text("PENGUIN_BURNER"), encoding="utf-8")
-    wrapper.chmod(0o755)
-    game.write_text(
-        "#!/usr/bin/env sh\n"
-        f"env | sort > {env_file}\n",
-        encoding="utf-8",
-    )
-    game.chmod(0o755)
-
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key not in {"DXVK_NVAPI_LATENCY_MARKER_LOG", "DXVK_NVAPI_LOG_LEVEL"}
-    }
-    env.update(
-        {
-            "HOME": str(tmp_path),
-            "PB_INGAME_LATENCY": "1",
-            "STEAM_COMPAT_DATA_PATH": str(compat_data),
-            "PENGUIN_BURNER_FLATPAK_APP_PATH": str(tmp_path / "missing-app-files"),
-        }
-    )
-    result = subprocess.run(
-        [str(wrapper), str(game)],
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    captured = env_file.read_text(encoding="utf-8")
-    assert "DXVK_NVAPI_LATENCY_MARKER_LOG=1\n" in captured
-    assert "DXVK_NVAPI_LOG_LEVEL=" not in captured
-
-
-def test_flatpak_steam_wrapper_points_at_shipped_native_layer(tmp_path) -> None:
+def test_flatpak_steam_wrapper_uses_shipped_layer_and_shim_paths(tmp_path) -> None:
     from common.flatpak_wrappers import _wrapper_text
 
     app_files = tmp_path / "app" / "files"
-    layer_dir = (
-        app_files
-        / "lib"
-        / "python3.13"
-        / "site-packages"
-        / "overlay"
-        / "native_layer"
-    )
-    layer_dir.mkdir(parents=True)
-    layer_dir.joinpath("VkLayer_PENGUINBURNER_latency.json").write_text(
-        "{}\n",
-        encoding="utf-8",
-    )
-    layer_dir.joinpath("libVkLayer_penguinburner_latency.so").write_bytes(b"so")
+    site_packages = app_files / "lib" / "python3.13" / "site-packages"
+    site_packages.mkdir(parents=True)
     wrapper = tmp_path / "PENGUIN_BURNER"
     env_file = tmp_path / "env.txt"
     game = tmp_path / "game"
+    host_python = tmp_path / "python3"
     wrapper.write_text(_wrapper_text("PENGUIN_BURNER"), encoding="utf-8")
     wrapper.chmod(0o755)
+    host_python.write_text(
+        "#!/usr/bin/env sh\n"
+        "test \"$1\" = -c\n"
+        "shift 3\n"
+        "case \"${1:-}\" in --pb-overlay=*) shift ;; esac\n"
+        "exec \"$@\"\n",
+        encoding="utf-8",
+    )
+    host_python.chmod(0o755)
     game.write_text(
         "#!/usr/bin/env sh\n"
         f"env | sort > {env_file}\n",
@@ -419,10 +260,12 @@ def test_flatpak_steam_wrapper_points_at_shipped_native_layer(tmp_path) -> None:
     game.chmod(0o755)
 
     result = subprocess.run(
-        [str(wrapper), str(game)],
+        [str(wrapper), "--pb-overlay=1", str(game)],
         env={
             **os.environ,
             "HOME": str(tmp_path),
+            "PYTHONPATH": "original-pythonpath",
+            "PENGUIN_BURNER_HOST_PYTHON": str(host_python),
             "PENGUIN_BURNER_FLATPAK_APP_PATH": str(app_files),
         },
         capture_output=True,
@@ -434,9 +277,75 @@ def test_flatpak_steam_wrapper_points_at_shipped_native_layer(tmp_path) -> None:
 
     assert result.returncode == 0, result.stderr
     captured = env_file.read_text(encoding="utf-8")
-    assert f"PENGUIN_BURNER_NATIVE_LAYER_DIR={layer_dir}\n" in captured
-    assert f"VK_ADD_IMPLICIT_LAYER_PATH={layer_dir}\n" in captured
-    assert "VK_LOADER_LAYERS_ENABLE=VK_LAYER_PENGUINBURNER_latency\n" in captured
+    assert "PYTHONPATH=original-pythonpath\n" in captured
+    assert (
+        f"PENGUIN_BURNER_NATIVE_LAYER_DIR={site_packages}/overlay/native_layer\n"
+        in captured
+    )
+    assert (
+        f"PENGUIN_BURNER_NVAPI_SHIM_DIR={site_packages}/overlay/nvapi_shim\n"
+        in captured
+    )
+
+
+def test_flatpak_startup_repairs_and_verifies_complete_steam_integration(
+    tmp_path, monkeypatch
+) -> None:
+    import common.flatpak_wrappers as wrappers
+    from overlay import shim_deploy
+
+    bin_dir = tmp_path / "bin"
+    manifest = tmp_path / "VkLayer_PENGUINBURNER_latency.json"
+    shim = tmp_path / "nvapi64.dll"
+    manifest.write_text("{}\n", encoding="utf-8")
+    shim.write_bytes(b"MZ[pb-nvapi-shim]")
+    monkeypatch.setenv("FLATPAK_ID", wrappers.APP_ID)
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_WRAPPER_BIN_DIR", str(bin_dir))
+    monkeypatch.setattr(wrappers, "install_vulkan_layer_manifest", lambda: manifest)
+    monkeypatch.setattr(shim_deploy, "nvapi_shim_artifact", lambda: shim)
+
+    repaired = wrappers.ensure_steam_integration()
+
+    assert repaired == bin_dir / "PENGUIN_BURNER"
+    assert repaired is not None
+    assert repaired.is_file()
+    assert os.access(repaired, os.X_OK)
+    assert "from overlay.launcher import main" in repaired.read_text(encoding="utf-8")
+    for command_name in wrappers.WRAPPERS:
+        assert (bin_dir / command_name).is_file()
+        assert os.access(bin_dir / command_name, os.X_OK)
+
+
+def test_flatpak_startup_rejects_missing_mandatory_payload(
+    tmp_path, monkeypatch
+) -> None:
+    import common.flatpak_wrappers as wrappers
+
+    monkeypatch.setenv("FLATPAK_ID", wrappers.APP_ID)
+    monkeypatch.setenv(
+        "PENGUIN_BURNER_FLATPAK_WRAPPER_BIN_DIR", str(tmp_path / "bin")
+    )
+    monkeypatch.setattr(wrappers, "install_vulkan_layer_manifest", lambda: None)
+
+    with pytest.raises(RuntimeError, match="Vulkan latency layer is missing"):
+        wrappers.ensure_steam_integration()
+
+
+def test_flatpak_startup_refuses_foreign_steam_wrapper(
+    tmp_path, monkeypatch
+) -> None:
+    import common.flatpak_wrappers as wrappers
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    foreign = bin_dir / "PENGUIN_BURNER"
+    foreign.write_text("#!/bin/sh\nexec false\n", encoding="utf-8")
+    foreign.chmod(0o755)
+    monkeypatch.setenv("FLATPAK_ID", wrappers.APP_ID)
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_WRAPPER_BIN_DIR", str(bin_dir))
+
+    with pytest.raises(RuntimeError, match="not owned by PenguinBurner"):
+        wrappers.ensure_steam_integration()
 
 
 def test_flatpak_wrapper_installer_registers_user_vulkan_layer(tmp_path) -> None:
@@ -979,8 +888,8 @@ def test_readme_and_flatpak_guide_distinguish_wrappers_from_native_scripts() -> 
     assert "install-flatpak-cli-wrappers.sh | bash" not in readme
     assert "penguin-burner-install-wrappers" not in readme
     assert "[Flatpak guide](docs/flatpak.md)" in readme
-    assert "That single command installs the Flatpak" not in readme
-    assert "That single command installs the Flatpak" in flatpak_doc
+    assert "That single command installs and opens the Flatpak" not in readme
+    assert "That single command installs and opens the Flatpak" in flatpak_doc
     assert "Existing Flatpak users should update" in flatpak_doc
     assert (
         "flatpak update --user -y io.github.jpietek.PenguinBurner"
@@ -1008,7 +917,7 @@ def test_readme_and_flatpak_guide_distinguish_wrappers_from_native_scripts() -> 
     ):
         assert command in flatpak_doc
     assert "`PATH`" in flatpak_doc
-    assert "refuses to" in flatpak_doc
+    assert "left untouched" in flatpak_doc
     assert "existing native/PyPI commands" in flatpak_doc
     assert (
         "PyPI, Flatpak with wrappers, COPR, AUR, and PPA installs run the GUI"
@@ -1022,7 +931,7 @@ def test_readme_and_flatpak_guide_distinguish_wrappers_from_native_scripts() -> 
     assert "install-flatpak-cli-wrappers.sh | bash" not in install_doc
     assert "[Flatpak guide](flatpak.md)" in install_doc
     assert "single pasteable command" in flatpak_doc
-    assert "penguin-burner-install-wrappers" in install_doc
+    assert "first GUI launch silently installs" in install_doc
 
 
 def _png_alpha_channel(path: Path) -> tuple[int, int, list[int]]:

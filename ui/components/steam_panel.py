@@ -14,6 +14,7 @@ import textwrap
 import threading
 import time
 
+from common.flatpak_wrappers import ensure_steam_integration
 from integrations.steam.manager import SteamGameRow, SteamIntegrationManager
 from integrations.steam.launch_options import injection_state
 from integrations.steam.process import launch_steam_game, restart_steam
@@ -1099,6 +1100,14 @@ class SteamPanel:
         app_id = self._current_app_id()
         row = self._rows.get(app_id)
         if row is None:
+            return
+        try:
+            ensure_steam_integration()
+        except (OSError, RuntimeError) as exc:
+            self._sync_status(
+                f"{row.game.name}: FAILED to repair the PenguinBurner Steam "
+                f"integration ({exc})"
+            )
             return
         if launch_steam_game(app_id):
             self._set_game_state(app_id, "launching")

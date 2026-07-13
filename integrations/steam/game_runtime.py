@@ -16,7 +16,7 @@ from pathlib import Path
 import sys
 
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR, read_auto_uv_profiles
-from profiles.uv.profile_tiers import resolve_profile_tier_profiles
+from profiles.uv.profile_tiers import PROFILE_TIERS, resolve_profile_tier_profiles
 
 from .settings import (
     GAME_MODE_ADAPTIVE,
@@ -64,14 +64,25 @@ def profile_argv_for_setting(setting: SteamGameSetting) -> list[str] | None:
         # Explicit per-game stock: pin factory GPU state while this game
         # runs, even when a standing adaptive/tier profile is active.
         return ["--auto-uv-profile", STOCK_PROFILE_SELECTOR]
+    resolved = resolve_profile_tier_profiles(read_auto_uv_profiles())
     if setting.mode == GAME_MODE_ADAPTIVE:
-        # Start from the newest profile; the runtime resolves it to an
-        # available tier and switches using present-frame pacing.
-        argv = ["--auto-uv-profile", "latest", "--adaptive-auto-uv"]
+        # Start from the highest explicitly assigned/available tier, not the
+        # newest file. "latest" lets a newer scratch or verification profile
+        # silently replace the user's Performance assignment in the runtime
+        # spec before adaptive switching even begins.
+        profile_id = ""
+        for tier in reversed(PROFILE_TIERS):
+            profile = resolved.get(tier)
+            if isinstance(profile, dict):
+                profile_id = str(profile.get("profile_id") or "").strip()
+            if profile_id:
+                break
+        if not profile_id:
+            return None
+        argv = ["--auto-uv-profile", profile_id, "--adaptive-auto-uv"]
         if setting.target_fps is not None:
             argv += ["--adaptive-target-fps", f"{float(setting.target_fps):g}"]
         return argv
-    resolved = resolve_profile_tier_profiles(read_auto_uv_profiles())
     profile = resolved.get(setting.mode)
     profile_id = (
         str(profile.get("profile_id") or "").strip()

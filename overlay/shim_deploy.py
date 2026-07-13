@@ -198,6 +198,47 @@ def deploy_nvapi_shim(env: dict[str, str]) -> Path | None:
         return None
 
 
+def restore_nvapi_shim(env: dict[str, str]) -> Path | None:
+    """Remove PenguinBurner fronting from one Proton prefix.
+
+    If our shim is still active, restore the parked dxvk-nvapi atomically. If
+    Proton has already restored its own nvapi64.dll, only the stale PB sidecar
+    needs removal. Returns the cleaned system32 path, or None when untouched.
+    """
+    system32 = prefix_system32(env)
+    if system32 is None:
+        return None
+    nvapi = system32 / SHIM_DLL_NAME
+    sidecar = system32 / REAL_SIDECAR_NAME
+    try:
+        if not sidecar.is_file():
+            return None
+        if not nvapi.is_file() or _file_contains(nvapi, SHIM_NEEDLE):
+            _atomic_copy(sidecar, nvapi)
+        sidecar.unlink()
+        return system32
+    except OSError as error:
+        _log(f"nvapi shim: restore failed in {system32}: {error}")
+        return None
+
+
+def restore_all_nvapi_shims(home: Path | None = None) -> tuple[Path, ...]:
+    """Restore every PB-fronted prefix across the user's Steam libraries."""
+    from overlay.telemetry.steam_game_setup import default_steamapps_dirs
+
+    restored: list[Path] = []
+    seen: set[Path] = set()
+    for steamapps in default_steamapps_dirs(home):
+        for compat_data in (steamapps / "compatdata").glob("*"):
+            cleaned = restore_nvapi_shim(
+                {"STEAM_COMPAT_DATA_PATH": str(compat_data)}
+            )
+            if cleaned is not None and cleaned not in seen:
+                restored.append(cleaned)
+                seen.add(cleaned)
+    return tuple(restored)
+
+
 def watch_seconds(env: dict[str, str]) -> float | None:
     """Optional hard cap on the watch duration; None = whole Proton session."""
     raw = str(env.get(NVAPI_SHIM_WATCH_SECONDS_ENV) or "").strip()

@@ -20,11 +20,12 @@ python -m pip install --user --upgrade penguin-burner
 ```bash
 flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo
 flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner
-flatpak run --user --command=penguin-burner-install-wrappers io.github.jpietek.PenguinBurner
+flatpak run io.github.jpietek.PenguinBurner
 ```
 
-See the [Flatpak guide](flatpak.md) for the single-command install, wrapper
-details, update command, clean uninstall, and direct launch command.
+The first GUI launch silently installs and verifies the host wrappers, Vulkan
+layer registration, and NVAPI shim payload. See the [Flatpak guide](flatpak.md)
+for repair details, the update command, and clean uninstall.
 
 The Flatpak includes the privileged root daemon (`penguin-burnerd`, a compiled
 Rust binary) built into the sandbox. The first privileged action installs it

@@ -4,8 +4,8 @@ import argparse
 import json
 import os
 from pathlib import Path
-import stat
 import sys
+import tempfile
 
 from overlay.native_layer import NATIVE_LAYER_LIBRARY
 from overlay.native_layer import NATIVE_LAYER_MANIFEST
@@ -69,6 +69,104 @@ def _is_managed_wrapper(path: Path) -> bool:
         )
     except OSError:
         return False
+
+
+def _is_native_steam_wrapper(path: Path) -> bool:
+    try:
+        return (
+            path.is_file()
+            and os.access(path, os.X_OK)
+            and "from overlay.launcher import main"
+            in path.read_text(encoding="utf-8", errors="replace")
+        )
+    except OSError:
+        return False
+
+
+def running_in_flatpak(
+    *,
+    environ: dict[str, str] | None = None,
+    flatpak_info_path: Path = Path("/.flatpak-info"),
+) -> bool:
+    env = os.environ if environ is None else environ
+    return bool(env.get("FLATPAK_ID", "").strip()) or flatpak_info_path.is_file()
+
+
+def _write_wrapper_atomic(target: Path, text: str) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        text=True,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        temporary.chmod(0o755)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def ensure_steam_wrapper(
+    bin_dir: Path | str | None = None,
+    *,
+    only_if_flatpak: bool = True,
+) -> Path | None:
+    """Install or refresh the host Steam wrapper required by launch options.
+
+    Flatpak cannot run a host post-install hook, so the complete integration
+    repair calls this low-level helper when needed. Native Python installs get
+    the same command from the ``PENGUIN_BURNER`` console-script entry point and
+    therefore do not need a generated host wrapper.
+    """
+    if only_if_flatpak and not running_in_flatpak():
+        return None
+    root = _default_bin_dir() if bin_dir is None else Path(bin_dir).expanduser()
+    target = root / "PENGUIN_BURNER"
+    if target.exists() and not _is_managed_wrapper(target):
+        raise RuntimeError(
+            f"refusing to overwrite existing command: {target} "
+            "(remove it or run penguin-burner-install-wrappers --force)"
+        )
+    expected = _wrapper_text("PENGUIN_BURNER")
+    try:
+        current = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        current = ""
+    if current != expected or not os.access(target, os.X_OK):
+        _write_wrapper_atomic(target, expected)
+    return target
+
+
+def ensure_flatpak_wrappers(
+    bin_dir: Path | str | None = None,
+) -> tuple[Path, ...]:
+    """Silently repair every generated Flatpak host command.
+
+    Existing non-managed commands are left untouched so a native/PyPI install
+    is never overwritten by merely launching the Flatpak. A clean Flatpak-only
+    installation receives the complete command set on first GUI start.
+    """
+    if not running_in_flatpak():
+        return ()
+    root = _default_bin_dir() if bin_dir is None else Path(bin_dir).expanduser()
+    repaired: list[Path] = []
+    for command_name in WRAPPERS:
+        target = root / command_name
+        if target.exists() and not _is_managed_wrapper(target):
+            continue
+        expected = _wrapper_text(command_name)
+        try:
+            current = target.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            current = ""
+        if current != expected or not os.access(target, os.X_OK):
+            _write_wrapper_atomic(target, expected)
+        repaired.append(target)
+    return tuple(repaired)
 
 
 def _default_vulkan_manifest_path(home: Path | str | None = None) -> Path:
@@ -213,6 +311,47 @@ def install_vulkan_layer_manifest(
     return target
 
 
+def ensure_steam_integration() -> Path | None:
+    """Repair and verify every host-facing Flatpak Steam component.
+
+    The shim is deployed into each Proton prefix by ``overlay.launcher`` at
+    game start because Proton can overwrite nvapi64.dll during prefix setup.
+    Here we verify that the immutable shim payload is shipped and that the
+    generated host wrapper points the launch at that full launcher path.
+    """
+    if not running_in_flatpak():
+        return None
+    ensure_flatpak_wrappers()
+    wrapper = _default_bin_dir() / "PENGUIN_BURNER"
+    if not wrapper.is_file() or not os.access(wrapper, os.X_OK):
+        raise RuntimeError(f"mandatory Steam wrapper is unavailable: {wrapper}")
+    if not _is_managed_wrapper(wrapper) and not _is_native_steam_wrapper(wrapper):
+        raise RuntimeError(
+            f"existing Steam wrapper is not owned by PenguinBurner: {wrapper}"
+        )
+
+    manifest = install_vulkan_layer_manifest()
+    if manifest is None:
+        raise RuntimeError("packaged Vulkan latency layer is missing")
+
+    _require_packaged_nvapi_shim()
+    return wrapper
+
+
+def _require_packaged_nvapi_shim() -> Path:
+    from overlay.shim_deploy import nvapi_shim_artifact
+
+    shim = nvapi_shim_artifact()
+    if shim is None:
+        raise RuntimeError("packaged NVAPI shim is missing")
+    try:
+        if shim.read_bytes()[:2] != b"MZ":
+            raise RuntimeError(f"packaged NVAPI shim is invalid: {shim}")
+    except OSError as exc:
+        raise RuntimeError(f"packaged NVAPI shim is unreadable: {exc}") from exc
+    return shim
+
+
 def _is_managed_vulkan_manifest(path: Path) -> bool:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -262,180 +401,43 @@ def _steam_wrapper_text() -> str:
         "#!/usr/bin/env sh\n"
         f"# {MARKER}\n"
         "set -eu\n"
-        "while [ \"$#\" -gt 0 ]; do\n"
-        "    case \"$1\" in\n"
-        "        --pb-overlay=*)\n"
-        "            overlay_value=${1#--pb-overlay=}\n"
-        "            case \"$overlay_value\" in\n"
-        "                1|true|TRUE|yes|YES|on|ON|0|false|FALSE|no|NO|off|OFF)\n"
-        "                    export PB_OVERLAY=\"$overlay_value\"\n"
-        "                    export PENGUIN_BURNER_OVERLAY=\"$overlay_value\"\n"
-        "                    ;;\n"
-        "            esac\n"
-        "            shift\n"
-        "            ;;\n"
-        "        *) break ;;\n"
-        "    esac\n"
-        "done\n"
         "if [ \"$#\" -eq 0 ]; then\n"
         "    echo \"Usage: $0 %command%\" >&2\n"
         "    exit 2\n"
-        "fi\n"
-        "if [ \"$(id -u)\" = 0 ]; then\n"
-        "    desktop_user=\"${PENGUIN_BURNER_Q2RTX_USER:-${SUDO_USER:-}}\"\n"
-        "    if [ -n \"$desktop_user\" ] && command -v getent >/dev/null 2>&1; then\n"
-        "        desktop_home=\"$(getent passwd \"$desktop_user\" | cut -d: -f6)\"\n"
-        "        if [ -n \"$desktop_home\" ]; then\n"
-        "            export HOME=\"$desktop_home\"\n"
-        "            export XDG_DATA_HOME=\"${XDG_DATA_HOME:-$desktop_home/.local/share}\"\n"
-        "        fi\n"
-        "    fi\n"
         "fi\n"
         "run_flatpak_clean() (\n"
         "    unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT\n"
         "    exec /usr/bin/flatpak \"$@\"\n"
         ")\n"
-        "cache_dir=\"${XDG_CACHE_HOME:-$HOME/.cache}/penguin-burner\"\n"
-        "config_dir=\"${XDG_CONFIG_HOME:-$HOME/.config}/PenguinBurner\"\n"
-        "mkdir -p \"$cache_dir\" \"$config_dir\" 2>/dev/null || true\n"
         "app_id=\"${PENGUIN_BURNER_FLATPAK_APP_ID:-io.github.jpietek.PenguinBurner}\"\n"
         "app_files=\"${PENGUIN_BURNER_FLATPAK_APP_PATH:-}\"\n"
-        "if [ -z \"$app_files\" ] && [ -x /usr/bin/flatpak ]; then\n"
+        "if [ -z \"$app_files\" ]; then\n"
         "    app_location=\"$(run_flatpak_clean info --user --show-location \"$app_id\" 2>/dev/null || run_flatpak_clean info --show-location \"$app_id\" 2>/dev/null || true)\"\n"
-        "    if [ -n \"$app_location\" ]; then\n"
-        "        app_files=\"$app_location/files\"\n"
+        "    active_location=\"${app_location%/*}/active\"\n"
+        "    if [ -d \"$active_location/files\" ]; then\n"
+        "        app_location=\"$active_location\"\n"
         "    fi\n"
+        "    [ -n \"$app_location\" ] && app_files=\"$app_location/files\"\n"
         "fi\n"
-        "steam_app_id=\"${SteamAppId:-${STEAM_COMPAT_APP_ID:-${SteamGameId:-}}}\"\n"
-        "steam_account_name=\"${SteamUser:-${SteamAppUser:-}}\"\n"
-        "case \"$steam_app_id\" in\n"
-        "    ''|*[!0-9]*) ;;\n"
-        "    *)\n"
-        "        if [ -x /usr/bin/flatpak ]; then\n"
-        "            run_flatpak_clean run --cwd=/app --command=python3 \"$app_id\" \\\n"
-        "                -m integrations.steam.game_runtime \\\n"
-        "                --watch-pid \"$$\" --app-id \"$steam_app_id\" \\\n"
-        "                --account-name \"$steam_account_name\" || true\n"
-        "        fi\n"
-        "        ;;\n"
-        "esac\n"
         "site_packages=\"\"\n"
-        "if [ -n \"$app_files\" ]; then\n"
-        "    for candidate in \"$app_files\"/lib/python*/site-packages; do\n"
-        "        if [ -d \"$candidate\" ]; then\n"
-        "            site_packages=\"$candidate\"\n"
-        "        fi\n"
-        "    done\n"
-        "fi\n"
-        "native_layer_dir=\"${PENGUIN_BURNER_NATIVE_LAYER_DIR:-}\"\n"
-        "if [ -z \"$native_layer_dir\" ] && [ -n \"$site_packages\" ]; then\n"
-        "    native_layer_dir=\"$site_packages/overlay/native_layer\"\n"
-        "fi\n"
-        "if [ -f \"$native_layer_dir/VkLayer_PENGUINBURNER_latency.json\" ] && [ -f \"$native_layer_dir/libVkLayer_penguinburner_latency.so\" ]; then\n"
-        "    export PENGUIN_BURNER_NATIVE_LAYER_DIR=\"$native_layer_dir\"\n"
-        "    case \":${VK_ADD_IMPLICIT_LAYER_PATH:-}:\" in\n"
-        "        *:\"$native_layer_dir\":*) ;;\n"
-        "        *) export VK_ADD_IMPLICIT_LAYER_PATH=\"$native_layer_dir${VK_ADD_IMPLICIT_LAYER_PATH:+:$VK_ADD_IMPLICIT_LAYER_PATH}\" ;;\n"
-        "    esac\n"
-        "    case \",${VK_LOADER_LAYERS_ENABLE:-},\" in\n"
-        "        *,VK_LAYER_PENGUINBURNER_latency,*) ;;\n"
-        "        *) export VK_LOADER_LAYERS_ENABLE=\"VK_LAYER_PENGUINBURNER_latency${VK_LOADER_LAYERS_ENABLE:+,$VK_LOADER_LAYERS_ENABLE}\" ;;\n"
-        "    esac\n"
-        "fi\n"
-        "dll_has_marker_log_flag() {\n"
-        "    [ -f \"$1\" ] || return 1\n"
-        "    LC_ALL=C grep -a -q 'DXVK_NVAPI_LATENCY_MARKER_LOG' \"$1\" 2>/dev/null\n"
-        "}\n"
-        "proton_root_has_marker_log_flag() {\n"
-        "    root=\"$1\"\n"
-        "    for candidate in \\\n"
-        "        \"$root/files/lib/wine/nvapi/x86_64-windows/nvapi64.dll\" \\\n"
-        "        \"$root/files/lib/wine/nvapi/i386-windows/nvapi.dll\" \\\n"
-        "        \"$root/files/lib/wine/nvidia-libs/nvapi/x86_64-windows/nvapi64.dll\" \\\n"
-        "        \"$root/files/lib/wine/nvidia-libs/nvapi/i386-windows/nvapi.dll\"\n"
-        "    do\n"
-        "        dll_has_marker_log_flag \"$candidate\" && return 0\n"
-        "    done\n"
-        "    return 1\n"
-        "}\n"
-        "dxvk_nvapi_marker_log_supported() {\n"
-        "    prefix_has_nvapi=0\n"
-        "    if [ -n \"${STEAM_COMPAT_DATA_PATH:-}\" ]; then\n"
-        "        windows=\"$STEAM_COMPAT_DATA_PATH/pfx/drive_c/windows\"\n"
-        "        for candidate in \\\n"
-        "            \"$windows/system32/nvapi64.dll\" \\\n"
-        "            \"$windows/syswow64/nvapi.dll\"\n"
-        "        do\n"
-        "            if [ -f \"$candidate\" ]; then\n"
-        "                prefix_has_nvapi=1\n"
-        "                dll_has_marker_log_flag \"$candidate\" && return 0\n"
-        "            fi\n"
-        "        done\n"
-        "        [ \"$prefix_has_nvapi\" = 0 ] || return 1\n"
+        "for candidate in \"$app_files\"/lib/python*/site-packages; do\n"
+        "    if [ -d \"$candidate\" ]; then\n"
+        "        site_packages=\"$candidate\"\n"
         "    fi\n"
-        "    old_ifs=$IFS\n"
-        "    IFS=:\n"
-        "    for root in ${STEAM_COMPAT_TOOL_PATHS:-}${STEAM_COMPAT_TOOL_PATH:+:$STEAM_COMPAT_TOOL_PATH}; do\n"
-        "        [ -n \"$root\" ] || continue\n"
-        "        proton_root_has_marker_log_flag \"$root\" && IFS=$old_ifs && return 0\n"
-        "    done\n"
-        "    IFS=$old_ifs\n"
-        "    for arg in \"$@\"; do\n"
-        "        case \"$arg\" in\n"
-        "            */proton|proton)\n"
-        "                root=$(dirname \"$arg\")\n"
-        "                proton_root_has_marker_log_flag \"$root\" && return 0\n"
-        "                ;;\n"
-        "        esac\n"
-        "    done\n"
-        "    return 1\n"
-        "}\n"
-        "export PENGUIN_BURNER=\"${PENGUIN_BURNER:-1}\"\n"
-        "export PENGUIN_BURNER_LATENCY_LAYER=\"${PENGUIN_BURNER_LATENCY_LAYER:-1}\"\n"
-        "if [ -z \"${PENGUIN_BURNER_OVERLAY+x}\" ] && [ -n \"${PB_OVERLAY:-}\" ]; then\n"
-        "    export PENGUIN_BURNER_OVERLAY=\"$PB_OVERLAY\"\n"
+        "done\n"
+        "if [ -z \"$site_packages\" ]; then\n"
+        "    echo \"PenguinBurner Flatpak payload is incomplete: Python package not found\" >&2\n"
+        "    exit 127\n"
         "fi\n"
-        "export PENGUIN_BURNER_OVERLAY=\"${PENGUIN_BURNER_OVERLAY:-auto}\"\n"
-        "export DXVK_NVAPI_VKREFLEX=\"${DXVK_NVAPI_VKREFLEX:-1}\"\n"
-        "export PROTON_ENABLE_NVAPI=\"${PROTON_ENABLE_NVAPI:-1}\"\n"
-        "export PROTON_HIDE_NVIDIA_GPU=\"${PROTON_HIDE_NVIDIA_GPU:-0}\"\n"
-        "case \"${PENGUIN_BURNER_INGAME_LATENCY:-${PB_INGAME_LATENCY:-}}\" in\n"
-        "    1|true|TRUE|yes|YES|on|ON)\n"
-        "        export PENGUIN_BURNER_LATENCY_DISPLAY=\"${PENGUIN_BURNER_LATENCY_DISPLAY:-1}\"\n"
-        "        export PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID=\"${PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID:-1}\"\n"
-        "        case \"${DXVK_NVAPI_LOG_LEVEL:-}\" in\n"
-        "            trace) ;;\n"
-        "            *)\n"
-        "                case \"${DXVK_NVAPI_LATENCY_MARKER_LOG:-}\" in\n"
-        "                    1|true|TRUE|yes|YES|on|ON) ;;\n"
-        "                    *)\n"
-        "                        if dxvk_nvapi_marker_log_supported \"$@\"; then\n"
-        "                            export DXVK_NVAPI_LATENCY_MARKER_LOG=\"${DXVK_NVAPI_LATENCY_MARKER_LOG:-1}\"\n"
-        "                        else\n"
-        "                            export DXVK_NVAPI_LOG_LEVEL=\"${DXVK_NVAPI_LOG_LEVEL:-trace}\"\n"
-        "                        fi\n"
-        "                        ;;\n"
-        "                esac\n"
-        "                ;;\n"
-        "        esac\n"
-        "        trace_fifo=\"$cache_dir/nvapi-trace.fifo\"\n"
-        "        if [ ! -e \"$trace_fifo\" ]; then\n"
-        "            mkfifo -m 600 \"$trace_fifo\" 2>/dev/null || true\n"
-        "        fi\n"
-        "        if [ -p \"$trace_fifo\" ]; then\n"
-        "            if exec 3<>\"$trace_fifo\" 2>/dev/null; then\n"
-        "                exec 2>&3\n"
-        "                exec 3>&-\n"
-        "            fi\n"
-        "        fi\n"
-        "        ;;\n"
-        "esac\n"
-        "export PENGUIN_BURNER_LATENCY_SOCKET=\"${PENGUIN_BURNER_LATENCY_SOCKET:-$cache_dir/latency.sock}\"\n"
-        "export PENGUIN_BURNER_OVERLAY_STATE=\"${PENGUIN_BURNER_OVERLAY_STATE:-$cache_dir/overlay-state.txt}\"\n"
-        "export PENGUIN_BURNER_OVERLAY_TEXT=\"${PENGUIN_BURNER_OVERLAY_TEXT:-$cache_dir/overlay-text.txt}\"\n"
-        "export PENGUIN_BURNER_OVERLAY_CONFIG=\"${PENGUIN_BURNER_OVERLAY_CONFIG:-$config_dir/overlay.toml}\"\n"
-        "unset MANGOHUD MANGOHUD_CONFIG MANGOHUD_DLSYM MANGOAPP MANGOAPP_CONFIG\n"
-        "exec \"$@\"\n"
+        "host_python=\"${PENGUIN_BURNER_HOST_PYTHON:-/usr/bin/python3}\"\n"
+        "if [ ! -x \"$host_python\" ]; then\n"
+        "    echo \"PenguinBurner requires host Python at $host_python\" >&2\n"
+        "    exit 127\n"
+        "fi\n"
+        "export PENGUIN_BURNER_NATIVE_LAYER_DIR=\"$site_packages/overlay/native_layer\"\n"
+        "export PENGUIN_BURNER_NVAPI_SHIM_DIR=\"$site_packages/overlay/nvapi_shim\"\n"
+        "export PENGUIN_BURNER_SESSION_HELPER_PYTHONPATH=\"$site_packages\"\n"
+        "exec \"$host_python\" -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from overlay.launcher import main; raise SystemExit(main())' \"$site_packages\" \"$@\"\n"
     )
 
 
@@ -450,16 +452,7 @@ def install_wrappers(bin_dir: Path, *, force: bool = False) -> list[Path]:
                 f"refusing to overwrite existing command: {target} "
                 "(rerun with --force)"
             )
-        target.write_text(_wrapper_text(command_name), encoding="utf-8")
-        target.chmod(
-            stat.S_IRUSR
-            | stat.S_IWUSR
-            | stat.S_IXUSR
-            | stat.S_IRGRP
-            | stat.S_IXGRP
-            | stat.S_IROTH
-            | stat.S_IXOTH
-        )
+        _write_wrapper_atomic(target, _wrapper_text(command_name))
         installed.append(target)
     return installed
 
@@ -485,26 +478,27 @@ def main(argv: list[str] | None = None) -> int:
         if args.uninstall:
             removed, skipped = uninstall_wrappers(args.bin_dir)
             removed_manifest = uninstall_vulkan_layer_manifest()
+            from overlay.shim_deploy import restore_all_nvapi_shims
+
+            restored_prefixes = restore_all_nvapi_shims()
             for path in removed:
                 print(f"removed {path}")
             if removed_manifest is not None:
                 print(f"removed {removed_manifest}")
+            for path in restored_prefixes:
+                print(f"restored NVAPI in {path}")
             for path in skipped:
                 print(f"skipped non-managed command: {path}", file=sys.stderr)
             return 0
 
         installed = install_wrappers(args.bin_dir, force=args.force)
         manifest = install_vulkan_layer_manifest()
+        if manifest is None:
+            raise RuntimeError("packaged Vulkan latency layer is missing")
+        _require_packaged_nvapi_shim()
         for path in installed:
             print(f"installed {path}")
-        if manifest is None:
-            print(
-                "warning: PenguinBurner native Vulkan layer was not found; "
-                "Steam overlay layer registration was skipped",
-                file=sys.stderr,
-            )
-        else:
-            print(f"installed {manifest}")
+        print(f"installed {manifest}")
         if "FLATPAK_ID" not in os.environ:
             path_entries = os.environ.get("PATH", "").split(os.pathsep)
             if str(args.bin_dir.expanduser()) not in path_entries:

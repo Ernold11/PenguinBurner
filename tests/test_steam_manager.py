@@ -437,6 +437,7 @@ def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> Non
 
 def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -> None:
     import runtime.daemon_client as daemon_client
+    import integrations.steam.game_runtime as game_runtime
 
     manager.refresh()
     manager.set_game_enabled(APP_ID, True)
@@ -460,13 +461,19 @@ def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -
         return {"started": True}
 
     monkeypatch.setattr(daemon_client, "start_game_runtime_profile", fake_start)
+    monkeypatch.setattr(game_runtime, "read_auto_uv_profiles", lambda: [])
+    monkeypatch.setattr(
+        game_runtime,
+        "resolve_profile_tier_profiles",
+        lambda _profiles: {"performance": {"profile_id": "performance-9"}},
+    )
 
     result = manager.hot_reapply(APP_ID)
 
     assert result is not None and result.ok
     assert calls == [
         (
-            ["--auto-uv-profile", "latest", "--adaptive-auto-uv"],
+            ["--auto-uv-profile", "performance-9", "--adaptive-auto-uv"],
             4242,
             APP_ID,
         )

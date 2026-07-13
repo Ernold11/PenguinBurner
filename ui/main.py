@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import sys
 
+from common.flatpak_wrappers import ensure_steam_integration
 from .assets import application_icon
 from .constants import APP_DESKTOP_ID
 from .constants import APP_DISPLAY_NAME
@@ -81,6 +82,15 @@ def run(argv: list[str] | None = None) -> int:
         app.setApplicationDisplayName(APP_DISPLAY_NAME)
     if hasattr(app, "setDesktopFileName"):
         app.setDesktopFileName(APP_DESKTOP_ID)
+    try:
+        ensure_steam_integration()
+    except (OSError, RuntimeError) as exc:
+        message = (
+            "PenguinBurner could not repair its mandatory Steam integration.\n\n"
+            f"{exc}"
+        )
+        print(f"error: {message}", file=sys.stderr)
+        return 1
     icon = application_icon(QtGui)
     if not icon.isNull():
         app.setWindowIcon(icon)

@@ -73,6 +73,57 @@ def test_deploy_fronts_stock_nvapi_and_parks_real(tmp_path: Path) -> None:
     assert (sys32 / shim_deploy.REAL_SIDECAR_NAME).read_bytes() == REAL_BYTES
 
 
+def test_restore_reverses_active_shim_fronting(tmp_path: Path) -> None:
+    _make_artifact(tmp_path)
+    data_path = _make_prefix(tmp_path)
+    env = _env(tmp_path, data_path)
+    sys32 = _system32(data_path)
+    assert shim_deploy.deploy_nvapi_shim(env) is not None
+
+    assert shim_deploy.restore_nvapi_shim(env) == sys32
+    assert (sys32 / shim_deploy.SHIM_DLL_NAME).read_bytes() == REAL_BYTES
+    assert not (sys32 / shim_deploy.REAL_SIDECAR_NAME).exists()
+
+
+def test_restore_removes_stale_sidecar_after_proton_resync(tmp_path: Path) -> None:
+    data_path = _make_prefix(tmp_path)
+    env = _env(tmp_path, data_path)
+    sys32 = _system32(data_path)
+    sidecar = sys32 / shim_deploy.REAL_SIDECAR_NAME
+    sidecar.write_bytes(b"older real")
+
+    assert shim_deploy.restore_nvapi_shim(env) == sys32
+    assert (sys32 / shim_deploy.SHIM_DLL_NAME).read_bytes() == REAL_BYTES
+    assert not sidecar.exists()
+
+
+def test_restore_recovers_parked_real_when_front_dll_is_missing(tmp_path: Path) -> None:
+    data_path = _make_prefix(tmp_path, with_nvapi=False)
+    env = _env(tmp_path, data_path)
+    sys32 = _system32(data_path)
+    sidecar = sys32 / shim_deploy.REAL_SIDECAR_NAME
+    sidecar.write_bytes(REAL_BYTES)
+
+    assert shim_deploy.restore_nvapi_shim(env) == sys32
+    assert (sys32 / shim_deploy.SHIM_DLL_NAME).read_bytes() == REAL_BYTES
+    assert not sidecar.exists()
+
+
+def test_restore_all_scans_every_steam_library_prefix(tmp_path: Path) -> None:
+    compat_data = (
+        tmp_path
+        / ".local/share/Steam/steamapps/compatdata/123"
+    )
+    system32 = compat_data / "pfx/drive_c/windows/system32"
+    system32.mkdir(parents=True)
+    (system32 / shim_deploy.SHIM_DLL_NAME).write_bytes(SHIM_BYTES)
+    (system32 / shim_deploy.REAL_SIDECAR_NAME).write_bytes(REAL_BYTES)
+
+    assert shim_deploy.restore_all_nvapi_shims(tmp_path) == (system32,)
+    assert (system32 / shim_deploy.SHIM_DLL_NAME).read_bytes() == REAL_BYTES
+    assert not (system32 / shim_deploy.REAL_SIDECAR_NAME).exists()
+
+
 def test_deploy_is_idempotent(tmp_path: Path) -> None:
     _make_artifact(tmp_path)
     data_path = _make_prefix(tmp_path)

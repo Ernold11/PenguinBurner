@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from common.flatpak_wrappers import ensure_steam_integration
 from overlay.telemetry.steam_launch_check import (
     launch_options_from_localconfig,
     rewrite_launch_options,
@@ -459,6 +460,13 @@ class SteamIntegrationManager:
     def _apply(self, app_id: str, setting: SteamGameSetting) -> ApplyResult:
         current = self._launch_options.get(app_id, "")
         if setting.active:
+            try:
+                ensure_steam_integration()
+            except (OSError, RuntimeError) as error:
+                return ApplyResult(
+                    False,
+                    f"PenguinBurner Steam integration repair failed: {error}",
+                )
             desired = inject_launch_options(current, overlay=setting.overlay)
             original = (
                 setting.original_launch_options

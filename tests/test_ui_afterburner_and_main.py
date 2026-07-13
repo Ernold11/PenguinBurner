@@ -169,6 +169,12 @@ def test_main_run_launches_app(monkeypatch) -> None:
     monkeypatch.setattr(ui_main, "apply_desktop_font_settings", lambda app, qtgui: None)
     monkeypatch.setattr(ui_main, "apply_dark_palette", lambda app, qtgui: None)
     monkeypatch.setattr(ui_main, "application_icon", lambda qtgui: SimpleNamespace(isNull=lambda: True))
+    integration_checks = []
+    monkeypatch.setattr(
+        ui_main,
+        "ensure_steam_integration",
+        lambda: integration_checks.append(True),
+    )
 
     created = {}
 
@@ -184,3 +190,29 @@ def test_main_run_launches_app(monkeypatch) -> None:
     assert ui_main.run(["pburn", "--gpu-index", "1"]) == 0
     assert created["shown"] is True
     assert created["gpu_index"] == 1
+    assert integration_checks == [True]
+
+
+def test_main_refuses_incomplete_flatpak_integration_without_popup(
+    monkeypatch, capsys
+) -> None:
+    app = SimpleNamespace(
+        setApplicationName=lambda n: None,
+        setApplicationDisplayName=lambda n: None,
+        setDesktopFileName=lambda n: None,
+    )
+    fake_qtwidgets = SimpleNamespace(QApplication=lambda argv: app)
+    monkeypatch.setattr(
+        ui_main,
+        "import_qt",
+        lambda: (object(), SimpleNamespace(), fake_qtwidgets, None),
+    )
+    monkeypatch.setattr(ui_main, "prepare_desktop_scale_env", lambda: None)
+    monkeypatch.setattr(
+        ui_main,
+        "ensure_steam_integration",
+        lambda: (_ for _ in ()).throw(RuntimeError("missing shim")),
+    )
+
+    assert ui_main.run(["pburn"]) == 1
+    assert "missing shim" in capsys.readouterr().err

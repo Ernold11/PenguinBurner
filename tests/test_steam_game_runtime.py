@@ -62,18 +62,37 @@ def test_profile_argv_for_explicit_stock_pins_factory_state() -> None:
     assert argv == ["--auto-uv-profile", "__stock__"]
 
 
-def test_profile_argv_for_adaptive() -> None:
+def _stub_adaptive_profiles(monkeypatch) -> None:
+    monkeypatch.setattr(game_runtime, "read_auto_uv_profiles", lambda: [])
+    monkeypatch.setattr(
+        game_runtime,
+        "resolve_profile_tier_profiles",
+        lambda profiles: {
+            "efficiency": {"profile_id": "efficiency-profile"},
+            "balanced": {"profile_id": "balanced-profile"},
+            "performance": {"profile_id": "performance-profile"},
+        },
+    )
+
+
+def test_profile_argv_for_adaptive(monkeypatch) -> None:
+    _stub_adaptive_profiles(monkeypatch)
     argv = profile_argv_for_setting(SteamGameSetting(enabled=True, mode="adaptive"))
-    assert argv == ["--auto-uv-profile", "latest", "--adaptive-auto-uv"]
+    assert argv == [
+        "--auto-uv-profile",
+        "performance-profile",
+        "--adaptive-auto-uv",
+    ]
 
 
-def test_profile_argv_for_adaptive_includes_per_game_target_fps() -> None:
+def test_profile_argv_for_adaptive_includes_per_game_target_fps(monkeypatch) -> None:
+    _stub_adaptive_profiles(monkeypatch)
     argv = profile_argv_for_setting(
         SteamGameSetting(enabled=True, mode="adaptive", target_fps=120.0)
     )
     assert argv == [
         "--auto-uv-profile",
-        "latest",
+        "performance-profile",
         "--adaptive-auto-uv",
         "--adaptive-target-fps",
         "120",
@@ -158,6 +177,8 @@ def test_apply_calls_daemon_with_own_pid(
 
     import runtime.daemon_client as daemon_client
 
+    _stub_adaptive_profiles(monkeypatch)
+
     def fake_start(argv, *, watch_pid, app_id="", **kwargs):
         calls.append({"argv": argv, "watch_pid": watch_pid, "app_id": app_id})
         return {"started": True}
@@ -171,7 +192,11 @@ def test_apply_calls_daemon_with_own_pid(
 
     assert calls == [
         {
-            "argv": ["--auto-uv-profile", "latest", "--adaptive-auto-uv"],
+            "argv": [
+                "--auto-uv-profile",
+                "performance-profile",
+                "--adaptive-auto-uv",
+            ],
             "watch_pid": os.getpid(),
             "app_id": "1089130",
         }
@@ -191,6 +216,8 @@ def test_apply_accepts_host_wrapper_pid(
     calls = []
 
     import runtime.daemon_client as daemon_client
+
+    _stub_adaptive_profiles(monkeypatch)
 
     monkeypatch.setattr(
         daemon_client,

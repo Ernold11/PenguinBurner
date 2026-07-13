@@ -601,12 +601,13 @@ def _flatpak_uninstall_systemd_command() -> list[str]:
     script = r"""
 legacy_unit=/etc/systemd/system/PenguinBurner.service
 daemon_unit=/etc/systemd/system/penguin-burnerd.service
+daemon_binary=/usr/libexec/penguin-burnerd
 last_runtime_state=/var/lib/penguin-burner/last-runtime.json
 boot_runtime_state=/var/lib/penguin-burner/boot-runtime.json
 active_runtime_state=/run/penguin-burner/active-runtime.json
 systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
 systemctl disable --now penguin-burnerd.service >/dev/null 2>&1 || true
-rm -f "$legacy_unit" "$daemon_unit" "$last_runtime_state" "$boot_runtime_state" "$active_runtime_state"
+rm -f "$legacy_unit" "$daemon_unit" "$daemon_binary" "$last_runtime_state" "$boot_runtime_state" "$active_runtime_state"
 systemctl daemon-reload
 systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
 systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true

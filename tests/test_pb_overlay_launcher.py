@@ -306,6 +306,51 @@ def test_main_arms_refront_watcher_when_shim_active(monkeypatch, tmp_path) -> No
     assert drained[0][0].is_fifo()
 
 
+def test_flatpak_bootstrap_path_is_limited_to_detached_helpers(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
+    monkeypatch.setenv(
+        launcher.SESSION_HELPER_PYTHONPATH_ENV, "/flatpak/site-packages"
+    )
+    monkeypatch.setenv("PYTHONPATH", "/original/pythonpath")
+    monkeypatch.setenv("PENGUIN_BURNER_INGAME_LATENCY", "1")
+    monkeypatch.setattr(
+        launcher, "configure_penguin_burner_environment", lambda env, **_kwargs: True
+    )
+    helper_envs = []
+    monkeypatch.setattr(
+        launcher, "spawn_refront_watcher", lambda env: helper_envs.append(dict(env))
+    )
+    monkeypatch.setattr(
+        launcher,
+        "spawn_detached_drainer",
+        lambda env, _path, session_pid=None: helper_envs.append(dict(env)),
+    )
+    game_envs = []
+
+    def fake_execvpe(_file, _args, env):
+        game_envs.append(dict(env))
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
+
+    try:
+        launcher.main(["game"])
+    except RuntimeError:
+        pass
+
+    assert len(helper_envs) == 2
+    for helper_env in helper_envs:
+        assert helper_env["PYTHONPATH"] == (
+            f"/flatpak/site-packages{launcher.os.pathsep}/original/pythonpath"
+        )
+        assert launcher.SESSION_HELPER_PYTHONPATH_ENV not in helper_env
+    assert game_envs[0]["PYTHONPATH"] == "/original/pythonpath"
+    assert launcher.SESSION_HELPER_PYTHONPATH_ENV not in game_envs[0]
+
+
 def test_main_does_not_arm_watcher_without_ingame_latency(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
