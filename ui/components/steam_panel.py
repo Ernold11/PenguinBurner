@@ -304,27 +304,33 @@ class SteamPanel:
         details_layout.setContentsMargins(22, 18, 22, 18)
         details_layout.setSpacing(12)
 
-        # Header: a wide title column on the left with the live status right
-        # beneath it, and the Play/Stop button pinned to the top-right so it
-        # holds one fixed spot no matter how long (or wrapped) the title is.
+        # Header: the game info (title, live status, last-played line) sits in
+        # a block on the left, and the Play/Stop button sits right beside that
+        # block — next to where the text ends, not floating in the far corner.
         title_row = QtWidgets.QHBoxLayout()
-        title_row.setSpacing(14)
-        title_column = QtWidgets.QVBoxLayout()
-        title_column.setContentsMargins(0, 0, 0, 0)
-        title_column.setSpacing(6)
+        title_row.setSpacing(18)
+        info_column = QtWidgets.QVBoxLayout()
+        info_column.setContentsMargins(0, 0, 0, 0)
+        info_column.setSpacing(6)
         self.game_title = QtWidgets.QLabel("Select a game")
         self.game_title.setObjectName("steamGameTitle")
         self.game_title.setWordWrap(True)
-        title_column.addWidget(self.game_title)
+        info_column.addWidget(self.game_title)
         self.game_status = QtWidgets.QLabel("")
         self.game_status.setObjectName("steamGameStatus")
         self.game_status.setVisible(False)
-        title_column.addWidget(self.game_status)
-        title_row.addLayout(title_column, 1)
+        info_column.addWidget(self.game_status)
+        self.game_metadata = QtWidgets.QLabel("")
+        self.game_metadata.setObjectName("steamGameMetadata")
+        # Single line so the info block's width follows the last-played line and
+        # the Play button sits right beside it.
+        self.game_metadata.setWordWrap(False)
+        info_column.addWidget(self.game_metadata)
+        title_row.addLayout(info_column, 0)
         self.play_button = QtWidgets.QPushButton("Play")
         self.play_button.setObjectName("steamPlayButton")
         self.play_button.setProperty("playState", "idle")
-        self.play_button.setMinimumWidth(96)
+        self.play_button.setMinimumWidth(104)
         self.play_button.setToolTip(
             _wrapped_tooltip(
                 "Launch the selected game through Steam. The command line, "
@@ -333,13 +339,9 @@ class SteamPanel:
                 "— Steam's own clean shutdown."
             )
         )
-        title_row.addWidget(self.play_button, 0, QtCore.Qt.AlignTop)
+        title_row.addWidget(self.play_button, 0, QtCore.Qt.AlignVCenter)
+        title_row.addStretch(1)
         details_layout.addLayout(title_row)
-
-        self.game_metadata = QtWidgets.QLabel("")
-        self.game_metadata.setObjectName("steamGameMetadata")
-        self.game_metadata.setWordWrap(True)
-        details_layout.addWidget(self.game_metadata)
 
         proton_label = QtWidgets.QLabel("Compatibility tool")
         proton_label.setObjectName("steamFieldLabel")
