@@ -1151,3 +1151,77 @@ def test_migrate_preserves_existing_boot_spec_when_nothing_recovered(
     # A repair/reinstall must not wipe an existing 0.7 boot profile.
     assert ("clear-boot-runtime", []) not in actions
     assert not any(action[0] == "persist-runtime" for action in actions)
+
+
+def test_registered_daemon_program_file_parses_unit(tmp_path: Path) -> None:
+    unit = tmp_path / "penguin-burnerd.service"
+    unit.write_text(
+        "[Service]\n"
+        "Environment=SUDO_USER=jp\n"
+        "Environment=PENGUIN_BURNER_DAEMON_PROGRAM_FILE=/opt/app/penguin_burner.py\n"
+        "ExecStart=/usr/libexec/penguin-burnerd\n",
+        encoding="utf-8",
+    )
+    assert runtime_service.registered_daemon_program_file(unit) == Path(
+        "/opt/app/penguin_burner.py"
+    )
+    # No unit installed (or unreadable): nothing to validate.
+    assert (
+        runtime_service.registered_daemon_program_file(tmp_path / "missing.service")
+        is None
+    )
+    # A unit that registers no worker path also validates as None.
+    bare = tmp_path / "bare.service"
+    bare.write_text("[Service]\nExecStart=/usr/libexec/penguin-burnerd\n")
+    assert runtime_service.registered_daemon_program_file(bare) is None
+
+
+def test_daemon_worker_registration_error_detects_medium_switch(
+    tmp_path: Path,
+) -> None:
+    """A healthy daemon registered to another install must fail readiness.
+
+    The flatpak->pip switch shape (2026-07-14): the daemon answers every
+    capability check, but its unit spawns scan workers from a deleted
+    deployment and the first scan dies with 'daemon worker ... is not
+    accessible'."""
+    current = tmp_path / "site-packages" / "penguin_burner.py"
+    current.parent.mkdir()
+    current.write_text("# worker\n", encoding="utf-8")
+    unit = tmp_path / "penguin-burnerd.service"
+
+    def write_unit(worker: Path) -> None:
+        unit.write_text(
+            f"Environment=PENGUIN_BURNER_DAEMON_PROGRAM_FILE={worker}\n",
+            encoding="utf-8",
+        )
+
+    # Registration matches this install: ready.
+    write_unit(current.resolve())
+    assert (
+        runtime_service.daemon_worker_registration_error(current, unit_path=unit)
+        is None
+    )
+
+    # Registered worker no longer exists (uninstalled flatpak deployment).
+    gone = tmp_path / "flatpak" / "penguin_burner.py"
+    write_unit(gone)
+    error = runtime_service.daemon_worker_registration_error(current, unit_path=unit)
+    assert error is not None and "no longer exists" in error
+
+    # Registered worker exists but belongs to a different install
+    # (e.g. an old python's site-packages after a distro upgrade).
+    other = tmp_path / "old-site-packages" / "penguin_burner.py"
+    other.parent.mkdir()
+    other.write_text("# stale worker\n", encoding="utf-8")
+    write_unit(other.resolve())
+    error = runtime_service.daemon_worker_registration_error(current, unit_path=unit)
+    assert error is not None and "this PenguinBurner runs from" in error
+
+    # No unit at all: nothing to validate, never blocks.
+    assert (
+        runtime_service.daemon_worker_registration_error(
+            current, unit_path=tmp_path / "absent.service"
+        )
+        is None
+    )

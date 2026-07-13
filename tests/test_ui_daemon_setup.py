@@ -105,6 +105,13 @@ def test_daemon_setup_default_check_enforces_protocol_and_capabilities(
     monkeypatch.setattr(
         daemon_setup_module, "require_daemon_capabilities", fake_require
     )
+    # Isolate from this host's real unit file; the registration check has
+    # its own dedicated test below.
+    monkeypatch.setattr(
+        daemon_setup_module,
+        "daemon_worker_registration_error",
+        lambda: None,
+    )
     commands = []
 
     ok = ensure_daemon_ready_for_privileged_action(
@@ -150,3 +157,56 @@ def test_daemon_setup_cancel_leaves_action_blocked() -> None:
     assert ok is False
     assert _MessageBox.questions
     assert ran == []
+
+
+def test_daemon_setup_repairs_stale_worker_registration(monkeypatch) -> None:
+    """Healthy daemon + unit pointing at another install -> repair prompt.
+
+    Capabilities cannot see a flatpak<->pip switch; the worker-registration
+    check must route it into the same install-or-repair flow."""
+    _MessageBox.answer = _Buttons.Yes
+    _MessageBox.questions = []
+    _MessageBox.criticals = []
+    registration = {"calls": 0}
+
+    monkeypatch.setattr(
+        daemon_setup_module,
+        "require_daemon_capabilities",
+        lambda *capabilities: {"state": "idle"},
+    )
+
+    def fake_registration_error():
+        registration["calls"] += 1
+        if registration["calls"] == 1:
+            return (
+                "the hardware service spawns scan workers from "
+                "/flatpak/penguin_burner.py, but this PenguinBurner runs "
+                "from /site/penguin_burner.py"
+            )
+        return None
+
+    monkeypatch.setattr(
+        daemon_setup_module,
+        "daemon_worker_registration_error",
+        fake_registration_error,
+    )
+    commands = []
+
+    ok = ensure_daemon_ready_for_privileged_action(
+        QtWidgets=_QtWidgets,
+        parent=None,
+        log=lambda _message: None,
+        action_label="Starting Auto-UV",
+        command_factory=lambda: ["repair-daemon"],
+        run_command=lambda command, **_kwargs: (
+            commands.append(command),
+            SimpleNamespace(returncode=0, stdout="repaired\n", stderr=""),
+        )[1],
+    )
+
+    assert ok is True
+    assert commands == [["repair-daemon"]]
+    assert registration["calls"] == 2
+    assert "install or repair" in _MessageBox.questions[0][2]
+    assert "spawns scan workers from" in _MessageBox.questions[0][2]
+    assert not _MessageBox.criticals

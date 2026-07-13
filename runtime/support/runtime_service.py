@@ -590,6 +590,65 @@ def _apply_persistent_runtime(argv, *, socket_path=DEFAULT_DAEMON_SOCKET) -> dic
     return result
 
 
+def registered_daemon_program_file(unit_path=None) -> Path | None:
+    """The scan-worker path the installed daemon unit registers, or None.
+
+    None means there is nothing to validate: no unit installed, or the unit
+    is unreadable, or it predates the program-file registration."""
+    path = Path(unit_path or daemon_systemd_service_unit_path())
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    prefix = f"Environment={AUTOSTART_PROGRAM_FILE_ENV}="
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith(prefix):
+            value = line[len(prefix):].strip()
+            return Path(value) if value else None
+    return None
+
+
+def _current_install_program_file() -> Path:
+    # runtime/support/runtime_service.py sits two levels below the install
+    # root (a site-packages dir or the source checkout), where the
+    # penguin_burner.py worker entry lives — the same layout cli_base_command
+    # resolves against.
+    return Path(__file__).resolve().parents[2] / "penguin_burner.py"
+
+
+def daemon_worker_registration_error(program_file=None, *, unit_path=None) -> str | None:
+    """Why the installed daemon cannot spawn scan workers for THIS install.
+
+    The unit bakes in the worker path of whichever install medium set the
+    daemon up. After a flatpak<->pip switch — or a distro Python upgrade
+    moving site-packages — the daemon stays healthy and answers every status
+    check, but each scan launch dies with "daemon worker ... is not
+    accessible" (2026-07-14). Surfacing the mismatch from the readiness check
+    routes the user into the existing install-or-repair prompt, whose
+    migration command regenerates the unit for the current install. Returns
+    None when the unit registers no worker (nothing to validate) or the
+    registration matches this install.
+    """
+    registered = registered_daemon_program_file(unit_path)
+    if registered is None:
+        return None
+    expected = _daemon_program_file_for_unit(
+        program_file if program_file is not None else _current_install_program_file()
+    )
+    if not registered.exists():
+        return (
+            "the hardware service is registered to a scan worker that no "
+            f"longer exists: {registered}"
+        )
+    if registered != Path(expected):
+        return (
+            f"the hardware service spawns scan workers from {registered}, "
+            f"but this PenguinBurner runs from {expected}"
+        )
+    return None
+
+
 def build_daemon_api_service_unit(
     program_file,
     *,

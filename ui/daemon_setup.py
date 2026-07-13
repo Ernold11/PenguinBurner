@@ -6,7 +6,21 @@ from typing import Callable
 
 from common.flatpak_wrappers import ensure_steam_integration
 from runtime.daemon_client import DaemonCompatibilityError, require_daemon_capabilities
+from runtime.support.runtime_service import daemon_worker_registration_error
 from ui.commands import daemon_migration_command
+
+
+def _daemon_status_and_worker_check(required_capabilities: tuple[str, ...]) -> dict:
+    status = require_daemon_capabilities(*required_capabilities)
+    # A healthy, protocol-compatible daemon can still be registered to spawn
+    # scan workers from a different install (flatpak<->pip switch, or a
+    # Python upgrade that moved site-packages). Capabilities cannot see
+    # that; validate the unit's worker registration so the mismatch lands
+    # in the repair prompt instead of failing the first scan launch.
+    registration_error = daemon_worker_registration_error()
+    if registration_error:
+        raise RuntimeError(registration_error)
+    return status
 
 
 def ensure_daemon_ready_for_privileged_action(
@@ -38,7 +52,7 @@ def ensure_daemon_ready_for_privileged_action(
     # protocol handshake (plus the action's capabilities) up front so a stale
     # daemon lands in the repair prompt instead.
     check = status_check or (
-        lambda: require_daemon_capabilities(*required_capabilities)
+        lambda: _daemon_status_and_worker_check(required_capabilities)
     )
 
     try:
@@ -57,6 +71,7 @@ def ensure_daemon_ready_for_privileged_action(
         unavailable_reason = str(exc)
         prompt = (
             f"{action_label} requires the PenguinBurner root hardware service.\n\n"
+            f"({unavailable_reason})\n\n"
             "PenguinBurner can install or repair it now. If an older "
             "PenguinBurner.service exists, it will be migrated once. This may "
             "ask for your administrator password once."
