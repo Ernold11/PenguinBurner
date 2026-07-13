@@ -588,7 +588,6 @@ def test_flatpak_layer_manifest_pins_to_active_symlink_not_commit(tmp_path) -> N
         encoding="utf-8",
     )
     layer_dir.joinpath("libVkLayer_penguinburner_latency.so").write_bytes(b"so")
-    (branch_dir / "active").symlink_to(commit)
 
     target = install_vulkan_layer_manifest(home=tmp_path, layer_dirs=[layer_dir])
 
@@ -596,10 +595,18 @@ def test_flatpak_layer_manifest_pins_to_active_symlink_not_commit(tmp_path) -> N
     library_path = json.loads(target.read_text(encoding="utf-8"))["layer"][
         "library_path"
     ]
+    # Structural rewrite: the commit hash is replaced with the stable "active"
+    # segment even without the target resolving (the installer runs in the
+    # flatpak sandbox where the host active/ path is not stat-able).
     assert "/active/" in library_path
     assert commit not in library_path
-    # The active path resolves to the real library, so the layer loads.
-    assert Path(library_path).exists()
+    expected_active = str(
+        branch_dir
+        / "active"
+        / "files/lib/python3.13/site-packages/overlay/native_layer"
+        / "libVkLayer_penguinburner_latency.so"
+    )
+    assert library_path == expected_active
 
 
 def test_flatpak_shell_installer_registers_user_vulkan_layer_manifest() -> None:

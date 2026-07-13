@@ -107,8 +107,11 @@ def _stabilize_flatpak_deploy_path(path: Path) -> Path:
     is_commit = len(commit) == 64 and all(c in "0123456789abcdef" for c in commit)
     if not is_commit:
         return path
-    stable = Path(*parts[:commit_index], "active", *parts[files_index:])
-    return stable if (stable / NATIVE_LAYER_LIBRARY).exists() else path
+    # Structural rewrite only: flatpak always maintains the <branch>/active
+    # symlink next to a deploy commit, and the installer runs inside the
+    # sandbox where the host active/ path is not visible to stat — so an
+    # existence check here would wrongly fall back to the commit path.
+    return Path(*parts[:commit_index], "active", *parts[files_index:])
 
 
 def _host_vulkan_manifest_text(
