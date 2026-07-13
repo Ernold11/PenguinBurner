@@ -217,7 +217,7 @@ def run_final_verification_and_save(
 
     if final_plan is None:
         raise AutoUvError("final verification did not produce a final curve")
-    final_comparison_probe = choose_final_comparison_probe(
+    profile_metrics_probe = choose_profile_metrics_probe(
         stable_probe=stable_probe,
         final_probe=final_probe,
         final_voltage_mv=int(final_voltage_mv),
@@ -227,7 +227,8 @@ def run_final_verification_and_save(
         plan=final_plan,
         lock_clock_mhz=int(final_lock_clock_mhz),
         voltage_mv=int(final_voltage_mv),
-        probe=final_comparison_probe,
+        probe=profile_metrics_probe,
+        final_verification_probe=final_probe,
         verification_duration_s=int(final_verification_duration_s),
         tail_rise_bins=int(tail_rise_bins),
         power_limit_w=gpu_policy.get("power_limit_w"),
@@ -242,7 +243,8 @@ def run_final_verification_and_save(
         plan=final_plan,
         lock_clock_mhz=int(final_lock_clock_mhz),
         voltage_mv=int(final_voltage_mv),
-        probe=final_comparison_probe,
+        probe=final_probe,
+        final_verification_probe=final_probe,
         base_probe=discovery_summary,
         fan_curve_payload=fan_result.payload if fan_result is not None else None,
         memory_offset_mhz=memory_offset_from_gpu_policy(gpu_policy),
@@ -257,7 +259,7 @@ def run_final_verification_and_save(
         voltage_mv=int(final_voltage_mv),
         lock_clock_mhz=int(final_lock_clock_mhz),
         final_status=final_status,
-        final_probe=final_comparison_probe,
+        final_probe=final_probe,
     )
     emit_auto_uv_event(
         event_callback,
@@ -272,7 +274,7 @@ def run_final_verification_and_save(
         final_lock_clock_mhz=int(final_lock_clock_mhz),
         initial_probe=discovery_summary,
         probe_history=probe_history,
-        final_probe=final_comparison_probe,
+        final_probe=profile_metrics_probe,
     )
 
 
@@ -323,13 +325,14 @@ def final_candidate(
     )
 
 
-def choose_final_comparison_probe(
+def choose_profile_metrics_probe(
     *,
     stable_probe,
     final_probe,
     final_voltage_mv: int,
     final_lock_clock_mhz: int,
 ):
+    """Keep the comparable candidate metrics; long Q2 clock is stored separately."""
     if (
         stable_probe is not None
         and int(stable_probe.candidate_voltage_mv) == int(final_voltage_mv)

@@ -323,8 +323,57 @@ def read_auto_uv_profiles(
         source="profile-store",
         include_unverified_user_edits=include_unverified_user_edits,
     )
+    apply_latest_final_verification_metrics(profiles)
     profiles.sort(key=_profile_sort_time, reverse=True)
     return profiles
+
+
+def apply_latest_final_verification_metrics(profiles: list[dict]) -> None:
+    """Repair the latest pre-fix profile in memory from its matching long check."""
+    latest = _read_json(
+        default_user_config_dir() / "uv-result" / "auto-uv-latest-verified.json"
+    )
+    if latest is None:
+        return
+    candidate_id = _candidate_id(latest)
+    verified_at = _iso_timestamp(latest.get("verified_at"))
+    if latest.get("avg_core_clock_mhz") in (None, "") or verified_at is None:
+        return
+    matches = [
+        profile
+        for profile in profiles
+        if bool(profile.get("final_verified"))
+        and _candidate_id(profile) == candidate_id
+        and _profile_matches_verification_time(profile, verified_at)
+    ]
+    if not matches:
+        return
+    newest_match = max(matches, key=_profile_sort_time)
+    for key in _VERIFICATION_METRIC_KEYS:
+        value = latest.get(key)
+        if value not in (None, ""):
+            newest_match[key] = value
+    newest_match["final_q2rtx_avg_core_clock_mhz"] = latest["avg_core_clock_mhz"]
+    newest_match["final_verification_metrics"] = True
+
+
+def _profile_matches_verification_time(profile: dict, verified_at: float) -> bool:
+    created_at = _iso_timestamp(
+        profile.get("profile_created_at") or profile.get("verified_at")
+    )
+    if created_at is None:
+        return False
+    return 0.0 <= created_at - float(verified_at) <= 300.0
+
+
+def _iso_timestamp(value: object) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return float(datetime.fromisoformat(text).timestamp())
+    except ValueError:
+        return None
 
 
 def profile_summary(
@@ -333,6 +382,9 @@ def profile_summary(
     tier_assignments: dict[str, str] | None = None,
     disabled_profile_tier_ids: set[str] | None = None,
 ) -> dict:
+    long_metrics = bool(profile.get("final_verification_metrics")) or profile.get(
+        "final_q2rtx_avg_core_clock_mhz"
+    ) not in (None, "")
     summary = {
         "profile_id": str(profile.get("profile_id", "")),
         "candidate_id": str(profile.get("candidate_id", "")),
@@ -345,16 +397,22 @@ def profile_summary(
         "lock_clock_mhz": profile.get("lock_clock_mhz"),
         "memory_offset_mhz": profile.get("memory_offset_mhz"),
         "power_limit_w": profile.get("power_limit_w"),
-        "avg_core_clock_mhz": profile.get("avg_core_clock_mhz"),
+        "avg_core_clock_mhz": _effective_profile_clock_mhz(profile),
         "avg_fps": profile.get("avg_fps"),
         "avg_power_w": profile.get("avg_power_w"),
         "efficiency_fps_per_w": profile.get("efficiency_fps_per_w"),
         "base_candidate_voltage_mv": profile.get("base_candidate_voltage_mv"),
         "base_lock_clock_mhz": profile.get("base_lock_clock_mhz"),
-        "base_avg_core_clock_mhz": profile.get("base_avg_core_clock_mhz"),
-        "base_avg_fps": profile.get("base_avg_fps"),
-        "base_avg_power_w": profile.get("base_avg_power_w"),
-        "base_efficiency_fps_per_w": profile.get("base_efficiency_fps_per_w"),
+        "base_avg_core_clock_mhz": (
+            None if long_metrics else profile.get("base_avg_core_clock_mhz")
+        ),
+        "base_avg_fps": None if long_metrics else profile.get("base_avg_fps"),
+        "base_avg_power_w": (
+            None if long_metrics else profile.get("base_avg_power_w")
+        ),
+        "base_efficiency_fps_per_w": (
+            None if long_metrics else profile.get("base_efficiency_fps_per_w")
+        ),
         "final_verified": bool(profile.get("final_verified", False)),
         "requires_verification": bool(profile.get("requires_verification", False)),
         "verification_status": profile.get("verification_status"),
@@ -368,6 +426,13 @@ def profile_summary(
         )
     )
     return summary
+
+
+def _effective_profile_clock_mhz(profile: dict):
+    long_clock = profile.get("final_q2rtx_avg_core_clock_mhz")
+    if long_clock not in (None, ""):
+        return long_clock
+    return profile.get("avg_core_clock_mhz")
 
 
 def profile_display_name(profile: dict) -> str:
@@ -526,7 +591,7 @@ def format_profile_table(profiles: list[dict]) -> str:
                 profile_display_name(profile),
                 _display_number(profile.get("candidate_voltage_mv"), precision=0),
                 _display_number(profile.get("lock_clock_mhz"), precision=0),
-                _display_number(profile.get("avg_core_clock_mhz"), precision=2),
+                _display_number(_effective_profile_clock_mhz(profile), precision=2),
                 _display_number(profile.get("efficiency_fps_per_w"), precision=4),
                 _display_signed_memory_clock(profile.get("memory_offset_mhz")),
                 str(profile.get("profile_source", "")),

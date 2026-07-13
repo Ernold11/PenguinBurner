@@ -11,7 +11,10 @@ from stability.q2rtx.models import Q2RTXStabilityConfig
 
 from auto_uv.domain.types import AutoUvProbeSummary
 from auto_uv.final_verification import fan_curve, result_files
-from auto_uv.final_verification.main_loop import final_candidate
+from auto_uv.final_verification.main_loop import (
+    choose_profile_metrics_probe,
+    final_candidate,
+)
 from auto_uv.persistence import auto_uv_persisted_json_files as persisted_files
 from auto_uv_test_data import wide_base_curve
 
@@ -118,6 +121,18 @@ def test_final_verification_candidate_carries_auto_oc_metadata() -> None:
     assert candidate.metadata["auto_oc_limit_mhz"] == 380
 
 
+def test_profile_metrics_keep_matching_short_probe() -> None:
+    short_probe = _summary(voltage_mv=925, clock_mhz=2830)
+    long_probe = _summary(voltage_mv=925, clock_mhz=2888)
+
+    assert choose_profile_metrics_probe(
+        stable_probe=short_probe,
+        final_probe=long_probe,
+        final_voltage_mv=925,
+        final_lock_clock_mhz=2830,
+    ) is short_probe
+
+
 def test_final_fan_curve_blocks_when_final_load_is_too_hot() -> None:
     payload = fan_curve.build_final_verification_fan_curve_payload(
         final_probe=_summary(temp_c=80.0),
@@ -154,7 +169,8 @@ def test_final_verified_profile_contains_fan_payload_and_memory_offset(
         plan=plan,
         lock_clock_mhz=2550,
         voltage_mv=935,
-        probe=_summary(),
+        probe=_summary(clock_mhz=2830),
+        final_verification_probe=_summary(clock_mhz=2888),
         base_probe=_summary(voltage_mv=1025, clock_mhz=2754),
         fan_curve_payload={"fan": {"curve": [[45.0, 0.0], [90.0, 100.0]]}},
         memory_offset_mhz=500,
@@ -168,6 +184,9 @@ def test_final_verified_profile_contains_fan_payload_and_memory_offset(
     assert payload["memory_offset_mhz"] == 500
     assert payload["power_limit_w"] == 360
     assert payload["tail_rise_bins"] == 2
+    assert payload["avg_core_clock_mhz"] == 2888.0
+    assert payload["final_q2rtx_avg_core_clock_mhz"] == 2888.0
+    assert payload["final_verification_metrics"] is True
     assert payload["flatten_target"]["tail_rise_bins"] == 2
     assert payload["fan_curve_payload"]["fan"]["curve"][-1] == [90.0, 100.0]
     assert (tmp_path / "uv-result" / "auto-uv-verified-candidates.json").exists()

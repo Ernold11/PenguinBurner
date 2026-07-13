@@ -249,6 +249,70 @@ def test_profile_table_headers_and_sorting_scope() -> None:
     assert PROFILE_SORTABLE_COLUMNS == frozenset({0, 2, 3, 4, 5, 6, 7})
 
 
+def test_existing_profile_uses_matching_latest_long_verification_clock(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    profile_path = archive_auto_uv_profile(
+        {
+            "candidate_id": "925mv-2980mhz",
+            "candidate_voltage_mv": 925,
+            "lock_clock_mhz": 2980,
+            "avg_core_clock_mhz": 2830.0,
+            "avg_fps": 63.456,
+            "avg_power_w": 299.53,
+            "efficiency_fps_per_w": 0.21185,
+            "base_avg_core_clock_mhz": 2743.6,
+            "base_avg_fps": 64.228,
+            "base_avg_power_w": 300.0,
+            "base_efficiency_fps_per_w": 0.21409,
+            "final_verified": True,
+            "points": [
+                {
+                    "index": 0,
+                    "voltage_mv": 925,
+                    "base_mhz": 2475,
+                    "target_mhz": 2980,
+                    "new_offset_mhz": 505,
+                }
+            ],
+        }
+    )
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    result_dir = tmp_path / "uv-result"
+    result_dir.mkdir(parents=True)
+    (result_dir / "auto-uv-latest-verified.json").write_text(
+        json.dumps(
+            {
+                "candidate_id": "925mv-2980mhz",
+                "candidate_voltage_mv": 925,
+                "lock_clock_mhz": 2980,
+                "avg_core_clock_mhz": 2888.06,
+                "avg_fps": 67.161,
+                "avg_power_w": 317.098,
+                "efficiency_fps_per_w": 0.211799,
+                "verified_at": profile["profile_created_at"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = profile_store.read_auto_uv_profile_summaries()
+
+    assert loaded[0]["avg_core_clock_mhz"] == 2888.06
+    assert loaded[0]["avg_fps"] == 67.161
+    assert loaded[0]["avg_power_w"] == 317.098
+    assert loaded[0]["efficiency_fps_per_w"] == 0.211799
+    assert loaded[0]["base_avg_core_clock_mhz"] is None
+    assert loaded[0]["base_avg_fps"] is None
+    assert loaded[0]["base_avg_power_w"] is None
+    assert loaded[0]["base_efficiency_fps_per_w"] is None
+    assert json.loads(profile_path.read_text(encoding="utf-8"))[
+        "avg_core_clock_mhz"
+    ] == 2830.0
+
+
 def test_profile_non_sort_columns_have_no_sort_keys() -> None:
     sort_values = _profile_sort_values(
         {

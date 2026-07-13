@@ -54,6 +54,7 @@ def write_final_stable_result(
     lock_clock_mhz: int,
     voltage_mv: int,
     probe: AutoUvProbeSummary | None,
+    final_verification_probe: AutoUvProbeSummary | None = None,
     verification_duration_s: int | None = None,
     tail_rise_bins: int = 0,
     power_limit_w: int | None = None,
@@ -62,7 +63,7 @@ def write_final_stable_result(
         plan=plan,
         lock_clock_mhz=int(lock_clock_mhz),
         voltage_mv=int(voltage_mv),
-        probe=probe,
+        probe=final_verification_probe or probe,
         reason="stable",
         label="final",
         tail_rise_bins=int(tail_rise_bins),
@@ -77,6 +78,7 @@ def write_final_stable_result(
             ),
         }
     )
+    _add_long_verification_clock(payload, final_verification_probe)
     if power_limit_w is not None:
         payload["power_limit_w"] = int(power_limit_w)
     return safe_json_write(
@@ -91,6 +93,7 @@ def write_final_verified_profile(
     lock_clock_mhz: int,
     voltage_mv: int,
     probe: AutoUvProbeSummary | None,
+    final_verification_probe: AutoUvProbeSummary | None = None,
     base_probe: AutoUvProbeSummary | None,
     fan_curve_payload: dict | None = None,
     memory_offset_mhz: int | None = None,
@@ -114,13 +117,14 @@ def write_final_verified_profile(
         plan=plan,
         lock_clock_mhz=int(lock_clock_mhz),
         voltage_mv=int(voltage_mv),
-        probe=probe,
+        probe=final_verification_probe or probe,
         base_probe=base_probe,
         reason="final-verified",
         label="final-verified",
         final_verified=True,
         tail_rise_bins=int(tail_rise_bins),
     )
+    _add_long_verification_clock(payload, final_verification_probe)
     if isinstance(fan_curve_payload, dict):
         payload["fan_curve_payload"] = dict(fan_curve_payload)
     if memory_offset_mhz is not None:
@@ -133,6 +137,20 @@ def write_final_verified_profile(
         payload["generated_profile_tier"] = str(generated_profile_tier).strip()
     append_verified_candidate(payload)
     return archive_final_verified_profile(payload)
+
+
+def _add_long_verification_clock(
+    payload: dict,
+    probe: AutoUvProbeSummary | None,
+) -> None:
+    if probe is None:
+        return
+    clock_mhz = probe.q2rtx_avg_core_clock_mhz
+    if clock_mhz is None:
+        clock_mhz = probe.avg_core_clock_mhz
+    if clock_mhz is not None:
+        payload["final_q2rtx_avg_core_clock_mhz"] = float(clock_mhz)
+        payload["final_verification_metrics"] = True
 
 
 def archive_final_verified_profile(final_curve_payload: dict) -> Path:
