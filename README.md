@@ -63,11 +63,14 @@ prompts.
 2. Launch PenguinBurner (`penguin-burner` or `pburn`). Flatpak users without
    wrappers should use the [Flatpak guide](docs/flatpak.md).
 3. Click **Setup Auto Undervolt**, choose a performance bias, and let the scan
-   find and verify a stable curve.
-4. On the **Profiles** tab, select the result and click **Apply Selected**.
-   Toggle **Silent fan curve** for the quiet fan profile.
-5. Enable **Persist on Startup** to apply it at boot, or **Apply Adaptive** to
-   switch tiers as your frame rate changes.
+   find and verify a stable curve. When it finishes, the verified profile is
+   applied and set as your boot profile automatically.
+4. On the **Profiles** tab you can select any saved profile and click **Apply**
+   to switch to it (applying also makes it the boot profile). Toggle **Silent
+   fan curve** for the quiet fan profile, or **Restore defaults** to return the
+   GPU to stock.
+5. For per-game tuning — including **Adaptive**, which switches tiers as your
+   frame rate changes — use the **Steam** tab to pick a mode per game.
 
 ## Automatic Tuning
 
@@ -124,8 +127,8 @@ switching. NVIDIA-only comparison, to the best of our knowledge:
 | Manual V/F curve editor | ✅ | ✅ |
 | Fan curve control | ✅ auto silent curve + editor | ✅ custom curves |
 | Power limit | ✅ Auto-UV + saved profiles | ✅ |
-| Steam library import | 🚧 planned | ❌ |
-| Per-game tuning profiles | 🚧 planned | ❌ |
+| Steam library import | ✅ auto-discovered library | ❌ |
+| Per-game tuning profiles | ✅ per-game mode + live launch | ❌ |
 | Runtime profile switching | ✅ by present-frame FPS pacing | ✅ by running process / gamemode |
 | MSI Afterburner import | ✅ | ❌ |
 | Historical telemetry charts | 🚧 planned (live overlay today) | ✅ charts + CSV export |
@@ -145,8 +148,6 @@ the resulting curve under LACT if you prefer.
 ### Roadmap (planned, not yet shipped)
 
 - **Historical data plotting** — power, clocks, and FPS over time.
-- **Steam library discovery** — find installed games automatically.
-- **Per-game tuning** — save and auto-apply a profile per game.
 
 ## Performance Overlay
 
