@@ -391,7 +391,17 @@ class SteamPanel:
         self.target_fps_spin.setSuffix(" FPS")
         self.target_fps_spin.setValue(adaptive_target_fps_from_env())
         self.target_fps_spin.setToolTip(target_fps_tooltip)
-        details_layout.addWidget(self.target_fps_spin)
+        # Size the box for its widest value ("1000 FPS") instead of letting it
+        # stretch across the whole details pane.
+        _fps_width = (
+            self.target_fps_spin.fontMetrics().horizontalAdvance("1000 FPS") + 48
+        )
+        self.target_fps_spin.setFixedWidth(_fps_width)
+        target_fps_row = QtWidgets.QHBoxLayout()
+        target_fps_row.setContentsMargins(0, 0, 0, 0)
+        target_fps_row.addWidget(self.target_fps_spin)
+        target_fps_row.addStretch(1)
+        details_layout.addLayout(target_fps_row)
 
         self.enabled_checkbox = QtWidgets.QCheckBox(
             "Enable PenguinBurner per-game profiles"
