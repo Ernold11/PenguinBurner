@@ -59,6 +59,8 @@ class _FakeManager:
         self.launch_changes: list[tuple[str, str]] = []
         self.enabled_changes: list[tuple[str, bool]] = []
         self.target_fps_changes: list[tuple[str, float | None]] = []
+        self.bulk_enabled: list[tuple[list[str], bool]] = []
+        self.bulk_overlay: list[tuple[list[str], bool]] = []
         self.stop_ok = True
         self.marker = True
         self.cdp = True
@@ -136,6 +138,18 @@ class _FakeManager:
             message="Applied live.",
             launch_options=launch_options,
         )
+
+    def set_all_games_enabled(self, app_ids, enabled):
+        self.bulk_enabled.append((sorted(app_ids), bool(enabled)))
+        self.rows = tuple(
+            replace(row, setting=replace(row.setting, enabled=bool(enabled)))
+            for row in self.rows
+        )
+        return SimpleNamespace(ok=True, message="bulk enable done")
+
+    def set_all_games_overlay(self, app_ids, overlay):
+        self.bulk_overlay.append((sorted(app_ids), bool(overlay)))
+        return SimpleNamespace(ok=True, message="bulk overlay done")
 
     def set_game_target_fps(self, app_id: str, target_fps):
         self.target_fps_changes.append((app_id, target_fps))
@@ -391,6 +405,61 @@ def test_panel_keeps_library_left_and_one_selected_game_editor(
     assert panel.game_title.text() == "Zeta"
     assert panel.launch_edit.toPlainText() == "gamemoderun %command%"
     assert panel.launch_edit.textCursor().position() == 0
+
+    panel._sync_timer.stop()
+
+
+def test_all_games_menu_bulk_enables_and_disables_with_confirmation(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    QtCore, QtGui, QtWidgetsModule, _pg = import_qt()
+    rows = (
+        _row(tmp_path, "10", "Alpha", 100),
+        _row(tmp_path, "20", "Beta", 200),
+    )
+    manager = _FakeManager(rows)
+    panel = SteamPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgetsModule,
+        manager=cast(SteamIntegrationManager, manager),
+    )
+    qtbot.addWidget(panel.widget)
+    qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
+
+    assert panel.all_games_button.isEnabled()
+    # Nothing enabled yet: only "enable all" can change something.
+    assert panel.enable_all_action.isEnabled() is True
+    assert panel.disable_all_action.isEnabled() is False
+    assert panel.overlay_all_action.isEnabled() is False
+    assert panel.overlay_none_action.isEnabled() is False
+
+    # Declining the confirmation applies nothing.
+    monkeypatch.setattr(panel, "_confirm_bulk", lambda *args: False)
+    panel.enable_all_action.trigger()
+    assert manager.bulk_enabled == []
+
+    # Disabled overlay action is a no-op even when triggered.
+    monkeypatch.setattr(panel, "_confirm_bulk", lambda *args: True)
+    panel.overlay_all_action.trigger()
+    assert manager.bulk_overlay == []
+
+    panel.enable_all_action.trigger()
+    assert manager.bulk_enabled == [(["10", "20"], True)]
+    # Everything enabled now: mass-enable grays out, the others open up.
+    assert panel.enable_all_action.isEnabled() is False
+    assert panel.disable_all_action.isEnabled() is True
+    assert panel.overlay_all_action.isEnabled() is True
+    assert panel.overlay_none_action.isEnabled() is False
+
+    panel.overlay_all_action.trigger()
+    assert manager.bulk_overlay == [(["10", "20"], True)]
+
+    panel.disable_all_action.trigger()
+    assert manager.bulk_enabled[-1] == (["10", "20"], False)
+    assert panel.disable_all_action.isEnabled() is False
 
     panel._sync_timer.stop()
 

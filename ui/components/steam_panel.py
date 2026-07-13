@@ -247,6 +247,41 @@ class SteamPanel:
             )
         )
         sort_row.addWidget(self.sort_combo, 1)
+        self.all_games_button = QtWidgets.QToolButton()
+        self.all_games_button.setObjectName("steamAllGamesButton")
+        self.all_games_button.setText("All games")
+        self.all_games_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.all_games_button.setToolTip(
+            _wrapped_tooltip(
+                "Bulk actions for every installed game: enable or disable the "
+                "PenguinBurner wrapper, or show/hide the In-Game overlay for "
+                "games that already have PenguinBurner enabled. Each action "
+                "asks for confirmation first."
+            )
+        )
+        all_games_menu = QtWidgets.QMenu(self.all_games_button)
+        self.enable_all_action = all_games_menu.addAction(
+            "Enable PenguinBurner for all games",
+            lambda: self._bulk_set_enabled(True),
+        )
+        self.disable_all_action = all_games_menu.addAction(
+            "Disable PenguinBurner for all games",
+            lambda: self._bulk_set_enabled(False),
+        )
+        all_games_menu.addSeparator()
+        self.overlay_all_action = all_games_menu.addAction(
+            "Show In-Game overlay for enabled games",
+            lambda: self._bulk_set_overlay(True),
+        )
+        self.overlay_none_action = all_games_menu.addAction(
+            "Hide In-Game overlay for all games",
+            lambda: self._bulk_set_overlay(False),
+        )
+        # Gray out no-op directions (e.g. "enable all" when everything is
+        # already enabled) right before the menu opens.
+        all_games_menu.aboutToShow.connect(self._sync_all_games_menu)
+        self.all_games_button.setMenu(all_games_menu)
+        sort_row.addWidget(self.all_games_button)
         library_layout.addLayout(sort_row)
 
         self.game_list = QtWidgets.QListWidget()
@@ -664,6 +699,10 @@ class SteamPanel:
         )
         self.setup_button.setEnabled(not self._scan_running and not restart_running)
         editable = has_selection and self._live_ready and not self._scan_running
+        self.all_games_button.setEnabled(
+            bool(self._rows) and self._live_ready and not self._scan_running
+        )
+        self._sync_all_games_menu()
         self.launch_edit.setEnabled(has_selection)
         self.launch_edit.setReadOnly(not editable)
         self.enabled_checkbox.setEnabled(editable)
@@ -786,6 +825,82 @@ class SteamPanel:
         result = self.manager.set_game_mode(app_id, self.mode_combo.currentData())
         hot = self.manager.hot_reapply(app_id) if result.ok else None
         self._after_apply(app_id, result, extra=hot)
+
+    def _sync_all_games_menu(self) -> None:
+        """Each bulk action stays clickable only while it would change
+        something: no mass-enable when everything is already enabled, no
+        overlay actions without a PenguinBurner-enabled game."""
+        rows = self._rows.values()
+        enabled_rows = [row for row in rows if row.setting.enabled]
+        self.enable_all_action.setEnabled(len(enabled_rows) < len(self._rows))
+        self.disable_all_action.setEnabled(bool(enabled_rows))
+        self.overlay_all_action.setEnabled(
+            any(not row.setting.overlay for row in enabled_rows)
+        )
+        self.overlay_none_action.setEnabled(
+            any(row.setting.overlay for row in enabled_rows)
+        )
+
+    def _bulk_set_enabled(self, enabled: bool) -> None:
+        if not self._flush_pending_launch_edit():
+            return
+        app_ids = list(self._rows)
+        if not app_ids:
+            return
+        count = len(app_ids)
+        games_word = "game" if count == 1 else "games"
+        if enabled:
+            text = (
+                f"Add the PenguinBurner wrapper to the launch options of "
+                f"{count} {games_word}?\n\n"
+                "The In-Game overlay stays off, and MangoHud is disabled in "
+                'wrapped games. "Disable PenguinBurner for all games" '
+                "restores the original launch options."
+            )
+        else:
+            text = (
+                f"Remove the PenguinBurner wrapper from {count} {games_word} "
+                "and restore their original Steam launch options?"
+            )
+        if not self._confirm_bulk("All games", text):
+            return
+        self._after_bulk_apply(self.manager.set_all_games_enabled(app_ids, enabled))
+
+    def _bulk_set_overlay(self, overlay: bool) -> None:
+        if not self._flush_pending_launch_edit():
+            return
+        app_ids = [
+            app_id for app_id, row in self._rows.items() if row.setting.enabled
+        ]
+        if not app_ids:
+            self._sync_status("No PenguinBurner-enabled games to change.")
+            return
+        count = len(app_ids)
+        games_word = "game" if count == 1 else "games"
+        verb = "Show" if overlay else "Hide"
+        if not self._confirm_bulk(
+            "All games",
+            f"{verb} the In-Game overlay in {count} PenguinBurner-enabled "
+            f"{games_word}?",
+        ):
+            return
+        self._after_bulk_apply(self.manager.set_all_games_overlay(app_ids, overlay))
+
+    def _confirm_bulk(self, title: str, text: str) -> bool:
+        QtWidgets = self.QtWidgets
+        answer = QtWidgets.QMessageBox.question(
+            self.widget,
+            title,
+            text,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        return answer == QtWidgets.QMessageBox.Yes
+
+    def _after_bulk_apply(self, result) -> None:
+        rows = self.manager.refresh(read_launch_options=False)
+        self._populate(rows)
+        prefix = "" if result.ok else "FAILED: "
+        self._sync_status(f"{prefix}{result.message}")
 
     def _target_fps_changed(self, value: float) -> None:
         if self._syncing:

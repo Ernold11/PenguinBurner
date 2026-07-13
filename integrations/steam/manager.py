@@ -276,6 +276,59 @@ class SteamIntegrationManager:
             replace(setting, target_fps=normalize_game_target_fps(target_fps)),
         )
 
+    def set_all_games_enabled(self, app_ids, enabled: bool) -> ApplyResult:
+        """Bulk wrapper toggle. Enabling keeps each game's overlay flag (off
+        unless the user opted in per game); disabling restores each game's
+        original launch options."""
+        return self._apply_to_games(
+            app_ids,
+            lambda app_id: self.set_game_enabled(app_id, bool(enabled)),
+            "enabled" if enabled else "disabled",
+        )
+
+    def set_all_games_overlay(self, app_ids, overlay: bool) -> ApplyResult:
+        return self._apply_to_games(
+            app_ids,
+            lambda app_id: self.set_game_overlay(app_id, bool(overlay)),
+            "overlay shown" if overlay else "overlay hidden",
+        )
+
+    def _apply_to_games(self, app_ids, action, label: str) -> ApplyResult:
+        ids = [str(app_id) for app_id in app_ids]
+        failed: list[str] = []
+        for app_id in ids:
+            result = action(app_id)
+            if not result.ok:
+                failed.append(app_id)
+        changed = len(ids) - len(failed)
+        # One daemon-status probe instead of one per game: only games the
+        # daemon is currently watching can pick the change up live.
+        applied = set(ids) - set(failed)
+        for app_id in self._watched_running_app_ids() & applied:
+            self.hot_reapply(app_id)
+        games_word = "game" if changed == 1 else "games"
+        message = f"PenguinBurner {label} for {changed} {games_word}."
+        if failed:
+            return ApplyResult(
+                False,
+                f"{message} Failed for {len(failed)}: {', '.join(failed[:5])}.",
+            )
+        return ApplyResult(True, message)
+
+    def _watched_running_app_ids(self) -> frozenset[str]:
+        from runtime.daemon_client import daemon_status
+
+        try:
+            status = daemon_status(timeout_s=1.0)
+        except Exception:
+            return frozenset()
+        watched = (status.get("game_runtime") or {}).get("watched") or []
+        return frozenset(
+            str(entry.get("app_id"))
+            for entry in watched
+            if entry.get("app_id")
+        )
+
     def available_compat_tools(self, app_id: str) -> tuple[tuple[str, str], ...]:
         if app_id in self._compat_tools:
             return self._compat_tools[app_id]

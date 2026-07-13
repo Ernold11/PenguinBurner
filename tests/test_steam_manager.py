@@ -117,6 +117,56 @@ def test_library_scan_initializes_disabled_adaptive_without_overlay(manager, tmp
     assert setting.original_launch_options == "gamemoderun %command%"
 
 
+def test_bulk_enable_and_disable_all_games(manager, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(manager, "_watched_running_app_ids", lambda: frozenset())
+    manager.refresh(initialize_defaults=True)
+
+    result = manager.set_all_games_enabled([APP_ID], True)
+
+    assert result.ok
+    assert "enabled for 1 game" in result.message
+    assert "PENGUIN_BURNER" in _FakeCdpClient.launch_options[APP_ID]
+    stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
+    setting = stored[ACCOUNT_ID][APP_ID]
+    assert setting.enabled is True
+    # Bulk enable never turns the overlay on.
+    assert setting.overlay is False
+
+    result = manager.set_all_games_enabled([APP_ID], False)
+
+    assert result.ok
+    assert _FakeCdpClient.launch_options[APP_ID] == "gamemoderun %command%"
+    stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
+    assert stored[ACCOUNT_ID][APP_ID].enabled is False
+
+
+def test_bulk_apply_hot_reapplies_only_watched_running_games(
+    manager,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        manager, "_watched_running_app_ids", lambda: frozenset({APP_ID})
+    )
+    reapplied = []
+    monkeypatch.setattr(manager, "hot_reapply", lambda app_id: reapplied.append(app_id))
+    manager.refresh(initialize_defaults=True)
+
+    manager.set_all_games_enabled([APP_ID], True)
+
+    assert reapplied == [APP_ID]
+
+
+def test_bulk_overlay_show_updates_wrapper_flag(manager, monkeypatch) -> None:
+    monkeypatch.setattr(manager, "_watched_running_app_ids", lambda: frozenset())
+    manager.refresh(initialize_defaults=True)
+    manager.set_game_enabled(APP_ID, True)
+
+    result = manager.set_all_games_overlay([APP_ID], True)
+
+    assert result.ok
+    assert "--pb-overlay=1" in _FakeCdpClient.launch_options[APP_ID]
+
+
 def test_library_scan_adopts_existing_wrapper_as_enabled_adaptive_choice(
     manager,
     tmp_path,
