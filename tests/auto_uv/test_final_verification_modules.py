@@ -135,13 +135,32 @@ def test_profile_metrics_keep_matching_short_probe() -> None:
 
 def test_final_fan_curve_blocks_when_final_load_is_too_hot() -> None:
     payload = fan_curve.build_final_verification_fan_curve_payload(
-        final_probe=_summary(temp_c=80.0),
-        probes=[_summary(temp_c=80.0)],
+        final_probe=_summary(temp_c=81.0),
+        probes=[_summary(temp_c=81.0)],
     )
 
     assert payload is not None
     assert payload["fan_curve_blocked"] is True
     assert payload["block_reason"] == "base-load-temperature-too-high"
+
+
+def test_final_fan_curve_is_more_aggressive_from_75_to_80c() -> None:
+    payload = fan_curve.build_final_verification_fan_curve_payload(
+        final_probe=_summary(temp_c=76.0, fan_pct=47.0),
+        probes=[_summary(temp_c=76.0, fan_pct=47.0)],
+    )
+
+    assert payload is not None
+    assert payload.get("fan_curve_blocked") is not True
+    curve = payload["fan"]["curve"]
+    hot_points = [point for point in curve if 75.0 <= point[0] <= 90.0]
+    assert hot_points
+    assert hot_points[-4:] == [
+        [76.0, 52.0],
+        [80.0, 60.0],
+        [85.0, 75.0],
+        [90.0, 100.0],
+    ]
 
 
 def test_final_fan_curve_keeps_runtime_curve_fields() -> None:

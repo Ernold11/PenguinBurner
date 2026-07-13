@@ -46,6 +46,13 @@ def build_final_verification_fan_curve_payload(
     probes: list[AutoUvProbeSummary],
 ) -> dict | None:
     telemetry = probe_telemetry_payload(final_probe=final_probe, probes=probes)
+    return build_fan_curve_payload_from_telemetry(telemetry)
+
+
+def build_fan_curve_payload_from_telemetry(telemetry: dict) -> dict | None:
+    """Build this profile's curve from saved scan telemetry."""
+    if not isinstance(telemetry, dict):
+        return None
     final_telemetry = telemetry["final"]
     scan_telemetry = telemetry["scan"]
     loaded_temp_c = (
@@ -113,6 +120,14 @@ def build_final_verification_fan_curve_payload(
         speed_reduction_pct=float(speed_reduction_pct),
         effective_power=float(effective_power),
     )
+    safe_anchor_speed_pct = clamp(
+        max(
+            float(safe_anchor_speed_pct),
+            float(AUTO_UV_FAN_TUNING.hot_range_end_speed_pct),
+        ),
+        float(min_active_speed_pct),
+        float(AUTO_UV_FAN_TUNING.load_anchor_max_speed_pct),
+    )
     curve = monotonic_curve(
         fan_curve_points(
             zero_rpm_temp_c=float(zero_rpm_temp_c),
@@ -126,6 +141,12 @@ def build_final_verification_fan_curve_payload(
             full_speed_pct=float(full_speed_pct),
             max_curve_points=int(max_curve_points),
             effective_power=float(effective_power),
+            hot_range_start_temp_c=float(
+                AUTO_UV_FAN_TUNING.hot_range_start_temp_c
+            ),
+            hot_range_start_speed_pct=float(
+                AUTO_UV_FAN_TUNING.hot_range_start_speed_pct
+            ),
         )
     )
     generated_at = datetime.now().astimezone().isoformat()
@@ -188,6 +209,8 @@ def fan_curve_points(
     full_speed_pct: float,
     max_curve_points: int,
     effective_power: float,
+    hot_range_start_temp_c: float,
+    hot_range_start_speed_pct: float,
 ) -> list[tuple[float, float]]:
     points: list[tuple[float, float]] = [
         (zero_rpm_temp_c, 0.0),
@@ -212,7 +235,31 @@ def fan_curve_points(
             (full_speed_temp_c, full_speed_pct),
         ]
     )
-    return points
+    hot_span_c = max(1.0, safe_curve_temp_c - hot_range_start_temp_c)
+    hot_speed_span_pct = max(
+        0.0,
+        safe_anchor_speed_pct - hot_range_start_speed_pct,
+    )
+    return [
+        (
+            temp_c,
+            max(
+                speed_pct,
+                hot_range_start_speed_pct
+                + (
+                    hot_speed_span_pct
+                    * clamp(
+                        (temp_c - hot_range_start_temp_c) / hot_span_c,
+                        0.0,
+                        1.0,
+                    )
+                ),
+            ),
+        )
+        if hot_range_start_temp_c <= temp_c <= safe_curve_temp_c
+        else (temp_c, speed_pct)
+        for temp_c, speed_pct in points
+    ]
 
 
 def load_anchor_fan_speed_pct(

@@ -95,7 +95,7 @@ class AutoUvStallTuning:
 
 @dataclass(frozen=True, slots=True)
 class AutoUvFanTuning:
-    max_base_curve_load_temp_c: float = 75.0
+    max_base_curve_load_temp_c: float = 80.0
     cooling_headroom_speed_reduction_pct_per_c: float = 1.5
     cooling_headroom_max_speed_reduction_pct: float = 15.0
     cooling_headroom_exponential_power_per_c: float = 0.15
@@ -106,8 +106,11 @@ class AutoUvFanTuning:
     minimum_active_speed_pct: float = 30.0
     exponential_points: int = 5
     exponential_power: float = 2.4
-    load_anchor_max_speed_pct: float = 65.0
-    emergency_temp_c: float = 80.0
+    hot_range_start_temp_c: float = 75.0
+    hot_range_start_speed_pct: float = 50.0
+    hot_range_end_speed_pct: float = 60.0
+    load_anchor_max_speed_pct: float = 60.0
+    emergency_temp_c: float = 85.0
     emergency_min_speed_pct: float = 75.0
     full_speed_temp_c: float = 90.0
     full_speed_pct: float = 100.0
