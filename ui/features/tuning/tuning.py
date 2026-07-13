@@ -353,6 +353,12 @@ def read_auto_uv_nvml_info(
     *,
     gpu_client: DaemonGpuClient | None = None,
 ) -> AutoUvNvmlInfo:
+    # Mobile GPUs with a fixed board power limit stay excluded from
+    # power-limit controls by identity (0.6.6 mobile support). Read-only NVML
+    # identity lookup, architecture-neutral — no daemon round-trip.
+    fixed_power_limit_excluded = _fixed_power_limit_excluded_by_gpu_identity(
+        gpu_index
+    )
     try:
         client = gpu_client or DaemonGpuClient(int(gpu_index))
         snapshot = client.snapshot(refresh=True)
@@ -364,10 +370,18 @@ def read_auto_uv_nvml_info(
     power = capabilities.power if capabilities is not None else None
     clocks = telemetry.clocks if telemetry is not None else None
 
+    if fixed_power_limit_excluded:
+        power_limit_set_supported_value = False
+    else:
+        power_limit_set_supported_value = (
+            power_limit_set_supported(gpu_index)
+            if _power_limit_set_probe_applicable(power)
+            else None
+        )
     return AutoUvNvmlInfo(
         power_draw_w=getattr(telemetry, "power_draw_w", None),
         power_management_enabled=getattr(power, "management_enabled", None),
-        power_limit_set_supported=power_limit_set_supported(gpu_index),
+        power_limit_set_supported=power_limit_set_supported_value,
         power_limit_w=getattr(power, "current_w", None),
         power_limit_default_w=getattr(power, "default_w", None),
         power_limit_min_w=getattr(power, "minimum_w", None),
@@ -380,6 +394,39 @@ def read_auto_uv_nvml_info(
         supported_graphics_clock_steps_mhz=(
             capabilities.supported_core_clocks_mhz if capabilities else ()
         ),
+    )
+
+
+def _fixed_power_limit_excluded_by_gpu_identity(gpu_index: int) -> bool:
+    """Identity gate for mobile GPUs whose board power limit is fixed.
+
+    Read-only NVML lookup (no daemon round-trip): these GPUs must not offer
+    power-limit controls no matter what the probe would report, so the scan
+    dialog grays the control out and scans run at the vanilla/stock limit.
+    """
+    try:
+        from drivers.nvidia.nvml_gpu_policy import (
+            fixed_power_limit_excluded_by_identity,
+        )
+        from drivers.nvidia.nvml_identity import query_nvml_gpu_identity
+
+        identity = query_nvml_gpu_identity(int(gpu_index))
+        return fixed_power_limit_excluded_by_identity(
+            gpu_name=getattr(identity, "name", None),
+            pci_device_id=getattr(identity, "pci_device_id", None),
+        )
+    except Exception:
+        return False
+
+
+def _power_limit_set_probe_applicable(power: object | None) -> bool:
+    if power is None:
+        return False
+    if getattr(power, "management_enabled", None) is False:
+        return False
+    return (
+        getattr(power, "minimum_w", None) is not None
+        and getattr(power, "maximum_w", None) is not None
     )
 
 
@@ -537,7 +584,7 @@ def _power_management_text(enabled: bool | None) -> str:
 def _power_limit_set_text(supported: bool | None) -> str:
     if supported is None:
         return ""
-    return f"Power limit writes: {'supported' if supported else 'unavailable'}"
+    return f"Fixed power-limit writes: {'supported' if supported else 'unavailable'}"
 
 
 def _clock_list_text(clocks_mhz: tuple[int, ...]) -> str:

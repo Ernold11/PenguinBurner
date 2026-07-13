@@ -120,6 +120,7 @@ switching. NVIDIA-only comparison, to the best of our knowledge:
 | Capability (NVIDIA) | PenguinBurner | LACT |
 | --- | :---: | :---: |
 | **Automatic** undervolt search (stability + perf verified) | ✅ Q2RTX + CUDA sweep | ❌ manual only |
+| Rust hardware daemon | 🚧 in progress | ✅ |
 | **Adaptive** undervolt (switches tiers by frame rate) | ✅ | ❌ |
 | **In-game performance overlay** | ✅ | ❌ |
 | **PC latency meter** | ✅ | ❌ |

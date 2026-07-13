@@ -5,7 +5,21 @@ import time
 from pathlib import Path
 
 from common.penguin_burner_paths import claim_desktop_user_ownership
+from drivers.nvidia.nvml_gpu_policy import fixed_power_limit_excluded_by_identity
 from integrations.afterburner.policy import apply_translated_gpu_policy
+
+
+def _fixed_power_limit_excluded(capabilities) -> bool:
+    """Whether this GPU's board power limit is fixed (mobile / low-TGP).
+
+    A fixed power limit cannot be set, so it must never be backed up or
+    restored — doing so would fail on the apply. Identity-based, matching the
+    0.6.6 mobile support."""
+    identity = getattr(capabilities, "identity", None)
+    return fixed_power_limit_excluded_by_identity(
+        gpu_name=getattr(identity, "name", None),
+        pci_device_id=getattr(identity, "pci_device_id", None),
+    )
 
 
 def apply_plan(reader, plan: list[dict]) -> None:
@@ -68,13 +82,22 @@ def backup_current_offsets(reader, backup_path, policy_controller=None):
     if policy_controller is not None:
         capabilities = policy_controller.capabilities()
         power = capabilities.power
-        payload["gpu_policy"] = {
-            "power_limit_w": _rounded_watts(power.current_w),
-            "power_limit_default_w": _rounded_watts(power.default_w),
-            "power_limit_min_w": _rounded_watts(power.minimum_w),
-            "power_limit_max_w": _rounded_watts(power.maximum_w),
+        gpu_policy = {
             "mem_clk_vf_offset_mhz": capabilities.clock_offsets.memory_mhz,
         }
+        # Mobile GPUs with a fixed board power limit cannot have it set, so
+        # never store one — restore would then try to apply it and fail
+        # (0.6.6 mobile support). The V/F offset restore is unaffected.
+        if not _fixed_power_limit_excluded(capabilities):
+            gpu_policy.update(
+                {
+                    "power_limit_w": _rounded_watts(power.current_w),
+                    "power_limit_default_w": _rounded_watts(power.default_w),
+                    "power_limit_min_w": _rounded_watts(power.minimum_w),
+                    "power_limit_max_w": _rounded_watts(power.maximum_w),
+                }
+            )
+        payload["gpu_policy"] = gpu_policy
     backup_path.parent.mkdir(parents=True, exist_ok=True)
     claim_desktop_user_ownership(backup_path.parent, include_parents=True)
     backup_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

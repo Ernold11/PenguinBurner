@@ -2462,6 +2462,127 @@ def test_scan_tuning_preset_hover_always_shows_its_tooltip(monkeypatch) -> None:
     assert hidden == [True]
 
 
+def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
+    monkeypatch,
+) -> None:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    import ui.dialogs.scan_tuning as scan_tuning
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_voltage_drop_default",
+        lambda gpu_name=None, **_kwargs: SimpleNamespace(
+            gpu_name="NVIDIA GeForce RTX 5060 Laptop GPU",
+            value_pct=15.0,
+            floor_voltage_mv=850,
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_clock_drop_default",
+        lambda gpu_index=None, preset_id=None, **_kwargs: SimpleNamespace(value_pct=12.5),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_power_limit_default",
+        lambda max_w=None, min_w=None, default_w=None, gpu_index=None, preset_id=None: SimpleNamespace(
+            watts=43,
+            pct=88.0,
+            preset_matched=True,
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_performance_target_default",
+        lambda gpu_name=None, **_kwargs: SimpleNamespace(voltage_mv=900, clock_mhz=2400),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "auto_uv_voltage_floor_range_mv",
+        lambda gpu_index=None, **_kwargs: (800, 1250),
+    )
+    monkeypatch.setattr(
+        scan_tuning, "memory_offset_mhz_range", lambda **_kwargs: (0, 4000)
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "gpu_choices_with_fallback",
+        lambda selected_index=None: (
+            [
+                SimpleNamespace(
+                    index=0,
+                    label="GPU 0 - NVIDIA GeForce RTX 5060 Laptop GPU",
+                )
+            ],
+            0,
+        ),
+    )
+    monkeypatch.setattr(
+        scan_tuning,
+        "read_auto_uv_nvml_info",
+        lambda selected, **_kwargs: SimpleNamespace(
+            power_draw_w=42.0,
+            power_management_enabled=True,
+            power_limit_set_supported=False,
+            power_limit_w=43.0,
+            power_limit_default_w=60.0,
+            power_limit_min_w=35.0,
+            power_limit_max_w=80.0,
+            graphics_clock_mhz=2100,
+            memory_clock_mhz=10501,
+            supported_memory_clocks_mhz=(),
+            supported_graphics_clock_steps_mhz=(),
+        ),
+    )
+
+    def accept_without_power_limit(dialog):
+        power_slider = dialog.findChild(QtWidgets.QSlider, "powerLimitSlider")
+        power_spin = dialog.findChild(QtWidgets.QSpinBox, "powerLimitSpin")
+        memory_spin = dialog.findChild(QtWidgets.QSpinBox, "memoryOffsetSpin")
+        max_drop_spin = dialog.findChild(QtWidgets.QDoubleSpinBox, "maxClockDropSpin")
+        performance_voltage = dialog.findChild(
+            QtWidgets.QSpinBox,
+            "performanceVoltageSpin",
+        )
+        performance_clock = dialog.findChild(
+            QtWidgets.QSpinBox,
+            "performanceClockSpin",
+        )
+        assert power_slider is not None and power_spin is not None
+        assert memory_spin is not None and max_drop_spin is not None
+        assert performance_voltage is not None and performance_clock is not None
+        # The mobile fixed power limit grays the power control out entirely,
+        # while the other scan controls stay usable.
+        assert not power_slider.isEnabled()
+        assert not power_spin.isEnabled()
+        assert memory_spin.isEnabled()
+        assert max_drop_spin.isEnabled()
+        memory_spin.setValue(500)
+        return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QtWidgets.QDialog, "exec", accept_without_power_limit)
+
+    options = scan_tuning.select_scan_tuning(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgets,
+        parent=None,
+        gpu_index=0,
+    )
+
+    # No power limit is ever sent for a mobile GPU: scans run at the vanilla
+    # stock limit.
+    assert options is not None
+    assert "auto_uv_power_limit_w" not in options
+
+
 def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -> None:
     import os
 

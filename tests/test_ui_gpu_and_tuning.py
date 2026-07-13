@@ -299,7 +299,7 @@ def test_auto_uv_nvml_info_text_is_compact_and_tuning_relevant() -> None:
     assert "Supported memory clocks: 810, 5001, 10501 MHz" in text
     assert "Supported core range: 210-3015 MHz (3 steps)" in text
     assert "Power management: enabled" in text
-    assert "Power limit writes: supported" in text
+    assert "Fixed power-limit writes: supported" in text
     assert "RTX" not in text
     assert "PCI" not in text
     assert "thermal" not in text.lower()
@@ -343,6 +343,86 @@ def test_power_limit_set_supported_returns_false_when_daemon_probe_fails(
     monkeypatch.setattr(daemon_client, "probe_power_limit_support", fail_probe)
 
     assert tuning.power_limit_set_supported(0) is False
+
+
+def test_read_auto_uv_nvml_info_skips_setter_probe_without_power_limits(
+    monkeypatch,
+) -> None:
+    # No daemon snapshot -> no power capabilities -> the power-limit setter
+    # probe must not run and support stays unknown (None).
+    monkeypatch.setattr(
+        tuning,
+        "_fixed_power_limit_excluded_by_gpu_identity",
+        lambda _gpu_index: False,
+    )
+    monkeypatch.setattr(
+        tuning,
+        "DaemonGpuClient",
+        lambda _gpu_index: (_ for _ in ()).throw(RuntimeError("daemon down")),
+    )
+    monkeypatch.setattr(
+        tuning,
+        "power_limit_set_supported",
+        lambda _gpu_index: (_ for _ in ()).throw(
+            AssertionError("setter probe should not run")
+        ),
+    )
+
+    info = tuning.read_auto_uv_nvml_info(0)
+
+    assert info.power_limit_set_supported is None
+    assert info.power_limit_min_w is None
+    assert info.power_limit_max_w is None
+
+
+def test_read_auto_uv_nvml_info_skips_mobile_power_limit_getters(
+    monkeypatch,
+) -> None:
+    # A mobile GPU with a fixed board power limit reports support=False by
+    # identity and never runs the power-limit setter probe, no matter what
+    # the daemon snapshot would offer.
+    power = SimpleNamespace(
+        management_enabled=True,
+        current_w=43.0,
+        default_w=60.0,
+        minimum_w=35.0,
+        maximum_w=80.0,
+    )
+    telemetry = SimpleNamespace(power_draw_w=42.0, clocks=None)
+    snapshot = SimpleNamespace(
+        capabilities=SimpleNamespace(
+            power=power,
+            supported_memory_clocks_mhz=(),
+            supported_core_clocks_mhz=(),
+        ),
+        telemetry=telemetry,
+    )
+
+    class FakeDaemonClient:
+        def __init__(self, _gpu_index):
+            pass
+
+        def snapshot(self, *, refresh=False):
+            return snapshot
+
+    monkeypatch.setattr(
+        tuning,
+        "_fixed_power_limit_excluded_by_gpu_identity",
+        lambda _gpu_index: True,
+    )
+    monkeypatch.setattr(tuning, "DaemonGpuClient", FakeDaemonClient)
+    monkeypatch.setattr(
+        tuning,
+        "power_limit_set_supported",
+        lambda _gpu_index: (_ for _ in ()).throw(
+            AssertionError("mobile setter probe must not run")
+        ),
+    )
+
+    info = tuning.read_auto_uv_nvml_info(0)
+
+    assert info.power_draw_w == 42.0
+    assert info.power_limit_set_supported is False
 
 
 class _FakeController:
