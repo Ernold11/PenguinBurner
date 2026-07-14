@@ -40,15 +40,20 @@ and use, closing the feature gap with the Windows tools Linux users miss: the
 python -m pip install --user --upgrade penguin-burner
 ```
 
-[Flatpak v0.7.2](https://github.com/jpietek/PenguinBurner/releases/tag/v0.7.2)
-is available from the
-[PenguinBurner Flatpak repository](https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo);
-use the [Flatpak install and update guide](docs/flatpak.md).
-
 Also packaged for [Fedora (COPR)](https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/),
 [Arch / CachyOS (AUR)](https://aur.archlinux.org/packages/penguin-burner), and
 [Ubuntu (PPA)](https://launchpad.net/~jpietek/+archive/ubuntu/penguin-burner) —
 commands in the [Install guide](docs/install.md).
+
+A [Flatpak](https://github.com/jpietek/PenguinBurner/releases/latest) is
+available from the
+[PenguinBurner Flatpak repository](https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo),
+but a native install (pip / COPR / AUR / PPA) is strongly recommended over it:
+Steam launches, the in-game overlay's Vulkan layer, and the root daemon all
+live on the host, so the Flatpak must write and repair host-side files from
+inside its sandbox — more moving parts and more that can break. Use the
+Flatpak only when nothing else is practical (e.g. immutable distros), with the
+[Flatpak install and update guide](docs/flatpak.md).
 
 PyPI, Flatpak with wrappers, COPR, AUR, and PPA installs run the GUI with
 `penguin-burner` (or `pburn`). Install the NVIDIA driver and CUDA first.

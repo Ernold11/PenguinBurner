@@ -4,7 +4,6 @@ import shlex
 import subprocess
 from typing import Callable
 
-from common.flatpak_wrappers import ensure_steam_integration
 from runtime.daemon_client import DaemonCompatibilityError, require_daemon_capabilities
 from runtime.support.runtime_service import daemon_worker_registration_error
 from ui.commands import daemon_migration_command
@@ -34,18 +33,6 @@ def ensure_daemon_ready_for_privileged_action(
     command_factory: Callable[[], list[str]] = daemon_migration_command,
     run_command: Callable = subprocess.run,
 ) -> bool:
-    try:
-        # The user-owned Steam wrapper is installed alongside daemon readiness,
-        # but never by the root daemon itself. Startup and Play repeat this
-        # check because the daemon can outlive a Flatpak reinstall.
-        ensure_steam_integration()
-    except (OSError, RuntimeError) as exc:
-        log(
-            "\nPenguinBurner could not repair its mandatory Steam "
-            f"integration: {exc}\n"
-        )
-        return False
-
     # Reachability alone is not readiness: a daemon left running from a
     # previous install still answers status but speaks an older protocol, and
     # the action would then fail mid-flight with a raw daemon error. Check the

@@ -154,7 +154,8 @@ def test_main_run_import_error(monkeypatch) -> None:
     assert ui_main.run(["pburn"]) == 1
 
 
-def test_main_run_launches_app(monkeypatch) -> None:
+def _patch_gui_run(monkeypatch) -> dict:
+    """Stub every ui_main.run collaborator; returns the window-capture dict."""
     app = SimpleNamespace(
         setApplicationName=lambda n: None,
         setApplicationDisplayName=lambda n: None,
@@ -169,12 +170,6 @@ def test_main_run_launches_app(monkeypatch) -> None:
     monkeypatch.setattr(ui_main, "apply_desktop_font_settings", lambda app, qtgui: None)
     monkeypatch.setattr(ui_main, "apply_dark_palette", lambda app, qtgui: None)
     monkeypatch.setattr(ui_main, "application_icon", lambda qtgui: SimpleNamespace(isNull=lambda: True))
-    integration_checks = []
-    monkeypatch.setattr(
-        ui_main,
-        "ensure_steam_integration",
-        lambda: integration_checks.append(True),
-    )
 
     created = {}
 
@@ -187,32 +182,36 @@ def test_main_run_launches_app(monkeypatch) -> None:
             created["shown"] = True
 
     monkeypatch.setattr(ui_main, "MainWindow", _FakeWindow)
+    return created
+
+
+def test_main_run_launches_app(monkeypatch) -> None:
+    created = _patch_gui_run(monkeypatch)
+    integration_checks = []
+    monkeypatch.setattr(
+        ui_main,
+        "ensure_steam_integration",
+        lambda: integration_checks.append(True),
+    )
+
     assert ui_main.run(["pburn", "--gpu-index", "1"]) == 0
     assert created["shown"] is True
     assert created["gpu_index"] == 1
     assert integration_checks == [True]
 
 
-def test_main_refuses_incomplete_flatpak_integration_without_popup(
+def test_main_warns_but_starts_on_incomplete_flatpak_integration(
     monkeypatch, capsys
 ) -> None:
-    app = SimpleNamespace(
-        setApplicationName=lambda n: None,
-        setApplicationDisplayName=lambda n: None,
-        setDesktopFileName=lambda n: None,
-    )
-    fake_qtwidgets = SimpleNamespace(QApplication=lambda argv: app)
-    monkeypatch.setattr(
-        ui_main,
-        "import_qt",
-        lambda: (object(), SimpleNamespace(), fake_qtwidgets, None),
-    )
-    monkeypatch.setattr(ui_main, "prepare_desktop_scale_env", lambda: None)
+    created = _patch_gui_run(monkeypatch)
     monkeypatch.setattr(
         ui_main,
         "ensure_steam_integration",
         lambda: (_ for _ in ()).throw(RuntimeError("missing shim")),
     )
 
-    assert ui_main.run(["pburn"]) == 1
-    assert "missing shim" in capsys.readouterr().err
+    assert ui_main.run(["pburn"]) == 0
+    assert created["shown"] is True
+    error_output = capsys.readouterr().err
+    assert "missing shim" in error_output
+    assert "warning" in error_output

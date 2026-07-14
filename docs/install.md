@@ -23,9 +23,11 @@ flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner
 flatpak run io.github.jpietek.PenguinBurner
 ```
 
-The first GUI launch silently installs and verifies the host wrappers, Vulkan
-layer registration, and NVAPI shim payload. See the [Flatpak guide](flatpak.md)
-for repair details, the update command, and clean uninstall.
+When a host Steam installation is detected, the
+first GUI launch silently installs and verifies the host wrappers, Vulkan
+layer registration, and NVAPI shim payload; hosts without Steam are left
+untouched. See the [Flatpak guide](flatpak.md) for repair details, the update
+command, and clean uninstall.
 
 The Flatpak includes the privileged root daemon (`penguin-burnerd`, a compiled
 Rust binary) built into the sandbox. The first privileged action installs it

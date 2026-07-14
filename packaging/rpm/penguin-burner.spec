@@ -1,6 +1,6 @@
 Name:           penguin-burner
-Version:        0.7.2
-Release:        2%{?dist}
+Version:        0.7.3
+Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
 %global debug_package %{nil}
@@ -109,6 +109,10 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Tue Jul 14 2026 PenguinBurner contributors <noreply@github.com> - 0.7.3-1
+- Install the Flatpak Steam host integration only when host Steam is detected.
+- Never block GUI startup or privileged actions on Steam integration repair.
+
 * Tue Jul 14 2026 PenguinBurner contributors <noreply@github.com> - 0.7.2-2
 - Fix Fedora dependency resolution for the PySide6 runtime package.
 

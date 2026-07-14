@@ -17,16 +17,24 @@ Or as a single pasteable command:
 flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo && flatpak install --user -y penguinburner io.github.jpietek.PenguinBurner && flatpak run io.github.jpietek.PenguinBurner
 ```
 
-That single command installs and opens the Flatpak. Before its window appears,
-PenguinBurner silently repairs and verifies the complete host integration. After that,
+That single command installs and opens the Flatpak. When a host Steam
+installation is detected, PenguinBurner silently repairs and verifies the
+complete host integration before its window appears. After that,
 `penguin-burner`, `pburn`, `penguin-burner-ui`, `pburn-ui`,
 `penguin-burner-cli`, `pburn-cli`, and `PENGUIN_BURNER` work from your `PATH`
 just like the native packages.
 
+Hosts without Steam are left completely untouched — no wrappers, Vulkan
+manifest, or shim files are written, and all GPU tuning (Auto-UV, profiles,
+fan control) works normally without them. To get the `pburn` PATH commands on
+a Steam-less host anyway, run the manual repair command below once; after
+that, startup keeps the generated files repaired across updates like on any
+other host.
+
 ## Host Wrappers
 
-The first GUI launch adds these commands under `~/.local/bin`, forwarding each
-one into the Flatpak sandbox:
+The first GUI launch on a host with Steam adds these commands under
+`~/.local/bin`, forwarding each one into the Flatpak sandbox:
 
 - `penguin-burner`
 - `pburn`

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import tomllib
 from pathlib import Path
 
 
@@ -55,6 +56,11 @@ def test_one_click_publisher_guards_git_and_waits_for_both_series() -> None:
 def test_ppa_docs_promise_generated_artifacts_stay_out_of_git() -> None:
     readme = Path("packaging/debian/README.md").read_text(encoding="utf-8")
 
-    assert "scripts/publish-ppa.sh 0.7.2" in readme
+    # The documented command must always name the current release, or the
+    # copy-pasted example fails check-release-version.sh at publish time.
+    version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]["version"]
+    assert f"scripts/publish-ppa.sh {version}" in readme
     assert "never committed to Git" in readme
     assert "REMAINING STEP" not in readme

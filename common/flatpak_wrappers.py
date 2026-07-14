@@ -318,8 +318,17 @@ def ensure_steam_integration() -> Path | None:
     game start because Proton can overwrite nvapi64.dll during prefix setup.
     Here we verify that the immutable shim payload is shipped and that the
     generated host wrapper points the launch at that full launcher path.
+
+    Hosts without a Steam installation are skipped: no wrapper, manifest, or
+    shim files are written, and nothing here may keep the rest of the app
+    (Auto-UV, profiles) from working. Managed files that already exist (an
+    earlier version, or a manual penguin-burner-install-wrappers run) keep
+    being repaired even without Steam, so a flatpak update never strands
+    stale generated files.
     """
     if not running_in_flatpak():
+        return None
+    if not _host_has_steam() and not _managed_integration_present():
         return None
     ensure_flatpak_wrappers()
     wrapper = _default_bin_dir() / "PENGUIN_BURNER"
@@ -336,6 +345,19 @@ def ensure_steam_integration() -> Path | None:
 
     _require_packaged_nvapi_shim()
     return wrapper
+
+
+def _host_has_steam() -> bool:
+    from integrations.steam.users import default_steam_root
+
+    return default_steam_root() is not None
+
+
+def _managed_integration_present() -> bool:
+    bin_dir = _default_bin_dir()
+    if any(_is_managed_wrapper(bin_dir / name) for name in WRAPPERS):
+        return True
+    return _is_managed_vulkan_manifest(_default_vulkan_manifest_path())
 
 
 def _require_packaged_nvapi_shim() -> Path:
