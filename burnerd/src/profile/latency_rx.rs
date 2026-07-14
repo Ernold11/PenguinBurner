@@ -39,6 +39,7 @@ const METER_MARKER_FPS_MAX_PRESENT_RATIO: f64 = 1.25;
 const DRIVER_REPORT_RING_SPAN: i64 = 256;
 const FRAMEGEN_CADENCE_RATIO: f64 = 1.5;
 const DXVK_NVAPI_VKREFLEX_SOURCE: &str = "dxvk-nvapi-vkreflex";
+const NVAPI_MARKER_SOURCE: &str = "nvapi-marker-log";
 
 const BASE_FRAME_MARKER_PRIORITY: [&str; 3] =
     ["oob-present-start", "present-start", "rendersubmit-start"];
@@ -294,12 +295,53 @@ fn has_marker_stream(samples: &[&Sample]) -> bool {
 
 // --- base-frame-marker + latency-proxy selection ----------------------------
 
-/// `_select_base_marker_frametime_p95` — prefer known base-frame markers, else
-/// the most-sampled marker, rejecting any whose implied FPS overshoots the raw
-/// present average (a generated-frame marker leaking in).
-fn select_base_marker_frametime_p95(samples: &[&Sample], raw_avg_fps: Option<f64>) -> Option<i64> {
+struct BaseMarkerSelection {
+    p95_us: i64,
+    fps_source: &'static str,
+}
+
+/// Prefer the shim's original NVAPI SIMULATION_START cadence for pre-FG FPS.
+/// The native Vulkan marker cadence is the fallback for sessions without a
+/// working shim stream. Every candidate is still rejected if its implied FPS
+/// overshoots the independently measured raw-present cadence.
+fn select_base_marker_frametime_p95(
+    samples: &[&Sample],
+    raw_avg_fps: Option<f64>,
+) -> Option<BaseMarkerSelection> {
+    let valid_p95 = |frametimes: &[i64]| -> Option<i64> {
+        if frametimes.len() < METER_MIN_PRESENT_SAMPLES {
+            return None;
+        }
+        let p95 = p95_us(frametimes)?;
+        if let (Some(marker_fps), Some(raw)) = (fps_from_frametime(Some(p95)), raw_avg_fps) {
+            if marker_fps > raw * METER_MARKER_FPS_MAX_PRESENT_RATIO {
+                return None;
+            }
+        }
+        Some(p95)
+    };
+
+    let shim_frametimes: Vec<i64> = samples
+        .iter()
+        .filter(|s| {
+            s.data.get("source").and_then(Value::as_str) == Some(NVAPI_MARKER_SOURCE)
+                && s.data.get("marker_name").and_then(Value::as_str) == Some("simulation-start")
+        })
+        .map(|s| int_value(s.data.get("base_frame_frametime_us")))
+        .filter(|&value| value > 0)
+        .collect();
+    if let Some(p95) = valid_p95(&shim_frametimes) {
+        return Some(BaseMarkerSelection {
+            p95_us: p95,
+            fps_source: "nvapi-base-frame-marker",
+        });
+    }
+
     let mut marker_frametimes: HashMap<String, Vec<i64>> = HashMap::new();
     for s in samples {
+        if s.data.get("source").and_then(Value::as_str) == Some(NVAPI_MARKER_SOURCE) {
+            continue;
+        }
         let ft = int_value(s.data.get("base_frame_frametime_us"));
         if ft <= 0 {
             continue;
@@ -314,23 +356,13 @@ fn select_base_marker_frametime_p95(samples: &[&Sample], raw_avg_fps: Option<f64
         marker_frametimes.entry(name).or_default().push(ft);
     }
 
-    let valid_p95 = |frametimes: &[i64]| -> Option<i64> {
-        if frametimes.len() < METER_MIN_PRESENT_SAMPLES {
-            return None;
-        }
-        let p95 = p95_us(frametimes)?;
-        if let (Some(marker_fps), Some(raw)) = (fps_from_frametime(Some(p95)), raw_avg_fps) {
-            if marker_fps > raw * METER_MARKER_FPS_MAX_PRESENT_RATIO {
-                return None;
-            }
-        }
-        Some(p95)
-    };
-
     for name in BASE_FRAME_MARKER_PRIORITY {
         if let Some(list) = marker_frametimes.get(name) {
             if let Some(p95) = valid_p95(list) {
-                return Some(p95);
+                return Some(BaseMarkerSelection {
+                    p95_us: p95,
+                    fps_source: "base-frame-marker",
+                });
             }
         }
     }
@@ -344,14 +376,17 @@ fn select_base_marker_frametime_p95(samples: &[&Sample], raw_avg_fps: Option<f64
     }
     // sort by (-len, name): most samples first, name ascending as tie-break.
     eligible.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    Some(eligible[0].2)
+    Some(BaseMarkerSelection {
+        p95_us: eligible[0].2,
+        fps_source: "base-frame-marker",
+    })
 }
 
 /// `_latency_proxy_p95` — the widest available click-to-photon proxy span, in
 /// tier order. Under explicit frame generation, prefer the displayed-present
 /// (out-of-band) spans that include the pacing hold. Only the p95 is consumed
 /// (the tier label feeds the summary log, which we do not reproduce).
-fn latency_proxy_p95(samples: &[&Sample]) -> Option<i64> {
+fn latency_proxy_from_samples(samples: &[&Sample], framegen_active: bool) -> Option<i64> {
     let tier_p95 = |key: &str, marker_proxy: Option<bool>| -> Option<i64> {
         let vals: Vec<i64> = samples
             .iter()
@@ -364,7 +399,7 @@ fn latency_proxy_p95(samples: &[&Sample]) -> Option<i64> {
         p95_us(&vals)
     };
 
-    if explicit_framegen_active(samples) {
+    if framegen_active {
         for key in ["input_to_oob_present_us", "sim_to_oob_present_us"] {
             if let Some(p95) = tier_p95(key, None) {
                 return Some(p95);
@@ -388,6 +423,31 @@ fn latency_proxy_p95(samples: &[&Sample]) -> Option<i64> {
     None
 }
 
+fn latency_proxy_p95(samples: &[&Sample]) -> Option<i64> {
+    // Frame-generation evidence lives on the layer's marker samples, not the
+    // bridge's (which never assert it) — judge it across ALL samples so the
+    // shim-preferred pass can still pick the displayed-present spans.
+    let framegen_active = explicit_framegen_active(samples);
+    let shim_samples: Vec<&Sample> = samples
+        .iter()
+        .copied()
+        .filter(|s| {
+            measurement(&s.data) == "marker-proxy"
+                && s.data.get("source").and_then(Value::as_str) == Some(NVAPI_MARKER_SOURCE)
+        })
+        .collect();
+    if let Some(value) = latency_proxy_from_samples(&shim_samples, framegen_active) {
+        return Some(value);
+    }
+
+    let fallback_samples: Vec<&Sample> = samples
+        .iter()
+        .copied()
+        .filter(|s| s.data.get("source").and_then(Value::as_str) != Some(NVAPI_MARKER_SOURCE))
+        .collect();
+    latency_proxy_from_samples(&fallback_samples, framegen_active)
+}
+
 // --- meter ------------------------------------------------------------------
 
 struct Sample {
@@ -400,10 +460,14 @@ struct Sample {
 struct Meter {
     samples: VecDeque<Sample>,
     last_base_present_fps: Option<f64>,
-    // The first game process to publish timing owns this receiver. A second
-    // concurrently launched game shares the socket but must not contaminate
-    // the owner's FPS/latency window.
-    owner_pid: Option<String>,
+    // A wrapper session can have multiple telemetry PIDs: the NVAPI shim uses
+    // Wine's PID namespace while the Vulkan layer uses the host PID. Session
+    // identity keeps those complementary producers together and still rejects
+    // a concurrently launched second game. PID ownership remains as a legacy
+    // fallback for clients that do not yet publish a session ID.
+    owner_session_id: Option<String>,
+    legacy_owner_pid: Option<String>,
+    last_owner_sample_monotonic: Option<f64>,
     // (pid, source, device, swapchain) → (max_present_id, duplicate_count).
     driver_report_present_ids: HashMap<String, (i64, i64)>,
 }
@@ -413,7 +477,9 @@ impl Meter {
         Meter {
             samples: VecDeque::new(),
             last_base_present_fps: None,
-            owner_pid: None,
+            owner_session_id: None,
+            legacy_owner_pid: None,
+            last_owner_sample_monotonic: None,
             driver_report_present_ids: HashMap::new(),
         }
     }
@@ -424,20 +490,11 @@ impl Meter {
         if sample.get("type").and_then(Value::as_str) != Some("timing") {
             return;
         }
-        let mut data = normalize_timing_sample(sample);
-        if let Some(sample_pid) = pid_value(data.get("pid")) {
-            if self
-                .owner_pid
-                .as_ref()
-                .is_some_and(|owner| owner != &sample_pid)
-            {
-                return;
-            }
-            if self.owner_pid.is_none() {
-                self.owner_pid = Some(sample_pid);
-            }
-        }
         let received = monotonic_now();
+        let mut data = normalize_timing_sample(sample);
+        if !self.accept_sample_owner(&data, received) {
+            return;
+        }
         let is_driver_report = measurement(&data) == "driver-report";
         if is_driver_report {
             self.synthesize_driver_report_duplicate_count(&mut data);
@@ -454,6 +511,69 @@ impl Meter {
             data,
             received_monotonic: received,
         });
+    }
+
+    fn accept_sample_owner(&mut self, data: &Map<String, Value>, received: f64) -> bool {
+        if let Some(session_id) = pid_value(data.get("session_id")) {
+            if self
+                .owner_session_id
+                .as_ref()
+                .is_some_and(|owner| owner != &session_id)
+                || self.legacy_owner_pid.is_some()
+            {
+                if !self.owner_is_stale(received) {
+                    return false;
+                }
+                self.reset_owner_state();
+            }
+            if self.owner_session_id.is_none() {
+                self.owner_session_id = Some(session_id);
+            }
+            self.last_owner_sample_monotonic = Some(received);
+            return true;
+        }
+
+        if self.owner_session_id.is_some() {
+            // The legacy fallback must be able to reclaim a stale session
+            // owner, exactly like the two mismatch paths above; otherwise one
+            // exited session-tagged game mutes every later legacy client for
+            // the daemon's lifetime.
+            if !self.owner_is_stale(received) {
+                return false;
+            }
+            self.reset_owner_state();
+        }
+        if let Some(sample_pid) = pid_value(data.get("pid")) {
+            if self
+                .legacy_owner_pid
+                .as_ref()
+                .is_some_and(|owner| owner != &sample_pid)
+            {
+                if !self.owner_is_stale(received) {
+                    return false;
+                }
+                self.reset_owner_state();
+            }
+            if self.legacy_owner_pid.is_none() {
+                self.legacy_owner_pid = Some(sample_pid);
+            }
+            self.last_owner_sample_monotonic = Some(received);
+        }
+        true
+    }
+
+    fn owner_is_stale(&self, now: f64) -> bool {
+        self.last_owner_sample_monotonic
+            .is_none_or(|last| now - last > METER_SAMPLE_MAX_AGE_S)
+    }
+
+    fn reset_owner_state(&mut self) {
+        self.samples.clear();
+        self.last_base_present_fps = None;
+        self.owner_session_id = None;
+        self.legacy_owner_pid = None;
+        self.last_owner_sample_monotonic = None;
+        self.driver_report_present_ids.clear();
     }
 
     fn synthesize_driver_report_duplicate_count(&mut self, sample: &mut Map<String, Value>) {
@@ -525,17 +645,17 @@ impl Meter {
             "n/a".to_string()
         };
 
-        let marker_frametime_p95 = select_base_marker_frametime_p95(&samples, raw_present_avg_fps);
+        let marker_selection = select_base_marker_frametime_p95(&samples, raw_present_avg_fps);
         let base_present_frametime_p95_us;
         let present_fps_value;
         let cadence_is_independent;
         let fps_source;
-        if let Some(marker_p95) = marker_frametime_p95 {
-            base_present_frametime_p95_us = Some(marker_p95);
-            present_fps_value = fps_from_frametime(Some(marker_p95));
+        if let Some(marker) = marker_selection {
+            base_present_frametime_p95_us = Some(marker.p95_us);
+            present_fps_value = fps_from_frametime(Some(marker.p95_us));
             self.last_base_present_fps = present_fps_value;
             cadence_is_independent = true;
-            fps_source = "base-frame-marker";
+            fps_source = marker.fps_source;
         } else {
             let (fps_val, deinterlaced) = estimate_base_present_fps(
                 &mut self.last_base_present_fps,
@@ -574,7 +694,18 @@ impl Meter {
         let pid = samples
             .iter()
             .rev()
+            .filter(|s| positive_us(&s.data, "present_frametime_us"))
             .find_map(|s| pid_value(s.data.get("pid")));
+        let pid = pid.or_else(|| {
+            samples
+                .iter()
+                .rev()
+                .find_map(|s| pid_value(s.data.get("pid")))
+        });
+        let session_id = samples
+            .iter()
+            .rev()
+            .find_map(|s| pid_value(s.data.get("session_id")));
 
         Some(LatencySnapshot {
             base_present_frametime_p95_ms: base_present_frametime_p95_us.map(|v| v as f64 / 1000.0),
@@ -586,6 +717,7 @@ impl Meter {
             latency_p95_ms: latency_proxy.map(|v| v as f64 / 1000.0),
             display_latency_p95_ms: display_latency.map(|v| v as f64 / 1000.0),
             pid,
+            session_id,
         })
     }
 }
@@ -1107,6 +1239,129 @@ mod tests {
         let snapshot = meter.snapshot(monotonic_now()).unwrap();
         assert_eq!(snapshot.pid.as_deref(), Some("111"));
         assert_eq!(snapshot.present_fps.as_deref(), Some("60"));
+    }
+
+    #[test]
+    fn meter_merges_complementary_pids_in_one_wrapper_session() {
+        let mut meter = Meter::new();
+        for _ in 0..6 {
+            meter.add_sample(obj(timing(json!({
+                "session_id": "700",
+                "pid": 312,
+                "measurement": "base-frame-marker-pacing",
+                "source": NVAPI_MARKER_SOURCE,
+                "marker_name": "simulation-start",
+                "base_frame_frametime_us": 20000,
+            }))));
+            meter.add_sample(obj(timing(json!({
+                "session_id": "700",
+                "pid": 219896,
+                "measurement": "present-pacing",
+                "present_frametime_us": 8333,
+            }))));
+        }
+
+        let snapshot = meter.snapshot(monotonic_now()).unwrap();
+        assert_eq!(meter.samples.len(), 12);
+        assert_eq!(snapshot.session_id.as_deref(), Some("700"));
+        assert_eq!(snapshot.pid.as_deref(), Some("219896"));
+        assert_eq!(snapshot.present_fps.as_deref(), Some("50"));
+        assert_eq!(
+            snapshot.fps_source.as_deref(),
+            Some("nvapi-base-frame-marker")
+        );
+        assert_eq!(snapshot.raw_present_fps_stats_avg.as_deref(), Some("120"));
+        assert_eq!(snapshot.framegen_active.as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn meter_rejects_a_different_live_wrapper_session() {
+        let mut meter = Meter::new();
+        meter.add_sample(obj(timing(json!({
+            "session_id": "700",
+            "pid": 312,
+            "present_frametime_us": 16600,
+        }))));
+        meter.add_sample(obj(timing(json!({
+            "session_id": "701",
+            "pid": 313,
+            "present_frametime_us": 8000,
+        }))));
+
+        assert_eq!(meter.samples.len(), 1);
+        assert_eq!(
+            meter.samples[0]
+                .data
+                .get("session_id")
+                .and_then(Value::as_str),
+            Some("700")
+        );
+    }
+
+    #[test]
+    fn legacy_pid_reclaims_a_stale_session_owner() {
+        let mut meter = Meter::new();
+        let session = obj(timing(json!({"session_id": "700", "pid": 312})));
+        let legacy = obj(timing(json!({"pid": 999})));
+
+        assert!(meter.accept_sample_owner(&session, 100.0));
+        // A live session owner still rejects untagged samples...
+        assert!(!meter.accept_sample_owner(&legacy, 101.0));
+        // ...but a stale one is evicted, like on every other ownership path.
+        assert!(meter.accept_sample_owner(&legacy, 101.0 + METER_SAMPLE_MAX_AGE_S + 1.0));
+        assert!(meter.owner_session_id.is_none());
+        assert_eq!(meter.legacy_owner_pid.as_deref(), Some("999"));
+    }
+
+    #[test]
+    fn framegen_evidence_from_layer_samples_selects_oob_span_for_shim_latency() {
+        let mut samples = Vec::new();
+        for i in 0..6 {
+            samples.push(timing(json!({
+                "session_id": "700",
+                "pid": 312,
+                "measurement": "marker-proxy",
+                "source": NVAPI_MARKER_SOURCE,
+                "sim_to_present_us": 18000 + i * 100,
+                "sim_to_oob_present_us": 42000 + i * 100,
+            })));
+        }
+        // Frame-generation evidence arrives on the layer's own marker samples
+        // (the bridge never asserts it); it must still steer the shim-preferred
+        // pass to the displayed-present span.
+        samples.push(timing(json!({
+            "session_id": "700",
+            "pid": 219896,
+            "marker_name": "oob-present-start",
+        })));
+
+        let snapshot = snapshot_of(samples).unwrap();
+        assert!(approx(snapshot.latency_p95_ms.unwrap(), 42.5));
+    }
+
+    #[test]
+    fn shim_latency_samples_win_over_native_semantic_duplicates() {
+        let mut samples = Vec::new();
+        for i in 0..6 {
+            samples.push(timing(json!({
+                "session_id": "700",
+                "pid": 312,
+                "measurement": "marker-proxy",
+                "source": NVAPI_MARKER_SOURCE,
+                "present_frametime_us": 16600,
+                "sim_to_present_us": 20000 + i * 100,
+            })));
+            samples.push(timing(json!({
+                "session_id": "700",
+                "pid": 219896,
+                "measurement": "marker-proxy",
+                "source": "native-layer",
+                "sim_to_present_us": 80000 + i * 100,
+            })));
+        }
+
+        let snapshot = snapshot_of(samples).unwrap();
+        assert!(approx(snapshot.latency_p95_ms.unwrap(), 20.5));
     }
 
     // --- parity fixtures (generated by running the Python meter directly) -----

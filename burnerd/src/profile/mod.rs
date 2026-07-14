@@ -93,6 +93,7 @@ pub struct LatencySnapshot {
     pub latency_p95_ms: Option<f64>,
     pub display_latency_p95_ms: Option<f64>,
     pub pid: Option<String>,
+    pub session_id: Option<String>,
 }
 
 /// Outcome of `EngineHandle::stop`.

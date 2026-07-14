@@ -514,6 +514,7 @@ void send_marker_timing_sample(
         sizeof(line),
         "{\"v\":1,\"type\":\"timing\",\"measurement\":\"marker-proxy\","
         "\"pid\":%ld,"
+        "\"session_id\":\"%s\","
         "\"device\":\"0x%016" PRIx64 "\",\"swapchain\":\"0x%016" PRIx64 "\","
         "\"present_id\":%" PRIu64 ",\"quality\":\"%s\","
         "\"timing_count\":0,\"sample_count\":%" PRIu64 ","
@@ -535,6 +536,7 @@ void send_marker_timing_sample(
         "\"driver_start_us\":0,"
         "\"driver_end_us\":0}",
         static_cast<long>(::getpid()),
+        telemetry_session_id(),
         handle_to_u64(device),
         handle_to_u64(swapchain),
         present_id,
