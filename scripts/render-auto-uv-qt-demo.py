@@ -3,12 +3,14 @@
 
 The script never starts the scanner or talks to the hardware daemon. It feeds
 synthetic scan events into ``MainWindow`` and captures the actual PySide6 and
-pyqtgraph widgets, producing a short README-friendly animated GIF.
+pyqtgraph widgets, then tours the real Profiles, Steam, and In-Game Overlay
+tabs, producing a short README-friendly animated GIF.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
@@ -26,17 +28,25 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import ui.components.overlay_config as overlay_config_mod  # noqa: E402
 import ui.window as window_mod  # noqa: E402
+from integrations.steam.library import InstalledSteamGame  # noqa: E402
+from integrations.steam.manager import SteamGameRow  # noqa: E402
+from integrations.steam.settings import SteamGameSetting  # noqa: E402
+from overlay.config import OverlayConfig  # noqa: E402
 from ui.main import APP_DISPLAY_NAME  # noqa: E402
 from ui.qt import apply_dark_palette, import_qt  # noqa: E402
 from ui.window import MainWindow  # noqa: E402
 
 
 FPS = 7
-DURATION_S = 18.0
+DURATION_S = 24.0
 CAPTURE_SIZE = (1600, 900)
 OUTPUT_SIZE = (1280, 720)
 DEFAULT_OUTPUT = REPO_ROOT / "docs/assets/auto-uv-full-scan-demo.gif"
+PROFILES_REVEAL_S = 15.6
+STEAM_REVEAL_S = 18.4
+OVERLAY_REVEAL_S = 21.2
 
 SOURCE_POINTS: list[tuple[float, float]] = [
     (800, 1940),
@@ -198,9 +208,88 @@ DEMO_PROFILES = [
 ]
 
 
+@dataclass(frozen=True)
+class DemoSteamGame:
+    app_id: str
+    name: str
+    last_played: int
+    mode: str = "adaptive"
+    target_fps: float | None = None
+    compat_tool: str = "proton-cachyos-11.0-20260601-slr-x86_64"
+
+
+# A deterministic snapshot of the current installed-game list and its visible
+# per-game choices. No Steam files are read when this renderer is run.
+DEMO_STEAM_GAMES = (
+    DemoSteamGame("1771300", "Kingdom Come: Deliverance II", 1784063542, target_fps=125.0, compat_tool="proton_experimental"),
+    DemoSteamGame("2531310", "The Last of Us™ Part II Remastered", 1784062655, target_fps=125.0, compat_tool=""),
+    DemoSteamGame("835960", "The Talos Principle 2", 1784060686, target_fps=80.0),
+    DemoSteamGame("3768760", "007 First Light", 1784060043, target_fps=80.0),
+    DemoSteamGame("1089130", "Quake II RTX", 1783980654, mode="performance", target_fps=125.0),
+    DemoSteamGame("1378990", "Crash Bandicoot™ 4: It’s About Time", 1783896865, mode="efficiency"),
+    DemoSteamGame("3606110", "Coffee Talk Tokyo Demo", 1783884063, mode="efficiency"),
+    DemoSteamGame("3764200", "Resident Evil Requiem", 1783872527),
+    DemoSteamGame("1206070", "Phonopolis", 1783627933, mode="efficiency", compat_tool=""),
+    DemoSteamGame("2215200", "LEGO® Batman™: Legacy of the Dark Knight", 1783374955, mode="efficiency"),
+    DemoSteamGame("3472040", "NBA 2K26", 1782844583, compat_tool="proton_experimental"),
+    DemoSteamGame("2909400", "FINAL FANTASY VII REBIRTH", 1782656113),
+    DemoSteamGame("2057760", "Esoteric Ebb", 1781433439),
+    DemoSteamGame("2318070", "Little Big Adventure – Twinsen’s Quest", 1781432345),
+    DemoSteamGame("3622640", "Vending Machine Co.", 1781432284),
+    DemoSteamGame("1226670", "Rosewater", 1781432252),
+)
+
+
+DEMO_OVERLAY_CONFIG = OverlayConfig(
+    enabled=True,
+    enabled_item_ids=(
+        "base_fps",
+        "fg_fps",
+        "latency_ms",
+        "clock_mhz",
+        "voltage_mv",
+        "power_w",
+        "profile",
+        "gpu_util_pct",
+        "cpu_peak_thread_pct",
+    ),
+    update_interval_s=1,
+    scale=0.5,
+)
+
+DEMO_OVERLAY_STATE = {
+    "present_fps": "125.0",
+    "framegen_fps": "238.4",
+    "latency_ms": "31.7",
+    "clock_mhz": "2912",
+    "voltage_mv": "915",
+    "power_w": "310",
+    "profile_tier": "Performance",
+    "gpu_util_pct": "98",
+    "cpu_util_pct": "24",
+    "cpu_peak_thread_pct": "72",
+    "fan_pct": "41",
+    "temperature_c": "67",
+    "uv_offset_mv": "-325",
+}
+
+
 def _stub_external_state() -> None:
     """Keep MainWindow construction completely local and daemon-free."""
 
+    # SteamPanel normally starts a background, read-only library scan during
+    # construction. The demo injects its fixed snapshot later instead.
+    setattr(window_mod.SteamPanel, "rescan", lambda *_args, **_kwargs: None)
+    setattr(
+        overlay_config_mod,
+        "load_overlay_config",
+        lambda *_args, **_kwargs: DEMO_OVERLAY_CONFIG,
+    )
+    setattr(
+        overlay_config_mod,
+        "read_overlay_state",
+        lambda: dict(DEMO_OVERLAY_STATE),
+    )
     window_mod.load_profile_summaries = lambda: []
     window_mod.systemd_autostart_profile_info = lambda: {
         "selector": "",
@@ -214,6 +303,34 @@ def _stub_external_state() -> None:
     window_mod.penguin_burner_runtime_is_active = lambda: False
     window_mod.silent_fan_curve_from_runtime_config = lambda: False
     window_mod.silent_fan_curve_to_runtime_config = lambda value: value
+
+
+def _demo_steam_rows() -> tuple[SteamGameRow, ...]:
+    launch_options = "PENGUIN_BURNER --pb-overlay=1 %command%"
+    steamapps_dir = Path("/demo/SteamLibrary/steamapps")
+    return tuple(
+        SteamGameRow(
+            game=InstalledSteamGame(
+                app_id=game.app_id,
+                name=game.name,
+                install_dir=game.name,
+                steamapps_dir=steamapps_dir,
+                state_flags=4,
+                last_played=game.last_played,
+                icon_path=None,
+                compat_tool=game.compat_tool,
+            ),
+            setting=SteamGameSetting(
+                enabled=True,
+                mode=game.mode,
+                overlay=True,
+                target_fps=game.target_fps,
+                injected_launch_options=launch_options,
+            ),
+            launch_options=launch_options,
+        )
+        for game in DEMO_STEAM_GAMES
+    )
 
 
 def _curve(
@@ -375,6 +492,10 @@ def render(output_path: Path) -> None:
     QtWidgets.QDialog.exec = lambda self: 0
     window = MainWindow((QtCore, QtGui, QtWidgets, pg))
     window._status_timer.stop()
+    window.steam_panel._sync_timer.stop()
+    window.steam_panel._game_state_timer.stop()
+    window.overlay_config.timer.stop()
+    window.overlay_config.refresh_preview()
     window.window.setWindowTitle(
         f"{APP_DISPLAY_NAME} — simulated Full Auto-UV scan (compressed)"
     )
@@ -421,6 +542,8 @@ def render(output_path: Path) -> None:
     verify_started = False
     complete_started = False
     profiles_revealed = False
+    steam_revealed = False
+    overlay_revealed = False
 
     try:
         frame_count = int(round(DURATION_S * FPS))
@@ -674,7 +797,7 @@ def render(output_path: Path) -> None:
                 )
                 _append_log(window, "Full scan complete: all three profiles verified and saved")
 
-            if elapsed_s >= 15.7 and not profiles_revealed:
+            if elapsed_s >= PROFILES_REVEAL_S and not profiles_revealed:
                 profiles_revealed = True
                 window.profile_list.set_profiles(
                     [dict(profile) for profile in DEMO_PROFILES],
@@ -684,6 +807,48 @@ def render(output_path: Path) -> None:
                 window.controls.set_status_text(
                     "Verified RTX 5080 results — every GPU tunes differently."
                 )
+
+            if elapsed_s >= STEAM_REVEAL_S and not steam_revealed:
+                steam_revealed = True
+                steam_panel = window.steam_panel
+                steam_panel._live_ready = True
+                steam_panel._compat_tool_live_ready = True
+                steam_panel._selected_app_id = "1771300"
+                steam_panel._populate(_demo_steam_rows())
+                steam_panel.user_label.setText("Steam user: connected")
+                steam_panel.setup_view.setVisible(False)
+                steam_panel.splitter.setVisible(True)
+                steam_panel.splitter.setSizes([480, 1040])
+                compat_index = steam_panel.proton_combo.currentIndex()
+                if compat_index >= 0:
+                    steam_panel.proton_combo.setItemText(
+                        compat_index,
+                        "Proton Experimental",
+                    )
+                current_game = steam_panel.game_list.currentItem()
+                if current_game is not None:
+                    steam_panel.game_list.scrollToItem(current_game)
+                steam_panel.status_label.setText(
+                    "Current Steam library · per-game tuning ready"
+                )
+                window.header.set_candidate(
+                    "Per-game Adaptive target · overlay · one-click Play"
+                )
+                window.controls.set_status_text(
+                    "Steam integration — real game list, simulated UI tour."
+                )
+                window.tabs.setCurrentIndex(window.steam_tab_index)
+
+            if elapsed_s >= OVERLAY_REVEAL_S and not overlay_revealed:
+                overlay_revealed = True
+                window.overlay_config.refresh_preview()
+                window.header.set_candidate(
+                    "Overlay: base FPS · frame generation · PC latency"
+                )
+                window.controls.set_status_text(
+                    "In-Game Overlay — representative live telemetry."
+                )
+                window.tabs.setCurrentIndex(window.overlay_tab_index)
 
             app.processEvents()
             _capture(

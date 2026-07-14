@@ -25,28 +25,16 @@
 - **Balanced** — undervolt and maintain clock. RTX 5080: 850 mV · 2639 MHz · 267 W.
 - **Performance** — undervolt and overclock. RTX 5080: 915 mV · 2980 MHz · 310 W.
 
-These are verified results from one RTX 5080; every GPU tunes differently.
+Verified RTX 5080 examples; every GPU differs. Pre-optimized targets are
+included for RTX 30, 40, and 50 series cards.
 
-The animation above is rendered by PenguinBurner's real Qt interface with a
-safely simulated scan; a live Auto-UV run drives the same UI while testing your
-GPU.
+PenguinBurner is an open-source NVIDIA GPU tuning app for Linux with
+automatic undervolting & overclocking. Adaptive per-game tuning targets a
+chosen pre-frame-generation FPS; the optional overlay shows PC latency and live
+FPS.
 
-PenguinBurner is an open-source NVIDIA GPU tuning app for Linux, built for
-automatic undervolting & overclocking. It also offers adaptive tuning, per-game
-Steam profiles, and an optional in-game monitoring overlay with PC latency and
-live FPS measured before frame generation.
-
-You get quieter fans, lower temperatures, and lower power draw, with no manual
-trial and error. It tests your card under real load, finds a stable efficient
-setting, and can switch settings automatically as your frame rate changes.
-
-Works on the NVIDIA proprietary driver with RTX 50 (Blackwell), RTX 40 (Ada),
-and RTX 30 (Ampere) cards. A recent driver is recommended.
-
-The goal is an all-in-one package for NVIDIA on Linux that is easy to install
-and use, closing the feature gap with the Windows tools Linux users miss: the
-[NVIDIA App](https://www.nvidia.com/en-us/software/nvidia-app/), NVUV, and
-[MSI Afterburner](https://www.msi.com/Landing/afterburner/graphics-cards).
+The GIF uses PenguinBurner's real Qt interface with simulated scan data; live
+Auto-UV uses the same UI while testing your GPU.
 
 ## Install
 

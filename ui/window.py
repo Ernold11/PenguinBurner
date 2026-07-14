@@ -158,7 +158,10 @@ class MainWindow(ProfileActionsMixin):
 
         self.tabs = self.QtWidgets.QTabWidget()
         self.tabs.setIconSize(self.QtCore.QSize(18, 18))
-        tab_icon = lambda filename: self.QtGui.QIcon(str(asset_image_path(filename)))
+
+        def tab_icon(filename: str):
+            return self.QtGui.QIcon(str(asset_image_path(filename)))
+
         self.auto_uv_tab_index = self.tabs.addTab(
             auto_uv_view,
             tab_icon("tab-auto-uv.png"),

@@ -1,60 +1,152 @@
-# PenguinBurner — agent guidance
+# PenguinBurner contributor agent guide
 
-## Privileged operations go through the root daemon, never pkexec
+Keep this file byte-for-byte identical to `CLAUDE.md`. Uppercase
+`AGENTS.md` is the canonical generic-agent filename; do not recreate a
+lowercase `agents.md`.
 
-PenguinBurner runs a single root-owned systemd daemon (`penguin-burnerd.service`,
-socket `/run/penguin-burnerd.sock`). **The whole point of that daemon is to hold
-the privilege**, so anything that needs root MUST be routed through it via the
-socket API — the UI/CLI send a request and the already-root daemon does the work.
+## Working agreement
 
-- **Do NOT** wrap privileged actions in `pkexec`/`sudo` (`privileged_command`).
-  Each of those pops a password prompt, which is exactly what the daemon exists to
-  avoid. Even a single prompt is wrong when the daemon is running.
-- **Do** add/extend a daemon API method in the Rust daemon (`burnerd/` — wire the
-  request through `burnerd/src/api.rs` + the supervisor; the socket protocol is
-  unchanged) and call it from the client (`runtime/daemon_client.py`); the UI
-  reaches it through the `"daemonize"` runtime path
-  (`runtime_profile_command("daemonize", ...)`), which talks to the socket with no
-  elevation prompt.
-- GPU resets, VF-curve application, power limits, fan control, "restore to stock",
-  etc. are all privileged and belong in the daemon.
-- The rare exceptions that genuinely cannot go through the daemon are the systemd
-  unit lifecycle itself (install/uninstall the service) — those still need one
-  elevation because they create the daemon. Everything the *running* daemon can do,
-  the daemon does.
+- Work from the user-visible behavior and the module that owns it.
+- Inspect the branch, worktree, and relevant code before editing. Preserve
+  unrelated changes and user data.
+- Keep each change scoped and PR-ready. Avoid opportunistic refactors unless
+  they are required for the requested behavior.
+- Do not commit, push, open a PR, publish, install, or mutate external state
+  unless the user asked for that action.
+- When publishing is requested, branch from the current `main` as
+  `agent/<short-scope>`. Push directly to `main` only when the user
+  explicitly requests it.
+- Never report a check, live test, or hardware result that was not actually
+  observed.
 
-When adding a feature that touches the GPU or system state, first ask "can the
-running root daemon do this over the socket?" — the answer is almost always yes.
+## Ownership map
 
-## Code quality & verification — run these EVERY time before commit/push
+Put behavior in the boundary that owns it:
 
-Never commit or push without running the checks below and seeing them pass. If a
-check fails, fix it (or stop and report) — do not commit red.
+- `burnerd/`: privileged Rust daemon, GPU policy, saved-profile application,
+  fan control, and adaptive runtime switching.
+- `runtime/`: daemon socket client plus scan, verification, and systemd
+  support. It is not a second privileged engine.
+- `auto_uv/`: scan/search algorithms, tier behavior, candidate selection,
+  final verification, and scan persistence.
+- `profiles/`: saved-profile storage, verification, tier assignment, and
+  profile payload interpretation.
+- `stability/`: managed Q2RTX and CUDA stability workloads.
+- `ui/features/`: Qt workflows owned by a visible feature;
+  `ui/components/`: reusable widgets.
+- `overlay/`: native Vulkan overlay, configuration, formatting, and telemetry.
+- `integrations/`: Steam integration and external formats such as
+  MSI Afterburner import and LACT export.
+- `drivers/`: low-level hardware facts and operations. Keep product policy out.
+- `curve_editors/`: manual V/F and fan-curve editing.
+- `cli/`: narrow argument parsing and routing into existing owners.
+- `common/`: small shared helpers without product ownership.
+- `docs/`: user-facing documentation. Keep temporary plans and one-off
+  investigation notes out of shipped docs.
 
-1. **Tests** — `python -m pytest tests/ -q`. The whole suite must pass (currently
-   ~1438 tests, runs in seconds). Add/adjust tests when you change behavior; a test
-   that encodes the OLD behavior must be updated deliberately, not deleted to go
-   green.
-2. **Types/diagnostics** — resolve new Pyright errors in the files you touched.
-   Pre-existing mixin/callback noise (e.g. `ProfileActionsMixin` attribute access,
-   controller callback signatures) is not yours to fix, but a genuinely new error
-   in your change is.
-3. **Verify end-to-end** — for any change with a runtime surface, actually drive
-   the affected flow and observe behavior (the `/verify` skill), not just tests.
-   Exercise the real path: e.g. a GPU/daemon change → hit it through the daemon and
-   read back live NVML state.
-4. **Review the diff** — run `/code-review` (or `/simplify` for quality-only) on
-   nontrivial diffs before committing.
-5. **Clean rebuild on reinstall** — always `rm -rf build/ *.egg-info` before
-   `pip install --user --force-reinstall --no-deps .`. setuptools copies sources
-   into `build/lib` and does NOT prune files deleted from the tree, so a stale
-   `build/` silently re-ships removed modules (this has bitten us: a reverted file
-   came back in the wheel). Verify the install afterward (grep the site-packages
-   copy for the change; confirm removed files are gone from the RECORD).
-6. **A running process keeps its old code.** Updating installed files does not
-   hot-reload a live GUI or daemon — relaunch/restart the affected process to pick
-   up new code (and remember restarting the daemon re-applies its systemd
-   autostart).
+Do not create a new top-level package for a narrow helper. Split modules by
+responsibility, not arbitrary line count.
 
-Only commit/push when the user asks. Branch off `main` first if on it. End commit
-messages with the required Co-Authored-By trailer.
+## Privileged operations use the root daemon
+
+PenguinBurner has one root-owned service, `penguin-burnerd.service`, on
+`/run/penguin-burnerd.sock`. Anything that needs root belongs behind that
+socket API.
+
+- Never wrap GPU or system actions in `pkexec`, `sudo`, or
+  `privileged_command`.
+- GPU reset, V/F-curve application, power limits, fan control, restore-to-stock,
+  and similar operations must execute in `burnerd/`.
+- Extend the Rust API and supervisor, then expose the request through
+  `runtime/daemon_client.py`. The Qt runtime path calls it through
+  `runtime_profile_command("daemonize", ...)`.
+- The genuine exception is installing or removing the systemd unit itself,
+  because that creates or removes the daemon.
+- A foreground scan may stop the service temporarily, but must not disable the
+  persistent service as a side effect.
+- Apply, save, install, and other writes must follow an explicit user action.
+  Do not make hardware or configuration writes an implicit default.
+
+## Implementation standards
+
+- Start at the visible workflow, then trace persistence, runtime, and daemon
+  ownership end to end.
+- Import from concrete owner modules. Do not add package-root re-export barrels,
+  lazy `__getattr__` maps, or compatibility facades to hide ownership.
+- Keep GUI and CLI options aligned. Do not add hidden tuning flags that have no
+  visible product workflow.
+- Keep side effects at the edge. Parsing, normalization, scoring, formatting,
+  and path selection should be small pure helpers where practical.
+- Do not mix UI rendering, persistence, subprocess control, and hardware
+  mutation in one function.
+- Prefer one clear module and explicit call path over chains of thin wrappers.
+  Use a small settings dataclass when a feature accumulates related options.
+- Update every affected surface together: implementation, tests, packaging,
+  GUI labels, CLI help, errors, and user docs.
+- When moving code, update imports, package metadata, tests, docs, and
+  user-visible command strings in the same change; scan for stale paths.
+- Preserve visible integrations and saved configuration unless removal or
+  migration is explicitly part of the request.
+- If overlay-visible fields change, keep Python formatting and the native layer
+  in agreement.
+- Generated public assets must have a reproducible generator when practical,
+  and the generated output must be inspected before publishing.
+
+## Verification before commit or push
+
+Never commit red. Fix failures caused by the change; if a relevant check cannot
+run, stop and report the exact blocker.
+
+1. Run focused tests while developing, then the full suite:
+   ```bash
+   python -m pytest tests/ -q
+   ```
+   Add or update tests for changed behavior. Deliberately update tests that
+   encode an old contract; do not delete them merely to get green.
+
+2. For code, refactors, or behavior-changing cleanup, run:
+   ```bash
+   scripts/check-feature-static-analysis.sh
+   ```
+   Docs-only or generated-asset-only changes may use focused lint/link/render
+   checks instead when the full static routine is irrelevant.
+
+3. Resolve new Pyright and Ruff diagnostics in touched files. Pre-existing
+   diagnostics outside the change are not a reason to widen scope.
+
+4. Exercise runtime behavior end to end when the change has a runtime surface:
+   - daemon/GPU work: use the socket path and read back real state;
+   - overlay/Steam work: relaunch the affected game and observe the real path;
+   - GUI work: drive the actual Qt workflow;
+   - packaging work: build/install the artifact and inspect its contents.
+   State clearly when hardware or live-game validation was not run.
+
+5. For a local reinstall, remove stale setuptools output first:
+   ```bash
+   rm -rf build/ *.egg-info
+   python -m pip install --user --force-reinstall --no-deps .
+   ```
+   Verify the installed copy. Updating files does not hot-reload a running GUI
+   or daemon; restart the affected process before live verification.
+
+6. Review the final diff, run `git diff --check`, and use the available
+   code-review workflow for nontrivial changes. Confirm generated/binary assets
+   are intentional and inspect them visually where applicable.
+
+## PR workflow
+
+1. Confirm the requested scope with `git status -sb`, branch/remote state, and
+   the relevant diff.
+2. Create or use a focused `agent/<scope>` branch when starting from `main`.
+3. Implement the smallest coherent change and keep unrelated worktree content
+   untouched.
+4. Run the required focused, full-suite, static, live, packaging, and visual
+   checks in proportion to the affected surfaces.
+5. Stage explicit paths only. Review the staged diff, not just the working tree.
+6. Commit only when authorized, with a concise message and the required
+   `Co-Authored-By` trailer.
+7. Push/open a PR only when authorized. Unless the user asked for a direct
+   `main` push, publish the feature branch and use a PR.
+8. In the PR body, explain what changed, why, user/developer impact, checks run,
+   and any live validation that remains.
+9. Verify the remote result and leave the requested branch/worktree state clean.
