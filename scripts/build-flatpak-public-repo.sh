@@ -112,6 +112,6 @@ Local test:
   flatpak run "$APP_ID"
 
 Public hosting:
-  Upload the contents of $OUT_DIR to HTTPS static hosting.
-  Re-run with PENGUIN_BURNER_FLATPAK_REPO_URL set to the public repo URL.
+  Publish through scripts/publish-flatpak-pages.sh so generated files are
+  deployed as a GitHub Pages artifact instead of committed to Git.
 EOF
