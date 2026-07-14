@@ -7,7 +7,6 @@ from integrations.steam.manager import SteamIntegrationManager
 from integrations.steam.settings import (
     GAME_MODE_ADAPTIVE,
     GAME_MODE_DEFAULT,
-    GAME_MODE_NONE,
     GAME_MODE_STOCK,
     load_steam_game_settings,
 )
@@ -493,6 +492,8 @@ def test_hot_reapply_tolerates_grace_window_exit(manager, monkeypatch) -> None:
             "game_runtime": {
                 "active": True,
                 "watched": [{"pid": 4242, "app_id": APP_ID}],
+                "standing_runtime_mode": "adaptive",
+                "standing_profile_id": "performance-9",
             }
         },
     )

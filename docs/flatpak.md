@@ -75,3 +75,52 @@ Launch the installed app at any time with:
 ```bash
 flatpak run io.github.jpietek.PenguinBurner
 ```
+
+## Publishing
+
+Flatpak repository output is deployed through a GitHub Pages Actions artifact,
+not committed to a `gh-pages` branch. Signing stays local: the publisher builds
+with the existing GPG key, verifies a clean installation and an update from the
+previous snapshot, uploads the signed snapshot to the matching GitHub Release,
+and dispatches the Pages workflow.
+
+From a clean checkout at the release tag, run:
+
+```bash
+scripts/publish-flatpak-pages.sh vX.Y.Z
+```
+
+The publisher discovers the newest compatible snapshot Release asset and uses
+it to preserve the OSTree repository across releases. It refuses to replace an
+existing snapshot unless `--replace` is passed explicitly.
+
+The one-time migration from legacy branch-backed Pages deliberately separates
+upload from deployment:
+
+```bash
+scripts/publish-flatpak-pages.sh --upload-only --migrate-ref origin/gh-pages v0.7.2
+```
+
+After that command succeeds, open repository **Settings → Pages** and change
+**Source** from the `gh-pages` branch to **GitHub Actions**, then dispatch the
+already-uploaded snapshot:
+
+```bash
+gh workflow run deploy-flatpak-pages.yml \
+  --repo jpietek/PenguinBurner \
+  --field tag=v0.7.2
+```
+
+Use `--prepare-only` instead of `--upload-only` to complete all local build,
+signature, installation, update, archive, and checksum checks without uploading
+an asset or dispatching the Pages workflow.
+
+The smoke test targets the published `x86_64` ref. On a cross-architecture
+maintenance host, set `PENGUIN_BURNER_FLATPAK_SMOKE_NO_DEPS=1` to validate the
+app ref without downloading a foreign-architecture runtime; release hosts
+should leave dependency verification enabled.
+
+After the workflow deploys, verify a fresh install and an update through the
+public URL before deleting `gh-pages`. The private GPG key is never uploaded;
+only the public key, signed repository, bundle, archive, and checksum leave the
+release machine.

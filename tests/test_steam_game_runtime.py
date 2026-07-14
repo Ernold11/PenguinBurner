@@ -130,8 +130,9 @@ def test_profile_argv_for_unresolved_tier_is_none(monkeypatch) -> None:
 
 
 def test_game_runtime_profile_argv_reads_setting(
-    steam_home: Path, tmp_path: Path
+    steam_home: Path, tmp_path: Path, monkeypatch
 ) -> None:
+    _stub_adaptive_profiles(monkeypatch)
     settings_path = tmp_path / "steam-game-settings.json"
     store_steam_game_setting(
         ACCOUNT_ID,
@@ -263,6 +264,7 @@ def test_flatpak_runtime_helper_passes_explicit_game_identity(monkeypatch) -> No
 def test_apply_soft_fails_when_daemon_unreachable(
     steam_home: Path, tmp_path: Path, monkeypatch, capsys
 ) -> None:
+    _stub_adaptive_profiles(monkeypatch)
     settings_path = tmp_path / "steam-game-settings.json"
     store_steam_game_setting(
         ACCOUNT_ID,

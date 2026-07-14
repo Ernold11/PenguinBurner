@@ -40,7 +40,10 @@ and use, closing the feature gap with the Windows tools Linux users miss: the
 python -m pip install --user --upgrade penguin-burner
 ```
 
-Flatpak users should use the [Flatpak guide](docs/flatpak.md).
+[Flatpak v0.7.2](https://github.com/jpietek/PenguinBurner/releases/tag/v0.7.2)
+is available from the
+[PenguinBurner Flatpak repository](https://jpietek.github.io/PenguinBurner/penguin-burner.flatpakrepo);
+use the [Flatpak install and update guide](docs/flatpak.md).
 
 Also packaged for [Fedora (COPR)](https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/),
 [Arch / CachyOS (AUR)](https://aur.archlinux.org/packages/penguin-burner), and
