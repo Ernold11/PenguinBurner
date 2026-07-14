@@ -1,4 +1,4 @@
-# <img src="docs/assets/penguin-burner-logo.png" alt="PenguinBurner logo" width="38" align="top"> NVIDIA GPU Auto Tuning Linux Tool
+# <img src="docs/assets/penguin-burner-logo.png" alt="PenguinBurner logo" width="38" align="top"> PenguinBurner — Automatic NVIDIA GPU Undervolting & Overclocking for Linux
 
 <p align="center">
   <a href="https://pypi.org/project/penguin-burner/"><img alt="PyPI" src="https://img.shields.io/pypi/v/penguin-burner?style=flat-square&logo=pypi&logoColor=white&color=3775A9"></a>
@@ -6,7 +6,6 @@
   <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square&logo=cplusplus&logoColor=white">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2021-CE412B?style=flat-square&logo=rust&logoColor=white">
   <a href="LICENSE"><img alt="License: GPL v3" src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"></a>
-  <img alt="Coverage" src="https://img.shields.io/badge/coverage-81%25-green?style=flat-square">
   <a href="https://github.com/sponsors/jpietek"><img alt="Sponsors" src="https://img.shields.io/badge/sponsors-2-EA4AAA?style=flat-square&logo=githubsponsors&logoColor=white"></a>
   <a href="https://github.com/jpietek/PenguinBurner/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/jpietek/PenguinBurner?style=flat-square&logo=github"></a>
 </p>
@@ -18,9 +17,24 @@
   <a href="https://pepy.tech/project/penguin-burner"><img alt="PyPI downloads" src="https://img.shields.io/pepy/dt/penguin-burner?style=flat-square&logo=pypi&logoColor=white&label=PyPI%20downloads"></a>
 </p>
 
-**PenguinBurner tunes your NVIDIA GPU on Linux, starting with
-automatic and adaptive undervolting, plus an optional in-game monitoring overlay
-with a PC latency meter and pre-frame-generation FPS that updates live.**
+![PenguinBurner Auto-UV finding Efficiency, Balanced, and Performance curves in one scan](docs/assets/auto-uv-full-scan-demo.gif)
+
+**One scan. Three verified GPU profiles.**
+
+- **Efficiency** — undervolt and underclock. RTX 5080: 850 mV · 2460 MHz · 233 W.
+- **Balanced** — undervolt and maintain clock. RTX 5080: 850 mV · 2639 MHz · 267 W.
+- **Performance** — undervolt and overclock. RTX 5080: 915 mV · 2980 MHz · 310 W.
+
+These are verified results from one RTX 5080; every GPU tunes differently.
+
+The animation above is rendered by PenguinBurner's real Qt interface with a
+safely simulated scan; a live Auto-UV run drives the same UI while testing your
+GPU.
+
+PenguinBurner is an open-source NVIDIA GPU tuning app for Linux, built for
+automatic undervolting & overclocking. It also offers adaptive tuning, per-game
+Steam profiles, and an optional in-game monitoring overlay with PC latency and
+live FPS measured before frame generation.
 
 You get quieter fans, lower temperatures, and lower power draw, with no manual
 trial and error. It tests your card under real load, finds a stable efficient
@@ -80,7 +94,7 @@ prompts.
 5. For per-game tuning — including **Adaptive**, which switches tiers as your
    frame rate changes — use the **Steam** tab to pick a mode per game.
 
-## Automatic Tuning
+## Automatic Undervolting & Overclocking
 
 Tests your card under real load and finds the most efficient stable undervolt
 curve for you. The sweep runs PenguinBurner's managed
@@ -152,8 +166,8 @@ enable or disable the wrapper across your whole library at once.
 [LACT](https://github.com/ilya-zlobintsev/LACT) is the broader, more established
 Linux GPU app, and it landed a working Nvidia VF curve setter before we did. It
 supports more brands and has deeper monitoring than we do. PenguinBurner is
-narrower on purpose: automatic undervolting, an in-game overlay, and adaptive
-switching. NVIDIA-only comparison, to the best of our knowledge:
+narrower on purpose: automatic undervolting & overclocking, an in-game overlay,
+and adaptive switching. NVIDIA-only comparison, to the best of our knowledge:
 
 | Capability (NVIDIA) | PenguinBurner | LACT |
 | --- | :---: | :---: |
@@ -274,13 +288,14 @@ Balanced at most retains the card's stock clock, probing gently for lower
 voltage. Efficiency just follows the stock curve on the first pass — lowering
 power consumption by reducing clock — then undervolts only very slightly.
 
-**Performance** undervolt mode is the one that pushes past stock. On my RTX 5080,
-during the OC phase I sometimes get a "Vulkan device lost", which PenguinBurner
-catches and then reverts the problematic voltage/frequency point. Worst case is
-a hard system freeze and reboot — after which the blacklisted V/F point is
-persisted to the UV history file in your home directory, so it is not retried.
+**Performance** is the profile that pushes past stock: it undervolts and then
+overclocks. On my RTX 5080, during the OC phase I sometimes get a "Vulkan device
+lost", which PenguinBurner catches and then reverts the problematic
+voltage/frequency point. Worst case is a hard system freeze and reboot — after
+which the blacklisted V/F point is persisted to the UV history file in your home
+directory, so it is not retried.
 
-You can also define, in the Performance UV dialog, exactly which
+You can also define, in the Performance setup dialog, exactly which
 voltage/frequency point the card is pushed to over stock limits. The default is
 the suggested point for 30/40/50-tier GPUs, based on experiments with this and
 similar tools on Windows. Performance is optional anyway — OC is not mandatory.

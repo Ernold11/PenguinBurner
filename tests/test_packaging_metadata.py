@@ -967,9 +967,12 @@ def test_readme_uses_logo_image_instead_of_emoji_title() -> None:
     first_lines = "\n".join(readme.splitlines()[:10])
 
     assert "docs/assets/penguin-burner-logo.png" in first_lines
-    assert "NVIDIA GPU Auto Tuning Linux Tool" in first_lines
-    assert "tunes your NVIDIA GPU on Linux" in readme
-    assert "automatic and adaptive undervolting" in readme
+    assert (
+        "PenguinBurner — Automatic NVIDIA GPU Undervolting & Overclocking for Linux"
+        in first_lines
+    )
+    assert "open-source NVIDIA GPU tuning app for Linux" in readme
+    assert "automatic undervolting & overclocking" in readme
     assert "MSI Afterburner" in readme
     assert "LACT" in readme
     assert "https://github.com/jpietek/PenguinBurner/issues" in readme
