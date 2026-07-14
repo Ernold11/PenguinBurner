@@ -11,7 +11,6 @@ from overlay.state import (
     OVERLAY_ENABLE_ENV_ALIAS,
     OVERLAY_ENABLE_ENV,
     OVERLAY_STATE_ENV,
-    OVERLAY_TEXT_ENV,
 )
 
 
@@ -19,14 +18,9 @@ def test_pb_overlay_launcher_execs_with_layer_environment(monkeypatch, tmp_path)
     calls = []
     monkeypatch.setenv("HOME", str(tmp_path))
     state_path = tmp_path / "overlay-state.txt"
-    text_path = tmp_path / "overlay-text.txt"
     monkeypatch.setenv(OVERLAY_STATE_ENV, str(state_path))
-    monkeypatch.setenv(OVERLAY_TEXT_ENV, str(text_path))
     monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
     native_layer_dir = _fake_native_layer_dir(tmp_path)
-    dxvk_layer_dir = tmp_path / "dxvk-nvapi-layer"
-    dxvk_layer_dir.mkdir()
-    monkeypatch.setattr(launcher, "_DXVK_NVAPI_LAYER_DIR", dxvk_layer_dir)
     monkeypatch.setenv(NATIVE_LAYER_DIR_ENV, str(native_layer_dir))
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setenv("LD_PRELOAD", "steam-overlay.so")
@@ -60,11 +54,31 @@ def test_pb_overlay_launcher_execs_with_layer_environment(monkeypatch, tmp_path)
     assert "DXVK_NVAPI_LOG_LEVEL" not in env
     assert "PROTON_LOG" not in env
     assert "VK_LAYER_PENGUINBURNER_latency" in env["VK_LOADER_LAYERS_ENABLE"]
-    assert "VK_LAYER_DXVK_NVAPI_reflex" in env["VK_LOADER_LAYERS_ENABLE"]
+    assert "VK_LAYER_DXVK_NVAPI_reflex" not in env["VK_LOADER_LAYERS_ENABLE"]
     assert str(native_layer_dir) in env["VK_ADD_IMPLICIT_LAYER_PATH"]
-    assert str(dxvk_layer_dir) in env["VK_ADD_IMPLICIT_LAYER_PATH"]
     assert env[OVERLAY_STATE_ENV] == str(state_path)
-    assert env[OVERLAY_TEXT_ENV] == str(text_path)
+    assert env[launcher.TELEMETRY_SESSION_ENV] == str(launcher.os.getpid())
+
+
+def test_main_overwrites_spoofed_telemetry_session(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
+    monkeypatch.setenv(launcher.TELEMETRY_SESSION_ENV, "some-other-game")
+    game_envs = []
+
+    def fake_execvpe(_file, _args, env):
+        game_envs.append(dict(env))
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
+    try:
+        launcher.main(["game"])
+    except RuntimeError:
+        pass
+
+    assert game_envs[0][launcher.TELEMETRY_SESSION_ENV] == str(
+        launcher.os.getpid()
+    )
 
 
 def test_configure_environment_arms_live_overlay_config_by_default(tmp_path) -> None:
@@ -133,7 +147,9 @@ def test_overlay_disabled_defaults_ingame_latency_off() -> None:
     assert "PENGUIN_BURNER_LATENCY_DISPLAY" not in env
 
 
-def test_configure_environment_keeps_explicit_trace_last_resort() -> None:
+def test_configure_environment_passes_user_dxvk_nvapi_log_env_through() -> None:
+    # The old trace escape is gone: a user-set DXVK_NVAPI_LOG_LEVEL no longer
+    # disables the shim; the launcher just leaves the user's env untouched.
     env = {
         OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
         "PB_INGAME_LATENCY": "1",
@@ -144,6 +160,18 @@ def test_configure_environment_keeps_explicit_trace_last_resort() -> None:
 
     assert "DXVK_NVAPI_LATENCY_MARKER_LOG" not in env
     assert env["DXVK_NVAPI_LOG_LEVEL"] == "trace"
+
+
+def test_shim_deploy_never_suppresses_the_layer_marker_tap(monkeypatch) -> None:
+    # Deploying the shim must not mute the native layer's own marker samples:
+    # the daemon prefers shim samples by source and needs the layer as the
+    # fallback when a deployed shim never streams (game-local nvapi64.dll,
+    # 32-bit titles). No suppression env may be set.
+    monkeypatch.setattr(launcher, "deploy_nvapi_shim", lambda _env: True)
+    env = {launcher.MARKER_FIFO_ENV: "/tmp/nvapi-trace.700.fifo"}
+
+    assert launcher._configure_dxvk_nvapi_marker_output(env)
+    assert "PENGUIN_BURNER_NVAPI_SHIM_ACTIVE" not in env
 
 
 def test_explicit_ingame_latency_zero_overrides_latency_alias() -> None:
@@ -204,9 +232,7 @@ def test_pb_overlay_launcher_strips_mangohud_when_overlay_enabled(
     monkeypatch.setenv("HOME", str(tmp_path))
     calls = []
     state_path = tmp_path / "overlay-state.txt"
-    text_path = tmp_path / "overlay-text.txt"
     monkeypatch.setenv(OVERLAY_STATE_ENV, str(state_path))
-    monkeypatch.setenv(OVERLAY_TEXT_ENV, str(text_path))
     monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
     monkeypatch.setenv("PB_OVERLAY", "1")
     monkeypatch.setenv(
@@ -241,7 +267,6 @@ def test_pb_overlay_launcher_keeps_mangohud_when_overlay_disabled(
     monkeypatch.setenv("HOME", str(tmp_path))
     calls = []
     monkeypatch.setenv(OVERLAY_STATE_ENV, str(tmp_path / "overlay-state.txt"))
-    monkeypatch.setenv(OVERLAY_TEXT_ENV, str(tmp_path / "overlay-text.txt"))
     monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
     # Explicit overlay-off (what the Steam tab writes for an unchecked overlay
     # toggle) is the one launch mode where MangoHud must survive.
@@ -268,7 +293,7 @@ def test_pb_overlay_launcher_keeps_mangohud_when_overlay_disabled(
 def test_main_arms_refront_watcher_when_shim_active(monkeypatch, tmp_path) -> None:
     """A real launch with the shim chosen spawns the detached re-front watcher
     that survives the exec and outlasts Proton's nvapi64.dll clobber."""
-    _write_prefix_nvapi(tmp_path, supports_marker_log=False)  # stock real present
+    _write_prefix_nvapi(tmp_path)  # stock real nvapi64.dll present
     shim_dir = tmp_path / "shim"
     shim_dir.mkdir()
     (shim_dir / "nvapi64.dll").write_bytes(b"MZ [pb-nvapi-shim] forwarder")
@@ -450,11 +475,10 @@ def _fake_native_layer_dir(tmp_path):
     return path
 
 
-def _write_prefix_nvapi(tmp_path, *, supports_marker_log: bool) -> None:
+def _write_prefix_nvapi(tmp_path) -> None:
     dll = tmp_path / "pfx/drive_c/windows/system32/nvapi64.dll"
     dll.parent.mkdir(parents=True)
-    marker = b"DXVK_NVAPI_LATENCY_MARKER_LOG" if supports_marker_log else b""
-    dll.write_bytes(b"prefix-nvapi " + marker)
+    dll.write_bytes(b"prefix-nvapi stock real")
 
 
 def test_steam_game_profile_failure_never_blocks_launch(
@@ -462,7 +486,6 @@ def test_steam_game_profile_failure_never_blocks_launch(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv(OVERLAY_STATE_ENV, str(tmp_path / "overlay-state.txt"))
-    monkeypatch.setenv(OVERLAY_TEXT_ENV, str(tmp_path / "overlay-text.txt"))
     monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
     import integrations.steam.game_runtime as game_runtime
 
@@ -488,7 +511,6 @@ def test_steam_game_profile_failure_never_blocks_launch(
 def test_wrapper_consumes_pb_overlay_flag(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv(OVERLAY_STATE_ENV, str(tmp_path / "overlay-state.txt"))
-    monkeypatch.setenv(OVERLAY_TEXT_ENV, str(tmp_path / "overlay-text.txt"))
     monkeypatch.setenv(OVERLAY_CONFIG_ENV, str(tmp_path / "overlay.toml"))
     monkeypatch.setenv("MANGOHUD", "1")
     calls = []

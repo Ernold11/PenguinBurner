@@ -14,13 +14,12 @@ OUTPUT_DIR="${PENGUIN_BURNER_FLATPAK_PAGES_DIST:-$ROOT/dist/flatpak-pages}"
 SMOKE_NO_DEPS="${PENGUIN_BURNER_FLATPAK_SMOKE_NO_DEPS:-0}"
 
 replace=0
-migration_ref=""
 prepare_only=0
 upload_only=0
 
 usage() {
     cat <<'EOF'
-Usage: scripts/publish-flatpak-pages.sh [--prepare-only|--upload-only] [--replace] [--migrate-ref REF] TAG
+Usage: scripts/publish-flatpak-pages.sh [--prepare-only|--upload-only] [--replace] TAG
 
 Build, verify, and publish a signed Flatpak Pages snapshot without committing
 generated files to Git.
@@ -32,16 +31,10 @@ Normal publication:
   - builds and signs locally, uploads versioned Release assets, and dispatches
     the GitHub Pages deployment workflow.
 
-One-time migration:
-  --migrate-ref REF exports an existing signed Pages tree (normally
-  origin/gh-pages), adds the Pages index, verifies and packages it without
-  rebuilding, then uploads and dispatches it for TAG.
-
 Options:
   --prepare-only     Build, verify, and package without uploading or deploying.
   --upload-only      Build, verify, package, and upload without dispatching.
   --replace          Explicitly replace existing snapshot Release assets.
-  --migrate-ref REF  Package an existing Git tree without rebuilding it.
   -h, --help         Show this help.
 EOF
 }
@@ -209,11 +202,6 @@ while (($#)); do
             upload_only=1
             shift
             ;;
-        --migrate-ref)
-            (($# >= 2)) || die "--migrate-ref requires a Git ref"
-            migration_ref="$2"
-            shift 2
-            ;;
         -h|--help)
             usage
             exit 0
@@ -251,63 +239,53 @@ site="$work_dir/site"
 previous_site="$work_dir/previous-site"
 mkdir -p "$site"
 
-if [[ -n "$migration_ref" ]]; then
-    git -C "$ROOT" rev-parse --verify "$migration_ref^{commit}" >/dev/null \
-        || die "migration ref does not exist: $migration_ref"
-    git -C "$ROOT" archive --format=tar "$migration_ref" \
-        | tar -xf - --no-same-owner --no-same-permissions -C "$site"
-    write_index "$site"
-    python3 "$ARTIFACT_HELPER" validate "$site"
-    smoke_install "$site" "$work_dir/migration-install" penguinburner-migration
-else
-    [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=normal)" ]] \
-        || die "normal publication requires a clean checkout"
-    head_commit="$(git -C "$ROOT" rev-parse HEAD)"
-    tag_commit="$(git -C "$ROOT" rev-parse "$tag^{commit}")"
-    [[ "$head_commit" == "$tag_commit" ]] \
-        || die "normal publication requires HEAD to match $tag"
+[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=normal)" ]] \
+    || die "normal publication requires a clean checkout"
+head_commit="$(git -C "$ROOT" rev-parse HEAD)"
+tag_commit="$(git -C "$ROOT" rev-parse "$tag^{commit}")"
+[[ "$head_commit" == "$tag_commit" ]] \
+    || die "normal publication requires HEAD to match $tag"
 
-    target_prerelease="$(
-        gh release view "$tag" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json isPrerelease \
-            --jq '.isPrerelease'
-    )"
-    target_published_at="$(
-        gh release view "$tag" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json publishedAt \
-            --jq '.publishedAt'
-    )"
-    previous_tag="$(
-        find_previous_snapshot_tag \
-            "$tag" \
-            "$target_prerelease" \
-            "$target_published_at"
-    )" \
-        || die "no compatible earlier Pages snapshot found; use --migrate-ref for the one-time migration"
-    previous_archive="$(snapshot_name "$previous_tag")"
-    mkdir -p "$work_dir/download"
-    gh release download "$previous_tag" \
+target_prerelease="$(
+    gh release view "$tag" \
         --repo "$GITHUB_REPOSITORY" \
-        --pattern "$previous_archive" \
-        --pattern "$previous_archive.sha256" \
-        --dir "$work_dir/download"
-    python3 "$ARTIFACT_HELPER" extract \
-        "$work_dir/download/$previous_archive" \
-        "$previous_site" \
-        --checksum "$work_dir/download/$previous_archive.sha256"
-    cp -a "$previous_site/." "$site/"
+        --json isPrerelease \
+        --jq '.isPrerelease'
+)"
+target_published_at="$(
+    gh release view "$tag" \
+        --repo "$GITHUB_REPOSITORY" \
+        --json publishedAt \
+        --jq '.publishedAt'
+)"
+previous_tag="$(
+    find_previous_snapshot_tag \
+        "$tag" \
+        "$target_prerelease" \
+        "$target_published_at"
+)" \
+    || die "no compatible earlier Pages snapshot found"
+previous_archive="$(snapshot_name "$previous_tag")"
+mkdir -p "$work_dir/download"
+gh release download "$previous_tag" \
+    --repo "$GITHUB_REPOSITORY" \
+    --pattern "$previous_archive" \
+    --pattern "$previous_archive.sha256" \
+    --dir "$work_dir/download"
+python3 "$ARTIFACT_HELPER" extract \
+    "$work_dir/download/$previous_archive" \
+    "$previous_site" \
+    --checksum "$work_dir/download/$previous_archive.sha256"
+cp -a "$previous_site/." "$site/"
 
-    PENGUIN_BURNER_FLATPAK_OUT_DIR="$site" \
-    PENGUIN_BURNER_FLATPAK_REPO_URL="$PUBLIC_REPO_URL" \
-    PENGUIN_BURNER_FLATPAK_BUILD_BUNDLE=1 \
-        "$BUILD_SCRIPT"
-    write_index "$site"
-    python3 "$ARTIFACT_HELPER" validate "$site"
-    smoke_install "$site" "$work_dir/new-install" penguinburner-new
-    smoke_update "$previous_site" "$site" "$work_dir/update-install"
-fi
+PENGUIN_BURNER_FLATPAK_OUT_DIR="$site" \
+PENGUIN_BURNER_FLATPAK_REPO_URL="$PUBLIC_REPO_URL" \
+PENGUIN_BURNER_FLATPAK_BUILD_BUNDLE=1 \
+    "$BUILD_SCRIPT"
+write_index "$site"
+python3 "$ARTIFACT_HELPER" validate "$site"
+smoke_install "$site" "$work_dir/new-install" penguinburner-new
+smoke_update "$previous_site" "$site" "$work_dir/update-install"
 
 mkdir -p "$OUTPUT_DIR"
 archive_name="$(snapshot_name "$tag")"
@@ -362,7 +340,4 @@ Uploaded signed Pages snapshot for $tag:
   Checksum: $checksum_path
   Release:  https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag
   Runs:     https://github.com/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW_FILE
-
-The remote gh-pages branch must not be deleted until the workflow succeeds and
-the public Flatpak install/update verification passes.
 EOF

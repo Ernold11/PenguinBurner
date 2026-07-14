@@ -16,20 +16,16 @@ from .state import (
     OVERLAY_ENABLE_ENV_ALIAS,
     OVERLAY_ENABLE_ENV,
     OVERLAY_STATE_ENV,
-    OVERLAY_TEXT_ENV,
     clear_overlay_override,
     overlay_state_path,
-    overlay_text_path,
 )
 from .telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 
 MASTER_ENABLE_ENV = "PENGUIN_BURNER"
 LATENCY_ENABLE_ENV = "PENGUIN_BURNER_LATENCY_LAYER"
 LATENCY_SOCKET_ENV = "PENGUIN_BURNER_LATENCY_SOCKET"
-# User-facing toggle for extra in-game Reflex marker telemetry. Native Vulkan
-# marker latency stays enabled by the wrapper; this toggle asks dxvk-nvapi to
-# emit marker records too. New dxvk-nvapi builds use a marker-only log flag;
-# full trace remains an explicit/manual fallback.
+# User-facing toggle for extra in-game Reflex marker telemetry: the NVAPI shim
+# is deployed into the Proton prefix and streams Reflex markers to the FIFO.
 INGAME_LATENCY_ENV = "PENGUIN_BURNER_INGAME_LATENCY"
 INGAME_LATENCY_ENV_ALIAS = "PB_INGAME_LATENCY"
 # Display (present->scanout) latency is folded into the single in-game latency
@@ -39,11 +35,10 @@ INGAME_LATENCY_ENV_ALIAS = "PB_INGAME_LATENCY"
 DISPLAY_LATENCY_ENV = "PENGUIN_BURNER_LATENCY_DISPLAY"
 INJECT_PRESENT_ID_ENV = "PENGUIN_BURNER_LATENCY_INJECT_PRESENT_ID"
 DXVK_NVAPI_ENABLE_ENV = "DXVK_NVAPI_VKREFLEX"
-DXVK_NVAPI_MARKER_LOG_ENV = "DXVK_NVAPI_LATENCY_MARKER_LOG"
-DXVK_NVAPI_TRACE_ENV = "DXVK_NVAPI_LOG_LEVEL"
 VK_LAYER_PATH_ENV = "VK_ADD_IMPLICIT_LAYER_PATH"
 VK_LAYER_ENABLE_ENV = "VK_LOADER_LAYERS_ENABLE"
 SESSION_HELPER_PYTHONPATH_ENV = "PENGUIN_BURNER_SESSION_HELPER_PYTHONPATH"
+TELEMETRY_SESSION_ENV = "PENGUIN_BURNER_TELEMETRY_SESSION"
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSEY = {"0", "false", "no", "off"}
@@ -72,17 +67,16 @@ def _overlay_enabled(env: dict[str, str]) -> bool:
     return False
 
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-_DXVK_NVAPI_LAYER_DIR = _REPO_ROOT / "third_party" / "dxvk-nvapi" / "build.layer"
-_DXVK_NVAPI_LAYER_NAME = "VK_LAYER_DXVK_NVAPI_reflex"
-
-
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     env = dict(os.environ)
     session_helper_pythonpath = str(
         env.pop(SESSION_HELPER_PYTHONPATH_ENV, "") or ""
     ).strip()
+    # Wine reports a Windows PID while the Vulkan layer reports the host PID.
+    # Both producers inherit this wrapper/session identity so the daemon can
+    # merge their complementary samples without mistaking them for two games.
+    env[TELEMETRY_SESSION_ENV] = str(os.getpid())
     args = _consume_wrapper_flags(args, env)
     # Every launch starts from its own launch-time overlay setting: a live
     # override left behind by a previous session must not leak into this one.
@@ -251,13 +245,12 @@ def _sweep_stale_marker_fifos(env: dict[str, str]) -> None:
 
 
 def _route_trace_to_fifo(env: dict[str, str]) -> None:
-    """Send dxvk-nvapi marker output into an in-memory FIFO.
+    """Route wine debug output (process stderr) into an in-memory FIFO.
 
-    dxvk-nvapi marker-only logging and the older full-trace fallback both write
-    to wine's debug output, i.e. the process stderr. We point stderr at a host
-    FIFO that the marker bridge drains, so the marker stream lives in the
-    kernel pipe buffer (RAM) and never touches disk. Redirecting the inherited
-    fd (not a path) also avoids any wine path translation.
+    The shim writes markers to the FIFO directly; stderr is still routed there
+    so marker lines that reach wine's debug output land in the same stream the
+    bridge drains, living in the kernel pipe buffer (RAM), never on disk.
+    Redirecting the inherited fd (not a path) avoids wine path translation.
     """
     fifo = trace_fifo_path(env)
     try:
@@ -307,7 +300,6 @@ def configure_penguin_burner_environment(
         env.setdefault(INJECT_PRESENT_ID_ENV, "1")
     env.setdefault(LATENCY_SOCKET_ENV, str(_home_latency_socket_path(env)))
     env.setdefault(OVERLAY_STATE_ENV, str(overlay_state_path(env)))
-    env.setdefault(OVERLAY_TEXT_ENV, str(overlay_text_path(env)))
     _prepend_layer_paths(env)
     _prepend_enabled_layers(env)
     return shim_active
@@ -319,12 +311,6 @@ def _configure_dxvk_nvapi_marker_output(
     command_args: list[str] | tuple[str, ...] | None = None,
 ) -> bool:
     _ = command_args
-    # Debug escape: if the user explicitly forces dxvk-nvapi's own trace log
-    # (DXVK_NVAPI_LOG_LEVEL=trace), skip the shim and let it log. That path is
-    # heavy (every nvapi call) -- diagnostics only; the shim is the normal source.
-    if str(env.get(DXVK_NVAPI_TRACE_ENV) or "").strip().lower() == "trace":
-        return False
-
     # The drop-in NVAPI shim taps the Reflex markers above vkd3d's owner-gate (so
     # it works under frame generation) and writes them to the marker FIFO the
     # bridge drains -- no trace, no marker-log, no dxvk-nvapi fork. When there is
@@ -378,22 +364,16 @@ def _home_latency_socket_path(env: dict[str, str]) -> Path:
 
 
 def _prepend_layer_paths(env: dict[str, str]) -> None:
-    layer_paths = [
-        *(str(path) for path in native_layer_dirs(env)),
-        *([str(_DXVK_NVAPI_LAYER_DIR)] if _DXVK_NVAPI_LAYER_DIR.exists() else []),
-    ]
+    layer_paths = [str(path) for path in native_layer_dirs(env)]
     if layer_paths:
         _prepend_path_entries(env, VK_LAYER_PATH_ENV, layer_paths, separator=":")
 
 
 def _prepend_enabled_layers(env: dict[str, str]) -> None:
-    layers = []
     if native_layer_dirs(env):
-        layers.append(LATENCY_LAYER_NAME)
-    if _DXVK_NVAPI_LAYER_DIR.exists():
-        layers.append(_DXVK_NVAPI_LAYER_NAME)
-    if layers:
-        _prepend_path_entries(env, VK_LAYER_ENABLE_ENV, layers, separator=",")
+        _prepend_path_entries(
+            env, VK_LAYER_ENABLE_ENV, [LATENCY_LAYER_NAME], separator=","
+        )
 
 
 def _prepend_path_entries(
@@ -413,11 +393,10 @@ def _prepend_path_entries(
 
 
 def _prepare_overlay_paths(env: dict[str, str]) -> None:
-    for key in (OVERLAY_STATE_ENV, OVERLAY_TEXT_ENV):
-        path = Path(str(env.get(key) or "")).expanduser()
-        if not str(path):
-            continue
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            continue
+    path = Path(str(env.get(OVERLAY_STATE_ENV) or "")).expanduser()
+    if not str(path):
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass

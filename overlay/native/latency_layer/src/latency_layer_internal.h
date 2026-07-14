@@ -51,8 +51,9 @@ constexpr const char* kOverlayEnableEnv = "PENGUIN_BURNER_OVERLAY";
 constexpr const char* kOverlayEnableEnvAlias = "PB_OVERLAY";
 constexpr const char* kOverlayStateEnv = "PENGUIN_BURNER_OVERLAY_STATE";
 constexpr const char* kOverlayOverrideEnv = "PENGUIN_BURNER_OVERLAY_OVERRIDE";
-constexpr const char* kOverlayTextEnv = "PENGUIN_BURNER_OVERLAY_TEXT";
 constexpr const char* kOverlayConfigEnv = "PENGUIN_BURNER_OVERLAY_CONFIG";
+constexpr const char* kTelemetrySessionEnv =
+    "PENGUIN_BURNER_TELEMETRY_SESSION";
 constexpr const char* kRecoveryResetEnv = "PENGUIN_BURNER_LATENCY_RECOVERY_RESET";
 constexpr const char* kDebugFlowEnv = "PENGUIN_BURNER_LATENCY_DEBUG_FLOW";
 constexpr const char* kQueryTimingsEnv = "PENGUIN_BURNER_LATENCY_QUERY_TIMINGS";
@@ -438,6 +439,7 @@ extern std::atomic<double> g_overlay_user_scale;
 
 // ---- Cross-translation-unit function declarations ----
     bool env_flag_enabled(const char* name);
+    const char* telemetry_session_id();
     bool debug_flow_enabled();
     bool display_latency_enabled();
     bool inject_present_id_enabled();
@@ -449,7 +451,6 @@ extern std::atomic<double> g_overlay_user_scale;
     bool overlay_enabled();
     uint64_t median_fps_from_present_frametime_locked( SwapchainContext& context, uint64_t present_frametime_us);
     std::string cached_overlay_text(uint64_t fps, uint64_t now_us);
-    void write_overlay_text_file(uint64_t fps, uint64_t now_us);
     void destroy_overlay_resources( const DeviceContext& device_context, SwapchainContext& swapchain_context);
     VkSemaphore submit_overlay_locked( const DeviceContext& device_context, VkSwapchainKHR swapchain, SwapchainContext& swapchain_context, const QueueContext& queue_context, VkQueue queue, uint32_t image_index, const VkPresentInfoKHR* present_info, const std::string& text);
     uint64_t live_swapchain_count_locked(VkDevice device);

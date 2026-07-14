@@ -20,8 +20,8 @@ flatpak remote-add --user --if-not-exists penguinburner https://jpietek.github.i
 That single command installs and opens the Flatpak. When a host Steam
 installation is detected, PenguinBurner silently repairs and verifies the
 complete host integration before its window appears. After that,
-`penguin-burner`, `pburn`, `penguin-burner-ui`, `pburn-ui`,
-`penguin-burner-cli`, `pburn-cli`, and `PENGUIN_BURNER` work from your `PATH`
+`penguin-burner`, `pburn`, `penguin-burner-cli`, `pburn-cli`, and
+`PENGUIN_BURNER` work from your `PATH`
 just like the native packages.
 
 Hosts without Steam are left completely untouched — no wrappers, Vulkan
@@ -38,8 +38,6 @@ The first GUI launch on a host with Steam adds these commands under
 
 - `penguin-burner`
 - `pburn`
-- `penguin-burner-ui`
-- `pburn-ui`
 - `penguin-burner-cli`
 - `pburn-cli`
 - `PENGUIN_BURNER`
@@ -102,23 +100,6 @@ The publisher discovers the newest compatible snapshot Release asset and uses
 it to preserve the OSTree repository across releases. It refuses to replace an
 existing snapshot unless `--replace` is passed explicitly.
 
-The one-time migration from legacy branch-backed Pages deliberately separates
-upload from deployment:
-
-```bash
-scripts/publish-flatpak-pages.sh --upload-only --migrate-ref origin/gh-pages v0.7.2
-```
-
-After that command succeeds, open repository **Settings → Pages** and change
-**Source** from the `gh-pages` branch to **GitHub Actions**, then dispatch the
-already-uploaded snapshot:
-
-```bash
-gh workflow run deploy-flatpak-pages.yml \
-  --repo jpietek/PenguinBurner \
-  --field tag=v0.7.2
-```
-
 Use `--prepare-only` instead of `--upload-only` to complete all local build,
 signature, installation, update, archive, and checksum checks without uploading
 an asset or dispatching the Pages workflow.
@@ -129,6 +110,6 @@ app ref without downloading a foreign-architecture runtime; release hosts
 should leave dependency verification enabled.
 
 After the workflow deploys, verify a fresh install and an update through the
-public URL before deleting `gh-pages`. The private GPG key is never uploaded;
+public URL. The private GPG key is never uploaded;
 only the public key, signed repository, bundle, archive, and checksum leave the
 release machine.

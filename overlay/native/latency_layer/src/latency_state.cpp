@@ -12,6 +12,24 @@ bool env_flag_enabled(const char* name) {
         && std::strcmp(value, "off") != 0;
 }
 
+const char* telemetry_session_id() {
+    static const std::string session_id = [] {
+        const char* value = std::getenv(kTelemetrySessionEnv);
+        if (!value || !*value) {
+            return std::string{};
+        }
+        std::string candidate(value);
+        if (!std::all_of(
+                candidate.begin(),
+                candidate.end(),
+                [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+            return std::string{};
+        }
+        return candidate;
+    }();
+    return session_id.c_str();
+}
+
 bool debug_flow_enabled() {
     static const bool enabled = env_flag_enabled(kDebugFlowEnv);
     return enabled;

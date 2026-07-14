@@ -320,12 +320,13 @@ void send_timing_sample(
         quality = "reflex-marker-presence";
     }
 
-    char line[1024]{};
+    char line[1280]{};
     int length = std::snprintf(
         line,
         sizeof(line),
         "{\"v\":1,\"type\":\"timing\",\"measurement\":\"driver-report\","
         "\"pid\":%ld,"
+        "\"session_id\":\"%s\","
         "\"device\":\"0x%016" PRIx64 "\",\"swapchain\":\"0x%016" PRIx64 "\","
         "\"present_id\":%" PRIu64 ",\"quality\":\"%s\","
         "\"timing_count\":%u,\"sample_count\":%" PRIu64 ","
@@ -353,6 +354,7 @@ void send_timing_sample(
         "\"gpu_render_start_us\":%" PRIu64 ","
         "\"gpu_render_end_us\":%" PRIu64 "}",
         static_cast<long>(::getpid()),
+        telemetry_session_id(),
         handle_to_u64(device),
         handle_to_u64(swapchain),
         report.presentID,
@@ -405,11 +407,13 @@ void send_present_pacing_sample(
         sizeof(line),
         "{\"v\":1,\"type\":\"timing\",\"measurement\":\"present-pacing\","
         "\"pid\":%ld,"
+        "\"session_id\":\"%s\","
         "\"device\":\"0x%016" PRIx64 "\",\"swapchain\":\"0x%016" PRIx64 "\","
         "\"quality\":\"present-frametime\","
         "\"present_count\":%" PRIu64 ","
         "\"present_frametime_us\":%" PRIu64 "}",
         static_cast<long>(::getpid()),
+        telemetry_session_id(),
         handle_to_u64(device),
         handle_to_u64(swapchain),
         present_count,
@@ -431,11 +435,13 @@ void send_display_latency_sample(
         sizeof(line),
         "{\"v\":1,\"type\":\"timing\",\"measurement\":\"display-latency\","
         "\"pid\":%ld,"
+        "\"session_id\":\"%s\","
         "\"device\":\"0x%016" PRIx64 "\",\"swapchain\":\"0x%016" PRIx64 "\","
         "\"quality\":\"present-wait\","
         "\"present_id\":%" PRIu64 ","
         "\"display_latency_us\":%" PRIu64 "}",
         static_cast<long>(::getpid()),
+        telemetry_session_id(),
         handle_to_u64(device),
         handle_to_u64(swapchain),
         present_id,
@@ -721,6 +727,7 @@ void send_base_frame_marker_sample(
         "{\"v\":1,\"type\":\"timing\","
         "\"measurement\":\"base-frame-marker-pacing\","
         "\"pid\":%ld,"
+        "\"session_id\":\"%s\","
         "\"device\":\"0x%016" PRIx64 "\",\"swapchain\":\"0x%016" PRIx64 "\","
         "\"quality\":\"base-frame-marker\","
         "\"base_frame_id\":%" PRIu64 ","
@@ -728,6 +735,7 @@ void send_base_frame_marker_sample(
         "\"marker\":%d,"
         "\"marker_name\":\"%s\"}",
         static_cast<long>(::getpid()),
+        telemetry_session_id(),
         handle_to_u64(device),
         handle_to_u64(swapchain),
         base_frame_id,

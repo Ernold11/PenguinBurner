@@ -309,13 +309,10 @@ def test_window_simple_helpers(main_window) -> None:
     win = main_window
     assert win._workflow_running() is False
     win._set_profile_actions_enabled(True)
-    assert "Autostart: Yes" in win._runtime_action_start_text("install-systemd")
-    assert "Disabling profile at boot" in win._runtime_action_start_text(
-        "uninstall-systemd"
-    )
-    assert "adaptive" in win._runtime_action_start_text(
-        "daemonize", adaptive_auto_uv=True
-    ).lower()
+    assert "Autostart: Yes" in win._runtime_action_start_text()
+    adaptive_text = win._runtime_action_start_text(adaptive_auto_uv=True)
+    assert "adaptive" in adaptive_text.lower()
+    assert "Autostart: Yes" in adaptive_text
     win._load_profiles()
     win.show_about()
 

@@ -270,7 +270,6 @@ def test_apply_selected_profile_with_persistence_stays_on_daemon_path(win) -> No
     assert args == ("daemonize",)
     assert kwargs["adaptive_auto_uv"] is False
     assert kwargs["profile_selector"] == "perf"
-    assert kwargs["persist_on_startup"] is True
 
 
 def test_restore_defaults_persists_stock_now_and_at_boot(win) -> None:
@@ -295,7 +294,6 @@ def test_restore_defaults_persists_stock_now_and_at_boot(win) -> None:
     args, kwargs = captured[0]
     assert args == ("daemonize",)
     assert kwargs["profile_selector"] == "__stock__"
-    assert kwargs["persist_on_startup"] is True
     assert "stock now and at boot" in window.controls.status_label.text()
 
 

@@ -52,7 +52,6 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
     daemonize = False
     install_systemd_service = False
     uninstall_systemd_service = False
-    reset_gpu_defaults = False
     migrate_to_daemon = False
     daemon_status_requested = False
     journal_hours = default_journal_hours
@@ -70,10 +69,6 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
             continue
         if arg in ("--uninstall-systemd-service", "--deinstall-systemd-service"):
             uninstall_systemd_service = True
-            index += 1
-            continue
-        if arg == "--reset-gpu-defaults":
-            reset_gpu_defaults = True
             index += 1
             continue
         if arg == "--migrate-to-daemon-service":
@@ -106,7 +101,6 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
         "daemonize": daemonize,
         "install_systemd_service": install_systemd_service,
         "uninstall_systemd_service": uninstall_systemd_service,
-        "reset_gpu_defaults": reset_gpu_defaults,
         "migrate_to_daemon": migrate_to_daemon,
         "daemon_status": daemon_status_requested,
         "journal_hours": journal_hours,

@@ -497,7 +497,7 @@ impl OverlayStatePublisher {
         let Some(snapshot) = snapshot else {
             return self.sticky_fps_values(now_ns, None);
         };
-        let fps_pid = pid_from_snapshot(snapshot);
+        let fps_pid = identity_from_snapshot(snapshot);
         let present_fps = fps_text(snapshot.present_fps.as_deref());
         let fps_source = snapshot
             .fps_source
@@ -560,7 +560,7 @@ impl OverlayStatePublisher {
         snapshot: &LatencySnapshot,
         now_ns: i64,
     ) -> (String, String) {
-        let latency_pid = pid_from_snapshot(snapshot);
+        let latency_pid = identity_from_snapshot(snapshot);
         let latency_ms = rounded_text(snapshot.latency_p95_ms);
         let display_latency_ms = rounded_text(snapshot.display_latency_p95_ms);
         if !latency_ms.is_empty() {
@@ -593,6 +593,15 @@ impl OverlayStatePublisher {
 
 fn pid_from_snapshot(snapshot: &LatencySnapshot) -> Option<String> {
     snapshot.pid.as_ref().filter(|p| !p.is_empty()).cloned()
+}
+
+fn identity_from_snapshot(snapshot: &LatencySnapshot) -> Option<String> {
+    snapshot
+        .session_id
+        .as_ref()
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .or_else(|| pid_from_snapshot(snapshot))
 }
 
 fn fps_text(value: Option<&str>) -> String {

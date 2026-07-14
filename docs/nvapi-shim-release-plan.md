@@ -14,13 +14,13 @@
 | B2 | Shim DLL not built in any release channel (Flatpak/arch/deb/rpm) | Blocker | 2 | **PREPARED 2026-07-01 (all channels, unpublished)** — Flatpak (mingw SDK extension, DLL verified in-app), wheel (EPEL mingw in the cibuildwheel container, DLL verified in-wheel), arch/deb/rpm build-deps, `REQUIRE_NVAPI_SHIM=1` everywhere, marker-source startup diagnostic. Distro packages need one real build each to verify dep names; nothing published yet. |
 | H1 | `_file_contains` 1 MB chunk scan can miss the needle → sidecar destruction | High (latent) | 3 | open |
 | H2 | Bridge pairs markers by frameID only → cross-game mispairing | High | 3 | largely mooted by per-launch FIFOs (one game per pipe); `(pid, frame)` keying still worthwhile |
-| H3 | Test suite red in clean checkout (`VK_LAYER_DXVK_NVAPI_reflex` assertion) | High (CI) | 3 | open |
+| H3 | Test suite red in clean checkout (`VK_LAYER_DXVK_NVAPI_reflex` assertion) | High (CI) | 3 | **DONE 2026-07-14** — dead fork-layer wiring + assertion removed |
 | M1 | Watcher TOCTOU with Proton's non-atomic DLL copy → truncated sidecar | Medium | 4 | partially fixed 2026-07-01 (`d4caacb`): watcher reacts only to completed rewrites (`IN_CLOSE_WRITE`/`IN_MOVED_TO`); parking sanity-check still open |
 | M2 | Fixed 60 s watch window / brand-new prefix gets no shim | Medium | 4 | **DONE 2026-07-01** (`d4caacb`) — inotify watcher scoped to the Proton session (pidfd), no fixed window |
 | M3 | `IsBadReadPtr` guard-page hazard | Medium | 4 | open |
 | M4 | No un-front/cleanup path (disable/uninstall leaves shim + sidecar) | Medium | 4 | open |
 | M5 | Anti-cheat coverage untested (EAC/BattlEye) | Medium | 5 | open |
-| L1 | Doc rot: removed marker-log/trace fallback still described | Low | 3 | open |
+| L1 | Doc rot: removed marker-log/trace fallback still described | Low | 3 | **DONE 2026-07-14** — docs/comments now describe the shim + layer-tap fallback; trace parser removed |
 | L2 | Wrapped games' stderr swallowed by the FIFO (support/debugging) | Low | 5 | open |
 | L3 | FIFO path mismatch under explicit `PENGUIN_BURNER_LATENCY_SOCKET` | Low | 4 | mooted: the drainer is told its FIFO explicitly (`--log`, `PENGUIN_BURNER_MARKER_FIFO`) |
 | — | Merge to `main` once Phases 1–3 land (shim is the chosen direction) | Gate | 5 | open |

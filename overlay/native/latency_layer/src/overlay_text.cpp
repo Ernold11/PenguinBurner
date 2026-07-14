@@ -669,26 +669,6 @@ std::string build_overlay_text(
     return text.empty() ? "PB WAITING" : text;
 }
 
-void write_overlay_text_file(uint64_t fps, uint64_t now_us) {
-    static uint64_t last_write_us = 0;
-    if (last_write_us && now_us > last_write_us && now_us - last_write_us < 250000) {
-        return;
-    }
-    last_write_us = now_us;
-    const std::string path =
-        overlay_runtime_path(kOverlayTextEnv, "overlay-text.txt");
-    const std::string text = build_overlay_text(fps, read_overlay_gpu_state(), now_us);
-    std::lock_guard lock(g_overlay_file_mutex);
-    const std::string temp_path = path + ".tmp";
-    FILE* file = std::fopen(temp_path.c_str(), "w");
-    if (!file) {
-        return;
-    }
-    std::fprintf(file, "%s\n", text.c_str());
-    std::fclose(file);
-    std::rename(temp_path.c_str(), path.c_str());
-}
-
 std::string cached_overlay_text(uint64_t fps, uint64_t now_us) {
     static uint64_t last_read_us = 0;
     static std::string last_text;
