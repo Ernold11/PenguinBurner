@@ -318,61 +318,6 @@ def test_daemon_migration_command_replays_legacy_boot_intent_host_side(
     assert "boot-runtime.json" not in script
 
 
-def test_flatpak_runtime_profile_install_copies_daemon_and_seeds_autostart(
-    monkeypatch, tmp_path
-) -> None:
-    _flatpak_daemon_install_env(monkeypatch, tmp_path)
-
-    command = commands.runtime_profile_command(
-        "install-systemd",
-        profile_selector="profile-a",
-        silent_fan_curve=True,
-        gpu_index=0,
-    )
-
-    assert command[:4] == [
-        "/usr/bin/flatpak-spawn",
-        "--host",
-        "/usr/bin/pkexec",
-        "/usr/bin/env",
-    ]
-    script = command[command.index("-c") + 1]
-    _assert_flatpak_daemon_binary_installed_atomically(script)
-    # The new daemon resolves this semantic intent, applies it, then stores the
-    # validated RuntimeSpec as explicit boot state.
-    assert "apply-runtime-intent --boot" in script
-    assert "PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1" in script
-    intent = json.loads(
-        base64.b64decode(
-            _command_env_value(command, "PENGUIN_BURNER_RUNTIME_INTENT_B64")
-        ).decode("utf-8")
-    )
-    assert intent == {
-        "profile_selector": "profile-a",
-        "silent_fan_curve": True,
-        "adaptive_auto_uv": False,
-        "gpu_index": 0,
-    }
-    unit = base64.b64decode(
-        _command_env_value(command, "PENGUIN_BURNER_SYSTEMD_UNIT_B64")
-    ).decode("utf-8")
-    assert "systemctl is-active --quiet penguin-burnerd.service" not in command[-2]
-    assert "systemctl enable penguin-burnerd.service" in command[-2]
-    assert "systemctl restart penguin-burnerd.service" in command[-2]
-    assert "systemctl enable --now penguin-burnerd.service" not in command[-2]
-    assert "systemctl enable --now PenguinBurner.service" not in command[-2]
-    _assert_flatpak_daemon_script_waits_for_api(
-        command[-2],
-        success_message='echo "Installed and enabled penguin-burnerd.service at $unit."',
-    )
-    assert "/usr/bin/flatpak" not in unit
-    assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
-    assert (
-        "ExecStart=/usr/libexec/penguin-burnerd --socket /run/penguin-burnerd.sock"
-        in unit
-    )
-
-
 def test_flatpak_runtime_profile_daemonize_uses_daemon_client(
     monkeypatch,
     tmp_path,
@@ -416,47 +361,6 @@ def test_flatpak_runtime_profile_daemonize_uses_daemon_client(
         "adaptive_auto_uv": False,
         "gpu_index": 0,
     }
-
-
-def test_flatpak_systemd_uninstall_clears_last_runtime_state(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    flatpak_info = tmp_path / ".flatpak-info"
-    flatpak_info.write_text("[Application]\n", encoding="utf-8")
-    monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
-    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
-    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
-    monkeypatch.setenv("USER", "desktop-user")
-    monkeypatch.setattr(
-        commands.pwd,
-        "getpwnam",
-        lambda user: SimpleNamespace(pw_dir=f"/home/{user}"),
-    )
-
-    def fake_which(name: str) -> str | None:
-        return {
-            "flatpak-spawn": "/usr/bin/flatpak-spawn",
-        }.get(name)
-
-    monkeypatch.setattr(commands.shutil, "which", fake_which)
-
-    command = commands.runtime_profile_command("uninstall-systemd")
-    script = command[-2]
-
-    assert command[:4] == [
-        "/usr/bin/flatpak-spawn",
-        "--host",
-        "/usr/bin/pkexec",
-        "/usr/bin/env",
-    ]
-    assert command[-1] == "penguin-burner-systemd-uninstall"
-    assert "last_runtime_state=/var/lib/penguin-burner/last-runtime.json" in script
-    assert "daemon_binary=/usr/libexec/penguin-burnerd" in script
-    assert (
-        'rm -f "$legacy_unit" "$daemon_unit" "$daemon_binary" '
-        '"$last_runtime_state"' in script
-    )
 
 
 def test_daemon_migration_command_uses_privileged_cli(monkeypatch) -> None:
@@ -779,24 +683,16 @@ def test_ui_runtime_command_uses_auto_uv_profile_without_afterburner_flag(
     assert intent["gpu_index"] == 1
 
 
-def test_ui_runtime_command_adds_adaptive_for_transient_and_persistent(
-    monkeypatch,
-) -> None:
+def test_ui_runtime_command_adds_adaptive(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 0)
 
-    persistent = commands.runtime_profile_command(
-        "install-systemd",
-        adaptive_auto_uv=True,
-    )
-    transient = commands.runtime_profile_command(
+    command = commands.runtime_profile_command(
         "daemonize",
         adaptive_auto_uv=True,
     )
 
-    assert "--adaptive-auto-uv" in persistent
-    assert _runtime_profile_daemon_intent(transient)["adaptive_auto_uv"] is True
-    assert "--auto-uv-profile" not in persistent
-    assert _runtime_profile_daemon_intent(transient)["profile_selector"] == ""
+    assert _runtime_profile_daemon_intent(command)["adaptive_auto_uv"] is True
+    assert _runtime_profile_daemon_intent(command)["profile_selector"] == ""
 
 
 def test_ui_adaptive_boot_apply_uses_daemon_without_pkexec(monkeypatch) -> None:
@@ -805,7 +701,6 @@ def test_ui_adaptive_boot_apply_uses_daemon_without_pkexec(monkeypatch) -> None:
     command = commands.runtime_profile_command(
         "daemonize",
         adaptive_auto_uv=True,
-        persist_on_startup=True,
         gpu_index=0,
     )
 
@@ -823,20 +718,6 @@ def test_ui_adaptive_boot_apply_uses_daemon_without_pkexec(monkeypatch) -> None:
         "adaptive_auto_uv": True,
         "gpu_index": 0,
     }
-
-
-def test_ui_clear_boot_uses_daemon_without_pkexec(monkeypatch) -> None:
-    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
-
-    command = commands.runtime_profile_command("clear-boot")
-
-    assert command[1:] == [
-        "-m",
-        "runtime.daemon_client",
-        "clear-boot-runtime-spec",
-    ]
-    assert "pkexec" not in " ".join(command)
-    assert "sudo" not in " ".join(command)
 
 
 def test_flatpak_normal_operations_never_request_elevation(
@@ -863,7 +744,6 @@ def test_flatpak_normal_operations_never_request_elevation(
         commands.runtime_profile_command(
             "daemonize",
             adaptive_auto_uv=True,
-            persist_on_startup=True,
             gpu_index=0,
         ),
         commands.runtime_profile_command(
@@ -871,7 +751,6 @@ def test_flatpak_normal_operations_never_request_elevation(
             profile_selector="__stock__",
             gpu_index=0,
         ),
-        commands.runtime_profile_command("clear-boot"),
         commands.profile_verify_command(
             profile_selector="profile-a",
             gpu_index=0,

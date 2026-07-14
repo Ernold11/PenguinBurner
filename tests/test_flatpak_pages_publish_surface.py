@@ -16,7 +16,8 @@ def test_flatpak_pages_publisher_uses_release_assets_not_git_commits() -> None:
     assert 'gh workflow run "$WORKFLOW_FILE"' in script
     assert "git commit" not in script
     assert "git push" not in script
-    assert "--migrate-ref" in script
+    assert "--migrate-ref" not in script
+    assert "gh-pages" not in script
     assert "--prepare-only" in script
     assert "--upload-only" in script
     assert "PENGUIN_BURNER_FLATPAK_BUILD_BUNDLE=1" in script

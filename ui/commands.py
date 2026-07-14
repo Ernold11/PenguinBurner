@@ -363,79 +363,27 @@ def runtime_profile_command(
     profile_selector: str = "",
     silent_fan_curve: bool = False,
     adaptive_auto_uv: bool = False,
-    persist_on_startup: bool = False,
     gpu_index: int | None = None,
 ) -> list[str]:
-    if action == "clear-boot":
-        return [
-            sys.executable,
-            "-m",
-            "runtime.daemon_client",
-            "clear-boot-runtime-spec",
-        ]
+    # Apply always targets the already-root daemon and always persists the
+    # runtime for boot (a standing action is complete: Apply persists the
+    # selected profile, Restore defaults persists the stock runtime).
+    if action != "daemonize":
+        raise ValueError(f"unknown runtime profile action: {action}")
     intent = {
         "profile_selector": str(profile_selector or "").strip(),
         "silent_fan_curve": bool(silent_fan_curve),
         "adaptive_auto_uv": bool(adaptive_auto_uv),
         "gpu_index": None if gpu_index is None else max(0, int(gpu_index)),
     }
-    runtime_argv: list[str] = []
-    if action == "daemonize":
-        service_flag = "--daemonize"
-    elif action == "install-systemd":
-        service_flag = "--install-systemd-service"
-    elif action == "uninstall-systemd":
-        service_flag = "--uninstall-systemd-service"
-    else:
-        raise ValueError(f"unknown runtime profile action: {action}")
-    if profile_selector and action != "uninstall-systemd":
-        runtime_argv.extend(["--auto-uv-profile", str(profile_selector)])
-    if silent_fan_curve and action != "uninstall-systemd":
-        runtime_argv.append("--silent-fan-curve")
-    if adaptive_auto_uv and action != "uninstall-systemd":
-        runtime_argv.append("--adaptive-auto-uv")
-    if gpu_index is not None:
-        runtime_argv.extend(["--gpu-index", str(max(0, int(gpu_index)))])
-    if action == "daemonize":
-        return _daemon_runtime_profile_command(
-            intent,
-            persist_on_startup=persist_on_startup,
-        )
-    if running_in_flatpak():
-        return _flatpak_systemd_profile_command(action, runtime_argv, intent)
-    command = [*cli_base_command(), service_flag, *runtime_argv]
-    return privileged_command(command)
-
-
-def _daemon_runtime_profile_command(
-    intent: dict,
-    *,
-    persist_on_startup: bool = False,
-) -> list[str]:
-    command = [
+    return [
         sys.executable,
         "-m",
         "runtime.daemon_client",
         "apply-runtime-intent",
+        "--boot",
+        json.dumps(intent, separators=(",", ":")),
     ]
-    if persist_on_startup:
-        command.append("--boot")
-    command.append(json.dumps(intent, separators=(",", ":")))
-    return command
-
-
-def _flatpak_systemd_profile_command(
-    action: str,
-    runtime_argv: list[str],
-    intent: dict,
-) -> list[str]:
-    if action == "install-systemd":
-        return _flatpak_daemon_install_command(
-            autostart_intent=dict(intent) if runtime_argv else {}
-        )
-    if action == "uninstall-systemd":
-        return _flatpak_uninstall_systemd_command()
-    raise ValueError(f"unknown runtime profile action: {action}")
 
 
 def _flatpak_daemon_install_command(
@@ -593,33 +541,6 @@ echo "Follow the journal with: journalctl -u penguin-burnerd.service --since \"-
             "-c",
             script,
             "penguin-burner-daemon-install",
-        ]
-    )
-
-
-def _flatpak_uninstall_systemd_command() -> list[str]:
-    script = r"""
-legacy_unit=/etc/systemd/system/PenguinBurner.service
-daemon_unit=/etc/systemd/system/penguin-burnerd.service
-daemon_binary=/usr/libexec/penguin-burnerd
-last_runtime_state=/var/lib/penguin-burner/last-runtime.json
-boot_runtime_state=/var/lib/penguin-burner/boot-runtime.json
-active_runtime_state=/run/penguin-burner/active-runtime.json
-systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
-systemctl disable --now penguin-burnerd.service >/dev/null 2>&1 || true
-rm -f "$legacy_unit" "$daemon_unit" "$daemon_binary" "$last_runtime_state" "$boot_runtime_state" "$active_runtime_state"
-systemctl daemon-reload
-systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
-systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
-echo "Removed PenguinBurner.service and penguin-burnerd.service."
-""".strip()
-    return _privileged_command(
-        [
-            "/bin/sh",
-            "-eu",
-            "-c",
-            script,
-            "penguin-burner-systemd-uninstall",
         ]
     )
 

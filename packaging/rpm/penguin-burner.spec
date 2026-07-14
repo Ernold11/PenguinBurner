@@ -96,8 +96,6 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %doc README.md readme-cli.md
 %{_bindir}/penguin-burner
 %{_bindir}/pburn
-%{_bindir}/penguin-burner-ui
-%{_bindir}/pburn-ui
 %{_bindir}/penguin-burner-cli
 %{_bindir}/pburn-cli
 %{_bindir}/PENGUIN_BURNER

@@ -31,9 +31,9 @@ markers:
 PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%
 ```
 
-`PB_INGAME_LATENCY=1` asks dxvk-nvapi/Proton to emit marker records. Newer
-dxvk-nvapi builds use `DXVK_NVAPI_LATENCY_MARKER_LOG=1`; older public builds
-fall back to `DXVK_NVAPI_LOG_LEVEL=trace`.
+With `PB_INGAME_LATENCY=1`, the drop-in NVAPI shim streams the Reflex markers
+to the wrapper's FIFO; without a Proton prefix the Vulkan layer's own marker
+tap covers the non-FG case.
 
 ## What PenguinBurner Can Force
 

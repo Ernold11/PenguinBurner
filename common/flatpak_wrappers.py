@@ -19,11 +19,17 @@ VULKAN_LAYER_DISABLE_ENV = "DISABLE_PENGUIN_BURNER_LATENCY_LAYER"
 WRAPPERS = (
     "penguin-burner",
     "pburn",
-    "penguin-burner-ui",
-    "pburn-ui",
     "penguin-burner-cli",
     "pburn-cli",
     "PENGUIN_BURNER",
+)
+# Command names shipped by older releases that are no longer installed.
+# Uninstall and the silent Flatpak repair still sweep these so hosts that
+# installed them under an earlier version are not left with orphaned
+# wrappers pointing at removed sandbox entry points.
+LEGACY_WRAPPERS = (
+    "penguin-burner-ui",
+    "pburn-ui",
 )
 
 
@@ -166,7 +172,21 @@ def ensure_flatpak_wrappers(
         if current != expected or not os.access(target, os.X_OK):
             _write_wrapper_atomic(target, expected)
         repaired.append(target)
+    _remove_legacy_wrappers(root)
     return tuple(repaired)
+
+
+def _remove_legacy_wrappers(bin_dir: Path) -> list[Path]:
+    """Delete generated wrappers for command names this version no longer
+    ships. Their sandbox entry points are gone, so a stale wrapper would fail
+    at ``flatpak run --command=...``. Only marker-managed files are touched."""
+    removed: list[Path] = []
+    for command_name in LEGACY_WRAPPERS:
+        target = bin_dir / command_name
+        if _is_managed_wrapper(target):
+            target.unlink()
+            removed.append(target)
+    return removed
 
 
 def _default_vulkan_manifest_path(home: Path | str | None = None) -> Path:
@@ -355,7 +375,10 @@ def _host_has_steam() -> bool:
 
 def _managed_integration_present() -> bool:
     bin_dir = _default_bin_dir()
-    if any(_is_managed_wrapper(bin_dir / name) for name in WRAPPERS):
+    if any(
+        _is_managed_wrapper(bin_dir / name)
+        for name in WRAPPERS + LEGACY_WRAPPERS
+    ):
         return True
     return _is_managed_vulkan_manifest(_default_vulkan_manifest_path())
 
@@ -476,13 +499,14 @@ def install_wrappers(bin_dir: Path, *, force: bool = False) -> list[Path]:
             )
         _write_wrapper_atomic(target, _wrapper_text(command_name))
         installed.append(target)
+    _remove_legacy_wrappers(bin_dir)
     return installed
 
 
 def uninstall_wrappers(bin_dir: Path) -> tuple[list[Path], list[Path]]:
     removed = []
     skipped = []
-    for command_name in WRAPPERS:
+    for command_name in WRAPPERS + LEGACY_WRAPPERS:
         target = bin_dir.expanduser() / command_name
         if not target.exists():
             continue

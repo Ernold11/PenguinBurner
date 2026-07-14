@@ -116,10 +116,10 @@ polling if inotify is unavailable. (Idempotent/self-healing either way.)
 
 ## Integration
 
-- `launcher.py:_configure_dxvk_nvapi_marker_output` — now just: explicit
-  `DXVK_NVAPI_LOG_LEVEL=trace` debug escape → else deploy the shim (set
-  `SHIM_OUTPUT` to the FIFO path) → else no marker env (layer-only). The ~100 LOC
-  of marker-log auto-detection was removed (the shim is universal now).
+- `launcher.py:_configure_dxvk_nvapi_marker_output` — now just: deploy the
+  shim (set `SHIM_OUTPUT` to the FIFO path) → else no marker env (layer-only).
+  The marker-log auto-detection and the `DXVK_NVAPI_LOG_LEVEL=trace` escape
+  are both gone (the shim is universal now).
 - `launcher.py:ingame_latency_enabled` — defaults **on when the overlay is
   enabled** (`PENGUIN_BURNER_OVERLAY`/`PB_OVERLAY`); opt out with
   `PENGUIN_BURNER_INGAME_LATENCY=0`.

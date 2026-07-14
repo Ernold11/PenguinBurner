@@ -63,10 +63,9 @@ class ProfileActionsMixin:
     ) -> None:
         if self._workflow_running():
             return
-        no_profile_actions = {"clear-boot", "uninstall-systemd"}
         profile_id = str(profile_selector or "").strip()
         selected_profile = None
-        if action not in no_profile_actions and adaptive_auto_uv:
+        if adaptive_auto_uv:
             tiers = adaptive_profile_tier_labels(self.profile_summaries)
             if not tiers:
                 available = ", ".join(tiers) if tiers else "none"
@@ -77,7 +76,7 @@ class ProfileActionsMixin:
                 )
                 return
             selected_profile = profile_for_selector(self.profile_summaries, "latest")
-        elif action not in no_profile_actions:
+        else:
             profile_id = profile_id or self.profile_list.selected_profile_id()
             if not profile_id:
                 self.log_view.append("\nNo profile selected.\n")
@@ -89,54 +88,38 @@ class ProfileActionsMixin:
                 self.log_view.append(f"\n{message}\n")
                 return
         if (
-            action not in no_profile_actions
-            and selected_profile
+            selected_profile
             and self.profile_list.silent_fan_enabled()
             and not sync_profile_fan_payload(selected_profile)
         ):
             self.controls.set_status_text("No runtime-ready silent fan curve is available.")
             self.log_view.append("\nNo runtime-ready silent fan curve is available.\n")
             return
-        if action in {
-            "clear-boot",
-            "daemonize",
-        } and not ensure_daemon_ready_for_privileged_action(
+        if not ensure_daemon_ready_for_privileged_action(
             QtWidgets=self.QtWidgets,
             parent=self.window,
             log=self.log_view.append,
             action_label=(
-                "Disabling the boot profile"
-                if action == "clear-boot"
-                else (
-                    "Applying adaptive Auto-UV"
-                    if adaptive_auto_uv
-                    else "Applying runtime profile"
-                )
+                "Applying adaptive Auto-UV"
+                if adaptive_auto_uv
+                else "Applying runtime profile"
             ),
         ):
             return
         # A standing action is always complete: Apply persists the selected
         # profile for boot, while Restore defaults persists the stock runtime.
-        persist_on_startup = action not in no_profile_actions
         command = runtime_profile_command(
             action,
-            profile_selector="" if action in no_profile_actions else profile_id,
+            profile_selector=profile_id,
             silent_fan_curve=self.profile_list.silent_fan_enabled(),
             adaptive_auto_uv=adaptive_auto_uv,
-            persist_on_startup=persist_on_startup,
             gpu_index=self.gpu_index,
         )
-        if action not in no_profile_actions:
-            self._persist_silent_fan_preference(self.profile_list.silent_fan_enabled())
-        if action not in no_profile_actions:
-            # A profile is now in effect, so the GPU is no longer at stock.
-            self._defaults_restored = False
+        self._persist_silent_fan_preference(self.profile_list.silent_fan_enabled())
+        # A profile is now in effect, so the GPU is no longer at stock.
+        self._defaults_restored = False
         self.controls.set_status_text(
-            self._runtime_action_start_text(
-                action,
-                adaptive_auto_uv=adaptive_auto_uv,
-                persist_on_startup=persist_on_startup,
-            )
+            self._runtime_action_start_text(adaptive_auto_uv=adaptive_auto_uv)
         )
         self._set_profile_actions_enabled(False)
         self.controls.start_button.setEnabled(False)
@@ -164,7 +147,6 @@ class ProfileActionsMixin:
             "daemonize",
             profile_selector=STOCK_PROFILE_SELECTOR,
             silent_fan_curve=self.profile_list.silent_fan_enabled(),
-            persist_on_startup=True,
             gpu_index=self.gpu_index,
         )
         self.controls.set_status_text(
@@ -550,28 +532,12 @@ class ProfileActionsMixin:
         profile_id = str(item.data(self.profile_list.PROFILE_ID_ROLE) or "")
         return profile_for_selector(self.profile_summaries, profile_id)
 
-    def _runtime_action_start_text(
-        self,
-        action: str,
-        *,
-        adaptive_auto_uv: bool = False,
-        persist_on_startup: bool | None = None,
-    ) -> str:
-        persists = (
-            action == "install-systemd"
-            if persist_on_startup is None
-            else bool(persist_on_startup)
-        )
+    def _runtime_action_start_text(self, *, adaptive_auto_uv: bool = False) -> str:
+        # Every apply persists the runtime for boot.
         if adaptive_auto_uv:
-            if persists:
-                return "Starting adaptive Auto-UV; Autostart: Yes."
-            return "Starting adaptive Auto-UV; Autostart: No."
+            return "Starting adaptive Auto-UV; Autostart: Yes."
         selected = self.profile_list.selected_profile_name() or "none"
-        if persists:
-            return f"Starting profile: {selected}; Autostart: Yes."
-        if action in {"clear-boot", "uninstall-systemd"}:
-            return "Disabling profile at boot."
-        return f"Starting profile: {selected}; Autostart: No."
+        return f"Starting profile: {selected}; Autostart: Yes."
 
 
 def _manual_curve_control_voltage_mvs(manual_edit) -> tuple[int, ...]:
@@ -598,10 +564,6 @@ def _runtime_action_label(action: str) -> str:
     labels = {
         "daemonize": "Apply selected profile",
         "adaptive-daemonize": "Apply adaptive Auto-UV",
-        "install-systemd": "Install startup profile",
-        "adaptive-install-systemd": "Install adaptive startup profile",
-        "clear-boot": "Disable profile at boot",
-        "uninstall-systemd": "Disable profile at boot",
         "delete-profiles": "Delete selected profiles",
         "restore-defaults": "Restore GPU defaults",
         "restore-keep-stock": "Keep GPU at stock",

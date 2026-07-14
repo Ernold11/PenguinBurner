@@ -7,7 +7,6 @@ import pwd
 
 
 OVERLAY_STATE_ENV = "PENGUIN_BURNER_OVERLAY_STATE"
-OVERLAY_TEXT_ENV = "PENGUIN_BURNER_OVERLAY_TEXT"
 OVERLAY_ENABLE_ENV = "PENGUIN_BURNER_OVERLAY"
 OVERLAY_ENABLE_ENV_ALIAS = "PB_OVERLAY"
 OVERLAY_OVERRIDE_ENV = "PENGUIN_BURNER_OVERLAY_OVERRIDE"
@@ -85,15 +84,6 @@ def overlay_state_path(env: Mapping[str, str] | None = None) -> Path:
                 return candidate / "penguin-burner" / "overlay-state.txt"
 
     return Path(f"/tmp/penguin-burner-overlay-{os.getuid()}.txt")
-
-
-def overlay_text_path(env: Mapping[str, str] | None = None) -> Path:
-    resolved_env = os.environ if env is None else env
-    explicit = str(resolved_env.get(OVERLAY_TEXT_ENV) or "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    state_path = overlay_state_path(resolved_env)
-    return state_path.with_name("overlay-text.txt")
 
 
 def overlay_override_path(env: Mapping[str, str] | None = None) -> Path:

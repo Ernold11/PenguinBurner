@@ -136,8 +136,8 @@ class build_py(_build_py):
     def _build_nvapi_shim(self) -> None:
         # Cross-compile the drop-in NVAPI latency shim (a PE nvapi64.dll) with
         # MinGW and stage it inside the package. Optional: when MinGW is absent
-        # the in-game latency path simply falls back to dxvk-nvapi marker-log /
-        # trace, so a missing toolchain is a warning, not a failure.
+        # the in-game latency path simply falls back to the Vulkan layer's
+        # own marker tap, so a missing toolchain is a warning, not a failure.
         if _env_flag_disabled("PENGUIN_BURNER_BUILD_NVAPI_SHIM"):
             return
         require_shim = _env_flag_enabled("PENGUIN_BURNER_REQUIRE_NVAPI_SHIM")

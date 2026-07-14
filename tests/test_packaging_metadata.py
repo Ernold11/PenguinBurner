@@ -87,8 +87,8 @@ def test_console_scripts_use_gui_default_and_explicit_cli_names() -> None:
 
     assert scripts["penguin-burner"] == "ui.main:main"
     assert scripts["pburn"] == "ui.main:main"
-    assert scripts["penguin-burner-ui"] == "ui.main:main"
-    assert scripts["pburn-ui"] == "ui.main:main"
+    assert "penguin-burner-ui" not in scripts
+    assert "pburn-ui" not in scripts
     assert "penguin-burner-yolo" not in scripts
     assert "pburn-yolo" not in scripts
     assert scripts["penguin-burner-cli"] == "penguin_burner:cli_main"
@@ -329,6 +329,45 @@ def test_flatpak_startup_repairs_and_verifies_complete_steam_integration(
     for command_name in wrappers.WRAPPERS:
         assert (bin_dir / command_name).is_file()
         assert os.access(bin_dir / command_name, os.X_OK)
+    for command_name in wrappers.LEGACY_WRAPPERS:
+        assert not (bin_dir / command_name).exists()
+
+
+def test_legacy_alias_wrappers_are_swept_but_never_reinstalled(
+    tmp_path, monkeypatch
+) -> None:
+    # Older releases installed penguin-burner-ui/pburn-ui host wrappers whose
+    # sandbox entry points no longer exist. Repair and uninstall must remove
+    # the managed leftovers; foreign files with those names stay untouched.
+    import common.flatpak_wrappers as wrappers
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setenv("FLATPAK_ID", wrappers.APP_ID)
+    assert wrappers.LEGACY_WRAPPERS == ("penguin-burner-ui", "pburn-ui")
+    for name in wrappers.LEGACY_WRAPPERS:
+        assert name not in wrappers.WRAPPERS
+    (bin_dir / "penguin-burner-ui").write_text(
+        f"#!/usr/bin/env sh\n# {wrappers.MARKER}\n", encoding="utf-8"
+    )
+    foreign = bin_dir / "pburn-ui"
+    foreign.write_text("#!/bin/sh\nexec my-own-tool\n", encoding="utf-8")
+
+    repaired = wrappers.ensure_flatpak_wrappers(bin_dir)
+
+    assert not (bin_dir / "penguin-burner-ui").exists()
+    assert foreign.read_text(encoding="utf-8") == "#!/bin/sh\nexec my-own-tool\n"
+    assert {path.name for path in repaired} == set(wrappers.WRAPPERS)
+
+    (bin_dir / "penguin-burner-ui").write_text(
+        f"#!/usr/bin/env sh\n# {wrappers.MARKER}\n", encoding="utf-8"
+    )
+    removed, skipped = wrappers.uninstall_wrappers(bin_dir)
+
+    assert bin_dir / "penguin-burner-ui" in removed
+    assert foreign in skipped
+    assert not (bin_dir / "penguin-burner-ui").exists()
+    assert foreign.exists()
 
 
 def test_flatpak_startup_rejects_missing_mandatory_payload(
@@ -598,21 +637,6 @@ def test_flatpak_layer_manifest_pins_to_active_symlink_not_commit(tmp_path) -> N
         / "libVkLayer_penguinburner_latency.so"
     )
     assert library_path == expected_active
-
-
-def test_flatpak_shell_installer_registers_user_vulkan_layer_manifest() -> None:
-    script = Path("scripts/install-flatpak-cli-wrappers.sh").read_text(
-        encoding="utf-8"
-    )
-
-    assert ".local/share/vulkan/implicit_layer.d" in script
-    assert '"enable_environment":' in script
-    assert '"PENGUIN_BURNER": "1"' in script
-    assert "libVkLayer_penguinburner_latency.so" in script
-    assert "nvapi-trace.fifo" in script
-    assert 'exec 2>&3' in script
-    assert "dxvk_nvapi_marker_log_supported" in script
-    assert "DXVK_NVAPI_LOG_LEVEL" in script
 
 
 def test_python_build_requires_native_layer_build_tooling() -> None:
@@ -982,13 +1006,13 @@ def test_readme_and_flatpak_guide_distinguish_wrappers_from_native_scripts() -> 
     for command in (
         "`penguin-burner`",
         "`pburn`",
-        "`penguin-burner-ui`",
-        "`pburn-ui`",
         "`penguin-burner-cli`",
         "`pburn-cli`",
         "`PENGUIN_BURNER`",
     ):
         assert command in flatpak_doc
+    assert "`penguin-burner-ui`" not in flatpak_doc
+    assert "`pburn-ui`" not in flatpak_doc
     assert "`PATH`" in flatpak_doc
     assert "left untouched" in flatpak_doc
     assert "existing native/PyPI commands" in flatpak_doc

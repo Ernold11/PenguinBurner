@@ -761,9 +761,6 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_queue_present_khr(
                 want_inject,
                 observation.injected_present_id);
         }
-        if (observation.overlay_fps) {
-            write_overlay_text_file(observation.overlay_fps, present_time_us);
-        }
         if (timing_queries_enabled()) {
             query_latency_timing(device, swapchain);
         } else if (should_report_counter(present_count)) {

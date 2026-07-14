@@ -1,12 +1,12 @@
-"""Bridge dxvk-nvapi Reflex marker log lines into the latency receiver.
+"""Bridge NVAPI-shim Reflex marker lines into the latency receiver.
 
-The preferred path uses dxvk-nvapi's marker-only
-``DXVK_NVAPI_LATENCY_MARKER_LOG=1`` output. The older full
-``DXVK_NVAPI_LOG_LEVEL=trace`` output is still parsed as a last-resort fallback.
-The PenguinBurner wrapper routes stderr into an in-memory FIFO, so dxvk-nvapi's
-marker lines are drained by this bridge without writing a Proton log to disk.
+The drop-in NVAPI shim (overlay/shim_deploy.py) writes one line per Reflex
+marker to the launch's marker FIFO, reusing the wire format the old
+dxvk-nvapi marker-log fork established. The PenguinBurner wrapper also routes
+stderr into the same FIFO, so every marker line is drained by this bridge
+without writing a Proton log to disk.
 
-This bridge tails that trace, pairs SIMULATION_START (NV marker 0) with
+This bridge tails that stream, pairs SIMULATION_START (NV marker 0) with
 PRESENT_END (NV marker 5) by frame id, and sends the resulting
 ``sim_to_present_us`` span to the PenguinBurner latency socket as a
 ``marker-proxy`` timing sample. When the title also emits INPUT_SAMPLE
@@ -47,7 +47,7 @@ from pathlib import Path
 from .sockets import latency_socket_path, latency_socket_paths
 from .. import shim_deploy as _shim_deploy
 
-# NV_LATENCY_MARKER_TYPE values emitted by dxvk-nvapi trace.
+# NV_LATENCY_MARKER_TYPE values named on the shim's marker lines.
 NV_MARKER_SIMULATION_START = 0
 NV_MARKER_PRESENT_END = 5
 NV_MARKER_INPUT_SAMPLE = 6
@@ -58,23 +58,14 @@ NV_FRAMEGEN_MARKERS = {
     NV_MARKER_OUT_OF_BAND_PRESENT_END,
 }
 
-# Marker-only dxvk-nvapi output (DXVK_NVAPI_LATENCY_MARKER_LOG=1).
+# The shim's marker-line wire format (inherited from the dxvk-nvapi
+# marker-log fork so the parser survived the source swap unchanged).
 _MARKER_LOG_RE = re.compile(
     r"^\d+\.\d+:([0-9a-fA-F]+):[0-9a-fA-F]+:"
     r"latency-marker:[^:]+:qpcUs=(\d+)\s+.*\bframeID=(\d+)\s+"
     r"markerType=(\w+)(?:\s+markerValue=(\d+))?"
 )
-
-# Stock dxvk-nvapi trace fallback (DXVK_NVAPI_LOG_LEVEL=trace).
-# The regular Reflex path logs NvAPI_D3D_SetLatencyMarker, while async/adaptive
-# frame generation can log NvAPI_D3D12_SetAsyncFrameMarker with the same
-# frameID/markerType fields plus presentFrameID. Timestamp is the log line's
-# seconds.milliseconds prefix (millisecond precision).
-_TRACE_RE = re.compile(
-    r"^(\d+)\.(\d+):.*Set(?:LatencyMarker|AsyncFrameMarker).*"
-    r"frameID=(\d+),markerType=(\w+)"
-)
-_TRACE_MARKER_NAMES = {
+_MARKER_NAMES = {
     "SIMULATION_START": NV_MARKER_SIMULATION_START,
     "PRESENT_END": NV_MARKER_PRESENT_END,
     "INPUT_SAMPLE": NV_MARKER_INPUT_SAMPLE,
@@ -87,18 +78,10 @@ def _parse_line_with_pid(line: str):
     """Return (frame, nv_marker, t_us, source_pid) for a marker line."""
     m = _MARKER_LOG_RE.search(line)
     if m:
-        marker = _TRACE_MARKER_NAMES.get(m.group(4))
+        marker = _MARKER_NAMES.get(m.group(4))
         if marker is None:
             return None
         return int(m.group(3)), marker, int(m.group(2)), int(m.group(1), 16)
-
-    m = _TRACE_RE.match(line)
-    if m:
-        marker = _TRACE_MARKER_NAMES.get(m.group(4))
-        if marker is None:
-            return None
-        t_us = (int(m.group(1)) * 1000 + int(m.group(2))) * 1000
-        return int(m.group(3)), marker, t_us, None
     return None
 
 # A frame id whose PRESENT_END never arrives must not leak forever; keep only a
@@ -116,6 +99,7 @@ _NO_WRITER_GRACE_S = 60.0
 # PRESENT_END is treated as a different frame's display, not this one's. Bounds a
 # mis-pairing to a sane click-to-photon magnitude (log timestamps are ms-grained).
 _MAX_OOB_LAG_US = 200_000
+TELEMETRY_SESSION_ENV = "PENGUIN_BURNER_TELEMETRY_SESSION"
 
 
 def _socket_targets(env: dict[str, str] | None = None) -> list[Path]:
@@ -165,6 +149,7 @@ def _resolve_oob_present(
     awaiting_oob: list[tuple[int, int, int, int]],
     oob_present_end_us: int,
     pid: int,
+    session_id: str,
 ) -> int:
     """Emit the frame-generation-inclusive span for one displayed base frame.
 
@@ -202,6 +187,8 @@ def _resolve_oob_present(
             # here -- out-of-band presents occur with frame gen off too.
             "framegen_active": False,
         }
+        if session_id:
+            sample["session_id"] = session_id
         if input_us and oob_present_end_us > input_us:
             # Game emits INPUT_SAMPLE: input -> displayed present is the widest
             # input-anchored span (full Reflex input lag through the FG hold).
@@ -326,10 +313,10 @@ def _follow(
         pass
     handle = None
     inode = None
-    # Under trace logging the file grows thousands of lines/sec. If we ever
-    # fall this far behind the write head, jump to live instead of slogging
-    # through stale backlog -- the overlay only needs *current* latency, so a
-    # gap is fine and staying current is what prevents the fallback stall.
+    # A user-pointed SHIM_OUTPUT file can grow fast. If we ever fall this far
+    # behind the write head, jump to live instead of slogging through stale
+    # backlog -- the overlay only needs *current* latency, so a gap is fine
+    # and staying current is what prevents the fallback stall.
     max_lag_bytes = 4 * 1024 * 1024
     while not _stop_requested(stop_event):
         try:
@@ -386,6 +373,7 @@ def run(
     # and let the FIFO back up into the game. Full queue -> drop the sample.
     sock.setblocking(False)
     pid = os.getpid() if pid is None else pid
+    session_id = str(env.get(TELEMETRY_SESSION_ENV) or "").strip()
 
     try:
         pending_sim: dict[int, int] = {}
@@ -395,6 +383,10 @@ def run(
         input_order: list[int] = []
         framegen_order: list[int] = []
         framegen_active_until_us = 0
+        # The shim sees the application's original Reflex frame IDs before
+        # DXVK/Vulkan and frame generation. Consecutive unique SIMULATION_START
+        # markers therefore provide the canonical pre-frame-generation cadence.
+        last_simulation_start: dict[int, tuple[int, int]] = {}
         # Base frames awaiting their out-of-band (frame-generation) display present,
         # in present order: (frame, input_us, sim_us, present_end_us).
         awaiting_oob: list[tuple[int, int, int, int]] = []
@@ -421,7 +413,14 @@ def run(
                 while len(framegen_order) > _MAX_PENDING:
                     framegen_marker_frames.pop(framegen_order.pop(0), None)
                 if marker == NV_MARKER_OUT_OF_BAND_PRESENT_END:
-                    _resolve_oob_present(sock, targets, awaiting_oob, t_us, sample_pid)
+                    _resolve_oob_present(
+                        sock,
+                        targets,
+                        awaiting_oob,
+                        t_us,
+                        sample_pid,
+                        session_id,
+                    )
                 continue
             if marker == NV_MARKER_INPUT_SAMPLE:
                 # Emitted by titles with full Reflex PCL markers, right before
@@ -432,6 +431,32 @@ def run(
                 while len(input_order) > _MAX_PENDING:
                     pending_input.pop(input_order.pop(0), None)
             elif marker == NV_MARKER_SIMULATION_START:
+                previous = last_simulation_start.get(sample_pid)
+                if previous is not None:
+                    previous_frame, previous_us = previous
+                    if frame != previous_frame and t_us > previous_us:
+                        base_sample = {
+                            "v": 1,
+                            "type": "timing",
+                            "measurement": "base-frame-marker-pacing",
+                            "source": "nvapi-marker-log",
+                            "pid": sample_pid,
+                            "base_frame_id": frame,
+                            "quality": "nvapi-base-frame-marker",
+                            "base_frame_frametime_us": t_us - previous_us,
+                            "marker": NV_MARKER_SIMULATION_START,
+                            "marker_name": "simulation-start",
+                        }
+                        if session_id:
+                            base_sample["session_id"] = session_id
+                        _send_sample(sock, targets, base_sample)
+                # Advance the cadence baseline only forward: a late-flushed
+                # older line must not rewind it and synthesize a multi-frame
+                # frametime on the next genuine marker.
+                if previous is None or (frame != previous[0] and t_us > previous[1]):
+                    last_simulation_start[sample_pid] = (frame, t_us)
+                # Pairing stays last-wins (like INPUT_SAMPLE above): a re-run
+                # simulation tick re-anchors sim_to_present for that frame.
                 if frame not in pending_sim:
                     order.append(frame)
                 pending_sim[frame] = t_us
@@ -465,6 +490,8 @@ def run(
                     "sim_to_present_us": span_us,
                     "framegen_active": False,
                 }
+                if session_id:
+                    sample["session_id"] = session_id
                 if input_us and t_us > input_us:
                     # Full Reflex input lag: input sample -> application present.
                     sample["input_to_present_us"] = t_us - input_us

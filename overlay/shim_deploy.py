@@ -6,7 +6,7 @@ the in-game latency flag is on, the launcher fronts the prefix's system32
 and our shim takes the ``nvapi64.dll`` name. The shim forwards every call to that
 sidecar and taps the Reflex latency markers, emitting them to stderr in the
 format ``telemetry/nvapi_marker_bridge.py`` parses -- which the launcher already
-routes to the marker FIFO. That replaces enabling dxvk-nvapi trace/marker-log:
+routes to the marker FIFO. It is the sole in-prefix marker source:
 same marker stream, no fork, and it works under frame generation (the tap is
 above vkd3d's owner-gate).
 
@@ -18,7 +18,7 @@ prefix re-sync (which restores the stock nvapi64.dll) simply self-heals on the
 next start.
 
 Falling back is always safe: when this returns ``None`` the launcher keeps the
-existing dxvk-nvapi marker-log / trace path.
+marker wire format the bridge already parses.
 """
 
 from __future__ import annotations
@@ -155,7 +155,7 @@ def deploy_nvapi_shim(env: dict[str, str]) -> Path | None:
     - shim already installed -> refresh it if the build changed;
     - prefix re-sync restored the stock DLL -> re-park and re-install next launch.
 
-    Returns None (launcher falls back to dxvk-nvapi marker-log / trace) when the
+    Returns None (launcher falls back to the Vulkan layer's marker tap) when the
     shim is disabled or unbuilt, there is no prefix, or system32 is not writable.
     """
     if nvapi_latency_disabled(env):

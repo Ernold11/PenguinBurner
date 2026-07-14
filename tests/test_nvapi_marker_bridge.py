@@ -11,31 +11,18 @@ from overlay.telemetry.nvapi_marker_bridge import (
 
 def test_parse_line_accepts_input_sample_marker() -> None:
     assert _parse_line_with_pid(
-        "123.456:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
-        "({version=1,frameID=42,markerType=INPUT_SAMPLE,rsvd})"
-    ) == (42, NV_MARKER_INPUT_SAMPLE, 123456000, None)
+        "123.456:2a:0:latency-marker:pb:"
+        "qpcUs=123456000 frameID=42 markerType=INPUT_SAMPLE"
+    ) == (42, NV_MARKER_INPUT_SAMPLE, 123456000, 0x2A)
 
 
-def test_parse_line_accepts_stock_dxvk_nvapi_trace_marker() -> None:
+def test_parse_line_rejects_stock_dxvk_nvapi_trace_lines() -> None:
+    # Stock DXVK_NVAPI_LOG_LEVEL=trace output is no longer a marker source;
+    # only the shim's latency-marker wire format parses.
     assert _parse_line_with_pid(
         "123.456:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
         "({version=1,frameID=42,markerType=SIMULATION_START,rsvd})"
-    ) == (42, NV_MARKER_SIMULATION_START, 123456000, None)
-
-
-def test_parse_line_accepts_stock_dxvk_nvapi_oob_present_marker() -> None:
-    assert _parse_line_with_pid(
-        "123.456:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
-        "({version=1,frameID=42,markerType=OUT_OF_BAND_PRESENT_END,rsvd})"
-    ) == (42, NV_MARKER_OUT_OF_BAND_PRESENT_END, 123456000, None)
-
-
-def test_parse_line_accepts_stock_dxvk_nvapi_async_frame_marker() -> None:
-    assert _parse_line_with_pid(
-        "123.456:trace:nvapi64:NvAPI_D3D12_SetAsyncFrameMarker "
-        "({version=1,frameID=42,markerType=OUT_OF_BAND_PRESENT_END,"
-        "presentFrameID=77,rsvd})"
-    ) == (42, NV_MARKER_OUT_OF_BAND_PRESENT_END, 123456000, None)
+    ) is None
 
 
 def test_parse_line_accepts_dxvk_nvapi_marker_only_log() -> None:
@@ -88,7 +75,50 @@ def test_bridge_uses_marker_only_log_process_id(monkeypatch, tmp_path) -> None:
     assert samples[0]["sim_to_present_us"] == 10000
 
 
-def test_bridge_does_not_mark_framegen_from_oob_present_trace(monkeypatch, tmp_path) -> None:
+def test_bridge_emits_unique_simulation_start_cadence_with_session(
+    monkeypatch, tmp_path
+) -> None:
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    lines = iter(
+        (
+            "1.000:0000002a:0:latency-marker:pb:qpcUs=1000000 frameID=7 "
+            "markerType=SIMULATION_START",
+            "1.001:0000002a:0:latency-marker:pb:qpcUs=1001000 frameID=7 "
+            "markerType=SIMULATION_START",
+            "1.020:0000002a:0:latency-marker:pb:qpcUs=1020000 frameID=8 "
+            "markerType=SIMULATION_START",
+            "1.040:0000002a:0:latency-marker:pb:qpcUs=1040000 frameID=9 "
+            "markerType=SIMULATION_START",
+        )
+    )
+    samples = []
+    monkeypatch.setattr(
+        bridge,
+        "_follow",
+        lambda _path, poll_interval_s, from_start, stop_event=None,
+        session_alive_fn=None, session_quiesced_fn=None: lines,
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_send_sample",
+        lambda _sock, _targets, sample: samples.append(sample),
+    )
+
+    run(
+        tmp_path / "trace.fifo",
+        env={bridge.TELEMETRY_SESSION_ENV: "700"},
+        pid=999,
+    )
+
+    assert [s["base_frame_id"] for s in samples] == [8, 9]
+    assert [s["base_frame_frametime_us"] for s in samples] == [20000, 20000]
+    assert all(s["pid"] == 42 for s in samples)
+    assert all(s["session_id"] == "700" for s in samples)
+    assert all(s["source"] == "nvapi-marker-log" for s in samples)
+
+
+def test_bridge_does_not_mark_framegen_from_oob_present_markers(monkeypatch, tmp_path) -> None:
     # Reflex out-of-band present markers are emitted with frame generation OFF, so
     # the bridge must never assert frame generation from them -- it emits the span
     # only and leaves the on/off decision to the receiver's cadence check.
@@ -96,12 +126,12 @@ def test_bridge_does_not_mark_framegen_from_oob_present_trace(monkeypatch, tmp_p
 
     lines = iter(
         (
-            "1.000:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
-            "({version=1,frameID=7,markerType=SIMULATION_START,rsvd})",
-            "1.005:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
-            "({version=1,frameID=7,markerType=OUT_OF_BAND_PRESENT_END,rsvd})",
-            "1.010:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
-            "({version=1,frameID=7,markerType=PRESENT_END,rsvd})",
+            "1.000:2a:0:latency-marker:pb:qpcUs=1000000 frameID=7 "
+            "markerType=SIMULATION_START",
+            "1.005:2a:0:latency-marker:pb:qpcUs=1005000 frameID=7 "
+            "markerType=OUT_OF_BAND_PRESENT_END",
+            "1.010:2a:0:latency-marker:pb:qpcUs=1010000 frameID=7 "
+            "markerType=PRESENT_END",
         )
     )
     samples = []
@@ -136,14 +166,14 @@ def test_bridge_emits_oob_present_span_in_present_order(monkeypatch, tmp_path) -
 
     lines = iter(
         (
-            "0.950:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
-            "({version=1,frameID=6,markerType=OUT_OF_BAND_PRESENT_END,rsvd})",
-            "1.000:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
-            "({version=1,frameID=7,markerType=SIMULATION_START,rsvd})",
-            "1.010:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
-            "({version=1,frameID=7,markerType=PRESENT_END,rsvd})",
-            "1.060:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
-            "({version=1,frameID=7,markerType=OUT_OF_BAND_PRESENT_END,rsvd})",
+            "0.950:2a:0:latency-marker:pb:qpcUs=950000 frameID=6 "
+            "markerType=OUT_OF_BAND_PRESENT_END",
+            "1.000:2a:0:latency-marker:pb:qpcUs=1000000 frameID=7 "
+            "markerType=SIMULATION_START",
+            "1.010:2a:0:latency-marker:pb:qpcUs=1010000 frameID=7 "
+            "markerType=PRESENT_END",
+            "1.060:2a:0:latency-marker:pb:qpcUs=1060000 frameID=7 "
+            "markerType=OUT_OF_BAND_PRESENT_END",
         )
     )
     samples = []
@@ -170,6 +200,50 @@ def test_bridge_emits_oob_present_span_in_present_order(monkeypatch, tmp_path) -
     assert oob_samples[0]["framegen_active"] is False
 
 
+def test_repeated_simulation_start_reanchors_pairing_without_rewinding_cadence(
+    monkeypatch, tmp_path
+) -> None:
+    # A re-run simulation tick for the SAME frame re-anchors sim_to_present
+    # (last-wins, like INPUT_SAMPLE), and a late-flushed OLDER line must not
+    # rewind the cadence baseline into a synthetic multi-frame frametime.
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    lines = iter(
+        (
+            "1.000:2a:0:latency-marker:pb:qpcUs=1000000 frameID=7 "
+            "markerType=SIMULATION_START",
+            # Same frame re-emitted 5ms later: pairing anchor moves forward.
+            "1.005:2a:0:latency-marker:pb:qpcUs=1005000 frameID=7 "
+            "markerType=SIMULATION_START",
+            # Late-flushed old line from an earlier frame: ignored as baseline.
+            "1.006:2a:0:latency-marker:pb:qpcUs=900000 frameID=6 "
+            "markerType=SIMULATION_START",
+            "1.020:2a:0:latency-marker:pb:qpcUs=1020000 frameID=7 "
+            "markerType=PRESENT_END",
+        )
+    )
+    samples = []
+
+    monkeypatch.setattr(
+        bridge,
+        "_follow",
+        lambda _path, poll_interval_s, from_start, stop_event=None,
+        session_alive_fn=None, session_quiesced_fn=None: lines,
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_send_sample",
+        lambda _sock, _targets, sample: samples.append(sample),
+    )
+
+    run(tmp_path / "trace.fifo", env={}, pid=123)
+
+    timing = [s for s in samples if "sim_to_present_us" in s]
+    assert len(timing) == 1
+    # Anchored at the re-emitted 1005000, not the first 1000000.
+    assert timing[0]["sim_to_present_us"] == 15000
+
+
 def test_bridge_reports_input_to_present_when_input_marker_present(monkeypatch, tmp_path) -> None:
     # Title with full Reflex PCL markers (e.g. Quake II RTX): INPUT_SAMPLE pairs
     # with PRESENT_END to give the true input-to-present Reflex lag.
@@ -177,12 +251,12 @@ def test_bridge_reports_input_to_present_when_input_marker_present(monkeypatch, 
 
     lines = iter(
         (
-            "1.000:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
-            "({version=1,frameID=7,markerType=INPUT_SAMPLE,rsvd})",
-            "1.002:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
-            "({version=1,frameID=7,markerType=SIMULATION_START,rsvd})",
-            "1.030:trace:nvapi64:NvAPI_D3D_SetLatencyMarker "
-            "({version=1,frameID=7,markerType=PRESENT_END,rsvd})",
+            "1.000:2a:0:latency-marker:pb:qpcUs=1000000 frameID=7 "
+            "markerType=INPUT_SAMPLE",
+            "1.002:2a:0:latency-marker:pb:qpcUs=1002000 frameID=7 "
+            "markerType=SIMULATION_START",
+            "1.030:2a:0:latency-marker:pb:qpcUs=1030000 frameID=7 "
+            "markerType=PRESENT_END",
         )
     )
     samples = []
