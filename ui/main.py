@@ -84,13 +84,16 @@ def run(argv: list[str] | None = None) -> int:
         app.setDesktopFileName(APP_DESKTOP_ID)
     try:
         ensure_steam_integration()
-    except (OSError, RuntimeError) as exc:
-        message = (
-            "PenguinBurner could not repair its mandatory Steam integration.\n\n"
-            f"{exc}"
+    except Exception as exc:
+        # Steam integration repair failing must not keep the GPU tuning UI
+        # from starting, whatever the failure mode (a corrupt packaged
+        # manifest raises ValueError/KeyError, not just OSError/RuntimeError);
+        # the Steam actions themselves re-check and refuse.
+        print(
+            "warning: PenguinBurner could not repair its Steam integration; "
+            f"Steam launches will not work until this is fixed: {exc}",
+            file=sys.stderr,
         )
-        print(f"error: {message}", file=sys.stderr)
-        return 1
     icon = application_icon(QtGui)
     if not icon.isNull():
         app.setWindowIcon(icon)

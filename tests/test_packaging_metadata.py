@@ -315,6 +315,7 @@ def test_flatpak_startup_repairs_and_verifies_complete_steam_integration(
     shim.write_bytes(b"MZ[pb-nvapi-shim]")
     monkeypatch.setenv("FLATPAK_ID", wrappers.APP_ID)
     monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_WRAPPER_BIN_DIR", str(bin_dir))
+    monkeypatch.setattr(wrappers, "_host_has_steam", lambda: True)
     monkeypatch.setattr(wrappers, "install_vulkan_layer_manifest", lambda: manifest)
     monkeypatch.setattr(shim_deploy, "nvapi_shim_artifact", lambda: shim)
 
@@ -339,6 +340,7 @@ def test_flatpak_startup_rejects_missing_mandatory_payload(
     monkeypatch.setenv(
         "PENGUIN_BURNER_FLATPAK_WRAPPER_BIN_DIR", str(tmp_path / "bin")
     )
+    monkeypatch.setattr(wrappers, "_host_has_steam", lambda: True)
     monkeypatch.setattr(wrappers, "install_vulkan_layer_manifest", lambda: None)
 
     with pytest.raises(RuntimeError, match="Vulkan latency layer is missing"):
@@ -357,9 +359,66 @@ def test_flatpak_startup_refuses_foreign_steam_wrapper(
     foreign.chmod(0o755)
     monkeypatch.setenv("FLATPAK_ID", wrappers.APP_ID)
     monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_WRAPPER_BIN_DIR", str(bin_dir))
+    monkeypatch.setattr(wrappers, "_host_has_steam", lambda: True)
 
     with pytest.raises(RuntimeError, match="not owned by PenguinBurner"):
         wrappers.ensure_steam_integration()
+
+
+def test_flatpak_startup_skips_steam_integration_without_steam(
+    tmp_path, monkeypatch
+) -> None:
+    import common.flatpak_wrappers as wrappers
+
+    bin_dir = tmp_path / "bin"
+    monkeypatch.setenv("FLATPAK_ID", wrappers.APP_ID)
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_WRAPPER_BIN_DIR", str(bin_dir))
+    monkeypatch.setattr(wrappers, "_host_has_steam", lambda: False)
+
+    assert wrappers.ensure_steam_integration() is None
+    # A Steam-less host must stay untouched: no wrappers, no manifest.
+    assert not bin_dir.exists()
+
+
+def test_flatpak_startup_repairs_existing_managed_files_without_steam(
+    tmp_path, monkeypatch
+) -> None:
+    # A Steam-less host that already opted in (manual install-wrappers run or
+    # an earlier version) must keep being repaired across flatpak updates.
+    import common.flatpak_wrappers as wrappers
+    from overlay import shim_deploy
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "pburn").write_text(
+        f"#!/usr/bin/env sh\n# {wrappers.MARKER}\n", encoding="utf-8"
+    )
+    manifest = tmp_path / "VkLayer_PENGUINBURNER_latency.json"
+    shim = tmp_path / "nvapi64.dll"
+    manifest.write_text("{}\n", encoding="utf-8")
+    shim.write_bytes(b"MZ[pb-nvapi-shim]")
+    monkeypatch.setenv("FLATPAK_ID", wrappers.APP_ID)
+    monkeypatch.setenv("PENGUIN_BURNER_FLATPAK_WRAPPER_BIN_DIR", str(bin_dir))
+    monkeypatch.setattr(wrappers, "_host_has_steam", lambda: False)
+    monkeypatch.setattr(wrappers, "install_vulkan_layer_manifest", lambda: manifest)
+    monkeypatch.setattr(shim_deploy, "nvapi_shim_artifact", lambda: shim)
+
+    repaired = wrappers.ensure_steam_integration()
+
+    assert repaired == bin_dir / "PENGUIN_BURNER"
+    assert repaired is not None
+    assert repaired.is_file()
+
+
+def test_host_has_steam_reads_the_real_steam_root(tmp_path, monkeypatch) -> None:
+    # Exercise the genuine detection wiring (import + default_steam_root),
+    # which every other test stubs out.
+    import common.flatpak_wrappers as wrappers
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    assert wrappers._host_has_steam() is False
+    (tmp_path / ".local" / "share" / "Steam" / "userdata").mkdir(parents=True)
+    assert wrappers._host_has_steam() is True
 
 
 def test_flatpak_wrapper_installer_registers_user_vulkan_layer(tmp_path) -> None:
