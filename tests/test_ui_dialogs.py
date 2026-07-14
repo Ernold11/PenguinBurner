@@ -230,6 +230,9 @@ def test_select_scan_tuning_mirrors_balanced_and_performance_memory(
     Performance; Efficiency stays independent, and the single-profile scope
     releases the mirror."""
     qtcore, qtgui, qtwidgets, _pg = qt
+    monkeypatch.setattr(
+        scan_tuning_dialog, "memory_offset_mhz_range", lambda **_kwargs: (0, 4000)
+    )
 
     checked: dict[str, bool] = {}
 

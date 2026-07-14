@@ -2522,6 +2522,7 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
             [
                 SimpleNamespace(
                     index=0,
+                    name="NVIDIA GeForce RTX 5060 Laptop GPU",
                     label="GPU 0 - NVIDIA GeForce RTX 5060 Laptop GPU",
                 )
             ],

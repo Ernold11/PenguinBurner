@@ -114,6 +114,11 @@ def test_dispatch_cli_daemonize_applies_through_running_daemon(monkeypatch) -> N
     applied = []
     monkeypatch.setattr(
         entry,
+        "resolve_auto_uv_profile",
+        lambda *_args, **_kwargs: {"profile_id": "latest"},
+    )
+    monkeypatch.setattr(
+        entry,
         "apply_runtime_intent",
         lambda intent, **kwargs: applied.append((intent, kwargs))
         or {"started": True, "runtime_mode": "static"},
