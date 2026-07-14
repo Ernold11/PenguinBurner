@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.7.3
+Version:        0.7.4
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -107,6 +107,12 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Tue Jul 14 2026 PenguinBurner contributors <noreply@github.com> - 0.7.4-1
+- Deduplicate in-game telemetry with per-session sample ownership.
+- Keep the Vulkan layer marker fallback active when the NVAPI shim is
+  deployed but never streams.
+- Remove superseded latency fallbacks, dead flags, and legacy scripts.
+
 * Tue Jul 14 2026 PenguinBurner contributors <noreply@github.com> - 0.7.3-1
 - Install the Flatpak Steam host integration only when host Steam is detected.
 - Never block GUI startup or privileged actions on Steam integration repair.
