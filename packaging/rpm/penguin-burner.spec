@@ -1,9 +1,16 @@
 Name:           penguin-burner
 Version:        0.7.2
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
 %global debug_package %{nil}
+
+# PyPI calls the minimal Qt wheel "PySide6-Essentials", but Fedora folds that
+# distribution into python3-pyside6 and provides python3dist(pyside6), not
+# python3dist(pyside6-essentials).  Keep the explicit Fedora dependency below
+# and filter only the unresolvable wheel-metadata dependency generated from the
+# installed .dist-info/METADATA file.
+%global __requires_exclude ^python%{python3_version}dist\\(pyside6-essentials\\).*$
 
 License:        GPL-3.0-or-later
 URL:            https://github.com/jpietek/PenguinBurner
@@ -102,6 +109,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Tue Jul 14 2026 PenguinBurner contributors <noreply@github.com> - 0.7.2-2
+- Fix Fedora dependency resolution for the PySide6 runtime package.
+
 * Sat Jun 20 2026 PenguinBurner contributors <noreply@github.com> - 0.5-1
 - Remove nvidia-smi shell calls in favor of NVML API helpers.
 - Use true headless Q2RTX tuned for PenguinBurner benchmarking.

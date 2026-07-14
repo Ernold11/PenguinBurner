@@ -54,6 +54,20 @@ def test_native_packages_install_pyside6_runtime_dependency() -> None:
     assert "Requires:       python3-pyside6 >= 6.7" in rpm_spec
 
 
+def test_fedora_rpm_filters_unprovided_pyside6_essentials_dependency() -> None:
+    rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(encoding="utf-8")
+
+    # PyPI's PySide6-Essentials name has no Fedora virtual provider.  The RPM
+    # dependency generator reads it from wheel metadata, so filter that one
+    # generated requirement while retaining python3-pyside6 above.
+    assert (
+        r"%global __requires_exclude "
+        r"^python%{python3_version}dist\\(pyside6-essentials\\).*$"
+        in rpm_spec
+    )
+    assert "Requires:       python3-pyside6 >= 6.7" in rpm_spec
+
+
 def test_native_package_versions_match_python_project() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     version = metadata["project"]["version"]
