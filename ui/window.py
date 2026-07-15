@@ -400,6 +400,18 @@ class MainWindow(ProfileActionsMixin):
             )
             return
         options = {**options, "gpu_index": int(self.gpu_index)}
+        # Remember the silent-fan intent BEFORE the scan: a foreground scan
+        # resets the GPU to stock, so mid-scan the "running" profile reads as
+        # fan-off. Without this, the completion auto-apply recomputes the
+        # checkbox from that stock state and silently drops a fan curve the
+        # user had running. Capture the checkbox OR the live running profile.
+        self._pre_scan_silent_fan = bool(
+            self.profile_list.silent_fan_enabled()
+            or (
+                penguin_burner_runtime_is_active()
+                and running_auto_uv_profile_info().get("silent_fan_curve")
+            )
+        )
         # Bring the scan into view: the live runs/curve are on the Auto-UV tab.
         self.tabs.setCurrentIndex(self.auto_uv_tab_index)
         command = scan_command(options)
@@ -649,6 +661,13 @@ class MainWindow(ProfileActionsMixin):
         # the boot/autostart profile, so the UI must not apply a second fallback.
         self._load_profiles()
         if apply_final_profile:
+            # Restore the pre-scan silent-fan intent: the reload above may have
+            # unticked the checkbox from the mid-scan stock state, and the
+            # auto-apply reads the checkbox. A scan must never turn off a fan
+            # curve the user had running.
+            if getattr(self, "_pre_scan_silent_fan", False):
+                self.profile_list.set_silent_fan_checked(True)
+            self._pre_scan_silent_fan = False
             # Apply the freshly verified profile now (and for boot when the
             # "Apply on startup" toggle is ticked).
             # Deferred one event-loop turn so the scan controller has fully

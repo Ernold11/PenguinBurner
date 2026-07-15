@@ -286,6 +286,52 @@ def test_silent_fan_tick_survives_discarded_run(win, monkeypatch) -> None:
     assert window.profile_list.silent_fan_enabled() is True
 
 
+def test_scan_completion_restores_pre_scan_silent_fan(win, monkeypatch) -> None:
+    # A foreground scan resets the GPU to stock, so the completion reload sees
+    # a fan-off running state. The auto-applied final profile must still carry
+    # the silent-fan curve the user had running before the scan, without any
+    # toggle change from them.
+    window, _mp = win
+    monkeypatch.setattr(window_mod, "silent_fan_curve_from_runtime_config", lambda: False)
+    monkeypatch.setattr(window_mod, "silent_fan_curve_to_runtime_config", lambda v: v)
+    monkeypatch.setattr(window_mod, "penguin_burner_runtime_is_active", lambda: True)
+    monkeypatch.setattr(
+        window_mod,
+        "running_auto_uv_profile_info",
+        lambda: {"selector": "p1", "silent_fan_curve": True, "adaptive_auto_uv": False},
+    )
+    monkeypatch.setattr(window_mod, "select_scan_tuning", lambda **k: {"gpu_index": 0})
+    monkeypatch.setattr(window_mod, "persist_runtime_gpu_index", lambda idx: int(idx))
+    monkeypatch.setattr(
+        window_mod, "ensure_daemon_ready_for_privileged_action", lambda **_k: True
+    )
+    monkeypatch.setattr(window_mod, "scan_command", lambda options: ["echo", "scan"])
+    window.scan_controller = _FakeController()
+
+    # Start a scan: the pre-scan silent-fan intent (live running profile) is
+    # captured even though the checkbox and config are both off.
+    window.start_scan()
+    assert window._pre_scan_silent_fan is True
+
+    # After the scan the running profile reads as stock (fan off).
+    monkeypatch.setattr(
+        window_mod,
+        "running_auto_uv_profile_info",
+        lambda: {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False},
+    )
+    applied = []
+    monkeypatch.setattr(
+        window, "_run_runtime_action", lambda action: applied.append(action)
+    )
+    # Drive the completion path with a pending final result (auto-apply).
+    window.pending_final_result_payload = {"candidate_id": "c1"}
+    window._scan_finished(0, 0, False)
+    window.QtCore.QCoreApplication.processEvents()
+
+    assert window.profile_list.silent_fan_enabled() is True
+    assert applied == ["daemonize"]
+
+
 def test_silent_fan_tick_stays_unchecked_when_not_persisted(win, monkeypatch) -> None:
     window, _mp = win
     monkeypatch.setattr(window_mod, "silent_fan_curve_from_runtime_config", lambda: False)

@@ -458,6 +458,14 @@ class ProfileList:
         finally:
             self.silent_fan_checkbox.blockSignals(signals_blocked)
 
+    def set_silent_fan_checked(self, checked: bool) -> None:
+        """Re-assert the silent-fan tick without firing the persist signal.
+
+        Used by the scan-completion path to restore the pre-scan intent
+        before the auto-apply reads the checkbox.
+        """
+        self._set_silent_fan_checked(checked)
+
     def persist_on_startup_enabled(self) -> bool:
         return bool(self.boot_apply_checkbox.isChecked())
 
