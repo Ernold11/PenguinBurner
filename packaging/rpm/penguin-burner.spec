@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.7.4
+Version:        0.7.5
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -107,6 +107,14 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Wed Jul 15 2026 PenguinBurner contributors <noreply@github.com> - 0.7.5-1
+- Add the opt-in "Apply on startup" toggle; applies are session-only by
+  default and a new --restore-stock recovery command resets to stock.
+- Tolerate mobile GPUs that reject the power-limit setter or expose no
+  controllable fans.
+- Show Proton vs Native Linux per Steam game and gray the compatibility
+  selector out for native titles.
+
 * Tue Jul 14 2026 PenguinBurner contributors <noreply@github.com> - 0.7.4-1
 - Deduplicate in-game telemetry with per-session sample ownership.
 - Keep the Vulkan layer marker fallback active when the NVAPI shim is
