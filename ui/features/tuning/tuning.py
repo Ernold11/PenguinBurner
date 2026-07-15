@@ -430,9 +430,16 @@ def _power_limit_set_probe_applicable(power: object | None) -> bool:
     )
 
 
+_NVML_INFO_UNAVAILABLE_TEXT = (
+    "GPU limits unavailable: the PenguinBurner background hardware service "
+    "is not responding. Close this dialog and click Setup Auto Undervolt "
+    "again to install or repair it (one admin prompt)."
+)
+
+
 def auto_uv_nvml_info_text(info: AutoUvNvmlInfo | None) -> str:
     if info is None:
-        return "NVML read-only info unavailable"
+        return _NVML_INFO_UNAVAILABLE_TEXT
 
     rows = [
         _power_limit_text(info),
@@ -443,7 +450,7 @@ def auto_uv_nvml_info_text(info: AutoUvNvmlInfo | None) -> str:
         _power_limit_set_text(info.power_limit_set_supported),
     ]
     text = "\n".join(row for row in rows if row)
-    return text or "NVML read-only info unavailable"
+    return text or _NVML_INFO_UNAVAILABLE_TEXT
 
 
 def power_limit_set_supported(gpu_index: int) -> bool:

@@ -367,6 +367,21 @@ class MainWindow(ProfileActionsMixin):
     def start_scan(self) -> None:
         if self._workflow_running():
             return
+        # The setup dialog reads GPU identity and limits through the daemon,
+        # so the service must be installed/updated BEFORE the dialog opens —
+        # otherwise a fresh or upgraded install shows a misleading generic
+        # "NVIDIA GPU" with no limits (the exact state that scares users off
+        # the one action that would fix it).
+        if not ensure_daemon_ready_for_privileged_action(
+            QtWidgets=self.QtWidgets,
+            parent=self.window,
+            log=self.log_view.append,
+            action_label="Setting up Auto-UV",
+            # The scan streams through the daemon; a stale daemon without this
+            # capability must land in the repair prompt, not fail at scan start.
+            required_capabilities=("scan-stream-v1",),
+        ):
+            return
         options = select_scan_tuning(
             QtCore=self.QtCore,
             QtGui=self.QtGui,
@@ -383,16 +398,6 @@ class MainWindow(ProfileActionsMixin):
                 "GPU selection",
                 f"Could not save selected GPU index: {exc}",
             )
-            return
-        if not ensure_daemon_ready_for_privileged_action(
-            QtWidgets=self.QtWidgets,
-            parent=self.window,
-            log=self.log_view.append,
-            action_label="Starting Auto-UV",
-            # The scan streams through the daemon; a stale daemon without this
-            # capability must land in the repair prompt, not fail at scan start.
-            required_capabilities=("scan-stream-v1",),
-        ):
             return
         options = {**options, "gpu_index": int(self.gpu_index)}
         # Bring the scan into view: the live runs/curve are on the Auto-UV tab.

@@ -60,6 +60,11 @@ def win(qapp, monkeypatch):
 
 def test_start_scan_cancelled(win) -> None:
     window, monkeypatch = win
+    monkeypatch.setattr(
+        window_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: True,
+    )
     monkeypatch.setattr(window_mod, "select_scan_tuning", lambda **k: None)
     fake = _FakeController()
     window.scan_controller = fake
@@ -107,29 +112,36 @@ def test_full_scan_shows_tier_progress_but_selected_profile_scan_hides_it(win) -
     assert window.auto_uv_tier_progress.widget.isHidden()
 
 
-def test_start_scan_runs_daemon_migration_gate_before_scan(win) -> None:
+def test_start_scan_runs_daemon_gate_before_the_setup_dialog(win) -> None:
+    # The setup dialog reads GPU identity/limits through the daemon: the
+    # install/update prompt must fire BEFORE the dialog opens, or a fresh
+    # install shows a misleading generic GPU with no limits.
     window, monkeypatch = win
-    gate_calls = []
-    monkeypatch.setattr(window_mod, "select_scan_tuning", lambda **k: {"gpu_index": 0})
-    monkeypatch.setattr(window_mod, "persist_runtime_gpu_index", lambda idx: int(idx))
-    monkeypatch.setattr(window_mod, "scan_command", lambda options: ["echo", "scan"])
+    order = []
 
     def fake_gate(**kwargs):
-        gate_calls.append(kwargs)
+        order.append(("gate", kwargs["action_label"]))
         return True
+
+    def fake_dialog(**_kwargs):
+        order.append(("dialog", None))
+        return {"gpu_index": 0}
 
     monkeypatch.setattr(
         window_mod,
         "ensure_daemon_ready_for_privileged_action",
         fake_gate,
     )
+    monkeypatch.setattr(window_mod, "select_scan_tuning", fake_dialog)
+    monkeypatch.setattr(window_mod, "persist_runtime_gpu_index", lambda idx: int(idx))
+    monkeypatch.setattr(window_mod, "scan_command", lambda options: ["echo", "scan"])
     fake = _FakeController()
     window.scan_controller = fake
 
     window.start_scan()
 
-    assert gate_calls
-    assert gate_calls[0]["action_label"] == "Starting Auto-UV"
+    assert order[0] == ("gate", "Setting up Auto-UV")
+    assert order[1] == ("dialog", None)
     assert fake.started
 
 
