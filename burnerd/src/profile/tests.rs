@@ -617,3 +617,85 @@ mod smoke {
         assert!(text.contains("voltage="));
     }
 }
+
+/// Laptop dGPUs commonly return NOT_SUPPORTED for `nvmlDeviceGetNumFans` (the
+/// EC owns the fans). With fan control disabled the engine must still start —
+/// stock and undervolt-only profiles never touch fans.
+#[test]
+fn unsupported_fan_count_is_tolerated_when_fan_control_disabled() {
+    let mock = MockGpu::new();
+    mock.inject_failure(
+        "fan_count",
+        crate::gpu::GpuError::nvml_with_text("nvmlDeviceGetNumFans", 3, "Not Supported"),
+    );
+
+    let mut publisher = super::telemetry::OverlayStatePublisher::new(
+        0,
+        false,
+        1.0,
+        String::new(),
+        String::new(),
+        String::new(),
+        false,
+        None,
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    let result = run_fan_control_loop(
+        &mock,
+        0,
+        false,
+        FanConfig::defaults(),
+        false, // fan control disabled → the unsupported fan count must not block
+        VfPolicyResult::default(),
+        &mut publisher,
+        None,
+        None,
+        None,
+        stop,
+        Some(1),
+        &mut None,
+    );
+    assert!(
+        result.is_ok(),
+        "engine must run without fan control when the fan count is unsupported: {result:?}"
+    );
+}
+
+/// With fan control REQUESTED, an unsupported fan count stays a hard error so
+/// the profile falls back instead of silently dropping the fan curve.
+#[test]
+fn unsupported_fan_count_still_fails_when_fan_control_enabled() {
+    let mock = MockGpu::new();
+    mock.inject_failure(
+        "fan_count",
+        crate::gpu::GpuError::nvml_with_text("nvmlDeviceGetNumFans", 3, "Not Supported"),
+    );
+
+    let mut publisher = super::telemetry::OverlayStatePublisher::new(
+        0,
+        false,
+        1.0,
+        String::new(),
+        String::new(),
+        String::new(),
+        false,
+        None,
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    let result = run_fan_control_loop(
+        &mock,
+        0,
+        false,
+        FanConfig::defaults(),
+        true,
+        VfPolicyResult::default(),
+        &mut publisher,
+        None,
+        None,
+        None,
+        stop,
+        Some(1),
+        &mut None,
+    );
+    assert!(result.is_err());
+}

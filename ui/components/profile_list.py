@@ -63,9 +63,16 @@ class ProfileList:
 
         top = QtWidgets.QHBoxLayout()
         self.silent_fan_checkbox = QtWidgets.QCheckBox("Silent fan curve")
+        self.boot_apply_checkbox = QtWidgets.QCheckBox("Apply on startup")
+        self.boot_apply_checkbox.setToolTip(
+            "When ticked, Apply also saves the profile as the boot profile. "
+            "Unticking clears any saved boot profile immediately, and Apply "
+            "then changes this session only, so the GPU starts at stock."
+        )
         self.daemonize_button = QtWidgets.QPushButton("Apply")
         self.daemonize_button.setToolTip(
-            "Apply the single selected profile now and at boot."
+            "Apply the single selected profile now. \"Apply on startup\" "
+            "controls whether it also becomes the boot profile."
         )
         self.delete_button = QtWidgets.QToolButton()
         self.delete_button.setObjectName("deleteProfilesButton")
@@ -82,6 +89,7 @@ class ProfileList:
         top.addWidget(QtWidgets.QLabel("Stored undervolt profiles"))
         top.addStretch(1)
         top.addWidget(self.silent_fan_checkbox)
+        top.addWidget(self.boot_apply_checkbox)
         top.addWidget(self.daemonize_button)
         top.addWidget(self.delete_button)
         top.addWidget(self.restore_defaults_button)
@@ -119,10 +127,10 @@ class ProfileList:
         layout.addLayout(top)
         layout.addWidget(self.table, 1)
         adaptive_note = QtWidgets.QLabel(
-            "Apply saves the selected profile for boot. Restore defaults "
-            "makes stock the current and boot state. Per-game "
-            "adaptive profiles with a target pre-frame-gen FPS are managed "
-            "in the Steam tab."
+            "Apply changes the current session; tick \"Apply on startup\" to "
+            "also save the profile for boot. Restore defaults makes stock "
+            "the current and boot state. Per-game adaptive profiles with a "
+            "target pre-frame-gen FPS are managed in the Steam tab."
         )
         adaptive_note.setObjectName("profilesAdaptiveNote")
         adaptive_note.setWordWrap(True)
@@ -439,6 +447,7 @@ class ProfileList:
             and all(self._row_is_deletable(row) for row in selected_rows)
         )
         self.daemonize_button.setEnabled(has_apply_selection)
+        self.boot_apply_checkbox.setEnabled(self._runtime_actions_available)
         self.delete_button.setEnabled(has_delete_selection)
         self.restore_defaults_button.setEnabled(self._runtime_actions_available)
 
@@ -448,6 +457,23 @@ class ProfileList:
             self.silent_fan_checkbox.setChecked(bool(checked))
         finally:
             self.silent_fan_checkbox.blockSignals(signals_blocked)
+
+    def persist_on_startup_enabled(self) -> bool:
+        return bool(self.boot_apply_checkbox.isChecked())
+
+    def set_boot_apply_checked(self, checked: bool) -> None:
+        """One-time init from the persisted config; never called on reloads.
+
+        The home-dir config key is the single source of truth for this
+        toggle. `set_profiles` deliberately leaves it alone so list reloads
+        can never flip the user's choice (the old Persist-on-Startup toggle
+        was removed over exactly that class of resync glitch).
+        """
+        signals_blocked = self.boot_apply_checkbox.blockSignals(True)
+        try:
+            self.boot_apply_checkbox.setChecked(bool(checked))
+        finally:
+            self.boot_apply_checkbox.blockSignals(signals_blocked)
 
     def _selected_rows(self) -> list[int]:
         selection_model = self.table.selectionModel()

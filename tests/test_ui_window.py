@@ -309,10 +309,13 @@ def test_window_simple_helpers(main_window) -> None:
     win = main_window
     assert win._workflow_running() is False
     win._set_profile_actions_enabled(True)
+    win.profile_list.set_boot_apply_checked(True)
     assert "Autostart: Yes" in win._runtime_action_start_text()
     adaptive_text = win._runtime_action_start_text(adaptive_auto_uv=True)
     assert "adaptive" in adaptive_text.lower()
     assert "Autostart: Yes" in adaptive_text
+    win.profile_list.set_boot_apply_checked(False)
+    assert "Autostart: No" in win._runtime_action_start_text()
     win._load_profiles()
     win.show_about()
 

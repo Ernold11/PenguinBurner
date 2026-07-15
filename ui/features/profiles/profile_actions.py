@@ -32,8 +32,10 @@ from ui.features.profiles.profiles import adaptive_profile_tier_labels
 from ui.features.profiles.profiles import delete_confirmation_text
 from ui.features.profiles.profiles import profile_can_apply
 from ui.features.profiles.profiles import profile_can_verify
+from ui.features.profiles.profiles import penguin_burner_runtime_is_active
 from ui.features.profiles.profiles import profile_delete_autostart_action
 from ui.features.profiles.profiles import profile_for_selector
+from ui.features.profiles.profiles import running_auto_uv_profile_info
 from ui.features.profiles.profiles import profile_is_deletable
 from ui.features.profiles.profiles import profile_status_label
 from ui.features.profiles.profiles import profile_verify_selector
@@ -106,14 +108,18 @@ class ProfileActionsMixin:
             ),
         ):
             return
-        # A standing action is always complete: Apply persists the selected
-        # profile for boot, while Restore defaults persists the stock runtime.
+        # Boot persistence follows the "Apply on startup" toggle: ticked saves
+        # the applied profile for boot, unticked applies session-only and
+        # clears any saved boot profile. Restore defaults still persists the
+        # stock runtime.
+        persist_on_startup = self.profile_list.persist_on_startup_enabled()
         command = runtime_profile_command(
             action,
             profile_selector=profile_id,
             silent_fan_curve=self.profile_list.silent_fan_enabled(),
             adaptive_auto_uv=adaptive_auto_uv,
             gpu_index=self.gpu_index,
+            persist_on_startup=persist_on_startup,
         )
         self._persist_silent_fan_preference(self.profile_list.silent_fan_enabled())
         # A profile is now in effect, so the GPU is no longer at stock.
@@ -148,6 +154,9 @@ class ProfileActionsMixin:
             profile_selector=STOCK_PROFILE_SELECTOR,
             silent_fan_curve=self.profile_list.silent_fan_enabled(),
             gpu_index=self.gpu_index,
+            # Stock is the safe state: restoring persists it for boot
+            # regardless of the Apply-on-startup toggle.
+            persist_on_startup=True,
         )
         self.controls.set_status_text(
             "Restoring GPU to stock now and at boot (daemon keeps running)."
@@ -345,11 +354,28 @@ class ProfileActionsMixin:
             list(selected_ids),
             autostart_info,
         )
-        restore_stock = autostart_action.get("action") == "restore-stock"
+        # Session-only applies (Apply-on-startup unticked) leave no boot
+        # entry, so also check the actively running profile — deleting it
+        # must restore stock instead of leaving an orphaned curve applied.
+        running_action = {"action": "keep"}
+        if penguin_burner_runtime_is_active():
+            running_action = profile_delete_autostart_action(
+                self.profile_summaries,
+                list(selected_ids),
+                running_auto_uv_profile_info(),
+            )
+        restore_stock = "restore-stock" in (
+            autostart_action.get("action"),
+            running_action.get("action"),
+        )
         if not self._confirm_profile_delete(
             restore_stock=restore_stock,
             removes_last_usable_adaptive_profile=(
-                autostart_action.get("reason") == "last-usable-adaptive-profile"
+                "last-usable-adaptive-profile"
+                in (
+                    autostart_action.get("reason"),
+                    running_action.get("reason"),
+                )
             ),
         ):
             return
@@ -533,11 +559,11 @@ class ProfileActionsMixin:
         return profile_for_selector(self.profile_summaries, profile_id)
 
     def _runtime_action_start_text(self, *, adaptive_auto_uv: bool = False) -> str:
-        # Every apply persists the runtime for boot.
+        autostart = "Yes" if self.profile_list.persist_on_startup_enabled() else "No"
         if adaptive_auto_uv:
-            return "Starting adaptive Auto-UV; Autostart: Yes."
+            return f"Starting adaptive Auto-UV; Autostart: {autostart}."
         selected = self.profile_list.selected_profile_name() or "none"
-        return f"Starting profile: {selected}; Autostart: Yes."
+        return f"Starting profile: {selected}; Autostart: {autostart}."
 
 
 def _manual_curve_control_voltage_mvs(manual_edit) -> tuple[int, ...]:

@@ -349,6 +349,7 @@ def test_flatpak_runtime_profile_daemonize_uses_daemon_client(
         profile_selector="profile-a",
         silent_fan_curve=True,
         gpu_index=0,
+    persist_on_startup=True,
     )
     intent = _runtime_profile_daemon_intent(command)
 
@@ -673,6 +674,7 @@ def test_ui_runtime_command_uses_auto_uv_profile_without_afterburner_flag(
         profile_selector="profile-a",
         silent_fan_curve=True,
         gpu_index=1,
+    persist_on_startup=True,
     )
     intent = _runtime_profile_daemon_intent(command)
 
@@ -689,6 +691,7 @@ def test_ui_runtime_command_adds_adaptive(monkeypatch) -> None:
     command = commands.runtime_profile_command(
         "daemonize",
         adaptive_auto_uv=True,
+    persist_on_startup=True,
     )
 
     assert _runtime_profile_daemon_intent(command)["adaptive_auto_uv"] is True
@@ -702,6 +705,7 @@ def test_ui_adaptive_boot_apply_uses_daemon_without_pkexec(monkeypatch) -> None:
         "daemonize",
         adaptive_auto_uv=True,
         gpu_index=0,
+    persist_on_startup=True,
     )
 
     assert command[1:5] == [
@@ -718,6 +722,25 @@ def test_ui_adaptive_boot_apply_uses_daemon_without_pkexec(monkeypatch) -> None:
         "adaptive_auto_uv": True,
         "gpu_index": 0,
     }
+
+
+def test_session_only_apply_clears_the_boot_profile(monkeypatch) -> None:
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+
+    command = commands.runtime_profile_command(
+        "daemonize",
+        profile_selector="perf",
+        gpu_index=0,
+        persist_on_startup=False,
+    )
+
+    assert command[1:5] == [
+        "-m",
+        "runtime.daemon_client",
+        "apply-runtime-intent",
+        "--clear-boot",
+    ]
+    assert "--boot" not in command
 
 
 def test_flatpak_normal_operations_never_request_elevation(
@@ -740,16 +763,19 @@ def test_flatpak_normal_operations_never_request_elevation(
             "daemonize",
             profile_selector="profile-a",
             gpu_index=0,
+        persist_on_startup=True,
         ),
         commands.runtime_profile_command(
             "daemonize",
             adaptive_auto_uv=True,
             gpu_index=0,
+        persist_on_startup=True,
         ),
         commands.runtime_profile_command(
             "daemonize",
             profile_selector="__stock__",
             gpu_index=0,
+        persist_on_startup=True,
         ),
         commands.profile_verify_command(
             profile_selector="profile-a",

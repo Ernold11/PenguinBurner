@@ -161,6 +161,44 @@ def test_apply_runtime_intent_uses_daemon_for_apply_and_boot(monkeypatch) -> Non
     assert all(call[2]["socket_path"] == "/tmp/burnerd.sock" for call in calls)
 
 
+def test_apply_runtime_intent_session_only_clears_boot(monkeypatch) -> None:
+    calls = []
+    spec = {"format_version": 1, "mode": "profile"}
+    monkeypatch.setattr(
+        runtime_spec,
+        "build_runtime_spec_from_intent",
+        lambda intent, **kwargs: calls.append(("resolve", intent, kwargs)) or spec,
+    )
+    monkeypatch.setattr(
+        daemon_client,
+        "apply_runtime_spec",
+        lambda payload, **kwargs: calls.append(("apply", payload, kwargs))
+        or {"started": True},
+    )
+    monkeypatch.setattr(
+        daemon_client,
+        "set_boot_runtime_spec",
+        lambda payload, **kwargs: calls.append(("boot", payload, kwargs))
+        or {"saved": True},
+    )
+    monkeypatch.setattr(
+        daemon_client,
+        "clear_boot_runtime_spec",
+        lambda **kwargs: calls.append(("clear-boot", None, kwargs))
+        or {"cleared": True},
+    )
+
+    result = daemon_client.apply_runtime_intent(
+        {"profile_selector": "perf"},
+        persist_on_startup=False,
+        clear_boot=True,
+        socket_path="/tmp/burnerd.sock",
+    )
+
+    assert result == {"started": True}
+    assert [call[0] for call in calls] == ["resolve", "apply", "clear-boot"]
+
+
 def test_adaptive_runtime_keeps_explicit_old_profile_as_initial_tier(monkeypatch) -> None:
     selected = _curve("balanced-old")
     curves = {

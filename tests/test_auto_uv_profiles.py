@@ -598,8 +598,7 @@ def test_profile_list_uses_one_apply_button() -> None:
     assert not hasattr(profile_list, "adaptive_button")
     assert not hasattr(profile_list, "adaptive_checkbox")
     assert not profile_list.daemonize_button.isEnabled()
-    assert "now and at boot" in profile_list.daemonize_button.toolTip()
-    assert not hasattr(profile_list, "boot_checkbox")
+    assert "Apply on startup" in profile_list.daemonize_button.toolTip()
     assert not hasattr(profile_list, "remove_button")
     restore_tooltip = profile_list.restore_defaults_button.toolTip()
     assert "core and memory offsets" in restore_tooltip
@@ -609,7 +608,7 @@ def test_profile_list_uses_one_apply_button() -> None:
     assert profile_list.daemonize_button.isEnabled()
 
 
-def test_profile_list_has_no_separate_boot_toggle() -> None:
+def test_profile_list_boot_toggle_defaults_off_and_survives_reloads() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -618,8 +617,21 @@ def test_profile_list_has_no_separate_boot_toggle() -> None:
     _ = app
     profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
 
-    assert not hasattr(profile_list, "boot_checkbox")
-    assert not hasattr(profile_list, "profile_at_boot_enabled")
+    # Opt-in boot persistence: unticked until the config (or a pre-existing
+    # boot entry seeding the one-time default) says otherwise.
+    assert not profile_list.persist_on_startup_enabled()
+
+    # Profile reloads must never flip the user's choice — the config key is
+    # the single source of truth (the old toggle was removed over resync
+    # glitches; this pins the fix).
+    profile_list.set_boot_apply_checked(True)
+    profile_list.set_profiles(
+        [{"profile_id": "profile-a", "final_verified": True}],
+    )
+    assert profile_list.persist_on_startup_enabled()
+    profile_list.set_boot_apply_checked(False)
+    profile_list.set_profiles([])
+    assert not profile_list.persist_on_startup_enabled()
 
 
 def test_adaptive_profile_tier_labels_need_distinct_verified_tiers() -> None:

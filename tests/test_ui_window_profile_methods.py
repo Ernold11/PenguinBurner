@@ -198,6 +198,65 @@ def test_delete_selected_profiles(win) -> None:
     window._delete_selected_profiles()
 
 
+def test_delete_running_session_only_profile_restores_stock(win) -> None:
+    # Session-only applies (Apply-on-startup unticked) leave no boot entry, so
+    # deleting the actively running profile must still restore stock instead
+    # of leaving an orphaned curve applied.
+    window, monkeypatch = win
+    window.profile_summaries = [PROFILE]
+    monkeypatch.setattr(window.profile_list, "selected_profile_ids", lambda: ["p1"])
+    monkeypatch.setattr(
+        window.profile_list, "selected_profile_paths", lambda: ["/tmp/p1.json"]
+    )
+    monkeypatch.setattr(
+        actions_mod,
+        "systemd_autostart_profile_info",
+        lambda: {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False},
+    )
+    monkeypatch.setattr(actions_mod, "penguin_burner_runtime_is_active", lambda: True)
+    monkeypatch.setattr(
+        actions_mod,
+        "running_auto_uv_profile_info",
+        lambda: {"selector": "p1", "silent_fan_curve": False, "adaptive_auto_uv": False},
+    )
+    confirmations: list[dict] = []
+    monkeypatch.setattr(
+        MainWindow,
+        "_confirm_profile_delete",
+        lambda self, **kwargs: confirmations.append(kwargs) or False,
+    )
+
+    window._delete_selected_profiles()
+
+    assert confirmations and confirmations[0]["restore_stock"] is True
+
+
+def test_unticking_boot_apply_clears_saved_boot_profile(win, monkeypatch) -> None:
+    import runtime.daemon_client as daemon_client_mod
+
+    window, _mp = win
+    cleared: list[bool] = []
+    saved: list[bool] = []
+    monkeypatch.setattr(
+        window_mod, "persist_on_startup_to_runtime_config", lambda v: saved.append(bool(v))
+    )
+    monkeypatch.setattr(
+        daemon_client_mod, "clear_boot_runtime_spec", lambda **_k: cleared.append(True)
+    )
+
+    window.profile_list.set_boot_apply_checked(True)  # blocked signals: no side effects
+    assert cleared == [] and saved == []
+
+    window.profile_list.boot_apply_checkbox.setChecked(False)
+    assert saved == [False]
+    assert cleared == [True]
+
+    # Ticking arms boot persistence for the next Apply but clears nothing.
+    window.profile_list.boot_apply_checkbox.setChecked(True)
+    assert saved == [False, True]
+    assert cleared == [True]
+
+
 def test_delete_boot_profile_falls_back_to_persisted_stock(win) -> None:
     window, monkeypatch = win
     restored: list[bool] = []

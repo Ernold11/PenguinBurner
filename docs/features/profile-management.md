@@ -17,12 +17,17 @@ Power W, and Memory offset. Sort by any column to compare runs.
 Top bar:
 
 - **Apply** — run the highlighted profile now.
+- **Apply on startup** — also save the applied profile as the boot profile.
+  Off by default: with it unticked, Apply changes the current session only
+  and clears any saved boot profile, so the GPU starts at stock.
 - **Silent fan curve** — use the saved fan curve with the applied profile.
 - **Restore defaults** — return the GPU to stock now and at boot.
 
-Apply always saves the selected profile as the standing boot state. Restore
-defaults saves stock as that state instead. The `penguin-burnerd` service stays
-enabled and available in both cases.
+With **Apply on startup** ticked, Apply saves the selected profile as the
+standing boot state. Restore defaults saves stock as that state instead. The
+`penguin-burnerd` service stays enabled and available in all cases. The toggle
+itself is remembered in `~/.config/PenguinBurner/penguin_burner.toml`
+(`[ui] persist_on_startup`) and survives reinstalls and upgrades.
 
 Right-click a profile:
 

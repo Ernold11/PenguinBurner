@@ -204,6 +204,13 @@ Remove the persistent boot-time service:
 sudo ./penguin_burner.sh --uninstall-systemd-service
 ```
 
+Recovery — reset the GPU to stock now and make stock the boot state, keeping
+saved profiles (works headless, without the GUI):
+
+```bash
+./penguin_burner.sh --restore-stock
+```
+
 By default daemon runtime applies the saved V/F curve and leaves fan control to
 the GPU driver. Add `--silent-fan-curve` to opt into PenguinBurner's saved
 Auto-UV fan curve:

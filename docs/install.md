@@ -15,6 +15,20 @@ debugging but is not the GPU picker backend.
 python -m pip install --user --upgrade penguin-burner
 ```
 
+Fedora 38+, Ubuntu 23.04+, and Debian 12+ mark the system Python as
+externally managed (PEP 668), so the command above fails with
+`error: externally-managed-environment`. On those distros install through
+pipx instead:
+
+```bash
+pipx install penguin-burner   # sudo dnf/apt install pipx first if needed
+```
+
+or use a dedicated virtual environment
+(`python -m venv ~/.venvs/penguin-burner && ~/.venvs/penguin-burner/bin/pip
+install penguin-burner`), or simply prefer the native COPR/AUR/PPA package
+for your distro below.
+
 ## Flatpak
 
 ```bash
@@ -34,6 +48,11 @@ Rust binary) built into the sandbox. The first privileged action installs it
 onto the host at `/usr/libexec/penguin-burnerd` together with its systemd
 service, with a single admin prompt; after that all privileged GPU operations
 go through the running service with no further prompts.
+
+After that very first daemon setup, quit and relaunch the app once: the
+sandbox can only see the daemon socket (`/run/penguin-burnerd.sock`) when it
+already exists at app launch. If GPU actions report the daemon socket as
+missing right after the first setup, the relaunch is the fix.
 
 ## Fedora ([COPR](https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/))
 
@@ -96,3 +115,34 @@ copies the current wheel-bundled `runtime/daemon_bin/penguin-burnerd`, or the
 dev build at `burnerd/target/release/penguin-burnerd`, into that fixed path. An
 existing safe `/usr/libexec` copy is used only when a distro package provides no
 separate source payload.
+
+## Recovery: getting back to stock
+
+Applied tuning persists across reboots only while **Apply on startup** on the
+Profiles tab is ticked (off by default). Unticking it clears any saved boot
+profile immediately, so a plain reboot returns an unticked setup to stock.
+
+If the GPU is in a bad state (or a boot profile misbehaves), reset it to
+stock — now and at boot — without the GUI:
+
+```bash
+penguin-burner-cli --restore-stock
+```
+
+This asks the running root daemon to clear core/memory offsets, release locked
+clocks, restore the factory V/F curve and default power limit, and makes stock
+the boot state. Saved profiles are kept and can be re-applied later.
+
+If a boot profile ever makes the desktop unusable before you can run that
+command, boot once into systemd rescue mode (hold the boot menu, select the
+rescue/recovery entry, or add `systemd.unit=rescue.target` to the kernel
+command line) and run:
+
+```bash
+systemctl disable --now penguin-burnerd.service
+```
+
+That stops the profile from applying at the next normal boot. (The
+`--restore-stock` command needs the daemon service running, so in rescue mode
+either disable the unit as above, or `systemctl start penguin-burnerd.service`
+first and then run `penguin-burner-cli --restore-stock`.)

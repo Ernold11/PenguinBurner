@@ -576,7 +576,18 @@ fn run_fan_control_loop(
     let poll_interval_s = settings.poll_interval_s;
     let vf_reapply_cooldown_s = poll_interval_s.max(10.0);
 
-    let fan_count = backend.fan_count().map_err(|e| e.to_string())?;
+    // Laptop dGPUs commonly return NOT_SUPPORTED for the fan count (the EC
+    // owns the fans). That must not block profiles that never touch fans.
+    let fan_count = match backend.fan_count() {
+        Ok(count) => count,
+        Err(exc) if !fan_control_enabled => {
+            engine_log(&format!(
+                "fan control unavailable (continuing without it): {exc}"
+            ));
+            0
+        }
+        Err(exc) => return Err(exc.to_string()),
+    };
     if fan_control_enabled && fan_count == 0 {
         return Err("GPU reports zero controllable fans".to_string());
     }
