@@ -42,6 +42,10 @@ Auto-UV uses the same UI while testing your GPU.
 python -m pip install --user --upgrade penguin-burner
 ```
 
+On distros whose system Python is externally managed (Fedora 38+,
+Ubuntu 23.04+, Debian 12+), pip refuses with `externally-managed-environment`;
+use `pipx install penguin-burner` there — or a native package below.
+
 Also packaged for [Fedora (COPR)](https://copr.fedorainfracloud.org/coprs/jpietek/penguin-burner/),
 [Arch / CachyOS (AUR)](https://aur.archlinux.org/packages/penguin-burner), and
 [Ubuntu (PPA)](https://launchpad.net/~jpietek/+archive/ubuntu/penguin-burner) —
@@ -74,11 +78,12 @@ prompts.
    wrappers should use the [Flatpak guide](docs/flatpak.md).
 3. Click **Setup Auto Undervolt**, choose a performance bias, and let the scan
    find and verify a stable curve. When it finishes, the verified profile is
-   applied and set as your boot profile automatically.
+   applied automatically.
 4. On the **Profiles** tab you can select any saved profile and click **Apply**
-   to switch to it (applying also makes it the boot profile). Toggle **Silent
-   fan curve** for the quiet fan profile, or **Restore defaults** to return the
-   GPU to stock.
+   to switch to it. Tick **Apply on startup** to also make the applied profile
+   your boot profile — off by default, so a tuned curve is never re-applied at
+   boot unless you opted in. Toggle **Silent fan curve** for the quiet fan
+   profile, or **Restore defaults** to return the GPU to stock.
 5. For per-game tuning — including **Adaptive**, which switches tiers as your
    frame rate changes — use the **Steam** tab to pick a mode per game.
 

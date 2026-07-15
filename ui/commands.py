@@ -364,10 +364,13 @@ def runtime_profile_command(
     silent_fan_curve: bool = False,
     adaptive_auto_uv: bool = False,
     gpu_index: int | None = None,
+    persist_on_startup: bool,
 ) -> list[str]:
-    # Apply always targets the already-root daemon and always persists the
-    # runtime for boot (a standing action is complete: Apply persists the
-    # selected profile, Restore defaults persists the stock runtime).
+    # Apply always targets the already-root daemon. Boot persistence follows
+    # the user's "Apply on startup" toggle: on, the applied runtime is saved
+    # as the boot profile; off, the apply is session-only and any saved boot
+    # profile is cleared so boot state always matches the visible toggle.
+    # Restore defaults keeps persisting the stock runtime for boot.
     if action != "daemonize":
         raise ValueError(f"unknown runtime profile action: {action}")
     intent = {
@@ -381,7 +384,7 @@ def runtime_profile_command(
         "-m",
         "runtime.daemon_client",
         "apply-runtime-intent",
-        "--boot",
+        "--boot" if persist_on_startup else "--clear-boot",
         json.dumps(intent, separators=(",", ":")),
     ]
 

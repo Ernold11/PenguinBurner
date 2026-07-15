@@ -279,6 +279,15 @@ def parse_arguments(argv):
         help="Print PenguinBurner hardware daemon status and exit.",
     )
     daemon_group.add_argument(
+        "--restore-stock",
+        action="store_true",
+        help=(
+            "Recovery: reset the GPU to stock now and make stock the boot "
+            "state through the running penguin-burnerd service. Saved "
+            "profiles are kept. Works without the GUI."
+        ),
+    )
+    daemon_group.add_argument(
         "--auto-uv-profile",
         default="",
         help=(

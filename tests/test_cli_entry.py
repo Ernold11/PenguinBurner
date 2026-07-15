@@ -110,6 +110,33 @@ def test_dispatch_cli_rejects_adaptive_systemd_install_with_no_tiers(
     )
 
 
+def test_dispatch_cli_restore_stock_persists_stock_for_boot(monkeypatch) -> None:
+    applied = []
+    monkeypatch.setattr(
+        entry,
+        "apply_runtime_intent",
+        lambda intent, **kwargs: applied.append((intent, kwargs))
+        or {"started": True, "runtime_mode": "stock"},
+    )
+
+    exit_code = entry.dispatch_cli(
+        program_file="/tmp/penguin_burner.py",
+        main_callback=lambda *_args, **_kwargs: None,
+        argv=["--restore-stock"],
+    )
+
+    assert exit_code == 0
+    assert applied == [
+        (
+            {"profile_selector": "__stock__"},
+            {
+                "persist_on_startup": True,
+                "socket_path": entry.DEFAULT_DAEMON_SOCKET,
+            },
+        )
+    ]
+
+
 def test_dispatch_cli_daemonize_applies_through_running_daemon(monkeypatch) -> None:
     applied = []
     monkeypatch.setattr(

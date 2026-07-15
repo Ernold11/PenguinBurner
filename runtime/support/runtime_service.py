@@ -54,6 +54,7 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
     uninstall_systemd_service = False
     migrate_to_daemon = False
     daemon_status_requested = False
+    restore_stock = False
     journal_hours = default_journal_hours
     passthrough = []
     index = 0
@@ -79,6 +80,10 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
             daemon_status_requested = True
             index += 1
             continue
+        if arg == "--restore-stock":
+            restore_stock = True
+            index += 1
+            continue
         if arg == "--journal-hours":
             if index + 1 >= len(argv):
                 raise RuntimeError("--journal-hours requires a value")
@@ -97,12 +102,20 @@ def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
         raise RuntimeError(
             "choose either --install-systemd-service or --uninstall-systemd-service"
         )
+    if restore_stock and (
+        daemonize or install_systemd_service or uninstall_systemd_service or migrate_to_daemon
+    ):
+        raise RuntimeError(
+            "--restore-stock is a standalone recovery command; do not combine "
+            "it with --daemonize or service install/uninstall/migrate flags"
+        )
     return {
         "daemonize": daemonize,
         "install_systemd_service": install_systemd_service,
         "uninstall_systemd_service": uninstall_systemd_service,
         "migrate_to_daemon": migrate_to_daemon,
         "daemon_status": daemon_status_requested,
+        "restore_stock": restore_stock,
         "journal_hours": journal_hours,
         "passthrough": passthrough,
     }

@@ -109,12 +109,21 @@ pub(super) fn reset_gpu_to_stock(
         )),
         Err(exc) => failures.push(format!("clock offsets: {exc}")),
     }
+    // Best-effort: mobile boards expose a readable default limit while
+    // rejecting the manual setter, and a rejected setter also means the limit
+    // was never moved off its default. A failure here must not fail the
+    // reset, or Auto-UV startup and the stock fallback break on that hardware.
     let default_w = backend.query_power_limits().power_limit_default_w;
     if let Some(default_w) = default_w {
         if default_w != 0 {
             if let Err(exc) = backend.apply_power_limit_w(default_w) {
-                failures.push(format!("power limit: {exc}"));
+                log(&format!(
+                    "keep-stock: default power limit restore skipped: {exc}"
+                ));
             } else {
+                // The setter succeeded, so this is not the fixed-limit mobile
+                // case: a readback that still shows a tuned limit is a real
+                // incomplete reset and stays fatal.
                 let readback = backend.query_power_limits();
                 if readback.power_limit_w != Some(default_w)
                     && readback.enforced_power_limit_w != Some(default_w)
@@ -453,6 +462,49 @@ mod tests {
                     offsets: vec![(5, 0)]
                 },
             ]
+        );
+    }
+
+    /// Mobile boards expose a readable default power limit while rejecting the
+    /// manual setter; the stock reset must still succeed and zero the V/F
+    /// curve, or Auto-UV startup and the stock fallback break on laptops.
+    #[test]
+    fn stock_reset_tolerates_rejected_power_limit_setter() {
+        let mut mock = MockGpu::new();
+        mock.vf_available = true;
+        mock.power_limits.power_limit_default_w = Some(115);
+        mock.power_limits.power_limit_w = Some(115);
+        mock.vf_points = vec![crate::gpu::VfPoint {
+            index: 5,
+            type_: 0,
+            voltage_based: 1,
+            ..Default::default()
+        }];
+        mock.inject_failure(
+            "apply_power_limit_w",
+            crate::gpu::GpuError::nvml_with_text(
+                "nvmlDeviceSetPowerManagementLimit",
+                3,
+                "Not Supported",
+            ),
+        );
+        let mut messages = Vec::new();
+        let mut log = |msg: &str| messages.push(msg.to_string());
+        let result =
+            configure_runtime_spec_policy(&mock, true, RuntimeMode::Stock, None, &mut log).unwrap();
+        assert_eq!(result.active_vf_curve_source.as_deref(), Some("stock"));
+        let ops = mock.recorded();
+        assert!(
+            ops.contains(&MockOp::ApplyVfOffsets {
+                offsets: vec![(5, 0)]
+            }),
+            "V/F zero plan must still apply when the power limit setter is rejected: {ops:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|msg| msg.contains("default power limit restore skipped")),
+            "the skipped power limit restore must be logged: {messages:?}"
         );
     }
 

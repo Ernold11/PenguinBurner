@@ -247,9 +247,15 @@ def apply_runtime_intent(
     intent: dict[str, Any],
     *,
     persist_on_startup: bool = False,
+    clear_boot: bool = False,
     socket_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Resolve and apply a user runtime intent through the root daemon."""
+    """Resolve and apply a user runtime intent through the root daemon.
+
+    ``persist_on_startup`` saves the applied spec as the boot profile;
+    ``clear_boot`` removes any saved boot profile so the apply is
+    session-only. With neither flag the boot entry is left untouched.
+    """
     from runtime.runtime_spec import build_runtime_spec_from_intent
 
     resolved_socket = _resolved_socket_path(socket_path)
@@ -257,6 +263,8 @@ def apply_runtime_intent(
     result = apply_runtime_spec(spec, socket_path=resolved_socket)
     if persist_on_startup:
         set_boot_runtime_spec(spec, socket_path=resolved_socket)
+    elif clear_boot:
+        clear_boot_runtime_spec(socket_path=resolved_socket)
     return result
 
 
@@ -748,6 +756,7 @@ def main(argv: list[str] | None = None) -> int:
     start.add_argument("options_json")
     runtime = subparsers.add_parser("apply-runtime-intent")
     runtime.add_argument("--boot", action="store_true")
+    runtime.add_argument("--clear-boot", action="store_true")
     runtime.add_argument("intent_json")
     subparsers.add_parser("migrate-legacy-boot-intent")
     runtime_spec = subparsers.add_parser("apply-runtime-spec")
@@ -822,6 +831,7 @@ def main(argv: list[str] | None = None) -> int:
             result = apply_runtime_intent(
                 intent,
                 persist_on_startup=bool(args.boot),
+                clear_boot=bool(args.clear_boot),
                 socket_path=args.socket,
             )
             print(

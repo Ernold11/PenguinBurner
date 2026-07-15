@@ -263,6 +263,7 @@ def test_apply_selected_profile_with_persistence_stays_on_daemon_path(win) -> No
     )
     window.command_controller = _FakeController()
 
+    window.profile_list.set_boot_apply_checked(True)
     window._run_profiles()
 
     assert captured
@@ -270,6 +271,41 @@ def test_apply_selected_profile_with_persistence_stays_on_daemon_path(win) -> No
     assert args == ("daemonize",)
     assert kwargs["adaptive_auto_uv"] is False
     assert kwargs["profile_selector"] == "perf"
+    assert kwargs["persist_on_startup"] is True
+
+
+def test_apply_without_boot_toggle_is_session_only(win) -> None:
+    window, monkeypatch = win
+    captured: list[tuple[tuple, dict]] = []
+    window.profile_summaries = [
+        {"profile_id": "perf", "final_verified": True, "profile_tier": "Performance"},
+    ]
+    monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: False)
+    monkeypatch.setattr(window.profile_list, "selected_profile_id", lambda: "perf")
+    monkeypatch.setattr(
+        actions_mod,
+        "profile_for_selector",
+        lambda _profiles, _selector: window.profile_summaries[-1],
+    )
+    monkeypatch.setattr(
+        actions_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        actions_mod,
+        "runtime_profile_command",
+        lambda *args, **kwargs: captured.append((args, kwargs)) or ["daemon-client"],
+    )
+    window.command_controller = _FakeController()
+
+    window.profile_list.set_boot_apply_checked(False)
+    window._run_profiles()
+
+    assert captured
+    _args, kwargs = captured[0]
+    assert kwargs["persist_on_startup"] is False
+    assert "Autostart: No" in window.controls.status_label.text()
 
 
 def test_restore_defaults_persists_stock_now_and_at_boot(win) -> None:

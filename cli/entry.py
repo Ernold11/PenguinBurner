@@ -50,6 +50,34 @@ def dispatch_cli(
             status = daemon_status(socket_path=DEFAULT_DAEMON_SOCKET)
             print(json.dumps(status, indent=2), flush=True)
             return 0
+        if runtime_flags["restore_stock"]:
+            # Headless recovery: reset the GPU to stock now and make stock the
+            # boot state. Kept GUI-independent so it works when a saved
+            # profile misbehaves or the desktop session is unusable.
+            from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
+
+            try:
+                _apply_runtime_intent_through_daemon(
+                    {"profile_selector": STOCK_PROFILE_SELECTOR},
+                    persist_on_startup=True,
+                )
+            except Exception as exc:
+                print(
+                    "restore-stock could not reach the penguin-burnerd "
+                    f"service: {exc}\n"
+                    "Start the service first:  sudo systemctl start "
+                    "penguin-burnerd.service\n"
+                    "Or keep any saved profile from applying at boot at all:  "
+                    "sudo systemctl disable --now penguin-burnerd.service",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return 1
+            log(
+                "GPU restored to stock; stock is now the boot state. "
+                "Saved profiles were kept and can be re-applied from the GUI."
+            )
+            return 0
         if runtime_flags["migrate_to_daemon"]:
             migrate_to_daemon_service(
                 program_file,
@@ -93,8 +121,19 @@ def _apply_runtime_through_daemon(
     *,
     persist_on_startup: bool,
 ) -> None:
-    result = apply_runtime_intent(
+    _apply_runtime_intent_through_daemon(
         runtime_intent_from_argv(runtime_argv),
+        persist_on_startup=persist_on_startup,
+    )
+
+
+def _apply_runtime_intent_through_daemon(
+    intent: dict,
+    *,
+    persist_on_startup: bool,
+) -> None:
+    result = apply_runtime_intent(
+        intent,
         persist_on_startup=bool(persist_on_startup),
         socket_path=DEFAULT_DAEMON_SOCKET,
     )
