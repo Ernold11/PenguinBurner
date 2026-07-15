@@ -183,6 +183,11 @@ def test_start_scan_switches_to_auto_uv_tab(win) -> None:
 
 def test_start_scan_gpu_persist_error(win) -> None:
     window, monkeypatch = win
+    monkeypatch.setattr(
+        window_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: True,
+    )
     monkeypatch.setattr(window_mod, "select_scan_tuning", lambda **k: {"gpu_index": 0})
 
     def _boom(_idx):
