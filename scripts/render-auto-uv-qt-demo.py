@@ -41,6 +41,9 @@ from ui.window import MainWindow  # noqa: E402
 
 FPS = 7
 DURATION_S = 24.0
+# Mobile-miniature intro: how long the completed three-curve payoff holds as
+# the GIF's opening (and therefore its static preview frame).
+PAYOFF_HOLD_S = 1.3
 CAPTURE_SIZE = (1600, 900)
 OUTPUT_SIZE = (1280, 720)
 DEFAULT_OUTPUT = REPO_ROOT / "docs/assets/auto-uv-full-scan-demo.gif"
@@ -869,9 +872,25 @@ def render(output_path: Path) -> None:
                 frame_dir / f"frame-{frame_index:03d}.png",
             )
 
-        # Preserve a static fallback/preview from the held completion state.
+        # GitHub mobile does not autoplay GIFs: the static miniature is the
+        # FIRST frame. Open on the scan-complete payoff (all three verified
+        # curves) held briefly, so the preview sells the result instead of a
+        # single gray baseline curve; the scan story then plays from the top.
+        payoff_index = int(PROFILES_REVEAL_S * FPS) - 1
+        hold_frames = int(round(PAYOFF_HOLD_S * FPS))
+        for index in range(frame_count - 1, -1, -1):
+            (frame_dir / f"frame-{index:03d}.png").rename(
+                frame_dir / f"frame-{index + hold_frames:03d}.png"
+            )
+        for index in range(hold_frames):
+            shutil.copy2(
+                frame_dir / f"frame-{payoff_index + hold_frames:03d}.png",
+                frame_dir / f"frame-{index:03d}.png",
+            )
+
+        # Static fallback/preview: the same completion payoff.
         poster_path = output_path.with_name(output_path.stem + "-poster.png")
-        shutil.copy2(frame_dir / f"frame-{frame_count - 1:03d}.png", poster_path)
+        shutil.copy2(frame_dir / f"frame-{payoff_index + hold_frames:03d}.png", poster_path)
         _encode_gif(frame_dir, output_path)
     finally:
         window.window.close()
