@@ -807,7 +807,9 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
     log(f"Installed and started {unit_path.name} at {unit_path}.")
 
     if legacy_state["exists"]:
-        _disable_legacy_service_after_daemon_migration(log=log)
+        # The new daemon answered status above; the legacy unit is stopped,
+        # disabled, AND its file removed so nothing can ever start it again.
+        _clear_existing_penguin_burner_unit(log=log, reason="daemon migration")
         if legacy_state["enabled"] and autostart_argv:
             log(
                 "Migrated enabled PenguinBurner.service autostart intent to "
@@ -895,30 +897,6 @@ def _wait_for_daemon_status(socket_path) -> None:
             last_error = exc
             time.sleep(0.1)
     raise RuntimeError(f"PenguinBurner daemon did not become reachable: {last_error}")
-
-
-def _disable_legacy_service_after_daemon_migration(*, log) -> None:
-    unit_name = f"{LEGACY_PENGUIN_BURNER_UNIT_NAME}.service"
-    result = subprocess.run(
-        [SYSTEMCTL, "disable", "--now", unit_name],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=stable_subprocess_env(),
-        check=False,
-    )
-    if result.returncode == 0:
-        log(f"Stopped and disabled legacy {unit_name} after daemon migration.")
-    subprocess.run(
-        [SYSTEMCTL, "reset-failed", unit_name],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=stable_subprocess_env(),
-        check=False,
-    )
 
 
 def uninstall_systemd_service(*, log):
