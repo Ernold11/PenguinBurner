@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.7.5
+Version:        0.7.6
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -107,6 +107,13 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Wed Jul 15 2026 PenguinBurner contributors <noreply@github.com> - 0.7.6-1
+- Install or update the hardware service before the Auto-UV setup dialog
+  opens, instead of showing a generic GPU with no limits.
+- Name the unreachable hardware service in the setup dialog and how to fix
+  it.
+- Remove the legacy PenguinBurner.service unit file during migration.
+
 * Wed Jul 15 2026 PenguinBurner contributors <noreply@github.com> - 0.7.5-1
 - Add the opt-in "Apply on startup" toggle; applies are session-only by
   default and a new --restore-stock recovery command resets to stock.

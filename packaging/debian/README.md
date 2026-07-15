@@ -48,7 +48,7 @@ are never committed to Git.
 From a clean checkout containing the release tag and Debian signing key:
 
 ```bash
-scripts/publish-ppa.sh 0.7.5
+scripts/publish-ppa.sh 0.7.6
 ```
 
 That one command builds and validates both Questing and Resolute source
