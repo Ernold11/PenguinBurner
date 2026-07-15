@@ -4,8 +4,6 @@
 Python application decides what the user asked for; the Rust daemon validates
 and executes that resolved intent without rereading user profile files.
 
-The detailed migration decisions are recorded in
-`docs/superpowers/specs/2026-07-10-rust-daemon-simplification-design.md`.
 
 ## Boundary
 

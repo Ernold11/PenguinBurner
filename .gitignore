@@ -32,3 +32,5 @@ byobu-history.txt
 third_party/
 # Local agent skills and settings stay out of Git.
 .claude/
+# The generator writes a local poster preview next to the GIF; only the GIF ships.
+docs/assets/auto-uv-full-scan-demo-poster.png

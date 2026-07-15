@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from drivers.nvidia.nvml_gpu_policy import fixed_power_limit_excluded_by_identity
-from drivers.nvidia.nvml_gpu_policy import power_limit_setter_probe_risky
 
 
 @pytest.mark.parametrize(
@@ -15,8 +14,8 @@ from drivers.nvidia.nvml_gpu_policy import power_limit_setter_probe_risky
         "NVIDIA GeForce RTX 2080 with Max-Q Design",
     ],
 )
-def test_power_limit_setter_probe_skips_mobile_gpu_names(gpu_name: str) -> None:
-    assert power_limit_setter_probe_risky(gpu_name=gpu_name, power_limits={}) is True
+def test_fixed_power_limit_excluded_for_mobile_gpu_names(gpu_name: str) -> None:
+    assert fixed_power_limit_excluded_by_identity(gpu_name=gpu_name) is True
 
 
 @pytest.mark.parametrize(
@@ -28,17 +27,7 @@ def test_power_limit_setter_probe_skips_mobile_gpu_names(gpu_name: str) -> None:
         "2D58",
     ],
 )
-def test_power_limit_setter_probe_skips_mobile_pci_ids(
-    pci_device_id: str,
-) -> None:
-    assert (
-        power_limit_setter_probe_risky(
-            gpu_name="NVIDIA GeForce RTX 5060",
-            pci_device_id=pci_device_id,
-            power_limits={},
-        )
-        is True
-    )
+def test_fixed_power_limit_excluded_for_mobile_pci_ids(pci_device_id: str) -> None:
     assert (
         fixed_power_limit_excluded_by_identity(
             gpu_name="NVIDIA GeForce RTX 5060",
@@ -48,16 +37,11 @@ def test_power_limit_setter_probe_skips_mobile_pci_ids(
     )
 
 
-def test_power_limit_setter_probe_allows_desktop_class_limits() -> None:
+def test_fixed_power_limit_allowed_for_desktop_identity() -> None:
     assert (
-        power_limit_setter_probe_risky(
+        fixed_power_limit_excluded_by_identity(
             gpu_name="NVIDIA GeForce RTX 5080",
-            power_limits={
-                "power_limit_w": 360,
-                "power_limit_default_w": 360,
-                "power_limit_min_w": 300,
-                "power_limit_max_w": 390,
-            },
+            pci_device_id="0x2C0210DE",
         )
         is False
     )

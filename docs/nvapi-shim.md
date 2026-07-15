@@ -1,7 +1,7 @@
 # NVAPI latency shim
 
 > **Status 2026-07-01: VALIDATED live; merged to `main`.** The shim is the
-> chosen direction (see `docs/nvapi-shim-release-plan.md`). Confirmed
+> chosen direction. Confirmed
 > end-to-end on **Talos 2** (835960) and **RE9 / Resident Evil Requiem**
 > (3764200) — both DX12 + Streamline + DLSS-G frame generation, on **stock
 > proton-cachyos** (no Proton/vkd3d patch).
