@@ -290,8 +290,8 @@ similar tools on Windows. Performance is optional anyway — OC is not mandatory
 
 PenguinBurner was built through agentic AI development, guided by human ideas and
 direction. The implementation, research, and reverse engineering were driven
-primarily by **GPT 5.5** (OpenAI) and **Claude Opus** (Anthropic), with brief use
-of **Fable** (Anthropic).
+primarily by **GPT 5.5** (OpenAI) and **Claude Opus** (Anthropic), recently
+most of the codebase (new Rust daemon!) was rewritten with **Fable** (Anthropic).
 
 - **NVIDIA** — for the graphics technology that, unfortunately, lacks some
   features and polish on Linux.
