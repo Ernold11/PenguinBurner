@@ -20,14 +20,14 @@ outdir="$(cd "$outdir" && pwd)"
 
 tarball="$outdir/$name-$version.tar.gz"
 
-tar \
-    --exclude=.git \
-    --exclude=.copr \
-    --exclude=dist \
-    --exclude=build \
-    --exclude='*.egg-info' \
-    --transform "s,^.,$name-$version," \
-    -czf "$tarball" .
+# Archive exactly the committed tree: a working-directory tar can sweep
+# untracked local files (vendored checkouts, scratch data) into a published
+# SRPM — both a multi-gigabyte tarball and a disclosure hazard.
+git archive \
+    --format=tar.gz \
+    --prefix="$name-$version/" \
+    --output="$tarball" \
+    HEAD
 
 rpmbuild -bs packaging/rpm/penguin-burner.spec \
     --define "_sourcedir $outdir" \
