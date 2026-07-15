@@ -217,18 +217,10 @@ Add the overlay flag when you want the readout visible immediately:
 PB_OVERLAY=1 PENGUIN_BURNER %command%
 ```
 
-Native Vulkan markers are the default latency source. For games whose latency
-markers only reach dxvk-nvapi, opt in explicitly:
-
-```text
-PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%
-```
-
-PenguinBurner auto-detects patched dxvk-nvapi/Proton nvapi builds and uses
-`DXVK_NVAPI_LATENCY_MARKER_LOG=1`, which emits marker-only records instead of
-full trace. With stock dxvk-nvapi it falls back to `DXVK_NVAPI_LOG_LEVEL=trace`,
-but only for games launched with `PB_INGAME_LATENCY=1`; the main runtime handles
-the data path without a separate helper service.
+In-game latency turns on with the overlay — no extra flag. The NVAPI shim is
+deployed into the Proton prefix automatically and streams Reflex markers (it
+works under frame generation); native and prefix-less games fall back to the
+Vulkan layer's marker tap. Opt out with `PB_INGAME_LATENCY=0`.
 
 Some games do not expose usable latency markers at all. PenguinBurner can load
 the telemetry layer and parse marker streams when they exist, but it cannot

@@ -11,29 +11,16 @@ path.
 
 ## Launch Paths
 
-Use the wrapper for the normal native Vulkan path:
-
-```text
-PENGUIN_BURNER %command%
-```
-
-Enable the overlay immediately:
+Wrap the game and enable the overlay:
 
 ```text
 PB_OVERLAY=1 PENGUIN_BURNER %command%
 ```
 
-Use the dxvk-nvapi marker fallback only when the normal native path does not
-produce a latency signal and the game is expected to support Reflex/NVAPI
-markers:
-
-```text
-PB_INGAME_LATENCY=1 PENGUIN_BURNER %command%
-```
-
-With `PB_INGAME_LATENCY=1`, the drop-in NVAPI shim streams the Reflex markers
-to the wrapper's FIFO; without a Proton prefix the Vulkan layer's own marker
-tap covers the non-FG case.
+In-game latency turns on with the overlay — no extra flag. The NVAPI shim is
+deployed into the Proton prefix automatically and streams Reflex markers to the
+wrapper's FIFO; native and prefix-less games fall back to the Vulkan layer's own
+marker tap. Opt out with `PB_INGAME_LATENCY=0`.
 
 ## What PenguinBurner Can Force
 
@@ -53,13 +40,20 @@ marker stream at all.
 
 ## Latency Sources
 
-### Native Vulkan Markers
+### NVAPI Shim (default, Proton games)
 
-The default source is PenguinBurner's native Vulkan implicit layer. It runs
-inside the game process and observes Vulkan low-latency calls such as
-`vkSetLatencyMarkerNV` and `vkGetLatencyTimingsNV`.
+The default source is the drop-in NVAPI shim. It taps the Reflex markers above
+vkd3d's owner-gate — so it still works under frame generation — and streams them
+to the wrapper's FIFO. The bridge pairs markers by frame ID and emits
+`marker-proxy` timing samples; no dxvk-nvapi fork, trace, or marker log is
+involved.
 
-When the game emits useful markers, the layer publishes timing samples such as:
+### Native Vulkan Markers (fallback)
+
+Games without a Proton prefix (and the single-swapchain / non-FG case) fall back
+to PenguinBurner's native Vulkan implicit layer, which observes
+`vkSetLatencyMarkerNV` / `vkGetLatencyTimingsNV` inside the game process and
+publishes samples such as:
 
 - `input_to_present_us`
 - `sim_to_present_us`
@@ -67,21 +61,8 @@ When the game emits useful markers, the layer publishes timing samples such as:
 - `submit_to_present_us`
 - `render_submit_us`
 
-The daemon aggregates recent samples and publishes `latency_p95_ms`. The overlay
-renders that as `LAT`.
-
-### dxvk-nvapi Marker Fallback
-
-Some games send Reflex marker information through dxvk-nvapi but do not expose
-it as native Vulkan marker calls in a way PenguinBurner's layer can read.
-`PB_INGAME_LATENCY=1` enables the fallback marker bridge for those games.
-
-The bridge reads dxvk-nvapi marker records from an in-memory FIFO, pairs frame
-markers by frame ID, and emits the same kind of `marker-proxy` timing samples
-that the daemon already understands.
-
-This path is a fallback, not a better default. It depends on log/marker output
-from dxvk-nvapi and can be noisier than direct native Vulkan telemetry.
+Either way the daemon aggregates recent samples and publishes `latency_p95_ms`,
+which the overlay renders as `LAT`.
 
 ### Display Tail
 
@@ -125,7 +106,8 @@ Missing `LAT` is expected for some games. Common causes:
 
 - The game does not implement Reflex/NVAPI/Vulkan latency markers.
 - The game implements them on Windows but not on the Proton path being used.
-- The marker stream reaches dxvk-nvapi but not the native Vulkan layer.
+- The game exposes no Reflex/NVAPI markers for the shim to tap and no native
+  Vulkan low-latency calls for the layer to read.
 - The game emits only partial markers, for example render-submit without input
   sample or present markers.
 - `VK_NV_low_latency2` or `vkGetLatencyTimingsNV` is unavailable or returns an

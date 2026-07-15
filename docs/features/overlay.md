@@ -61,16 +61,15 @@ raw-output, and frame-generation detection rules.
 
 ## PC latency meter
 
-The **LAT** field shows PC latency in milliseconds from the native Vulkan marker
-path: the render tail plus the present-to-scanout display tail when that tail is
-supported. Where the display tail isn't available, it shows render latency
-alone.
+The **LAT** field shows PC latency in milliseconds: the render tail plus the
+present-to-scanout display tail when that tail is supported. Where the display
+tail isn't available, it shows render latency alone. It turns on with the
+overlay, sourced from the NVAPI shim on Proton games and the native Vulkan layer
+otherwise.
 
 - Set `PENGUIN_BURNER_LATENCY_DISPLAY=0` to show render latency only.
-- Set `PB_INGAME_LATENCY=1` before `PENGUIN_BURNER` only when explicitly testing
-  the dxvk-nvapi marker path. New dxvk-nvapi builds use marker-only logging;
-  stock builds automatically fall back to full trace so public installs still
-  work.
+- Set `PB_INGAME_LATENCY=0` to turn the latency field off while keeping the
+  overlay.
 
 Some games do not expose usable latency markers. In those games PenguinBurner
 keeps showing FPS and GPU telemetry, but omits `LAT` instead of inventing a
