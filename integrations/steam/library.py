@@ -21,6 +21,18 @@ STATE_FLAG_UNINSTALLING = 1
 
 _ICON_MAX_BYTES = 65536
 
+_NATIVE_LINUX_RUNTIME_PREFIXES = (
+    "steamlinuxruntime",
+    "legacysteamruntime",
+)
+
+
+def _is_native_linux_runtime(tool_name: str) -> bool:
+    normalized = tool_name.strip().casefold().replace("_", "").replace("-", "")
+    return any(
+        normalized.startswith(prefix) for prefix in _NATIVE_LINUX_RUNTIME_PREFIXES
+    )
+
 
 @dataclass(frozen=True)
 class InstalledSteamGame:
@@ -31,7 +43,16 @@ class InstalledSteamGame:
     state_flags: int
     last_played: int
     icon_path: Path | None
+    # Explicit per-game override from config.vdf. Empty means "Steam default",
+    # not "native Linux".
     compat_tool: str
+    # Effective runtime from SteamClient.Apps.RegisterForAppDetails. None means
+    # the live Steam API did not answer, while an empty string is Steam's
+    # explicit report that no compatibility tool is active.
+    effective_compat_tool: str | None = None
+    effective_compat_tool_display: str = ""
+    effective_compat_tool_priority: int = 0
+    effective_platforms: tuple[str, ...] = ()
 
     @property
     def ready(self) -> bool:
@@ -41,7 +62,33 @@ class InstalledSteamGame:
 
     @property
     def is_proton(self) -> bool:
-        return bool(self.compat_tool)
+        tool_name = self.effective_compat_tool
+        if tool_name is None:
+            tool_name = self.compat_tool
+        return bool(tool_name) and not _is_native_linux_runtime(tool_name)
+
+    @property
+    def runtime_known(self) -> bool:
+        return self.effective_compat_tool is not None
+
+    @property
+    def is_native_linux(self) -> bool:
+        tool_name = self.effective_compat_tool
+        if tool_name is None:
+            return False
+        return not tool_name or _is_native_linux_runtime(tool_name)
+
+    @property
+    def runtime_label(self) -> str:
+        if self.is_native_linux:
+            return "Native Linux"
+        if self.is_proton:
+            return "Proton"
+        return "Runtime unknown"
+
+    @property
+    def effective_compat_tool_label(self) -> str:
+        return self.effective_compat_tool_display or self.effective_compat_tool or ""
 
 
 def installed_steam_games(home: Path | None = None) -> tuple[InstalledSteamGame, ...]:

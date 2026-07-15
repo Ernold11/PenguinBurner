@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 from integrations.steam.library import (
@@ -86,6 +87,12 @@ def test_reads_compat_tool_mapping(tmp_path: Path) -> None:
     games = {game.app_id: game for game in installed_steam_games(tmp_path)}
     assert games["10"].is_proton and games["10"].compat_tool == "proton_experimental"
     assert not games["20"].is_proton
+    assert not games["20"].runtime_known
+    assert not games["20"].is_native_linux
+
+    steam_reported_native = replace(games["20"], effective_compat_tool="")
+    assert steam_reported_native.runtime_known
+    assert steam_reported_native.is_native_linux
 
 
 def test_reads_last_played_timestamp_from_manifest(tmp_path: Path) -> None:

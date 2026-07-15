@@ -15,6 +15,7 @@ read-back; callers fall back to the Steam-stopped localconfig path.
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 import hashlib
 import http.client
 import json
@@ -44,6 +45,21 @@ _WS_ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 class SteamCdpError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class SteamAppDetails:
+    """Runtime facts reported by Steam for one installed app.
+
+    ``compat_tool_name`` is Steam's effective choice, including a default
+    Proton selected without a per-game ``CompatToolMapping`` override.
+    """
+
+    launch_options: str
+    compat_tool_name: str
+    compat_tool_display_name: str
+    compat_tool_priority: int
+    platforms: tuple[str, ...]
 
 
 def cdp_marker_path(home: Path | None = None) -> Path | None:
@@ -347,6 +363,66 @@ class SteamCdpClient:
             f" {json.dumps(str(tool_name))})"
         )
 
+    def app_details(
+        self,
+        app_id: str,
+        *,
+        timeout_s: float = 2.0,
+    ) -> SteamAppDetails | None:
+        """Read launch options and the effective compatibility tool from Steam.
+
+        This is the same per-app details subscription used by Steam's own
+        Properties UI. In particular, ``strCompatToolName`` remains populated
+        when Steam selected Proton through its global/default policy and no
+        explicit per-game mapping exists on disk.
+        """
+        timeout_ms = max(100, int(timeout_s * 1000))
+        value = self.evaluate(
+            "new Promise((resolve) => {"
+            "  let done = false;"
+            "  const finish = (value) => { if (!done) { done = true; resolve(value); } };"
+            f"  const reg = SteamClient.Apps.RegisterForAppDetails({int(app_id)},"
+            "    (details) => {"
+            "      try { reg.unregister(); } catch (err) {}"
+            "      finish(details ? {"
+            "        launchOptions: typeof details.strLaunchOptions === 'string'"
+            "          ? details.strLaunchOptions : '',"
+            "        compatToolName: typeof details.strCompatToolName === 'string'"
+            "          ? details.strCompatToolName : '',"
+            "        compatToolDisplayName:"
+            "          typeof details.strCompatToolDisplayName === 'string'"
+            "            ? details.strCompatToolDisplayName : '',"
+            "        compatToolPriority: Number.isFinite(details.nCompatToolPriority)"
+            "          ? details.nCompatToolPriority : 0,"
+            "        platforms: Array.isArray(details.vecPlatforms)"
+            "          ? details.vecPlatforms : []"
+            "      } : null);"
+            "    });"
+            f"  setTimeout(() => {{ try {{ reg.unregister(); }} catch (err) {{}}"
+            f"    finish(null); }}, {timeout_ms});"
+            "})"
+        )
+        if not isinstance(value, dict):
+            return None
+        platforms = value.get("platforms")
+        try:
+            priority = int(value.get("compatToolPriority") or 0)
+        except (TypeError, ValueError):
+            priority = 0
+        return SteamAppDetails(
+            launch_options=str(value.get("launchOptions") or ""),
+            compat_tool_name=str(value.get("compatToolName") or ""),
+            compat_tool_display_name=str(value.get("compatToolDisplayName") or ""),
+            compat_tool_priority=priority,
+            platforms=tuple(
+                str(platform).strip().lower()
+                for platform in platforms
+                if str(platform).strip()
+            )
+            if isinstance(platforms, list)
+            else (),
+        )
+
     def terminate_app(self, app_id: str) -> None:
         """Ask Steam to shut the running game down (the Stop button in
         Steam's own UI). TerminateApp takes the gameid as a string; for
@@ -361,22 +437,8 @@ class SteamCdpClient:
         The in-page timeout must stay below the client's socket timeout, or
         the socket read gives up before the JS fallback can resolve null.
         """
-        timeout_ms = max(100, int(timeout_s * 1000))
-        value = self.evaluate(
-            "new Promise((resolve) => {"
-            "  let done = false;"
-            "  const finish = (value) => { if (!done) { done = true; resolve(value); } };"
-            f"  const reg = SteamClient.Apps.RegisterForAppDetails({int(app_id)},"
-            "    (details) => {"
-            "      try { reg.unregister(); } catch (err) {}"
-            "      finish(details && typeof details.strLaunchOptions === 'string'"
-            "        ? details.strLaunchOptions : null);"
-            "    });"
-            f"  setTimeout(() => {{ try {{ reg.unregister(); }} catch (err) {{}}"
-            f"    finish(null); }}, {timeout_ms});"
-            "})"
-        )
-        return value if isinstance(value, str) else None
+        details = self.app_details(app_id, timeout_s=timeout_s)
+        return details.launch_options if details is not None else None
 
     def set_app_launch_options(
         self,

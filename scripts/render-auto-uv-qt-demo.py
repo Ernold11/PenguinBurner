@@ -216,20 +216,21 @@ class DemoSteamGame:
     mode: str = "adaptive"
     target_fps: float | None = None
     compat_tool: str = "proton-cachyos-11.0-20260601-slr-x86_64"
+    effective_compat_tool: str | None = None
 
 
 # A deterministic snapshot of the current installed-game list and its visible
 # per-game choices. No Steam files are read when this renderer is run.
 DEMO_STEAM_GAMES = (
     DemoSteamGame("1771300", "Kingdom Come: Deliverance II", 1784063542, target_fps=125.0, compat_tool="proton_experimental"),
-    DemoSteamGame("2531310", "The Last of Us™ Part II Remastered", 1784062655, target_fps=125.0, compat_tool=""),
+    DemoSteamGame("2531310", "The Last of Us™ Part II Remastered", 1784062655, target_fps=125.0, compat_tool="", effective_compat_tool="proton-cachyos-11.0-20260602-slr-x86_64"),
     DemoSteamGame("835960", "The Talos Principle 2", 1784060686, target_fps=80.0),
     DemoSteamGame("3768760", "007 First Light", 1784060043, target_fps=80.0),
     DemoSteamGame("1089130", "Quake II RTX", 1783980654, mode="performance", target_fps=125.0),
     DemoSteamGame("1378990", "Crash Bandicoot™ 4: It’s About Time", 1783896865, mode="efficiency"),
     DemoSteamGame("3606110", "Coffee Talk Tokyo Demo", 1783884063, mode="efficiency"),
     DemoSteamGame("3764200", "Resident Evil Requiem", 1783872527),
-    DemoSteamGame("1206070", "Phonopolis", 1783627933, mode="efficiency", compat_tool=""),
+    DemoSteamGame("1206070", "Phonopolis", 1783627933, mode="efficiency", compat_tool="", effective_compat_tool="proton-cachyos-11.0-20260602-slr-x86_64"),
     DemoSteamGame("2215200", "LEGO® Batman™: Legacy of the Dark Knight", 1783374955, mode="efficiency"),
     DemoSteamGame("3472040", "NBA 2K26", 1782844583, compat_tool="proton_experimental"),
     DemoSteamGame("2909400", "FINAL FANTASY VII REBIRTH", 1782656113),
@@ -319,6 +320,16 @@ def _demo_steam_rows() -> tuple[SteamGameRow, ...]:
                 last_played=game.last_played,
                 icon_path=None,
                 compat_tool=game.compat_tool,
+                effective_compat_tool=(
+                    game.effective_compat_tool
+                    if game.effective_compat_tool is not None
+                    else game.compat_tool
+                ),
+                effective_compat_tool_display=(
+                    game.effective_compat_tool
+                    if game.effective_compat_tool is not None
+                    else game.compat_tool
+                ),
             ),
             setting=SteamGameSetting(
                 enabled=True,

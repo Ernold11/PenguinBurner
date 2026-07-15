@@ -344,17 +344,16 @@ class SteamPanel:
         title_row.addStretch(1)
         details_layout.addLayout(title_row)
 
-        proton_label = QtWidgets.QLabel("Compatibility tool")
-        proton_label.setObjectName("steamFieldLabel")
-        details_layout.addWidget(proton_label)
+        self.proton_label = QtWidgets.QLabel("Compatibility tool")
+        self.proton_label.setObjectName("steamFieldLabel")
+        details_layout.addWidget(self.proton_label)
         self.proton_combo = QtWidgets.QComboBox()
         self.proton_combo.setObjectName("steamCompatTool")
-        self.proton_combo.setToolTip(
-            _wrapped_tooltip(
-                "Keeps Steam's current choice by default. Selecting another entry "
-                "uses Steam's own compatibility-tool setting for this game."
-            )
+        self._proton_combo_default_tooltip = _wrapped_tooltip(
+            "Keeps Steam's current choice by default. Selecting another entry "
+            "uses Steam's own compatibility-tool setting for this game."
         )
+        self.proton_combo.setToolTip(self._proton_combo_default_tooltip)
         details_layout.addWidget(self.proton_combo)
 
         command_label = QtWidgets.QLabel("Steam command line")
@@ -556,6 +555,8 @@ class SteamPanel:
                 row.game.last_played,
                 row.game.icon_path,
                 row.game.compat_tool,
+                row.game.effective_compat_tool,
+                row.game.effective_compat_tool_display,
                 row.setting,
                 row.launch_options,
             )
@@ -612,7 +613,9 @@ class SteamPanel:
                 item.setSizeHint(self.QtCore.QSize(0, _ROW_HEIGHT))
                 if row.game.icon_path is not None:
                     item.setIcon(self.QtGui.QIcon(str(row.game.icon_path)))
-                runtime = row.game.compat_tool if row.game.is_proton else "Native Linux"
+                runtime = row.game.runtime_label
+                if row.game.is_proton and row.game.effective_compat_tool_label:
+                    runtime = row.game.effective_compat_tool_label
                 item.setToolTip(
                     f"{row.game.name}\nApp {row.game.app_id} · {runtime}\n"
                     f"{last_played_text(row.game.last_played)}"
@@ -674,11 +677,19 @@ class SteamPanel:
             else:
                 self.game_title.setText(row.game.name)
                 self.game_metadata.setText(
-                    f"App {row.game.app_id} · {last_played_text(row.game.last_played)}"
+                    f"App {row.game.app_id} · {row.game.runtime_label} · "
+                    f"{last_played_text(row.game.last_played)}"
                 )
                 tools = self.manager.available_compat_tools(row.game.app_id)
                 self.proton_combo.clear()
-                self.proton_combo.addItem("Steam default", "")
+                default_label = "Steam default"
+                if not row.game.compat_tool:
+                    effective = row.game.effective_compat_tool_label
+                    if effective:
+                        default_label = f"Steam default ({effective})"
+                    elif row.game.is_native_linux:
+                        default_label = "Native Linux — no compatibility tool"
+                self.proton_combo.addItem(default_label, "")
                 for name, display in tools:
                     self.proton_combo.addItem(display, name)
                 compat_index = self.proton_combo.findData(row.game.compat_tool)
@@ -725,9 +736,33 @@ class SteamPanel:
         self.mode_combo.setEnabled(wrapper_enabled)
         self.target_fps_label.setEnabled(wrapper_enabled)
         self.target_fps_spin.setEnabled(wrapper_enabled)
-        self.proton_combo.setEnabled(
-            has_selection and self._compat_tool_live_ready and not self._scan_running
+        # Native Linux games run without a compatibility tool; changing Proton
+        # for them is not a PenguinBurner workflow, so the selector grays out.
+        # A game already forced onto Proton keeps the selector until the user
+        # reverts it to Steam default (through Steam) — no lock-in.
+        selected_row = self._rows.get(self._selected_app_id)
+        selected_is_native = (
+            selected_row is not None and selected_row.game.is_native_linux
         )
+        proton_enabled = (
+            has_selection
+            and self._compat_tool_live_ready
+            and not self._scan_running
+            and not selected_is_native
+        )
+        self.proton_combo.setEnabled(proton_enabled)
+        self.proton_label.setEnabled(proton_enabled or not has_selection)
+        if selected_is_native:
+            self.proton_combo.setToolTip(
+                _wrapped_tooltip(
+                    "Steam reports that this game runs natively on Linux "
+                    "without a compatibility tool. To force Proton for it, "
+                    "use Steam's game "
+                    "properties; the selector unlocks once a tool is set."
+                )
+            )
+        else:
+            self.proton_combo.setToolTip(self._proton_combo_default_tooltip)
         self.overlay_checkbox.setEnabled(wrapper_enabled)
         # The Play/Stop button state (including availability) is derived from
         # the selected game's lifecycle in _sync_game_status.

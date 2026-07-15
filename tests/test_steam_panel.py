@@ -24,6 +24,7 @@ from ui.components.steam_panel import (
     sorted_steam_rows,
 )
 from ui.qt import import_qt
+from ui.styles import STYLESHEET
 
 
 def _row(
@@ -33,6 +34,8 @@ def _row(
     last_played: int,
     *,
     command: str = "%command%",
+    compat_tool: str = "proton_experimental",
+    effective_compat_tool: str | None = "proton_experimental",
 ) -> SteamGameRow:
     return SteamGameRow(
         game=InstalledSteamGame(
@@ -43,7 +46,13 @@ def _row(
             state_flags=4,
             last_played=last_played,
             icon_path=None,
-            compat_tool="proton_experimental",
+            compat_tool=compat_tool,
+            effective_compat_tool=effective_compat_tool,
+            effective_compat_tool_display=(
+                "Proton Experimental"
+                if effective_compat_tool == "proton_experimental"
+                else str(effective_compat_tool or "")
+            ),
         ),
         setting=SteamGameSetting(),
         launch_options=command,
@@ -305,6 +314,59 @@ def test_uninitialized_steam_uses_centered_library_setup(
     assert manager.initialize_defaults_calls == [False, True]
     assert panel.setup_title.text() == "Your library is ready"
     assert panel.setup_button.text() == "Restart Steam to finish"
+
+
+def test_native_game_shows_runtime_and_grays_proton_selector(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    QtCore, QtGui, QtWidgetsModule, _pg = import_qt()
+    rows = (
+        _row(
+            tmp_path,
+            "10",
+            "NativeGame",
+            200,
+            compat_tool="",
+            effective_compat_tool="",
+        ),
+        _row(
+            tmp_path,
+            "20",
+            "WinGame",
+            100,
+            compat_tool="",
+            effective_compat_tool="proton_experimental",
+        ),
+    )
+    manager = _FakeManager(rows)
+    panel = SteamPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgetsModule,
+        manager=cast(SteamIntegrationManager, manager),
+    )
+    qtbot.addWidget(panel.widget)
+    qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
+
+    # Most recently played (native) game is selected first.
+    assert panel.game_title.text() == "NativeGame"
+    assert "Native Linux" in panel.game_metadata.text()
+    assert not panel.proton_combo.isEnabled()
+    assert "natively on Linux" in panel.proton_combo.toolTip()
+    compat_disabled_style = STYLESHEET.split(
+        "QComboBox#steamCompatTool:disabled {", 1
+    )[1].split("}", 1)[0]
+    assert "color: #7f8794;" in compat_disabled_style
+
+    panel.game_list.setCurrentItem(panel.game_list.item(1))
+    qtbot.waitUntil(lambda: panel.game_title.text() == "WinGame", timeout=2000)
+    assert "· Proton ·" in panel.game_metadata.text()
+    # The exact tool version lives only in the selector, not the header line.
+    assert "proton_experimental" not in panel.game_metadata.text()
+    assert panel.proton_combo.isEnabled()
+    assert panel.proton_combo.currentText() == "Steam default (Proton Experimental)"
+    assert "natively on Linux" not in panel.proton_combo.toolTip()
 
 
 def test_panel_keeps_library_left_and_one_selected_game_editor(

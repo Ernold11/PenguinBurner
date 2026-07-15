@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 import integrations.steam.manager as manager_module
+from integrations.steam.cdp import SteamAppDetails
 from integrations.steam.manager import SteamIntegrationManager
 from integrations.steam.settings import (
     GAME_MODE_ADAPTIVE,
@@ -21,6 +22,7 @@ class _FakeCdpClient:
     launch_options: dict[str, str] = {}
     terminated: list[str] = []
     compat_tool: dict[str, str] = {}
+    app_details_by_id: dict[str, SteamAppDetails] = {}
     fail = False
 
     def __init__(self, **kwargs):
@@ -35,6 +37,23 @@ class _FakeCdpClient:
 
     def app_launch_options(self, app_id, **kwargs):
         return type(self).launch_options.get(app_id)
+
+    def app_details(self, app_id, **kwargs):
+        details = type(self).app_details_by_id.get(str(app_id))
+        if details is None:
+            return None
+        tool_name = type(self).compat_tool.get(str(app_id), details.compat_tool_name)
+        return SteamAppDetails(
+            launch_options=type(self).launch_options.get(str(app_id), ""),
+            compat_tool_name=tool_name,
+            compat_tool_display_name=(
+                "Proton Experimental"
+                if tool_name == "proton_experimental"
+                else tool_name
+            ),
+            compat_tool_priority=details.compat_tool_priority,
+            platforms=details.platforms,
+        )
 
     def set_app_launch_options(self, app_id, value, **kwargs):
         type(self).launch_options[app_id] = value
@@ -85,6 +104,15 @@ def manager(steam_home: Path, tmp_path: Path, monkeypatch) -> SteamIntegrationMa
     _FakeCdpClient.launch_options = {APP_ID: "gamemoderun %command%"}
     _FakeCdpClient.terminated = []
     _FakeCdpClient.compat_tool = {}
+    _FakeCdpClient.app_details_by_id = {
+        APP_ID: SteamAppDetails(
+            launch_options="gamemoderun %command%",
+            compat_tool_name="proton_experimental",
+            compat_tool_display_name="Proton Experimental",
+            compat_tool_priority=75,
+            platforms=("windows", "linux"),
+        )
+    }
     _FakeCdpClient.fail = False
     monkeypatch.setattr(manager_module, "SteamCdpClient", _FakeCdpClient)
     monkeypatch.setattr(manager_module, "steam_running", lambda: True)
@@ -101,6 +129,30 @@ def test_refresh_merges_library_settings_and_launch_options(manager) -> None:
     assert rows[0].setting.mode == GAME_MODE_ADAPTIVE
     assert rows[0].setting.enabled is False
     assert rows[0].setting.overlay is False
+    # No explicit config.vdf override exists, but Steam's API reports the
+    # effective default Proton. Absence of an override must not mean native.
+    assert rows[0].game.compat_tool == ""
+    assert rows[0].game.effective_compat_tool == "proton_experimental"
+    assert rows[0].game.is_proton
+    assert not rows[0].game.is_native_linux
+
+
+def test_refresh_marks_native_only_when_steam_api_reports_no_compat_tool(
+    manager,
+) -> None:
+    _FakeCdpClient.app_details_by_id[APP_ID] = SteamAppDetails(
+        launch_options="gamemoderun %command%",
+        compat_tool_name="",
+        compat_tool_display_name="",
+        compat_tool_priority=0,
+        platforms=("windows", "linux"),
+    )
+
+    game = manager.refresh()[0].game
+
+    assert game.runtime_known
+    assert game.is_native_linux
+    assert not game.is_proton
 
 
 def test_library_scan_initializes_disabled_adaptive_without_overlay(manager, tmp_path) -> None:

@@ -19,7 +19,14 @@ from overlay.telemetry.steam_launch_check import (
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR, resolve_auto_uv_profile
 from profiles.uv.profile_tiers import profile_tier_label
 
-from .cdp import SteamCdpClient, SteamCdpError, cdp_available, cdp_marker_present, ensure_cdp_marker
+from .cdp import (
+    SteamAppDetails,
+    SteamCdpClient,
+    SteamCdpError,
+    cdp_available,
+    cdp_marker_present,
+    ensure_cdp_marker,
+)
 from .launch_options import (
     inject_launch_options,
     injection_state,
@@ -64,6 +71,7 @@ class SteamIntegrationManager:
         self._settings_path = settings_path
         self._launch_options: dict[str, str] = {}
         self._compat_tools: dict[str, tuple[tuple[str, str], ...]] = {}
+        self._app_details: dict[str, SteamAppDetails] = {}
 
     # -- status ------------------------------------------------------------
 
@@ -175,7 +183,9 @@ class SteamIntegrationManager:
     ) -> tuple[SteamGameRow, ...]:
         games = installed_steam_games(self._home)
         if read_launch_options:
-            self._read_all_launch_options(games)
+            games = self._read_all_app_details(games)
+        else:
+            games = self._merge_cached_app_details(games)
         user = self.active_user()
         settings = (
             load_steam_game_settings(self._settings_path).get(user.account_id, {})
@@ -223,30 +233,72 @@ class SteamIntegrationManager:
                 continue
             self._apply(game.app_id, SteamGameSetting())
 
-    def _read_all_launch_options(self, games: tuple[InstalledSteamGame, ...]) -> None:
+    def _read_all_app_details(
+        self,
+        games: tuple[InstalledSteamGame, ...],
+    ) -> tuple[InstalledSteamGame, ...]:
+        """Read Steam's live per-app facts, including its effective Proton.
+
+        The config.vdf mapping only records explicit overrides. Steam's API is
+        authoritative for the runtime it actually selected through defaults.
+        """
         try:
             with SteamCdpClient(timeout_s=3.0) as client:
-                self._launch_options = {
-                    game.app_id: client.app_launch_options(game.app_id) or ""
+                fresh_details = {
+                    game.app_id: details
                     for game in games
+                    if (details := client.app_details(game.app_id)) is not None
                 }
-                return
         except SteamCdpError:
-            pass
+            fresh_details = {}
+        if fresh_details:
+            self._app_details.update(fresh_details)
+            self._launch_options.update(
+                {
+                    app_id: details.launch_options
+                    for app_id, details in fresh_details.items()
+                }
+            )
+            return self._merge_cached_app_details(games)
         if self.steam_running():
             # localconfig on disk is stale while Steam runs; keep the cache.
-            return
+            return self._merge_cached_app_details(games)
         user = self.active_user()
         if user is None:
-            return
+            return self._merge_cached_app_details(games)
         try:
             text = user.localconfig_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            return
+            return self._merge_cached_app_details(games)
         self._launch_options = {
             game.app_id: launch_options_from_localconfig(text, game.app_id) or ""
             for game in games
         }
+        return self._merge_cached_app_details(games)
+
+    def _merge_cached_app_details(
+        self,
+        games: tuple[InstalledSteamGame, ...],
+    ) -> tuple[InstalledSteamGame, ...]:
+        return tuple(
+            self._game_with_app_details(game, self._app_details.get(game.app_id))
+            for game in games
+        )
+
+    @staticmethod
+    def _game_with_app_details(
+        game: InstalledSteamGame,
+        details: SteamAppDetails | None,
+    ) -> InstalledSteamGame:
+        if details is None:
+            return game
+        return replace(
+            game,
+            effective_compat_tool=details.compat_tool_name,
+            effective_compat_tool_display=details.compat_tool_display_name,
+            effective_compat_tool_priority=details.compat_tool_priority,
+            effective_platforms=details.platforms,
+        )
 
     # -- mutations -----------------------------------------------------------
 
@@ -356,8 +408,12 @@ class SteamIntegrationManager:
                 if not client.compat_tool_selection_supported():
                     return ApplyResult(False, "this Steam build cannot change Proton live")
                 client.specify_compat_tool(app_id, tool_name)
+                details = client.app_details(app_id)
         except SteamCdpError as error:
             return ApplyResult(False, f"Proton change failed: {error}")
+        if details is not None:
+            self._app_details[app_id] = details
+            self._launch_options[app_id] = details.launch_options
         return ApplyResult(
             True,
             "Using Steam default compatibility tool."

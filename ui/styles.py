@@ -222,7 +222,8 @@ QListWidget#steamGameList::item:selected {{
 QComboBox#steamGameSort, QComboBox#steamAutoUvMode {{
     padding: 5px 8px;
 }}
-QComboBox#steamAutoUvMode:disabled {{
+QComboBox#steamAutoUvMode:disabled,
+QComboBox#steamCompatTool:disabled {{
     background: {theme.CONTROL_BG};
     border-color: {theme.BORDER};
     color: {theme.TEXT_DISABLED};

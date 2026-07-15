@@ -30,8 +30,13 @@ in `~/.config/PenguinBurner/steam-game-settings.json`.
 
 ## Per-game options
 
-Once a game is enabled, the editor exposes:
+The per-game editor exposes:
 
+- **Compatibility tool** — Steam's current per-game override, or its effective
+  default Proton when no override was saved. PenguinBurner reads the effective
+  tool from Steam's live per-app details API; it does not infer "native" from a
+  missing config entry. Only games Steam explicitly reports as native Linux
+  have this selector disabled and visibly grayed out.
 - **Auto-UV mode** — one of:
   - **Adaptive** — starts from your newest profile and switches between saved
     tiers using live present-frame pacing (see below).
@@ -45,7 +50,10 @@ Once a game is enabled, the editor exposes:
 - **Enable In-Game overlay** — the live readout (latency, pre-frame-gen FPS,
   clocks, power, tier) for this game.
 
-Every control stays grayed out until the game's PenguinBurner toggle is on.
+The tuning and overlay controls stay grayed out until the game's PenguinBurner
+toggle is on. The compatibility selector is independent of that toggle; it is
+grayed out only for a Steam-confirmed native Linux runtime or when live Steam
+control is unavailable.
 
 ## Bulk actions ("All games")
 

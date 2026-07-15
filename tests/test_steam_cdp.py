@@ -176,7 +176,18 @@ def fake_steam():
             app_id = expression.partition("RegisterForAppDetails(")[2].partition(",")[
                 0
             ].strip()
-            return state["launch_options"].get(app_id)
+            tool_name = state["compat_tool"].get(app_id, "")
+            return {
+                "launchOptions": state["launch_options"].get(app_id, ""),
+                "compatToolName": tool_name,
+                "compatToolDisplayName": (
+                    "Proton Experimental"
+                    if tool_name == "proton_experimental"
+                    else tool_name
+                ),
+                "compatToolPriority": 75,
+                "platforms": ["windows", "linux"],
+            }
         raise AssertionError(f"unexpected expression: {expression}")
 
     server = _FakeSteamCdp(evaluate)
@@ -203,6 +214,19 @@ def test_read_launch_options_live(fake_steam) -> None:
     with SteamCdpClient(port=server.http_port) as client:
         assert client.set_app_launch_options_supported()
         assert client.app_launch_options("1089130") == "gamemoderun %command%"
+
+
+def test_read_app_details_reports_steams_effective_compat_tool(fake_steam) -> None:
+    server, _ = fake_steam
+    with SteamCdpClient(port=server.http_port) as client:
+        details = client.app_details("1089130")
+
+    assert details is not None
+    assert details.launch_options == "gamemoderun %command%"
+    assert details.compat_tool_name == "proton_experimental"
+    assert details.compat_tool_display_name == "Proton Experimental"
+    assert details.compat_tool_priority == 75
+    assert details.platforms == ("windows", "linux")
 
 
 def test_write_verifies_by_read_back(fake_steam) -> None:
