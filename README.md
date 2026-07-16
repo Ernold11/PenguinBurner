@@ -19,6 +19,9 @@
 
 ![PenguinBurner Auto-UV finding Efficiency, Balanced, and Performance curves in one scan](docs/assets/auto-uv-full-scan-demo.gif)
 
+PenguinBurner is an open-source NVIDIA GPU tuning app for Linux with
+automatic undervolting & overclocking with adaptive per-game tuning targets.
+
 **One scan. Three verified GPU profiles.**
 
 - **Efficiency** — undervolt and underclock. RTX 5080: 850 mV · 2460 MHz · 233 W.
@@ -31,11 +34,6 @@ that is the inefficiency Auto-UV removes.
 
 Verified RTX 5080 examples; every GPU differs. Pre-optimized targets are
 included for RTX 30, 40, and 50 series cards.
-
-PenguinBurner is an open-source NVIDIA GPU tuning app for Linux with
-automatic undervolting & overclocking. Adaptive per-game tuning targets a
-chosen pre-frame-generation FPS; the optional overlay shows PC latency and live
-FPS.
 
 ## Install
 
