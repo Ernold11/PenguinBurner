@@ -299,9 +299,18 @@ def test_window_scan_finished_branches(main_window) -> None:
 
 
 def test_window_verify_and_command_finished(main_window) -> None:
+    main_window.header.set_candidate("User edited memory offset +6000 MT/s")
     main_window._verify_finished(0, 0, False)  # success
+    assert main_window.header.candidate_label.text() == ""
+
+    main_window.header.set_candidate("stale candidate")
     main_window._verify_finished(1, 0, True)  # stopped
+    assert main_window.header.candidate_label.text() == ""
+
+    main_window.header.set_candidate("stale candidate")
     main_window._verify_finished(1, 0, False)  # failed
+    assert main_window.header.candidate_label.text() == ""
+
     main_window._command_finished("delete", 0, 0)
 
 
