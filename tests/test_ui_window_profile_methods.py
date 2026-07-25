@@ -120,6 +120,34 @@ def test_edit_vf_curve_opens_and_saves(win) -> None:
     assert window.last_auto_uv_candidate_id == "c9"
 
 
+def test_edit_memory_offset_no_value_shows_info(win) -> None:
+    window, monkeypatch = win
+    monkeypatch.setattr(actions_mod, "editable_memory_offset_from_profile", lambda profile: None)
+    shown: list = []
+    monkeypatch.setattr(window.QtWidgets.QMessageBox, "information", lambda *a, **k: shown.append(a))
+    window._edit_profile_memory_offset(PROFILE)
+    assert shown
+
+
+def test_edit_memory_offset_opens_and_saves(win) -> None:
+    window, monkeypatch = win
+    monkeypatch.setattr(actions_mod, "editable_memory_offset_from_profile", lambda profile: 200)
+    monkeypatch.setattr(actions_mod, "memory_offset_mhz_range", lambda gpu_index: (0, 2000))
+    monkeypatch.setattr(
+        actions_mod,
+        "save_edited_memory_offset_profile",
+        lambda profile, new_memory_offset_mhz, **kw: (
+            Path("/tmp/auto-uv-profile-mem.json"),
+            {"memory_offset_mhz": new_memory_offset_mhz},
+        ),
+    )
+    # The editor stub fires the save callback to exercise the closure.
+    monkeypatch.setattr(
+        actions_mod, "open_memory_offset_editor_dialog", lambda **k: k["save_callback"](400)
+    )
+    window._edit_profile_memory_offset(PROFILE)
+
+
 def test_export_lact_cancelled_and_no_gpu(win) -> None:
     window, monkeypatch = win
     monkeypatch.setattr(
