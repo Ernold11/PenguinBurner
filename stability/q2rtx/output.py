@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from pathlib import Path
+import json
 
 from .constants import (
     FATAL_OUTPUT_REGEXES,
@@ -76,6 +77,37 @@ def attach_stdout_progress(
 
     def _progress_callback(state: dict) -> None:
         print(_format_live_progress_state(state, prefix=prefix), flush=True)
+        if previous_progress_callback is not None:
+            previous_progress_callback(state)
+
+    config.progress_callback = _progress_callback
+    return config
+
+
+def attach_stdout_telemetry_events(
+    config: Q2RTXStabilityConfig,
+    *,
+    target_voltage_mv: int,
+    target_clock_mhz: int,
+) -> Q2RTXStabilityConfig:
+    """Print a load_telemetry JSON line per tick alongside the human status
+    line, so a listening GUI can plot the live GPU position on the curve
+    being verified (mirroring what a live Auto-UV scan already emits)."""
+    previous_progress_callback = config.progress_callback
+
+    def _progress_callback(state: dict) -> None:
+        latest_sample = state.get("latest_sample")
+        if latest_sample is not None:
+            payload = {
+                "event": "load_telemetry",
+                "voltage_mv": int(target_voltage_mv),
+                "clock_mhz": int(target_clock_mhz),
+            }
+            if latest_sample.voltage_mv is not None:
+                payload["measured_voltage_mv"] = round(float(latest_sample.voltage_mv))
+            if latest_sample.core_clock_mhz is not None:
+                payload["measured_clock_mhz"] = round(float(latest_sample.core_clock_mhz))
+            print(json.dumps(payload, sort_keys=True), flush=True)
         if previous_progress_callback is not None:
             previous_progress_callback(state)
 

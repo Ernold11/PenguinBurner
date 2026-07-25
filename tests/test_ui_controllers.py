@@ -251,6 +251,32 @@ def test_verify_runs_and_reports_progress(qtbot, tmp_path) -> None:
     assert not (tmp_path / "vstop").exists()  # cleaned up on finish
 
 
+def test_verify_routes_telemetry_json_out_of_the_log_view(qtbot, tmp_path) -> None:
+    controller = VerifyController(QtCore=QtCore, stop_request_path=tmp_path / "vstop")
+    outputs: list[str] = []
+    telemetry: list[dict] = []
+    controller.on_output = outputs.append
+    controller.on_telemetry = telemetry.append
+
+    # The last line has no trailing newline, exercising the drain-on-finish path.
+    script = (
+        "import sys\n"
+        "print('{\"event\": \"load_telemetry\", \"voltage_mv\": 925, \"clock_mhz\": 2950}')\n"
+        "print('status elapsed=5.0s running')\n"
+        "sys.stdout.write('{\"event\": \"load_telemetry\", \"voltage_mv\": 926, \"clock_mhz\": 2951}')\n"
+    )
+    assert controller.start([sys.executable, "-c", script], duration_s=60) is True
+    qtbot.waitUntil(lambda: not controller.is_running(), timeout=5000)
+
+    assert telemetry == [
+        {"event": "load_telemetry", "voltage_mv": 925, "clock_mhz": 2950},
+        {"event": "load_telemetry", "voltage_mv": 926, "clock_mhz": 2951},
+    ]
+    joined_output = "".join(outputs)
+    assert "load_telemetry" not in joined_output
+    assert "status elapsed=5.0s running" in joined_output
+
+
 def test_verify_failed_start_reports(qtbot, tmp_path) -> None:
     controller = VerifyController(QtCore=QtCore, stop_request_path=tmp_path / "vstop")
     outputs: list[str] = []

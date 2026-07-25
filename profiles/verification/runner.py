@@ -32,6 +32,7 @@ from profiles.uv.runtime_auto_uv_profile import (
 from stability.q2rtx.long_stability_config import build_long_stability_test_config
 from stability.q2rtx.models import StabilityTestError
 from stability.q2rtx.output import attach_stdout_progress
+from stability.q2rtx.output import attach_stdout_telemetry_events
 from stability.q2rtx.reporting import print_q2rtx_stability_result
 from stability.q2rtx.runtime import run_q2rtx_stability_test
 
@@ -62,6 +63,7 @@ class ProfileVerificationDependencies:
     build_long_stability_test_config: Callable = build_long_stability_test_config
     run_q2rtx_stability_test: Callable = run_q2rtx_stability_test
     attach_stdout_progress: Callable = attach_stdout_progress
+    attach_stdout_telemetry_events: Callable = attach_stdout_telemetry_events
     print_q2rtx_stability_result: Callable = print_q2rtx_stability_result
     log: Callable[[str], None] = runtime_log
 
@@ -185,6 +187,12 @@ def run_profile_verification(
             stability_config.abort_callback = stability_stop_request_abort_callback(
                 stop_request_path,
                 previous_callback=stability_config.abort_callback,
+            )
+        if flatten_target is not None:
+            stability_config = deps.attach_stdout_telemetry_events(
+                stability_config,
+                target_voltage_mv=int(flatten_target["lock_voltage_mv"]),
+                target_clock_mhz=int(flatten_target["lock_clock_mhz"]),
             )
         deps.attach_stdout_progress(stability_config)
         try:
