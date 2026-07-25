@@ -134,6 +134,47 @@ def test_open_live_gpu_applier_continues_when_raised_power_limit_is_rejected(
     ]
 
 
+def test_laptop_fixed_power_limit_is_platform_managed_and_not_saved(
+    monkeypatch,
+) -> None:
+    logs: list[str] = []
+    controllers = _patch_power_environment(monkeypatch)
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "reset_nvidia_runtime_defaults",
+        lambda **_kwargs: {
+            "plan": [{"index": 0, "voltage_mv": 900, "target_mhz": 2490}],
+            "gpu_name": "NVIDIA GeForce RTX 4090 Laptop GPU",
+            "power_limit_w": 150,
+            "power_limits": {
+                "power_limit_default_w": 150,
+                "power_limit_min_w": 5,
+                "power_limit_max_w": 175,
+            },
+        },
+    )
+    applier = gpu_vf_curve_applier.open_live_gpu_vf_curve_applier(
+        gpu_index=0,
+        runtime_options={},
+        log=logs.append,
+    )
+
+    assert controllers[0].power_limit_calls == []
+    assert applier.power_limit_w is None
+    assert applier.baseline_power_limit_w is None
+    assert applier.requested_power_limit_w is None
+    assert "power_limit_w" not in applier.translated_gpu_policy
+    assert logs == []
+
+    applier.requested_power_limit_w = 150
+    assert applier.apply_requested_power_limit(log=logs.append) is None
+    assert controllers[0].power_limit_calls == []
+    assert logs == [
+        "Auto-UV power limit: skipped final fixed write on mobile GPU; "
+        "continuing without saved power limit"
+    ]
+
+
 def test_final_power_limit_rejection_is_not_fatal_and_not_saved() -> None:
     logs: list[str] = []
 

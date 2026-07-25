@@ -85,9 +85,38 @@ def test_build_static_runtime_spec_resolves_gpu_and_profile(monkeypatch) -> None
     }
     assert spec["static_profile"]["profile_id"] == "balanced-new"
     assert spec["static_profile"]["plan"][0]["new_offset_mhz"] == 100
+    assert spec["static_profile"]["power_limit_w"] == 320
     assert spec["policy"]["enable_persistence_mode"] is False
     assert spec["overlay"] == {"enabled": True, "update_interval_s": 2}
 
+
+def test_laptop_runtime_ignores_legacy_saved_fixed_power_limit(monkeypatch) -> None:
+    legacy_curve = _curve("legacy-laptop")
+    legacy_curve["power_limit_w"] = 150
+    _stub_runtime_sources(monkeypatch, curve=legacy_curve)
+    monkeypatch.setattr(
+        runtime_spec,
+        "gpu_capabilities",
+        lambda index, **kwargs: {
+            "identity": {
+                "uuid": f"GPU-laptop-{index}",
+                "pci_bus_id": "0000:01:00.0",
+                "pci_device_id": "0x271710DE",
+                "name": "NVIDIA GeForce RTX 4090 Laptop GPU",
+            },
+            "power_limits": {
+                "power_limit_w": None,
+                "power_limit_default_w": 150,
+                "power_limit_min_w": 5,
+                "power_limit_max_w": 175,
+            },
+        },
+    )
+    spec = runtime_spec.build_runtime_spec(profile_selector="legacy-laptop")
+
+    assert spec["static_profile"]["power_limit_w"] is None
+    assert spec["static_profile"]["memory_offset_mhz"] == 1500
+    assert spec["static_profile"]["plan"][0]["new_offset_mhz"] == 100
 
 def test_build_static_runtime_spec_resolves_latest_profile_for_empty_selector(
     monkeypatch,
