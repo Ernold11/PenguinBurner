@@ -18,7 +18,7 @@ class VerifyController:
         self.last_elapsed_s = 0.0
         self.stop_requested = False
         self.on_output = lambda _text: None
-        self.on_progress = lambda _percent, _elapsed_s, _target_s, _detail: None
+        self.on_progress = lambda _percent, *, elapsed_s=None, target_s=None, detail="": None
         self.on_finished = lambda _exit_code, _exit_status, _stopped: None
 
     def is_running(self) -> bool:
@@ -90,9 +90,9 @@ class VerifyController:
             self.last_elapsed_s = max(self.last_elapsed_s, elapsed)
             self.on_progress(
                 progress_percent(self.last_elapsed_s, self.target_duration_s),
-                self.last_elapsed_s,
-                self.target_duration_s,
-                line.strip(),
+                elapsed_s=self.last_elapsed_s,
+                target_s=self.target_duration_s,
+                detail=line.strip(),
             )
 
     def _finished(self, exit_code, exit_status) -> None:
