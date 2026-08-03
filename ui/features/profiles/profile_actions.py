@@ -15,6 +15,7 @@ from ui.commands import runtime_profile_command
 from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
 from ui.components.fan_curve_editor import open_fan_curve_editor_dialog
 from ui.components.vf_curve_editor import open_vf_curve_editor_dialog
+from ui.features.curves.curve_profiles import curve_points_from_values
 from ui.features.curves.curve_profiles import profile_base_curve_points
 from ui.features.curves.curve_profiles import profile_curve_plan
 from ui.features.curves.curve_profiles import save_edited_curve_profile
@@ -328,6 +329,16 @@ class ProfileActionsMixin:
         self.header.set_candidate(label)
         self.controls.set_status_text(f"Verifying {label} with {workload}.")
         self.tabs.setCurrentIndex(self.auto_uv_tab_index)
+        # Verify tests an already-known curve rather than discovering one, so
+        # there's no live candidate-curve event stream to plot from — just
+        # show the static curve being verified instead of leaving the plot
+        # showing whatever it last had.
+        base_points = profile_base_curve_points(profile)
+        if base_points:
+            self.vf_plot.set_source_points(base_points)
+        candidate_points = curve_points_from_values(profile_curve_plan(profile))
+        if candidate_points:
+            self.vf_plot.set_candidate_points(candidate_points, remember_previous=False)
         self.controls.set_verify_progress(
             0,
             elapsed_s=0,

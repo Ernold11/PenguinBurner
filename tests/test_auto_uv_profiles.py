@@ -1478,6 +1478,105 @@ def test_profile_verification_promotes_verified_profile(
     assert resolve_auto_uv_profile(str(stored_path)) is not None
 
 
+def test_profile_verification_wires_live_telemetry_events_when_target_known(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    # A GUI listening on stdout can only plot the live GPU position if this
+    # is wired with the profile's own target voltage/clock, not left unset.
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    stored_path = archive_auto_uv_profile(
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "profile_source": "user-edited",
+            "final_verified": False,
+            "requires_verification": True,
+            "base_avg_core_clock_mhz": 2500.0,
+            "base_avg_fps": 100.0,
+            "base_avg_power_w": 250.0,
+            "base_efficiency_fps_per_w": 0.4,
+            "points": [
+                {
+                    "index": 0,
+                    "voltage_mv": 900,
+                    "base_mhz": 2500,
+                    "target_mhz": 2600,
+                    "new_offset_mhz": 100,
+                }
+            ],
+        }
+    )
+
+    class FakeGpuClient:
+        def refresh_points(self) -> None:
+            pass
+
+    config = SimpleNamespace(abort_callback=None)
+    result = SimpleNamespace(
+        success=True,
+        reason="ok",
+        log_path=tmp_path / "verify.log",
+        benchmark_summary=SimpleNamespace(fps_avg=120.0),
+        telemetry_summary=lambda: {"core_clock_avg": 2580.0, "power_avg": 240.0},
+    )
+    plan = [
+        {
+            "index": 0,
+            "voltage_mv": 900,
+            "base_mhz": 2500,
+            "target_mhz": 2600,
+            "new_offset_mhz": 100,
+        }
+    ]
+    monkeypatch.setattr(
+        profile_verification_runner,
+        "apply_verify_auto_uv_profile",
+        lambda *_args, **_kwargs: (
+            "auto-UV:2600MHz@900mV",
+            {"lock_voltage_mv": 900, "lock_clock_mhz": 2600},
+            plan,
+        ),
+    )
+
+    telemetry_calls = []
+
+    def fake_attach_telemetry(stability_config, *, target_voltage_mv, target_clock_mhz):
+        telemetry_calls.append(
+            {"target_voltage_mv": target_voltage_mv, "target_clock_mhz": target_clock_mhz}
+        )
+        return stability_config
+
+    deps = profile_verification_runner.ProfileVerificationDependencies(
+        stop_existing_penguin_burner_runtime=lambda **_kwargs: None,
+        gpu_client_factory=lambda **_kwargs: FakeGpuClient(),
+        backup_current_offsets=lambda *_args, **_kwargs: None,
+        restore_offsets=lambda *_args, **_kwargs: None,
+        build_stability_config=lambda *_args, **_kwargs: config,
+        build_long_stability_test_config=lambda stability_config, **_kwargs: (
+            stability_config
+        ),
+        attach_stdout_progress=lambda _config: None,
+        attach_stdout_telemetry_events=fake_attach_telemetry,
+        run_q2rtx_stability_test=lambda _config: result,
+        print_q2rtx_stability_result=lambda _result: None,
+    )
+
+    profile_verification_runner.run_profile_verification(
+        SimpleNamespace(
+            auto_uv_profile=str(stored_path),
+            stability_seconds=600,
+            stability_stop_request_file="",
+        ),
+        gpu_index=0,
+        config_path=tmp_path / "runtime.ini",
+        auto_uv_runtime_options={},
+        dependencies=deps,
+    )
+
+    assert telemetry_calls == [{"target_voltage_mv": 900, "target_clock_mhz": 2600}]
+
+
 def test_profile_verification_voltage_abort_requires_sustained_busy_mismatch() -> None:
     callback = profile_verification_rules.profile_verification_voltage_abort_callback(
         {"lock_voltage_mv": 870}

@@ -176,6 +176,42 @@ def test_verify_profile_guards_and_runs(win) -> None:
     assert fake.started
 
 
+def test_verify_profile_shows_the_static_curve_being_verified(win) -> None:
+    window, monkeypatch = win
+    monkeypatch.setattr(actions_mod, "select_verify_options", lambda **k: {"duration_s": 60})
+    monkeypatch.setattr(actions_mod, "ensure_daemon_ready_for_privileged_action", lambda **_k: True)
+    monkeypatch.setattr(actions_mod, "profile_verify_command", lambda **k: ["echo", "verify"])
+    monkeypatch.setattr(actions_mod, "profile_base_curve_points", lambda profile: [(900, 2400)])
+    monkeypatch.setattr(
+        actions_mod,
+        "profile_curve_plan",
+        lambda profile: [{"index": 0, "voltage_mv": 900, "base_mhz": 2400, "target_mhz": 2500}],
+    )
+    window.verify_controller = _FakeController()
+
+    window._verify_profile(PROFILE)
+
+    assert window.vf_plot._source_points == [(900.0, 2400.0)]
+    assert window.vf_plot._candidate_points == [(900.0, 2500.0)]
+
+
+def test_verify_profile_without_a_curve_leaves_the_plot_untouched(win) -> None:
+    window, monkeypatch = win
+    monkeypatch.setattr(actions_mod, "select_verify_options", lambda **k: {"duration_s": 60})
+    monkeypatch.setattr(actions_mod, "ensure_daemon_ready_for_privileged_action", lambda **_k: True)
+    monkeypatch.setattr(actions_mod, "profile_verify_command", lambda **k: ["echo", "verify"])
+    monkeypatch.setattr(actions_mod, "profile_base_curve_points", lambda profile: [])
+    monkeypatch.setattr(actions_mod, "profile_curve_plan", lambda profile: [])
+    window.vf_plot.set_source_points([(800, 2000)])
+    window.vf_plot.set_candidate_points([(800, 2100)], remember_previous=False)
+    window.verify_controller = _FakeController()
+
+    window._verify_profile(PROFILE)
+
+    assert window.vf_plot._source_points == [(800.0, 2000.0)]
+    assert window.vf_plot._candidate_points == [(800.0, 2100.0)]
+
+
 def test_delete_selected_profiles(win) -> None:
     window, monkeypatch = win
     window.profile_summaries = [PROFILE]

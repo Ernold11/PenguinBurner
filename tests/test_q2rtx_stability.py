@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import json
 import sys
 import tarfile
 from types import SimpleNamespace
@@ -35,11 +36,13 @@ from stability.q2rtx.models import (
     Q2RTXStabilityConfig,
     Q2RTXStabilityResult,
     StabilityTestError,
+    TelemetrySample,
 )
 from stability.q2rtx.output import (
     _benchmark_summary_from_events,
     _format_live_progress_state,
     _scan_output_for_fatal_patterns,
+    attach_stdout_telemetry_events,
 )
 from stability.q2rtx.reporting import _filter_report_output_tail
 from stability.q2rtx.runtime import build_benchmark_command
@@ -680,6 +683,53 @@ def test_cuda_companion_progress_is_labeled_as_cuda() -> None:
     assert "running=cuda" in line
     assert "demo=q2demo1" not in line
     assert "elapsed=512.0s" in line
+
+
+def test_attach_stdout_telemetry_events_prints_load_telemetry_json(capsys) -> None:
+    config = Q2RTXStabilityConfig(duration_s=1, log_dir=Path("/tmp"))
+    previous_calls = []
+    config.progress_callback = previous_calls.append
+
+    attach_stdout_telemetry_events(
+        config,
+        target_voltage_mv=925,
+        target_clock_mhz=2950,
+    )
+    sample = TelemetrySample(
+        elapsed_s=12.0,
+        gpu_util_pct=99.0,
+        power_w=280.0,
+        core_clock_mhz=2940.0,
+        temperature_c=62.0,
+        voltage_mv=923.0,
+        fan_speed_pct=50.0,
+    )
+    config.progress_callback({"elapsed_s": 12.0, "latest_sample": sample})
+
+    printed = capsys.readouterr().out.strip()
+    payload = json.loads(printed)
+    assert payload == {
+        "event": "load_telemetry",
+        "voltage_mv": 925,
+        "clock_mhz": 2950,
+        "measured_voltage_mv": 923,
+        "measured_clock_mhz": 2940,
+    }
+    # The wrapped config still chains to whatever callback was set before.
+    assert previous_calls == [{"elapsed_s": 12.0, "latest_sample": sample}]
+
+
+def test_attach_stdout_telemetry_events_skips_missing_sample(capsys) -> None:
+    config = Q2RTXStabilityConfig(duration_s=1, log_dir=Path("/tmp"))
+
+    attach_stdout_telemetry_events(
+        config,
+        target_voltage_mv=925,
+        target_clock_mhz=2950,
+    )
+    config.progress_callback({"elapsed_s": 0.0, "latest_sample": None})
+
+    assert capsys.readouterr().out.strip() == ""
 
 
 def test_fatal_output_abort_reason_uses_active_workload() -> None:
