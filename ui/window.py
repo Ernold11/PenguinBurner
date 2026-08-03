@@ -714,6 +714,11 @@ class MainWindow(ProfileActionsMixin):
         # profile's own verification is running; leaving it up afterward
         # would misleadingly suggest it still reflects the current state.
         self.vf_plot.clear_load_markers()
+        # The header's candidate label is only ever set by a running scan or
+        # verify; clear it here too, or it keeps showing the just-verified
+        # profile's name indefinitely, including through unrelated later
+        # Apply actions that never touch this label themselves.
+        self.header.set_candidate("")
         self.controls.set_running(False)
         self._load_profiles()
 
