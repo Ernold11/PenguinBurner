@@ -299,10 +299,51 @@ def test_window_scan_finished_branches(main_window) -> None:
 
 
 def test_window_verify_and_command_finished(main_window) -> None:
+    main_window.header.set_candidate("User edited memory offset +6000 MT/s")
     main_window._verify_finished(0, 0, False)  # success
+    assert main_window.header.candidate_label.text() == ""
+
+    main_window.header.set_candidate("stale candidate")
     main_window._verify_finished(1, 0, True)  # stopped
+    assert main_window.header.candidate_label.text() == ""
+
+    main_window.header.set_candidate("stale candidate")
     main_window._verify_finished(1, 0, False)  # failed
+    assert main_window.header.candidate_label.text() == ""
+
     main_window._command_finished("delete", 0, 0)
+
+
+def test_verify_controller_telemetry_plots_the_live_gpu_position(main_window) -> None:
+    win = main_window
+    win.verify_controller.on_telemetry(
+        {
+            "event": "load_telemetry",
+            "voltage_mv": 925,
+            "clock_mhz": 2950,
+            "measured_voltage_mv": 923,
+            "measured_clock_mhz": 2940,
+        }
+    )
+    assert win.vf_plot._last_live_probe_values == (923.0, 2940.0)
+
+
+def test_verify_finished_clears_the_live_gpu_position_marker(main_window) -> None:
+    win = main_window
+    win.verify_controller.on_telemetry(
+        {
+            "event": "load_telemetry",
+            "voltage_mv": 925,
+            "clock_mhz": 2950,
+            "measured_voltage_mv": 923,
+            "measured_clock_mhz": 2940,
+        }
+    )
+    assert win.vf_plot._last_live_probe_values is not None
+
+    win._verify_finished(0, 0, False)
+
+    assert win.vf_plot._last_live_probe_values is None
 
 
 def test_window_simple_helpers(main_window) -> None:

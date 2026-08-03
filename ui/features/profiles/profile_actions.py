@@ -4,6 +4,7 @@ import shlex
 
 from common.penguin_burner_paths import default_user_config_dir
 from curve_editors.uv.vf_curve_manual_editor import editable_anchor_from_profile
+from profiles.uv.memory_offset_edit import editable_memory_offset_from_profile
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 from profiles.uv.profile_store import delete_auto_uv_profile_paths
 from profiles.uv.profile_tiers import save_profile_tier_assignment
@@ -14,7 +15,9 @@ from ui.commands import profile_verify_command
 from ui.commands import runtime_profile_command
 from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
 from ui.components.fan_curve_editor import open_fan_curve_editor_dialog
+from ui.components.memory_offset_editor import open_memory_offset_editor_dialog
 from ui.components.vf_curve_editor import open_vf_curve_editor_dialog
+from ui.features.curves.curve_profiles import curve_points_from_values
 from ui.features.curves.curve_profiles import profile_base_curve_points
 from ui.features.curves.curve_profiles import profile_curve_plan
 from ui.features.curves.curve_profiles import save_edited_curve_profile
@@ -25,9 +28,11 @@ from ui.features.curves.fan_profiles import profile_fan_measurement_points
 from ui.features.curves.fan_profiles import profile_id_from_archive_path
 from ui.features.curves.fan_profiles import save_edited_fan_profile
 from ui.features.curves.fan_profiles import sync_profile_fan_payload
+from ui.features.curves.memory_offset_profiles import save_edited_memory_offset_profile
 from ui.features.integrations.lact_export import detect_lact_gpu_id
 from ui.features.integrations.lact_export import lact_export_output_path
 from ui.features.integrations.lact_export import write_lact_profile_config
+from ui.features.tuning.tuning import memory_offset_mhz_range
 from ui.features.profiles.profiles import adaptive_profile_tier_labels
 from ui.features.profiles.profiles import delete_confirmation_text
 from ui.features.profiles.profiles import profile_can_apply
@@ -254,6 +259,43 @@ class ProfileActionsMixin:
             control_voltage_mvs=control_voltage_mvs,
         )
 
+    def _edit_profile_memory_offset(self, profile: dict) -> None:
+        current = editable_memory_offset_from_profile(profile)
+        if current is None:
+            self.QtWidgets.QMessageBox.information(
+                self.window,
+                "Edit Memory Offset",
+                "No editable memory offset is available for this profile.",
+            )
+            return
+        min_mhz, max_mhz = memory_offset_mhz_range(gpu_index=self.gpu_index)
+
+        def save_edit(new_memory_offset_mhz: int) -> str:
+            path, _payload = save_edited_memory_offset_profile(
+                profile,
+                new_memory_offset_mhz,
+                original_memory_offset_mhz=current,
+            )
+            profile_id = profile_id_from_archive_path(path)
+            message = (
+                f"Saved edited memory offset draft: {path.name}. "
+                "Verify it before Apply."
+            )
+            self.controls.set_status_text(message)
+            self._load_profiles()
+            if profile_id:
+                self.profile_list.select_profile(profile_id)
+            return message
+
+        open_memory_offset_editor_dialog(
+            QtWidgets=self.QtWidgets,
+            parent=self.window,
+            current_memory_offset_mhz=current,
+            min_mhz=min_mhz,
+            max_mhz=max_mhz,
+            save_callback=save_edit,
+        )
+
     def _export_lact_profile(self, profile: dict) -> None:
         directory = self.QtWidgets.QFileDialog.getExistingDirectory(
             self.window,
@@ -328,6 +370,16 @@ class ProfileActionsMixin:
         self.header.set_candidate(label)
         self.controls.set_status_text(f"Verifying {label} with {workload}.")
         self.tabs.setCurrentIndex(self.auto_uv_tab_index)
+        # Verify tests an already-known curve rather than discovering one, so
+        # there's no live candidate-curve event stream to plot from — just
+        # show the static curve being verified instead of leaving the plot
+        # showing whatever it last had.
+        base_points = profile_base_curve_points(profile)
+        if base_points:
+            self.vf_plot.set_source_points(base_points)
+        candidate_points = curve_points_from_values(profile_curve_plan(profile))
+        if candidate_points:
+            self.vf_plot.set_candidate_points(candidate_points, remember_previous=False)
         self.controls.set_verify_progress(
             0,
             elapsed_s=0,
@@ -500,6 +552,10 @@ class ProfileActionsMixin:
         edit_curve_action.setEnabled(bool(profile_curve_plan(profile)))
         fan_action = menu.addAction("Edit Fan Curve")
         fan_action.setEnabled(bool(profile_fan_curve_points(profile)))
+        memory_offset_action = menu.addAction("Edit Memory Offset")
+        memory_offset_action.setEnabled(
+            editable_memory_offset_from_profile(profile) is not None
+        )
         apply_action = menu.addAction("Apply")
         apply_action.setEnabled(not self._workflow_running() and profile_can_apply(profile))
         verify_action = menu.addAction("Verify")
@@ -532,6 +588,8 @@ class ProfileActionsMixin:
             self._edit_profile_vf_curve(profile)
         elif chosen == fan_action:
             self._edit_profile_fan_curve(profile)
+        elif chosen == memory_offset_action:
+            self._edit_profile_memory_offset(profile)
         elif chosen == apply_action:
             self._run_runtime_action("daemonize")
         elif chosen == verify_action:

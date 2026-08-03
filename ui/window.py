@@ -99,6 +99,7 @@ class MainWindow(ProfileActionsMixin):
             stop_request_path=verify_stop_request_path(),
         )
         self.verify_controller.on_output = self.log_view.append
+        self.verify_controller.on_telemetry = self.vf_plot.set_live_load_marker
         self.verify_controller.on_progress = self.controls.set_verify_progress
         self.verify_controller.on_finished = self._verify_finished
         self._load_profiles()
@@ -709,6 +710,15 @@ class MainWindow(ProfileActionsMixin):
                     exit_code=exit_code,
                     exit_status=exit_status,
                 )
+        # The live GPU-position marker only means something while this
+        # profile's own verification is running; leaving it up afterward
+        # would misleadingly suggest it still reflects the current state.
+        self.vf_plot.clear_load_markers()
+        # The header's candidate label is only ever set by a running scan or
+        # verify; clear it here too, or it keeps showing the just-verified
+        # profile's name indefinitely, including through unrelated later
+        # Apply actions that never touch this label themselves.
+        self.header.set_candidate("")
         self.controls.set_running(False)
         self._load_profiles()
 
