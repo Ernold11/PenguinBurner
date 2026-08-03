@@ -11,8 +11,9 @@ import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6 import QtCore
+from PySide6 import QtCore, QtWidgets
 
+from ui.components.scan_controls import ScanControls
 from ui.controllers.scan import ScanController
 from ui.controllers.verify import VerifyController
 
@@ -238,7 +239,7 @@ def test_verify_runs_and_reports_progress(qtbot, tmp_path) -> None:
     controller = VerifyController(QtCore=QtCore, stop_request_path=tmp_path / "vstop")
     progress: list[tuple] = []
     finished: list[tuple] = []
-    controller.on_progress = lambda pct, elapsed, target, detail: progress.append((pct, elapsed))
+    controller.on_progress = lambda pct, *, elapsed_s, target_s, detail: progress.append((pct, elapsed_s))
     controller.on_finished = lambda code, status, stopped: finished.append((code, stopped))
 
     script = "print('status elapsed=30.0s running'); print('status elapsed=60.0s done')"
@@ -249,6 +250,22 @@ def test_verify_runs_and_reports_progress(qtbot, tmp_path) -> None:
     assert progress and progress[-1][0] == 100  # 60/60 -> 100%
     assert finished and finished[0][1] is False
     assert not (tmp_path / "vstop").exists()  # cleaned up on finish
+
+
+def test_verify_progress_wires_to_real_scan_controls(qtbot, tmp_path) -> None:
+    # Regression test: on_progress is assigned ScanControls.set_verify_progress
+    # verbatim in ui/window.py, whose elapsed_s/target_s/detail are keyword-only.
+    # A mocked positional-lambda stub would not catch a calling-convention
+    # mismatch between the two, so this wires the real widget instead.
+    controller = VerifyController(QtCore=QtCore, stop_request_path=tmp_path / "vstop")
+    controls = ScanControls(QtWidgets=QtWidgets)
+    controller.on_progress = controls.set_verify_progress
+
+    script = "print('status elapsed=30.0s running')"
+    assert controller.start([sys.executable, "-c", script], duration_s=60) is True
+    qtbot.waitUntil(lambda: not controller.is_running(), timeout=5000)
+
+    assert controls.dependency_progress.text() == "Verifying profile 30s / 1min"
 
 
 def test_verify_routes_telemetry_json_out_of_the_log_view(qtbot, tmp_path) -> None:
