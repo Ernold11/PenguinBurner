@@ -83,7 +83,8 @@ class LiveGpuVfCurveApplier:
         if requested_w is None:
             return self.power_limit_w
         if fixed_power_limit_excluded_by_identity(
-            gpu_name=self.translated_gpu_policy.get("gpu_name")
+            gpu_name=self.translated_gpu_policy.get("gpu_name"),
+            pci_device_id=self.translated_gpu_policy.get("pci_device_id"),
         ):
             self.requested_power_limit_w = None
             self.translated_gpu_policy.pop("power_limit_w", None)
@@ -153,8 +154,10 @@ def open_live_gpu_vf_curve_applier(
     assert_zero_runtime_vf_offsets(gpu)
 
     gpu_name = runtime_reset.get("gpu_name")
+    pci_device_id = runtime_reset.get("pci_device_id")
     fixed_power_limit_excluded = fixed_power_limit_excluded_by_identity(
-        gpu_name=gpu_name
+        gpu_name=gpu_name,
+        pci_device_id=pci_device_id,
     )
     baseline_power_limit_w = (
         _positive_power_limit_w(runtime_reset.get("power_limit_w"))
@@ -170,6 +173,8 @@ def open_live_gpu_vf_curve_applier(
         reset_power_limits.get("power_limit_max_w")
     )
     translated_gpu_policy = {"gpu_name": gpu_name}
+    if pci_device_id:
+        translated_gpu_policy["pci_device_id"] = pci_device_id
     if baseline_power_limit_w is not None:
         translated_gpu_policy["power_limit_w"] = baseline_power_limit_w
     requested_power_limit_w = _auto_uv_power_limit_w(runtime_options)

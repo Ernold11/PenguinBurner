@@ -606,6 +606,7 @@ fn execute(backend: &dyn GpuBackend, write: GpuWrite) -> Result<Value, String> {
             Ok(json!({
                 "reset": true,
                 "gpu_name": identity.name,
+                "pci_device_id": identity.pci_device_id,
                 "power_limits": power_limits_json(power_limits),
                 "clock_offsets_mhz": {
                     "gpc": clock_offsets.gpc_clk_vf_offset_mhz,
@@ -1012,6 +1013,7 @@ mod tests {
 
         assert_eq!(result["reset"], true);
         assert_eq!(result["gpu_name"], "Mock RTX");
+        assert_eq!(result["pci_device_id"], "0x123410DE");
         assert_eq!(result["power_limits"]["power_limit_default_w"], 360);
         assert_eq!(result["points"][0]["index"], 12);
         assert_eq!(
