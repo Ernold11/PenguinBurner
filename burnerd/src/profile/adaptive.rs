@@ -621,7 +621,7 @@ impl AdaptiveAutoUvRuntimeController {
         log: &mut dyn FnMut(&str),
     ) -> Result<AdaptiveSwitchResult, String> {
         let label = profile_tier_label(tier);
-        let (_power, memory) = apply_adaptive_curve(backend, curve, ceiling, &label)?;
+        let (_power, memory) = apply_adaptive_curve(backend, curve, ceiling, &label, log)?;
         publisher.profile_tier = curve.profile_tier.clone();
         publisher.profile_tier_key = if curve.profile_tier_key.is_empty() {
             tier.to_string()
