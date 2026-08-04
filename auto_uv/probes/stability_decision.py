@@ -21,6 +21,11 @@ class StabilityThresholds:
     busy_gpu_util_pct: float = 60.0
     power_saturation_headroom_pct: float = 2.0
     power_cap_busy_sample_fraction: float = 0.5
+    # The perf-cap-reason vote only counts when enough of the busy window
+    # actually reports reasons; a sparse reason-bearing subset must not speak
+    # for the whole run (it falls through to the avg-power signal instead).
+    power_cap_min_reason_samples: int = 3
+    power_cap_min_reason_coverage: float = 0.5
 
 
 FATAL_REASON_PREFIXES = (
@@ -363,7 +368,9 @@ def busy_samples_indicate_power_cap(
     names a power cap on most busy samples that report one (robust even when
     per-frame spikes hold the *average* power below the limit), or the
     average busy power sits within the saturation headroom of the applied
-    limit.
+    limit. The reason vote requires minimum evidence — enough reason-bearing
+    samples covering enough of the busy window — so a lone sw-power sample
+    among reason-less telemetry cannot grant a false power-walled pass.
     """
     reason_samples = [
         sample
@@ -375,7 +382,12 @@ def busy_samples_indicate_power_cap(
         for sample in reason_samples
         if perf_cap_reason_indicates_power(read_field(sample, "perf_cap_reason"))
     ]
-    if reason_samples:
+    reason_vote_qualified = (
+        len(reason_samples) >= int(thresholds.power_cap_min_reason_samples)
+        and len(reason_samples)
+        >= float(thresholds.power_cap_min_reason_coverage) * len(busy_samples)
+    )
+    if reason_vote_qualified:
         capped_fraction = len(capped_samples) / len(reason_samples)
         if capped_fraction >= float(thresholds.power_cap_busy_sample_fraction):
             return True, {

@@ -12,6 +12,7 @@ from auto_uv.domain.types import (
     VfCurveCandidate,
 )
 from auto_uv.curve.base_vf_curve_voltage_bins import editable_voltage_bins
+from auto_uv.curve.measured_probe_lock_clock import probe_indicates_power_saturation
 from auto_uv.curve.flattened_voltage_probe_curve import build_flattened_voltage_probe_curve
 from auto_uv.curve.rising_tail import tail_ceiling_clock_mhz
 from auto_uv.scan_mode.uv_limits import UvTierTarget, uv_limit_profile_target_for_gpu
@@ -22,6 +23,11 @@ from .settings import (
     AUTO_OC_DEFAULT_MAX_INTERPOLATION_STEPS,
     AUTO_OC_TARGET_PROFILE_ID,
 )
+
+# A stable rung whose measured clock trails its requested lock by more than
+# this while the probe is power-saturated is wall-limited, not capability:
+# 1.5 driver clock steps absorbs bin snapping and telemetry averaging noise.
+AUTO_OC_WALL_SHORTFALL_TOLERANCE_MHZ = 22.5
 
 
 class AutoOcProbeRunner(Protocol):
@@ -113,6 +119,7 @@ def run_auto_oc_candidate_search(
     attempts: list[AutoOcAttempt] = []
     failed_voltage_floor_mv: int | None = None
     consumed_voltage_floor_mv: int | None = None
+    power_wall_reached = False
 
     def probe_step(step: AutoOcStep, *, action: str) -> tuple[VfCurveCandidate, VoltageProbeOutcome]:
         candidate = auto_oc_candidate(
@@ -154,8 +161,31 @@ def run_auto_oc_candidate_search(
         step: AutoOcStep,
         outcome: VoltageProbeOutcome,
     ) -> bool:
-        nonlocal selected_candidate, selected_probe, selected_key
+        nonlocal selected_candidate, selected_probe, selected_key, power_wall_reached
         if outcome.decision.passed and outcome.raw_probe is not None:
+            measured_clock = effective_q2rtx_clock_mhz(outcome.raw_probe)
+            if (
+                measured_clock is not None
+                and float(candidate.target_mhz) - float(measured_clock)
+                > AUTO_OC_WALL_SHORTFALL_TOLERANCE_MHZ
+                and probe_indicates_power_saturation(
+                    outcome.raw_probe,
+                    power_limit_w=getattr(runner, "power_limit_w", None),
+                )
+            ):
+                # The rung is stable but its measured clock is set by the
+                # board-power wall, not by the requested lock. Adopting it
+                # would ship a lock target the cap cannot deliver, and every
+                # higher rung would measure the same wall — the climb is over.
+                power_wall_reached = True
+                log_phase(
+                    log,
+                    "auto-oc",
+                    "power-walled rung not adopted "
+                    f"requested={int(candidate.target_mhz)}MHz "
+                    f"measured={_format_clock(measured_clock)}",
+                )
+                return True
             candidate_key = auto_oc_probe_key(
                 outcome.raw_probe,
                 voltage_mv=int(candidate.voltage_mv),
@@ -210,6 +240,14 @@ def run_auto_oc_candidate_search(
             )
         if auto_oc_should_stop(outcome):
             log_phase(log, "auto-oc", f"stop critical={outcome.decision.reason}")
+            break
+        if power_wall_reached:
+            log_phase(
+                log,
+                "auto-oc",
+                "stop power-wall reached; higher rungs cannot raise a "
+                "capped clock",
+            )
             break
         if passed:
             continue

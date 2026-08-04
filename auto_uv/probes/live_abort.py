@@ -112,13 +112,21 @@ def busy_samples_mostly_power_capped(
     *,
     capped_fraction: float = 0.5,
     power_limit_w: int | None = None,
+    min_reason_samples: int = 3,
+    min_reason_coverage: float = 0.5,
 ) -> bool:
     reason_samples = [
         sample
         for sample in busy_samples
         if getattr(sample, "perf_cap_reason", None) not in (None, "")
     ]
-    if reason_samples:
+    # A sparse reason-bearing subset must not speak for the whole busy
+    # window; without enough coverage the decision falls through to the
+    # average-power signal (same evidence rule as the post-probe check).
+    if (
+        len(reason_samples) >= int(min_reason_samples)
+        and len(reason_samples) >= float(min_reason_coverage) * len(busy_samples)
+    ):
         capped = sum(
             1 for sample in reason_samples if sample_indicates_power_cap(sample)
         )

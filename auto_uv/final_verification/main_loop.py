@@ -19,6 +19,7 @@ from auto_uv.domain.types import (
     VfCurveCandidate,
 )
 from ..curve.rising_tail import tail_ceiling_clock_mhz
+from ..shared.positive_int import positive_int
 from auto_uv.probes.stability_decision import (
     StabilityThresholds,
     evaluate_stable_run,
@@ -212,6 +213,9 @@ def run_final_verification_and_save(
         probe=final_probe,
         base_probe=discovery_summary,
         tail_rise_bins=int(tail_rise_bins),
+        configured_power_limit_w=positive_int(
+            gpu_policy.get("power_limit_w")
+        ),
     )
     final_status = f"completed {format_user_duration(final_verification_duration_s)} long check"
 

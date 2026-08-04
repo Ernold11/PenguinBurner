@@ -582,3 +582,52 @@ def test_performance_sweep_profile_uses_passed_auto_oc_anchors_below_selection()
     assert by_voltage[900]["target_mhz"] == 1400
     assert by_voltage[925]["target_mhz"] == 1425
     assert by_voltage[950]["target_mhz"] == 1450
+
+
+def test_wall_limited_rung_is_not_adopted_and_stops_the_climb() -> None:
+    # A power-bound card delivers at most the wall clock no matter what lock
+    # the rung requests. The first rung whose request exceeds the wall by
+    # more than the shortfall tolerance must not be adopted as capability
+    # (its lock would overstate the curve), and the climb must stop there —
+    # higher rungs can only measure the same wall.
+    curve = base_curve(850, 955, 5, 2400, 15)
+    start = VfCurveCandidate("reclaim-start", 900, 2415, curve)
+    wall_mhz = 2450.0
+    tried: list[int] = []
+
+    class WallRunner:
+        power_limit_w = 460
+
+        def probe_candidate(self, candidate, **_kwargs):
+            tried.append(int(candidate.target_mhz))
+            measured = min(float(candidate.target_mhz), wall_mhz)
+            probe = _probe(
+                candidate.voltage_mv,
+                candidate.target_mhz,
+                q2rtx_clock_mhz=measured,
+            )
+            if measured < float(candidate.target_mhz):
+                probe.perf_cap_reason = "sw-power"
+            return _passed_outcome(probe)
+
+    result = run_auto_oc_candidate_search(
+        base_curve=curve,
+        start_candidate=start,
+        start_probe=_probe(900, 2415, q2rtx_clock_mhz=2415.0),
+        runner=WallRunner(),
+        gpu_name="NVIDIA GeForce RTX 4090",
+        clock_ceiling=None,
+        probe_history=[],
+        log=lambda _message: None,
+        target_voltage_mv=900,
+        target_clock_mhz=2700,
+    )
+
+    selected = result.selected_candidate
+    # The adopted lock never overstates the wall beyond the tolerance.
+    assert float(selected.target_mhz) <= wall_mhz + 22.5
+    # The climb stopped at the first wall-limited rung instead of walking
+    # the remaining ladder to the 2700MHz endpoint.
+    beyond_tolerance = [t for t in tried if t > wall_mhz + 22.5]
+    assert len(beyond_tolerance) == 1
+    assert max(tried) < 2700

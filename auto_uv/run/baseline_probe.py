@@ -255,6 +255,7 @@ def write_verified_candidate(
     *,
     discovery_summary: AutoUvProbeSummary,
     tail_rise_bins: int = 0,
+    configured_power_limit_w: int | None = None,
 ) -> None:
     effective_tail_rise_bins = int(
         candidate.metadata.get("tail_rise_bins", tail_rise_bins)
@@ -266,6 +267,7 @@ def write_verified_candidate(
         probe=probe,
         base_probe=discovery_summary,
         tail_rise_bins=int(effective_tail_rise_bins),
+        configured_power_limit_w=configured_power_limit_w,
     )
 
 

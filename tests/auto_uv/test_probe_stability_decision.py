@@ -483,3 +483,45 @@ def test_sample_is_busy_false_when_power_below_floor_and_util_low() -> None:
     sample = {"gpu_util_pct": 10.0, "power_w": 50.0}
 
     assert not sample_is_busy(sample, busy_power_floor_w=100.0, busy_gpu_util_pct=60.0)
+
+
+def test_sparse_power_cap_reasons_cannot_speak_for_the_window() -> None:
+    # One sw-power sample among nineteen reason-less busy samples previously
+    # yielded a 100% capped fraction (reason-less samples were excluded from
+    # the denominator) and a false power-walled pass. The minimum-evidence
+    # guard makes the reason vote abstain; power is far off the cap, so the
+    # low clock fails as the real demotion it is.
+    samples = [
+        _busy_sample(2111.0, power_w=430.0, perf_cap_reason="sw-power"),
+        *[_busy_sample(2111.0, power_w=430.0, perf_cap_reason=None)] * 19,
+    ]
+    decision = evaluate_loaded_telemetry(
+        samples,
+        baseline_power_w=553.0,
+        baseline_core_clock_mhz=2595.0,
+        power_limit_w=517,
+        thresholds=StabilityThresholds(min_core_clock_pct=94.0),
+        log_path=None,
+    )
+
+    assert not decision.passed
+    assert decision.failure_kind is FailureKind.LOW_CLOCK
+
+
+def test_reason_vote_needs_minimum_sample_count() -> None:
+    # Two capped samples out of two reason-bearing (100% fraction, full
+    # coverage of a two-sample window) still abstain below the three-sample
+    # minimum; the avg-power signal then decides — here power pins the
+    # limit, so the exemption is granted by the power path instead.
+    samples = [_busy_sample(2111.0, power_w=512.0, perf_cap_reason="sw-power")] * 2
+    decision = evaluate_loaded_telemetry(
+        samples,
+        baseline_power_w=553.0,
+        baseline_core_clock_mhz=2595.0,
+        power_limit_w=517,
+        thresholds=StabilityThresholds(min_core_clock_pct=94.0),
+        log_path=None,
+    )
+
+    assert decision.passed
+    assert "power-walled but stable" in decision.reason

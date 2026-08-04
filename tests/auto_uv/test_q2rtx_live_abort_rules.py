@@ -413,3 +413,36 @@ def test_telemetry_abort_passes_when_everything_healthy() -> None:
         )
         is None
     )
+
+
+def test_sparse_power_cap_reasons_do_not_suppress_live_low_clock_abort() -> None:
+    # Only one busy sample carries a sw-power reason among many reason-less
+    # ones: the suppression must abstain (minimum-evidence guard) and the
+    # average-clock abort still fires on the collapsed clock.
+    n = AUTO_UV_STALL_TUNING.avg_core_clock_abort_min_samples + 3
+    samples = [
+        TelemetrySample(
+            elapsed_s=float(i),
+            gpu_util_pct=95.0,
+            power_w=120.0,
+            core_clock_mhz=210.0,
+            perf_cap_reason="sw-power" if i == 6 else None,
+        )
+        for i in range(6, 6 + n)
+    ]
+    progress_state: dict = {}
+
+    reason = telemetry_live_abort_reason(
+        {
+            "elapsed_s": 30.0,
+            "latest_sample": samples[-1],
+            "telemetry_samples": samples,
+        },
+        busy_power_floor_w=60.0,
+        proper_run_power_floor_w=None,
+        target_core_clock_floor_mhz=2000.0,
+        progress_state=progress_state,
+    )
+
+    assert reason is not None
+    assert reason.startswith("telemetry-live-core_clock-avg")

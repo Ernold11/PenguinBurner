@@ -260,3 +260,40 @@ def test_verified_candidate_payload_rejects_malformed_plan_point() -> None:
             plan=[], lock_clock_mhz=2700, voltage_mv=900,
             probe=None, reason="r", label="l",
         )
+
+
+def test_verified_candidate_payload_records_power_regime() -> None:
+    from auto_uv.persistence.verified_candidate_result_file import (
+        verified_candidate_payload,
+    )
+
+    point = {
+        "index": 12,
+        "voltage_mv": 900,
+        "base_mhz": 2500,
+        "target_mhz": 2700,
+        "new_offset_mhz": 200,
+    }
+    capped = verified_candidate_payload(
+        plan=[point],
+        lock_clock_mhz=2700,
+        voltage_mv=900,
+        probe=None,
+        reason="r",
+        label="l",
+        configured_power_limit_w=503,
+    )
+    unrecorded = verified_candidate_payload(
+        plan=[point],
+        lock_clock_mhz=2700,
+        voltage_mv=900,
+        probe=None,
+        reason="r",
+        label="l",
+    )
+
+    # Crash recovery reads this to re-establish the measurement regime; the
+    # explicit None distinguishes "no cap" from a pre-regime cache entry
+    # only by absence of the key in truly old files.
+    assert capped["configured_power_limit_w"] == 503
+    assert unrecorded["configured_power_limit_w"] is None

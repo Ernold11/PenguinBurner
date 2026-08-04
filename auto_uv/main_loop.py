@@ -408,6 +408,7 @@ def run_voltage_frequency_undervolt_main_loop(
             stable_probe,
             discovery_summary=discovery_summary,
             tail_rise_bins=int(tail_rise_bins),
+            configured_power_limit_w=positive_int(gpu.power_limit_w),
         )
         log_user_stage(
             log,
@@ -491,6 +492,7 @@ def run_voltage_frequency_undervolt_main_loop(
                 summary,
                 discovery_summary=discovery_summary,
                 tail_rise_bins=int(descent_tail_rise_bins),
+                configured_power_limit_w=positive_int(gpu.power_limit_w),
             )
 
         def record_passed_candidate(
@@ -716,6 +718,9 @@ def run_voltage_frequency_undervolt_main_loop(
                             tier_stable_probe,
                             discovery_summary=tier_discovery_summary,
                             tail_rise_bins=int(tier_tail_rise_bins),
+                            configured_power_limit_w=positive_int(
+                                gpu.power_limit_w
+                            ),
                         )
                         tier_min_search_voltage_mv = min_search_voltage_mv(
                             start_voltage_mv=int(tier_baseline_candidate.voltage_mv),
@@ -1407,6 +1412,7 @@ def run_adaptive_tier_descent(
             candidate,
             summary,
             discovery_summary=discovery_summary,
+            configured_power_limit_w=positive_int(gpu.power_limit_w),
             tail_rise_bins=int(
                 candidate.metadata.get("tail_rise_bins", tier_descent_tail)
             ),
@@ -2127,6 +2133,28 @@ def run_recovered_previous_crash_selection(
         settings,
         tail_rise_bins=int(recovery_tail_rise_bins),
     )
+    # Re-establish the board-power regime the candidate was measured under.
+    # The verified-candidate pool is regime-heterogeneous (per-tier caps), so
+    # resuming under whatever limit the fresh scan-open applied could
+    # re-verify and save this candidate in a regime it never ran in. Records
+    # from before this field resume under the current limit, logged.
+    recorded_power_limit_w = positive_int(
+        recovery_record.get("configured_power_limit_w")
+    )
+    if recorded_power_limit_w is None:
+        log_phase(
+            log,
+            "crash-recovery",
+            "saved candidate carries no recorded power limit; resuming under "
+            f"the current {_format_power_limit_w(gpu.power_limit_w)} limit",
+        )
+    elif recorded_power_limit_w != positive_int(gpu.power_limit_w):
+        gpu.requested_power_limit_w = int(recorded_power_limit_w)
+        apply_pending_power_limit(
+            gpu,
+            log=log,
+            purpose="crash-recovery regime",
+        )
     runner = AutoUvProbeRunner(
         reader=gpu.reader,
         live_voltage_reader=gpu.live_voltage_reader,

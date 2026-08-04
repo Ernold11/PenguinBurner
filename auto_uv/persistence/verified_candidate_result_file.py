@@ -24,6 +24,7 @@ def write_latest_verified_candidate(
     probe: AutoUvProbeSummary | None,
     base_probe: AutoUvProbeSummary | None = None,
     tail_rise_bins: int = 0,
+    configured_power_limit_w: int | None = None,
 ) -> Path:
     output_path = auto_uv_user_config_dir() / "uv-result" / "auto-uv-latest-verified.json"
     payload = verified_candidate_payload(
@@ -35,6 +36,7 @@ def write_latest_verified_candidate(
         reason="latest-verified",
         label="passed-short-probe",
         tail_rise_bins=int(tail_rise_bins),
+        configured_power_limit_w=configured_power_limit_w,
     )
     path = safe_json_write(output_path, payload)
     append_verified_candidate(payload)
@@ -121,6 +123,7 @@ def verified_candidate_payload(
     base_probe: AutoUvProbeSummary | None = None,
     final_verified: bool = False,
     tail_rise_bins: int = 0,
+    configured_power_limit_w: int | None = None,
 ) -> dict:
     _validate_plan_points(plan)
     flatten_target = build_flatten_target_for_plan(
@@ -143,6 +146,14 @@ def verified_candidate_payload(
         "lock_clock_mhz": int(lock_clock_mhz),
         "candidate_voltage_mv": int(voltage_mv),
         "tail_rise_bins": int(tail_rise_bins),
+        # The board-power regime this candidate was measured under; crash
+        # recovery re-establishes it before re-verifying (None = unlimited
+        # or unrecorded pre-regime cache entry).
+        "configured_power_limit_w": (
+            int(configured_power_limit_w)
+            if configured_power_limit_w is not None
+            else None
+        ),
         "core_oc_mhz": core_oc_mhz(
             lock_clock_mhz=int(lock_clock_mhz),
             base_probe=base_probe,
