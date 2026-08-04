@@ -85,6 +85,29 @@ def test_power_limit_pct_reduces_savings_tiers_and_keeps_performance_full() -> N
     ) == pytest.approx(100.0)
 
 
+def test_rtx_5090_power_limit_percentages_and_575w_tier_caps() -> None:
+    from auto_uv.main_loop import adaptive_tier_power_limit_w
+
+    gpu_name = "NVIDIA GeForce RTX 5090"
+    percentages = {
+        tier: uv_limit_power_limit_pct_for_gpu(gpu_name, profile_id=tier)
+        for tier in ("efficiency", "balanced", "performance")
+    }
+
+    assert percentages == pytest.approx(
+        {"efficiency": 74.8, "balanced": 87.4, "performance": 100.0}
+    )
+    assert {
+        tier: adaptive_tier_power_limit_w(
+            power_limit_pct=percentage,
+            baseline_power_limit_w=575,
+            scan_request_w=None,
+            balanced_pct=percentages["balanced"],
+        )
+        for tier, percentage in percentages.items()
+    } == {"efficiency": 430, "balanced": 503, "performance": 575}
+
+
 def test_power_limit_pct_ampere_efficiency_takes_fixed_reduction() -> None:
     # 80% stored - 12% reduction = 70.4; balanced halfway to full = 85.2.
     assert uv_limit_power_limit_pct_for_gpu(
