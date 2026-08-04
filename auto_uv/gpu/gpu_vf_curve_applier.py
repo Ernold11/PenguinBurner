@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, cast
 
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
+from drivers.nvidia.nvml_gpu_policy import fixed_power_limit_excluded_by_identity
 from runtime.support.vf_curve_plan import apply_plan
 from runtime.support.nvidia_runtime_defaults import reset_nvidia_runtime_defaults
 
@@ -81,6 +82,17 @@ class LiveGpuVfCurveApplier:
         requested_w = _positive_power_limit_w(self.requested_power_limit_w)
         if requested_w is None:
             return self.power_limit_w
+        if fixed_power_limit_excluded_by_identity(
+            gpu_name=self.translated_gpu_policy.get("gpu_name"),
+            pci_device_id=self.translated_gpu_policy.get("pci_device_id"),
+        ):
+            self.requested_power_limit_w = None
+            self.translated_gpu_policy.pop("power_limit_w", None)
+            log(
+                "Auto-UV power limit: skipped final fixed write on mobile GPU; "
+                "continuing without saved power limit"
+            )
+            return None
         requested_w = self.clamp_power_limit_w(int(requested_w))
         if self.power_limit_w == requested_w:
             self.requested_power_limit_w = None
@@ -141,7 +153,17 @@ def open_live_gpu_vf_curve_applier(
     gpu.refresh_points()
     assert_zero_runtime_vf_offsets(gpu)
 
-    baseline_power_limit_w = _positive_power_limit_w(runtime_reset.get("power_limit_w"))
+    gpu_name = runtime_reset.get("gpu_name")
+    pci_device_id = runtime_reset.get("pci_device_id")
+    fixed_power_limit_excluded = fixed_power_limit_excluded_by_identity(
+        gpu_name=gpu_name,
+        pci_device_id=pci_device_id,
+    )
+    baseline_power_limit_w = (
+        _positive_power_limit_w(runtime_reset.get("power_limit_w"))
+        if not fixed_power_limit_excluded
+        else None
+    )
     reset_power_limits = runtime_reset.get("power_limits")
     reset_power_limits = reset_power_limits if isinstance(reset_power_limits, dict) else {}
     min_power_limit_w = _positive_power_limit_w(
@@ -150,12 +172,19 @@ def open_live_gpu_vf_curve_applier(
     max_power_limit_w = _positive_power_limit_w(
         reset_power_limits.get("power_limit_max_w")
     )
-    translated_gpu_policy = {
-        "gpu_name": runtime_reset.get("gpu_name"),
-        "power_limit_w": baseline_power_limit_w,
-    }
+    translated_gpu_policy = {"gpu_name": gpu_name}
+    if pci_device_id:
+        translated_gpu_policy["pci_device_id"] = pci_device_id
+    if baseline_power_limit_w is not None:
+        translated_gpu_policy["power_limit_w"] = baseline_power_limit_w
     requested_power_limit_w = _auto_uv_power_limit_w(runtime_options)
-    if requested_power_limit_w is not None and (
+    if requested_power_limit_w is not None and fixed_power_limit_excluded:
+        log(
+            "Auto-UV power limit: skipped requested fixed write on mobile GPU; "
+            "continuing without saved power limit"
+        )
+        requested_power_limit_w = None
+    elif requested_power_limit_w is not None and (
         baseline_power_limit_w is None
         or int(requested_power_limit_w) >= int(baseline_power_limit_w)
     ):
