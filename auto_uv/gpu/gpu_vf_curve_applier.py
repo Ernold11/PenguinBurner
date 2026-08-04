@@ -13,7 +13,7 @@ from drivers.nvidia.nvml_gpu_policy import fixed_power_limit_excluded_by_identit
 from runtime.support.vf_curve_plan import apply_plan
 from runtime.support.nvidia_runtime_defaults import reset_nvidia_runtime_defaults
 
-from auto_uv.domain.types import AutoUvError
+from auto_uv.domain.types import AutoUvError, AutoUvPowerLimitApplyError
 from auto_uv.scan_mode.auto_uv_mode import (
     ADAPTIVE_TIER_MODES,
     adaptive_tier_option_key,
@@ -78,7 +78,12 @@ class LiveGpuVfCurveApplier:
             clamped = min(clamped, int(self.max_power_limit_w))
         return clamped
 
-    def apply_requested_power_limit(self, *, log: Callable[[str], None]) -> int | None:
+    def apply_requested_power_limit(
+        self,
+        *,
+        log: Callable[[str], None],
+        purpose: str = "final verification",
+    ) -> int | None:
         requested_w = _positive_power_limit_w(self.requested_power_limit_w)
         if requested_w is None:
             return self.power_limit_w
@@ -89,7 +94,8 @@ class LiveGpuVfCurveApplier:
             self.requested_power_limit_w = None
             self.translated_gpu_policy.pop("power_limit_w", None)
             log(
-                "Auto-UV power limit: skipped final fixed write on mobile GPU; "
+                "Auto-UV power limit: skipped fixed write for "
+                f"{str(purpose)} on mobile GPU; "
                 "continuing without saved power limit"
             )
             return None
@@ -103,23 +109,36 @@ class LiveGpuVfCurveApplier:
             )
         except Exception as exc:
             self.requested_power_limit_w = None
-            self.translated_gpu_policy.pop("power_limit_w", None)
-            log(
-                "Auto-UV power limit: unable to apply "
-                f"{int(requested_w)}W for final verification; "
-                "continuing without saved power limit: "
-                f"{exc}"
+            raise AutoUvPowerLimitApplyError(
+                "Auto-UV power limit: unable to establish "
+                f"{int(requested_w)}W for {str(purpose)}; scan stopped before "
+                f"probing under an unknown power regime: {exc}"
+            ) from exc
+        try:
+            verified_power_limit_w = verify_applied_power_limit_w(
+                self.policy_controller,
+                requested_w=int(requested_w),
+                reported_applied_w=int(applied_power_limit_w),
             )
-            return None
-        self.translated_gpu_policy["power_limit_w"] = int(applied_power_limit_w)
+        except AutoUvPowerLimitApplyError:
+            self.requested_power_limit_w = None
+            raise
+        except Exception as exc:
+            self.requested_power_limit_w = None
+            raise AutoUvPowerLimitApplyError(
+                "Auto-UV power limit: unable to read back "
+                f"{int(requested_w)}W for {str(purpose)}; scan stopped before "
+                f"probing under an unknown power regime: {exc}"
+            ) from exc
+        self.translated_gpu_policy["power_limit_w"] = int(verified_power_limit_w)
         # Consume the request so a subsequent tier's apply starts clean and
         # never mistakes this tier's applied cap for a fresh scan-wide one.
         self.requested_power_limit_w = None
         log(
             "Auto-UV power limit: applied "
-            f"{int(applied_power_limit_w)}W for final verification"
+            f"{int(verified_power_limit_w)}W for {str(purpose)}"
         )
-        return int(applied_power_limit_w)
+        return int(verified_power_limit_w)
 
     def close(self) -> None:
         if self.clock_ceiling is not None:
@@ -184,32 +203,34 @@ def open_live_gpu_vf_curve_applier(
             "continuing without saved power limit"
         )
         requested_power_limit_w = None
-    elif requested_power_limit_w is not None and (
-        baseline_power_limit_w is None
-        or int(requested_power_limit_w) >= int(baseline_power_limit_w)
-    ):
+    elif requested_power_limit_w is not None:
+        if min_power_limit_w is not None:
+            requested_power_limit_w = max(
+                int(requested_power_limit_w), int(min_power_limit_w)
+            )
+        if max_power_limit_w is not None:
+            requested_power_limit_w = min(
+                int(requested_power_limit_w), int(max_power_limit_w)
+            )
         try:
             applied_power_limit_w = gpu.apply_power_limit_w(
                 int(requested_power_limit_w)
             )
-        except Exception as exc:
-            translated_gpu_policy.pop("power_limit_w", None)
-            log(
-                "Auto-UV power limit: unable to apply "
-                f"{int(requested_power_limit_w)}W; "
-                "continuing without saved power limit: "
-                f"{exc}"
+            verified_power_limit_w = verify_applied_power_limit_w(
+                gpu,
+                requested_w=int(requested_power_limit_w),
+                reported_applied_w=int(applied_power_limit_w),
             )
-            requested_power_limit_w = None
-            applied_power_limit_w = None
-        if applied_power_limit_w is not None:
-            translated_gpu_policy["power_limit_w"] = int(applied_power_limit_w)
-            log(f"Auto-UV power limit: applied {int(applied_power_limit_w)}W")
-    elif requested_power_limit_w is not None and baseline_power_limit_w is not None:
+        except Exception as exc:
+            raise AutoUvPowerLimitApplyError(
+                "Auto-UV power limit: unable to establish "
+                f"{int(requested_power_limit_w)}W for discovery and sweep; "
+                f"scan stopped before probing: {exc}"
+            ) from exc
+        translated_gpu_policy["power_limit_w"] = int(verified_power_limit_w)
         log(
-            "Auto-UV power limit: keeping "
-            f"{int(baseline_power_limit_w)}W for discovery/sweep; "
-            f"will apply {int(requested_power_limit_w)}W for final verification"
+            "Auto-UV power limit: applied "
+            f"{int(verified_power_limit_w)}W for discovery and sweep"
         )
 
     memory_offset_mhz, memory_offset_limit_mhz = auto_uv_memory_offset_mhz(
@@ -271,10 +292,10 @@ def _auto_uv_power_limit_w(runtime_options: dict) -> int | None:
     value = runtime_options.get("auto_uv_power_limit_w")
     if value in (None, ""):
         # Full scans carry per-tier power limits instead of the scan-wide
-        # key. The HIGHEST tier request stands in as the scan-wide request so
-        # a raised cap (above the stock default) holds during the shared
-        # discovery and the descents, like the old single slider did; each
-        # tier's own (lower) cap still applies at its final verification.
+        # key. The highest tier request establishes the startup regime before
+        # adaptive orchestration begins. Each tier then applies and reads back
+        # its own exact cap before its stock baseline, flattened baseline,
+        # descent, selection, and final verification.
         tier_values = [
             runtime_options.get(adaptive_tier_option_key(tier, "power_limit_w"))
             for tier in ADAPTIVE_TIER_MODES
@@ -298,3 +319,41 @@ def _positive_power_limit_w(value: object) -> int | None:
     except (TypeError, ValueError):
         return None
     return power_limit_w if power_limit_w > 0 else None
+
+
+def verify_applied_power_limit_w(
+    policy_controller,
+    *,
+    requested_w: int,
+    reported_applied_w: int,
+) -> int:
+    """Confirm the daemon's applied result against live capabilities when available."""
+    requested = int(requested_w)
+    reported = int(reported_applied_w)
+    capabilities = getattr(policy_controller, "capabilities", None)
+    if not callable(capabilities):
+        if reported != requested:
+            raise AutoUvPowerLimitApplyError(
+                f"daemon reported {reported}W after requesting {requested}W"
+            )
+        return reported
+    live = capabilities(refresh=True)
+    power = getattr(live, "power", None)
+    readbacks = (
+        getattr(power, "current_w", None),
+        getattr(power, "enforced_w", None),
+    )
+    confirmed = [
+        int(round(float(value)))
+        for value in readbacks
+        if value is not None
+        and abs(float(value) - float(requested)) <= 1.0
+    ]
+    if not confirmed:
+        current_w, enforced_w = readbacks
+        raise AutoUvPowerLimitApplyError(
+            "power-limit read-back mismatch after requesting "
+            f"{requested}W: current={current_w!r} enforced={enforced_w!r} "
+            f"daemon-reported={reported}W"
+        )
+    return requested

@@ -353,6 +353,108 @@ def test_telemetry_derives_power_floor_when_baseline_power_absent() -> None:
     assert decision.reason == "loaded telemetry stable"
 
 
+# --- power-cap-aware clock floor (power-bound regime, e.g. RTX 5090) ---
+
+
+def _busy_sample(
+    clock_mhz: float,
+    *,
+    power_w: float = 450.0,
+    perf_cap_reason: str | None = None,
+) -> dict:
+    return {
+        "elapsed_s": 6.0,
+        "power_w": power_w,
+        "core_clock_mhz": clock_mhz,
+        "gpu_util_pct": 99.0,
+        "perf_cap_reason": perf_cap_reason,
+    }
+
+
+def test_low_clock_passes_when_busy_samples_report_power_cap() -> None:
+    # The field failure shape: avg 2111 vs a 94%-of-2595 floor, driver naming
+    # sw-power on the busy window while average draw sits below the limit
+    # (per-frame spikes hit the cap, the average droops).
+    decision = evaluate_loaded_telemetry(
+        [_busy_sample(2111.0, power_w=453.0, perf_cap_reason="sw-power")] * 4,
+        baseline_power_w=553.0,
+        baseline_core_clock_mhz=2595.0,
+        power_limit_w=517,
+        thresholds=StabilityThresholds(min_core_clock_pct=94.0),
+        log_path=None,
+    )
+
+    assert decision.passed
+    assert "power-walled but stable" in decision.reason
+
+
+def test_low_clock_passes_when_average_power_pins_the_limit() -> None:
+    # No perf-cap telemetry at all; saturation proven by avg power within the
+    # 2% headroom of the applied limit.
+    decision = evaluate_loaded_telemetry(
+        [_busy_sample(2111.0, power_w=512.0)] * 4,
+        baseline_power_w=553.0,
+        baseline_core_clock_mhz=2595.0,
+        power_limit_w=517,
+        thresholds=StabilityThresholds(min_core_clock_pct=94.0),
+        log_path=None,
+    )
+
+    assert decision.passed
+    assert "power-walled but stable" in decision.reason
+
+
+def test_low_clock_still_fails_for_reliability_demotion() -> None:
+    # Same clock shortfall, but power is off the cap and the driver names a
+    # reliability cap: silent V/F demotion must keep failing (S7).
+    decision = evaluate_loaded_telemetry(
+        [_busy_sample(2111.0, power_w=430.0, perf_cap_reason="sw-reliability")] * 4,
+        baseline_power_w=553.0,
+        baseline_core_clock_mhz=2595.0,
+        power_limit_w=517,
+        thresholds=StabilityThresholds(min_core_clock_pct=94.0),
+        log_path=None,
+    )
+
+    assert not decision.passed
+    assert decision.failure_kind is FailureKind.LOW_CLOCK
+    assert decision.reason == "average busy core clock below floor"
+
+
+def test_power_cap_exemption_disarms_when_cap_stops_binding() -> None:
+    # Once an undervolt frees power headroom (power off the limit, driver
+    # reports no cap), a still-low clock is real instability again.
+    decision = evaluate_loaded_telemetry(
+        [_busy_sample(2111.0, power_w=400.0, perf_cap_reason="none")] * 4,
+        baseline_power_w=553.0,
+        baseline_core_clock_mhz=2595.0,
+        power_limit_w=517,
+        thresholds=StabilityThresholds(min_core_clock_pct=94.0),
+        log_path=None,
+    )
+
+    assert not decision.passed
+    assert decision.failure_kind is FailureKind.LOW_CLOCK
+
+
+def test_minority_power_cap_samples_do_not_exempt_low_clock() -> None:
+    samples = [
+        _busy_sample(2111.0, power_w=430.0, perf_cap_reason="sw-power"),
+        *[_busy_sample(2111.0, power_w=430.0, perf_cap_reason="none")] * 3,
+    ]
+    decision = evaluate_loaded_telemetry(
+        samples,
+        baseline_power_w=553.0,
+        baseline_core_clock_mhz=2595.0,
+        power_limit_w=517,
+        thresholds=StabilityThresholds(min_core_clock_pct=94.0),
+        log_path=None,
+    )
+
+    assert not decision.passed
+    assert decision.failure_kind is FailureKind.LOW_CLOCK
+
+
 # --- coverage: evaluate_cuda_companion failure branch ---
 
 

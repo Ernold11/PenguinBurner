@@ -44,6 +44,15 @@ The GUI offers that one-time setup automatically; from the CLI install it with
   previously stable candidates for final verification instead of throwing the
   work away.
 
+When a tier includes a board-power limit, Auto-UV applies and reads back
+that exact limit before the tier's stock baseline, voltage sweep, and final
+verification. It stops instead of probing if the limit cannot be established.
+On a genuinely power-limited card, the lower measured clock is treated as a
+governor operating point only while sustained cap evidence is present; ordinary
+clock regressions still fail. Efficiency and Balanced may then probe a bounded
+clock climb at the already-proven voltage, without raising the voltage or
+loosening the stability checks.
+
 By default Q2RTX runs through PenguinBurner's managed
 [headless benchmark binary](https://github.com/jpietek/Q2RTX-headless), so no
 desktop display server or compositor wrapper is needed. Render resolution is

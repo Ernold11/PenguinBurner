@@ -455,9 +455,10 @@ def select_scan_tuning(
             text="Power limit",
             widget=power_widget,
             tooltip=(
-                "Power limit in watts applied at this profile's final "
-                "verification and saved with its profile. The range comes "
-                "from NVML for the selected GPU; the default position is "
+                "Power limit in watts applied to this profile's stock "
+                "baseline, descent, final verification, and saved profile. "
+                "The range comes from NVML for the selected GPU; the "
+                "default position is "
                 "preset-aware (savings-biased presets cap below stock, "
                 "Performance keeps the stock budget)."
             ),
@@ -612,9 +613,9 @@ def select_scan_tuning(
     # A full scan reuses the Balanced downsweep for Performance only when
     # both tiers descend at the same memory clock, so in that scope the two
     # memory boxes mirror each other. Efficiency stays independent, and the
-    # power limit and clock drop stay per-tier: descents run at stock power,
-    # and the engine gate validates the donated endpoint against
-    # Performance's clock floor itself, falling back to a full descent.
+    # power limit and clock drop stay per-tier. A Balanced descent may be
+    # donated only when Performance uses the same power and memory policy;
+    # otherwise Performance runs its own capped baseline and descent.
     balanced_memory_spin = tier_controls[AUTO_UV_PRESET_BALANCED]["memory"]
     performance_memory_spin = tier_controls[AUTO_UV_PRESET_PERFORMANCE]["memory"]
 

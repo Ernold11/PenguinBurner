@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, cast
 
 from auto_uv.domain.types import FailureKind, FailureSeverity, StableRunDecision
 from ..curve.base_load_telemetry import derive_active_power_floor_w
@@ -19,6 +19,8 @@ class StabilityThresholds:
     min_core_clock_pct: float = 85.0
     clock_tolerance_mhz: float = 5.0
     busy_gpu_util_pct: float = 60.0
+    power_saturation_headroom_pct: float = 2.0
+    power_cap_busy_sample_fraction: float = 0.5
 
 
 FATAL_REASON_PREFIXES = (
@@ -318,6 +320,22 @@ def evaluate_loaded_telemetry(
             )
         avg_clock_mhz = sum(clocks) / len(clocks)
         if avg_clock_mhz < floor_mhz - float(thresholds.clock_tolerance_mhz):
+            power_capped, power_cap_evidence = busy_samples_indicate_power_cap(
+                busy_samples,
+                power_limit_w=power_limit_w,
+                thresholds=thresholds,
+            )
+            if power_capped:
+                # A clock shortfall while the power governor holds the board
+                # at its cap is the cap working, not V/F instability. The
+                # exemption disarms itself as an undervolt succeeds: once
+                # power drops off the limit, the clock floor regains full
+                # force, so genuinely demoted clocks still fail here.
+                return _pass(
+                    "loaded telemetry power-walled but stable "
+                    f"avg={avg_clock_mhz:.1f}MHz floor={floor_mhz:.1f}MHz",
+                    log_path=log_path,
+                )
             return _fail(
                 FailureKind.LOW_CLOCK,
                 FailureSeverity.RECOVERABLE,
@@ -326,10 +344,67 @@ def evaluate_loaded_telemetry(
                     "avg_core_clock_mhz": avg_clock_mhz,
                     "floor_mhz": floor_mhz,
                     "busy_samples": len(busy_samples),
+                    **power_cap_evidence,
                 },
                 log_path=log_path,
             )
     return _pass("loaded telemetry stable", log_path=log_path)
+
+
+def busy_samples_indicate_power_cap(
+    busy_samples: list[Any],
+    *,
+    power_limit_w: int | None,
+    thresholds: StabilityThresholds = StabilityThresholds(),
+) -> tuple[bool, dict[str, Any]]:
+    """Whether the busy window ran against the board-power cap.
+
+    Two independent signals, either suffices: the driver's perf-cap reason
+    names a power cap on most busy samples that report one (robust even when
+    per-frame spikes hold the *average* power below the limit), or the
+    average busy power sits within the saturation headroom of the applied
+    limit.
+    """
+    reason_samples = [
+        sample
+        for sample in busy_samples
+        if read_field(sample, "perf_cap_reason") not in (None, "")
+    ]
+    capped_samples = [
+        sample
+        for sample in reason_samples
+        if perf_cap_reason_indicates_power(read_field(sample, "perf_cap_reason"))
+    ]
+    if reason_samples:
+        capped_fraction = len(capped_samples) / len(reason_samples)
+        if capped_fraction >= float(thresholds.power_cap_busy_sample_fraction):
+            return True, {
+                "power_cap_sample_fraction": round(capped_fraction, 3),
+                "power_cap_reason_samples": len(reason_samples),
+            }
+    powers = [
+        float(read_field(sample, "power_w"))
+        for sample in busy_samples
+        if read_field(sample, "power_w") is not None
+    ]
+    if powers and power_limit_w is not None and int(power_limit_w) > 0:
+        avg_power_w = sum(powers) / len(powers)
+        saturation_floor_w = float(power_limit_w) * (
+            1.0 - max(0.0, float(thresholds.power_saturation_headroom_pct)) / 100.0
+        )
+        if avg_power_w >= saturation_floor_w:
+            return True, {
+                "avg_busy_power_w": round(avg_power_w, 1),
+                "power_saturation_floor_w": round(saturation_floor_w, 1),
+            }
+    return False, {}
+
+
+def perf_cap_reason_indicates_power(reason_text: Any) -> bool:
+    reason = str(reason_text or "").lower()
+    return any(
+        "power" in token.strip() for token in reason.replace(",", "+").split("+")
+    )
 
 
 def evaluate_cuda_companion(
@@ -416,7 +491,7 @@ def _benchmark_evidence(benchmark_summary: Any) -> dict[str, Any]:
 def _measurement_telemetry_samples(result: Any) -> list[Any]:
     getter = getattr(result, "measurement_telemetry_samples", None)
     if callable(getter):
-        return list(getter())
+        return list(cast(Iterable[Any], getter()))
     benchmark_samples = read_field(result, "benchmark_telemetry_samples")
     if benchmark_samples is not None:
         return list(benchmark_samples)

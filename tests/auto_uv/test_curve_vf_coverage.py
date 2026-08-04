@@ -210,3 +210,35 @@ def test_lock_clock_takes_min_of_measured_and_previous() -> None:
 
     assert result < 2400
     assert result == min(2400, result)
+
+
+def test_lock_clock_does_not_ratchet_power_capped_measurement() -> None:
+    curve = base_curve(800, 1025, 25, 2000, 30)
+    probe = _probe_summary(avg_core_clock_mhz=2100.0)
+    probe.perf_cap_reason = "sw-power"
+
+    assert (
+        lock_clock_from_probe_loaded_clock(
+            curve,
+            probe=probe,
+            previous_lock_clock_mhz=2400,
+            power_limit_w=575,
+        )
+        == 2400
+    )
+
+
+def test_lock_clock_uses_power_limit_when_perf_cap_reason_is_unavailable() -> None:
+    curve = base_curve(800, 1025, 25, 2000, 30)
+    probe = _probe_summary(avg_core_clock_mhz=2100.0)
+    probe.avg_power_w = 566.0
+
+    assert (
+        lock_clock_from_probe_loaded_clock(
+            curve,
+            probe=probe,
+            previous_lock_clock_mhz=2400,
+            power_limit_w=575,
+        )
+        == 2400
+    )

@@ -15,6 +15,10 @@ class AutoUvError(RuntimeError):
     pass
 
 
+class AutoUvPowerLimitApplyError(AutoUvError):
+    """The requested scan power regime could not be established reliably."""
+
+
 class AutoUvFinalChoiceDiscarded(RuntimeError):
     pass
 

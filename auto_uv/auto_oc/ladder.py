@@ -38,6 +38,40 @@ def build_auto_oc_ladder(
     if start_voltage == endpoint_voltage and start_clock == endpoint_clock:
         return []
 
+    # Power-bound savings tiers have already found their lowest stable
+    # voltage. Reclaim the clock headroom created by that undervolt without
+    # walking voltage upward again.
+    if start_voltage == endpoint_voltage:
+        step_count = max(1, int(max_steps))
+        seen_clocks: set[int] = set()
+        steps: list[AutoOcStep] = []
+        for raw_index in range(1, step_count + 1):
+            ratio = float(raw_index) / float(step_count)
+            requested_clock_mhz = int(
+                round(
+                    float(start_clock)
+                    + (float(endpoint_clock - start_clock) * ratio)
+                )
+            )
+            target_mhz = bounded_clock(
+                requested_clock_mhz,
+                start_clock_mhz=start_clock,
+                endpoint_clock_mhz=endpoint_clock,
+                clock_step_mhz=int(clock_step_mhz),
+            )
+            if target_mhz <= start_clock or target_mhz in seen_clocks:
+                continue
+            seen_clocks.add(target_mhz)
+            steps.append(
+                AutoOcStep(
+                    index=len(steps) + 1,
+                    voltage_mv=int(start_voltage),
+                    target_mhz=int(target_mhz),
+                    ratio=ratio,
+                )
+            )
+        return steps
+
     voltages = [
         int(voltage)
         for voltage in sorted(editable_voltage_bins(base_curve))

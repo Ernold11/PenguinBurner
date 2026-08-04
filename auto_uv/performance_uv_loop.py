@@ -18,7 +18,12 @@ from auto_uv.curve.performance_sweep_profile import (
 from auto_uv.domain.scan_settings import AutoUvScanSettings
 from auto_uv.probes.runner import AutoUvProbeRunner
 from auto_uv.run.voltage_sweep_state import LowerVoltageSweepResult, VoltageProbeOutcome
-from auto_uv.scan_mode.auto_uv_mode import AUTO_UV_MODE_PERFORMANCE
+from auto_uv.scan_mode.auto_uv_mode import (
+    AUTO_UV_MODE_BALANCED,
+    AUTO_UV_MODE_EFFICIENCY,
+    AUTO_UV_MODE_PERFORMANCE,
+)
+from auto_uv.scan_mode.uv_limits import uv_limit_profile_target_for_gpu
 
 
 def run_performance_uv_loop(
@@ -135,6 +140,92 @@ def select_performance_auto_oc_candidate(
         int(selected.target_mhz),
         None if selected_changed else stable_probe,
         auto_oc_metadata,
+    )
+
+
+def select_power_bound_clock_reclaim_candidate(
+    base_curve: list[dict],
+    *,
+    auto_uv_mode: str,
+    stable_plan: list[dict],
+    stable_voltage_mv: int,
+    stable_lock_clock_mhz: int,
+    stable_probe: AutoUvProbeSummary | None,
+    stable_history: list[AutoUvProbeSummary],
+    runner: AutoUvProbeRunner,
+    gpu_name: object | None,
+    clock_ceiling,
+    probe_history: list[AutoUvProbeSummary],
+    log: Callable[[str], None],
+    tail_rise_bins: int = 0,
+    measured_baseline_clock_mhz: float | int | None = None,
+) -> tuple[list[dict], int, int, AutoUvProbeSummary | None, dict]:
+    """Raise clock at the proven voltage after a capped savings-tier descent."""
+    mode = str(auto_uv_mode)
+    if mode not in {AUTO_UV_MODE_EFFICIENCY, AUTO_UV_MODE_BALANCED}:
+        return (
+            stable_plan,
+            int(stable_voltage_mv),
+            int(stable_lock_clock_mhz),
+            stable_probe,
+            {},
+        )
+    endpoint = uv_limit_profile_target_for_gpu(gpu_name, mode)
+    if endpoint is None or int(endpoint.clock_mhz) <= int(stable_lock_clock_mhz):
+        return (
+            stable_plan,
+            int(stable_voltage_mv),
+            int(stable_lock_clock_mhz),
+            stable_probe,
+            {},
+        )
+    log_phase(
+        log,
+        "clock-reclaim",
+        f"{mode} fixed-voltage climb "
+        f"{int(stable_voltage_mv)}mV@{int(stable_lock_clock_mhz)}MHz -> "
+        f"{int(endpoint.clock_mhz)}MHz",
+    )
+    start_candidate = VfCurveCandidate(
+        label=f"{mode}-clock-reclaim-start",
+        voltage_mv=int(stable_voltage_mv),
+        target_mhz=int(stable_lock_clock_mhz),
+        flattened_plan=stable_plan,
+    )
+    result = run_auto_oc_candidate_search(
+        base_curve=base_curve,
+        start_candidate=start_candidate,
+        start_probe=stable_probe,
+        runner=runner,
+        gpu_name=gpu_name,
+        clock_ceiling=clock_ceiling,
+        probe_history=probe_history,
+        log=log,
+        tail_rise_bins=int(tail_rise_bins),
+        target_voltage_mv=int(stable_voltage_mv),
+        target_clock_mhz=int(endpoint.clock_mhz),
+        measured_baseline_clock_mhz=measured_baseline_clock_mhz,
+        target_profile_id=mode,
+        probe_stable_history=stable_history,
+    )
+    for attempt in getattr(result, "attempts", ()) or ():
+        if attempt.outcome.decision.passed and attempt.outcome.raw_probe is not None:
+            stable_history.append(attempt.outcome.raw_probe)
+    selected = result.selected_candidate
+    selected_changed = int(selected.target_mhz) != int(stable_lock_clock_mhz)
+    metadata = {
+        "clock_reclaim": True,
+        "clock_reclaim_start_mhz": int(stable_lock_clock_mhz),
+        "clock_reclaim_target_mhz": int(endpoint.clock_mhz),
+        "clock_reclaim_selected_mhz": int(selected.target_mhz),
+        "clock_reclaim_voltage_mv": int(stable_voltage_mv),
+    }
+    return (
+        selected.flattened_plan,
+        int(selected.voltage_mv),
+        int(selected.target_mhz),
+        result.selected_probe if selected_changed else stable_probe,
+        metadata,
     )
 
 

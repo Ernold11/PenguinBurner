@@ -11,6 +11,7 @@ from auto_uv.domain.user_options import (
     AUTO_UV_STALL_TUNING,
 )
 from .runtime_guardrails import core_clock_below_floor, telemetry_sample_is_busy
+from .stability_decision import perf_cap_reason_indicates_power
 from .summary import mean
 
 
@@ -21,6 +22,7 @@ def telemetry_live_abort_reason(
     proper_run_power_floor_w: float | None,
     target_core_clock_floor_mhz: float | None,
     progress_state: dict,
+    power_limit_w: int | None = None,
 ) -> str | None:
     samples = list(state.get("telemetry_samples") or [])
     busy_samples = [s for s in samples if telemetry_sample_is_busy(s, busy_power_floor_w)]
@@ -52,6 +54,10 @@ def telemetry_live_abort_reason(
     low_live = low_live_clock_abort_reason(
         live_core_clock_mhz=live_clock,
         live_sample_is_busy=latest_busy,
+        live_sample_power_capped=sample_indicates_power_cap(
+            latest,
+            power_limit_w=power_limit_w,
+        ),
         core_clock_samples=clocks,
         target_core_clock_floor_mhz=target_core_clock_floor_mhz,
         progress_state=progress_state,
@@ -64,6 +70,13 @@ def telemetry_live_abort_reason(
         and avg_clock is not None
         and len(clocks) >= AUTO_UV_STALL_TUNING.avg_core_clock_abort_min_samples
         and core_clock_below_floor(avg_clock, target_core_clock_floor_mhz)
+        # A power-governed busy window legitimately averages below the floor;
+        # the post-probe decision re-checks this with full saturation
+        # evidence, so the live abort stays quiet under a power cap.
+        and not busy_samples_mostly_power_capped(
+            busy_samples,
+            power_limit_w=power_limit_w,
+        )
     ):
         return (
             f"telemetry-live-core_clock-avg current={avg_clock:.1f}MHz "
@@ -71,6 +84,54 @@ def telemetry_live_abort_reason(
             f"tolerance={AUTO_UV_CURVE_TUNING.clock_select_tolerance_mhz:.1f}MHz"
         )
     return None
+
+
+def sample_indicates_power_cap(
+    sample,
+    *,
+    power_limit_w: int | None = None,
+    power_saturation_headroom_pct: float = 2.0,
+) -> bool:
+    if sample is None:
+        return False
+    if perf_cap_reason_indicates_power(
+        getattr(sample, "perf_cap_reason", None)
+    ):
+        return True
+    power_w = getattr(sample, "power_w", None)
+    if power_w is None or power_limit_w is None or int(power_limit_w) <= 0:
+        return False
+    saturation_floor_w = float(power_limit_w) * (
+        1.0 - max(0.0, float(power_saturation_headroom_pct)) / 100.0
+    )
+    return float(power_w) >= float(saturation_floor_w)
+
+
+def busy_samples_mostly_power_capped(
+    busy_samples: list,
+    *,
+    capped_fraction: float = 0.5,
+    power_limit_w: int | None = None,
+) -> bool:
+    reason_samples = [
+        sample
+        for sample in busy_samples
+        if getattr(sample, "perf_cap_reason", None) not in (None, "")
+    ]
+    if reason_samples:
+        capped = sum(
+            1 for sample in reason_samples if sample_indicates_power_cap(sample)
+        )
+        if capped / len(reason_samples) >= float(capped_fraction):
+            return True
+    powers = [
+        float(sample.power_w)
+        for sample in busy_samples
+        if getattr(sample, "power_w", None) is not None
+    ]
+    if not powers or power_limit_w is None or int(power_limit_w) <= 0:
+        return False
+    return sum(powers) / len(powers) >= float(power_limit_w) * 0.98
 
 
 def selected_nvidia_gpu_idle_abort_reason(state: dict) -> str | None:
@@ -178,6 +239,7 @@ def low_live_clock_abort_reason(
     core_clock_samples: list[float],
     target_core_clock_floor_mhz: float | None,
     progress_state: dict,
+    live_sample_power_capped: bool = False,
 ) -> str | None:
     if (
         target_core_clock_floor_mhz is None
@@ -188,6 +250,7 @@ def low_live_clock_abort_reason(
     progress_state["low_core_clock_streak"] = (
         int(progress_state.get("low_core_clock_streak", 0)) + 1
         if live_sample_is_busy
+        and not live_sample_power_capped
         and core_clock_below_floor(live_core_clock_mhz, target_core_clock_floor_mhz)
         else 0
     )

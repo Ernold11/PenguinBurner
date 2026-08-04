@@ -186,6 +186,7 @@ def probe_voltage_candidate(
             proper_run_power_floor_w=proper_run_power_floor_w,
             target_core_clock_floor_mhz=target_floor_mhz,
             progress_state=progress_state,
+            power_limit_w=power_limit_w,
         )
         if telemetry_abort is not None:
             return telemetry_abort

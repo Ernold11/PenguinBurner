@@ -89,16 +89,39 @@ def run_discovery_probe(
         marker_details=marker_details,
         event_callback=event_callback,
     )
+    return run_discovery_probe_with_runner(
+        base_curve,
+        runner=runner,
+        log=log,
+        event_callback=event_callback,
+    )
+
+
+def run_discovery_probe_with_runner(
+    base_curve: list[dict],
+    *,
+    runner: AutoUvProbeRunner,
+    log: Callable[[str], None],
+    event_callback: AutoUvEventCallback | None,
+    label: str = "base default curve",
+) -> tuple[AutoUvProbeSummary, object]:
+    """Measure a stock baseline with an already configured scan runner.
+
+    Adaptive profiles use this entry point after applying each tier's own
+    power and memory policy, so target derivation and later probes share the
+    exact shipped regime.
+    """
+    point = max(editable_base_vf_points(base_curve), key=lambda item: item.target_mhz)
     emit_auto_uv_event(
         event_callback,
         "probe_start",
         stage="base-baseline",
         voltage_mv=int(point.voltage_mv),
         clock_mhz=int(point.target_mhz),
-        label="base default curve",
+        label=str(label),
         elapsed_s=0.0,
         target_duration_s=reference_discovery_q2rtx_duration_s(
-            int(short_probe_base_duration_s)
+            int(runner.short_probe_base_duration_s)
         ),
     )
     summary, result = runner.probe_default_curve(
@@ -119,7 +142,7 @@ def run_discovery_probe(
     log_benchmark(log, phase="discover", probe=summary)
     light_load_diagnostic = selected_nvidia_light_load_diagnostic(
         list(getattr(result, "telemetry_samples", []) or []),
-        power_limit_w=reference_power_limit_w,
+        power_limit_w=runner.power_limit_w,
     )
     if light_load_diagnostic is not None:
         log_phase(log, "discover", light_load_diagnostic)
@@ -128,8 +151,8 @@ def run_discovery_probe(
 
 def baseline_load_reference_power_limit_w(gpu) -> int | None:
     return _positive_power_limit_w(
-        getattr(gpu, "baseline_power_limit_w", None)
-    ) or _positive_power_limit_w(getattr(gpu, "power_limit_w", None))
+        getattr(gpu, "power_limit_w", None)
+    ) or _positive_power_limit_w(getattr(gpu, "baseline_power_limit_w", None))
 
 
 def _positive_power_limit_w(value: object) -> int | None:
@@ -198,6 +221,7 @@ def adjust_baseline_to_measured_clock(
         base_curve,
         probe=stable_probe,
         previous_lock_clock_mhz=int(candidate.target_mhz),
+        power_limit_w=getattr(gpu, "power_limit_w", None),
     )
     if int(measured_target_mhz) == int(candidate.target_mhz):
         return candidate

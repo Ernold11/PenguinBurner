@@ -134,6 +134,26 @@ def test_auto_oc_ladder_climbs_strictly_by_voltage_on_sparse_bins() -> None:
     assert len({step.voltage_mv for step in ladder}) == len(ladder)
 
 
+def test_auto_oc_ladder_can_reclaim_clock_at_fixed_voltage() -> None:
+    curve = base_curve(850, 950, 5, 2400, 15)
+
+    ladder = build_auto_oc_ladder(
+        curve,
+        start_voltage_mv=900,
+        start_clock_mhz=2400,
+        endpoint_voltage_mv=900,
+        endpoint_clock_mhz=2700,
+        max_steps=4,
+    )
+
+    assert [(step.voltage_mv, step.target_mhz) for step in ladder] == [
+        (900, 2475),
+        (900, 2550),
+        (900, 2625),
+        (900, 2700),
+    ]
+
+
 def test_auto_oc_probe_key_uses_q2rtx_clock_before_fps() -> None:
     lower_fps_higher_clock = _probe(950, 2745, fps=80.0, q2rtx_clock_mhz=2735.0)
     higher_fps_lower_clock = _probe(925, 2670, fps=120.0, q2rtx_clock_mhz=2680.0)
@@ -197,6 +217,56 @@ def test_auto_oc_search_climbs_voltage_and_clock_to_target() -> None:
         925,
         2980,
     )
+
+
+def test_auto_oc_search_reclaims_clock_at_fixed_voltage_with_capped_history() -> None:
+    curve = base_curve(850, 950, 5, 2400, 15)
+    start = VfCurveCandidate("balanced-winner", 900, 2400, curve)
+    baseline = _probe(1000, 2500, fps=90.0)
+    descended = _probe(900, 2400, fps=92.0)
+    tried: list[tuple[int, int]] = []
+    received_histories: list[list[AutoUvProbeSummary]] = []
+
+    class FakeRunner:
+        def probe_candidate(self, candidate, **kwargs):
+            tried.append((candidate.voltage_mv, candidate.target_mhz))
+            received_histories.append(kwargs["stable_history"])
+            return _passed_outcome(
+                _probe(
+                    candidate.voltage_mv,
+                    candidate.target_mhz,
+                    fps=93.0,
+                    q2rtx_clock_mhz=float(candidate.target_mhz),
+                )
+            )
+
+    result = run_auto_oc_candidate_search(
+        base_curve=curve,
+        start_candidate=start,
+        start_probe=descended,
+        runner=FakeRunner(),
+        gpu_name="NVIDIA GeForce RTX 5090",
+        clock_ceiling=None,
+        probe_history=[],
+        log=lambda _message: None,
+        max_interpolation_steps=4,
+        target_voltage_mv=900,
+        target_clock_mhz=2700,
+        target_profile_id="balanced",
+        probe_stable_history=[baseline, descended],
+    )
+
+    assert tried == [
+        (900, 2475),
+        (900, 2550),
+        (900, 2625),
+        (900, 2700),
+    ]
+    assert all(history == [baseline, descended] for history in received_histories)
+    assert (
+        result.selected_candidate.voltage_mv,
+        result.selected_candidate.target_mhz,
+    ) == (900, 2700)
 
 
 def test_auto_oc_search_skips_target_voltage_below_uv_candidate() -> None:

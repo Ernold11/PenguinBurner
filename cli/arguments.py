@@ -195,8 +195,9 @@ def parse_arguments(argv):
             metavar="W",
             help=(
                 f"Full-scan override: the {tier_label} tier's power limit in "
-                "watts, applied at that tier's final verification and saved "
-                "with its profile. Only meaningful with --auto-uv-mode adaptive."
+                "watts, applied for that tier's baseline, descent, final "
+                "verification, and saved profile. Only meaningful with "
+                "--auto-uv-mode adaptive."
             ),
         )
         auto_uv_group.add_argument(

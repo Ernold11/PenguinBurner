@@ -62,11 +62,14 @@ def run_auto_oc_candidate_search(
     target_voltage_mv: int | None = None,
     target_clock_mhz: int | None = None,
     measured_baseline_clock_mhz: float | int | None = None,
+    target_profile_id: str = AUTO_OC_TARGET_PROFILE_ID,
+    probe_stable_history: list[AutoUvProbeSummary] | None = None,
 ) -> AutoOcSearchResult:
     endpoint = auto_oc_endpoint(
         gpu_name,
         target_voltage_mv=target_voltage_mv,
         target_clock_mhz=target_clock_mhz,
+        target_profile_id=str(target_profile_id),
     )
     if endpoint is None:
         return _skip(start_candidate, start_probe, "no-auto-oc-target")
@@ -134,7 +137,7 @@ def run_auto_oc_candidate_search(
         )
         outcome = runner.probe_candidate(
             candidate,
-            stable_history=[],
+            stable_history=list(probe_stable_history or []),
             phase_label="candidate",
             enforce_target_core_clock_floor=False,
             summarize_saturated_tail=False,
@@ -274,8 +277,9 @@ def auto_oc_endpoint(
     *,
     target_voltage_mv: int | None = None,
     target_clock_mhz: int | None = None,
+    target_profile_id: str = AUTO_OC_TARGET_PROFILE_ID,
 ) -> UvTierTarget | None:
-    table_target = uv_limit_profile_target_for_gpu(gpu_name, AUTO_OC_TARGET_PROFILE_ID)
+    table_target = uv_limit_profile_target_for_gpu(gpu_name, target_profile_id)
     voltage_mv = positive_int(target_voltage_mv)
     clock_mhz = positive_int(target_clock_mhz)
     if table_target is None:

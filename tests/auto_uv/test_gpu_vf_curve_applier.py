@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+import pytest
+
+from auto_uv.domain.types import AutoUvPowerLimitApplyError
 from auto_uv.gpu import gpu_vf_curve_applier
 from runtime.support import nvidia_runtime_defaults as runtime_defaults
 
@@ -70,17 +73,21 @@ def test_open_live_gpu_applier_applies_raised_auto_uv_power_limit(monkeypatch) -
     assert applier.baseline_power_limit_w == 360
     assert applier.requested_power_limit_w == 390
     assert applier.translated_gpu_policy["power_limit_w"] == 390
-    assert logs == ["Auto-UV power limit: applied 390W"]
+    assert logs == [
+        "Auto-UV power limit: applied 390W for discovery and sweep"
+    ]
 
     applier.apply_requested_power_limit(log=logs.append)
 
     assert controllers[0].power_limit_calls == [390]
     assert applier.power_limit_w == 390
     assert applier.translated_gpu_policy["power_limit_w"] == 390
-    assert logs == ["Auto-UV power limit: applied 390W"]
+    assert logs == [
+        "Auto-UV power limit: applied 390W for discovery and sweep"
+    ]
 
 
-def test_open_live_gpu_applier_defers_reduced_auto_uv_power_limit_until_final(
+def test_open_live_gpu_applier_applies_reduced_auto_uv_power_limit_for_scan(
     monkeypatch,
 ) -> None:
     logs: list[str] = []
@@ -92,14 +99,13 @@ def test_open_live_gpu_applier_defers_reduced_auto_uv_power_limit_until_final(
         log=logs.append,
     )
 
-    assert controllers[0].power_limit_calls == []
-    assert applier.power_limit_w == 360
+    assert controllers[0].power_limit_calls == [319]
+    assert applier.power_limit_w == 319
     assert applier.baseline_power_limit_w == 360
     assert applier.requested_power_limit_w == 319
-    assert applier.translated_gpu_policy["power_limit_w"] == 360
+    assert applier.translated_gpu_policy["power_limit_w"] == 319
     assert logs == [
-        "Auto-UV power limit: keeping 360W for discovery/sweep; "
-        "will apply 319W for final verification"
+        "Auto-UV power limit: applied 319W for discovery and sweep"
     ]
 
     applier.apply_requested_power_limit(log=logs.append)
@@ -107,31 +113,29 @@ def test_open_live_gpu_applier_defers_reduced_auto_uv_power_limit_until_final(
     assert controllers[0].power_limit_calls == [319]
     assert applier.power_limit_w == 319
     assert applier.translated_gpu_policy["power_limit_w"] == 319
-    assert logs[-1] == "Auto-UV power limit: applied 319W for final verification"
+    assert logs == [
+        "Auto-UV power limit: applied 319W for discovery and sweep"
+    ]
 
 
-def test_open_live_gpu_applier_continues_when_raised_power_limit_is_rejected(
+def test_open_live_gpu_applier_stops_when_raised_power_limit_is_rejected(
     monkeypatch,
 ) -> None:
     logs: list[str] = []
     controllers = _patch_power_environment(monkeypatch, error=_POWER_LIMIT_ERROR)
 
-    applier = gpu_vf_curve_applier.open_live_gpu_vf_curve_applier(
-        gpu_index=0,
-        runtime_options={"auto_uv_power_limit_w": 390},
-        log=logs.append,
-    )
+    with pytest.raises(
+        AutoUvPowerLimitApplyError,
+        match="scan stopped before probing",
+    ):
+        gpu_vf_curve_applier.open_live_gpu_vf_curve_applier(
+            gpu_index=0,
+            runtime_options={"auto_uv_power_limit_w": 390},
+            log=logs.append,
+        )
 
     assert controllers[0].power_limit_calls == [390]
-    assert applier.power_limit_w is None
-    assert applier.requested_power_limit_w is None
-    assert "power_limit_w" not in applier.translated_gpu_policy
-    assert logs == [
-        "Auto-UV power limit: unable to apply 390W; "
-        "continuing without saved power limit: "
-        "nvmlDeviceSetPowerManagementLimit failed with NVML error 3: "
-        "Not Supported"
-    ]
+    assert logs == []
 
 
 def test_laptop_fixed_power_limit_is_platform_managed_and_not_saved(
@@ -170,7 +174,7 @@ def test_laptop_fixed_power_limit_is_platform_managed_and_not_saved(
     assert applier.apply_requested_power_limit(log=logs.append) is None
     assert controllers[0].power_limit_calls == []
     assert logs == [
-        "Auto-UV power limit: skipped final fixed write on mobile GPU; "
+        "Auto-UV power limit: skipped fixed write for final verification on mobile GPU; "
         "continuing without saved power limit"
     ]
 
@@ -217,12 +221,12 @@ def test_pci_identified_mobile_gpu_never_writes_or_saves_fixed_power_limit(
     assert applier.apply_requested_power_limit(log=logs.append) is None
     assert controllers[0].power_limit_calls == []
     assert logs[-1] == (
-        "Auto-UV power limit: skipped final fixed write on mobile GPU; "
+        "Auto-UV power limit: skipped fixed write for final verification on mobile GPU; "
         "continuing without saved power limit"
     )
 
 
-def test_final_power_limit_rejection_is_not_fatal_and_not_saved() -> None:
+def test_tier_power_limit_rejection_is_fatal_and_preserves_known_cap() -> None:
     logs: list[str] = []
 
     class FakePolicyController:
@@ -246,18 +250,80 @@ def test_final_power_limit_rejection_is_not_fatal_and_not_saved() -> None:
         requested_power_limit_w=43,
     )
 
-    assert applier.apply_requested_power_limit(log=logs.append) is None
+    with pytest.raises(
+        AutoUvPowerLimitApplyError,
+        match="probing under an unknown power regime",
+    ):
+        applier.apply_requested_power_limit(log=logs.append)
 
     assert policy_controller.power_limit_calls == [43]
-    assert applier.power_limit_w is None
+    assert applier.power_limit_w == 360
     assert applier.requested_power_limit_w is None
-    assert "power_limit_w" not in applier.translated_gpu_policy
-    assert logs == [
-        "Auto-UV power limit: unable to apply 43W for final verification; "
-        "continuing without saved power limit: "
-        "nvmlDeviceSetPowerManagementLimit failed with NVML error 3: "
-        "Not Supported"
-    ]
+    assert applier.translated_gpu_policy["power_limit_w"] == 360
+    assert logs == []
+
+
+def test_power_limit_readback_mismatch_stops_before_policy_is_updated() -> None:
+    class FakePolicyController:
+        def apply_power_limit_w(self, power_limit_w):
+            return int(power_limit_w)
+
+        def capabilities(self, *, refresh):
+            assert refresh
+            return cast(
+                Any,
+                type(
+                    "Caps",
+                    (),
+                    {
+                        "power": type(
+                            "Power",
+                            (),
+                            {"current_w": 300.0, "enforced_w": 300.0},
+                        )()
+                    },
+                )(),
+            )
+
+    applier = gpu_vf_curve_applier.LiveGpuVfCurveApplier(
+        gpu_index=0,
+        gpu=cast(Any, FakePolicyController()),
+        runtime_default_plan=[],
+        translated_gpu_policy={"power_limit_w": 360},
+        baseline_power_limit_w=360,
+        requested_power_limit_w=320,
+    )
+
+    with pytest.raises(AutoUvPowerLimitApplyError, match="read-back mismatch"):
+        applier.apply_requested_power_limit(log=lambda _message: None)
+
+    assert applier.power_limit_w == 360
+    assert applier.requested_power_limit_w is None
+
+
+def test_power_limit_readback_error_stops_before_policy_is_updated() -> None:
+    class FakePolicyController:
+        def apply_power_limit_w(self, power_limit_w):
+            return int(power_limit_w)
+
+        def capabilities(self, *, refresh):
+            assert refresh
+            raise RuntimeError("daemon read-back unavailable")
+
+    applier = gpu_vf_curve_applier.LiveGpuVfCurveApplier(
+        gpu_index=0,
+        gpu=cast(Any, FakePolicyController()),
+        runtime_default_plan=[],
+        translated_gpu_policy={"power_limit_w": 360},
+        baseline_power_limit_w=360,
+        requested_power_limit_w=320,
+    )
+
+    with pytest.raises(AutoUvPowerLimitApplyError, match="unable to read back"):
+        applier.apply_requested_power_limit(log=lambda _message: None)
+
+    assert applier.power_limit_w == 360
+    assert applier.requested_power_limit_w is None
 
 
 class _MemoryOffsetPolicyController:
