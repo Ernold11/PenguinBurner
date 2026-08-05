@@ -35,9 +35,22 @@ def probe_indicates_power_saturation(
     *,
     power_limit_w: int | None,
     power_saturation_headroom_pct: float = 2.0,
+    require_power_evidence: bool = False,
 ) -> bool:
+    """Whether this probe ran against the board-power wall.
+
+    The driver's perf-cap reason alone is a weak signal: Blackwell summarizes
+    a power cap on probes drawing well under the configured limit (287W of a
+    319W cap in the 2026-08-04 log). That is enough to stop the scan from
+    ratcheting a target downward — a conservative, reversible decision — but
+    not enough to conclude the board CANNOT go faster. Callers making that
+    stronger capability claim pass ``require_power_evidence`` so only measured
+    power at the limit counts.
+    """
     perf_cap_reason = str(getattr(probe, "perf_cap_reason", "") or "").lower()
-    if any("power" in token for token in perf_cap_reason.replace(",", "+").split("+")):
+    if not require_power_evidence and any(
+        "power" in token for token in perf_cap_reason.replace(",", "+").split("+")
+    ):
         return True
     avg_power_w = getattr(probe, "avg_power_w", None)
     if avg_power_w is None or power_limit_w is None or int(power_limit_w) <= 0:

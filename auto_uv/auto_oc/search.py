@@ -171,6 +171,12 @@ def run_auto_oc_candidate_search(
                 and probe_indicates_power_saturation(
                     outcome.raw_probe,
                     power_limit_w=getattr(runner, "power_limit_w", None),
+                    # Ending a climb claims the board cannot go faster, so it
+                    # takes measured power at the limit. A perf-cap reason
+                    # alone appears with hundreds of watts still to spare, and
+                    # Blackwell always measures a little under its requested
+                    # lock — together those would end every climb at rung one.
+                    require_power_evidence=True,
                 )
             ):
                 # The rung is stable but its measured clock is set by the

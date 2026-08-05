@@ -608,6 +608,9 @@ def test_wall_limited_rung_is_not_adopted_and_stops_the_climb() -> None:
             )
             if measured < float(candidate.target_mhz):
                 probe.perf_cap_reason = "sw-power"
+                # A real wall shows up as measured power AT the limit, not as
+                # a perf-cap reason alone.
+                probe.avg_power_w = 458.0
             return _passed_outcome(probe)
 
     result = run_auto_oc_candidate_search(
@@ -631,3 +634,44 @@ def test_wall_limited_rung_is_not_adopted_and_stops_the_climb() -> None:
     beyond_tolerance = [t for t in tried if t > wall_mhz + 22.5]
     assert len(beyond_tolerance) == 1
     assert max(tried) < 2700
+
+
+def test_power_cap_reason_without_power_evidence_does_not_stop_the_climb() -> None:
+    # Blackwell reports a power cap while hundreds of watts of headroom
+    # remain, and always measures a little below its requested lock. If the
+    # reason token alone ended the climb, every power-bound reclaim would
+    # stop at its first rung and ship the capped stock clock.
+    curve = base_curve(850, 955, 5, 2400, 15)
+    start = VfCurveCandidate("reclaim-start", 900, 2415, curve)
+    tried: list[int] = []
+
+    class OffWallRunner:
+        power_limit_w = 460
+
+        def probe_candidate(self, candidate, **_kwargs):
+            tried.append(int(candidate.target_mhz))
+            probe = _probe(
+                candidate.voltage_mv,
+                candidate.target_mhz,
+                # A droop shortfall past the wall tolerance, every rung.
+                q2rtx_clock_mhz=float(candidate.target_mhz) - 40.0,
+            )
+            probe.perf_cap_reason = "sw-power"
+            probe.avg_power_w = 300.0
+            return _passed_outcome(probe)
+
+    result = run_auto_oc_candidate_search(
+        base_curve=curve,
+        start_candidate=start,
+        start_probe=_probe(900, 2415, q2rtx_clock_mhz=2415.0),
+        runner=OffWallRunner(),
+        gpu_name="NVIDIA GeForce RTX 4090",
+        clock_ceiling=None,
+        probe_history=[],
+        log=lambda _message: None,
+        target_voltage_mv=900,
+        target_clock_mhz=2700,
+    )
+
+    assert len(tried) > 1
+    assert int(result.selected_candidate.target_mhz) > 2415
