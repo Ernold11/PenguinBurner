@@ -120,6 +120,10 @@ from auto_uv.scan_mode.auto_uv_mode import (
 from auto_uv.scan_mode.uv_limits import uv_limit_power_limit_pct_for_gpu
 
 
+ADAPTIVE_BASELINE_REUSE_CLOCK_TOLERANCE_MHZ = 15
+ADAPTIVE_BASELINE_REUSE_VOLTAGE_TOLERANCE_MV = 10
+
+
 @dataclass(frozen=True, slots=True)
 class FinalScanCandidate:
     plan: list[dict]
@@ -1682,8 +1686,16 @@ def performance_can_reuse_balanced_descent(
         )
         return False
     if (
-        int(performance_baseline_voltage_mv) != int(donation.baseline_voltage_mv)
-        or int(performance_baseline_target_mhz) != int(donation.baseline_target_mhz)
+        abs(
+            int(performance_baseline_voltage_mv)
+            - int(donation.baseline_voltage_mv)
+        )
+        > ADAPTIVE_BASELINE_REUSE_VOLTAGE_TOLERANCE_MV
+        or abs(
+            int(performance_baseline_target_mhz)
+            - int(donation.baseline_target_mhz)
+        )
+        > ADAPTIVE_BASELINE_REUSE_CLOCK_TOLERANCE_MHZ
     ):
         log_phase(
             log,

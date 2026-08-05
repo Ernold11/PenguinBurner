@@ -83,16 +83,16 @@ def test_probe_summary_records_loaded_median_and_p90_diagnostics() -> None:
     assert summary.loaded_median_voltage_mv == 860.0
     assert summary.loaded_qualified_sample_count == 4
     assert summary.observed_vdroop_mv == 10.0
-    assert summary.perf_cap_reason == "sw-power+hw-thermal"
+    assert summary.perf_cap_reason == "hw-thermal"
 
     payload = probe_summary_event_payload(summary, stage="probe")
     metrics = probe_metrics(summary)
     assert payload["loaded_median_core_clock_mhz"] == 2400.0
-    assert payload["perf_cap_reason"] == "sw-power+hw-thermal"
+    assert payload["perf_cap_reason"] == "hw-thermal"
     assert payload["observed_vdroop_mv"] == 10.0
     assert metrics["loaded_median_voltage_mv"] == 860.0
     assert metrics["loaded_qualified_sample_count"] == 4
-    assert metrics["perf_cap_reason"] == "sw-power+hw-thermal"
+    assert metrics["perf_cap_reason"] == "hw-thermal"
 
 
 def test_probe_summary_without_benchmark_summary_has_no_fps_metrics() -> None:
@@ -312,4 +312,34 @@ def test_loaded_perf_cap_reason_reports_dominant_sw_power() -> None:
             use_power_limit_floor=True,
         )
         == "sw-power"
+    )
+
+
+def test_loaded_perf_cap_reason_rejects_sparse_power_evidence() -> None:
+    loaded_samples = [
+        {
+            "elapsed_s": 6.0,
+            "power_w": 200.0,
+            "perf_cap_reason": "sw-power",
+        },
+        *[
+            {
+                "elapsed_s": 7.0 + index,
+                "power_w": 200.0,
+                "perf_cap_reason": None,
+            }
+            for index in range(9)
+        ],
+    ]
+
+    # One reason-bearing sample must not classify an otherwise reason-less,
+    # far-below-cap window as power-saturated for ratchet/reclaim consumers.
+    assert (
+        summarize_loaded_perf_cap_reason(
+            loaded_samples,
+            [],
+            power_limit_w=450,
+            use_power_limit_floor=False,
+        )
+        == "none"
     )

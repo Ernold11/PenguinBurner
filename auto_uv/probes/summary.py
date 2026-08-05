@@ -20,7 +20,9 @@ from ..curve.base_load_telemetry import (
 from ..shared.probe_data_fields import read_field
 
 
-_SW_POWER_DOMINANT_SAMPLE_FRACTION = 0.5
+POWER_CAP_BUSY_SAMPLE_FRACTION = 0.5
+POWER_CAP_MIN_REASON_SAMPLES = 3
+POWER_CAP_MIN_REASON_COVERAGE = 0.5
 
 
 def mean(values: Sequence[float | int | None]) -> float | None:
@@ -96,6 +98,7 @@ def summarize_perf_cap_reason(
 ) -> str | None:
     counts: Counter[str] = Counter()
     reason_sample_count = 0
+    power_reason_sample_count = 0
     saw_none = False
     for sample in samples:
         reason_text = read_field(sample, "perf_cap_reason")
@@ -113,19 +116,35 @@ def summarize_perf_cap_reason(
             counts[reason] += 1
         if sample_reasons:
             reason_sample_count += 1
+            if any(_perf_cap_reason_indicates_power(reason) for reason in sample_reasons):
+                power_reason_sample_count += 1
+    power_reason_vote_qualified = (
+        reason_sample_count >= POWER_CAP_MIN_REASON_SAMPLES
+        and reason_sample_count
+        >= POWER_CAP_MIN_REASON_COVERAGE * len(samples)
+        and power_reason_sample_count / reason_sample_count
+        >= POWER_CAP_BUSY_SAMPLE_FRACTION
+    )
     if (
         require_sw_power_dominant
-        and reason_sample_count > 0
-        and counts.get("sw-power", 0) / reason_sample_count
-        <= _SW_POWER_DOMINANT_SAMPLE_FRACTION
+        and not power_reason_vote_qualified
     ):
-        counts.pop("sw-power", None)
+        for reason in tuple(counts):
+            if _perf_cap_reason_indicates_power(reason):
+                counts.pop(reason, None)
         saw_none = True
     if not counts:
         return "none" if saw_none else None
 
     ordered_reasons = sorted(counts, key=lambda reason: (-counts[reason], reason))
     return "+".join(ordered_reasons[:3])
+
+
+def _perf_cap_reason_indicates_power(reason_text: object) -> bool:
+    reason = str(reason_text or "").lower()
+    return any(
+        "power" in token.strip() for token in reason.replace(",", "+").split("+")
+    )
 
 
 def summarize_loaded_perf_cap_reason(

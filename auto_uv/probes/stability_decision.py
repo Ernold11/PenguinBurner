@@ -10,6 +10,11 @@ from auto_uv.domain.types import FailureKind, FailureSeverity, StableRunDecision
 from ..curve.base_load_telemetry import derive_active_power_floor_w
 from ..shared.probe_data_fields import percent as _percent
 from ..shared.probe_data_fields import read_field
+from .summary import (
+    POWER_CAP_BUSY_SAMPLE_FRACTION,
+    POWER_CAP_MIN_REASON_COVERAGE,
+    POWER_CAP_MIN_REASON_SAMPLES,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,12 +25,12 @@ class StabilityThresholds:
     clock_tolerance_mhz: float = 5.0
     busy_gpu_util_pct: float = 60.0
     power_saturation_headroom_pct: float = 2.0
-    power_cap_busy_sample_fraction: float = 0.5
+    power_cap_busy_sample_fraction: float = POWER_CAP_BUSY_SAMPLE_FRACTION
     # The perf-cap-reason vote only counts when enough of the busy window
     # actually reports reasons; a sparse reason-bearing subset must not speak
     # for the whole run (it falls through to the avg-power signal instead).
-    power_cap_min_reason_samples: int = 3
-    power_cap_min_reason_coverage: float = 0.5
+    power_cap_min_reason_samples: int = POWER_CAP_MIN_REASON_SAMPLES
+    power_cap_min_reason_coverage: float = POWER_CAP_MIN_REASON_COVERAGE
 
 
 FATAL_REASON_PREFIXES = (

@@ -12,7 +12,12 @@ from auto_uv.domain.user_options import (
 )
 from .runtime_guardrails import core_clock_below_floor, telemetry_sample_is_busy
 from .stability_decision import perf_cap_reason_indicates_power
-from .summary import mean
+from .summary import (
+    POWER_CAP_BUSY_SAMPLE_FRACTION,
+    POWER_CAP_MIN_REASON_COVERAGE,
+    POWER_CAP_MIN_REASON_SAMPLES,
+    mean,
+)
 
 
 def telemetry_live_abort_reason(
@@ -110,10 +115,10 @@ def sample_indicates_power_cap(
 def busy_samples_mostly_power_capped(
     busy_samples: list,
     *,
-    capped_fraction: float = 0.5,
+    capped_fraction: float = POWER_CAP_BUSY_SAMPLE_FRACTION,
     power_limit_w: int | None = None,
-    min_reason_samples: int = 3,
-    min_reason_coverage: float = 0.5,
+    min_reason_samples: int = POWER_CAP_MIN_REASON_SAMPLES,
+    min_reason_coverage: float = POWER_CAP_MIN_REASON_COVERAGE,
 ) -> bool:
     reason_samples = [
         sample

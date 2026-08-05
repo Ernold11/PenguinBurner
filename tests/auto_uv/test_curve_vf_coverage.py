@@ -15,6 +15,7 @@ from auto_uv.curve.base_vf_curve_voltage_bins import (
     next_higher_editable_voltage_bin,
 )
 from auto_uv.curve.measured_probe_lock_clock import lock_clock_from_probe_loaded_clock
+from auto_uv.probes.summary import summarize_perf_cap_reason
 
 from auto_uv_test_data import base_curve
 
@@ -242,3 +243,25 @@ def test_lock_clock_uses_power_limit_when_perf_cap_reason_is_unavailable() -> No
         )
         == 2400
     )
+
+
+def test_lock_clock_does_not_trust_sparse_power_reason_summary() -> None:
+    curve = base_curve(800, 1025, 25, 2000, 30)
+    probe = _probe_summary(avg_core_clock_mhz=2100.0)
+    probe.perf_cap_reason = summarize_perf_cap_reason(
+        [
+            {"perf_cap_reason": "sw-power"},
+            *[{"perf_cap_reason": None} for _ in range(9)],
+        ],
+        require_sw_power_dominant=True,
+    )
+
+    result = lock_clock_from_probe_loaded_clock(
+        curve,
+        probe=probe,
+        previous_lock_clock_mhz=2400,
+        power_limit_w=450,
+    )
+
+    assert probe.perf_cap_reason == "none"
+    assert result < 2400

@@ -2857,12 +2857,29 @@ def test_performance_can_reuse_balanced_descent_gate() -> None:
         performance_memory_offset_mhz=6000,
         **mismatched_power_kwargs,
     )
+    # Repeated same-regime baselines can land one driver bin apart. Preserve
+    # reuse for that harmless measurement noise.
+    one_bin_baseline_kwargs = dict(gate_kwargs)
+    one_bin_baseline_kwargs["performance_baseline_target_mhz"] = 2415
+    one_bin_baseline_kwargs["performance_baseline_voltage_mv"] = 1010
+    assert performance_can_reuse_balanced_descent(
+        donation(descent_tail=performance_tail, memory_offset_mhz=6000),
+        performance_memory_offset_mhz=6000,
+        **one_bin_baseline_kwargs,
+    )
     mismatched_baseline_kwargs = dict(gate_kwargs)
-    mismatched_baseline_kwargs["performance_baseline_target_mhz"] = 2415
+    mismatched_baseline_kwargs["performance_baseline_target_mhz"] = 2430
     assert not performance_can_reuse_balanced_descent(
         donation(descent_tail=performance_tail, memory_offset_mhz=6000),
         performance_memory_offset_mhz=6000,
         **mismatched_baseline_kwargs,
+    )
+    mismatched_voltage_kwargs = dict(gate_kwargs)
+    mismatched_voltage_kwargs["performance_baseline_voltage_mv"] = 1020
+    assert not performance_can_reuse_balanced_descent(
+        donation(descent_tail=performance_tail, memory_offset_mhz=6000),
+        performance_memory_offset_mhz=6000,
+        **mismatched_voltage_kwargs,
     )
     # A diverging per-tier memory offset changes the physics of the descent.
     assert not performance_can_reuse_balanced_descent(
