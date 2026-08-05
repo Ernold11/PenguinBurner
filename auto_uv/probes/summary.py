@@ -176,6 +176,28 @@ def summarize_loaded_perf_cap_reason(
     )
 
 
+def count_hw_power_brake_samples(samples: Sequence) -> int:
+    """Loaded samples where the power-delivery hardware asserted its brake.
+
+    ``hw-power-brake`` is not the configured power limit doing its job — it is
+    an external protection signal (EDPp/OCP) from the board's power delivery.
+    A candidate that trips it is still allowed to pass the power-walled clock
+    exemption, because the clock loss really is caused by power rather than by
+    V/F instability, but the event must never be invisible: it is reported per
+    probe so a brake-heavy scan is legible in the log, events, and saved
+    result instead of reading as an ordinary capped run.
+    """
+    brake = 0
+    for sample in samples:
+        reason = str(read_field(sample, "perf_cap_reason") or "").lower()
+        if any(
+            "power-brake" in token
+            for token in reason.replace(",", "+").split("+")
+        ):
+            brake += 1
+    return brake
+
+
 def loaded_telemetry_samples(
     telemetry_samples: list,
     *,
@@ -381,6 +403,9 @@ def summarize_q2rtx_cuda_probe(
         use_power_limit_floor=use_power_limit_floor,
         skip_elapsed_warmup=skip_elapsed_warmup,
     )
+    hw_power_brake_samples = count_hw_power_brake_samples(
+        [*q2rtx_samples, *companion_samples]
+    )
     max_power_w = max_or_none(
         [telemetry.get("power_max"), sample_max(companion_samples, "power_w")]
     )
@@ -495,6 +520,8 @@ def summarize_q2rtx_cuda_probe(
         loaded_qualified_sample_count=int(loaded_qualified_sample_count),
         observed_vdroop_mv=observed_vdroop_mv,
         perf_cap_reason=perf_cap_reason,
+        hw_power_brake_samples=int(hw_power_brake_samples),
+        telemetry_sample_count=len(q2rtx_samples) + len(companion_samples),
         fps_stddev=fps_stddev,
         fps_variance_pct=fps_variance_pct,
     )

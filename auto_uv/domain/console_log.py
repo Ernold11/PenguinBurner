@@ -42,6 +42,28 @@ def log_benchmark(
     if reference_probe is not None:
         parts.extend(benchmark_delta_parts(probe, reference_probe, reference_label))
     log_phase(log, phase, "benchmark " + " ".join(parts))
+    brake_note = hw_power_brake_note(probe)
+    if brake_note is not None:
+        log_phase(log, phase, brake_note)
+
+
+def hw_power_brake_note(probe: AutoUvProbeSummary) -> str | None:
+    """Report power-delivery brake events, which a capped run alone hides.
+
+    The clock-floor exemption treats any power-named cap as the cap working,
+    so a candidate that trips the board's protection brake can still pass. It
+    must not do so silently: this line makes the event legible next to the
+    probe it belongs to.
+    """
+    brake_samples = int(getattr(probe, "hw_power_brake_samples", 0) or 0)
+    if brake_samples <= 0:
+        return None
+    total = int(getattr(probe, "telemetry_sample_count", 0) or 0)
+    coverage = f"{brake_samples}/{total}" if total > 0 else str(brake_samples)
+    return (
+        f"hw-power-brake asserted on {coverage} telemetry samples: the board's "
+        "power delivery limited the clock, not the configured power limit"
+    )
 
 
 def benchmark_delta_parts(

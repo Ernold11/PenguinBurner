@@ -46,6 +46,9 @@ def probe_summary_event_payload(
         "temp_c": _rounded(read_field(probe, "avg_temperature_c")),
         "fan_pct": _rounded(read_field(probe, "avg_fan_speed_pct")),
         "perf_cap_reason": _string_or_empty(read_field(probe, "perf_cap_reason")),
+        "hw_power_brake_samples": int(
+            read_field(probe, "hw_power_brake_samples") or 0
+        ),
         "efficiency_fps_per_w": _rounded(read_field(probe, "efficiency_fps_per_w")),
         "efficiency_mhz_per_w": _rounded(read_field(probe, "efficiency_mhz_per_w")),
         "decision": str(decision),

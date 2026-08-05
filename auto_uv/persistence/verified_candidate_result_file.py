@@ -190,6 +190,7 @@ def probe_metrics(probe: AutoUvProbeSummary | None) -> dict:
             "efficiency_mhz_per_w": None,
             "watts_per_mhz": None,
             "perf_cap_reason": None,
+            "hw_power_brake_samples": 0,
             "fps_stddev": None,
             "fps_variance_pct": None,
         }
@@ -217,6 +218,7 @@ def probe_metrics(probe: AutoUvProbeSummary | None) -> dict:
         "efficiency_mhz_per_w": float_or_none(probe.efficiency_mhz_per_w),
         "watts_per_mhz": float_or_none(probe.watts_per_mhz),
         "perf_cap_reason": str_or_none(probe.perf_cap_reason),
+        "hw_power_brake_samples": int_or_zero(probe.hw_power_brake_samples),
     }
 
 

@@ -277,7 +277,10 @@ class RunsTable:
             self._metric_text_with_delta(payload.get("power_w"), "power_w"),
             _format_float(payload.get("temp_c")),
             _format_float(payload.get("fan_pct")),
-            _perf_cap_reason_text(payload.get("perf_cap_reason")),
+            _perf_cap_reason_text(
+                payload.get("perf_cap_reason"),
+                payload.get("hw_power_brake_samples"),
+            ),
             self._metric_text_with_delta(
                 payload.get("efficiency_fps_per_w"),
                 "efficiency_fps_per_w",
@@ -404,7 +407,10 @@ class RunsTable:
         item.setToolTip(f"FPS/W {delta_pct:+.2f}% vs base")
 
     def _set_perf_cap_cell(self, row: int, payload: dict, *, row_state: str) -> None:
-        reason_text = _perf_cap_reason_text(payload.get("perf_cap_reason"))
+        reason_text = _perf_cap_reason_text(
+            payload.get("perf_cap_reason"),
+            payload.get("hw_power_brake_samples"),
+        )
         item = self.widget.item(row, self.PERF_CAP_COLUMN)
         if item is None:
             item = self.widget_item(
@@ -415,7 +421,10 @@ class RunsTable:
             self.widget.setItem(row, self.PERF_CAP_COLUMN, item)
         elif reason_text:
             item.setText(reason_text)
-        tooltip = _perf_cap_reason_tooltip(payload.get("perf_cap_reason"))
+        tooltip = _perf_cap_reason_tooltip(
+            payload.get("perf_cap_reason"),
+            payload.get("hw_power_brake_samples"),
+        )
         if tooltip:
             item.setToolTip(tooltip)
 
@@ -912,18 +921,34 @@ def _payload_number(payload: dict, *keys: str):
     return None
 
 
-def _perf_cap_reason_text(value) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    return text.replace(",", "+")
+def _perf_cap_reason_text(value, hw_power_brake_samples: object = 0) -> str:
+    text = str(value or "").strip().replace(",", "+")
+    if not _brake_count(hw_power_brake_samples):
+        return text
+    # The summarizer may suppress a sparse power token, but a power-delivery
+    # brake is never something the Cap column should quietly drop.
+    if "power-brake" in text.lower():
+        return text
+    return f"{text}+hw-power-brake" if text and text != "none" else "hw-power-brake"
 
 
-def _perf_cap_reason_tooltip(value) -> str:
-    text = _perf_cap_reason_text(value)
+def _perf_cap_reason_tooltip(value, hw_power_brake_samples: object = 0) -> str:
+    text = _perf_cap_reason_text(value, hw_power_brake_samples)
     if not text:
         return ""
-    return f"NVML clocks throttle reason: {text}"
+    tooltip = f"NVML clocks throttle reason: {text}"
+    brake_samples = _brake_count(hw_power_brake_samples)
+    if brake_samples:
+        tooltip += (
+            f"\nhw-power-brake on {brake_samples} samples: the board's power "
+            "delivery limited the clock, not the configured power limit"
+        )
+    return tooltip
+
+
+def _brake_count(value: object) -> int:
+    number = _to_float(value)
+    return max(0, int(number)) if number is not None else 0
 
 
 def _to_float(value) -> float | None:

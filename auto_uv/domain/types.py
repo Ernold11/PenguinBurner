@@ -58,6 +58,11 @@ class AutoUvProbeSummary:
     loaded_qualified_sample_count: int = 0
     observed_vdroop_mv: float | None = None
     perf_cap_reason: str | None = None
+    # Samples where the board's power-delivery protection (EDPp/OCP) braked
+    # the clock. Distinct from the configured power limit: it is reported so
+    # a brake-heavy run is visible rather than reading as an ordinary cap.
+    hw_power_brake_samples: int = 0
+    telemetry_sample_count: int = 0
     fps_stddev: float | None = None
     fps_variance_pct: float | None = None
 

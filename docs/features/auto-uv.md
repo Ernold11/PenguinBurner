@@ -53,6 +53,14 @@ clock regressions still fail. Efficiency and Balanced may then probe a bounded
 clock climb at the already-proven voltage, without raising the voltage or
 loosening the stability checks.
 
+`hw-power-brake` is the board's own power-delivery protection, not the power
+limit you configured. A probe that trips it still counts as power-limited
+rather than unstable, so it is not failed on clock alone — but the event is
+always reported: the run's Cap column names it, the probe log line and JSON
+event carry the sample count, and the saved scan result records it. Repeated
+brakes on a candidate mean that board is hitting its delivery limit at that
+operating point.
+
 By default Q2RTX runs through PenguinBurner's managed
 [headless benchmark binary](https://github.com/jpietek/Q2RTX-headless), so no
 desktop display server or compositor wrapper is needed. Render resolution is
