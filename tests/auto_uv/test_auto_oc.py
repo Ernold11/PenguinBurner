@@ -675,3 +675,47 @@ def test_power_cap_reason_without_power_evidence_does_not_stop_the_climb() -> No
 
     assert len(tried) > 1
     assert int(result.selected_candidate.target_mhz) > 2415
+
+
+def test_hw_power_brake_stops_climb_below_software_power_limit() -> None:
+    # The hardware brake is direct wall evidence even when aggregate board
+    # power is far below the configured software cap. Continuing upward would
+    # repeatedly ask the board for clocks its protection circuit already
+    # refused to deliver.
+    curve = base_curve(850, 955, 5, 2400, 15)
+    start = VfCurveCandidate("reclaim-start", 900, 2415, curve)
+    wall_mhz = 2450.0
+    tried: list[int] = []
+
+    class HardwareBrakeRunner:
+        power_limit_w = 460
+
+        def probe_candidate(self, candidate, **_kwargs):
+            tried.append(int(candidate.target_mhz))
+            measured = min(float(candidate.target_mhz), wall_mhz)
+            probe = _probe(
+                candidate.voltage_mv,
+                candidate.target_mhz,
+                q2rtx_clock_mhz=measured,
+            )
+            if measured < float(candidate.target_mhz):
+                probe.perf_cap_reason = "sw-power+hw-power-brake"
+                probe.avg_power_w = 300.0
+            return _passed_outcome(probe)
+
+    result = run_auto_oc_candidate_search(
+        base_curve=curve,
+        start_candidate=start,
+        start_probe=_probe(900, 2415, q2rtx_clock_mhz=2415.0),
+        runner=HardwareBrakeRunner(),
+        gpu_name="NVIDIA GeForce RTX 4090",
+        clock_ceiling=None,
+        probe_history=[],
+        log=lambda _message: None,
+        target_voltage_mv=900,
+        target_clock_mhz=2700,
+    )
+
+    assert float(result.selected_candidate.target_mhz) <= wall_mhz + 22.5
+    assert len([target for target in tried if target > wall_mhz + 22.5]) == 1
+    assert max(tried) < 2700

@@ -492,6 +492,7 @@ def probe_summary_from_candidate_record(record: dict) -> AutoUvProbeSummary | No
         ),
         observed_vdroop_mv=_float_or_none(record.get("observed_vdroop_mv")),
         perf_cap_reason=str(record.get("perf_cap_reason") or "") or None,
+        hw_power_brake_samples=int(record.get("hw_power_brake_samples") or 0),
         fps_stddev=_float_or_none(record.get("fps_stddev")),
         fps_variance_pct=_float_or_none(record.get("fps_variance_pct")),
     )
@@ -542,6 +543,9 @@ def base_probe_summary_from_candidate_record(record: dict) -> AutoUvProbeSummary
         ),
         observed_vdroop_mv=_float_or_none(record.get("base_observed_vdroop_mv")),
         perf_cap_reason=str(record.get("base_perf_cap_reason") or "") or None,
+        hw_power_brake_samples=int(
+            record.get("base_hw_power_brake_samples") or 0
+        ),
         fps_stddev=_float_or_none(record.get("base_fps_stddev")),
         fps_variance_pct=_float_or_none(record.get("base_fps_variance_pct")),
     )

@@ -141,11 +141,16 @@ def evaluate_stable_run(
         if not cuda_decision.passed:
             return cuda_decision
 
+    stable_reason = (
+        telemetry_decision.reason
+        if "hw-power-brake=" in str(telemetry_decision.reason)
+        else "stable run"
+    )
     return StableRunDecision(
         passed=True,
         failure_kind=FailureKind.NONE,
         severity=FailureSeverity.PASS,
-        reason="stable run",
+        reason=stable_reason,
         evidence={
             "telemetry_samples": len(
                 _measurement_telemetry_samples(result)
@@ -313,6 +318,12 @@ def evaluate_loaded_telemetry(
             evidence={"power_floor_w": power_floor_w},
             log_path=log_path,
         )
+    brake_samples = count_hw_power_brake_samples(busy_samples)
+    brake_note = (
+        f" hw-power-brake={brake_samples}/{len(busy_samples)}"
+        if brake_samples
+        else ""
+    )
     if baseline_core_clock_mhz is not None:
         floor_mhz = float(baseline_core_clock_mhz) * _percent(
             thresholds.min_core_clock_pct
@@ -342,12 +353,6 @@ def evaluate_loaded_telemetry(
                 # exemption disarms itself as an undervolt succeeds: once
                 # power drops off the limit, the clock floor regains full
                 # force, so genuinely demoted clocks still fail here.
-                brake_samples = count_hw_power_brake_samples(busy_samples)
-                brake_note = (
-                    f" hw-power-brake={brake_samples}/{len(busy_samples)}"
-                    if brake_samples
-                    else ""
-                )
                 return _pass(
                     "loaded telemetry power-walled but stable "
                     f"avg={avg_clock_mhz:.1f}MHz floor={floor_mhz:.1f}MHz"
@@ -366,7 +371,7 @@ def evaluate_loaded_telemetry(
                 },
                 log_path=log_path,
             )
-    return _pass("loaded telemetry stable", log_path=log_path)
+    return _pass(f"loaded telemetry stable{brake_note}", log_path=log_path)
 
 
 def busy_samples_indicate_power_cap(
