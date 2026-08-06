@@ -71,6 +71,12 @@ class GovernorPowerModel:
     # A second, non-power cap reason mixed into capped samples (thermal), so
     # scenarios can prove a thermal cap never buys a power-wall exemption.
     secondary_cap_reason: str | None = None
+    # Board power-delivery protection (EDPp/OCP): fraction of busy samples on
+    # which the hardware brake asserts. Deliberately independent of the
+    # software cap — a board trips its brake on transients while aggregate
+    # draw sits well under the configured limit — and typically sparse, which
+    # is what makes it disappear from a summarized perf-cap reason.
+    brake_duty: float = 0.0
     # Report the power cap even when the board is not at its wall. Blackwell
     # does this: the 2026-08-04 log summarizes sw-power on a probe drawing
     # 287W under a 319W cap, so the reason token alone is weaker evidence
@@ -260,10 +266,15 @@ def synthesize_busy_samples(
     silent reliability demotion. Passing ``model`` adds that model's jitter
     and perf-cap duty cycle; without it the samples are flat and always
     labeled, which is the well-behaved control case.
+
+    A model's ``brake_duty`` mixes in the board's hw-power-brake bit on its
+    own schedule, so a scenario can express a protection brake firing while
+    the software cap is nowhere near reached.
     """
     jitter_clock = float(getattr(model, "clock_jitter_mhz", 0.0) or 0.0)
     jitter_power = float(getattr(model, "power_jitter_w", 0.0) or 0.0)
     duty = float(getattr(model, "cap_reason_duty", 1.0) or 1.0)
+    brake_duty = float(getattr(model, "brake_duty", 0.0) or 0.0)
     idle_reason = getattr(model, "idle_cap_reason", "none") if model else "none"
     secondary = getattr(model, "secondary_cap_reason", None) if model else None
     samples: list[dict] = []
@@ -273,10 +284,14 @@ def synthesize_busy_samples(
             getattr(model, "reports_power_cap_off_the_wall", False)
         )
         capped = names_cap and _duty_cycle_hit(index, duty)
+        tokens: list[str] = []
         if capped:
-            reason = f"sw-power+{secondary}" if secondary else "sw-power"
-        else:
-            reason = idle_reason
+            tokens.append("sw-power")
+            if secondary:
+                tokens.append(str(secondary))
+        if _duty_cycle_hit(index, brake_duty):
+            tokens.append("hw-power-brake")
+        reason = "+".join(tokens) if tokens else idle_reason
         samples.append(
             {
                 "elapsed_s": float(first_elapsed_s) + float(index),

@@ -19,6 +19,7 @@ from typing import Any, cast
 from auto_uv.auto_oc.search import AUTO_OC_WALL_SHORTFALL_TOLERANCE_MHZ
 from auto_uv.balanced_uv_loop import run_balanced_uv_loop
 from auto_uv.base_uv_loop import BaseUvLoopIO
+from auto_uv.curve.measured_probe_lock_clock import probe_indicates_power_saturation
 from auto_uv.curve.vf_curve_flattening import build_flattened_plan
 from auto_uv.domain.scan_settings import AutoUvScanSettings
 from auto_uv.domain.types import FailureKind, VfCurveCandidate
@@ -213,6 +214,75 @@ def test_vdroop_shortfall_alone_does_not_end_the_climb() -> None:
     )
     assert not any(probe["power_capped"] for probe in harness.probes)
     assert selected_clock_mhz > start_clock_mhz
+
+
+def test_sparse_hardware_brake_ends_the_climb_the_summary_no_longer_names() -> None:
+    """The board's protection brake must stop a climb even when it is sparse.
+
+    Same scenario as the droop test above — generous cap, nothing saturates —
+    with the one difference that the board asserts hw-power-brake on a
+    minority of samples. The brake is transient by nature, so the summarizer's
+    reason vote drops it from ``perf_cap_reason`` entirely; only the counted
+    samples survive. Reading the lossy string here let the climb keep asking
+    for clocks the power delivery had already refused.
+    """
+    droop_only = GovernorPowerModel(
+        dynamic_w_per_mhz_v2=0.20,
+        idle_w=40.0,
+        spike_margin_mv=0.0,
+        vdroop_mv=25.0,
+        clock_jitter_mhz=20.0,
+    )
+    braked = replace(droop_only, brake_duty=0.2)
+    curve = rtx_5090_steep_synthetic_curve()
+    descended_voltage_mv = 925
+    start_clock_mhz = 2400
+    start = _candidate(
+        curve, voltage_mv=descended_voltage_mv, clock_mhz=start_clock_mhz
+    )
+
+    selected: dict[str, int] = {}
+    for name, model in (("droop-only", droop_only), ("braked", braked)):
+        # A cap so generous nothing saturates: no sw-power, no near-limit
+        # average power. The brake is the only power evidence in play.
+        harness = _harness(model, power_limit_w=2000, curve=curve)
+        harness.baseline_core_clock_mhz = float(
+            harness.operating_point(list(start.flattened_plan))["clock_mhz"]
+        )
+        start_probe = harness.probe(start).raw_probe
+        assert start_probe is not None
+        if model is braked:
+            # The evidence the decision has to run on: counted, not named.
+            assert start_probe.hw_power_brake_samples > 0
+            assert "brake" not in str(start_probe.perf_cap_reason or "")
+            assert probe_indicates_power_saturation(
+                start_probe,
+                power_limit_w=2000,
+                require_power_evidence=True,
+            )
+        _plan, _voltage_mv, selected_clock_mhz, _probe, _metadata = (
+            select_power_bound_clock_reclaim_candidate(
+                curve,
+                auto_uv_mode="balanced",
+                stable_plan=list(start.flattened_plan),
+                stable_voltage_mv=descended_voltage_mv,
+                stable_lock_clock_mhz=start_clock_mhz,
+                stable_probe=start_probe,
+                stable_history=[],
+                runner=cast(Any, harness),
+                gpu_name=GPU_NAME,
+                clock_ceiling=None,
+                probe_history=[],
+                log=lambda _message: None,
+            )
+        )
+        assert not any(probe["power_capped"] for probe in harness.probes)
+        selected[name] = int(selected_clock_mhz)
+
+    assert selected["droop-only"] > start_clock_mhz, (
+        "control must still climb, otherwise the brake proves nothing"
+    )
+    assert selected["braked"] < selected["droop-only"]
 
 
 def test_descent_walks_down_instead_of_stopping_at_the_capped_clock() -> None:
