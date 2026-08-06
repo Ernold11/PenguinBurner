@@ -57,6 +57,13 @@ def probe_indicates_power_saturation(
     # that the board's power-delivery protection is already limiting clocks.
     # Do not keep climbing merely because board power is below the software
     # cap: EDPp/OCP can assert before that aggregate limit is reached.
+    #
+    # Read the counted samples first: the brake is transient by nature, and
+    # the summarizer drops a minority power token from ``perf_cap_reason``
+    # entirely, so a real brake reaches this decision only through the count
+    # that survives summarization.
+    if int(getattr(probe, "hw_power_brake_samples", 0) or 0) > 0:
+        return True
     if "hw-power-brake" in perf_cap_tokens:
         return True
     if not require_power_evidence and any(

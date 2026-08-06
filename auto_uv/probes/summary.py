@@ -177,7 +177,11 @@ def summarize_loaded_perf_cap_reason(
 
 
 def count_hw_power_brake_samples(samples: Sequence) -> int:
-    """Loaded samples where the power-delivery hardware asserted its brake.
+    """Samples where the power-delivery hardware asserted its brake.
+
+    Counted over whatever window the caller passes — the probe summary reports
+    it across the probe's telemetry, the stability decision across the busy
+    window — so read the paired total before comparing two coverage figures.
 
     ``hw-power-brake`` is not the configured power limit doing its job — it is
     an external protection signal (EDPp/OCP) from the board's power delivery.
