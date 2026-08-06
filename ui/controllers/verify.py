@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import os
 import signal
+from typing import Callable
 
 from ui.features.tuning.verify import elapsed_from_line
 from ui.features.tuning.verify import progress_percent
@@ -19,12 +20,14 @@ class VerifyController:
         self.last_elapsed_s = 0.0
         self.stop_requested = False
         self._buffer = ""
-        self.on_output = lambda _text: None
-        self.on_telemetry = lambda _payload: None
-        self.on_progress = (
+        self.on_output: Callable[..., None] = lambda _text: None
+        self.on_telemetry: Callable[..., None] = lambda _payload: None
+        self.on_progress: Callable[..., None] = (
             lambda _percent, *, elapsed_s=None, target_s=None, detail="": None
         )
-        self.on_finished = lambda _exit_code, _exit_status, _stopped: None
+        self.on_finished: Callable[..., None] = (
+            lambda _exit_code, _exit_status, _stopped: None
+        )
 
     def is_running(self) -> bool:
         return self.process is not None

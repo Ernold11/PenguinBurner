@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import os
 import signal
+from typing import Callable
 
 
 class ScanController:
@@ -14,10 +15,12 @@ class ScanController:
         self.process = None
         self.stop_requested = False
         self._buffer = ""
-        self.on_output = lambda _text: None
-        self.on_event = lambda _payload: None
-        self.on_human_line = lambda _line: None
-        self.on_finished = lambda _exit_code, _exit_status, _stopped: None
+        self.on_output: Callable[..., None] = lambda _text: None
+        self.on_event: Callable[..., None] = lambda _payload: None
+        self.on_human_line: Callable[..., None] = lambda _line: None
+        self.on_finished: Callable[..., None] = (
+            lambda _exit_code, _exit_status, _stopped: None
+        )
 
     def is_running(self) -> bool:
         return self.process is not None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+from typing import Callable
 
 
 class CommandController:
@@ -10,8 +11,10 @@ class CommandController:
         self.process = None
         self.kind = ""
         self.command: list[str] = []
-        self.on_output = lambda _text: None
-        self.on_finished = lambda _kind, _exit_code, _exit_status: None
+        self.on_output: Callable[..., None] = lambda _text: None
+        self.on_finished: Callable[..., None] = (
+            lambda _kind, _exit_code, _exit_status: None
+        )
 
     def is_running(self) -> bool:
         return self.process is not None

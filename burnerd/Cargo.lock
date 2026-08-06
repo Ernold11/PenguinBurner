@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "penguin-burnerd"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "libc",
