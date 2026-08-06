@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+from typing import Any
 
 from common.penguin_burner_paths import default_user_config_dir
 from curve_editors.uv.vf_curve_manual_editor import editable_anchor_from_profile
@@ -50,6 +51,39 @@ from ui.features.tuning.verify import workload_label
 
 
 class ProfileActionsMixin:
+    QtCore: Any
+    QtGui: Any
+    QtWidgets: Any
+    pg: Any
+    window: Any
+    tabs: Any
+    auto_uv_tab_index: int
+    profile_list: Any
+    profile_summaries: list[dict]
+    log_view: Any
+    controls: Any
+    errors: Any
+    header: Any
+    curve_tabs: Any
+    vf_plot: Any
+    scan_controller: Any
+    command_controller: Any
+    verify_controller: Any
+    gpu_index: int | None
+    last_auto_uv_candidate_id: str
+
+    def _workflow_running(self) -> bool:
+        raise NotImplementedError
+
+    def _load_profiles(self) -> None:
+        raise NotImplementedError
+
+    def _persist_silent_fan_preference(self, checked: bool) -> None:
+        raise NotImplementedError
+
+    def _set_profile_actions_enabled(self, enabled: bool) -> None:
+        raise NotImplementedError
+
     def _apply_profile_action(self) -> str:
         # Apply always targets the already-root daemon. Persistence is a daemon
         # API flag on that request; checking for the host unit from a Flatpak is

@@ -105,7 +105,7 @@ directly to [adaptive UV tiers](./adaptive-uv.md):
 
 | Preset | Tail-rise bins | Extra |
 | --- | --- | --- |
-| Efficiency | `0` (flat) | lowest power |
+| Efficiency | `0` (flat) | lowest tier power; bounded fixed-voltage clock reclaim on power-bound baselines |
 | Balanced | `4` | moderate clock tail |
 | Performance | `6` | adds an Auto-OC ladder (raises V+clock to targets) |
 

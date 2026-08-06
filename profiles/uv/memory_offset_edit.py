@@ -20,8 +20,11 @@ _EXCLUDED_PARENT_KEYS = {
 
 
 def editable_memory_offset_from_profile(profile: dict) -> int | None:
+    raw_offset = profile.get("memory_offset_mhz")
+    if raw_offset is None:
+        return None
     try:
-        return round(float(profile.get("memory_offset_mhz")))
+        return round(float(raw_offset))
     except (TypeError, ValueError):
         return None
 

@@ -24,16 +24,19 @@ automatic undervolting & overclocking with adaptive per-game tuning targets.
 
 **One scan. Three verified GPU profiles.**
 
-- **Efficiency** — undervolt and underclock. RTX 5080: 850 mV · 2460 MHz · 233 W.
-- **Balanced** — undervolt and maintain clock. RTX 5080: 850 mV · 2639 MHz · 267 W.
-- **Performance** — undervolt and overclock. RTX 5080: 915 mV · 2980 MHz · 310 W.
+- **Efficiency** — deepest savings. RTX 5080: 850 mV · 2800 MHz target /
+  2625 MHz loaded · 254 W.
+- **Balanced** — maintain more loaded clock. RTX 5080: 860 mV · 2775 MHz
+  target / 2745 MHz loaded · 272 W.
+- **Performance** — undervolt and overclock. RTX 5080: 925 mV · 2980 MHz
+  target / 2977 MHz loaded · 313 W.
 
-For scale: the same RTX 5080 at stock runs 2734 MHz at **341 W** under the
-same load. The factory curve burns 74 W more than Balanced for 4% clock —
-that is the inefficiency Auto-UV removes.
+For scale: the same RTX 5080 at stock uses about **341 W** under the same load.
+Balanced held roughly the same loaded clock at 272 W — about 69 W less.
 
-Verified RTX 5080 examples; every GPU differs. Pre-optimized targets are
-included for RTX 30, 40, and 50 series cards.
+Verified RTX 5080 examples; every GPU differs. A requested target can exceed
+the loaded clock when voltage droop or the power governor intervenes.
+Pre-optimized targets are included for RTX 30, 40, and 50 series cards.
 
 ## Install
 
@@ -267,10 +270,10 @@ from the Profiles view. See
 Auto-UV makes real hardware changes — enabling persistence mode, setting board
 power limits, writing core/memory V/F offsets, and taking over fan control.
 
-The **Balanced** and **Efficiency** Auto-UV profiles are ultra-defensive.
-Balanced at most retains the card's stock clock, probing gently for lower
-voltage. Efficiency just follows the stock curve on the first pass — lowering
-power consumption by reducing clock — then undervolts only very slightly.
+The **Balanced** and **Efficiency** Auto-UV profiles use conservative voltage
+floors and board-power caps. Efficiency accepts the deepest loaded-clock drop,
+then may reclaim stable clock without raising its proven voltage. Balanced
+keeps more loaded clock with a higher voltage and power budget.
 
 **Performance** is the profile that pushes past stock: it undervolts and then
 overclocks. On my RTX 5080, during the OC phase I sometimes get a "Vulkan device
