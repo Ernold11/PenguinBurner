@@ -316,35 +316,6 @@ def test_auto_uv_nvml_info_text_summarizes_long_clock_lists() -> None:
     assert text == "Supported memory clocks: 1000-6000 MHz (6 steps)"
 
 
-def test_power_limit_set_supported_uses_daemon_probe(monkeypatch) -> None:
-    from runtime import daemon_client
-
-    calls = []
-    monkeypatch.setattr(
-        daemon_client,
-        "probe_power_limit_support",
-        lambda gpu_index, **kwargs: (
-            calls.append((gpu_index, kwargs)) or {"supported": True}
-        ),
-    )
-
-    assert tuning.power_limit_set_supported(2) is True
-    assert calls == [(2, {"timeout_s": 1.0})]
-
-
-def test_power_limit_set_supported_returns_false_when_daemon_probe_fails(
-    monkeypatch,
-) -> None:
-    from runtime import daemon_client
-
-    def fail_probe(*_args, **_kwargs):
-        raise RuntimeError("daemon down")
-
-    monkeypatch.setattr(daemon_client, "probe_power_limit_support", fail_probe)
-
-    assert tuning.power_limit_set_supported(0) is False
-
-
 def test_read_auto_uv_nvml_info_skips_setter_probe_without_power_limits(
     monkeypatch,
 ) -> None:
@@ -352,22 +323,9 @@ def test_read_auto_uv_nvml_info_skips_setter_probe_without_power_limits(
     # probe must not run and support stays unknown (None).
     monkeypatch.setattr(
         tuning,
-        "_fixed_power_limit_excluded_by_gpu_identity",
-        lambda _gpu_index: False,
-    )
-    monkeypatch.setattr(
-        tuning,
         "DaemonGpuClient",
         lambda _gpu_index: (_ for _ in ()).throw(RuntimeError("daemon down")),
     )
-    monkeypatch.setattr(
-        tuning,
-        "power_limit_set_supported",
-        lambda _gpu_index: (_ for _ in ()).throw(
-            AssertionError("setter probe should not run")
-        ),
-    )
-
     info = tuning.read_auto_uv_nvml_info(0)
 
     assert info.power_limit_set_supported is None
@@ -375,12 +333,11 @@ def test_read_auto_uv_nvml_info_skips_setter_probe_without_power_limits(
     assert info.power_limit_max_w is None
 
 
-def test_read_auto_uv_nvml_info_skips_mobile_power_limit_getters(
+def test_read_auto_uv_nvml_info_grays_power_controls_from_setter_probe(
     monkeypatch,
 ) -> None:
-    # A mobile GPU with a fixed board power limit reports support=False by
-    # identity and never runs the power-limit setter probe, no matter what
-    # the daemon snapshot would offer.
+    # RTX 2050 mobile GPUs can expose readable limits under a desktop-like
+    # name. The setter probe, not identity strings, must disable the controls.
     power = SimpleNamespace(
         management_enabled=True,
         current_w=43.0,
@@ -398,6 +355,8 @@ def test_read_auto_uv_nvml_info_skips_mobile_power_limit_getters(
         telemetry=telemetry,
     )
 
+    probe_calls: list[bool] = []
+
     class FakeDaemonClient:
         def __init__(self, _gpu_index):
             pass
@@ -405,24 +364,17 @@ def test_read_auto_uv_nvml_info_skips_mobile_power_limit_getters(
         def snapshot(self, *, refresh=False):
             return snapshot
 
-    monkeypatch.setattr(
-        tuning,
-        "_fixed_power_limit_excluded_by_gpu_identity",
-        lambda _gpu_index: True,
-    )
+        def power_limit_set_supported(self) -> bool:
+            probe_calls.append(True)
+            return False
+
     monkeypatch.setattr(tuning, "DaemonGpuClient", FakeDaemonClient)
-    monkeypatch.setattr(
-        tuning,
-        "power_limit_set_supported",
-        lambda _gpu_index: (_ for _ in ()).throw(
-            AssertionError("mobile setter probe must not run")
-        ),
-    )
 
     info = tuning.read_auto_uv_nvml_info(0)
 
     assert info.power_draw_w == 42.0
     assert info.power_limit_set_supported is False
+    assert probe_calls == [True]
 
 
 class _FakeController:

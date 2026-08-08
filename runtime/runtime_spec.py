@@ -14,7 +14,6 @@ from typing import Any
 from auto_uv.domain.user_options import AUTO_UV_FAN_TUNING
 from cli.runtime_config_file import default_runtime_config, load_runtime_config
 from common.penguin_burner_errors import NvmlError
-from drivers.nvidia.nvml_gpu_policy import fixed_power_limit_excluded_by_identity
 from overlay.config import load_overlay_config
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR, read_auto_uv_profiles
 from profiles.uv.profile_tiers import (
@@ -153,10 +152,6 @@ def build_runtime_spec(
     identity = capabilities.get("identity")
     if not isinstance(identity, dict) or not str(identity.get("uuid") or "").strip():
         raise RuntimeError(f"GPU {selected_index} did not report a stable UUID")
-    fixed_power_limit_excluded = fixed_power_limit_excluded_by_identity(
-        gpu_name=identity.get("name"),
-        pci_device_id=identity.get("pci_device_id"),
-    )
 
     selector = str(profile_selector or "").strip()
     selected_curve = (
@@ -177,12 +172,6 @@ def build_runtime_spec(
     elif selected_curve is not None:
         mode = "static"
         static_profile = _profile_spec(selected_curve)
-    if fixed_power_limit_excluded:
-        if static_profile is not None:
-            static_profile["power_limit_w"] = None
-        if adaptive is not None:
-            for profile in adaptive["profiles"].values():
-                profile["power_limit_w"] = None
 
     fan = _fan_spec(config, enabled=bool(silent_fan_curve))
     overlay = load_overlay_config()

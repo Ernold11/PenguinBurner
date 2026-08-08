@@ -176,6 +176,18 @@ def test_vf_points_are_cached_and_invalidated_after_write(monkeypatch) -> None:
     assert snapshots == [2, 2]
 
 
+def test_power_limit_support_uses_driver_setter_probe(monkeypatch) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr(
+        daemon_gpu,
+        "probe_power_limit_support",
+        lambda index: calls.append(int(index)) or {"supported": False},
+    )
+
+    assert DaemonGpuClient(2).power_limit_set_supported() is False
+    assert calls == [2]
+
+
 def test_voltage_preserves_implausible_raw_sample(monkeypatch) -> None:
     samples = iter((912_000, 0))
     monkeypatch.setattr(

@@ -31,13 +31,20 @@ def _patch_applier_environment(monkeypatch, gpu_client_type) -> None:
     )
 
 
-def _patch_power_environment(monkeypatch, *, error: str | None = None):
+def _patch_power_environment(
+    monkeypatch,
+    *,
+    error: str | None = None,
+    power_limit_supported: bool = True,
+    power_limit_probe_error: Exception | None = None,
+):
     clients = []
 
     class FakeGpuClient:
         def __init__(self, *, gpu_index: int) -> None:
             self.gpu_index = int(gpu_index)
             self.power_limit_calls: list[int] = []
+            self.power_limit_probe_calls = 0
             clients.append(self)
 
         def refresh_points(self) -> None:
@@ -48,6 +55,12 @@ def _patch_power_environment(monkeypatch, *, error: str | None = None):
             if error is not None:
                 raise RuntimeError(error)
             return int(power_limit_w)
+
+        def power_limit_set_supported(self) -> bool:
+            self.power_limit_probe_calls += 1
+            if power_limit_probe_error is not None:
+                raise power_limit_probe_error
+            return bool(power_limit_supported)
 
     _patch_applier_environment(monkeypatch, FakeGpuClient)
     monkeypatch.setattr(
@@ -138,11 +151,14 @@ def test_open_live_gpu_applier_stops_when_raised_power_limit_is_rejected(
     assert logs == []
 
 
-def test_laptop_fixed_power_limit_is_platform_managed_and_not_saved(
+def test_unsupported_power_limit_is_platform_managed_and_not_saved(
     monkeypatch,
 ) -> None:
     logs: list[str] = []
-    controllers = _patch_power_environment(monkeypatch)
+    controllers = _patch_power_environment(
+        monkeypatch,
+        power_limit_supported=False,
+    )
     monkeypatch.setattr(
         gpu_vf_curve_applier,
         "reset_nvidia_runtime_defaults",
@@ -168,18 +184,21 @@ def test_laptop_fixed_power_limit_is_platform_managed_and_not_saved(
     assert applier.baseline_power_limit_w is None
     assert applier.requested_power_limit_w is None
     assert "power_limit_w" not in applier.translated_gpu_policy
-    assert logs == []
+    assert logs == [
+        "Auto-UV power limit: driver reports fixed power-limit writes are unsupported; "
+        "continuing without saved power limit"
+    ]
 
     applier.requested_power_limit_w = 150
     assert applier.apply_requested_power_limit(log=logs.append) is None
     assert controllers[0].power_limit_calls == []
-    assert logs == [
-        "Auto-UV power limit: skipped fixed write for final verification on mobile GPU; "
+    assert logs[-1] == (
+        "Auto-UV power limit: skipped unsupported fixed write for final verification; "
         "continuing without saved power limit"
-    ]
+    )
 
 
-def test_pci_identified_mobile_gpu_never_writes_or_saves_fixed_power_limit(
+def test_successful_probe_is_authoritative_even_for_mobile_identity_strings(
     monkeypatch,
 ) -> None:
     logs: list[str] = []
@@ -206,24 +225,76 @@ def test_pci_identified_mobile_gpu_never_writes_or_saves_fixed_power_limit(
         log=logs.append,
     )
 
+    assert controllers[0].power_limit_calls == [175]
+    assert applier.power_limit_w == 175
+    assert applier.baseline_power_limit_w == 150
+    assert applier.requested_power_limit_w == 175
+    assert applier.translated_gpu_policy["pci_device_id"] == "0x2C1810DE"
+    assert applier.translated_gpu_policy["power_limit_w"] == 175
+    assert logs == ["Auto-UV power limit: applied 175W for discovery and sweep"]
+
+
+def test_unrecognized_rtx_2050_with_unsupported_setter_never_saves_power_limit(
+    monkeypatch,
+) -> None:
+    logs: list[str] = []
+    controllers = _patch_power_environment(
+        monkeypatch,
+        power_limit_supported=False,
+    )
+    monkeypatch.setattr(
+        gpu_vf_curve_applier,
+        "reset_nvidia_runtime_defaults",
+        lambda **_kwargs: {
+            "plan": [{"index": 0, "voltage_mv": 900, "target_mhz": 1620}],
+            "gpu_name": "NVIDIA GeForce RTX 2050",
+            "pci_device_id": "0x25B810DE",
+            "power_limit_w": 35,
+            "power_limits": {
+                "power_limit_default_w": 35,
+                "power_limit_min_w": 35,
+                "power_limit_max_w": 55,
+            },
+        },
+    )
+    applier = gpu_vf_curve_applier.open_live_gpu_vf_curve_applier(
+        gpu_index=0,
+        runtime_options={},
+        log=logs.append,
+    )
+
+    assert controllers[0].power_limit_probe_calls == 1
     assert controllers[0].power_limit_calls == []
     assert applier.power_limit_w is None
     assert applier.baseline_power_limit_w is None
-    assert applier.requested_power_limit_w is None
-    assert applier.translated_gpu_policy["pci_device_id"] == "0x2C1810DE"
     assert "power_limit_w" not in applier.translated_gpu_policy
     assert logs == [
-        "Auto-UV power limit: skipped requested fixed write on mobile GPU; "
+        "Auto-UV power limit: driver reports fixed power-limit writes are unsupported; "
         "continuing without saved power limit"
     ]
 
-    applier.requested_power_limit_w = 150
-    assert applier.apply_requested_power_limit(log=logs.append) is None
-    assert controllers[0].power_limit_calls == []
-    assert logs[-1] == (
-        "Auto-UV power limit: skipped fixed write for final verification on mobile GPU; "
-        "continuing without saved power limit"
+
+def test_power_limit_probe_failure_disables_power_without_claiming_driver_result(
+    monkeypatch,
+) -> None:
+    logs: list[str] = []
+    _patch_power_environment(
+        monkeypatch,
+        power_limit_probe_error=RuntimeError("daemon timeout"),
     )
+
+    applier = gpu_vf_curve_applier.open_live_gpu_vf_curve_applier(
+        gpu_index=0,
+        runtime_options={},
+        log=logs.append,
+    )
+
+    assert applier.power_limit_set_supported is False
+    assert "power_limit_w" not in applier.translated_gpu_policy
+    assert logs == [
+        "Auto-UV power limit: could not verify fixed power-limit write support "
+        "(daemon timeout); continuing without saved power limit"
+    ]
 
 
 def test_tier_power_limit_rejection_is_fatal_and_preserves_known_cap() -> None:
@@ -338,6 +409,9 @@ class _MemoryOffsetPolicyController:
 
     def refresh_points(self) -> None:
         return None
+
+    def power_limit_set_supported(self) -> bool:
+        return True
 
     def apply_clock_offsets(self, **kwargs):
         self.clock_offset_calls.append(kwargs)

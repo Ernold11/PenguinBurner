@@ -22,6 +22,7 @@ from runtime.daemon_client import (
     gpu_reset_locked_memory_clocks,
     gpu_telemetry,
     gpu_vf_snapshot,
+    probe_power_limit_support,
 )
 
 
@@ -262,6 +263,10 @@ class DaemonGpuClient:
         self._capabilities_cache = None
         self._telemetry_cache = None
         return int(result.get("applied_w", requested))
+
+    def power_limit_set_supported(self) -> bool:
+        result = probe_power_limit_support(self.gpu_index)
+        return bool(result.get("supported"))
 
     def enable_persistence_mode(self) -> bool:
         gpu_enable_persistence_mode(self.gpu_index)

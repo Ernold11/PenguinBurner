@@ -5,21 +5,17 @@ import time
 from pathlib import Path
 
 from common.penguin_burner_paths import claim_desktop_user_ownership
-from drivers.nvidia.nvml_gpu_policy import fixed_power_limit_excluded_by_identity
 from integrations.afterburner.policy import apply_translated_gpu_policy
 
 
-def _fixed_power_limit_excluded(capabilities) -> bool:
-    """Whether this GPU's board power limit is fixed (mobile / low-TGP).
-
-    A fixed power limit cannot be set, so it must never be backed up or
-    restored — doing so would fail on the apply. Identity-based, matching the
-    0.6.6 mobile support."""
-    identity = getattr(capabilities, "identity", None)
-    return fixed_power_limit_excluded_by_identity(
-        gpu_name=getattr(identity, "name", None),
-        pci_device_id=getattr(identity, "pci_device_id", None),
-    )
+def _power_limit_set_supported(policy_controller) -> bool:
+    probe = getattr(policy_controller, "power_limit_set_supported", None)
+    if not callable(probe):
+        return False
+    try:
+        return bool(probe())
+    except Exception:
+        return False
 
 
 def apply_plan(reader, plan: list[dict]) -> None:
@@ -85,10 +81,10 @@ def backup_current_offsets(reader, backup_path, policy_controller=None):
         gpu_policy = {
             "mem_clk_vf_offset_mhz": capabilities.clock_offsets.memory_mhz,
         }
-        # Mobile GPUs with a fixed board power limit cannot have it set, so
-        # never store one — restore would then try to apply it and fail
-        # (0.6.6 mobile support). The V/F offset restore is unaffected.
-        if not _fixed_power_limit_excluded(capabilities):
+        # Only store power state after the daemon has proven that the setter
+        # works by safely re-applying the current value. Readable limits alone
+        # are not evidence of write support on mobile GPUs.
+        if _power_limit_set_supported(policy_controller):
             gpu_policy.update(
                 {
                     "power_limit_w": _rounded_watts(power.current_w),

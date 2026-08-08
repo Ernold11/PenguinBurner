@@ -14,20 +14,11 @@
 //! Applying the mem offset first, then the per-point offsets, leaves both live;
 //! the reverse order silently erases the fresh curve.
 
-use crate::gpu::GpuBackend;
+use crate::gpu::{GpuBackend, NVML_ERROR_NOT_SUPPORTED};
 
 use super::ceiling::FlattenedClockCeilingController;
 use super::guard::select_expected_vf_samples;
 use super::runtime_spec::{LoadedCurve, PlanItem, RuntimeMode};
-
-const FIXED_POWER_LIMIT_MOBILE_NAME_TOKENS: &[&str] =
-    &["laptop", "mobile", "notebook", "max-q", "max q"];
-const FIXED_POWER_LIMIT_MOBILE_PCI_DEVICE_IDS: &[&str] = &[
-    // Blackwell notebook IDs from NVIDIA supported-chip tables. Keep this in
-    // sync with drivers/nvidia/nvml_gpu_policy.py.
-    "2BB4", "2C18", "2C19", "2C38", "2C39", "2C58", "2C59", "2D18", "2D19", "2D39", "2D58", "2D59",
-    "2DB8", "2DB9", "2F18", "2F38", "2F58",
-];
 
 /// `apply_plan`: MHz→kHz ×1000, then a single `SetControl` write. The engine
 /// does the ×1000 here (coordinator answer, matches Python `apply_plan`).
@@ -118,20 +109,20 @@ pub(super) fn reset_gpu_to_stock(
         )),
         Err(exc) => failures.push(format!("clock offsets: {exc}")),
     }
-    if fixed_power_limit_excluded(backend) {
-        log("keep-stock: fixed power limit restore skipped on mobile GPU; power is platform-managed");
-    } else {
-        // Unknown mobile identities can still reject the setter. A rejected
-        // restore means the fixed limit was not moved, so keep reset best-effort
-        // rather than blocking Auto-UV startup or the stock fallback.
-        let default_w = backend.query_power_limits().power_limit_default_w;
-        if let Some(default_w) = default_w {
-            if default_w != 0 {
-                if let Err(exc) = backend.apply_power_limit_w(default_w) {
+    // Re-applying the readable default is also the capability check. Fixed
+    // mobile limits remain unchanged and return NVML_ERROR_NOT_SUPPORTED;
+    // that rejection is best-effort because no power state was changed.
+    let default_w = backend.query_power_limits().power_limit_default_w;
+    if let Some(default_w) = default_w {
+        if default_w != 0 {
+            match backend.apply_power_limit_w(default_w) {
+                Err(exc) if exc.rc() == NVML_ERROR_NOT_SUPPORTED => {
                     log(&format!(
                         "keep-stock: default power limit restore skipped: {exc}"
                     ));
-                } else {
+                }
+                Err(exc) => failures.push(format!("power limit restore: {exc}")),
+                Ok(_) => {
                     let readback = backend.query_power_limits();
                     if readback.power_limit_w != Some(default_w)
                         && readback.enforced_power_limit_w != Some(default_w)
@@ -189,17 +180,20 @@ fn apply_power_limit(
     let Some(power) = power_limit_w.filter(|&p| p > 0) else {
         return Ok(None);
     };
-    if fixed_power_limit_excluded(backend) {
-        log(&format!(
-            "Skipped saved profile fixed power limit {power} W for {label}: mobile GPU power is platform-managed"
-        ));
-        return Ok(None);
-    }
-    let applied = backend.apply_power_limit_w(power).map_err(|exc| {
-        format!(
-            "failed to apply saved profile power limit {power} W for {label}: driver rejected nvmlDeviceSetPowerManagementLimit: {exc}"
-        )
-    })?;
+    let applied = match backend.apply_power_limit_w(power) {
+        Ok(applied) => applied,
+        Err(exc) if exc.rc() == NVML_ERROR_NOT_SUPPORTED => {
+            log(&format!(
+                "Skipped saved profile fixed power limit {power} W for {label}: driver reports that power-limit control is unavailable"
+            ));
+            return Ok(None);
+        }
+        Err(exc) => {
+            return Err(format!(
+                "failed to apply saved profile power limit {power} W for {label}: driver rejected nvmlDeviceSetPowerManagementLimit: {exc}"
+            ));
+        }
+    };
     let readback = backend.query_power_limits();
     if applied != power
         || (readback.power_limit_w != Some(power) && readback.enforced_power_limit_w != Some(power))
@@ -417,62 +411,6 @@ pub fn apply_adaptive_curve(
     Ok((power, memory))
 }
 
-fn fixed_power_limit_excluded(backend: &dyn GpuBackend) -> bool {
-    let identity = backend.identity();
-    fixed_power_limit_excluded_by_identity(&identity.name, &identity.pci_device_id)
-}
-
-fn fixed_power_limit_excluded_by_identity(gpu_name: &str, pci_device_id: &str) -> bool {
-    let name = gpu_name.to_ascii_lowercase();
-    if FIXED_POWER_LIMIT_MOBILE_NAME_TOKENS
-        .iter()
-        .any(|token| name.contains(token))
-    {
-        return true;
-    }
-    let normalized = normalize_pci_device_id(pci_device_id);
-    FIXED_POWER_LIMIT_MOBILE_PCI_DEVICE_IDS.contains(&normalized.as_str())
-}
-
-fn normalize_pci_device_id(value: &str) -> String {
-    let text = value
-        .trim()
-        .to_ascii_uppercase()
-        .replace("0X", "")
-        .replace(':', " ")
-        .replace('-', " ")
-        .replace('_', " ");
-    let parts: Vec<String> = text
-        .split_whitespace()
-        .map(|part| {
-            part.chars()
-                .filter(|ch| ch.is_ascii_hexdigit())
-                .collect::<String>()
-        })
-        .filter(|part| !part.is_empty())
-        .collect();
-    if parts.len() >= 2 && parts[0] == "10DE" {
-        return last_four_hex_digits(&parts[1]);
-    }
-    let token = parts.first().map(String::as_str).unwrap_or("");
-    if token.len() >= 8 && token.ends_with("10DE") {
-        return token[..4].to_string();
-    }
-    if token.len() >= 8 && token.starts_with("10DE") {
-        return token[4..8].to_string();
-    }
-    last_four_hex_digits(token)
-}
-
-fn last_four_hex_digits(value: &str) -> String {
-    let suffix = if value.len() > 4 {
-        &value[value.len() - 4..]
-    } else {
-        value
-    };
-    format!("{suffix:0>4}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,7 +519,26 @@ mod tests {
     }
 
     #[test]
-    fn stock_reset_never_writes_fixed_power_limit_on_mobile() {
+    fn stock_reset_keeps_other_power_limit_failures_fatal() {
+        let mut mock = MockGpu::new();
+        mock.power_limits.power_limit_default_w = Some(115);
+        mock.inject_failure(
+            "apply_power_limit_w",
+            crate::gpu::GpuError::nvml_with_text(
+                "nvmlDeviceSetPowerManagementLimit",
+                4,
+                "Insufficient Permissions",
+            ),
+        );
+        let mut log = |_: &str| {};
+
+        let error = reset_gpu_to_stock(&mock, &mut log).unwrap_err();
+
+        assert!(error.contains("NVML error 4: Insufficient Permissions"));
+    }
+
+    #[test]
+    fn stock_reset_uses_driver_result_instead_of_mobile_identity() {
         let mut mock = MockGpu::new();
         mock.identity.name = "NVIDIA GeForce RTX 4090 Laptop GPU".to_string();
         mock.vf_available = true;
@@ -608,15 +565,14 @@ mod tests {
             configure_runtime_spec_policy(&mock, true, RuntimeMode::Stock, None, &mut log).unwrap();
 
         assert_eq!(result.active_vf_curve_source.as_deref(), Some("stock"));
-        assert!(!mock
-            .recorded()
-            .iter()
-            .any(|operation| matches!(operation, MockOp::ApplyPowerLimit { .. })));
+        assert!(mock.recorded().contains(&MockOp::ApplyPowerLimit {
+            power_limit_w: 150
+        }));
         assert!(mock.recorded().contains(&MockOp::ApplyVfOffsets {
             offsets: vec![(5, 0)]
         }));
         assert!(messages.iter().any(|message| message
-            == "keep-stock: fixed power limit restore skipped on mobile GPU; power is platform-managed"));
+            .contains("keep-stock: default power limit restore skipped")));
     }
 
     #[test]
@@ -626,22 +582,45 @@ mod tests {
             "apply_power_limit_w",
             crate::gpu::GpuError::nvml_with_text(
                 "nvmlDeviceSetPowerManagementLimit",
-                3,
-                "Not Supported",
+                4,
+                "Insufficient Permissions",
             ),
         );
         let mut log = |_: &str| {};
         let err = apply_power_limit(&mock, "auto-UV final curve", Some(320), &mut log).unwrap_err();
         assert_eq!(
             err,
-            "failed to apply saved profile power limit 320 W for auto-UV final curve: driver rejected nvmlDeviceSetPowerManagementLimit: nvmlDeviceSetPowerManagementLimit failed with NVML error 3: Not Supported"
+            "failed to apply saved profile power limit 320 W for auto-UV final curve: driver rejected nvmlDeviceSetPowerManagementLimit: nvmlDeviceSetPowerManagementLimit failed with NVML error 4: Insufficient Permissions"
         );
     }
 
     #[test]
-    fn pre_upgrade_static_power_limit_is_ignored_on_mobile() {
+    fn unavailable_power_limit_setter_is_skipped_without_identity_matching() {
+        let mock = MockGpu::new();
+        mock.inject_failure(
+            "apply_power_limit_w",
+            crate::gpu::GpuError::nvml_with_text(
+                "nvmlDeviceSetPowerManagementLimit",
+                3,
+                "the requested operation is not available on the target device",
+            ),
+        );
+        let mut messages = Vec::new();
+        let mut log = |message: &str| messages.push(message.to_string());
+
+        let applied = apply_power_limit(&mock, "auto-UV final curve", Some(35), &mut log).unwrap();
+
+        assert_eq!(applied, None);
+        assert_eq!(
+            messages,
+            ["Skipped saved profile fixed power limit 35 W for auto-UV final curve: driver reports that power-limit control is unavailable"]
+        );
+    }
+
+    #[test]
+    fn unsupported_static_power_limit_is_skipped_after_driver_probe() {
         let mut mock = MockGpu::new();
-        mock.identity.name = "NVIDIA GeForce RTX 4090 Laptop GPU".to_string();
+        mock.identity.name = "NVIDIA GeForce RTX 2050".to_string();
         mock.inject_failure(
             "apply_power_limit_w",
             crate::gpu::GpuError::nvml_with_text(
@@ -656,27 +635,14 @@ mod tests {
         let applied = apply_power_limit(&mock, "auto-UV final curve", Some(150), &mut log).unwrap();
 
         assert_eq!(applied, None);
-        assert!(mock.recorded().is_empty());
+        assert_eq!(
+            mock.recorded(),
+            [MockOp::ApplyPowerLimit { power_limit_w: 150 }]
+        );
         assert_eq!(
             messages,
-            ["Skipped saved profile fixed power limit 150 W for auto-UV final curve: mobile GPU power is platform-managed"]
+            ["Skipped saved profile fixed power limit 150 W for auto-UV final curve: driver reports that power-limit control is unavailable"]
         );
-    }
-
-    #[test]
-    fn mobile_power_limit_identity_matches_name_or_pci_device_id() {
-        assert!(fixed_power_limit_excluded_by_identity(
-            "NVIDIA GeForce RTX 4090 Laptop GPU",
-            "0x271710DE"
-        ));
-        assert!(fixed_power_limit_excluded_by_identity(
-            "NVIDIA GeForce RTX 5090",
-            "0x2C1810DE"
-        ));
-        assert!(!fixed_power_limit_excluded_by_identity(
-            "NVIDIA GeForce RTX 5090",
-            "0x2B8510DE"
-        ));
     }
 
     #[test]
@@ -760,11 +726,11 @@ mod tests {
     }
 
     #[test]
-    fn pre_upgrade_adaptive_power_limit_is_ignored_on_mobile() {
+    fn unsupported_adaptive_power_limit_is_skipped_after_driver_probe() {
         use super::super::runtime_spec::FlattenTarget;
 
         let mut mock = MockGpu::new();
-        mock.identity.pci_device_id = "0x2C1810DE".to_string();
+        mock.identity.name = "NVIDIA GeForce RTX 2050".to_string();
         mock.mem_offset_range = Some((-2000, 6000));
         mock.vf_points = vec![crate::gpu::VfPoint {
             index: 12,
@@ -773,6 +739,14 @@ mod tests {
             current_offset_khz: 240_000,
             ..Default::default()
         }];
+        mock.inject_failure(
+            "apply_power_limit_w",
+            crate::gpu::GpuError::nvml_with_text(
+                "nvmlDeviceSetPowerManagementLimit",
+                3,
+                "Not Supported",
+            ),
+        );
         let curve = LoadedCurve {
             path: std::path::PathBuf::new(),
             profile_id: "legacy-adaptive-mobile".to_string(),
@@ -804,13 +778,12 @@ mod tests {
 
         assert_eq!(power, None);
         assert_eq!(memory, Some(1500));
-        assert!(!mock
-            .recorded()
-            .iter()
-            .any(|operation| matches!(operation, MockOp::ApplyPowerLimit { .. })));
+        assert!(mock.recorded().contains(&MockOp::ApplyPowerLimit {
+            power_limit_w: 150
+        }));
         assert_eq!(
             messages,
-            ["Skipped saved profile fixed power limit 150 W for adaptive balanced profile: mobile GPU power is platform-managed"]
+            ["Skipped saved profile fixed power limit 150 W for adaptive balanced profile: driver reports that power-limit control is unavailable"]
         );
     }
 

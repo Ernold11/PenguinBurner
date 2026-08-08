@@ -1,5 +1,5 @@
 Name:           penguin-burner
-Version:        0.7.7
+Version:        0.7.8
 Release:        1%{?dist}
 Summary:        NVIDIA GPU automatic undervolting and fine tuning tool
 
@@ -107,6 +107,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.jpietek.Pen
 %{_datadir}/penguin-burner/penguin_burner.sh
 
 %changelog
+* Sat Aug 08 2026 PenguinBurner contributors <noreply@github.com> - 0.7.8-1
+- Hotfix mobile GPU power-limit detection.
+
 * Thu Aug 06 2026 PenguinBurner contributors <noreply@github.com> - 0.7.7-1
 - Fix RTX 5090-class and other power-limited Auto-UV scan scenarios.
 - Skip unsupported fixed power writes on mobile GPUs.
