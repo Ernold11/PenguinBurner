@@ -21,6 +21,8 @@ use std::fmt;
 
 use serde::Serialize;
 
+pub const NVML_ERROR_NOT_SUPPORTED: i64 = 3;
+
 // The A2 backend is a stable 39-method contract; the wave-A3 engine consumes
 // most of it. The remainder tagged below (device identity/memory/throttle reads,
 // single-fan writes, the exact-lock path, driver/uuid strings, VfSummary) is
@@ -156,7 +158,6 @@ pub struct GpuError {
 impl GpuError {
     /// The native return code (NVML `nvmlReturn_t` / NVAPI `NvAPI_Status`), or
     /// `0` when the failure was not a native call (e.g. a missing symbol).
-    #[allow(dead_code)] // callers that branch on rc arrive in milestone B
     pub fn rc(&self) -> i64 {
         self.rc
     }

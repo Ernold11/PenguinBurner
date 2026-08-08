@@ -353,14 +353,9 @@ def read_auto_uv_nvml_info(
     *,
     gpu_client: DaemonGpuClient | None = None,
 ) -> AutoUvNvmlInfo:
-    # Mobile GPUs with a fixed board power limit stay excluded from
-    # power-limit controls by identity (0.6.6 mobile support). Read-only NVML
-    # identity lookup, architecture-neutral — no daemon round-trip.
-    fixed_power_limit_excluded = _fixed_power_limit_excluded_by_gpu_identity(
-        gpu_index
-    )
+    client = gpu_client
     try:
-        client = gpu_client or DaemonGpuClient(int(gpu_index))
+        client = client or DaemonGpuClient(int(gpu_index))
         snapshot = client.snapshot(refresh=True)
     except Exception:
         snapshot = None
@@ -370,14 +365,11 @@ def read_auto_uv_nvml_info(
     power = capabilities.power if capabilities is not None else None
     clocks = telemetry.clocks if telemetry is not None else None
 
-    if fixed_power_limit_excluded:
-        power_limit_set_supported_value = False
-    else:
-        power_limit_set_supported_value = (
-            power_limit_set_supported(gpu_index)
-            if _power_limit_set_probe_applicable(power)
-            else None
-        )
+    power_limit_set_supported_value = (
+        _power_limit_set_supported(client)
+        if client is not None and _power_limit_set_probe_applicable(power)
+        else None
+    )
     return AutoUvNvmlInfo(
         power_draw_w=getattr(telemetry, "power_draw_w", None),
         power_management_enabled=getattr(power, "management_enabled", None),
@@ -397,28 +389,6 @@ def read_auto_uv_nvml_info(
     )
 
 
-def _fixed_power_limit_excluded_by_gpu_identity(gpu_index: int) -> bool:
-    """Identity gate for mobile GPUs whose board power limit is fixed.
-
-    Read-only NVML lookup (no daemon round-trip): these GPUs must not offer
-    power-limit controls no matter what the probe would report, so the scan
-    dialog grays the control out and scans run at the vanilla/stock limit.
-    """
-    try:
-        from drivers.nvidia.nvml_gpu_policy import (
-            fixed_power_limit_excluded_by_identity,
-        )
-        from drivers.nvidia.nvml_identity import query_nvml_gpu_identity
-
-        identity = query_nvml_gpu_identity(int(gpu_index))
-        return fixed_power_limit_excluded_by_identity(
-            gpu_name=getattr(identity, "name", None),
-            pci_device_id=getattr(identity, "pci_device_id", None),
-        )
-    except Exception:
-        return False
-
-
 def _power_limit_set_probe_applicable(power: object | None) -> bool:
     if power is None:
         return False
@@ -428,6 +398,13 @@ def _power_limit_set_probe_applicable(power: object | None) -> bool:
         getattr(power, "minimum_w", None) is not None
         and getattr(power, "maximum_w", None) is not None
     )
+
+
+def _power_limit_set_supported(gpu_client: DaemonGpuClient) -> bool:
+    try:
+        return gpu_client.power_limit_set_supported()
+    except Exception:
+        return False
 
 
 _NVML_INFO_UNAVAILABLE_TEXT = (
@@ -451,16 +428,6 @@ def auto_uv_nvml_info_text(info: AutoUvNvmlInfo | None) -> str:
     ]
     text = "\n".join(row for row in rows if row)
     return text or _NVML_INFO_UNAVAILABLE_TEXT
-
-
-def power_limit_set_supported(gpu_index: int) -> bool:
-    try:
-        from runtime.daemon_client import probe_power_limit_support
-
-        result = probe_power_limit_support(int(gpu_index), timeout_s=1.0)
-    except Exception:
-        return False
-    return bool(result.get("supported"))
 
 
 def memory_offset_mhz_range(

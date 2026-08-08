@@ -90,7 +90,7 @@ def test_build_static_runtime_spec_resolves_gpu_and_profile(monkeypatch) -> None
     assert spec["overlay"] == {"enabled": True, "update_interval_s": 2}
 
 
-def test_laptop_runtime_ignores_legacy_saved_fixed_power_limit(monkeypatch) -> None:
+def test_runtime_spec_leaves_power_capability_decision_to_daemon(monkeypatch) -> None:
     legacy_curve = _curve("legacy-laptop")
     legacy_curve["power_limit_w"] = 150
     _stub_runtime_sources(monkeypatch, curve=legacy_curve)
@@ -114,7 +114,9 @@ def test_laptop_runtime_ignores_legacy_saved_fixed_power_limit(monkeypatch) -> N
     )
     spec = runtime_spec.build_runtime_spec(profile_selector="legacy-laptop")
 
-    assert spec["static_profile"]["power_limit_w"] is None
+    # Resolution preserves the saved intent. The daemon attempts the write and
+    # skips only NVML_ERROR_NOT_SUPPORTED, without guessing from this name.
+    assert spec["static_profile"]["power_limit_w"] == 150
     assert spec["static_profile"]["memory_offset_mhz"] == 1500
     assert spec["static_profile"]["plan"][0]["new_offset_mhz"] == 100
 

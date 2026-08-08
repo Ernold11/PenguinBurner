@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Any, Callable, cast
 
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
-from drivers.nvidia.nvml_gpu_policy import fixed_power_limit_excluded_by_identity
 from runtime.support.vf_curve_plan import apply_plan
 from runtime.support.nvidia_runtime_defaults import reset_nvidia_runtime_defaults
 
@@ -29,6 +28,7 @@ class LiveGpuVfCurveApplier:
     gpu: DaemonGpuClient
     runtime_default_plan: list[dict]
     translated_gpu_policy: dict
+    power_limit_set_supported: bool = True
     baseline_power_limit_w: int | None = None
     requested_power_limit_w: int | None = None
     min_power_limit_w: int | None = None
@@ -87,15 +87,12 @@ class LiveGpuVfCurveApplier:
         requested_w = _positive_power_limit_w(self.requested_power_limit_w)
         if requested_w is None:
             return self.power_limit_w
-        if fixed_power_limit_excluded_by_identity(
-            gpu_name=self.translated_gpu_policy.get("gpu_name"),
-            pci_device_id=self.translated_gpu_policy.get("pci_device_id"),
-        ):
+        if not self.power_limit_set_supported:
             self.requested_power_limit_w = None
             self.translated_gpu_policy.pop("power_limit_w", None)
             log(
-                "Auto-UV power limit: skipped fixed write for "
-                f"{str(purpose)} on mobile GPU; "
+                "Auto-UV power limit: skipped unsupported fixed write for "
+                f"{str(purpose)}; "
                 "continuing without saved power limit"
             )
             return None
@@ -174,17 +171,29 @@ def open_live_gpu_vf_curve_applier(
 
     gpu_name = runtime_reset.get("gpu_name")
     pci_device_id = runtime_reset.get("pci_device_id")
-    fixed_power_limit_excluded = fixed_power_limit_excluded_by_identity(
-        gpu_name=gpu_name,
-        pci_device_id=pci_device_id,
-    )
+    try:
+        power_limit_set_supported = gpu.power_limit_set_supported()
+    except Exception as exc:
+        power_limit_set_supported = False
+        log(
+            "Auto-UV power limit: could not verify fixed power-limit write support "
+            f"({exc}); continuing without saved power limit"
+        )
+    else:
+        if not power_limit_set_supported:
+            log(
+                "Auto-UV power limit: driver reports fixed power-limit writes are "
+                "unsupported; continuing without saved power limit"
+            )
     baseline_power_limit_w = (
         _positive_power_limit_w(runtime_reset.get("power_limit_w"))
-        if not fixed_power_limit_excluded
+        if power_limit_set_supported
         else None
     )
     reset_power_limits = runtime_reset.get("power_limits")
-    reset_power_limits = reset_power_limits if isinstance(reset_power_limits, dict) else {}
+    reset_power_limits = (
+        reset_power_limits if isinstance(reset_power_limits, dict) else {}
+    )
     min_power_limit_w = _positive_power_limit_w(
         reset_power_limits.get("power_limit_min_w")
     )
@@ -197,11 +206,7 @@ def open_live_gpu_vf_curve_applier(
     if baseline_power_limit_w is not None:
         translated_gpu_policy["power_limit_w"] = baseline_power_limit_w
     requested_power_limit_w = _auto_uv_power_limit_w(runtime_options)
-    if requested_power_limit_w is not None and fixed_power_limit_excluded:
-        log(
-            "Auto-UV power limit: skipped requested fixed write on mobile GPU; "
-            "continuing without saved power limit"
-        )
+    if requested_power_limit_w is not None and not power_limit_set_supported:
         requested_power_limit_w = None
     elif requested_power_limit_w is not None:
         if min_power_limit_w is not None:
@@ -283,6 +288,7 @@ def open_live_gpu_vf_curve_applier(
         max_power_limit_w=max_power_limit_w,
         runtime_default_plan=runtime_default_plan,
         translated_gpu_policy=translated_gpu_policy,
+        power_limit_set_supported=power_limit_set_supported,
         baseline_power_limit_w=baseline_power_limit_w,
         requested_power_limit_w=requested_power_limit_w,
     )
