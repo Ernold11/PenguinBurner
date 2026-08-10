@@ -92,6 +92,11 @@ pub struct MockGpu {
     pub vf_available: bool,
     pub vf_points: Vec<VfPoint>,
 
+    /// Power limit applied through the trait; overrides `power_limits` in
+    /// `query_power_limits` readback so verify-after-apply behaves like real
+    /// hardware.
+    applied_power_limit_w: RefCell<Option<i64>>,
+
     ops: RefCell<Vec<MockOp>>,
     failures: RefCell<HashMap<&'static str, GpuError>>,
     /// Test hook run on every `temperature_c` read — lets engine-loop tests
@@ -132,6 +137,7 @@ impl Default for MockGpu {
             voltage_uv: None,
             vf_available: false,
             vf_points: Vec::new(),
+            applied_power_limit_w: RefCell::new(None),
             ops: RefCell::new(Vec::new()),
             failures: RefCell::new(HashMap::new()),
             on_temperature: RefCell::new(None),
@@ -243,12 +249,18 @@ impl GpuBackend for MockGpu {
     }
 
     fn query_power_limits(&self) -> PowerLimits {
-        self.power_limits
+        let mut limits = self.power_limits;
+        if let Some(applied) = *self.applied_power_limit_w.borrow() {
+            limits.power_limit_w = Some(applied);
+            limits.enforced_power_limit_w = Some(applied);
+        }
+        limits
     }
 
     fn apply_power_limit_w(&self, power_limit_w: i64) -> GpuResult<i64> {
         self.record(MockOp::ApplyPowerLimit { power_limit_w });
         self.fail("apply_power_limit_w")?;
+        *self.applied_power_limit_w.borrow_mut() = Some(power_limit_w);
         Ok(power_limit_w)
     }
 

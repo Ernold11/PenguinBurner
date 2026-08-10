@@ -42,6 +42,17 @@ Apply, Verify, and Delete go through the root hardware service
 (`penguin-burnerd`), so none of them ask for your password; verification runs
 as your regular user.
 
+## Suspend/resume
+
+An applied profile survives system sleep automatically. Waking from
+suspend can silently reset driver state (power limit, locked clocks, the
+V/F curve), so the runtime engine detects every resume, waits a few
+seconds for the driver to settle, then re-verifies the applied profile and
+reapplies anything that drifted. The check is read-first: nothing is
+rewritten when the state survived. Detection works on any init system —
+it compares two kernel clocks instead of listening to logind — and the
+result is logged as `event=resume-reverify-complete` in the engine log.
+
 ## Where profiles live
 
 Saved profiles are stored under the PenguinBurner user config directory in

@@ -699,3 +699,48 @@ fn unsupported_fan_count_still_fails_when_fan_control_enabled() {
     );
     assert!(result.is_err());
 }
+
+#[test]
+fn resume_recovery_reapplies_drifted_power_limit() {
+    let mut mock = MockGpu::new();
+    mock.power_limits = crate::gpu::PowerLimits {
+        power_management_enabled: Some(true),
+        power_limit_w: Some(320),
+        enforced_power_limit_w: Some(320),
+        power_limit_default_w: Some(320),
+        power_limit_min_w: Some(150),
+        power_limit_max_w: Some(450),
+    };
+    // Drifted after a simulated resume: expected 250, driver reports 320.
+    let reapplied = super::run_resume_recovery(&mock, Some(250), None).expect("recovery pass");
+    assert!(reapplied);
+    assert!(mock
+        .recorded()
+        .iter()
+        .any(|op| matches!(op, MockOp::ApplyPowerLimit { power_limit_w: 250 })));
+
+    // Second pass: the limit now reads back as expected — no further writes.
+    let ops_before = mock.recorded().len();
+    let reapplied = super::run_resume_recovery(&mock, Some(250), None).expect("recovery pass");
+    assert!(!reapplied);
+    assert_eq!(mock.recorded().len(), ops_before);
+}
+
+#[test]
+fn resume_recovery_propagates_power_limit_failure() {
+    let mut mock = MockGpu::new();
+    mock.power_limits = crate::gpu::PowerLimits {
+        power_management_enabled: Some(true),
+        power_limit_w: Some(320),
+        enforced_power_limit_w: Some(320),
+        power_limit_default_w: Some(320),
+        power_limit_min_w: Some(150),
+        power_limit_max_w: Some(450),
+    };
+    mock.inject_failure(
+        "apply_power_limit_w",
+        crate::gpu::GpuError::other("injected resume failure", 0),
+    );
+    let err = super::run_resume_recovery(&mock, Some(250), None).expect_err("must fail");
+    assert!(err.contains("power limit reapply"), "{err}");
+}

@@ -12,6 +12,7 @@ mod fan;
 mod guard;
 mod latency_rx;
 mod logfmt;
+mod resume;
 mod runtime_spec;
 pub(crate) mod savings;
 mod telemetry;
@@ -609,6 +610,9 @@ fn run_fan_control_loop(
     let mut vf_expected_samples: Vec<PlanItem> = vf_policy.vf_expected_samples.clone();
     let mut reapply_memory_offset_mhz: Option<i64> =
         vf_policy.auto_uv_profile_gpu_policy.mem_clk_vf_offset_mhz;
+    // Stable for the engine's lifetime: adaptive tier switches retarget the
+    // ceiling and VF plan but never the board power limit.
+    let expected_power_limit_w = vf_policy.auto_uv_profile_gpu_policy.power_limit_w;
     let profile_clock_mhz = vf_policy.profile_clock_mhz;
     let profile_voltage_mv = vf_policy.profile_voltage_mv;
     let mut current_tier_label = vf_policy_tier_label(&vf_policy);
@@ -651,6 +655,13 @@ fn run_fan_control_loop(
     let mut last_overlay_publish: Option<f64> = None;
     let mut overlay_publish_failed = false;
     let mut last_vf_reapply = 0.0_f64;
+    let mut sleep_detector = resume::SleepGapDetector::new(
+        resume::SLEEP_GAP_THRESHOLD_S,
+        monotonic_now(),
+        resume::boottime_now(),
+    );
+    let mut resume_deadline: Option<f64> = None;
+    let mut resume_attempts = 0u32;
 
     loop {
         if let Some(max) = max_iterations {
@@ -663,6 +674,20 @@ fn run_fan_control_loop(
         }
         iteration_count += 1;
         let loop_started = monotonic_now();
+
+        // System resume detection: CLOCK_BOOTTIME keeps counting through a
+        // sleep while the loop's monotonic clock does not, so a divergence
+        // between the two IS a completed suspend cycle. Applied GPU state may
+        // have silently reset; re-verify after a short driver-settle grace.
+        if let Some(slept_s) = sleep_detector.observe(loop_started, resume::boottime_now()) {
+            engine_log(&format!(
+                "{} event=system-resume-detected slept_s={slept_s:.0} action=reverify-in-{}s",
+                local_timestamp(),
+                resume::RESUME_REAPPLY_GRACE_S,
+            ));
+            resume_deadline = Some(loop_started + resume::RESUME_REAPPLY_GRACE_S);
+            resume_attempts = 0;
+        }
 
         let overlay_interval_s = overlay_update_interval_s(publisher);
 
@@ -760,6 +785,41 @@ fn run_fan_control_loop(
                         engine_log(&warn_line("overlay publish unavailable", &exc.to_string()));
                     }
                     overlay_publish_failed = true;
+                }
+            }
+        }
+
+        // Post-resume re-verification: reassert the power limit and the
+        // locked-clock ceiling, then force the VF guard (cooldown cleared
+        // below) and the fan controller to re-derive hardware state.
+        if let Some(deadline) = resume_deadline {
+            if loop_started >= deadline {
+                match run_resume_recovery(backend, expected_power_limit_w, cleanup.ceiling.as_mut())
+                {
+                    Ok(power_reapplied) => {
+                        engine_log(&format!(
+                            "{} event=resume-reverify-complete power_limit_reapplied={power_reapplied}",
+                            local_timestamp()
+                        ));
+                        last_vf_reapply = 0.0;
+                        last_speed = None;
+                        last_set_temp_c = None;
+                        resume_deadline = None;
+                    }
+                    Err(exc) => {
+                        resume_attempts += 1;
+                        if resume_attempts >= resume::RESUME_REAPPLY_MAX_ATTEMPTS {
+                            return Err(format!(
+                                "post-resume GPU state re-verification failed after {} attempts: {exc}",
+                                resume::RESUME_REAPPLY_MAX_ATTEMPTS
+                            ));
+                        }
+                        engine_log(&format!(
+                            "{} event=resume-reverify-retry attempt={resume_attempts} error={exc}",
+                            local_timestamp()
+                        ));
+                        resume_deadline = Some(loop_started + resume::RESUME_REAPPLY_GRACE_S);
+                    }
                 }
             }
         }
@@ -1040,6 +1100,24 @@ fn maybe_reapply_vf_curve(
         ],
     ));
     loop_started
+}
+
+/// One post-resume recovery pass: power limit first (independent), then the
+/// locked-clock ceiling re-lock. The VF/mem reapply stays with the loop's
+/// existing guard (whose cooldown the caller clears) so the mem-before-VF
+/// ordering invariant keeps exactly one owner.
+fn run_resume_recovery(
+    backend: &dyn GpuBackend,
+    expected_power_limit_w: Option<i64>,
+    ceiling: Option<&mut FlattenedClockCeilingController<'_>>,
+) -> Result<bool, String> {
+    let power_reapplied = resume::verify_power_limit(backend, expected_power_limit_w)?;
+    if let Some(controller) = ceiling {
+        controller
+            .apply()
+            .map_err(|exc| format!("clock ceiling re-lock failed: {exc}"))?;
+    }
+    Ok(power_reapplied)
 }
 
 #[allow(clippy::too_many_arguments)]
