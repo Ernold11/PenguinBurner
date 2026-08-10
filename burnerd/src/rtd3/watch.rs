@@ -1,23 +1,23 @@
 //! Startup supervisor for the deep-sleep gate.
 //!
-//! `startup` replaces the unconditional boot-time autostart: a machine that is
-//! decidably a desktop (gate `Disabled`) starts the persisted runtime
-//! synchronously exactly as before, and every machine then gets a watcher
-//! thread that keeps the gate's view live for the daemon's lifetime — an
-//! undecided verdict can resolve, a `disabled` verdict can flip once the user
-//! enables runtime PM, and a `suspended` sighting arms the gate for good.
+//! `startup` replaces the unconditional boot-time autostart: Desktop mode
+//! starts the persisted runtime synchronously exactly as before, and every
+//! machine then gets a watcher thread that keeps the detected mode live for
+//! the daemon's lifetime — Unknown can resolve, Desktop can flip once the user
+//! enables runtime PM, and a `suspended` sighting selects Mobile handling for
+//! good.
 //!
-//! While armed, the watcher polls the kernel's cached `runtime_status` (a
-//! wake-free read) once per second and starts the deferred runtime only when
-//! the GPU is demonstrably in use: sustained `active` AND another process
-//! holding a `/dev/nvidia<N>` device-node fd. Bare `active` is not enough —
-//! transient wakes (Vulkan/GL capability probes from arbitrary apps,
-//! boot-time driver init) last seconds, and attaching on them would hold the
-//! GPU awake, recreating the bug this module exists to fix (issue #30).
+//! In Mobile and Unknown modes, the watcher polls the kernel's cached
+//! `runtime_status` (a wake-free read) once per second and starts the deferred
+//! runtime only when the GPU is demonstrably in use: sustained `active` AND
+//! another process holding a `/dev/nvidia<N>` device-node fd. Bare `active` is
+//! not enough — transient wakes (Vulkan/GL capability probes from arbitrary
+//! apps, boot-time driver init) last seconds, and attaching on them would hold
+//! the GPU awake, recreating the bug this module exists to fix (issue #30).
 //! Auxiliary nodes (`nvidiactl`, `nvidia-uvm`, `nvidia-modeset`,
 //! `nvidia-caps/*`) are deliberately not counted: monitoring agents and
 //! container toolkits hold them long-lived without keeping a fine-grained
-//! RTD3 GPU awake. While armed it also drops idle RPC backends so a one-off
+//! RTD3 GPU awake. While protected it also drops idle RPC backends so a one-off
 //! GUI telemetry query cannot pin NVML forever.
 
 use std::fs;
@@ -30,37 +30,33 @@ use crate::gpu_rpc;
 use crate::logging;
 use crate::supervisor::{self, Supervisor};
 
-use super::detect::{DeepSleepDecision, Rtd3Probe, RuntimePmStatus};
+use super::detect::{Rtd3Probe, RuntimePmStatus};
 
-const ARMED_TICK: Duration = Duration::from_secs(1);
-/// Cadence while the verdict is `Disabled`: only re-evaluation (the user may
-/// enable runtime PM at runtime) and sticky-arming observation happen here.
-const DISABLED_TICK: Duration = Duration::from_secs(60);
-/// How long an undecided gate may stay undecided before falling back to the
-/// classic path (device never appeared / driver never initialized).
-const UNDECIDED_GRACE_TICKS: u32 = 30;
+const MOBILE_TICK: Duration = Duration::from_secs(1);
+/// Cadence in Desktop mode: re-evaluate in case the user enables runtime PM.
+const DESKTOP_TICK: Duration = Duration::from_secs(60);
 /// Consecutive `active` readings required before a wake counts as real.
 const SUSTAINED_ACTIVE_TICKS: u32 = 3;
-/// Idle TTL for lazily-opened RPC backends while the gate is armed.
+/// Idle TTL for lazily-opened RPC backends in Mobile or Unknown mode.
 const RPC_BACKEND_IDLE_TTL: Duration = Duration::from_secs(30);
 
-/// Evaluate the gate, run the classic synchronous autostart when the machine
-/// is decidably a desktop (preserving the start-before-socket-bind ordering),
-/// and spawn the lifetime watcher in every case.
+/// Evaluate the mode, run eager autostart only in definite Desktop mode
+/// (preserving the start-before-socket-bind ordering), and spawn the lifetime
+/// watcher in every case.
 pub fn startup(sup: &Arc<Mutex<Supervisor>>) {
     let probe = Rtd3Probe::system();
     let hint = supervisor::persisted_pci_bus_id_hint();
-    let decision = super::evaluate(&probe, hint.as_deref());
+    super::evaluate(&probe, hint.as_deref());
 
-    let classic_started = matches!(decision, DeepSleepDecision::Disabled { .. });
-    if classic_started {
+    let desktop_autostart_attempted = super::allows_desktop_autostart();
+    if desktop_autostart_attempted {
         supervisor::start_autostart_if_configured(sup);
     }
 
     let sup = sup.clone();
     thread::Builder::new()
         .name("penguin-burner-rtd3".to_string())
-        .spawn(move || watch_loop(&sup, &probe, hint.as_deref(), classic_started))
+        .spawn(move || watch_loop(&sup, &probe, hint.as_deref(), desktop_autostart_attempted))
         .expect("spawn rtd3 watcher thread");
 }
 
@@ -68,9 +64,8 @@ fn watch_loop(
     sup: &Arc<Mutex<Supervisor>>,
     probe: &Rtd3Probe,
     hint: Option<&str>,
-    mut classic_started: bool,
+    mut desktop_autostart_attempted: bool,
 ) {
-    let mut undecided_ticks = 0u32;
     let mut active_ticks = 0u32;
     // One start attempt per active episode: a failed `profile::start` must not
     // retry at 1 Hz, and a dead engine retained in the profile slot must not
@@ -78,60 +73,34 @@ fn watch_loop(
     let mut start_attempted = false;
 
     loop {
-        if let Some(addr) = super::pci_addr() {
-            super::note_runtime_status(probe.runtime_pm_status(&addr));
-        }
+        super::evaluate(probe, hint);
 
-        if super::is_armed() {
+        if super::protects_deep_sleep() {
             let released = gpu_rpc::release_idle_backends(RPC_BACKEND_IDLE_TTL);
             if released > 0 {
                 logging::info(&format!(
                     "deep sleep: released {released} idle GPU backend(s) so the GPU can suspend"
                 ));
             }
-            armed_tick(sup, &mut active_ticks, &mut start_attempted);
-            thread::sleep(ARMED_TICK);
+            mobile_tick(sup, &mut active_ticks, &mut start_attempted);
+            thread::sleep(MOBILE_TICK);
             continue;
         }
 
-        match super::current_decision() {
-            Some(DeepSleepDecision::Disabled { .. }) => {
-                super::set_autostart_deferred(false);
-                if !classic_started {
-                    // The verdict resolved to desktop after boot (device
-                    // appeared during the undecided window): run the classic
-                    // start it would have received at boot.
-                    classic_started = true;
-                    supervisor::start_autostart_if_configured(sup);
-                }
-                thread::sleep(DISABLED_TICK);
-                super::evaluate(probe, hint);
-            }
-            _ => {
-                undecided_ticks += 1;
-                if !classic_started && undecided_ticks > UNDECIDED_GRACE_TICKS {
-                    // Could not decide (driver power file stayed `?` or the
-                    // device never appeared). Fall back to the classic start
-                    // so a saved profile is not silently dropped; persistence
-                    // mode stays suppressed while the gate is undecided, so
-                    // this cannot permanently block D3cold on a laptop that
-                    // was merely slow to initialize.
-                    logging::warn(
-                        "deep sleep gate stayed undecided; falling back to classic runtime start",
-                    );
-                    classic_started = true;
-                    supervisor::start_autostart_if_configured(sup);
-                }
-                thread::sleep(ARMED_TICK);
-                super::evaluate(probe, hint);
-            }
+        super::set_autostart_deferred(false);
+        if !desktop_autostart_attempted && super::allows_desktop_autostart() {
+            // Detection resolved from Unknown to Desktop after boot: make the
+            // one eager-start attempt Desktop mode would have received at boot.
+            desktop_autostart_attempted = true;
+            supervisor::start_autostart_if_configured(sup);
         }
+        thread::sleep(DESKTOP_TICK);
     }
 }
 
-/// One armed observation tick: hold the deferred runtime back until the GPU
-/// is genuinely in use, and never fight another GPU owner.
-fn armed_tick(sup: &Arc<Mutex<Supervisor>>, active_ticks: &mut u32, start_attempted: &mut bool) {
+/// One Mobile/Unknown observation tick: hold the deferred runtime back until
+/// the GPU is genuinely in use, and never fight another GPU owner.
+fn mobile_tick(sup: &Arc<Mutex<Supervisor>>, active_ticks: &mut u32, start_attempted: &mut bool) {
     // A scan/verification child owns the GPU exclusively; its own
     // `/dev/nvidia*` fds and activity must never satisfy the start policy —
     // starting the engine here would race the child's raw GPU writes.
@@ -166,10 +135,11 @@ fn armed_tick(sup: &Arc<Mutex<Supervisor>>, active_ticks: &mut u32, start_attemp
         *start_attempted = false;
     }
     if *active_ticks >= SUSTAINED_ACTIVE_TICKS && !*start_attempted && nvidia_client_present() {
-        *start_attempted = true;
         logging::info("deep sleep: GPU is in use; starting the deferred persisted runtime");
-        super::set_autostart_deferred(false);
-        supervisor::start_autostart_if_configured(sup);
+        if supervisor::start_autostart_if_configured(sup) {
+            *start_attempted = true;
+            super::set_autostart_deferred(false);
+        }
     }
 }
 

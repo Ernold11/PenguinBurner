@@ -116,14 +116,14 @@ struct RegistryEntry {
 }
 
 /// Lazy per-`gpu_index` backends. On desktops they live for the daemon's
-/// lifetime; while the deep-sleep gate is armed the rtd3 watcher drops idle
+/// lifetime; in Mobile or Unknown mode the RTD3 watcher drops idle
 /// entries (`release_idle_backends`) so a one-off telemetry query cannot pin
 /// the GPU in D0 forever. Dropping a real entry closes NVML and the hidden
 /// NVAPI sessions via their `Drop` impls; the next request simply reopens.
 static REGISTRY: Mutex<Vec<RegistryEntry>> = Mutex::new(Vec::new());
 
 /// Drop backends that have not served a request within `ttl`. Returns how
-/// many were released. Called only while the deep-sleep gate is armed.
+/// many were released. Called only while deep-sleep protection is active.
 pub fn release_idle_backends(ttl: Duration) -> usize {
     let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
     let before = registry.len();
@@ -269,6 +269,11 @@ pub fn handle(method: &str, request: &Map<String, Value>) -> Result<Value, Strin
         return read(gpu_index, method);
     }
     let write = parse(method, request)?;
+    if matches!(&write, GpuWrite::EnablePersistence) && crate::rtd3::protects_deep_sleep() {
+        return Err(
+            "GPU persistence mode is unavailable in Mobile or Unknown deep-sleep mode".to_string(),
+        );
+    }
 
     let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
     let position = registry_position(&mut registry, gpu_index)?;

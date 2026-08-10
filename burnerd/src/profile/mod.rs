@@ -453,7 +453,7 @@ fn run_with_backend(
     // VF-curve policy: persistence → memory → VF → power → clock ceiling
     // (mem before VF: a mem-offset write wipes the per-point VF table).
     // Persistence mode is a documented RTD3 blocker, so it is suppressed
-    // while the deep-sleep gate is armed or still undecided; the profile is
+    // in Mobile or Unknown deep-sleep mode; the profile is
     // reapplied on wake instead of relying on the driver staying initialized.
     let enable_persistence_mode =
         spec.policy.enable_persistence_mode && !crate::rtd3::suppress_persistence();

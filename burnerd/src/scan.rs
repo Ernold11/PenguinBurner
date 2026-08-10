@@ -208,7 +208,7 @@ fn run_child(
         ChildStart::SpawnFailed(err) => {
             // `begin_child` already stopped the active profile before spawn.
             // A permission/path failure must not leave the user's standing
-            // runtime silently disabled (deep-sleep armed: the watcher owns
+            // runtime silently disabled (Mobile/Unknown: the watcher owns
             // the restart so a sleeping GPU is not force-attached).
             supervisor::resume_autostart_after_child(sup);
             write_json_line(

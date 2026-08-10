@@ -7,8 +7,10 @@ that keeps an NVML session or a `/dev/nvidia*` file handle open pins the GPU
 awake and silently drains the battery. Most GPU tools on Linux do exactly
 that, including their background services.
 
-PenguinBurner's daemon is deep-sleep aware. On RTD3-capable machines it holds
-**no** GPU handles while the GPU is idle, so the dGPU can reach D3cold with
+PenguinBurner's daemon is deep-sleep aware. It does not enable RTD3 itself;
+the NVIDIA driver and kernel must already expose working runtime power
+management. On RTD3-capable machines the daemon holds **no** GPU handles while
+the GPU is idle, so the dGPU can reach D3cold with
 `penguin-burnerd.service` running.
 
 ## How it works
@@ -21,13 +23,14 @@ At startup the daemon classifies the machine using only cached kernel state
 - `/sys/bus/pci/devices/<pci-addr>/power/control` — must be `auto` for the
   kernel to suspend the device;
 - `/sys/bus/pci/devices/<pci-addr>/power/runtime_status` — the live power
-  state. A GPU ever observed `suspended` arms deep-sleep handling even if the
+  state. A GPU ever observed `suspended` selects Mobile handling even if the
   config files were inconclusive.
 
-**Desktops** (runtime D3 disabled or unsupported) keep the classic behavior:
-the saved profile is applied at boot and the daemon stays attached.
+**Desktop mode** (runtime D3 disabled or unsupported) keeps the always-attached
+behavior: the saved profile is applied at boot and the daemon stays attached.
 
-**RTD3 laptops** get the deferred behavior:
+**Mobile mode** (runtime D3 enabled with automatic runtime power management)
+gets the deferred behavior:
 
 - A saved profile is not applied while the GPU sleeps. The daemon watches
   `runtime_status` once per second (a cached read — no GPU traffic) and
@@ -40,6 +43,11 @@ the saved profile is applied at boot and the daemon stays attached.
 - GPU persistence mode is never enabled (it blocks runtime D3); the profile
   is reapplied on wake instead.
 
+After upgrading from a version that previously enabled persistence mode,
+reboot once before testing deep sleep. NVIDIA persistence state can outlive a
+service restart, and PenguinBurner does not make implicit hardware writes to
+undo old state.
+
 ## Checking it on your machine
 
 ```
@@ -50,7 +58,7 @@ The `deep_sleep` block reports the verdict:
 
 ```json
 "deep_sleep": {
-  "state": "armed",
+  "state": "mobile",
   "mode": "fine-grained",
   "pci_addr": "0000:01:00.0",
   "runtime_status": "suspended",
@@ -59,9 +67,10 @@ The `deep_sleep` block reports the verdict:
 }
 ```
 
-`state: "armed"` means the daemon treats GPU handles as ephemeral;
-`"disabled"` (with a `reason`) means classic desktop behavior. To confirm the
-GPU really sleeps with the service running:
+`state: "mobile"` means the daemon treats GPU handles as ephemeral;
+`"desktop"` (with a `reason`) means always-attached behavior. `"unknown"`
+stays detached like Mobile mode until detection resolves. To confirm the GPU
+really sleeps with the service running:
 
 ```
 cat /sys/bus/pci/devices/0000:01:00.0/power/runtime_status
@@ -70,7 +79,7 @@ cat /sys/bus/pci/devices/0000:01:00.0/power/runtime_status
 (replace the address with your dGPU's; it should read `suspended` when no
 game is running).
 
-If `state` is `"disabled"` with reason `power/control is not 'auto'`, your
+If `state` is `"desktop"` with reason `power/control is not 'auto'`, your
 distribution has not enabled runtime power management for the dGPU — see the
 NVIDIA driver README chapter on runtime D3 for the required udev rules and
 module options.

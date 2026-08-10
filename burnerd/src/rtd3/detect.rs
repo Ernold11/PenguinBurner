@@ -202,39 +202,39 @@ impl Rtd3Probe {
     }
 }
 
-/// The startup verdict for one GPU. `Unknown` is a deliberate third state:
+/// The deep-sleep mode for one GPU. `Unknown` is a deliberate third state:
 /// "not decidable yet" (device not bound, driver power file still `?`) must
-/// keep the daemon detached rather than fall through to the classic
+/// keep the daemon detached rather than fall through to the desktop
 /// NVML-at-boot path, otherwise the boot race reintroduces the pinned-GPU bug.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeepSleepDecision {
-    Armed { fine_grained: bool },
-    Disabled { reason: &'static str },
+pub enum DeepSleepMode {
+    Mobile { fine_grained: bool },
+    Desktop { reason: &'static str },
     Unknown { reason: &'static str },
 }
 
-pub fn assess(probe: &Rtd3Probe, addr: &str) -> DeepSleepDecision {
+pub fn assess(probe: &Rtd3Probe, addr: &str) -> DeepSleepMode {
     if !probe.device_present(addr) {
-        return DeepSleepDecision::Unknown {
+        return DeepSleepMode::Unknown {
             reason: "PCI device not visible yet",
         };
     }
     match probe.runtime_d3_config(addr) {
         config if config.enabled() => match probe.power_control(addr).as_deref() {
-            Some("auto") => DeepSleepDecision::Armed {
+            Some("auto") => DeepSleepMode::Mobile {
                 fine_grained: config == RuntimeD3Config::FineGrained,
             },
-            Some(_) => DeepSleepDecision::Disabled {
+            Some(_) => DeepSleepMode::Desktop {
                 reason: "power/control is not 'auto' (runtime PM disabled by policy)",
             },
-            None => DeepSleepDecision::Unknown {
+            None => DeepSleepMode::Unknown {
                 reason: "power/control not readable",
             },
         },
-        RuntimeD3Config::Disabled | RuntimeD3Config::NotSupported => DeepSleepDecision::Disabled {
+        RuntimeD3Config::Disabled | RuntimeD3Config::NotSupported => DeepSleepMode::Desktop {
             reason: "driver reports runtime D3 disabled or unsupported",
         },
-        _ => DeepSleepDecision::Unknown {
+        _ => DeepSleepMode::Unknown {
             reason: "driver power file missing or GPU not initialized",
         },
     }
@@ -321,34 +321,34 @@ mod tests {
     }
 
     #[test]
-    fn arms_on_fine_grained_rtd3_with_auto_control() {
+    fn selects_mobile_on_fine_grained_rtd3_with_auto_control() {
         let (_root, probe, addr) =
             fake_tree(Some("Enabled (fine-grained)"), Some("auto"), Some("suspended"));
         assert_eq!(
             assess(&probe, addr),
-            DeepSleepDecision::Armed { fine_grained: true }
+            DeepSleepMode::Mobile { fine_grained: true }
         );
         assert_eq!(probe.runtime_pm_status(addr), RuntimePmStatus::Suspended);
         assert_eq!(probe.first_nvidia_gpu_addr().as_deref(), Some(addr));
     }
 
     #[test]
-    fn disables_when_control_is_pinned_on() {
+    fn selects_desktop_when_control_is_pinned_on() {
         let (_root, probe, addr) =
             fake_tree(Some("Enabled (fine-grained)"), Some("on"), Some("active"));
         assert!(matches!(
             assess(&probe, addr),
-            DeepSleepDecision::Disabled { .. }
+            DeepSleepMode::Desktop { .. }
         ));
     }
 
     #[test]
-    fn disables_on_desktop_config() {
+    fn selects_desktop_when_rtd3_is_disabled() {
         let (_root, probe, addr) =
             fake_tree(Some("Disabled by default"), Some("auto"), Some("active"));
         assert!(matches!(
             assess(&probe, addr),
-            DeepSleepDecision::Disabled { .. }
+            DeepSleepMode::Desktop { .. }
         ));
     }
 
@@ -357,12 +357,12 @@ mod tests {
         let (_root, probe, addr) = fake_tree(None, Some("auto"), Some("active"));
         assert!(matches!(
             assess(&probe, addr),
-            DeepSleepDecision::Unknown { .. }
+            DeepSleepMode::Unknown { .. }
         ));
         let (_root, probe, addr) = fake_tree(Some("?"), Some("auto"), Some("active"));
         assert!(matches!(
             assess(&probe, addr),
-            DeepSleepDecision::Unknown { .. }
+            DeepSleepMode::Unknown { .. }
         ));
     }
 
@@ -371,7 +371,7 @@ mod tests {
         let (_root, probe, _) = fake_tree(Some("Enabled (fine-grained)"), Some("auto"), None);
         assert!(matches!(
             assess(&probe, "0000:99:00.0"),
-            DeepSleepDecision::Unknown { .. }
+            DeepSleepMode::Unknown { .. }
         ));
     }
 }

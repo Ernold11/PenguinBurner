@@ -506,9 +506,9 @@ fn load_runtime_spec(path: &PathBuf) -> Result<Option<RuntimeSpec>, String> {
     Ok(Some(spec))
 }
 
-/// PCI bus id from the persisted runtime specs, for the deep-sleep gate to
+/// PCI bus id from the persisted runtime specs, for the deep-sleep mode to
 /// locate the GPU in sysfs before any NVML init. Empty on legacy specs saved
-/// before the field existed; the gate then falls back to PCI enumeration.
+/// before the field existed; detection then falls back to PCI enumeration.
 pub fn persisted_pci_bus_id_hint() -> Option<String> {
     for path in [active_state_file_path(), boot_state_file_path()] {
         if let Ok(Some(spec)) = load_runtime_spec(&path) {
@@ -546,11 +546,11 @@ pub fn profile_slot_occupied(sup: &Mutex<Supervisor>) -> bool {
     guard(sup).profile.is_some()
 }
 
-/// Post-child runtime recovery: on desktops this is the classic immediate
-/// restart; while the deep-sleep gate is armed the watcher owns runtime
-/// starts (a scan's exit must not force-attach a GPU that is about to idle).
+/// Post-child runtime recovery: Desktop mode restarts immediately; Mobile and
+/// Unknown leave the start to the watcher so a scan exit cannot force-attach a
+/// GPU that is about to idle.
 pub fn resume_autostart_after_child(sup: &Arc<Mutex<Supervisor>>) {
-    if crate::rtd3::is_armed() {
+    if !crate::rtd3::allows_desktop_autostart() {
         logging::info("deep sleep: leaving post-child runtime start to the watcher");
         return;
     }
@@ -1148,10 +1148,15 @@ pub fn boot_runtime_spec_summary() -> Result<Value, String> {
 /// start its stock fallback instead of trying an older spec that may identify a
 /// different GPU. Persisting the stock fallback shadows the broken intent only
 /// for the current boot; the explicit boot spec is retried after reboot.
-pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
+///
+/// Atomically start persisted runtime intent only when neither an engine nor a
+/// scan/verification child owns the GPU. Returns true once a valid spec was
+/// attempted (success or handled failure), and false when idle prerequisites
+/// or persisted intent were absent.
+pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) -> bool {
     let mut supervisor = guard(sup);
-    if supervisor.profile.is_some() {
-        return;
+    if supervisor.profile.is_some() || supervisor.child_running_kind().is_some() {
+        return false;
     }
 
     let candidates = [
@@ -1186,7 +1191,7 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
                 }
                 drop(supervisor);
                 persist_active_runtime(&spec);
-                return;
+                return true;
             }
             Err(error) => {
                 let (message, failed_engine) = error.into_parts();
@@ -1196,11 +1201,11 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
                 ));
                 if let Some(engine) = failed_engine {
                     supervisor.profile = Some(ProfileJob { engine, spec });
-                    return;
+                    return true;
                 }
 
                 if spec.mode_name() == "stock" {
-                    return;
+                    return true;
                 }
                 let stock = spec.stock_fallback();
                 match profile::start(stock.clone()) {
@@ -1233,10 +1238,11 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
                         }
                     }
                 }
-                return;
+                return true;
             }
         }
     }
+    false
 }
 
 /// Shutdown cleanup: stop the in-process engine (A3 releases fans + clock lock).
@@ -1396,9 +1402,9 @@ mod tests {
     }
 
     /// After a wedged engine finally exits, the dead job must NOT linger in the
-    /// slot — otherwise `start_autostart_if_configured` (early-returns while
-    /// `profile.is_some()`) never re-applies the persisted profile after a scan.
-    /// `stop_engine_for_child` frees the exited slot on the next start.
+    /// slot — otherwise `start_autostart_if_configured` (which refuses an
+    /// occupied profile slot) never re-applies the persisted profile after a
+    /// scan. `stop_engine_for_child` frees the exited slot on the next start.
     #[test]
     fn stop_engine_for_child_frees_an_already_exited_job() {
         let sup = wedged_supervisor(Duration::from_millis(100), Duration::from_millis(50));
@@ -1448,6 +1454,36 @@ mod tests {
             .unwrap();
         assert_eq!(loaded.gpu.uuid, "GPU-round-trip");
         assert_eq!(loaded.mode_name(), "stock");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autostart_atomically_refuses_a_running_child() {
+        use std::process::Command;
+
+        let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = env::temp_dir().join(format!("pb-state-child-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("active-runtime.json");
+        let _state_guard = StateEnvGuard::new(&path);
+        let _inert_guard = StateEnvGuard::named("PENGUIN_BURNERD_TEST_INERT_ENGINE", "1");
+        persist_runtime_spec(&path, &RuntimeSpec::test_stock("GPU-child-gate")).unwrap();
+
+        let child = Command::new("sleep").arg("10").spawn().expect("spawn sleep");
+        let job = Arc::new(ChildJob {
+            proc: ChildProc::new(child).expect("shared child"),
+            argv: vec!["sleep".to_string(), "10".to_string()],
+            generation: 1,
+            kind: ChildKind::Scan,
+        });
+        let supervisor = Arc::new(Mutex::new(Supervisor::new()));
+        guard(&supervisor).child = Some(job.clone());
+
+        assert!(!start_autostart_if_configured(&supervisor));
+        assert!(guard(&supervisor).profile.is_none());
+
+        job.proc.signal(libc::SIGKILL);
+        job.proc.wait();
         let _ = fs::remove_dir_all(&dir);
     }
 
