@@ -452,9 +452,16 @@ fn run_with_backend(
 
     // VF-curve policy: persistence → memory → VF → power → clock ceiling
     // (mem before VF: a mem-offset write wipes the per-point VF table).
+    // Persistence mode is a documented RTD3 blocker, so it is suppressed
+    // whenever the deep-sleep gate is armed; the profile is reapplied on wake
+    // instead of relying on the driver staying initialized.
+    let enable_persistence_mode = spec.policy.enable_persistence_mode && !crate::rtd3::is_armed();
+    if spec.policy.enable_persistence_mode && !enable_persistence_mode {
+        log("Deep sleep armed: skipping GPU persistence mode (it blocks runtime D3)");
+    }
     let vf_policy = apply::configure_runtime_spec_policy(
         backend,
-        spec.policy.enable_persistence_mode,
+        enable_persistence_mode,
         spec.mode,
         initial_curve,
         &mut log,

@@ -19,6 +19,7 @@ use crate::supervisor::{self, Supervisor};
 pub const PROTOCOL_MAJOR: u32 = 2;
 pub const PROTOCOL_MINOR: u32 = 0;
 pub const DAEMON_CAPABILITIES: &[&str] = &[
+    "deep-sleep-status-v1",
     "energy-savings-v1",
     "game-runtime-v1",
     "gpu-capabilities-v1",
@@ -60,6 +61,8 @@ pub struct StatusResult {
     pub game_runtime: Option<GameRuntimeStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub energy_savings: Option<EnergySavingsStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deep_sleep: Option<crate::rtd3::DeepSleepStatus>,
 }
 
 #[derive(Debug, Serialize)]
@@ -95,6 +98,7 @@ impl StatusResult {
             capabilities: DAEMON_CAPABILITIES,
             game_runtime: None,
             energy_savings: None,
+            deep_sleep: None,
         }
     }
 
@@ -105,6 +109,11 @@ impl StatusResult {
 
     pub fn with_energy_savings(mut self, energy_savings: Option<EnergySavingsStatus>) -> Self {
         self.energy_savings = energy_savings;
+        self
+    }
+
+    pub fn with_deep_sleep(mut self, deep_sleep: Option<crate::rtd3::DeepSleepStatus>) -> Self {
+        self.deep_sleep = deep_sleep;
         self
     }
 }
@@ -403,7 +412,7 @@ mod tests {
         assert_eq!(
             text,
             format!(
-                "{{\"ok\":true,\"result\":{{\"state\":\"idle\",\"active_job\":null,\"version\":\"{}\",\"protocol_major\":2,\"protocol_minor\":0,\"capabilities\":[\"energy-savings-v1\",\"game-runtime-v1\",\"gpu-capabilities-v1\",\"gpu-telemetry-v1\",\"gpu-vf-snapshot-v1\",\"gpu-writes-v1\",\"runtime-spec-v1\",\"scan-stream-v1\",\"verification-stream-v1\"]}}}}",
+                "{{\"ok\":true,\"result\":{{\"state\":\"idle\",\"active_job\":null,\"version\":\"{}\",\"protocol_major\":2,\"protocol_minor\":0,\"capabilities\":[\"deep-sleep-status-v1\",\"energy-savings-v1\",\"game-runtime-v1\",\"gpu-capabilities-v1\",\"gpu-telemetry-v1\",\"gpu-vf-snapshot-v1\",\"gpu-writes-v1\",\"runtime-spec-v1\",\"scan-stream-v1\",\"verification-stream-v1\"]}}}}",
                 env!("CARGO_PKG_VERSION"),
             )
         );

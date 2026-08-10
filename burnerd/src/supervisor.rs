@@ -505,6 +505,28 @@ fn load_runtime_spec(path: &PathBuf) -> Result<Option<RuntimeSpec>, String> {
     Ok(Some(spec))
 }
 
+/// PCI bus id from the persisted runtime specs, for the deep-sleep gate to
+/// locate the GPU in sysfs before any NVML init. Empty on legacy specs saved
+/// before the field existed; the gate then falls back to PCI enumeration.
+pub fn persisted_pci_bus_id_hint() -> Option<String> {
+    for path in [active_state_file_path(), boot_state_file_path()] {
+        if let Ok(Some(spec)) = load_runtime_spec(&path) {
+            if !spec.gpu.pci_bus_id.is_empty() {
+                return Some(spec.gpu.pci_bus_id);
+            }
+        }
+    }
+    None
+}
+
+/// True when a persisted runtime exists that `start_autostart_if_configured`
+/// would start — what the deep-sleep watcher holds back while the GPU sleeps.
+pub fn has_persisted_runtime() -> bool {
+    [active_state_file_path(), boot_state_file_path()]
+        .iter()
+        .any(|path| matches!(load_runtime_spec(path), Ok(Some(_))))
+}
+
 fn persist_active_runtime(spec: &RuntimeSpec) {
     if let Err(error) = persist_runtime_spec(&active_state_file_path(), spec) {
         logging::error(&error);
@@ -541,6 +563,7 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
     let supervisor = guard(sup);
     let game_runtime = supervisor.game_runtime_status();
     let energy_savings = energy_savings_status();
+    let deep_sleep = crate::rtd3::status();
 
     if let Some(job) = &supervisor.child {
         let returncode = job.proc.poll();
@@ -575,7 +598,8 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
             }),
         )
         .with_game_runtime(game_runtime)
-        .with_energy_savings(energy_savings);
+        .with_energy_savings(energy_savings)
+        .with_deep_sleep(deep_sleep);
     }
 
     if let Some(job) = &supervisor.profile {
@@ -600,12 +624,14 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
             }),
         )
         .with_game_runtime(game_runtime)
-        .with_energy_savings(energy_savings);
+        .with_energy_savings(energy_savings)
+        .with_deep_sleep(deep_sleep);
     }
 
     StatusResult::new("idle", None)
         .with_game_runtime(game_runtime)
         .with_energy_savings(energy_savings)
+        .with_deep_sleep(deep_sleep)
 }
 
 pub fn stop_auto_uv_scan(sup: &Mutex<Supervisor>) -> StopResult {

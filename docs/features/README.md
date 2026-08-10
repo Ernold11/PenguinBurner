@@ -22,6 +22,8 @@ comparison.
   export, and clean up saved curves.
 - **[Curve Editors](./curve-editor.md)** — manual V/F and fan curve editing.
 - **[Silent Fan Curve](./silent-fan-curve.md)** — auto-generated quiet fan curve.
+- **[Laptop Deep Sleep](./deep-sleep.md)** — the daemon lets a hybrid laptop's
+  dGPU reach D3cold instead of pinning it awake.
 
 ## Help
 

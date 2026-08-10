@@ -1220,3 +1220,112 @@ fn large_but_legal_request_line_still_parses() {
         "{response}"
     );
 }
+
+// --- deep-sleep (RTD3) gate ---------------------------------------------------
+
+/// Fake PCI sysfs + NVIDIA procfs trees for the RTD3 probe seams, at the same
+/// address `test_runtime_spec` persists so the hint path is exercised.
+fn write_rtd3_tree(
+    dir: &std::path::Path,
+    d3_line: &str,
+    control: &str,
+    runtime_status: &str,
+) -> (PathBuf, PathBuf) {
+    let addr = "0000:01:00.0";
+    let sys = dir.join("rtd3-sys");
+    let proc_root = dir.join("rtd3-proc");
+    let device = sys.join(addr);
+    let power = device.join("power");
+    std::fs::create_dir_all(&power).unwrap();
+    std::fs::write(device.join("vendor"), "0x10de\n").unwrap();
+    std::fs::write(device.join("class"), "0x030000\n").unwrap();
+    std::fs::write(power.join("control"), format!("{control}\n")).unwrap();
+    std::fs::write(
+        power.join("runtime_status"),
+        format!("{runtime_status}\n"),
+    )
+    .unwrap();
+    let proc_gpu = proc_root.join(addr);
+    std::fs::create_dir_all(&proc_gpu).unwrap();
+    std::fs::write(
+        proc_gpu.join("power"),
+        format!("Runtime D3 status:          {d3_line}\nVideo Memory:               Off\n"),
+    )
+    .unwrap();
+    (sys, proc_root)
+}
+
+#[test]
+fn deep_sleep_defers_autostart_while_the_gpu_is_suspended() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-rtd3-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_file = dir.join("state.json");
+    std::fs::write(&state_file, test_runtime_spec().to_string()).unwrap();
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+
+    let daemon = Daemon::start(&[
+        ("PENGUIN_BURNERD_TEST_STATE_FILE", state_file.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+    ]);
+
+    // The gate is evaluated synchronously before the socket binds: armed, and
+    // the persisted runtime must NOT be running while the GPU sleeps.
+    let status = daemon.request(r#"{"method":"status"}"#);
+    let result = &status["result"];
+    assert_eq!(result["state"], "idle", "{status}");
+    assert_eq!(result["deep_sleep"]["state"], "armed", "{status}");
+    assert_eq!(result["deep_sleep"]["mode"], "fine-grained", "{status}");
+    assert_eq!(result["deep_sleep"]["pci_addr"], "0000:01:00.0", "{status}");
+
+    // The watcher marks the deferral within its first ticks.
+    let mut deferred = false;
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        let deep_sleep = &status["result"]["deep_sleep"];
+        if deep_sleep["autostart_deferred"] == Value::Bool(true) {
+            assert_eq!(deep_sleep["runtime_status"], "suspended", "{status}");
+            assert_eq!(deep_sleep["suspended_observed"], Value::Bool(true), "{status}");
+            deferred = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(deferred, "autostart was never marked deferred");
+
+    // Still no engine: the sleeping GPU was never attached.
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(status["result"]["state"], "idle", "{status}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deep_sleep_disabled_on_desktop_runs_autostart_immediately() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-rtd3-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_file = dir.join("state.json");
+    std::fs::write(&state_file, test_runtime_spec().to_string()).unwrap();
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Disabled by default", "auto", "active");
+
+    let daemon = Daemon::start(&[
+        ("PENGUIN_BURNERD_TEST_STATE_FILE", state_file.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+    ]);
+
+    // Desktop verdict: the classic synchronous autostart path, byte-for-byte.
+    let status = daemon.request(r#"{"method":"status"}"#);
+    let result = &status["result"];
+    assert_eq!(result["state"], "runtime_profile_running", "{status}");
+    assert_eq!(result["deep_sleep"]["state"], "disabled", "{status}");
+    assert_eq!(
+        result["deep_sleep"]["autostart_deferred"],
+        Value::Bool(false),
+        "{status}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
