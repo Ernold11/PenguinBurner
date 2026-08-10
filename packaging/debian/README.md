@@ -5,7 +5,6 @@ This directory contains the Debian packaging template used by
 
 Supported PPA targets:
 
-- Ubuntu 25.10 `questing`
 - Ubuntu 26.04 `resolute`
 
 The package is amd64-only and requires NVIDIA driver/userspace packages 580 or
@@ -51,7 +50,16 @@ From a clean checkout containing the release tag and Debian signing key:
 scripts/publish-ppa.sh 0.7.8
 ```
 
-That one command builds and validates both Questing and Resolute source
-packages, uploads them through Launchpad's anonymous passive-FTP endpoint,
-waits for Launchpad's amd64 builds, prints their URLs, and fails if either build
-fails. Pass series names after the version to publish only selected targets.
+That one command builds and validates the Resolute source package, uploads it
+through Launchpad's anonymous passive-FTP endpoint, waits for Launchpad's amd64
+build, prints its URL, and fails if the build fails. Pass a series name after
+the version to publish only that target.
+
+When retrying the same upstream version with a new Debian revision, reuse the
+orig tarball already accepted by Launchpad so its immutable checksum does not
+change:
+
+```bash
+PPA_ORIG_TARBALL=/path/to/penguin-burner_0.7.7.orig.tar.gz \
+  DEBIAN_REVISION=2 scripts/publish-ppa.sh 0.7.7 resolute
+```

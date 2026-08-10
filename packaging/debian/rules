@@ -11,6 +11,11 @@ export CARGO_NET_OFFLINE = true
 override_dh_auto_clean:
 	rm -rf build dist *.egg-info src/*.egg-info debian/cargo burnerd/target
 
+# Cargo's vendored checksum manifests include upstream Cargo.toml.orig files.
+# Newer dh_clean versions remove those recursively unless vendor/ is excluded.
+override_dh_clean:
+	dh_clean -Xvendor/
+
 override_dh_auto_configure:
 
 override_dh_auto_build:

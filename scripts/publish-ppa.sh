@@ -26,7 +26,7 @@ PY
 fi
 
 if [ "${#series_list[@]}" -eq 0 ]; then
-    series_list=(questing resolute)
+    series_list=(resolute)
 fi
 
 for command in cargo dpkg-buildpackage dput git gpg python3; do
@@ -72,9 +72,9 @@ cleanup() {
 trap cleanup EXIT
 
 if [ "$ppa" = "ppa:jpietek/penguin-burner" ]; then
-    # Fedora's distro-info data may not know future Ubuntu series such as
-    # questing/resolute. Use a local dput-ng profile without the
-    # supported-distribution hook while keeping checksum, suite, and GPG checks.
+    # The host's distro-info data may lag the currently supported Ubuntu series.
+    # Use a local dput-ng profile without the supported-distribution hook while
+    # keeping checksum, suite, and GPG checks.
     dput_profile_dir="$(mktemp -d)"
     mkdir -p "$dput_profile_dir/profiles"
     cat > "$dput_profile_dir/profiles/penguin-ppa.json" <<'JSON'
