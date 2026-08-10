@@ -15,10 +15,11 @@
 
 use crate::gpu::GpuBackend;
 
-/// Divergence below this is clock jitter; above it, a real sleep. Ticks are
-/// seconds apart and both clocks have nanosecond resolution, so anything in
-/// between is unambiguous.
-pub const SLEEP_GAP_THRESHOLD_S: f64 = 5.0;
+/// Divergence below this is clock jitter; above it, a real sleep. The two
+/// clocks only diverge across a suspend, so the floor exists purely to
+/// absorb timer quantization — kept low so even brief lid-close dips are
+/// caught (their suspend entry/exit can reset driver state like any other).
+pub const SLEEP_GAP_THRESHOLD_S: f64 = 2.0;
 /// Wait after detection before touching the GPU: the driver may still be
 /// re-initializing right after resume (readback can be transient garbage).
 pub const RESUME_REAPPLY_GRACE_S: f64 = 3.0;
@@ -90,7 +91,7 @@ pub fn verify_power_limit(
 mod tests {
     use super::*;
     use crate::gpu::mock::MockGpu;
-    use crate::gpu::{GpuError, PowerLimits, NVML_ERROR_NOT_SUPPORTED};
+    use crate::gpu::{GpuError, NVML_ERROR_NOT_SUPPORTED};
 
     fn detector() -> SleepGapDetector {
         SleepGapDetector::new(SLEEP_GAP_THRESHOLD_S, 100.0, 500.0)
@@ -117,20 +118,11 @@ mod tests {
     #[test]
     fn sub_threshold_jitter_is_ignored() {
         let mut det = detector();
-        assert_eq!(det.observe(102.0, 506.0), None); // 4s gap < 5s threshold
+        assert_eq!(det.observe(102.0, 503.0), None); // 1s gap < 2s threshold
     }
 
     fn mock_with_limits(limit_w: i64, enforced_w: i64) -> MockGpu {
-        let mut mock = MockGpu::new();
-        mock.power_limits = PowerLimits {
-            power_management_enabled: Some(true),
-            power_limit_w: Some(limit_w),
-            enforced_power_limit_w: Some(enforced_w),
-            power_limit_default_w: Some(300),
-            power_limit_min_w: Some(150),
-            power_limit_max_w: Some(450),
-        };
-        mock
+        MockGpu::with_power_limits(limit_w, enforced_w)
     }
 
     fn no_log() -> impl FnMut(&str) {

@@ -701,16 +701,7 @@ fn unsupported_fan_count_still_fails_when_fan_control_enabled() {
 }
 
 fn resume_mock(limit_w: i64) -> MockGpu {
-    let mut mock = MockGpu::new();
-    mock.power_limits = crate::gpu::PowerLimits {
-        power_management_enabled: Some(true),
-        power_limit_w: Some(limit_w),
-        enforced_power_limit_w: Some(limit_w),
-        power_limit_default_w: Some(320),
-        power_limit_min_w: Some(150),
-        power_limit_max_w: Some(450),
-    };
-    mock
+    MockGpu::with_power_limits(limit_w, limit_w)
 }
 
 #[test]
@@ -789,4 +780,39 @@ fn resume_recovery_propagates_power_limit_failure() {
     );
     let err = super::run_resume_recovery(&mock, false, Some(250), None).expect_err("must fail");
     assert!(err.contains("power limit"), "{err}");
+}
+
+#[test]
+fn resume_recovery_relocks_ceiling_even_when_power_fails() {
+    // The two steps are independent driver state: a failing power-limit
+    // reapply must not starve the ceiling re-lock across the retry budget.
+    let mut mock = resume_mock(320);
+    mock.supported_core_clocks = vec![2400, 2500, 2600, 2640, 2700];
+    mock.inject_failure(
+        "apply_power_limit_w",
+        crate::gpu::GpuError::other("injected resume failure", 0),
+    );
+    let mut ceiling = super::ceiling::FlattenedClockCeilingController::new(
+        FlattenTarget {
+            source: "auto-uv-final".into(),
+            lock_clock_mhz: 2640,
+            lock_voltage_mv: Some(875),
+            end_voltage_mv: Some(875),
+            tail_point_count: Some(1),
+            ceiling_clock_mhz: None,
+            tail_rise_bins: None,
+        },
+        &mock,
+    );
+    let err = super::run_resume_recovery(&mock, false, Some(250), Some(&mut ceiling))
+        .expect_err("power failure must still surface");
+    assert!(err.contains("power limit"), "{err}");
+    assert!(
+        mock.recorded()
+            .iter()
+            .any(|op| matches!(op, MockOp::ApplyLockedCoreClock { .. })
+                || matches!(op, MockOp::ApplyLockedCoreClockRange { .. })),
+        "ceiling must be re-locked despite the power failure: {:?}",
+        mock.recorded()
+    );
 }

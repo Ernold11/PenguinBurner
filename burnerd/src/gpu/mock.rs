@@ -92,10 +92,13 @@ pub struct MockGpu {
     pub vf_available: bool,
     pub vf_points: Vec<VfPoint>,
 
-    /// Power limit applied through the trait; overrides `power_limits` in
-    /// `query_power_limits` readback so verify-after-apply behaves like real
-    /// hardware. Tests simulating a driver-side reset (e.g. suspend loss)
-    /// call `clear_applied_power_limit` so later `power_limits` writes win.
+    /// Management power limit applied through the trait; overrides only
+    /// `power_limit_w` in the `query_power_limits` readback so
+    /// verify-after-apply behaves like real hardware while the enforced
+    /// limit stays independently settable (it can legitimately diverge —
+    /// thermal/idle caps). Tests simulating a driver-side reset (e.g.
+    /// suspend loss) call `clear_applied_power_limit` so later
+    /// `power_limits` writes win.
     applied_power_limit_w: RefCell<Option<i64>>,
 
     ops: RefCell<Vec<MockOp>>,
@@ -189,6 +192,25 @@ impl MockGpu {
     }
 }
 
+#[cfg(test)]
+impl MockGpu {
+    /// Shared test fixture: sane constraints around explicit management and
+    /// enforced limits (kept in one place so the resume/apply tests cannot
+    /// drift apart).
+    pub fn with_power_limits(limit_w: i64, enforced_w: i64) -> Self {
+        let mut mock = Self::new();
+        mock.power_limits = PowerLimits {
+            power_management_enabled: Some(true),
+            power_limit_w: Some(limit_w),
+            enforced_power_limit_w: Some(enforced_w),
+            power_limit_default_w: Some(320),
+            power_limit_min_w: Some(150),
+            power_limit_max_w: Some(450),
+        };
+        mock
+    }
+}
+
 impl GpuBackend for MockGpu {
     fn gpu_index(&self) -> u32 {
         self.gpu_index
@@ -261,7 +283,6 @@ impl GpuBackend for MockGpu {
         let mut limits = self.power_limits;
         if let Some(applied) = *self.applied_power_limit_w.borrow() {
             limits.power_limit_w = Some(applied);
-            limits.enforced_power_limit_w = Some(applied);
         }
         limits
     }

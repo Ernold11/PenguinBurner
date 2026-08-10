@@ -384,6 +384,13 @@ impl AdaptiveProfileController {
         }
     }
 
+    /// Drop the utilization window (post-resume: pre-suspend samples are
+    /// hours old by wall time but still "recent" on the monotonic clock the
+    /// window is pruned by, and would poison the CPU-bound guard).
+    fn clear_util_window(&mut self) {
+        self.util_samples.clear();
+    }
+
     fn windowed_avg(&self, pick: impl Fn(&UtilSample) -> Option<f64>) -> Option<f64> {
         let values: Vec<f64> = self.util_samples.iter().filter_map(&pick).collect();
         if values.is_empty() {
@@ -467,6 +474,12 @@ pub struct AdaptiveAutoUvRuntimeController {
 }
 
 impl AdaptiveAutoUvRuntimeController {
+    /// A system resume was detected: invalidate windowed utilization state so
+    /// the CPU-bound guard reasons only about post-resume samples.
+    pub fn note_system_resume(&mut self) {
+        self.policy.clear_util_window();
+    }
+
     /// Construct + enumerate tier curves. `log` receives the enable/target lines.
     pub fn new(
         current_tier: &str,
@@ -573,7 +586,7 @@ impl AdaptiveAutoUvRuntimeController {
                 vf_apply_plan: None,
                 vf_expected_samples: Vec::new(),
                 memory_offset_mhz: None,
-            applied_power_limit_w: None,
+                applied_power_limit_w: None,
             });
         }
         let Some(curve) = self.tier_curves.get(&decision.tier).cloned() else {
@@ -584,7 +597,7 @@ impl AdaptiveAutoUvRuntimeController {
                 vf_apply_plan: None,
                 vf_expected_samples: Vec::new(),
                 memory_offset_mhz: None,
-            applied_power_limit_w: None,
+                applied_power_limit_w: None,
             });
         };
         match self.apply_curve(
@@ -610,7 +623,7 @@ impl AdaptiveAutoUvRuntimeController {
                     vf_apply_plan: None,
                     vf_expected_samples: Vec::new(),
                     memory_offset_mhz: None,
-                applied_power_limit_w: None,
+                    applied_power_limit_w: None,
                 })
             }
         }

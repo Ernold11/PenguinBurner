@@ -350,7 +350,7 @@ fn monotonic_now() -> f64 {
 
 /// Shared sampler for the monotonic/boottime pair the sleep detector
 /// compares — both clocks must be read identically for the gap math to hold.
-pub(self) fn clock_seconds(clock: libc::clockid_t) -> f64 {
+fn clock_seconds(clock: libc::clockid_t) -> f64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
@@ -567,7 +567,7 @@ impl Drop for EngineCleanup<'_> {
 fn run_fan_control_loop(
     backend: &dyn GpuBackend,
     gpu_index: u32,
-    _enable_persistence_mode: bool,
+    enable_persistence_mode: bool,
     fan_config: FanConfig,
     fan_control_enabled: bool,
     vf_policy: VfPolicyResult<'_>,
@@ -636,7 +636,7 @@ fn run_fan_control_loop(
 
     log_startup(
         gpu_index,
-        _enable_persistence_mode,
+        enable_persistence_mode,
         &gpu_policy_text,
         fan_control_enabled,
         fan_count,
@@ -694,6 +694,12 @@ fn run_fan_control_loop(
             ));
             resume_deadline = Some(loop_started + resume::RESUME_REAPPLY_GRACE_S);
             resume_attempts = 0;
+            // Pre-suspend utilization samples still look "recent" on the
+            // monotonic clock; drop them so the CPU-bound guard reasons only
+            // about post-resume load.
+            if let Some(controller) = adaptive_ctrl.as_deref_mut() {
+                controller.note_system_resume();
+            }
         }
 
         // Driver-settle window: while a re-verification is pending, this tick
@@ -703,9 +709,11 @@ fn run_fan_control_loop(
         // which is exactly what the grace exists to prevent.
         if let Some(deadline) = resume_deadline {
             if loop_started < deadline {
+                // Cap the wait at the remaining grace so a long poll interval
+                // does not stretch the no-backend-calls blackout past it.
                 sleep_loop(
                     &stop_flag,
-                    poll_interval_s,
+                    poll_interval_s.min(deadline - loop_started),
                     overlay_update_interval_s(publisher),
                     publisher.enabled,
                 );
@@ -713,7 +721,7 @@ fn run_fan_control_loop(
             }
             match run_resume_recovery(
                 backend,
-                _enable_persistence_mode,
+                enable_persistence_mode,
                 expected_power_limit_w,
                 cleanup.ceiling.as_mut(),
             ) {
@@ -739,18 +747,22 @@ fn run_fan_control_loop(
                             local_timestamp()
                         ));
                         resume_deadline = None;
+                        // Same re-assertion the success path forces: the fan
+                        // dedup and VF cooldown must not trust pre-suspend
+                        // state just because the recovery writes failed.
+                        last_vf_reapply = 0.0;
+                        last_speed = None;
+                        last_set_temp_c = None;
                     } else {
                         engine_log(&format!(
                             "{} event=resume-reverify-retry attempt={resume_attempts} error={exc}",
                             local_timestamp()
                         ));
-                        resume_deadline = Some(loop_started + resume::RESUME_REAPPLY_GRACE_S);
-                        sleep_loop(
-                            &stop_flag,
-                            poll_interval_s,
-                            overlay_update_interval_s(publisher),
-                            publisher.enabled,
-                        );
+                        // Re-anchor AFTER the failed attempt (which may have
+                        // blocked past the old anchor) so every retry gets a
+                        // full settle grace; the grace branch above owns the
+                        // sleep on the next tick.
+                        resume_deadline = Some(monotonic_now() + resume::RESUME_REAPPLY_GRACE_S);
                         continue;
                     }
                 }
@@ -787,7 +799,12 @@ fn run_fan_control_loop(
                     }
                     vf_expected_samples = update.vf_expected_samples;
                     reapply_memory_offset_mhz = update.memory_offset_mhz;
-                    expected_power_limit_w = update.applied_power_limit_w;
+                    // A tier that carries no limit leaves the previously
+                    // applied limit in force on the hardware, so keep
+                    // tracking that value for the post-resume re-verify.
+                    if update.applied_power_limit_w.is_some() {
+                        expected_power_limit_w = update.applied_power_limit_w;
+                    }
                 }
             }
         }
@@ -1137,10 +1154,11 @@ fn maybe_reapply_vf_curve(
 }
 
 /// One post-resume recovery pass: persistence mode (a resume can drop it;
-/// only applied at startup otherwise), then the power limit (read-first),
-/// then the locked-clock ceiling re-lock. The VF/mem reapply stays with the
-/// loop's existing guard (whose cooldown the caller clears) so the
-/// mem-before-VF ordering invariant keeps exactly one owner.
+/// only applied at startup otherwise), then the power limit (read-first) and
+/// the locked-clock ceiling re-lock — attempted independently so one failing
+/// step cannot starve the other across the bounded retry budget. The VF/mem
+/// reapply stays with the loop's existing guard (whose cooldown the caller
+/// clears) so the mem-before-VF ordering invariant keeps exactly one owner.
 fn run_resume_recovery(
     backend: &dyn GpuBackend,
     enable_persistence_mode: bool,
@@ -1149,13 +1167,25 @@ fn run_resume_recovery(
 ) -> Result<bool, String> {
     let mut log = |message: &str| engine_log(message);
     apply::apply_gpu_base_policy(backend, enable_persistence_mode, &mut log);
-    let power_reapplied = resume::verify_power_limit(backend, expected_power_limit_w, &mut log)?;
+    let mut failures: Vec<String> = Vec::new();
+    let power_reapplied =
+        match resume::verify_power_limit(backend, expected_power_limit_w, &mut log) {
+            Ok(reapplied) => reapplied,
+            Err(exc) => {
+                failures.push(exc);
+                false
+            }
+        };
     if let Some(controller) = ceiling {
-        controller
-            .apply()
-            .map_err(|exc| format!("clock ceiling re-lock failed: {exc}"))?;
+        if let Err(exc) = controller.apply() {
+            failures.push(format!("clock ceiling re-lock failed: {exc}"));
+        }
     }
-    Ok(power_reapplied)
+    if failures.is_empty() {
+        Ok(power_reapplied)
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

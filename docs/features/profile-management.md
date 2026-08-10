@@ -47,13 +47,16 @@ as your regular user.
 While a profile runtime is active, it survives system sleep
 automatically. Waking from suspend can silently reset driver state
 (power limit, locked clocks, the V/F curve), so the runtime engine
-detects every resume, waits a few seconds for the driver to settle, then
-re-asserts the applied profile: the power limit is checked first and only
-rewritten when it drifted; the clock ceiling, persistence policy, and fan
-state are re-asserted directly; the V/F curve re-verifies through the
-engine's usual drift guard. Detection works on any init system — it
-compares two kernel clocks instead of listening to logind — and the
-result is logged as `event=resume-reverify-complete` in the engine log.
+detects resumes from sleeps longer than a couple of seconds, waits a few
+seconds for the driver to settle, then re-asserts the applied profile:
+persistence policy is re-asserted, the power limit is checked and only
+rewritten when it drifted, the clock ceiling is re-locked, fan state is
+re-asserted, and the V/F curve re-verifies through the engine's usual
+drift guard. Detection works on any init system — it compares two kernel
+clocks instead of listening to logind — and the result is logged as
+`event=resume-reverify-complete` in the engine log (or
+`event=resume-reverify-gave-up` if the driver kept rejecting the
+recovery writes; the per-tick guards keep re-verifying from there).
 
 This covers the runtime engine only: state that was deliberately left on
 the GPU after stopping the runtime is not re-verified after a sleep —
