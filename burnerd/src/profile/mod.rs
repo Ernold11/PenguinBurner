@@ -523,6 +523,7 @@ fn run_with_backend(
         savings_tracker.as_mut(),
         stop_flag,
         max_iterations,
+        None,
         ready,
     )
 }
@@ -577,6 +578,9 @@ fn run_fan_control_loop(
     mut savings_tracker: Option<&mut savings::SavingsTracker>,
     stop_flag: Arc<AtomicBool>,
     max_iterations: Option<u64>,
+    // Test seam (like `max_iterations`): overrides the (monotonic, boottime)
+    // pair the resume machinery samples, so loop tests can fabricate sleeps.
+    mut resume_clocks: Option<&mut dyn FnMut() -> (f64, f64)>,
     ready: &mut Option<SyncSender<Result<(), String>>>,
 ) -> Result<(), String> {
     let mut settings = RuntimeFanSettings::build(&fan_config, fan_control_enabled)?;
@@ -662,10 +666,14 @@ fn run_fan_control_loop(
     let mut last_overlay_publish: Option<f64> = None;
     let mut overlay_publish_failed = false;
     let mut last_vf_reapply = 0.0_f64;
+    let (setup_monotonic, setup_boottime) = match resume_clocks.as_mut() {
+        Some(clocks) => clocks(),
+        None => (monotonic_now(), resume::boottime_now()),
+    };
     let mut sleep_detector = resume::SleepGapDetector::new(
         resume::SLEEP_GAP_THRESHOLD_S,
-        monotonic_now(),
-        resume::boottime_now(),
+        setup_monotonic,
+        setup_boottime,
     );
     let mut resume_deadline: Option<f64> = None;
     let mut resume_attempts = 0u32;
@@ -686,13 +694,17 @@ fn run_fan_control_loop(
         // sleep while the loop's monotonic clock does not, so a divergence
         // between the two IS a completed suspend cycle. Applied GPU state may
         // have silently reset; re-verify after a short driver-settle grace.
-        if let Some(slept_s) = sleep_detector.observe(loop_started, resume::boottime_now()) {
+        let (tick_monotonic, tick_boottime) = match resume_clocks.as_mut() {
+            Some(clocks) => clocks(),
+            None => (loop_started, resume::boottime_now()),
+        };
+        if let Some(slept_s) = sleep_detector.observe(tick_monotonic, tick_boottime) {
             engine_log(&format!(
                 "{} event=system-resume-detected slept_s={slept_s:.0} action=reverify-in-{}s",
                 local_timestamp(),
                 resume::RESUME_REAPPLY_GRACE_S,
             ));
-            resume_deadline = Some(loop_started + resume::RESUME_REAPPLY_GRACE_S);
+            resume_deadline = Some(tick_monotonic + resume::RESUME_REAPPLY_GRACE_S);
             resume_attempts = 0;
             // Pre-suspend utilization samples still look "recent" on the
             // monotonic clock; drop them so the CPU-bound guard reasons only
@@ -708,12 +720,12 @@ fn run_fan_control_loop(
         // driver — a transient error on any of them is fatal to the loop,
         // which is exactly what the grace exists to prevent.
         if let Some(deadline) = resume_deadline {
-            if loop_started < deadline {
+            if tick_monotonic < deadline {
                 // Cap the wait at the remaining grace so a long poll interval
                 // does not stretch the no-backend-calls blackout past it.
                 sleep_loop(
                     &stop_flag,
-                    poll_interval_s.min(deadline - loop_started),
+                    poll_interval_s.min((deadline - tick_monotonic).max(0.05)),
                     overlay_update_interval_s(publisher),
                     publisher.enabled,
                 );
@@ -762,7 +774,12 @@ fn run_fan_control_loop(
                         // blocked past the old anchor) so every retry gets a
                         // full settle grace; the grace branch above owns the
                         // sleep on the next tick.
-                        resume_deadline = Some(monotonic_now() + resume::RESUME_REAPPLY_GRACE_S);
+                        let after_attempt = match resume_clocks.as_mut() {
+                            Some(clocks) => clocks().0,
+                            None => monotonic_now(),
+                        };
+                        resume_deadline =
+                            Some(after_attempt + resume::RESUME_REAPPLY_GRACE_S);
                         continue;
                     }
                 }
@@ -809,7 +826,30 @@ fn run_fan_control_loop(
             }
         }
 
-        let current_temp_c = backend.temperature_c().map_err(|e| e.to_string())?;
+        let current_temp_c = match backend.temperature_c() {
+            Ok(temp) => temp,
+            Err(exc) => {
+                // A suspend can land mid-tick inside a blocking call and
+                // surface as a transient post-wake error before the loop-top
+                // detector saw the gap. A fresh gap means "enter the settle
+                // window", not "die".
+                if let Some((slept_s, now)) =
+                    probe_sleep_gap(&mut sleep_detector, &mut resume_clocks)
+                {
+                    engine_log(&format!(
+                        "{} event=system-resume-detected slept_s={slept_s:.0} trigger=telemetry-error error={exc}",
+                        local_timestamp()
+                    ));
+                    resume_deadline = Some(now + resume::RESUME_REAPPLY_GRACE_S);
+                    resume_attempts = 0;
+                    if let Some(controller) = adaptive_ctrl.as_deref_mut() {
+                        controller.note_system_resume();
+                    }
+                    continue;
+                }
+                return Err(exc.to_string());
+            }
+        };
         let power_draw_w = backend.power_draw_w();
 
         let ceiling_text = cleanup
@@ -1020,9 +1060,24 @@ fn run_fan_control_loop(
         ));
 
         if settings.force_update_every_poll || Some(target_speed) != last_speed {
-            backend
-                .set_all_fans_speed(fan_count, target_speed as u32)
-                .map_err(|e| e.to_string())?;
+            if let Err(exc) = backend.set_all_fans_speed(fan_count, target_speed as u32) {
+                // Same mid-tick-suspend tolerance as the telemetry read.
+                if let Some((slept_s, now)) =
+                    probe_sleep_gap(&mut sleep_detector, &mut resume_clocks)
+                {
+                    engine_log(&format!(
+                        "{} event=system-resume-detected slept_s={slept_s:.0} trigger=fan-write-error error={exc}",
+                        local_timestamp()
+                    ));
+                    resume_deadline = Some(now + resume::RESUME_REAPPLY_GRACE_S);
+                    resume_attempts = 0;
+                    if let Some(controller) = adaptive_ctrl.as_deref_mut() {
+                        controller.note_system_resume();
+                    }
+                    continue;
+                }
+                return Err(exc.to_string());
+            }
             last_set_temp_c = Some(current_temp_c);
             last_speed = Some(target_speed);
             last_update_time = loop_started;
@@ -1186,6 +1241,21 @@ fn run_resume_recovery(
     } else {
         Err(failures.join("; "))
     }
+}
+
+/// Sample the clock pair (seam-aware) and ask the detector whether a suspend
+/// just ended; returns the slept seconds and the sampled monotonic time.
+fn probe_sleep_gap(
+    detector: &mut resume::SleepGapDetector,
+    clocks: &mut Option<&mut dyn FnMut() -> (f64, f64)>,
+) -> Option<(f64, f64)> {
+    let (monotonic, boottime) = match clocks.as_mut() {
+        Some(clocks) => clocks(),
+        None => (monotonic_now(), resume::boottime_now()),
+    };
+    detector
+        .observe(monotonic, boottime)
+        .map(|gap| (gap, monotonic))
 }
 
 #[allow(clippy::too_many_arguments)]
