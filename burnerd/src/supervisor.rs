@@ -14,6 +14,7 @@ use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::process::{Child, ExitStatus};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -519,12 +520,41 @@ pub fn persisted_pci_bus_id_hint() -> Option<String> {
     None
 }
 
-/// True when a persisted runtime exists that `start_autostart_if_configured`
-/// would start — what the deep-sleep watcher holds back while the GPU sleeps.
-pub fn has_persisted_runtime() -> bool {
-    [active_state_file_path(), boot_state_file_path()]
-        .iter()
-        .any(|path| matches!(load_runtime_spec(path), Ok(Some(_))))
+/// Set once this session's boot intent has been acted on (an autostart ran,
+/// or the user explicitly stopped the runtime). The boot spec must apply at
+/// most once per daemon lifetime — the deep-sleep watcher must not resurrect
+/// a runtime the user stopped just because the boot file still exists.
+static BOOT_RUNTIME_CONSUMED: AtomicBool = AtomicBool::new(false);
+
+fn deferred_pending_from(active_exists: bool, boot_exists: bool, boot_consumed: bool) -> bool {
+    active_exists || (boot_exists && !boot_consumed)
+}
+
+/// True when a persisted runtime exists that the deep-sleep watcher should
+/// hold back while the GPU sleeps and start when it is really in use.
+pub fn deferred_runtime_pending() -> bool {
+    deferred_pending_from(
+        matches!(load_runtime_spec(&active_state_file_path()), Ok(Some(_))),
+        matches!(load_runtime_spec(&boot_state_file_path()), Ok(Some(_))),
+        BOOT_RUNTIME_CONSUMED.load(Ordering::SeqCst),
+    )
+}
+
+/// True while the profile slot is occupied at all — running, or retained
+/// after a failure/wedge (which deliberately blocks further starts).
+pub fn profile_slot_occupied(sup: &Mutex<Supervisor>) -> bool {
+    guard(sup).profile.is_some()
+}
+
+/// Post-child runtime recovery: on desktops this is the classic immediate
+/// restart; while the deep-sleep gate is armed the watcher owns runtime
+/// starts (a scan's exit must not force-attach a GPU that is about to idle).
+pub fn resume_autostart_after_child(sup: &Arc<Mutex<Supervisor>>) {
+    if crate::rtd3::is_armed() {
+        logging::info("deep sleep: leaving post-child runtime start to the watcher");
+        return;
+    }
+    start_autostart_if_configured(sup);
 }
 
 fn persist_active_runtime(spec: &RuntimeSpec) {
@@ -958,6 +988,9 @@ pub fn apply_runtime_spec(
 }
 
 pub fn stop_runtime_profile(sup: &Mutex<Supervisor>) -> Result<StopResult, String> {
+    // An explicit stop settles this session's runtime intent: the boot spec
+    // must not be resurrected by the deep-sleep watcher afterwards.
+    BOOT_RUNTIME_CONSUMED.store(true, Ordering::SeqCst);
     let mut supervisor = guard(sup);
     let stop_timeout = supervisor.stop_timeout;
     match supervisor.profile.as_mut() {
@@ -1065,7 +1098,7 @@ pub fn finish_child(sup: &Arc<Mutex<Supervisor>>, job: &Arc<ChildJob>) {
         }
     };
     if restart {
-        start_autostart_if_configured(sup);
+        resume_autostart_after_child(sup);
     }
 }
 
@@ -1134,6 +1167,7 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
                 continue;
             }
         };
+        BOOT_RUNTIME_CONSUMED.store(true, Ordering::SeqCst);
         match profile::start(spec.clone()) {
             Ok(engine) => {
                 logging::info(&format!(
@@ -1226,6 +1260,17 @@ mod tests {
 
     // `STATE_FILE_ENV` is process-global; serialize the tests that mutate it.
     static STATE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn deferred_pending_honors_boot_consumption() {
+        // The active-session spec always re-arms the watcher.
+        assert!(deferred_pending_from(true, false, false));
+        assert!(deferred_pending_from(true, true, true));
+        // The boot spec arms it at most once per daemon lifetime.
+        assert!(deferred_pending_from(false, true, false));
+        assert!(!deferred_pending_from(false, true, true));
+        assert!(!deferred_pending_from(false, false, false));
+    }
 
     struct StateEnvGuard {
         name: &'static str,

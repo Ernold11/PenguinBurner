@@ -453,11 +453,12 @@ fn run_with_backend(
     // VF-curve policy: persistence → memory → VF → power → clock ceiling
     // (mem before VF: a mem-offset write wipes the per-point VF table).
     // Persistence mode is a documented RTD3 blocker, so it is suppressed
-    // whenever the deep-sleep gate is armed; the profile is reapplied on wake
-    // instead of relying on the driver staying initialized.
-    let enable_persistence_mode = spec.policy.enable_persistence_mode && !crate::rtd3::is_armed();
+    // while the deep-sleep gate is armed or still undecided; the profile is
+    // reapplied on wake instead of relying on the driver staying initialized.
+    let enable_persistence_mode =
+        spec.policy.enable_persistence_mode && !crate::rtd3::suppress_persistence();
     if spec.policy.enable_persistence_mode && !enable_persistence_mode {
-        log("Deep sleep armed: skipping GPU persistence mode (it blocks runtime D3)");
+        log("Deep sleep: skipping GPU persistence mode (it blocks runtime D3)");
     }
     let vf_policy = apply::configure_runtime_spec_policy(
         backend,
@@ -513,7 +514,7 @@ fn run_with_backend(
     run_fan_control_loop(
         backend,
         gpu_index,
-        spec.policy.enable_persistence_mode,
+        enable_persistence_mode,
         fan_config,
         fan_control_enabled,
         vf_policy,
@@ -567,7 +568,7 @@ impl Drop for EngineCleanup<'_> {
 fn run_fan_control_loop(
     backend: &dyn GpuBackend,
     gpu_index: u32,
-    _enable_persistence_mode: bool,
+    enable_persistence_mode: bool,
     fan_config: FanConfig,
     fan_control_enabled: bool,
     vf_policy: VfPolicyResult<'_>,
@@ -632,7 +633,7 @@ fn run_fan_control_loop(
 
     log_startup(
         gpu_index,
-        _enable_persistence_mode,
+        enable_persistence_mode,
         &gpu_policy_text,
         fan_control_enabled,
         fan_count,

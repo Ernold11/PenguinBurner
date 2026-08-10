@@ -32,8 +32,9 @@ the saved profile is applied at boot and the daemon stays attached.
 - A saved profile is not applied while the GPU sleeps. The daemon watches
   `runtime_status` once per second (a cached read — no GPU traffic) and
   applies the profile when the GPU is actually in use: sustained `active`
-  plus a real client holding a `/dev/nvidia*` handle (a game, not a
-  transient Vulkan capability probe).
+  plus a real client holding a `/dev/nvidia<N>` device handle (a game, not
+  a transient Vulkan capability probe, and not monitoring tools that only
+  hold `nvidiactl`/`nvidia-uvm` handles).
 - One-off telemetry or capability queries release their GPU handles after 30
   idle seconds instead of keeping them for the daemon's lifetime.
 - GPU persistence mode is never enabled (it blocks runtime D3); the profile
@@ -80,3 +81,8 @@ module options.
   stopped or the daemon restarts; automatic idle re-detach is planned.
 - Profile reapply after a deep-sleep cycle happens when the runtime is
   started for the wake, not transparently mid-session.
+- After an Auto-UV scan or verification finishes, the saved profile applies
+  at the next real GPU use instead of immediately, so the scan's end never
+  pins a GPU that is about to idle.
+- A runtime you explicitly stop stays stopped: the boot profile arms the
+  wake-apply at most once per daemon start.

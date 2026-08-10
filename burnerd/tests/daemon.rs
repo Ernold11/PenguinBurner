@@ -1329,3 +1329,43 @@ fn deep_sleep_disabled_on_desktop_runs_autostart_immediately() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn deep_sleep_scan_completion_does_not_force_start_the_deferred_runtime() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-rtd3-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_file = dir.join("state.json");
+    std::fs::write(&state_file, test_runtime_spec().to_string()).unwrap();
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+
+    let daemon = Daemon::start(&[
+        ("PENGUIN_BURNERD_TEST_STATE_FILE", state_file.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        ("SCAN_STUB_EXIT_AFTER_LINES", "1"),
+    ]);
+
+    // Armed and deferred at boot; a completed scan must hand the restart to
+    // the watcher (which sees a suspended GPU) instead of force-starting the
+    // runtime and pinning the GPU — the desktop finish_child behavior.
+    finish_successful_scan(&daemon);
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(status["result"]["state"], "idle", "{status}");
+
+    // The deferral resumes: still pending, never started.
+    let mut deferred = false;
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        let result = &status["result"];
+        if result["deep_sleep"]["autostart_deferred"] == Value::Bool(true) {
+            assert_eq!(result["state"], "idle", "{status}");
+            deferred = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(deferred, "deferral did not resume after the scan");
+    let _ = std::fs::remove_dir_all(&dir);
+}

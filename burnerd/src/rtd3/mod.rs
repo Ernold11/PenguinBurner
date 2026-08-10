@@ -118,12 +118,32 @@ pub fn is_armed() -> bool {
     matches!(state.decision, Some(DeepSleepDecision::Armed { .. })) || state.suspended_observed
 }
 
+/// True when GPU persistence mode must not be enabled: while armed it blocks
+/// runtime D3, and while the verdict is still unknown it could — an engine
+/// keeps the driver initialized through its own handles anyway, so
+/// suppressing it on an undecided machine costs nothing.
+pub fn suppress_persistence() -> bool {
+    let state = gate();
+    match &state.decision {
+        // Armed or still undecided: suppress.
+        Some(DeepSleepDecision::Armed { .. }) | Some(DeepSleepDecision::Unknown { .. }) => true,
+        // Decided desktop, or gate never evaluated (unreachable in the
+        // daemon, which always evaluates at startup): classic behavior,
+        // unless the GPU has proven it can suspend.
+        Some(DeepSleepDecision::Disabled { .. }) | None => state.suspended_observed,
+    }
+}
+
 pub fn current_decision() -> Option<DeepSleepDecision> {
     gate().decision.clone()
 }
 
 pub fn pci_addr() -> Option<String> {
     gate().pci_addr.clone()
+}
+
+pub fn last_runtime_status() -> Option<RuntimePmStatus> {
+    gate().last_runtime_status
 }
 
 /// Record a watcher observation. First `suspended` sighting arms the gate for
