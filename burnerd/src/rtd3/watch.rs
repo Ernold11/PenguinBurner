@@ -21,7 +21,7 @@
 //! GUI telemetry query cannot pin NVML forever.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -39,6 +39,19 @@ const DESKTOP_TICK: Duration = Duration::from_secs(60);
 const SUSTAINED_ACTIVE_TICKS: u32 = 3;
 /// Idle TTL for lazily-opened RPC backends in Mobile or Unknown mode.
 const RPC_BACKEND_IDLE_TTL: Duration = Duration::from_secs(30);
+
+/// Client-free seconds (one Mobile tick each) before a running engine is
+/// parked so the GPU can suspend. Wide enough to ride out game restarts,
+/// launcher hand-offs, and shader-compile gaps without a park/reattach
+/// cycle. Shrunk by the integration-test timing env so the park path can be
+/// exercised in seconds.
+fn park_after_idle_ticks() -> u32 {
+    if std::env::var_os("PENGUIN_BURNERD_TEST_TIMINGS").is_some_and(|v| !v.is_empty()) {
+        2
+    } else {
+        60
+    }
+}
 
 /// Evaluate the mode, run eager autostart only in definite Desktop mode
 /// (preserving the start-before-socket-bind ordering), and spawn the lifetime
@@ -71,6 +84,9 @@ fn watch_loop(
     // retry at 1 Hz, and a dead engine retained in the profile slot must not
     // produce log spam. Reset when the GPU leaves `active`.
     let mut start_attempted = false;
+    // Consecutive client-free ticks while an engine is attached; at the park
+    // threshold the runtime is parked so the GPU can reach D3cold.
+    let mut idle_ticks = 0u32;
 
     loop {
         super::evaluate(probe, hint);
@@ -82,7 +98,7 @@ fn watch_loop(
                     "deep sleep: released {released} idle GPU backend(s) so the GPU can suspend"
                 ));
             }
-            mobile_tick(sup, &mut active_ticks, &mut start_attempted);
+            mobile_tick(sup, &mut active_ticks, &mut start_attempted, &mut idle_ticks);
             thread::sleep(MOBILE_TICK);
             continue;
         }
@@ -99,8 +115,14 @@ fn watch_loop(
 }
 
 /// One Mobile/Unknown observation tick: hold the deferred runtime back until
-/// the GPU is genuinely in use, and never fight another GPU owner.
-fn mobile_tick(sup: &Arc<Mutex<Supervisor>>, active_ticks: &mut u32, start_attempted: &mut bool) {
+/// the GPU is genuinely in use, park an attached-but-idle runtime so the GPU
+/// can suspend, and never fight another GPU owner.
+fn mobile_tick(
+    sup: &Arc<Mutex<Supervisor>>,
+    active_ticks: &mut u32,
+    start_attempted: &mut bool,
+    idle_ticks: &mut u32,
+) {
     // A scan/verification child owns the GPU exclusively; its own
     // `/dev/nvidia*` fds and activity must never satisfy the start policy —
     // starting the engine here would race the child's raw GPU writes.
@@ -108,6 +130,7 @@ fn mobile_tick(sup: &Arc<Mutex<Supervisor>>, active_ticks: &mut u32, start_attem
         super::set_autostart_deferred(false);
         *active_ticks = 0;
         *start_attempted = false;
+        *idle_ticks = 0;
         return;
     }
     // The profile slot (running OR retained-after-failure) means the runtime
@@ -117,10 +140,40 @@ fn mobile_tick(sup: &Arc<Mutex<Supervisor>>, active_ticks: &mut u32, start_attem
         super::set_autostart_deferred(false);
         *active_ticks = 0;
         *start_attempted = false;
+        if supervisor::profile_engine_running(sup) {
+            super::set_parked(false);
+            // Park policy: the engine's own NVML polling resets the driver's
+            // idle timer forever, so an attached engine means the GPU can
+            // NEVER suspend on its own. When no other process holds a real
+            // /dev/nvidia<N> handle for the whole window, release the GPU:
+            // the profile stays a standing intent (persisted state kept) and
+            // reapplies at the next real use.
+            if nvidia_client_present() {
+                *idle_ticks = 0;
+            } else {
+                *idle_ticks += 1;
+                if *idle_ticks >= park_after_idle_ticks() {
+                    *idle_ticks = 0;
+                    logging::info(
+                        "deep sleep: no GPU clients for the idle window; parking the runtime",
+                    );
+                    if supervisor::park_runtime_for_deep_sleep(sup) {
+                        super::set_parked(true);
+                        // The parked intent is pending again from this very
+                        // instant — a status read between ticks must not
+                        // claim otherwise.
+                        super::set_autostart_deferred(wakeable_runtime_pending());
+                    }
+                }
+            }
+        } else {
+            *idle_ticks = 0;
+        }
         return;
     }
+    *idle_ticks = 0;
 
-    let pending = supervisor::deferred_runtime_pending();
+    let pending = wakeable_runtime_pending();
     super::set_autostart_deferred(pending);
     if !pending {
         *active_ticks = 0;
@@ -139,14 +192,29 @@ fn mobile_tick(sup: &Arc<Mutex<Supervisor>>, active_ticks: &mut u32, start_attem
         if supervisor::start_autostart_if_configured(sup) {
             *start_attempted = true;
             super::set_autostart_deferred(false);
+            super::set_parked(false);
         }
     }
 }
 
+/// A runtime is pending AND worth waking for. A pending stock runtime
+/// enforces nothing: attaching an engine for it would only pin the GPU, so
+/// it neither counts as deferred nor wakes.
+fn wakeable_runtime_pending() -> bool {
+    supervisor::deferred_runtime_pending()
+        && supervisor::deferred_runtime_mode().as_deref() != Some("stock")
+}
+
 /// True when a process other than the daemon holds a `/dev/nvidia<N>` fd —
 /// pure procfs reads, never touches the device. Root sees every process.
+/// Test seam (never set in production): `PENGUIN_BURNERD_TEST_CLIENT_PROC`
+/// points the scan at a fake proc tree so integration tests can stage and
+/// remove GPU clients deterministically on any machine.
 fn nvidia_client_present() -> bool {
-    other_nvidia_client_in("/proc", std::process::id())
+    let proc_root = std::env::var_os("PENGUIN_BURNERD_TEST_CLIENT_PROC")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| PathBuf::from("/proc"), PathBuf::from);
+    other_nvidia_client_in(proc_root, std::process::id())
 }
 
 /// Only the numbered render nodes count as a real GPU client. `nvidiactl`,

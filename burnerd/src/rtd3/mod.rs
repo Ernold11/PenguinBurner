@@ -47,6 +47,9 @@ pub struct DeepSleepStatus {
     /// True once the GPU has been seen suspended this daemon lifetime —
     /// definitive evidence the platform can deep-sleep.
     pub suspended_observed: bool,
+    /// True while an applied profile is parked: its engine released the GPU
+    /// so it can suspend, and the watcher reapplies it at the next real use.
+    pub parked: bool,
 }
 
 #[derive(Default)]
@@ -56,6 +59,7 @@ struct GateState {
     last_runtime_status: Option<RuntimePmStatus>,
     suspended_observed: bool,
     autostart_deferred: bool,
+    parked: bool,
 }
 
 static GATE: Mutex<GateState> = Mutex::new(GateState {
@@ -64,6 +68,7 @@ static GATE: Mutex<GateState> = Mutex::new(GateState {
     last_runtime_status: None,
     suspended_observed: false,
     autostart_deferred: false,
+    parked: false,
 });
 
 fn gate() -> std::sync::MutexGuard<'static, GateState> {
@@ -177,6 +182,20 @@ pub(crate) fn note_runtime_status(status: RuntimePmStatus) {
     record_runtime_status(&mut state, status);
 }
 
+/// Record that the applied runtime was parked (engine stopped, persisted
+/// state kept) so the GPU can suspend — or that it re-materialized.
+pub fn set_parked(parked: bool) {
+    let mut state = gate();
+    if state.parked != parked {
+        state.parked = parked;
+        logging::info(if parked {
+            "deep sleep: runtime parked; the GPU may suspend until its next real use"
+        } else {
+            "deep sleep: parked runtime re-materialized"
+        });
+    }
+}
+
 pub fn set_autostart_deferred(deferred: bool) {
     let mut state = gate();
     if state.autostart_deferred != deferred {
@@ -226,6 +245,7 @@ pub fn status() -> Option<DeepSleepStatus> {
         runtime_status: state.last_runtime_status.map(|s| s.as_str().to_string()),
         autostart_deferred: state.autostart_deferred,
         suspended_observed: state.suspended_observed,
+        parked: state.parked,
     })
 }
 

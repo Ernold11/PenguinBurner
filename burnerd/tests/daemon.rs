@@ -1269,7 +1269,14 @@ fn deep_sleep_defers_autostart_while_the_gpu_is_suspended() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let state_file = dir.join("state.json");
-    std::fs::write(&state_file, test_runtime_spec().to_string()).unwrap();
+    // A static spec: deferral only applies to a runtime the watcher would
+    // re-attach (a pending stock runtime enforces nothing and deliberately
+    // never defers nor wakes).
+    std::fs::write(
+        &state_file,
+        test_static_runtime_spec("deferred-profile").to_string(),
+    )
+    .unwrap();
     let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
 
     let daemon = Daemon::start(&[
@@ -1371,7 +1378,14 @@ fn deep_sleep_scan_completion_does_not_force_start_the_deferred_runtime() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let state_file = dir.join("state.json");
-    std::fs::write(&state_file, test_runtime_spec().to_string()).unwrap();
+    // A static spec: deferral only applies to a runtime the watcher would
+    // re-attach (a pending stock runtime enforces nothing and deliberately
+    // never defers nor wakes).
+    std::fs::write(
+        &state_file,
+        test_static_runtime_spec("deferred-profile").to_string(),
+    )
+    .unwrap();
     let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
 
     let daemon = Daemon::start(&[
@@ -1492,5 +1506,143 @@ fn mobile_mode_rejects_persistence_enable_rpc() {
             .is_some_and(|error| error.contains("Mobile or Unknown")),
         "{response}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deep_sleep_parks_idle_runtime_and_reattaches_on_use() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-rtd3-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    // Fake client-scan proc tree, initially empty: no GPU clients anywhere.
+    let clients = dir.join("clients");
+    std::fs::create_dir_all(&clients).unwrap();
+
+    let daemon = Daemon::start(&[
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+    ]);
+
+    // Explicit apply attaches the engine (a user action may wake the GPU).
+    let start = daemon.request(&runtime_spec_request(
+        "apply_runtime_spec",
+        &test_static_runtime_spec("parked-profile"),
+    ));
+    assert_eq!(start["ok"], Value::Bool(true), "{start}");
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(status["result"]["state"], "runtime_profile_running", "{status}");
+
+    // No clients for the (test-shrunk) idle window: the watcher parks the
+    // runtime — engine gone, persisted state kept, profile pending again.
+    let mut parked = false;
+    for _ in 0..200 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        let result = &status["result"];
+        if result["deep_sleep"]["parked"] == Value::Bool(true) {
+            assert_eq!(result["state"], "idle", "{status}");
+            assert_eq!(
+                result["deep_sleep"]["autostart_deferred"],
+                Value::Bool(true),
+                "{status}"
+            );
+            parked = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(parked, "runtime was never parked");
+    assert!(
+        daemon.state_file.exists(),
+        "parking must keep the persisted runtime state"
+    );
+
+    // Simulate real use: GPU active + a process holding /dev/nvidia0. The
+    // watcher must re-materialize the parked profile.
+    std::fs::write(
+        sys.join("0000:01:00.0/power/runtime_status"),
+        "active\n",
+    )
+    .unwrap();
+    let fd_dir = clients.join("4242").join("fd");
+    std::fs::create_dir_all(&fd_dir).unwrap();
+    std::os::unix::fs::symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+
+    let mut reattached = false;
+    for _ in 0..200 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        let result = &status["result"];
+        if result["state"] == "runtime_profile_running" {
+            assert_eq!(
+                result["active_job"]["profile_id"], "parked-profile",
+                "{status}"
+            );
+            assert_eq!(result["deep_sleep"]["parked"], Value::Bool(false), "{status}");
+            reattached = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(reattached, "parked runtime was never re-materialized on use");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deep_sleep_never_reattaches_a_parked_stock_runtime() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-rtd3-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    let clients = dir.join("clients");
+    std::fs::create_dir_all(&clients).unwrap();
+
+    let daemon = Daemon::start(&[
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+    ]);
+
+    // Apply stock (the GUI's "restore defaults"): the engine attaches for the
+    // reset writes, then the park policy must release it like any runtime.
+    let start = daemon.request(&apply_runtime_request());
+    assert_eq!(start["ok"], Value::Bool(true), "{start}");
+
+    let mut parked = false;
+    for _ in 0..200 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["deep_sleep"]["parked"] == Value::Bool(true) {
+            parked = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(parked, "stock runtime was never parked");
+
+    // Real GPU use arrives: a stock runtime enforces nothing, so the watcher
+    // must NOT re-attach (that would only pin the GPU) and must not report
+    // the stock intent as deferred.
+    std::fs::write(
+        sys.join("0000:01:00.0/power/runtime_status"),
+        "active\n",
+    )
+    .unwrap();
+    let fd_dir = clients.join("4242").join("fd");
+    std::fs::create_dir_all(&fd_dir).unwrap();
+    std::os::unix::fs::symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        let result = &status["result"];
+        assert_eq!(result["state"], "idle", "stock must never re-attach: {status}");
+        assert_eq!(
+            result["deep_sleep"]["autostart_deferred"],
+            Value::Bool(false),
+            "{status}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

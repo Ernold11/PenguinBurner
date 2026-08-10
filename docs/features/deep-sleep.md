@@ -84,10 +84,24 @@ distribution has not enabled runtime power management for the dGPU — see the
 NVIDIA driver README chapter on runtime D3 for the required udev rules and
 module options.
 
+## Applied profiles and deep sleep coexist
+
+An applied profile does not keep the GPU awake. While the profile runtime
+is attached it polls the driver, which by itself prevents runtime D3 — so
+when no other process has held a real `/dev/nvidia<N>` handle for 60
+seconds, the daemon **parks** the runtime: the engine releases every GPU
+handle (fans return to hardware auto, the clock lock is released) while
+the profile stays applied as a standing intent. The GPU is then free to
+enter D3cold. When something real starts using the GPU again, the profile
+re-attaches and reapplies within a few seconds — before a game finishes
+loading. `deep_sleep.parked: true` in `--daemon-status` shows a parked
+profile; `autostart_deferred: true` confirms it will reapply on use.
+
+Restoring stock behaves the same way, with one refinement: a stock
+runtime enforces nothing, so once parked it never re-attaches at all.
+
 ## Current limitations
 
-- After a game ends, the daemon keeps its handles until the profile is
-  stopped or the daemon restarts; automatic idle re-detach is planned.
 - Profile reapply after a deep-sleep cycle happens when the runtime is
   started for the wake, not transparently mid-session.
 - After an Auto-UV scan or verification finishes, the saved profile applies

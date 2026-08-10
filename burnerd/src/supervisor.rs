@@ -540,6 +540,50 @@ pub fn deferred_runtime_pending() -> bool {
     )
 }
 
+/// Mode name of the runtime spec the deep-sleep watcher would start, using
+/// the same active-then-boot precedence (and boot-consumption rule) as
+/// `deferred_runtime_pending`. `None` when nothing is pending.
+pub fn deferred_runtime_mode() -> Option<String> {
+    if let Ok(Some(spec)) = load_runtime_spec(&active_state_file_path()) {
+        return Some(spec.mode_name().to_string());
+    }
+    if !BOOT_RUNTIME_CONSUMED.load(Ordering::SeqCst) {
+        if let Ok(Some(spec)) = load_runtime_spec(&boot_state_file_path()) {
+            return Some(spec.mode_name().to_string());
+        }
+    }
+    None
+}
+
+/// Deep-sleep park: stop the running engine while deliberately KEEPING the
+/// persisted runtime state and the boot intent — the profile stays a standing
+/// intent that the rtd3 watcher re-materializes at the GPU's next real use.
+/// The engine's cleanup restores fans to hardware auto and releases the clock
+/// lock; the remaining applied state evaporates with D3cold anyway. Refuses
+/// while a game session owns the runtime lifecycle or the engine wedges.
+pub fn park_runtime_for_deep_sleep(sup: &Mutex<Supervisor>) -> bool {
+    let mut supervisor = guard(sup);
+    if !supervisor.game_runtime.watches.is_empty() {
+        return false;
+    }
+    let stop_timeout = supervisor.stop_timeout;
+    match supervisor.profile.as_mut() {
+        Some(job) if job.engine.is_running() => match job.engine.stop(stop_timeout) {
+            StopOutcome::Stopped => {
+                supervisor.profile = None;
+                true
+            }
+            StopOutcome::TimedOut => {
+                logging::error(
+                    "deep sleep park: engine did not stop within timeout; staying attached",
+                );
+                false
+            }
+        },
+        _ => false,
+    }
+}
+
 /// True while the profile slot is occupied at all — running, or retained
 /// after a failure/wedge (which deliberately blocks further starts).
 pub fn profile_slot_occupied(sup: &Mutex<Supervisor>) -> bool {
@@ -989,8 +1033,10 @@ pub fn apply_runtime_spec(
 
 pub fn stop_runtime_profile(sup: &Mutex<Supervisor>) -> Result<StopResult, String> {
     // An explicit stop settles this session's runtime intent: the boot spec
-    // must not be resurrected by the deep-sleep watcher afterwards.
+    // must not be resurrected by the deep-sleep watcher afterwards, and a
+    // parked runtime is dissolved rather than left claiming otherwise.
     BOOT_RUNTIME_CONSUMED.store(true, Ordering::SeqCst);
+    crate::rtd3::set_parked(false);
     let mut supervisor = guard(sup);
     let stop_timeout = supervisor.stop_timeout;
     match supervisor.profile.as_mut() {
