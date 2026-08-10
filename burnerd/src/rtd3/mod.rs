@@ -160,6 +160,18 @@ pub fn suppress_persistence() -> bool {
     protects_deep_sleep()
 }
 
+/// True when the driver reports fine-grained runtime D3: it holds the GPU
+/// awake per submitted work, not per open fd, so a `/dev/nvidia<N>` holder is
+/// not evidence of use and the watcher must ask NVML for live contexts
+/// instead. Deliberately NOT satisfied by the sticky suspended-observed
+/// fallback — only the parsed driver report proves fine-grained semantics.
+pub fn fine_grained_mode() -> bool {
+    matches!(
+        gate().mode,
+        Some(DeepSleepMode::Mobile { fine_grained: true })
+    )
+}
+
 pub fn last_runtime_status() -> Option<RuntimePmStatus> {
     gate().last_runtime_status
 }
@@ -332,6 +344,48 @@ mod tests {
             status().and_then(|status| status.pci_addr).as_deref(),
             Some(addr)
         );
+        reset_for_test();
+    }
+
+    #[test]
+    fn fine_grained_mode_follows_the_parsed_driver_report_only() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        reset_for_test();
+        let root = tempfile::tempdir().expect("tempdir");
+        let addr = "0000:01:00.0";
+        let device = root.path().join("sys").join(addr);
+        fs::create_dir_all(device.join("power")).unwrap();
+        fs::write(device.join("vendor"), "0x10de\n").unwrap();
+        fs::write(device.join("class"), "0x030000\n").unwrap();
+        fs::write(device.join("power/control"), "auto\n").unwrap();
+        fs::write(device.join("power/runtime_status"), "active\n").unwrap();
+        let proc_gpu = root.path().join("proc").join(addr);
+        fs::create_dir_all(&proc_gpu).unwrap();
+        let probe = detect::Rtd3Probe::with_roots(
+            &root.path().join("sys"),
+            &root.path().join("proc"),
+        );
+
+        fs::write(
+            proc_gpu.join("power"),
+            "Runtime D3 status:          Enabled (fine-grained)\n",
+        )
+        .unwrap();
+        evaluate(&probe, None);
+        assert!(fine_grained_mode());
+
+        fs::write(
+            proc_gpu.join("power"),
+            "Runtime D3 status:          Enabled (coarse-grained)\n",
+        )
+        .unwrap();
+        evaluate(&probe, None);
+        assert!(!fine_grained_mode());
+        // The sticky suspended observation selects Mobile handling but must
+        // NOT claim fine-grained fd semantics.
+        note_runtime_status(RuntimePmStatus::Suspended);
+        assert!(is_mobile_mode());
+        assert!(!fine_grained_mode());
         reset_for_test();
     }
 

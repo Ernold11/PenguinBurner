@@ -1519,11 +1519,19 @@ fn deep_sleep_parks_idle_runtime_and_reattaches_on_use() {
     // Fake client-scan proc tree, initially empty: no GPU clients anywhere.
     let clients = dir.join("clients");
     std::fs::create_dir_all(&clients).unwrap();
+    // Fine-grained mode reads GPU contexts from NVML (the mock's staged PID
+    // file here), not the fd scan; no file yet means no contexts.
+    let contexts = dir.join("context-pids");
 
     let daemon = Daemon::start(&[
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
         ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
         ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        MOCK_GPU,
+        (
+            "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
+            contexts.to_str().unwrap(),
+        ),
     ]);
 
     // Explicit apply attaches the engine (a user action may wake the GPU).
@@ -1559,16 +1567,14 @@ fn deep_sleep_parks_idle_runtime_and_reattaches_on_use() {
         "parking must keep the persisted runtime state"
     );
 
-    // Simulate real use: GPU active + a process holding /dev/nvidia0. The
+    // Simulate real use: GPU active + a process with a live GPU context. The
     // watcher must re-materialize the parked profile.
     std::fs::write(
         sys.join("0000:01:00.0/power/runtime_status"),
         "active\n",
     )
     .unwrap();
-    let fd_dir = clients.join("4242").join("fd");
-    std::fs::create_dir_all(&fd_dir).unwrap();
-    std::os::unix::fs::symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+    std::fs::write(&contexts, "4242\n").unwrap();
 
     let mut reattached = false;
     for _ in 0..200 {
@@ -1598,11 +1604,17 @@ fn deep_sleep_never_reattaches_a_parked_stock_runtime() {
     let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
     let clients = dir.join("clients");
     std::fs::create_dir_all(&clients).unwrap();
+    let contexts = dir.join("context-pids");
 
     let daemon = Daemon::start(&[
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
         ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
         ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        MOCK_GPU,
+        (
+            "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
+            contexts.to_str().unwrap(),
+        ),
     ]);
 
     // Apply stock (the GUI's "restore defaults"): the engine attaches for the
@@ -1629,9 +1641,7 @@ fn deep_sleep_never_reattaches_a_parked_stock_runtime() {
         "active\n",
     )
     .unwrap();
-    let fd_dir = clients.join("4242").join("fd");
-    std::fs::create_dir_all(&fd_dir).unwrap();
-    std::os::unix::fs::symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+    std::fs::write(&contexts, "4242\n").unwrap();
 
     for _ in 0..100 {
         let status = daemon.request(r#"{"method":"status"}"#);
@@ -1644,5 +1654,176 @@ fn deep_sleep_never_reattaches_a_parked_stock_runtime() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The issue-#30 hardware finding: fine-grained RTD3 suspends the GPU under
+/// idly-open `/dev/nvidia<N>` fds (desktop shells, monitoring agents), so an
+/// fd holder must not starve the park policy, and after parking a bare fd
+/// holder plus an active GPU must not re-attach either — only a live NVML
+/// context is real use.
+#[test]
+fn deep_sleep_fine_grained_ignores_idle_device_node_holders() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-rtd3-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    // A long-lived /dev/nvidia0 holder exists the whole time.
+    let clients = dir.join("clients");
+    let fd_dir = clients.join("4242").join("fd");
+    std::fs::create_dir_all(&fd_dir).unwrap();
+    std::os::unix::fs::symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+    let contexts = dir.join("context-pids");
+
+    let daemon = Daemon::start(&[
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        MOCK_GPU,
+        (
+            "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
+            contexts.to_str().unwrap(),
+        ),
+    ]);
+
+    let start = daemon.request(&runtime_spec_request(
+        "apply_runtime_spec",
+        &test_static_runtime_spec("holder-blind-profile"),
+    ));
+    assert_eq!(start["ok"], Value::Bool(true), "{start}");
+
+    // No NVML contexts: the fd holder alone must not block parking.
+    let mut parked = false;
+    for _ in 0..200 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["deep_sleep"]["parked"] == Value::Bool(true) {
+            parked = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(parked, "fd holder starved the fine-grained park policy");
+
+    // GPU goes (and stays) active with the fd holder but still no context:
+    // must not re-materialize on that alone.
+    std::fs::write(sys.join("0000:01:00.0/power/runtime_status"), "active\n").unwrap();
+    std::thread::sleep(Duration::from_secs(5));
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(
+        status["result"]["state"], "idle",
+        "an fd holder without a context re-attached the runtime: {status}"
+    );
+
+    // A real context appears: re-materialize.
+    std::fs::write(&contexts, "4242\n").unwrap();
+    let mut reattached = false;
+    for _ in 0..200 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["state"] == "runtime_profile_running" {
+            reattached = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(reattached, "a live context never re-materialized the runtime");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Coarse-grained RTD3 keeps the GPU awake per open fd, so there the fd scan
+/// stays the park signal: a device-node holder blocks parking, and its exit
+/// releases the runtime.
+#[test]
+fn deep_sleep_coarse_grained_device_holder_blocks_park() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-rtd3-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (coarse-grained)", "auto", "active");
+    let clients = dir.join("clients");
+    let fd_dir = clients.join("4242").join("fd");
+    std::fs::create_dir_all(&fd_dir).unwrap();
+    std::os::unix::fs::symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+
+    let daemon = Daemon::start(&[
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        MOCK_GPU,
+    ]);
+
+    let start = daemon.request(&runtime_spec_request(
+        "apply_runtime_spec",
+        &test_static_runtime_spec("coarse-profile"),
+    ));
+    assert_eq!(start["ok"], Value::Bool(true), "{start}");
+
+    // Well past the (test-shrunk) park window: the fd holder must keep the
+    // engine attached.
+    std::thread::sleep(Duration::from_secs(5));
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(
+        status["result"]["state"], "runtime_profile_running",
+        "coarse-grained park ignored the fd holder: {status}"
+    );
+    assert_eq!(
+        status["result"]["deep_sleep"]["parked"],
+        Value::Bool(false),
+        "{status}"
+    );
+
+    // The holder exits: the park policy releases the runtime.
+    std::fs::remove_dir_all(clients.join("4242")).unwrap();
+    let mut parked = false;
+    for _ in 0..200 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["deep_sleep"]["parked"] == Value::Bool(true) {
+            parked = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(parked, "runtime was never parked after the holder exited");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// When the NVML context query fails (driver without the _v3 process-list
+/// symbols), fine-grained mode falls back to the conservative fd scan rather
+/// than never parking (or parking under a real client).
+#[test]
+fn deep_sleep_fine_grained_falls_back_to_fd_scan_when_nvml_query_fails() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-rtd3-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    let clients = dir.join("clients");
+    std::fs::create_dir_all(&clients).unwrap();
+
+    let daemon = Daemon::start(&[
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        MOCK_GPU,
+        ("PENGUIN_BURNERD_TEST_MOCK_GPU_FAIL", "gpu_context_pids"),
+    ]);
+
+    let start = daemon.request(&runtime_spec_request(
+        "apply_runtime_spec",
+        &test_static_runtime_spec("fallback-profile"),
+    ));
+    assert_eq!(start["ok"], Value::Bool(true), "{start}");
+
+    // The fd scan (empty client tree) governs: the runtime still parks.
+    let mut parked = false;
+    for _ in 0..200 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["deep_sleep"]["parked"] == Value::Bool(true) {
+            parked = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(parked, "fd-scan fallback never parked the runtime");
     let _ = std::fs::remove_dir_all(&dir);
 }

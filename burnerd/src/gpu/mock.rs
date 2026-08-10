@@ -8,6 +8,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use super::{
     snap_core_clock_mhz, snap_core_clock_range, vf_editable_core_points, vf_find_nearest,
@@ -92,6 +93,13 @@ pub struct MockGpu {
     pub vf_available: bool,
     pub vf_points: Vec<VfPoint>,
 
+    /// Canned `gpu_context_pids` answer.
+    pub context_pids: Vec<u32>,
+    /// Integration-test seam: when set, `gpu_context_pids` re-reads this file
+    /// on every call (missing file → no contexts), so a test can stage and
+    /// remove GPU clients while the daemon runs. Overrides `context_pids`.
+    pub context_pids_file: Option<PathBuf>,
+
     ops: RefCell<Vec<MockOp>>,
     failures: RefCell<HashMap<&'static str, GpuError>>,
     /// Test hook run on every `temperature_c` read — lets engine-loop tests
@@ -132,6 +140,8 @@ impl Default for MockGpu {
             voltage_uv: None,
             vf_available: false,
             vf_points: Vec::new(),
+            context_pids: Vec::new(),
+            context_pids_file: None,
             ops: RefCell::new(Vec::new()),
             failures: RefCell::new(HashMap::new()),
             on_temperature: RefCell::new(None),
@@ -240,6 +250,16 @@ impl GpuBackend for MockGpu {
 
     fn throttle_reason_mask(&self) -> Option<u64> {
         self.throttle_mask
+    }
+
+    fn gpu_context_pids(&self) -> GpuResult<Vec<u32>> {
+        self.fail("gpu_context_pids")?;
+        match &self.context_pids_file {
+            Some(path) => Ok(parse_pid_list(
+                &std::fs::read_to_string(path).unwrap_or_default(),
+            )),
+            None => Ok(self.context_pids.clone()),
+        }
     }
 
     fn query_power_limits(&self) -> PowerLimits {
@@ -434,9 +454,33 @@ impl GpuBackend for MockGpu {
     }
 }
 
+/// Whitespace-separated PID list from the `context_pids_file` seam; non-PID
+/// tokens are ignored.
+fn parse_pid_list(text: &str) -> Vec<u32> {
+    text.split_whitespace()
+        .filter_map(|token| token.parse().ok())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_pids_come_from_the_canned_field_or_the_file_seam() {
+        let mut mock = MockGpu::new();
+        assert_eq!(mock.gpu_context_pids().unwrap(), Vec::<u32>::new());
+        mock.context_pids = vec![4242];
+        assert_eq!(mock.gpu_context_pids().unwrap(), vec![4242]);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("pids");
+        mock.context_pids_file = Some(file.clone());
+        // Missing file: the seam reports no contexts (overriding the canned field).
+        assert_eq!(mock.gpu_context_pids().unwrap(), Vec::<u32>::new());
+        std::fs::write(&file, "123 456\nnot-a-pid\n").unwrap();
+        assert_eq!(mock.gpu_context_pids().unwrap(), vec![123, 456]);
+    }
 
     #[test]
     fn records_writes_in_order() {

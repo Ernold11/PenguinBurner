@@ -35,9 +35,15 @@ gets the deferred behavior:
 - A saved profile is not applied while the GPU sleeps. The daemon watches
   `runtime_status` once per second (a cached read — no GPU traffic) and
   applies the profile when the GPU is actually in use: sustained `active`
-  plus a real client holding a `/dev/nvidia<N>` device handle (a game, not
-  a transient Vulkan capability probe, and not monitoring tools that only
-  hold `nvidiactl`/`nvidia-uvm` handles).
+  plus a real GPU client (a game, not a transient Vulkan capability probe).
+- What counts as a real client follows the driver's runtime D3 granularity.
+  Under fine-grained RTD3 (`mode: "fine-grained"`) the driver lets the GPU
+  sleep even while desktop shells or monitoring tools hold `/dev/nvidia<N>`
+  open, so an open handle proves nothing — the daemon asks NVML for live
+  graphics/compute contexts instead. Under coarse-grained RTD3 any
+  `/dev/nvidia<N>` holder keeps the GPU awake, so there the device-handle
+  scan is the accurate signal (auxiliary `nvidiactl`/`nvidia-uvm` handles
+  never count).
 - One-off telemetry or capability queries release their GPU handles after 30
   idle seconds instead of keeping them for the daemon's lifetime.
 - GPU persistence mode is never enabled (it blocks runtime D3); the profile
@@ -88,8 +94,9 @@ module options.
 
 An applied profile does not keep the GPU awake. While the profile runtime
 is attached it polls the driver, which by itself prevents runtime D3 — so
-when no other process has held a real `/dev/nvidia<N>` handle for 60
-seconds, the daemon **parks** the runtime: the engine releases every GPU
+when no other process has really used the GPU for 60 seconds (the same
+mode-aware client signal as above), the daemon **parks** the runtime: the
+engine releases every GPU
 handle (fans return to hardware auto, the clock lock is released) while
 the profile stays applied as a standing intent. The GPU is then free to
 enter D3cold. When something real starts using the GPU again, the profile

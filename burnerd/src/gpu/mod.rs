@@ -245,6 +245,10 @@ pub trait GpuBackend {
     fn gpu_utilization_pct(&self) -> Option<u32>;
     fn clock_info_mhz(&self, clock_type: ClockType) -> Option<u32>;
     fn throttle_reason_mask(&self) -> Option<u64>;
+    /// PIDs holding a live graphics or compute context on this GPU. The
+    /// accurate "GPU in use" signal on fine-grained RTD3 laptops, where an
+    /// idly open `/dev/nvidia<N>` fd does not keep the GPU awake.
+    fn gpu_context_pids(&self) -> GpuResult<Vec<u32>>;
 
     // --- power / persistence ----------------------------------------------
     fn query_power_limits(&self) -> PowerLimits;

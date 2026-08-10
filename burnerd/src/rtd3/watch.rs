@@ -9,16 +9,25 @@
 //!
 //! In Mobile and Unknown modes, the watcher polls the kernel's cached
 //! `runtime_status` (a wake-free read) once per second and starts the deferred
-//! runtime only when the GPU is demonstrably in use: sustained `active` AND
-//! another process holding a `/dev/nvidia<N>` device-node fd. Bare `active` is
-//! not enough — transient wakes (Vulkan/GL capability probes from arbitrary
-//! apps, boot-time driver init) last seconds, and attaching on them would hold
-//! the GPU awake, recreating the bug this module exists to fix (issue #30).
-//! Auxiliary nodes (`nvidiactl`, `nvidia-uvm`, `nvidia-modeset`,
-//! `nvidia-caps/*`) are deliberately not counted: monitoring agents and
-//! container toolkits hold them long-lived without keeping a fine-grained
-//! RTD3 GPU awake. While protected it also drops idle RPC backends so a one-off
-//! GUI telemetry query cannot pin NVML forever.
+//! runtime only when the GPU is demonstrably in use: sustained `active` AND a
+//! real GPU client. Bare `active` is not enough — transient wakes (Vulkan/GL
+//! capability probes from arbitrary apps, boot-time driver init) last seconds,
+//! and attaching on them would hold the GPU awake, recreating the bug this
+//! module exists to fix (issue #30).
+//!
+//! What counts as a "real GPU client" depends on the driver's runtime-D3
+//! granularity. Coarse-grained (and undecided) RTD3 keeps the GPU awake while
+//! any process holds a `/dev/nvidia<N>` device-node fd, so the fd scan is the
+//! accurate signal there; auxiliary nodes (`nvidiactl`, `nvidia-uvm`,
+//! `nvidia-modeset`, `nvidia-caps/*`) are deliberately not counted. Under
+//! fine-grained RTD3 the driver wakes per submitted work, not per open fd —
+//! desktop shells and monitoring agents hold the render node open for hours
+//! while the GPU sleeps — so an fd holder proves nothing, and treating it as
+//! use would starve the park policy forever. There the watcher asks NVML for
+//! live graphics/compute contexts instead, falling back to the fd scan only
+//! when that query fails (driver too old for the _v3 symbols, no backend).
+//! While protected it also drops idle RPC backends so a one-off GUI telemetry
+//! query cannot pin NVML forever.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -144,11 +153,11 @@ fn mobile_tick(
             super::set_parked(false);
             // Park policy: the engine's own NVML polling resets the driver's
             // idle timer forever, so an attached engine means the GPU can
-            // NEVER suspend on its own. When no other process holds a real
-            // /dev/nvidia<N> handle for the whole window, release the GPU:
-            // the profile stays a standing intent (persisted state kept) and
-            // reapplies at the next real use.
-            if nvidia_client_present() {
+            // NEVER suspend on its own. When no other process really uses the
+            // GPU for the whole window, release it: the profile stays a
+            // standing intent (persisted state kept) and reapplies at the
+            // next real use.
+            if gpu_in_use_by_client(supervisor::profile_gpu_index(sup)) {
                 *idle_ticks = 0;
             } else {
                 *idle_ticks += 1;
@@ -187,7 +196,10 @@ fn mobile_tick(
         *active_ticks = 0;
         *start_attempted = false;
     }
-    if *active_ticks >= SUSTAINED_ACTIVE_TICKS && !*start_attempted && nvidia_client_present() {
+    if *active_ticks >= SUSTAINED_ACTIVE_TICKS
+        && !*start_attempted
+        && gpu_in_use_by_client(supervisor::deferred_runtime_gpu_index())
+    {
         logging::info("deep sleep: GPU is in use; starting the deferred persisted runtime");
         if supervisor::start_autostart_if_configured(sup) {
             *start_attempted = true;
@@ -203,6 +215,37 @@ fn mobile_tick(
 fn wakeable_runtime_pending() -> bool {
     supervisor::deferred_runtime_pending()
         && supervisor::deferred_runtime_mode().as_deref() != Some("stock")
+}
+
+/// True when another process is really using the GPU (the mode-aware client
+/// signal described in the module docs). Only called while the GPU is already
+/// awake — an attached engine (park check) or sustained `active` (wake check)
+/// — so the fine-grained NVML query never wakes a sleeping GPU; the registry
+/// backend it opens is swept by `release_idle_backends` once the checks stop.
+fn gpu_in_use_by_client(gpu_index: Option<u32>) -> bool {
+    if super::fine_grained_mode() {
+        if let Some(index) = gpu_index {
+            match gpu_rpc::context_pids(index) {
+                Ok(pids) => {
+                    let self_pid = std::process::id();
+                    return pids.into_iter().any(|pid| pid != self_pid);
+                }
+                Err(error) => log_context_query_fallback(&error),
+            }
+        }
+    }
+    nvidia_client_present()
+}
+
+/// The NVML-context fallback is a per-boot property (old driver, missing
+/// symbols); log it once, not at 1 Hz.
+fn log_context_query_fallback(error: &str) {
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| {
+        logging::info(&format!(
+            "deep sleep: NVML context query unavailable ({error}); using the device-node scan"
+        ));
+    });
 }
 
 /// True when a process other than the daemon holds a `/dev/nvidia<N>` fd —

@@ -187,6 +187,24 @@ impl GpuBackend for NvmlBackend {
             .map(|reasons| reasons.bits())
     }
 
+    fn gpu_context_pids(&self) -> GpuResult<Vec<u32>> {
+        let device = self.device()?;
+        let graphics = device
+            .running_graphics_processes()
+            .map_err(|error| runtime_error("nvmlDeviceGetGraphicsRunningProcesses_v3", error))?;
+        let compute = device
+            .running_compute_processes()
+            .map_err(|error| runtime_error("nvmlDeviceGetComputeRunningProcesses_v3", error))?;
+        let mut pids: Vec<u32> = graphics
+            .into_iter()
+            .chain(compute)
+            .map(|process| process.pid)
+            .collect();
+        pids.sort_unstable();
+        pids.dedup();
+        Ok(pids)
+    }
+
     #[allow(deprecated)]
     fn query_power_limits(&self) -> PowerLimits {
         let Ok(device) = self.device() else {

@@ -33,6 +33,9 @@ use crate::gpu::{
 
 const MOCK_ENV: &str = "PENGUIN_BURNERD_TEST_MOCK_GPU";
 const MOCK_FAIL_ENV: &str = "PENGUIN_BURNERD_TEST_MOCK_GPU_FAIL";
+/// Path of a PID-list file the mock re-reads on every `gpu_context_pids` call,
+/// so integration tests can stage and remove GPU contexts while the daemon runs.
+const MOCK_CONTEXT_PIDS_ENV: &str = "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS";
 
 /// method → request fields allowed besides `method`. Also the method registry:
 /// a name missing here is "unknown daemon method".
@@ -131,6 +134,20 @@ pub fn release_idle_backends(ttl: Duration) -> usize {
     before - registry.len()
 }
 
+/// PIDs holding a live graphics/compute context on `gpu_index`, for the
+/// deep-sleep watcher's fine-grained "GPU in use" signal. Uses (and lazily
+/// opens) the shared registry backend; the entry's last-used stamp lets
+/// `release_idle_backends` sweep it once the watcher stops asking.
+pub fn context_pids(gpu_index: u32) -> Result<Vec<u32>, String> {
+    let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
+    let position = registry_position(&mut registry, gpu_index)?;
+    let backend: &dyn GpuBackend = match &registry[position].backend {
+        RpcBackend::Real(backend) => backend.as_ref(),
+        RpcBackend::Mock(backend) => backend.as_ref(),
+    };
+    backend.gpu_context_pids().map_err(|err| err.to_string())
+}
+
 fn open_backend(gpu_index: u32) -> Result<RpcBackend, String> {
     if env::var_os(MOCK_ENV).is_some_and(|v| !v.is_empty()) {
         let mut mock = MockGpu::new();
@@ -189,6 +206,9 @@ fn open_backend(gpu_index: u32) -> Result<RpcBackend, String> {
             base_voltage_uv: 900_000,
             current_offset_khz: 120_000,
         }];
+        mock.context_pids_file = env::var_os(MOCK_CONTEXT_PIDS_ENV)
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from);
         if let Ok(method) = env::var(MOCK_FAIL_ENV) {
             if !method.is_empty() {
                 let message = format!("{method} mock failure");

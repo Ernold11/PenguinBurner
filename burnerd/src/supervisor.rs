@@ -590,6 +590,30 @@ pub fn profile_slot_occupied(sup: &Mutex<Supervisor>) -> bool {
     guard(sup).profile.is_some()
 }
 
+/// GPU index of the runtime in the profile slot, for the deep-sleep park
+/// policy's client check.
+pub fn profile_gpu_index(sup: &Mutex<Supervisor>) -> Option<u32> {
+    guard(sup)
+        .profile
+        .as_ref()
+        .map(|job| job.spec.gpu.index_at_resolution)
+}
+
+/// GPU index of the runtime spec the deep-sleep watcher would start, using
+/// the same active-then-boot precedence (and boot-consumption rule) as
+/// `deferred_runtime_pending`. `None` when nothing is pending.
+pub fn deferred_runtime_gpu_index() -> Option<u32> {
+    if let Ok(Some(spec)) = load_runtime_spec(&active_state_file_path()) {
+        return Some(spec.gpu.index_at_resolution);
+    }
+    if !BOOT_RUNTIME_CONSUMED.load(Ordering::SeqCst) {
+        if let Ok(Some(spec)) = load_runtime_spec(&boot_state_file_path()) {
+            return Some(spec.gpu.index_at_resolution);
+        }
+    }
+    None
+}
+
 /// Post-child runtime recovery: Desktop mode restarts immediately; Mobile and
 /// Unknown leave the start to the watcher so a scan exit cannot force-attach a
 /// GPU that is about to idle.
