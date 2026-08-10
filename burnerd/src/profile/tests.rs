@@ -700,19 +700,25 @@ fn unsupported_fan_count_still_fails_when_fan_control_enabled() {
     assert!(result.is_err());
 }
 
-#[test]
-fn resume_recovery_reapplies_drifted_power_limit() {
+fn resume_mock(limit_w: i64) -> MockGpu {
     let mut mock = MockGpu::new();
     mock.power_limits = crate::gpu::PowerLimits {
         power_management_enabled: Some(true),
-        power_limit_w: Some(320),
-        enforced_power_limit_w: Some(320),
+        power_limit_w: Some(limit_w),
+        enforced_power_limit_w: Some(limit_w),
         power_limit_default_w: Some(320),
         power_limit_min_w: Some(150),
         power_limit_max_w: Some(450),
     };
+    mock
+}
+
+#[test]
+fn resume_recovery_reapplies_drifted_power_limit() {
     // Drifted after a simulated resume: expected 250, driver reports 320.
-    let reapplied = super::run_resume_recovery(&mock, Some(250), None).expect("recovery pass");
+    let mock = resume_mock(320);
+    let reapplied =
+        super::run_resume_recovery(&mock, false, Some(250), None).expect("recovery pass");
     assert!(reapplied);
     assert!(mock
         .recorded()
@@ -721,26 +727,66 @@ fn resume_recovery_reapplies_drifted_power_limit() {
 
     // Second pass: the limit now reads back as expected — no further writes.
     let ops_before = mock.recorded().len();
-    let reapplied = super::run_resume_recovery(&mock, Some(250), None).expect("recovery pass");
+    let reapplied =
+        super::run_resume_recovery(&mock, false, Some(250), None).expect("recovery pass");
     assert!(!reapplied);
     assert_eq!(mock.recorded().len(), ops_before);
+
+    // Simulated second suspend that resets the limit again: the shadow is
+    // cleared, so the drift is visible and reapplied once more.
+    mock.clear_applied_power_limit();
+    let reapplied =
+        super::run_resume_recovery(&mock, false, Some(250), None).expect("recovery pass");
+    assert!(reapplied);
+}
+
+#[test]
+fn resume_recovery_reasserts_persistence_and_ceiling() {
+    let mut mock = resume_mock(250);
+    mock.supported_core_clocks = vec![2400, 2500, 2600, 2640, 2700];
+    let mut ceiling = super::ceiling::FlattenedClockCeilingController::new(
+        FlattenTarget {
+            source: "auto-uv-final".into(),
+            lock_clock_mhz: 2640,
+            lock_voltage_mv: Some(875),
+            end_voltage_mv: Some(875),
+            tail_point_count: Some(1),
+            ceiling_clock_mhz: None,
+            tail_rise_bins: None,
+        },
+        &mock,
+    );
+    ceiling.apply().unwrap();
+    let ops_before = mock.recorded().len();
+
+    let reapplied = super::run_resume_recovery(&mock, true, Some(250), Some(&mut ceiling))
+        .expect("recovery pass");
+    assert!(!reapplied, "limit still matched: read-first must skip it");
+    let ops = mock.recorded()[ops_before..].to_vec();
+    assert!(
+        ops.iter().any(|op| matches!(op, MockOp::EnablePersistence)),
+        "persistence must be re-asserted: {ops:?}"
+    );
+    assert!(
+        ops.iter()
+            .any(|op| matches!(op, MockOp::ApplyLockedCoreClock { .. })
+                || matches!(op, MockOp::ApplyLockedCoreClockRange { .. })),
+        "ceiling must be re-locked: {ops:?}"
+    );
+    assert!(
+        !ops.iter()
+            .any(|op| matches!(op, MockOp::ApplyPowerLimit { .. })),
+        "matching power limit must not be rewritten: {ops:?}"
+    );
 }
 
 #[test]
 fn resume_recovery_propagates_power_limit_failure() {
-    let mut mock = MockGpu::new();
-    mock.power_limits = crate::gpu::PowerLimits {
-        power_management_enabled: Some(true),
-        power_limit_w: Some(320),
-        enforced_power_limit_w: Some(320),
-        power_limit_default_w: Some(320),
-        power_limit_min_w: Some(150),
-        power_limit_max_w: Some(450),
-    };
+    let mut mock = resume_mock(320);
     mock.inject_failure(
         "apply_power_limit_w",
         crate::gpu::GpuError::other("injected resume failure", 0),
     );
-    let err = super::run_resume_recovery(&mock, Some(250), None).expect_err("must fail");
-    assert!(err.contains("power limit reapply"), "{err}");
+    let err = super::run_resume_recovery(&mock, false, Some(250), None).expect_err("must fail");
+    assert!(err.contains("power limit"), "{err}");
 }

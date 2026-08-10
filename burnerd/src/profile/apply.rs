@@ -71,7 +71,7 @@ pub struct VfPolicyResult<'a> {
     pub profile_voltage_mv: Option<f64>,
 }
 
-fn apply_gpu_base_policy(
+pub(super) fn apply_gpu_base_policy(
     backend: &dyn GpuBackend,
     enable_persistence_mode: bool,
     log: &mut dyn FnMut(&str),
@@ -171,7 +171,7 @@ pub(super) fn reset_gpu_to_stock(
     Ok(())
 }
 
-fn apply_power_limit(
+pub(super) fn apply_power_limit(
     backend: &dyn GpuBackend,
     label: &str,
     power_limit_w: Option<i64>,

@@ -345,13 +345,19 @@ fn now_unix_ns() -> i64 {
 /// absolute, always-increasing clock with an arbitrary large epoch). Used for
 /// every loop `loop_started - last_*` delta so the `0.0`-init markers work.
 fn monotonic_now() -> f64 {
+    clock_seconds(libc::CLOCK_MONOTONIC)
+}
+
+/// Shared sampler for the monotonic/boottime pair the sleep detector
+/// compares — both clocks must be read identically for the gap math to hold.
+pub(self) fn clock_seconds(clock: libc::clockid_t) -> f64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
     // SAFETY: clock_gettime writes into the owned timespec.
     unsafe {
-        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+        libc::clock_gettime(clock, &mut ts);
     }
     ts.tv_sec as f64 + ts.tv_nsec as f64 / 1_000_000_000.0
 }
@@ -610,9 +616,10 @@ fn run_fan_control_loop(
     let mut vf_expected_samples: Vec<PlanItem> = vf_policy.vf_expected_samples.clone();
     let mut reapply_memory_offset_mhz: Option<i64> =
         vf_policy.auto_uv_profile_gpu_policy.mem_clk_vf_offset_mhz;
-    // Stable for the engine's lifetime: adaptive tier switches retarget the
-    // ceiling and VF plan but never the board power limit.
-    let expected_power_limit_w = vf_policy.auto_uv_profile_gpu_policy.power_limit_w;
+    // Tracks the power limit applied for the CURRENT tier: startup value
+    // here, updated on every adaptive tier switch below, consumed by the
+    // post-resume re-verification.
+    let mut expected_power_limit_w = vf_policy.auto_uv_profile_gpu_policy.power_limit_w;
     let profile_clock_mhz = vf_policy.profile_clock_mhz;
     let profile_voltage_mv = vf_policy.profile_voltage_mv;
     let mut current_tier_label = vf_policy_tier_label(&vf_policy);
@@ -689,6 +696,67 @@ fn run_fan_control_loop(
             resume_attempts = 0;
         }
 
+        // Driver-settle window: while a re-verification is pending, this tick
+        // makes NO backend calls at all. Right after wake, telemetry reads,
+        // adaptive writes, and the VF guard would all hit the half-initialized
+        // driver — a transient error on any of them is fatal to the loop,
+        // which is exactly what the grace exists to prevent.
+        if let Some(deadline) = resume_deadline {
+            if loop_started < deadline {
+                sleep_loop(
+                    &stop_flag,
+                    poll_interval_s,
+                    overlay_update_interval_s(publisher),
+                    publisher.enabled,
+                );
+                continue;
+            }
+            match run_resume_recovery(
+                backend,
+                _enable_persistence_mode,
+                expected_power_limit_w,
+                cleanup.ceiling.as_mut(),
+            ) {
+                Ok(power_reapplied) => {
+                    engine_log(&format!(
+                        "{} event=resume-reverify-complete power_limit_reapplied={power_reapplied}",
+                        local_timestamp()
+                    ));
+                    last_vf_reapply = 0.0;
+                    last_speed = None;
+                    last_set_temp_c = None;
+                    resume_deadline = None;
+                }
+                Err(exc) => {
+                    resume_attempts += 1;
+                    if resume_attempts >= resume::RESUME_REAPPLY_MAX_ATTEMPTS {
+                        // Giving up is deliberately non-fatal: erroring out
+                        // would strip fan control and the clock ceiling while
+                        // leaving the undervolt applied. The per-tick guards
+                        // keep re-verifying the curve from here on.
+                        engine_log(&format!(
+                            "{} event=resume-reverify-gave-up attempts={resume_attempts} error={exc}",
+                            local_timestamp()
+                        ));
+                        resume_deadline = None;
+                    } else {
+                        engine_log(&format!(
+                            "{} event=resume-reverify-retry attempt={resume_attempts} error={exc}",
+                            local_timestamp()
+                        ));
+                        resume_deadline = Some(loop_started + resume::RESUME_REAPPLY_GRACE_S);
+                        sleep_loop(
+                            &stop_flag,
+                            poll_interval_s,
+                            overlay_update_interval_s(publisher),
+                            publisher.enabled,
+                        );
+                        continue;
+                    }
+                }
+            }
+        }
+
         let overlay_interval_s = overlay_update_interval_s(publisher);
 
         // Aggregate the current in-game telemetry window (None when no receiver /
@@ -719,6 +787,7 @@ fn run_fan_control_loop(
                     }
                     vf_expected_samples = update.vf_expected_samples;
                     reapply_memory_offset_mhz = update.memory_offset_mhz;
+                    expected_power_limit_w = update.applied_power_limit_w;
                 }
             }
         }
@@ -785,41 +854,6 @@ fn run_fan_control_loop(
                         engine_log(&warn_line("overlay publish unavailable", &exc.to_string()));
                     }
                     overlay_publish_failed = true;
-                }
-            }
-        }
-
-        // Post-resume re-verification: reassert the power limit and the
-        // locked-clock ceiling, then force the VF guard (cooldown cleared
-        // below) and the fan controller to re-derive hardware state.
-        if let Some(deadline) = resume_deadline {
-            if loop_started >= deadline {
-                match run_resume_recovery(backend, expected_power_limit_w, cleanup.ceiling.as_mut())
-                {
-                    Ok(power_reapplied) => {
-                        engine_log(&format!(
-                            "{} event=resume-reverify-complete power_limit_reapplied={power_reapplied}",
-                            local_timestamp()
-                        ));
-                        last_vf_reapply = 0.0;
-                        last_speed = None;
-                        last_set_temp_c = None;
-                        resume_deadline = None;
-                    }
-                    Err(exc) => {
-                        resume_attempts += 1;
-                        if resume_attempts >= resume::RESUME_REAPPLY_MAX_ATTEMPTS {
-                            return Err(format!(
-                                "post-resume GPU state re-verification failed after {} attempts: {exc}",
-                                resume::RESUME_REAPPLY_MAX_ATTEMPTS
-                            ));
-                        }
-                        engine_log(&format!(
-                            "{} event=resume-reverify-retry attempt={resume_attempts} error={exc}",
-                            local_timestamp()
-                        ));
-                        resume_deadline = Some(loop_started + resume::RESUME_REAPPLY_GRACE_S);
-                    }
                 }
             }
         }
@@ -1102,16 +1136,20 @@ fn maybe_reapply_vf_curve(
     loop_started
 }
 
-/// One post-resume recovery pass: power limit first (independent), then the
-/// locked-clock ceiling re-lock. The VF/mem reapply stays with the loop's
-/// existing guard (whose cooldown the caller clears) so the mem-before-VF
-/// ordering invariant keeps exactly one owner.
+/// One post-resume recovery pass: persistence mode (a resume can drop it;
+/// only applied at startup otherwise), then the power limit (read-first),
+/// then the locked-clock ceiling re-lock. The VF/mem reapply stays with the
+/// loop's existing guard (whose cooldown the caller clears) so the
+/// mem-before-VF ordering invariant keeps exactly one owner.
 fn run_resume_recovery(
     backend: &dyn GpuBackend,
+    enable_persistence_mode: bool,
     expected_power_limit_w: Option<i64>,
     ceiling: Option<&mut FlattenedClockCeilingController<'_>>,
 ) -> Result<bool, String> {
-    let power_reapplied = resume::verify_power_limit(backend, expected_power_limit_w)?;
+    let mut log = |message: &str| engine_log(message);
+    apply::apply_gpu_base_policy(backend, enable_persistence_mode, &mut log);
+    let power_reapplied = resume::verify_power_limit(backend, expected_power_limit_w, &mut log)?;
     if let Some(controller) = ceiling {
         controller
             .apply()

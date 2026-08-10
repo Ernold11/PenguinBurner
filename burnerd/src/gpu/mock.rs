@@ -94,7 +94,8 @@ pub struct MockGpu {
 
     /// Power limit applied through the trait; overrides `power_limits` in
     /// `query_power_limits` readback so verify-after-apply behaves like real
-    /// hardware.
+    /// hardware. Tests simulating a driver-side reset (e.g. suspend loss)
+    /// call `clear_applied_power_limit` so later `power_limits` writes win.
     applied_power_limit_w: RefCell<Option<i64>>,
 
     ops: RefCell<Vec<MockOp>>,
@@ -161,6 +162,14 @@ impl MockGpu {
     #[allow(dead_code)] // used by unit tests only (the module is not test-gated)
     pub fn clear_failure(&self, method: &'static str) {
         self.failures.borrow_mut().remove(method);
+    }
+
+    /// Forget the trait-applied power limit so `query_power_limits` reports
+    /// the `power_limits` field again — simulates the driver losing the
+    /// limit (suspend/reset) after an apply.
+    #[allow(dead_code)] // used by unit tests only (the module is not test-gated)
+    pub fn clear_applied_power_limit(&self) {
+        *self.applied_power_limit_w.borrow_mut() = None;
     }
 
     /// A snapshot of the recorded operations.
