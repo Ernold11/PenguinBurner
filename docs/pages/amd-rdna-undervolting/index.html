@@ -1,0 +1,989 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="What Linux 7.1.8 actually exposes for AMD RDNA undervolting, what a six-boundary SMU14 experiment could add, and how PenguinBurner can share one tuning interface with NVIDIA.">
+  <meta name="theme-color" content="#11151a">
+  <link rel="canonical" href="https://jpietek.github.io/PenguinBurner/amd-rdna-undervolting/">
+  <title>AMD RDNA undervolting on Linux — PenguinBurner research</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0e1216;
+      --surface: #151b21;
+      --surface-2: #1a222b;
+      --surface-3: #202a35;
+      --line: #2c3743;
+      --line-strong: #405062;
+      --text: #d7e0e8;
+      --strong: #f2f7fa;
+      --muted: #96a5b4;
+      --green: #67e08a;
+      --green-dark: #214b32;
+      --amber: #f0b65d;
+      --blue: #79b7ff;
+      --purple: #c69cff;
+      --red: #ff7b7b;
+      --code: #0a0e12;
+      --max: 1180px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 82% -8%, rgba(103, 224, 138, .08), transparent 34rem),
+        radial-gradient(circle at 8% 18%, rgba(121, 183, 255, .055), transparent 28rem),
+        var(--bg);
+      color: var(--text);
+      font: 16px/1.66 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    a { color: #9bc9ff; text-underline-offset: .18em; }
+    a:hover { color: #c8e2ff; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code {
+      padding: .08em .32em;
+      border: 1px solid rgba(121, 183, 255, .14);
+      border-radius: 4px;
+      background: rgba(121, 183, 255, .07);
+      color: #dbeaff;
+      font-size: .9em;
+    }
+    pre {
+      margin: 1rem 0;
+      padding: 1rem 1.1rem;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--code);
+      color: #dce8f2;
+      line-height: 1.55;
+      font-size: .86rem;
+    }
+    pre code { padding: 0; border: 0; background: transparent; color: inherit; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid rgba(64, 80, 98, .7);
+      background: rgba(14, 18, 22, .91);
+      backdrop-filter: blur(16px);
+    }
+    .topbar-inner {
+      width: min(var(--max), calc(100% - 36px));
+      min-height: 58px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--strong);
+      text-decoration: none;
+      font-weight: 760;
+      letter-spacing: -.01em;
+    }
+    .brand-mark {
+      width: 31px;
+      height: 31px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #3d7851;
+      border-radius: 8px;
+      background: #17271d;
+      color: var(--green);
+      font-weight: 850;
+    }
+    .toplinks { margin-left: auto; display: flex; gap: 16px; font-size: .82rem; }
+    .toplinks a { color: var(--muted); text-decoration: none; }
+    .toplinks a:hover { color: var(--strong); }
+
+    main { width: min(var(--max), calc(100% - 36px)); margin: 0 auto; }
+    .hero { padding: 76px 0 42px; }
+    .eyebrow {
+      margin-bottom: 10px;
+      color: var(--amber);
+      font-size: .76rem;
+      font-weight: 800;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { color: var(--strong); line-height: 1.18; letter-spacing: -.025em; }
+    h1 { max-width: 950px; margin: 0; font-size: clamp(2.25rem, 6vw, 4.75rem); }
+    h2 { margin: 0 0 1rem; font-size: clamp(1.65rem, 3.2vw, 2.5rem); }
+    h3 { margin: 1.45rem 0 .55rem; font-size: 1.18rem; }
+    .lead { max-width: 850px; margin: 22px 0 0; color: #b9c6d2; font-size: clamp(1.05rem, 2vw, 1.3rem); }
+    .hero-meta { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 26px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(26, 34, 43, .8);
+      color: var(--muted);
+      font-size: .77rem;
+    }
+    .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+    .pill.warn::before { background: var(--amber); }
+    .pill.info::before { background: var(--blue); }
+
+    .share {
+      margin-top: 30px;
+      padding: 13px 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(21, 27, 33, .78);
+    }
+    .share-label { color: var(--muted); font-size: .78rem; white-space: nowrap; }
+    .share-url { min-width: 0; overflow: hidden; color: #c9def3; font: .82rem/1.4 ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .copy-button {
+      margin-left: auto;
+      padding: 7px 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--surface-3);
+      color: var(--strong);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .verdict-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; margin: 8px 0 48px; }
+    .verdict {
+      min-height: 190px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: linear-gradient(155deg, rgba(28, 37, 46, .95), rgba(20, 26, 32, .95));
+    }
+    .verdict .number { color: var(--green); font-size: 2.6rem; font-weight: 850; line-height: 1; }
+    .verdict:nth-child(2) .number { color: var(--amber); }
+    .verdict:nth-child(3) .number { color: var(--blue); }
+    .verdict strong { display: block; margin-top: 10px; color: var(--strong); font-size: 1.02rem; }
+    .verdict p { margin: 7px 0 0; color: var(--muted); font-size: .9rem; }
+
+    .toc {
+      margin-bottom: 78px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: rgba(15, 20, 25, .75);
+    }
+    .toc strong { color: var(--strong); }
+    .toc ol { margin: 12px 0 0; padding-left: 1.35rem; columns: 2; column-gap: 3rem; }
+    .toc li { margin: 4px 0; break-inside: avoid; }
+
+    section { padding: 0 0 84px; scroll-margin-top: 82px; }
+    .section-intro { max-width: 850px; margin: -.35rem 0 1.65rem; color: var(--muted); font-size: 1.02rem; }
+    .callout {
+      margin: 18px 0;
+      padding: 15px 17px;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--blue);
+      border-radius: 8px;
+      background: rgba(121, 183, 255, .055);
+    }
+    .callout.warning { border-left-color: var(--amber); background: rgba(240, 182, 93, .055); }
+    .callout.danger { border-left-color: var(--red); background: rgba(255, 123, 123, .055); }
+    .callout strong { color: var(--strong); }
+
+    .status {
+      display: inline-flex;
+      margin-right: 7px;
+      padding: 2px 7px;
+      border: 1px solid;
+      border-radius: 999px;
+      font-size: .68rem;
+      font-weight: 800;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      vertical-align: .12em;
+    }
+    .confirmed { border-color: rgba(103, 224, 138, .4); background: rgba(103, 224, 138, .08); color: #93efaa; }
+    .inference { border-color: rgba(121, 183, 255, .4); background: rgba(121, 183, 255, .08); color: #aaceff; }
+    .proposal { border-color: rgba(198, 156, 255, .4); background: rgba(198, 156, 255, .08); color: #d6b8ff; }
+
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 11px; }
+    table { width: 100%; border-collapse: collapse; min-width: 720px; background: rgba(18, 24, 29, .82); }
+    th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--strong); background: rgba(32, 42, 53, .72); font-size: .75rem; letter-spacing: .04em; text-transform: uppercase; }
+    td { font-size: .88rem; }
+    tr:last-child td { border-bottom: 0; }
+    .yes { color: #91ecaa; font-weight: 760; }
+    .no { color: #ff9b9b; font-weight: 760; }
+    .maybe { color: #f2c47f; font-weight: 760; }
+
+    .diagram {
+      margin: 24px 0;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: linear-gradient(180deg, rgba(25, 33, 41, .9), rgba(14, 19, 24, .9));
+    }
+    .diagram-title { color: var(--strong); font-weight: 760; }
+    .diagram-subtitle { margin-top: 2px; color: var(--muted); font-size: .82rem; }
+    .zones { display: grid; grid-template-columns: repeat(5, minmax(100px, 1fr)); margin: 52px 22px 30px; }
+    .zone {
+      position: relative;
+      height: 54px;
+      display: grid;
+      place-items: center;
+      border-top: 2px solid #5f7488;
+      border-bottom: 2px solid #5f7488;
+      background: rgba(121, 183, 255, .06);
+      color: #a9bac9;
+      font-size: .78rem;
+    }
+    .zone:first-child { border-left: 2px solid #5f7488; }
+    .zone:last-child { border-right: 2px solid #5f7488; }
+    .boundary {
+      position: absolute;
+      top: 50%;
+      left: 0;
+      width: 15px;
+      height: 15px;
+      border: 3px solid #102017;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 2px #4d9c67;
+      transform: translate(-50%, -50%);
+    }
+    .boundary::before {
+      content: attr(data-label);
+      position: absolute;
+      bottom: 21px;
+      left: 50%;
+      color: #a8eab9;
+      font: 750 .72rem ui-monospace, monospace;
+      transform: translateX(-50%);
+    }
+    .zone:last-child::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: 0;
+      width: 15px;
+      height: 15px;
+      border: 3px solid #102017;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 2px #4d9c67;
+      transform: translate(50%, -50%);
+    }
+    .last-boundary { position: absolute; top: -31px; right: -10px; color: #a8eab9; font: 750 .72rem ui-monospace, monospace; }
+    .formula { text-align: center; color: #bfd0dd; font: .9rem/1.6 ui-monospace, monospace; }
+
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: rgba(21, 27, 33, .8);
+    }
+    .card h3 { margin-top: 0; }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    ul, ol { padding-left: 1.35rem; }
+    li + li { margin-top: .42rem; }
+
+    .flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 24px 0; }
+    .flow-step {
+      position: relative;
+      min-height: 135px;
+      padding: 15px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+    }
+    .flow-step::after {
+      content: "→";
+      position: absolute;
+      top: 50%;
+      right: -17px;
+      z-index: 2;
+      color: var(--amber);
+      font-weight: 850;
+      transform: translateY(-50%);
+    }
+    .flow-step:last-child::after { content: none; }
+    .flow-step b { display: block; color: var(--strong); font-size: .87rem; }
+    .flow-step span { display: block; margin-top: 6px; color: var(--muted); font-size: .78rem; }
+
+    .chart { margin: 24px 0; border: 1px solid var(--line); border-radius: 13px; overflow: hidden; background: #10151a; }
+    .chart-header { padding: 14px 17px; border-bottom: 1px solid var(--line); }
+    .chart-header strong { display: block; color: var(--strong); }
+    .chart-header span { color: var(--muted); font-size: .78rem; }
+    .chart svg { display: block; width: 100%; height: auto; }
+    .chart-legend { display: flex; flex-wrap: wrap; gap: 15px; padding: 11px 17px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: .76rem; }
+    .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+    .swatch { width: 17px; height: 3px; background: var(--green); }
+    .swatch.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
+    .swatch.band { height: 9px; background: rgba(103, 224, 138, .18); border: 1px solid rgba(103, 224, 138, .45); }
+
+    .adapter {
+      display: grid;
+      grid-template-columns: 1fr 1.35fr 1fr;
+      align-items: stretch;
+      gap: 14px;
+      margin: 24px 0;
+    }
+    .adapter-box { padding: 17px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); }
+    .adapter-box.center { border-color: #4a6755; background: linear-gradient(180deg, #19271e, #151d18); }
+    .adapter-box strong { display: block; margin-bottom: 8px; color: var(--strong); }
+    .adapter-box ul { margin: 0; color: var(--muted); font-size: .84rem; }
+
+    .source-list { display: grid; gap: 10px; padding: 0; list-style: none; }
+    .source-list li { margin: 0; padding: 13px 15px; border: 1px solid var(--line); border-radius: 9px; background: rgba(21, 27, 33, .7); }
+    .source-list strong { color: var(--strong); }
+    .source-list span { display: block; margin-top: 2px; color: var(--muted); font-size: .82rem; }
+    footer { padding: 12px 0 52px; border-top: 1px solid var(--line); color: var(--muted); font-size: .78rem; }
+    .footer-inner { width: min(var(--max), calc(100% - 36px)); margin: 0 auto; }
+
+    @media (max-width: 900px) {
+      .verdict-grid, .two-col, .adapter { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .flow-step { min-height: auto; }
+      .flow-step::after { content: "↓"; top: auto; right: 50%; bottom: -22px; transform: translateX(50%); }
+      .toc ol { columns: 1; }
+      .zones { margin-inline: 12px; overflow-x: auto; }
+    }
+    @media (max-width: 640px) {
+      body { font-size: 15px; }
+      .hero { padding-top: 50px; }
+      .toplinks a:first-child { display: none; }
+      .share { align-items: stretch; flex-direction: column; }
+      .copy-button { margin-left: 0; }
+      .zones { grid-template-columns: repeat(5, 100px); padding-top: 4px; }
+      th, td { padding: 10px; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #18202a; }
+      .topbar, .share, .copy-button { display: none; }
+      h1, h2, h3, .diagram-title, .card h3, .source-list strong { color: #080b0f; }
+      .verdict, .toc, .card, .diagram, .table-wrap, .chart, .adapter-box, .source-list li { background: white; border-color: #bbc3cb; break-inside: avoid; }
+      a { color: #124b82; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="https://github.com/jpietek/PenguinBurner">
+        <span class="brand-mark">PB</span>
+        <span>PenguinBurner</span>
+      </a>
+      <nav class="toplinks" aria-label="Project links">
+        <a href="#kernel-718">Linux 7.1.8</a>
+        <a href="#six-boundaries">Six-boundary experiment</a>
+        <a href="https://github.com/jpietek/PenguinBurner/discussions/43">Discussion #43</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <header class="hero">
+      <div class="eyebrow">PenguinBurner engineering research · 11 August 2026</div>
+      <h1>AMD RDNA undervolting on Linux: what exists, what we can hack, and what we can visualize</h1>
+      <p class="lead">
+        Source-level analysis of Linux 7.1.5–7.1.8, 7.2-rc7, current public AMD DRM trees,
+        and the path toward a single PenguinBurner tuning model for AMD and NVIDIA.
+        RX 9060 and RX 9070 are the primary target. RDNA3 follows for the six-boundary experiment;
+        RDNA2 remains a useful stock global-offset backend without the six-boundary claim.
+      </p>
+      <div class="hero-meta">
+        <span class="pill">Primary sources only</span>
+        <span class="pill info">No RX 9070 hardware result claimed</span>
+        <span class="pill warn">Experimental kernel patch clearly separated</span>
+      </div>
+      <div class="share">
+        <span class="share-label">Link from Discussion #43</span>
+        <span class="share-url" id="share-url">https://jpietek.github.io/PenguinBurner/amd-rdna-undervolting/</span>
+        <button class="copy-button" id="copy-link" type="button">Copy link</button>
+      </div>
+    </header>
+
+    <div class="verdict-grid" aria-label="Executive answer">
+      <article class="verdict">
+        <div class="number">1</div>
+        <strong>supported voltage control</strong>
+        <p>Modern AMDGPU exposes one signed millivolt offset for the whole firmware-managed V/F curve.</p>
+      </article>
+      <article class="verdict">
+        <div class="number">6</div>
+        <strong>internal boundary-offset slots</strong>
+        <p>SMU13/14 carry six offsets around five PWL zones, but stock Linux broadcasts one value to all six.</p>
+      </article>
+      <article class="verdict">
+        <div class="number">0</div>
+        <strong>returned base-curve points</strong>
+        <p>No modern AMDGPU getter enumerates the hidden V/F curve. We can sample its operating response instead.</p>
+      </article>
+    </div>
+
+    <nav class="toc" aria-label="Contents">
+      <strong>Contents</strong>
+      <ol>
+        <li><a href="#bottom-line">Bottom line</a></li>
+        <li><a href="#kernel-718">Exactly what Linux 7.1.8 can do</a></li>
+        <li><a href="#newer-kernels">What 7.2 and newer trees change</a></li>
+        <li><a href="#six-boundaries">The six-boundary kernel experiment</a></li>
+        <li><a href="#getters">What can be read back</a></li>
+        <li><a href="#visualization">How to visualize an opaque curve</a></li>
+        <li><a href="#adapter">One AMD/NVIDIA interface</a></li>
+        <li><a href="#auto-uv">Efficiency, Balanced, Performance</a></li>
+        <li><a href="#upstream">How to take this upstream</a></li>
+        <li><a href="#sources">Primary sources</a></li>
+      </ol>
+    </nav>
+
+    <section id="bottom-line">
+      <h2>Bottom line</h2>
+      <p class="section-intro">
+        Modern RDNA support is viable, but it is a different control model from NVIDIA. The shared product
+        should be built around capabilities and typed tuning plans—not around a universal editable curve.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Capability</th><th>NVIDIA in PenguinBurner</th><th>AMD stock 7.1.8</th><th>AMD SMU14 experiment</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Enumerate editable V/F bins</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td></tr>
+            <tr><td>Independent voltage-shape control</td><td class="yes">Many frequency offsets at voltage bins</td><td class="no">No</td><td class="maybe">Six coarse boundary offsets, if PMFW accepts them</td></tr>
+            <tr><td>Whole-curve voltage offset</td><td>Not the current NVIDIA model</td><td class="yes"><code>vo N</code></td><td class="yes">Keep <code>vo N</code> compatible</td></tr>
+            <tr><td>Observe current voltage/frequency</td><td class="yes">Yes</td><td class="maybe">Yes when board/firmware exports the metrics</td><td class="maybe">Same telemetry</td></tr>
+            <tr><td>Read six boundary offsets</td><td>Not applicable</td><td class="no">Only element zero is reported</td><td class="maybe">Patch can report all six</td></tr>
+            <tr><td>Read hidden base curve</td><td class="yes">Hidden NVAPI path</td><td class="no">No public getter</td><td class="no">Still no base-curve getter</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warning">
+        <strong>Terminology:</strong> the six SMU values are signed voltage <em>offsets at region boundaries</em>.
+        They are not six absolute <code>(frequency, voltage)</code> coordinates. Exposing them would produce a
+        coarse curve-shaping control, not NVIDIA-style editing of dozens of bins.
+      </div>
+      <div class="callout">
+        <strong>Why NVIDIA is not a fixed-offset scan:</strong> PenguinBurner's recorded
+        <a href="https://github.com/jpietek/PenguinBurner/blob/main/tests/auto_uv/auto_uv_test_data.py#L30-L61">RTX 5080 fixture</a>
+        contains 78 editable voltage bins spanning 760–1240 mV. The NVIDIA plan can assign a different frequency
+        offset to each bin and reshape or flatten the high-voltage tail. “100+ points” is not universal—the
+        observed 5080 example has 78—but it is still fundamentally richer than AMD's one global scalar. The shared
+        interface must preserve that distinction.
+      </div>
+      <h3>Scope by generation</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Target</th><th>Supported stock plan</th><th>Six-boundary experiment</th><th>PenguinBurner scope</th></tr></thead>
+          <tbody>
+            <tr><td>RDNA2 / inspected SMU11 paths</td><td class="yes">Global <code>vo</code> where the live ABI exposes it</td><td class="no">No six-slot table found on the relevant path</td><td>Simple global-offset support only</td></tr>
+            <tr><td>RDNA3 / inspected SMU13.0.0 and 13.0.7 paths</td><td class="yes">Global <code>vo</code></td><td class="maybe">Six slots exist; investigate after RDNA4</td><td>Stock support plus later experimental qualification</td></tr>
+            <tr><td>RDNA4 / SMU14.0.2 and 14.0.3</td><td class="yes">Global <code>vo</code></td><td class="maybe">Six slots exist; first patch and hardware target</td><td>Primary RX 9060/9070 target</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Marketing generation is not the dispatch key. PenguinBurner must inspect the selected card's live tokens
+        and ranges, then advertise <code>GLOBAL_VOLTAGE_OFFSET</code> or the explicitly patched
+        <code>ZONE_BOUNDARY_OFFSETS</code> capability. This keeps RDNA2 inside the same adapter without forcing it
+        into the RDNA3/4 experiment.
+      </p>
+    </section>
+
+    <section id="kernel-718">
+      <h2>Exactly what Linux 7.1.8 can do on modern AMD</h2>
+      <p class="section-intro">
+        This is the stock-kernel implementation target. Every item must be capability-probed on the selected
+        PCI device; board firmware and the OverDrive feature mask remain authoritative.
+      </p>
+
+      <h3>1. Global voltage offset—the supported path</h3>
+      <p>
+        <span class="status confirmed">Confirmed upstream</span>
+        The documented <code>pp_od_clk_voltage</code> command is <code>vo &lt;offset_mv&gt;</code>. AMDGPU describes it
+        as an extra offset applied to the <a href="https://docs.kernel.org/7.1/gpu/amdgpu/thermal.html#pp-od-clk-voltage">whole V/F curve</a>.
+        The generic parser sends one <code>PP_OD_EDIT_VDDGFX_OFFSET</code> value; the SMU13 and SMU14 handlers copy
+        it into every internal boundary slot. Linux 7.1.8 therefore provides one scalar—not per-point control.
+      </p>
+      <pre><code># Schematic sequence; exact card path and emitted range must be discovered.
+write power_dpm_force_performance_level: manual
+write pp_od_clk_voltage: vo &lt;signed millivolts inside VDDGFX_OFFSET range&gt;
+write pp_od_clk_voltage: c
+read  pp_od_clk_voltage                 # verify committed state
+
+# Restore OverDrive state:
+write pp_od_clk_voltage: r
+write pp_od_clk_voltage: c
+restore the performance-level policy captured before the transaction</code></pre>
+      <p>
+        PenguinBurner can scan progressively more-negative values, but it must use the card's reported range and
+        read back every commit. Fixed presets such as −50/−100/−150 mV can be search seeds, never assumed-safe
+        universal values. A crash-safe baseline, rollback, and final verification are mandatory.
+      </p>
+      <div class="callout warning">
+        <strong>Stock-kernel preconditions:</strong> <code>pp_od_clk_voltage</code> is created only when OverDrive is
+        supported and enabled. OverDrive bit 14 is not in the upstream default stable feature mask, so a missing
+        node may reflect the effective <code>amdgpu.ppfeaturemask</code> policy rather than the silicon. The files are
+        root-writable. PenguinBurner should diagnose both conditions, never silently edit boot parameters, and route
+        every write through <code>penguin-burnerd</code> after an explicit user action.
+      </div>
+
+      <h3>2. Clock, power, fan, and policy controls</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Control</th><th>7.1.8 surface</th><th>Practical meaning</th></tr></thead>
+          <tbody>
+            <tr><td>Graphics clock</td><td><code>pp_od_clk_voltage</code> tokens emitted by the card</td><td>SMU backends differ: min/max clocks or an offset. Parse the live output.</td></tr>
+            <tr><td>Power cap</td><td>hwmon <code>power1_cap</code>, <code>_min</code>, <code>_max</code></td><td>Enough to define lower-power Efficiency and higher-headroom Performance candidates when supported.</td></tr>
+            <tr><td>Fan control</td><td>hwmon PWM and optional <code>gpu_od/fan_curve</code></td><td>Independent capability; never assume every board exposes the firmware curve editor.</td></tr>
+            <tr><td>DPM policy</td><td><code>power_dpm_force_performance_level</code></td><td>Manual OverDrive changes require policy coordination and restoration.</td></tr>
+            <tr><td>Recovery</td><td>OverDrive reset; separate GPU recovery machinery</td><td>Use <code>r</code> + <code>c</code> for normal rollback. A full GPU reset is escalation, not routine restore.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>What changed specifically in the 7.1.x stable updates</h3>
+      <ul>
+        <li><strong>7.1.6:</strong> corrected SMU13 power-limit min/default/max calculation and power-display units. The SMU13 range fix is not the RX 9000 SMU14 fix.</li>
+        <li><strong>7.1.8:</strong> standardized AMD PM's internal GPU-power sensor unit to milliwatts while preserving the legacy raw debugfs encoding.</li>
+        <li><strong>7.1.8:</strong> made each <code>gpu_metrics</code> read one atomic snapshot instead of a possible mixture of two samples.</li>
+        <li><strong>7.1.8:</strong> fixed a concurrent <code>pp_table</code> use-after-free and stopped exposing that table on firmware-owned APUs.</li>
+        <li><strong>7.1.8:</strong> restored the selected UMD stable pstate after runtime resume and included DCN flip/idle correctness fixes.</li>
+      </ul>
+      <p>None of those commits changed <code>PP_OD_EDIT_VDDGFX_OFFSET</code>, the six-slot broadcast, the fan ABI, or added a voltage-curve getter.</p>
+
+      <h3>3. Telemetry available to an Auto-UV scanner</h3>
+      <p>
+        <span class="status confirmed">Confirmed upstream</span>
+        Documented hwmon attributes include GPU voltage <code>in0_input</code>, GFX clock <code>freq1_input</code>,
+        memory clock, temperature, power, fan, and cap limits when the ASIC/firmware supplies them.
+        <code>gpu_busy_percent</code>, <code>mem_busy_percent</code>, and versioned binary <code>gpu_metrics</code>
+        add utilization and a synchronized metrics snapshot. Linux 7.1.8 specifically fixed
+        <a href="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=219eed1a041ef4d91e4eedede587a98412f78c82">torn <code>gpu_metrics</code> reads</a>,
+        which is useful for response sampling.
+      </p>
+
+      <h3>4. Things 7.1.8 does not expose</h3>
+      <ul>
+        <li>No per-point editor for RDNA2, RDNA3, or RDNA4 on the modern <code>vo</code> path.</li>
+        <li>No list of the firmware's base V/F points and no boundary-frequency getter.</li>
+        <li>No public six-value setter or six-value readback for <code>VoltageOffsetPerZoneBoundary[]</code>.</li>
+        <li>No guarantee that voltage telemetry exists or has the same averaging behavior on every board.</li>
+        <li>No reason to use ROCm merely for sysfs tuning; the kernel driver owns these controls.</li>
+      </ul>
+    </section>
+
+    <section id="newer-kernels">
+      <h2>What 7.2 and newer public trees actually change</h2>
+      <p class="section-intro">
+        None of the inspected changes turn AMD into a per-point curve API. They still matter for a reliable
+        PenguinBurner backend.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Tree</th><th>Tuning-adjacent changes</th><th>Per-point/per-zone UV?</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>7.1.5 → 7.1.8</td>
+              <td>Power-unit correction, atomic <code>gpu_metrics</code>, <code>pp_table</code> safety/APU restriction, UMD state restore, display fixes.</td>
+              <td class="no">No change</td>
+            </tr>
+            <tr>
+              <td>7.2-rc7</td>
+              <td>OD parser/output hardening, corrected SMU14 power-limit range, SMU14.0.2 energy-metric fix, GFX12 queue/reset and display robustness.</td>
+              <td class="no">No change</td>
+            </tr>
+            <tr>
+              <td>Post-7.2 AMD DRM / linux-next</td>
+              <td>Queued power-limit accounting and restoration across AC/DC changes, resume, table reload, and reset.</td>
+              <td class="no">No public patch found</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        RX 9060 uses MP1 14.0.2 and RX 9070/9070 XT uses MP1 14.0.3 in the
+        <a href="https://docs.kernel.org/gpu/amdgpu/amd-hardware-list-info.html#discrete-graphics-processing-units-dgpu-info">official hardware table</a>.
+        Both dispatch through the shared <code>smu_v14_0_2</code> backend, so both get the same scalar-only voltage
+        semantics—and both are good targets for the same carefully gated experiment.
+      </p>
+    </section>
+
+    <section id="six-boundaries">
+      <h2>The six-boundary SMU13/14 experiment</h2>
+      <p class="section-intro">
+        The driver is currently the narrowing point on the inspected SMU13/14 paths: the full OverDrive table
+        contains six values, while the public edit path deliberately broadcasts one input and reports only slot
+        zero. Patch SMU14 first for RX 9060/9070; treat SMU13 as a separate follow-up qualification.
+      </p>
+
+      <div class="diagram" role="img" aria-label="Five piecewise-linear zones separated by six voltage-offset boundary nodes">
+        <div class="diagram-title">Correct mental model: five PWL zones, six boundary-offset nodes</div>
+        <div class="diagram-subtitle">The node positions are conceptual. Their actual frequency coordinates are not exposed.</div>
+        <div class="zones">
+          <div class="zone"><i class="boundary" data-label="B0"></i>Zone 0</div>
+          <div class="zone"><i class="boundary" data-label="B1"></i>Zone 1</div>
+          <div class="zone"><i class="boundary" data-label="B2"></i>Zone 2</div>
+          <div class="zone"><i class="boundary" data-label="B3"></i>Zone 3</div>
+          <div class="zone"><i class="boundary" data-label="B4"></i>Zone 4<span class="last-boundary">B5</span></div>
+        </div>
+        <div class="formula">B0 — Zone 0 — B1 — Zone 1 — B2 — Zone 2 — B3 — Zone 3 — B4 — Zone 4 — B5</div>
+      </div>
+
+      <h3>What the stock handler does</h3>
+      <p>
+        <span class="status confirmed">Confirmed upstream</span>
+        SMU14 defines <code>PP_NUM_RTAVFS_PWL_ZONES = 5</code> and six
+        <code>VoltageOffsetPerZoneBoundary[]</code> entries. The
+        <a href="https://github.com/torvalds/linux/blob/v7.2-rc7/drivers/gpu/drm/amd/pm/swsmu/smu14/smu_v14_0_2_ppt.c#L2566-L2585">7.2-rc7 edit handler</a>
+        loops over all six entries and assigns the same <code>input[0]</code>. Its
+        <a href="https://github.com/torvalds/linux/blob/v7.2-rc7/drivers/gpu/drm/amd/pm/swsmu/smu14/smu_v14_0_2_ppt.c#L1115-L1124">read path</a>
+        prints only element zero. The 7.1.8 code has the same semantics.
+      </p>
+
+      <h3>Can we add a six-value setter?</h3>
+      <p>
+        <span class="status proposal">Experiment proposal</span>
+        Yes at the kernel-driver layer. Preserve <code>vo N</code> as the supported broadcast operation, add an
+        explicitly experimental command that accepts exactly six signed values, validate every element against
+        firmware-provided bounds, write the complete OverDrive table, commit, and read it back.
+      </p>
+      <pre><code># Existing ABI remains unchanged:
+vo -75                       # broadcast -75 mV to B0..B5
+
+# Illustrative private-patch syntax—not an upstream ABI:
+voz -20 -30 -45 -60 -75 -85 # independently stage B0..B5
+c                            # commit through the normal OD transaction
+r                            # reset remains available</code></pre>
+      <p>
+        The token name <code>voz</code> is intentionally presented as a design placeholder. An upstream RFC should
+        let AMD maintainers choose the ABI. The important properties are atomic six-value input, unchanged legacy
+        behavior, per-slot validation, full readback, and an obvious experimental capability flag.
+      </p>
+
+      <h3>Can we add a six-value getter?</h3>
+      <p>
+        <span class="status proposal">Experiment proposal</span>
+        Yes. The complete SMU OverDrive table is already retrieved from firmware; the current display function
+        merely selects <code>[0]</code>. A diagnostic patch can emit B0 through B5 after a fresh table read, and the
+        setter can compare requested values with that firmware readback.
+      </p>
+      <pre><code># Illustrative patched readback—not present in stock 7.1.8:
+OD_VDDGFX_OFFSET_ZONES:
+0: &lt;signed mV at B0&gt;
+1: &lt;signed mV at B1&gt;
+2: &lt;signed mV at B2&gt;
+3: &lt;signed mV at B3&gt;
+4: &lt;signed mV at B4&gt;
+5: &lt;signed mV at B5&gt;</code></pre>
+      <div class="callout warning">
+        <strong>What this getter does not solve:</strong> it returns six adjustments, not the stock voltage or
+        frequency at each boundary. Without a documented boundary map or base-curve getter, PenguinBurner must
+        label them B0…B5 and must not draw them at invented MHz/mV coordinates.
+      </div>
+
+      <h3>What we still have to prove on hardware</h3>
+      <div class="two-col">
+        <article class="card">
+          <h3>Encouraging evidence</h3>
+          <ul>
+            <li>The firmware table truly carries six independently addressable fields.</li>
+            <li>The full table already crosses the kernel/PMFW boundary.</li>
+            <li>SMU14 declares advanced/full-control fields and an OD curve-offset error code.</li>
+            <li>RX 9060 and RX 9070 share the backend to patch first.</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Unknown until an RX 9000 test</h3>
+          <ul>
+            <li>Whether PMFW accepts unequal offsets or silently normalizes them.</li>
+            <li>Whether a hidden advanced mode is required—and how to enable it safely.</li>
+            <li>Per-slot bounds, interpolation behavior, and persistence across reset/resume.</li>
+            <li>Whether unequal offsets produce stable, useful curve shaping.</li>
+          </ul>
+        </article>
+      </div>
+      <div class="callout danger">
+        <strong>Safety boundary:</strong> start with an isolated test kernel on RDNA4, a stock recovery kernel,
+        no boot-time application, zeroed slots, and tiny single-slot deltas. Verify firmware readback and exercise
+        idle, load, and rapid transitions before increasing magnitude. Do not blindly toggle undocumented advanced
+        mode fields. This page proposes an experiment; it does not claim the firmware accepts unequal values.
+      </div>
+    </section>
+
+    <section id="getters">
+      <h2>What AMD getters actually offer</h2>
+      <p class="section-intro">
+        Stock modern AMD exposes configured controls and the current operating state—not the full function the
+        firmware uses to choose voltage at every frequency.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Question</th><th>Best source</th><th>Answer</th></tr></thead>
+          <tbody>
+            <tr><td>What voltage offset and OD ranges are configured?</td><td><code>pp_od_clk_voltage</code></td><td class="yes">Yes: supported tokens, state, and ranges; modern stock readback shows the scalar.</td></tr>
+            <tr><td>What clock and voltage is the GPU using now?</td><td><code>gpu_metrics</code> or hwmon <code>freq1_input</code> + <code>in0_input</code></td><td class="maybe">Often, capability-dependent. Metric versions and averaging differ.</td></tr>
+            <tr><td>What are temperature, power, fan, and utilization now?</td><td><code>gpu_metrics</code>, hwmon, busy-percent files</td><td class="yes">Yes when exposed; missing values must remain “unavailable.”</td></tr>
+            <tr><td>What DPM levels exist/currently apply?</td><td><code>pp_dpm_sclk</code> and related files</td><td class="maybe">Where supported; levels are not an absolute V/F curve.</td></tr>
+            <tr><td>What are all hidden V/F points?</td><td>No public modern ABI</td><td class="no">No.</td></tr>
+            <tr><td>What are all six internal offsets?</td><td>Stock display function</td><td class="no">No: only slot zero. A patch can expose all six.</td></tr>
+            <tr><td>Where are the six boundary frequencies?</td><td>No documented ABI</td><td class="no">No safe mapping found.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        The internal SMU table also contains droop/PWL coefficients. Their presence suggests a piecewise
+        mathematical curve, not a dense public list of 100+ points. The scaling and relationship to the six offset
+        boundaries are not documented as a userspace ABI, so decoding them would be a separate reverse-engineering
+        project—not something PenguinBurner should silently rely on.
+      </p>
+    </section>
+
+    <section id="visualization">
+      <h2>How PenguinBurner can visualize an opaque AMD curve</h2>
+      <p class="section-intro">
+        Call it a <strong>measured operating response</strong>, not “the firmware V/F curve.” Each dot is something
+        the GPU actually reported while a controlled workload was running.
+      </p>
+
+      <div class="flow" aria-label="Measured response construction pipeline">
+        <div class="flow-step"><b>1 · Apply candidate</b><span>Global offset now; six boundaries only in an experimental kernel.</span></div>
+        <div class="flow-step"><b>2 · Exercise states</b><span>Idle, light, medium, full load, and rapid transitions.</span></div>
+        <div class="flow-step"><b>3 · Sample snapshots</b><span>Clock, voltage, power, utilization, temperature, throttling, timestamp.</span></div>
+        <div class="flow-step"><b>4 · Aggregate</b><span>Group clock into 25–50 MHz bins; compute median and 10–90% band.</span></div>
+        <div class="flow-step"><b>5 · Compare</b><span>Overlay stock, candidate, tiers, failures, gaps, and sample density.</span></div>
+      </div>
+
+      <figure class="chart">
+        <figcaption class="chart-header">
+          <strong>Schematic UI: measured operating response</strong>
+          <span>This is an explanatory drawing, not RX 9070 test data. No numerical results are implied.</span>
+        </figcaption>
+        <svg viewBox="0 0 1000 480" role="img" aria-label="Schematic scatter plot with stock and candidate measured voltage-frequency response">
+          <rect width="1000" height="480" fill="#10151a"/>
+          <g stroke="#27323d" stroke-width="1">
+            <line x1="90" y1="70" x2="950" y2="70"/><line x1="90" y1="145" x2="950" y2="145"/>
+            <line x1="90" y1="220" x2="950" y2="220"/><line x1="90" y1="295" x2="950" y2="295"/>
+            <line x1="90" y1="370" x2="950" y2="370"/>
+            <line x1="250" y1="40" x2="250" y2="400"/><line x1="420" y1="40" x2="420" y2="400"/>
+            <line x1="590" y1="40" x2="590" y2="400"/><line x1="760" y1="40" x2="760" y2="400"/>
+          </g>
+          <g stroke="#718294" stroke-width="2">
+            <line x1="90" y1="40" x2="90" y2="400"/><line x1="90" y1="400" x2="950" y2="400"/>
+          </g>
+          <path d="M110 358 C250 336 365 300 480 259 C610 211 750 148 930 79 L930 112 C758 180 618 243 486 287 C366 326 244 360 110 382 Z" fill="rgba(103,224,138,.13)" stroke="rgba(103,224,138,.28)"/>
+          <path d="M110 343 C270 320 400 278 525 228 C670 169 790 112 930 63" fill="none" stroke="#8695a4" stroke-width="4" stroke-dasharray="9 8"/>
+          <path d="M110 369 C255 344 380 311 490 271 C640 217 784 151 930 96" fill="none" stroke="#67e08a" stroke-width="4"/>
+          <g fill="#f0b65d" opacity=".7">
+            <circle cx="154" cy="360" r="4"/><circle cx="196" cy="350" r="4"/><circle cx="244" cy="342" r="4"/>
+            <circle cx="307" cy="327" r="4"/><circle cx="365" cy="310" r="4"/><circle cx="421" cy="291" r="4"/>
+            <circle cx="479" cy="277" r="4"/><circle cx="535" cy="252" r="4"/><circle cx="604" cy="226" r="4"/>
+            <circle cx="671" cy="197" r="4"/><circle cx="727" cy="170" r="4"/><circle cx="792" cy="143" r="4"/>
+            <circle cx="846" cy="122" r="4"/><circle cx="901" cy="100" r="4"/>
+          </g>
+          <g fill="#9aabba" font-family="system-ui, sans-serif" font-size="15">
+            <text x="487" y="449">Observed GFX frequency →</text>
+            <text transform="translate(25 294) rotate(-90)">Observed GPU voltage →</text>
+            <text x="98" y="31" fill="#f0b65d">SCHEMATIC · SAMPLED TELEMETRY</text>
+          </g>
+        </svg>
+        <div class="chart-legend">
+          <span class="legend-item"><i class="swatch" style="background:#8695a4"></i>stock median</span>
+          <span class="legend-item"><i class="swatch"></i>candidate median</span>
+          <span class="legend-item"><i class="swatch dot"></i>raw accepted samples</span>
+          <span class="legend-item"><i class="swatch band"></i>10–90% observed band</span>
+        </div>
+      </figure>
+
+      <div class="two-col">
+        <article class="card">
+          <h3>Show</h3>
+          <ul>
+            <li>Faint raw samples, binned median, confidence/dispersion band, and sample count.</li>
+            <li>Stock versus current candidate and final Efficiency/Balanced/Performance overlays.</li>
+            <li>Red markers for throttling, instability, reset, or a failed probe.</li>
+            <li>Gaps where telemetry is missing or sample density is insufficient.</li>
+            <li>A separate six-node offset strip when the patched capability exists.</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Never imply</h3>
+          <ul>
+            <li>That interpolation through samples is the firmware's stored curve.</li>
+            <li>That every frequency has one deterministic voltage independent of temperature and limits.</li>
+            <li>That B0…B5 have known MHz positions before the mapping is proven.</li>
+            <li>That absent voltage metrics equal zero.</li>
+            <li>That a passed workload proves universal stability.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="adapter">
+      <h2>One PenguinBurner interface for AMD and NVIDIA</h2>
+      <p class="section-intro">
+        Use one orchestration contract with a tagged voltage-control payload. Share identity, telemetry, lifecycle,
+        scoring, persistence, rollback, and verification; let candidate construction remain capability-specific.
+      </p>
+
+      <div class="adapter" aria-label="Capability-based backend architecture">
+        <div class="adapter-box">
+          <strong>NVIDIA adapter</strong>
+          <ul><li>NVML facts/controls</li><li>hidden NVAPI V/F snapshot</li><li>per-bin frequency offsets</li></ul>
+        </div>
+        <div class="adapter-box center">
+          <strong>Shared GPU tuning contract</strong>
+          <ul><li>capabilities + stable device identity</li><li>telemetry snapshot</li><li>apply typed plan + readback</li><li>restore captured baseline</li><li>run/score/verify candidates</li></ul>
+        </div>
+        <div class="adapter-box">
+          <strong>AMDGPU adapter</strong>
+          <ul><li>sysfs/hwmon facts</li><li>global offset now</li><li>six-boundary offsets only when patched</li></ul>
+        </div>
+      </div>
+
+      <pre><code>enum VoltageControl {
+    PerPointCurve { points: Vec&lt;VfOffset&gt; },          // NVIDIA
+    GlobalOffset { offset_mv: i32 },                  // stock modern AMD
+    ZoneBoundaryOffsets { offsets_mv: [i32; 6] },     // patched SMU13/14 only
+    None,
+}
+
+struct TuningPlan {
+    device_id: StablePciIdentity,
+    voltage: VoltageControl,
+    gfx_clock: Option&lt;ClockControl&gt;,
+    memory_clock: Option&lt;ClockControl&gt;,
+    power_limit: Option&lt;PowerLimit&gt;,
+    fan: Option&lt;FanControl&gt;,
+}
+
+trait GpuTuningBackend {
+    fn capabilities(&amp;self) -&gt; Capabilities;
+    fn telemetry(&amp;self) -&gt; TelemetrySnapshot;
+    fn capture_baseline(&amp;self) -&gt; BaselineToken;
+    fn apply(&amp;self, plan: &amp;TuningPlan) -&gt; AppliedReadback;
+    fn restore(&amp;self, baseline: &amp;BaselineToken) -&gt; AppliedReadback;
+}</code></pre>
+      <p>
+        <span class="status proposal">PenguinBurner design</span>
+        The Rust daemon remains the only privileged writer. AMD sysfs writes, OD commit/reset, fan changes, and
+        recovery belong behind <code>/run/penguin-burnerd.sock</code>, just like NVIDIA mutations. Python and Qt
+        consume typed daemon capabilities; they do not open a second privileged engine.
+      </p>
+      <p>
+        Do not add an adapter method named simply <code>get_curve()</code> and fabricate AMD points. Instead expose
+        <code>voltage_control.kind</code>, optional editable controls, and a distinct measured-response series.
+        Profiles should persist the tagged plan, PCI identity, kernel/driver/firmware facts, ranges, captured
+        baseline, and verification evidence. A profile is revalidated when capabilities change.
+      </p>
+    </section>
+
+    <section id="auto-uv">
+      <h2>Efficiency, Balanced, and Performance on AMD</h2>
+      <p class="section-intro">
+        The same three product goals remain possible without pretending AMD has NVIDIA's curve editor.
+        PenguinBurner searches the controls the card actually exposes.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Tier</th><th>Global voltage strategy</th><th>Clock/power strategy</th><th>Selection target</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Efficiency</strong></td><td>Most-negative verified stable scalar offset</td><td>Lower power cap and, where supported, lower clock target/offset</td><td>Best performance per watt subject to a performance floor</td></tr>
+            <tr><td><strong>Balanced</strong></td><td>Moderate verified negative offset</td><td>Near-stock clocks and a moderate cap</td><td>Meaningful power/temperature reduction with little performance loss</td></tr>
+            <tr><td><strong>Performance</strong></td><td>Mild negative or zero offset, whichever remains stable</td><td>Positive GFX control and/or higher permitted power cap</td><td>Highest verified throughput inside thermal and power guardrails</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Yes, Performance can push clocks and power upward if the card exposes those controls. Efficiency can push
+        them downward. A negative voltage offset does not itself lock an exact voltage; firmware continues choosing
+        the operating point. Search candidates should therefore be explicit tuples such as
+        <code>{offset_mv, gfx_control, power_limit}</code>, scored using measured output, energy, temperature,
+        throttling, and stability.
+      </p>
+      <div class="callout">
+        <strong>What can be shared with NVIDIA:</strong> workload management, crash markers, progressive search,
+        telemetry capture, scoring, persistence, final verification, tier selection, and adaptive runtime switching.
+        <strong>What must differ:</strong> candidate identity and generation. NVIDIA reshapes/flattens bins; stock AMD
+        shifts the firmware curve globally; experimental AMD may shape six boundaries.
+      </div>
+    </section>
+
+    <section id="upstream">
+      <h2>How to take the six-boundary idea upstream</h2>
+      <p class="section-intro">
+        First prove that PMFW accepts unequal values on RX 9060/9070. Then turn the evidence into a narrow RFC rather
+        than asking upstream to accept an untested UI concept.
+      </p>
+      <ol>
+        <li>Build the private SMU14 diagnostic patch with legacy scalar behavior, atomic six-value set, six-value get, validation, reset, and readback logs.</li>
+        <li>Capture exact board, VBIOS, PMFW, kernel commit, OD ranges, accepted/rejected arrays, runtime telemetry, transition tests, reset/resume behavior, and recovery.</li>
+        <li>Document the missing contract questions: slot bounds, interpolation, boundary mapping, advanced-mode requirements, and long-term ABI.</li>
+        <li>Open a focused request in the <a href="https://gitlab.freedesktop.org/drm/amd">DRM/AMD project</a>, linking the evidence and <a href="https://github.com/jpietek/PenguinBurner/discussions/43">PenguinBurner Discussion #43</a>.</li>
+        <li>Send the RFC/patch to <a href="https://lists.freedesktop.org/mailman/listinfo/amd-gfx">amd-gfx</a> and the current AMD PowerPlay/SWSMU and AMDGPU maintainers listed in the kernel <a href="https://github.com/torvalds/linux/blob/master/MAINTAINERS">MAINTAINERS file</a>.</li>
+      </ol>
+      <p>
+        No matching public patch series or announced roadmap exposing independent
+        <code>VoltageOffsetPerZoneBoundary[]</code> values was found in mainline, drm-next, AMD staging, linux-next,
+        or the searched public patch queue as of the research date. That is absence of public evidence—not proof
+        AMD will never support it.
+      </p>
+    </section>
+
+    <section id="sources">
+      <h2>Primary sources</h2>
+      <p class="section-intro">Claims above were checked against project documentation and source, not forum recipes.</p>
+      <ul class="source-list">
+        <li><strong><a href="https://docs.kernel.org/7.1/gpu/amdgpu/thermal.html">AMDGPU GPU Power/Thermal Controls, Linux 7.1</a></strong><span>Documented OverDrive commands, hwmon attributes, fan controls, power caps, and gpu_metrics.</span></li>
+        <li><strong><a href="https://github.com/gregkh/linux/blob/v7.1.8/drivers/gpu/drm/amd/pm/amdgpu_pm.c#L739-L786">Linux 7.1.8 OverDrive parser</a></strong><span>The public <code>vo</code> token maps to one voltage-offset edit operation.</span></li>
+        <li><strong><a href="https://github.com/gregkh/linux/blob/v7.1.8/drivers/gpu/drm/amd/pm/swsmu/smu14/smu_v14_0_2_ppt.c#L2566-L2585">Linux 7.1.8 SMU14 voltage-offset handler</a></strong><span>One input is copied across all internal boundary entries.</span></li>
+        <li><strong><a href="https://github.com/torvalds/linux/blob/v7.2-rc7/drivers/gpu/drm/amd/pm/swsmu/inc/pmfw_if/smu14_driver_if_v14_0.h#L680-L755">SMU14 firmware-interface definitions</a></strong><span>Five RTAVFS PWL zones and six OverDrive curve-offset entries.</span></li>
+        <li><strong><a href="https://docs.kernel.org/gpu/amdgpu/amd-hardware-list-info.html#discrete-graphics-processing-units-dgpu-info">Official AMDGPU hardware table</a></strong><span>RX 9060 XT MP1 14.0.2; RX 9070/9070 XT MP1 14.0.3.</span></li>
+        <li><strong><a href="https://cdn.kernel.org/pub/linux/kernel/v7.x/ChangeLog-7.1.8">Linux 7.1.8 changelog</a></strong><span>Stable fixes checked for AMD power, metrics, table, resume, and display changes.</span></li>
+        <li><strong><a href="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=e987eabc02646920cd13ab75902693e99735eca0">SMU14 power-limit range correction in 7.2</a></strong><span>The main tuning-adjacent 7.2 correction for the shared RX 9000 backend.</span></li>
+        <li><strong><a href="https://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git/tree/drivers/gpu/drm/amd/pm/swsmu/smu14/smu_v14_0_2_ppt.c?id=3d08ff75a47a3e7e2ab45a3bcab6723b4d906422">Inspected linux-next SMU14 backend</a></strong><span>Still scalar-broadcasting at the pinned development-tree revision.</span></li>
+        <li><strong><a href="https://gpuopen.com/manuals/adlx/adlx-sdk-references/adlx-interfaces/gpu-tuning/iadlxmanualgraphicstuning2/setgpuvoltage/">AMD ADLX <code>SetGPUVoltage</code></a></strong><span>Windows cross-check: Navi4+ exposes a scalar voltage offset from base voltage.</span></li>
+        <li><strong><a href="https://github.com/jpietek/PenguinBurner/discussions/43">PenguinBurner Discussion #43</a></strong><span>The original AMD support and per-V/F-point API discussion this report updates.</span></li>
+      </ul>
+      <div class="callout warning">
+        <strong>Validation status:</strong> conclusions about exposed APIs are source-level findings. No RX 9060 or
+        RX 9070 was exercised for this report. Usable offset ranges, telemetry quality, PMFW handling of unequal
+        boundary offsets, stability, reset behavior, and performance must be measured on real hardware.
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      PenguinBurner research note · scoped to modern RDNA, primarily RX 9000 ·
+      <a href="https://github.com/jpietek/PenguinBurner">source repository</a>
+    </div>
+  </footer>
+
+  <script>
+    (() => {
+      const button = document.getElementById("copy-link");
+      const value = document.getElementById("share-url").textContent.trim();
+      button.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(value);
+          button.textContent = "Copied";
+        } catch (_) {
+          button.textContent = "Select URL";
+        }
+        window.setTimeout(() => { button.textContent = "Copy link"; }, 1800);
+      });
+    })();
+  </script>
+</body>
+</html>
