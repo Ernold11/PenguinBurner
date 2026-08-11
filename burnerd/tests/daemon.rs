@@ -1276,6 +1276,29 @@ fn write_rtd3_tree(
     (sys, proc_root)
 }
 
+fn write_fake_proc_identity(
+    proc_root: &std::path::Path,
+    pid: u32,
+    name: &str,
+    status: Option<&str>,
+) {
+    let process_dir = proc_root.join(pid.to_string());
+    std::fs::create_dir_all(&process_dir).unwrap();
+    std::fs::write(process_dir.join("comm"), format!("{name}\n")).unwrap();
+    if let Some(status) = status {
+        std::fs::write(process_dir.join("status"), status).unwrap();
+    }
+}
+
+fn write_root_powerd_identity(proc_root: &std::path::Path, pid: u32) {
+    write_fake_proc_identity(
+        proc_root,
+        pid,
+        "nvidia-powerd",
+        Some("Name:\tnvidia-powerd\nUid:\t0\t0\t0\t0\n"),
+    );
+}
+
 #[test]
 fn deep_sleep_defers_autostart_while_the_gpu_is_suspended() {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -1329,6 +1352,224 @@ fn deep_sleep_defers_autostart_while_the_gpu_is_suspended() {
     // Still no engine: the sleeping GPU was never attached.
     let status = daemon.request(r#"{"method":"status"}"#);
     assert_eq!(status["result"]["state"], "idle", "{status}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// NVIDIA's Dynamic Boost helper may retain an NVML context while no user
+/// workload exists. On fine-grained RTD3 that infrastructure context must not
+/// turn a daemon restart into a self-sustaining runtime attachment.
+#[test]
+fn deep_sleep_powerd_only_context_does_not_start_deferred_runtime() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-rtd3-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_file = dir.join("state.json");
+    std::fs::write(
+        &state_file,
+        test_static_runtime_spec("deferred-profile").to_string(),
+    )
+    .unwrap();
+    let (sys, proc_root) =
+        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "active");
+    let clients = dir.join("clients");
+    write_root_powerd_identity(&clients, 880);
+    let contexts = dir.join("context-pids");
+    std::fs::write(&contexts, "graphics 880\ncompute 880\n").unwrap();
+
+    let daemon = Daemon::start(&[
+        ("PENGUIN_BURNERD_TEST_STATE_FILE", state_file.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        MOCK_GPU,
+        (
+            "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
+            contexts.to_str().unwrap(),
+        ),
+    ]);
+
+    // Stay beyond the three-tick wake threshold. The helper is not a game,
+    // so it must never materialize the persisted profile.
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        assert_eq!(
+            status["result"]["state"], "idle",
+            "powerd-only context started the runtime: {status}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(
+        status["result"]["deep_sleep"]["autostart_deferred"],
+        Value::Bool(true),
+        "{status}"
+    );
+    let gpu_clients = &status["result"]["deep_sleep"]["gpu_clients"];
+    assert_eq!(gpu_clients["total_count"], 0, "{status}");
+    assert_eq!(gpu_clients["graphics_count"], 0, "{status}");
+    assert_eq!(gpu_clients["compute_count"], 0, "{status}");
+    assert_eq!(gpu_clients["ignored_count"], 1, "{status}");
+    assert_eq!(gpu_clients["ignored_clients"][0]["pid"], 880, "{status}");
+    assert_eq!(
+        gpu_clients["ignored_clients"][0]["name"],
+        "nvidia-powerd",
+        "{status}"
+    );
+
+    // Dynamic Boost remains present when a real workload arrives. The game
+    // context—not powerd—must still materialize the persisted profile.
+    std::fs::create_dir_all(clients.join("4242")).unwrap();
+    std::fs::write(clients.join("4242/comm"), "some-game\n").unwrap();
+    std::fs::write(
+        clients.join("4242/status"),
+        "Name:\tsome-game\nUid:\t1000\t1000\t1000\t1000\n",
+    )
+    .unwrap();
+    std::fs::write(&contexts, "graphics 880 4242\ncompute 880\n").unwrap();
+
+    let mut attached = false;
+    for _ in 0..120 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["state"] == "runtime_profile_running" {
+            let clients = &status["result"]["deep_sleep"]["gpu_clients"];
+            assert_eq!(clients["total_count"], 1, "{status}");
+            assert_eq!(clients["graphics"][0]["pid"], 4242, "{status}");
+            assert_eq!(clients["ignored_count"], 1, "{status}");
+            attached = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(attached, "a real game context did not start the runtime");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An explicitly applied profile initially owns GPU handles. A powerd-only
+/// context must still let the watcher park that runtime and release PB's hold.
+#[test]
+fn deep_sleep_powerd_only_context_allows_running_runtime_to_park() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-rtd3-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (sys, proc_root) =
+        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "active");
+    let clients = dir.join("clients");
+    write_root_powerd_identity(&clients, 880);
+    let contexts = dir.join("context-pids");
+    std::fs::write(&contexts, "graphics 880\n").unwrap();
+
+    let daemon = Daemon::start(&[
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        MOCK_GPU,
+        (
+            "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
+            contexts.to_str().unwrap(),
+        ),
+    ]);
+
+    let start = daemon.request(&runtime_spec_request(
+        "apply_runtime_spec",
+        &test_static_runtime_spec("powerd-only-profile"),
+    ));
+    assert_eq!(start["ok"], Value::Bool(true), "{start}");
+
+    let mut parked = false;
+    for _ in 0..120 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["deep_sleep"]["parked"] == Value::Bool(true) {
+            assert_eq!(status["result"]["state"], "idle", "{status}");
+            let clients = &status["result"]["deep_sleep"]["gpu_clients"];
+            assert_eq!(clients["total_count"], 0, "{status}");
+            assert_eq!(clients["ignored_count"], 1, "{status}");
+            parked = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(parked, "powerd-only context prevented runtime parking");
+    let log = daemon.stderr_log();
+    assert!(
+        log.contains("ignored infrastructure helpers=1 [880 nvidia-powerd]"),
+        "journal did not explain the powerd exclusion:\n{log}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deep_sleep_powerd_exclusion_requires_exact_root_identity() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-rtd3-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (sys, proc_root) =
+        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "active");
+    let clients = dir.join("clients");
+
+    for (pid, comm, status) in [
+        (880, "nvidia-powerd", Some("Uid:\t0\t0\t0\t0\n")),
+        (
+            881,
+            "nvidia-powerd",
+            Some("Uid:\t1000\t1000\t1000\t1000\n"),
+        ),
+        (882, "nvidia-powerd", None),
+        (883, "nvidia-powerd", Some("Uid:\tnot-a-uid\n")),
+        (884, "nvidia-powerd2", Some("Uid:\t0\t0\t0\t0\n")),
+        (885, "nvidia-powerd ", Some("Uid:\t0\t0\t0\t0\n")),
+        (886, "nvidia-powerd", Some("Uid:\t1000\t0\n")),
+        (
+            887,
+            "nvidia-powerd",
+            Some("Uid:\t1000\t0\tnot-a-uid\t0\n"),
+        ),
+        (
+            888,
+            "nvidia-powerd",
+            Some("Uid:\t0\t0\t0\t0\nUid:\t1000\t1000\t1000\t1000\n"),
+        ),
+    ] {
+        write_fake_proc_identity(&clients, pid, comm, status);
+    }
+    let contexts = dir.join("context-pids");
+    std::fs::write(
+        &contexts,
+        "graphics 880 881 882 883 884 885 886 887 888\n",
+    )
+    .unwrap();
+
+    let daemon = Daemon::start(&[
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        MOCK_GPU,
+        (
+            "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
+            contexts.to_str().unwrap(),
+        ),
+    ]);
+    let start = daemon.request(&runtime_spec_request(
+        "apply_runtime_spec",
+        &test_static_runtime_spec("identity-profile"),
+    ));
+    assert_eq!(start["ok"], Value::Bool(true), "{start}");
+
+    let mut sampled = false;
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        let clients = &status["result"]["deep_sleep"]["gpu_clients"];
+        if clients["ignored_count"] == 1 && clients["total_count"] == 8 {
+            assert_eq!(clients["ignored_clients"][0]["pid"], 880, "{status}");
+            assert_eq!(clients["graphics_count"], 8, "{status}");
+            sampled = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(sampled, "identity classification was not reported");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1649,12 +1890,12 @@ fn deep_sleep_parks_idle_runtime_and_reattaches_on_use() {
     let log = daemon.stderr_log();
     for expected in [
         "deep sleep: runtime_status suspended (initial)",
-        "deep sleep: gpu clients (nvml-contexts): counted=0 (idle), graphics=0, compute=0, device-node holders=0",
+        "deep sleep: gpu clients (nvml-contexts): counted=0 (idle), graphics=0, compute=0, ignored infrastructure helpers=0, device-node holders=0",
         "deep sleep: no GPU clients; parking the runtime in 1s unless one appears",
         "deep sleep: no GPU clients for the idle window; parking the runtime",
         "deep sleep: runtime parked; the GPU may suspend until its next real use",
         "deep sleep: runtime_status suspended -> active (suspended for ",
-        "deep sleep: gpu clients (nvml-contexts): counted=2 (GPU in use), graphics=1 [4242 some-game], compute=1 [555 cuda-worker], device-node holders=0",
+        "deep sleep: gpu clients (nvml-contexts): counted=2 (GPU in use), graphics=1 [4242 some-game], compute=1 [555 cuda-worker], ignored infrastructure helpers=0, device-node holders=0",
         "deep sleep: GPU is in use; starting the deferred persisted runtime",
         "deep sleep: runtime deferral cleared",
         "deep sleep: parked runtime re-materialized",
@@ -1828,9 +2069,10 @@ fn deep_sleep_coarse_grained_device_holder_blocks_park() {
     std::fs::create_dir_all(&dir).unwrap();
     let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (coarse-grained)", "auto", "active");
     let clients = dir.join("clients");
-    let fd_dir = clients.join("4242").join("fd");
+    let fd_dir = clients.join("880").join("fd");
     std::fs::create_dir_all(&fd_dir).unwrap();
     std::os::unix::fs::symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+    write_root_powerd_identity(&clients, 880);
 
     let daemon = Daemon::start(&[
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
@@ -1863,10 +2105,11 @@ fn deep_sleep_coarse_grained_device_holder_blocks_park() {
     assert_eq!(stats["source"], "device-nodes", "{status}");
     assert_eq!(stats["device_node_count"], 1, "{status}");
     assert_eq!(stats["total_count"], 1, "{status}");
-    assert_eq!(stats["device_node_holders"][0]["pid"], 4242, "{status}");
+    assert_eq!(stats["ignored_count"], 0, "{status}");
+    assert_eq!(stats["device_node_holders"][0]["pid"], 880, "{status}");
 
     // The holder exits: the park policy releases the runtime.
-    std::fs::remove_dir_all(clients.join("4242")).unwrap();
+    std::fs::remove_dir_all(clients.join("880")).unwrap();
     let mut parked = false;
     for _ in 0..200 {
         let status = daemon.request(r#"{"method":"status"}"#);
@@ -1891,7 +2134,14 @@ fn deep_sleep_fine_grained_falls_back_to_fd_scan_when_nvml_query_fails() {
     std::fs::create_dir_all(&dir).unwrap();
     let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
     let clients = dir.join("clients");
-    std::fs::create_dir_all(&clients).unwrap();
+    let powerd_fd_dir = clients.join("880/fd");
+    std::fs::create_dir_all(&powerd_fd_dir).unwrap();
+    std::os::unix::fs::symlink("/dev/nvidia0", powerd_fd_dir.join("14")).unwrap();
+    write_root_powerd_identity(&clients, 880);
+    let game_fd_dir = clients.join("4242/fd");
+    std::fs::create_dir_all(&game_fd_dir).unwrap();
+    std::os::unix::fs::symlink("/dev/nvidia0", game_fd_dir.join("7")).unwrap();
+    std::fs::write(clients.join("4242/comm"), "some-game\n").unwrap();
 
     let daemon = Daemon::start(&[
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
@@ -1907,16 +2157,33 @@ fn deep_sleep_fine_grained_falls_back_to_fd_scan_when_nvml_query_fails() {
     ));
     assert_eq!(start["ok"], Value::Bool(true), "{start}");
 
-    // The fd scan (empty client tree) governs: the runtime still parks.
+    // The fallback remains conservative for ordinary holders. Powerd is
+    // visible but ignored; the game beside it is counted and blocks parking.
+    std::thread::sleep(Duration::from_secs(4));
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(
+        status["result"]["state"], "runtime_profile_running",
+        "fallback ignored a real holder: {status}"
+    );
+    let gpu_clients = &status["result"]["deep_sleep"]["gpu_clients"];
+    assert_eq!(gpu_clients["source"], "device-nodes", "{status}");
+    assert_eq!(gpu_clients["total_count"], 1, "{status}");
+    assert_eq!(gpu_clients["device_node_count"], 2, "{status}");
+    assert_eq!(gpu_clients["ignored_count"], 1, "{status}");
+
+    // Once the real holder exits, powerd alone must not starve parking.
+    std::fs::remove_dir_all(clients.join("4242")).unwrap();
     let mut parked = false;
     for _ in 0..200 {
         let status = daemon.request(r#"{"method":"status"}"#);
         if status["result"]["deep_sleep"]["parked"] == Value::Bool(true) {
             // The stats disclose that the decision fell back to the fd scan.
-            assert_eq!(
-                status["result"]["deep_sleep"]["gpu_clients"]["source"], "device-nodes",
-                "{status}"
-            );
+            let clients = &status["result"]["deep_sleep"]["gpu_clients"];
+            assert_eq!(clients["source"], "device-nodes", "{status}");
+            assert_eq!(clients["total_count"], 0, "{status}");
+            assert_eq!(clients["device_node_count"], 1, "{status}");
+            assert_eq!(clients["ignored_count"], 1, "{status}");
+            assert_eq!(clients["ignored_clients"][0]["pid"], 880, "{status}");
             parked = true;
             break;
         }

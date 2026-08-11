@@ -97,22 +97,32 @@ sample of the processes it judged the park/wake decision by:
   "source": "nvml-contexts",
   "graphics_count": 1,
   "compute_count": 0,
-  "device_node_count": 2,
+  "device_node_count": 3,
+  "ignored_count": 1,
   "total_count": 1,
   "age_s": 0.6,
   "graphics": [{"pid": 3117, "name": "vkcube"}],
   "compute": [],
+  "ignored_clients": [{"pid": 880, "name": "nvidia-powerd"}],
   "device_node_holders": [
+    {"pid": 880, "name": "nvidia-powerd"},
     {"pid": 1450, "name": "plasmashell"},
     {"pid": 3117, "name": "vkcube"}
   ]
 }
 ```
 
-- `graphics` / `compute` list the processes holding a live NVML context of
-  that kind; `device_node_holders` lists every process with `/dev/nvidia<N>`
-  open. Each entry is `pid` plus the process name (`null` if it exited
-  before the lookup).
+- `graphics` / `compute` list the counted processes holding a live NVML
+  context of that kind; `device_node_holders` lists every process with
+  `/dev/nvidia<N>` open. Each entry is `pid` plus the process name (`null` if
+  it exited before the lookup).
+- `ignored_clients` names positively identified infrastructure helpers that
+  were observed but excluded from the fine-grained verdict. Currently the
+  only exception is an exact `nvidia-powerd` process running as root. It is
+  NVIDIA's Dynamic Boost controller, not a user workload; a game appearing
+  alongside it remains counted normally. Missing or malformed process
+  identity is counted conservatively, and coarse-grained/unknown modes never
+  apply this exception.
 - `source` names the decisive signal: `"nvml-contexts"` under fine-grained
   RTD3, `"device-nodes"` under coarse-grained RTD3 or when the NVML process
   query is unavailable.
@@ -135,7 +145,7 @@ countdown edges — never per-tick, so an idle system stays quiet and the log
 reads as a timeline. A full park-then-wake cycle looks like this:
 
 ```
-deep sleep: gpu clients (nvml-contexts): counted=0 (idle), graphics=0, compute=0, device-node holders=2 [1450 plasmashell, 1721 kwin_wayland]
+deep sleep: gpu clients (nvml-contexts): counted=0 (idle), graphics=0, compute=0, ignored infrastructure helpers=1 [880 nvidia-powerd], device-node holders=3 [880 nvidia-powerd, 1450 plasmashell, 1721 kwin_wayland]
 deep sleep: no GPU clients; parking the runtime in 59s unless one appears
 deep sleep: no GPU clients for the idle window; parking the runtime
 deep sleep: persisted runtime deferred until the GPU is in use
@@ -143,7 +153,7 @@ deep sleep: runtime parked; the GPU may suspend until its next real use
 deep sleep: runtime_status active -> suspended (active for 312.4s)
 deep sleep: released 1 idle GPU backend(s) so the GPU can suspend
 deep sleep: runtime_status suspended -> active (suspended for 1841.7s)
-deep sleep: gpu clients (nvml-contexts): counted=1 (GPU in use), graphics=1 [9314 game.exe], compute=0, device-node holders=3 [1450 plasmashell, 1721 kwin_wayland, 9314 game.exe]
+deep sleep: gpu clients (nvml-contexts): counted=1 (GPU in use), graphics=1 [9314 game.exe], compute=0, ignored infrastructure helpers=1 [880 nvidia-powerd], device-node holders=4 [880 nvidia-powerd, 1450 plasmashell, 1721 kwin_wayland, 9314 game.exe]
 deep sleep: GPU is in use; starting the deferred persisted runtime
 deep sleep: runtime deferral cleared
 deep sleep: parked runtime re-materialized
@@ -153,7 +163,8 @@ Line by line:
 
 - **`gpu clients (...)`** — the client sample, logged whenever it changes.
   `counted` is the number the park/wake decision used (`(GPU in use)` /
-  `(idle)` is the verdict); the lists that follow are the evidence.
+  `(idle)` is the verdict); the counted, explicitly ignored, and open-holder
+  lists that follow are the complete evidence.
 - **`runtime_status A -> B (A for Ns)`** — the kernel's own view of the
   GPU's power state, with how long the previous state was held. This is the
   ground truth that parking actually led to a suspend, and it timestamps

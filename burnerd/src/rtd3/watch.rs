@@ -24,8 +24,12 @@
 //! desktop shells and monitoring agents hold the render node open for hours
 //! while the GPU sleeps — so an fd holder proves nothing, and treating it as
 //! use would starve the park policy forever. There the watcher asks NVML for
-//! live graphics/compute contexts instead, falling back to the fd scan only
-//! when that query fails (driver too old for the _v3 symbols, no backend).
+//! live graphics/compute contexts instead. A root-owned `nvidia-powerd`
+//! context is reported but excluded: Dynamic Boost is driver infrastructure,
+//! and a real workload alongside it still has its own counted context. The
+//! watcher falls back to the fd scan only when the context query fails (driver
+//! too old for the _v3 symbols, no backend), applying the same narrow helper
+//! exclusion in confirmed fine-grained mode.
 //! While protected it also drops idle RPC backends so a one-off GUI telemetry
 //! query cannot pin NVML forever.
 
@@ -329,16 +333,30 @@ fn gpu_in_use_by_client(gpu_index: Option<u32>) -> bool {
         graphics: Vec::new(),
         compute: Vec::new(),
         device_node_holders: nvidia_device_node_holders_in(&proc_root, self_pid),
+        ignored_clients: Vec::new(),
     };
     if super::fine_grained_mode() {
         if let Some(index) = gpu_index {
             match gpu_rpc::context_pids(index) {
                 Ok(contexts) => {
                     observation.source = GpuClientSource::NvmlContexts;
-                    observation.graphics = named_processes(&proc_root, &contexts.graphics, self_pid);
-                    observation.compute = named_processes(&proc_root, &contexts.compute, self_pid);
+                    let (graphics, compute, ignored) = classified_context_processes(
+                        &proc_root,
+                        &contexts.graphics,
+                        &contexts.compute,
+                        self_pid,
+                    );
+                    observation.graphics = graphics;
+                    observation.compute = compute;
+                    observation.ignored_clients = ignored;
                 }
-                Err(error) => log_context_query_fallback(&error),
+                Err(error) => {
+                    log_context_query_fallback(&error);
+                    observation.ignored_clients = ignored_powerd_processes(
+                        &proc_root,
+                        &observation.device_node_holders,
+                    );
+                }
             }
         }
     }
@@ -371,25 +389,103 @@ fn client_proc_root() -> PathBuf {
         .map_or_else(|| PathBuf::from("/proc"), PathBuf::from)
 }
 
-/// Resolve `/proc/<pid>/comm` names for context PIDs, dropping the daemon's
-/// own PID so the lists match what the park/wake decision counts.
-fn named_processes(proc_root: &Path, pids: &[u32], self_pid: u32) -> Vec<GpuClientProcess> {
-    pids.iter()
+/// Resolve each unique context PID through procfs exactly once, dropping the
+/// daemon itself and partitioning the one narrowly approved fine-grained
+/// infrastructure helper from clients that decide park/wake behavior.
+fn classified_context_processes(
+    proc_root: &Path,
+    graphics_pids: &[u32],
+    compute_pids: &[u32],
+    self_pid: u32,
+) -> (
+    Vec<GpuClientProcess>,
+    Vec<GpuClientProcess>,
+    Vec<GpuClientProcess>,
+) {
+    let mut unique_pids: Vec<u32> = graphics_pids
+        .iter()
+        .chain(compute_pids)
         .copied()
         .filter(|pid| *pid != self_pid)
-        .map(|pid| GpuClientProcess {
-            pid,
-            name: process_name(proc_root, pid),
-        })
-        .collect()
+        .collect();
+    unique_pids.sort_unstable();
+    unique_pids.dedup();
+
+    let mut counted = Vec::new();
+    let mut ignored = Vec::new();
+    for pid in unique_pids {
+        let name = process_name(proc_root, pid);
+        let process = GpuClientProcess { pid, name };
+        if is_root_nvidia_powerd(proc_root, &process) {
+            ignored.push(process);
+        } else {
+            counted.push(process);
+        }
+    }
+    let graphics = counted
+        .iter()
+        .filter(|process| graphics_pids.contains(&process.pid))
+        .cloned()
+        .collect();
+    let compute = counted
+        .iter()
+        .filter(|process| compute_pids.contains(&process.pid))
+        .cloned()
+        .collect();
+    (graphics, compute, ignored)
 }
 
 /// Process name from `<proc_root>/<pid>/comm`; `None` once the process is
 /// gone. Pure procfs read — never touches the GPU.
 fn process_name(proc_root: &Path, pid: u32) -> Option<String> {
     let comm = fs::read_to_string(proc_root.join(pid.to_string()).join("comm")).ok()?;
-    let name = comm.trim();
+    // procfs terminates `comm` with exactly one newline. Preserve every byte
+    // of the process name itself so the infrastructure exception is an exact
+    // match rather than a whitespace-normalized one.
+    let name = comm.strip_suffix('\n').unwrap_or(&comm);
     (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Effective UID from `/proc/<pid>/status`. Missing or malformed process
+/// metadata returns `None`, so callers retain the candidate conservatively.
+fn process_effective_uid(proc_root: &Path, pid: u32) -> Option<u32> {
+    let status = fs::read_to_string(proc_root.join(pid.to_string()).join("status")).ok()?;
+    let mut records = status.lines().filter_map(|line| line.strip_prefix("Uid:"));
+    let record = records.next()?;
+    if records.next().is_some() {
+        return None;
+    }
+    let mut fields = record.split_whitespace();
+    let _real: u32 = fields.next()?.parse().ok()?;
+    let effective: u32 = fields.next()?.parse().ok()?;
+    let _saved: u32 = fields.next()?.parse().ok()?;
+    let _filesystem: u32 = fields.next()?.parse().ok()?;
+    if fields.next().is_some() {
+        return None;
+    }
+    Some(effective)
+}
+
+/// The one approved fine-grained infrastructure exception. Keep the exact
+/// name and root-identity requirements in one predicate so the NVML and
+/// device-node fallback paths cannot drift.
+fn is_root_nvidia_powerd(proc_root: &Path, process: &GpuClientProcess) -> bool {
+    process.name.as_deref() == Some("nvidia-powerd")
+        && process_effective_uid(proc_root, process.pid) == Some(0)
+}
+
+/// Positively identify the Dynamic Boost helper among an already resolved
+/// process list. Used by the fine-grained device-node fallback; coarse and
+/// unknown modes never call this exclusion.
+fn ignored_powerd_processes(
+    proc_root: &Path,
+    processes: &[GpuClientProcess],
+) -> Vec<GpuClientProcess> {
+    processes
+        .iter()
+        .filter(|process| is_root_nvidia_powerd(proc_root, process))
+        .cloned()
+        .collect()
 }
 
 /// Only the numbered render nodes count as a real GPU client. `nvidiactl`,
@@ -494,18 +590,22 @@ mod tests {
     }
 
     #[test]
-    fn named_processes_resolve_comm_and_drop_the_daemon() {
+    fn classified_context_processes_resolve_comm_once_and_drop_the_daemon() {
         let root = tempfile::tempdir().expect("tempdir");
         fs::create_dir_all(root.path().join("123")).unwrap();
         fs::write(root.path().join("123").join("comm"), "cuda-worker\n").unwrap();
 
-        let named = named_processes(root.path(), &[123, 456, 999], 456);
-        assert_eq!(named.len(), 2);
-        assert_eq!(named[0].pid, 123);
-        assert_eq!(named[0].name.as_deref(), Some("cuda-worker"));
+        let (graphics, compute, ignored) =
+            classified_context_processes(root.path(), &[123, 456, 999], &[123], 456);
+        assert!(ignored.is_empty());
+        assert_eq!(graphics.len(), 2);
+        assert_eq!(graphics[0].pid, 123);
+        assert_eq!(graphics[0].name.as_deref(), Some("cuda-worker"));
         // A PID that exited between the NVML query and the lookup keeps its
         // entry so the counts stay honest, just without a name.
-        assert_eq!(named[1].pid, 999);
-        assert_eq!(named[1].name, None);
+        assert_eq!(graphics[1].pid, 999);
+        assert_eq!(graphics[1].name, None);
+        // A PID present in both context kinds shares the one classification.
+        assert_eq!(compute, vec![graphics[0].clone()]);
     }
 }

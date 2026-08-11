@@ -102,6 +102,9 @@ pub struct GpuClientObservation {
     pub graphics: Vec<GpuClientProcess>,
     pub compute: Vec<GpuClientProcess>,
     pub device_node_holders: Vec<GpuClientProcess>,
+    /// Positively identified infrastructure helpers excluded from the verdict
+    /// in fine-grained mode, retained so status and logs explain the decision.
+    pub ignored_clients: Vec<GpuClientProcess>,
 }
 
 impl GpuClientObservation {
@@ -110,15 +113,31 @@ impl GpuClientObservation {
     /// definition of "decisive" — the watcher's verdict, the status block's
     /// `total_count`, and the journal line all derive from it.
     pub(crate) fn counted_pids(&self) -> HashSet<u32> {
-        let decisive: &[&[GpuClientProcess]] = match self.source {
-            GpuClientSource::NvmlContexts => &[&self.graphics, &self.compute],
-            GpuClientSource::DeviceNodes => &[&self.device_node_holders],
-        };
-        decisive
-            .iter()
-            .flat_map(|list| list.iter())
-            .map(|process| process.pid)
-            .collect()
+        match self.source {
+            // Context lists already contain only counted clients. If a
+            // contradictory ignored entry ever survives classification,
+            // fail closed: an explicitly counted context wins.
+            GpuClientSource::NvmlContexts => self
+                .graphics
+                .iter()
+                .chain(&self.compute)
+                .map(|process| process.pid)
+                .collect(),
+            // The fallback retains every observed holder for diagnostics and
+            // subtracts only the positively identified helper PIDs.
+            GpuClientSource::DeviceNodes => {
+                let ignored: HashSet<u32> = self
+                    .ignored_clients
+                    .iter()
+                    .map(|process| process.pid)
+                    .collect();
+                self.device_node_holders
+                    .iter()
+                    .filter(|process| !ignored.contains(&process.pid))
+                    .map(|process| process.pid)
+                    .collect()
+            }
+        }
     }
 
     /// True when the decision must treat the GPU as in use.
@@ -137,6 +156,7 @@ pub struct GpuClientsStatus {
     pub graphics_count: usize,
     pub compute_count: usize,
     pub device_node_count: usize,
+    pub ignored_count: usize,
     /// Unique PIDs the park/wake decision counted (the context lists under
     /// "nvml-contexts", the fd holders under "device-nodes"). Parking
     /// proceeds only while this stays 0.
@@ -146,6 +166,9 @@ pub struct GpuClientsStatus {
     pub age_s: f64,
     pub graphics: Vec<GpuClientProcess>,
     pub compute: Vec<GpuClientProcess>,
+    /// Infrastructure helpers observed but excluded from the fine-grained
+    /// client decision.
+    pub ignored_clients: Vec<GpuClientProcess>,
     /// Processes holding `/dev/nvidia<N>` open. Under fine-grained RTD3 this
     /// is informational: a holder with no live context does not keep the GPU
     /// awake and does not block parking.
@@ -158,10 +181,12 @@ fn gpu_clients_status(observation: &GpuClientObservation, observed_at: Instant) 
         graphics_count: observation.graphics.len(),
         compute_count: observation.compute.len(),
         device_node_count: observation.device_node_holders.len(),
+        ignored_count: observation.ignored_clients.len(),
         total_count: observation.counted_pids().len(),
         age_s: (observed_at.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
         graphics: observation.graphics.clone(),
         compute: observation.compute.clone(),
+        ignored_clients: observation.ignored_clients.clone(),
         device_node_holders: observation.device_node_holders.clone(),
     }
 }
@@ -402,7 +427,7 @@ fn describe_gpu_clients(observation: &GpuClientObservation) -> String {
         format!("{label}={} [{}]", processes.len(), entries.join(", "))
     }
     format!(
-        "deep sleep: gpu clients ({}): counted={} ({}), {}, {}, {}",
+        "deep sleep: gpu clients ({}): counted={} ({}), {}, {}, {}, {}",
         observation.source.as_str(),
         observation.counted_pids().len(),
         if observation.in_use() {
@@ -412,6 +437,10 @@ fn describe_gpu_clients(observation: &GpuClientObservation) -> String {
         },
         list("graphics", &observation.graphics),
         list("compute", &observation.compute),
+        list(
+            "ignored infrastructure helpers",
+            &observation.ignored_clients,
+        ),
         list("device-node holders", &observation.device_node_holders),
     )
 }
@@ -625,6 +654,7 @@ mod tests {
             graphics: vec![client(100, "gnome-shell"), client(200, "game")],
             compute: vec![client(200, "game"), client(300, "python3")],
             device_node_holders: vec![client(100, "gnome-shell"), client(999, "Xorg")],
+            ignored_clients: Vec::new(),
         };
         let stats = gpu_clients_status(&observation, Instant::now());
         assert_eq!(stats.source, "nvml-contexts");
@@ -640,12 +670,26 @@ mod tests {
             graphics: Vec::new(),
             compute: Vec::new(),
             device_node_holders: vec![client(999, "Xorg")],
+            ignored_clients: Vec::new(),
         };
         let stats = gpu_clients_status(&observation, Instant::now());
         assert_eq!(stats.source, "device-nodes");
         assert_eq!(stats.total_count, 1);
         assert_eq!(stats.graphics_count, 0);
         assert_eq!(stats.compute_count, 0);
+    }
+
+    #[test]
+    fn counted_context_wins_over_a_contradictory_ignored_entry() {
+        let observation = GpuClientObservation {
+            source: GpuClientSource::NvmlContexts,
+            graphics: vec![client(880, "nvidia-powerd")],
+            compute: Vec::new(),
+            device_node_holders: Vec::new(),
+            ignored_clients: vec![client(880, "nvidia-powerd")],
+        };
+        assert!(observation.in_use());
+        assert_eq!(observation.counted_pids(), HashSet::from([880]));
     }
 
     #[test]
@@ -661,11 +705,13 @@ mod tests {
                     name: None,
                 },
             ],
+            ignored_clients: Vec::new(),
         };
         assert_eq!(
             describe_gpu_clients(&observation),
             "deep sleep: gpu clients (nvml-contexts): counted=1 (GPU in use), \
              graphics=1 [4242 some-game], compute=0, \
+             ignored infrastructure helpers=0, \
              device-node holders=2 [1450 plasmashell, 3117]"
         );
 
@@ -677,12 +723,14 @@ mod tests {
             graphics: Vec::new(),
             compute: Vec::new(),
             device_node_holders: vec![client(1450, "plasmashell")],
+            ignored_clients: Vec::new(),
         };
         assert!(!observation.in_use());
         assert_eq!(
             describe_gpu_clients(&observation),
             "deep sleep: gpu clients (nvml-contexts): counted=0 (idle), \
-             graphics=0, compute=0, device-node holders=1 [1450 plasmashell]"
+             graphics=0, compute=0, ignored infrastructure helpers=0, \
+             device-node holders=1 [1450 plasmashell]"
         );
     }
 
@@ -703,6 +751,7 @@ mod tests {
             graphics: Vec::new(),
             compute: Vec::new(),
             device_node_holders: vec![client(4242, "some-game")],
+            ignored_clients: Vec::new(),
         });
         let clients = status()
             .expect("evaluated")
