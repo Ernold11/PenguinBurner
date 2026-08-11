@@ -200,6 +200,22 @@ impl Rtd3Probe {
             None => RuntimePmStatus::Unknown,
         }
     }
+
+    /// Cumulative runtime-PM residency: `power/runtime_active_time` and
+    /// `power/runtime_suspended_time`, milliseconds since boot
+    /// (Documentation/ABI/testing/sysfs-devices-power). Cached kernel
+    /// counters — reading them never wakes the device. `None` per counter
+    /// when the file is missing or unparsable.
+    pub fn runtime_pm_times(&self, addr: &str) -> (Option<u64>, Option<u64>) {
+        let read = |file: &str| {
+            Self::read_trimmed(&self.pci_devices_root.join(addr).join("power").join(file))
+                .and_then(|text| text.parse().ok())
+        };
+        (
+            read("runtime_active_time"),
+            read("runtime_suspended_time"),
+        )
+    }
 }
 
 /// The deep-sleep mode for one GPU. `Unknown` is a deliberate third state:
@@ -274,6 +290,22 @@ mod tests {
         }
         let probe = Rtd3Probe::with_roots(&root.path().join("sys"), &root.path().join("proc"));
         (root, probe, addr)
+    }
+
+    #[test]
+    fn runtime_pm_times_read_the_kernel_counters_or_none() {
+        let (root, probe, addr) = fake_tree(None, None, Some("suspended"));
+        // Missing files (old kernels): both counters absent.
+        assert_eq!(probe.runtime_pm_times(addr), (None, None));
+
+        let power = root.path().join("sys").join(addr).join("power");
+        fs::write(power.join("runtime_active_time"), "5123\n").unwrap();
+        fs::write(power.join("runtime_suspended_time"), "60789\n").unwrap();
+        assert_eq!(probe.runtime_pm_times(addr), (Some(5123), Some(60789)));
+
+        // Garbage stays None per counter, not a panic.
+        fs::write(power.join("runtime_active_time"), "not-a-number\n").unwrap();
+        assert_eq!(probe.runtime_pm_times(addr), (None, Some(60789)));
     }
 
     #[test]

@@ -68,10 +68,19 @@ The `deep_sleep` block reports the verdict:
   "mode": "fine-grained",
   "pci_addr": "0000:01:00.0",
   "runtime_status": "suspended",
+  "runtime_active_ms": 512300,
+  "runtime_suspended_ms": 7203400,
   "autostart_deferred": true,
-  "suspended_observed": true
+  "suspended_observed": true,
+  "parked": false
 }
 ```
+
+`runtime_active_ms` / `runtime_suspended_ms` are the kernel's cumulative
+runtime-PM residency counters for the dGPU since boot (wake-free reads).
+They quantify how much the GPU actually sleeps: on a healthy setup the
+suspended counter should dominate after some idle time, and two status
+reads a few minutes apart show which state the interval was spent in.
 
 `state: "mobile"` means the daemon treats GPU handles as ephemeral;
 `"desktop"` (with a `reason`) means always-attached behavior. `"unknown"`
@@ -118,14 +127,54 @@ sample of the processes it judged the park/wake decision by:
   because sampling only happens while the GPU is awake; a large value next
   to `runtime_status: "suspended"` is normal.
 
-The daemon also writes the same evidence to its journal whenever the client
-sample changes — process starts and exits, not once per second — so an idle
-system stays quiet and the log reads as a timeline of who took and released
-the GPU:
+### The journal narrative
+
+The daemon writes every deep-sleep decision edge to its journal. All lines
+are change-triggered — process starts/exits, kernel state transitions,
+countdown edges — never per-tick, so an idle system stays quiet and the log
+reads as a timeline. A full park-then-wake cycle looks like this:
 
 ```
-deep sleep: gpu clients (nvml-contexts): graphics=1 [3117 vkcube], compute=0, device-node holders=2 [1450 plasmashell, 3117 vkcube]
+deep sleep: gpu clients (nvml-contexts): counted=0 (idle), graphics=0, compute=0, device-node holders=2 [1450 plasmashell, 1721 kwin_wayland]
+deep sleep: no GPU clients; parking the runtime in 59s unless one appears
+deep sleep: no GPU clients for the idle window; parking the runtime
+deep sleep: persisted runtime deferred until the GPU is in use
+deep sleep: runtime parked; the GPU may suspend until its next real use
+deep sleep: runtime_status active -> suspended (active for 312.4s)
+deep sleep: released 1 idle GPU backend(s) so the GPU can suspend
+deep sleep: runtime_status suspended -> active (suspended for 1841.7s)
+deep sleep: gpu clients (nvml-contexts): counted=1 (GPU in use), graphics=1 [9314 game.exe], compute=0, device-node holders=3 [1450 plasmashell, 1721 kwin_wayland, 9314 game.exe]
+deep sleep: GPU is in use; starting the deferred persisted runtime
+deep sleep: runtime deferral cleared
+deep sleep: parked runtime re-materialized
 ```
+
+Line by line:
+
+- **`gpu clients (...)`** — the client sample, logged whenever it changes.
+  `counted` is the number the park/wake decision used (`(GPU in use)` /
+  `(idle)` is the verdict); the lists that follow are the evidence.
+- **`runtime_status A -> B (A for Ns)`** — the kernel's own view of the
+  GPU's power state, with how long the previous state was held. This is the
+  ground truth that parking actually led to a suspend, and it timestamps
+  every wake. (The backend-release line lags the suspend by its 30s idle
+  TTL, as above.)
+- **`no GPU clients; parking the runtime in Ns unless one appears`** — the
+  park countdown started; N is the remaining time, so the park line lands N
+  seconds after this one. If a client shows up first you get
+  `park countdown reset after Ns: a GPU client appeared` and the sample
+  line names who; if the countdown's preconditions vanish instead (a scan
+  starts, the engine stops) you get `park countdown abandoned: <why>`. A
+  park the supervisor cannot perform says
+  `park refused (a game session owns the runtime or the engine did not
+  stop); retrying every idle window` — once per idle stretch.
+- **`GPU awake but no counted clients; keeping the runtime deferred
+  (transient wake?)`** — the GPU came out of suspend without any counted
+  client (a Vulkan capability probe from some app). This is why a wake does
+  not always apply the profile — deliberate, and now visible. It is only
+  logged for genuine wakes from suspend, so the normal post-park drain
+  (the GPU stays `active` for the driver's autosuspend delay after the
+  engine releases it) never produces it.
 
 To watch it live while reproducing a park/wake problem:
 

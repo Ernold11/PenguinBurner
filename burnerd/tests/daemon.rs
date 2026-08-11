@@ -85,7 +85,11 @@ impl Daemon {
             .env_remove("PENGUIN_BURNER_DAEMON_ALLOWED_UID")
             .env_remove("NOTIFY_SOCKET")
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            // The daemon logs to stderr (journald's view); capture it so
+            // tests can assert the journal narrative the docs promise.
+            .stderr(Stdio::from(
+                std::fs::File::create(dir.join("daemon.stderr.log")).unwrap(),
+            ));
         for (key, value) in extra_env {
             command.env(key, value);
         }
@@ -129,6 +133,12 @@ impl Daemon {
         let mut reader = BufReader::new(stream);
         let line = read_line(&mut reader).expect("a response line");
         serde_json::from_str(&line).expect("valid JSON response")
+    }
+
+    /// Everything the daemon has logged so far (its stderr — what journald
+    /// would show).
+    fn stderr_log(&self) -> String {
+        std::fs::read_to_string(self.dir.join("daemon.stderr.log")).unwrap_or_default()
     }
 
     fn stop_request_file(&self) -> PathBuf {
@@ -1252,6 +1262,10 @@ fn write_rtd3_tree(
         format!("{runtime_status}\n"),
     )
     .unwrap();
+    // Cumulative runtime-PM residency counters (ms), surfaced in the status
+    // block so testers can quantify how much the GPU really sleeps.
+    std::fs::write(power.join("runtime_active_time"), "5123\n").unwrap();
+    std::fs::write(power.join("runtime_suspended_time"), "60789\n").unwrap();
     let proc_gpu = proc_root.join(addr);
     std::fs::create_dir_all(&proc_gpu).unwrap();
     std::fs::write(
@@ -1302,6 +1316,9 @@ fn deep_sleep_defers_autostart_while_the_gpu_is_suspended() {
         if deep_sleep["autostart_deferred"] == Value::Bool(true) {
             assert_eq!(deep_sleep["runtime_status"], "suspended", "{status}");
             assert_eq!(deep_sleep["suspended_observed"], Value::Bool(true), "{status}");
+            // The kernel residency counters pass through from the fake sysfs.
+            assert_eq!(deep_sleep["runtime_active_ms"], 5123, "{status}");
+            assert_eq!(deep_sleep["runtime_suspended_ms"], 60789, "{status}");
             deferred = true;
             break;
         }
@@ -1624,6 +1641,32 @@ fn deep_sleep_parks_idle_runtime_and_reattaches_on_use() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(stats_seen, "gpu_clients never reported the per-kind stats");
+
+    // The journal narrative the docs promise, end to end: countdown start
+    // (remaining time, threshold-1 under the 2-tick test window), park,
+    // kernel transition, the wake sample with the counted verdict, and the
+    // re-materialization. Substring checks: other lines may interleave.
+    let log = daemon.stderr_log();
+    for expected in [
+        "deep sleep: runtime_status suspended (initial)",
+        "deep sleep: gpu clients (nvml-contexts): counted=0 (idle), graphics=0, compute=0, device-node holders=0",
+        "deep sleep: no GPU clients; parking the runtime in 1s unless one appears",
+        "deep sleep: no GPU clients for the idle window; parking the runtime",
+        "deep sleep: runtime parked; the GPU may suspend until its next real use",
+        "deep sleep: runtime_status suspended -> active (suspended for ",
+        "deep sleep: gpu clients (nvml-contexts): counted=2 (GPU in use), graphics=1 [4242 some-game], compute=1 [555 cuda-worker], device-node holders=0",
+        "deep sleep: GPU is in use; starting the deferred persisted runtime",
+        "deep sleep: runtime deferral cleared",
+        "deep sleep: parked runtime re-materialized",
+    ] {
+        assert!(log.contains(expected), "journal missing {expected:?}:\n{log}");
+    }
+    // The park drain must NOT be mislabeled as a wake: the GPU never came
+    // out of suspend without a client in this scenario.
+    assert!(
+        !log.contains("transient wake"),
+        "park drain was mislabeled as a transient wake:\n{log}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

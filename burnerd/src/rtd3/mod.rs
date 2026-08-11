@@ -43,6 +43,14 @@ pub struct DeepSleepStatus {
     /// Last observed kernel runtime-PM state ("suspended", "active", ...).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_status: Option<String>,
+    /// Cumulative milliseconds the GPU has spent runtime-active since boot
+    /// (kernel counter, wake-free read). With `runtime_suspended_ms` this
+    /// quantifies how much the GPU actually sleeps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_active_ms: Option<u64>,
+    /// Cumulative milliseconds runtime-suspended since boot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_suspended_ms: Option<u64>,
     /// True while a persisted runtime exists but its start is held back
     /// because the GPU is asleep.
     pub autostart_deferred: bool,
@@ -96,6 +104,29 @@ pub struct GpuClientObservation {
     pub device_node_holders: Vec<GpuClientProcess>,
 }
 
+impl GpuClientObservation {
+    /// The unique PIDs the park/wake decision counts: the context lists under
+    /// `NvmlContexts`, the fd holders under `DeviceNodes`. The single
+    /// definition of "decisive" — the watcher's verdict, the status block's
+    /// `total_count`, and the journal line all derive from it.
+    pub(crate) fn counted_pids(&self) -> HashSet<u32> {
+        let decisive: &[&[GpuClientProcess]] = match self.source {
+            GpuClientSource::NvmlContexts => &[&self.graphics, &self.compute],
+            GpuClientSource::DeviceNodes => &[&self.device_node_holders],
+        };
+        decisive
+            .iter()
+            .flat_map(|list| list.iter())
+            .map(|process| process.pid)
+            .collect()
+    }
+
+    /// True when the decision must treat the GPU as in use.
+    pub(crate) fn in_use(&self) -> bool {
+        !self.counted_pids().is_empty()
+    }
+}
+
 /// The `gpu_clients` object inside `deep_sleep`: the watcher's latest client
 /// sample, kept so someone debugging why the GPU does or does not park
 /// (issue #30) can see exactly what the daemon saw.
@@ -122,21 +153,12 @@ pub struct GpuClientsStatus {
 }
 
 fn gpu_clients_status(observation: &GpuClientObservation, observed_at: Instant) -> GpuClientsStatus {
-    let decisive: &[&[GpuClientProcess]] = match observation.source {
-        GpuClientSource::NvmlContexts => &[&observation.graphics, &observation.compute],
-        GpuClientSource::DeviceNodes => &[&observation.device_node_holders],
-    };
-    let counted: HashSet<u32> = decisive
-        .iter()
-        .flat_map(|list| list.iter())
-        .map(|process| process.pid)
-        .collect();
     GpuClientsStatus {
         source: observation.source.as_str().to_string(),
         graphics_count: observation.graphics.len(),
         compute_count: observation.compute.len(),
         device_node_count: observation.device_node_holders.len(),
-        total_count: counted.len(),
+        total_count: observation.counted_pids().len(),
         age_s: (observed_at.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
         graphics: observation.graphics.clone(),
         compute: observation.compute.clone(),
@@ -149,6 +171,11 @@ struct GateState {
     mode: Option<DeepSleepMode>,
     pci_addr: Option<String>,
     last_runtime_status: Option<RuntimePmStatus>,
+    /// When `last_runtime_status` last changed, so each transition line can
+    /// say how long the previous state was held.
+    runtime_status_since: Option<Instant>,
+    runtime_active_ms: Option<u64>,
+    runtime_suspended_ms: Option<u64>,
     suspended_observed: bool,
     autostart_deferred: bool,
     parked: bool,
@@ -159,6 +186,9 @@ static GATE: Mutex<GateState> = Mutex::new(GateState {
     mode: None,
     pci_addr: None,
     last_runtime_status: None,
+    runtime_status_since: None,
+    runtime_active_ms: None,
+    runtime_suspended_ms: None,
     suspended_observed: false,
     autostart_deferred: false,
     parked: false,
@@ -193,10 +223,15 @@ pub fn evaluate(probe: &detect::Rtd3Probe, pci_hint: Option<&str>) -> DeepSleepM
         },
     };
     let runtime_status = addr.as_deref().map(|addr| probe.runtime_pm_status(addr));
+    let runtime_times = addr.as_deref().map(|addr| probe.runtime_pm_times(addr));
     let mut state = gate();
     state.pci_addr = addr;
     if let Some(status) = runtime_status {
         record_runtime_status(&mut state, status);
+    }
+    if let Some((active_ms, suspended_ms)) = runtime_times {
+        state.runtime_active_ms = active_ms;
+        state.runtime_suspended_ms = suspended_ms;
     }
     if state.mode.as_ref() != Some(&mode) {
         logging::info(&format!(
@@ -271,6 +306,32 @@ pub fn last_runtime_status() -> Option<RuntimePmStatus> {
 }
 
 fn record_runtime_status(state: &mut GateState, status: RuntimePmStatus) {
+    // Transition line: the kernel-side timeline of the GPU's sleep. Emitted
+    // only when the state changes (the watcher re-reads at 1 Hz), with how
+    // long the previous state was held, so the journal shows exactly when
+    // the GPU suspended, when it woke, and how long each episode lasted.
+    match state.last_runtime_status {
+        Some(previous) if previous == status => {}
+        Some(previous) => {
+            let held = state
+                .runtime_status_since
+                .map(|since| format!(" ({} for {:.1}s)", previous.as_str(), since.elapsed().as_secs_f64()))
+                .unwrap_or_default();
+            logging::info(&format!(
+                "deep sleep: runtime_status {} -> {}{held}",
+                previous.as_str(),
+                status.as_str(),
+            ));
+            state.runtime_status_since = Some(Instant::now());
+        }
+        None => {
+            logging::info(&format!(
+                "deep sleep: runtime_status {} (initial)",
+                status.as_str()
+            ));
+            state.runtime_status_since = Some(Instant::now());
+        }
+    }
     state.last_runtime_status = Some(status);
     if status == RuntimePmStatus::Suspended && !state.suspended_observed {
         state.suspended_observed = true;
@@ -322,10 +383,10 @@ pub(crate) fn record_gpu_clients(observation: GpuClientObservation) {
     state.gpu_clients = Some((observation, Instant::now()));
 }
 
-/// One journal line naming every sampled process with its count per list,
-/// e.g. `deep sleep: gpu clients (nvml-contexts): graphics=1 [4242
-/// some-game], compute=0, device-node holders=2 [1450 plasmashell, 3117
-/// vkcube]`.
+/// One journal line carrying the decision verdict plus every sampled process
+/// with its count per list, e.g. `deep sleep: gpu clients (nvml-contexts):
+/// counted=1 (GPU in use), graphics=1 [4242 some-game], compute=0,
+/// device-node holders=2 [1450 plasmashell, 3117 vkcube]`.
 fn describe_gpu_clients(observation: &GpuClientObservation) -> String {
     fn list(label: &str, processes: &[GpuClientProcess]) -> String {
         if processes.is_empty() {
@@ -341,8 +402,14 @@ fn describe_gpu_clients(observation: &GpuClientObservation) -> String {
         format!("{label}={} [{}]", processes.len(), entries.join(", "))
     }
     format!(
-        "deep sleep: gpu clients ({}): {}, {}, {}",
+        "deep sleep: gpu clients ({}): counted={} ({}), {}, {}, {}",
         observation.source.as_str(),
+        observation.counted_pids().len(),
+        if observation.in_use() {
+            "GPU in use"
+        } else {
+            "idle"
+        },
         list("graphics", &observation.graphics),
         list("compute", &observation.compute),
         list("device-node holders", &observation.device_node_holders),
@@ -396,6 +463,8 @@ pub fn status() -> Option<DeepSleepStatus> {
         mode,
         pci_addr: state.pci_addr.clone(),
         runtime_status: state.last_runtime_status.map(|s| s.as_str().to_string()),
+        runtime_active_ms: state.runtime_active_ms,
+        runtime_suspended_ms: state.runtime_suspended_ms,
         autostart_deferred: state.autostart_deferred,
         suspended_observed: state.suspended_observed,
         parked: state.parked,
@@ -595,8 +664,25 @@ mod tests {
         };
         assert_eq!(
             describe_gpu_clients(&observation),
-            "deep sleep: gpu clients (nvml-contexts): graphics=1 [4242 some-game], \
-             compute=0, device-node holders=2 [1450 plasmashell, 3117]"
+            "deep sleep: gpu clients (nvml-contexts): counted=1 (GPU in use), \
+             graphics=1 [4242 some-game], compute=0, \
+             device-node holders=2 [1450 plasmashell, 3117]"
+        );
+
+        // Fine-grained with only fd holders: counted=0 reads as idle even
+        // though the holder list is not empty — the line itself explains a
+        // park that happens under a running desktop shell.
+        let observation = GpuClientObservation {
+            source: GpuClientSource::NvmlContexts,
+            graphics: Vec::new(),
+            compute: Vec::new(),
+            device_node_holders: vec![client(1450, "plasmashell")],
+        };
+        assert!(!observation.in_use());
+        assert_eq!(
+            describe_gpu_clients(&observation),
+            "deep sleep: gpu clients (nvml-contexts): counted=0 (idle), \
+             graphics=0, compute=0, device-node holders=1 [1450 plasmashell]"
         );
     }
 

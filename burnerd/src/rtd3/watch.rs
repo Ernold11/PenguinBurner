@@ -83,20 +83,73 @@ pub fn startup(sup: &Arc<Mutex<Supervisor>>) {
         .expect("spawn rtd3 watcher thread");
 }
 
+/// The watcher's per-tick counters: one wake episode's progress and one park
+/// countdown. Reset on the edges commented at each `mobile_tick` site.
+#[derive(Default)]
+struct TickState {
+    /// Consecutive `active` readings; a wake counts as real at
+    /// [`SUSTAINED_ACTIVE_TICKS`].
+    active_ticks: u32,
+    /// One start attempt per active episode: a failed `profile::start` must
+    /// not retry at 1 Hz, and a dead engine retained in the profile slot must
+    /// not produce log spam. Reset when the GPU leaves `active`.
+    start_attempted: bool,
+    /// The current active episode began from a `suspended` reading, so a
+    /// sustained-active-without-clients outcome really is a transient wake.
+    /// Without this gate the drain tail of every park would be mislabeled:
+    /// the GPU stays `active` for the driver's autosuspend delay after the
+    /// engine releases it, which is not a wake.
+    woke_from_suspend: bool,
+    /// One "transient wake" journal line per active episode.
+    transient_wake_logged: bool,
+    /// Consecutive client-free ticks while an engine is attached; at the park
+    /// threshold the runtime is parked so the GPU can reach D3cold.
+    idle_ticks: u32,
+    /// The countdown-start journal line has announced the current continuous
+    /// client-free stretch. Latched across a refused park (which restarts the
+    /// countdown) so the announcement cannot re-fire every window.
+    countdown_announced: bool,
+    /// A refused park has explained itself for the current client-free
+    /// stretch; further refusals stay quiet until the stretch ends.
+    park_refusal_logged: bool,
+}
+
+impl TickState {
+    /// Reset the wake-episode trackers (the park countdown is reset
+    /// separately — the two run in disjoint phases).
+    fn reset_wake_episode(&mut self) {
+        self.active_ticks = 0;
+        self.start_attempted = false;
+        self.woke_from_suspend = false;
+        self.transient_wake_logged = false;
+    }
+
+    /// End the current client-free stretch: zero the countdown and re-arm
+    /// its journal latches.
+    fn end_countdown(&mut self) {
+        self.idle_ticks = 0;
+        self.countdown_announced = false;
+        self.park_refusal_logged = false;
+    }
+
+    /// End the countdown because its preconditions vanished (not because a
+    /// client appeared). Logs only when a countdown was actually in
+    /// progress, so an announced start line is never left dangling.
+    fn abandon_countdown(&mut self, reason: &str) {
+        if self.idle_ticks > 0 {
+            logging::info(&format!("deep sleep: park countdown abandoned: {reason}"));
+        }
+        self.end_countdown();
+    }
+}
+
 fn watch_loop(
     sup: &Arc<Mutex<Supervisor>>,
     probe: &Rtd3Probe,
     hint: Option<&str>,
     mut desktop_autostart_attempted: bool,
 ) {
-    let mut active_ticks = 0u32;
-    // One start attempt per active episode: a failed `profile::start` must not
-    // retry at 1 Hz, and a dead engine retained in the profile slot must not
-    // produce log spam. Reset when the GPU leaves `active`.
-    let mut start_attempted = false;
-    // Consecutive client-free ticks while an engine is attached; at the park
-    // threshold the runtime is parked so the GPU can reach D3cold.
-    let mut idle_ticks = 0u32;
+    let mut tick_state = TickState::default();
 
     loop {
         super::evaluate(probe, hint);
@@ -108,7 +161,7 @@ fn watch_loop(
                     "deep sleep: released {released} idle GPU backend(s) so the GPU can suspend"
                 ));
             }
-            mobile_tick(sup, &mut active_ticks, &mut start_attempted, &mut idle_ticks);
+            mobile_tick(sup, &mut tick_state);
             thread::sleep(MOBILE_TICK);
             continue;
         }
@@ -127,20 +180,14 @@ fn watch_loop(
 /// One Mobile/Unknown observation tick: hold the deferred runtime back until
 /// the GPU is genuinely in use, park an attached-but-idle runtime so the GPU
 /// can suspend, and never fight another GPU owner.
-fn mobile_tick(
-    sup: &Arc<Mutex<Supervisor>>,
-    active_ticks: &mut u32,
-    start_attempted: &mut bool,
-    idle_ticks: &mut u32,
-) {
+fn mobile_tick(sup: &Arc<Mutex<Supervisor>>, state: &mut TickState) {
     // A scan/verification child owns the GPU exclusively; its own
     // `/dev/nvidia*` fds and activity must never satisfy the start policy —
     // starting the engine here would race the child's raw GPU writes.
     if supervisor::active_child_kind(sup).is_some() {
         super::set_autostart_deferred(false);
-        *active_ticks = 0;
-        *start_attempted = false;
-        *idle_ticks = 0;
+        state.reset_wake_episode();
+        state.abandon_countdown("a scan/verification child took the GPU");
         return;
     }
     // The profile slot (running OR retained-after-failure) means the runtime
@@ -148,8 +195,7 @@ fn mobile_tick(
     // restarts, so it must not count as "deferred" either.
     if supervisor::profile_slot_occupied(sup) {
         super::set_autostart_deferred(false);
-        *active_ticks = 0;
-        *start_attempted = false;
+        state.reset_wake_episode();
         if supervisor::profile_engine_running(sup) {
             super::set_parked(false);
             // Park policy: the engine's own NVML polling resets the driver's
@@ -159,15 +205,32 @@ fn mobile_tick(
             // standing intent (persisted state kept) and reapplies at the
             // next real use.
             if gpu_in_use_by_client(supervisor::profile_gpu_index(sup)) {
-                *idle_ticks = 0;
+                if state.idle_ticks > 0 {
+                    logging::info(&format!(
+                        "deep sleep: park countdown reset after {}s: a GPU client appeared",
+                        state.idle_ticks
+                    ));
+                }
+                state.end_countdown();
             } else {
-                *idle_ticks += 1;
-                if *idle_ticks >= park_after_idle_ticks() {
-                    *idle_ticks = 0;
+                state.idle_ticks += 1;
+                if state.idle_ticks == 1 && !state.countdown_announced {
+                    state.countdown_announced = true;
+                    // Remaining time, not the window size: this tick already
+                    // counted, so the park lands threshold-1 seconds after
+                    // this line's own timestamp.
+                    logging::info(&format!(
+                        "deep sleep: no GPU clients; parking the runtime in {}s unless one appears",
+                        park_after_idle_ticks() - state.idle_ticks
+                    ));
+                }
+                if state.idle_ticks >= park_after_idle_ticks() {
+                    state.idle_ticks = 0;
                     logging::info(
                         "deep sleep: no GPU clients for the idle window; parking the runtime",
                     );
                     if supervisor::park_runtime_for_deep_sleep(sup) {
+                        state.end_countdown();
                         // Deferral first: the moment `parked` becomes
                         // visible, the status block must already say the
                         // runtime will reapply. In the other order a status
@@ -176,39 +239,63 @@ fn mobile_tick(
                         // runtime that claims it will not come back.
                         super::set_autostart_deferred(wakeable_runtime_pending());
                         super::set_parked(true);
+                    } else if !state.park_refusal_logged {
+                        // Once per client-free stretch: without this line a
+                        // refused park (game session owns the runtime, or
+                        // the engine did not stop in time) reads as a
+                        // countdown that silently went nowhere, repeating
+                        // every window.
+                        state.park_refusal_logged = true;
+                        logging::info(
+                            "deep sleep: park refused (a game session owns the runtime or the engine did not stop); retrying every idle window",
+                        );
                     }
                 }
             }
         } else {
-            *idle_ticks = 0;
+            state.abandon_countdown("the runtime engine is no longer running");
         }
         return;
     }
-    *idle_ticks = 0;
+    state.abandon_countdown("the runtime is no longer attached");
 
     let pending = wakeable_runtime_pending();
     super::set_autostart_deferred(pending);
     if !pending {
-        *active_ticks = 0;
-        *start_attempted = false;
+        state.reset_wake_episode();
         return;
     }
 
     if super::last_runtime_status() == Some(RuntimePmStatus::Active) {
-        *active_ticks += 1;
+        state.active_ticks += 1;
     } else {
-        *active_ticks = 0;
-        *start_attempted = false;
+        state.reset_wake_episode();
+        // Only an episode that starts from suspension can be a wake. One that
+        // starts while the GPU reads `active` is the drain tail of whatever
+        // just released it (a park, an exiting child) — the driver holds the
+        // GPU in D0 for its autosuspend delay after the last release.
+        state.woke_from_suspend = matches!(
+            super::last_runtime_status(),
+            Some(RuntimePmStatus::Suspended | RuntimePmStatus::Resuming)
+        );
     }
-    if *active_ticks >= SUSTAINED_ACTIVE_TICKS
-        && !*start_attempted
-        && gpu_in_use_by_client(supervisor::deferred_runtime_gpu_index())
-    {
-        logging::info("deep sleep: GPU is in use; starting the deferred persisted runtime");
-        if supervisor::start_autostart_if_configured(sup) {
-            *start_attempted = true;
-            super::set_autostart_deferred(false);
-            super::set_parked(false);
+    if state.active_ticks >= SUSTAINED_ACTIVE_TICKS && !state.start_attempted {
+        if gpu_in_use_by_client(supervisor::deferred_runtime_gpu_index()) {
+            logging::info("deep sleep: GPU is in use; starting the deferred persisted runtime");
+            if supervisor::start_autostart_if_configured(sup) {
+                state.start_attempted = true;
+                super::set_autostart_deferred(false);
+                super::set_parked(false);
+            }
+        } else if state.woke_from_suspend && !state.transient_wake_logged {
+            // Once per genuine wake episode: the GPU came out of suspend but
+            // nothing holds a counted client, so the runtime stays deferred.
+            // This is the journal's answer to "the GPU woke up — why didn't
+            // the profile apply?": a capability probe, not use.
+            state.transient_wake_logged = true;
+            logging::info(
+                "deep sleep: GPU awake but no counted clients; keeping the runtime deferred (transient wake?)",
+            );
         }
     }
 }
@@ -255,12 +342,10 @@ fn gpu_in_use_by_client(gpu_index: Option<u32>) -> bool {
             }
         }
     }
-    let in_use = match observation.source {
-        GpuClientSource::NvmlContexts => {
-            !(observation.graphics.is_empty() && observation.compute.is_empty())
-        }
-        GpuClientSource::DeviceNodes => !observation.device_node_holders.is_empty(),
-    };
+    // The verdict, the status block's `total_count`, and the journal line all
+    // come from the same `counted_pids` definition, so they can never
+    // disagree about who was counted.
+    let in_use = observation.in_use();
     super::record_gpu_clients(observation);
     in_use
 }
