@@ -12,8 +12,9 @@ use std::path::PathBuf;
 
 use super::{
     snap_core_clock_mhz, snap_core_clock_range, vf_editable_core_points, vf_find_nearest,
-    vf_summary_of, AppliedOffsets, ClockOffsets, ClockType, GpuBackend, GpuError, GpuIdentity,
-    GpuMemoryInfo, GpuResult, PowerLimits, RangeSnapResult, SnapResult, VfPoint, VfSummary,
+    vf_summary_of, AppliedOffsets, ClockOffsets, ClockType, GpuBackend, GpuContextPids, GpuError,
+    GpuIdentity, GpuMemoryInfo, GpuResult, PowerLimits, RangeSnapResult, SnapResult, VfPoint,
+    VfSummary,
 };
 
 /// One recorded privileged operation, in call order.
@@ -94,10 +95,12 @@ pub struct MockGpu {
     pub vf_points: Vec<VfPoint>,
 
     /// Canned `gpu_context_pids` answer.
-    pub context_pids: Vec<u32>,
+    pub context_pids: GpuContextPids,
     /// Integration-test seam: when set, `gpu_context_pids` re-reads this file
     /// on every call (missing file → no contexts), so a test can stage and
     /// remove GPU clients while the daemon runs. Overrides `context_pids`.
+    /// Format: whitespace-separated tokens where `graphics` / `compute`
+    /// select the kind for subsequent PIDs (default `graphics`).
     pub context_pids_file: Option<PathBuf>,
 
     ops: RefCell<Vec<MockOp>>,
@@ -140,7 +143,7 @@ impl Default for MockGpu {
             voltage_uv: None,
             vf_available: false,
             vf_points: Vec::new(),
-            context_pids: Vec::new(),
+            context_pids: GpuContextPids::default(),
             context_pids_file: None,
             ops: RefCell::new(Vec::new()),
             failures: RefCell::new(HashMap::new()),
@@ -252,10 +255,10 @@ impl GpuBackend for MockGpu {
         self.throttle_mask
     }
 
-    fn gpu_context_pids(&self) -> GpuResult<Vec<u32>> {
+    fn gpu_context_pids(&self) -> GpuResult<GpuContextPids> {
         self.fail("gpu_context_pids")?;
         match &self.context_pids_file {
-            Some(path) => Ok(parse_pid_list(
+            Some(path) => Ok(parse_context_pid_list(
                 &std::fs::read_to_string(path).unwrap_or_default(),
             )),
             None => Ok(self.context_pids.clone()),
@@ -454,12 +457,29 @@ impl GpuBackend for MockGpu {
     }
 }
 
-/// Whitespace-separated PID list from the `context_pids_file` seam; non-PID
+/// Whitespace-separated token list from the `context_pids_file` seam. The
+/// tokens `graphics` and `compute` select the kind for the PIDs that follow
+/// (default `graphics`, so a bare PID list stays valid); other non-PID
 /// tokens are ignored.
-fn parse_pid_list(text: &str) -> Vec<u32> {
-    text.split_whitespace()
-        .filter_map(|token| token.parse().ok())
-        .collect()
+fn parse_context_pid_list(text: &str) -> GpuContextPids {
+    let mut pids = GpuContextPids::default();
+    let mut compute = false;
+    for token in text.split_whitespace() {
+        match token {
+            "graphics" => compute = false,
+            "compute" => compute = true,
+            token => {
+                if let Ok(pid) = token.parse() {
+                    if compute {
+                        pids.compute.push(pid);
+                    } else {
+                        pids.graphics.push(pid);
+                    }
+                }
+            }
+        }
+    }
+    pids
 }
 
 #[cfg(test)]
@@ -469,17 +489,24 @@ mod tests {
     #[test]
     fn context_pids_come_from_the_canned_field_or_the_file_seam() {
         let mut mock = MockGpu::new();
-        assert_eq!(mock.gpu_context_pids().unwrap(), Vec::<u32>::new());
-        mock.context_pids = vec![4242];
-        assert_eq!(mock.gpu_context_pids().unwrap(), vec![4242]);
+        assert_eq!(mock.gpu_context_pids().unwrap(), GpuContextPids::default());
+        mock.context_pids.graphics = vec![4242];
+        assert_eq!(mock.gpu_context_pids().unwrap().graphics, vec![4242]);
 
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("pids");
         mock.context_pids_file = Some(file.clone());
         // Missing file: the seam reports no contexts (overriding the canned field).
-        assert_eq!(mock.gpu_context_pids().unwrap(), Vec::<u32>::new());
-        std::fs::write(&file, "123 456\nnot-a-pid\n").unwrap();
-        assert_eq!(mock.gpu_context_pids().unwrap(), vec![123, 456]);
+        assert_eq!(mock.gpu_context_pids().unwrap(), GpuContextPids::default());
+        // Bare PIDs default to graphics; kind tokens switch the target list.
+        std::fs::write(&file, "123 456\nnot-a-pid\ncompute 789\ngraphics 321\n").unwrap();
+        assert_eq!(
+            mock.gpu_context_pids().unwrap(),
+            GpuContextPids {
+                graphics: vec![123, 456, 321],
+                compute: vec![789],
+            }
+        );
     }
 
     #[test]

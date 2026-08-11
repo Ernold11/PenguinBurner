@@ -9,8 +9,8 @@ use nvml_wrapper::{Device, Nvml};
 use super::nvapi::{NvapiVfSession, NvapiVoltageSession};
 use super::{
     mw_to_w_float, mw_to_w_round, snap_core_clock_mhz, snap_core_clock_range, w_to_mw_round,
-    AppliedOffsets, ClockOffsets, ClockType, GpuBackend, GpuError, GpuIdentity, GpuMemoryInfo,
-    GpuResult, PowerLimits, RangeSnapResult, SnapResult, VfPoint, VfSummary,
+    AppliedOffsets, ClockOffsets, ClockType, GpuBackend, GpuContextPids, GpuError, GpuIdentity,
+    GpuMemoryInfo, GpuResult, PowerLimits, RangeSnapResult, SnapResult, VfPoint, VfSummary,
 };
 
 pub struct NvmlBackend {
@@ -187,7 +187,13 @@ impl GpuBackend for NvmlBackend {
             .map(|reasons| reasons.bits())
     }
 
-    fn gpu_context_pids(&self) -> GpuResult<Vec<u32>> {
+    fn gpu_context_pids(&self) -> GpuResult<GpuContextPids> {
+        fn pids(processes: Vec<nvml_wrapper::struct_wrappers::device::ProcessInfo>) -> Vec<u32> {
+            let mut pids: Vec<u32> = processes.into_iter().map(|process| process.pid).collect();
+            pids.sort_unstable();
+            pids.dedup();
+            pids
+        }
         let device = self.device()?;
         let graphics = device
             .running_graphics_processes()
@@ -195,14 +201,10 @@ impl GpuBackend for NvmlBackend {
         let compute = device
             .running_compute_processes()
             .map_err(|error| runtime_error("nvmlDeviceGetComputeRunningProcesses_v3", error))?;
-        let mut pids: Vec<u32> = graphics
-            .into_iter()
-            .chain(compute)
-            .map(|process| process.pid)
-            .collect();
-        pids.sort_unstable();
-        pids.dedup();
-        Ok(pids)
+        Ok(GpuContextPids {
+            graphics: pids(graphics),
+            compute: pids(compute),
+        })
     }
 
     #[allow(deprecated)]

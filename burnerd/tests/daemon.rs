@@ -1556,6 +1556,13 @@ fn deep_sleep_parks_idle_runtime_and_reattaches_on_use() {
                 Value::Bool(true),
                 "{status}"
             );
+            // The client sample behind the park decision: no contexts, no
+            // holders — nothing counted.
+            let clients = &result["deep_sleep"]["gpu_clients"];
+            assert_eq!(clients["source"], "nvml-contexts", "{status}");
+            assert_eq!(clients["total_count"], 0, "{status}");
+            assert_eq!(clients["graphics_count"], 0, "{status}");
+            assert_eq!(clients["compute_count"], 0, "{status}");
             parked = true;
             break;
         }
@@ -1567,14 +1574,19 @@ fn deep_sleep_parks_idle_runtime_and_reattaches_on_use() {
         "parking must keep the persisted runtime state"
     );
 
-    // Simulate real use: GPU active + a process with a live GPU context. The
-    // watcher must re-materialize the parked profile.
+    // Simulate real use: GPU active + processes with live GPU contexts (one
+    // graphics, one compute; comm files supply the names the status block
+    // reports). The watcher must re-materialize the parked profile.
     std::fs::write(
         sys.join("0000:01:00.0/power/runtime_status"),
         "active\n",
     )
     .unwrap();
-    std::fs::write(&contexts, "4242\n").unwrap();
+    std::fs::create_dir_all(clients.join("4242")).unwrap();
+    std::fs::write(clients.join("4242/comm"), "some-game\n").unwrap();
+    std::fs::create_dir_all(clients.join("555")).unwrap();
+    std::fs::write(clients.join("555/comm"), "cuda-worker\n").unwrap();
+    std::fs::write(&contexts, "graphics 4242\ncompute 555\n").unwrap();
 
     let mut reattached = false;
     for _ in 0..200 {
@@ -1592,6 +1604,26 @@ fn deep_sleep_parks_idle_runtime_and_reattaches_on_use() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(reattached, "parked runtime was never re-materialized on use");
+
+    // The per-kind stats name the processes that woke the runtime.
+    let mut stats_seen = false;
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        let clients = &status["result"]["deep_sleep"]["gpu_clients"];
+        if clients["total_count"] == 2 {
+            assert_eq!(clients["source"], "nvml-contexts", "{status}");
+            assert_eq!(clients["graphics_count"], 1, "{status}");
+            assert_eq!(clients["compute_count"], 1, "{status}");
+            assert_eq!(clients["graphics"][0]["pid"], 4242, "{status}");
+            assert_eq!(clients["graphics"][0]["name"], "some-game", "{status}");
+            assert_eq!(clients["compute"][0]["pid"], 555, "{status}");
+            assert_eq!(clients["compute"][0]["name"], "cuda-worker", "{status}");
+            stats_seen = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(stats_seen, "gpu_clients never reported the per-kind stats");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1674,6 +1706,7 @@ fn deep_sleep_fine_grained_ignores_idle_device_node_holders() {
     let fd_dir = clients.join("4242").join("fd");
     std::fs::create_dir_all(&fd_dir).unwrap();
     std::os::unix::fs::symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+    std::fs::write(clients.join("4242/comm"), "plasmashell\n").unwrap();
     let contexts = dir.join("context-pids");
 
     let daemon = Daemon::start(&[
@@ -1698,6 +1731,17 @@ fn deep_sleep_fine_grained_ignores_idle_device_node_holders() {
     for _ in 0..200 {
         let status = daemon.request(r#"{"method":"status"}"#);
         if status["result"]["deep_sleep"]["parked"] == Value::Bool(true) {
+            // The sample shows the holder as informational, not counted:
+            // exactly the evidence that explains this park to a debugger.
+            let clients = &status["result"]["deep_sleep"]["gpu_clients"];
+            assert_eq!(clients["source"], "nvml-contexts", "{status}");
+            assert_eq!(clients["total_count"], 0, "{status}");
+            assert_eq!(clients["device_node_count"], 1, "{status}");
+            assert_eq!(clients["device_node_holders"][0]["pid"], 4242, "{status}");
+            assert_eq!(
+                clients["device_node_holders"][0]["name"], "plasmashell",
+                "{status}"
+            );
             parked = true;
             break;
         }
@@ -1771,6 +1815,12 @@ fn deep_sleep_coarse_grained_device_holder_blocks_park() {
         Value::Bool(false),
         "{status}"
     );
+    // Coarse-grained: the device-node scan decides, so the holder is counted.
+    let stats = &status["result"]["deep_sleep"]["gpu_clients"];
+    assert_eq!(stats["source"], "device-nodes", "{status}");
+    assert_eq!(stats["device_node_count"], 1, "{status}");
+    assert_eq!(stats["total_count"], 1, "{status}");
+    assert_eq!(stats["device_node_holders"][0]["pid"], 4242, "{status}");
 
     // The holder exits: the park policy releases the runtime.
     std::fs::remove_dir_all(clients.join("4242")).unwrap();
@@ -1819,6 +1869,11 @@ fn deep_sleep_fine_grained_falls_back_to_fd_scan_when_nvml_query_fails() {
     for _ in 0..200 {
         let status = daemon.request(r#"{"method":"status"}"#);
         if status["result"]["deep_sleep"]["parked"] == Value::Bool(true) {
+            // The stats disclose that the decision fell back to the fd scan.
+            assert_eq!(
+                status["result"]["deep_sleep"]["gpu_clients"]["source"], "device-nodes",
+                "{status}"
+            );
             parked = true;
             break;
         }

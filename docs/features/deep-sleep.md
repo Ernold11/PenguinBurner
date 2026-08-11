@@ -78,6 +78,68 @@ The `deep_sleep` block reports the verdict:
 stays detached like Mobile mode until detection resolves. To confirm the GPU
 really sleeps with the service running:
 
+### Who is using the GPU right now
+
+In Mobile mode the block also carries `gpu_clients` — the daemon's latest
+sample of the processes it judged the park/wake decision by:
+
+```json
+"gpu_clients": {
+  "source": "nvml-contexts",
+  "graphics_count": 1,
+  "compute_count": 0,
+  "device_node_count": 2,
+  "total_count": 1,
+  "age_s": 0.6,
+  "graphics": [{"pid": 3117, "name": "vkcube"}],
+  "compute": [],
+  "device_node_holders": [
+    {"pid": 1450, "name": "plasmashell"},
+    {"pid": 3117, "name": "vkcube"}
+  ]
+}
+```
+
+- `graphics` / `compute` list the processes holding a live NVML context of
+  that kind; `device_node_holders` lists every process with `/dev/nvidia<N>`
+  open. Each entry is `pid` plus the process name (`null` if it exited
+  before the lookup).
+- `source` names the decisive signal: `"nvml-contexts"` under fine-grained
+  RTD3, `"device-nodes"` under coarse-grained RTD3 or when the NVML process
+  query is unavailable.
+- `total_count` is the number of unique clients the decision counted.
+  **Parking proceeds only while it stays 0**, so if the GPU never parks,
+  the named processes here are what is keeping it awake.
+- Under fine-grained RTD3 the `device_node_holders` list is informational:
+  a desktop shell holding the device open does not keep the GPU awake and
+  does not block parking — which is why `total_count` can be 0 while the
+  list is not empty.
+- `age_s` is the sample's age in seconds. It grows while the GPU sleeps,
+  because sampling only happens while the GPU is awake; a large value next
+  to `runtime_status: "suspended"` is normal.
+
+The daemon also writes the same evidence to its journal whenever the client
+sample changes — process starts and exits, not once per second — so an idle
+system stays quiet and the log reads as a timeline of who took and released
+the GPU:
+
+```
+deep sleep: gpu clients (nvml-contexts): graphics=1 [3117 vkcube], compute=0, device-node holders=2 [1450 plasmashell, 3117 vkcube]
+```
+
+To watch it live while reproducing a park/wake problem:
+
+```
+sudo journalctl -u penguin-burnerd.service -f
+```
+
+To capture a log file to attach to a bug report (adjust the window to cover
+your test):
+
+```
+sudo journalctl -u penguin-burnerd.service --since "-1 hour" --no-pager > penguin-burnerd-deep-sleep.log
+```
+
 ```
 cat /sys/bus/pci/devices/0000:01:00.0/power/runtime_status
 ```
@@ -102,7 +164,9 @@ the profile stays applied as a standing intent. The GPU is then free to
 enter D3cold. When something real starts using the GPU again, the profile
 re-attaches and reapplies within a few seconds — before a game finishes
 loading. `deep_sleep.parked: true` in `--daemon-status` shows a parked
-profile; `autostart_deferred: true` confirms it will reapply on use.
+profile; `autostart_deferred: true` confirms it will reapply on use. If a
+profile never parks, `gpu_clients` (above) names the processes still being
+counted as GPU users.
 
 Restoring stock behaves the same way, with one refinement: a stock
 runtime enforces nothing, so once parked it never re-attaches at all.

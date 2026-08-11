@@ -40,6 +40,7 @@ use crate::logging;
 use crate::supervisor::{self, Supervisor};
 
 use super::detect::{Rtd3Probe, RuntimePmStatus};
+use super::{GpuClientObservation, GpuClientProcess, GpuClientSource};
 
 const MOBILE_TICK: Duration = Duration::from_secs(1);
 /// Cadence in Desktop mode: re-evaluate in case the user enables runtime PM.
@@ -167,11 +168,14 @@ fn mobile_tick(
                         "deep sleep: no GPU clients for the idle window; parking the runtime",
                     );
                     if supervisor::park_runtime_for_deep_sleep(sup) {
-                        super::set_parked(true);
-                        // The parked intent is pending again from this very
-                        // instant — a status read between ticks must not
-                        // claim otherwise.
+                        // Deferral first: the moment `parked` becomes
+                        // visible, the status block must already say the
+                        // runtime will reapply. In the other order a status
+                        // read can land between the two gate writes (the
+                        // deferral check reads spec files) and see a parked
+                        // runtime that claims it will not come back.
                         super::set_autostart_deferred(wakeable_runtime_pending());
+                        super::set_parked(true);
                     }
                 }
             }
@@ -222,19 +226,43 @@ fn wakeable_runtime_pending() -> bool {
 /// awake — an attached engine (park check) or sustained `active` (wake check)
 /// — so the fine-grained NVML query never wakes a sleeping GPU; the registry
 /// backend it opens is swept by `release_idle_backends` once the checks stop.
+///
+/// Every call records the full sample (per-kind context holders AND
+/// device-node holders, with process names) as the `deep_sleep.gpu_clients`
+/// status block, so someone debugging a park that does or does not happen
+/// can see exactly the evidence the decision used.
 fn gpu_in_use_by_client(gpu_index: Option<u32>) -> bool {
+    let proc_root = client_proc_root();
+    let self_pid = std::process::id();
+    // Sampled even when the decision ignores it: a shell holding
+    // `/dev/nvidia0` open while the context lists stay empty is precisely
+    // what explains a fine-grained park to a reader of the status block.
+    let mut observation = GpuClientObservation {
+        source: GpuClientSource::DeviceNodes,
+        graphics: Vec::new(),
+        compute: Vec::new(),
+        device_node_holders: nvidia_device_node_holders_in(&proc_root, self_pid),
+    };
     if super::fine_grained_mode() {
         if let Some(index) = gpu_index {
             match gpu_rpc::context_pids(index) {
-                Ok(pids) => {
-                    let self_pid = std::process::id();
-                    return pids.into_iter().any(|pid| pid != self_pid);
+                Ok(contexts) => {
+                    observation.source = GpuClientSource::NvmlContexts;
+                    observation.graphics = named_processes(&proc_root, &contexts.graphics, self_pid);
+                    observation.compute = named_processes(&proc_root, &contexts.compute, self_pid);
                 }
                 Err(error) => log_context_query_fallback(&error),
             }
         }
     }
-    nvidia_client_present()
+    let in_use = match observation.source {
+        GpuClientSource::NvmlContexts => {
+            !(observation.graphics.is_empty() && observation.compute.is_empty())
+        }
+        GpuClientSource::DeviceNodes => !observation.device_node_holders.is_empty(),
+    };
+    super::record_gpu_clients(observation);
+    in_use
 }
 
 /// The NVML-context fallback is a per-boot property (old driver, missing
@@ -248,16 +276,35 @@ fn log_context_query_fallback(error: &str) {
     });
 }
 
-/// True when a process other than the daemon holds a `/dev/nvidia<N>` fd —
-/// pure procfs reads, never touches the device. Root sees every process.
-/// Test seam (never set in production): `PENGUIN_BURNERD_TEST_CLIENT_PROC`
-/// points the scan at a fake proc tree so integration tests can stage and
-/// remove GPU clients deterministically on any machine.
-fn nvidia_client_present() -> bool {
-    let proc_root = std::env::var_os("PENGUIN_BURNERD_TEST_CLIENT_PROC")
+/// The proc tree the client scan and name lookups read. Test seam (never set
+/// in production): `PENGUIN_BURNERD_TEST_CLIENT_PROC` points at a fake proc
+/// tree so integration tests can stage and remove GPU clients
+/// deterministically on any machine.
+fn client_proc_root() -> PathBuf {
+    std::env::var_os("PENGUIN_BURNERD_TEST_CLIENT_PROC")
         .filter(|v| !v.is_empty())
-        .map_or_else(|| PathBuf::from("/proc"), PathBuf::from);
-    other_nvidia_client_in(proc_root, std::process::id())
+        .map_or_else(|| PathBuf::from("/proc"), PathBuf::from)
+}
+
+/// Resolve `/proc/<pid>/comm` names for context PIDs, dropping the daemon's
+/// own PID so the lists match what the park/wake decision counts.
+fn named_processes(proc_root: &Path, pids: &[u32], self_pid: u32) -> Vec<GpuClientProcess> {
+    pids.iter()
+        .copied()
+        .filter(|pid| *pid != self_pid)
+        .map(|pid| GpuClientProcess {
+            pid,
+            name: process_name(proc_root, pid),
+        })
+        .collect()
+}
+
+/// Process name from `<proc_root>/<pid>/comm`; `None` once the process is
+/// gone. Pure procfs read — never touches the GPU.
+fn process_name(proc_root: &Path, pid: u32) -> Option<String> {
+    let comm = fs::read_to_string(proc_root.join(pid.to_string()).join("comm")).ok()?;
+    let name = comm.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Only the numbered render nodes count as a real GPU client. `nvidiactl`,
@@ -269,9 +316,17 @@ fn is_nvidia_device_node(target: &str) -> bool {
         .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn other_nvidia_client_in(proc_root: impl AsRef<Path>, self_pid: u32) -> bool {
+/// Every process other than the daemon holding a `/dev/nvidia<N>` fd, with
+/// names — pure procfs reads, never touches the device. Root sees every
+/// process. Sorted by PID so repeated status reads stay stable.
+fn nvidia_device_node_holders_in(
+    proc_root: impl AsRef<Path>,
+    self_pid: u32,
+) -> Vec<GpuClientProcess> {
+    let proc_root = proc_root.as_ref();
+    let mut holders = Vec::new();
     let Ok(entries) = fs::read_dir(proc_root) else {
-        return false;
+        return holders;
     };
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name();
@@ -284,15 +339,19 @@ fn other_nvidia_client_in(proc_root: impl AsRef<Path>, self_pid: u32) -> bool {
         let Ok(fds) = fs::read_dir(entry.path().join("fd")) else {
             continue;
         };
-        for fd in fds.filter_map(Result::ok) {
-            if let Ok(target) = fs::read_link(fd.path()) {
-                if is_nvidia_device_node(&target.to_string_lossy()) {
-                    return true;
-                }
-            }
+        let holds_device_node = fds.filter_map(Result::ok).any(|fd| {
+            fs::read_link(fd.path())
+                .is_ok_and(|target| is_nvidia_device_node(&target.to_string_lossy()))
+        });
+        if holds_device_node {
+            holders.push(GpuClientProcess {
+                pid,
+                name: process_name(proc_root, pid),
+            });
         }
     }
-    false
+    holders.sort_unstable_by_key(|process| process.pid);
+    holders
 }
 
 #[cfg(test)]
@@ -314,16 +373,28 @@ mod tests {
     }
 
     #[test]
-    fn detects_nvidia_fd_holders_and_skips_self() {
+    fn collects_nvidia_fd_holders_with_names_and_skips_self() {
         let root = tempfile::tempdir().expect("tempdir");
         let fd_dir = root.path().join("4242").join("fd");
         fs::create_dir_all(&fd_dir).unwrap();
         symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+        fs::write(root.path().join("4242").join("comm"), "some-game\n").unwrap();
+        // A holder whose comm is unreadable still appears, without a name.
+        let anon_fd_dir = root.path().join("77").join("fd");
+        fs::create_dir_all(&anon_fd_dir).unwrap();
+        symlink("/dev/nvidia1", anon_fd_dir.join("3")).unwrap();
         fs::create_dir_all(root.path().join("not-a-pid")).unwrap();
 
-        assert!(other_nvidia_client_in(root.path(), 1));
+        let holders = nvidia_device_node_holders_in(root.path(), 1);
+        assert_eq!(holders.len(), 2);
+        assert_eq!(holders[0].pid, 77);
+        assert_eq!(holders[0].name, None);
+        assert_eq!(holders[1].pid, 4242);
+        assert_eq!(holders[1].name.as_deref(), Some("some-game"));
         // The daemon's own fds never count as a client.
-        assert!(!other_nvidia_client_in(root.path(), 4242));
+        let holders = nvidia_device_node_holders_in(root.path(), 4242);
+        assert_eq!(holders.len(), 1);
+        assert_eq!(holders[0].pid, 77);
     }
 
     #[test]
@@ -334,6 +405,22 @@ mod tests {
         symlink("/dev/nvidiactl", fd_dir.join("3")).unwrap();
         symlink("/dev/nvidia-uvm", fd_dir.join("4")).unwrap();
         symlink("/dev/dri/renderD128", fd_dir.join("5")).unwrap();
-        assert!(!other_nvidia_client_in(root.path(), 1));
+        assert!(nvidia_device_node_holders_in(root.path(), 1).is_empty());
+    }
+
+    #[test]
+    fn named_processes_resolve_comm_and_drop_the_daemon() {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(root.path().join("123")).unwrap();
+        fs::write(root.path().join("123").join("comm"), "cuda-worker\n").unwrap();
+
+        let named = named_processes(root.path(), &[123, 456, 999], 456);
+        assert_eq!(named.len(), 2);
+        assert_eq!(named[0].pid, 123);
+        assert_eq!(named[0].name.as_deref(), Some("cuda-worker"));
+        // A PID that exited between the NVML query and the lookup keeps its
+        // entry so the counts stay honest, just without a name.
+        assert_eq!(named[1].pid, 999);
+        assert_eq!(named[1].name, None);
     }
 }

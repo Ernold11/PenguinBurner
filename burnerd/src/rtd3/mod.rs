@@ -18,7 +18,9 @@
 pub mod detect;
 pub mod watch;
 
+use std::collections::HashSet;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use serde::Serialize;
 
@@ -50,6 +52,96 @@ pub struct DeepSleepStatus {
     /// True while an applied profile is parked: its engine released the GPU
     /// so it can suspend, and the watcher reapplies it at the next real use.
     pub parked: bool,
+    /// The watcher's most recent client sample (mobile modes only): which
+    /// processes really use the GPU, per kind, with aggregate counts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_clients: Option<GpuClientsStatus>,
+}
+
+/// One process in the `gpu_clients` lists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GpuClientProcess {
+    pub pid: u32,
+    /// `/proc/<pid>/comm`; `null` when the process exited before the lookup.
+    pub name: Option<String>,
+}
+
+/// Where a client sample came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuClientSource {
+    /// Live NVML graphics/compute contexts — the decisive signal under
+    /// fine-grained RTD3.
+    NvmlContexts,
+    /// `/dev/nvidia<N>` device-node fd holders — the decisive signal under
+    /// coarse-grained/unknown RTD3, and the fallback when NVML is unavailable.
+    DeviceNodes,
+}
+
+impl GpuClientSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NvmlContexts => "nvml-contexts",
+            Self::DeviceNodes => "device-nodes",
+        }
+    }
+}
+
+/// A watcher client sample: who holds live GPU contexts and who merely holds
+/// device nodes open, minus the daemon itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuClientObservation {
+    pub source: GpuClientSource,
+    pub graphics: Vec<GpuClientProcess>,
+    pub compute: Vec<GpuClientProcess>,
+    pub device_node_holders: Vec<GpuClientProcess>,
+}
+
+/// The `gpu_clients` object inside `deep_sleep`: the watcher's latest client
+/// sample, kept so someone debugging why the GPU does or does not park
+/// (issue #30) can see exactly what the daemon saw.
+#[derive(Debug, Clone, Serialize)]
+pub struct GpuClientsStatus {
+    /// "nvml-contexts" or "device-nodes" — which signal decided park/wake.
+    pub source: String,
+    pub graphics_count: usize,
+    pub compute_count: usize,
+    pub device_node_count: usize,
+    /// Unique PIDs the park/wake decision counted (the context lists under
+    /// "nvml-contexts", the fd holders under "device-nodes"). Parking
+    /// proceeds only while this stays 0.
+    pub total_count: usize,
+    /// Seconds since the sample was taken. Grows while the GPU sleeps —
+    /// the watcher only samples an awake GPU.
+    pub age_s: f64,
+    pub graphics: Vec<GpuClientProcess>,
+    pub compute: Vec<GpuClientProcess>,
+    /// Processes holding `/dev/nvidia<N>` open. Under fine-grained RTD3 this
+    /// is informational: a holder with no live context does not keep the GPU
+    /// awake and does not block parking.
+    pub device_node_holders: Vec<GpuClientProcess>,
+}
+
+fn gpu_clients_status(observation: &GpuClientObservation, observed_at: Instant) -> GpuClientsStatus {
+    let decisive: &[&[GpuClientProcess]] = match observation.source {
+        GpuClientSource::NvmlContexts => &[&observation.graphics, &observation.compute],
+        GpuClientSource::DeviceNodes => &[&observation.device_node_holders],
+    };
+    let counted: HashSet<u32> = decisive
+        .iter()
+        .flat_map(|list| list.iter())
+        .map(|process| process.pid)
+        .collect();
+    GpuClientsStatus {
+        source: observation.source.as_str().to_string(),
+        graphics_count: observation.graphics.len(),
+        compute_count: observation.compute.len(),
+        device_node_count: observation.device_node_holders.len(),
+        total_count: counted.len(),
+        age_s: (observed_at.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
+        graphics: observation.graphics.clone(),
+        compute: observation.compute.clone(),
+        device_node_holders: observation.device_node_holders.clone(),
+    }
 }
 
 #[derive(Default)]
@@ -60,6 +152,7 @@ struct GateState {
     suspended_observed: bool,
     autostart_deferred: bool,
     parked: bool,
+    gpu_clients: Option<(GpuClientObservation, Instant)>,
 }
 
 static GATE: Mutex<GateState> = Mutex::new(GateState {
@@ -69,6 +162,7 @@ static GATE: Mutex<GateState> = Mutex::new(GateState {
     suspended_observed: false,
     autostart_deferred: false,
     parked: false,
+    gpu_clients: None,
 });
 
 fn gate() -> std::sync::MutexGuard<'static, GateState> {
@@ -208,6 +302,53 @@ pub fn set_parked(parked: bool) {
     }
 }
 
+/// Record the watcher's latest client sample for the `gpu_clients` status
+/// block. Called on every awake-GPU check, so the block always reflects the
+/// evidence behind the most recent park/wake decision.
+///
+/// A journal line is emitted only when the sample differs from the previous
+/// one: the watcher samples at 1 Hz, and the client set changes on the order
+/// of process starts and exits, so the journal reads as a sparse narrative
+/// of who took and released the GPU instead of a per-second flood.
+pub(crate) fn record_gpu_clients(observation: GpuClientObservation) {
+    let mut state = gate();
+    let changed = state
+        .gpu_clients
+        .as_ref()
+        .is_none_or(|(previous, _)| previous != &observation);
+    if changed {
+        logging::info(&describe_gpu_clients(&observation));
+    }
+    state.gpu_clients = Some((observation, Instant::now()));
+}
+
+/// One journal line naming every sampled process with its count per list,
+/// e.g. `deep sleep: gpu clients (nvml-contexts): graphics=1 [4242
+/// some-game], compute=0, device-node holders=2 [1450 plasmashell, 3117
+/// vkcube]`.
+fn describe_gpu_clients(observation: &GpuClientObservation) -> String {
+    fn list(label: &str, processes: &[GpuClientProcess]) -> String {
+        if processes.is_empty() {
+            return format!("{label}=0");
+        }
+        let entries: Vec<String> = processes
+            .iter()
+            .map(|process| match &process.name {
+                Some(name) => format!("{} {name}", process.pid),
+                None => process.pid.to_string(),
+            })
+            .collect();
+        format!("{label}={} [{}]", processes.len(), entries.join(", "))
+    }
+    format!(
+        "deep sleep: gpu clients ({}): {}, {}, {}",
+        observation.source.as_str(),
+        list("graphics", &observation.graphics),
+        list("compute", &observation.compute),
+        list("device-node holders", &observation.device_node_holders),
+    )
+}
+
 pub fn set_autostart_deferred(deferred: bool) {
     let mut state = gate();
     if state.autostart_deferred != deferred {
@@ -258,6 +399,10 @@ pub fn status() -> Option<DeepSleepStatus> {
         autostart_deferred: state.autostart_deferred,
         suspended_observed: state.suspended_observed,
         parked: state.parked,
+        gpu_clients: state
+            .gpu_clients
+            .as_ref()
+            .map(|(observation, observed_at)| gpu_clients_status(observation, *observed_at)),
     })
 }
 
@@ -394,6 +539,93 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         reset_for_test();
         assert!(status().is_none());
+        reset_for_test();
+    }
+
+    fn client(pid: u32, name: &str) -> GpuClientProcess {
+        GpuClientProcess {
+            pid,
+            name: Some(name.to_string()),
+        }
+    }
+
+    #[test]
+    fn gpu_client_stats_count_only_the_decisive_lists() {
+        let observation = GpuClientObservation {
+            source: GpuClientSource::NvmlContexts,
+            graphics: vec![client(100, "gnome-shell"), client(200, "game")],
+            compute: vec![client(200, "game"), client(300, "python3")],
+            device_node_holders: vec![client(100, "gnome-shell"), client(999, "Xorg")],
+        };
+        let stats = gpu_clients_status(&observation, Instant::now());
+        assert_eq!(stats.source, "nvml-contexts");
+        assert_eq!(stats.graphics_count, 2);
+        assert_eq!(stats.compute_count, 2);
+        assert_eq!(stats.device_node_count, 2);
+        // A PID with both context kinds counts once; under fine-grained RTD3
+        // fd holders are informational and never counted.
+        assert_eq!(stats.total_count, 3);
+
+        let observation = GpuClientObservation {
+            source: GpuClientSource::DeviceNodes,
+            graphics: Vec::new(),
+            compute: Vec::new(),
+            device_node_holders: vec![client(999, "Xorg")],
+        };
+        let stats = gpu_clients_status(&observation, Instant::now());
+        assert_eq!(stats.source, "device-nodes");
+        assert_eq!(stats.total_count, 1);
+        assert_eq!(stats.graphics_count, 0);
+        assert_eq!(stats.compute_count, 0);
+    }
+
+    #[test]
+    fn gpu_client_log_line_names_every_process_with_counts() {
+        let observation = GpuClientObservation {
+            source: GpuClientSource::NvmlContexts,
+            graphics: vec![client(4242, "some-game")],
+            compute: Vec::new(),
+            device_node_holders: vec![
+                client(1450, "plasmashell"),
+                GpuClientProcess {
+                    pid: 3117,
+                    name: None,
+                },
+            ],
+        };
+        assert_eq!(
+            describe_gpu_clients(&observation),
+            "deep sleep: gpu clients (nvml-contexts): graphics=1 [4242 some-game], \
+             compute=0, device-node holders=2 [1450 plasmashell, 3117]"
+        );
+    }
+
+    #[test]
+    fn status_reports_the_recorded_client_sample() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        reset_for_test();
+        let root = tempfile::tempdir().expect("tempdir");
+        let probe = detect::Rtd3Probe::with_roots(
+            &root.path().join("sys"),
+            &root.path().join("proc"),
+        );
+        evaluate(&probe, None);
+        assert!(status().expect("evaluated").gpu_clients.is_none());
+
+        record_gpu_clients(GpuClientObservation {
+            source: GpuClientSource::DeviceNodes,
+            graphics: Vec::new(),
+            compute: Vec::new(),
+            device_node_holders: vec![client(4242, "some-game")],
+        });
+        let clients = status()
+            .expect("evaluated")
+            .gpu_clients
+            .expect("sample recorded");
+        assert_eq!(clients.source, "device-nodes");
+        assert_eq!(clients.device_node_holders[0].pid, 4242);
+        assert_eq!(clients.device_node_holders[0].name.as_deref(), Some("some-game"));
+        assert!(clients.age_s >= 0.0);
         reset_for_test();
     }
 }
