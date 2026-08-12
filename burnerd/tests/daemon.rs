@@ -1384,6 +1384,14 @@ fn deep_sleep_powerd_only_context_does_not_start_deferred_runtime() {
     .unwrap();
     let (sys, proc_root) =
         write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "active");
+    // Keep the old timer-driven repro fast: its quiet interval was this
+    // autosuspend delay plus one watcher tick, so the five-second observation
+    // below spans more than two complete retry deadlines.
+    std::fs::write(
+        sys.join("0000:01:00.0/power/autosuspend_delay_ms"),
+        "1000\n",
+    )
+    .unwrap();
     let clients = dir.join("clients");
     write_root_powerd_identity(&clients, 880);
     let contexts = dir.join("context-pids");
@@ -1454,6 +1462,9 @@ fn deep_sleep_powerd_only_context_does_not_start_deferred_runtime() {
         "Name:\tsome-game\nUid:\t1000\t1000\t1000\t1000\n",
     )
     .unwrap();
+    let game_fds = clients.join("4242/fd");
+    std::fs::create_dir_all(&game_fds).unwrap();
+    std::os::unix::fs::symlink("/dev/nvidia0", game_fds.join("7")).unwrap();
     std::fs::write(&contexts, "graphics 880 4242\ncompute 880\n").unwrap();
 
     let mut attached = false;
@@ -2071,8 +2082,31 @@ fn deep_sleep_fine_grained_ignores_idle_device_node_holders() {
         "an fd holder without a context re-attached the runtime: {status}"
     );
 
-    // A real context appears: re-materialize.
+    // With no context, the kernel completes a runtime-PM cycle. A later real
+    // context wakes the GPU; that external transition re-arms the one-shot
+    // context probe even though the long-lived fd holder did not change.
+    std::fs::write(
+        sys.join("0000:01:00.0/power/runtime_status"),
+        "suspended\n",
+    )
+    .unwrap();
+    let mut suspension_observed = false;
+    for _ in 0..80 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["deep_sleep"]["runtime_status"] == "suspended" {
+            suspension_observed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(suspension_observed, "runtime-PM suspension was not observed");
+
     std::fs::write(&contexts, "4242\n").unwrap();
+    std::fs::write(
+        sys.join("0000:01:00.0/power/runtime_status"),
+        "active\n",
+    )
+    .unwrap();
     let mut reattached = false;
     for _ in 0..200 {
         let status = daemon.request(r#"{"method":"status"}"#);

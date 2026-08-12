@@ -1,21 +1,17 @@
 //! Mode-aware GPU-client detection for the RTD3 watcher.
 //!
 //! The module hides both the client-evidence rules and the cadence of NVIDIA
-//! queries. Fine-grained probes are short-lived and followed by a quiet window
-//! in deferred mode so the watcher cannot keep a GPU awake by observing it.
+//! queries. Fine-grained idle observations are latched in deferred mode so the
+//! watcher cannot keep a GPU awake by periodically observing it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use crate::gpu::{self, GpuContextPids};
 use crate::logging;
 
 use super::detect::RuntimePmStatus;
 use super::{GpuClientObservation, GpuClientProcess, GpuClientSource};
-
-const WATCH_TICK: Duration = Duration::from_secs(1);
-const UNKNOWN_AUTOSUSPEND_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientPhase {
@@ -29,8 +25,6 @@ pub(crate) struct ClientTick {
     pub gpu_index: Option<u32>,
     pub fine_grained: bool,
     pub runtime_status: Option<RuntimePmStatus>,
-    pub autosuspend_delay: Option<Duration>,
-    pub now: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +34,11 @@ pub(crate) enum ClientVerdict {
     /// No NVIDIA observation is safe or due. This never authorizes a start or
     /// advances a park countdown.
     Pending,
+}
+
+struct IdleLatch {
+    gpu_index: Option<u32>,
+    holders: Vec<GpuClientProcess>,
 }
 
 trait ContextProvider {
@@ -64,9 +63,7 @@ pub(crate) struct ClientDetector {
     proc_root: PathBuf,
     self_pid: u32,
     provider: Box<dyn ContextProvider>,
-    quiet_until: Option<Instant>,
-    quiet_gpu_index: Option<Option<u32>>,
-    quiet_holders: Vec<GpuClientProcess>,
+    idle_latch: Option<IdleLatch>,
 }
 
 impl ClientDetector {
@@ -75,9 +72,7 @@ impl ClientDetector {
             proc_root: client_proc_root(),
             self_pid: std::process::id(),
             provider: Box::new(EphemeralContextProvider),
-            quiet_until: None,
-            quiet_gpu_index: None,
-            quiet_holders: Vec::new(),
+            idle_latch: None,
         }
     }
 
@@ -88,29 +83,32 @@ impl ClientDetector {
         if input.phase == ClientPhase::Deferred
             && input.runtime_status != Some(RuntimePmStatus::Active)
         {
-            self.clear_quiet();
+            if matches!(
+                input.runtime_status,
+                Some(RuntimePmStatus::Suspended | RuntimePmStatus::Resuming)
+            ) {
+                self.clear_idle_latch();
+            }
             return ClientVerdict::Pending;
         }
 
         let holders = nvidia_device_node_holders_in(&self.proc_root, self.self_pid);
         if input.phase == ClientPhase::Deferred
             && input.fine_grained
-            && self
-                .quiet_until
-                .is_some_and(|until| input.now < until)
-            && self.quiet_gpu_index == Some(input.gpu_index)
-            && holders == self.quiet_holders
+            && self.idle_latch.as_ref().is_some_and(|latch| {
+                latch.gpu_index == input.gpu_index && latch.holders == holders
+            })
         {
             return ClientVerdict::Pending;
         }
-        self.clear_quiet();
+        self.clear_idle_latch();
 
         let observation = match self.observe(input.gpu_index, input.fine_grained, holders.clone()) {
             Ok(observation) => observation,
             Err(error) => {
                 log_context_shutdown_failure(&error);
                 if input.phase == ClientPhase::Deferred && input.fine_grained {
-                    self.arm_quiet(input, holders);
+                    self.latch_idle(input.gpu_index, holders);
                 }
                 return ClientVerdict::Pending;
             }
@@ -120,7 +118,7 @@ impl ClientDetector {
         }
 
         if input.phase == ClientPhase::Deferred && input.fine_grained {
-            self.arm_quiet(input, observation.device_node_holders.clone());
+            self.latch_idle(input.gpu_index, observation.device_node_holders.clone());
         }
         ClientVerdict::Idle(observation)
     }
@@ -171,24 +169,16 @@ impl ClientDetector {
         Ok(observation)
     }
 
-    fn arm_quiet(&mut self, input: ClientTick, holders: Vec<GpuClientProcess>) {
-        let delay = input
-            .autosuspend_delay
-            .unwrap_or(UNKNOWN_AUTOSUSPEND_DELAY)
-            .saturating_add(WATCH_TICK);
-        self.quiet_until = input.now.checked_add(delay);
-        self.quiet_gpu_index = Some(input.gpu_index);
-        self.quiet_holders = holders;
+    fn latch_idle(&mut self, gpu_index: Option<u32>, holders: Vec<GpuClientProcess>) {
+        self.idle_latch = Some(IdleLatch { gpu_index, holders });
     }
 
-    fn clear_quiet(&mut self) {
-        self.quiet_until = None;
-        self.quiet_gpu_index = None;
-        self.quiet_holders.clear();
+    fn clear_idle_latch(&mut self) {
+        self.idle_latch = None;
     }
 
     pub(crate) fn reset(&mut self) {
-        self.clear_quiet();
+        self.clear_idle_latch();
     }
 
     #[cfg(test)]
@@ -201,9 +191,7 @@ impl ClientDetector {
             proc_root,
             self_pid,
             provider: Box::new(provider),
-            quiet_until: None,
-            quiet_gpu_index: None,
-            quiet_holders: Vec::new(),
+            idle_latch: None,
         }
     }
 }
@@ -398,14 +386,12 @@ mod tests {
         }
     }
 
-    fn active_tick(phase: ClientPhase, now: Instant) -> ClientTick {
+    fn active_tick(phase: ClientPhase) -> ClientTick {
         ClientTick {
             phase,
             gpu_index: Some(0),
             fine_grained: true,
             runtime_status: Some(RuntimePmStatus::Active),
-            autosuspend_delay: Some(Duration::from_secs(5)),
-            now,
         }
     }
 
@@ -421,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn powerd_only_enters_a_quiet_window_and_holder_change_rearms_probe() {
+    fn powerd_only_latches_idle_and_holder_change_rearms_probe() {
         let root = tempfile::tempdir().unwrap();
         write_identity(root.path(), 880, "nvidia-powerd", 0);
         let calls = Rc::new(RefCell::new(0));
@@ -434,13 +420,11 @@ mod tests {
             contexts: contexts.clone(),
         };
         let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
-        let now = Instant::now();
-
-        let first = detector.tick(active_tick(ClientPhase::Deferred, now));
+        let first = detector.tick(active_tick(ClientPhase::Deferred));
         assert!(matches!(first, ClientVerdict::Idle(_)));
         assert_eq!(*calls.borrow(), 1);
         assert_eq!(
-            detector.tick(active_tick(ClientPhase::Deferred, now + Duration::from_secs(2))),
+            detector.tick(active_tick(ClientPhase::Deferred)),
             ClientVerdict::Pending
         );
         assert_eq!(*calls.borrow(), 1);
@@ -450,10 +434,7 @@ mod tests {
         fs::create_dir_all(&fd_dir).unwrap();
         symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
         contexts.borrow_mut().graphics.push(4242);
-        let changed = detector.tick(active_tick(
-            ClientPhase::Deferred,
-            now + Duration::from_secs(3),
-        ));
+        let changed = detector.tick(active_tick(ClientPhase::Deferred));
         assert!(matches!(changed, ClientVerdict::Busy(_)));
         assert_eq!(*calls.borrow(), 2);
     }
@@ -467,7 +448,7 @@ mod tests {
             contexts: Rc::new(RefCell::new(GpuContextPids::default())),
         };
         let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
-        let mut input = active_tick(ClientPhase::Deferred, Instant::now());
+        let mut input = active_tick(ClientPhase::Deferred);
         input.runtime_status = Some(RuntimePmStatus::Suspended);
         assert_eq!(detector.tick(input), ClientVerdict::Pending);
         assert_eq!(*calls.borrow(), 0);
@@ -481,24 +462,19 @@ mod tests {
             calls: calls.clone(),
         };
         let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
-        let now = Instant::now();
-
         assert_eq!(
-            detector.tick(active_tick(ClientPhase::Deferred, now)),
+            detector.tick(active_tick(ClientPhase::Deferred)),
             ClientVerdict::Pending
         );
         assert_eq!(
-            detector.tick(active_tick(
-                ClientPhase::Deferred,
-                now + Duration::from_secs(2),
-            )),
+            detector.tick(active_tick(ClientPhase::Deferred)),
             ClientVerdict::Pending
         );
         assert_eq!(*calls.borrow(), 1);
     }
 
     #[test]
-    fn quiet_deadline_reprobes_when_a_context_appears_without_a_new_holder() {
+    fn unchanged_holder_set_never_reprobes_without_an_external_event() {
         let root = tempfile::tempdir().unwrap();
         write_identity(root.path(), 880, "nvidia-powerd", 0);
         let calls = Rc::new(RefCell::new(0));
@@ -511,26 +487,53 @@ mod tests {
             contexts: contexts.clone(),
         };
         let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
-        let now = Instant::now();
         assert!(matches!(
-            detector.tick(active_tick(ClientPhase::Deferred, now)),
+            detector.tick(active_tick(ClientPhase::Deferred)),
             ClientVerdict::Idle(_)
         ));
 
         write_identity(root.path(), 4242, "some-game", 1000);
         contexts.borrow_mut().graphics.push(4242);
+        assert_eq!(
+            detector.tick(active_tick(ClientPhase::Deferred)),
+            ClientVerdict::Pending
+        );
+        assert_eq!(*calls.borrow(), 1);
+    }
+
+    #[test]
+    fn runtime_pm_cycle_rearms_probe_without_a_new_holder() {
+        let root = tempfile::tempdir().unwrap();
+        write_identity(root.path(), 880, "nvidia-powerd", 0);
+        let calls = Rc::new(RefCell::new(0));
+        let contexts = Rc::new(RefCell::new(GpuContextPids {
+            graphics: vec![880],
+            compute: Vec::new(),
+        }));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: contexts.clone(),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
         assert!(matches!(
-            detector.tick(active_tick(
-                ClientPhase::Deferred,
-                now + Duration::from_secs(7),
-            )),
+            detector.tick(active_tick(ClientPhase::Deferred)),
+            ClientVerdict::Idle(_)
+        ));
+
+        let mut suspended = active_tick(ClientPhase::Deferred);
+        suspended.runtime_status = Some(RuntimePmStatus::Suspended);
+        assert_eq!(detector.tick(suspended), ClientVerdict::Pending);
+        write_identity(root.path(), 4242, "some-game", 1000);
+        contexts.borrow_mut().graphics.push(4242);
+        assert!(matches!(
+            detector.tick(active_tick(ClientPhase::Deferred)),
             ClientVerdict::Busy(_)
         ));
         assert_eq!(*calls.borrow(), 2);
     }
 
     #[test]
-    fn quiet_window_does_not_cross_gpu_indices() {
+    fn unproven_nonactive_statuses_do_not_rearm_probe() {
         let root = tempfile::tempdir().unwrap();
         let calls = Rc::new(RefCell::new(0));
         let provider = ScriptedProvider {
@@ -538,13 +541,43 @@ mod tests {
             contexts: Rc::new(RefCell::new(GpuContextPids::default())),
         };
         let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
-        let now = Instant::now();
         assert!(matches!(
-            detector.tick(active_tick(ClientPhase::Deferred, now)),
+            detector.tick(active_tick(ClientPhase::Deferred)),
             ClientVerdict::Idle(_)
         ));
 
-        let mut other_gpu = active_tick(ClientPhase::Deferred, now + Duration::from_secs(1));
+        for status in [
+            RuntimePmStatus::Suspending,
+            RuntimePmStatus::Error,
+            RuntimePmStatus::Unsupported,
+            RuntimePmStatus::Unknown,
+        ] {
+            let mut nonactive = active_tick(ClientPhase::Deferred);
+            nonactive.runtime_status = Some(status);
+            assert_eq!(detector.tick(nonactive), ClientVerdict::Pending);
+            assert_eq!(
+                detector.tick(active_tick(ClientPhase::Deferred)),
+                ClientVerdict::Pending
+            );
+        }
+        assert_eq!(*calls.borrow(), 1);
+    }
+
+    #[test]
+    fn idle_latch_does_not_cross_gpu_indices() {
+        let root = tempfile::tempdir().unwrap();
+        let calls = Rc::new(RefCell::new(0));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: Rc::new(RefCell::new(GpuContextPids::default())),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        assert!(matches!(
+            detector.tick(active_tick(ClientPhase::Deferred)),
+            ClientVerdict::Idle(_)
+        ));
+
+        let mut other_gpu = active_tick(ClientPhase::Deferred);
         other_gpu.gpu_index = Some(1);
         assert!(matches!(detector.tick(other_gpu), ClientVerdict::Idle(_)));
         assert_eq!(*calls.borrow(), 2);

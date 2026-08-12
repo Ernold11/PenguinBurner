@@ -28,9 +28,9 @@
 //! context is reported but excluded: Dynamic Boost is driver infrastructure,
 //! and a real workload alongside it still has its own counted context. The
 //! context query owns one short-lived NVML-only session and closes it before
-//! returning. An idle result starts a wake-free quiet interval so observation
-//! cannot become a self-sustaining one-second GPU hold; a changed numbered-node
-//! holder set re-arms the query for a newly arrived workload.
+//! returning. An idle result latches until a changed numbered-node holder set
+//! or a runtime-PM sleep/wake cycle re-arms the query, so observation cannot
+//! become a periodic self-sustaining GPU hold.
 //! The watcher falls back to the fd scan only when the context query fails
 //! (driver too old for the _v3 symbols, no backend), applying the same narrow
 //! helper exclusion in confirmed fine-grained mode.
@@ -39,7 +39,7 @@
 
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::gpu_rpc;
 use crate::logging;
@@ -258,6 +258,12 @@ fn mobile_tick(
     if super::last_runtime_status() == Some(RuntimePmStatus::Active) {
         state.active_ticks += 1;
     } else {
+        if matches!(
+            super::last_runtime_status(),
+            Some(RuntimePmStatus::Suspended | RuntimePmStatus::Resuming)
+        ) {
+            clients.reset();
+        }
         state.reset_wake_episode();
         // Only an episode that starts from suspension can be a wake. One that
         // starts while the GPU reads `active` is the drain tail of whatever
@@ -312,8 +318,6 @@ fn client_verdict(
         gpu_index,
         fine_grained: super::fine_grained_mode(),
         runtime_status: super::last_runtime_status(),
-        autosuspend_delay: super::autosuspend_delay(),
-        now: Instant::now(),
     })
 }
 
