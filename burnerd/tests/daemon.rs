@@ -196,6 +196,18 @@ fn read_line<R: BufRead>(reader: &mut R) -> Option<String> {
     }
 }
 
+fn mock_gpu_lifetime(path: &std::path::Path) -> (u64, u64, u64) {
+    let values: Vec<u64> = std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|value| value.parse().ok())
+        .collect();
+    match values.as_slice() {
+        [opens, closes, live] => (*opens, *closes, *live),
+        _ => (0, 0, 0),
+    }
+}
+
 fn test_runtime_spec() -> Value {
     serde_json::json!({
         "format_version": 1,
@@ -1375,6 +1387,7 @@ fn deep_sleep_powerd_only_context_does_not_start_deferred_runtime() {
     let clients = dir.join("clients");
     write_root_powerd_identity(&clients, 880);
     let contexts = dir.join("context-pids");
+    let lifetime = dir.join("gpu-lifetime");
     std::fs::write(&contexts, "graphics 880\ncompute 880\n").unwrap();
 
     let daemon = Daemon::start(&[
@@ -1386,6 +1399,10 @@ fn deep_sleep_powerd_only_context_does_not_start_deferred_runtime() {
         (
             "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
             contexts.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_MOCK_GPU_LIFETIME_FILE",
+            lifetime.to_str().unwrap(),
         ),
     ]);
 
@@ -1415,6 +1432,17 @@ fn deep_sleep_powerd_only_context_does_not_start_deferred_runtime() {
         gpu_clients["ignored_clients"][0]["name"],
         "nvidia-powerd",
         "{status}"
+    );
+    let (opens, closes, live) = mock_gpu_lifetime(&lifetime);
+    assert!(opens > 0, "the watcher never exercised the context probe");
+    assert_eq!(
+        opens, 1,
+        "powerd-only activity caused a repeated NVIDIA probe loop"
+    );
+    assert_eq!(
+        (opens, closes, live),
+        (opens, opens, 0),
+        "the watcher retained its NVIDIA session while only nvidia-powerd remained"
     );
 
     // Dynamic Boost remains present when a real workload arrives. The game
@@ -2142,6 +2170,7 @@ fn deep_sleep_fine_grained_falls_back_to_fd_scan_when_nvml_query_fails() {
     std::fs::create_dir_all(&game_fd_dir).unwrap();
     std::os::unix::fs::symlink("/dev/nvidia0", game_fd_dir.join("7")).unwrap();
     std::fs::write(clients.join("4242/comm"), "some-game\n").unwrap();
+    let lifetime = dir.join("gpu-lifetime");
 
     let daemon = Daemon::start(&[
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
@@ -2149,6 +2178,10 @@ fn deep_sleep_fine_grained_falls_back_to_fd_scan_when_nvml_query_fails() {
         ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
         MOCK_GPU,
         ("PENGUIN_BURNERD_TEST_MOCK_GPU_FAIL", "gpu_context_pids"),
+        (
+            "PENGUIN_BURNERD_TEST_MOCK_GPU_LIFETIME_FILE",
+            lifetime.to_str().unwrap(),
+        ),
     ]);
 
     let start = daemon.request(&runtime_spec_request(
@@ -2170,6 +2203,13 @@ fn deep_sleep_fine_grained_falls_back_to_fd_scan_when_nvml_query_fails() {
     assert_eq!(gpu_clients["total_count"], 1, "{status}");
     assert_eq!(gpu_clients["device_node_count"], 2, "{status}");
     assert_eq!(gpu_clients["ignored_count"], 1, "{status}");
+    let (opens, closes, live) = mock_gpu_lifetime(&lifetime);
+    assert!(opens > 0, "the failing context probe was never exercised");
+    assert_eq!(
+        (opens, closes, live),
+        (opens, opens, 0),
+        "a failed context query retained its NVIDIA session"
+    );
 
     // Once the real holder exits, powerd alone must not starve parking.
     std::fs::remove_dir_all(clients.join("4242")).unwrap();

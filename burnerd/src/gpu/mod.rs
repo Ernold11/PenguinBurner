@@ -8,6 +8,7 @@
 //! error-message text are preserved verbatim (see `port-notes/03-nvml-ffi.md`).
 
 mod backend;
+pub(crate) mod context;
 mod nvapi;
 
 // Compiled into the binary (not test-gated) because it also backs the

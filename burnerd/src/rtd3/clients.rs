@@ -1,0 +1,594 @@
+//! Mode-aware GPU-client detection for the RTD3 watcher.
+//!
+//! The module hides both the client-evidence rules and the cadence of NVIDIA
+//! queries. Fine-grained probes are short-lived and followed by a quiet window
+//! in deferred mode so the watcher cannot keep a GPU awake by observing it.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use crate::gpu::{self, GpuContextPids};
+use crate::logging;
+
+use super::detect::RuntimePmStatus;
+use super::{GpuClientObservation, GpuClientProcess, GpuClientSource};
+
+const WATCH_TICK: Duration = Duration::from_secs(1);
+const UNKNOWN_AUTOSUSPEND_DELAY: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClientPhase {
+    Attached,
+    Deferred,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ClientTick {
+    pub phase: ClientPhase,
+    pub gpu_index: Option<u32>,
+    pub fine_grained: bool,
+    pub runtime_status: Option<RuntimePmStatus>,
+    pub autosuspend_delay: Option<Duration>,
+    pub now: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ClientVerdict {
+    Busy(GpuClientObservation),
+    Idle(GpuClientObservation),
+    /// No NVIDIA observation is safe or due. This never authorizes a start or
+    /// advances a park countdown.
+    Pending,
+}
+
+trait ContextProvider {
+    fn context_pids(
+        &self,
+        gpu_index: u32,
+    ) -> Result<GpuContextPids, gpu::context::ContextProbeError>;
+}
+
+struct EphemeralContextProvider;
+
+impl ContextProvider for EphemeralContextProvider {
+    fn context_pids(
+        &self,
+        gpu_index: u32,
+    ) -> Result<GpuContextPids, gpu::context::ContextProbeError> {
+        gpu::context::context_pids_ephemeral(gpu_index)
+    }
+}
+
+pub(crate) struct ClientDetector {
+    proc_root: PathBuf,
+    self_pid: u32,
+    provider: Box<dyn ContextProvider>,
+    quiet_until: Option<Instant>,
+    quiet_gpu_index: Option<Option<u32>>,
+    quiet_holders: Vec<GpuClientProcess>,
+}
+
+impl ClientDetector {
+    pub(crate) fn system() -> Self {
+        Self {
+            proc_root: client_proc_root(),
+            self_pid: std::process::id(),
+            provider: Box::new(EphemeralContextProvider),
+            quiet_until: None,
+            quiet_gpu_index: None,
+            quiet_holders: Vec::new(),
+        }
+    }
+
+    pub(crate) fn tick(&mut self, input: ClientTick) -> ClientVerdict {
+        // A running profile engine already owns and wakes the GPU even if the
+        // cached sysfs sample still says `suspended`. Only a deferred runtime
+        // relies on runtime_status to prove a query is safe.
+        if input.phase == ClientPhase::Deferred
+            && input.runtime_status != Some(RuntimePmStatus::Active)
+        {
+            self.clear_quiet();
+            return ClientVerdict::Pending;
+        }
+
+        let holders = nvidia_device_node_holders_in(&self.proc_root, self.self_pid);
+        if input.phase == ClientPhase::Deferred
+            && input.fine_grained
+            && self
+                .quiet_until
+                .is_some_and(|until| input.now < until)
+            && self.quiet_gpu_index == Some(input.gpu_index)
+            && holders == self.quiet_holders
+        {
+            return ClientVerdict::Pending;
+        }
+        self.clear_quiet();
+
+        let observation = match self.observe(input.gpu_index, input.fine_grained, holders.clone()) {
+            Ok(observation) => observation,
+            Err(error) => {
+                log_context_shutdown_failure(&error);
+                if input.phase == ClientPhase::Deferred && input.fine_grained {
+                    self.arm_quiet(input, holders);
+                }
+                return ClientVerdict::Pending;
+            }
+        };
+        if observation.in_use() {
+            return ClientVerdict::Busy(observation);
+        }
+
+        if input.phase == ClientPhase::Deferred && input.fine_grained {
+            self.arm_quiet(input, observation.device_node_holders.clone());
+        }
+        ClientVerdict::Idle(observation)
+    }
+
+    fn observe(
+        &self,
+        gpu_index: Option<u32>,
+        fine_grained: bool,
+        device_node_holders: Vec<GpuClientProcess>,
+    ) -> Result<GpuClientObservation, gpu::context::ContextProbeError> {
+        let mut observation = GpuClientObservation {
+            source: GpuClientSource::DeviceNodes,
+            graphics: Vec::new(),
+            compute: Vec::new(),
+            device_node_holders,
+            ignored_clients: Vec::new(),
+        };
+        if !fine_grained {
+            return Ok(observation);
+        }
+        let Some(index) = gpu_index else {
+            return Ok(observation);
+        };
+        match self.provider.context_pids(index) {
+            Ok(contexts) => {
+                observation.source = GpuClientSource::NvmlContexts;
+                let (graphics, compute, ignored) = classified_context_processes(
+                    &self.proc_root,
+                    &contexts.graphics,
+                    &contexts.compute,
+                    self.self_pid,
+                );
+                observation.graphics = graphics;
+                observation.compute = compute;
+                observation.ignored_clients = ignored;
+            }
+            Err(gpu::context::ContextProbeError::Query(error)) => {
+                log_context_query_fallback(&error);
+                observation.ignored_clients = ignored_powerd_processes(
+                    &self.proc_root,
+                    &observation.device_node_holders,
+                );
+            }
+            Err(error @ gpu::context::ContextProbeError::Shutdown { .. }) => {
+                return Err(error);
+            }
+        }
+        Ok(observation)
+    }
+
+    fn arm_quiet(&mut self, input: ClientTick, holders: Vec<GpuClientProcess>) {
+        let delay = input
+            .autosuspend_delay
+            .unwrap_or(UNKNOWN_AUTOSUSPEND_DELAY)
+            .saturating_add(WATCH_TICK);
+        self.quiet_until = input.now.checked_add(delay);
+        self.quiet_gpu_index = Some(input.gpu_index);
+        self.quiet_holders = holders;
+    }
+
+    fn clear_quiet(&mut self) {
+        self.quiet_until = None;
+        self.quiet_gpu_index = None;
+        self.quiet_holders.clear();
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.clear_quiet();
+    }
+
+    #[cfg(test)]
+    fn with_provider(
+        proc_root: PathBuf,
+        self_pid: u32,
+        provider: impl ContextProvider + 'static,
+    ) -> Self {
+        Self {
+            proc_root,
+            self_pid,
+            provider: Box::new(provider),
+            quiet_until: None,
+            quiet_gpu_index: None,
+            quiet_holders: Vec::new(),
+        }
+    }
+}
+
+/// The proc tree the client scan and name lookups read. Test seam (never set
+/// in production): `PENGUIN_BURNERD_TEST_CLIENT_PROC` points at a fake proc
+/// tree so integration tests can stage GPU clients deterministically.
+fn client_proc_root() -> PathBuf {
+    std::env::var_os("PENGUIN_BURNERD_TEST_CLIENT_PROC")
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| PathBuf::from("/proc"), PathBuf::from)
+}
+
+fn classified_context_processes(
+    proc_root: &Path,
+    graphics_pids: &[u32],
+    compute_pids: &[u32],
+    self_pid: u32,
+) -> (
+    Vec<GpuClientProcess>,
+    Vec<GpuClientProcess>,
+    Vec<GpuClientProcess>,
+) {
+    let mut unique_pids: Vec<u32> = graphics_pids
+        .iter()
+        .chain(compute_pids)
+        .copied()
+        .filter(|pid| *pid != self_pid)
+        .collect();
+    unique_pids.sort_unstable();
+    unique_pids.dedup();
+
+    let mut counted = Vec::new();
+    let mut ignored = Vec::new();
+    for pid in unique_pids {
+        let name = process_name(proc_root, pid);
+        let process = GpuClientProcess { pid, name };
+        if is_root_nvidia_powerd(proc_root, &process) {
+            ignored.push(process);
+        } else {
+            counted.push(process);
+        }
+    }
+    let graphics = counted
+        .iter()
+        .filter(|process| graphics_pids.contains(&process.pid))
+        .cloned()
+        .collect();
+    let compute = counted
+        .iter()
+        .filter(|process| compute_pids.contains(&process.pid))
+        .cloned()
+        .collect();
+    (graphics, compute, ignored)
+}
+
+fn process_name(proc_root: &Path, pid: u32) -> Option<String> {
+    let comm = fs::read_to_string(proc_root.join(pid.to_string()).join("comm")).ok()?;
+    let name = comm.strip_suffix('\n').unwrap_or(&comm);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+fn process_effective_uid(proc_root: &Path, pid: u32) -> Option<u32> {
+    let status = fs::read_to_string(proc_root.join(pid.to_string()).join("status")).ok()?;
+    let mut records = status.lines().filter_map(|line| line.strip_prefix("Uid:"));
+    let record = records.next()?;
+    if records.next().is_some() {
+        return None;
+    }
+    let mut fields = record.split_whitespace();
+    let _real: u32 = fields.next()?.parse().ok()?;
+    let effective: u32 = fields.next()?.parse().ok()?;
+    let _saved: u32 = fields.next()?.parse().ok()?;
+    let _filesystem: u32 = fields.next()?.parse().ok()?;
+    if fields.next().is_some() {
+        return None;
+    }
+    Some(effective)
+}
+
+fn is_root_nvidia_powerd(proc_root: &Path, process: &GpuClientProcess) -> bool {
+    process.name.as_deref() == Some("nvidia-powerd")
+        && process_effective_uid(proc_root, process.pid) == Some(0)
+}
+
+fn ignored_powerd_processes(
+    proc_root: &Path,
+    processes: &[GpuClientProcess],
+) -> Vec<GpuClientProcess> {
+    processes
+        .iter()
+        .filter(|process| is_root_nvidia_powerd(proc_root, process))
+        .cloned()
+        .collect()
+}
+
+fn is_nvidia_device_node(target: &str) -> bool {
+    target
+        .strip_prefix("/dev/nvidia")
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn nvidia_device_node_holders_in(
+    proc_root: impl AsRef<Path>,
+    self_pid: u32,
+) -> Vec<GpuClientProcess> {
+    let proc_root = proc_root.as_ref();
+    let mut holders = Vec::new();
+    let Ok(entries) = fs::read_dir(proc_root) else {
+        return holders;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|value| value.parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid == self_pid {
+            continue;
+        }
+        let Ok(fds) = fs::read_dir(entry.path().join("fd")) else {
+            continue;
+        };
+        let holds_device_node = fds.filter_map(Result::ok).any(|fd| {
+            fs::read_link(fd.path())
+                .is_ok_and(|target| is_nvidia_device_node(&target.to_string_lossy()))
+        });
+        if holds_device_node {
+            holders.push(GpuClientProcess {
+                pid,
+                name: process_name(proc_root, pid),
+            });
+        }
+    }
+    holders.sort_unstable_by_key(|process| process.pid);
+    holders
+}
+
+fn log_context_query_fallback(error: &impl std::fmt::Display) {
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| {
+        logging::info(&format!(
+            "deep sleep: NVML context query unavailable ({error}); using the device-node scan"
+        ));
+    });
+}
+
+fn log_context_shutdown_failure(error: &impl std::fmt::Display) {
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| {
+        logging::info(&format!(
+            "deep sleep: NVIDIA context probe cleanup failed ({error}); refusing an idle decision"
+        ));
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::os::unix::fs::symlink;
+    use std::rc::Rc;
+
+    struct ScriptedProvider {
+        calls: Rc<RefCell<u32>>,
+        contexts: Rc<RefCell<GpuContextPids>>,
+    }
+
+    struct ShutdownFailingProvider {
+        calls: Rc<RefCell<u32>>,
+    }
+
+    impl ContextProvider for ScriptedProvider {
+        fn context_pids(
+            &self,
+            _gpu_index: u32,
+        ) -> Result<GpuContextPids, gpu::context::ContextProbeError> {
+            *self.calls.borrow_mut() += 1;
+            Ok(self.contexts.borrow().clone())
+        }
+    }
+
+    impl ContextProvider for ShutdownFailingProvider {
+        fn context_pids(
+            &self,
+            _gpu_index: u32,
+        ) -> Result<GpuContextPids, gpu::context::ContextProbeError> {
+            *self.calls.borrow_mut() += 1;
+            Err(gpu::context::ContextProbeError::Shutdown {
+                shutdown: gpu::GpuError::other("mock nvmlShutdown failure", 0),
+                query: None,
+            })
+        }
+    }
+
+    fn active_tick(phase: ClientPhase, now: Instant) -> ClientTick {
+        ClientTick {
+            phase,
+            gpu_index: Some(0),
+            fine_grained: true,
+            runtime_status: Some(RuntimePmStatus::Active),
+            autosuspend_delay: Some(Duration::from_secs(5)),
+            now,
+        }
+    }
+
+    fn write_identity(root: &Path, pid: u32, name: &str, uid: u32) {
+        let process = root.join(pid.to_string());
+        fs::create_dir_all(&process).unwrap();
+        fs::write(process.join("comm"), format!("{name}\n")).unwrap();
+        fs::write(
+            process.join("status"),
+            format!("Name:\t{name}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn powerd_only_enters_a_quiet_window_and_holder_change_rearms_probe() {
+        let root = tempfile::tempdir().unwrap();
+        write_identity(root.path(), 880, "nvidia-powerd", 0);
+        let calls = Rc::new(RefCell::new(0));
+        let contexts = Rc::new(RefCell::new(GpuContextPids {
+            graphics: vec![880],
+            compute: vec![880],
+        }));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: contexts.clone(),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        let now = Instant::now();
+
+        let first = detector.tick(active_tick(ClientPhase::Deferred, now));
+        assert!(matches!(first, ClientVerdict::Idle(_)));
+        assert_eq!(*calls.borrow(), 1);
+        assert_eq!(
+            detector.tick(active_tick(ClientPhase::Deferred, now + Duration::from_secs(2))),
+            ClientVerdict::Pending
+        );
+        assert_eq!(*calls.borrow(), 1);
+
+        write_identity(root.path(), 4242, "some-game", 1000);
+        let fd_dir = root.path().join("4242/fd");
+        fs::create_dir_all(&fd_dir).unwrap();
+        symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+        contexts.borrow_mut().graphics.push(4242);
+        let changed = detector.tick(active_tick(
+            ClientPhase::Deferred,
+            now + Duration::from_secs(3),
+        ));
+        assert!(matches!(changed, ClientVerdict::Busy(_)));
+        assert_eq!(*calls.borrow(), 2);
+    }
+
+    #[test]
+    fn nonactive_status_never_opens_the_context_provider() {
+        let root = tempfile::tempdir().unwrap();
+        let calls = Rc::new(RefCell::new(0));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: Rc::new(RefCell::new(GpuContextPids::default())),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        let mut input = active_tick(ClientPhase::Deferred, Instant::now());
+        input.runtime_status = Some(RuntimePmStatus::Suspended);
+        assert_eq!(detector.tick(input), ClientVerdict::Pending);
+        assert_eq!(*calls.borrow(), 0);
+    }
+
+    #[test]
+    fn shutdown_failure_is_pending_and_does_not_create_a_probe_loop() {
+        let root = tempfile::tempdir().unwrap();
+        let calls = Rc::new(RefCell::new(0));
+        let provider = ShutdownFailingProvider {
+            calls: calls.clone(),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        let now = Instant::now();
+
+        assert_eq!(
+            detector.tick(active_tick(ClientPhase::Deferred, now)),
+            ClientVerdict::Pending
+        );
+        assert_eq!(
+            detector.tick(active_tick(
+                ClientPhase::Deferred,
+                now + Duration::from_secs(2),
+            )),
+            ClientVerdict::Pending
+        );
+        assert_eq!(*calls.borrow(), 1);
+    }
+
+    #[test]
+    fn quiet_deadline_reprobes_when_a_context_appears_without_a_new_holder() {
+        let root = tempfile::tempdir().unwrap();
+        write_identity(root.path(), 880, "nvidia-powerd", 0);
+        let calls = Rc::new(RefCell::new(0));
+        let contexts = Rc::new(RefCell::new(GpuContextPids {
+            graphics: vec![880],
+            compute: Vec::new(),
+        }));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: contexts.clone(),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        let now = Instant::now();
+        assert!(matches!(
+            detector.tick(active_tick(ClientPhase::Deferred, now)),
+            ClientVerdict::Idle(_)
+        ));
+
+        write_identity(root.path(), 4242, "some-game", 1000);
+        contexts.borrow_mut().graphics.push(4242);
+        assert!(matches!(
+            detector.tick(active_tick(
+                ClientPhase::Deferred,
+                now + Duration::from_secs(7),
+            )),
+            ClientVerdict::Busy(_)
+        ));
+        assert_eq!(*calls.borrow(), 2);
+    }
+
+    #[test]
+    fn quiet_window_does_not_cross_gpu_indices() {
+        let root = tempfile::tempdir().unwrap();
+        let calls = Rc::new(RefCell::new(0));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: Rc::new(RefCell::new(GpuContextPids::default())),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        let now = Instant::now();
+        assert!(matches!(
+            detector.tick(active_tick(ClientPhase::Deferred, now)),
+            ClientVerdict::Idle(_)
+        ));
+
+        let mut other_gpu = active_tick(ClientPhase::Deferred, now + Duration::from_secs(1));
+        other_gpu.gpu_index = Some(1);
+        assert!(matches!(detector.tick(other_gpu), ClientVerdict::Idle(_)));
+        assert_eq!(*calls.borrow(), 2);
+    }
+
+    #[test]
+    fn only_numbered_device_nodes_count_as_clients() {
+        assert!(is_nvidia_device_node("/dev/nvidia0"));
+        assert!(is_nvidia_device_node("/dev/nvidia12"));
+        assert!(!is_nvidia_device_node("/dev/nvidiactl"));
+        assert!(!is_nvidia_device_node("/dev/nvidia-uvm"));
+        assert!(!is_nvidia_device_node("/dev/nvidia-modeset"));
+        assert!(!is_nvidia_device_node("/dev/nvidia-caps/nvidia-cap1"));
+        assert!(!is_nvidia_device_node("/dev/dri/renderD128"));
+    }
+
+    #[test]
+    fn collects_nvidia_fd_holders_with_names_and_skips_self() {
+        let root = tempfile::tempdir().unwrap();
+        let fd_dir = root.path().join("4242/fd");
+        fs::create_dir_all(&fd_dir).unwrap();
+        symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+        fs::write(root.path().join("4242/comm"), "some-game\n").unwrap();
+        let holders = nvidia_device_node_holders_in(root.path(), 1);
+        assert_eq!(holders.len(), 1);
+        assert_eq!(holders[0].pid, 4242);
+        assert_eq!(holders[0].name.as_deref(), Some("some-game"));
+        assert!(nvidia_device_node_holders_in(root.path(), 4242).is_empty());
+    }
+
+    #[test]
+    fn classified_context_processes_drop_self_and_ignore_only_root_powerd() {
+        let root = tempfile::tempdir().unwrap();
+        write_identity(root.path(), 880, "nvidia-powerd", 0);
+        write_identity(root.path(), 881, "nvidia-powerd", 1000);
+        write_identity(root.path(), 4242, "some-game", 1000);
+        let (graphics, compute, ignored) = classified_context_processes(
+            root.path(),
+            &[880, 881, 4242, 999],
+            &[4242, 777],
+            999,
+        );
+        assert_eq!(ignored.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![880]);
+        assert_eq!(graphics.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![881, 4242]);
+        assert_eq!(compute.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![777, 4242]);
+    }
+}

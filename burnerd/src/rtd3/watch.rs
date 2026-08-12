@@ -27,24 +27,26 @@
 //! live graphics/compute contexts instead. A root-owned `nvidia-powerd`
 //! context is reported but excluded: Dynamic Boost is driver infrastructure,
 //! and a real workload alongside it still has its own counted context. The
-//! watcher falls back to the fd scan only when the context query fails (driver
-//! too old for the _v3 symbols, no backend), applying the same narrow helper
-//! exclusion in confirmed fine-grained mode.
+//! context query owns one short-lived NVML-only session and closes it before
+//! returning. An idle result starts a wake-free quiet interval so observation
+//! cannot become a self-sustaining one-second GPU hold; a changed numbered-node
+//! holder set re-arms the query for a newly arrived workload.
+//! The watcher falls back to the fd scan only when the context query fails
+//! (driver too old for the _v3 symbols, no backend), applying the same narrow
+//! helper exclusion in confirmed fine-grained mode.
 //! While protected it also drops idle RPC backends so a one-off GUI telemetry
 //! query cannot pin NVML forever.
 
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::gpu_rpc;
 use crate::logging;
 use crate::supervisor::{self, Supervisor};
 
+use super::clients::{ClientDetector, ClientPhase, ClientTick, ClientVerdict};
 use super::detect::{Rtd3Probe, RuntimePmStatus};
-use super::{GpuClientObservation, GpuClientProcess, GpuClientSource};
 
 const MOBILE_TICK: Duration = Duration::from_secs(1);
 /// Cadence in Desktop mode: re-evaluate in case the user enables runtime PM.
@@ -154,6 +156,7 @@ fn watch_loop(
     mut desktop_autostart_attempted: bool,
 ) {
     let mut tick_state = TickState::default();
+    let mut clients = ClientDetector::system();
 
     loop {
         super::evaluate(probe, hint);
@@ -165,11 +168,12 @@ fn watch_loop(
                     "deep sleep: released {released} idle GPU backend(s) so the GPU can suspend"
                 ));
             }
-            mobile_tick(sup, &mut tick_state);
+            mobile_tick(sup, &mut tick_state, &mut clients);
             thread::sleep(MOBILE_TICK);
             continue;
         }
 
+        clients.reset();
         super::set_autostart_deferred(false);
         if !desktop_autostart_attempted && super::allows_desktop_autostart() {
             // Detection resolved from Unknown to Desktop after boot: make the
@@ -184,11 +188,16 @@ fn watch_loop(
 /// One Mobile/Unknown observation tick: hold the deferred runtime back until
 /// the GPU is genuinely in use, park an attached-but-idle runtime so the GPU
 /// can suspend, and never fight another GPU owner.
-fn mobile_tick(sup: &Arc<Mutex<Supervisor>>, state: &mut TickState) {
+fn mobile_tick(
+    sup: &Arc<Mutex<Supervisor>>,
+    state: &mut TickState,
+    clients: &mut ClientDetector,
+) {
     // A scan/verification child owns the GPU exclusively; its own
     // `/dev/nvidia*` fds and activity must never satisfy the start policy —
     // starting the engine here would race the child's raw GPU writes.
     if supervisor::active_child_kind(sup).is_some() {
+        clients.reset();
         super::set_autostart_deferred(false);
         state.reset_wake_episode();
         state.abandon_countdown("a scan/verification child took the GPU");
@@ -208,52 +217,27 @@ fn mobile_tick(sup: &Arc<Mutex<Supervisor>>, state: &mut TickState) {
             // GPU for the whole window, release it: the profile stays a
             // standing intent (persisted state kept) and reapplies at the
             // next real use.
-            if gpu_in_use_by_client(supervisor::profile_gpu_index(sup)) {
-                if state.idle_ticks > 0 {
-                    logging::info(&format!(
-                        "deep sleep: park countdown reset after {}s: a GPU client appeared",
-                        state.idle_ticks
-                    ));
-                }
-                state.end_countdown();
-            } else {
-                state.idle_ticks += 1;
-                if state.idle_ticks == 1 && !state.countdown_announced {
-                    state.countdown_announced = true;
-                    // Remaining time, not the window size: this tick already
-                    // counted, so the park lands threshold-1 seconds after
-                    // this line's own timestamp.
-                    logging::info(&format!(
-                        "deep sleep: no GPU clients; parking the runtime in {}s unless one appears",
-                        park_after_idle_ticks() - state.idle_ticks
-                    ));
-                }
-                if state.idle_ticks >= park_after_idle_ticks() {
-                    state.idle_ticks = 0;
-                    logging::info(
-                        "deep sleep: no GPU clients for the idle window; parking the runtime",
-                    );
-                    if supervisor::park_runtime_for_deep_sleep(sup) {
-                        state.end_countdown();
-                        // Deferral first: the moment `parked` becomes
-                        // visible, the status block must already say the
-                        // runtime will reapply. In the other order a status
-                        // read can land between the two gate writes (the
-                        // deferral check reads spec files) and see a parked
-                        // runtime that claims it will not come back.
-                        super::set_autostart_deferred(wakeable_runtime_pending());
-                        super::set_parked(true);
-                    } else if !state.park_refusal_logged {
-                        // Once per client-free stretch: without this line a
-                        // refused park (game session owns the runtime, or
-                        // the engine did not stop in time) reads as a
-                        // countdown that silently went nowhere, repeating
-                        // every window.
-                        state.park_refusal_logged = true;
-                        logging::info(
-                            "deep sleep: park refused (a game session owns the runtime or the engine did not stop); retrying every idle window",
-                        );
+            match client_verdict(
+                clients,
+                ClientPhase::Attached,
+                supervisor::profile_gpu_index(sup),
+            ) {
+                ClientVerdict::Busy(observation) => {
+                    super::record_gpu_clients(observation);
+                    if state.idle_ticks > 0 {
+                        logging::info(&format!(
+                            "deep sleep: park countdown reset after {}s: a GPU client appeared",
+                            state.idle_ticks
+                        ));
                     }
+                    state.end_countdown();
+                }
+                ClientVerdict::Idle(observation) => {
+                    super::record_gpu_clients(observation);
+                    advance_park_countdown(sup, state);
+                }
+                ClientVerdict::Pending => {
+                    state.abandon_countdown("a safe GPU-client observation is pending");
                 }
             }
         } else {
@@ -266,6 +250,7 @@ fn mobile_tick(sup: &Arc<Mutex<Supervisor>>, state: &mut TickState) {
     let pending = wakeable_runtime_pending();
     super::set_autostart_deferred(pending);
     if !pending {
+        clients.reset();
         state.reset_wake_episode();
         return;
     }
@@ -284,23 +269,80 @@ fn mobile_tick(sup: &Arc<Mutex<Supervisor>>, state: &mut TickState) {
         );
     }
     if state.active_ticks >= SUSTAINED_ACTIVE_TICKS && !state.start_attempted {
-        if gpu_in_use_by_client(supervisor::deferred_runtime_gpu_index()) {
-            logging::info("deep sleep: GPU is in use; starting the deferred persisted runtime");
-            if supervisor::start_autostart_if_configured(sup) {
-                state.start_attempted = true;
-                super::set_autostart_deferred(false);
-                super::set_parked(false);
+        match client_verdict(
+            clients,
+            ClientPhase::Deferred,
+            supervisor::deferred_runtime_gpu_index(),
+        ) {
+            ClientVerdict::Busy(observation) => {
+                super::record_gpu_clients(observation);
+                logging::info(
+                    "deep sleep: GPU is in use; starting the deferred persisted runtime",
+                );
+                if supervisor::start_autostart_if_configured(sup) {
+                    state.start_attempted = true;
+                    super::set_autostart_deferred(false);
+                    super::set_parked(false);
+                }
             }
-        } else if state.woke_from_suspend && !state.transient_wake_logged {
-            // Once per genuine wake episode: the GPU came out of suspend but
-            // nothing holds a counted client, so the runtime stays deferred.
-            // This is the journal's answer to "the GPU woke up — why didn't
-            // the profile apply?": a capability probe, not use.
-            state.transient_wake_logged = true;
-            logging::info(
-                "deep sleep: GPU awake but no counted clients; keeping the runtime deferred (transient wake?)",
-            );
+            ClientVerdict::Idle(observation) => {
+                super::record_gpu_clients(observation);
+                if state.woke_from_suspend && !state.transient_wake_logged {
+                    // Once per genuine wake episode: the GPU came out of
+                    // suspend but nothing holds a counted client, so the
+                    // runtime stays deferred.
+                    state.transient_wake_logged = true;
+                    logging::info(
+                        "deep sleep: GPU awake but no counted clients; keeping the runtime deferred (transient wake?)",
+                    );
+                }
+            }
+            ClientVerdict::Pending => {}
         }
+    }
+}
+
+fn client_verdict(
+    detector: &mut ClientDetector,
+    phase: ClientPhase,
+    gpu_index: Option<u32>,
+) -> ClientVerdict {
+    detector.tick(ClientTick {
+        phase,
+        gpu_index,
+        fine_grained: super::fine_grained_mode(),
+        runtime_status: super::last_runtime_status(),
+        autosuspend_delay: super::autosuspend_delay(),
+        now: Instant::now(),
+    })
+}
+
+fn advance_park_countdown(sup: &Arc<Mutex<Supervisor>>, state: &mut TickState) {
+    state.idle_ticks += 1;
+    if state.idle_ticks == 1 && !state.countdown_announced {
+        state.countdown_announced = true;
+        logging::info(&format!(
+            "deep sleep: no GPU clients; parking the runtime in {}s unless one appears",
+            park_after_idle_ticks() - state.idle_ticks
+        ));
+    }
+    if state.idle_ticks < park_after_idle_ticks() {
+        return;
+    }
+
+    state.idle_ticks = 0;
+    logging::info("deep sleep: no GPU clients for the idle window; parking the runtime");
+    if supervisor::park_runtime_for_deep_sleep(sup) {
+        state.end_countdown();
+        // Deferral first: a visible parked runtime must already say it will
+        // reapply at the next real use.
+        super::set_autostart_deferred(wakeable_runtime_pending());
+        super::set_parked(true);
+    } else if !state.park_refusal_logged {
+        state.park_refusal_logged = true;
+        logging::info(
+            "deep sleep: park refused (a game session owns the runtime or the engine did not stop); retrying every idle window",
+        );
     }
 }
 
@@ -310,302 +352,4 @@ fn mobile_tick(sup: &Arc<Mutex<Supervisor>>, state: &mut TickState) {
 fn wakeable_runtime_pending() -> bool {
     supervisor::deferred_runtime_pending()
         && supervisor::deferred_runtime_mode().as_deref() != Some("stock")
-}
-
-/// True when another process is really using the GPU (the mode-aware client
-/// signal described in the module docs). Only called while the GPU is already
-/// awake — an attached engine (park check) or sustained `active` (wake check)
-/// — so the fine-grained NVML query never wakes a sleeping GPU; the registry
-/// backend it opens is swept by `release_idle_backends` once the checks stop.
-///
-/// Every call records the full sample (per-kind context holders AND
-/// device-node holders, with process names) as the `deep_sleep.gpu_clients`
-/// status block, so someone debugging a park that does or does not happen
-/// can see exactly the evidence the decision used.
-fn gpu_in_use_by_client(gpu_index: Option<u32>) -> bool {
-    let proc_root = client_proc_root();
-    let self_pid = std::process::id();
-    // Sampled even when the decision ignores it: a shell holding
-    // `/dev/nvidia0` open while the context lists stay empty is precisely
-    // what explains a fine-grained park to a reader of the status block.
-    let mut observation = GpuClientObservation {
-        source: GpuClientSource::DeviceNodes,
-        graphics: Vec::new(),
-        compute: Vec::new(),
-        device_node_holders: nvidia_device_node_holders_in(&proc_root, self_pid),
-        ignored_clients: Vec::new(),
-    };
-    if super::fine_grained_mode() {
-        if let Some(index) = gpu_index {
-            match gpu_rpc::context_pids(index) {
-                Ok(contexts) => {
-                    observation.source = GpuClientSource::NvmlContexts;
-                    let (graphics, compute, ignored) = classified_context_processes(
-                        &proc_root,
-                        &contexts.graphics,
-                        &contexts.compute,
-                        self_pid,
-                    );
-                    observation.graphics = graphics;
-                    observation.compute = compute;
-                    observation.ignored_clients = ignored;
-                }
-                Err(error) => {
-                    log_context_query_fallback(&error);
-                    observation.ignored_clients = ignored_powerd_processes(
-                        &proc_root,
-                        &observation.device_node_holders,
-                    );
-                }
-            }
-        }
-    }
-    // The verdict, the status block's `total_count`, and the journal line all
-    // come from the same `counted_pids` definition, so they can never
-    // disagree about who was counted.
-    let in_use = observation.in_use();
-    super::record_gpu_clients(observation);
-    in_use
-}
-
-/// The NVML-context fallback is a per-boot property (old driver, missing
-/// symbols); log it once, not at 1 Hz.
-fn log_context_query_fallback(error: &str) {
-    static LOGGED: std::sync::Once = std::sync::Once::new();
-    LOGGED.call_once(|| {
-        logging::info(&format!(
-            "deep sleep: NVML context query unavailable ({error}); using the device-node scan"
-        ));
-    });
-}
-
-/// The proc tree the client scan and name lookups read. Test seam (never set
-/// in production): `PENGUIN_BURNERD_TEST_CLIENT_PROC` points at a fake proc
-/// tree so integration tests can stage and remove GPU clients
-/// deterministically on any machine.
-fn client_proc_root() -> PathBuf {
-    std::env::var_os("PENGUIN_BURNERD_TEST_CLIENT_PROC")
-        .filter(|v| !v.is_empty())
-        .map_or_else(|| PathBuf::from("/proc"), PathBuf::from)
-}
-
-/// Resolve each unique context PID through procfs exactly once, dropping the
-/// daemon itself and partitioning the one narrowly approved fine-grained
-/// infrastructure helper from clients that decide park/wake behavior.
-fn classified_context_processes(
-    proc_root: &Path,
-    graphics_pids: &[u32],
-    compute_pids: &[u32],
-    self_pid: u32,
-) -> (
-    Vec<GpuClientProcess>,
-    Vec<GpuClientProcess>,
-    Vec<GpuClientProcess>,
-) {
-    let mut unique_pids: Vec<u32> = graphics_pids
-        .iter()
-        .chain(compute_pids)
-        .copied()
-        .filter(|pid| *pid != self_pid)
-        .collect();
-    unique_pids.sort_unstable();
-    unique_pids.dedup();
-
-    let mut counted = Vec::new();
-    let mut ignored = Vec::new();
-    for pid in unique_pids {
-        let name = process_name(proc_root, pid);
-        let process = GpuClientProcess { pid, name };
-        if is_root_nvidia_powerd(proc_root, &process) {
-            ignored.push(process);
-        } else {
-            counted.push(process);
-        }
-    }
-    let graphics = counted
-        .iter()
-        .filter(|process| graphics_pids.contains(&process.pid))
-        .cloned()
-        .collect();
-    let compute = counted
-        .iter()
-        .filter(|process| compute_pids.contains(&process.pid))
-        .cloned()
-        .collect();
-    (graphics, compute, ignored)
-}
-
-/// Process name from `<proc_root>/<pid>/comm`; `None` once the process is
-/// gone. Pure procfs read — never touches the GPU.
-fn process_name(proc_root: &Path, pid: u32) -> Option<String> {
-    let comm = fs::read_to_string(proc_root.join(pid.to_string()).join("comm")).ok()?;
-    // procfs terminates `comm` with exactly one newline. Preserve every byte
-    // of the process name itself so the infrastructure exception is an exact
-    // match rather than a whitespace-normalized one.
-    let name = comm.strip_suffix('\n').unwrap_or(&comm);
-    (!name.is_empty()).then(|| name.to_string())
-}
-
-/// Effective UID from `/proc/<pid>/status`. Missing or malformed process
-/// metadata returns `None`, so callers retain the candidate conservatively.
-fn process_effective_uid(proc_root: &Path, pid: u32) -> Option<u32> {
-    let status = fs::read_to_string(proc_root.join(pid.to_string()).join("status")).ok()?;
-    let mut records = status.lines().filter_map(|line| line.strip_prefix("Uid:"));
-    let record = records.next()?;
-    if records.next().is_some() {
-        return None;
-    }
-    let mut fields = record.split_whitespace();
-    let _real: u32 = fields.next()?.parse().ok()?;
-    let effective: u32 = fields.next()?.parse().ok()?;
-    let _saved: u32 = fields.next()?.parse().ok()?;
-    let _filesystem: u32 = fields.next()?.parse().ok()?;
-    if fields.next().is_some() {
-        return None;
-    }
-    Some(effective)
-}
-
-/// The one approved fine-grained infrastructure exception. Keep the exact
-/// name and root-identity requirements in one predicate so the NVML and
-/// device-node fallback paths cannot drift.
-fn is_root_nvidia_powerd(proc_root: &Path, process: &GpuClientProcess) -> bool {
-    process.name.as_deref() == Some("nvidia-powerd")
-        && process_effective_uid(proc_root, process.pid) == Some(0)
-}
-
-/// Positively identify the Dynamic Boost helper among an already resolved
-/// process list. Used by the fine-grained device-node fallback; coarse and
-/// unknown modes never call this exclusion.
-fn ignored_powerd_processes(
-    proc_root: &Path,
-    processes: &[GpuClientProcess],
-) -> Vec<GpuClientProcess> {
-    processes
-        .iter()
-        .filter(|process| is_root_nvidia_powerd(proc_root, process))
-        .cloned()
-        .collect()
-}
-
-/// Only the numbered render nodes count as a real GPU client. `nvidiactl`,
-/// `nvidia-uvm*`, `nvidia-modeset`, and `nvidia-caps/*` are held long-lived
-/// by monitoring/container tooling without keeping an RTD3 GPU awake.
-fn is_nvidia_device_node(target: &str) -> bool {
-    target
-        .strip_prefix("/dev/nvidia")
-        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
-}
-
-/// Every process other than the daemon holding a `/dev/nvidia<N>` fd, with
-/// names — pure procfs reads, never touches the device. Root sees every
-/// process. Sorted by PID so repeated status reads stay stable.
-fn nvidia_device_node_holders_in(
-    proc_root: impl AsRef<Path>,
-    self_pid: u32,
-) -> Vec<GpuClientProcess> {
-    let proc_root = proc_root.as_ref();
-    let mut holders = Vec::new();
-    let Ok(entries) = fs::read_dir(proc_root) else {
-        return holders;
-    };
-    for entry in entries.filter_map(Result::ok) {
-        let name = entry.file_name();
-        let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
-            continue;
-        };
-        if pid == self_pid {
-            continue;
-        }
-        let Ok(fds) = fs::read_dir(entry.path().join("fd")) else {
-            continue;
-        };
-        let holds_device_node = fds.filter_map(Result::ok).any(|fd| {
-            fs::read_link(fd.path())
-                .is_ok_and(|target| is_nvidia_device_node(&target.to_string_lossy()))
-        });
-        if holds_device_node {
-            holders.push(GpuClientProcess {
-                pid,
-                name: process_name(proc_root, pid),
-            });
-        }
-    }
-    holders.sort_unstable_by_key(|process| process.pid);
-    holders
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::symlink;
-
-    #[test]
-    fn only_numbered_device_nodes_count_as_clients() {
-        assert!(is_nvidia_device_node("/dev/nvidia0"));
-        assert!(is_nvidia_device_node("/dev/nvidia12"));
-        assert!(!is_nvidia_device_node("/dev/nvidiactl"));
-        assert!(!is_nvidia_device_node("/dev/nvidia-uvm"));
-        assert!(!is_nvidia_device_node("/dev/nvidia-uvm-tools"));
-        assert!(!is_nvidia_device_node("/dev/nvidia-modeset"));
-        assert!(!is_nvidia_device_node("/dev/nvidia-caps/nvidia-cap1"));
-        assert!(!is_nvidia_device_node("/dev/nvidia"));
-        assert!(!is_nvidia_device_node("/dev/dri/renderD128"));
-    }
-
-    #[test]
-    fn collects_nvidia_fd_holders_with_names_and_skips_self() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let fd_dir = root.path().join("4242").join("fd");
-        fs::create_dir_all(&fd_dir).unwrap();
-        symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
-        fs::write(root.path().join("4242").join("comm"), "some-game\n").unwrap();
-        // A holder whose comm is unreadable still appears, without a name.
-        let anon_fd_dir = root.path().join("77").join("fd");
-        fs::create_dir_all(&anon_fd_dir).unwrap();
-        symlink("/dev/nvidia1", anon_fd_dir.join("3")).unwrap();
-        fs::create_dir_all(root.path().join("not-a-pid")).unwrap();
-
-        let holders = nvidia_device_node_holders_in(root.path(), 1);
-        assert_eq!(holders.len(), 2);
-        assert_eq!(holders[0].pid, 77);
-        assert_eq!(holders[0].name, None);
-        assert_eq!(holders[1].pid, 4242);
-        assert_eq!(holders[1].name.as_deref(), Some("some-game"));
-        // The daemon's own fds never count as a client.
-        let holders = nvidia_device_node_holders_in(root.path(), 4242);
-        assert_eq!(holders.len(), 1);
-        assert_eq!(holders[0].pid, 77);
-    }
-
-    #[test]
-    fn auxiliary_nvidia_nodes_are_not_clients() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let fd_dir = root.path().join("100").join("fd");
-        fs::create_dir_all(&fd_dir).unwrap();
-        symlink("/dev/nvidiactl", fd_dir.join("3")).unwrap();
-        symlink("/dev/nvidia-uvm", fd_dir.join("4")).unwrap();
-        symlink("/dev/dri/renderD128", fd_dir.join("5")).unwrap();
-        assert!(nvidia_device_node_holders_in(root.path(), 1).is_empty());
-    }
-
-    #[test]
-    fn classified_context_processes_resolve_comm_once_and_drop_the_daemon() {
-        let root = tempfile::tempdir().expect("tempdir");
-        fs::create_dir_all(root.path().join("123")).unwrap();
-        fs::write(root.path().join("123").join("comm"), "cuda-worker\n").unwrap();
-
-        let (graphics, compute, ignored) =
-            classified_context_processes(root.path(), &[123, 456, 999], &[123], 456);
-        assert!(ignored.is_empty());
-        assert_eq!(graphics.len(), 2);
-        assert_eq!(graphics[0].pid, 123);
-        assert_eq!(graphics[0].name.as_deref(), Some("cuda-worker"));
-        // A PID that exited between the NVML query and the lookup keeps its
-        // entry so the counts stay honest, just without a name.
-        assert_eq!(graphics[1].pid, 999);
-        assert_eq!(graphics[1].name, None);
-        // A PID present in both context kinds shares the one classification.
-        assert_eq!(compute, vec![graphics[0].clone()]);
-    }
 }

@@ -102,6 +102,10 @@ pub struct MockGpu {
     /// Format: whitespace-separated tokens where `graphics` / `compute`
     /// select the kind for subsequent PIDs (default `graphics`).
     pub context_pids_file: Option<PathBuf>,
+    /// Integration-test seam: a three-field `opens closes live` file updated
+    /// when a mock NVIDIA session is acquired and dropped. Production never
+    /// sets it.
+    lifetime_file: Option<PathBuf>,
 
     ops: RefCell<Vec<MockOp>>,
     failures: RefCell<HashMap<&'static str, GpuError>>,
@@ -145,6 +149,7 @@ impl Default for MockGpu {
             vf_points: Vec::new(),
             context_pids: GpuContextPids::default(),
             context_pids_file: None,
+            lifetime_file: None,
             ops: RefCell::new(Vec::new()),
             failures: RefCell::new(HashMap::new()),
             on_temperature: RefCell::new(None),
@@ -175,6 +180,13 @@ impl MockGpu {
         self.ops.borrow().clone()
     }
 
+    /// Begin tracking this mock instance as one live NVIDIA session.
+    pub(crate) fn track_lifetime(&mut self, path: PathBuf) {
+        let (opens, closes, live) = read_lifetime_state(&path);
+        write_lifetime_state(&path, opens + 1, closes, live + 1);
+        self.lifetime_file = Some(path);
+    }
+
     fn record(&self, op: MockOp) {
         self.ops.borrow_mut().push(op);
     }
@@ -184,6 +196,35 @@ impl MockGpu {
             Some(err) => Err(err.clone()),
             None => Ok(()),
         }
+    }
+}
+
+impl Drop for MockGpu {
+    fn drop(&mut self) {
+        let Some(path) = &self.lifetime_file else {
+            return;
+        };
+        let (opens, closes, live) = read_lifetime_state(path);
+        write_lifetime_state(path, opens, closes + 1, live.saturating_sub(1));
+    }
+}
+
+fn write_lifetime_state(path: &std::path::Path, opens: u64, closes: u64, live: u64) {
+    let temporary = path.with_extension("tmp");
+    if std::fs::write(&temporary, format!("{opens} {closes} {live}\n")).is_ok() {
+        let _ = std::fs::rename(temporary, path);
+    }
+}
+
+fn read_lifetime_state(path: &std::path::Path) -> (u64, u64, u64) {
+    let values: Vec<u64> = std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|value| value.parse().ok())
+        .collect();
+    match values.as_slice() {
+        [opens, closes, live] => (*opens, *closes, *live),
+        _ => (0, 0, 0),
     }
 }
 

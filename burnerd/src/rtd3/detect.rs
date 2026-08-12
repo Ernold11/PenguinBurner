@@ -8,6 +8,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// `Runtime D3 status:` as reported by `/proc/driver/nvidia/gpus/<addr>/power`.
 ///
@@ -201,6 +202,20 @@ impl Rtd3Probe {
         }
     }
 
+    /// Kernel autosuspend delay for this device. Missing, negative, or
+    /// malformed values are unknown; callers choose a conservative fallback.
+    /// This is a cached sysfs read and never wakes the device.
+    pub fn autosuspend_delay(&self, addr: &str) -> Option<Duration> {
+        Self::read_trimmed(
+            &self
+                .pci_devices_root
+                .join(addr)
+                .join("power/autosuspend_delay_ms"),
+        )
+        .and_then(|text| text.parse::<u64>().ok())
+        .map(Duration::from_millis)
+    }
+
     /// Cumulative runtime-PM residency: `power/runtime_active_time` and
     /// `power/runtime_suspended_time`, milliseconds since boot
     /// (Documentation/ABI/testing/sysfs-devices-power). Cached kernel
@@ -306,6 +321,23 @@ mod tests {
         // Garbage stays None per counter, not a panic.
         fs::write(power.join("runtime_active_time"), "not-a-number\n").unwrap();
         assert_eq!(probe.runtime_pm_times(addr), (None, Some(60789)));
+    }
+
+    #[test]
+    fn autosuspend_delay_accepts_nonnegative_milliseconds_only() {
+        let (root, probe, addr) = fake_tree(None, None, Some("active"));
+        let path = root
+            .path()
+            .join("sys")
+            .join(addr)
+            .join("power/autosuspend_delay_ms");
+        assert_eq!(probe.autosuspend_delay(addr), None);
+        fs::write(&path, "5000\n").unwrap();
+        assert_eq!(probe.autosuspend_delay(addr), Some(Duration::from_secs(5)));
+        fs::write(&path, "-1\n").unwrap();
+        assert_eq!(probe.autosuspend_delay(addr), None);
+        fs::write(&path, "not-a-number\n").unwrap();
+        assert_eq!(probe.autosuspend_delay(addr), None);
     }
 
     #[test]

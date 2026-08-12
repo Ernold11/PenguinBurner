@@ -20,6 +20,31 @@ pub struct NvmlBackend {
     vf: Option<NvapiVfSession>,
 }
 
+#[derive(Debug)]
+pub(crate) enum ContextProbeError {
+    Query(GpuError),
+    Shutdown {
+        shutdown: GpuError,
+        query: Option<GpuError>,
+    },
+}
+
+impl std::fmt::Display for ContextProbeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Query(error) => error.fmt(formatter),
+            Self::Shutdown {
+                shutdown,
+                query: Some(query),
+            } => write!(formatter, "{shutdown}; context query also failed: {query}"),
+            Self::Shutdown {
+                shutdown,
+                query: None,
+            } => shutdown.fmt(formatter),
+        }
+    }
+}
+
 impl NvmlBackend {
     pub fn open(gpu_index: u32) -> GpuResult<Self> {
         let nvml = Nvml::init().map_err(|error| runtime_error("nvmlInit_v2", error))?;
@@ -64,6 +89,58 @@ impl NvmlBackend {
             .ok()
             .map(|offset| offset.clock_offset_mhz))
     }
+}
+
+/// One context-only NVML observation for the RTD3 watcher. The local `Nvml`
+/// owns the driver session and is dropped before this function returns; unlike
+/// `NvmlBackend::open`, this does not initialize either hidden NVAPI session.
+pub(crate) fn context_pids_ephemeral(
+    gpu_index: u32,
+) -> Result<GpuContextPids, ContextProbeError> {
+    let nvml = Nvml::init()
+        .map_err(|error| runtime_error("nvmlInit_v2", error))
+        .map_err(ContextProbeError::Query)?;
+    let query_result = nvml
+        .device_by_index(gpu_index)
+        .map_err(|error| runtime_error("nvmlDeviceGetHandleByIndex_v2", error))
+        .and_then(|device| query_context_pids(&device));
+    let shutdown_result = nvml
+        .shutdown()
+        .map_err(|error| runtime_error("nvmlShutdown", error));
+    finish_context_probe(query_result, shutdown_result)
+}
+
+fn finish_context_probe(
+    query_result: GpuResult<GpuContextPids>,
+    shutdown_result: GpuResult<()>,
+) -> Result<GpuContextPids, ContextProbeError> {
+    match (query_result, shutdown_result) {
+        (query_result, Err(shutdown)) => Err(ContextProbeError::Shutdown {
+            shutdown,
+            query: query_result.err(),
+        }),
+        (Err(error), Ok(())) => Err(ContextProbeError::Query(error)),
+        (Ok(contexts), Ok(())) => Ok(contexts),
+    }
+}
+
+fn query_context_pids(device: &Device<'_>) -> GpuResult<GpuContextPids> {
+    fn pids(processes: Vec<nvml_wrapper::struct_wrappers::device::ProcessInfo>) -> Vec<u32> {
+        let mut pids: Vec<u32> = processes.into_iter().map(|process| process.pid).collect();
+        pids.sort_unstable();
+        pids.dedup();
+        pids
+    }
+    let graphics = device
+        .running_graphics_processes()
+        .map_err(|error| runtime_error("nvmlDeviceGetGraphicsRunningProcesses_v3", error))?;
+    let compute = device
+        .running_compute_processes()
+        .map_err(|error| runtime_error("nvmlDeviceGetComputeRunningProcesses_v3", error))?;
+    Ok(GpuContextPids {
+        graphics: pids(graphics),
+        compute: pids(compute),
+    })
 }
 
 impl GpuBackend for NvmlBackend {
@@ -188,23 +265,8 @@ impl GpuBackend for NvmlBackend {
     }
 
     fn gpu_context_pids(&self) -> GpuResult<GpuContextPids> {
-        fn pids(processes: Vec<nvml_wrapper::struct_wrappers::device::ProcessInfo>) -> Vec<u32> {
-            let mut pids: Vec<u32> = processes.into_iter().map(|process| process.pid).collect();
-            pids.sort_unstable();
-            pids.dedup();
-            pids
-        }
         let device = self.device()?;
-        let graphics = device
-            .running_graphics_processes()
-            .map_err(|error| runtime_error("nvmlDeviceGetGraphicsRunningProcesses_v3", error))?;
-        let compute = device
-            .running_compute_processes()
-            .map_err(|error| runtime_error("nvmlDeviceGetComputeRunningProcesses_v3", error))?;
-        Ok(GpuContextPids {
-            graphics: pids(graphics),
-            compute: pids(compute),
-        })
+        query_context_pids(&device)
     }
 
     #[allow(deprecated)]
@@ -527,6 +589,30 @@ mod tests {
         assert_eq!(
             policy_error("nvmlDeviceSetClockOffsets", NvmlError::NotSupported).to_string(),
             "nvmlDeviceSetClockOffsets failed with NVML error 3: the requested operation is not available on the target device"
+        );
+    }
+
+    #[test]
+    fn ephemeral_probe_surfaces_shutdown_failure_after_a_successful_query() {
+        let result = finish_context_probe(
+            Ok(GpuContextPids::default()),
+            Err(GpuError::other("mock nvmlShutdown failure", 0)),
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "mock nvmlShutdown failure"
+        );
+    }
+
+    #[test]
+    fn ephemeral_probe_preserves_shutdown_failure_when_the_query_also_fails() {
+        let result = finish_context_probe(
+            Err(GpuError::other("mock context query failure", 0)),
+            Err(GpuError::other("mock nvmlShutdown failure", 0)),
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "mock nvmlShutdown failure; context query also failed: mock context query failure"
         );
     }
 }

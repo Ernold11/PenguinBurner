@@ -40,7 +40,12 @@ gets the deferred behavior:
   Under fine-grained RTD3 (`mode: "fine-grained"`) the driver lets the GPU
   sleep even while desktop shells or monitoring tools hold `/dev/nvidia<N>`
   open, so an open handle proves nothing — the daemon asks NVML for live
-  graphics/compute contexts instead. Under coarse-grained RTD3 any
+  graphics/compute contexts instead. Each watcher query uses a short-lived,
+  context-only NVML session and closes it before making the decision. If the
+  result is idle or only root-owned `nvidia-powerd`, the watcher pauses NVIDIA
+  queries for the kernel autosuspend delay (plus one tick); a changed numbered
+  device-holder set re-arms detection when a workload arrives. Under
+  coarse-grained RTD3 any
   `/dev/nvidia<N>` holder keeps the GPU awake, so there the device-handle
   scan is the accurate signal (auxiliary `nvidiactl`/`nvidia-uvm` handles
   never count).
@@ -151,7 +156,6 @@ deep sleep: no GPU clients for the idle window; parking the runtime
 deep sleep: persisted runtime deferred until the GPU is in use
 deep sleep: runtime parked; the GPU may suspend until its next real use
 deep sleep: runtime_status active -> suspended (active for 312.4s)
-deep sleep: released 1 idle GPU backend(s) so the GPU can suspend
 deep sleep: runtime_status suspended -> active (suspended for 1841.7s)
 deep sleep: gpu clients (nvml-contexts): counted=1 (GPU in use), graphics=1 [9314 game.exe], compute=0, ignored infrastructure helpers=1 [880 nvidia-powerd], device-node holders=4 [880 nvidia-powerd, 1450 plasmashell, 1721 kwin_wayland, 9314 game.exe]
 deep sleep: GPU is in use; starting the deferred persisted runtime
@@ -168,8 +172,9 @@ Line by line:
 - **`runtime_status A -> B (A for Ns)`** — the kernel's own view of the
   GPU's power state, with how long the previous state was held. This is the
   ground truth that parking actually led to a suspend, and it timestamps
-  every wake. (The backend-release line lags the suspend by its 30s idle
-  TTL, as above.)
+  every wake. Watcher context probes have already closed before their client
+  decision is logged. A separate `released N idle GPU backend(s)` line refers
+  only to a one-off socket RPC backend reaching its 30-second idle TTL.
 - **`no GPU clients; parking the runtime in Ns unless one appears`** — the
   park countdown started; N is the remaining time, so the park line lands N
   seconds after this one. If a client shows up first you get

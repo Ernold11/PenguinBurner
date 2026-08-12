@@ -15,12 +15,13 @@
 //! Desktop mode keeps the existing always-attached behavior. Mobile mode keeps
 //! GPU handles ephemeral so an RTD3-capable dGPU can suspend.
 
+mod clients;
 pub mod detect;
 pub mod watch;
 
 use std::collections::HashSet;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -201,6 +202,7 @@ struct GateState {
     runtime_status_since: Option<Instant>,
     runtime_active_ms: Option<u64>,
     runtime_suspended_ms: Option<u64>,
+    autosuspend_delay: Option<Duration>,
     suspended_observed: bool,
     autostart_deferred: bool,
     parked: bool,
@@ -214,6 +216,7 @@ static GATE: Mutex<GateState> = Mutex::new(GateState {
     runtime_status_since: None,
     runtime_active_ms: None,
     runtime_suspended_ms: None,
+    autosuspend_delay: None,
     suspended_observed: false,
     autostart_deferred: false,
     parked: false,
@@ -249,6 +252,9 @@ pub fn evaluate(probe: &detect::Rtd3Probe, pci_hint: Option<&str>) -> DeepSleepM
     };
     let runtime_status = addr.as_deref().map(|addr| probe.runtime_pm_status(addr));
     let runtime_times = addr.as_deref().map(|addr| probe.runtime_pm_times(addr));
+    let autosuspend_delay = addr
+        .as_deref()
+        .and_then(|addr| probe.autosuspend_delay(addr));
     let mut state = gate();
     state.pci_addr = addr;
     if let Some(status) = runtime_status {
@@ -258,6 +264,7 @@ pub fn evaluate(probe: &detect::Rtd3Probe, pci_hint: Option<&str>) -> DeepSleepM
         state.runtime_active_ms = active_ms;
         state.runtime_suspended_ms = suspended_ms;
     }
+    state.autosuspend_delay = autosuspend_delay;
     if state.mode.as_ref() != Some(&mode) {
         logging::info(&format!(
             "deep sleep mode: {} (gpu={})",
@@ -328,6 +335,10 @@ pub fn fine_grained_mode() -> bool {
 
 pub fn last_runtime_status() -> Option<RuntimePmStatus> {
     gate().last_runtime_status
+}
+
+pub(crate) fn autosuspend_delay() -> Option<Duration> {
+    gate().autosuspend_delay
 }
 
 fn record_runtime_status(state: &mut GateState, status: RuntimePmStatus) {

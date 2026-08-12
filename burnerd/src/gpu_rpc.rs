@@ -27,7 +27,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Map, Value};
 
 use crate::gpu::{
-    mock::MockGpu, ClockType, GpuBackend, GpuContextPids, GpuError, GpuIdentity, GpuMemoryInfo,
+    mock::MockGpu, ClockType, GpuBackend, GpuError, GpuIdentity, GpuMemoryInfo,
     NvmlBackend, VfPoint,
 };
 
@@ -132,21 +132,6 @@ pub fn release_idle_backends(ttl: Duration) -> usize {
     let before = registry.len();
     registry.retain(|entry| entry.last_used.elapsed() < ttl);
     before - registry.len()
-}
-
-/// PIDs holding a live graphics/compute context on `gpu_index`, split by
-/// kind, for the deep-sleep watcher's fine-grained "GPU in use" signal and
-/// its `gpu_clients` debug stats. Uses (and lazily opens) the shared registry
-/// backend; the entry's last-used stamp lets `release_idle_backends` sweep it
-/// once the watcher stops asking.
-pub fn context_pids(gpu_index: u32) -> Result<GpuContextPids, String> {
-    let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
-    let position = registry_position(&mut registry, gpu_index)?;
-    let backend: &dyn GpuBackend = match &registry[position].backend {
-        RpcBackend::Real(backend) => backend.as_ref(),
-        RpcBackend::Mock(backend) => backend.as_ref(),
-    };
-    backend.gpu_context_pids().map_err(|err| err.to_string())
 }
 
 fn open_backend(gpu_index: u32) -> Result<RpcBackend, String> {
