@@ -28,9 +28,10 @@
 //! context is reported but excluded: Dynamic Boost is driver infrastructure,
 //! and a real workload alongside it still has its own counted context. The
 //! context query owns one short-lived NVML-only session and closes it before
-//! returning. An idle result latches until a changed numbered-node holder set
-//! or a runtime-PM sleep/wake cycle re-arms the query, so observation cannot
-//! become a periodic self-sustaining GPU hold.
+//! returning. An idle result latches until a changed numbered-node holder set,
+//! a runtime-PM sleep/wake cycle, or a bounded stretch of awake latched ticks
+//! re-arms the query, so observation cannot become a periodic self-sustaining
+//! GPU hold — while a latched holder that starts real work is still noticed.
 //! The watcher falls back to the fd scan only when the context query fails
 //! (driver too old for the _v3 symbols, no backend), applying the same narrow
 //! helper exclusion in confirmed fine-grained mode.
@@ -159,30 +160,61 @@ fn watch_loop(
     let mut clients = ClientDetector::system();
 
     loop {
-        super::evaluate(probe, hint);
-
-        if super::protects_deep_sleep() {
-            let released = gpu_rpc::release_idle_backends(RPC_BACKEND_IDLE_TTL);
-            if released > 0 {
-                logging::info(&format!(
-                    "deep sleep: released {released} idle GPU backend(s) so the GPU can suspend"
-                ));
-            }
-            mobile_tick(sup, &mut tick_state, &mut clients);
-            thread::sleep(MOBILE_TICK);
-            continue;
-        }
-
-        clients.reset();
-        super::set_autostart_deferred(false);
-        if !desktop_autostart_attempted && super::allows_desktop_autostart() {
-            // Detection resolved from Unknown to Desktop after boot: make the
-            // one eager-start attempt Desktop mode would have received at boot.
-            desktop_autostart_attempted = true;
-            supervisor::start_autostart_if_configured(sup);
-        }
-        thread::sleep(DESKTOP_TICK);
+        // The watcher is the only thread that parks runtimes, starts deferred
+        // ones, and sweeps idle RPC backends; a single panicking tick must not
+        // silently disable all three for the daemon's remaining lifetime.
+        // Shared state stays usable across an unwind: the gate and supervisor
+        // mutexes recover from poisoning, and TickState/ClientDetector hold
+        // only counters and latches that the next tick re-derives.
+        let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            watch_tick(
+                sup,
+                probe,
+                hint,
+                &mut desktop_autostart_attempted,
+                &mut tick_state,
+                &mut clients,
+            )
+        }));
+        let delay = tick.unwrap_or_else(|_panic| {
+            logging::error("deep sleep: watcher tick panicked; keeping the watcher alive");
+            MOBILE_TICK
+        });
+        thread::sleep(delay);
     }
+}
+
+/// One watcher iteration; returns how long to sleep before the next.
+fn watch_tick(
+    sup: &Arc<Mutex<Supervisor>>,
+    probe: &Rtd3Probe,
+    hint: Option<&str>,
+    desktop_autostart_attempted: &mut bool,
+    tick_state: &mut TickState,
+    clients: &mut ClientDetector,
+) -> Duration {
+    super::evaluate(probe, hint);
+
+    if super::protects_deep_sleep() {
+        let released = gpu_rpc::release_idle_backends(RPC_BACKEND_IDLE_TTL);
+        if released > 0 {
+            logging::info(&format!(
+                "deep sleep: released {released} idle GPU backend(s) so the GPU can suspend"
+            ));
+        }
+        mobile_tick(sup, tick_state, clients);
+        return MOBILE_TICK;
+    }
+
+    clients.reset();
+    super::set_autostart_deferred(false);
+    if !*desktop_autostart_attempted && super::allows_desktop_autostart() {
+        // Detection resolved from Unknown to Desktop after boot: make the
+        // one eager-start attempt Desktop mode would have received at boot.
+        *desktop_autostart_attempted = true;
+        supervisor::start_autostart_if_configured(sup);
+    }
+    DESKTOP_TICK
 }
 
 /// One Mobile/Unknown observation tick: hold the deferred runtime back until

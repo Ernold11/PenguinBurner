@@ -52,7 +52,6 @@ def _no_live_daemon_runtime_calls(monkeypatch):
         "_apply_persistent_runtime",
         lambda _argv, **_kwargs: {"pid": 4321},
     )
-    monkeypatch.setattr(runtime_service, "clear_boot_runtime_spec", lambda **_kwargs: {})
 
 
 def _write_fake_elf(path: Path, payload: bytes = b"daemon") -> None:
@@ -454,7 +453,13 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        runtime_service,
+        "install_daemon_binary",
+        lambda *_a, **_k: runtime_service.DaemonBinaryRefresh(
+            changed=False, source=Path("/pkg/penguin-burnerd")
+        ),
+    )
     monkeypatch.setattr(
         runtime_service, "LAST_RUNTIME_STATE_PATH", state_file
     )
@@ -520,6 +525,91 @@ def test_install_systemd_service_replaces_transient_unit_before_enabling(
     assert any("persistent service install" in message for message in logs)
 
 
+def test_describe_daemon_binary_refresh_messages() -> None:
+    updated = runtime_service.describe_daemon_binary_refresh(
+        runtime_service.DaemonBinaryRefresh(
+            changed=True, source=Path("/pkg/penguin-burnerd")
+        )
+    )
+    assert "updated" in updated
+    assert "/pkg/penguin-burnerd" in updated
+
+    unchanged = runtime_service.describe_daemon_binary_refresh(
+        runtime_service.DaemonBinaryRefresh(
+            changed=False, source=Path("/pkg/penguin-burnerd")
+        )
+    )
+    assert "already current" in unchanged
+
+    # Source resolving to the installed copy itself means this install ships
+    # no daemon payload: the "refresh" was a no-op against a possibly stale
+    # binary and the message must say so loudly (issue #30).
+    kept = runtime_service.describe_daemon_binary_refresh(
+        runtime_service.DaemonBinaryRefresh(
+            changed=False, source=runtime_service.LIBEXEC_DAEMON_BINARY
+        )
+    )
+    assert "KEPT" in kept
+    assert "no daemon payload" in kept
+
+
+def test_install_systemd_service_without_argv_preserves_boot_spec(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    program = tmp_path / "penguin_burner.py"
+    daemon_unit = tmp_path / "penguin-burnerd.service"
+    program.write_text("# program\n", encoding="utf-8")
+    actions = []
+    logs = []
+
+    monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
+    monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
+    monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        runtime_service,
+        "install_daemon_binary",
+        lambda *_a, **_k: runtime_service.DaemonBinaryRefresh(
+            changed=True, source=Path("/pkg/penguin-burnerd")
+        ),
+    )
+    monkeypatch.setattr(runtime_service, "clear_last_runtime_state", lambda: None)
+    monkeypatch.setattr(
+        runtime_service,
+        "clear_existing_penguin_burner_unit_for_install",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        runtime_service,
+        "_apply_persistent_runtime",
+        lambda argv, **_kwargs: actions.append(("persist-runtime", list(argv)))
+        or {"pid": 4321},
+    )
+    monkeypatch.setattr(
+        runtime_service, "daemon_systemd_service_unit_path", lambda: daemon_unit
+    )
+    monkeypatch.setattr(runtime_service, "_wait_for_daemon_status", lambda *_args: None)
+    monkeypatch.setattr(
+        runtime_service.subprocess,
+        "run",
+        lambda args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(
+        runtime_service,
+        "run_checked_subprocess",
+        lambda args: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    runtime_service.install_systemd_service(
+        program, [], journal_hours=4, log=logs.append
+    )
+
+    # An install/repair with no profile argv must not rewrite or clear the
+    # boot spec — the existing boot profile survives the reinstall.
+    assert actions == []
+    assert any(message.startswith("Daemon binary: updated") for message in logs)
+
+
 def test_install_systemd_service_restarts_active_daemon_after_unit_update(
     tmp_path: Path,
     monkeypatch,
@@ -546,7 +636,13 @@ def test_install_systemd_service_restarts_active_daemon_after_unit_update(
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        runtime_service,
+        "install_daemon_binary",
+        lambda *_a, **_k: runtime_service.DaemonBinaryRefresh(
+            changed=False, source=Path("/pkg/penguin-burnerd")
+        ),
+    )
     monkeypatch.setattr(
         runtime_service, "LAST_RUNTIME_STATE_PATH", state_file
     )
@@ -633,7 +729,13 @@ def test_migrate_to_daemon_service_disables_legacy_after_daemon_reachable(
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        runtime_service,
+        "install_daemon_binary",
+        lambda *_a, **_k: runtime_service.DaemonBinaryRefresh(
+            changed=False, source=Path("/pkg/penguin-burnerd")
+        ),
+    )
     monkeypatch.setattr(
         runtime_service, "LAST_RUNTIME_STATE_PATH", state_file
     )
@@ -780,7 +882,13 @@ def test_daemonize_starts_daemon_service_and_runtime_profile(tmp_path, monkeypat
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        runtime_service,
+        "install_daemon_binary",
+        lambda *_a, **_k: runtime_service.DaemonBinaryRefresh(
+            changed=False, source=Path("/pkg/penguin-burnerd")
+        ),
+    )
     monkeypatch.setattr(
         runtime_service,
         "daemon_systemd_service_unit_path",
@@ -853,7 +961,9 @@ def test_daemonize_restarts_only_when_existing_binary_changed(
     monkeypatch.setattr(
         runtime_service,
         "install_daemon_binary",
-        lambda *_args, **_kwargs: binary_changed,
+        lambda *_args, **_kwargs: runtime_service.DaemonBinaryRefresh(
+            changed=binary_changed, source=Path("/pkg/penguin-burnerd")
+        ),
     )
     monkeypatch.setattr(
         runtime_service,
@@ -917,7 +1027,13 @@ def test_daemonize_preserves_pkexec_desktop_user_env(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        runtime_service,
+        "install_daemon_binary",
+        lambda *_a, **_k: runtime_service.DaemonBinaryRefresh(
+            changed=False, source=Path("/pkg/penguin-burnerd")
+        ),
+    )
     monkeypatch.setattr(
         runtime_service,
         "daemon_systemd_service_unit_path",
@@ -1062,7 +1178,13 @@ def test_migrate_recovers_066_boot_profile_without_legacy_capitalized_unit(
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        runtime_service,
+        "install_daemon_binary",
+        lambda *_a, **_k: runtime_service.DaemonBinaryRefresh(
+            changed=False, source=Path("/pkg/penguin-burnerd")
+        ),
+    )
     monkeypatch.setattr(runtime_service, "LAST_RUNTIME_STATE_PATH", state_file)
     monkeypatch.setattr(
         runtime_service, "clear_last_runtime_state", lambda: None
@@ -1116,7 +1238,13 @@ def test_migrate_preserves_existing_boot_spec_when_nothing_recovered(
     monkeypatch.setattr(runtime_service, "SYSTEMCTL", "/bin/systemctl")
     monkeypatch.setattr(runtime_service, "systemd_is_available", lambda: True)
     monkeypatch.setattr(runtime_service.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(runtime_service, "install_daemon_binary", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        runtime_service,
+        "install_daemon_binary",
+        lambda *_a, **_k: runtime_service.DaemonBinaryRefresh(
+            changed=False, source=Path("/pkg/penguin-burnerd")
+        ),
+    )
     monkeypatch.setattr(runtime_service, "LAST_RUNTIME_STATE_PATH", missing_state)
     monkeypatch.setattr(runtime_service, "clear_last_runtime_state", lambda: None)
     monkeypatch.setattr(
@@ -1124,11 +1252,6 @@ def test_migrate_preserves_existing_boot_spec_when_nothing_recovered(
         "_apply_persistent_runtime",
         lambda argv, **_kwargs: actions.append(("persist-runtime", list(argv)))
         or {"pid": 1},
-    )
-    monkeypatch.setattr(
-        runtime_service,
-        "clear_boot_runtime_spec",
-        lambda **_kwargs: actions.append(("clear-boot-runtime", [])),
     )
     monkeypatch.setattr(
         runtime_service, "legacy_systemd_service_unit_path", lambda: missing_legacy
@@ -1149,7 +1272,6 @@ def test_migrate_preserves_existing_boot_spec_when_nothing_recovered(
     )
 
     # A repair/reinstall must not wipe an existing 0.7 boot profile.
-    assert ("clear-boot-runtime", []) not in actions
     assert not any(action[0] == "persist-runtime" for action in actions)
 
 

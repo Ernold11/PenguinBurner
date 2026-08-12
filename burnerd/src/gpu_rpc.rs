@@ -134,6 +134,17 @@ pub fn release_idle_backends(ttl: Duration) -> usize {
     before - registry.len()
 }
 
+/// Backends open right now — the daemon's own GPU hold count. Surfaced in the
+/// deep-sleep status because the watcher's client sample excludes the daemon's
+/// pid: without this number a daemon-held NVML session (a polling GUI's
+/// telemetry backend) reads as "no clients" while it pins the GPU.
+pub fn open_backend_count() -> usize {
+    REGISTRY
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .len()
+}
+
 fn open_backend(gpu_index: u32) -> Result<RpcBackend, String> {
     if env::var_os(MOCK_ENV).is_some_and(|v| !v.is_empty()) {
         let mut mock = MockGpu::new();

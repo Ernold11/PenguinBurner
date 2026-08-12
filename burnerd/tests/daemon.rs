@@ -349,6 +349,7 @@ fn status_is_idle_when_nothing_running() {
     assert_eq!(result["state"], "idle");
     assert_eq!(result["active_job"], Value::Null);
     assert!(result["version"].is_string());
+    assert!(result["build"].is_string());
 }
 
 #[test]
@@ -1515,6 +1516,15 @@ fn deep_sleep_powerd_only_context_allows_running_runtime_to_park() {
         &test_static_runtime_spec("powerd-only-profile"),
     ));
     assert_eq!(start["ok"], Value::Bool(true), "{start}");
+    // While the engine is attached, the daemon must confess its own hold:
+    // the client sample excludes the daemon's pid, so this flag is the only
+    // status evidence that the daemon itself is the pin.
+    let running = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(
+        running["result"]["deep_sleep"]["daemon"]["engine_attached"],
+        Value::Bool(true),
+        "{running}"
+    );
 
     let mut parked = false;
     for _ in 0..120 {
@@ -1524,6 +1534,11 @@ fn deep_sleep_powerd_only_context_allows_running_runtime_to_park() {
             let clients = &status["result"]["deep_sleep"]["gpu_clients"];
             assert_eq!(clients["total_count"], 0, "{status}");
             assert_eq!(clients["ignored_count"], 1, "{status}");
+            assert_eq!(
+                status["result"]["deep_sleep"]["daemon"]["engine_attached"],
+                Value::Bool(false),
+                "{status}"
+            );
             parked = true;
             break;
         }

@@ -77,7 +77,8 @@ The `deep_sleep` block reports the verdict:
   "runtime_suspended_ms": 7203400,
   "autostart_deferred": true,
   "suspended_observed": true,
-  "parked": false
+  "parked": false,
+  "daemon": {"engine_attached": false, "rpc_backends": 0}
 }
 ```
 
@@ -139,8 +140,27 @@ sample of the processes it judged the park/wake decision by:
   does not block parking — which is why `total_count` can be 0 while the
   list is not empty.
 - `age_s` is the sample's age in seconds. It grows while the GPU sleeps,
-  because sampling only happens while the GPU is awake; a large value next
-  to `runtime_status: "suspended"` is normal.
+  because sampling only happens while the GPU is awake — and it also grows
+  while an idle result is latched, because observing the GPU opens it and
+  would keep resetting the driver's autosuspend timer. A growing `age_s` is
+  the daemon deliberately not looking so the GPU can sleep; an unchanged
+  holder set re-probes only after a bounded awake window (~5 minutes), so a
+  latched holder that starts real work still re-materializes the profile.
+
+### What the daemon itself is holding
+
+The client lists above exclude the daemon's own process, so the `deep_sleep`
+block carries a separate `daemon` object with the daemon's own GPU holds:
+
+- `engine_attached: true` — the in-process profile engine is applied and
+  polling the driver. This alone keeps the GPU awake; it is exactly the hold
+  the park countdown removes.
+- `rpc_backends` — lazily-opened GPU backends still serving socket queries
+  (telemetry, capabilities). A steadily nonzero value means some client —
+  typically an open PenguinBurner GUI polling telemetry — queries faster
+  than the 30-second idle sweep and holds the GPU awake through the daemon,
+  even though `gpu_clients` shows no counted process. Close the GUI when
+  testing suspend.
 
 ### The journal narrative
 
@@ -217,6 +237,12 @@ distribution has not enabled runtime power management for the dGPU — see the
 NVIDIA driver README chapter on runtime D3 for the required udev rules and
 module options.
 
+When testing a fix, first confirm which build is actually running: the
+daemon's startup journal line reads `penguin-burnerd <version> (<commit>)
+starting`, and `--daemon-status` reports the same short commit as `build`.
+The package version alone does not change between builds of a branch, so a
+stale installed daemon can otherwise impersonate a fresh one.
+
 ## Applied profiles and deep sleep coexist
 
 An applied profile does not keep the GPU awake. While the profile runtime
@@ -231,7 +257,8 @@ re-attaches and reapplies within a few seconds — before a game finishes
 loading. `deep_sleep.parked: true` in `--daemon-status` shows a parked
 profile; `autostart_deferred: true` confirms it will reapply on use. If a
 profile never parks, `gpu_clients` (above) names the processes still being
-counted as GPU users.
+counted as GPU users, and the `daemon` object shows whether the daemon's own
+holds (an attached engine, a GUI polling telemetry) are the remaining pin.
 
 Restoring stock behaves the same way, with one refinement: a stock
 runtime enforces nothing, so once parked it never re-attaches at all.

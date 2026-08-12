@@ -771,6 +771,9 @@ def test_wheel_bundles_rust_daemon_as_package_data() -> None:
     assert "cargo" in setup_py
     assert "--release" in setup_py and "--locked" in setup_py
     assert 'Path(self.build_lib) / "runtime" / "daemon_bin"' in setup_py
+    # Every skip path must consult the REQUIRE gate — a missing crate manifest
+    # once bypassed it silently, shipping a daemon-less wheel under REQUIRE=1.
+    assert "daemon sources are missing" in setup_py
 
     # The sdist carries the crate sources + committed lockfile so a pip install
     # from sdist can cargo-build the daemon into the wheel.

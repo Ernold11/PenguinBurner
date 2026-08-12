@@ -661,7 +661,13 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
     let supervisor = guard(sup);
     let game_runtime = supervisor.game_runtime_status();
     let energy_savings = energy_savings_status();
-    let deep_sleep = crate::rtd3::status();
+    let deep_sleep = crate::rtd3::status(crate::rtd3::DaemonGpuHolds {
+        engine_attached: supervisor
+            .profile
+            .as_ref()
+            .is_some_and(|job| job.engine.returncode().is_none()),
+        rpc_backends: crate::gpu_rpc::open_backend_count(),
+    });
 
     if let Some(job) = &supervisor.child {
         let returncode = job.proc.poll();

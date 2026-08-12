@@ -2,7 +2,9 @@
 //!
 //! The module hides both the client-evidence rules and the cadence of NVIDIA
 //! queries. Fine-grained idle observations are latched in deferred mode so the
-//! watcher cannot keep a GPU awake by periodically observing it.
+//! watcher cannot keep a GPU awake by periodically observing it; a latch that
+//! survives [`LATCH_REPROBE_TICKS`] awake ticks expires into one fresh probe
+//! so an already-latched holder that starts real work is still noticed.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -36,9 +38,21 @@ pub(crate) enum ClientVerdict {
     Pending,
 }
 
+/// Latched ticks (1 Hz, counted only while awake and deferred) after which
+/// one fresh probe re-arms. An already-latched fd holder that starts real GPU
+/// work never changes the holder set and, with the GPU held awake by that
+/// work, never produces the suspend/resume edge that clears the latch — so
+/// without a bound the parked profile would never re-materialize for the
+/// whole workload. A GPU that read `active` for this entire window is
+/// demonstrably awake, so the one re-probe cannot wake anything.
+const LATCH_REPROBE_TICKS: u32 = 300;
+
 struct IdleLatch {
     gpu_index: Option<u32>,
     holders: Vec<GpuClientProcess>,
+    /// Consecutive latch hits; at [`LATCH_REPROBE_TICKS`] the latch expires
+    /// into one fresh probe.
+    held_ticks: u32,
 }
 
 trait ContextProvider {
@@ -93,13 +107,18 @@ impl ClientDetector {
         }
 
         let holders = nvidia_device_node_holders_in(&self.proc_root, self.self_pid);
-        if input.phase == ClientPhase::Deferred
-            && input.fine_grained
-            && self.idle_latch.as_ref().is_some_and(|latch| {
-                latch.gpu_index == input.gpu_index && latch.holders == holders
-            })
-        {
-            return ClientVerdict::Pending;
+        if input.phase == ClientPhase::Deferred && input.fine_grained {
+            if let Some(latch) = self.idle_latch.as_mut() {
+                if latch.gpu_index == input.gpu_index && latch.holders == holders {
+                    latch.held_ticks = latch.held_ticks.saturating_add(1);
+                    if latch.held_ticks < LATCH_REPROBE_TICKS {
+                        return ClientVerdict::Pending;
+                    }
+                    // Bounded re-arm: the GPU stayed awake for the whole
+                    // window, so probe once — a latched holder may have
+                    // started real work that must re-materialize the profile.
+                }
+            }
         }
         self.clear_idle_latch();
 
@@ -170,7 +189,11 @@ impl ClientDetector {
     }
 
     fn latch_idle(&mut self, gpu_index: Option<u32>, holders: Vec<GpuClientProcess>) {
-        self.idle_latch = Some(IdleLatch { gpu_index, holders });
+        self.idle_latch = Some(IdleLatch {
+            gpu_index,
+            holders,
+            held_ticks: 0,
+        });
     }
 
     fn clear_idle_latch(&mut self) {
@@ -474,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_holder_set_never_reprobes_without_an_external_event() {
+    fn unchanged_holder_set_does_not_reprobe_within_the_bounded_window() {
         let root = tempfile::tempdir().unwrap();
         write_identity(root.path(), 880, "nvidia-powerd", 0);
         let calls = Rc::new(RefCell::new(0));
@@ -494,11 +517,84 @@ mod tests {
 
         write_identity(root.path(), 4242, "some-game", 1000);
         contexts.borrow_mut().graphics.push(4242);
+        for _ in 0..(LATCH_REPROBE_TICKS - 1) {
+            assert_eq!(
+                detector.tick(active_tick(ClientPhase::Deferred)),
+                ClientVerdict::Pending
+            );
+        }
+        assert_eq!(*calls.borrow(), 1);
+    }
+
+    #[test]
+    fn latched_holder_that_starts_work_is_noticed_at_the_reprobe_bound() {
+        // The missed-wake gap: an already-listed fd holder starts submitting
+        // real GPU work. The holder set never changes and the busy GPU never
+        // suspends, so neither re-arm edge fires — only the bounded window
+        // may notice the new context and re-materialize the parked profile.
+        let root = tempfile::tempdir().unwrap();
+        write_identity(root.path(), 1450, "plasmashell", 1000);
+        let fd_dir = root.path().join("1450/fd");
+        fs::create_dir_all(&fd_dir).unwrap();
+        symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+        let calls = Rc::new(RefCell::new(0));
+        let contexts = Rc::new(RefCell::new(GpuContextPids::default()));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: contexts.clone(),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        assert!(matches!(
+            detector.tick(active_tick(ClientPhase::Deferred)),
+            ClientVerdict::Idle(_)
+        ));
+
+        contexts.borrow_mut().graphics.push(1450);
+        for _ in 0..(LATCH_REPROBE_TICKS - 1) {
+            assert_eq!(
+                detector.tick(active_tick(ClientPhase::Deferred)),
+                ClientVerdict::Pending
+            );
+        }
+        assert!(matches!(
+            detector.tick(active_tick(ClientPhase::Deferred)),
+            ClientVerdict::Busy(_)
+        ));
+        assert_eq!(*calls.borrow(), 2);
+    }
+
+    #[test]
+    fn idle_reprobe_at_the_bound_relatches_for_another_window() {
+        let root = tempfile::tempdir().unwrap();
+        write_identity(root.path(), 880, "nvidia-powerd", 0);
+        let calls = Rc::new(RefCell::new(0));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: Rc::new(RefCell::new(GpuContextPids::default())),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        assert!(matches!(
+            detector.tick(active_tick(ClientPhase::Deferred)),
+            ClientVerdict::Idle(_)
+        ));
+        for _ in 0..(LATCH_REPROBE_TICKS - 1) {
+            assert_eq!(
+                detector.tick(active_tick(ClientPhase::Deferred)),
+                ClientVerdict::Pending
+            );
+        }
+        // Bound reached: one probe, still idle, and the fresh latch holds the
+        // next window without probing.
+        assert!(matches!(
+            detector.tick(active_tick(ClientPhase::Deferred)),
+            ClientVerdict::Idle(_)
+        ));
+        assert_eq!(*calls.borrow(), 2);
         assert_eq!(
             detector.tick(active_tick(ClientPhase::Deferred)),
             ClientVerdict::Pending
         );
-        assert_eq!(*calls.borrow(), 1);
+        assert_eq!(*calls.borrow(), 2);
     }
 
     #[test]

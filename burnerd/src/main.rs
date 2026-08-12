@@ -41,8 +41,9 @@ fn run() -> i32 {
     };
 
     logging::info(&format!(
-        "penguin-burnerd {} starting",
-        env!("CARGO_PKG_VERSION")
+        "penguin-burnerd {} ({}) starting",
+        env!("CARGO_PKG_VERSION"),
+        env!("PENGUIN_BURNERD_BUILD_ID"),
     ));
 
     // Register before spawning the autostart engine so every termination

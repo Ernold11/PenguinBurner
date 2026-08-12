@@ -61,10 +61,30 @@ pub struct DeepSleepStatus {
     /// True while an applied profile is parked: its engine released the GPU
     /// so it can suspend, and the watcher reapplies it at the next real use.
     pub parked: bool,
+    /// The daemon's own GPU holds at status time. The client sample excludes
+    /// the daemon's pid, so without this block a daemon-held NVML session
+    /// (attached engine, a polling GUI's telemetry backend) reads as "no
+    /// clients" while it pins the GPU — the misdirection that pointed
+    /// issue #30 at nvidia-powerd.
+    pub daemon: DaemonGpuHolds,
     /// The watcher's most recent client sample (mobile modes only): which
     /// processes really use the GPU, per kind, with aggregate counts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_clients: Option<GpuClientsStatus>,
+}
+
+/// The daemon's own GPU holds, reported by the supervisor at status time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct DaemonGpuHolds {
+    /// True while the in-process profile engine is attached: the daemon
+    /// itself holds NVML/NVAPI for the applied profile — the pin the park
+    /// countdown exists to remove.
+    pub engine_attached: bool,
+    /// Lazily-opened GPU RPC backends still alive (telemetry/capability
+    /// queries). A steadily nonzero value means some client keeps querying
+    /// faster than the 30s idle sweep, holding the GPU awake through the
+    /// daemon even though no external process shows in the client lists.
+    pub rpc_backends: usize,
 }
 
 /// One process in the `gpu_clients` lists.
@@ -459,8 +479,10 @@ pub fn set_autostart_deferred(deferred: bool) {
 }
 
 /// The `deep_sleep` status block; `None` until `evaluate` has run (unit tests
-/// that build a bare supervisor never see the field).
-pub fn status() -> Option<DeepSleepStatus> {
+/// that build a bare supervisor never see the field). `daemon_holds` comes
+/// from the caller because engine and RPC-backend state belong to the
+/// supervisor and gpu_rpc, not this gate.
+pub fn status(daemon_holds: DaemonGpuHolds) -> Option<DeepSleepStatus> {
     let state = gate();
     let detected_mode = state.mode.as_ref()?;
     let mobile =
@@ -498,6 +520,7 @@ pub fn status() -> Option<DeepSleepStatus> {
         autostart_deferred: state.autostart_deferred,
         suspended_observed: state.suspended_observed,
         parked: state.parked,
+        daemon: daemon_holds,
         gpu_clients: state
             .gpu_clients
             .as_ref()
@@ -548,7 +571,9 @@ mod tests {
             DeepSleepMode::Unknown { .. }
         ));
         assert_eq!(
-            status().and_then(|status| status.pci_addr).as_deref(),
+            status(DaemonGpuHolds::default())
+                .and_then(|status| status.pci_addr)
+                .as_deref(),
             Some("0000:01:00.0")
         );
         assert!(protects_deep_sleep());
@@ -585,7 +610,9 @@ mod tests {
             DeepSleepMode::Mobile { .. }
         ));
         assert_eq!(
-            status().and_then(|status| status.pci_addr).as_deref(),
+            status(DaemonGpuHolds::default())
+                .and_then(|status| status.pci_addr)
+                .as_deref(),
             Some(addr)
         );
         reset_for_test();
@@ -637,7 +664,7 @@ mod tests {
     fn status_is_absent_until_evaluated() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         reset_for_test();
-        assert!(status().is_none());
+        assert!(status(DaemonGpuHolds::default()).is_none());
         reset_for_test();
     }
 
@@ -745,7 +772,10 @@ mod tests {
             &root.path().join("proc"),
         );
         evaluate(&probe, None);
-        assert!(status().expect("evaluated").gpu_clients.is_none());
+        assert!(status(DaemonGpuHolds::default())
+            .expect("evaluated")
+            .gpu_clients
+            .is_none());
 
         record_gpu_clients(GpuClientObservation {
             source: GpuClientSource::DeviceNodes,
@@ -754,7 +784,7 @@ mod tests {
             device_node_holders: vec![client(4242, "some-game")],
             ignored_clients: Vec::new(),
         });
-        let clients = status()
+        let clients = status(DaemonGpuHolds::default())
             .expect("evaluated")
             .gpu_clients
             .expect("sample recorded");

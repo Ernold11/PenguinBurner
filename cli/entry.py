@@ -89,17 +89,16 @@ def dispatch_cli(
         _require_adaptive_profiles_available(runtime_flags, runtime_argv)
         _reject_auto_uv_scan_in_background(runtime_flags, runtime_argv)
         if runtime_flags["install_systemd_service"]:
-            try:
-                daemon_status(socket_path=DEFAULT_DAEMON_SOCKET)
-            except Exception:
-                install_systemd_service(
-                    program_file,
-                    runtime_argv,
-                    journal_hours=runtime_flags["journal_hours"],
-                    log=log,
-                )
-            else:
-                _apply_runtime_through_daemon(runtime_argv, persist_on_startup=True)
+            # Always run the real install: it refreshes the /usr/libexec daemon
+            # binary, rewrites the unit, and restarts the service. Probing the
+            # socket and "applying instead" when a daemon answered left users
+            # running a stale daemon with success-looking output (issue #30).
+            install_systemd_service(
+                program_file,
+                runtime_argv,
+                journal_hours=runtime_flags["journal_hours"],
+                log=log,
+            )
         elif runtime_flags["uninstall_systemd_service"]:
             uninstall_systemd_service(log=log)
         elif runtime_flags["daemonize"]:
