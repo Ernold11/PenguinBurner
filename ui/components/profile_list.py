@@ -3,6 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 
 from profiles.uv.profile_store import profile_display_name
+from profiles.gpu_identity import (
+    bound_profile_gpu_uuids,
+    profile_gpu_compatibility,
+    profile_gpu_label,
+    profile_gpu_uuid,
+)
+from profiles.gpu_identity import GPU_COMPATIBILITY_LEGACY, GPU_COMPATIBILITY_MATCH
 from profiles.uv.profile_tiers import (
     normalize_profile_tier,
     resolve_profile_tier_profiles,
@@ -13,13 +20,14 @@ from .. import theme
 GOOD_DELTA_COLOR = theme.GOOD
 BAD_DELTA_COLOR = theme.ERROR
 PROFILE_SORT_ROLE = 261
-PROFILE_SORTABLE_COLUMNS = frozenset({0, 2, 3, 4, 5, 6, 7})
+PROFILE_SORTABLE_COLUMNS = frozenset({0, 2, 3, 4, 5, 6, 7, 8})
 
 
 class ProfileList:
     COLUMNS = [
         "Date",
         "Profile",
+        "GPU",
         "mV",
         "Target MHz",
         "Effective MHz",
@@ -32,19 +40,22 @@ class ProfileList:
     ]
     DATE_COLUMN = 0
     PROFILE_COLUMN = 1
-    VOLTAGE_COLUMN = 2
-    TARGET_MHZ_COLUMN = 3
-    EFFECTIVE_MHZ_COLUMN = 4
-    FPSW_COLUMN = 5
-    FPS_COLUMN = 6
-    POWER_COLUMN = 7
-    MEMORY_OFFSET_COLUMN = 8
-    SOURCE_COLUMN = 10
+    GPU_COLUMN = 2
+    VOLTAGE_COLUMN = 3
+    TARGET_MHZ_COLUMN = 4
+    EFFECTIVE_MHZ_COLUMN = 5
+    FPSW_COLUMN = 6
+    FPS_COLUMN = 7
+    POWER_COLUMN = 8
+    MEMORY_OFFSET_COLUMN = 9
+    SOURCE_COLUMN = 11
     PROFILE_ID_ROLE = 257
     CANDIDATE_ID_ROLE = 258
     PROFILE_PATH_ROLE = 259
     PROFILE_DELETABLE_ROLE = 260
     PROFILE_APPLY_ROLE = 262
+    PROFILE_GPU_UUID_ROLE = 263
+    PROFILE_VERIFIED_ROLE = 264
     SORT_VALUE_ROLE = PROFILE_SORT_ROLE
     SORTABLE_COLUMNS = PROFILE_SORTABLE_COLUMNS
 
@@ -54,6 +65,11 @@ class ProfileList:
         self.QtWidgets = QtWidgets
         self._item_class = _sortable_item_class(QtWidgets, self.SORT_VALUE_ROLE)
         self._runtime_actions_available = True
+        self._gpu_choices: list[object] = []
+        self._target_gpu_uuid = ""
+        self._target_gpu_index: int | None = None
+        self._target_selection_required = False
+        self.on_target_gpu_changed = None
         self._sort_column = self.DATE_COLUMN
         self._sort_order = QtCore.Qt.DescendingOrder
         self.widget = QtWidgets.QWidget()
@@ -62,6 +78,15 @@ class ProfileList:
         layout.setSpacing(8)
 
         top = QtWidgets.QHBoxLayout()
+        self.target_gpu_label = QtWidgets.QLabel("Target GPU")
+        self.target_gpu_combo = QtWidgets.QComboBox()
+        self.target_gpu_combo.setObjectName("profileTargetGpu")
+        self.target_gpu_combo.setToolTip(
+            "Choose which GPU this Profiles action targets. Changing this selection "
+            "does not modify hardware settings."
+        )
+        self.target_gpu_label.setVisible(False)
+        self.target_gpu_combo.setVisible(False)
         self.silent_fan_checkbox = QtWidgets.QCheckBox("Silent fan curve")
         self.boot_apply_checkbox = QtWidgets.QCheckBox("Apply on startup")
         self.boot_apply_checkbox.setToolTip(
@@ -87,6 +112,8 @@ class ProfileList:
             "and restore the default power limit."
         )
         top.addWidget(QtWidgets.QLabel("Stored undervolt profiles"))
+        top.addWidget(self.target_gpu_label)
+        top.addWidget(self.target_gpu_combo)
         top.addStretch(1)
         top.addWidget(self.silent_fan_checkbox)
         top.addWidget(self.boot_apply_checkbox)
@@ -136,6 +163,7 @@ class ProfileList:
         adaptive_note.setWordWrap(True)
         layout.addWidget(adaptive_note)
         self.table.itemSelectionChanged.connect(self._sync_action_state)
+        self.target_gpu_combo.currentIndexChanged.connect(self._target_gpu_changed)
         self._sync_action_state()
 
     def set_profiles(
@@ -181,6 +209,7 @@ class ProfileList:
                 values = [
                     _date_text(profile),
                     _profile_name(profile),
+                    profile_gpu_label(profile),
                     _format_profile_metric_with_delta(
                         profile.get("candidate_voltage_mv"),
                         _profile_base_metric(profile, "candidate_voltage_mv"),
@@ -223,6 +252,15 @@ class ProfileList:
                     item.setData(self.PROFILE_PATH_ROLE, profile_path)
                     item.setData(self.PROFILE_DELETABLE_ROLE, bool(is_deletable))
                     item.setData(self.PROFILE_APPLY_ROLE, bool(is_applicable))
+                    item.setData(
+                        self.PROFILE_GPU_UUID_ROLE,
+                        str(
+                            (profile.get("gpu_identity") or {}).get("uuid")
+                            if isinstance(profile.get("gpu_identity"), dict)
+                            else ""
+                        ).strip(),
+                    )
+                    item.setData(self.PROFILE_VERIFIED_ROLE, bool(is_applicable))
                     item.setData(self.SORT_VALUE_ROLE, sort_values[column])
                     if (
                         column in self.SORTABLE_COLUMNS - {self.DATE_COLUMN}
@@ -310,6 +348,124 @@ class ProfileList:
         elif silent_fan_checked is not None:
             self._set_silent_fan_checked(bool(silent_fan_checked))
         self._sync_action_state()
+
+    def configure_gpu_targets(
+        self,
+        profiles: list[dict],
+        choices: list[object],
+        *,
+        preferred_index: int | None = None,
+    ) -> None:
+        previous_uuid = self._target_gpu_uuid
+        self._gpu_choices = list(choices)
+        bound_uuids = bound_profile_gpu_uuids(profiles)
+        choice_by_uuid = {
+            str(getattr(choice, "uuid", "") or "").strip().casefold(): choice
+            for choice in self._gpu_choices
+            if str(getattr(choice, "uuid", "") or "").strip()
+        }
+        self._target_selection_required = len(bound_uuids) >= 2 or (
+            not bound_uuids and len(self._gpu_choices) >= 2 and bool(profiles)
+        )
+
+        target_uuid = ""
+        if self._target_selection_required:
+            preferred_choice = next(
+                (
+                    choice
+                    for choice in self._gpu_choices
+                    if preferred_index is not None
+                    and int(getattr(choice, "index", -1)) == int(preferred_index)
+                ),
+                None,
+            )
+            preferred_uuid = str(getattr(preferred_choice, "uuid", "") or "").strip()
+            if preferred_uuid and (
+                preferred_uuid.casefold() in {item.casefold() for item in bound_uuids}
+                or not bound_uuids
+            ):
+                target_uuid = preferred_uuid
+            elif previous_uuid.casefold() in {item.casefold() for item in bound_uuids}:
+                target_uuid = previous_uuid
+        elif len(bound_uuids) == 1:
+            target_uuid = bound_uuids[0]
+        elif len(self._gpu_choices) == 1:
+            target_uuid = str(getattr(self._gpu_choices[0], "uuid", "") or "").strip()
+
+        target_choice = choice_by_uuid.get(target_uuid.casefold())
+        if target_choice is None and not target_uuid and len(self._gpu_choices) == 1:
+            target_choice = self._gpu_choices[0]
+        self._target_gpu_uuid = target_uuid
+        self._target_gpu_index = (
+            int(getattr(target_choice, "index")) if target_choice is not None else None
+        )
+        self._populate_target_gpu_combo(target_uuid)
+        self._sync_target_gpu_presentation()
+        self._sync_action_state()
+
+    def target_gpu_index(self) -> int | None:
+        return self._target_gpu_index
+
+    def target_gpu_uuid(self) -> str:
+        return self._target_gpu_uuid
+
+    def target_selection_required(self) -> bool:
+        return self._target_selection_required
+
+    def profile_matches_target(self, profile: dict) -> bool:
+        compatibility = profile_gpu_compatibility(profile, self._target_gpu_uuid)
+        if compatibility == GPU_COMPATIBILITY_MATCH:
+            return self._target_gpu_index is not None
+        if compatibility == GPU_COMPATIBILITY_LEGACY:
+            return len(self._gpu_choices) == 1 and self._target_gpu_index is not None
+        return False
+
+    def _populate_target_gpu_combo(self, target_uuid: str) -> None:
+        blocked = self.target_gpu_combo.blockSignals(True)
+        try:
+            self.target_gpu_combo.clear()
+            self.target_gpu_combo.addItem("Choose target GPU...", "")
+            selected_combo_index = 0
+            for choice in self._gpu_choices:
+                uuid = str(getattr(choice, "uuid", "") or "").strip()
+                if not uuid:
+                    continue
+                label = str(getattr(choice, "label", "") or "").strip()
+                self.target_gpu_combo.addItem(label or uuid, uuid)
+                if uuid.casefold() == target_uuid.casefold():
+                    selected_combo_index = self.target_gpu_combo.count() - 1
+            self.target_gpu_combo.setCurrentIndex(selected_combo_index)
+        finally:
+            self.target_gpu_combo.blockSignals(blocked)
+
+    def _target_gpu_changed(self, _combo_index: int) -> None:
+        uuid = str(self.target_gpu_combo.currentData() or "").strip()
+        choice = next(
+            (
+                item
+                for item in self._gpu_choices
+                if str(getattr(item, "uuid", "") or "").strip().casefold()
+                == uuid.casefold()
+            ),
+            None,
+        )
+        self._target_gpu_uuid = uuid
+        self._target_gpu_index = (
+            int(getattr(choice, "index")) if choice is not None else None
+        )
+        self._sync_target_gpu_presentation()
+        self._sync_action_state()
+        if callable(self.on_target_gpu_changed):
+            self.on_target_gpu_changed(self._target_gpu_index, self._target_gpu_uuid)
+
+    def _sync_target_gpu_presentation(self) -> None:
+        visible = self._target_selection_required
+        self.target_gpu_label.setVisible(visible)
+        self.target_gpu_combo.setVisible(visible)
+        if visible and self._target_gpu_index is not None:
+            self.daemonize_button.setText(f"Apply to GPU {self._target_gpu_index}")
+        else:
+            self.daemonize_button.setText("Apply")
 
     def _active_sort_column(self) -> int:
         column = int(self._sort_column)
@@ -449,7 +605,9 @@ class ProfileList:
         self.daemonize_button.setEnabled(has_apply_selection)
         self.boot_apply_checkbox.setEnabled(self._runtime_actions_available)
         self.delete_button.setEnabled(has_delete_selection)
-        self.restore_defaults_button.setEnabled(self._runtime_actions_available)
+        self.restore_defaults_button.setEnabled(
+            self._runtime_actions_available and self._target_gpu_index is not None
+        )
 
     def _set_silent_fan_checked(self, checked: bool) -> None:
         signals_blocked = self.silent_fan_checkbox.blockSignals(True)
@@ -507,7 +665,17 @@ class ProfileList:
 
     def _row_is_applicable(self, row: int) -> bool:
         item = self.table.item(int(row), 0)
-        return bool(item is not None and item.data(self.PROFILE_APPLY_ROLE))
+        if item is None or not item.data(self.PROFILE_VERIFIED_ROLE):
+            return False
+        profile_uuid = str(item.data(self.PROFILE_GPU_UUID_ROLE) or "").strip()
+        if profile_uuid:
+            return bool(
+                self._target_gpu_index is not None
+                and profile_uuid.casefold() == self._target_gpu_uuid.casefold()
+            )
+        if not self._gpu_choices and not self._target_selection_required:
+            return True
+        return bool(len(self._gpu_choices) == 1 and self._target_gpu_index is not None)
 
 
 def _standard_trash_icon(QtWidgets, widget):
@@ -545,11 +713,11 @@ def _sort_value_less(left, right, *, descending: bool = False) -> bool:
     return left_key < right_key
 
 
-def _sort_key(value) -> float | str:
+def _sort_key(value) -> tuple[int, float, str]:
     number = _to_float(value)
     if number is not None:
-        return float(number)
-    return str(value).casefold()
+        return (0, float(number), "")
+    return (1, 0.0, str(value).casefold())
 
 
 def _selection_flags(QtCore, *names: str):
@@ -783,6 +951,7 @@ def _profile_sort_values(profile: dict) -> list[float | str]:
     return [
         _date_sort_value(profile),
         "",
+        profile_gpu_label(profile).casefold(),
         _profile_value_sort_value(profile, "candidate_voltage_mv"),
         _profile_value_sort_value(profile, "lock_clock_mhz"),
         _profile_value_sort_value(profile, "avg_core_clock_mhz"),
@@ -809,14 +978,16 @@ def _resolved_tier_winner_ids(profiles: list[dict]) -> dict[str, str]:
     # resolve_profile_tier_profiles); the table mirrors that so each tier label
     # appears on exactly one row -- the profile adaptive mode would actually
     # pick. Superseded duplicates fall back to a blank tier in the UI.
-    resolved = resolve_profile_tier_profiles(profiles)
     winners: dict[str, str] = {}
-    for tier, profile in resolved.items():
-        if not isinstance(profile, dict):
-            continue
-        profile_id = str(profile.get("profile_id") or "").strip()
-        if profile_id:
-            winners[tier] = profile_id
+    for gpu_uuid in {profile_gpu_uuid(profile) for profile in profiles}:
+        resolved = resolve_profile_tier_profiles(profiles, gpu_uuid=gpu_uuid)
+        for tier, profile in resolved.items():
+            if not isinstance(profile, dict):
+                continue
+            profile_id = str(profile.get("profile_id") or "").strip()
+            if profile_id:
+                winner_key = f"{gpu_uuid}\0{tier}" if gpu_uuid else tier
+                winners[winner_key] = profile_id
     return winners
 
 
@@ -836,7 +1007,9 @@ def _profile_tier_label(
         return ""
     if tier_winner_ids:
         tier_key = normalize_profile_tier(label)
-        winner_id = str(tier_winner_ids.get(tier_key) or "").strip()
+        gpu_uuid = profile_gpu_uuid(profile)
+        winner_key = f"{gpu_uuid}\0{tier_key}" if gpu_uuid else tier_key
+        winner_id = str(tier_winner_ids.get(winner_key) or "").strip()
         profile_id = str(profile.get("profile_id") or "").strip()
         # Only the resolved winner keeps the tier; duplicates show no tier so
         # the column stays unique and matches adaptive mode's choice.

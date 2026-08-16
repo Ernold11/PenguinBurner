@@ -7,6 +7,7 @@ import time
 
 from common.atomic_write import atomic_write_json
 from common.penguin_burner_paths import default_user_config_dir
+from profiles.gpu_identity import profile_gpu_uuid
 
 
 PROFILE_TIER_EFFICIENCY = "efficiency"
@@ -113,14 +114,19 @@ def profile_tier_assignments_path() -> Path:
     return default_user_config_dir() / "auto-uv-profile-tier-assignments.json"
 
 
-def load_profile_tier_assignments(path: str | Path | None = None) -> dict[str, str]:
+def load_profile_tier_assignments(
+    path: str | Path | None = None,
+    *,
+    gpu_uuid: str = "",
+) -> dict[str, str]:
     payload = _read_profile_tier_assignments(path)
-    raw_tiers = payload.get("tiers") if isinstance(payload, dict) else None
+    group = _profile_tier_group(payload, gpu_uuid)
+    raw_tiers = group.get("tiers")
     if not isinstance(raw_tiers, dict):
         return {}
     assignments: dict[str, str] = {}
     seen_profiles: set[str] = set()
-    disabled_profile_ids = _disabled_profile_ids_from_payload(payload)
+    disabled_profile_ids = _disabled_profile_ids_from_payload(group)
     for raw_tier, raw_profile_id in raw_tiers.items():
         tier = normalize_profile_tier(raw_tier)
         profile_id = str(raw_profile_id or "").strip()
@@ -138,8 +144,11 @@ def load_profile_tier_assignments(path: str | Path | None = None) -> dict[str, s
 
 def load_profile_tier_disabled_profile_ids(
     path: str | Path | None = None,
+    *,
+    gpu_uuid: str = "",
 ) -> set[str]:
-    return _disabled_profile_ids_from_payload(_read_profile_tier_assignments(path))
+    payload = _read_profile_tier_assignments(path)
+    return _disabled_profile_ids_from_payload(_profile_tier_group(payload, gpu_uuid))
 
 
 def save_profile_tier_assignment(
@@ -147,21 +156,30 @@ def save_profile_tier_assignment(
     tier: object | None,
     *,
     path: str | Path | None = None,
+    gpu_uuid: str = "",
 ) -> dict[str, str]:
     selected_profile_id = str(profile_id or "").strip()
     selected_tier = normalize_profile_tier(tier)
     if not selected_profile_id:
         raise ValueError("profile_id is required")
     if profile_tier_is_none(tier):
-        return save_profile_tier_none_assignment(selected_profile_id, path=path)
+        return save_profile_tier_none_assignment(
+            selected_profile_id,
+            path=path,
+            gpu_uuid=gpu_uuid,
+        )
     if not selected_tier:
         raise ValueError("profile tier is required")
 
-    disabled_profile_ids = load_profile_tier_disabled_profile_ids(path)
+    disabled_profile_ids = load_profile_tier_disabled_profile_ids(
+        path, gpu_uuid=gpu_uuid
+    )
     disabled_profile_ids.discard(selected_profile_id)
     assignments = {
         key: value
-        for key, value in load_profile_tier_assignments(path).items()
+        for key, value in load_profile_tier_assignments(
+            path, gpu_uuid=gpu_uuid
+        ).items()
         if value != selected_profile_id
     }
     assignments[selected_tier] = selected_profile_id
@@ -169,6 +187,7 @@ def save_profile_tier_assignment(
         assignments,
         disabled_profile_ids=disabled_profile_ids,
         path=path,
+        gpu_uuid=gpu_uuid,
     )
     return assignments
 
@@ -177,6 +196,7 @@ def save_profile_tier_none_assignment(
     profile_id: str,
     *,
     path: str | Path | None = None,
+    gpu_uuid: str = "",
 ) -> dict[str, str]:
     selected_profile_id = str(profile_id or "").strip()
     if not selected_profile_id:
@@ -184,17 +204,83 @@ def save_profile_tier_none_assignment(
 
     assignments = {
         key: value
-        for key, value in load_profile_tier_assignments(path).items()
+        for key, value in load_profile_tier_assignments(
+            path, gpu_uuid=gpu_uuid
+        ).items()
         if value != selected_profile_id
     }
-    disabled_profile_ids = load_profile_tier_disabled_profile_ids(path)
+    disabled_profile_ids = load_profile_tier_disabled_profile_ids(
+        path, gpu_uuid=gpu_uuid
+    )
     disabled_profile_ids.add(selected_profile_id)
     _write_profile_tier_assignments(
         assignments,
         disabled_profile_ids=disabled_profile_ids,
         path=path,
+        gpu_uuid=gpu_uuid,
     )
     return assignments
+
+
+def migrate_legacy_profile_tier_to_gpu(
+    profile_id: str,
+    gpu_uuid: str,
+    *,
+    path: str | Path | None = None,
+) -> None:
+    """Move one legacy global assignment into its newly bound GPU group."""
+    selected_profile_id = str(profile_id or "").strip()
+    selected_gpu_uuid = str(gpu_uuid or "").strip()
+    if not selected_profile_id or not selected_gpu_uuid:
+        return
+    legacy_assignments = load_profile_tier_assignments(path)
+    legacy_disabled = load_profile_tier_disabled_profile_ids(path)
+    assigned_tier = next(
+        (
+            tier
+            for tier, assigned_id in legacy_assignments.items()
+            if assigned_id == selected_profile_id
+        ),
+        "",
+    )
+    was_disabled = selected_profile_id in legacy_disabled
+    if not assigned_tier and not was_disabled:
+        return
+
+    gpu_assignments = load_profile_tier_assignments(
+        path, gpu_uuid=selected_gpu_uuid
+    )
+    gpu_disabled = load_profile_tier_disabled_profile_ids(
+        path, gpu_uuid=selected_gpu_uuid
+    )
+    gpu_assignments = {
+        tier: assigned_id
+        for tier, assigned_id in gpu_assignments.items()
+        if assigned_id != selected_profile_id
+    }
+    if assigned_tier:
+        gpu_assignments[assigned_tier] = selected_profile_id
+        gpu_disabled.discard(selected_profile_id)
+    if was_disabled:
+        gpu_disabled.add(selected_profile_id)
+    _write_profile_tier_assignments(
+        gpu_assignments,
+        disabled_profile_ids=gpu_disabled,
+        path=path,
+        gpu_uuid=selected_gpu_uuid,
+    )
+
+    legacy_assignments = {
+        tier: assigned_id
+        for tier, assigned_id in legacy_assignments.items()
+        if assigned_id != selected_profile_id
+    }
+    legacy_disabled.discard(selected_profile_id)
+    _write_profile_tier_assignments(
+        legacy_assignments,
+        disabled_profile_ids=legacy_disabled,
+        path=path,
+    )
 
 
 def profile_tier_disabled(
@@ -209,7 +295,9 @@ def profile_tier_disabled(
     disabled = (
         disabled_profile_ids
         if disabled_profile_ids is not None
-        else load_profile_tier_disabled_profile_ids()
+        else load_profile_tier_disabled_profile_ids(
+            gpu_uuid=profile_gpu_uuid(profile)
+        )
     )
     return profile_id in disabled
 
@@ -221,7 +309,11 @@ def assigned_tier_for_profile(
     profile_id = str(profile.get("profile_id") or "").strip()
     if not profile_id:
         return ""
-    tier_assignments = assignments if assignments is not None else load_profile_tier_assignments()
+    tier_assignments = (
+        assignments
+        if assignments is not None
+        else load_profile_tier_assignments(gpu_uuid=profile_gpu_uuid(profile))
+    )
     for tier, assigned_profile_id in tier_assignments.items():
         if str(assigned_profile_id or "").strip() == profile_id:
             return normalize_profile_tier(tier)
@@ -233,6 +325,13 @@ def profile_tier_summary_fields(
     assignments: dict[str, str] | None = None,
     disabled_profile_ids: set[str] | None = None,
 ) -> dict[str, object]:
+    gpu_uuid = profile_gpu_uuid(profile)
+    if assignments is None:
+        assignments = load_profile_tier_assignments(gpu_uuid=gpu_uuid)
+    if disabled_profile_ids is None:
+        disabled_profile_ids = load_profile_tier_disabled_profile_ids(
+            gpu_uuid=gpu_uuid
+        )
     generated_tier = generated_profile_tier(profile)
     disabled = profile_tier_disabled(profile, disabled_profile_ids)
     assigned_tier = "" if disabled else assigned_tier_for_profile(profile, assignments)
@@ -252,18 +351,29 @@ def resolve_profile_tier_profiles(
     profiles: list[dict],
     assignments: dict[str, str] | None = None,
     disabled_profile_ids: set[str] | None = None,
+    *,
+    gpu_uuid: str = "",
 ) -> dict[str, dict | None]:
-    tier_assignments = assignments if assignments is not None else load_profile_tier_assignments()
+    selected_gpu_uuid = str(gpu_uuid or "").strip()
+    tier_assignments = (
+        assignments
+        if assignments is not None
+        else load_profile_tier_assignments(gpu_uuid=selected_gpu_uuid)
+    )
     disabled = (
         disabled_profile_ids
         if disabled_profile_ids is not None
-        else load_profile_tier_disabled_profile_ids()
+        else load_profile_tier_disabled_profile_ids(gpu_uuid=selected_gpu_uuid)
     )
     visible_profiles = [
         profile
         for profile in profiles
         if bool(profile.get("final_verified", False))
         and not profile_tier_disabled(profile, disabled)
+        and (
+            not selected_gpu_uuid
+            or profile_gpu_uuid(profile).casefold() == selected_gpu_uuid.casefold()
+        )
     ]
     visible_profiles.sort(key=_profile_sort_time, reverse=True)
     by_profile_id = {
@@ -331,6 +441,7 @@ def _write_profile_tier_assignments(
     *,
     disabled_profile_ids: set[str] | None = None,
     path: str | Path | None = None,
+    gpu_uuid: str = "",
 ) -> Path:
     assignment_path = Path(path).expanduser() if path is not None else profile_tier_assignments_path()
     disabled = sorted(
@@ -338,9 +449,7 @@ def _write_profile_tier_assignments(
         for profile_id in (disabled_profile_ids or set())
         if str(profile_id).strip()
     )
-    payload = {
-        "format_version": 2,
-        "updated_at": datetime.now().astimezone().isoformat(),
+    group: dict[str, object] = {
         "tiers": {
             tier: str(assignments[tier])
             for tier in PROFILE_TIERS
@@ -348,7 +457,29 @@ def _write_profile_tier_assignments(
         },
     }
     if disabled:
-        payload["disabled_profile_ids"] = disabled
+        group["disabled_profile_ids"] = disabled
+    selected_gpu_uuid = str(gpu_uuid or "").strip()
+    existing = _read_profile_tier_assignments(path)
+    gpu_profiles = existing.get("gpu_profiles")
+    groups = dict(gpu_profiles) if isinstance(gpu_profiles, dict) else {}
+    if selected_gpu_uuid:
+        for key in tuple(groups):
+            if str(key).casefold() == selected_gpu_uuid.casefold():
+                groups.pop(key, None)
+        groups[selected_gpu_uuid] = group
+        payload = {
+            **existing,
+            "format_version": 3,
+            "updated_at": datetime.now().astimezone().isoformat(),
+            "gpu_profiles": groups,
+        }
+    else:
+        payload = {
+            **existing,
+            "format_version": 3 if groups else 2,
+            "updated_at": datetime.now().astimezone().isoformat(),
+            **group,
+        }
     return atomic_write_json(assignment_path, payload)
 
 
@@ -374,11 +505,26 @@ def _disabled_profile_ids_from_payload(payload: dict) -> set[str]:
     }
 
 
+def _profile_tier_group(payload: dict, gpu_uuid: str) -> dict:
+    selected_gpu_uuid = str(gpu_uuid or "").strip()
+    if not selected_gpu_uuid:
+        return payload if isinstance(payload, dict) else {}
+    groups = payload.get("gpu_profiles") if isinstance(payload, dict) else None
+    if not isinstance(groups, dict):
+        return {}
+    for key, group in groups.items():
+        if str(key).casefold() == selected_gpu_uuid.casefold() and isinstance(
+            group, dict
+        ):
+            return group
+    return {}
+
+
 def _optional_int(value: object | None) -> int | None:
     if value in (None, ""):
         return None
     try:
-        return int(value)
+        return int(str(value))
     except (TypeError, ValueError):
         return None
 
@@ -422,7 +568,7 @@ def _optional_float(value: object | None) -> float | None:
     if value in (None, ""):
         return None
     try:
-        return float(value)
+        return float(str(value))
     except (TypeError, ValueError):
         return None
 

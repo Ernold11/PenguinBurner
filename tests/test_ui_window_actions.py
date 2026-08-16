@@ -413,7 +413,11 @@ def test_run_runtime_action_blocked_when_busy(win) -> None:
 
 def test_run_adaptive_requires_at_least_one_tier(win) -> None:
     window, monkeypatch = win
-    monkeypatch.setattr(actions_mod, "adaptive_profile_tier_labels", lambda profs: [])
+    monkeypatch.setattr(
+        actions_mod,
+        "adaptive_profile_tier_labels",
+        lambda profs, **kwargs: [],
+    )
     shown: list = []
     monkeypatch.setattr(window.errors, "show", lambda title, msg: shown.append(title))
     fake = _FakeController()

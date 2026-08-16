@@ -9,8 +9,10 @@ verify, tier, export, and clean up curves.
 
 ## The table
 
-Each row shows: Date, Profile name, mV, Target MHz, Effective MHz, FPS/W, FPS,
-Power W, and Memory offset. Sort by any column to compare runs.
+Each row shows: Date, Profile name, GPU, mV, Target MHz, Effective MHz, FPS/W,
+FPS, Power W, and Memory offset. Sort by any column to compare runs. Verified
+profiles retain the GPU name, UUID, and PCI identity from verification, so a
+saved curve cannot silently move to another card if driver indices change.
 
 ## Actions
 
@@ -22,6 +24,12 @@ Top bar:
   and clears any saved boot profile, so the GPU starts at stock.
 - **Silent fan curve** — use the saved fan curve with the applied profile.
 - **Restore defaults** — return the GPU to stock now and at boot.
+
+On a one-GPU system, GPU targeting stays out of the way and **Apply** works as
+before. If saved profiles belong to multiple physical GPUs, the tab shows a
+target selector and requires an explicit choice. Tier assignments are kept per
+GPU. A legacy profile without GPU identity can be used directly on a one-GPU
+system; on a multi-GPU system it must be verified on the intended card first.
 
 With **Apply on startup** ticked, Apply saves the selected profile as the
 standing boot state. Restore defaults saves stock as that state instead. The

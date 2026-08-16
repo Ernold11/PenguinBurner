@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 import json
 from pathlib import Path
 import re
 
 from common.atomic_write import atomic_write_json
+from profiles.gpu_identity import (
+    normalized_gpu_identity,
+    profile_gpu_identity,
+    profile_gpu_uuid,
+)
 from common.penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
 
 from .profile_tiers import (
     load_profile_tier_assignments,
     load_profile_tier_disabled_profile_ids,
+    migrate_legacy_profile_tier_to_gpu,
     profile_tier_summary_fields,
 )
 
@@ -113,6 +120,7 @@ def mark_auto_uv_profile_verified(
     verification: dict | None = None,
     metrics: dict | None = None,
     base_metrics: dict | None = None,
+    gpu_identity: dict | None = None,
 ) -> Path:
     resolved = resolve_auto_uv_profile(str(selector), allow_unverified=True)
     if resolved is None:
@@ -129,6 +137,9 @@ def mark_auto_uv_profile_verified(
     updated["verification_status"] = "verified"
     updated["verified_at"] = now
     updated.setdefault("profile_source", "auto-uv-final")
+    normalized_identity = normalized_gpu_identity(gpu_identity or {})
+    if str(normalized_identity.get("uuid") or "").strip():
+        updated["gpu_identity"] = normalized_identity
 
     merged_verification = {}
     if isinstance(updated.get("verification"), dict):
@@ -158,7 +169,46 @@ def mark_auto_uv_profile_verified(
                 continue
             updated[target_key] = value
 
-    return atomic_write_json(path, updated)
+    written_path = atomic_write_json(path, updated)
+    if str(normalized_identity.get("uuid") or "").strip():
+        migrate_legacy_profile_tier_to_gpu(
+            str(updated.get("profile_id") or path.stem),
+            str(normalized_identity["uuid"]),
+        )
+    return written_path
+
+
+def bind_auto_uv_profile_gpu_identity(
+    selector: str | Path,
+    gpu_identity: dict,
+) -> Path:
+    """Bind a legacy profile during an explicit, unambiguous user action."""
+
+    resolved = resolve_auto_uv_profile(str(selector), allow_unverified=True)
+    if resolved is None:
+        raise FileNotFoundError(f"Auto-UV profile not found: {selector}")
+    path, _resolved_payload = resolved
+    payload = _read_json(path)
+    if payload is None:
+        raise FileNotFoundError(f"Auto-UV profile not readable: {path}")
+    normalized_identity = normalized_gpu_identity(gpu_identity)
+    target_uuid = str(normalized_identity.get("uuid") or "").strip()
+    if not target_uuid:
+        raise ValueError("GPU identity requires a stable UUID")
+    existing_identity = profile_gpu_identity(payload)
+    existing_uuid = str(existing_identity.get("uuid") or "").strip()
+    if existing_uuid and existing_uuid.casefold() != target_uuid.casefold():
+        raise ValueError(
+            f"profile is already bound to {existing_uuid}, not {target_uuid}"
+        )
+    updated = dict(payload)
+    updated["gpu_identity"] = normalized_identity
+    written_path = atomic_write_json(path, updated)
+    migrate_legacy_profile_tier_to_gpu(
+        str(updated.get("profile_id") or path.stem),
+        target_uuid,
+    )
+    return written_path
 
 
 def mark_auto_uv_profile_verification_failed(
@@ -419,6 +469,7 @@ def profile_summary(
         "requires_verification": bool(profile.get("requires_verification", False)),
         "verification_status": profile.get("verification_status"),
         "manual_edit": profile.get("manual_edit"),
+        "gpu_identity": profile_gpu_identity(profile),
     }
     summary.update(
         profile_tier_summary_fields(
@@ -460,16 +511,26 @@ def _display_date(value) -> str:
 
 
 def read_auto_uv_profile_summaries() -> list[dict]:
-    tier_assignments = load_profile_tier_assignments()
-    disabled_profile_tier_ids = load_profile_tier_disabled_profile_ids()
-    return [
-        profile_summary(
-            profile,
-            tier_assignments=tier_assignments,
-            disabled_profile_tier_ids=disabled_profile_tier_ids,
+    assignments_by_gpu: dict[str, dict[str, str]] = {}
+    disabled_by_gpu: dict[str, set[str]] = {}
+    summaries: list[dict] = []
+    for profile in read_auto_uv_profiles():
+        gpu_uuid = profile_gpu_uuid(profile)
+        if gpu_uuid not in assignments_by_gpu:
+            assignments_by_gpu[gpu_uuid] = load_profile_tier_assignments(
+                gpu_uuid=gpu_uuid
+            )
+            disabled_by_gpu[gpu_uuid] = load_profile_tier_disabled_profile_ids(
+                gpu_uuid=gpu_uuid
+            )
+        summaries.append(
+            profile_summary(
+                profile,
+                tier_assignments=assignments_by_gpu[gpu_uuid],
+                disabled_profile_tier_ids=disabled_by_gpu[gpu_uuid],
+            )
         )
-        for profile in read_auto_uv_profiles()
-    ]
+    return summaries
 
 
 def delete_auto_uv_profiles(selectors: list[str | Path]) -> list[Path]:
@@ -486,7 +547,7 @@ def delete_auto_uv_profiles(selectors: list[str | Path]) -> list[Path]:
     return delete_auto_uv_profile_paths(paths)
 
 
-def delete_auto_uv_profile_paths(paths: list[str | Path]) -> list[Path]:
+def delete_auto_uv_profile_paths(paths: Sequence[str | Path]) -> list[Path]:
     deleted: list[Path] = []
     seen: set[Path] = set()
     for raw_path in paths:

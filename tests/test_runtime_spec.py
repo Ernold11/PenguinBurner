@@ -90,6 +90,64 @@ def test_build_static_runtime_spec_resolves_gpu_and_profile(monkeypatch) -> None
     assert spec["overlay"] == {"enabled": True, "update_interval_s": 2}
 
 
+def test_bound_profile_resolves_current_index_from_uuid_after_reordering(
+    monkeypatch,
+) -> None:
+    curve = _curve("gpu-a-profile")
+    curve["gpu_identity"] = {
+        "name": "Test GPU",
+        "uuid": "GPU-bound-a",
+        "pci_bus_id": "0000:01:00.0",
+        "pci_device_id": "0x123410DE",
+        "index_at_verification": 0,
+    }
+    _stub_runtime_sources(monkeypatch, curve=curve)
+    monkeypatch.setattr(
+        runtime_spec.DaemonGpuClient,
+        "discover_identities",
+        lambda: [
+            SimpleNamespace(index=0, uuid="GPU-other"),
+            SimpleNamespace(index=1, uuid="GPU-bound-a"),
+        ],
+    )
+    monkeypatch.setattr(
+        runtime_spec,
+        "gpu_capabilities",
+        lambda index, **_kwargs: {
+            "identity": {
+                "uuid": "GPU-bound-a" if int(index) == 1 else "GPU-other",
+                "pci_bus_id": "0000:01:00.0",
+                "name": "Test GPU",
+            }
+        },
+    )
+
+    spec = runtime_spec.build_runtime_spec(profile_selector="gpu-a-profile")
+
+    assert spec["gpu"]["uuid"] == "GPU-bound-a"
+    assert spec["gpu"]["index_at_resolution"] == 1
+
+
+def test_explicit_gpu_index_cannot_override_bound_profile_uuid(monkeypatch) -> None:
+    curve = _curve("gpu-a-profile")
+    curve["gpu_identity"] = {"uuid": "GPU-bound-a", "name": "Test GPU"}
+    _stub_runtime_sources(monkeypatch, curve=curve)
+    monkeypatch.setattr(
+        runtime_spec.DaemonGpuClient,
+        "discover_identities",
+        lambda: [
+            SimpleNamespace(index=0, uuid="GPU-bound-a"),
+            SimpleNamespace(index=1, uuid="GPU-other"),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="not requested GPU 1"):
+        runtime_spec.build_runtime_spec(
+            profile_selector="gpu-a-profile",
+            gpu_index=1,
+        )
+
+
 def test_runtime_spec_leaves_power_capability_decision_to_daemon(monkeypatch) -> None:
     legacy_curve = _curve("legacy-laptop")
     legacy_curve["power_limit_w"] = 150
@@ -242,7 +300,7 @@ def test_adaptive_runtime_keeps_explicit_old_profile_as_initial_tier(monkeypatch
     monkeypatch.setattr(
         runtime_spec,
         "resolve_profile_tier_profiles",
-        lambda _profiles: {
+        lambda _profiles, **_kwargs: {
             "efficiency": {"profile_id": "eff-new"},
             "balanced": {"profile_id": "balanced-new"},
             "performance": None,
@@ -277,7 +335,7 @@ def test_adaptive_runtime_accepts_one_profile_without_switching(monkeypatch) -> 
     monkeypatch.setattr(
         runtime_spec,
         "resolve_profile_tier_profiles",
-        lambda _profiles: {"balanced": {"profile_id": "balanced-only"}},
+        lambda _profiles, **_kwargs: {"balanced": {"profile_id": "balanced-only"}},
     )
     monkeypatch.setattr(
         runtime_spec,
@@ -315,7 +373,7 @@ def test_adaptive_without_explicit_profile_starts_at_fastest_available_tier(
     monkeypatch.setattr(
         runtime_spec,
         "resolve_profile_tier_profiles",
-        lambda _profiles: {
+        lambda _profiles, **_kwargs: {
             tier: {"profile_id": f"{tier}-profile"} for tier in tiers
         },
     )
@@ -346,7 +404,7 @@ def test_adaptive_runtime_uses_per_game_target_fps_override(monkeypatch) -> None
     monkeypatch.setattr(
         runtime_spec,
         "resolve_profile_tier_profiles",
-        lambda _profiles: {"balanced": {"profile_id": "balanced-only"}},
+        lambda _profiles, **_kwargs: {"balanced": {"profile_id": "balanced-only"}},
     )
     monkeypatch.setattr(
         runtime_spec,

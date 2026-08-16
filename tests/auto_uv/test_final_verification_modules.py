@@ -195,6 +195,13 @@ def test_final_verified_profile_contains_fan_payload_and_memory_offset(
         memory_offset_mhz=500,
         power_limit_w=360,
         tail_rise_bins=2,
+        gpu_identity={
+            "name": "NVIDIA RTX 5090",
+            "uuid": "GPU-final-a",
+            "pci_bus_id": "00000000:01:00.0",
+            "pci_device_id": "0x2B8510DE",
+            "index": 0,
+        },
     )
     payload = json.loads(profile_path.read_text(encoding="utf-8"))
 
@@ -208,6 +215,13 @@ def test_final_verified_profile_contains_fan_payload_and_memory_offset(
     assert payload["final_verification_metrics"] is True
     assert payload["flatten_target"]["tail_rise_bins"] == 2
     assert payload["fan_curve_payload"]["fan"]["curve"][-1] == [90.0, 100.0]
+    assert payload["gpu_identity"] == {
+        "name": "NVIDIA RTX 5090",
+        "uuid": "GPU-final-a",
+        "pci_bus_id": "00000000:01:00.0",
+        "pci_device_id": "0x2B8510DE",
+        "index_at_verification": 0,
+    }
     assert (tmp_path / "uv-result" / "auto-uv-verified-candidates.json").exists()
 
 

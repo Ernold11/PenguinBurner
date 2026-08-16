@@ -95,8 +95,11 @@ def adaptive_profile_tier_keys(
     profiles: list[dict],
     *,
     assignments: dict[str, str] | None = None,
+    gpu_uuid: str = "",
 ) -> list[str]:
-    resolved = resolve_profile_tier_profiles(list(profiles), assignments=assignments)
+    resolved = resolve_profile_tier_profiles(
+        list(profiles), assignments=assignments, gpu_uuid=gpu_uuid
+    )
     return available_adaptive_tiers(resolved)
 
 
@@ -104,12 +107,15 @@ def adaptive_profile_tier_labels(
     profiles: list[dict],
     *,
     assignments: dict[str, str] | None = None,
+    gpu_uuid: str = "",
 ) -> list[str]:
     return [
         label
         for label in (
             profile_tier_label(tier)
-            for tier in adaptive_profile_tier_keys(profiles, assignments=assignments)
+            for tier in adaptive_profile_tier_keys(
+                profiles, assignments=assignments, gpu_uuid=gpu_uuid
+            )
         )
         if label
     ]
@@ -477,6 +483,7 @@ def _daemon_running_profile_info() -> dict[str, object]:
     active_job = payload.get("active_job")
     if isinstance(active_job, dict) and str(active_job.get("runtime_mode") or ""):
         info = _profile_info_from_runtime_summary(active_job)
+        info["gpu_uuid"] = str(active_job.get("gpu_uuid") or "")
         # The Steam tab's per-game override layer: active_job is the live
         # (possibly per-game) spec; game_runtime carries the standing one
         # that returns when the game exits.

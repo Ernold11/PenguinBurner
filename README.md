@@ -85,7 +85,8 @@ prompts.
    to switch to it. Tick **Apply on startup** to also make the applied profile
    your boot profile — off by default, so a tuned curve is never re-applied at
    boot unless you opted in. Toggle **Silent fan curve** for the quiet fan
-   profile, or **Restore defaults** to return the GPU to stock.
+   profile, or **Restore defaults** to return the GPU to stock. Multi-GPU
+   systems show an explicit target only when saved profiles span multiple GPUs.
 5. For per-game tuning — including **Adaptive**, which switches tiers as your
    frame rate changes — use the **Steam** tab to pick a mode per game.
 
@@ -144,6 +145,8 @@ standing profile when it exits, with no password prompt.
 Steam integration is what unlocks the fully customizable, **per-game** setup:
 
 - **Per-game profiles** — a different GPU behavior saved for each game.
+- **Per-game GPU target** — on multi-GPU systems, choose the physical card by
+  stable UUID; single-GPU systems keep the selector hidden.
 - **Per-game adaptive pre-frame-generation FPS target** — the adaptive engine's
   promote/demote target, set individually per game (a 60 Hz story game and a
   144 Hz shooter each get their own).

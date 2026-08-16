@@ -1,15 +1,25 @@
 from __future__ import annotations
 
 import shlex
+from pathlib import Path
 from typing import Any
 
 from common.penguin_burner_paths import default_user_config_dir
 from curve_editors.uv.vf_curve_manual_editor import editable_anchor_from_profile
 from profiles.uv.memory_offset_edit import editable_memory_offset_from_profile
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
+from profiles.uv.profile_store import bind_auto_uv_profile_gpu_identity
 from profiles.uv.profile_store import delete_auto_uv_profile_paths
 from profiles.uv.profile_tiers import save_profile_tier_assignment
 from profiles.uv.profile_tiers import save_profile_tier_none_assignment
+from profiles.gpu_identity import (
+    GPU_COMPATIBILITY_LEGACY,
+    GPU_COMPATIBILITY_MATCH,
+    profile_gpu_compatibility,
+    profile_gpu_uuid,
+)
+from profiles.gpu_identity import normalized_gpu_identity
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 
 from ui.commands import delete_profiles_command
 from ui.commands import profile_verify_command
@@ -104,10 +114,20 @@ class ProfileActionsMixin:
     ) -> None:
         if self._workflow_running():
             return
+        target_gpu_index = self.profile_list.target_gpu_index()
+        target_gpu_uuid = self.profile_list.target_gpu_uuid()
+        if target_gpu_index is None:
+            message = "Choose a target GPU before applying this profile."
+            self.controls.set_status_text(message)
+            self.log_view.append(f"\n{message}\n")
+            return
         profile_id = str(profile_selector or "").strip()
         selected_profile = None
         if adaptive_auto_uv:
-            tiers = adaptive_profile_tier_labels(self.profile_summaries)
+            tiers = adaptive_profile_tier_labels(
+                self.profile_summaries,
+                gpu_uuid=target_gpu_uuid,
+            )
             if not tiers:
                 available = ", ".join(tiers) if tiers else "none"
                 self.errors.show(
@@ -116,7 +136,6 @@ class ProfileActionsMixin:
                     f"profile. Available tiers: {available}.",
                 )
                 return
-            selected_profile = profile_for_selector(self.profile_summaries, "latest")
         else:
             profile_id = profile_id or self.profile_list.selected_profile_id()
             if not profile_id:
@@ -125,6 +144,19 @@ class ProfileActionsMixin:
             selected_profile = profile_for_selector(self.profile_summaries, profile_id)
             if not profile_can_apply(selected_profile or {}):
                 message = "This edited profile must be verified before it can be applied."
+                self.controls.set_status_text(message)
+                self.log_view.append(f"\n{message}\n")
+                return
+            if not self.profile_list.profile_matches_target(selected_profile or {}):
+                compatibility = profile_gpu_compatibility(
+                    selected_profile or {}, target_gpu_uuid
+                )
+                message = (
+                    "This legacy profile must be verified on the selected GPU "
+                    "before it can be applied."
+                    if compatibility == GPU_COMPATIBILITY_LEGACY
+                    else "This profile belongs to a different GPU. Choose its GPU target."
+                )
                 self.controls.set_status_text(message)
                 self.log_view.append(f"\n{message}\n")
                 return
@@ -147,6 +179,30 @@ class ProfileActionsMixin:
             ),
         ):
             return
+        if not self._confirm_runtime_gpu_switch(target_gpu_uuid):
+            return
+        if (
+            selected_profile
+            and profile_gpu_compatibility(selected_profile, target_gpu_uuid)
+            == GPU_COMPATIBILITY_LEGACY
+            and Path(str(selected_profile.get("path") or "")).is_file()
+        ):
+            try:
+                identity = normalized_gpu_identity(
+                    DaemonGpuClient(int(target_gpu_index)).capabilities().identity,
+                    index_at_verification=int(target_gpu_index),
+                )
+                bind_auto_uv_profile_gpu_identity(
+                    str(selected_profile.get("path") or profile_id),
+                    identity,
+                )
+                selected_profile["gpu_identity"] = identity
+            except Exception as exc:
+                self.errors.show(
+                    "GPU profile binding",
+                    f"Could not bind this legacy profile to the selected GPU: {exc}",
+                )
+                return
         # Boot persistence follows the "Apply on startup" toggle: ticked saves
         # the applied profile for boot, unticked applies session-only and
         # clears any saved boot profile. Restore defaults still persists the
@@ -157,7 +213,7 @@ class ProfileActionsMixin:
             profile_selector=profile_id,
             silent_fan_curve=self.profile_list.silent_fan_enabled(),
             adaptive_auto_uv=adaptive_auto_uv,
-            gpu_index=self.gpu_index,
+            gpu_index=int(target_gpu_index),
             persist_on_startup=persist_on_startup,
         )
         self._persist_silent_fan_preference(self.profile_list.silent_fan_enabled())
@@ -177,6 +233,13 @@ class ProfileActionsMixin:
     def _restore_gpu_defaults(self) -> None:
         if self._workflow_running():
             return
+        target_gpu_index = self.profile_list.target_gpu_index()
+        if target_gpu_index is None:
+            self.errors.show(
+                "Restore defaults",
+                "Choose a target GPU before restoring defaults.",
+            )
+            return
         # Elevated work goes through the already-root daemon (NO pkexec): ask it
         # to run the reserved stock runtime. The daemon stops the current profile,
         # resets the GPU to factory, applies no undervolt, and keeps running for
@@ -192,7 +255,7 @@ class ProfileActionsMixin:
             "daemonize",
             profile_selector=STOCK_PROFILE_SELECTOR,
             silent_fan_curve=self.profile_list.silent_fan_enabled(),
-            gpu_index=self.gpu_index,
+            gpu_index=int(target_gpu_index),
             # Stock is the safe state: restoring persists it for boot
             # regardless of the Apply-on-startup toggle.
             persist_on_startup=True,
@@ -302,7 +365,16 @@ class ProfileActionsMixin:
                 "No editable memory offset is available for this profile.",
             )
             return
-        min_mhz, max_mhz = memory_offset_mhz_range(gpu_index=self.gpu_index)
+        target_gpu_index = self.profile_list.target_gpu_index()
+        if target_gpu_index is None:
+            self.errors.show(
+                "Edit Memory Offset",
+                "Choose this profile's GPU before editing its memory offset.",
+            )
+            return
+        min_mhz, max_mhz = memory_offset_mhz_range(
+            gpu_index=int(target_gpu_index)
+        )
 
         def save_edit(new_memory_offset_mhz: int) -> str:
             path, _payload = save_edited_memory_offset_profile(
@@ -374,6 +446,21 @@ class ProfileActionsMixin:
     def _verify_profile(self, profile: dict) -> None:
         if self._workflow_running() or not profile_can_verify(profile):
             return
+        target_gpu_index = self.profile_list.target_gpu_index()
+        target_gpu_uuid = self.profile_list.target_gpu_uuid()
+        if target_gpu_index is None:
+            self.errors.show(
+                "Profile verification",
+                "Choose a target GPU before verifying this profile.",
+            )
+            return
+        compatibility = profile_gpu_compatibility(profile, target_gpu_uuid)
+        if compatibility not in {GPU_COMPATIBILITY_MATCH, GPU_COMPATIBILITY_LEGACY}:
+            self.errors.show(
+                "Profile verification",
+                "This profile belongs to a different GPU. Choose its GPU target.",
+            )
+            return
         label = profile_status_label(
             self.profile_summaries,
             str(profile.get("profile_id", "")),
@@ -397,7 +484,7 @@ class ProfileActionsMixin:
             profile_selector=profile_verify_selector(profile),
             duration_s=duration_s,
             stop_request_path=verify_stop_request_path(),
-            gpu_index=self.gpu_index,
+            gpu_index=int(target_gpu_index),
         )
         workload = workload_label()
         self.header.set_stage("Profile verification")
@@ -591,7 +678,11 @@ class ProfileActionsMixin:
             editable_memory_offset_from_profile(profile) is not None
         )
         apply_action = menu.addAction("Apply")
-        apply_action.setEnabled(not self._workflow_running() and profile_can_apply(profile))
+        apply_action.setEnabled(
+            not self._workflow_running()
+            and profile_can_apply(profile)
+            and self.profile_list.profile_matches_target(profile)
+        )
         verify_action = menu.addAction("Verify")
         verify_action.setEnabled(
             not self._workflow_running() and profile_can_verify(profile)
@@ -634,11 +725,18 @@ class ProfileActionsMixin:
             profile_id = str(profile.get("profile_id") or "").strip()
             for tier, action in tier_actions.items():
                 if chosen == action:
-                    save_profile_tier_assignment(profile_id, tier)
+                    save_profile_tier_assignment(
+                        profile_id,
+                        tier,
+                        gpu_uuid=profile_gpu_uuid(profile),
+                    )
                     self._load_profiles()
                     break
         elif chosen == none_tier_action:
-            save_profile_tier_none_assignment(str(profile.get("profile_id") or ""))
+            save_profile_tier_none_assignment(
+                str(profile.get("profile_id") or ""),
+                gpu_uuid=profile_gpu_uuid(profile),
+            )
             self._load_profiles()
         elif chosen == delete_action:
             self._delete_selected_profiles()
@@ -656,6 +754,27 @@ class ProfileActionsMixin:
             return f"Starting adaptive Auto-UV; Autostart: {autostart}."
         selected = self.profile_list.selected_profile_name() or "none"
         return f"Starting profile: {selected}; Autostart: {autostart}."
+
+    def _confirm_runtime_gpu_switch(self, target_gpu_uuid: str) -> bool:
+        running_info = running_auto_uv_profile_info()
+        running_uuid = str(running_info.get("gpu_uuid") or "").strip()
+        selected_uuid = str(target_gpu_uuid or "").strip()
+        if not running_uuid or not selected_uuid or running_uuid.casefold() == selected_uuid.casefold():
+            return True
+        buttons = (
+            self.QtWidgets.QMessageBox.StandardButton.Yes
+            | self.QtWidgets.QMessageBox.StandardButton.No
+        )
+        answer = self.QtWidgets.QMessageBox.question(
+            self.window,
+            "Switch managed GPU",
+            "Another GPU is currently managed. Switching stops monitoring that GPU. "
+            "Its applied curve, memory offset, or power limit may remain until you "
+            "restore it or the driver resets it.\n\nSwitch to the selected GPU?",
+            buttons,
+            self.QtWidgets.QMessageBox.StandardButton.No,
+        )
+        return answer == self.QtWidgets.QMessageBox.StandardButton.Yes
 
 
 def _manual_curve_control_voltage_mvs(manual_edit) -> tuple[int, ...]:

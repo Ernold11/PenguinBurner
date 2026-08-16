@@ -32,6 +32,10 @@ in `~/.config/PenguinBurner/steam-game-settings.json`.
 
 The per-game editor exposes:
 
+- **Game GPU** — shown only when two or more physical NVIDIA GPUs are detected.
+  Choose the card PenguinBurner should tune for this game before enabling the
+  wrapper. The setting stores the GPU UUID and resolves its current index at
+  launch; PenguinBurner does not guess from the active display or GPU load.
 - **Compatibility tool** — Steam's current per-game override, or its effective
   default Proton when no override was saved. PenguinBurner reads the effective
   tool from Steam's live per-app details API; it does not infer "native" from a
@@ -62,7 +66,8 @@ your whole library in one confirmed step:
 
 - **Enable / Disable PenguinBurner for all games** — add or remove the wrapper
   everywhere. Enabling keeps the overlay off and leaves each game's saved mode
-  intact; disabling restores every game's original Steam launch options.
+  intact; disabling restores every game's original Steam launch options. On a
+  multi-GPU host, every game needs a Game GPU before bulk enable can run.
 - **Show / Hide In-Game overlay for enabled games.**
 
 Each action confirms first and shows the game count. Directions that would change

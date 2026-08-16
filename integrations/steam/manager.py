@@ -307,6 +307,13 @@ class SteamIntegrationManager:
         setting = self._setting(app_id)
         return self._apply(app_id, replace(setting, mode=mode))
 
+    def set_game_gpu(self, app_id: str, gpu_uuid: str) -> ApplyResult:
+        setting = self._setting(app_id)
+        return self._apply(
+            app_id,
+            replace(setting, gpu_uuid=str(gpu_uuid or "").strip()),
+        )
+
     def set_game_enabled(self, app_id: str, enabled: bool) -> ApplyResult:
         setting = self._setting(app_id)
         return self._apply(

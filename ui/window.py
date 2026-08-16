@@ -33,7 +33,11 @@ from ui.dialogs.about import show_about_dialog
 from ui.dialogs.final_choice import select_final_candidate
 from ui.dialogs.scan_tuning import select_scan_tuning
 from .error_reporting import ErrorReporter
-from ui.features.tuning.gpu_selection import persist_runtime_gpu_index
+from ui.features.tuning.gpu_selection import (
+    detected_gpu_choices,
+    gpu_choices_with_fallback,
+    persist_runtime_gpu_index,
+)
 from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
 from ui.features.tuning.final_choice_controller import handle_final_choice_request
 from . import theme
@@ -138,6 +142,7 @@ class MainWindow(ProfileActionsMixin):
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
         )
+        self.profile_list.on_target_gpu_changed = self._profile_target_gpu_changed
         self.log_view = LogView(
             QtCore=self.QtCore,
             QtGui=self.QtGui,
@@ -153,10 +158,14 @@ class MainWindow(ProfileActionsMixin):
             QtCore=self.QtCore,
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
-            adaptive_available=lambda: len(
-                adaptive_profile_tier_labels(self.profile_summaries)
+            adaptive_available=lambda gpu_uuid="": len(
+                adaptive_profile_tier_labels(
+                    self.profile_summaries,
+                    gpu_uuid=gpu_uuid,
+                )
             )
             >= 1,
+            gpu_choices=detected_gpu_choices,
         )
 
         self.tabs = self.QtWidgets.QTabWidget()
@@ -756,8 +765,31 @@ class MainWindow(ProfileActionsMixin):
                 or bool(autostart_info["silent_fan_curve"])
             ),
         )
+        gpu_choices, _selected_gpu_index = gpu_choices_with_fallback(
+            selected_index=self.gpu_index
+        )
+        self.profile_list.configure_gpu_targets(
+            self.profile_summaries,
+            gpu_choices,
+            preferred_index=self.gpu_index,
+        )
         self._set_profile_actions_enabled(not self._workflow_running())
         self._refresh_running_status(running_info, autostart_info)
+
+    def _profile_target_gpu_changed(
+        self,
+        gpu_index: int | None,
+        _gpu_uuid: str,
+    ) -> None:
+        if gpu_index is None:
+            return
+        try:
+            self.gpu_index = persist_runtime_gpu_index(int(gpu_index))
+        except Exception as exc:
+            self.errors.show(
+                "GPU selection",
+                f"Could not save selected GPU index: {exc}",
+            )
 
     def _poll_running_status(self) -> None:
         """Gather live daemon/systemd status OFF the GUI thread, then render.
