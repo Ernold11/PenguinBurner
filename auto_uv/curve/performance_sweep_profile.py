@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Protocol, TypeGuard
 
 from auto_uv.domain.types import AutoUvProbeSummary, VfCurveCandidate
 from auto_uv.run.voltage_sweep_state import VoltageProbeOutcome
@@ -15,6 +15,14 @@ class SweepProfileAnchor:
     voltage_mv: int
     target_mhz: int
     source: str
+
+
+class AutoOcAttemptLike(Protocol):
+    @property
+    def candidate(self) -> VfCurveCandidate: ...
+
+    @property
+    def outcome(self) -> VoltageProbeOutcome: ...
 
 
 def build_performance_sweep_profile_candidate(
@@ -193,7 +201,7 @@ def monotonic_anchors(anchors: list[SweepProfileAnchor]) -> list[SweepProfileAnc
     return normalized
 
 
-def passed_attempt(attempt: object) -> bool:
+def passed_attempt(attempt: object) -> TypeGuard[AutoOcAttemptLike]:
     outcome = getattr(attempt, "outcome", None)
     if not isinstance(outcome, VoltageProbeOutcome):
         return False

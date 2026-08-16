@@ -36,8 +36,6 @@ def derive_loaded_voltage_band(
         use_power_limit_floor=use_power_limit_floor,
         rules=telemetry_rules,
     )
-    if active_power_floor_w is None:
-        return LoadedVoltageBand(None)
 
     voltages = sorted(
         int(round(float(read_field(sample, "voltage_mv"))))
