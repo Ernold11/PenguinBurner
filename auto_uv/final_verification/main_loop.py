@@ -70,6 +70,7 @@ def run_final_verification_and_save(
     clock_ceiling,
     discovery_summary,
     translated_gpu_policy,
+    gpu_identity,
     min_performance_core_clock_pct,
     runtime_default_plan,
     final_clock_drop_margin_pct,
@@ -256,6 +257,7 @@ def run_final_verification_and_save(
         tail_rise_bins=int(tail_rise_bins),
         auto_uv_mode=str(auto_uv_mode or ""),
         generated_profile_tier=str(generated_profile_tier or ""),
+        gpu_identity=gpu_identity,
     )
     log_final_summary(
         log,

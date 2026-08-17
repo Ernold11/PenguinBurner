@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +9,7 @@ from integrations.steam.game_runtime import (
     game_account_id,
     game_app_id,
     game_runtime_profile_argv,
+    game_gpu_target,
     profile_argv_for_setting,
 )
 from integrations.steam.settings import (
@@ -67,11 +69,20 @@ def _stub_adaptive_profiles(monkeypatch) -> None:
     monkeypatch.setattr(
         game_runtime,
         "resolve_profile_tier_profiles",
-        lambda profiles: {
+        lambda profiles, **kwargs: {
             "efficiency": {"profile_id": "efficiency-profile"},
             "balanced": {"profile_id": "balanced-profile"},
             "performance": {"profile_id": "performance-profile"},
         },
+    )
+    monkeypatch.setattr(
+        game_runtime.DaemonGpuClient,
+        "discover_identities",
+        classmethod(
+            lambda cls: [
+                SimpleNamespace(index=0, uuid="GPU-primary", name="RTX Test")
+            ]
+        ),
     )
 
 
@@ -197,6 +208,8 @@ def test_apply_calls_daemon_with_own_pid(
                 "--auto-uv-profile",
                 "performance-profile",
                 "--adaptive-auto-uv",
+                "--gpu-index",
+                "0",
             ],
             "watch_pid": os.getpid(),
             "app_id": "1089130",
@@ -283,6 +296,68 @@ def test_apply_soft_fails_when_daemon_unreachable(
         env, home=steam_home, settings_path=settings_path
     )
     assert "skipped" in capsys.readouterr().err
+
+
+def test_apply_reports_when_another_game_owns_runtime(
+    steam_home: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _stub_adaptive_profiles(monkeypatch)
+    settings_path = tmp_path / "steam-game-settings.json"
+    store_steam_game_setting(
+        ACCOUNT_ID,
+        "1089130",
+        SteamGameSetting(enabled=True, mode="adaptive"),
+        path=settings_path,
+    )
+    import runtime.daemon_client as daemon_client
+
+    monkeypatch.setattr(
+        daemon_client,
+        "start_game_runtime_profile",
+        lambda *args, **kwargs: {
+            "started": False,
+            "ignored": True,
+            "reason": "first-game-runtime-active",
+        },
+    )
+
+    assert not apply_game_runtime_profile(
+        {"SteamAppId": "1089130", "SteamUser": "jan_pietek"},
+        home=steam_home,
+        settings_path=settings_path,
+    )
+    assert "first-game-runtime-active" in capsys.readouterr().err
+
+
+def test_game_gpu_target_requires_choice_with_multiple_gpus() -> None:
+    identities = [
+        SimpleNamespace(index=0, uuid="GPU-a"),
+        SimpleNamespace(index=1, uuid="GPU-b"),
+    ]
+
+    assert game_gpu_target(SteamGameSetting(), identities) is None
+    assert game_gpu_target(
+        SteamGameSetting(gpu_uuid="GPU-b"), identities
+    ) == ("GPU-b", 1)
+
+
+def test_profile_argv_filters_tiers_by_gpu_uuid(monkeypatch) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr(game_runtime, "read_auto_uv_profiles", lambda: [])
+    monkeypatch.setattr(
+        game_runtime,
+        "resolve_profile_tier_profiles",
+        lambda profiles, *, gpu_uuid="": seen.append(gpu_uuid)
+        or {"balanced": {"profile_id": "profile-b"}},
+    )
+
+    argv = profile_argv_for_setting(
+        SteamGameSetting(enabled=True, mode="balanced", gpu_uuid="GPU-b"),
+        gpu_index=2,
+    )
+
+    assert seen == ["GPU-b"]
+    assert argv == ["--auto-uv-profile", "profile-b", "--gpu-index", "2"]
 
 
 def test_client_resolves_and_applies_game_spec_on_the_same_socket(monkeypatch) -> None:

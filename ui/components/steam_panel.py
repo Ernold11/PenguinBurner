@@ -126,12 +126,15 @@ class SteamPanel:
         QtWidgets,
         manager: SteamIntegrationManager | None = None,
         adaptive_available=None,
+        gpu_choices=None,
     ):
         self.QtCore = QtCore
         self.QtGui = QtGui
         self.QtWidgets = QtWidgets
         self.manager = manager if manager is not None else SteamIntegrationManager()
-        self.adaptive_available = adaptive_available or (lambda: True)
+        self.adaptive_available = adaptive_available
+        self.gpu_choices = gpu_choices or (lambda: [])
+        self._gpu_choices: tuple[object, ...] = ()
         self._syncing = False
         self._scan_running = False
         self._rows: dict[str, SteamGameRow] = {}
@@ -372,6 +375,20 @@ class SteamPanel:
         )
         details_layout.addWidget(self.launch_edit)
 
+        self.game_gpu_label = QtWidgets.QLabel("Game GPU")
+        self.game_gpu_label.setObjectName("steamFieldLabel")
+        self.game_gpu_label.setToolTip(
+            _wrapped_tooltip(
+                "Choose the physical GPU PenguinBurner will tune while this "
+                "game runs. This is required only on multi-GPU systems."
+            )
+        )
+        details_layout.addWidget(self.game_gpu_label)
+        self.game_gpu_combo = QtWidgets.QComboBox()
+        self.game_gpu_combo.setObjectName("steamGameGpu")
+        self.game_gpu_combo.setToolTip(self.game_gpu_label.toolTip())
+        details_layout.addWidget(self.game_gpu_combo)
+
         self.mode_label = QtWidgets.QLabel("Auto-UV mode")
         self.mode_label.setObjectName("steamFieldLabel")
         details_layout.addWidget(self.mode_label)
@@ -441,6 +458,7 @@ class SteamPanel:
         self.game_list.currentItemChanged.connect(self._selection_changed)
         self.proton_combo.currentIndexChanged.connect(self._proton_changed)
         self.mode_combo.currentIndexChanged.connect(self._mode_changed)
+        self.game_gpu_combo.currentIndexChanged.connect(self._game_gpu_changed)
         self.target_fps_spin.valueChanged.connect(self._target_fps_changed)
         self.enabled_checkbox.toggled.connect(self._enabled_changed)
         self.overlay_checkbox.toggled.connect(self._overlay_changed)
@@ -460,6 +478,7 @@ class SteamPanel:
         self._game_state_timer.setInterval(_GAME_STATE_POLL_MS)
         self._game_state_timer.timeout.connect(self._poll_game_states)
 
+        self._sync_game_gpu_choices()
         self._sync_selected_details()
         # Startup discovery is read-only. Only an explicit Rescan button click
         # records the disabled, Adaptive-preselected defaults for new games.
@@ -566,6 +585,7 @@ class SteamPanel:
     def _populate(self, rows: tuple[SteamGameRow, ...]) -> None:
         previous_app_id = self._selected_app_id or self._current_app_id()
         self._rows = {row.game.app_id: row for row in rows}
+        self._sync_game_gpu_choices()
         self._sync_default_mode_label()
         self._refresh_game_list(preferred_app_id=previous_app_id)
         self._sync_status()
@@ -584,7 +604,17 @@ class SteamPanel:
         finally:
             self.mode_combo.blockSignals(signals_were_blocked)
 
-        adaptive_ok = bool(self.adaptive_available())
+        row = self._rows.get(self._current_app_id())
+        gpu_uuid = str(row.setting.gpu_uuid or "").strip() if row else ""
+        if not gpu_uuid and len(self._gpu_choices) == 1:
+            gpu_uuid = str(getattr(self._gpu_choices[0], "uuid", "") or "").strip()
+        if not callable(self.adaptive_available):
+            adaptive_ok = True
+        else:
+            try:
+                adaptive_ok = bool(self.adaptive_available(gpu_uuid))
+            except TypeError:
+                adaptive_ok = bool(self.adaptive_available())
         adaptive_index = self.mode_combo.findData(GAME_MODE_ADAPTIVE)
         if adaptive_index >= 0:
             item = self.mode_combo.model().item(adaptive_index)
@@ -668,6 +698,7 @@ class SteamPanel:
                 self.proton_combo.clear()
                 self.proton_combo.addItem("Steam default", "")
                 self.launch_edit.clear()
+                self.game_gpu_combo.setCurrentIndex(0)
                 self.mode_combo.setCurrentIndex(
                     max(0, self.mode_combo.findData(GAME_MODE_ADAPTIVE))
                 )
@@ -702,6 +733,8 @@ class SteamPanel:
                 cursor.setPosition(0)
                 self.launch_edit.setTextCursor(cursor)
                 self._resize_launch_editor()
+                gpu_index = self.game_gpu_combo.findData(row.setting.gpu_uuid)
+                self.game_gpu_combo.setCurrentIndex(max(0, gpu_index))
                 mode_index = self.mode_combo.findData(normalize_game_mode(row.setting.mode))
                 self.mode_combo.setCurrentIndex(max(0, mode_index))
                 self.target_fps_spin.setValue(
@@ -731,6 +764,11 @@ class SteamPanel:
         self.launch_edit.setEnabled(has_selection)
         self.launch_edit.setReadOnly(not editable)
         self.enabled_checkbox.setEnabled(editable)
+        multi_gpu = len(self._gpu_choices) >= 2
+        self.game_gpu_label.setVisible(multi_gpu)
+        self.game_gpu_combo.setVisible(multi_gpu)
+        self.game_gpu_label.setEnabled(editable)
+        self.game_gpu_combo.setEnabled(editable)
         wrapper_enabled = editable and self.enabled_checkbox.isChecked()
         self.mode_label.setEnabled(wrapper_enabled)
         self.mode_combo.setEnabled(wrapper_enabled)
@@ -942,6 +980,42 @@ class SteamPanel:
         hot = self.manager.hot_reapply(app_id) if result.ok else None
         self._after_apply(app_id, result, extra=hot)
 
+    def _sync_game_gpu_choices(self) -> None:
+        try:
+            choices = tuple(self.gpu_choices())
+        except Exception:
+            choices = ()
+        current_uuid = str(self.game_gpu_combo.currentData() or "").strip()
+        signals_were_blocked = self.game_gpu_combo.blockSignals(True)
+        try:
+            self._gpu_choices = choices
+            self.game_gpu_combo.clear()
+            if len(choices) >= 2:
+                self.game_gpu_combo.addItem("Choose a GPU…", "")
+            for choice in choices:
+                uuid = str(getattr(choice, "uuid", "") or "").strip()
+                if uuid:
+                    self.game_gpu_combo.addItem(str(getattr(choice, "label", uuid)), uuid)
+            index = self.game_gpu_combo.findData(current_uuid)
+            self.game_gpu_combo.setCurrentIndex(max(0, index))
+        finally:
+            self.game_gpu_combo.blockSignals(signals_were_blocked)
+
+    def _game_gpu_changed(self, _index: int) -> None:
+        if self._syncing:
+            return
+        if not self._flush_pending_launch_edit():
+            return
+        app_id = self._current_app_id()
+        if not app_id:
+            return
+        gpu_uuid = str(self.game_gpu_combo.currentData() or "").strip()
+        if len(self._gpu_choices) >= 2 and not gpu_uuid:
+            return
+        result = self.manager.set_game_gpu(app_id, gpu_uuid)
+        hot = self.manager.hot_reapply(app_id) if result.ok else None
+        self._after_apply(app_id, result, extra=hot)
+
     def _sync_all_games_menu(self) -> None:
         """Each bulk action stays clickable only while it would change
         something: no mass-enable when everything is already enabled, no
@@ -962,6 +1036,13 @@ class SteamPanel:
             return
         app_ids = list(self._rows)
         if not app_ids:
+            return
+        if enabled and len(self._gpu_choices) >= 2 and any(
+            not row.setting.gpu_uuid for row in self._rows.values()
+        ):
+            self._sync_status(
+                "Choose a Game GPU for each game before enabling all games."
+            )
             return
         count = len(app_ids)
         games_word = "game" if count == 1 else "games"
@@ -1037,6 +1118,18 @@ class SteamPanel:
             return
         app_id = self._current_app_id()
         if not app_id:
+            return
+        if (
+            checked
+            and len(self._gpu_choices) >= 2
+            and not str(self.game_gpu_combo.currentData() or "").strip()
+        ):
+            signals_were_blocked = self.enabled_checkbox.blockSignals(True)
+            try:
+                self.enabled_checkbox.setChecked(False)
+            finally:
+                self.enabled_checkbox.blockSignals(signals_were_blocked)
+            self._sync_status("Choose a Game GPU before enabling PenguinBurner.")
             return
         result = self.manager.set_game_enabled(app_id, checked)
         hot = self.manager.hot_reapply(app_id) if result.ok else None

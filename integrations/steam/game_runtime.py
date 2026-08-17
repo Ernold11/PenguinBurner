@@ -11,10 +11,13 @@ a daemon problem must never block a game launch.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 import os
 from pathlib import Path
 import sys
 
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
+from profiles.gpu_identity import gpu_index_for_uuid
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR, read_auto_uv_profiles
 from profiles.uv.profile_tiers import PROFILE_TIERS, resolve_profile_tier_profiles
 
@@ -54,7 +57,12 @@ def game_account_id(env: dict[str, str], *, home: Path | None = None) -> str:
     return users[0].account_id if users else ""
 
 
-def profile_argv_for_setting(setting: SteamGameSetting) -> list[str] | None:
+def profile_argv_for_setting(
+    setting: SteamGameSetting,
+    *,
+    gpu_index: int | None = None,
+    gpu_uuid: str = "",
+) -> list[str] | None:
     """Daemon runtime argv for a preset; None when there is nothing to apply."""
     if not setting.enabled:
         return None
@@ -63,8 +71,15 @@ def profile_argv_for_setting(setting: SteamGameSetting) -> list[str] | None:
     if setting.mode == GAME_MODE_STOCK:
         # Explicit per-game stock: pin factory GPU state while this game
         # runs, even when a standing adaptive/tier profile is active.
-        return ["--auto-uv-profile", STOCK_PROFILE_SELECTOR]
-    resolved = resolve_profile_tier_profiles(read_auto_uv_profiles())
+        argv = ["--auto-uv-profile", STOCK_PROFILE_SELECTOR]
+        return _argv_with_gpu_index(argv, gpu_index)
+    selected_uuid = str(gpu_uuid or setting.gpu_uuid or "").strip()
+    profiles = read_auto_uv_profiles()
+    resolved = (
+        resolve_profile_tier_profiles(profiles, gpu_uuid=selected_uuid)
+        if selected_uuid
+        else resolve_profile_tier_profiles(profiles)
+    )
     if setting.mode == GAME_MODE_ADAPTIVE:
         # Start from the highest explicitly assigned/available tier, not the
         # newest file. "latest" lets a newer scratch or verification profile
@@ -82,7 +97,7 @@ def profile_argv_for_setting(setting: SteamGameSetting) -> list[str] | None:
         argv = ["--auto-uv-profile", profile_id, "--adaptive-auto-uv"]
         if setting.target_fps is not None:
             argv += ["--adaptive-target-fps", f"{float(setting.target_fps):g}"]
-        return argv
+        return _argv_with_gpu_index(argv, gpu_index)
     profile = resolved.get(setting.mode)
     profile_id = (
         str(profile.get("profile_id") or "").strip()
@@ -91,7 +106,30 @@ def profile_argv_for_setting(setting: SteamGameSetting) -> list[str] | None:
     )
     if not profile_id:
         return None
-    return ["--auto-uv-profile", profile_id]
+    return _argv_with_gpu_index(["--auto-uv-profile", profile_id], gpu_index)
+
+
+def _argv_with_gpu_index(argv: list[str], gpu_index: int | None) -> list[str]:
+    if gpu_index is None:
+        return argv
+    return [*argv, "--gpu-index", str(max(0, int(gpu_index)))]
+
+
+def game_gpu_target(
+    setting: SteamGameSetting,
+    identities: Sequence[object],
+) -> tuple[str, int] | None:
+    """Resolve a saved UUID to today's index, or infer the only physical GPU."""
+    selected_uuid = str(setting.gpu_uuid or "").strip()
+    if selected_uuid:
+        index = gpu_index_for_uuid(identities, selected_uuid)
+        return (selected_uuid, index) if index is not None else None
+    if len(identities) != 1:
+        return None
+    identity = identities[0]
+    uuid = str(getattr(identity, "uuid", "") or "").strip()
+    index = gpu_index_for_uuid(identities, uuid)
+    return (uuid, index) if uuid and index is not None else None
 
 
 def game_runtime_profile_argv(
@@ -109,7 +147,19 @@ def game_runtime_profile_argv(
     setting = steam_game_setting(account_id, app_id, path=settings_path)
     if setting is None:
         return None
-    argv = profile_argv_for_setting(setting)
+    try:
+        identities = list(DaemonGpuClient.discover_identities())
+    except Exception:
+        return None
+    target = game_gpu_target(setting, identities)
+    if target is None:
+        return None
+    gpu_uuid, gpu_index = target
+    argv = profile_argv_for_setting(
+        setting,
+        gpu_index=gpu_index,
+        gpu_uuid=gpu_uuid,
+    )
     if argv is None:
         return None
     return argv, app_id
@@ -129,7 +179,7 @@ def apply_game_runtime_profile(
     from runtime.daemon_client import start_game_runtime_profile
 
     try:
-        start_game_runtime_profile(
+        result = start_game_runtime_profile(
             argv,
             watch_pid=os.getpid() if watch_pid is None else int(watch_pid),
             app_id=app_id,
@@ -138,6 +188,15 @@ def apply_game_runtime_profile(
     except Exception as error:
         print(
             f"penguin-burner: per-game profile apply skipped: {error}",
+            file=sys.stderr,
+        )
+        return False
+    if isinstance(result, dict) and (
+        bool(result.get("ignored")) or not bool(result.get("started", True))
+    ):
+        reason = str(result.get("reason") or "daemon did not start the profile")
+        print(
+            f"penguin-burner: per-game profile apply skipped: {reason}",
             file=sys.stderr,
         )
         return False

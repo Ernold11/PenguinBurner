@@ -8,6 +8,7 @@ import tempfile
 
 from common.penguin_burner_errors import NvmlError
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
+from profiles.gpu_identity import normalized_gpu_identity
 from runtime.support.vf_curve_plan import (
     apply_plan,
     backup_current_offsets,
@@ -86,8 +87,14 @@ def run_profile_verification(
     try:
         gpu_client = deps.gpu_client_factory(gpu_index=gpu_index)
         gpu_client.refresh_points()
+        gpu_identity = normalized_gpu_identity(
+            gpu_client.capabilities().identity,
+            index_at_verification=int(gpu_index),
+        )
     except Exception as exc:
         raise NvmlError(f"could not open the daemon GPU client: {exc}") from exc
+    if not str(gpu_identity.get("uuid") or "").strip():
+        raise NvmlError(f"GPU {int(gpu_index)} did not report a stable UUID")
     vf_curve_reader = gpu_client
     gpu_policy_controller = gpu_client
 
@@ -263,6 +270,7 @@ def run_profile_verification(
             },
             metrics=profile_verification_metrics_from_result(result),
             base_metrics=base_metrics,
+            gpu_identity=gpu_identity,
         )
         deps.log(f"Marked profile verified: path={verified_path}")
         deps.log(f"Profile verification passed: profile={label}.")

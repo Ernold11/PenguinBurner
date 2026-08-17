@@ -264,7 +264,11 @@ def apply_runtime_intent(
     if persist_on_startup:
         set_boot_runtime_spec(spec, socket_path=resolved_socket)
     elif clear_boot:
-        clear_boot_runtime_spec(socket_path=resolved_socket)
+        gpu = spec.get("gpu") if isinstance(spec, dict) else None
+        gpu_uuid = (
+            str(gpu.get("uuid") or "").strip() if isinstance(gpu, dict) else ""
+        )
+        clear_boot_runtime_spec(gpu_uuid=gpu_uuid, socket_path=resolved_socket)
     return result
 
 
@@ -283,11 +287,16 @@ def set_boot_runtime_spec(
 
 def clear_boot_runtime_spec(
     *,
+    gpu_uuid: str = "",
     socket_path: str | Path = DEFAULT_DAEMON_SOCKET,
     timeout_s: float = 10.0,
 ) -> dict[str, Any]:
-    return daemon_request(
-        "clear_boot_runtime_spec",
+    request: dict[str, Any] = {"method": "clear_boot_runtime_spec"}
+    selected_uuid = str(gpu_uuid or "").strip()
+    if selected_uuid:
+        request["gpu_uuid"] = selected_uuid
+    return daemon_payload_request(
+        request,
         socket_path=socket_path,
         timeout_s=timeout_s,
     )
@@ -763,7 +772,9 @@ def main(argv: list[str] | None = None) -> int:
     runtime_spec.add_argument("spec_json")
     boot_spec = subparsers.add_parser("set-boot-runtime-spec")
     boot_spec.add_argument("spec_json")
-    subparsers.add_parser("clear-boot-runtime-spec")
+    subparsers.add_parser("boot-runtime-spec")
+    clear_boot = subparsers.add_parser("clear-boot-runtime-spec")
+    clear_boot.add_argument("--gpu-uuid", default="")
     verify = subparsers.add_parser("start-profile-verification")
     verify.add_argument("options_json")
     delete = subparsers.add_parser("delete-auto-uv-profiles")
@@ -776,6 +787,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "status":
             print(
                 json.dumps(daemon_status(socket_path=args.socket), indent=2),
+                flush=True,
+            )
+            return 0
+        if args.command == "boot-runtime-spec":
+            print(
+                json.dumps(boot_runtime_spec(socket_path=args.socket), indent=2),
                 flush=True,
             )
             return 0
@@ -854,7 +871,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "clear-boot-runtime-spec":
             print(
-                json.dumps(clear_boot_runtime_spec(socket_path=args.socket), indent=2),
+                json.dumps(
+                    clear_boot_runtime_spec(
+                        gpu_uuid=args.gpu_uuid,
+                        socket_path=args.socket,
+                    ),
+                    indent=2,
+                ),
                 flush=True,
             )
             return 0

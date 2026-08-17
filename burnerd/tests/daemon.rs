@@ -641,6 +641,112 @@ fn completed_scan_restores_exact_adaptive_runtime_instead_of_boot_profile() {
     assert_eq!(restored, adaptive);
 }
 
+#[test]
+fn boot_runtime_specs_are_saved_and_cleared_per_gpu() {
+    let daemon = Daemon::start(&[]);
+    let mut gpu_a = test_static_runtime_spec("profile-a");
+    gpu_a["gpu"]["uuid"] = Value::String("GPU-A".to_string());
+    gpu_a["gpu"]["index_at_resolution"] = Value::from(0);
+    let mut gpu_b = test_static_runtime_spec("profile-b");
+    gpu_b["gpu"]["uuid"] = Value::String("GPU-B".to_string());
+    gpu_b["gpu"]["index_at_resolution"] = Value::from(1);
+
+    let saved_a = daemon.request(&runtime_spec_request("set_boot_runtime_spec", &gpu_a));
+    assert_eq!(saved_a["result"]["saved_gpu_count"], 1);
+    assert_eq!(saved_a["result"]["active_gpu_uuid"], "GPU-A");
+
+    let saved_b = daemon.request(&runtime_spec_request("set_boot_runtime_spec", &gpu_b));
+    assert_eq!(saved_b["result"]["saved_gpu_count"], 2);
+    assert_eq!(saved_b["result"]["active_gpu_uuid"], "GPU-B");
+
+    let summary = daemon.request(r#"{"method":"boot_runtime_spec"}"#);
+    assert_eq!(summary["result"]["configured"], true);
+    assert_eq!(summary["result"]["active_gpu_uuid"], "GPU-B");
+    assert_eq!(summary["result"]["gpus"].as_array().unwrap().len(), 2);
+    assert_eq!(summary["result"]["gpus"][0]["gpu_uuid"], "GPU-A");
+    assert_eq!(summary["result"]["gpus"][1]["gpu_uuid"], "GPU-B");
+
+    let cleared_a = daemon.request(
+        r#"{"method":"clear_boot_runtime_spec","gpu_uuid":"GPU-A"}"#,
+    );
+    assert_eq!(cleared_a["result"]["cleared"], true);
+    assert_eq!(cleared_a["result"]["saved_gpu_count"], 1);
+    let summary = daemon.request(r#"{"method":"boot_runtime_spec"}"#);
+    assert_eq!(summary["result"]["gpus"].as_array().unwrap().len(), 1);
+    assert_eq!(summary["result"]["gpus"][0]["gpu_uuid"], "GPU-B");
+
+    let cleared_b = daemon.request(
+        r#"{"method":"clear_boot_runtime_spec","gpu_uuid":"GPU-B"}"#,
+    );
+    assert_eq!(cleared_b["result"]["saved_gpu_count"], 0);
+    let summary = daemon.request(r#"{"method":"boot_runtime_spec"}"#);
+    assert_eq!(summary["result"]["configured"], false);
+}
+
+#[test]
+fn autostart_replays_available_gpus_by_uuid_and_reports_missing_targets() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-multi-boot-{}-{}", std::process::id(), n));
+    std::fs::create_dir_all(&dir).unwrap();
+    let boot_file = dir.join("boot.json");
+
+    let mut gpu_a = test_static_runtime_spec("profile-a");
+    gpu_a["gpu"]["uuid"] = Value::String("GPU-A".to_string());
+    gpu_a["gpu"]["index_at_resolution"] = Value::from(0); // stale: now index 1
+    let mut gpu_b = test_static_runtime_spec("profile-b");
+    gpu_b["gpu"]["uuid"] = Value::String("GPU-B".to_string());
+    gpu_b["gpu"]["index_at_resolution"] = Value::from(1); // stale: now index 0
+    let mut missing = test_static_runtime_spec("profile-missing");
+    missing["gpu"]["uuid"] = Value::String("GPU-MISSING".to_string());
+    missing["gpu"]["index_at_resolution"] = Value::from(2);
+    std::fs::write(
+        &boot_file,
+        serde_json::json!({
+            "format_version": 1,
+            "active_gpu_uuid": "GPU-MISSING",
+            "specs": [gpu_a, missing, gpu_b],
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let daemon = Daemon::start(&[
+        (
+            "PENGUIN_BURNERD_TEST_BOOT_STATE_FILE",
+            boot_file.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_GPU_IDENTITIES",
+            r#"[{"index":0,"uuid":"GPU-B"},{"index":1,"uuid":"GPU-A"}]"#,
+        ),
+    ]);
+
+    let status = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(status["result"]["state"], "runtime_profile_running");
+    assert_eq!(status["result"]["active_job"]["gpu_uuid"], "GPU-B");
+
+    let boot = daemon.request(r#"{"method":"boot_runtime_spec"}"#);
+    assert_eq!(boot["result"]["active_gpu_uuid"], "GPU-MISSING");
+    assert_eq!(boot["result"]["effective_active_gpu_uuid"], "GPU-B");
+    assert_eq!(boot["result"]["gpus"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        boot["result"]["replay"],
+        serde_json::json!([
+            {"gpu_uuid": "GPU-A", "gpu_index": 1, "outcome": "applied"},
+            {
+                "gpu_uuid": "GPU-MISSING",
+                "outcome": "gpu-not-detected",
+                "error": "runtime profile GPU GPU-MISSING is not currently detected",
+            },
+            {"gpu_uuid": "GPU-B", "gpu_index": 0, "outcome": "active"},
+        ])
+    );
+
+    // A missing card remains configured for a future restart.
+    assert_eq!(boot["result"]["configured"], true);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// F1 regression: the autostart engine thread spawns before the signal thread,
 /// so it MUST inherit the SIGTERM/SIGINT block — otherwise the kernel delivers
 /// a process-directed SIGTERM to it (the only thread with the signal unblocked)

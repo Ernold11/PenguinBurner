@@ -85,11 +85,15 @@ def _deps(**overrides):
         "delete_auto_uv_profiles": lambda selectors: [Path("/tmp/profile-a.json")],
         "resolve_auto_uv_profile": lambda selector, **kwargs: (
             Path("/tmp/profile-a.json"),
-            {"profile_id": "profile-a", "final_verified": True},
+            {
+                "profile_id": "profile-a",
+                "final_verified": True,
+                "gpu_identity": {"uuid": "GPU-A"},
+            },
         ),
-        "save_profile_tier_assignment": lambda profile_id, tier: calls[
+        "save_profile_tier_assignment": lambda profile_id, tier, **kwargs: calls[
             "tier_assignments"
-        ].append((profile_id, tier))
+        ].append((profile_id, tier, kwargs.get("gpu_uuid")))
         or {"balanced": profile_id},
         "rewrite_steam_launch_options": lambda **kwargs: calls[
             "steam_launch_rewrites"
@@ -150,7 +154,7 @@ def test_main_command_routing_assigns_profile_tier_without_loading_runtime_confi
     )
 
     assert result.handled is True
-    assert calls["tier_assignments"] == [("profile-a", "balanced")]
+    assert calls["tier_assignments"] == [("profile-a", "balanced", "GPU-A")]
     assert calls["prints"][0][0] == (
         "Assigned Auto-UV profile profile-a to Balanced tier.",
     )
@@ -168,7 +172,7 @@ def test_main_command_routing_assigns_profile_tier_none():
     )
 
     assert result.handled is True
-    assert calls["tier_assignments"] == [("profile-a", "none")]
+    assert calls["tier_assignments"] == [("profile-a", "none", "GPU-A")]
     assert calls["prints"][0][0] == (
         "Removed adaptive tier assignment for Auto-UV profile profile-a.",
     )

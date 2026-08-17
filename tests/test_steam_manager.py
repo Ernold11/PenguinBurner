@@ -559,6 +559,83 @@ def test_hot_reapply_tolerates_grace_window_exit(manager, monkeypatch) -> None:
     assert "next launch" in result.message
 
 
+def test_hot_reapply_targets_saved_gpu_for_stock(manager, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    import integrations.steam.game_runtime as game_runtime
+    import runtime.daemon_client as daemon_client
+
+    manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
+    manager.set_game_mode(APP_ID, GAME_MODE_STOCK)
+    manager.set_game_gpu(APP_ID, "GPU-B")
+    monkeypatch.setattr(
+        daemon_client,
+        "daemon_status",
+        lambda **kwargs: {
+            "game_runtime": {
+                "active": True,
+                "watched": [{"pid": 4242, "app_id": APP_ID}],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        game_runtime.DaemonGpuClient,
+        "discover_identities",
+        classmethod(
+            lambda cls: [
+                SimpleNamespace(index=0, uuid="GPU-A"),
+                SimpleNamespace(index=1, uuid="GPU-B"),
+            ]
+        ),
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        daemon_client,
+        "start_game_runtime_profile",
+        lambda argv, **kwargs: calls.append(list(argv)) or {"started": True},
+    )
+
+    result = manager.hot_reapply(APP_ID)
+
+    assert result is not None and result.ok
+    assert calls == [
+        ["--auto-uv-profile", "__stock__", "--gpu-index", "1"]
+    ]
+
+
+def test_hot_reapply_reports_ignored_concurrent_game(manager, monkeypatch) -> None:
+    import runtime.daemon_client as daemon_client
+
+    manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
+    manager.set_game_mode(APP_ID, GAME_MODE_STOCK)
+    monkeypatch.setattr(
+        daemon_client,
+        "daemon_status",
+        lambda **kwargs: {
+            "game_runtime": {
+                "active": True,
+                "watched": [{"pid": 4242, "app_id": APP_ID}],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        daemon_client,
+        "start_game_runtime_profile",
+        lambda *args, **kwargs: {
+            "started": False,
+            "ignored": True,
+            "reason": "first-game-runtime-active",
+        },
+    )
+
+    result = manager.hot_reapply(APP_ID)
+
+    assert result is not None and not result.ok
+    assert "first-game-runtime-active" in result.message
+
+
 def test_stop_game_terminates_via_cdp(manager) -> None:
     result = manager.stop_game(APP_ID)
 

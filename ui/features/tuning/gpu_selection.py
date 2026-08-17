@@ -15,6 +15,7 @@ class GpuChoice:
     name: str
     pci_bus_id: str = ""
     uuid: str = ""
+    pci_device_id: str = ""
 
     @property
     def label(self) -> str:
@@ -49,6 +50,7 @@ def gpu_choices_from_nvml_identities(identities) -> list[GpuChoice]:
                 index=index,
                 name=str(getattr(identity, "name", "") or ""),
                 pci_bus_id=str(getattr(identity, "pci_bus_id", "") or ""),
+                pci_device_id=str(getattr(identity, "pci_device_id", "") or ""),
                 uuid=str(getattr(identity, "uuid", "") or ""),
             )
         )

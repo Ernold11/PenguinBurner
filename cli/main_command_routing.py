@@ -15,6 +15,7 @@ from runtime.support.runtime_debug import (
 )
 from runtime.support.runtime_service import running_under_systemd_service, stop_existing_penguin_burner_runtime
 from runtime.gpu_control.fan_release import release_fans_to_hardware_auto
+from profiles.gpu_identity import profile_gpu_uuid
 from profiles.uv.profile_store import (
     delete_auto_uv_profiles,
     format_profile_table,
@@ -234,7 +235,11 @@ def _assign_profile_tier(args, *, deps: MainCommandRoutingDependencies) -> None:
     if not profile_id:
         raise NvmlError(f"Auto-UV profile has no profile_id: {selector}")
 
-    assignments = deps.save_profile_tier_assignment(profile_id, raw_tier)
+    assignments = deps.save_profile_tier_assignment(
+        profile_id,
+        raw_tier,
+        gpu_uuid=profile_gpu_uuid(profile),
+    )
     tier = deps.normalize_profile_tier(raw_tier)
     tier_label = deps.profile_tier_label(tier)
     disabled = bool(deps.profile_tier_is_none(raw_tier))

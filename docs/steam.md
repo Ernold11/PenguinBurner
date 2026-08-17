@@ -32,6 +32,10 @@ in `~/.config/PenguinBurner/steam-game-settings.json`.
 
 The per-game editor exposes:
 
+- **Game GPU** — shown only when two or more physical NVIDIA GPUs are detected.
+  Choose the card PenguinBurner should tune for this game before enabling the
+  wrapper. The setting stores the GPU UUID and resolves its current index at
+  launch; PenguinBurner does not guess from the active display or GPU load.
 - **Compatibility tool** — Steam's current per-game override, or its effective
   default Proton when no override was saved. PenguinBurner reads the effective
   tool from Steam's live per-app details API; it does not infer "native" from a
@@ -62,7 +66,8 @@ your whole library in one confirmed step:
 
 - **Enable / Disable PenguinBurner for all games** — add or remove the wrapper
   everywhere. Enabling keeps the overlay off and leaves each game's saved mode
-  intact; disabling restores every game's original Steam launch options.
+  intact; disabling restores every game's original Steam launch options. On a
+  multi-GPU host, every game needs a Game GPU before bulk enable can run.
 - **Show / Hide In-Game overlay for enabled games.**
 
 Each action confirms first and shows the game count. Directions that would change
@@ -84,11 +89,20 @@ Enabling a game splices the `PENGUIN_BURNER` wrapper into its Steam launch
 options. At launch the wrapper resolves the game and account, then asks the
 already-root daemon to apply that game's profile over the socket — no elevation,
 no per-game password. When the game exits, the daemon restores your standing
-profile automatically. If the daemon is unreachable, the wrapper soft-fails and
-the game launches normally; PenguinBurner never blocks a launch.
+profile automatically. For a cross-GPU override it first restores that game's
+target GPU to its prior saved state, then resumes the standing GPU. If no prior
+state is known, it restores the game GPU to stock. If the daemon is unreachable,
+the wrapper soft-fails and the game launches normally; PenguinBurner never
+blocks a launch.
 
 Adaptive mode additionally passes the per-game target FPS, and a live change to
-a running game is re-applied in place without a relaunch.
+a running game is re-applied in place without a relaunch. Changing the Game GPU
+itself requires restarting the game.
+
+The daemon has one active monitoring/adaptive/fan-control engine and one
+overlay telemetry owner. The first watched Steam game therefore remains the
+owner until it exits; a second concurrently launched game still starts, but its
+per-game runtime request is skipped and reported in the wrapper diagnostics.
 
 ## Compatibility
 

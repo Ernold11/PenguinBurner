@@ -5,10 +5,11 @@ This is the only Auto-UV module that creates NVAPI/NVML helpers and applies curv
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, cast
 
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
+from profiles.gpu_identity import normalized_gpu_identity
 from runtime.support.vf_curve_plan import apply_plan
 from runtime.support.nvidia_runtime_defaults import reset_nvidia_runtime_defaults
 
@@ -28,6 +29,7 @@ class LiveGpuVfCurveApplier:
     gpu: DaemonGpuClient
     runtime_default_plan: list[dict]
     translated_gpu_policy: dict
+    gpu_identity: dict[str, str | int] = field(default_factory=dict)
     power_limit_set_supported: bool = True
     baseline_power_limit_w: int | None = None
     requested_power_limit_w: int | None = None
@@ -151,12 +153,18 @@ def open_live_gpu_vf_curve_applier(
     gpu = DaemonGpuClient(gpu_index=int(gpu_index))
     try:
         gpu.refresh_points()
+        gpu_identity = normalized_gpu_identity(
+            gpu.capabilities().identity,
+            index_at_verification=int(gpu_index),
+        )
     except Exception as exc:
         raise AutoUvError(
             "failed to create Linux NVAPI VF helper"
             f": {exc}. This driver/GPU combination may not expose editable "
             "voltage-based V/F points."
         ) from exc
+    if not str(gpu_identity.get("uuid") or "").strip():
+        raise AutoUvError(f"GPU {int(gpu_index)} did not report a stable UUID")
 
     runtime_reset = reset_nvidia_runtime_defaults(
         gpu_index=int(gpu_index),
@@ -284,6 +292,7 @@ def open_live_gpu_vf_curve_applier(
     return LiveGpuVfCurveApplier(
         gpu_index=int(gpu_index),
         gpu=gpu,
+        gpu_identity=gpu_identity,
         min_power_limit_w=min_power_limit_w,
         max_power_limit_w=max_power_limit_w,
         runtime_default_plan=runtime_default_plan,
