@@ -384,6 +384,13 @@ impl AdaptiveProfileController {
         }
     }
 
+    /// Drop the utilization window (post-resume: pre-suspend samples are
+    /// hours old by wall time but still "recent" on the monotonic clock the
+    /// window is pruned by, and would poison the CPU-bound guard).
+    fn clear_util_window(&mut self) {
+        self.util_samples.clear();
+    }
+
     fn windowed_avg(&self, pick: impl Fn(&UtilSample) -> Option<f64>) -> Option<f64> {
         let values: Vec<f64> = self.util_samples.iter().filter_map(&pick).collect();
         if values.is_empty() {
@@ -451,6 +458,10 @@ pub struct AdaptiveSwitchResult {
     pub vf_apply_plan: Option<Vec<PlanItem>>,
     pub vf_expected_samples: Vec<PlanItem>,
     pub memory_offset_mhz: Option<i64>,
+    /// Power limit the tier switch actually applied (`None` when the tier
+    /// carries no limit or the driver skipped it): the loop's post-resume
+    /// re-verification must track the CURRENT tier, not the startup value.
+    pub applied_power_limit_w: Option<i64>,
 }
 
 pub struct AdaptiveAutoUvRuntimeController {
@@ -463,6 +474,12 @@ pub struct AdaptiveAutoUvRuntimeController {
 }
 
 impl AdaptiveAutoUvRuntimeController {
+    /// A system resume was detected: invalidate windowed utilization state so
+    /// the CPU-bound guard reasons only about post-resume samples.
+    pub fn note_system_resume(&mut self) {
+        self.policy.clear_util_window();
+    }
+
     /// Construct + enumerate tier curves. `log` receives the enable/target lines.
     pub fn new(
         current_tier: &str,
@@ -569,6 +586,7 @@ impl AdaptiveAutoUvRuntimeController {
                 vf_apply_plan: None,
                 vf_expected_samples: Vec::new(),
                 memory_offset_mhz: None,
+                applied_power_limit_w: None,
             });
         }
         let Some(curve) = self.tier_curves.get(&decision.tier).cloned() else {
@@ -579,6 +597,7 @@ impl AdaptiveAutoUvRuntimeController {
                 vf_apply_plan: None,
                 vf_expected_samples: Vec::new(),
                 memory_offset_mhz: None,
+                applied_power_limit_w: None,
             });
         };
         match self.apply_curve(
@@ -604,6 +623,7 @@ impl AdaptiveAutoUvRuntimeController {
                     vf_apply_plan: None,
                     vf_expected_samples: Vec::new(),
                     memory_offset_mhz: None,
+                    applied_power_limit_w: None,
                 })
             }
         }
@@ -621,7 +641,7 @@ impl AdaptiveAutoUvRuntimeController {
         log: &mut dyn FnMut(&str),
     ) -> Result<AdaptiveSwitchResult, String> {
         let label = profile_tier_label(tier);
-        let (_power, memory) = apply_adaptive_curve(backend, curve, ceiling, &label, log)?;
+        let (power, memory) = apply_adaptive_curve(backend, curve, ceiling, &label, log)?;
         publisher.profile_tier = curve.profile_tier.clone();
         publisher.profile_tier_key = if curve.profile_tier_key.is_empty() {
             tier.to_string()
@@ -641,6 +661,7 @@ impl AdaptiveAutoUvRuntimeController {
             vf_apply_plan: Some(curve.plan.clone()),
             vf_expected_samples: select_expected_vf_samples(&curve.plan, 8),
             memory_offset_mhz: memory,
+            applied_power_limit_w: power,
         })
     }
 

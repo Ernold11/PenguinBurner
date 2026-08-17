@@ -106,6 +106,14 @@ pub struct MockGpu {
     /// when a mock NVIDIA session is acquired and dropped. Production never
     /// sets it.
     lifetime_file: Option<PathBuf>,
+    /// Management power limit applied through the trait; overrides only
+    /// `power_limit_w` in the `query_power_limits` readback so
+    /// verify-after-apply behaves like real hardware while the enforced
+    /// limit stays independently settable (it can legitimately diverge —
+    /// thermal/idle caps). Tests simulating a driver-side reset (e.g.
+    /// suspend loss) call `clear_applied_power_limit` so later
+    /// `power_limits` writes win.
+    applied_power_limit_w: RefCell<Option<i64>>,
 
     ops: RefCell<Vec<MockOp>>,
     failures: RefCell<HashMap<&'static str, GpuError>>,
@@ -150,6 +158,7 @@ impl Default for MockGpu {
             context_pids: GpuContextPids::default(),
             context_pids_file: None,
             lifetime_file: None,
+            applied_power_limit_w: RefCell::new(None),
             ops: RefCell::new(Vec::new()),
             failures: RefCell::new(HashMap::new()),
             on_temperature: RefCell::new(None),
@@ -173,6 +182,14 @@ impl MockGpu {
     #[allow(dead_code)] // used by unit tests only (the module is not test-gated)
     pub fn clear_failure(&self, method: &'static str) {
         self.failures.borrow_mut().remove(method);
+    }
+
+    /// Forget the trait-applied power limit so `query_power_limits` reports
+    /// the `power_limits` field again — simulates the driver losing the
+    /// limit (suspend/reset) after an apply.
+    #[allow(dead_code)] // used by unit tests only (the module is not test-gated)
+    pub fn clear_applied_power_limit(&self) {
+        *self.applied_power_limit_w.borrow_mut() = None;
     }
 
     /// A snapshot of the recorded operations.
@@ -225,6 +242,25 @@ fn read_lifetime_state(path: &std::path::Path) -> (u64, u64, u64) {
     match values.as_slice() {
         [opens, closes, live] => (*opens, *closes, *live),
         _ => (0, 0, 0),
+    }
+}
+
+#[cfg(test)]
+impl MockGpu {
+    /// Shared test fixture: sane constraints around explicit management and
+    /// enforced limits (kept in one place so the resume/apply tests cannot
+    /// drift apart).
+    pub fn with_power_limits(limit_w: i64, enforced_w: i64) -> Self {
+        let mut mock = Self::new();
+        mock.power_limits = PowerLimits {
+            power_management_enabled: Some(true),
+            power_limit_w: Some(limit_w),
+            enforced_power_limit_w: Some(enforced_w),
+            power_limit_default_w: Some(320),
+            power_limit_min_w: Some(150),
+            power_limit_max_w: Some(450),
+        };
+        mock
     }
 }
 
@@ -307,12 +343,17 @@ impl GpuBackend for MockGpu {
     }
 
     fn query_power_limits(&self) -> PowerLimits {
-        self.power_limits
+        let mut limits = self.power_limits;
+        if let Some(applied) = *self.applied_power_limit_w.borrow() {
+            limits.power_limit_w = Some(applied);
+        }
+        limits
     }
 
     fn apply_power_limit_w(&self, power_limit_w: i64) -> GpuResult<i64> {
         self.record(MockOp::ApplyPowerLimit { power_limit_w });
         self.fail("apply_power_limit_w")?;
+        *self.applied_power_limit_w.borrow_mut() = Some(power_limit_w);
         Ok(power_limit_w)
     }
 

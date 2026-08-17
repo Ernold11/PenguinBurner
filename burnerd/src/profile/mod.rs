@@ -12,6 +12,7 @@ mod fan;
 mod guard;
 mod latency_rx;
 mod logfmt;
+mod resume;
 mod runtime_spec;
 pub(crate) mod savings;
 mod telemetry;
@@ -344,13 +345,19 @@ fn now_unix_ns() -> i64 {
 /// absolute, always-increasing clock with an arbitrary large epoch). Used for
 /// every loop `loop_started - last_*` delta so the `0.0`-init markers work.
 fn monotonic_now() -> f64 {
+    clock_seconds(libc::CLOCK_MONOTONIC)
+}
+
+/// Shared sampler for the monotonic/boottime pair the sleep detector
+/// compares — both clocks must be read identically for the gap math to hold.
+fn clock_seconds(clock: libc::clockid_t) -> f64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
     // SAFETY: clock_gettime writes into the owned timespec.
     unsafe {
-        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+        libc::clock_gettime(clock, &mut ts);
     }
     ts.tv_sec as f64 + ts.tv_nsec as f64 / 1_000_000_000.0
 }
@@ -524,6 +531,7 @@ fn run_with_backend(
         savings_tracker.as_mut(),
         stop_flag,
         max_iterations,
+        None,
         ready,
     )
 }
@@ -578,6 +586,9 @@ fn run_fan_control_loop(
     mut savings_tracker: Option<&mut savings::SavingsTracker>,
     stop_flag: Arc<AtomicBool>,
     max_iterations: Option<u64>,
+    // Test seam (like `max_iterations`): overrides the (monotonic, boottime)
+    // pair the resume machinery samples, so loop tests can fabricate sleeps.
+    mut resume_clocks: Option<&mut dyn FnMut() -> (f64, f64)>,
     ready: &mut Option<SyncSender<Result<(), String>>>,
 ) -> Result<(), String> {
     let mut settings = RuntimeFanSettings::build(&fan_config, fan_control_enabled)?;
@@ -617,6 +628,10 @@ fn run_fan_control_loop(
     let mut vf_expected_samples: Vec<PlanItem> = vf_policy.vf_expected_samples.clone();
     let mut reapply_memory_offset_mhz: Option<i64> =
         vf_policy.auto_uv_profile_gpu_policy.mem_clk_vf_offset_mhz;
+    // Tracks the power limit applied for the CURRENT tier: startup value
+    // here, updated on every adaptive tier switch below, consumed by the
+    // post-resume re-verification.
+    let mut expected_power_limit_w = vf_policy.auto_uv_profile_gpu_policy.power_limit_w;
     let profile_clock_mhz = vf_policy.profile_clock_mhz;
     let profile_voltage_mv = vf_policy.profile_voltage_mv;
     let mut current_tier_label = vf_policy_tier_label(&vf_policy);
@@ -659,6 +674,17 @@ fn run_fan_control_loop(
     let mut last_overlay_publish: Option<f64> = None;
     let mut overlay_publish_failed = false;
     let mut last_vf_reapply = 0.0_f64;
+    let (setup_monotonic, setup_boottime) = match resume_clocks.as_mut() {
+        Some(clocks) => clocks(),
+        None => (monotonic_now(), resume::boottime_now()),
+    };
+    let mut sleep_detector = resume::SleepGapDetector::new(
+        resume::SLEEP_GAP_THRESHOLD_S,
+        setup_monotonic,
+        setup_boottime,
+    );
+    let mut resume_deadline: Option<f64> = None;
+    let mut resume_attempts = 0u32;
 
     loop {
         if let Some(max) = max_iterations {
@@ -671,6 +697,102 @@ fn run_fan_control_loop(
         }
         iteration_count += 1;
         let loop_started = monotonic_now();
+
+        // System resume detection: CLOCK_BOOTTIME keeps counting through a
+        // sleep while the loop's monotonic clock does not, so a divergence
+        // between the two IS a completed suspend cycle. Applied GPU state may
+        // have silently reset; re-verify after a short driver-settle grace.
+        let (tick_monotonic, tick_boottime) = match resume_clocks.as_mut() {
+            Some(clocks) => clocks(),
+            None => (loop_started, resume::boottime_now()),
+        };
+        if let Some(slept_s) = sleep_detector.observe(tick_monotonic, tick_boottime) {
+            engine_log(&format!(
+                "{} event=system-resume-detected slept_s={slept_s:.0} action=reverify-in-{}s",
+                local_timestamp(),
+                resume::RESUME_REAPPLY_GRACE_S,
+            ));
+            resume_deadline = Some(tick_monotonic + resume::RESUME_REAPPLY_GRACE_S);
+            resume_attempts = 0;
+            // Pre-suspend utilization samples still look "recent" on the
+            // monotonic clock; drop them so the CPU-bound guard reasons only
+            // about post-resume load.
+            if let Some(controller) = adaptive_ctrl.as_deref_mut() {
+                controller.note_system_resume();
+            }
+        }
+
+        // Driver-settle window: while a re-verification is pending, this tick
+        // makes NO backend calls at all. Right after wake, telemetry reads,
+        // adaptive writes, and the VF guard would all hit the half-initialized
+        // driver — a transient error on any of them is fatal to the loop,
+        // which is exactly what the grace exists to prevent.
+        if let Some(deadline) = resume_deadline {
+            if tick_monotonic < deadline {
+                // Cap the wait at the remaining grace so a long poll interval
+                // does not stretch the no-backend-calls blackout past it.
+                sleep_loop(
+                    &stop_flag,
+                    poll_interval_s.min((deadline - tick_monotonic).max(0.05)),
+                    overlay_update_interval_s(publisher),
+                    publisher.enabled,
+                );
+                continue;
+            }
+            match run_resume_recovery(
+                backend,
+                enable_persistence_mode,
+                expected_power_limit_w,
+                cleanup.ceiling.as_mut(),
+            ) {
+                Ok(power_reapplied) => {
+                    engine_log(&format!(
+                        "{} event=resume-reverify-complete power_limit_reapplied={power_reapplied}",
+                        local_timestamp()
+                    ));
+                    last_vf_reapply = 0.0;
+                    last_speed = None;
+                    last_set_temp_c = None;
+                    resume_deadline = None;
+                }
+                Err(exc) => {
+                    resume_attempts += 1;
+                    if resume_attempts >= resume::RESUME_REAPPLY_MAX_ATTEMPTS {
+                        // Giving up is deliberately non-fatal: erroring out
+                        // would strip fan control and the clock ceiling while
+                        // leaving the undervolt applied. The per-tick guards
+                        // keep re-verifying the curve from here on.
+                        engine_log(&format!(
+                            "{} event=resume-reverify-gave-up attempts={resume_attempts} error={exc}",
+                            local_timestamp()
+                        ));
+                        resume_deadline = None;
+                        // Same re-assertion the success path forces: the fan
+                        // dedup and VF cooldown must not trust pre-suspend
+                        // state just because the recovery writes failed.
+                        last_vf_reapply = 0.0;
+                        last_speed = None;
+                        last_set_temp_c = None;
+                    } else {
+                        engine_log(&format!(
+                            "{} event=resume-reverify-retry attempt={resume_attempts} error={exc}",
+                            local_timestamp()
+                        ));
+                        // Re-anchor AFTER the failed attempt (which may have
+                        // blocked past the old anchor) so every retry gets a
+                        // full settle grace; the grace branch above owns the
+                        // sleep on the next tick.
+                        let after_attempt = match resume_clocks.as_mut() {
+                            Some(clocks) => clocks().0,
+                            None => monotonic_now(),
+                        };
+                        resume_deadline =
+                            Some(after_attempt + resume::RESUME_REAPPLY_GRACE_S);
+                        continue;
+                    }
+                }
+            }
+        }
 
         let overlay_interval_s = overlay_update_interval_s(publisher);
 
@@ -702,11 +824,40 @@ fn run_fan_control_loop(
                     }
                     vf_expected_samples = update.vf_expected_samples;
                     reapply_memory_offset_mhz = update.memory_offset_mhz;
+                    // A tier that carries no limit leaves the previously
+                    // applied limit in force on the hardware, so keep
+                    // tracking that value for the post-resume re-verify.
+                    if update.applied_power_limit_w.is_some() {
+                        expected_power_limit_w = update.applied_power_limit_w;
+                    }
                 }
             }
         }
 
-        let current_temp_c = backend.temperature_c().map_err(|e| e.to_string())?;
+        let current_temp_c = match backend.temperature_c() {
+            Ok(temp) => temp,
+            Err(exc) => {
+                // A suspend can land mid-tick inside a blocking call and
+                // surface as a transient post-wake error before the loop-top
+                // detector saw the gap. A fresh gap means "enter the settle
+                // window", not "die".
+                if let Some((slept_s, now)) =
+                    probe_sleep_gap(&mut sleep_detector, &mut resume_clocks)
+                {
+                    engine_log(&format!(
+                        "{} event=system-resume-detected slept_s={slept_s:.0} trigger=telemetry-error error={exc}",
+                        local_timestamp()
+                    ));
+                    resume_deadline = Some(now + resume::RESUME_REAPPLY_GRACE_S);
+                    resume_attempts = 0;
+                    if let Some(controller) = adaptive_ctrl.as_deref_mut() {
+                        controller.note_system_resume();
+                    }
+                    continue;
+                }
+                return Err(exc.to_string());
+            }
+        };
         let power_draw_w = backend.power_draw_w();
 
         let ceiling_text = cleanup
@@ -917,9 +1068,24 @@ fn run_fan_control_loop(
         ));
 
         if settings.force_update_every_poll || Some(target_speed) != last_speed {
-            backend
-                .set_all_fans_speed(fan_count, target_speed as u32)
-                .map_err(|e| e.to_string())?;
+            if let Err(exc) = backend.set_all_fans_speed(fan_count, target_speed as u32) {
+                // Same mid-tick-suspend tolerance as the telemetry read.
+                if let Some((slept_s, now)) =
+                    probe_sleep_gap(&mut sleep_detector, &mut resume_clocks)
+                {
+                    engine_log(&format!(
+                        "{} event=system-resume-detected slept_s={slept_s:.0} trigger=fan-write-error error={exc}",
+                        local_timestamp()
+                    ));
+                    resume_deadline = Some(now + resume::RESUME_REAPPLY_GRACE_S);
+                    resume_attempts = 0;
+                    if let Some(controller) = adaptive_ctrl.as_deref_mut() {
+                        controller.note_system_resume();
+                    }
+                    continue;
+                }
+                return Err(exc.to_string());
+            }
             last_set_temp_c = Some(current_temp_c);
             last_speed = Some(target_speed);
             last_update_time = loop_started;
@@ -1048,6 +1214,56 @@ fn maybe_reapply_vf_curve(
         ],
     ));
     loop_started
+}
+
+/// One post-resume recovery pass: persistence mode (a resume can drop it;
+/// only applied at startup otherwise), then the power limit (read-first) and
+/// the locked-clock ceiling re-lock — attempted independently so one failing
+/// step cannot starve the other across the bounded retry budget. The VF/mem
+/// reapply stays with the loop's existing guard (whose cooldown the caller
+/// clears) so the mem-before-VF ordering invariant keeps exactly one owner.
+fn run_resume_recovery(
+    backend: &dyn GpuBackend,
+    enable_persistence_mode: bool,
+    expected_power_limit_w: Option<i64>,
+    ceiling: Option<&mut FlattenedClockCeilingController<'_>>,
+) -> Result<bool, String> {
+    let mut log = |message: &str| engine_log(message);
+    apply::apply_gpu_base_policy(backend, enable_persistence_mode, &mut log);
+    let mut failures: Vec<String> = Vec::new();
+    let power_reapplied =
+        match resume::verify_power_limit(backend, expected_power_limit_w, &mut log) {
+            Ok(reapplied) => reapplied,
+            Err(exc) => {
+                failures.push(exc);
+                false
+            }
+        };
+    if let Some(controller) = ceiling {
+        if let Err(exc) = controller.apply() {
+            failures.push(format!("clock ceiling re-lock failed: {exc}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(power_reapplied)
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+/// Sample the clock pair (seam-aware) and ask the detector whether a suspend
+/// just ended; returns the slept seconds and the sampled monotonic time.
+fn probe_sleep_gap(
+    detector: &mut resume::SleepGapDetector,
+    clocks: &mut Option<&mut dyn FnMut() -> (f64, f64)>,
+) -> Option<(f64, f64)> {
+    let (monotonic, boottime) = match clocks.as_mut() {
+        Some(clocks) => clocks(),
+        None => (monotonic_now(), resume::boottime_now()),
+    };
+    detector
+        .observe(monotonic, boottime)
+        .map(|gap| (gap, monotonic))
 }
 
 #[allow(clippy::too_many_arguments)]
