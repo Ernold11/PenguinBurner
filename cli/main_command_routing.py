@@ -29,12 +29,14 @@ from profiles.uv.profile_tiers import (
     save_profile_tier_assignment,
 )
 from profiles.uv.runtime_auto_uv_profile import load_auto_uv_final_curve
+from runtime.daemon_client import set_boot_main_gpu
 
 
 @dataclass(slots=True)
 class MainCommandRoutingDependencies:
     clear_auto_uv_state: Callable
     load_config: Callable
+    set_boot_main_gpu: Callable = set_boot_main_gpu
     load_auto_uv_final_curve: Callable = load_auto_uv_final_curve
     running_under_systemd_service: Callable = running_under_systemd_service
     enable_stdio_capture: Callable = enable_stdio_capture
@@ -109,6 +111,23 @@ def route_main_command(
 
     if getattr(args, "set_steam_overlay_launch", None):
         _set_steam_overlay_launch(args, deps=deps)
+        return MainCommandRoutingResult(handled=True)
+
+    main_gpu_uuid = str(getattr(args, "set_main_gpu", "") or "").strip()
+    clear_main_gpu = bool(getattr(args, "clear_main_gpu", False))
+    if main_gpu_uuid and clear_main_gpu:
+        raise NvmlError("choose only one of --set-main-gpu or --clear-main-gpu")
+    if main_gpu_uuid or clear_main_gpu:
+        result = deps.set_boot_main_gpu(main_gpu_uuid)
+        if args.json_events:
+            deps.print_fn(json.dumps({"main_gpu": result}, indent=2), flush=True)
+        elif main_gpu_uuid:
+            deps.print_fn(f"Main GPU set to {main_gpu_uuid}.", flush=True)
+        else:
+            deps.print_fn(
+                "Main GPU cleared; startup monitoring now uses the last saved GPU.",
+                flush=True,
+            )
         return MainCommandRoutingResult(handled=True)
 
     if not explicit_cli_args and not deps.running_under_systemd_service():

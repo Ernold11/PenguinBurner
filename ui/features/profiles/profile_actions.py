@@ -25,6 +25,7 @@ from profiles.gpu_identity import (
 from profiles.gpu_identity import normalized_gpu_identity
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from runtime.daemon_client import clear_boot_runtime_spec
+from runtime.daemon_client import set_boot_main_gpu
 
 from ui.commands import delete_profiles_command
 from ui.commands import profile_verify_command
@@ -118,12 +119,52 @@ class ProfileActionsMixin:
             self.profile_list.set_boot_apply_checked(
                 persist_on_startup_from_runtime_config(default=False)
             )
+            self.profile_list.set_main_gpu_state(
+                checked=False,
+                has_boot_profile=False,
+            )
             return
         key = selected_uuid.casefold()
+        info = systemd_autostart_profile_info(gpu_uuid=selected_uuid)
         if key not in self._boot_apply_by_gpu:
-            info = systemd_autostart_profile_info(gpu_uuid=selected_uuid)
             self._boot_apply_by_gpu[key] = bool(info.get("selector"))
         self.profile_list.set_boot_apply_checked(self._boot_apply_by_gpu[key])
+        self.profile_list.set_main_gpu_state(
+            checked=bool(info.get("main_gpu")),
+            has_boot_profile=bool(info.get("selector")),
+        )
+
+    def _persist_main_gpu_preference(self, checked: bool) -> None:
+        gpu_uuid = self.profile_list.target_gpu_uuid()
+        if not gpu_uuid or not self.profile_list.target_selection_required():
+            self.profile_list.set_main_gpu_state(
+                checked=False,
+                has_boot_profile=False,
+            )
+            return
+        has_boot_profile = self.profile_list.main_gpu_target_has_boot_profile()
+        if checked and not has_boot_profile:
+            self.profile_list.set_main_gpu_state(
+                checked=False,
+                has_boot_profile=False,
+            )
+            return
+        try:
+            set_boot_main_gpu(gpu_uuid if checked else "")
+        except Exception as exc:
+            self.profile_list.set_main_gpu_state(
+                checked=not checked,
+                has_boot_profile=has_boot_profile,
+            )
+            self.errors.show(
+                "Main GPU",
+                f"Could not update the daemon's main GPU: {exc}",
+            )
+            return
+        self.profile_list.set_main_gpu_state(
+            checked=checked,
+            has_boot_profile=has_boot_profile,
+        )
 
     def _persist_silent_fan_preference(self, checked: bool) -> None:
         raise NotImplementedError

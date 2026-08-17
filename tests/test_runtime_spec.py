@@ -321,6 +321,24 @@ def test_daemon_client_boot_diagnostics_and_targeted_clear(monkeypatch, capsys) 
     assert calls == [("clear", "GPU-A")]
 
 
+def test_daemon_client_sets_and_clears_main_gpu(monkeypatch, capsys) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        daemon_client,
+        "set_boot_main_gpu",
+        lambda gpu_uuid, **_kwargs: calls.append(gpu_uuid)
+        or {"selected": bool(gpu_uuid), "main_gpu_uuid": gpu_uuid},
+    )
+
+    assert (
+        daemon_client.main(["set-boot-main-gpu", "--gpu-uuid", "GPU-A"])
+        == 0
+    )
+    assert '"main_gpu_uuid": "GPU-A"' in capsys.readouterr().out
+    assert daemon_client.main(["set-boot-main-gpu"]) == 0
+    assert calls == ["GPU-A", ""]
+
+
 def test_adaptive_runtime_keeps_explicit_old_profile_as_initial_tier(monkeypatch) -> None:
     selected = _curve("balanced-old")
     curves = {

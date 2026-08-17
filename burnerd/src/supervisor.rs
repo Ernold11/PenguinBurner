@@ -96,6 +96,8 @@ impl AppliedRuntimeHistory {
 struct BootRuntimeSet {
     format_version: u32,
     active_gpu_uuid: String,
+    #[serde(default)]
+    main_gpu_uuid: String,
     specs: Vec<RuntimeSpec>,
 }
 
@@ -104,6 +106,7 @@ impl BootRuntimeSet {
         Self {
             format_version: BOOT_RUNTIME_SET_FORMAT_VERSION,
             active_gpu_uuid: String::new(),
+            main_gpu_uuid: String::new(),
             specs: Vec::new(),
         }
     }
@@ -112,6 +115,7 @@ impl BootRuntimeSet {
         Self {
             format_version: BOOT_RUNTIME_SET_FORMAT_VERSION,
             active_gpu_uuid: spec.gpu.uuid.clone(),
+            main_gpu_uuid: String::new(),
             specs: vec![spec],
         }
     }
@@ -132,6 +136,17 @@ impl BootRuntimeSet {
         {
             return Err("boot runtime active_gpu_uuid has no saved spec".to_string());
         }
+        if !self.main_gpu_uuid.is_empty()
+            && !self
+                .specs
+                .iter()
+                .any(|spec| spec.gpu.uuid == self.main_gpu_uuid)
+        {
+            return Err("boot runtime main_gpu_uuid has no saved spec".to_string());
+        }
+        if !self.main_gpu_uuid.is_empty() && self.active_gpu_uuid != self.main_gpu_uuid {
+            return Err("boot runtime main_gpu_uuid is not active".to_string());
+        }
         Ok(())
     }
 
@@ -139,13 +154,32 @@ impl BootRuntimeSet {
         let uuid = spec.gpu.uuid.clone();
         self.specs.retain(|saved| saved.gpu.uuid != uuid);
         self.specs.push(spec);
-        self.active_gpu_uuid = uuid;
+        if self.main_gpu_uuid.is_empty() {
+            self.active_gpu_uuid = uuid;
+        }
+    }
+
+    fn set_main_gpu(&mut self, gpu_uuid: &str) -> Result<(), String> {
+        let selected_uuid = gpu_uuid.trim();
+        if selected_uuid.is_empty() {
+            self.main_gpu_uuid.clear();
+            return Ok(());
+        }
+        if !self.specs.iter().any(|spec| spec.gpu.uuid == selected_uuid) {
+            return Err("main GPU has no saved boot runtime spec".to_string());
+        }
+        self.main_gpu_uuid = selected_uuid.to_string();
+        self.active_gpu_uuid = selected_uuid.to_string();
+        Ok(())
     }
 
     fn remove(&mut self, gpu_uuid: &str) -> bool {
         let before = self.specs.len();
         self.specs.retain(|spec| spec.gpu.uuid != gpu_uuid);
         let removed = self.specs.len() != before;
+        if removed && self.main_gpu_uuid == gpu_uuid {
+            self.main_gpu_uuid.clear();
+        }
         if removed && self.active_gpu_uuid == gpu_uuid {
             self.active_gpu_uuid = self
                 .specs
@@ -1645,6 +1679,25 @@ pub fn set_boot_runtime_spec(spec: RuntimeSpec) -> Result<Value, String> {
         "runtime_mode": spec.mode_name(),
         "gpu_uuid": spec.gpu.uuid,
         "active_gpu_uuid": set.active_gpu_uuid,
+        "main_gpu_uuid": set.main_gpu_uuid,
+        "saved_gpu_count": set.specs.len(),
+    }))
+}
+
+pub fn set_boot_main_gpu(gpu_uuid: &str) -> Result<Value, String> {
+    let _update_guard = BOOT_STATE_UPDATE_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let path = boot_state_file_path();
+    let mut set = load_boot_runtime_set(&path)?;
+    set.set_main_gpu(gpu_uuid)?;
+    if !set.specs.is_empty() {
+        persist_json(&path, &set)?;
+    }
+    Ok(serde_json::json!({
+        "selected": !set.main_gpu_uuid.is_empty(),
+        "main_gpu_uuid": set.main_gpu_uuid,
+        "active_gpu_uuid": set.active_gpu_uuid,
         "saved_gpu_count": set.specs.len(),
     }))
 }
@@ -1686,6 +1739,7 @@ pub fn clear_boot_runtime_spec(gpu_uuid: &str) -> Result<Value, String> {
         "cleared": cleared,
         "gpu_uuid": selected_uuid,
         "active_gpu_uuid": set.active_gpu_uuid,
+        "main_gpu_uuid": set.main_gpu_uuid,
         "saved_gpu_count": set.specs.len(),
     }))
 }
@@ -1727,6 +1781,7 @@ pub fn boot_runtime_spec_summary(sup: &Mutex<Supervisor>) -> Result<Value, Strin
         "gpu_uuid": active.gpu.uuid,
         "silent_fan_curve": active.fan.enabled,
         "active_gpu_uuid": set.active_gpu_uuid,
+        "main_gpu_uuid": set.main_gpu_uuid,
         "effective_active_gpu_uuid": effective_active_gpu_uuid,
         "gpus": set.specs.iter().map(boot_spec_summary).collect::<Vec<_>>(),
         "replay": replay,
@@ -2589,6 +2644,23 @@ mod tests {
     }
 
     #[test]
+    fn explicit_main_gpu_survives_other_saves_and_old_sets_default_to_unset() {
+        let mut set = BootRuntimeSet::empty();
+        set.upsert(RuntimeSpec::test_static("GPU-A", "profile-a"));
+        set.upsert(RuntimeSpec::test_static("GPU-B", "profile-b"));
+        set.set_main_gpu("GPU-A").unwrap();
+        set.upsert(RuntimeSpec::test_static("GPU-B", "profile-b-new"));
+        assert_eq!(set.main_gpu_uuid, "GPU-A");
+        assert_eq!(set.active_gpu_uuid, "GPU-A");
+
+        let mut legacy_json = serde_json::to_value(&set).unwrap();
+        legacy_json.as_object_mut().unwrap().remove("main_gpu_uuid");
+        let legacy_set: BootRuntimeSet = serde_json::from_value(legacy_json).unwrap();
+        assert!(legacy_set.main_gpu_uuid.is_empty());
+        legacy_set.validate().unwrap();
+    }
+
+    #[test]
     fn concurrent_boot_saves_preserve_every_gpu_entry() {
         let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = env::temp_dir().join(format!(
@@ -2696,6 +2768,7 @@ mod tests {
             &BootRuntimeSet {
                 format_version: BOOT_RUNTIME_SET_FORMAT_VERSION,
                 active_gpu_uuid: "GPU-B".to_string(),
+                main_gpu_uuid: String::new(),
                 specs: vec![
                     RuntimeSpec::test_static("GPU-A", "boot-profile-a"),
                     RuntimeSpec::test_static("GPU-B", "boot-profile-b"),
@@ -2958,6 +3031,7 @@ mod tests {
             &BootRuntimeSet {
                 format_version: BOOT_RUNTIME_SET_FORMAT_VERSION,
                 active_gpu_uuid: "GPU-B".to_string(),
+                main_gpu_uuid: String::new(),
                 specs: vec![gpu_a, gpu_b],
             },
         )

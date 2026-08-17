@@ -302,6 +302,19 @@ def clear_boot_runtime_spec(
     )
 
 
+def set_boot_main_gpu(
+    gpu_uuid: str,
+    *,
+    socket_path: str | Path = DEFAULT_DAEMON_SOCKET,
+    timeout_s: float = 10.0,
+) -> dict[str, Any]:
+    return daemon_payload_request(
+        {"method": "set_boot_main_gpu", "gpu_uuid": str(gpu_uuid or "").strip()},
+        socket_path=socket_path,
+        timeout_s=timeout_s,
+    )
+
+
 def boot_runtime_spec(
     *,
     socket_path: str | Path = DEFAULT_DAEMON_SOCKET,
@@ -772,6 +785,8 @@ def main(argv: list[str] | None = None) -> int:
     runtime_spec.add_argument("spec_json")
     boot_spec = subparsers.add_parser("set-boot-runtime-spec")
     boot_spec.add_argument("spec_json")
+    main_gpu = subparsers.add_parser("set-boot-main-gpu")
+    main_gpu.add_argument("--gpu-uuid", default="")
     subparsers.add_parser("boot-runtime-spec")
     clear_boot = subparsers.add_parser("clear-boot-runtime-spec")
     clear_boot.add_argument("--gpu-uuid", default="")
@@ -793,6 +808,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "boot-runtime-spec":
             print(
                 json.dumps(boot_runtime_spec(socket_path=args.socket), indent=2),
+                flush=True,
+            )
+            return 0
+        if args.command == "set-boot-main-gpu":
+            print(
+                json.dumps(
+                    set_boot_main_gpu(args.gpu_uuid, socket_path=args.socket),
+                    indent=2,
+                ),
                 flush=True,
             )
             return 0

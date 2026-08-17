@@ -274,6 +274,7 @@ def test_autostart_info_selects_saved_spec_by_gpu_uuid(monkeypatch) -> None:
         lambda **_kwargs: {
             "configured": True,
             "gpu_uuid": "GPU-B",
+            "main_gpu_uuid": "GPU-A",
             "profile_id": "profile-b",
             "runtime_mode": "static",
             "gpus": [
@@ -300,6 +301,7 @@ def test_autostart_info_selects_saved_spec_by_gpu_uuid(monkeypatch) -> None:
         "silent_fan_curve": True,
         "adaptive_auto_uv": True,
         "gpu_uuid": "GPU-A",
+        "main_gpu": True,
     }
 
 

@@ -282,6 +282,20 @@ def parse_arguments(argv):
         help="Print PenguinBurner hardware daemon status and exit.",
     )
     daemon_group.add_argument(
+        "--set-main-gpu",
+        metavar="GPU-UUID",
+        default="",
+        help=(
+            "On a multi-NVIDIA-GPU system, make a saved startup GPU the "
+            "daemon's main monitored GPU after boot."
+        ),
+    )
+    daemon_group.add_argument(
+        "--clear-main-gpu",
+        action="store_true",
+        help="Clear the explicit Main GPU and restore last-saved-GPU behavior.",
+    )
+    daemon_group.add_argument(
         "--restore-stock",
         action="store_true",
         help=(

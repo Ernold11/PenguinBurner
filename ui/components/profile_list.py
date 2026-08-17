@@ -68,6 +68,7 @@ class ProfileList:
         self._target_gpu_uuid = ""
         self._target_gpu_index: int | None = None
         self._target_selection_required = False
+        self._main_gpu_target_has_boot_profile = False
         self.on_target_gpu_changed = None
         self._sort_column = self.DATE_COLUMN
         self._sort_order = QtCore.Qt.DescendingOrder
@@ -88,6 +89,9 @@ class ProfileList:
         self.target_gpu_label.setVisible(False)
         self.target_gpu_combo.setVisible(False)
         self.silent_fan_checkbox = QtWidgets.QCheckBox("Silent fan curve")
+        self.main_gpu_checkbox = QtWidgets.QCheckBox("Main GPU")
+        self.main_gpu_checkbox.setObjectName("profileMainGpu")
+        self.main_gpu_checkbox.setVisible(False)
         self.boot_apply_checkbox = QtWidgets.QCheckBox("Apply on startup")
         self.boot_apply_checkbox.setToolTip(
             "When ticked, Apply also saves the profile for this GPU at boot. "
@@ -114,6 +118,7 @@ class ProfileList:
         top.addWidget(QtWidgets.QLabel("Stored undervolt profiles"))
         top.addWidget(self.target_gpu_label)
         top.addWidget(self.target_gpu_combo)
+        top.addWidget(self.main_gpu_checkbox)
         top.addStretch(1)
         top.addWidget(self.silent_fan_checkbox)
         top.addWidget(self.boot_apply_checkbox)
@@ -407,6 +412,7 @@ class ProfileList:
             int(getattr(target_choice, "index")) if target_choice is not None else None
         )
         self._populate_target_gpu_combo(target_uuid)
+        self.set_main_gpu_state(checked=False, has_boot_profile=False)
         self._sync_target_gpu_presentation()
         self._sync_profile_filter()
         self._sync_action_state()
@@ -462,6 +468,7 @@ class ProfileList:
         self._target_gpu_index = (
             int(getattr(choice, "index")) if choice is not None else None
         )
+        self.set_main_gpu_state(checked=False, has_boot_profile=False)
         self._sync_target_gpu_presentation()
         self._sync_profile_filter()
         self._sync_action_state()
@@ -475,6 +482,7 @@ class ProfileList:
         self.target_gpu_label.setEnabled(selectable)
         self.target_gpu_combo.setVisible(visible)
         self.target_gpu_combo.setEnabled(selectable)
+        self.main_gpu_checkbox.setVisible(selectable)
         self.target_gpu_combo.setToolTip(
             "Only one GPU detected."
             if len(self._gpu_choices) == 1
@@ -644,6 +652,12 @@ class ProfileList:
         self.boot_apply_checkbox.setEnabled(
             self._runtime_actions_available and self._target_gpu_index is not None
         )
+        self.main_gpu_checkbox.setEnabled(
+            self._runtime_actions_available
+            and self._target_selection_required
+            and self._target_gpu_index is not None
+            and self._main_gpu_target_has_boot_profile
+        )
         self.delete_button.setEnabled(has_delete_selection)
         self.restore_defaults_button.setEnabled(
             self._runtime_actions_available and self._target_gpu_index is not None
@@ -674,6 +688,42 @@ class ProfileList:
             self.boot_apply_checkbox.setChecked(bool(checked))
         finally:
             self.boot_apply_checkbox.blockSignals(signals_blocked)
+
+    def set_main_gpu_state(
+        self,
+        *,
+        checked: bool,
+        has_boot_profile: bool,
+    ) -> None:
+        """Render the selected NVIDIA GPU's explicit boot-owner state."""
+        self._main_gpu_target_has_boot_profile = bool(has_boot_profile)
+        signals_blocked = self.main_gpu_checkbox.blockSignals(True)
+        try:
+            self.main_gpu_checkbox.setChecked(bool(checked))
+        finally:
+            self.main_gpu_checkbox.blockSignals(signals_blocked)
+        if self._target_gpu_index is None:
+            tooltip = "Choose a target NVIDIA GPU first."
+        elif not has_boot_profile:
+            tooltip = (
+                "Apply a profile with Apply on startup first, then mark this "
+                "NVIDIA GPU as the daemon's main monitored GPU."
+            )
+        elif checked:
+            tooltip = (
+                "This NVIDIA GPU owns daemon monitoring after boot. Untick to "
+                "restore the default last-saved-GPU behavior."
+            )
+        else:
+            tooltip = (
+                "Make this NVIDIA GPU own daemon monitoring after boot. Manual "
+                "Apply can still move monitoring for the current session."
+            )
+        self.main_gpu_checkbox.setToolTip(tooltip)
+        self._sync_action_state()
+
+    def main_gpu_target_has_boot_profile(self) -> bool:
+        return bool(self._main_gpu_target_has_boot_profile)
 
     def _selected_rows(self) -> list[int]:
         selection_model = self.table.selectionModel()

@@ -666,6 +666,28 @@ fn boot_runtime_specs_are_saved_and_cleared_per_gpu() {
     assert_eq!(summary["result"]["gpus"][0]["gpu_uuid"], "GPU-A");
     assert_eq!(summary["result"]["gpus"][1]["gpu_uuid"], "GPU-B");
 
+    let selected_a = daemon.request(r#"{"method":"set_boot_main_gpu","gpu_uuid":"GPU-A"}"#);
+    assert_eq!(selected_a["result"]["selected"], true);
+    assert_eq!(selected_a["result"]["main_gpu_uuid"], "GPU-A");
+    assert_eq!(selected_a["result"]["active_gpu_uuid"], "GPU-A");
+
+    // An explicit Main GPU survives later startup-profile saves for another
+    // NVIDIA card instead of silently reverting to last-saved-wins.
+    let resaved_b = daemon.request(&runtime_spec_request("set_boot_runtime_spec", &gpu_b));
+    assert_eq!(resaved_b["result"]["main_gpu_uuid"], "GPU-A");
+    assert_eq!(resaved_b["result"]["active_gpu_uuid"], "GPU-A");
+
+    let rejected = daemon.request(r#"{"method":"set_boot_main_gpu","gpu_uuid":"GPU-MISSING"}"#);
+    assert_eq!(rejected["ok"], Value::Bool(false));
+    assert_eq!(rejected["error"], "main GPU has no saved boot runtime spec");
+    let bad_type = daemon.request(r#"{"method":"set_boot_main_gpu","gpu_uuid":1}"#);
+    assert_eq!(bad_type["ok"], Value::Bool(false));
+    assert_eq!(bad_type["error"], "gpu_uuid must be a string");
+
+    let cleared_main = daemon.request(r#"{"method":"set_boot_main_gpu","gpu_uuid":""}"#);
+    assert_eq!(cleared_main["result"]["selected"], false);
+    assert_eq!(cleared_main["result"]["main_gpu_uuid"], "");
+
     let cleared_a = daemon.request(
         r#"{"method":"clear_boot_runtime_spec","gpu_uuid":"GPU-A"}"#,
     );

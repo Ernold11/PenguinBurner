@@ -262,12 +262,19 @@ def systemd_autostart_profile_info(*, gpu_uuid: str = "") -> dict[str, object]:
                     continue
                 saved_uuid = str(saved_spec.get("gpu_uuid") or "").strip()
                 if saved_uuid.casefold() == selected_gpu_uuid.casefold():
-                    return _profile_info_from_runtime_summary(saved_spec)
+                    info = _profile_info_from_runtime_summary(saved_spec)
+                    main_gpu_uuid = str(summary.get("main_gpu_uuid") or "").strip()
+                    info["main_gpu"] = bool(
+                        main_gpu_uuid
+                        and main_gpu_uuid.casefold() == selected_gpu_uuid.casefold()
+                    )
+                    return info
         return {
             "selector": "",
             "silent_fan_curve": False,
             "adaptive_auto_uv": False,
             "gpu_uuid": selected_gpu_uuid,
+            "main_gpu": False,
         }
     return _profile_info_from_runtime_summary(summary, require_configured=True)
 

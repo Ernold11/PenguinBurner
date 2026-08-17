@@ -21,6 +21,10 @@ Top bar:
 - **Apply** — run the highlighted profile now.
 - **Target GPU** — filter profiles and choose the physical card for actions.
   The selector remains visible but disabled when only one GPU is detected.
+- **Main GPU** — on systems with two or more NVIDIA GPUs, explicitly choose
+  which saved startup GPU owns daemon monitoring after boot. Untick it to
+  restore the default last-saved-GPU behavior. A startup profile must already
+  be saved for the selected GPU before this toggle is available.
 - **Apply on startup** — also save the applied profile for the selected GPU.
   Off by default: with it unticked, Apply changes the current session only
   and clears only that GPU's saved boot profile.
@@ -41,11 +45,24 @@ GPU is skipped but remains saved for a later boot. Restore defaults saves stock
 for the selected GPU instead.
 
 The Rust daemon still has one active policy engine. After serial application,
-the most recently saved available GPU remains actively monitored and gets
-drift recovery, adaptive switching, and PenguinBurner fan control. Earlier
-GPUs keep their V/F curve, memory offset, and power limit, while their fans are
-released to hardware auto. Selecting and applying another GPU transfers the
-active engine to it; it does not run a second monitoring engine.
+the explicitly selected **Main GPU** remains actively monitored; without that
+selection, the most recently saved available GPU remains active as before. It
+gets drift recovery, adaptive switching, and PenguinBurner fan control.
+Earlier GPUs keep their V/F curve, memory offset, and power limit, while their
+fans are released to hardware auto. Selecting and applying another GPU still
+transfers the active engine to it for the current session; it does not run a
+second monitoring engine.
+
+GPU discovery for these controls comes from NVIDIA NVML. Intel and AMD PRIME
+adapters are not shown and do not make a one-NVIDIA-GPU setup count as
+multi-GPU.
+
+The same preference is available without the GUI:
+
+```bash
+pburn-cli --set-main-gpu GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+pburn-cli --clear-main-gpu
+```
 
 Right-click a profile:
 

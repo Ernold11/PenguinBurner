@@ -641,6 +641,7 @@ def test_profile_list_single_gpu_keeps_clean_apply_and_legacy_profile() -> None:
     assert profile_list.target_gpu_combo.currentData() == "GPU-A"
     assert profile_list.daemonize_button.text() == "Apply"
     assert profile_list.daemonize_button.isEnabled()
+    assert profile_list.main_gpu_checkbox.isHidden()
     assert profile_list.target_gpu_index() == 0
     assert profile_list.table.item(0, profile_list.GPU_COLUMN).text() == (
         "Unassigned (legacy)"
@@ -707,6 +708,8 @@ def test_profile_list_multiple_profile_gpus_requires_explicit_target() -> None:
     assert profile_list.target_gpu_index() is None
     assert not profile_list.daemonize_button.isEnabled()
     assert not profile_list.boot_apply_checkbox.isEnabled()
+    assert not profile_list.main_gpu_checkbox.isHidden()
+    assert not profile_list.main_gpu_checkbox.isEnabled()
 
     profile_list.target_gpu_combo.setCurrentIndex(2)
 
@@ -715,8 +718,14 @@ def test_profile_list_multiple_profile_gpus_requires_explicit_target() -> None:
     assert profile_list.daemonize_button.text() == "Apply to GPU 1"
     assert profile_list.daemonize_button.isEnabled()
     assert profile_list.boot_apply_checkbox.isEnabled()
+    assert not profile_list.main_gpu_checkbox.isEnabled()
     assert profile_list.table.isRowHidden(0)
     assert not profile_list.table.isRowHidden(1)
+
+    profile_list.set_main_gpu_state(checked=True, has_boot_profile=True)
+
+    assert profile_list.main_gpu_checkbox.isEnabled()
+    assert profile_list.main_gpu_checkbox.isChecked()
 
 
 def test_profile_list_multiple_hardware_gpus_one_profile_group_keeps_selector_visible() -> None:

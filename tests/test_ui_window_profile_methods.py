@@ -409,6 +409,53 @@ def test_boot_apply_checkbox_tracks_selected_gpu(win, monkeypatch) -> None:
     assert "GPU-A" in calls and "GPU-B" in calls
 
 
+def test_main_gpu_toggle_tracks_target_and_writes_uuid(win, monkeypatch) -> None:
+    from ui.features.tuning.gpu_selection import GpuChoice
+
+    window, _mp = win
+    monkeypatch.setattr(
+        window_mod,
+        "gpu_choices_with_fallback",
+        lambda **_kwargs: (
+            [
+                GpuChoice(index=0, name="Card A", uuid="GPU-A"),
+                GpuChoice(index=1, name="Card B", uuid="GPU-B"),
+            ],
+            0,
+        ),
+    )
+
+    def autostart_info(*, gpu_uuid: str = "") -> dict[str, object]:
+        return {
+            "selector": f"profile-{gpu_uuid[-1].lower()}" if gpu_uuid else "",
+            "gpu_uuid": gpu_uuid,
+            "silent_fan_curve": False,
+            "adaptive_auto_uv": False,
+            "main_gpu": gpu_uuid == "GPU-A",
+        }
+
+    selected: list[str] = []
+    monkeypatch.setattr(window_mod, "systemd_autostart_profile_info", autostart_info)
+    monkeypatch.setattr(actions_mod, "systemd_autostart_profile_info", autostart_info)
+    monkeypatch.setattr(
+        actions_mod,
+        "set_boot_main_gpu",
+        lambda gpu_uuid: selected.append(gpu_uuid),
+    )
+    window._boot_apply_by_gpu = {}
+    window.gpu_index = 0
+    window._load_profiles()
+
+    assert not window.profile_list.main_gpu_checkbox.isHidden()
+    assert window.profile_list.main_gpu_checkbox.isChecked()
+    window.profile_list.target_gpu_combo.setCurrentIndex(2)
+    assert not window.profile_list.main_gpu_checkbox.isChecked()
+    window.profile_list.main_gpu_checkbox.setChecked(True)
+    window.profile_list.main_gpu_checkbox.setChecked(False)
+
+    assert selected == ["GPU-B", ""]
+
+
 def test_boot_toggle_without_multi_gpu_target_cannot_clear_all(win, monkeypatch) -> None:
     window, _mp = win
     saved: list[bool] = []

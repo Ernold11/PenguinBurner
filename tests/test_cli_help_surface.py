@@ -47,6 +47,13 @@ def test_main_cli_help_includes_profile_tier_assignment(capsys):
     assert "none" in help_text
 
 
+def test_main_cli_help_includes_main_gpu_controls(capsys):
+    help_text = _help_output(capsys, parse_arguments)
+
+    assert "--set-main-gpu" in help_text
+    assert "--clear-main-gpu" in help_text
+
+
 def test_main_cli_help_removes_old_compat_flags(capsys):
     help_text = _help_output(capsys, parse_arguments)
 

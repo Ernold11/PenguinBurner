@@ -38,7 +38,9 @@ The Profiles tab's Target GPU selector filters saved profiles and controls
 which card Apply, Restore defaults, and Apply on startup affect. Only the
 currently active card has live monitoring, drift recovery, fan control, and
 adaptive switching; other applied cards retain static curve, memory, and power
-settings.
+settings. When at least two NVIDIA GPUs are detected, **Main GPU** chooses the
+saved startup card that owns monitoring after boot. Intel and AMD PRIME
+adapters are not included in this NVIDIA/NVML selector.
 
 For a boot-recovery issue, collect the daemon journal and its saved/replay
 summary before changing the configuration:

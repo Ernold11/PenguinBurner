@@ -269,6 +269,9 @@ class MainWindow(ProfileActionsMixin):
         self.profile_list.boot_apply_checkbox.toggled.connect(
             self._persist_boot_apply_preference
         )
+        self.profile_list.main_gpu_checkbox.toggled.connect(
+            self._persist_main_gpu_preference
+        )
         self.profile_list.restore_defaults_button.clicked.connect(
             self._restore_gpu_defaults
         )
