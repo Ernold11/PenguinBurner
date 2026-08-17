@@ -212,6 +212,10 @@ class build_py(_build_py):
             )
             return
         if not DAEMON_MANIFEST.exists():
+            self._daemon_unavailable(
+                f"penguin-burnerd daemon sources are missing ({DAEMON_MANIFEST})",
+                require=require_daemon,
+            )
             return
         cargo = shutil.which("cargo")
         if not cargo:

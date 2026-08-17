@@ -22,17 +22,20 @@
 
 use std::env;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
 
 use crate::gpu::{
-    mock::MockGpu, ClockType, GpuBackend, GpuError, GpuIdentity, GpuMemoryInfo, NvmlBackend,
-    VfPoint,
+    mock::MockGpu, ClockType, GpuBackend, GpuError, GpuIdentity, GpuMemoryInfo,
+    NvmlBackend, VfPoint,
 };
 
 const MOCK_ENV: &str = "PENGUIN_BURNERD_TEST_MOCK_GPU";
 const MOCK_FAIL_ENV: &str = "PENGUIN_BURNERD_TEST_MOCK_GPU_FAIL";
+/// Path of a PID-list file the mock re-reads on every `gpu_context_pids` call,
+/// so integration tests can stage and remove GPU contexts while the daemon runs.
+const MOCK_CONTEXT_PIDS_ENV: &str = "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS";
 
 /// method → request fields allowed besides `method`. Also the method registry:
 /// a name missing here is "unknown daemon method".
@@ -109,8 +112,38 @@ enum RpcBackend {
 // threaded Python daemon call these drivers from arbitrary handler threads).
 unsafe impl Send for RpcBackend {}
 
-/// Lazy per-`gpu_index` backends, kept for the daemon's lifetime.
-static REGISTRY: Mutex<Vec<(u32, RpcBackend)>> = Mutex::new(Vec::new());
+struct RegistryEntry {
+    gpu_index: u32,
+    backend: RpcBackend,
+    last_used: Instant,
+}
+
+/// Lazy per-`gpu_index` backends. On desktops they live for the daemon's
+/// lifetime; in Mobile or Unknown mode the RTD3 watcher drops idle
+/// entries (`release_idle_backends`) so a one-off telemetry query cannot pin
+/// the GPU in D0 forever. Dropping a real entry closes NVML and the hidden
+/// NVAPI sessions via their `Drop` impls; the next request simply reopens.
+static REGISTRY: Mutex<Vec<RegistryEntry>> = Mutex::new(Vec::new());
+
+/// Drop backends that have not served a request within `ttl`. Returns how
+/// many were released. Called only while deep-sleep protection is active.
+pub fn release_idle_backends(ttl: Duration) -> usize {
+    let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
+    let before = registry.len();
+    registry.retain(|entry| entry.last_used.elapsed() < ttl);
+    before - registry.len()
+}
+
+/// Backends open right now — the daemon's own GPU hold count. Surfaced in the
+/// deep-sleep status because the watcher's client sample excludes the daemon's
+/// pid: without this number a daemon-held NVML session (a polling GUI's
+/// telemetry backend) reads as "no clients" while it pins the GPU.
+pub fn open_backend_count() -> usize {
+    REGISTRY
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .len()
+}
 
 fn open_backend(gpu_index: u32) -> Result<RpcBackend, String> {
     if env::var_os(MOCK_ENV).is_some_and(|v| !v.is_empty()) {
@@ -170,6 +203,9 @@ fn open_backend(gpu_index: u32) -> Result<RpcBackend, String> {
             base_voltage_uv: 900_000,
             current_offset_khz: 120_000,
         }];
+        mock.context_pids_file = env::var_os(MOCK_CONTEXT_PIDS_ENV)
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from);
         if let Ok(method) = env::var(MOCK_FAIL_ENV) {
             if !method.is_empty() {
                 let message = format!("{method} mock failure");
@@ -184,6 +220,28 @@ fn open_backend(gpu_index: u32) -> Result<RpcBackend, String> {
     NvmlBackend::open(gpu_index)
         .map(|backend| RpcBackend::Real(Box::new(backend)))
         .map_err(|err| err.to_string())
+}
+
+/// Find (or lazily open) the backend for `gpu_index`, stamping its last-use
+/// time so `release_idle_backends` measures idleness from the newest request.
+fn registry_position(registry: &mut Vec<RegistryEntry>, gpu_index: u32) -> Result<usize, String> {
+    match registry
+        .iter()
+        .position(|entry| entry.gpu_index == gpu_index)
+    {
+        Some(position) => {
+            registry[position].last_used = Instant::now();
+            Ok(position)
+        }
+        None => {
+            registry.push(RegistryEntry {
+                gpu_index,
+                backend: open_backend(gpu_index)?,
+                last_used: Instant::now(),
+            });
+            Ok(registry.len() - 1)
+        }
+    }
 }
 
 /// A fully-parsed, validated GPU write. Parsing is pure (no backend), so every
@@ -228,17 +286,16 @@ pub fn handle(method: &str, request: &Map<String, Value>) -> Result<Value, Strin
         return read(gpu_index, method);
     }
     let write = parse(method, request)?;
+    if matches!(&write, GpuWrite::EnablePersistence) && crate::rtd3::protects_deep_sleep() {
+        return Err(
+            "GPU persistence mode is unavailable in Mobile or Unknown deep-sleep mode".to_string(),
+        );
+    }
 
     let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
-    let position = match registry.iter().position(|(index, _)| *index == gpu_index) {
-        Some(position) => position,
-        None => {
-            registry.push((gpu_index, open_backend(gpu_index)?));
-            registry.len() - 1
-        }
-    };
+    let position = registry_position(&mut registry, gpu_index)?;
 
-    match &registry[position].1 {
+    match &registry[position].backend {
         RpcBackend::Real(backend) => execute(backend.as_ref(), write),
         // Test seam only: echo the ops recorded during this call back to the
         // integration test (its sole cross-process channel). Never runs in prod.
@@ -266,14 +323,8 @@ pub fn is_read_method(method: &str) -> bool {
 
 fn read(gpu_index: u32, method: &str) -> Result<Value, String> {
     let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
-    let position = match registry.iter().position(|(index, _)| *index == gpu_index) {
-        Some(position) => position,
-        None => {
-            registry.push((gpu_index, open_backend(gpu_index)?));
-            registry.len() - 1
-        }
-    };
-    let backend: &dyn GpuBackend = match &registry[position].1 {
+    let position = registry_position(&mut registry, gpu_index)?;
+    let backend: &dyn GpuBackend = match &registry[position].backend {
         RpcBackend::Real(backend) => backend.as_ref(),
         RpcBackend::Mock(backend) => backend.as_ref(),
     };
@@ -421,24 +472,18 @@ fn unix_time_ns() -> u64 {
 pub fn probe_power_limit_support(request: &Map<String, Value>) -> Result<Value, String> {
     let gpu_index = request_gpu_index(request)?;
     let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
-    let position = match registry.iter().position(|(index, _)| *index == gpu_index) {
-        Some(position) => position,
-        None => match open_backend(gpu_index) {
-            Ok(backend) => {
-                registry.push((gpu_index, backend));
-                registry.len() - 1
-            }
-            Err(err) => {
-                return Ok(json!({
-                    "gpu_index": gpu_index,
-                    "supported": false,
-                    "reason": err,
-                }));
-            }
-        },
+    let position = match registry_position(&mut registry, gpu_index) {
+        Ok(position) => position,
+        Err(err) => {
+            return Ok(json!({
+                "gpu_index": gpu_index,
+                "supported": false,
+                "reason": err,
+            }));
+        }
     };
 
-    match &registry[position].1 {
+    match &registry[position].backend {
         RpcBackend::Real(backend) => probe_power_limit_backend(gpu_index, backend.as_ref()),
         RpcBackend::Mock(mock) => {
             let before = mock.recorded().len();

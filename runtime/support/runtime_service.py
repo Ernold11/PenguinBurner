@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import dataclasses
 import os
 from pathlib import Path
 import pwd
@@ -14,7 +15,6 @@ import time
 
 from runtime.daemon_client import DEFAULT_DAEMON_SOCKET
 from runtime.daemon_client import apply_runtime_spec
-from runtime.daemon_client import clear_boot_runtime_spec
 from runtime.daemon_client import daemon_status
 from runtime.daemon_client import set_boot_runtime_spec
 from runtime.daemon_client import stop_runtime_profile
@@ -515,11 +515,38 @@ def _atomic_install_daemon_binary(
                 pass
 
 
-def install_daemon_binary(program_file, *, source_path=None) -> bool:
+@dataclasses.dataclass(frozen=True)
+class DaemonBinaryRefresh:
+    """Outcome of one privileged daemon-binary install attempt."""
+
+    changed: bool
+    source: Path
+
+
+def describe_daemon_binary_refresh(refresh: DaemonBinaryRefresh) -> str:
+    """One mandatory user-facing line per install: what happened to the binary.
+
+    A stale root daemon with success-looking output cost issue #30 three test
+    cycles; every install action must now say whether /usr/libexec was
+    refreshed, and from where.
+    """
+    if refresh.source == LIBEXEC_DAEMON_BINARY:
+        return (
+            f"Daemon binary: KEPT the existing {LIBEXEC_DAEMON_BINARY} — this "
+            "install carries no daemon payload. Rebuild with cargo or "
+            "reinstall a daemon-bearing package, then re-run the install."
+        )
+    if refresh.changed:
+        return f"Daemon binary: updated {LIBEXEC_DAEMON_BINARY} from {refresh.source}."
+    return f"Daemon binary: already current (matches {refresh.source})."
+
+
+def install_daemon_binary(program_file, *, source_path=None) -> DaemonBinaryRefresh:
     if os.geteuid() != 0:
         raise RuntimeError("installing penguin-burnerd requires root privileges")
     source = daemon_install_source_path(program_file, source_path=source_path)
-    return _atomic_install_daemon_binary(source, LIBEXEC_DAEMON_BINARY)
+    changed = _atomic_install_daemon_binary(source, LIBEXEC_DAEMON_BINARY)
+    return DaemonBinaryRefresh(changed=changed, source=source)
 
 
 def _daemon_program_file_for_unit(program_file) -> Path:
@@ -715,7 +742,8 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
             "systemd service install requires root privileges. Re-run with sudo."
         )
 
-    install_daemon_binary(program_file)
+    refresh = install_daemon_binary(program_file)
+    log(describe_daemon_binary_refresh(refresh))
     _stop_active_runtime_before_daemon_restart()
     clear_last_runtime_state()
     clear_existing_penguin_burner_unit_for_install(log=log)
@@ -738,8 +766,10 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
     _wait_for_daemon_status(DEFAULT_DAEMON_SOCKET)
     if argv:
         _apply_persistent_runtime(argv)
-    else:
-        clear_boot_runtime_spec(socket_path=DEFAULT_DAEMON_SOCKET)
+    # With no profile argv this is an install/repair, not a boot-profile
+    # change: an existing boot spec is preserved as-is (the daemon re-read it
+    # on the restart above), matching migrate_to_daemon_service. Wiping the
+    # user's boot profile on a reinstall was never the intent.
     log(f"Installed and enabled {unit_path.name} at {unit_path}.")
     log(f"Follow the journal with: {journalctl_follow_command(journal_hours)}")
 
@@ -779,7 +809,8 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
                 "Recovered apply-on-startup profile from the previous "
                 f"PenguinBurner version: {shlex.join(recovered)}"
             )
-    install_daemon_binary(program_file)
+    refresh = install_daemon_binary(program_file)
+    log(describe_daemon_binary_refresh(refresh))
     _stop_active_runtime_before_daemon_restart()
     clear_last_runtime_state()
     unit_path = daemon_systemd_service_unit_path()
@@ -1017,7 +1048,7 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
             "Re-run PenguinBurner with sudo."
         )
 
-    binary_changed = install_daemon_binary(program_file)
+    binary_changed = install_daemon_binary(program_file).changed
     clear_existing_penguin_burner_unit_for_daemonize(log=log)
     _ensure_daemon_service_started(
         program_file,

@@ -175,7 +175,13 @@ def test_dispatch_cli_daemonize_applies_through_running_daemon(monkeypatch) -> N
     ]
 
 
-def test_dispatch_cli_persistent_update_uses_running_daemon(monkeypatch) -> None:
+def test_dispatch_cli_persistent_update_reinstalls_even_with_daemon_running(
+    monkeypatch,
+) -> None:
+    # A running daemon must not short-circuit an explicit install: skipping the
+    # binary refresh left users on a stale /usr/libexec daemon with
+    # success-looking output (issue #30). The boot-profile apply happens inside
+    # install_systemd_service, never as a bare apply-through-daemon.
     applied = []
     installed = []
     monkeypatch.setattr(entry, "daemon_status", lambda **_kwargs: {"state": "idle"})
@@ -188,7 +194,9 @@ def test_dispatch_cli_persistent_update_uses_running_daemon(monkeypatch) -> None
     monkeypatch.setattr(
         entry,
         "install_systemd_service",
-        lambda *args, **kwargs: installed.append((args, kwargs)),
+        lambda program_file, argv, **kwargs: installed.append(
+            (program_file, list(argv), kwargs)
+        ),
     )
     monkeypatch.setattr(entry, "read_auto_uv_profiles", lambda: [{"profile_id": "p1"}])
     monkeypatch.setattr(
@@ -212,6 +220,5 @@ def test_dispatch_cli_persistent_update_uses_running_daemon(monkeypatch) -> None
     )
 
     assert exit_code == 0
-    assert installed == []
-    assert applied[0][0]["adaptive_auto_uv"] is True
-    assert applied[0][1]["persist_on_startup"] is True
+    assert installed[0][1] == ["--adaptive-auto-uv"]
+    assert applied == []

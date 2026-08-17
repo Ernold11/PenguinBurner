@@ -255,8 +255,10 @@ def parse_arguments(argv):
         "--install-systemd-service",
         action="store_true",
         help=(
-            "Install the PenguinBurner daemon service when absent, or update "
-            "its persistent boot profile through the running daemon."
+            "Install or update the PenguinBurner daemon service: refresh the "
+            "/usr/libexec daemon binary, rewrite the unit, and restart it. "
+            "With profile options, also set the persistent boot profile; "
+            "without them, an existing boot profile is kept."
         ),
     )
     daemon_group.add_argument(

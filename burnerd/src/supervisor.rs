@@ -14,6 +14,7 @@ use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::process::{Child, ExitStatus};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -505,6 +506,125 @@ fn load_runtime_spec(path: &PathBuf) -> Result<Option<RuntimeSpec>, String> {
     Ok(Some(spec))
 }
 
+/// PCI bus id from the persisted runtime specs, for the deep-sleep mode to
+/// locate the GPU in sysfs before any NVML init. Empty on legacy specs saved
+/// before the field existed; detection then falls back to PCI enumeration.
+pub fn persisted_pci_bus_id_hint() -> Option<String> {
+    for path in [active_state_file_path(), boot_state_file_path()] {
+        if let Ok(Some(spec)) = load_runtime_spec(&path) {
+            if !spec.gpu.pci_bus_id.is_empty() {
+                return Some(spec.gpu.pci_bus_id);
+            }
+        }
+    }
+    None
+}
+
+/// Set once this session's boot intent has been acted on (an autostart ran,
+/// or the user explicitly stopped the runtime). The boot spec must apply at
+/// most once per daemon lifetime — the deep-sleep watcher must not resurrect
+/// a runtime the user stopped just because the boot file still exists.
+static BOOT_RUNTIME_CONSUMED: AtomicBool = AtomicBool::new(false);
+
+fn deferred_pending_from(active_exists: bool, boot_exists: bool, boot_consumed: bool) -> bool {
+    active_exists || (boot_exists && !boot_consumed)
+}
+
+/// True when a persisted runtime exists that the deep-sleep watcher should
+/// hold back while the GPU sleeps and start when it is really in use.
+pub fn deferred_runtime_pending() -> bool {
+    deferred_pending_from(
+        matches!(load_runtime_spec(&active_state_file_path()), Ok(Some(_))),
+        matches!(load_runtime_spec(&boot_state_file_path()), Ok(Some(_))),
+        BOOT_RUNTIME_CONSUMED.load(Ordering::SeqCst),
+    )
+}
+
+/// Mode name of the runtime spec the deep-sleep watcher would start, using
+/// the same active-then-boot precedence (and boot-consumption rule) as
+/// `deferred_runtime_pending`. `None` when nothing is pending.
+pub fn deferred_runtime_mode() -> Option<String> {
+    if let Ok(Some(spec)) = load_runtime_spec(&active_state_file_path()) {
+        return Some(spec.mode_name().to_string());
+    }
+    if !BOOT_RUNTIME_CONSUMED.load(Ordering::SeqCst) {
+        if let Ok(Some(spec)) = load_runtime_spec(&boot_state_file_path()) {
+            return Some(spec.mode_name().to_string());
+        }
+    }
+    None
+}
+
+/// Deep-sleep park: stop the running engine while deliberately KEEPING the
+/// persisted runtime state and the boot intent — the profile stays a standing
+/// intent that the rtd3 watcher re-materializes at the GPU's next real use.
+/// The engine's cleanup restores fans to hardware auto and releases the clock
+/// lock; the remaining applied state evaporates with D3cold anyway. Refuses
+/// while a game session owns the runtime lifecycle or the engine wedges.
+pub fn park_runtime_for_deep_sleep(sup: &Mutex<Supervisor>) -> bool {
+    let mut supervisor = guard(sup);
+    if !supervisor.game_runtime.watches.is_empty() {
+        return false;
+    }
+    let stop_timeout = supervisor.stop_timeout;
+    match supervisor.profile.as_mut() {
+        Some(job) if job.engine.is_running() => match job.engine.stop(stop_timeout) {
+            StopOutcome::Stopped => {
+                supervisor.profile = None;
+                true
+            }
+            StopOutcome::TimedOut => {
+                logging::error(
+                    "deep sleep park: engine did not stop within timeout; staying attached",
+                );
+                false
+            }
+        },
+        _ => false,
+    }
+}
+
+/// True while the profile slot is occupied at all — running, or retained
+/// after a failure/wedge (which deliberately blocks further starts).
+pub fn profile_slot_occupied(sup: &Mutex<Supervisor>) -> bool {
+    guard(sup).profile.is_some()
+}
+
+/// GPU index of the runtime in the profile slot, for the deep-sleep park
+/// policy's client check.
+pub fn profile_gpu_index(sup: &Mutex<Supervisor>) -> Option<u32> {
+    guard(sup)
+        .profile
+        .as_ref()
+        .map(|job| job.spec.gpu.index_at_resolution)
+}
+
+/// GPU index of the runtime spec the deep-sleep watcher would start, using
+/// the same active-then-boot precedence (and boot-consumption rule) as
+/// `deferred_runtime_pending`. `None` when nothing is pending.
+pub fn deferred_runtime_gpu_index() -> Option<u32> {
+    if let Ok(Some(spec)) = load_runtime_spec(&active_state_file_path()) {
+        return Some(spec.gpu.index_at_resolution);
+    }
+    if !BOOT_RUNTIME_CONSUMED.load(Ordering::SeqCst) {
+        if let Ok(Some(spec)) = load_runtime_spec(&boot_state_file_path()) {
+            return Some(spec.gpu.index_at_resolution);
+        }
+    }
+    None
+}
+
+/// Post-child runtime recovery: Desktop mode restarts immediately; Mobile and
+/// Unknown leave the start to the watcher so a scan exit cannot force-attach a
+/// GPU that is about to idle.
+pub fn resume_autostart_after_child(sup: &Arc<Mutex<Supervisor>>) {
+    if !crate::rtd3::allows_desktop_autostart() {
+        logging::info("deep sleep: leaving post-child runtime start to the watcher");
+        return;
+    }
+    start_autostart_if_configured(sup);
+}
+
 fn persist_active_runtime(spec: &RuntimeSpec) {
     if let Err(error) = persist_runtime_spec(&active_state_file_path(), spec) {
         logging::error(&error);
@@ -541,6 +661,13 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
     let supervisor = guard(sup);
     let game_runtime = supervisor.game_runtime_status();
     let energy_savings = energy_savings_status();
+    let deep_sleep = crate::rtd3::status(crate::rtd3::DaemonGpuHolds {
+        engine_attached: supervisor
+            .profile
+            .as_ref()
+            .is_some_and(|job| job.engine.returncode().is_none()),
+        rpc_backends: crate::gpu_rpc::open_backend_count(),
+    });
 
     if let Some(job) = &supervisor.child {
         let returncode = job.proc.poll();
@@ -575,7 +702,8 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
             }),
         )
         .with_game_runtime(game_runtime)
-        .with_energy_savings(energy_savings);
+        .with_energy_savings(energy_savings)
+        .with_deep_sleep(deep_sleep);
     }
 
     if let Some(job) = &supervisor.profile {
@@ -600,12 +728,14 @@ pub fn status(sup: &Mutex<Supervisor>) -> StatusResult {
             }),
         )
         .with_game_runtime(game_runtime)
-        .with_energy_savings(energy_savings);
+        .with_energy_savings(energy_savings)
+        .with_deep_sleep(deep_sleep);
     }
 
     StatusResult::new("idle", None)
         .with_game_runtime(game_runtime)
         .with_energy_savings(energy_savings)
+        .with_deep_sleep(deep_sleep)
 }
 
 pub fn stop_auto_uv_scan(sup: &Mutex<Supervisor>) -> StopResult {
@@ -932,6 +1062,11 @@ pub fn apply_runtime_spec(
 }
 
 pub fn stop_runtime_profile(sup: &Mutex<Supervisor>) -> Result<StopResult, String> {
+    // An explicit stop settles this session's runtime intent: the boot spec
+    // must not be resurrected by the deep-sleep watcher afterwards, and a
+    // parked runtime is dissolved rather than left claiming otherwise.
+    BOOT_RUNTIME_CONSUMED.store(true, Ordering::SeqCst);
+    crate::rtd3::set_parked(false);
     let mut supervisor = guard(sup);
     let stop_timeout = supervisor.stop_timeout;
     match supervisor.profile.as_mut() {
@@ -1039,7 +1174,7 @@ pub fn finish_child(sup: &Arc<Mutex<Supervisor>>, job: &Arc<ChildJob>) {
         }
     };
     if restart {
-        start_autostart_if_configured(sup);
+        resume_autostart_after_child(sup);
     }
 }
 
@@ -1089,10 +1224,15 @@ pub fn boot_runtime_spec_summary() -> Result<Value, String> {
 /// start its stock fallback instead of trying an older spec that may identify a
 /// different GPU. Persisting the stock fallback shadows the broken intent only
 /// for the current boot; the explicit boot spec is retried after reboot.
-pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
+///
+/// Atomically start persisted runtime intent only when neither an engine nor a
+/// scan/verification child owns the GPU. Returns true once a valid spec was
+/// attempted (success or handled failure), and false when idle prerequisites
+/// or persisted intent were absent.
+pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) -> bool {
     let mut supervisor = guard(sup);
-    if supervisor.profile.is_some() {
-        return;
+    if supervisor.profile.is_some() || supervisor.child_running_kind().is_some() {
+        return false;
     }
 
     let candidates = [
@@ -1108,6 +1248,7 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
                 continue;
             }
         };
+        BOOT_RUNTIME_CONSUMED.store(true, Ordering::SeqCst);
         match profile::start(spec.clone()) {
             Ok(engine) => {
                 logging::info(&format!(
@@ -1126,7 +1267,7 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
                 }
                 drop(supervisor);
                 persist_active_runtime(&spec);
-                return;
+                return true;
             }
             Err(error) => {
                 let (message, failed_engine) = error.into_parts();
@@ -1136,11 +1277,11 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
                 ));
                 if let Some(engine) = failed_engine {
                     supervisor.profile = Some(ProfileJob { engine, spec });
-                    return;
+                    return true;
                 }
 
                 if spec.mode_name() == "stock" {
-                    return;
+                    return true;
                 }
                 let stock = spec.stock_fallback();
                 match profile::start(stock.clone()) {
@@ -1173,10 +1314,11 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) {
                         }
                     }
                 }
-                return;
+                return true;
             }
         }
     }
+    false
 }
 
 /// Shutdown cleanup: stop the in-process engine (A3 releases fans + clock lock).
@@ -1200,6 +1342,17 @@ mod tests {
 
     // `STATE_FILE_ENV` is process-global; serialize the tests that mutate it.
     static STATE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn deferred_pending_honors_boot_consumption() {
+        // The active-session spec always re-arms the watcher.
+        assert!(deferred_pending_from(true, false, false));
+        assert!(deferred_pending_from(true, true, true));
+        // The boot spec arms it at most once per daemon lifetime.
+        assert!(deferred_pending_from(false, true, false));
+        assert!(!deferred_pending_from(false, true, true));
+        assert!(!deferred_pending_from(false, false, false));
+    }
 
     struct StateEnvGuard {
         name: &'static str,
@@ -1325,9 +1478,9 @@ mod tests {
     }
 
     /// After a wedged engine finally exits, the dead job must NOT linger in the
-    /// slot — otherwise `start_autostart_if_configured` (early-returns while
-    /// `profile.is_some()`) never re-applies the persisted profile after a scan.
-    /// `stop_engine_for_child` frees the exited slot on the next start.
+    /// slot — otherwise `start_autostart_if_configured` (which refuses an
+    /// occupied profile slot) never re-applies the persisted profile after a
+    /// scan. `stop_engine_for_child` frees the exited slot on the next start.
     #[test]
     fn stop_engine_for_child_frees_an_already_exited_job() {
         let sup = wedged_supervisor(Duration::from_millis(100), Duration::from_millis(50));
@@ -1377,6 +1530,36 @@ mod tests {
             .unwrap();
         assert_eq!(loaded.gpu.uuid, "GPU-round-trip");
         assert_eq!(loaded.mode_name(), "stock");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autostart_atomically_refuses_a_running_child() {
+        use std::process::Command;
+
+        let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = env::temp_dir().join(format!("pb-state-child-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("active-runtime.json");
+        let _state_guard = StateEnvGuard::new(&path);
+        let _inert_guard = StateEnvGuard::named("PENGUIN_BURNERD_TEST_INERT_ENGINE", "1");
+        persist_runtime_spec(&path, &RuntimeSpec::test_stock("GPU-child-gate")).unwrap();
+
+        let child = Command::new("sleep").arg("10").spawn().expect("spawn sleep");
+        let job = Arc::new(ChildJob {
+            proc: ChildProc::new(child).expect("shared child"),
+            argv: vec!["sleep".to_string(), "10".to_string()],
+            generation: 1,
+            kind: ChildKind::Scan,
+        });
+        let supervisor = Arc::new(Mutex::new(Supervisor::new()));
+        guard(&supervisor).child = Some(job.clone());
+
+        assert!(!start_autostart_if_configured(&supervisor));
+        assert!(guard(&supervisor).profile.is_none());
+
+        job.proc.signal(libc::SIGKILL);
+        job.proc.wait();
         let _ = fs::remove_dir_all(&dir);
     }
 
