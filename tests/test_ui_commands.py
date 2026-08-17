@@ -1396,6 +1396,19 @@ def test_start_auto_uv_button_uses_orange_without_changing_primary_green() -> No
     assert "border-color: #d45d5d" in STYLESHEET
 
 
+def test_single_gpu_profile_target_uses_disabled_colors() -> None:
+    label_style = STYLESHEET.split(
+        "QLabel#profileTargetGpuLabel:disabled {", 1
+    )[1].split("}", 1)[0]
+    combo_style = STYLESHEET.split(
+        "QComboBox#profileTargetGpu:disabled {", 1
+    )[1].split("}", 1)[0]
+
+    assert "color: #7f8794" in label_style
+    assert "color: #7f8794" in combo_style
+    assert "background: #252b34" in combo_style
+
+
 def _verify_daemon_options(command: list[str]) -> dict:
     assert command[1:4] == [
         "-m",

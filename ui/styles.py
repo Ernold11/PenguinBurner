@@ -136,6 +136,14 @@ QLineEdit, QPlainTextEdit, QTableWidget, QListWidget, QComboBox {{
     border: 1px solid {theme.BORDER};
     color: {theme.TEXT};
 }}
+QLabel#profileTargetGpuLabel:disabled {{
+    color: {theme.TEXT_DISABLED};
+}}
+QComboBox#profileTargetGpu:disabled {{
+    background: {theme.CONTROL_BG};
+    border-color: {theme.BORDER};
+    color: {theme.TEXT_DISABLED};
+}}
 QFrame#steamLibrarySetupCard {{
     background: {theme.SURFACE_BG};
     border: 1px solid {theme.BORDER_STRONG};

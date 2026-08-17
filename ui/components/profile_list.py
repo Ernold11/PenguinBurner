@@ -78,6 +78,7 @@ class ProfileList:
 
         top = QtWidgets.QHBoxLayout()
         self.target_gpu_label = QtWidgets.QLabel("Target GPU")
+        self.target_gpu_label.setObjectName("profileTargetGpuLabel")
         self.target_gpu_combo = QtWidgets.QComboBox()
         self.target_gpu_combo.setObjectName("profileTargetGpu")
         self.target_gpu_combo.setToolTip(
@@ -255,7 +256,7 @@ class ProfileList:
                     item.setData(
                         self.PROFILE_GPU_UUID_ROLE,
                         str(
-                            (profile.get("gpu_identity") or {}).get("uuid")
+                            (profile.get("gpu_identity") or {}).get("uuid") or ""
                             if isinstance(profile.get("gpu_identity"), dict)
                             else ""
                         ).strip(),
@@ -469,9 +470,11 @@ class ProfileList:
 
     def _sync_target_gpu_presentation(self) -> None:
         visible = bool(self._gpu_choices)
+        selectable = len(self._gpu_choices) >= 2
         self.target_gpu_label.setVisible(visible)
+        self.target_gpu_label.setEnabled(selectable)
         self.target_gpu_combo.setVisible(visible)
-        self.target_gpu_combo.setEnabled(len(self._gpu_choices) >= 2)
+        self.target_gpu_combo.setEnabled(selectable)
         self.target_gpu_combo.setToolTip(
             "Only one GPU detected."
             if len(self._gpu_choices) == 1

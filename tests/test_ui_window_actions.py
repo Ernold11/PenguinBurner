@@ -345,6 +345,11 @@ def test_apply_bound_profile_targets_non_display_gpu(win) -> None:
     monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: False)
     monkeypatch.setattr(
         actions_mod,
+        "running_auto_uv_profile_info",
+        lambda: {"gpu_uuid": ""},
+    )
+    monkeypatch.setattr(
+        actions_mod,
         "ensure_daemon_ready_for_privileged_action",
         lambda **_kwargs: True,
     )

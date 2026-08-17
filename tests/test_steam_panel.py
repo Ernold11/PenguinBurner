@@ -623,6 +623,11 @@ def test_target_fps_spin_stores_per_game_value(
     # until PenguinBurner is toggled on for the game.
     assert panel.target_fps_spin.objectName() == "steamAdaptiveTargetFps"
     assert panel.target_fps_spin.text() == "60 FPS"
+    assert panel.target_fps_spin.singleStep() == 5.0
+    assert panel.target_fps_spin.keyboardTracking() is False
+    assert "Up/Down to adjust by 5 FPS" in " ".join(
+        panel.target_fps_spin.toolTip().split()
+    )
     assert panel.target_fps_spin.isEnabled() is False
 
     panel.enabled_checkbox.click()
@@ -632,6 +637,21 @@ def test_target_fps_spin_stores_per_game_value(
 
     assert manager.target_fps_changes == [("10", 120.0)]
     assert manager.rows[0].setting.target_fps == 120.0
+
+    manager.target_fps_changes.clear()
+    qtbot.keyClick(panel.target_fps_spin, QtCore.Qt.Key_Up)
+    qtbot.keyClick(panel.target_fps_spin, QtCore.Qt.Key_Down)
+    assert manager.target_fps_changes == [("10", 125.0), ("10", 120.0)]
+
+    manager.target_fps_changes.clear()
+    editor = panel.target_fps_spin.lineEdit()
+    editor.selectAll()
+    qtbot.keyClicks(editor, "143")
+    # Typing is not persisted digit-by-digit; Enter commits the complete FPS.
+    assert manager.target_fps_changes == []
+    qtbot.keyClick(editor, QtCore.Qt.Key_Return)
+    assert manager.target_fps_changes == [("10", 143.0)]
+    assert manager.rows[0].setting.target_fps == 143.0
 
     panel._sync_timer.stop()
 

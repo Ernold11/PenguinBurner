@@ -553,6 +553,10 @@ class MainWindow(ProfileActionsMixin):
                     color=tier_color,
                     alpha=220,
                     width=2,
+                    # The final tier is also the live candidate. Keep the
+                    # persistent tier-colored trace above that identical
+                    # green curve so Performance remains visibly red.
+                    z_value=5,
                 )
         elif event == "tier_completed":
             tier_name = str(payload.get("tier", ""))

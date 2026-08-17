@@ -402,6 +402,7 @@ class SteamPanel:
             "Adaptive Auto-UV target base-present FPS for this game. "
             "PenguinBurner uses it to decide when adaptive profiles should "
             "promote or demote. Range is 15 to 1000 FPS, default 60 FPS. "
+            "Type a value, or use Up/Down to adjust by 5 FPS. "
             "Changes update a running game live."
         )
         self.target_fps_label = QtWidgets.QLabel("Adaptive target FPS")
@@ -415,7 +416,11 @@ class SteamPanel:
             MAX_ADAPTIVE_TARGET_FPS,
         )
         self.target_fps_spin.setDecimals(0)
-        self.target_fps_spin.setSingleStep(1.0)
+        self.target_fps_spin.setSingleStep(5.0)
+        # Saving refreshes the selected game's editor. Defer typed edits until
+        # Enter or focus loss so that refresh cannot interrupt a multi-digit
+        # value after its first keystroke. Arrow steps still apply immediately.
+        self.target_fps_spin.setKeyboardTracking(False)
         self.target_fps_spin.setSuffix(" FPS")
         self.target_fps_spin.setValue(adaptive_target_fps_from_env())
         self.target_fps_spin.setToolTip(target_fps_tooltip)

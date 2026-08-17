@@ -180,6 +180,10 @@ def test_window_plots_selected_performance_auto_oc_curve(main_window) -> None:
     x_values, y_values = win.vf_plot.comparison_curves[-1].getData()
     assert list(x_values) == [850.0, 925.0]
     assert list(y_values) == [2595.0, 2980.0]
+    assert (
+        win.vf_plot.comparison_curves[-1].zValue()
+        > win.vf_plot.candidate_curve.zValue()
+    )
 
 
 def test_memory_offset_status_text_formats() -> None:

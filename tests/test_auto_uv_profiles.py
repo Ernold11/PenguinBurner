@@ -635,6 +635,7 @@ def test_profile_list_single_gpu_keeps_clean_apply_and_legacy_profile() -> None:
     profile_list.select_profile("legacy")
 
     assert not profile_list.target_gpu_combo.isHidden()
+    assert not profile_list.target_gpu_label.isEnabled()
     assert not profile_list.target_gpu_combo.isEnabled()
     assert profile_list.target_gpu_combo.count() == 1
     assert profile_list.target_gpu_combo.currentData() == "GPU-A"
@@ -668,6 +669,7 @@ def test_profile_list_stale_configured_index_does_not_fake_multiple_gpus() -> No
     assert profile_list.target_gpu_combo.count() == 1
     assert profile_list.target_gpu_combo.currentData() == "GPU-A"
     assert profile_list.target_gpu_index() == 0
+    assert not profile_list.target_gpu_label.isEnabled()
     assert not profile_list.target_gpu_combo.isEnabled()
 
 
@@ -700,6 +702,8 @@ def test_profile_list_multiple_profile_gpus_requires_explicit_target() -> None:
     profile_list.select_profile("profile-b")
 
     assert not profile_list.target_gpu_combo.isHidden()
+    assert profile_list.target_gpu_label.isEnabled()
+    assert profile_list.target_gpu_combo.isEnabled()
     assert profile_list.target_gpu_index() is None
     assert not profile_list.daemonize_button.isEnabled()
     assert not profile_list.boot_apply_checkbox.isEnabled()
@@ -769,7 +773,13 @@ def test_profile_list_target_filter_keeps_legacy_profiles_visible() -> None:
             "final_verified": True,
             "gpu_identity": {"name": "RTX 5090", "uuid": "GPU-B"},
         },
-        {"profile_id": "legacy", "final_verified": True},
+        {
+            "profile_id": "legacy",
+            "final_verified": True,
+            # Profile summaries normalize missing legacy identity to an empty
+            # mapping. It must not become the literal UUID string "None".
+            "gpu_identity": {},
+        },
     ]
     choices = [
         GpuChoice(0, "RTX 4090", "00000000:01:00.0", "GPU-A"),
