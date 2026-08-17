@@ -34,6 +34,25 @@ does not need Steam, a desktop display server, or a compositor wrapper.
 ### I have more than one GPU
 
 Select the card with `--gpu-index N`, or pick it in the Auto-UV tuning dialog.
+The Profiles tab's Target GPU selector filters saved profiles and controls
+which card Apply, Restore defaults, and Apply on startup affect. Only the
+currently active card has live monitoring, drift recovery, fan control, and
+adaptive switching; other applied cards retain static curve, memory, and power
+settings.
+
+For a boot-recovery issue, collect the daemon journal and its saved/replay
+summary before changing the configuration:
+
+```bash
+journalctl -u penguin-burnerd.service -b --no-pager
+python3 -m runtime.daemon_client boot-runtime-spec
+python3 -m runtime.daemon_client status
+```
+
+The boot summary lists every saved GPU UUID and a replay outcome such as
+`applied`, `active`, `gpu-not-detected`, or `stock-fallback`. This lets issue
+reporters identify index changes, missing cards, and per-card recovery without
+requiring a developer to reproduce the same hardware layout.
 
 ### Adaptive switching isn't doing anything
 

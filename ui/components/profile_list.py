@@ -4,7 +4,6 @@ from datetime import datetime
 
 from profiles.uv.profile_store import profile_display_name
 from profiles.gpu_identity import (
-    bound_profile_gpu_uuids,
     profile_gpu_compatibility,
     profile_gpu_label,
     profile_gpu_uuid,
@@ -90,9 +89,9 @@ class ProfileList:
         self.silent_fan_checkbox = QtWidgets.QCheckBox("Silent fan curve")
         self.boot_apply_checkbox = QtWidgets.QCheckBox("Apply on startup")
         self.boot_apply_checkbox.setToolTip(
-            "When ticked, Apply also saves the profile as the boot profile. "
-            "Unticking clears any saved boot profile immediately, and Apply "
-            "then changes this session only, so the GPU starts at stock."
+            "When ticked, Apply also saves the profile for this GPU at boot. "
+            "Unticking clears this GPU's saved boot profile immediately, and "
+            "Apply then changes only the current session."
         )
         self.daemonize_button = QtWidgets.QPushButton("Apply")
         self.daemonize_button.setToolTip(
@@ -164,6 +163,7 @@ class ProfileList:
         layout.addWidget(adaptive_note)
         self.table.itemSelectionChanged.connect(self._sync_action_state)
         self.target_gpu_combo.currentIndexChanged.connect(self._target_gpu_changed)
+        self._sync_profile_filter()
         self._sync_action_state()
 
     def set_profiles(
@@ -357,16 +357,27 @@ class ProfileList:
         preferred_index: int | None = None,
     ) -> None:
         previous_uuid = self._target_gpu_uuid
-        self._gpu_choices = list(choices)
-        bound_uuids = bound_profile_gpu_uuids(profiles)
+        choices_with_stable_identity = [
+            choice
+            for choice in choices
+            if str(getattr(choice, "uuid", "") or "").strip()
+        ]
+        # gpu_choices_with_fallback() may append a UUID-less placeholder for
+        # a configured index that is no longer present. It is useful to other
+        # index-based workflows, but must not turn this UUID-bound selector
+        # into a fake multi-GPU choice. Keep one placeholder only when GPU
+        # discovery produced no stable identity at all.
+        self._gpu_choices = (
+            choices_with_stable_identity
+            if choices_with_stable_identity
+            else list(choices[:1])
+        )
         choice_by_uuid = {
             str(getattr(choice, "uuid", "") or "").strip().casefold(): choice
             for choice in self._gpu_choices
             if str(getattr(choice, "uuid", "") or "").strip()
         }
-        self._target_selection_required = len(bound_uuids) >= 2 or (
-            not bound_uuids and len(self._gpu_choices) >= 2 and bool(profiles)
-        )
+        self._target_selection_required = len(self._gpu_choices) >= 2
 
         target_uuid = ""
         if self._target_selection_required:
@@ -380,15 +391,10 @@ class ProfileList:
                 None,
             )
             preferred_uuid = str(getattr(preferred_choice, "uuid", "") or "").strip()
-            if preferred_uuid and (
-                preferred_uuid.casefold() in {item.casefold() for item in bound_uuids}
-                or not bound_uuids
-            ):
+            if preferred_uuid:
                 target_uuid = preferred_uuid
-            elif previous_uuid.casefold() in {item.casefold() for item in bound_uuids}:
+            elif previous_uuid.casefold() in choice_by_uuid:
                 target_uuid = previous_uuid
-        elif len(bound_uuids) == 1:
-            target_uuid = bound_uuids[0]
         elif len(self._gpu_choices) == 1:
             target_uuid = str(getattr(self._gpu_choices[0], "uuid", "") or "").strip()
 
@@ -401,6 +407,7 @@ class ProfileList:
         )
         self._populate_target_gpu_combo(target_uuid)
         self._sync_target_gpu_presentation()
+        self._sync_profile_filter()
         self._sync_action_state()
 
     def target_gpu_index(self) -> int | None:
@@ -424,7 +431,8 @@ class ProfileList:
         blocked = self.target_gpu_combo.blockSignals(True)
         try:
             self.target_gpu_combo.clear()
-            self.target_gpu_combo.addItem("Choose target GPU...", "")
+            if len(self._gpu_choices) >= 2:
+                self.target_gpu_combo.addItem("Choose target GPU...", "")
             selected_combo_index = 0
             for choice in self._gpu_choices:
                 uuid = str(getattr(choice, "uuid", "") or "").strip()
@@ -454,18 +462,45 @@ class ProfileList:
             int(getattr(choice, "index")) if choice is not None else None
         )
         self._sync_target_gpu_presentation()
+        self._sync_profile_filter()
         self._sync_action_state()
         if callable(self.on_target_gpu_changed):
             self.on_target_gpu_changed(self._target_gpu_index, self._target_gpu_uuid)
 
     def _sync_target_gpu_presentation(self) -> None:
-        visible = self._target_selection_required
+        visible = bool(self._gpu_choices)
         self.target_gpu_label.setVisible(visible)
         self.target_gpu_combo.setVisible(visible)
-        if visible and self._target_gpu_index is not None:
+        self.target_gpu_combo.setEnabled(len(self._gpu_choices) >= 2)
+        self.target_gpu_combo.setToolTip(
+            "Only one GPU detected."
+            if len(self._gpu_choices) == 1
+            else "Choose which GPU this Profiles action targets. Changing this "
+            "selection does not modify hardware settings."
+        )
+        if self._target_selection_required and self._target_gpu_index is not None:
             self.daemonize_button.setText(f"Apply to GPU {self._target_gpu_index}")
         else:
             self.daemonize_button.setText("Apply")
+
+    def _sync_profile_filter(self) -> None:
+        target_uuid = self._target_gpu_uuid.casefold()
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            profile_uuid = (
+                ""
+                if item is None
+                else str(item.data(self.PROFILE_GPU_UUID_ROLE) or "").strip().casefold()
+            )
+            hidden = bool(
+                target_uuid and profile_uuid and profile_uuid != target_uuid
+            )
+            self.table.setRowHidden(row, hidden)
+            if hidden:
+                for column in range(self.table.columnCount()):
+                    cell = self.table.item(row, column)
+                    if cell is not None:
+                        cell.setSelected(False)
 
     def _active_sort_column(self) -> int:
         column = int(self._sort_column)
@@ -603,7 +638,9 @@ class ProfileList:
             and all(self._row_is_deletable(row) for row in selected_rows)
         )
         self.daemonize_button.setEnabled(has_apply_selection)
-        self.boot_apply_checkbox.setEnabled(self._runtime_actions_available)
+        self.boot_apply_checkbox.setEnabled(
+            self._runtime_actions_available and self._target_gpu_index is not None
+        )
         self.delete_button.setEnabled(has_delete_selection)
         self.restore_defaults_button.setEnabled(
             self._runtime_actions_available and self._target_gpu_index is not None
@@ -628,13 +665,7 @@ class ProfileList:
         return bool(self.boot_apply_checkbox.isChecked())
 
     def set_boot_apply_checked(self, checked: bool) -> None:
-        """One-time init from the persisted config; never called on reloads.
-
-        The home-dir config key is the single source of truth for this
-        toggle. `set_profiles` deliberately leaves it alone so list reloads
-        can never flip the user's choice (the old Persist-on-Startup toggle
-        was removed over exactly that class of resync glitch).
-        """
+        """Update the selected GPU's boot state without firing persistence."""
         signals_blocked = self.boot_apply_checkbox.blockSignals(True)
         try:
             self.boot_apply_checkbox.setChecked(bool(checked))

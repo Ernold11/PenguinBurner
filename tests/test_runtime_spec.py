@@ -252,7 +252,11 @@ def test_apply_runtime_intent_uses_daemon_for_apply_and_boot(monkeypatch) -> Non
 
 def test_apply_runtime_intent_session_only_clears_boot(monkeypatch) -> None:
     calls = []
-    spec = {"format_version": 1, "mode": "profile"}
+    spec = {
+        "format_version": 1,
+        "mode": "profile",
+        "gpu": {"uuid": "GPU-B", "index_at_resolution": 1},
+    }
     monkeypatch.setattr(
         runtime_spec,
         "build_runtime_spec_from_intent",
@@ -286,6 +290,35 @@ def test_apply_runtime_intent_session_only_clears_boot(monkeypatch) -> None:
 
     assert result == {"started": True}
     assert [call[0] for call in calls] == ["resolve", "apply", "clear-boot"]
+    assert calls[-1][2]["gpu_uuid"] == "GPU-B"
+
+
+def test_daemon_client_boot_diagnostics_and_targeted_clear(monkeypatch, capsys) -> None:
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        daemon_client,
+        "boot_runtime_spec",
+        lambda **kwargs: {
+            "configured": True,
+            "replay": [{"gpu_uuid": "GPU-A", "outcome": "active"}],
+        },
+    )
+    monkeypatch.setattr(
+        daemon_client,
+        "clear_boot_runtime_spec",
+        lambda *, gpu_uuid="", **kwargs: calls.append(("clear", gpu_uuid))
+        or {"cleared": True, "gpu_uuid": gpu_uuid},
+    )
+
+    assert daemon_client.main(["boot-runtime-spec"]) == 0
+    assert '"outcome": "active"' in capsys.readouterr().out
+    assert (
+        daemon_client.main(
+            ["clear-boot-runtime-spec", "--gpu-uuid", "GPU-A"]
+        )
+        == 0
+    )
+    assert calls == [("clear", "GPU-A")]
 
 
 def test_adaptive_runtime_keeps_explicit_old_profile_as_initial_tier(monkeypatch) -> None:

@@ -67,12 +67,16 @@ def profile_delete_autostart_action(
     if not selector:
         return {"action": "keep"}
     if bool(autostart_info.get("adaptive_auto_uv", False)):
+        gpu_uuid = str(autostart_info.get("gpu_uuid") or "").strip()
         remaining_profiles = [
             profile
             for profile in profiles
             if str(profile.get("profile_id", "")).strip() not in selected
         ]
-        resolved = resolve_profile_tier_profiles(remaining_profiles)
+        resolved = resolve_profile_tier_profiles(
+            remaining_profiles,
+            gpu_uuid=gpu_uuid,
+        )
         remaining_tiers = available_adaptive_tiers(resolved)
         if remaining_tiers:
             # Adaptive runtime is valid with a single remaining tier: it
@@ -242,13 +246,29 @@ def runner_status_text(
     return "No running/autostart profile available yet."
 
 
-def systemd_autostart_profile_info() -> dict[str, object]:
+def systemd_autostart_profile_info(*, gpu_uuid: str = "") -> dict[str, object]:
+    selected_gpu_uuid = str(gpu_uuid or "").strip()
     try:
         summary = boot_runtime_spec(timeout_s=1.0)
     except Exception:
         if not systemd_service_is_enabled():
             return _legacy_systemd_autostart_profile_info()
         return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+    if selected_gpu_uuid:
+        saved_specs = summary.get("gpus") if isinstance(summary, dict) else None
+        if isinstance(saved_specs, list):
+            for saved_spec in saved_specs:
+                if not isinstance(saved_spec, dict):
+                    continue
+                saved_uuid = str(saved_spec.get("gpu_uuid") or "").strip()
+                if saved_uuid.casefold() == selected_gpu_uuid.casefold():
+                    return _profile_info_from_runtime_summary(saved_spec)
+        return {
+            "selector": "",
+            "silent_fan_curve": False,
+            "adaptive_auto_uv": False,
+            "gpu_uuid": selected_gpu_uuid,
+        }
     return _profile_info_from_runtime_summary(summary, require_configured=True)
 
 
@@ -519,11 +539,15 @@ def _profile_info_from_runtime_summary(
     mode = str(summary.get("runtime_mode") or "").strip().lower()
     profile_id = str(summary.get("profile_id") or "").strip()
     selector = STOCK_PROFILE_SELECTOR if mode == "stock" else profile_id
-    return {
+    info: dict[str, object] = {
         "selector": selector,
         "silent_fan_curve": bool(summary.get("silent_fan_curve")),
         "adaptive_auto_uv": mode == "adaptive",
     }
+    gpu_uuid = str(summary.get("gpu_uuid") or "").strip()
+    if gpu_uuid:
+        info["gpu_uuid"] = gpu_uuid
+    return info
 
 
 def _daemon_status_payload() -> dict[str, object]:

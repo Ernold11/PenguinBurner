@@ -89,11 +89,20 @@ Enabling a game splices the `PENGUIN_BURNER` wrapper into its Steam launch
 options. At launch the wrapper resolves the game and account, then asks the
 already-root daemon to apply that game's profile over the socket — no elevation,
 no per-game password. When the game exits, the daemon restores your standing
-profile automatically. If the daemon is unreachable, the wrapper soft-fails and
-the game launches normally; PenguinBurner never blocks a launch.
+profile automatically. For a cross-GPU override it first restores that game's
+target GPU to its prior saved state, then resumes the standing GPU. If no prior
+state is known, it restores the game GPU to stock. If the daemon is unreachable,
+the wrapper soft-fails and the game launches normally; PenguinBurner never
+blocks a launch.
 
 Adaptive mode additionally passes the per-game target FPS, and a live change to
-a running game is re-applied in place without a relaunch.
+a running game is re-applied in place without a relaunch. Changing the Game GPU
+itself requires restarting the game.
+
+The daemon has one active monitoring/adaptive/fan-control engine and one
+overlay telemetry owner. The first watched Steam game therefore remains the
+owner until it exits; a second concurrently launched game still starts, but its
+per-game runtime request is skipped and reported in the wrapper diagnostics.
 
 ## Compatibility
 

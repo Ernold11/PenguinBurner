@@ -298,6 +298,37 @@ def test_apply_soft_fails_when_daemon_unreachable(
     assert "skipped" in capsys.readouterr().err
 
 
+def test_apply_reports_when_another_game_owns_runtime(
+    steam_home: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _stub_adaptive_profiles(monkeypatch)
+    settings_path = tmp_path / "steam-game-settings.json"
+    store_steam_game_setting(
+        ACCOUNT_ID,
+        "1089130",
+        SteamGameSetting(enabled=True, mode="adaptive"),
+        path=settings_path,
+    )
+    import runtime.daemon_client as daemon_client
+
+    monkeypatch.setattr(
+        daemon_client,
+        "start_game_runtime_profile",
+        lambda *args, **kwargs: {
+            "started": False,
+            "ignored": True,
+            "reason": "first-game-runtime-active",
+        },
+    )
+
+    assert not apply_game_runtime_profile(
+        {"SteamAppId": "1089130", "SteamUser": "jan_pietek"},
+        home=steam_home,
+        settings_path=settings_path,
+    )
+    assert "first-game-runtime-active" in capsys.readouterr().err
+
+
 def test_game_gpu_target_requires_choice_with_multiple_gpus() -> None:
     identities = [
         SimpleNamespace(index=0, uuid="GPU-a"),

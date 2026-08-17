@@ -4,6 +4,10 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+from cli.runtime_config_file import (
+    persist_on_startup_from_runtime_config,
+    persist_on_startup_to_runtime_config,
+)
 from common.penguin_burner_paths import default_user_config_dir
 from curve_editors.uv.vf_curve_manual_editor import editable_anchor_from_profile
 from profiles.uv.memory_offset_edit import editable_memory_offset_from_profile
@@ -20,6 +24,7 @@ from profiles.gpu_identity import (
 )
 from profiles.gpu_identity import normalized_gpu_identity
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
+from runtime.daemon_client import clear_boot_runtime_spec
 
 from ui.commands import delete_profiles_command
 from ui.commands import profile_verify_command
@@ -81,12 +86,44 @@ class ProfileActionsMixin:
     verify_controller: Any
     gpu_index: int | None
     last_auto_uv_candidate_id: str
+    _boot_apply_by_gpu: dict[str, bool]
 
     def _workflow_running(self) -> bool:
         raise NotImplementedError
 
     def _load_profiles(self) -> None:
         raise NotImplementedError
+
+    def _persist_boot_apply_preference(self, checked: bool) -> None:
+        gpu_uuid = self.profile_list.target_gpu_uuid()
+        if self.profile_list.target_selection_required() and not gpu_uuid:
+            return
+        if gpu_uuid:
+            self._boot_apply_by_gpu[gpu_uuid.casefold()] = bool(checked)
+        # Keep the historical single-value preference for one-GPU upgrades;
+        # the per-GPU daemon boot set is authoritative once UUIDs are known.
+        persist_on_startup_to_runtime_config(bool(checked))
+        if checked:
+            return
+        # Unticking means "nothing applies at boot": clear the selected GPU's
+        # saved entry immediately so the toggle and daemon state stay aligned.
+        try:
+            clear_boot_runtime_spec(gpu_uuid=gpu_uuid)
+        except Exception as exc:
+            self.log_view.append(f"\nCould not clear the saved boot profile: {exc}\n")
+
+    def _sync_boot_apply_for_target(self, gpu_uuid: str) -> None:
+        selected_uuid = str(gpu_uuid or "").strip()
+        if not selected_uuid:
+            self.profile_list.set_boot_apply_checked(
+                persist_on_startup_from_runtime_config(default=False)
+            )
+            return
+        key = selected_uuid.casefold()
+        if key not in self._boot_apply_by_gpu:
+            info = systemd_autostart_profile_info(gpu_uuid=selected_uuid)
+            self._boot_apply_by_gpu[key] = bool(info.get("selector"))
+        self.profile_list.set_boot_apply_checked(self._boot_apply_by_gpu[key])
 
     def _persist_silent_fan_preference(self, checked: bool) -> None:
         raise NotImplementedError
@@ -521,7 +558,8 @@ class ProfileActionsMixin:
         selected_paths = self.profile_list.selected_profile_paths()
         if not selected_paths:
             return
-        autostart_info = systemd_autostart_profile_info()
+        target_gpu_uuid = self.profile_list.target_gpu_uuid()
+        autostart_info = systemd_autostart_profile_info(gpu_uuid=target_gpu_uuid)
         autostart_action = profile_delete_autostart_action(
             self.profile_summaries,
             list(selected_ids),
@@ -622,6 +660,10 @@ class ProfileActionsMixin:
             # reflect that as Default in the status line. Live daemon detection
             # (running selector == stock sentinel) also drives this.
             self._defaults_restored = True
+            target_gpu_uuid = self.profile_list.target_gpu_uuid()
+            if target_gpu_uuid:
+                self._boot_apply_by_gpu[target_gpu_uuid.casefold()] = True
+            self.profile_list.set_boot_apply_checked(True)
         if success:
             self.controls.set_status_text(f"{label} complete.")
         else:

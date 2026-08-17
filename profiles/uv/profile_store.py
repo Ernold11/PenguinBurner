@@ -10,6 +10,7 @@ from common.atomic_write import atomic_write_json
 from profiles.gpu_identity import (
     normalized_gpu_identity,
     profile_gpu_identity,
+    profile_gpu_label,
     profile_gpu_uuid,
 )
 from common.penguin_burner_paths import claim_desktop_user_ownership, default_user_config_dir
@@ -632,6 +633,7 @@ def format_profile_table(profiles: list[dict]) -> str:
         (
             "created",
             "id",
+            "GPU",
             "tier",
             "profile",
             "mV",
@@ -650,6 +652,7 @@ def format_profile_table(profiles: list[dict]) -> str:
             (
                 created,
                 str(profile.get("profile_id", "")),
+                profile_gpu_label(profile),
                 str(profile.get("profile_tier", "")),
                 profile_display_name(profile),
                 _display_number(profile.get("candidate_voltage_mv"), precision=0),

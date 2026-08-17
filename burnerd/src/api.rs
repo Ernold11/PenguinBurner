@@ -269,6 +269,7 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
         Some("apply_runtime_spec") => &["spec"],
         Some("start_game_runtime_profile") => &["spec", "watch_pid", "app_id"],
         Some("set_boot_runtime_spec") => &["spec"],
+        Some("clear_boot_runtime_spec") => &["gpu_uuid"],
         Some("delete_auto_uv_profiles") => &["paths"],
         Some(name) if gpu_rpc::is_gpu_method(name) => gpu_rpc::allowed_fields(name),
         _ => &[],
@@ -313,10 +314,15 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
             supervisor::set_boot_runtime_spec(spec).map(MethodResult::Value)
         }
         Some("clear_boot_runtime_spec") => {
-            supervisor::clear_boot_runtime_spec().map(MethodResult::Value)
+            let gpu_uuid = match object.get("gpu_uuid") {
+                None => "",
+                Some(Value::String(value)) => value.as_str(),
+                Some(_) => return Err("gpu_uuid must be a string".to_string()),
+            };
+            supervisor::clear_boot_runtime_spec(gpu_uuid).map(MethodResult::Value)
         }
         Some("boot_runtime_spec") => {
-            supervisor::boot_runtime_spec_summary().map(MethodResult::Value)
+            supervisor::boot_runtime_spec_summary(sup).map(MethodResult::Value)
         }
         Some("stop_runtime_profile") => {
             supervisor::stop_runtime_profile(sup).map(MethodResult::Stop)

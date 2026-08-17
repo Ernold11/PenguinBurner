@@ -275,7 +275,11 @@ def test_delete_running_session_only_profile_restores_stock(win) -> None:
     monkeypatch.setattr(
         actions_mod,
         "systemd_autostart_profile_info",
-        lambda: {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False},
+        lambda **_kwargs: {
+            "selector": "",
+            "silent_fan_curve": False,
+            "adaptive_auto_uv": False,
+        },
     )
     monkeypatch.setattr(actions_mod, "penguin_burner_runtime_is_active", lambda: True)
     monkeypatch.setattr(
@@ -295,30 +299,137 @@ def test_delete_running_session_only_profile_restores_stock(win) -> None:
     assert confirmations and confirmations[0]["restore_stock"] is True
 
 
-def test_unticking_boot_apply_clears_saved_boot_profile(win, monkeypatch) -> None:
-    import runtime.daemon_client as daemon_client_mod
+def test_delete_checks_boot_profile_for_selected_non_active_gpu(win) -> None:
+    window, monkeypatch = win
+    window.profile_summaries = [PROFILE]
+    monkeypatch.setattr(window.profile_list, "selected_profile_ids", lambda: ["p1"])
+    monkeypatch.setattr(
+        window.profile_list, "selected_profile_paths", lambda: ["/tmp/p1.json"]
+    )
+    monkeypatch.setattr(window.profile_list, "target_gpu_uuid", lambda: "GPU-A")
+    requested_gpu_uuids: list[str] = []
 
+    def autostart_info(*, gpu_uuid: str = "") -> dict[str, object]:
+        requested_gpu_uuids.append(gpu_uuid)
+        return {
+            "selector": "p1",
+            "gpu_uuid": gpu_uuid,
+            "silent_fan_curve": False,
+            "adaptive_auto_uv": False,
+        }
+
+    monkeypatch.setattr(actions_mod, "systemd_autostart_profile_info", autostart_info)
+    monkeypatch.setattr(actions_mod, "penguin_burner_runtime_is_active", lambda: False)
+    confirmations: list[dict] = []
+    monkeypatch.setattr(
+        MainWindow,
+        "_confirm_profile_delete",
+        lambda self, **kwargs: confirmations.append(kwargs) or False,
+    )
+
+    window._delete_selected_profiles()
+
+    assert requested_gpu_uuids == ["GPU-A"]
+    assert confirmations and confirmations[0]["restore_stock"] is True
+
+
+def test_unticking_boot_apply_clears_saved_boot_profile(win, monkeypatch) -> None:
     window, _mp = win
-    cleared: list[bool] = []
+    cleared: list[str] = []
     saved: list[bool] = []
     monkeypatch.setattr(
-        window_mod, "persist_on_startup_to_runtime_config", lambda v: saved.append(bool(v))
+        actions_mod, "persist_on_startup_to_runtime_config", lambda v: saved.append(bool(v))
     )
     monkeypatch.setattr(
-        daemon_client_mod, "clear_boot_runtime_spec", lambda **_k: cleared.append(True)
+        actions_mod,
+        "clear_boot_runtime_spec",
+        lambda **kwargs: cleared.append(str(kwargs.get("gpu_uuid") or "")),
     )
+    monkeypatch.setattr(window.profile_list, "target_gpu_uuid", lambda: "GPU-A")
 
     window.profile_list.set_boot_apply_checked(True)  # blocked signals: no side effects
     assert cleared == [] and saved == []
 
     window.profile_list.boot_apply_checkbox.setChecked(False)
     assert saved == [False]
-    assert cleared == [True]
+    assert cleared == ["GPU-A"]
 
     # Ticking arms boot persistence for the next Apply but clears nothing.
     window.profile_list.boot_apply_checkbox.setChecked(True)
     assert saved == [False, True]
-    assert cleared == [True]
+    assert cleared == ["GPU-A"]
+
+
+def test_boot_apply_checkbox_tracks_selected_gpu(win, monkeypatch) -> None:
+    from ui.features.tuning.gpu_selection import GpuChoice
+
+    window, _mp = win
+    monkeypatch.setattr(
+        window_mod,
+        "gpu_choices_with_fallback",
+        lambda **_kwargs: (
+            [
+                GpuChoice(index=0, name="Card A", uuid="GPU-A"),
+                GpuChoice(index=1, name="Card B", uuid="GPU-B"),
+            ],
+            0,
+        ),
+    )
+    calls: list[str] = []
+
+    def autostart_info(*, gpu_uuid: str = "") -> dict[str, object]:
+        calls.append(gpu_uuid)
+        if gpu_uuid.casefold() == "gpu-a":
+            return {
+                "selector": "profile-a",
+                "gpu_uuid": "GPU-A",
+                "silent_fan_curve": False,
+                "adaptive_auto_uv": False,
+            }
+        return {
+            "selector": "",
+            "silent_fan_curve": False,
+            "adaptive_auto_uv": False,
+        }
+
+    monkeypatch.setattr(window_mod, "systemd_autostart_profile_info", autostart_info)
+    monkeypatch.setattr(actions_mod, "systemd_autostart_profile_info", autostart_info)
+    window._boot_apply_by_gpu = {}
+    window.gpu_index = 0
+
+    window._load_profiles()
+
+    assert window.profile_list.target_gpu_uuid() == "GPU-A"
+    assert window.profile_list.persist_on_startup_enabled() is True
+    window.profile_list.target_gpu_combo.setCurrentIndex(2)
+    assert window.profile_list.target_gpu_uuid() == "GPU-B"
+    assert window.profile_list.persist_on_startup_enabled() is False
+    window.profile_list.target_gpu_combo.setCurrentIndex(1)
+    assert window.profile_list.persist_on_startup_enabled() is True
+    assert "GPU-A" in calls and "GPU-B" in calls
+
+
+def test_boot_toggle_without_multi_gpu_target_cannot_clear_all(win, monkeypatch) -> None:
+    window, _mp = win
+    saved: list[bool] = []
+    cleared: list[str] = []
+    monkeypatch.setattr(window.profile_list, "target_gpu_uuid", lambda: "")
+    monkeypatch.setattr(window.profile_list, "target_selection_required", lambda: True)
+    monkeypatch.setattr(
+        actions_mod,
+        "persist_on_startup_to_runtime_config",
+        lambda value: saved.append(bool(value)),
+    )
+    monkeypatch.setattr(
+        actions_mod,
+        "clear_boot_runtime_spec",
+        lambda **kwargs: cleared.append(str(kwargs.get("gpu_uuid") or "")),
+    )
+
+    window._persist_boot_apply_preference(False)
+
+    assert saved == []
+    assert cleared == []
 
 
 def test_delete_boot_profile_falls_back_to_persisted_stock(win) -> None:

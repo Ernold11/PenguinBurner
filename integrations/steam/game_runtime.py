@@ -179,7 +179,7 @@ def apply_game_runtime_profile(
     from runtime.daemon_client import start_game_runtime_profile
 
     try:
-        start_game_runtime_profile(
+        result = start_game_runtime_profile(
             argv,
             watch_pid=os.getpid() if watch_pid is None else int(watch_pid),
             app_id=app_id,
@@ -188,6 +188,15 @@ def apply_game_runtime_profile(
     except Exception as error:
         print(
             f"penguin-burner: per-game profile apply skipped: {error}",
+            file=sys.stderr,
+        )
+        return False
+    if isinstance(result, dict) and (
+        bool(result.get("ignored")) or not bool(result.get("started", True))
+    ):
+        reason = str(result.get("reason") or "daemon did not start the profile")
+        print(
+            f"penguin-burner: per-game profile apply skipped: {reason}",
             file=sys.stderr,
         )
         return False

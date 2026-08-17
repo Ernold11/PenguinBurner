@@ -118,9 +118,11 @@ separate source payload.
 
 ## Recovery: getting back to stock
 
-Applied tuning persists across reboots only while **Apply on startup** on the
-Profiles tab is ticked (off by default). Unticking it clears any saved boot
-profile immediately, so a plain reboot returns an unticked setup to stock.
+Applied tuning persists across reboots only while **Apply on startup** is
+ticked for the selected GPU (off by default). Unticking it clears that GPU's
+saved boot entry immediately without removing other GPUs' entries. The daemon
+replays saved GPUs serially by stable UUID and leaves one GPU actively
+monitored; see [Profile Management](features/profile-management.md).
 
 If the GPU is in a bad state (or a boot profile misbehaves), reset it to
 stock — now and at boot — without the GUI:

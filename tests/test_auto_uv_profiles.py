@@ -133,6 +133,11 @@ def test_profile_table_shows_copyable_id_and_keeps_date_separate_from_name() -> 
         "avg_core_clock_mhz": 2605.25,
         "efficiency_fps_per_w": 0.81234,
         "profile_source": "profile-store",
+        "gpu_identity": {
+            "name": "RTX 5090",
+            "uuid": "GPU-A",
+            "pci_bus_id": "00000000:01:00.0",
+        },
     }
 
     rendered = format_profile_table([profile])
@@ -140,6 +145,7 @@ def test_profile_table_shows_copyable_id_and_keeps_date_separate_from_name() -> 
     assert "2026-04-27 12:00:00" in rendered
     assert "20260427-120000-000000-875mv-2610mhz" in rendered
     assert "Balanced" in rendered
+    assert "RTX 5090 (01:00.0)" in rendered
     assert "2610 MHz 875 mV" in rendered
     # 500 MT/s transfer-rate offset -> 250 MHz realized memory clock.
     assert "+250 MHz" in rendered
@@ -628,13 +634,41 @@ def test_profile_list_single_gpu_keeps_clean_apply_and_legacy_profile() -> None:
     )
     profile_list.select_profile("legacy")
 
-    assert profile_list.target_gpu_combo.isHidden()
+    assert not profile_list.target_gpu_combo.isHidden()
+    assert not profile_list.target_gpu_combo.isEnabled()
+    assert profile_list.target_gpu_combo.count() == 1
+    assert profile_list.target_gpu_combo.currentData() == "GPU-A"
     assert profile_list.daemonize_button.text() == "Apply"
     assert profile_list.daemonize_button.isEnabled()
     assert profile_list.target_gpu_index() == 0
     assert profile_list.table.item(0, profile_list.GPU_COLUMN).text() == (
         "Unassigned (legacy)"
     )
+
+
+def test_profile_list_stale_configured_index_does_not_fake_multiple_gpus() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [{"profile_id": "legacy", "final_verified": True}]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(
+        profiles,
+        [
+            GpuChoice(0, "NVIDIA RTX 5090", "00000000:01:00.0", "GPU-A"),
+            GpuChoice(5, "NVIDIA GPU"),
+        ],
+        preferred_index=5,
+    )
+
+    assert profile_list.target_gpu_combo.count() == 1
+    assert profile_list.target_gpu_combo.currentData() == "GPU-A"
+    assert profile_list.target_gpu_index() == 0
+    assert not profile_list.target_gpu_combo.isEnabled()
 
 
 def test_profile_list_multiple_profile_gpus_requires_explicit_target() -> None:
@@ -668,6 +702,7 @@ def test_profile_list_multiple_profile_gpus_requires_explicit_target() -> None:
     assert not profile_list.target_gpu_combo.isHidden()
     assert profile_list.target_gpu_index() is None
     assert not profile_list.daemonize_button.isEnabled()
+    assert not profile_list.boot_apply_checkbox.isEnabled()
 
     profile_list.target_gpu_combo.setCurrentIndex(2)
 
@@ -675,9 +710,12 @@ def test_profile_list_multiple_profile_gpus_requires_explicit_target() -> None:
     assert profile_list.target_gpu_index() == 1
     assert profile_list.daemonize_button.text() == "Apply to GPU 1"
     assert profile_list.daemonize_button.isEnabled()
+    assert profile_list.boot_apply_checkbox.isEnabled()
+    assert profile_list.table.isRowHidden(0)
+    assert not profile_list.table.isRowHidden(1)
 
 
-def test_profile_list_multiple_hardware_gpus_one_profile_group_needs_no_choice() -> None:
+def test_profile_list_multiple_hardware_gpus_one_profile_group_keeps_selector_visible() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -700,10 +738,86 @@ def test_profile_list_multiple_hardware_gpus_one_profile_group_needs_no_choice()
     profile_list.configure_gpu_targets(profiles, choices)
     profile_list.select_profile("profile-b")
 
-    assert profile_list.target_gpu_combo.isHidden()
+    assert not profile_list.target_gpu_combo.isHidden()
+    assert profile_list.target_gpu_combo.isEnabled()
+    assert profile_list.target_gpu_index() is None
+    assert not profile_list.daemonize_button.isEnabled()
+
+    profile_list.target_gpu_combo.setCurrentIndex(2)
+
     assert profile_list.target_gpu_index() == 1
-    assert profile_list.daemonize_button.text() == "Apply"
+    assert profile_list.daemonize_button.text() == "Apply to GPU 1"
     assert profile_list.daemonize_button.isEnabled()
+
+
+def test_profile_list_target_filter_keeps_legacy_profiles_visible() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [
+        {
+            "profile_id": "profile-a",
+            "final_verified": True,
+            "gpu_identity": {"name": "RTX 4090", "uuid": "GPU-A"},
+        },
+        {
+            "profile_id": "profile-b",
+            "final_verified": True,
+            "gpu_identity": {"name": "RTX 5090", "uuid": "GPU-B"},
+        },
+        {"profile_id": "legacy", "final_verified": True},
+    ]
+    choices = [
+        GpuChoice(0, "RTX 4090", "00000000:01:00.0", "GPU-A"),
+        GpuChoice(1, "RTX 5090", "00000000:02:00.0", "GPU-B"),
+    ]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(profiles, choices)
+
+    profile_list.target_gpu_combo.setCurrentIndex(1)
+
+    assert not profile_list.table.isRowHidden(0)
+    assert profile_list.table.isRowHidden(1)
+    assert not profile_list.table.isRowHidden(2)
+
+
+def test_profile_filter_deselects_rows_hidden_by_gpu_switch() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [
+        {
+            "profile_id": "profile-a",
+            "final_verified": True,
+            "gpu_identity": {"uuid": "GPU-A"},
+        },
+        {
+            "profile_id": "profile-b",
+            "final_verified": True,
+            "gpu_identity": {"uuid": "GPU-B"},
+        },
+    ]
+    choices = [
+        GpuChoice(0, "RTX A", uuid="GPU-A"),
+        GpuChoice(1, "RTX B", uuid="GPU-B"),
+    ]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(profiles, choices)
+    profile_list.target_gpu_combo.setCurrentIndex(1)
+    profile_list.select_profile("profile-a")
+    assert profile_list.selected_profile_ids() == ["profile-a"]
+
+    profile_list.target_gpu_combo.setCurrentIndex(2)
+
+    assert profile_list.selected_profile_ids() == []
 
 
 def test_profile_list_boot_toggle_defaults_off_and_survives_reloads() -> None:

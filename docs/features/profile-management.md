@@ -19,23 +19,33 @@ saved curve cannot silently move to another card if driver indices change.
 Top bar:
 
 - **Apply** — run the highlighted profile now.
-- **Apply on startup** — also save the applied profile as the boot profile.
+- **Target GPU** — filter profiles and choose the physical card for actions.
+  The selector remains visible but disabled when only one GPU is detected.
+- **Apply on startup** — also save the applied profile for the selected GPU.
   Off by default: with it unticked, Apply changes the current session only
-  and clears any saved boot profile, so the GPU starts at stock.
+  and clears only that GPU's saved boot profile.
 - **Silent fan curve** — use the saved fan curve with the applied profile.
 - **Restore defaults** — return the GPU to stock now and at boot.
 
-On a one-GPU system, GPU targeting stays out of the way and **Apply** works as
-before. If saved profiles belong to multiple physical GPUs, the tab shows a
-target selector and requires an explicit choice. Tier assignments are kept per
-GPU. A legacy profile without GPU identity can be used directly on a one-GPU
-system; on a multi-GPU system it must be verified on the intended card first.
+On a one-GPU system, the disabled target selector identifies the card and
+**Apply** works as before. On a multi-GPU system, selecting a target filters out
+profiles bound to other cards; legacy/unassigned profiles remain visible so
+they can be verified and bound. Tier assignments and the startup checkbox are
+kept per GPU. A legacy profile can be used directly on a one-GPU system; on a
+multi-GPU system it must be verified on the intended card first.
 
-With **Apply on startup** ticked, Apply saves the selected profile as the
-standing boot state. Restore defaults saves stock as that state instead. The
-`penguin-burnerd` service stays enabled and available in all cases. The toggle
-itself is remembered in `~/.config/PenguinBurner/penguin_burner.toml`
-(`[ui] persist_on_startup`) and survives reinstalls and upgrades.
+With **Apply on startup** ticked, Apply saves the selected profile in that
+GPU's boot entry. At boot, `penguin-burnerd` resolves saved UUIDs to their
+current driver indices and applies the available entries serially. A missing
+GPU is skipped but remains saved for a later boot. Restore defaults saves stock
+for the selected GPU instead.
+
+The Rust daemon still has one active policy engine. After serial application,
+the most recently saved available GPU remains actively monitored and gets
+drift recovery, adaptive switching, and PenguinBurner fan control. Earlier
+GPUs keep their V/F curve, memory offset, and power limit, while their fans are
+released to hardware auto. Selecting and applying another GPU transfers the
+active engine to it; it does not run a second monitoring engine.
 
 Right-click a profile:
 

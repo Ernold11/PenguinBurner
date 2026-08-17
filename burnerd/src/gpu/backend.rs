@@ -5,6 +5,7 @@ use nvml_wrapper::enum_wrappers::device::{Clock, PerformanceState, TemperatureSe
 use nvml_wrapper::enums::device::GpuLockedClocksSetting;
 use nvml_wrapper::error::NvmlError;
 use nvml_wrapper::{Device, Nvml};
+use serde::Deserialize;
 
 use super::nvapi::{NvapiVfSession, NvapiVoltageSession};
 use super::{
@@ -38,6 +39,61 @@ impl NvmlBackend {
             voltage: NvapiVoltageSession::open(gpu_index, &pci_bus_id).ok(),
             vf: NvapiVfSession::open(gpu_index, &pci_bus_id).ok(),
         })
+    }
+
+    /// Resolve a persisted physical UUID to its current NVML index. The saved
+    /// index is only a fast-path hint because driver enumeration can change
+    /// across boots.
+    pub fn resolve_gpu_index(expected_uuid: &str, index_hint: u32) -> GpuResult<u32> {
+        const TEST_IDENTITIES_ENV: &str = "PENGUIN_BURNERD_TEST_GPU_IDENTITIES";
+        #[derive(Deserialize)]
+        struct TestIdentity {
+            index: u32,
+            uuid: String,
+        }
+
+        let expected = expected_uuid.trim();
+        if expected.is_empty() {
+            return Err(GpuError::other("runtime profile GPU uuid is required", 0));
+        }
+        if let Ok(raw) = std::env::var(TEST_IDENTITIES_ENV) {
+            let identities: Vec<TestIdentity> = serde_json::from_str(&raw).map_err(|error| {
+                GpuError::other(format!("invalid {TEST_IDENTITIES_ENV}: {error}"), 0)
+            })?;
+            return identities
+                .into_iter()
+                .find(|identity| identity.uuid == expected)
+                .map(|identity| identity.index)
+                .ok_or_else(|| {
+                    GpuError::other(
+                        format!("runtime profile GPU {expected} is not currently detected"),
+                        0,
+                    )
+                });
+        }
+        // Existing inert-engine tests intentionally avoid NVML. They exercise
+        // supervisor state rather than device discovery and keep their saved
+        // index unless an explicit fake identity table was supplied above.
+        if std::env::var_os("PENGUIN_BURNERD_TEST_INERT_ENGINE").is_some() {
+            return Ok(index_hint);
+        }
+
+        let nvml = Nvml::init().map_err(|error| runtime_error("nvmlInit_v2", error))?;
+        if let Ok(device) = nvml.device_by_index(index_hint) {
+            if device.uuid().ok().as_deref() == Some(expected) {
+                return Ok(index_hint);
+            }
+        }
+        let device = nvml.device_by_uuid(expected).map_err(|error| {
+            let (code, _text) = error_parts(error);
+            GpuError::other(
+                format!("runtime profile GPU {expected} is not currently detected"),
+                code,
+            )
+        })?;
+        device
+            .index()
+            .map_err(|error| runtime_error("nvmlDeviceGetIndex", error))
     }
 
     fn device(&self) -> GpuResult<Device<'_>> {

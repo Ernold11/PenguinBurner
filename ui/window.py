@@ -4,8 +4,6 @@ from pathlib import Path
 import shlex
 
 from cli.runtime_config_file import (
-    persist_on_startup_from_runtime_config,
-    persist_on_startup_to_runtime_config,
     silent_fan_curve_from_runtime_config,
     silent_fan_curve_to_runtime_config,
 )
@@ -77,6 +75,7 @@ class MainWindow(ProfileActionsMixin):
         self._defaults_restored = False
         self._delete_restore_stock = False
         self._delete_switch_systemd_profile_id = ""
+        self._boot_apply_by_gpu: dict[str, bool] = {}
 
         self.window = self.QtWidgets.QMainWindow()
         self.window.setWindowTitle(APP_DISPLAY_NAME)
@@ -267,7 +266,6 @@ class MainWindow(ProfileActionsMixin):
         self.profile_list.silent_fan_checkbox.toggled.connect(
             self._persist_silent_fan_preference
         )
-        self._boot_apply_toggle_initialized = False
         self.profile_list.boot_apply_checkbox.toggled.connect(
             self._persist_boot_apply_preference
         )
@@ -734,17 +732,6 @@ class MainWindow(ProfileActionsMixin):
     def _load_profiles(self) -> None:
         self.profile_summaries = load_profile_summaries()
         autostart_info = systemd_autostart_profile_info()
-        if not self._boot_apply_toggle_initialized:
-            self._boot_apply_toggle_initialized = True
-            # One-time init: the persisted config value is authoritative. Only
-            # when the key has never been written does an existing boot entry
-            # seed the default, so 0.7.4 upgrades keep their boot profile
-            # until the user unticks the toggle. Reloads never touch the box.
-            self.profile_list.set_boot_apply_checked(
-                persist_on_startup_from_runtime_config(
-                    default=bool(autostart_info["selector"])
-                )
-            )
         running_info = (
             running_auto_uv_profile_info()
             if penguin_burner_runtime_is_active()
@@ -773,6 +760,7 @@ class MainWindow(ProfileActionsMixin):
             gpu_choices,
             preferred_index=self.gpu_index,
         )
+        self._sync_boot_apply_for_target(self.profile_list.target_gpu_uuid())
         self._set_profile_actions_enabled(not self._workflow_running())
         self._refresh_running_status(running_info, autostart_info)
 
@@ -781,6 +769,7 @@ class MainWindow(ProfileActionsMixin):
         gpu_index: int | None,
         _gpu_uuid: str,
     ) -> None:
+        self._sync_boot_apply_for_target(_gpu_uuid)
         if gpu_index is None:
             return
         try:
@@ -878,25 +867,6 @@ class MainWindow(ProfileActionsMixin):
         # Remember the silent-fan choice durably so the "latest profile setup"
         # restores it after an aborted Auto-UV run, profile reload, or restart.
         silent_fan_curve_to_runtime_config(bool(checked))
-
-    def _persist_boot_apply_preference(self, checked: bool) -> None:
-        # Every click lands in the home-dir config immediately: the key is the
-        # single source of truth for the toggle, survives reinstalls, and no
-        # reload path resyncs the checkbox against runtime state.
-        persist_on_startup_to_runtime_config(bool(checked))
-        if not checked:
-            # Unticking means "nothing applies at boot": clear any saved boot
-            # profile right away so the toggle and the real boot state cannot
-            # diverge while the user never clicks Apply again. Best-effort —
-            # the startup seed uses blocked signals and never lands here.
-            from runtime.daemon_client import clear_boot_runtime_spec
-
-            try:
-                clear_boot_runtime_spec()
-            except Exception as exc:
-                self.log_view.append(
-                    f"\nCould not clear the saved boot profile: {exc}\n"
-                )
 
     def _workflow_running(self) -> bool:
         return (

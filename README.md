@@ -86,7 +86,8 @@ prompts.
    your boot profile — off by default, so a tuned curve is never re-applied at
    boot unless you opted in. Toggle **Silent fan curve** for the quiet fan
    profile, or **Restore defaults** to return the GPU to stock. Multi-GPU
-   systems show an explicit target only when saved profiles span multiple GPUs.
+   systems filter the table with the **Target GPU** selector. On a one-GPU
+   system the same selector shows the detected card but is disabled.
 5. For per-game tuning — including **Adaptive**, which switches tiers as your
    frame rate changes — use the **Steam** tab to pick a mode per game.
 

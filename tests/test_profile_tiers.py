@@ -137,6 +137,24 @@ def test_binding_migrates_legacy_tier_assignment_to_gpu(tmp_path) -> None:
     }
 
 
+def test_binding_does_not_overwrite_existing_gpu_tier_assignment(tmp_path) -> None:
+    path = tmp_path / "assignments.json"
+    save_profile_tier_assignment("legacy-profile", "balanced", path=path)
+    save_profile_tier_assignment(
+        "gpu-profile",
+        "balanced",
+        path=path,
+        gpu_uuid="GPU-a",
+    )
+
+    migrate_legacy_profile_tier_to_gpu("legacy-profile", "GPU-a", path=path)
+
+    assert load_profile_tier_assignments(path) == {}
+    assert load_profile_tier_assignments(path, gpu_uuid="GPU-a") == {
+        PROFILE_TIER_BALANCED: "gpu-profile"
+    }
+
+
 def test_resolve_profile_tiers_only_uses_selected_gpu_group(tmp_path) -> None:
     path = tmp_path / "assignments.json"
     profile_a = _profile("profile-a", "Performance", "2026-06-01T12:00:00+00:00")

@@ -253,12 +253,18 @@ def migrate_legacy_profile_tier_to_gpu(
     gpu_disabled = load_profile_tier_disabled_profile_ids(
         path, gpu_uuid=selected_gpu_uuid
     )
+    existing_tier_profile_id = str(
+        gpu_assignments.get(assigned_tier) or ""
+    ).strip()
     gpu_assignments = {
         tier: assigned_id
         for tier, assigned_id in gpu_assignments.items()
         if assigned_id != selected_profile_id
     }
-    if assigned_tier:
+    if assigned_tier and (
+        not existing_tier_profile_id
+        or existing_tier_profile_id == selected_profile_id
+    ):
         gpu_assignments[assigned_tier] = selected_profile_id
         gpu_disabled.discard(selected_profile_id)
     if was_disabled:
