@@ -251,6 +251,60 @@ def test_probe_summary_accepts_busy_util_below_power_limit_floor() -> None:
     assert summary.loaded_qualified_sample_count == 4
 
 
+def test_probe_summary_accepts_busy_util_without_power_telemetry() -> None:
+    samples = [
+        {
+            "elapsed_s": 5.0 + index,
+            "power_w": None,
+            "gpu_util_pct": 99.0,
+            "core_clock_mhz": clock_mhz,
+            "voltage_mv": voltage_mv,
+            "temperature_c": 60.0,
+            "fan_speed_pct": 36.0,
+        }
+        for index, (clock_mhz, voltage_mv) in enumerate(
+            ((2700.0, 1015.0), (2715.0, 1020.0), (2730.0, 1025.0))
+        )
+    ]
+    result = SimpleNamespace(
+        telemetry_samples=samples,
+        companion_telemetry_samples=[],
+        telemetry_summary=lambda: {},
+        reason="ok",
+        log_path=Path("/tmp/q2rtx.log"),
+    )
+
+    loaded = loaded_telemetry_means(
+        samples,
+        power_limit_w=115,
+        use_power_limit_floor=True,
+        skip_elapsed_warmup=True,
+    )
+    summary = summarize_q2rtx_cuda_probe(
+        candidate_voltage_mv=1025,
+        lock_clock_mhz=2730,
+        live_voltage_before_mv=1015,
+        live_voltage_after_mv=1025,
+        used_companion_load=False,
+        power_limit_w=115,
+        result=result,
+        telemetry_samples=samples,
+        use_power_limit_floor=True,
+    )
+
+    assert loaded[0] is None
+    assert loaded[1] == pytest.approx(2715.0)
+    assert loaded[2] == pytest.approx(1020.0)
+    assert loaded[5] == 3
+    assert loaded[6] is None
+    assert summary.avg_power_w is None
+    assert summary.avg_core_clock_mhz == pytest.approx(2715.0)
+    assert summary.avg_voltage_mv == pytest.approx(1020.0)
+    assert summary.avg_temperature_c == pytest.approx(60.0)
+    assert summary.avg_fan_speed_pct == pytest.approx(36.0)
+    assert summary.efficiency_fps_per_w is None
+
+
 def test_loaded_perf_cap_reason_suppresses_idle_as_none() -> None:
     loaded_samples = [
         {"elapsed_s": 6.0, "power_w": 220.0, "perf_cap_reason": "idle"},

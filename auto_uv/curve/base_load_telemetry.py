@@ -6,7 +6,7 @@ It ignores ramp-up/idle samples so curve flattening preserves sustained load clo
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from ..shared.probe_data_fields import numeric_values, percent, read_field
 
@@ -23,7 +23,35 @@ class LoadedTelemetryRules:
     active_core_clock_percentile: float = 0.75
 
 
-def decision_samples(samples: list[Any], *, rules: LoadedTelemetryRules) -> list[Any]:
+class LoadedTelemetryRulesLike(Protocol):
+    @property
+    def loaded_sample_warmup_s(self) -> float: ...
+
+    @property
+    def saturated_tail_power_pct(self) -> float: ...
+
+    @property
+    def saturated_tail_core_clock_pct(self) -> float: ...
+
+    @property
+    def saturated_tail_min_samples(self) -> int: ...
+
+    @property
+    def power_saturation_headroom_pct(self) -> float: ...
+
+    @property
+    def loaded_sample_power_floor_pct(self) -> float: ...
+
+    @property
+    def loaded_sample_gpu_util_pct(self) -> float: ...
+
+    @property
+    def active_core_clock_percentile(self) -> float: ...
+
+
+def decision_samples(
+    samples: list[Any], *, rules: LoadedTelemetryRulesLike
+) -> list[Any]:
     # Ramp-up samples are not steady load; keep raw samples only when filtering would erase all evidence.
     warmup_s = max(0.0, float(rules.loaded_sample_warmup_s))
     if warmup_s <= 0.0:
@@ -40,7 +68,7 @@ def decision_samples(samples: list[Any], *, rules: LoadedTelemetryRules) -> list
 def saturated_tail_samples(
     telemetry_samples: list[Any],
     *,
-    rules: LoadedTelemetryRules = LoadedTelemetryRules(),
+    rules: LoadedTelemetryRulesLike = LoadedTelemetryRules(),
 ) -> list[Any]:
     samples = decision_samples(telemetry_samples, rules=rules)
     power_values = sample_values(samples, "power_w")
@@ -82,7 +110,7 @@ def derive_power_saturated_clock_mhz(
     telemetry_samples: list[Any],
     *,
     power_limit_w: int | None,
-    rules: LoadedTelemetryRules = LoadedTelemetryRules(),
+    rules: LoadedTelemetryRulesLike = LoadedTelemetryRules(),
 ) -> tuple[float | None, int, float | None]:
     if power_limit_w is None or int(power_limit_w) <= 0:
         return None, 0, None
@@ -106,7 +134,7 @@ def derive_active_core_clock_mhz(
     *,
     power_limit_w: int | None,
     use_power_limit_floor: bool,
-    rules: LoadedTelemetryRules = LoadedTelemetryRules(),
+    rules: LoadedTelemetryRulesLike = LoadedTelemetryRules(),
 ) -> tuple[float | None, float | None, int, float | None]:
     samples = decision_samples(telemetry_samples, rules=rules)
     active_power_floor_w = derive_active_power_floor_w(
@@ -144,7 +172,7 @@ def derive_active_core_clock_mhz(
         float(avg_clock_mhz),
         float(preferred_clock_mhz),
         len(clocks),
-        float(active_power_floor_w),
+        active_power_floor_w,
     )
 
 
@@ -153,7 +181,7 @@ def derive_active_power_floor_w(
     *,
     power_limit_w: int | None,
     use_power_limit_floor: bool,
-    rules: LoadedTelemetryRules = LoadedTelemetryRules(),
+    rules: LoadedTelemetryRulesLike = LoadedTelemetryRules(),
 ) -> float | None:
     power_values = sample_values(
         decision_samples(telemetry_samples, rules=rules),
@@ -170,7 +198,7 @@ def sample_is_loaded(
     sample: Any,
     *,
     active_power_floor_w: float | None,
-    rules: LoadedTelemetryRules = LoadedTelemetryRules(),
+    rules: LoadedTelemetryRulesLike = LoadedTelemetryRules(),
 ) -> bool:
     if sample is None:
         return False

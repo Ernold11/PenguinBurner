@@ -267,3 +267,26 @@ def test_loaded_voltage_band_accepts_busy_util_below_power_limit_floor() -> None
     )
 
     assert band == LoadedVoltageBand(1028)
+
+
+def test_loaded_voltage_band_accepts_busy_util_without_power_telemetry() -> None:
+    band = derive_loaded_voltage_band(
+        [
+            {
+                "elapsed_s": 6.0,
+                "power_w": None,
+                "gpu_util_pct": 99.0,
+                "voltage_mv": 1025.0,
+            },
+            {
+                "elapsed_s": 7.0,
+                "power_w": None,
+                "gpu_util_pct": 99.0,
+                "voltage_mv": 1030.0,
+            },
+        ],
+        power_limit_w=115,
+        use_power_limit_floor=True,
+    )
+
+    assert band == LoadedVoltageBand(1028)
