@@ -105,6 +105,16 @@ impl ClientDetector {
             }
             return ClientVerdict::Pending;
         }
+        // Fine-grained deferred detection must query contexts for the exact
+        // GPU. Without a resolved index, the global /dev/nvidiaN holder scan
+        // cannot distinguish another card and must never authorize replay.
+        if input.phase == ClientPhase::Deferred
+            && input.fine_grained
+            && input.gpu_index.is_none()
+        {
+            self.clear_idle_latch();
+            return ClientVerdict::Pending;
+        }
 
         let holders = nvidia_device_node_holders_in(&self.proc_root, self.self_pid);
         if input.phase == ClientPhase::Deferred && input.fine_grained {
@@ -473,6 +483,25 @@ mod tests {
         let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
         let mut input = active_tick(ClientPhase::Deferred);
         input.runtime_status = Some(RuntimePmStatus::Suspended);
+        assert_eq!(detector.tick(input), ClientVerdict::Pending);
+        assert_eq!(*calls.borrow(), 0);
+    }
+
+    #[test]
+    fn unresolved_fine_grained_target_ignores_global_device_holders() {
+        let root = tempfile::tempdir().unwrap();
+        write_identity(root.path(), 4242, "other-gpu-game", 1000);
+        let fd_dir = root.path().join("4242/fd");
+        fs::create_dir_all(&fd_dir).unwrap();
+        symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+        let calls = Rc::new(RefCell::new(0));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: Rc::new(RefCell::new(GpuContextPids::default())),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        let mut input = active_tick(ClientPhase::Deferred);
+        input.gpu_index = None;
         assert_eq!(detector.tick(input), ClientVerdict::Pending);
         assert_eq!(*calls.borrow(), 0);
     }

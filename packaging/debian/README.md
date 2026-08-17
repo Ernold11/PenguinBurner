@@ -47,7 +47,7 @@ are never committed to Git.
 From a clean checkout containing the release tag and Debian signing key:
 
 ```bash
-scripts/publish-ppa.sh 0.7.8
+scripts/publish-ppa.sh 0.7.9
 ```
 
 That one command builds and validates the Resolute source package, uploads it

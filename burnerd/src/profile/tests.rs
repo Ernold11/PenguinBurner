@@ -781,7 +781,7 @@ fn resume_recovery_reasserts_persistence_and_ceiling() {
 
 #[test]
 fn resume_recovery_propagates_power_limit_failure() {
-    let mut mock = resume_mock(320);
+    let mock = resume_mock(320);
     mock.inject_failure(
         "apply_power_limit_w",
         crate::gpu::GpuError::other("injected resume failure", 0),

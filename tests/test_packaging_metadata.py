@@ -4,6 +4,8 @@ import json
 import os
 import subprocess
 import struct
+import sys
+import tarfile
 import tomllib
 import zlib
 from pathlib import Path
@@ -779,7 +781,29 @@ def test_wheel_bundles_rust_daemon_as_package_data() -> None:
     # from sdist can cargo-build the daemon into the wheel.
     assert "include burnerd/Cargo.toml" in manifest
     assert "include burnerd/Cargo.lock" in manifest
+    assert "include burnerd/build.rs" in manifest
     assert "recursive-include burnerd/src *.rs" in manifest
+
+
+def test_sdist_contains_complete_rust_daemon_crate(tmp_path: Path) -> None:
+    subprocess.run(
+        [sys.executable, "setup.py", "sdist", "--dist-dir", str(tmp_path)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    archives = list(tmp_path.glob("penguin_burner-*.tar.gz"))
+    assert len(archives) == 1
+    with tarfile.open(archives[0], "r:gz") as archive:
+        names = archive.getnames()
+    for relative in (
+        "burnerd/Cargo.toml",
+        "burnerd/Cargo.lock",
+        "burnerd/build.rs",
+        "burnerd/src/main.rs",
+    ):
+        assert any(name.endswith(f"/{relative}") for name in names), relative
 
 
 def test_pypi_wheel_build_installs_rust_toolchain_and_requires_daemon() -> None:

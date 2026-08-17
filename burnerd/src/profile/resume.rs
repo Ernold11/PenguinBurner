@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn not_supported_reapply_is_tolerated_as_skip() {
-        let mut mock = mock_with_limits(320, 320);
+        let mock = mock_with_limits(320, 320);
         mock.inject_failure(
             "apply_power_limit_w",
             GpuError::nvml("nvmlDeviceSetPowerManagementLimit", NVML_ERROR_NOT_SUPPORTED),
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn reapply_failure_is_reported() {
-        let mut mock = mock_with_limits(320, 320);
+        let mock = mock_with_limits(320, 320);
         mock.inject_failure(
             "apply_power_limit_w",
             GpuError::other("injected power failure", 0),

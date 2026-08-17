@@ -50,7 +50,8 @@ python3 -m runtime.daemon_client status
 ```
 
 The boot summary lists every saved GPU UUID and a replay outcome such as
-`applied`, `active`, `gpu-not-detected`, or `stock-fallback`. This lets issue
+`applied`, `active`, `stock-skipped`, `gpu-not-detected`, or `stock-fallback`.
+This lets issue
 reporters identify index changes, missing cards, and per-card recovery without
 requiring a developer to reproduce the same hardware layout.
 

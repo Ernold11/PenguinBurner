@@ -55,8 +55,8 @@ pub struct DeepSleepStatus {
     /// True while a persisted runtime exists but its start is held back
     /// because the GPU is asleep.
     pub autostart_deferred: bool,
-    /// True once the GPU has been seen suspended this daemon lifetime —
-    /// definitive evidence the platform can deep-sleep.
+    /// True once the current target GPU has been seen suspended — definitive
+    /// evidence that card needs Mobile handling. Reset when the target changes.
     pub suspended_observed: bool,
     /// True while an applied profile is parked: its engine released the GPU
     /// so it can suspend, and the watcher reapplies it at the next real use.
@@ -271,6 +271,25 @@ pub fn evaluate(probe: &detect::Rtd3Probe, pci_hint: Option<&str>) -> DeepSleepM
     let runtime_status = addr.as_deref().map(|addr| probe.runtime_pm_status(addr));
     let runtime_times = addr.as_deref().map(|addr| probe.runtime_pm_times(addr));
     let mut state = gate();
+    if state.pci_addr.is_some() && state.pci_addr != addr {
+        logging::info(&format!(
+            "deep sleep: rebinding GPU target {} -> {}",
+            state.pci_addr.as_deref().unwrap_or("unknown"),
+            addr.as_deref().unwrap_or("unknown"),
+        ));
+        // Every observation below belongs to one physical GPU. Carrying any
+        // of it across a target switch can make the new card inherit the old
+        // card's sticky Mobile verdict, client sample, or parked state.
+        state.mode = None;
+        state.last_runtime_status = None;
+        state.runtime_status_since = None;
+        state.runtime_active_ms = None;
+        state.runtime_suspended_ms = None;
+        state.suspended_observed = false;
+        state.autostart_deferred = false;
+        state.parked = false;
+        state.gpu_clients = None;
+    }
     state.pci_addr = addr;
     if let Some(status) = runtime_status {
         record_runtime_status(&mut state, status);
@@ -290,6 +309,10 @@ pub fn evaluate(probe: &detect::Rtd3Probe, pci_hint: Option<&str>) -> DeepSleepM
     mode
 }
 
+pub(crate) fn target_pci_addr() -> Option<String> {
+    gate().pci_addr.clone()
+}
+
 fn describe(mode: &DeepSleepMode) -> String {
     match mode {
         DeepSleepMode::Mobile { fine_grained } => format!(
@@ -305,9 +328,9 @@ fn describe(mode: &DeepSleepMode) -> String {
     }
 }
 
-/// True when the effective mode is Mobile. Sticky: observing a suspended GPU
-/// is definitive evidence that mobile deep-sleep handling is required even if
-/// the configuration files were unreadable or later change.
+/// True when the effective mode is Mobile. Sticky for the current target:
+/// observing suspension is definitive even if configuration files later
+/// change, but the evidence is reset when another GPU becomes active.
 #[cfg(test)]
 pub(crate) fn is_mobile_mode() -> bool {
     let state = gate();

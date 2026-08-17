@@ -5,7 +5,7 @@
 //! machine then gets a watcher thread that keeps the detected mode live for
 //! the daemon's lifetime — Unknown can resolve, Desktop can flip once the user
 //! enables runtime PM, and a `suspended` sighting selects Mobile handling for
-//! good.
+//! that GPU until the active runtime target changes.
 //!
 //! In Mobile and Unknown modes, the watcher polls the kernel's cached
 //! `runtime_status` (a wake-free read) once per second and starts the deferred
@@ -75,7 +75,7 @@ fn park_after_idle_ticks() -> u32 {
 /// watcher in every case.
 pub fn startup(sup: &Arc<Mutex<Supervisor>>) {
     let probe = Rtd3Probe::system();
-    let hint = supervisor::persisted_pci_bus_id_hint();
+    let hint = runtime_pci_hint(sup, &probe);
     super::evaluate(&probe, hint.as_deref());
 
     let desktop_autostart_attempted = super::allows_desktop_autostart();
@@ -86,8 +86,20 @@ pub fn startup(sup: &Arc<Mutex<Supervisor>>) {
     let sup = sup.clone();
     thread::Builder::new()
         .name("penguin-burner-rtd3".to_string())
-        .spawn(move || watch_loop(&sup, &probe, hint.as_deref(), desktop_autostart_attempted))
+        .spawn(move || watch_loop(&sup, &probe, desktop_autostart_attempted))
         .expect("spawn rtd3 watcher thread");
+}
+
+fn runtime_pci_hint(sup: &Mutex<Supervisor>, probe: &Rtd3Probe) -> Option<String> {
+    let hints: Vec<String> = supervisor::runtime_pci_bus_id_hints(sup)
+        .into_iter()
+        .filter_map(|hint| super::detect::sysfs_pci_addr(&hint))
+        .collect();
+    hints
+        .iter()
+        .find(|hint| probe.is_nvidia_gpu(hint))
+        .cloned()
+        .or_else(|| hints.into_iter().next())
 }
 
 /// The watcher's per-tick counters: one wake episode's progress and one park
@@ -153,7 +165,6 @@ impl TickState {
 fn watch_loop(
     sup: &Arc<Mutex<Supervisor>>,
     probe: &Rtd3Probe,
-    hint: Option<&str>,
     mut desktop_autostart_attempted: bool,
 ) {
     let mut tick_state = TickState::default();
@@ -170,7 +181,6 @@ fn watch_loop(
             watch_tick(
                 sup,
                 probe,
-                hint,
                 &mut desktop_autostart_attempted,
                 &mut tick_state,
                 &mut clients,
@@ -188,12 +198,21 @@ fn watch_loop(
 fn watch_tick(
     sup: &Arc<Mutex<Supervisor>>,
     probe: &Rtd3Probe,
-    hint: Option<&str>,
     desktop_autostart_attempted: &mut bool,
     tick_state: &mut TickState,
     clients: &mut ClientDetector,
 ) -> Duration {
-    super::evaluate(probe, hint);
+    let previous_target = super::target_pci_addr();
+    let hint = runtime_pci_hint(sup, probe);
+    super::evaluate(probe, hint.as_deref());
+    if super::target_pci_addr() != previous_target {
+        // Client latches and countdowns are meaningful only for the card they
+        // observed. Re-arm desktop startup too, for a persisted target change
+        // made while no engine owns the profile slot.
+        clients.reset();
+        *tick_state = TickState::default();
+        *desktop_autostart_attempted = false;
+    }
 
     if super::protects_deep_sleep() {
         let released = gpu_rpc::release_idle_backends(RPC_BACKEND_IDLE_TTL);
@@ -202,7 +221,12 @@ fn watch_tick(
                 "deep sleep: released {released} idle GPU backend(s) so the GPU can suspend"
             ));
         }
-        mobile_tick(sup, tick_state, clients);
+        mobile_tick(
+            sup,
+            tick_state,
+            clients,
+            probe.nvidia_gpu_addrs().len() == 1,
+        );
         return MOBILE_TICK;
     }
 
@@ -224,6 +248,7 @@ fn mobile_tick(
     sup: &Arc<Mutex<Supervisor>>,
     state: &mut TickState,
     clients: &mut ClientDetector,
+    legacy_target_unambiguous: bool,
 ) {
     // A scan/verification child owns the GPU exclusively; its own
     // `/dev/nvidia*` fds and activity must never satisfy the start policy —
@@ -266,7 +291,7 @@ fn mobile_tick(
                 }
                 ClientVerdict::Idle(observation) => {
                     super::record_gpu_clients(observation);
-                    advance_park_countdown(sup, state);
+                    advance_park_countdown(sup, state, legacy_target_unambiguous);
                 }
                 ClientVerdict::Pending => {
                     state.abandon_countdown("a safe GPU-client observation is pending");
@@ -279,7 +304,7 @@ fn mobile_tick(
     }
     state.abandon_countdown("the runtime is no longer attached");
 
-    let pending = wakeable_runtime_pending();
+    let pending = wakeable_runtime_pending(legacy_target_unambiguous);
     super::set_autostart_deferred(pending);
     if !pending {
         clients.reset();
@@ -307,10 +332,14 @@ fn mobile_tick(
         );
     }
     if state.active_ticks >= SUSTAINED_ACTIVE_TICKS && !state.start_attempted {
+        let target = super::target_pci_addr();
         match client_verdict(
             clients,
             ClientPhase::Deferred,
-            supervisor::deferred_runtime_gpu_index(),
+            supervisor::deferred_runtime_gpu_index(
+                target.as_deref(),
+                legacy_target_unambiguous,
+            ),
         ) {
             ClientVerdict::Busy(observation) => {
                 super::record_gpu_clients(observation);
@@ -353,7 +382,11 @@ fn client_verdict(
     })
 }
 
-fn advance_park_countdown(sup: &Arc<Mutex<Supervisor>>, state: &mut TickState) {
+fn advance_park_countdown(
+    sup: &Arc<Mutex<Supervisor>>,
+    state: &mut TickState,
+    legacy_target_unambiguous: bool,
+) {
     state.idle_ticks += 1;
     if state.idle_ticks == 1 && !state.countdown_announced {
         state.countdown_announced = true;
@@ -372,7 +405,7 @@ fn advance_park_countdown(sup: &Arc<Mutex<Supervisor>>, state: &mut TickState) {
         state.end_countdown();
         // Deferral first: a visible parked runtime must already say it will
         // reapply at the next real use.
-        super::set_autostart_deferred(wakeable_runtime_pending());
+        super::set_autostart_deferred(wakeable_runtime_pending(legacy_target_unambiguous));
         super::set_parked(true);
     } else if !state.park_refusal_logged {
         state.park_refusal_logged = true;
@@ -382,10 +415,11 @@ fn advance_park_countdown(sup: &Arc<Mutex<Supervisor>>, state: &mut TickState) {
     }
 }
 
-/// A runtime is pending AND worth waking for. A pending stock runtime
-/// enforces nothing: attaching an engine for it would only pin the GPU, so
-/// it neither counts as deferred nor wakes.
-fn wakeable_runtime_pending() -> bool {
-    supervisor::deferred_runtime_pending()
-        && supervisor::deferred_runtime_mode().as_deref() != Some("stock")
+/// Persisted intent is worth waking for when the active-session runtime is
+/// non-stock, or when any entry in a pending multi-GPU boot replay is
+/// non-stock. The latter matters when the selected card itself is stock but
+/// another card still needs its saved settings applied.
+fn wakeable_runtime_pending(legacy_target_unambiguous: bool) -> bool {
+    let target = super::target_pci_addr();
+    supervisor::deferred_runtime_wakeable(target.as_deref(), legacy_target_unambiguous)
 }

@@ -696,7 +696,9 @@ fn autostart_replays_available_gpus_by_uuid_and_reports_missing_targets() {
     let mut gpu_b = test_static_runtime_spec("profile-b");
     gpu_b["gpu"]["uuid"] = Value::String("GPU-B".to_string());
     gpu_b["gpu"]["index_at_resolution"] = Value::from(1); // stale: now index 0
-    let mut missing = test_static_runtime_spec("profile-missing");
+    // A missing selected stock target must not suppress the available static
+    // fallback that RTD3 is actually watching.
+    let mut missing = test_runtime_spec();
     missing["gpu"]["uuid"] = Value::String("GPU-MISSING".to_string());
     missing["gpu"]["index_at_resolution"] = Value::from(2);
     std::fs::write(
@@ -1370,6 +1372,25 @@ fn write_rtd3_tree(
     let addr = "0000:01:00.0";
     let sys = dir.join("rtd3-sys");
     let proc_root = dir.join("rtd3-proc");
+    write_rtd3_gpu(
+        &sys,
+        &proc_root,
+        addr,
+        d3_line,
+        control,
+        runtime_status,
+    );
+    (sys, proc_root)
+}
+
+fn write_rtd3_gpu(
+    sys: &std::path::Path,
+    proc_root: &std::path::Path,
+    addr: &str,
+    d3_line: &str,
+    control: &str,
+    runtime_status: &str,
+) {
     let device = sys.join(addr);
     let power = device.join("power");
     std::fs::create_dir_all(&power).unwrap();
@@ -1392,7 +1413,6 @@ fn write_rtd3_tree(
         format!("Runtime D3 status:          {d3_line}\nVideo Memory:               Off\n"),
     )
     .unwrap();
-    (sys, proc_root)
 }
 
 fn write_fake_proc_identity(
@@ -1471,6 +1491,527 @@ fn deep_sleep_defers_autostart_while_the_gpu_is_suspended() {
     // Still no engine: the sleeping GPU was never attached.
     let status = daemon.request(r#"{"method":"status"}"#);
     assert_eq!(status["result"]["state"], "idle", "{status}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deep_sleep_defers_multi_gpu_boot_replay_until_the_active_gpu_is_used() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!(
+        "pb-rtd3-multi-{}-{}",
+        std::process::id(),
+        n
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let boot_file = dir.join("boot.json");
+    let mut gpu_a = test_static_runtime_spec("profile-a");
+    gpu_a["gpu"]["uuid"] = Value::String("GPU-A".to_string());
+    gpu_a["gpu"]["index_at_resolution"] = Value::from(0);
+    gpu_a["gpu"]["pci_bus_id"] = Value::String("0000:02:00.0".to_string());
+    let mut gpu_b = test_static_runtime_spec("profile-b");
+    gpu_b["gpu"]["uuid"] = Value::String("GPU-B".to_string());
+    gpu_b["gpu"]["index_at_resolution"] = Value::from(1);
+    let mut missing = test_static_runtime_spec("profile-missing");
+    missing["gpu"]["uuid"] = Value::String("GPU-MISSING".to_string());
+    missing["gpu"]["index_at_resolution"] = Value::from(2);
+    missing["gpu"]["pci_bus_id"] = Value::String("0000:03:00.0".to_string());
+    std::fs::write(
+        &boot_file,
+        serde_json::json!({
+            "format_version": 1,
+            "active_gpu_uuid": "GPU-MISSING",
+            "specs": [gpu_a, missing, gpu_b],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (sys, proc_root) =
+        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    write_rtd3_gpu(
+        &sys,
+        &proc_root,
+        "0000:02:00.0",
+        "Enabled (fine-grained)",
+        "auto",
+        "suspended",
+    );
+    let clients = dir.join("clients");
+    let contexts = dir.join("context-pids");
+
+    let daemon = Daemon::start(&[
+        (
+            "PENGUIN_BURNERD_TEST_BOOT_STATE_FILE",
+            boot_file.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_GPU_IDENTITIES",
+            r#"[{"index":0,"uuid":"GPU-B"},{"index":1,"uuid":"GPU-A"}]"#,
+        ),
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
+        MOCK_GPU,
+        (
+            "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
+            contexts.to_str().unwrap(),
+        ),
+    ]);
+
+    let mut deferred = false;
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        let result = &status["result"];
+        if result["deep_sleep"]["autostart_deferred"] == Value::Bool(true) {
+            assert_eq!(result["state"], "idle", "{status}");
+            deferred = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(deferred, "multi-GPU boot replay was not deferred");
+
+    write_fake_proc_identity(
+        &clients,
+        4242,
+        "some-game",
+        Some("Name:\tsome-game\nUid:\t1000\t1000\t1000\t1000\n"),
+    );
+    std::fs::write(&contexts, "graphics 4242\n").unwrap();
+    std::fs::write(sys.join("0000:01:00.0/power/runtime_status"), "active\n").unwrap();
+
+    let mut started = false;
+    for _ in 0..200 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["state"] == "runtime_profile_running" {
+            assert_eq!(status["result"]["active_job"]["gpu_uuid"], "GPU-B");
+            started = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(started, "selected active GPU runtime was never started");
+
+    let boot = daemon.request(r#"{"method":"boot_runtime_spec"}"#);
+    assert_eq!(
+        boot["result"]["replay"],
+        serde_json::json!([
+            {"gpu_uuid": "GPU-A", "gpu_index": 1, "outcome": "applied"},
+            {
+                "gpu_uuid": "GPU-MISSING",
+                "outcome": "gpu-not-detected",
+                "error": "runtime profile GPU GPU-MISSING is not currently detected",
+            },
+            {"gpu_uuid": "GPU-B", "gpu_index": 0, "outcome": "active"},
+        ])
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deep_sleep_replays_non_stock_gpu_when_selected_gpu_is_stock() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!(
+        "pb-rtd3-multi-stock-active-{}-{}",
+        std::process::id(),
+        n
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let boot_file = dir.join("boot.json");
+    let mut gpu_a = test_static_runtime_spec("profile-a");
+    gpu_a["gpu"]["uuid"] = Value::String("GPU-A".to_string());
+    gpu_a["gpu"]["index_at_resolution"] = Value::from(0); // stale: now index 1
+    gpu_a["gpu"]["pci_bus_id"] = Value::String("0000:02:00.0".to_string());
+    let mut gpu_b = test_runtime_spec();
+    gpu_b["gpu"]["uuid"] = Value::String("GPU-B".to_string());
+    gpu_b["gpu"]["index_at_resolution"] = Value::from(1); // stale: now index 0
+    std::fs::write(
+        &boot_file,
+        serde_json::json!({
+            "format_version": 1,
+            "active_gpu_uuid": "GPU-B",
+            "specs": [gpu_a, gpu_b],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (sys, proc_root) =
+        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    write_rtd3_gpu(
+        &sys,
+        &proc_root,
+        "0000:02:00.0",
+        "Enabled (fine-grained)",
+        "auto",
+        "suspended",
+    );
+    let clients = dir.join("clients");
+    let contexts = dir.join("context-pids");
+
+    let daemon = Daemon::start(&[
+        (
+            "PENGUIN_BURNERD_TEST_BOOT_STATE_FILE",
+            boot_file.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_GPU_IDENTITIES",
+            r#"[{"index":0,"uuid":"GPU-B"},{"index":1,"uuid":"GPU-A"}]"#,
+        ),
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
+        MOCK_GPU,
+        // An empty profile id matches stock. If the daemon tries to start the
+        // selected stock engine instead of skipping it, replay reports a
+        // failure and this test fails.
+        ("PENGUIN_BURNERD_TEST_FAIL_PROFILE_ID", ""),
+        (
+            "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
+            contexts.to_str().unwrap(),
+        ),
+    ]);
+
+    let mut deferred = false;
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["deep_sleep"]["autostart_deferred"] == Value::Bool(true) {
+            assert_eq!(status["result"]["state"], "idle", "{status}");
+            assert_eq!(
+                status["result"]["deep_sleep"]["pci_addr"],
+                "0000:02:00.0",
+                "the watcher must target the non-stock GPU: {status}"
+            );
+            deferred = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        deferred,
+        "the non-stock entry did not make the complete boot replay wakeable"
+    );
+
+    write_fake_proc_identity(
+        &clients,
+        4242,
+        "some-game",
+        Some("Name:\tsome-game\nUid:\t1000\t1000\t1000\t1000\n"),
+    );
+    std::fs::write(&contexts, "graphics 4242\n").unwrap();
+    std::fs::write(sys.join("0000:02:00.0/power/runtime_status"), "active\n").unwrap();
+
+    let mut started = false;
+    for _ in 0..200 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["state"] == "runtime_profile_running" {
+            assert_eq!(status["result"]["active_job"]["gpu_uuid"], "GPU-A");
+            started = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(started, "the complete boot replay never started");
+    assert_eq!(
+        std::fs::read_to_string(sys.join("0000:01:00.0/power/runtime_status")).unwrap(),
+        "suspended\n",
+        "the selected stock GPU must not need to wake to trigger replay"
+    );
+
+    let boot = daemon.request(r#"{"method":"boot_runtime_spec"}"#);
+    assert_eq!(
+        boot["result"]["replay"],
+        serde_json::json!([
+            {"gpu_uuid": "GPU-A", "gpu_index": 1, "outcome": "active"},
+            {"gpu_uuid": "GPU-B", "gpu_index": 0, "outcome": "stock-skipped"},
+        ])
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deep_sleep_replays_legacy_boot_spec_without_pci_id_on_single_gpu() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!(
+        "pb-rtd3-legacy-boot-{}-{}",
+        std::process::id(),
+        n
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let boot_file = dir.join("boot.json");
+    let mut legacy = test_static_runtime_spec("legacy-profile");
+    legacy["gpu"]["uuid"] = Value::String("GPU-LEGACY".to_string());
+    legacy["gpu"].as_object_mut().unwrap().remove("pci_bus_id");
+    // The old on-disk format was one RuntimeSpec rather than a BootRuntimeSet.
+    std::fs::write(&boot_file, legacy.to_string()).unwrap();
+    let (sys, proc_root) =
+        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    let clients = dir.join("clients");
+    let contexts = dir.join("context-pids");
+
+    let daemon = Daemon::start(&[
+        (
+            "PENGUIN_BURNERD_TEST_BOOT_STATE_FILE",
+            boot_file.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_GPU_IDENTITIES",
+            r#"[{"index":0,"uuid":"GPU-LEGACY"}]"#,
+        ),
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
+        MOCK_GPU,
+        (
+            "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
+            contexts.to_str().unwrap(),
+        ),
+    ]);
+
+    let mut deferred = false;
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["deep_sleep"]["autostart_deferred"] == Value::Bool(true) {
+            assert_eq!(status["result"]["deep_sleep"]["pci_addr"], "0000:01:00.0");
+            deferred = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(deferred, "legacy boot intent was not deferred for wake");
+
+    write_fake_proc_identity(
+        &clients,
+        4242,
+        "some-game",
+        Some("Name:\tsome-game\nUid:\t1000\t1000\t1000\t1000\n"),
+    );
+    std::fs::write(&contexts, "graphics 4242\n").unwrap();
+    std::fs::write(sys.join("0000:01:00.0/power/runtime_status"), "active\n").unwrap();
+
+    let mut started = false;
+    for _ in 0..200 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["state"] == "runtime_profile_running" {
+            assert_eq!(status["result"]["active_job"]["gpu_uuid"], "GPU-LEGACY");
+            started = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(started, "legacy boot profile never started after GPU use");
+    let boot = daemon.request(r#"{"method":"boot_runtime_spec"}"#);
+    assert_eq!(
+        boot["result"]["replay"],
+        serde_json::json!([
+            {"gpu_uuid": "GPU-LEGACY", "gpu_index": 0, "outcome": "active"},
+        ])
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deep_sleep_does_not_substitute_gpu_when_target_uuid_resolution_fails() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!(
+        "pb-rtd3-unresolved-target-{}-{}",
+        std::process::id(),
+        n
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let boot_file = dir.join("boot.json");
+    let mut gpu_a = test_static_runtime_spec("profile-a");
+    gpu_a["gpu"]["uuid"] = Value::String("GPU-A".to_string());
+    let mut gpu_b = test_static_runtime_spec("profile-b");
+    gpu_b["gpu"]["uuid"] = Value::String("GPU-B".to_string());
+    gpu_b["gpu"]["index_at_resolution"] = Value::from(1);
+    gpu_b["gpu"]["pci_bus_id"] = Value::String("0000:02:00.0".to_string());
+    std::fs::write(
+        &boot_file,
+        serde_json::json!({
+            "format_version": 1,
+            "active_gpu_uuid": "GPU-A",
+            "specs": [gpu_b, gpu_a],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (sys, proc_root) =
+        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    write_rtd3_gpu(
+        &sys,
+        &proc_root,
+        "0000:02:00.0",
+        "Enabled (fine-grained)",
+        "auto",
+        "suspended",
+    );
+    let clients = dir.join("clients");
+    let contexts = dir.join("context-pids");
+    write_fake_proc_identity(
+        &clients,
+        4242,
+        "some-game",
+        Some("Name:\tsome-game\nUid:\t1000\t1000\t1000\t1000\n"),
+    );
+    let other_gpu_fd_dir = clients.join("4242/fd");
+    std::fs::create_dir_all(&other_gpu_fd_dir).unwrap();
+    std::os::unix::fs::symlink("/dev/nvidia0", other_gpu_fd_dir.join("7")).unwrap();
+    std::fs::write(&contexts, "graphics 4242\n").unwrap();
+
+    let daemon = Daemon::start(&[
+        (
+            "PENGUIN_BURNERD_TEST_BOOT_STATE_FILE",
+            boot_file.to_str().unwrap(),
+        ),
+        // The watched GPU-A is physically present in sysfs, but its stable
+        // UUID cannot be resolved. GPU-B must not be substituted for client
+        // detection just because it is resolvable.
+        (
+            "PENGUIN_BURNERD_TEST_GPU_IDENTITIES",
+            r#"[{"index":0,"uuid":"GPU-B"}]"#,
+        ),
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
+        MOCK_GPU,
+        (
+            "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
+            contexts.to_str().unwrap(),
+        ),
+    ]);
+
+    let mut targeted = false;
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["deep_sleep"]["autostart_deferred"] == Value::Bool(true) {
+            assert_eq!(status["result"]["deep_sleep"]["pci_addr"], "0000:01:00.0");
+            targeted = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(targeted, "the selected target was not observed");
+    std::fs::write(sys.join("0000:01:00.0/power/runtime_status"), "active\n").unwrap();
+
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        assert_eq!(
+            status["result"]["state"],
+            "idle",
+            "another GPU was substituted for the unresolved target: {status}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let boot = daemon.request(r#"{"method":"boot_runtime_spec"}"#);
+    assert_eq!(boot["result"]["replay"], serde_json::json!([]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deep_sleep_rebinds_after_applying_a_profile_to_another_gpu() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("pb-rtd3-rebind-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (sys, proc_root) =
+        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    write_rtd3_gpu(
+        &sys,
+        &proc_root,
+        "0000:02:00.0",
+        "Enabled (fine-grained)",
+        "auto",
+        "active",
+    );
+    let clients = dir.join("clients");
+    let contexts = dir.join("context-pids");
+    write_fake_proc_identity(
+        &clients,
+        4242,
+        "some-game",
+        Some("Name:\tsome-game\nUid:\t1000\t1000\t1000\t1000\n"),
+    );
+    std::fs::write(&contexts, "graphics 4242\n").unwrap();
+
+    let daemon = Daemon::start(&[
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
+        MOCK_GPU,
+        (
+            "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
+            contexts.to_str().unwrap(),
+        ),
+    ]);
+    let initial = daemon.request(r#"{"method":"status"}"#);
+    assert_eq!(initial["result"]["deep_sleep"]["pci_addr"], "0000:01:00.0");
+    assert_eq!(
+        initial["result"]["deep_sleep"]["suspended_observed"],
+        Value::Bool(true)
+    );
+
+    let mut gpu_b = test_static_runtime_spec("profile-b");
+    gpu_b["gpu"]["uuid"] = Value::String("GPU-B".to_string());
+    gpu_b["gpu"]["index_at_resolution"] = Value::from(1);
+    gpu_b["gpu"]["pci_bus_id"] = Value::String("0000:02:00.0".to_string());
+    let applied = daemon.request(&runtime_spec_request("apply_runtime_spec", &gpu_b));
+    assert_eq!(applied["ok"], Value::Bool(true), "{applied}");
+
+    let mut rebound = false;
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        let result = &status["result"];
+        if result["deep_sleep"]["pci_addr"] == "0000:02:00.0" {
+            assert_eq!(result["active_job"]["gpu_uuid"], "GPU-B", "{status}");
+            assert_eq!(
+                result["deep_sleep"]["suspended_observed"],
+                Value::Bool(false),
+                "{status}"
+            );
+            rebound = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(rebound, "RTD3 watcher did not rebind from GPU A to GPU B");
+    assert!(
+        daemon
+            .stderr_log()
+            .contains("deep sleep: rebinding GPU target 0000:01:00.0 -> 0000:02:00.0")
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

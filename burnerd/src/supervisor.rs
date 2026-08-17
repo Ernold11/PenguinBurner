@@ -750,24 +750,62 @@ fn load_boot_runtime_set(path: &PathBuf) -> Result<BootRuntimeSet, String> {
     Ok(set)
 }
 
-fn load_boot_active_spec() -> Option<RuntimeSpec> {
-    load_boot_runtime_set(&boot_state_file_path())
-        .ok()?
-        .active_spec()
-        .cloned()
-}
-
-/// PCI bus id from the persisted runtime specs, for the deep-sleep mode to
-/// locate the GPU in sysfs before any NVML init. Empty on legacy specs saved
-/// before the field existed; detection then falls back to PCI enumeration.
-pub fn persisted_pci_bus_id_hint() -> Option<String> {
-    let active = load_runtime_spec(&active_state_file_path()).ok().flatten();
-    for spec in active.into_iter().chain(load_boot_active_spec()) {
-        if !spec.gpu.pci_bus_id.is_empty() {
-            return Some(spec.gpu.pci_bus_id);
+/// PCI bus ids from persisted runtime intent. The current session keeps
+/// precedence. Fresh-boot candidates then put the selected non-stock GPU
+/// first, followed by other non-stock GPUs newest first; stock entries are
+/// only fallbacks. RTD3 uses the first address still present in sysfs without
+/// waking NVML, so a selected stock card cannot hide pending work on another
+/// card.
+pub fn persisted_pci_bus_id_hints() -> Vec<String> {
+    let mut hints = Vec::new();
+    let mut push = |spec: &RuntimeSpec| {
+        let pci_bus_id = spec.gpu.pci_bus_id.trim();
+        if !pci_bus_id.is_empty() && !hints.iter().any(|hint| hint == pci_bus_id) {
+            hints.push(pci_bus_id.to_string());
+        }
+    };
+    if let Ok(Some(spec)) = load_runtime_spec(&active_state_file_path()) {
+        push(&spec);
+    }
+    if let Ok(set) = load_boot_runtime_set(&boot_state_file_path()) {
+        let selected = set.active_spec();
+        if let Some(spec) = selected.filter(|spec| spec.mode_name() != "stock") {
+            push(spec);
+        }
+        for spec in set
+            .specs
+            .iter()
+            .rev()
+            .filter(|spec| spec.gpu.uuid != set.active_gpu_uuid && spec.mode_name() != "stock")
+        {
+            push(spec);
+        }
+        if let Some(spec) = selected.filter(|spec| spec.mode_name() == "stock") {
+            push(spec);
+        }
+        for spec in set.specs.iter().rev().filter(|spec| {
+            spec.gpu.uuid != set.active_gpu_uuid && spec.mode_name() == "stock"
+        }) {
+            push(spec);
         }
     }
-    None
+    hints
+}
+
+/// Live RTD3 target candidates. An occupied engine slot wins over disk state
+/// so applying a profile to another GPU rebinds the watcher on its next tick.
+pub fn runtime_pci_bus_id_hints(sup: &Mutex<Supervisor>) -> Vec<String> {
+    let profile_hint = guard(sup)
+        .profile
+        .as_ref()
+        .map(|job| job.spec.gpu.pci_bus_id.trim().to_string())
+        .filter(|hint| !hint.is_empty());
+    let mut hints = persisted_pci_bus_id_hints();
+    if let Some(profile_hint) = profile_hint {
+        hints.retain(|hint| hint != &profile_hint);
+        hints.insert(0, profile_hint);
+    }
+    hints
 }
 
 /// Set once this session's boot intent has been acted on (an autostart ran,
@@ -776,31 +814,64 @@ pub fn persisted_pci_bus_id_hint() -> Option<String> {
 /// runtimes the user stopped just because the boot file still exists.
 static BOOT_RUNTIME_CONSUMED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(test)]
 fn deferred_pending_from(active_exists: bool, boot_exists: bool, boot_consumed: bool) -> bool {
     active_exists || (boot_exists && !boot_consumed)
 }
 
-/// True when persisted runtime intent exists that the deep-sleep watcher
-/// should hold back while the selected active GPU sleeps.
-pub fn deferred_runtime_pending() -> bool {
-    deferred_pending_from(
-        matches!(load_runtime_spec(&active_state_file_path()), Ok(Some(_))),
-        load_boot_runtime_set(&boot_state_file_path())
-            .is_ok_and(|set| !set.specs.is_empty()),
-        BOOT_RUNTIME_CONSUMED.load(Ordering::SeqCst),
-    )
+fn spec_matches_pci(spec: &RuntimeSpec, target_pci_addr: &str) -> bool {
+    crate::rtd3::detect::sysfs_pci_addr(&spec.gpu.pci_bus_id).as_deref()
+        == crate::rtd3::detect::sysfs_pci_addr(target_pci_addr).as_deref()
 }
 
-/// Mode name of the runtime spec the deep-sleep watcher would leave active,
-/// using active-session then selected boot-GPU precedence.
-pub fn deferred_runtime_mode() -> Option<String> {
+fn boot_spec_for_target<'a>(
+    set: &'a BootRuntimeSet,
+    target_pci_addr: &str,
+    legacy_target_unambiguous: bool,
+) -> Option<&'a RuntimeSpec> {
+    set.specs
+        .iter()
+        .find(|spec| spec_matches_pci(spec, target_pci_addr))
+        .or_else(|| {
+            if !legacy_target_unambiguous {
+                return None;
+            }
+            let mut legacy = set
+                .specs
+                .iter()
+                .filter(|spec| spec.gpu.pci_bus_id.trim().is_empty());
+            let spec = legacy.next()?;
+            legacy.next().is_none().then_some(spec)
+        })
+}
+
+/// True when the persisted spec for the RTD3 target contains work worth
+/// replaying after a real wake. PCI target selection prefers a pending
+/// non-stock boot entry, so a selected stock GPU cannot suppress another
+/// card's saved settings and a missing non-stock entry cannot make an
+/// unrelated stock card wakeable.
+pub fn deferred_runtime_wakeable(
+    target_pci_addr: Option<&str>,
+    legacy_target_unambiguous: bool,
+) -> bool {
     if let Ok(Some(spec)) = load_runtime_spec(&active_state_file_path()) {
-        return Some(spec.mode_name().to_string());
+        if target_pci_addr.is_none_or(|target| {
+            (legacy_target_unambiguous && spec.gpu.pci_bus_id.trim().is_empty())
+                || spec_matches_pci(&spec, target)
+        }) {
+            return spec.mode_name() != "stock";
+        }
     }
     if !BOOT_RUNTIME_CONSUMED.load(Ordering::SeqCst) {
-        return load_boot_active_spec().map(|spec| spec.mode_name().to_string());
+        if let Ok(set) = load_boot_runtime_set(&boot_state_file_path()) {
+            if let Some(target) = target_pci_addr {
+                return boot_spec_for_target(&set, target, legacy_target_unambiguous)
+                    .is_some_and(|spec| spec.mode_name() != "stock");
+            }
+            return set.specs.iter().any(|spec| spec.mode_name() != "stock");
+        }
     }
-    None
+    false
 }
 
 /// Deep-sleep park: stop the running engine while deliberately keeping the
@@ -844,13 +915,52 @@ pub fn profile_gpu_index(sup: &Mutex<Supervisor>) -> Option<u32> {
         .map(|job| job.spec.gpu.index_at_resolution)
 }
 
-/// GPU index of the runtime spec the deep-sleep watcher would leave active.
-pub fn deferred_runtime_gpu_index() -> Option<u32> {
+/// Current GPU index for the same persisted PCI target the deep-sleep watcher
+/// is observing. Keeping target selection and client detection coherent is
+/// essential when the selected boot GPU is stock and another GPU has work.
+pub fn deferred_runtime_gpu_index(
+    target_pci_addr: Option<&str>,
+    legacy_target_unambiguous: bool,
+) -> Option<u32> {
     if let Ok(Some(spec)) = load_runtime_spec(&active_state_file_path()) {
-        return Some(spec.gpu.index_at_resolution);
+        if target_pci_addr.is_none_or(|target| {
+            (legacy_target_unambiguous && spec.gpu.pci_bus_id.trim().is_empty())
+                || spec_matches_pci(&spec, target)
+        }) {
+            return crate::gpu::NvmlBackend::resolve_gpu_index(
+                &spec.gpu.uuid,
+                spec.gpu.index_at_resolution,
+            )
+            .ok();
+        }
     }
     if !BOOT_RUNTIME_CONSUMED.load(Ordering::SeqCst) {
-        return load_boot_active_spec().map(|spec| spec.gpu.index_at_resolution);
+        if let Ok(set) = load_boot_runtime_set(&boot_state_file_path()) {
+            if let Some(target) = target_pci_addr {
+                let spec = boot_spec_for_target(&set, target, legacy_target_unambiguous)?;
+                return crate::gpu::NvmlBackend::resolve_gpu_index(
+                    &spec.gpu.uuid,
+                    spec.gpu.index_at_resolution,
+                )
+                .ok();
+            }
+            if let Some(index) = set.active_spec().and_then(|spec| {
+                crate::gpu::NvmlBackend::resolve_gpu_index(
+                    &spec.gpu.uuid,
+                    spec.gpu.index_at_resolution,
+                )
+                .ok()
+            }) {
+                return Some(index);
+            }
+            return set.specs.iter().rev().find_map(|spec| {
+                crate::gpu::NvmlBackend::resolve_gpu_index(
+                    &spec.gpu.uuid,
+                    spec.gpu.index_at_resolution,
+                )
+                .ok()
+            });
+        }
     }
     None
 }
@@ -1647,6 +1757,7 @@ enum BootReplayOutcome {
     StockFallback,
     StockFallbackActive,
     StockFallbackFailed,
+    StockSkipped,
 }
 
 impl BootReplayOutcome {
@@ -1660,6 +1771,7 @@ impl BootReplayOutcome {
             Self::StockFallback => "stock-fallback",
             Self::StockFallbackActive => "stock-fallback-active",
             Self::StockFallbackFailed => "stock-fallback-failed",
+            Self::StockSkipped => "stock-skipped",
         }
     }
 }
@@ -2050,10 +2162,12 @@ fn ordered_boot_replay(
 }
 
 /// Recover the current-session runtime first. On a fresh boot, resolve every
-/// saved GPU UUID, apply the available specs serially, and leave only the most
-/// recently saved available GPU's engine running. Stopping the earlier engines
-/// deliberately leaves their V/F curve, memory offset, and power limit applied
-/// while returning fans to hardware auto and releasing clock locks.
+/// saved GPU UUID, apply the available specs serially, and leave one selected
+/// non-stock engine running. On RTD3 systems, stock entries are recorded but
+/// never opened: a stock reset is unnecessary after boot and must not wake a
+/// sleeping card. Stopping earlier non-stock engines deliberately leaves their
+/// V/F curve, memory offset, and power limit applied while returning fans to
+/// hardware auto and releasing clock locks.
 pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) -> bool {
     let mut supervisor = guard(sup);
     if supervisor.profile.is_some() || supervisor.child_running_kind().is_some() {
@@ -2113,7 +2227,7 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) -> bool {
             }
         }
     }
-    let active_uuid = if available
+    let default_active_uuid = if available
         .iter()
         .any(|spec| spec.gpu.uuid == set.active_gpu_uuid)
     {
@@ -2124,12 +2238,51 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) -> bool {
             .map(|spec| spec.gpu.uuid.clone())
             .unwrap_or_default()
     };
+    let protects_deep_sleep = crate::rtd3::protects_deep_sleep();
+    let target_pci_addr = crate::rtd3::target_pci_addr();
+    let active_uuid = if protects_deep_sleep {
+        target_pci_addr
+            .as_deref()
+            .and_then(|target| {
+                available.iter().find(|spec| {
+                    spec.mode_name() != "stock" && spec_matches_pci(spec, target)
+                })
+            })
+            .or_else(|| {
+                available
+                    .iter()
+                    .rev()
+                    .find(|spec| spec.mode_name() != "stock")
+            })
+            .map(|spec| spec.gpu.uuid.clone())
+            .unwrap_or(default_active_uuid)
+    } else {
+        default_active_uuid
+    };
 
     for spec in available
         .iter()
         .filter(|spec| spec.gpu.uuid != active_uuid)
     {
         let uuid = spec.gpu.uuid.clone();
+        if protects_deep_sleep && spec.mode_name() == "stock" {
+            logging::info(&format!(
+                "deep sleep: leaving boot stock target detached for gpu={uuid}"
+            ));
+            supervisor
+                .last_applied_specs
+                .insert(uuid.clone(), spec.clone());
+            replay_by_uuid.insert(
+                uuid.clone(),
+                boot_replay_result(
+                    &uuid,
+                    Some(spec.gpu.index_at_resolution),
+                    BootReplayOutcome::StockSkipped,
+                    None,
+                ),
+            );
+            continue;
+        }
         let replay = replay_inactive_boot_spec(&mut supervisor, spec.clone());
         replay_by_uuid.insert(uuid, replay.result);
         if replay.abort {
@@ -2143,6 +2296,24 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) -> bool {
         .find(|spec| spec.gpu.uuid == active_uuid);
     let persisted_active = active_spec.and_then(|spec| {
         let uuid = spec.gpu.uuid.clone();
+        if protects_deep_sleep && spec.mode_name() == "stock" {
+            logging::info(&format!(
+                "deep sleep: leaving boot stock target detached for gpu={uuid}"
+            ));
+            supervisor
+                .last_applied_specs
+                .insert(uuid.clone(), spec.clone());
+            replay_by_uuid.insert(
+                uuid.clone(),
+                boot_replay_result(
+                    &uuid,
+                    Some(spec.gpu.index_at_resolution),
+                    BootReplayOutcome::StockSkipped,
+                    None,
+                ),
+            );
+            return None;
+        }
         let (result, persisted) = start_active_boot_spec(&mut supervisor, spec);
         replay_by_uuid.insert(uuid, result);
         persisted

@@ -168,16 +168,26 @@ impl Rtd3Probe {
         vendor.as_deref() == Some("0x10de") && class.is_some_and(|class| class.starts_with("0x03"))
     }
 
-    /// First NVIDIA display-class device in the PCI tree, in stable name
-    /// order. Hybrid laptops have exactly one.
-    pub fn first_nvidia_gpu_addr(&self) -> Option<String> {
-        let entries = fs::read_dir(&self.pci_devices_root).ok()?;
+    /// NVIDIA display-class devices in the PCI tree, in stable name order.
+    /// Reading vendor/class from sysfs does not initialize either GPU.
+    pub fn nvidia_gpu_addrs(&self) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(&self.pci_devices_root) else {
+            return Vec::new();
+        };
         let mut addrs: Vec<String> = entries
             .filter_map(|entry| entry.ok())
             .filter_map(|entry| entry.file_name().into_string().ok())
             .collect();
         addrs.sort();
-        addrs.into_iter().find(|addr| self.is_nvidia_gpu(addr))
+        addrs
+            .into_iter()
+            .filter(|addr| self.is_nvidia_gpu(addr))
+            .collect()
+    }
+
+    /// First NVIDIA display-class device in stable PCI order.
+    pub fn first_nvidia_gpu_addr(&self) -> Option<String> {
+        self.nvidia_gpu_addrs().into_iter().next()
     }
 
     pub fn runtime_d3_config(&self, addr: &str) -> RuntimeD3Config {
