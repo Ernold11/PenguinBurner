@@ -41,9 +41,28 @@ FLATPAK_ACTIVE_SITE_PACKAGES = (
 @pytest.fixture(autouse=True)
 def _no_live_daemon_runtime_calls(monkeypatch):
     # Lifecycle tests simulate the root-only file owner inside a user-owned
-    # tmp_path. Production constants remain UID/GID 0.
+    # tmp_path. Production constants remain UID/GID 0, and a daemon already
+    # installed on the test host must never become test input.
+    live_daemon_binary = runtime_service.DAEMON_BINARY
+    capture_managed_file = runtime_service._ManagedFileRollback.capture
+
+    def capture_isolated_managed_file(path: Path):
+        path = Path(path)
+        if path == live_daemon_binary:
+            return runtime_service._ManagedFileRollback(
+                path=path,
+                existed=False,
+                backup_path=None,
+            )
+        return capture_managed_file(path)
+
     monkeypatch.setattr(runtime_service, "ROOT_UID", os.getuid())
     monkeypatch.setattr(runtime_service, "ROOT_GID", os.getgid())
+    monkeypatch.setattr(
+        runtime_service._ManagedFileRollback,
+        "capture",
+        capture_isolated_managed_file,
+    )
     monkeypatch.setattr(
         runtime_service,
         "_stop_active_runtime_before_daemon_restart",

@@ -7,10 +7,10 @@
   session on mobile sleep-state behavior.
 - Reapply and verify saved GPU state after suspend and resume (#41).
 - Allow Auto-UV to continue safely when power telemetry is unavailable (#48).
-- Install the root daemon at the immutable-host-safe canonical
-  `/var/opt/penguin-burner/libexec/penguin-burnerd` path, including Flatpak and
-  pip repairs on Bazzite and other read-only-`/usr` systems (#51).
-- Partly fix multi-GPU support with per-GPU profiles, filtering, Steam
-  targeting, and serial startup application. The Rust daemon still has one
-  active monitoring, adaptive-switching, drift-recovery, and fan-control
-  engine, so those active features cover only one GPU at a time (#49).
+- Support Flatpak and pip daemon installation and repair on Bazzite and other
+  immutable distributions through the canonical
+  `/var/opt/penguin-burner/libexec/penguin-burnerd` path (#51). Thanks to
+  @Lostfire93 for the debugging session.
+- Add per-GPU profiles, filtering, Steam targeting, and serial startup
+  application (#46). Active daemon monitoring, adaptive switching, drift
+  recovery, and fan control still cover one GPU at a time.
