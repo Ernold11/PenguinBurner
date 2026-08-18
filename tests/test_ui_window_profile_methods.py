@@ -360,6 +360,42 @@ def test_unticking_boot_apply_clears_saved_boot_profile(win, monkeypatch) -> Non
     assert cleared == ["GPU-A"]
 
 
+def test_unticking_boot_apply_failure_restores_checked_state(win, monkeypatch) -> None:
+    window, _mp = win
+    saved: list[bool] = []
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        actions_mod,
+        "persist_on_startup_to_runtime_config",
+        lambda value: saved.append(bool(value)),
+    )
+    monkeypatch.setattr(
+        actions_mod,
+        "clear_boot_runtime_spec",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("socket unavailable")),
+    )
+    monkeypatch.setattr(window.profile_list, "target_gpu_uuid", lambda: "GPU-A")
+    monkeypatch.setattr(
+        window.errors,
+        "show",
+        lambda title, message: shown.append((title, message)),
+    )
+    window._boot_apply_by_gpu = {"gpu-a": True}
+    window.profile_list.set_boot_apply_checked(True)
+
+    window.profile_list.boot_apply_checkbox.setChecked(False)
+
+    assert window.profile_list.persist_on_startup_enabled() is True
+    assert window._boot_apply_by_gpu == {"gpu-a": True}
+    assert saved == []
+    assert shown == [
+        (
+            "Apply on startup",
+            "Could not clear the saved boot profile: socket unavailable",
+        )
+    ]
+
+
 def test_boot_apply_checkbox_tracks_selected_gpu(win, monkeypatch) -> None:
     from ui.features.tuning.gpu_selection import GpuChoice
 

@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import profiles.uv.profile_tiers as tiers_mod
 from profiles.uv.profile_tiers import (
     PROFILE_TIER_BALANCED,
     PROFILE_TIER_EFFICIENCY,
@@ -172,6 +173,38 @@ def test_resolve_profile_tiers_only_uses_selected_gpu_group(tmp_path) -> None:
     )
 
     assert resolved[PROFILE_TIER_PERFORMANCE] == profile_a
+
+
+def test_resolve_selected_gpu_can_include_legacy_without_other_gpu(monkeypatch) -> None:
+    legacy = _profile("legacy", "Balanced", "2026-06-01T12:00:00+00:00")
+    profile_a = _profile("profile-a", "Performance", "2026-06-02T12:00:00+00:00")
+    profile_a["gpu_identity"] = {"uuid": "GPU-a", "name": "A"}
+    profile_b = _profile("profile-b", "Efficiency", "2026-06-03T12:00:00+00:00")
+    profile_b["gpu_identity"] = {"uuid": "GPU-b", "name": "B"}
+    monkeypatch.setattr(
+        tiers_mod,
+        "load_profile_tier_assignments",
+        lambda *, gpu_uuid="": (
+            {PROFILE_TIER_PERFORMANCE: "profile-a"}
+            if gpu_uuid
+            else {PROFILE_TIER_BALANCED: "legacy"}
+        ),
+    )
+    monkeypatch.setattr(
+        tiers_mod,
+        "load_profile_tier_disabled_profile_ids",
+        lambda *, gpu_uuid="": set(),
+    )
+
+    resolved = resolve_profile_tier_profiles(
+        [legacy, profile_a, profile_b],
+        gpu_uuid="GPU-a",
+        include_legacy_profiles=True,
+    )
+
+    assert resolved[PROFILE_TIER_BALANCED] == legacy
+    assert resolved[PROFILE_TIER_PERFORMANCE] == profile_a
+    assert resolved[PROFILE_TIER_EFFICIENCY] is None
 
 
 def test_resolve_profile_tier_profiles_prefers_pinned_then_latest_generated() -> None:

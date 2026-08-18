@@ -359,18 +359,28 @@ def resolve_profile_tier_profiles(
     disabled_profile_ids: set[str] | None = None,
     *,
     gpu_uuid: str = "",
+    include_legacy_profiles: bool = False,
 ) -> dict[str, dict | None]:
     selected_gpu_uuid = str(gpu_uuid or "").strip()
-    tier_assignments = (
-        assignments
-        if assignments is not None
-        else load_profile_tier_assignments(gpu_uuid=selected_gpu_uuid)
-    )
-    disabled = (
-        disabled_profile_ids
-        if disabled_profile_ids is not None
-        else load_profile_tier_disabled_profile_ids(gpu_uuid=selected_gpu_uuid)
-    )
+    if assignments is not None:
+        tier_assignments = assignments
+    else:
+        tier_assignments = load_profile_tier_assignments(gpu_uuid=selected_gpu_uuid)
+        if selected_gpu_uuid and include_legacy_profiles:
+            # Explicit per-GPU assignments win, while old global assignments
+            # remain usable on a physically unambiguous one-GPU machine.
+            tier_assignments = {
+                **load_profile_tier_assignments(),
+                **tier_assignments,
+            }
+    if disabled_profile_ids is not None:
+        disabled = disabled_profile_ids
+    else:
+        disabled = load_profile_tier_disabled_profile_ids(
+            gpu_uuid=selected_gpu_uuid
+        )
+        if selected_gpu_uuid and include_legacy_profiles:
+            disabled = disabled | load_profile_tier_disabled_profile_ids()
     visible_profiles = [
         profile
         for profile in profiles
@@ -379,6 +389,7 @@ def resolve_profile_tier_profiles(
         and (
             not selected_gpu_uuid
             or profile_gpu_uuid(profile).casefold() == selected_gpu_uuid.casefold()
+            or (include_legacy_profiles and not profile_gpu_uuid(profile))
         )
     ]
     visible_profiles.sort(key=_profile_sort_time, reverse=True)

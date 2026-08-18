@@ -162,7 +162,7 @@ impl StopResult {
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum MethodResult {
-    Status(StatusResult),
+    Status(Box<StatusResult>),
     Start(StartResult),
     Stop(StopResult),
     /// Dynamic result dicts (milestone-B `gpu_*` writes + profile deletion).
@@ -304,7 +304,7 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
     }
 
     match method {
-        Some("status") => Ok(MethodResult::Status(supervisor::status(sup))),
+        Some("status") => Ok(MethodResult::Status(Box::new(supervisor::status(sup)))),
         Some("stop_auto_uv_scan") => Ok(MethodResult::Stop(supervisor::stop_auto_uv_scan(sup))),
         Some("stop_profile_verification") => Ok(MethodResult::Stop(
             supervisor::stop_profile_verification(sup),

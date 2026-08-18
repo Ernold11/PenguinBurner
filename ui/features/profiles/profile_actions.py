@@ -99,19 +99,30 @@ class ProfileActionsMixin:
         gpu_uuid = self.profile_list.target_gpu_uuid()
         if self.profile_list.target_selection_required() and not gpu_uuid:
             return
-        if gpu_uuid:
-            self._boot_apply_by_gpu[gpu_uuid.casefold()] = bool(checked)
-        # Keep the historical single-value preference for one-GPU upgrades;
-        # the per-GPU daemon boot set is authoritative once UUIDs are known.
-        persist_on_startup_to_runtime_config(bool(checked))
         if checked:
+            if gpu_uuid:
+                self._boot_apply_by_gpu[gpu_uuid.casefold()] = True
+            # Keep the historical single-value preference for one-GPU upgrades;
+            # the per-GPU daemon boot set is authoritative once UUIDs are known.
+            persist_on_startup_to_runtime_config(True)
             return
         # Unticking means "nothing applies at boot": clear the selected GPU's
-        # saved entry immediately so the toggle and daemon state stay aligned.
+        # saved entry immediately. Do not commit the visible/cache preference
+        # until the daemon confirms the write; otherwise a socket failure makes
+        # the UI claim boot is disabled while the old profile still applies.
         try:
             clear_boot_runtime_spec(gpu_uuid=gpu_uuid)
         except Exception as exc:
-            self.log_view.append(f"\nCould not clear the saved boot profile: {exc}\n")
+            message = f"Could not clear the saved boot profile: {exc}"
+            if gpu_uuid:
+                self._boot_apply_by_gpu[gpu_uuid.casefold()] = True
+            self.profile_list.set_boot_apply_checked(True)
+            self.log_view.append(f"\n{message}\n")
+            self.errors.show("Apply on startup", message)
+            return
+        if gpu_uuid:
+            self._boot_apply_by_gpu[gpu_uuid.casefold()] = False
+        persist_on_startup_to_runtime_config(False)
 
     def _sync_boot_apply_for_target(self, gpu_uuid: str) -> None:
         selected_uuid = str(gpu_uuid or "").strip()

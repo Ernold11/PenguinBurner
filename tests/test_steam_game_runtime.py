@@ -161,6 +161,51 @@ def test_game_runtime_profile_argv_reads_setting(
     assert "--adaptive-auto-uv" in argv
 
 
+def test_game_runtime_profile_argv_keeps_legacy_profile_on_single_gpu(
+    steam_home: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings_path = tmp_path / "steam-game-settings.json"
+    store_steam_game_setting(
+        ACCOUNT_ID,
+        "1089130",
+        SteamGameSetting(enabled=True, mode="balanced"),
+        path=settings_path,
+    )
+    monkeypatch.setattr(
+        game_runtime,
+        "read_auto_uv_profiles",
+        lambda: [
+            {
+                "profile_id": "legacy-balanced",
+                "final_verified": True,
+                "profile_tier": "balanced",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        game_runtime.DaemonGpuClient,
+        "discover_identities",
+        classmethod(
+            lambda cls: [
+                SimpleNamespace(index=0, uuid="GPU-only", name="RTX Test")
+            ]
+        ),
+    )
+
+    resolved = game_runtime_profile_argv(
+        {"SteamAppId": "1089130", "SteamUser": "jan_pietek"},
+        home=steam_home,
+        settings_path=settings_path,
+    )
+
+    assert resolved == (
+        ["--auto-uv-profile", "legacy-balanced", "--gpu-index", "0"],
+        "1089130",
+    )
+
+
 def test_game_runtime_profile_argv_none_without_setting(
     steam_home: Path, tmp_path: Path
 ) -> None:
@@ -347,7 +392,7 @@ def test_profile_argv_filters_tiers_by_gpu_uuid(monkeypatch) -> None:
     monkeypatch.setattr(
         game_runtime,
         "resolve_profile_tier_profiles",
-        lambda profiles, *, gpu_uuid="": seen.append(gpu_uuid)
+        lambda profiles, *, gpu_uuid="", **_kwargs: seen.append(gpu_uuid)
         or {"balanced": {"profile_id": "profile-b"}},
     )
 
@@ -358,6 +403,31 @@ def test_profile_argv_filters_tiers_by_gpu_uuid(monkeypatch) -> None:
 
     assert seen == ["GPU-b"]
     assert argv == ["--auto-uv-profile", "profile-b", "--gpu-index", "2"]
+
+
+def test_profile_argv_keeps_legacy_tiers_on_unambiguous_single_gpu(
+    monkeypatch,
+) -> None:
+    legacy = {
+        "profile_id": "legacy-balanced",
+        "final_verified": True,
+        "profile_tier": "balanced",
+    }
+    monkeypatch.setattr(game_runtime, "read_auto_uv_profiles", lambda: [legacy])
+
+    argv = profile_argv_for_setting(
+        SteamGameSetting(enabled=True, mode="balanced"),
+        gpu_index=0,
+        gpu_uuid="GPU-only",
+        include_legacy_profiles=True,
+    )
+
+    assert argv == [
+        "--auto-uv-profile",
+        "legacy-balanced",
+        "--gpu-index",
+        "0",
+    ]
 
 
 def test_client_resolves_and_applies_game_spec_on_the_same_socket(monkeypatch) -> None:

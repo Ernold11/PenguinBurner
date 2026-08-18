@@ -541,6 +541,47 @@ def test_single_gpu_keeps_game_gpu_selector_hidden(qtbot, tmp_path: Path) -> Non
     assert manager.enabled_changes == [("10", True)]
 
 
+def test_game_selection_refreshes_gpu_specific_adaptive_availability(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    QtCore, QtGui, QtWidgetsModule, _pg = import_qt()
+    row_a = _row(tmp_path, "10", "Alpha", 100)
+    row_b = _row(tmp_path, "20", "Beta", 200)
+    manager = _FakeManager(
+        (
+            replace(row_a, setting=replace(row_a.setting, gpu_uuid="GPU-a")),
+            replace(row_b, setting=replace(row_b.setting, gpu_uuid="GPU-b")),
+        )
+    )
+    choices = (
+        SimpleNamespace(uuid="GPU-a", label="GPU 0 - RTX A"),
+        SimpleNamespace(uuid="GPU-b", label="GPU 1 - RTX B"),
+    )
+    panel = SteamPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgetsModule,
+        manager=cast(SteamIntegrationManager, manager),
+        adaptive_available=lambda gpu_uuid="": gpu_uuid == "GPU-a",
+        gpu_choices=lambda: choices,
+    )
+    qtbot.addWidget(panel.widget)
+    panel.widget.show()
+    qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
+    adaptive_item = panel.mode_combo.model().item(
+        panel.mode_combo.findData(GAME_MODE_ADAPTIVE)
+    )
+
+    assert panel.game_title.text() == "Beta"
+    assert adaptive_item is not None and not adaptive_item.isEnabled()
+
+    panel.game_list.setCurrentItem(panel.game_list.item(1))
+
+    assert panel.game_title.text() == "Alpha"
+    assert adaptive_item.isEnabled()
+
+
 def test_all_games_menu_bulk_enables_and_disables_with_confirmation(
     qtbot,
     tmp_path: Path,

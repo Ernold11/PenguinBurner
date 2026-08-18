@@ -62,6 +62,7 @@ def profile_argv_for_setting(
     *,
     gpu_index: int | None = None,
     gpu_uuid: str = "",
+    include_legacy_profiles: bool = False,
 ) -> list[str] | None:
     """Daemon runtime argv for a preset; None when there is nothing to apply."""
     if not setting.enabled:
@@ -76,7 +77,11 @@ def profile_argv_for_setting(
     selected_uuid = str(gpu_uuid or setting.gpu_uuid or "").strip()
     profiles = read_auto_uv_profiles()
     resolved = (
-        resolve_profile_tier_profiles(profiles, gpu_uuid=selected_uuid)
+        resolve_profile_tier_profiles(
+            profiles,
+            gpu_uuid=selected_uuid,
+            include_legacy_profiles=include_legacy_profiles,
+        )
         if selected_uuid
         else resolve_profile_tier_profiles(profiles)
     )
@@ -159,6 +164,7 @@ def game_runtime_profile_argv(
         setting,
         gpu_index=gpu_index,
         gpu_uuid=gpu_uuid,
+        include_legacy_profiles=len(identities) == 1,
     )
     if argv is None:
         return None

@@ -37,6 +37,8 @@ from .library import InstalledSteamGame, installed_steam_games
 from .process import running_steam_game_ids, steam_game_running, steam_running
 from .settings import (
     GAME_MODE_ADAPTIVE,
+    GAME_MODE_DEFAULT,
+    GAME_MODE_NONE,
     SteamGameSetting,
     load_steam_game_settings,
     normalize_game_mode,
@@ -495,7 +497,11 @@ class SteamIntegrationManager:
             return None
         setting = self._setting(app_id)
         argv = profile_argv_for_setting(setting)
-        if argv is not None and str(setting.gpu_uuid or "").strip():
+        profile_mode_requested = setting.enabled and setting.mode not in {
+            GAME_MODE_DEFAULT,
+            GAME_MODE_NONE,
+        }
+        if profile_mode_requested:
             try:
                 identities = list(DaemonGpuClient.discover_identities())
             except Exception as error:
@@ -508,6 +514,7 @@ class SteamIntegrationManager:
                 setting,
                 gpu_index=gpu_index,
                 gpu_uuid=gpu_uuid,
+                include_legacy_profiles=len(identities) == 1,
             )
         if argv is None:
             game_runtime = status.get("game_runtime") or {}

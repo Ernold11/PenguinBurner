@@ -155,14 +155,15 @@ def build_runtime_spec(
     config, _config_path = load_runtime_config()
     configured_gpu = config.get("gpu", {}) if isinstance(config, dict) else {}
     bound_uuid = profile_gpu_uuid(selected_curve or {})
+    discovered_identities = None
     selected_index = (
         _nonnegative_int(configured_gpu.get("index"), default=0)
         if gpu_index is None
         else max(0, int(gpu_index))
     )
     if bound_uuid:
-        identities = DaemonGpuClient.discover_identities()
-        bound_index = gpu_index_for_uuid(identities, bound_uuid)
+        discovered_identities = DaemonGpuClient.discover_identities()
+        bound_index = gpu_index_for_uuid(discovered_identities, bound_uuid)
         if bound_index is None:
             raise RuntimeError(f"profile GPU {bound_uuid} is not currently detected")
         if gpu_index is not None and int(selected_index) != int(bound_index):
@@ -179,10 +180,21 @@ def build_runtime_spec(
     static_profile = None
     adaptive = None
     if adaptive_auto_uv:
+        include_legacy_profiles = False
+        if selected_curve is not None and not bound_uuid:
+            try:
+                if discovered_identities is None:
+                    discovered_identities = DaemonGpuClient.discover_identities()
+                include_legacy_profiles = len(discovered_identities) == 1
+            except Exception:
+                # The selected legacy profile still provides one valid tier;
+                # failure to enumerate peers must not make the apply fail.
+                include_legacy_profiles = False
         adaptive = _adaptive_spec(
             selected_curve,
             target_fps_override=adaptive_target_fps,
             gpu_uuid=str(identity["uuid"]),
+            include_legacy_profiles=include_legacy_profiles,
         )
         if adaptive is not None:
             mode = "adaptive"
@@ -222,9 +234,12 @@ def _adaptive_spec(
     *,
     target_fps_override: float | None = None,
     gpu_uuid: str = "",
+    include_legacy_profiles: bool = False,
 ) -> dict[str, Any] | None:
     resolved = resolve_profile_tier_profiles(
-        read_auto_uv_profiles(), gpu_uuid=str(gpu_uuid or "")
+        read_auto_uv_profiles(),
+        gpu_uuid=str(gpu_uuid or ""),
+        include_legacy_profiles=include_legacy_profiles,
     )
     tier_profiles: dict[str, dict[str, Any]] = {}
     for tier in available_adaptive_tiers(resolved):

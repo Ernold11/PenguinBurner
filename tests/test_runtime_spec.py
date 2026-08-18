@@ -148,6 +148,32 @@ def test_explicit_gpu_index_cannot_override_bound_profile_uuid(monkeypatch) -> N
         )
 
 
+def test_single_gpu_adaptive_runtime_includes_legacy_tiers(monkeypatch) -> None:
+    curve = _curve("legacy-balanced")
+    _stub_runtime_sources(monkeypatch, curve=curve)
+    monkeypatch.setattr(
+        runtime_spec.DaemonGpuClient,
+        "discover_identities",
+        lambda: [SimpleNamespace(index=0, uuid="GPU-test-0")],
+    )
+    calls: list[dict[str, object]] = []
+
+    def adaptive(selected_curve, **kwargs):
+        calls.append({"selected_curve": selected_curve, **kwargs})
+        return {"initial_tier": "balanced"}
+
+    monkeypatch.setattr(runtime_spec, "_adaptive_spec", adaptive)
+
+    spec = runtime_spec.build_runtime_spec(
+        profile_selector="legacy-balanced",
+        adaptive_auto_uv=True,
+        gpu_index=0,
+    )
+
+    assert spec["mode"] == "adaptive"
+    assert calls[0]["include_legacy_profiles"] is True
+
+
 def test_runtime_spec_leaves_power_capability_decision_to_daemon(monkeypatch) -> None:
     legacy_curve = _curve("legacy-laptop")
     legacy_curve["power_limit_w"] = 150

@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -472,7 +473,14 @@ def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> Non
     monkeypatch.setattr(
         game_runtime,
         "resolve_profile_tier_profiles",
-        lambda profiles: {"balanced": {"profile_id": "profile-9"}},
+        lambda profiles, **_kwargs: {"balanced": {"profile_id": "profile-9"}},
+    )
+    monkeypatch.setattr(
+        game_runtime.DaemonGpuClient,
+        "discover_identities",
+        classmethod(
+            lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]
+        ),
     )
     calls = []
 
@@ -483,7 +491,9 @@ def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> Non
     monkeypatch.setattr(daemon_client, "start_game_runtime_profile", fake_start)
     result = manager.hot_reapply(APP_ID)
     assert result is not None and result.ok
-    assert calls == [(["--auto-uv-profile", "profile-9"], 4242, APP_ID)]
+    assert calls == [
+        (["--auto-uv-profile", "profile-9", "--gpu-index", "0"], 4242, APP_ID)
+    ]
 
 
 def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -> None:
@@ -516,7 +526,16 @@ def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -
     monkeypatch.setattr(
         game_runtime,
         "resolve_profile_tier_profiles",
-        lambda _profiles: {"performance": {"profile_id": "performance-9"}},
+        lambda _profiles, **_kwargs: {
+            "performance": {"profile_id": "performance-9"}
+        },
+    )
+    monkeypatch.setattr(
+        game_runtime.DaemonGpuClient,
+        "discover_identities",
+        classmethod(
+            lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]
+        ),
     )
 
     result = manager.hot_reapply(APP_ID)
@@ -524,7 +543,13 @@ def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -
     assert result is not None and result.ok
     assert calls == [
         (
-            ["--auto-uv-profile", "performance-9", "--adaptive-auto-uv"],
+            [
+                "--auto-uv-profile",
+                "performance-9",
+                "--adaptive-auto-uv",
+                "--gpu-index",
+                "0",
+            ],
             4242,
             APP_ID,
         )

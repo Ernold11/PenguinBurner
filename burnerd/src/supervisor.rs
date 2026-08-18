@@ -12,7 +12,7 @@ use std::fs;
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -1851,11 +1851,7 @@ fn boot_replay_result(
     value
 }
 
-fn recover_active_session(
-    supervisor: &mut Supervisor,
-    path: &PathBuf,
-    saved: RuntimeSpec,
-) -> bool {
+fn recover_active_session(supervisor: &mut Supervisor, path: &Path, saved: RuntimeSpec) -> bool {
     let spec = match resolve_recovery_gpu(saved) {
         Ok(spec) => spec,
         Err(error) => {

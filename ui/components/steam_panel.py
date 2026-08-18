@@ -609,7 +609,11 @@ class SteamPanel:
         finally:
             self.mode_combo.blockSignals(signals_were_blocked)
 
-        row = self._rows.get(self._current_app_id())
+        self._sync_adaptive_availability()
+
+    def _sync_adaptive_availability(self, row: SteamGameRow | None = None) -> None:
+        if row is None:
+            row = self._rows.get(self._current_app_id())
         gpu_uuid = str(row.setting.gpu_uuid or "").strip() if row else ""
         if not gpu_uuid and len(self._gpu_choices) == 1:
             gpu_uuid = str(getattr(self._gpu_choices[0], "uuid", "") or "").strip()
@@ -751,6 +755,7 @@ class SteamPanel:
                 self.overlay_checkbox.setChecked(row.setting.overlay)
         finally:
             self._syncing = was_syncing
+        self._sync_adaptive_availability(row)
         self._sync_interaction_state()
 
     def _sync_interaction_state(self) -> None:
