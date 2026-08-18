@@ -10,7 +10,7 @@
 - Support Flatpak and pip daemon installation and repair on Bazzite and other
   immutable distributions through the canonical
   `/var/opt/penguin-burner/libexec/penguin-burnerd` path (#51). Thanks to
-  @Lostfire93 for the debugging session.
+  @LostFire93 for the debugging session.
 - Add per-GPU profiles, filtering, Steam targeting, and serial startup
   application (#46). Active daemon monitoring, adaptive switching, drift
   recovery, and fan control still cover one GPU at a time.
