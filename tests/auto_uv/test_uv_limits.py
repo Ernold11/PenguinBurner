@@ -21,7 +21,7 @@ def test_5080_voltage_table_exposes_efficiency_floor_and_performance_ceiling() -
     assert floor.voltage_mv == 850
     assert floor.clock_mhz == 2800
     assert ceiling.voltage_mv == 925
-    assert ceiling.clock_mhz == 2980
+    assert ceiling.clock_mhz == 2950
     assert voltage_drop_pct(start_voltage_mv=1000, floor_voltage_mv=850) == pytest.approx(
         15.0
     )
@@ -41,7 +41,7 @@ def test_clock_drop_uses_preset_aware_gpu_table_ratio() -> None:
     )
     assert efficiency is not None and performance is not None
     assert efficiency == pytest.approx(11.111111111111116)
-    assert performance == pytest.approx(5.3968253968254)
+    assert performance == pytest.approx(6.349206349206349)
     # Balanced is a savings-biased blend (0.6 efficiency / 0.4 performance) of
     # the two presets, so it stays centered-but-deeper on every GPU instead of
     # collapsing toward a neighbour when the clock geometry is tight.

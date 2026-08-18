@@ -60,7 +60,9 @@ _UV_LIMIT_TARGETS: tuple[dict[str, object], ...] = (
         "patterns": ("5080",),
         "efficiency": (850, 2800),
         "balanced": (900, 2800),
-        "performance": (925, 2980),
+        # Leave modest headroom for the default four-bin additive tail:
+        # 2950 + (4 * 15) = 3010 MHz nominal instead of 3040 MHz.
+        "performance": (925, 2950),
         "clock_drop_ceiling_mhz": 3150,
         "efficiency_power_limit_pct": 88,
     },

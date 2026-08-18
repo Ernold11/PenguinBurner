@@ -1605,7 +1605,7 @@ def test_auto_uv_clock_drop_default_uses_preset_aware_gpu_table_ratio() -> None:
     assert balanced.value_pct == pytest.approx(
         efficiency.value_pct * 0.6 + performance.value_pct * 0.4
     )
-    assert performance.value_pct == pytest.approx(5.3968253968254)
+    assert performance.value_pct == pytest.approx(6.349206349206349)
 
 
 def test_auto_uv_clock_drop_default_falls_back_to_generic_when_unmatched() -> None:
