@@ -124,8 +124,9 @@ handles shutdown signals, `sd-notify` sends readiness/watchdog messages,
 `procfs` supplies process metrics, and `tempfile` provides atomic state writes.
 
 The systemd unit executes the fixed root-owned
-`/usr/libexec/penguin-burnerd`. `PENGUIN_BURNER_DAEMON_PROGRAM_FILE` points to
-the Python CLI used only for temporary scan/verification children.
+`/var/opt/penguin-burner/libexec/penguin-burnerd`.
+`PENGUIN_BURNER_DAEMON_PROGRAM_FILE` points to the Python CLI used only for
+temporary scan/verification children.
 
 ## Verification
 

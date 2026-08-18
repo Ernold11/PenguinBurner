@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -104,7 +105,9 @@ def _assert_flatpak_daemon_script_waits_for_api(
     state_clear = 'rm -f "/var/lib/penguin-burner/last-runtime.json"'
     if clears_last_runtime:
         assert state_clear in script
-        assert script.rindex(state_clear) < script.rindex("restart_penguin_burnerd")
+        assert script.rindex("restart_penguin_burnerd") < script.rindex(
+            state_clear
+        ) < script.rindex("commit_daemon_install")
     else:
         # Migration consumes the legacy 0.6.x state via
         # migrate-legacy-boot-intent instead of deleting it up front.
@@ -128,15 +131,28 @@ def _assert_flatpak_daemon_binary_installed_atomically(script: str) -> None:
     assert "nonblock" in script
     assert "oflag=nofollow" in script
     assert "conv=fsync" in script
+    assert '[ ! -f "$PENGUIN_BURNER_DAEMON_BINARY_SRC" ]' in script
+    assert '[ -L "$PENGUIN_BURNER_DAEMON_BINARY_SRC" ]' in script
     assert "7f454c46" in script
     assert 'chown root:root "$daemon_tmp"' in script
     assert 'chmod 0755 "$daemon_tmp"' in script
     assert commit in script
     assert "install -Dm0755" not in script
-    assert "trap cleanup_install_temps EXIT" in script
+    assert "trap finish_daemon_install EXIT" in script
     assert "trap 'exit 1' HUP INT TERM" in script
     assert script.index(stage) < script.index(copy) < script.index(commit)
-    assert script.index(commit) < script.index(legacy_mutation)
+    assert script.index(commit) < script.rindex(legacy_mutation)
+
+
+def test_flatpak_systemd_transaction_is_owned_by_runtime_support() -> None:
+    ui_source = Path("ui/commands.py").read_text(encoding="utf-8")
+    runtime_source = Path(
+        "runtime/support/flatpak_daemon_install.py"
+    ).read_text(encoding="utf-8")
+
+    assert "rollback_daemon_install" not in ui_source
+    assert "def build_flatpak_daemon_install_script" in runtime_source
+    assert "rollback_daemon_install" in runtime_source
 
 
 def test_ui_scan_command_uses_daemon_client_without_pkexec(monkeypatch) -> None:
@@ -233,9 +249,8 @@ def _command_env_value(command: list[str], name: str) -> str:
 def test_daemon_migration_command_installs_flatpak_daemon(
     monkeypatch, tmp_path
 ) -> None:
-    # B4b: the sandbox-built /app/libexec binary is copied onto the host's
-    # root-owned /usr/libexec by the one pkexec elevation; the repair flow clears
-    # stale last-runtime state from old deployments before restarting.
+    # The sandbox-built /app/libexec source is copied to the one canonical host
+    # runtime path by the explicit pkexec repair transaction.
     _flatpak_daemon_install_env(monkeypatch, tmp_path)
 
     command = commands.daemon_migration_command()
@@ -250,6 +265,14 @@ def test_daemon_migration_command_installs_flatpak_daemon(
         f"{FLATPAK_APP_PATH}/libexec/penguin-burnerd"
     )
     script = command[command.index("-c") + 1]
+    syntax = subprocess.run(
+        ["/bin/sh", "-n"],
+        input=script,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert syntax.returncode == 0, syntax.stderr
     assert "/usr/bin/flatpak" not in command
     assert command[-5:] == [
         "/bin/sh",
@@ -258,7 +281,7 @@ def test_daemon_migration_command_installs_flatpak_daemon(
         command[-2],
         "penguin-burner-daemon-install",
     ]
-    assert "systemctl is-active --quiet penguin-burnerd.service" not in command[-2]
+    assert "systemctl is-active --quiet penguin-burnerd.service" in command[-2]
     assert "systemctl enable penguin-burnerd.service" in command[-2]
     assert "systemctl restart penguin-burnerd.service" in command[-2]
     assert "systemctl enable --now penguin-burnerd.service" not in command[-2]
@@ -268,6 +291,26 @@ def test_daemon_migration_command_installs_flatpak_daemon(
         clears_last_runtime=False,
     )
     _assert_flatpak_daemon_binary_installed_atomically(script)
+    assert "daemon_dir=/var/opt/penguin-burner/libexec" in script
+    assert (
+        'daemon_target="/var/opt/penguin-burner/libexec/penguin-burnerd"'
+        in script
+    )
+    assert "PENGUIN_BURNER_DAEMON_BINARY_TARGET" not in " ".join(command)
+    assert "findmnt" in script and "noexec" in script
+    assert "selinuxenabled" in script and "restorecon" in script
+    assert "rollback_daemon_install" in script
+    assert (
+        "systemctl disable --now penguin-burnerd.service >/dev/null 2>&1 "
+        "|| rollback_failed=1"
+    ) in script
+    assert (
+        "systemctl disable --now PenguinBurner.service >/dev/null 2>&1 "
+        "|| rollback_failed=1"
+    ) in script
+    assert script.index("restart_penguin_burnerd\n") < script.rindex(
+        "commit_daemon_install"
+    )
     assert "systemctl enable penguin-burnerd.service" in script
     # Migration replays a 0.6.x boot profile host-side after the new daemon
     # is up; it passes no client-built intent of its own.
@@ -282,7 +325,8 @@ def test_daemon_migration_command_installs_flatpak_daemon(
     assert "/usr/bin/flatpak" not in unit
     assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
     assert (
-        "ExecStart=/usr/libexec/penguin-burnerd --socket /run/penguin-burnerd.sock"
+        "ExecStart=/var/opt/penguin-burner/libexec/penguin-burnerd "
+        "--socket /run/penguin-burnerd.sock"
         in unit
     )
 

@@ -136,8 +136,9 @@ def require_daemon_capabilities(
     *required: str,
     socket_path: str | Path | None = None,
     timeout_s: float = 3.0,
+    expected_version: str | None = None,
 ) -> dict[str, Any]:
-    """Return status only when the daemon protocol and capabilities match."""
+    """Return status only when the requested compatibility contract matches."""
     status = daemon_status(
         socket_path=_resolved_socket_path(socket_path),
         timeout_s=timeout_s,
@@ -157,6 +158,13 @@ def require_daemon_capabilities(
         raise DaemonCompatibilityError(
             "PenguinBurner hardware service protocol mismatch: "
             f"client={DAEMON_PROTOCOL_MAJOR}, daemon={protocol_major}"
+        )
+    expected_release = str(expected_version or "").strip()
+    daemon_release = str(status.get("version") or "").strip()
+    if expected_release and daemon_release != expected_release:
+        raise DaemonCompatibilityError(
+            "PenguinBurner hardware service release mismatch: "
+            f"app={expected_release}, daemon={daemon_release or 'unknown'}"
         )
     available = {
         str(item)

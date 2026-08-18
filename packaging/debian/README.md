@@ -19,10 +19,12 @@ bundled `burnerd/` crate. `debian/rules` (`override_dh_auto_build`) runs:
 cargo build --release --locked --manifest-path burnerd/Cargo.toml
 ```
 
-and installs the result to `/usr/libexec/penguin-burnerd` (0755, root-owned) —
-the path `runtime/support/runtime_service.py` discovers first. `cargo` is a
-`Build-Depends`. `CARGO_HOME` is redirected into `debian/cargo` so the build
-stays inside the tree (matching `Rules-Requires-Root: no`).
+and installs the result to `/usr/libexec/penguin-burnerd` (0755, root-owned).
+This package-owned file is an install source: explicit hardware-service setup
+copies it to `/var/opt/penguin-burner/libexec/penguin-burnerd`, which is the
+only path generated systemd units execute. `cargo` is a `Build-Depends`.
+`CARGO_HOME` is redirected into `debian/cargo` so the build stays inside the
+tree (matching `Rules-Requires-Root: no`).
 
 ### Offline Launchpad builds
 

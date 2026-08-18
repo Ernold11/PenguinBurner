@@ -8,8 +8,8 @@
 # burnerd/Cargo.lock changes (see packaging/flatpak/README.md).
 #
 # The pkexec-elevated service lifecycle stages this binary atomically at the
-# host's root-owned /usr/libexec/penguin-burnerd. Generated units always execute
-# that fixed path, never the user-owned Flatpak deployment path.
+# host's root-owned /var/opt/penguin-burner/libexec/penguin-burnerd. Generated
+# units always execute that fixed path, never the Flatpak deployment path.
 app-id: io.github.jpietek.PenguinBurner
 runtime: org.freedesktop.Platform
 runtime-version: "25.08"
@@ -50,7 +50,7 @@ modules:
   # plus a cargo/config redirecting crates.io there, so `cargo build --offline
   # --locked` resolves everything with no network. CARGO_HOME points at that
   # extracted config; --locked pins the committed Cargo.lock. The elevated
-  # lifecycle copies it to the host's /usr/libexec/penguin-burnerd at install.
+  # lifecycle copies it to the host's canonical /var/opt target at install.
   - name: penguin-burnerd
     buildsystem: simple
     build-options:

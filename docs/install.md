@@ -45,9 +45,11 @@ command, and clean uninstall.
 
 The Flatpak includes the privileged root daemon (`penguin-burnerd`, a compiled
 Rust binary) built into the sandbox. The first privileged action installs it
-onto the host at `/usr/libexec/penguin-burnerd` together with its systemd
+onto the host at
+`/var/opt/penguin-burner/libexec/penguin-burnerd` together with its systemd
 service, with a single admin prompt; after that all privileged GPU operations
-go through the running service with no further prompts.
+go through the running service with no further prompts. This writable
+root-owned location works on rpm-ostree systems where `/usr` is read-only.
 
 After that very first daemon setup, quit and relaunch the app once: the
 sandbox can only see the daemon socket (`/run/penguin-burnerd.sock`) when it
@@ -96,9 +98,9 @@ python -m pip install --user --no-index --no-deps --find-links dist --upgrade pe
 ## Root daemon (from a checkout)
 
 The privileged root daemon (`penguin-burnerd`) is a compiled Rust binary. The
-native COPR/AUR/PPA packages build it for you and install it to
-`/usr/libexec/penguin-burnerd`. The PyPI/local wheel also bundles a compiled
-copy (built with `cargo` at wheel-build time) inside the package at
+native COPR/AUR/PPA packages build it for you and ship a package-owned source
+at `/usr/libexec/penguin-burnerd`. The PyPI/local wheel also bundles a compiled
+source copy (built with `cargo` at wheel-build time) inside the package at
 `runtime/daemon_bin/penguin-burnerd`; building the wheel from source therefore
 needs a Rust toolchain (`cargo`) just as it needs `cmake` for the Vulkan layer
 and MinGW for the NVAPI shim. From a checkout you can instead build the daemon
@@ -109,12 +111,13 @@ scripts/build-daemon.sh   # cargo build --release --locked in burnerd/
 ```
 
 The systemd unit always executes the root-owned
-`/usr/libexec/penguin-burnerd`; it never points into a user-writable wheel or
-checkout. During the one elevated service setup, the installer atomically
-copies the current wheel-bundled `runtime/daemon_bin/penguin-burnerd`, or the
-dev build at `burnerd/target/release/penguin-burnerd`, into that fixed path. An
-existing safe `/usr/libexec` copy is used only when a distro package provides no
-separate source payload.
+`/var/opt/penguin-burner/libexec/penguin-burnerd`; it never points into a
+user-writable wheel, checkout, or Flatpak deployment. During the one elevated
+service setup, the installer atomically copies the current wheel-bundled
+`runtime/daemon_bin/penguin-burnerd`, the dev build at
+`burnerd/target/release/penguin-burnerd`, or a native package's safe
+`/usr/libexec/penguin-burnerd` source into that fixed path. Failed startup or
+socket readiness restores the previous binary, unit, and service state.
 
 ## Recovery: getting back to stock
 

@@ -330,26 +330,26 @@ class MainWindow(ProfileActionsMixin):
         )
 
     def _check_daemon_upgrade_on_startup(self) -> None:
-        """If a running daemon is an incompatible older version, offer to update
-        it now — the seamless post-0.6.x-upgrade path.
+        """Offer to update a running daemon from another incompatible release.
 
-        Only fires when a daemon is actually running AND speaks an incompatible
-        protocol (a stale 0.6.x daemon on the same socket). A brand-new user
-        with no daemon installed is left alone: the install prompt appears when
-        they first do something privileged, not on launch.
+        Only fires when a daemon is actually running and its protocol or release
+        differs from this application. A brand-new user with no daemon installed
+        is left alone: the install prompt appears when they first do something
+        privileged, not on launch.
         """
         from runtime.daemon_client import (
             DaemonCompatibilityError,
             daemon_status,
             require_daemon_capabilities,
         )
+        from ui.assets import application_version
 
         try:
             daemon_status(timeout_s=1.0)
         except Exception:
             return  # not running / not installed — do not nag a new user
         try:
-            require_daemon_capabilities()
+            require_daemon_capabilities(expected_version=application_version())
             return  # running and compatible — nothing to do
         except DaemonCompatibilityError:
             pass

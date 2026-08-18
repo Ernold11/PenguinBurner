@@ -119,7 +119,7 @@ packages = [
 ]
 "runtime" = [
   # Compiled root daemon staged by setup.py build_py; the elevated install
-  # step copies it to /usr/libexec/penguin-burnerd.
+  # step copies it to /var/opt/penguin-burner/libexec/penguin-burnerd.
   "daemon_bin/penguin-burnerd",
 ]
 "ui.assets" = [

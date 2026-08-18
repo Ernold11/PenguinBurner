@@ -299,64 +299,6 @@ def daemon_migration_command() -> list[str]:
     return privileged_command([*cli_base_command(), "--migrate-to-daemon-service"])
 
 
-def _flatpak_daemon_restart_and_wait_script() -> str:
-    return r"""
-daemon_socket=/run/penguin-burnerd.sock
-
-wait_for_penguin_burnerd() {
-    attempt=0
-    while [ "$attempt" -lt 30 ]; do
-        if /usr/bin/python3 - "$daemon_socket" >/dev/null 2>&1 <<'PY'
-import json
-import socket
-import sys
-
-path = sys.argv[1]
-with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-    client.settimeout(1.0)
-    client.connect(path)
-    client.sendall(b'{"method":"status"}\n')
-    data = b""
-    while b"\n" not in data:
-        chunk = client.recv(4096)
-        if not chunk:
-            break
-        data += chunk
-response = json.loads(data.split(b"\n", 1)[0].decode("utf-8"))
-if not response.get("ok"):
-    raise SystemExit(1)
-PY
-        then
-            return 0
-        fi
-        attempt=$((attempt + 1))
-        sleep 0.1
-    done
-    return 1
-}
-
-print_penguin_burnerd_diagnostics() {
-    systemctl status --no-pager penguin-burnerd.service >&2 || true
-    journalctl -u penguin-burnerd.service -n 80 --no-pager >&2 || true
-}
-
-restart_penguin_burnerd() {
-    rm -f "$daemon_socket"
-    if ! systemctl restart penguin-burnerd.service; then
-        echo "Failed to restart penguin-burnerd.service." >&2
-        print_penguin_burnerd_diagnostics
-        return 1
-    fi
-    if wait_for_penguin_burnerd; then
-        return 0
-    fi
-    echo "penguin-burnerd.service restarted, but $daemon_socket did not answer status." >&2
-    print_penguin_burnerd_diagnostics
-    return 1
-}
-""".strip()
-
-
 def runtime_profile_command(
     action: str,
     *,
@@ -396,18 +338,18 @@ def _flatpak_daemon_install_command(
 
     The manifest builds penguin-burnerd into /app/libexec (host-visible inside
     the flatpak deployment dir); the one pkexec elevation copies it onto the
-    root-owned /usr/libexec/penguin-burnerd (a root service must never execute
-    from a user-writable path), drops the generated unit into
-    /etc/systemd/system, and enables+restarts it. ExecStart points at the fixed
-    /usr/libexec path, so unit generation needs no flatpak-specific ExecStart.
+    canonical root-owned host path, drops the generated unit into
+    /etc/systemd/system, and enables+restarts it. The source deployment is
+    never an ExecStart target.
 
     ``autostart_intent`` is None for migration/repair, an empty dict for no boot
     runtime, or a semantic intent that the newly installed daemon resolves and
     persists through its typed API.
     """
+    from runtime.support.flatpak_daemon_install import (
+        build_flatpak_daemon_install_script,
+    )
     from runtime.support.runtime_service import (
-        LAST_RUNTIME_STATE_PATH,
-        LIBEXEC_DAEMON_BINARY,
         build_daemon_api_service_unit,
         flatpak_host_app_path,
         flatpak_host_cli_program_file,
@@ -415,10 +357,7 @@ def _flatpak_daemon_install_command(
     )
 
     program_file = flatpak_host_cli_program_file()
-    unit = build_daemon_api_service_unit(
-        program_file,
-        binary_path=str(LIBEXEC_DAEMON_BINARY),
-    )
+    unit = build_daemon_api_service_unit(program_file)
     encoded_unit = base64.b64encode(unit.encode("utf-8")).decode("ascii")
     daemon_binary_src = flatpak_host_app_path() / "libexec" / "penguin-burnerd"
 
@@ -428,113 +367,19 @@ def _flatpak_daemon_install_command(
         f"PENGUIN_BURNER_RUNTIME_PYTHONPATH={flatpak_host_site_packages_path()}",
         f"PENGUIN_BURNER_RUNTIME_HOME={_desktop_user_home()}",
     ]
-    runtime_block = ""
+    runtime_action = "none"
     if autostart_intent:
         intent_json = json.dumps(autostart_intent, separators=(",", ":"))
         environment.append(
             "PENGUIN_BURNER_RUNTIME_INTENT_B64="
             + base64.b64encode(intent_json.encode("utf-8")).decode("ascii")
         )
-        runtime_block = (
-            "\nintent_json=\"$(printf '%s' \"$PENGUIN_BURNER_RUNTIME_INTENT_B64\" | base64 -d)\"\n"
-            "env PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 "
-            "PYTHONPATH=\"$PENGUIN_BURNER_RUNTIME_PYTHONPATH\" "
-            "PENGUIN_BURNER_HOME=\"$PENGUIN_BURNER_RUNTIME_HOME\" "
-            "/usr/bin/python3 -m runtime.daemon_client apply-runtime-intent "
-            "--boot \"$intent_json\"\n"
-        )
+        runtime_action = "apply-intent"
     elif autostart_intent is None:
-        # Migration/repair: replay a 0.6.x last-runtime.json boot profile
-        # host-side, where /var/lib is visible (the sandbox cannot read it).
-        # The helper consumes the legacy file; an existing 0.7
-        # boot-runtime.json is preserved untouched either way.
-        runtime_block = (
-            "\nenv PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 "
-            "PYTHONPATH=\"$PENGUIN_BURNER_RUNTIME_PYTHONPATH\" "
-            "PENGUIN_BURNER_HOME=\"$PENGUIN_BURNER_RUNTIME_HOME\" "
-            "/usr/bin/python3 -m runtime.daemon_client "
-            "migrate-legacy-boot-intent\n"
-        )
+        runtime_action = "migrate-legacy"
 
-    script = "\n".join(
-        [
-            _flatpak_daemon_restart_and_wait_script(),
-            (
-                r"""
-legacy_unit=/etc/systemd/system/PenguinBurner.service
-unit=/etc/systemd/system/penguin-burnerd.service
-daemon_dir=/usr/libexec
-daemon_target="$daemon_dir/penguin-burnerd"
-daemon_tmp=
-unit_tmp=
-cleanup_install_temps() {
-    if [ -n "$daemon_tmp" ]; then rm -f -- "$daemon_tmp"; fi
-    if [ -n "$unit_tmp" ]; then rm -f -- "$unit_tmp"; fi
-}
-trap cleanup_install_temps EXIT
-trap 'exit 1' HUP INT TERM
-if [ ! -e "$daemon_dir" ]; then
-    mkdir -m0755 "$daemon_dir"
-fi
-if [ ! -d "$daemon_dir" ] || [ -L "$daemon_dir" ] || \
-   [ "$(stat -c %u "$daemon_dir")" != 0 ] || \
-   [ $((0$(stat -c %a "$daemon_dir") & 0022)) -ne 0 ]; then
-    echo "$daemon_dir is not a safe root-owned install directory." >&2
-    exit 1
-fi
-daemon_tmp="$(mktemp "$daemon_dir/.penguin-burnerd.XXXXXX")"
-dd if="$PENGUIN_BURNER_DAEMON_BINARY_SRC" of="$daemon_tmp" \
-   iflag=nofollow,fullblock,nonblock oflag=nofollow conv=fsync status=none
-if [ "$(od -An -tx1 -N4 "$daemon_tmp" | tr -d '[:space:]')" != 7f454c46 ]; then
-    echo "PenguinBurner daemon install source is not an ELF binary." >&2
-    exit 1
-fi
-chown root:root "$daemon_tmp"
-chmod 0755 "$daemon_tmp"
-unit_tmp="$(mktemp /etc/systemd/system/.penguin-burnerd.service.XXXXXX)"
-printf '%s' "$PENGUIN_BURNER_SYSTEMD_UNIT_B64" | base64 -d > "$unit_tmp"
-chmod 0644 "$unit_tmp"
-mv -f -- "$daemon_tmp" "$daemon_target"
-daemon_tmp=
-mv -f -- "$unit_tmp" "$unit"
-unit_tmp=
-systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || true
-if [ -f "$legacy_unit" ]; then
-    rm -f "$legacy_unit"
-    echo "Removed existing static PenguinBurner.service."
-fi
-trap - EXIT HUP INT TERM
-"""
-                # boot-runtime.json is deliberately preserved so a
-                # repair/reinstall keeps the user's boot profile (the daemon
-                # ignores an invalid spec). The legacy 0.6.x last-runtime.json
-                # is consumed by migrate-legacy-boot-intent on the migration
-                # path; an explicit intent supersedes it, so it is stale and
-                # removed here.
-                + (
-                    '\nrm -f '
-                    + (
-                        f'"{LAST_RUNTIME_STATE_PATH}" '
-                        if autostart_intent is not None
-                        else ""
-                    )
-                    + '/run/penguin-burner/active-runtime.json\n'
-                )
-                + r"""
-systemctl daemon-reload
-systemctl reset-failed PenguinBurner.service >/dev/null 2>&1 || true
-systemctl reset-failed penguin-burnerd.service >/dev/null 2>&1 || true
-systemctl enable penguin-burnerd.service
-restart_penguin_burnerd
-"""
-                + runtime_block
-                + r"""
-echo "Copied penguin-burnerd to /usr/libexec/penguin-burnerd."
-echo "Installed and enabled penguin-burnerd.service at $unit."
-echo "Follow the journal with: journalctl -u penguin-burnerd.service --since \"-4 hours\" -f"
-""".strip()
-            ),
-        ]
+    script = build_flatpak_daemon_install_script(
+        runtime_action=runtime_action,
     )
     return _privileged_command(
         [

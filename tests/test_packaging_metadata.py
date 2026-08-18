@@ -822,16 +822,17 @@ def test_pypi_wheel_build_installs_rust_toolchain_and_requires_daemon() -> None:
 def test_daemon_discovery_includes_packaged_site_packages_copy() -> None:
     service = Path("runtime/support/runtime_service.py").read_text(encoding="utf-8")
 
-    # Unit execution is fixed at root-owned /usr/libexec. Install-source discovery
-    # prefers the current wheel payload, then a dev build, with an existing
-    # libexec copy only as the distro-package fallback.
+    # Unit execution is fixed at the root-owned /var/opt target. Install-source
+    # discovery prefers the current wheel payload, then a dev build, then the
+    # native-package source, with the existing canonical copy last.
     assert "def _packaged_daemon_binary" in service
     assert '"daemon_bin"' in service
-    assert "return str(LIBEXEC_DAEMON_BINARY)" in service
+    assert "return str(DAEMON_BINARY)" in service
     packaged = service.index("_packaged_daemon_binary(),")
     dev = service.index("_dev_daemon_binary(program_file),")
-    libexec = service.index("LIBEXEC_DAEMON_BINARY,\n", dev)
-    assert packaged < dev < libexec
+    native = service.index("NATIVE_PACKAGE_DAEMON_BINARY,\n", dev)
+    canonical = service.index("DAEMON_BINARY,\n", native)
+    assert packaged < dev < native < canonical
 
 
 def test_flatpak_build_scripts_install_rust_stable_extension() -> None:
