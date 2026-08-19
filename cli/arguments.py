@@ -259,7 +259,8 @@ def parse_arguments(argv):
             "daemon binary at /var/opt/penguin-burner/libexec, rewrite the "
             "unit, and restart it. With profile options, also set the "
             "persistent boot profile; without them, an existing boot profile "
-            "is kept."
+            "is kept. Asks for authorization (pkexec/sudo) when not run as "
+            "root."
         ),
     )
     daemon_group.add_argument(
@@ -267,14 +268,18 @@ def parse_arguments(argv):
         "--deinstall-systemd-service",
         dest="uninstall_systemd_service",
         action="store_true",
-        help="Stop and remove the persistent PenguinBurner systemd service.",
+        help=(
+            "Stop and remove the persistent PenguinBurner systemd service. "
+            "Asks for authorization (pkexec/sudo) when not run as root."
+        ),
     )
     daemon_group.add_argument(
         "--migrate-to-daemon-service",
         action="store_true",
         help=(
             "Install penguin-burnerd.service and migrate an existing "
-            "legacy PenguinBurner.service when possible."
+            "legacy PenguinBurner.service when possible. Asks for "
+            "authorization (pkexec/sudo) when not run as root."
         ),
     )
     daemon_group.add_argument(

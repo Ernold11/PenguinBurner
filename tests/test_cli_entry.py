@@ -6,6 +6,7 @@ import cli.entry as entry
 def test_dispatch_cli_allows_adaptive_systemd_install_with_two_tiers(monkeypatch) -> None:
     installed = []
 
+    monkeypatch.setattr(entry.os, "geteuid", lambda: 0)
     monkeypatch.setattr(
         entry,
         "daemon_status",
@@ -47,6 +48,7 @@ def test_dispatch_cli_allows_adaptive_systemd_install_with_one_tier(
     monkeypatch,
     capsys,
 ) -> None:
+    monkeypatch.setattr(entry.os, "geteuid", lambda: 0)
     monkeypatch.setattr(entry, "read_auto_uv_profiles", lambda: [{"profile_id": "p1"}])
     monkeypatch.setattr(
         entry,
@@ -87,6 +89,7 @@ def test_dispatch_cli_rejects_adaptive_systemd_install_with_no_tiers(
     monkeypatch,
     capsys,
 ) -> None:
+    monkeypatch.setattr(entry.os, "geteuid", lambda: 0)
     monkeypatch.setattr(entry, "read_auto_uv_profiles", lambda: [])
     monkeypatch.setattr(entry, "resolve_profile_tier_profiles", lambda profiles: {})
     monkeypatch.setattr(entry, "available_adaptive_tiers", lambda resolved: [])
@@ -184,6 +187,7 @@ def test_dispatch_cli_persistent_update_reinstalls_even_with_daemon_running(
     # install_systemd_service, never as a bare apply-through-daemon.
     applied = []
     installed = []
+    monkeypatch.setattr(entry.os, "geteuid", lambda: 0)
     monkeypatch.setattr(entry, "daemon_status", lambda **_kwargs: {"state": "idle"})
     monkeypatch.setattr(
         entry,
@@ -222,3 +226,76 @@ def test_dispatch_cli_persistent_update_reinstalls_even_with_daemon_running(
     assert exit_code == 0
     assert installed[0][1] == ["--adaptive-auto-uv"]
     assert applied == []
+
+
+def test_dispatch_cli_reexecs_daemon_lifecycle_commands_when_not_root(
+    monkeypatch,
+) -> None:
+    reexeced = []
+    monkeypatch.setattr(entry.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        entry,
+        "reexec_daemon_lifecycle_with_root",
+        lambda argv: reexeced.append(list(argv)) or 7,
+    )
+    for direct_call in (
+        "install_systemd_service",
+        "uninstall_systemd_service",
+        "migrate_to_daemon_service",
+    ):
+        monkeypatch.setattr(
+            entry,
+            direct_call,
+            lambda *_args, _name=direct_call, **_kwargs: (_ for _ in ()).throw(
+                AssertionError(f"{_name} must not run without root")
+            ),
+        )
+
+    lifecycle_argvs = [
+        ["--install-systemd-service", "--adaptive-auto-uv"],
+        ["--uninstall-systemd-service"],
+        ["--migrate-to-daemon-service"],
+    ]
+    for argv in lifecycle_argvs:
+        exit_code = entry.dispatch_cli(
+            program_file="/tmp/penguin_burner.py",
+            main_callback=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("main callback must not run")
+            ),
+            argv=list(argv),
+        )
+        assert exit_code == 7
+
+    assert reexeced == lifecycle_argvs
+
+
+def test_dispatch_cli_runs_daemon_lifecycle_directly_as_root(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(entry.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        entry,
+        "reexec_daemon_lifecycle_with_root",
+        lambda argv: (_ for _ in ()).throw(
+            AssertionError("root must not re-elevate")
+        ),
+    )
+    monkeypatch.setattr(
+        entry,
+        "uninstall_systemd_service",
+        lambda **_kwargs: calls.append("uninstall"),
+    )
+    monkeypatch.setattr(
+        entry,
+        "migrate_to_daemon_service",
+        lambda _program_file, **_kwargs: calls.append("migrate"),
+    )
+
+    for argv in (["--uninstall-systemd-service"], ["--migrate-to-daemon-service"]):
+        exit_code = entry.dispatch_cli(
+            program_file="/tmp/penguin_burner.py",
+            main_callback=lambda *_args, **_kwargs: None,
+            argv=list(argv),
+        )
+        assert exit_code == 0
+
+    assert calls == ["uninstall", "migrate"]

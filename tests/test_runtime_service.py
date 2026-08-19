@@ -1783,3 +1783,100 @@ def test_daemon_worker_registration_error_detects_medium_switch(
         )
         is None
     )
+
+
+def _capture_reexec_command(monkeypatch, returncode: int = 0) -> list:
+    commands: list = []
+    monkeypatch.setattr(
+        runtime_service.subprocess,
+        "run",
+        lambda command, check: commands.append((list(command), check))
+        or SimpleNamespace(returncode=returncode),
+    )
+    return commands
+
+
+def test_reexec_daemon_lifecycle_builds_pkexec_command(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_service, "running_in_flatpak", lambda: False)
+    monkeypatch.setattr(
+        runtime_service.shutil,
+        "which",
+        lambda name: "/usr/bin/pkexec" if name == "pkexec" else None,
+    )
+    entry_script = "/home/user/.local/bin/penguin-burner-cli"
+    monkeypatch.setattr(runtime_service.sys, "argv", [entry_script])
+    monkeypatch.setenv("SUDO_USER", "tester")
+    import_root = str(Path(runtime_service.__file__).resolve().parents[2])
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(["/extra/site", import_root, "/extra/site"]),
+    )
+    commands = _capture_reexec_command(monkeypatch, returncode=42)
+
+    exit_code = runtime_service.reexec_daemon_lifecycle_with_root(
+        ["--install-systemd-service", "--adaptive-auto-uv"]
+    )
+
+    assert exit_code == 42
+    assert commands == [
+        (
+            [
+                "/usr/bin/pkexec",
+                "/usr/bin/env",
+                "SUDO_USER=tester",
+                "PYTHONPATH=" + os.pathsep.join([import_root, "/extra/site"]),
+                runtime_service.sys.executable,
+                str(Path(entry_script).resolve()),
+                "--install-systemd-service",
+                "--adaptive-auto-uv",
+            ],
+            False,
+        )
+    ]
+
+
+def test_reexec_daemon_lifecycle_falls_back_to_sudo(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_service, "running_in_flatpak", lambda: False)
+    monkeypatch.setattr(
+        runtime_service.shutil,
+        "which",
+        lambda name: "/usr/bin/sudo" if name == "sudo" else None,
+    )
+    monkeypatch.setattr(runtime_service.sys, "argv", ["/opt/pb/penguin-burner-cli"])
+    monkeypatch.setenv("SUDO_USER", "tester")
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    commands = _capture_reexec_command(monkeypatch)
+
+    exit_code = runtime_service.reexec_daemon_lifecycle_with_root(
+        ["--uninstall-systemd-service"]
+    )
+
+    assert exit_code == 0
+    command, check = commands[0]
+    assert command[0] == "/usr/bin/sudo"
+    assert command[1] == "/usr/bin/env"
+    assert command[-1] == "--uninstall-systemd-service"
+    assert check is False
+
+
+def test_reexec_daemon_lifecycle_requires_an_escalator(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_service, "running_in_flatpak", lambda: False)
+    monkeypatch.setattr(runtime_service.shutil, "which", lambda _name: None)
+    commands = _capture_reexec_command(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="neither pkexec nor sudo"):
+        runtime_service.reexec_daemon_lifecycle_with_root(
+            ["--install-systemd-service"]
+        )
+    assert commands == []
+
+
+def test_reexec_daemon_lifecycle_refuses_flatpak_sandbox(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_service, "running_in_flatpak", lambda: True)
+    commands = _capture_reexec_command(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="PenguinBurner GUI"):
+        runtime_service.reexec_daemon_lifecycle_with_root(
+            ["--install-systemd-service"]
+        )
+    assert commands == []

@@ -11,13 +11,15 @@ verification, and applying saved Auto-UV profiles as daemon runtime.
 
 Privileged GPU writes are performed by the root hardware service
 (`penguin-burnerd.service`, a compiled Rust daemon); the CLI itself and Auto-UV
-scans run as your regular user and talk to it over a local socket. `sudo` is
+scans run as your regular user and talk to it over a local socket. Root is
 only needed to install, repair, migrate, or explicitly uninstall the root
-service. Session profile changes use the running daemon; setting a saved profile as the
-boot profile from the CLI goes through the sudo service-install command (see
-Profiles And Runtime below), while `--restore-stock` resets the boot state to
-stock and the GUI's **Apply on startup** workflow persists a profile — both
-through the daemon socket without a password.
+service; run those commands as your regular user and the CLI asks for
+authorization itself (pkexec/sudo). Session profile changes use the running
+daemon; setting a saved profile as the boot profile from the CLI goes through
+the service-install command (see Profiles And Runtime below), while
+`--restore-stock` resets the boot state to stock and the GUI's **Apply on
+startup** workflow persists a profile — both through the daemon socket
+without a password.
 
 ## Install
 
@@ -33,10 +35,11 @@ Start the GUI:
 
 One-time setup: install the root hardware service so profile application and
 scans can reach the GPU (the GUI offers the same setup automatically on the
-first privileged action):
+first privileged action). Run it as your regular user; it asks for
+authorization (pkexec/sudo) when not run as root:
 
 ```bash
-sudo ~/.local/bin/penguin-burner-cli --migrate-to-daemon-service
+~/.local/bin/penguin-burner-cli --migrate-to-daemon-service
 ```
 
 Run the CLI from an installed package:

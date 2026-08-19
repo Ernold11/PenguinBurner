@@ -10,6 +10,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -1093,6 +1094,50 @@ class _DaemonServiceInstallTransaction:
                 f"{rollback_error}"
             ) from exc
         return False
+
+
+def reexec_daemon_lifecycle_with_root(argv: list[str]) -> int:
+    """Re-run this CLI invocation as root for one daemon-lifecycle step.
+
+    pip --user installs live where only the invoking user's Python looks, so a
+    bare ``sudo penguin-burner-cli`` dies on import before any product code
+    runs (sudo resets HOME and root's interpreter never searches the user
+    site). Mirror the GUI's single elevated lifecycle step instead: escalate
+    through pkexec (or sudo) with the invoking user's import root injected so
+    the root process resolves the same installed code.
+    """
+    if running_in_flatpak():
+        # In the sandbox pkexec is unusable, sys.executable is /app/bin/python,
+        # and the injected PYTHONPATH would name sandbox paths that mean
+        # nothing on the host. The flatpak daemon lifecycle runs host-side
+        # through the GUI's flatpak-spawn flow instead.
+        raise RuntimeError(
+            "this daemon service command cannot self-elevate inside the "
+            "flatpak sandbox; run the daemon setup from the PenguinBurner "
+            "GUI, which performs the host-side elevated install"
+        )
+    escalator = shutil.which("pkexec") or shutil.which("sudo")
+    if escalator is None:
+        raise RuntimeError(
+            "this daemon service command requires root privileges and "
+            "neither pkexec nor sudo is available; re-run as root"
+        )
+    import_root = str(Path(__file__).resolve().parents[2])
+    pythonpath_entries = [import_root]
+    for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+        entry = entry.strip()
+        if entry and entry not in pythonpath_entries:
+            pythonpath_entries.append(entry)
+    command = [
+        escalator,
+        "/usr/bin/env",
+        f"SUDO_USER={_invoking_user_name()}",
+        "PYTHONPATH=" + os.pathsep.join(pythonpath_entries),
+        sys.executable,
+        str(Path(sys.argv[0]).resolve()),
+        *argv,
+    ]
+    return subprocess.run(command, check=False).returncode
 
 
 def install_systemd_service(program_file, argv, *, journal_hours, log):
