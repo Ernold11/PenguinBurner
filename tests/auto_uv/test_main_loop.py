@@ -2638,6 +2638,36 @@ def test_adaptive_tier_power_limit_scales_from_the_balanced_anchor() -> None:
         )
         == 360
     )
+    # The shipped ladder: balanced and performance both default to the full
+    # stock budget (anchor pct 100), so an untouched slider yields stock watts
+    # for both and a manual value passes through unscaled.
+    assert (
+        adaptive_tier_power_limit_w(
+            power_limit_pct=100.0,
+            baseline_power_limit_w=360,
+            scan_request_w=None,
+            balanced_pct=100.0,
+        )
+        == 360
+    )
+    assert (
+        adaptive_tier_power_limit_w(
+            power_limit_pct=100.0,
+            baseline_power_limit_w=360,
+            scan_request_w=300,
+            balanced_pct=100.0,
+        )
+        == 300
+    )
+    assert (
+        adaptive_tier_power_limit_w(
+            power_limit_pct=77.44,
+            baseline_power_limit_w=360,
+            scan_request_w=300,
+            balanced_pct=100.0,
+        )
+        == 232
+    )
 
 
 def test_adaptive_tier_order_and_descent_tails() -> None:
@@ -3321,18 +3351,34 @@ def test_rtx_5090_tier_cap_is_constant_across_every_phase(monkeypatch) -> None:
     main_loop.run_adaptive_tier_scans(**kwargs)
 
     assert phases == [
-        (tier, phase, watts)
-        for tier, watts in (
-            ("efficiency", 430),
-            ("balanced", 503),
-            ("performance", 575),
-        )
-        for phase in (
-            "stock-and-flat-baseline",
-            "descent",
-            "selection",
-            "final-verification",
-        )
+        *(
+            ("efficiency", phase, 430)
+            for phase in (
+                "stock-and-flat-baseline",
+                "descent",
+                "selection",
+                "final-verification",
+            )
+        ),
+        *(
+            ("balanced", phase, 575)
+            for phase in (
+                "stock-and-flat-baseline",
+                "descent",
+                "selection",
+                "final-verification",
+            )
+        ),
+        # Performance shares balanced's full-power regime by default, so it
+        # adopts the balanced descent and never runs its own descent phase.
+        *(
+            ("performance", phase, 575)
+            for phase in (
+                "stock-and-flat-baseline",
+                "selection",
+                "final-verification",
+            )
+        ),
     ]
     assert reclaim_flags == [
         ("efficiency", True),

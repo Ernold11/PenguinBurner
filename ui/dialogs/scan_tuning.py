@@ -459,9 +459,8 @@ def select_scan_tuning(
                 "Power limit in watts applied to this profile's stock "
                 "baseline, descent, final verification, and saved profile. "
                 "The range comes from NVML for the selected GPU; the "
-                "default position is "
-                "preset-aware (savings-biased presets cap below stock, "
-                "Performance keeps the stock budget)."
+                "default position is preset-aware (Efficiency caps below "
+                "stock, Balanced and Performance keep the stock budget)."
             ),
         )
 

@@ -277,9 +277,11 @@ Auto-UV makes real hardware changes — enabling persistence mode, setting board
 power limits, writing core/memory V/F offsets, and taking over fan control.
 
 The **Balanced** and **Efficiency** Auto-UV profiles use conservative voltage
-floors and board-power caps. Efficiency accepts the deepest loaded-clock drop,
-then may reclaim stable clock without raising its proven voltage. Balanced
-keeps more loaded clock with a higher voltage and power budget.
+floors; Efficiency also caps board power by default. Efficiency accepts the
+deepest loaded-clock drop, then may reclaim stable clock without raising its
+proven voltage. Balanced keeps more loaded clock with a higher voltage and
+the stock power budget (cap it per scan in the dialog if you want a watts
+ceiling too).
 
 **Performance** is the profile that pushes past stock: it undervolts and then
 overclocks. On my RTX 5080, during the OC phase I sometimes get a "Vulkan device

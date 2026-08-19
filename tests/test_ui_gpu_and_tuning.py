@@ -197,7 +197,7 @@ def test_power_limit_default_caps_efficiency_from_stock_tgp() -> None:
     assert default.watts == 300
 
 
-def test_power_limit_default_balanced_splits_efficiency_and_full() -> None:
+def test_power_limit_default_balanced_keeps_stock_board_power() -> None:
     default = auto_uv_power_limit_default(
         max_w=390.0,
         min_w=300.0,
@@ -205,10 +205,10 @@ def test_power_limit_default_balanced_splits_efficiency_and_full() -> None:
         gpu_name="NVIDIA GeForce RTX 5080",
         preset_id="balanced",
     )
-    # Balanced is the midpoint of the reduced efficiency cap (77.44%) and 100%.
-    assert default.pct == pytest.approx(88.72)
-    # 360 W * 88.72% = 319.4 -> 319 W.
-    assert default.watts == 319
+    # Balanced keeps the stock budget so the full scan's balanced descent
+    # stays donatable to the performance tier.
+    assert default.pct == pytest.approx(100.0)
+    assert default.watts == 360
 
 
 def test_power_limit_default_performance_keeps_stock_board_power() -> None:

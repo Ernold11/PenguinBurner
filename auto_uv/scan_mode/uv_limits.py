@@ -14,15 +14,15 @@ _BALANCED_EFFICIENCY_WEIGHT = 0.6
 
 # Per-tier power-cap defaults. Undervolting alone still lets the card chase
 # transient boost bins that cost disproportionate watts for a few MHz, so the
-# savings-biased presets pair the V/F floor with a board-power cap while the
-# performance preset keeps the stock board power budget. Only the efficiency cap
-# varies by silicon (a weaker cut caps sooner); balanced sits halfway between
-# the family's efficiency cap and full power, so one number per family fully
-# describes the ladder. Unlike the clock-drop blend below, a plain midpoint is
-# fine here: the cap is a linear mix of one stored number against a fixed 100,
-# so it cannot collapse toward a neighbour the way clock geometry can.
-# Percentages apply to the card's DEFAULT power limit (stock TGP), not the
-# raised OC maximum.
+# efficiency preset pairs its V/F floor with a board-power cap. Balanced and
+# performance both keep the stock board power budget by default: identical
+# power regimes keep the balanced descent donatable to the performance tier in
+# a full scan (the descent-reuse gate requires matching limits), and measured
+# balanced curves are voltage-limited under gaming-class load anyway — the cap
+# only bound their baseline probes. Users can still cap any tier per run from
+# the scan dialog or the per-tier CLI flags. Only the efficiency cap varies by
+# silicon (a weaker cut caps sooner). Percentages apply to the card's DEFAULT
+# power limit (stock TGP), not the raised OC maximum.
 _FULL_POWER_LIMIT_PCT = 100.0
 
 # A fixed extra reduction applied to EVERY family's efficiency power cap. The
@@ -308,10 +308,9 @@ def uv_limit_power_limit_pct_for_gpu(
 ) -> float | None:
     """Return the default board-power cap (percent of the card's stock TGP) for a tier.
 
-    The performance tier always keeps the full stock power budget. The efficiency
-    cap is the per-family stored value; balanced sits halfway between the family's
-    efficiency cap and full power (so a family whose efficiency runs uncapped keeps
-    every tier at full power).
+    Balanced and performance keep the full stock power budget so a full scan's
+    balanced descent stays donatable to the performance tier. The efficiency
+    cap is the per-family stored value less the fixed extra reduction.
     """
     entry = _uv_limit_entry_for_gpu(gpu_name)
     if entry is None:
@@ -330,10 +329,9 @@ def _derived_power_limit_pct(
         return None
     efficiency_pct = float(stored)
     # Families that already cap efficiency get the same fixed extra reduction so
-    # the default undercuts stock TGP by a real margin; balanced inherits it
-    # through the halfway blend below. A family left at full power is
-    # deliberately uncapped, so it stays uncapped (you cannot lower a limit that
-    # is not there).
+    # the default undercuts stock TGP by a real margin. A family left at full
+    # power is deliberately uncapped, so it stays uncapped (you cannot lower a
+    # limit that is not there).
     if efficiency_pct < _FULL_POWER_LIMIT_PCT:
         efficiency_pct = max(
             0.0,
@@ -341,10 +339,8 @@ def _derived_power_limit_pct(
             * (1.0 - _EFFICIENCY_POWER_LIMIT_EXTRA_REDUCTION_PCT / 100.0),
         )
     profile = str(profile_id or "efficiency").strip().lower()
-    if profile == "performance":
+    if profile in ("performance", "balanced"):
         return _FULL_POWER_LIMIT_PCT
-    if profile == "balanced":
-        return (efficiency_pct + _FULL_POWER_LIMIT_PCT) / 2.0
     return efficiency_pct
 
 

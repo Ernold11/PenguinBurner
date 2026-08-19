@@ -18,3 +18,10 @@
   2980 → 2950 MHz ratio, about 1%) so the default four-bin rising tail stays
   below each family's clock ceiling; before this it could top out above the
   ceiling on some GPUs.
+- Default the Balanced power limit to full board power like Performance, so
+  the full scan reuses the balanced descent for the Performance tier and only
+  runs its Auto-OC climb. Cap any tier per run from the scan dialog; only
+  Efficiency stays capped by default.
+- Daemon service install/uninstall/migrate commands ask for authorization
+  themselves (pkexec/sudo) when not run as root, fixing the
+  ModuleNotFoundError a bare sudo hit on pip installs.

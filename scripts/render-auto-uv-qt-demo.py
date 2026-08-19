@@ -171,7 +171,7 @@ DEMO_PROFILES = [
         "base_avg_power_w": 341.574,
         "base_efficiency_fps_per_w": 0.179370,
         "memory_offset_mhz": 6000,
-        "power_limit_w": 319,
+        "power_limit_w": 360,
         "final_verified": True,
         "generated_profile_tier": "Balanced",
         "generated_profile_tier_key": "balanced",

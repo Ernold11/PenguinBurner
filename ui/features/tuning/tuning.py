@@ -243,11 +243,11 @@ def auto_uv_power_limit_default(
 ) -> AutoUvPowerLimitDefault:
     """Preset-aware default board-power cap in watts.
 
-    Savings-biased presets pair the V/F floor with a fraction of the card's
+    The efficiency preset pairs its V/F floor with a fraction of the card's
     stock power budget (the driver default limit, not the raised OC maximum);
-    the performance preset (and any GPU not covered by the tier table) keeps
-    the stock board power budget so nothing is left on the table when the user
-    asked for headroom.
+    balanced and performance (and any GPU not covered by the tier table) keep
+    the stock board power budget — matching regimes keep the full scan's
+    balanced descent donatable to the performance tier.
     """
     detected_name = str(gpu_name).strip() if gpu_name else _query_gpu_name(gpu_index)
     preset = auto_uv_preset(preset_id)

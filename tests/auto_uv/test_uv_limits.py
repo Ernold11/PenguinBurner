@@ -69,17 +69,17 @@ def test_rtx_5060_shares_the_5060_ti_vf_targets() -> None:
     ) == pytest.approx(70.4)
 
 
-def test_power_limit_pct_reduces_savings_tiers_and_keeps_performance_full() -> None:
+def test_power_limit_pct_caps_only_efficiency() -> None:
     # Blackwell: efficiency cap is the stored per-family value LESS the fixed
-    # 12% efficiency reduction (88 * 0.88 = 77.44); balanced sits halfway
-    # between that and full power ((77.44 + 100) / 2 = 88.72); performance keeps
-    # the stock budget.
+    # 12% efficiency reduction (88 * 0.88 = 77.44). Balanced and performance
+    # keep the stock budget so the full scan's balanced descent stays
+    # donatable to the performance tier (matching power regimes).
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 5080", profile_id="efficiency"
     ) == pytest.approx(77.44)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 5080", profile_id="balanced"
-    ) == pytest.approx(88.72)
+    ) == pytest.approx(100.0)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 5080", profile_id="performance"
     ) == pytest.approx(100.0)
@@ -95,7 +95,7 @@ def test_rtx_5090_power_limit_percentages_and_575w_tier_caps() -> None:
     }
 
     assert percentages == pytest.approx(
-        {"efficiency": 74.8, "balanced": 87.4, "performance": 100.0}
+        {"efficiency": 74.8, "balanced": 100.0, "performance": 100.0}
     )
     assert {
         tier: adaptive_tier_power_limit_w(
@@ -105,17 +105,17 @@ def test_rtx_5090_power_limit_percentages_and_575w_tier_caps() -> None:
             balanced_pct=percentages["balanced"],
         )
         for tier, percentage in percentages.items()
-    } == {"efficiency": 430, "balanced": 503, "performance": 575}
+    } == {"efficiency": 430, "balanced": 575, "performance": 575}
 
 
 def test_power_limit_pct_ampere_efficiency_takes_fixed_reduction() -> None:
-    # 80% stored - 12% reduction = 70.4; balanced halfway to full = 85.2.
+    # 80% stored - 12% reduction = 70.4; balanced keeps the stock budget.
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 3080", profile_id="efficiency"
     ) == pytest.approx(70.4)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 3080", profile_id="balanced"
-    ) == pytest.approx(85.2)
+    ) == pytest.approx(100.0)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 3080", profile_id="performance"
     ) == pytest.approx(100.0)
