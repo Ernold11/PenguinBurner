@@ -28,7 +28,7 @@ automatic undervolting & overclocking with adaptive per-game tuning targets.
   2625 MHz loaded · 254 W.
 - **Balanced** — maintain more loaded clock. RTX 5080: 860 mV · 2775 MHz
   target / 2745 MHz loaded · 272 W.
-- **Performance** — undervolt and overclock. RTX 5080: 925 mV · 2980 MHz
+- **Performance** — undervolt and overclock. RTX 5080: 925 mV · 2950 MHz
   target / 2977 MHz loaded · 313 W.
 
 For scale: the same RTX 5080 at stock uses about **341 W** under the same load.

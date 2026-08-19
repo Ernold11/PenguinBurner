@@ -1573,7 +1573,7 @@ def test_auto_uv_performance_target_default_uses_gpu_table_target() -> None:
     assert target.preset_matched is True
     assert target.gpu_family == "RTX 4090"
     assert target.voltage_mv == 925
-    assert target.clock_mhz == 2670
+    assert target.clock_mhz == 2645
 
 
 def test_auto_uv_voltage_drop_default_uses_detected_gpu_table_floor() -> None:

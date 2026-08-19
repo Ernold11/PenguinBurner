@@ -143,7 +143,7 @@ def test_target_matching_keeps_ti_super_before_base_4070() -> None:
 
     assert target is not None
     assert target.gpu_family == "RTX 4070 Ti Super"
-    assert target.clock_mhz == 2730
+    assert target.clock_mhz == 2705
 
 
 def test_4070_ti_performance_target_matches_reference_table() -> None:
@@ -155,7 +155,7 @@ def test_4070_ti_performance_target_matches_reference_table() -> None:
     assert target is not None
     assert target.gpu_family == "RTX 4070 Ti"
     assert target.voltage_mv == 950
-    assert target.clock_mhz == 2685
+    assert target.clock_mhz == 2660
 
 
 def test_3080_uses_ampere_table_values() -> None:
@@ -168,7 +168,7 @@ def test_3080_uses_ampere_table_values() -> None:
     assert floor.voltage_mv == 800
     assert floor.clock_mhz == 1750
     assert ceiling.voltage_mv == 900
-    assert ceiling.clock_mhz == 1950
+    assert ceiling.clock_mhz == 1930
 
 
 def test_3080_12gb_matches_before_base_3080() -> None:
@@ -180,7 +180,7 @@ def test_3080_12gb_matches_before_base_3080() -> None:
     assert target is not None
     assert target.gpu_family == "RTX 3080 12GB"
     assert target.voltage_mv == 900
-    assert target.clock_mhz == 1920
+    assert target.clock_mhz == 1900
     assert (
         uv_limit_profile_target_for_gpu("NVIDIA GeForce RTX 3080 12GB", "max")
         is None

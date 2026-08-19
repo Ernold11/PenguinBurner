@@ -14,6 +14,7 @@
 - Add per-GPU profiles, filtering, Steam targeting, and serial startup
   application (#46). Active daemon monitoring, adaptive switching, drift
   recovery, and fan control still cover one GPU at a time.
-- Reduce the RTX 5080 Performance target from 2980 to 2950 MHz. With the
-  default four-bin rising tail, its nominal upper target is now 3010 MHz
-  instead of 3040 MHz.
+- Lower every GPU-table Performance target proportionally (the RTX 5080's
+  2980 → 2950 MHz ratio, about 1%) so the default four-bin rising tail stays
+  below each family's clock ceiling; before this it could top out above the
+  ceiling on some GPUs.
