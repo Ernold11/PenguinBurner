@@ -602,3 +602,48 @@ def test_profile_spec_carries_power_metrics_only_when_present(monkeypatch) -> No
     spec = runtime_spec.build_runtime_spec(profile_selector="junk-power")
     assert "avg_power_w" not in spec["static_profile"]
     assert "base_avg_power_w" not in spec["static_profile"]
+
+
+def test_adaptive_without_explicit_profile_includes_legacy_tiers_on_single_gpu(
+    monkeypatch,
+) -> None:
+    _stub_runtime_sources(monkeypatch)
+    monkeypatch.setattr(
+        runtime_spec.DaemonGpuClient,
+        "discover_identities",
+        lambda: [SimpleNamespace(index=2, uuid="GPU-test-2")],
+    )
+    calls: list[dict[str, object]] = []
+
+    def adaptive(selected_curve, **kwargs):
+        calls.append({"selected_curve": selected_curve, **kwargs})
+        return {"initial_tier": "balanced"}
+
+    monkeypatch.setattr(runtime_spec, "_adaptive_spec", adaptive)
+
+    spec = runtime_spec.build_runtime_spec(
+        profile_selector="",
+        adaptive_auto_uv=True,
+    )
+
+    assert spec["mode"] == "adaptive"
+    assert calls[0]["selected_curve"] is None
+    assert calls[0]["include_legacy_profiles"] is True
+
+
+def test_adaptive_request_fails_closed_instead_of_degrading_to_stock(
+    monkeypatch,
+) -> None:
+    _stub_runtime_sources(monkeypatch)
+    monkeypatch.setattr(
+        runtime_spec.DaemonGpuClient,
+        "discover_identities",
+        lambda: [SimpleNamespace(index=2, uuid="GPU-test-2")],
+    )
+    monkeypatch.setattr(runtime_spec, "_adaptive_spec", lambda *args, **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="adaptive Auto-UV was requested"):
+        runtime_spec.build_runtime_spec(
+            profile_selector="",
+            adaptive_auto_uv=True,
+        )

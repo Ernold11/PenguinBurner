@@ -513,3 +513,40 @@ def test_profile_sort_time_falls_back_to_path_mtime(tmp_path) -> None:
         "mtime-profile",
         "walltime-profile",
     }
+
+
+def test_reassigning_a_disabled_profile_clears_the_stale_disabled_list(
+    tmp_path,
+) -> None:
+    path = tmp_path / "assignments.json"
+    save_profile_tier_none_assignment("p1", path=path)
+    assert load_profile_tier_disabled_profile_ids(path) == {"p1"}
+
+    assignments = save_profile_tier_assignment("p1", "balanced", path=path)
+
+    assert assignments == {PROFILE_TIER_BALANCED: "p1"}
+    assert load_profile_tier_assignments(path) == {PROFILE_TIER_BALANCED: "p1"}
+    assert load_profile_tier_disabled_profile_ids(path) == set()
+    assert "disabled_profile_ids" not in json.loads(path.read_text())
+
+
+def test_migrating_a_disabled_profile_clears_the_legacy_disabled_list(
+    tmp_path,
+) -> None:
+    path = tmp_path / "assignments.json"
+    save_profile_tier_none_assignment("p1", path=path)
+
+    migrate_legacy_profile_tier_to_gpu("p1", "GPU-a", path=path)
+
+    assert load_profile_tier_disabled_profile_ids(path) == set()
+    assert load_profile_tier_disabled_profile_ids(path, gpu_uuid="GPU-a") == {"p1"}
+
+    save_profile_tier_assignment("p1", "balanced", path=path, gpu_uuid="GPU-a")
+
+    assert load_profile_tier_assignments(path, gpu_uuid="GPU-a") == {
+        PROFILE_TIER_BALANCED: "p1"
+    }
+    assert load_profile_tier_disabled_profile_ids(path, gpu_uuid="GPU-a") == set()
+    # Single-GPU adaptive resolution unions the legacy list with the GPU
+    # group's, so a stale legacy entry would keep excluding the profile.
+    assert "disabled_profile_ids" not in json.loads(path.read_text())

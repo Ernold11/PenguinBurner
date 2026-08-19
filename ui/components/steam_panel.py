@@ -620,10 +620,16 @@ class SteamPanel:
         if not callable(self.adaptive_available):
             adaptive_ok = True
         else:
+            # Legacy (identity-less) profiles stay usable on a physically
+            # unambiguous one-GPU machine, matching the game-launch path.
+            single_gpu = len(self._gpu_choices) == 1
             try:
-                adaptive_ok = bool(self.adaptive_available(gpu_uuid))
+                adaptive_ok = bool(self.adaptive_available(gpu_uuid, single_gpu))
             except TypeError:
-                adaptive_ok = bool(self.adaptive_available())
+                try:
+                    adaptive_ok = bool(self.adaptive_available(gpu_uuid))
+                except TypeError:
+                    adaptive_ok = bool(self.adaptive_available())
         adaptive_index = self.mode_combo.findData(GAME_MODE_ADAPTIVE)
         if adaptive_index >= 0:
             item = self.mode_combo.model().item(adaptive_index)

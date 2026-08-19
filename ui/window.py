@@ -157,10 +157,11 @@ class MainWindow(ProfileActionsMixin):
             QtCore=self.QtCore,
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
-            adaptive_available=lambda gpu_uuid="": len(
+            adaptive_available=lambda gpu_uuid="", include_legacy_profiles=False: len(
                 adaptive_profile_tier_labels(
                     self.profile_summaries,
                     gpu_uuid=gpu_uuid,
+                    include_legacy_profiles=include_legacy_profiles,
                 )
             )
             >= 1,

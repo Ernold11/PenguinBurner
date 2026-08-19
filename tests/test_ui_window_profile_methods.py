@@ -246,7 +246,7 @@ def test_delete_selected_profiles(win) -> None:
     monkeypatch.setattr(window.profile_list, "selected_profile_ids", lambda: ["p1"])
     monkeypatch.setattr(window.profile_list, "selected_profile_paths", lambda: ["/tmp/p1.json"])
     monkeypatch.setattr(
-        actions_mod, "profile_delete_autostart_action", lambda *a: {"action": "keep"}
+        actions_mod, "profile_delete_autostart_action", lambda *a, **k: {"action": "keep"}
     )
     monkeypatch.setattr(MainWindow, "_confirm_profile_delete", lambda self, **k: True)
     deleted = []

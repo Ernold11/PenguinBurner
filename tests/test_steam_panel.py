@@ -938,3 +938,33 @@ def test_refused_stop_falls_back_to_running(
 
     panel._sync_timer.stop()
     panel._game_state_timer.stop()
+
+
+def test_single_gpu_adaptive_availability_passes_legacy_flag(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    QtCore, QtGui, QtWidgetsModule, _pg = import_qt()
+    manager = _FakeManager((_row(tmp_path, "10", "Alpha", 100),))
+    calls: list[tuple[str, bool]] = []
+
+    def availability(gpu_uuid="", include_legacy_profiles=False):
+        calls.append((gpu_uuid, include_legacy_profiles))
+        return True
+
+    panel = SteamPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgetsModule,
+        manager=cast(SteamIntegrationManager, manager),
+        adaptive_available=availability,
+        gpu_choices=lambda: (
+            SimpleNamespace(uuid="GPU-only", label="GPU 0 - RTX Only"),
+        ),
+    )
+    qtbot.addWidget(panel.widget)
+    panel.widget.show()
+    qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
+
+    assert calls
+    assert calls[-1] == ("GPU-only", True)

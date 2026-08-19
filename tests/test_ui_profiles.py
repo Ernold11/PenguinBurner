@@ -56,7 +56,7 @@ def test_delete_autostart_action_adaptive_branches(monkeypatch) -> None:
     monkeypatch.setattr(
         profiles,
         "resolve_profile_tier_profiles",
-        lambda profs, *, gpu_uuid="": {"balanced": _P2},
+        lambda profs, *, gpu_uuid="", include_legacy_profiles=False: {"balanced": _P2},
     )
 
     # Two remaining tiers -> keep.
@@ -422,3 +422,47 @@ def test_runner_status_text_shows_per_game_override_and_standing() -> None:
     assert "(per-game)" in status
     assert "Standing: Default" in status
     assert "Autostart: No" in status
+
+
+def test_delete_autostart_keeps_adaptive_when_legacy_tiers_remain_on_single_gpu() -> None:
+    bound = {
+        "profile_id": "bound-a",
+        "final_verified": True,
+        "profile_tier": "Performance",
+        "gpu_identity": {"uuid": "GPU-A"},
+    }
+    legacy = {
+        "profile_id": "legacy-b",
+        "final_verified": True,
+        "profile_tier": "Balanced",
+    }
+    info = {"selector": "bound-a", "adaptive_auto_uv": True, "gpu_uuid": "GPU-A"}
+
+    without_legacy = profiles.profile_delete_autostart_action(
+        [bound, legacy], ["bound-a"], info
+    )
+    with_legacy = profiles.profile_delete_autostart_action(
+        [bound, legacy], ["bound-a"], info, include_legacy_profiles=True
+    )
+
+    assert without_legacy == {
+        "action": "restore-stock",
+        "reason": "last-usable-adaptive-profile",
+    }
+    assert with_legacy == {"action": "keep"}
+
+
+def test_adaptive_tier_helpers_include_legacy_profiles_on_single_gpu() -> None:
+    legacy = {
+        "profile_id": "legacy-b",
+        "final_verified": True,
+        "profile_tier": "Balanced",
+    }
+
+    assert profiles.adaptive_profile_tier_keys([legacy], gpu_uuid="GPU-A") == []
+    assert profiles.adaptive_profile_tier_keys(
+        [legacy], gpu_uuid="GPU-A", include_legacy_profiles=True
+    ) == ["balanced"]
+    assert profiles.adaptive_profile_tier_labels(
+        [legacy], gpu_uuid="GPU-A", include_legacy_profiles=True
+    ) == ["Balanced"]

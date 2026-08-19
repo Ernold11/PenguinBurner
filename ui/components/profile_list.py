@@ -426,6 +426,9 @@ class ProfileList:
     def target_selection_required(self) -> bool:
         return self._target_selection_required
 
+    def single_physical_gpu(self) -> bool:
+        return len(self._gpu_choices) == 1
+
     def profile_matches_target(self, profile: dict) -> bool:
         compatibility = profile_gpu_compatibility(profile, self._target_gpu_uuid)
         if compatibility == GPU_COMPATIBILITY_MATCH:

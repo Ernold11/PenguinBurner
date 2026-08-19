@@ -180,24 +180,31 @@ def build_runtime_spec(
     static_profile = None
     adaptive = None
     if adaptive_auto_uv:
-        include_legacy_profiles = False
-        if selected_curve is not None and not bound_uuid:
-            try:
-                if discovered_identities is None:
-                    discovered_identities = DaemonGpuClient.discover_identities()
-                include_legacy_profiles = len(discovered_identities) == 1
-            except Exception:
-                # The selected legacy profile still provides one valid tier;
-                # failure to enumerate peers must not make the apply fail.
-                include_legacy_profiles = False
+        try:
+            if discovered_identities is None:
+                discovered_identities = DaemonGpuClient.discover_identities()
+            include_legacy_profiles = len(discovered_identities) == 1
+        except Exception:
+            # Peer enumeration is advisory: an explicitly selected profile
+            # still provides one valid tier; failure to enumerate peers must
+            # not make that apply fail.
+            include_legacy_profiles = False
         adaptive = _adaptive_spec(
             selected_curve,
             target_fps_override=adaptive_target_fps,
             gpu_uuid=str(identity["uuid"]),
             include_legacy_profiles=include_legacy_profiles,
         )
-        if adaptive is not None:
-            mode = "adaptive"
+        if adaptive is None:
+            # Silently degrading an explicit adaptive request to stock would
+            # run the GPU at stock without an error — and persist stock as the
+            # boot profile on the install path.
+            raise RuntimeError(
+                "adaptive Auto-UV was requested but no verified tier profiles "
+                f"resolve for GPU {identity['uuid']}; run an Auto-UV scan for "
+                "this GPU or verify its saved profiles first"
+            )
+        mode = "adaptive"
     elif selected_curve is not None:
         mode = "static"
         static_profile = _profile_spec(selected_curve)

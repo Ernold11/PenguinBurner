@@ -59,6 +59,8 @@ def profile_delete_autostart_action(
     profiles: list[dict],
     selected_ids: list[str],
     autostart_info: dict[str, object],
+    *,
+    include_legacy_profiles: bool = False,
 ) -> dict[str, str]:
     selected = {str(value).strip() for value in selected_ids if str(value).strip()}
     if not selected:
@@ -76,6 +78,7 @@ def profile_delete_autostart_action(
         resolved = resolve_profile_tier_profiles(
             remaining_profiles,
             gpu_uuid=gpu_uuid,
+            include_legacy_profiles=include_legacy_profiles,
         )
         remaining_tiers = available_adaptive_tiers(resolved)
         if remaining_tiers:
@@ -100,9 +103,13 @@ def adaptive_profile_tier_keys(
     *,
     assignments: dict[str, str] | None = None,
     gpu_uuid: str = "",
+    include_legacy_profiles: bool = False,
 ) -> list[str]:
     resolved = resolve_profile_tier_profiles(
-        list(profiles), assignments=assignments, gpu_uuid=gpu_uuid
+        list(profiles),
+        assignments=assignments,
+        gpu_uuid=gpu_uuid,
+        include_legacy_profiles=include_legacy_profiles,
     )
     return available_adaptive_tiers(resolved)
 
@@ -112,13 +119,17 @@ def adaptive_profile_tier_labels(
     *,
     assignments: dict[str, str] | None = None,
     gpu_uuid: str = "",
+    include_legacy_profiles: bool = False,
 ) -> list[str]:
     return [
         label
         for label in (
             profile_tier_label(tier)
             for tier in adaptive_profile_tier_keys(
-                profiles, assignments=assignments, gpu_uuid=gpu_uuid
+                profiles,
+                assignments=assignments,
+                gpu_uuid=gpu_uuid,
+                include_legacy_profiles=include_legacy_profiles,
             )
         )
         if label

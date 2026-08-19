@@ -216,6 +216,7 @@ class ProfileActionsMixin:
             tiers = adaptive_profile_tier_labels(
                 self.profile_summaries,
                 gpu_uuid=target_gpu_uuid,
+                include_legacy_profiles=self.profile_list.single_physical_gpu(),
             )
             if not tiers:
                 available = ", ".join(tiers) if tiers else "none"
@@ -616,6 +617,7 @@ class ProfileActionsMixin:
             self.profile_summaries,
             list(selected_ids),
             autostart_info,
+            include_legacy_profiles=self.profile_list.single_physical_gpu(),
         )
         # Session-only applies (Apply-on-startup unticked) leave no boot
         # entry, so also check the actively running profile — deleting it
@@ -626,6 +628,7 @@ class ProfileActionsMixin:
                 self.profile_summaries,
                 list(selected_ids),
                 running_auto_uv_profile_info(),
+                include_legacy_profiles=self.profile_list.single_physical_gpu(),
             )
         restore_stock = "restore-stock" in (
             autostart_action.get("action"),

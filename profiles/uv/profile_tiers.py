@@ -497,6 +497,11 @@ def _write_profile_tier_assignments(
             "updated_at": datetime.now().astimezone().isoformat(),
             **group,
         }
+        if not disabled:
+            # ``group`` omits the key when the set is empty, so spreading
+            # ``existing`` would resurrect a previously written list and keep
+            # re-enabled profiles excluded from tier resolution.
+            payload.pop("disabled_profile_ids", None)
     return atomic_write_json(assignment_path, payload)
 
 
