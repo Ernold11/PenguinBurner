@@ -148,17 +148,21 @@ Runtime and daemon mode prefer the saved curve automatically:
 ./penguin_burner.sh --daemonize --auto-uv-profile latest --silent-fan-curve
 ```
 
-After the daemon's one-time installation, persist the latest verified profile
-for boot through its socket API:
+Make the latest verified profile the boot profile. The command performs the
+full service install (refresh the daemon binary, rewrite the unit, restart the
+service) before saving the boot profile, so it needs root:
 
 ```bash
-./penguin_burner.sh --install-systemd-service --auto-uv-profile latest
-./penguin_burner.sh --install-systemd-service --auto-uv-profile latest --silent-fan-curve
+sudo ./penguin_burner.sh --install-systemd-service --auto-uv-profile latest
+sudo ./penguin_burner.sh --install-systemd-service --auto-uv-profile latest --silent-fan-curve
 ```
 
+To set the boot profile without a password, tick **Apply on startup** in the
+GUI and then apply the profile — the boot entry is written at apply time.
+
 Export a saved curve to [LACT](https://github.com/ilya-zlobintsev/LACT) from the
-GUI Profiles view. Add the silent fan curve in the export dialog when you want
-LACT to manage fan settings too. Review the generated file, then:
+GUI Profiles view. Tick **Silent fan curve** in the Profiles tab before
+exporting when you want LACT to manage fan settings too. Review the generated file, then:
 
 ```bash
 sudo install -m 0644 lact-config.yaml /etc/lact/config.yaml

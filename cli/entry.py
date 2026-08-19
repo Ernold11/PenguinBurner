@@ -89,8 +89,8 @@ def dispatch_cli(
         _require_adaptive_profiles_available(runtime_flags, runtime_argv)
         _reject_auto_uv_scan_in_background(runtime_flags, runtime_argv)
         if runtime_flags["install_systemd_service"]:
-            # Always run the real install: it refreshes the /usr/libexec daemon
-            # binary, rewrites the unit, and restarts the service. Probing the
+            # Always run the real install: it refreshes the canonical /var/opt
+            # daemon binary, rewrites the unit, and restarts the service. Probing the
             # socket and "applying instead" when a daemon answered left users
             # running a stale daemon with success-looking output (issue #30).
             install_systemd_service(

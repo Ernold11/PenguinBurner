@@ -107,7 +107,7 @@ def parse_arguments(argv):
         help=(
             "Auto-UV preset path. efficiency uses a flat base sweep plus a "
             "low-voltage tail-tune pass; balanced uses the 4-bin tail sweep; "
-            "performance uses the 6-bin tail sweep plus Auto-OC."
+            "performance uses the 4-bin tail sweep plus Auto-OC."
         ),
     )
     auto_uv_group.add_argument(
@@ -256,9 +256,10 @@ def parse_arguments(argv):
         action="store_true",
         help=(
             "Install or update the PenguinBurner daemon service: refresh the "
-            "/usr/libexec daemon binary, rewrite the unit, and restart it. "
-            "With profile options, also set the persistent boot profile; "
-            "without them, an existing boot profile is kept."
+            "daemon binary at /var/opt/penguin-burner/libexec, rewrite the "
+            "unit, and restart it. With profile options, also set the "
+            "persistent boot profile; without them, an existing boot profile "
+            "is kept."
         ),
     )
     daemon_group.add_argument(

@@ -13,7 +13,11 @@ Privileged GPU writes are performed by the root hardware service
 (`penguin-burnerd.service`, a compiled Rust daemon); the CLI itself and Auto-UV
 scans run as your regular user and talk to it over a local socket. `sudo` is
 only needed to install, repair, migrate, or explicitly uninstall the root
-service. Runtime/profile and boot-profile changes use the running daemon.
+service. Session profile changes use the running daemon; setting a saved profile as the
+boot profile from the CLI goes through the sudo service-install command (see
+Profiles And Runtime below), while `--restore-stock` resets the boot state to
+stock and the GUI's **Apply on startup** workflow persists a profile — both
+through the daemon socket without a password.
 
 ## Install
 
@@ -64,7 +68,7 @@ with `--auto-uv-mode efficiency|balanced|performance`.
 Common scan controls, shown for every GUI preset:
 
 - `--gpu-index N`: select the NVIDIA GPU used for scan, verification, and runtime.
-- `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed. For known GPUs the default follows the selected preset; unknown GPUs use `12.5`. On RTX 5080 the defaults are about `11.1` for Efficiency, `6.0` for Balanced, and `5.4` for Performance.
+- `--auto-uv-max-clock-drop-pct N`: maximum loaded core-clock drop allowed. For known GPUs the default follows the selected preset; unknown GPUs use `12.5`. On RTX 5080 the defaults are about `11.1` for Efficiency, `9.2` for Balanced, and `6.3` for Performance.
 - `--auto-uv-memory-offset-mhz N`: memory clock V/F offset applied during the scan and saved with the final profile.
 - `--auto-uv-power-limit-w N`: power limit applied during the scan and saved with the final profile.
 
@@ -91,7 +95,7 @@ Performance preset controls:
 - `--auto-uv-mode performance`: use the GUI Performance preset path.
 - `--auto-oc-target-voltage-mv N`: Performance Auto-OC voltage target.
 - `--auto-oc-target-clock-mhz N`: Performance Auto-OC clock target.
-- `--auto-uv-tail-rise-bins 6`: the GUI Performance preset shape. The runtime fills this in automatically when omitted.
+- `--auto-uv-tail-rise-bins 4`: the GUI Performance preset shape. The runtime fills this in automatically when omitted.
 
 Examples:
 
@@ -106,7 +110,7 @@ Balanced with all common GUI knobs made explicit:
 ```bash
 ./penguin_burner.sh --auto-uv-voltage-scan \
   --auto-uv-mode balanced \
-  --auto-uv-max-clock-drop-pct 6.0 \
+  --auto-uv-max-clock-drop-pct 9.2 \
   --auto-uv-memory-offset-mhz 500 \
   --auto-uv-power-limit-w 390
 ```
@@ -144,7 +148,7 @@ Performance with a custom Auto-OC target:
   --auto-uv-mode performance \
   --auto-oc-target-voltage-mv 910 \
   --auto-oc-target-clock-mhz 2950 \
-  --auto-uv-tail-rise-bins 6
+  --auto-uv-tail-rise-bins 4
 ```
 
 Performance with common scan limits too:
@@ -154,7 +158,7 @@ Performance with common scan limits too:
   --auto-uv-mode performance \
   --auto-oc-target-voltage-mv 910 \
   --auto-oc-target-clock-mhz 2950 \
-  --auto-uv-max-clock-drop-pct 5.4 \
+  --auto-uv-max-clock-drop-pct 6.3 \
   --auto-uv-memory-offset-mhz 500 \
   --auto-uv-power-limit-w 390
 ```
@@ -182,21 +186,31 @@ Apply the latest saved Auto-UV profile as a daemon after a final curve exists:
 ./penguin_burner.sh --daemonize --auto-uv-profile latest
 ```
 
-Persist the latest verified Auto-UV profile for boot through the installed daemon:
+Make the latest verified Auto-UV profile the boot profile for the selected
+GPU. This command always performs the full service install — it refreshes the
+daemon binary at the canonical
+`/var/opt/penguin-burner/libexec/penguin-burnerd` path, rewrites the systemd
+unit, and restarts the service before saving the boot profile — so it needs
+root:
 
 ```bash
-./penguin_burner.sh --install-systemd-service --auto-uv-profile latest
+sudo ./penguin_burner.sh --install-systemd-service --auto-uv-profile latest
 ```
 
 Persist it with the saved silent fan curve too:
 
 ```bash
-./penguin_burner.sh --install-systemd-service --auto-uv-profile latest --silent-fan-curve
+sudo ./penguin_burner.sh --install-systemd-service --auto-uv-profile latest --silent-fan-curve
 ```
 
-If the daemon has not had its one-time installation yet, use the migration
-command from the Install section first; changing the boot profile afterward
-does not reinstall the service or ask for another password.
+Without profile options the same command reinstalls or repairs the service
+and keeps any existing boot profile. Reinstalling every time is deliberate:
+skipping the install when a daemon already answered used to leave a stale
+daemon binary running behind a success message. To change the boot profile
+without a password, tick **Apply on startup** in the GUI and then apply the
+profile (the boot entry is written at apply time);
+`--daemonize --auto-uv-profile latest` applies for the current session only
+and never changes the boot profile.
 
 Remove the persistent boot-time service:
 
@@ -225,10 +239,10 @@ Adaptive Auto-UV can switch between saved verified profile tiers:
 ./penguin_burner.sh --daemonize --adaptive-auto-uv
 ```
 
-For persistent adaptive boot autostart:
+For persistent adaptive boot autostart (full service install, root required):
 
 ```bash
-./penguin_burner.sh --install-systemd-service --adaptive-auto-uv
+sudo ./penguin_burner.sh --install-systemd-service --adaptive-auto-uv
 ```
 
 Generated Efficiency, Balanced, and Performance scans are tiered automatically.
