@@ -277,7 +277,8 @@ fn mobile_tick(
             match client_verdict(
                 clients,
                 ClientPhase::Attached,
-                supervisor::profile_gpu_index(sup),
+                None,
+                &|| supervisor::profile_gpu_index(sup),
             ) {
                 ClientVerdict::Busy(observation) => {
                     super::record_gpu_clients(observation);
@@ -333,13 +334,20 @@ fn mobile_tick(
     }
     if state.active_ticks >= SUSTAINED_ACTIVE_TICKS && !state.start_attempted {
         let target = super::target_pci_addr();
+        // The index resolver opens NVML, so it must stay lazy: evaluated only
+        // when the detector actually probes, never on latched ticks — a
+        // per-tick NVML session would reset the driver's autosuspend timer
+        // and keep the very GPU this feature parks from ever suspending.
         match client_verdict(
             clients,
             ClientPhase::Deferred,
-            supervisor::deferred_runtime_gpu_index(
-                target.as_deref(),
-                legacy_target_unambiguous,
-            ),
+            target.as_deref(),
+            &|| {
+                supervisor::deferred_runtime_gpu_index(
+                    target.as_deref(),
+                    legacy_target_unambiguous,
+                )
+            },
         ) {
             ClientVerdict::Busy(observation) => {
                 super::record_gpu_clients(observation);
@@ -372,11 +380,13 @@ fn mobile_tick(
 fn client_verdict(
     detector: &mut ClientDetector,
     phase: ClientPhase,
-    gpu_index: Option<u32>,
+    target_key: Option<&str>,
+    resolve_gpu_index: &dyn Fn() -> Option<u32>,
 ) -> ClientVerdict {
     detector.tick(ClientTick {
         phase,
-        gpu_index,
+        target_key,
+        resolve_gpu_index,
         fine_grained: super::fine_grained_mode(),
         runtime_status: super::last_runtime_status(),
     })

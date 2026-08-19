@@ -21,10 +21,17 @@ pub(crate) enum ClientPhase {
     Deferred,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ClientTick {
+#[derive(Clone, Copy)]
+pub(crate) struct ClientTick<'a> {
     pub phase: ClientPhase,
-    pub gpu_index: Option<u32>,
+    /// NVML-free identity of the deferred target (the persisted PCI address);
+    /// used only to invalidate the idle latch when the target moves.
+    pub target_key: Option<&'a str>,
+    /// Resolves the target's current NVML device index. Invoked only when a
+    /// context probe is actually due — never on latched or unsafe ticks —
+    /// because resolution itself opens an NVML session, and a per-tick session
+    /// resets the driver's autosuspend timer and can hold the GPU awake.
+    pub resolve_gpu_index: &'a dyn Fn() -> Option<u32>,
     pub fine_grained: bool,
     pub runtime_status: Option<RuntimePmStatus>,
 }
@@ -48,7 +55,7 @@ pub(crate) enum ClientVerdict {
 const LATCH_REPROBE_TICKS: u32 = 300;
 
 struct IdleLatch {
-    gpu_index: Option<u32>,
+    target_key: Option<String>,
     holders: Vec<GpuClientProcess>,
     /// Consecutive latch hits; at [`LATCH_REPROBE_TICKS`] the latch expires
     /// into one fresh probe.
@@ -90,7 +97,7 @@ impl ClientDetector {
         }
     }
 
-    pub(crate) fn tick(&mut self, input: ClientTick) -> ClientVerdict {
+    pub(crate) fn tick(&mut self, input: ClientTick<'_>) -> ClientVerdict {
         // A running profile engine already owns and wakes the GPU even if the
         // cached sysfs sample still says `suspended`. Only a deferred runtime
         // relies on runtime_status to prove a query is safe.
@@ -105,21 +112,13 @@ impl ClientDetector {
             }
             return ClientVerdict::Pending;
         }
-        // Fine-grained deferred detection must query contexts for the exact
-        // GPU. Without a resolved index, the global /dev/nvidiaN holder scan
-        // cannot distinguish another card and must never authorize replay.
-        if input.phase == ClientPhase::Deferred
-            && input.fine_grained
-            && input.gpu_index.is_none()
-        {
-            self.clear_idle_latch();
-            return ClientVerdict::Pending;
-        }
 
         let holders = nvidia_device_node_holders_in(&self.proc_root, self.self_pid);
         if input.phase == ClientPhase::Deferred && input.fine_grained {
             if let Some(latch) = self.idle_latch.as_mut() {
-                if latch.gpu_index == input.gpu_index && latch.holders == holders {
+                if latch.target_key.as_deref() == input.target_key
+                    && latch.holders == holders
+                {
                     latch.held_ticks = latch.held_ticks.saturating_add(1);
                     if latch.held_ticks < LATCH_REPROBE_TICKS {
                         return ClientVerdict::Pending;
@@ -132,12 +131,25 @@ impl ClientDetector {
         }
         self.clear_idle_latch();
 
-        let observation = match self.observe(input.gpu_index, input.fine_grained, holders.clone()) {
+        // A probe is due, so the one NVML-opening resolution is safe: the
+        // probe itself opens NVML on the same tick anyway.
+        let gpu_index = (input.resolve_gpu_index)();
+        // Fine-grained deferred detection must query contexts for the exact
+        // GPU. Without a resolved index, the global /dev/nvidiaN holder scan
+        // cannot distinguish another card and must never authorize replay.
+        if input.phase == ClientPhase::Deferred
+            && input.fine_grained
+            && gpu_index.is_none()
+        {
+            return ClientVerdict::Pending;
+        }
+
+        let observation = match self.observe(gpu_index, input.fine_grained, holders.clone()) {
             Ok(observation) => observation,
             Err(error) => {
                 log_context_shutdown_failure(&error);
                 if input.phase == ClientPhase::Deferred && input.fine_grained {
-                    self.latch_idle(input.gpu_index, holders);
+                    self.latch_idle(input.target_key, holders);
                 }
                 return ClientVerdict::Pending;
             }
@@ -147,7 +159,10 @@ impl ClientDetector {
         }
 
         if input.phase == ClientPhase::Deferred && input.fine_grained {
-            self.latch_idle(input.gpu_index, observation.device_node_holders.clone());
+            self.latch_idle(
+                input.target_key,
+                observation.device_node_holders.clone(),
+            );
         }
         ClientVerdict::Idle(observation)
     }
@@ -198,9 +213,9 @@ impl ClientDetector {
         Ok(observation)
     }
 
-    fn latch_idle(&mut self, gpu_index: Option<u32>, holders: Vec<GpuClientProcess>) {
+    fn latch_idle(&mut self, target_key: Option<&str>, holders: Vec<GpuClientProcess>) {
         self.idle_latch = Some(IdleLatch {
-            gpu_index,
+            target_key: target_key.map(str::to_string),
             holders,
             held_ticks: 0,
         });
@@ -419,10 +434,19 @@ mod tests {
         }
     }
 
-    fn active_tick(phase: ClientPhase) -> ClientTick {
+    fn resolve_index_zero() -> Option<u32> {
+        Some(0)
+    }
+
+    fn resolve_index_none() -> Option<u32> {
+        None
+    }
+
+    fn active_tick(phase: ClientPhase) -> ClientTick<'static> {
         ClientTick {
             phase,
-            gpu_index: Some(0),
+            target_key: Some("0000:01:00.0"),
+            resolve_gpu_index: &resolve_index_zero,
             fine_grained: true,
             runtime_status: Some(RuntimePmStatus::Active),
         }
@@ -501,10 +525,51 @@ mod tests {
         };
         let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
         let mut input = active_tick(ClientPhase::Deferred);
-        input.gpu_index = None;
+        input.resolve_gpu_index = &resolve_index_none;
         assert_eq!(detector.tick(input), ClientVerdict::Pending);
         assert_eq!(*calls.borrow(), 0);
     }
+
+    #[test]
+    fn latched_ticks_never_invoke_the_gpu_index_resolver() {
+        // Regression: the watcher used to resolve the deferred target's NVML
+        // index eagerly on every tick, opening an NVML session per second
+        // while waiting for suspension — which itself can keep the GPU awake.
+        let root = tempfile::tempdir().unwrap();
+        let calls = Rc::new(RefCell::new(0));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: Rc::new(RefCell::new(GpuContextPids::default())),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        let resolves = Rc::new(RefCell::new(0u32));
+        let resolves_seen = resolves.clone();
+        let resolver = move || {
+            *resolves_seen.borrow_mut() += 1;
+            Some(0)
+        };
+
+        let run_tick = |detector: &mut ClientDetector| {
+            detector.tick(ClientTick {
+                phase: ClientPhase::Deferred,
+                target_key: Some("0000:01:00.0"),
+                resolve_gpu_index: &resolver,
+                fine_grained: true,
+                runtime_status: Some(RuntimePmStatus::Active),
+            })
+        };
+
+        assert!(matches!(run_tick(&mut detector), ClientVerdict::Idle(_)));
+        assert_eq!(*resolves.borrow(), 1);
+        for _ in 0..10 {
+            assert_eq!(run_tick(&mut detector), ClientVerdict::Pending);
+        }
+        // The awake-and-idle steady state stays NVML-free end to end: neither
+        // the resolver nor the context provider runs again while latched.
+        assert_eq!(*resolves.borrow(), 1);
+        assert_eq!(*calls.borrow(), 1);
+    }
+
 
     #[test]
     fn shutdown_failure_is_pending_and_does_not_create_a_probe_loop() {
@@ -689,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_latch_does_not_cross_gpu_indices() {
+    fn idle_latch_does_not_cross_deferred_targets() {
         let root = tempfile::tempdir().unwrap();
         let calls = Rc::new(RefCell::new(0));
         let provider = ScriptedProvider {
@@ -703,7 +768,7 @@ mod tests {
         ));
 
         let mut other_gpu = active_tick(ClientPhase::Deferred);
-        other_gpu.gpu_index = Some(1);
+        other_gpu.target_key = Some("0000:02:00.0");
         assert!(matches!(detector.tick(other_gpu), ClientVerdict::Idle(_)));
         assert_eq!(*calls.borrow(), 2);
     }
