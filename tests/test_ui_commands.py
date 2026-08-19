@@ -1620,7 +1620,8 @@ def test_auto_uv_voltage_drop_default_falls_back_to_generic_when_unmatched() -> 
 
     assert preview.preset_matched is False
     assert preview.value_pct == pytest.approx(10.0)
-    assert preview.floor_voltage_mv == 900
+    assert preview.floor_voltage_mv is None
+    assert preview.reference_voltage_mv is None
 
 
 def test_auto_uv_voltage_drop_default_uses_ampere_table_for_3080() -> None:
@@ -2445,9 +2446,9 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
         scan_tuning,
         "auto_uv_voltage_drop_default",
         lambda gpu_name=None, **_kwargs: SimpleNamespace(
-            gpu_name="NVIDIA GeForce RTX 5060 Laptop GPU",
-            value_pct=15.0,
-            floor_voltage_mv=850,
+            gpu_name="NVIDIA GeForce RTX 2050 Laptop GPU",
+            value_pct=10.0,
+            floor_voltage_mv=None,
         ),
     )
     monkeypatch.setattr(
@@ -2484,8 +2485,8 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
             [
                 SimpleNamespace(
                     index=0,
-                    name="NVIDIA GeForce RTX 5060 Laptop GPU",
-                    label="GPU 0 - NVIDIA GeForce RTX 5060 Laptop GPU",
+                    name="NVIDIA GeForce RTX 2050 Laptop GPU",
+                    label="GPU 0 - NVIDIA GeForce RTX 2050 Laptop GPU",
                 )
             ],
             0,
@@ -2522,15 +2523,21 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
             QtWidgets.QSpinBox,
             "performanceClockSpin",
         )
+        voltage_floor = dialog.findChild(QtWidgets.QSpinBox, "voltageFloorSpin")
         assert power_slider is not None and power_spin is not None
         assert memory_spin is not None and max_drop_spin is not None
         assert performance_voltage is not None and performance_clock is not None
+        assert voltage_floor is not None
         # The mobile fixed power limit grays the power control out entirely,
         # while the other scan controls stay usable.
         assert not power_slider.isEnabled()
         assert not power_spin.isEnabled()
         assert memory_spin.isEnabled()
         assert max_drop_spin.isEnabled()
+        # An unknown GPU leaves the floor automatic. The loaded baseline probe
+        # will turn this into a 10% drop from its actual starting voltage.
+        assert voltage_floor.specialValueText() == "Auto (-10%)"
+        assert voltage_floor.value() == voltage_floor.minimum()
         memory_spin.setValue(500)
         return QtWidgets.QDialog.DialogCode.Accepted
 
@@ -2548,6 +2555,7 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
     # stock limit.
     assert options is not None
     assert "auto_uv_power_limit_w" not in options
+    assert "auto_uv_min_voltage_mv" not in options
 
 
 def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -> None:
