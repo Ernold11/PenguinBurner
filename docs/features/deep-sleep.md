@@ -43,9 +43,10 @@ gets the deferred behavior:
   graphics/compute contexts instead. Each watcher query uses a short-lived,
   context-only NVML session and closes it before making the decision. If the
   result is idle or only root-owned `nvidia-powerd`, the watcher stops NVIDIA
-  queries entirely until a changed numbered-device holder set or a kernel
-  runtime-PM sleep/wake cycle signals a new workload. It never polls NVML on a
-  timer while waiting for suspension. Under coarse-grained RTD3 any
+  queries entirely until a changed numbered-device holder set, a kernel
+  runtime-PM sleep/wake cycle, or the bounded awake-window re-probe described
+  below signals a new workload. Between those edges it never opens NVML while
+  waiting for suspension. Under coarse-grained RTD3 any
   `/dev/nvidia<N>` holder keeps the GPU awake, so there the device-handle
   scan is the accurate signal (auxiliary `nvidiactl`/`nvidia-uvm` handles
   never count).

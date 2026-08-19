@@ -131,9 +131,16 @@ impl ClientDetector {
         }
         self.clear_idle_latch();
 
-        // A probe is due, so the one NVML-opening resolution is safe: the
-        // probe itself opens NVML on the same tick anyway.
-        let gpu_index = (input.resolve_gpu_index)();
+        // The index feeds only the fine-grained NVML context query, so it is
+        // resolved only there, and only once a probe is due. Resolution itself
+        // opens an NVML session; coarse-grained ticks never latch, so an
+        // unconditional resolve would open one per second and let the daemon
+        // itself hold an otherwise-idle GPU in D0.
+        let gpu_index = if input.fine_grained {
+            (input.resolve_gpu_index)()
+        } else {
+            None
+        };
         // Fine-grained deferred detection must query contexts for the exact
         // GPU. Without a resolved index, the global /dev/nvidiaN holder scan
         // cannot distinguish another card and must never authorize replay.
@@ -751,6 +758,39 @@ mod tests {
             );
         }
         assert_eq!(*calls.borrow(), 1);
+    }
+
+    #[test]
+    fn coarse_grained_ticks_never_invoke_the_gpu_index_resolver() {
+        // Coarse-grained detection is the fd-holder scan alone; observe()
+        // ignores the index there, so the NVML-opening resolver must never
+        // run — a per-second NVML session would hold an idle GPU in D0.
+        let root = tempfile::tempdir().unwrap();
+        let calls = Rc::new(RefCell::new(0));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: Rc::new(RefCell::new(GpuContextPids::default())),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        let resolves = Rc::new(RefCell::new(0u32));
+        let resolves_seen = resolves.clone();
+        let resolver = move || {
+            *resolves_seen.borrow_mut() += 1;
+            Some(0)
+        };
+
+        for _ in 0..5 {
+            let verdict = detector.tick(ClientTick {
+                phase: ClientPhase::Deferred,
+                target_key: Some("0000:01:00.0"),
+                resolve_gpu_index: &resolver,
+                fine_grained: false,
+                runtime_status: Some(RuntimePmStatus::Active),
+            });
+            assert!(matches!(verdict, ClientVerdict::Idle(_)));
+        }
+        assert_eq!(*resolves.borrow(), 0);
+        assert_eq!(*calls.borrow(), 0);
     }
 
     #[test]

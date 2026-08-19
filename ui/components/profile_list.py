@@ -194,7 +194,10 @@ class ProfileList:
         table_signals_blocked = self.table.blockSignals(True)
         try:
             self.table.setRowCount(0)
-            tier_winner_ids = _resolved_tier_winner_ids(profiles)
+            tier_winner_ids = _resolved_tier_winner_ids(
+                profiles,
+                include_legacy_profiles=self.single_physical_gpu(),
+            )
             for profile in profiles:
                 row = self.table.rowCount()
                 self.table.insertRow(row)
@@ -1060,21 +1063,39 @@ def _profile_source_label(profile: dict) -> str:
     return labels.get(source, source)
 
 
-def _resolved_tier_winner_ids(profiles: list[dict]) -> dict[str, str]:
+def _resolved_tier_winner_ids(
+    profiles: list[dict],
+    *,
+    include_legacy_profiles: bool = False,
+) -> dict[str, str]:
     # Adaptive mode collapses every tier down to a single profile (see
     # resolve_profile_tier_profiles); the table mirrors that so each tier label
     # appears on exactly one row -- the profile adaptive mode would actually
     # pick. Superseded duplicates fall back to a blank tier in the UI.
     winners: dict[str, str] = {}
-    for gpu_uuid in {profile_gpu_uuid(profile) for profile in profiles}:
-        resolved = resolve_profile_tier_profiles(profiles, gpu_uuid=gpu_uuid)
+    gpu_uuids = {profile_gpu_uuid(profile) for profile in profiles}
+    if include_legacy_profiles and gpu_uuids - {""}:
+        # A single-GPU host resolves legacy and bound profiles as one merged
+        # population (the game-launch rule), so the tier label must land on
+        # the row adaptive would actually pick regardless of its binding.
+        gpu_uuids -= {""}
+    for gpu_uuid in gpu_uuids:
+        resolved = resolve_profile_tier_profiles(
+            profiles,
+            gpu_uuid=gpu_uuid,
+            include_legacy_profiles=include_legacy_profiles,
+        )
         for tier, profile in resolved.items():
             if not isinstance(profile, dict):
                 continue
             profile_id = str(profile.get("profile_id") or "").strip()
-            if profile_id:
-                winner_key = f"{gpu_uuid}\0{tier}" if gpu_uuid else tier
-                winners[winner_key] = profile_id
+            if not profile_id:
+                continue
+            winners[f"{gpu_uuid}\0{tier}" if gpu_uuid else tier] = profile_id
+            if include_legacy_profiles and gpu_uuid:
+                # Legacy rows look up by bare tier; mirror the merged winner
+                # so the superseded population blanks consistently.
+                winners[tier] = profile_id
     return winners
 
 
