@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -472,7 +473,14 @@ def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> Non
     monkeypatch.setattr(
         game_runtime,
         "resolve_profile_tier_profiles",
-        lambda profiles: {"balanced": {"profile_id": "profile-9"}},
+        lambda profiles, **_kwargs: {"balanced": {"profile_id": "profile-9"}},
+    )
+    monkeypatch.setattr(
+        game_runtime.DaemonGpuClient,
+        "discover_identities",
+        classmethod(
+            lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]
+        ),
     )
     calls = []
 
@@ -483,7 +491,9 @@ def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> Non
     monkeypatch.setattr(daemon_client, "start_game_runtime_profile", fake_start)
     result = manager.hot_reapply(APP_ID)
     assert result is not None and result.ok
-    assert calls == [(["--auto-uv-profile", "profile-9"], 4242, APP_ID)]
+    assert calls == [
+        (["--auto-uv-profile", "profile-9", "--gpu-index", "0"], 4242, APP_ID)
+    ]
 
 
 def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -> None:
@@ -516,7 +526,16 @@ def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -
     monkeypatch.setattr(
         game_runtime,
         "resolve_profile_tier_profiles",
-        lambda _profiles: {"performance": {"profile_id": "performance-9"}},
+        lambda _profiles, **_kwargs: {
+            "performance": {"profile_id": "performance-9"}
+        },
+    )
+    monkeypatch.setattr(
+        game_runtime.DaemonGpuClient,
+        "discover_identities",
+        classmethod(
+            lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]
+        ),
     )
 
     result = manager.hot_reapply(APP_ID)
@@ -524,7 +543,13 @@ def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -
     assert result is not None and result.ok
     assert calls == [
         (
-            ["--auto-uv-profile", "performance-9", "--adaptive-auto-uv"],
+            [
+                "--auto-uv-profile",
+                "performance-9",
+                "--adaptive-auto-uv",
+                "--gpu-index",
+                "0",
+            ],
             4242,
             APP_ID,
         )
@@ -532,6 +557,7 @@ def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -
 
 
 def test_hot_reapply_tolerates_grace_window_exit(manager, monkeypatch) -> None:
+    import integrations.steam.game_runtime as game_runtime
     import runtime.daemon_client as daemon_client
 
     manager.refresh()
@@ -549,6 +575,11 @@ def test_hot_reapply_tolerates_grace_window_exit(manager, monkeypatch) -> None:
             }
         },
     )
+    monkeypatch.setattr(
+        game_runtime.DaemonGpuClient,
+        "discover_identities",
+        classmethod(lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]),
+    )
 
     def fake_start(argv, **kwargs):
         raise RuntimeError("watch_pid 4242 is not a running process")
@@ -557,6 +588,89 @@ def test_hot_reapply_tolerates_grace_window_exit(manager, monkeypatch) -> None:
     result = manager.hot_reapply(APP_ID)
     assert result is not None and result.ok
     assert "next launch" in result.message
+
+
+def test_hot_reapply_targets_saved_gpu_for_stock(manager, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    import integrations.steam.game_runtime as game_runtime
+    import runtime.daemon_client as daemon_client
+
+    manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
+    manager.set_game_mode(APP_ID, GAME_MODE_STOCK)
+    manager.set_game_gpu(APP_ID, "GPU-B")
+    monkeypatch.setattr(
+        daemon_client,
+        "daemon_status",
+        lambda **kwargs: {
+            "game_runtime": {
+                "active": True,
+                "watched": [{"pid": 4242, "app_id": APP_ID}],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        game_runtime.DaemonGpuClient,
+        "discover_identities",
+        classmethod(
+            lambda cls: [
+                SimpleNamespace(index=0, uuid="GPU-A"),
+                SimpleNamespace(index=1, uuid="GPU-B"),
+            ]
+        ),
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        daemon_client,
+        "start_game_runtime_profile",
+        lambda argv, **kwargs: calls.append(list(argv)) or {"started": True},
+    )
+
+    result = manager.hot_reapply(APP_ID)
+
+    assert result is not None and result.ok
+    assert calls == [
+        ["--auto-uv-profile", "__stock__", "--gpu-index", "1"]
+    ]
+
+
+def test_hot_reapply_reports_ignored_concurrent_game(manager, monkeypatch) -> None:
+    import integrations.steam.game_runtime as game_runtime
+    import runtime.daemon_client as daemon_client
+
+    manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
+    manager.set_game_mode(APP_ID, GAME_MODE_STOCK)
+    monkeypatch.setattr(
+        daemon_client,
+        "daemon_status",
+        lambda **kwargs: {
+            "game_runtime": {
+                "active": True,
+                "watched": [{"pid": 4242, "app_id": APP_ID}],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        game_runtime.DaemonGpuClient,
+        "discover_identities",
+        classmethod(lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]),
+    )
+    monkeypatch.setattr(
+        daemon_client,
+        "start_game_runtime_profile",
+        lambda *args, **kwargs: {
+            "started": False,
+            "ignored": True,
+            "reason": "first-game-runtime-active",
+        },
+    )
+
+    result = manager.hot_reapply(APP_ID)
+
+    assert result is not None and not result.ok
+    assert "first-game-runtime-active" in result.message
 
 
 def test_stop_game_terminates_via_cdp(manager) -> None:

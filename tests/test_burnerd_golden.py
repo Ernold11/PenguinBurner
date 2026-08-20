@@ -160,7 +160,7 @@ def _terminate(handle: DaemonHandle) -> None:
 
 
 @pytest.fixture
-def make_daemon(tmp_path):
+def make_daemon(tmp_path, write_desktop_rtd3_tree):
     """Factory: start a fresh Rust daemon with the scan stub wired up.
 
     The stub's behavior is selected via keyword args (mapped to ``SCAN_STUB_*``
@@ -188,6 +188,7 @@ def make_daemon(tmp_path):
             state_file.write_text(json.dumps(seed_state), encoding="utf-8")
         stub = base / "scan_stub.py"
         stub.write_text(_STUB, encoding="utf-8")
+        rtd3_sys, rtd3_proc = write_desktop_rtd3_tree(base)
 
         env = os.environ.copy()
         env["PENGUIN_BURNER_DAEMON_PROGRAM_FILE"] = str(stub)
@@ -195,6 +196,8 @@ def make_daemon(tmp_path):
         env["PENGUIN_BURNERD_TEST_STATE_FILE"] = str(state_file)
         env["PENGUIN_BURNERD_TEST_INERT_ENGINE"] = "1"  # engine idles (no GPU under test)
         env["PENGUIN_BURNERD_TEST_TIMINGS"] = "1"  # fast kill ladder
+        env["PENGUIN_BURNERD_TEST_RTD3_SYSFS"] = str(rtd3_sys)
+        env["PENGUIN_BURNERD_TEST_RTD3_PROC"] = str(rtd3_proc)
         env.pop("PENGUIN_BURNER_DAEMON_ALLOWED_UID", None)  # open the peercred gate
         env.pop("NOTIFY_SOCKET", None)  # no systemd watchdog under test
         if exit_after_lines:

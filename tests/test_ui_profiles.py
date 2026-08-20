@@ -53,7 +53,11 @@ def test_delete_autostart_action_non_adaptive() -> None:
 
 def test_delete_autostart_action_adaptive_branches(monkeypatch) -> None:
     info = {"selector": "p1", "adaptive_auto_uv": True}
-    monkeypatch.setattr(profiles, "resolve_profile_tier_profiles", lambda profs: {"balanced": _P2})
+    monkeypatch.setattr(
+        profiles,
+        "resolve_profile_tier_profiles",
+        lambda profs, *, gpu_uuid="", include_legacy_profiles=False: {"balanced": _P2},
+    )
 
     # Two remaining tiers -> keep.
     monkeypatch.setattr(profiles, "available_adaptive_tiers", lambda resolved: ["a", "b"])
@@ -72,6 +76,36 @@ def test_delete_autostart_action_adaptive_branches(monkeypatch) -> None:
     assert profiles.profile_delete_autostart_action([_P1], ["p1"], info)["action"] == (
         "restore-stock"
     )
+
+
+def test_delete_adaptive_profile_only_counts_its_gpu_profiles() -> None:
+    profile_a = {
+        "profile_id": "profile-a",
+        "final_verified": True,
+        "profile_tier": "Balanced",
+        "gpu_identity": {"uuid": "GPU-A"},
+    }
+    profile_b = {
+        "profile_id": "profile-b",
+        "final_verified": True,
+        "profile_tier": "Balanced",
+        "gpu_identity": {"uuid": "GPU-B"},
+    }
+
+    action = profiles.profile_delete_autostart_action(
+        [profile_a, profile_b],
+        ["profile-a"],
+        {
+            "selector": "profile-a",
+            "adaptive_auto_uv": True,
+            "gpu_uuid": "GPU-A",
+        },
+    )
+
+    assert action == {
+        "action": "restore-stock",
+        "reason": "last-usable-adaptive-profile",
+    }
 
 
 # --- capability / label helpers ----------------------------------------------
@@ -206,6 +240,7 @@ def test_daemon_unit_autostart_and_entry_exists(monkeypatch, tmp_path) -> None:
         lambda **_kwargs: {
             "configured": True,
             "profile_id": "p4",
+            "gpu_uuid": "GPU-A",
             "runtime_mode": "static",
             "silent_fan_curve": True,
         },
@@ -216,6 +251,7 @@ def test_daemon_unit_autostart_and_entry_exists(monkeypatch, tmp_path) -> None:
         "selector": "p4",
         "silent_fan_curve": True,
         "adaptive_auto_uv": False,
+        "gpu_uuid": "GPU-A",
     }
     assert profiles.systemd_unit_entry_exists() is True
 
@@ -229,6 +265,44 @@ def test_daemon_unit_autostart_and_entry_exists(monkeypatch, tmp_path) -> None:
         profiles, "systemd_service_unit_path", lambda: tmp_path / "missing.service"
     )
     assert profiles.systemd_unit_entry_exists() is False
+
+
+def test_autostart_info_selects_saved_spec_by_gpu_uuid(monkeypatch) -> None:
+    monkeypatch.setattr(
+        profiles,
+        "boot_runtime_spec",
+        lambda **_kwargs: {
+            "configured": True,
+            "gpu_uuid": "GPU-B",
+            "main_gpu_uuid": "GPU-A",
+            "profile_id": "profile-b",
+            "runtime_mode": "static",
+            "gpus": [
+                {
+                    "configured": True,
+                    "gpu_uuid": "GPU-A",
+                    "profile_id": "profile-a",
+                    "runtime_mode": "adaptive",
+                    "silent_fan_curve": True,
+                },
+                {
+                    "configured": True,
+                    "gpu_uuid": "GPU-B",
+                    "profile_id": "profile-b",
+                    "runtime_mode": "static",
+                    "silent_fan_curve": False,
+                },
+            ],
+        },
+    )
+
+    assert profiles.systemd_autostart_profile_info(gpu_uuid="gpu-a") == {
+        "selector": "profile-a",
+        "silent_fan_curve": True,
+        "adaptive_auto_uv": True,
+        "gpu_uuid": "GPU-A",
+        "main_gpu": True,
+    }
 
 
 def test_autostart_info_uses_daemon_inside_flatpak_without_systemctl(monkeypatch) -> None:
@@ -348,3 +422,47 @@ def test_runner_status_text_shows_per_game_override_and_standing() -> None:
     assert "(per-game)" in status
     assert "Standing: Default" in status
     assert "Autostart: No" in status
+
+
+def test_delete_autostart_keeps_adaptive_when_legacy_tiers_remain_on_single_gpu() -> None:
+    bound = {
+        "profile_id": "bound-a",
+        "final_verified": True,
+        "profile_tier": "Performance",
+        "gpu_identity": {"uuid": "GPU-A"},
+    }
+    legacy = {
+        "profile_id": "legacy-b",
+        "final_verified": True,
+        "profile_tier": "Balanced",
+    }
+    info = {"selector": "bound-a", "adaptive_auto_uv": True, "gpu_uuid": "GPU-A"}
+
+    without_legacy = profiles.profile_delete_autostart_action(
+        [bound, legacy], ["bound-a"], info
+    )
+    with_legacy = profiles.profile_delete_autostart_action(
+        [bound, legacy], ["bound-a"], info, include_legacy_profiles=True
+    )
+
+    assert without_legacy == {
+        "action": "restore-stock",
+        "reason": "last-usable-adaptive-profile",
+    }
+    assert with_legacy == {"action": "keep"}
+
+
+def test_adaptive_tier_helpers_include_legacy_profiles_on_single_gpu() -> None:
+    legacy = {
+        "profile_id": "legacy-b",
+        "final_verified": True,
+        "profile_tier": "Balanced",
+    }
+
+    assert profiles.adaptive_profile_tier_keys([legacy], gpu_uuid="GPU-A") == []
+    assert profiles.adaptive_profile_tier_keys(
+        [legacy], gpu_uuid="GPU-A", include_legacy_profiles=True
+    ) == ["balanced"]
+    assert profiles.adaptive_profile_tier_labels(
+        [legacy], gpu_uuid="GPU-A", include_legacy_profiles=True
+    ) == ["Balanced"]

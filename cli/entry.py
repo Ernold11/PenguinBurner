@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
 import sys
 from typing import Callable
 
@@ -17,6 +18,7 @@ from runtime.support.runtime_service import (
     install_systemd_service,
     migrate_to_daemon_service,
     parse_runtime_flags,
+    reexec_daemon_lifecycle_with_root,
     running_under_systemd_service,
     uninstall_systemd_service,
 )
@@ -78,6 +80,16 @@ def dispatch_cli(
                 "Saved profiles were kept and can be re-applied from the GUI."
             )
             return 0
+        if (
+            runtime_flags["install_systemd_service"]
+            or runtime_flags["uninstall_systemd_service"]
+            or runtime_flags["migrate_to_daemon"]
+        ) and os.geteuid() != 0:
+            # Daemon-lifecycle commands need root, but a bare sudo on a pip
+            # --user install dies on import before product code runs. Elevate
+            # this one invocation ourselves (pkexec/sudo) with the invoking
+            # user's import root preserved.
+            return reexec_daemon_lifecycle_with_root(raw_argv)
         if runtime_flags["migrate_to_daemon"]:
             migrate_to_daemon_service(
                 program_file,
@@ -89,17 +101,16 @@ def dispatch_cli(
         _require_adaptive_profiles_available(runtime_flags, runtime_argv)
         _reject_auto_uv_scan_in_background(runtime_flags, runtime_argv)
         if runtime_flags["install_systemd_service"]:
-            try:
-                daemon_status(socket_path=DEFAULT_DAEMON_SOCKET)
-            except Exception:
-                install_systemd_service(
-                    program_file,
-                    runtime_argv,
-                    journal_hours=runtime_flags["journal_hours"],
-                    log=log,
-                )
-            else:
-                _apply_runtime_through_daemon(runtime_argv, persist_on_startup=True)
+            # Always run the real install: it refreshes the canonical /var/opt
+            # daemon binary, rewrites the unit, and restarts the service. Probing the
+            # socket and "applying instead" when a daemon answered left users
+            # running a stale daemon with success-looking output (issue #30).
+            install_systemd_service(
+                program_file,
+                runtime_argv,
+                journal_hours=runtime_flags["journal_hours"],
+                log=log,
+            )
         elif runtime_flags["uninstall_systemd_service"]:
             uninstall_systemd_service(log=log)
         elif runtime_flags["daemonize"]:

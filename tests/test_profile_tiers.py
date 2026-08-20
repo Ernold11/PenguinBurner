@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import profiles.uv.profile_tiers as tiers_mod
 from profiles.uv.profile_tiers import (
     PROFILE_TIER_BALANCED,
     PROFILE_TIER_EFFICIENCY,
@@ -13,6 +14,7 @@ from profiles.uv.profile_tiers import (
     generated_profile_tier,
     load_profile_tier_disabled_profile_ids,
     load_profile_tier_assignments,
+    migrate_legacy_profile_tier_to_gpu,
     normalize_profile_tier,
     profile_tier_disabled,
     profile_tier_summary_fields,
@@ -88,6 +90,121 @@ def test_profile_tier_none_assignment_disables_generated_tier(tmp_path) -> None:
     assert fields["profile_tier"] == ""
     assert fields["profile_tier_key"] == ""
     assert fields["profile_tier_disabled"] is True
+
+
+def test_profile_tier_assignments_are_isolated_by_gpu_uuid(tmp_path) -> None:
+    path = tmp_path / "assignments.json"
+
+    save_profile_tier_assignment(
+        "profile-a",
+        "performance",
+        path=path,
+        gpu_uuid="GPU-a",
+    )
+    save_profile_tier_assignment(
+        "profile-b",
+        "performance",
+        path=path,
+        gpu_uuid="GPU-b",
+    )
+    save_profile_tier_none_assignment(
+        "disabled-a",
+        path=path,
+        gpu_uuid="GPU-a",
+    )
+
+    assert load_profile_tier_assignments(path, gpu_uuid="GPU-a") == {
+        PROFILE_TIER_PERFORMANCE: "profile-a"
+    }
+    assert load_profile_tier_assignments(path, gpu_uuid="gpu-B") == {
+        PROFILE_TIER_PERFORMANCE: "profile-b"
+    }
+    assert load_profile_tier_disabled_profile_ids(
+        path, gpu_uuid="GPU-a"
+    ) == {"disabled-a"}
+    assert load_profile_tier_disabled_profile_ids(path, gpu_uuid="GPU-b") == set()
+    assert load_profile_tier_assignments(path) == {}
+
+
+def test_binding_migrates_legacy_tier_assignment_to_gpu(tmp_path) -> None:
+    path = tmp_path / "assignments.json"
+    save_profile_tier_assignment("profile-a", "balanced", path=path)
+
+    migrate_legacy_profile_tier_to_gpu("profile-a", "GPU-a", path=path)
+
+    assert load_profile_tier_assignments(path) == {}
+    assert load_profile_tier_assignments(path, gpu_uuid="GPU-a") == {
+        PROFILE_TIER_BALANCED: "profile-a"
+    }
+
+
+def test_binding_does_not_overwrite_existing_gpu_tier_assignment(tmp_path) -> None:
+    path = tmp_path / "assignments.json"
+    save_profile_tier_assignment("legacy-profile", "balanced", path=path)
+    save_profile_tier_assignment(
+        "gpu-profile",
+        "balanced",
+        path=path,
+        gpu_uuid="GPU-a",
+    )
+
+    migrate_legacy_profile_tier_to_gpu("legacy-profile", "GPU-a", path=path)
+
+    assert load_profile_tier_assignments(path) == {}
+    assert load_profile_tier_assignments(path, gpu_uuid="GPU-a") == {
+        PROFILE_TIER_BALANCED: "gpu-profile"
+    }
+
+
+def test_resolve_profile_tiers_only_uses_selected_gpu_group(tmp_path) -> None:
+    path = tmp_path / "assignments.json"
+    profile_a = _profile("profile-a", "Performance", "2026-06-01T12:00:00+00:00")
+    profile_a["gpu_identity"] = {"uuid": "GPU-a", "name": "A"}
+    profile_b = _profile("profile-b", "Performance", "2026-06-02T12:00:00+00:00")
+    profile_b["gpu_identity"] = {"uuid": "GPU-b", "name": "B"}
+    save_profile_tier_assignment(
+        "profile-a", "performance", path=path, gpu_uuid="GPU-a"
+    )
+
+    resolved = resolve_profile_tier_profiles(
+        [profile_a, profile_b],
+        assignments=load_profile_tier_assignments(path, gpu_uuid="GPU-a"),
+        gpu_uuid="GPU-a",
+    )
+
+    assert resolved[PROFILE_TIER_PERFORMANCE] == profile_a
+
+
+def test_resolve_selected_gpu_can_include_legacy_without_other_gpu(monkeypatch) -> None:
+    legacy = _profile("legacy", "Balanced", "2026-06-01T12:00:00+00:00")
+    profile_a = _profile("profile-a", "Performance", "2026-06-02T12:00:00+00:00")
+    profile_a["gpu_identity"] = {"uuid": "GPU-a", "name": "A"}
+    profile_b = _profile("profile-b", "Efficiency", "2026-06-03T12:00:00+00:00")
+    profile_b["gpu_identity"] = {"uuid": "GPU-b", "name": "B"}
+    monkeypatch.setattr(
+        tiers_mod,
+        "load_profile_tier_assignments",
+        lambda *, gpu_uuid="": (
+            {PROFILE_TIER_PERFORMANCE: "profile-a"}
+            if gpu_uuid
+            else {PROFILE_TIER_BALANCED: "legacy"}
+        ),
+    )
+    monkeypatch.setattr(
+        tiers_mod,
+        "load_profile_tier_disabled_profile_ids",
+        lambda *, gpu_uuid="": set(),
+    )
+
+    resolved = resolve_profile_tier_profiles(
+        [legacy, profile_a, profile_b],
+        gpu_uuid="GPU-a",
+        include_legacy_profiles=True,
+    )
+
+    assert resolved[PROFILE_TIER_BALANCED] == legacy
+    assert resolved[PROFILE_TIER_PERFORMANCE] == profile_a
+    assert resolved[PROFILE_TIER_EFFICIENCY] is None
 
 
 def test_resolve_profile_tier_profiles_prefers_pinned_then_latest_generated() -> None:
@@ -396,3 +513,40 @@ def test_profile_sort_time_falls_back_to_path_mtime(tmp_path) -> None:
         "mtime-profile",
         "walltime-profile",
     }
+
+
+def test_reassigning_a_disabled_profile_clears_the_stale_disabled_list(
+    tmp_path,
+) -> None:
+    path = tmp_path / "assignments.json"
+    save_profile_tier_none_assignment("p1", path=path)
+    assert load_profile_tier_disabled_profile_ids(path) == {"p1"}
+
+    assignments = save_profile_tier_assignment("p1", "balanced", path=path)
+
+    assert assignments == {PROFILE_TIER_BALANCED: "p1"}
+    assert load_profile_tier_assignments(path) == {PROFILE_TIER_BALANCED: "p1"}
+    assert load_profile_tier_disabled_profile_ids(path) == set()
+    assert "disabled_profile_ids" not in json.loads(path.read_text())
+
+
+def test_migrating_a_disabled_profile_clears_the_legacy_disabled_list(
+    tmp_path,
+) -> None:
+    path = tmp_path / "assignments.json"
+    save_profile_tier_none_assignment("p1", path=path)
+
+    migrate_legacy_profile_tier_to_gpu("p1", "GPU-a", path=path)
+
+    assert load_profile_tier_disabled_profile_ids(path) == set()
+    assert load_profile_tier_disabled_profile_ids(path, gpu_uuid="GPU-a") == {"p1"}
+
+    save_profile_tier_assignment("p1", "balanced", path=path, gpu_uuid="GPU-a")
+
+    assert load_profile_tier_assignments(path, gpu_uuid="GPU-a") == {
+        PROFILE_TIER_BALANCED: "p1"
+    }
+    assert load_profile_tier_disabled_profile_ids(path, gpu_uuid="GPU-a") == set()
+    # Single-GPU adaptive resolution unions the legacy list with the GPU
+    # group's, so a stale legacy entry would keep excluding the profile.
+    assert "disabled_profile_ids" not in json.loads(path.read_text())

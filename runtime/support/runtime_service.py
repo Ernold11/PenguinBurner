@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import dataclasses
 import os
 from pathlib import Path
 import pwd
@@ -9,12 +10,12 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 
 from runtime.daemon_client import DEFAULT_DAEMON_SOCKET
 from runtime.daemon_client import apply_runtime_spec
-from runtime.daemon_client import clear_boot_runtime_spec
 from runtime.daemon_client import daemon_status
 from runtime.daemon_client import set_boot_runtime_spec
 from runtime.daemon_client import stop_runtime_profile
@@ -24,6 +25,8 @@ from common.subprocess_locale import stable_subprocess_env
 
 
 SYSTEMCTL = shutil.which("systemctl") or "systemctl"
+ROOT_UID = 0
+ROOT_GID = 0
 LEGACY_PENGUIN_BURNER_UNIT_NAME = "PenguinBurner"
 PENGUIN_BURNER_DAEMON_UNIT_NAME = "penguin-burnerd"
 PENGUIN_BURNER_UNIT_NAME = PENGUIN_BURNER_DAEMON_UNIT_NAME
@@ -43,9 +46,15 @@ DESKTOP_RUNTIME_ENV_NAMES = (
     "PENGUIN_BURNER_Q2RTX_UID",
     "PENGUIN_BURNER_Q2RTX_GID",
 )
-# The only executable path permitted in the root systemd unit. Wheel/dev copies
-# are installation sources, never persistent root execution paths.
-LIBEXEC_DAEMON_BINARY = Path("/usr/libexec/penguin-burnerd")
+# The only executable path permitted in the root systemd unit. Wheel, checkout,
+# Flatpak, and native-package copies are installation sources, never persistent
+# root execution paths.
+DAEMON_INSTALL_BASE = Path("/var/opt")
+DAEMON_PRODUCT_DIRECTORY = DAEMON_INSTALL_BASE / "penguin-burner"
+DAEMON_LIBEXEC_DIRECTORY = DAEMON_PRODUCT_DIRECTORY / "libexec"
+DAEMON_BINARY = DAEMON_LIBEXEC_DIRECTORY / "penguin-burnerd"
+NATIVE_PACKAGE_DAEMON_BINARY = Path("/usr/libexec/penguin-burnerd")
+SELINUX_ENFORCE_PATH = Path("/sys/fs/selinux/enforce")
 
 
 def parse_runtime_flags(argv, *, default_journal_hours=DEFAULT_JOURNAL_HOURS):
@@ -338,7 +347,7 @@ def _packaged_daemon_binary() -> Path:
     ``runtime/daemon_bin/penguin-burnerd`` (package data). This module lives at
     ``runtime/support/runtime_service.py``, so the sibling ``daemon_bin`` dir is
     one level up from ``support``. This is the *source* copy the elevated install
-    step reads from to populate the root-owned /usr/libexec target.
+    step reads from to populate the root-owned canonical target.
     """
     return Path(__file__).resolve().parent.parent / "daemon_bin" / "penguin-burnerd"
 
@@ -357,20 +366,21 @@ def _dev_daemon_binary(program_file) -> Path:
 def daemon_binary_path(program_file, *, binary_path=None) -> str:
     """Return the sole root-service executable path.
 
-    ``binary_path`` survives only for the Flatpak unit builder; it must name the
-    same fixed host path. A unit can never point into site-packages or a checkout.
+    Lifecycle callers pass the destination returned by the install step; it
+    must still name the same fixed host path. A unit can never point into
+    site-packages or a checkout.
     """
     del program_file
-    if binary_path is not None and Path(binary_path) != LIBEXEC_DAEMON_BINARY:
+    if binary_path is not None and Path(binary_path) != DAEMON_BINARY:
         raise RuntimeError(
             "penguin-burnerd service binary must be installed at "
-            f"{LIBEXEC_DAEMON_BINARY}, not {binary_path}"
+            f"{DAEMON_BINARY}, not {binary_path}"
         )
-    return str(LIBEXEC_DAEMON_BINARY)
+    return str(DAEMON_BINARY)
 
 
 def daemon_install_source_path(program_file, *, source_path=None) -> Path:
-    """Select bytes for the privileged copy into ``/usr/libexec``.
+    """Select bytes for the privileged copy into the canonical target.
 
     Prefer the current wheel/dev payload over an older installed daemon so a
     repair also performs an update. A safe existing libexec binary is the final
@@ -382,7 +392,8 @@ def daemon_install_source_path(program_file, *, source_path=None) -> Path:
         else [
             _packaged_daemon_binary(),
             _dev_daemon_binary(program_file),
-            LIBEXEC_DAEMON_BINARY,
+            NATIVE_PACKAGE_DAEMON_BINARY,
+            DAEMON_BINARY,
         ]
     )
     for candidate in candidates:
@@ -412,6 +423,95 @@ def _installed_daemon_is_safe(path: Path, *, owner_uid=0) -> bool:
     except OSError:
         return False
     return _daemon_metadata_is_safe(metadata, owner_uid=owner_uid)
+
+
+def _ensure_safe_daemon_install_tree(
+    destination: Path,
+    *,
+    owner_uid=0,
+) -> None:
+    """Create and validate the base/product/libexec directory chain."""
+    destination = Path(destination)
+    product_directory = destination.parent.parent
+    install_base = product_directory.parent
+    for directory in (install_base, product_directory, destination.parent):
+        try:
+            metadata = directory.lstat()
+        except FileNotFoundError:
+            try:
+                directory.mkdir(mode=0o755)
+                metadata = directory.lstat()
+            except OSError as exc:
+                raise RuntimeError(
+                    f"cannot create daemon install directory {directory}: {exc}"
+                ) from exc
+        except OSError as exc:
+            raise RuntimeError(
+                f"cannot inspect daemon install directory {directory}: {exc}"
+            ) from exc
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != owner_uid
+            or metadata.st_mode & 0o022
+        ):
+            raise RuntimeError(
+                "daemon install directory is not a safe root-owned real "
+                f"directory: {directory}"
+            )
+
+
+def _reject_noexec_daemon_target(target_directory: Path) -> None:
+    """Fail early with a useful error when the target mount is ``noexec``."""
+    findmnt = shutil.which("findmnt")
+    if not findmnt:
+        return
+    result = subprocess.run(
+        [findmnt, "-no", "OPTIONS", "--target", str(target_directory)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=stable_subprocess_env(),
+        check=False,
+    )
+    if result.returncode != 0:
+        return
+    options = {option.strip() for option in result.stdout.strip().split(",")}
+    if "noexec" in options:
+        raise RuntimeError(
+            "PenguinBurner cannot install its hardware service because "
+            f"{target_directory} is mounted noexec"
+        )
+
+
+def _selinux_is_active() -> bool:
+    if SELINUX_ENFORCE_PATH.exists():
+        return True
+    selinuxenabled = shutil.which("selinuxenabled")
+    if not selinuxenabled:
+        return False
+    result = subprocess.run(
+        [selinuxenabled],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=stable_subprocess_env(),
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _restore_daemon_selinux_context(product_directory: Path) -> None:
+    if not _selinux_is_active():
+        return
+    restorecon = shutil.which("restorecon")
+    if not restorecon:
+        raise RuntimeError(
+            "SELinux is active, but restorecon is unavailable; cannot safely "
+            "label the PenguinBurner hardware service"
+        )
+    run_checked_subprocess([restorecon, "-RF", str(product_directory)])
 
 
 def _read_daemon_install_source(source: Path) -> bytes:
@@ -469,6 +569,18 @@ def _atomic_install_daemon_binary(
     temporary_fd = -1
     temporary_path = None
     try:
+        try:
+            destination_metadata = destination.lstat()
+        except FileNotFoundError:
+            destination_metadata = None
+        if destination_metadata is not None and not _daemon_metadata_is_safe(
+            destination_metadata,
+            owner_uid=owner_uid,
+        ):
+            raise RuntimeError(
+                f"installed daemon is not a safe ELF executable: {destination}"
+            )
+
         if source == destination:
             if not _installed_daemon_is_safe(
                 destination, owner_uid=owner_uid
@@ -515,11 +627,51 @@ def _atomic_install_daemon_binary(
                 pass
 
 
-def install_daemon_binary(program_file, *, source_path=None) -> bool:
+@dataclasses.dataclass(frozen=True)
+class DaemonBinaryRefresh:
+    """Outcome of one privileged daemon-binary install attempt."""
+
+    changed: bool
+    source: Path
+    destination: Path = DAEMON_BINARY
+
+
+def describe_daemon_binary_refresh(refresh: DaemonBinaryRefresh) -> str:
+    """One mandatory user-facing line per install: what happened to the binary.
+
+    A stale root daemon with success-looking output cost issue #30 three test
+    cycles; every install action must now say whether the canonical target was
+    refreshed, and from where.
+    """
+    if refresh.source == refresh.destination:
+        return (
+            f"Daemon binary: KEPT the existing {refresh.destination} — this "
+            "install carries no daemon payload. Rebuild with cargo or "
+            "reinstall a daemon-bearing package, then re-run the install."
+        )
+    if refresh.changed:
+        return (
+            f"Daemon binary: updated {refresh.destination} from {refresh.source}."
+        )
+    return (
+        f"Daemon binary: already current at {refresh.destination} "
+        f"(matches {refresh.source})."
+    )
+
+
+def install_daemon_binary(program_file, *, source_path=None) -> DaemonBinaryRefresh:
     if os.geteuid() != 0:
         raise RuntimeError("installing penguin-burnerd requires root privileges")
     source = daemon_install_source_path(program_file, source_path=source_path)
-    return _atomic_install_daemon_binary(source, LIBEXEC_DAEMON_BINARY)
+    _ensure_safe_daemon_install_tree(DAEMON_BINARY)
+    _reject_noexec_daemon_target(DAEMON_BINARY.parent)
+    changed = _atomic_install_daemon_binary(source, DAEMON_BINARY)
+    _restore_daemon_selinux_context(DAEMON_BINARY.parent.parent)
+    return DaemonBinaryRefresh(
+        changed=changed,
+        source=source,
+        destination=DAEMON_BINARY,
+    )
 
 
 def _daemon_program_file_for_unit(program_file) -> Path:
@@ -565,7 +717,17 @@ def read_legacy_last_runtime_argv() -> list[str]:
 
 
 def clear_last_runtime_state() -> None:
-    """Clear boot state during the privileged service lifecycle."""
+    """Remove only the obsolete pre-RuntimeSpec state file."""
+    try:
+        LAST_RUNTIME_STATE_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def clear_all_runtime_state() -> None:
+    """Remove legacy and current boot state during explicit uninstall."""
     for path in (LAST_RUNTIME_STATE_PATH, BOOT_RUNTIME_STATE_PATH):
         try:
             path.unlink()
@@ -674,9 +836,9 @@ def build_daemon_api_service_unit(
 
     # The compiled Rust penguin-burnerd binary. Boot intent is stored separately
     # through the typed daemon API. Type=notify + WatchdogSec: the daemon sends
-    # READY=1 and heartbeats WATCHDOG=1. Flatpak callers may pass
-    # binary_path=/usr/libexec/penguin-burnerd explicitly, but every unit is
-    # constrained to that same root-owned path.
+    # READY=1 and heartbeats WATCHDOG=1. Lifecycle callers pass the installed
+    # destination explicitly, but every unit is constrained to that same
+    # root-owned target.
     binary = daemon_binary_path(program_file, binary_path=binary_path)
     exec_start = _format_systemd_exec([binary, "--socket", str(socket_path)])
     program_file_env = (
@@ -707,6 +869,277 @@ def build_daemon_api_service_unit(
     )
 
 
+def _atomic_write_service_unit(path: Path, text: str) -> None:
+    path = Path(path)
+    temporary_fd = -1
+    temporary_path = None
+    try:
+        temporary_fd, temp_path = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            dir=path.parent,
+        )
+        temporary_path = Path(temp_path)
+        with os.fdopen(temporary_fd, "w", encoding="utf-8") as temporary_file:
+            temporary_fd = -1
+            temporary_file.write(text)
+            temporary_file.flush()
+            os.fchown(temporary_file.fileno(), ROOT_UID, ROOT_GID)
+            os.fchmod(temporary_file.fileno(), 0o644)
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    except OSError as exc:
+        raise RuntimeError(f"could not atomically install systemd unit {path}: {exc}") from exc
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass
+        if temporary_fd >= 0:
+            try:
+                os.close(temporary_fd)
+            except OSError:
+                pass
+
+
+@dataclasses.dataclass
+class _ManagedFileRollback:
+    path: Path
+    existed: bool
+    backup_path: Path | None
+
+    @classmethod
+    def capture(cls, path: Path) -> "_ManagedFileRollback":
+        path = Path(path)
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return cls(path=path, existed=False, backup_path=None)
+        except OSError as exc:
+            raise RuntimeError(f"cannot inspect rollback source {path}: {exc}") from exc
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != ROOT_UID
+            or metadata.st_mode & 0o022
+        ):
+            raise RuntimeError(
+                f"cannot replace unsafe managed file during daemon setup: {path}"
+            )
+        backup_fd = -1
+        backup_path = None
+        try:
+            backup_fd, backup_name = tempfile.mkstemp(
+                prefix=f".{path.name}.rollback.",
+                dir=path.parent,
+            )
+            backup_path = Path(backup_name)
+            os.close(backup_fd)
+            backup_fd = -1
+            backup_path.unlink()
+            os.link(path, backup_path)
+            return cls(path=path, existed=True, backup_path=backup_path)
+        except OSError as exc:
+            if backup_path is not None:
+                try:
+                    backup_path.unlink()
+                except OSError:
+                    pass
+            raise RuntimeError(f"cannot preserve {path} for rollback: {exc}") from exc
+        finally:
+            if backup_fd >= 0:
+                os.close(backup_fd)
+
+    def restore(self) -> None:
+        if self.existed:
+            if self.backup_path is None:
+                raise RuntimeError(f"rollback copy for {self.path} is unavailable")
+            os.replace(self.backup_path, self.path)
+            self.backup_path = None
+            return
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def discard(self) -> None:
+        if self.backup_path is None:
+            return
+        try:
+            self.backup_path.unlink()
+        except FileNotFoundError:
+            pass
+        self.backup_path = None
+
+
+@dataclasses.dataclass(frozen=True)
+class _SystemdUnitState:
+    enabled: bool
+    active: bool
+
+
+class _DaemonServiceInstallTransaction:
+    def __init__(self, *, log, socket_path=DEFAULT_DAEMON_SOCKET):
+        self._log = log
+        self._socket_path = socket_path
+        self._committed = False
+        self._states: dict[str, _SystemdUnitState] | None = None
+        self._snapshots: list[_ManagedFileRollback] = []
+        try:
+            self._snapshots = [
+                _ManagedFileRollback.capture(DAEMON_BINARY),
+                _ManagedFileRollback.capture(daemon_systemd_service_unit_path()),
+                _ManagedFileRollback.capture(legacy_systemd_service_unit_path()),
+            ]
+        except Exception:
+            for snapshot in self._snapshots:
+                snapshot.discard()
+            raise
+
+    def __enter__(self) -> "_DaemonServiceInstallTransaction":
+        return self
+
+    def capture_service_state(self) -> None:
+        self._states = {
+            f"{PENGUIN_BURNER_DAEMON_UNIT_NAME}.service": _SystemdUnitState(
+                enabled=_systemd_unit_is_enabled(
+                    f"{PENGUIN_BURNER_DAEMON_UNIT_NAME}.service"
+                ),
+                active=_systemd_unit_is_active(
+                    f"{PENGUIN_BURNER_DAEMON_UNIT_NAME}.service"
+                ),
+            ),
+            f"{LEGACY_PENGUIN_BURNER_UNIT_NAME}.service": _SystemdUnitState(
+                enabled=_systemd_unit_is_enabled(
+                    f"{LEGACY_PENGUIN_BURNER_UNIT_NAME}.service"
+                ),
+                active=_systemd_unit_is_active(
+                    f"{LEGACY_PENGUIN_BURNER_UNIT_NAME}.service"
+                ),
+            ),
+        }
+
+    def commit(self) -> None:
+        self._committed = True
+        for snapshot in self._snapshots:
+            snapshot.discard()
+
+    def _rollback(self) -> None:
+        states = self._states or {}
+        rollback_errors: list[str] = []
+
+        def attempt(description: str, operation) -> None:
+            try:
+                operation()
+            except Exception as exc:
+                rollback_errors.append(f"{description}: {exc}")
+
+        if states:
+            for unit_name in states:
+                attempt(
+                    f"could not stop and disable {unit_name}",
+                    lambda unit_name=unit_name: run_checked_subprocess(
+                        [SYSTEMCTL, "disable", "--now", unit_name]
+                    ),
+                )
+        for snapshot in self._snapshots:
+            attempt(
+                f"could not restore {snapshot.path}",
+                snapshot.restore,
+            )
+        if not states:
+            if rollback_errors:
+                raise RuntimeError("; ".join(rollback_errors))
+            return
+        attempt(
+            "could not reload restored systemd units",
+            lambda: run_checked_subprocess([SYSTEMCTL, "daemon-reload"]),
+        )
+        for unit_name, state in states.items():
+            if state.enabled:
+                attempt(
+                    f"could not re-enable {unit_name}",
+                    lambda unit_name=unit_name: run_checked_subprocess(
+                        [SYSTEMCTL, "enable", unit_name]
+                    ),
+                )
+            if state.active:
+                attempt(
+                    f"could not restart {unit_name}",
+                    lambda unit_name=unit_name: run_checked_subprocess(
+                        [SYSTEMCTL, "start", unit_name]
+                    ),
+                )
+        daemon_state = states[f"{PENGUIN_BURNER_DAEMON_UNIT_NAME}.service"]
+        if daemon_state.active:
+            attempt(
+                "restored hardware service did not become ready",
+                lambda: _wait_for_daemon_status(self._socket_path),
+            )
+        if rollback_errors:
+            raise RuntimeError("; ".join(rollback_errors))
+        self._log("Restored the previous PenguinBurner hardware service after setup failed.")
+
+    def __exit__(self, exc_type, exc, traceback) -> bool:
+        del exc_type, traceback
+        if exc is None or self._committed:
+            for snapshot in self._snapshots:
+                snapshot.discard()
+            return False
+        try:
+            self._rollback()
+        except Exception as rollback_error:
+            raise RuntimeError(
+                f"{exc}\nRollback of the previous hardware service also failed: "
+                f"{rollback_error}"
+            ) from exc
+        return False
+
+
+def reexec_daemon_lifecycle_with_root(argv: list[str]) -> int:
+    """Re-run this CLI invocation as root for one daemon-lifecycle step.
+
+    pip --user installs live where only the invoking user's Python looks, so a
+    bare ``sudo penguin-burner-cli`` dies on import before any product code
+    runs (sudo resets HOME and root's interpreter never searches the user
+    site). Mirror the GUI's single elevated lifecycle step instead: escalate
+    through pkexec (or sudo) with the invoking user's import root injected so
+    the root process resolves the same installed code.
+    """
+    if running_in_flatpak():
+        # In the sandbox pkexec is unusable, sys.executable is /app/bin/python,
+        # and the injected PYTHONPATH would name sandbox paths that mean
+        # nothing on the host. The flatpak daemon lifecycle runs host-side
+        # through the GUI's flatpak-spawn flow instead.
+        raise RuntimeError(
+            "this daemon service command cannot self-elevate inside the "
+            "flatpak sandbox; run the daemon setup from the PenguinBurner "
+            "GUI, which performs the host-side elevated install"
+        )
+    escalator = shutil.which("pkexec") or shutil.which("sudo")
+    if escalator is None:
+        raise RuntimeError(
+            "this daemon service command requires root privileges and "
+            "neither pkexec nor sudo is available; re-run as root"
+        )
+    import_root = str(Path(__file__).resolve().parents[2])
+    pythonpath_entries = [import_root]
+    for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+        entry = entry.strip()
+        if entry and entry not in pythonpath_entries:
+            pythonpath_entries.append(entry)
+    command = [
+        escalator,
+        "/usr/bin/env",
+        f"SUDO_USER={_invoking_user_name()}",
+        "PYTHONPATH=" + os.pathsep.join(pythonpath_entries),
+        sys.executable,
+        str(Path(sys.argv[0]).resolve()),
+        *argv,
+    ]
+    return subprocess.run(command, check=False).returncode
+
+
 def install_systemd_service(program_file, argv, *, journal_hours, log):
     if not systemd_is_available():
         raise RuntimeError("systemd service install is unavailable on this system.")
@@ -715,31 +1148,40 @@ def install_systemd_service(program_file, argv, *, journal_hours, log):
             "systemd service install requires root privileges. Re-run with sudo."
         )
 
-    install_daemon_binary(program_file)
-    _stop_active_runtime_before_daemon_restart()
-    clear_last_runtime_state()
-    clear_existing_penguin_burner_unit_for_install(log=log)
     unit_path = daemon_systemd_service_unit_path()
-    unit_path.write_text(
-        build_daemon_api_service_unit(program_file),
-        encoding="utf-8",
-    )
-    run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
-    subprocess.run(
-        [SYSTEMCTL, "reset-failed", unit_path.name],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=stable_subprocess_env(),
-        check=False,
-    )
-    _enable_and_start_or_restart_daemon_unit(unit_path.name)
-    _wait_for_daemon_status(DEFAULT_DAEMON_SOCKET)
+    with _DaemonServiceInstallTransaction(log=log) as transaction:
+        refresh = install_daemon_binary(program_file)
+        log(describe_daemon_binary_refresh(refresh))
+        transaction.capture_service_state()
+        _stop_active_runtime_before_daemon_restart()
+        clear_existing_penguin_burner_unit_for_install(log=log)
+        _atomic_write_service_unit(
+            unit_path,
+            build_daemon_api_service_unit(
+                program_file,
+                binary_path=refresh.destination,
+            ),
+        )
+        run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
+        subprocess.run(
+            [SYSTEMCTL, "reset-failed", unit_path.name],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=stable_subprocess_env(),
+            check=False,
+        )
+        _enable_and_start_or_restart_daemon_unit(unit_path.name)
+        _wait_for_daemon_status(DEFAULT_DAEMON_SOCKET)
+        transaction.commit()
+    clear_last_runtime_state()
     if argv:
         _apply_persistent_runtime(argv)
-    else:
-        clear_boot_runtime_spec(socket_path=DEFAULT_DAEMON_SOCKET)
+    # With no profile argv this is an install/repair, not a boot-profile
+    # change: an existing boot spec is preserved as-is (the daemon re-read it
+    # on the restart above), matching migrate_to_daemon_service. Wiping the
+    # user's boot profile on a reinstall was never the intent.
     log(f"Installed and enabled {unit_path.name} at {unit_path}.")
     log(f"Follow the journal with: {journalctl_follow_command(journal_hours)}")
 
@@ -779,28 +1221,39 @@ def migrate_to_daemon_service(program_file, *, socket_path=DEFAULT_DAEMON_SOCKET
                 "Recovered apply-on-startup profile from the previous "
                 f"PenguinBurner version: {shlex.join(recovered)}"
             )
-    install_daemon_binary(program_file)
-    _stop_active_runtime_before_daemon_restart()
-    clear_last_runtime_state()
     unit_path = daemon_systemd_service_unit_path()
-    unit_path.write_text(
-        build_daemon_api_service_unit(program_file, socket_path=socket_path),
-        encoding="utf-8",
-    )
-    run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
-    subprocess.run(
-        [SYSTEMCTL, "reset-failed", unit_path.name],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=stable_subprocess_env(),
-        check=False,
-    )
-    _enable_and_start_or_restart_daemon_unit(unit_path.name)
-    _wait_for_daemon_status(socket_path)
-    if autostart_argv:
-        _apply_persistent_runtime(autostart_argv, socket_path=socket_path)
+    with _DaemonServiceInstallTransaction(
+        log=log,
+        socket_path=socket_path,
+    ) as transaction:
+        refresh = install_daemon_binary(program_file)
+        log(describe_daemon_binary_refresh(refresh))
+        transaction.capture_service_state()
+        _stop_active_runtime_before_daemon_restart()
+        _atomic_write_service_unit(
+            unit_path,
+            build_daemon_api_service_unit(
+                program_file,
+                socket_path=socket_path,
+                binary_path=refresh.destination,
+            ),
+        )
+        run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
+        subprocess.run(
+            [SYSTEMCTL, "reset-failed", unit_path.name],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=stable_subprocess_env(),
+            check=False,
+        )
+        _enable_and_start_or_restart_daemon_unit(unit_path.name)
+        _wait_for_daemon_status(socket_path)
+        if autostart_argv:
+            _apply_persistent_runtime(autostart_argv, socket_path=socket_path)
+        transaction.commit()
+    clear_last_runtime_state()
     # With nothing recovered, an existing 0.7 boot spec is preserved as-is
     # (a repair/reinstall must not wipe the user's boot profile); the daemon
     # re-read it on the restart above.
@@ -908,7 +1361,7 @@ def uninstall_systemd_service(*, log):
         )
 
     _stop_active_runtime_before_daemon_restart()
-    clear_last_runtime_state()  # nothing to re-run once the service is gone
+    clear_all_runtime_state()  # nothing to re-run once the service is gone
     unit_paths = (
         daemon_systemd_service_unit_path(),
         legacy_systemd_service_unit_path(),
@@ -1017,14 +1470,22 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
             "Re-run PenguinBurner with sudo."
         )
 
-    binary_changed = install_daemon_binary(program_file)
-    clear_existing_penguin_burner_unit_for_daemonize(log=log)
-    _ensure_daemon_service_started(
-        program_file,
-        socket_path=DEFAULT_DAEMON_SOCKET,
-        binary_changed=binary_changed,
-        log=log,
-    )
+    unit_changed = False
+    with _DaemonServiceInstallTransaction(log=log) as transaction:
+        refresh = install_daemon_binary(program_file)
+        log(describe_daemon_binary_refresh(refresh))
+        transaction.capture_service_state()
+        clear_existing_penguin_burner_unit_for_daemonize(log=log)
+        unit_changed = _ensure_daemon_service_started(
+            program_file,
+            socket_path=DEFAULT_DAEMON_SOCKET,
+            binary_changed=refresh.changed,
+            binary_path=refresh.destination,
+            log=log,
+        )
+        transaction.commit()
+    if unit_changed:
+        clear_last_runtime_state()
     result, _spec = _apply_runtime(argv, socket_path=DEFAULT_DAEMON_SOCKET)
     log(
         "Started runtime profile through "
@@ -1039,10 +1500,14 @@ def daemonize_with_systemd(program_file, argv, *, journal_hours, log):
 
 
 def _ensure_daemon_service_started(
-    program_file, *, socket_path, binary_changed, log
-) -> None:
+    program_file, *, socket_path, binary_changed, binary_path, log
+) -> bool:
     unit_path = daemon_systemd_service_unit_path()
-    unit_text = build_daemon_api_service_unit(program_file, socket_path=socket_path)
+    unit_text = build_daemon_api_service_unit(
+        program_file,
+        socket_path=socket_path,
+        binary_path=binary_path,
+    )
     wrote_unit = False
     current_text = (
         unit_path.read_text(encoding="utf-8", errors="replace")
@@ -1050,13 +1515,12 @@ def _ensure_daemon_service_started(
         else ""
     )
     if current_text != unit_text:
-        unit_path.write_text(unit_text, encoding="utf-8")
+        _atomic_write_service_unit(unit_path, unit_text)
         wrote_unit = True
         verb = "Updated" if current_text else "Installed"
         log(f"{verb} {unit_path.name} at {unit_path}.")
     if wrote_unit:
         run_checked_subprocess([SYSTEMCTL, "daemon-reload"])
-        clear_last_runtime_state()
     subprocess.run(
         [SYSTEMCTL, "reset-failed", unit_path.name],
         capture_output=True,
@@ -1073,3 +1537,4 @@ def _ensure_daemon_service_started(
     else:
         run_checked_subprocess([SYSTEMCTL, "start", unit_path.name])
     _wait_for_daemon_status(socket_path)
+    return wrote_unit

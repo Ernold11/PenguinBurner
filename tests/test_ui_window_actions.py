@@ -325,6 +325,49 @@ def test_apply_without_boot_toggle_is_session_only(win) -> None:
     assert "Autostart: No" in window.controls.status_label.text()
 
 
+def test_apply_bound_profile_targets_non_display_gpu(win) -> None:
+    window, monkeypatch = win
+    captured: list[dict] = []
+    profile = {
+        "profile_id": "gpu-b-profile",
+        "final_verified": True,
+        "gpu_identity": {"uuid": "GPU-B"},
+    }
+    window.profile_summaries = [profile]
+    monkeypatch.setattr(
+        window.profile_list,
+        "selected_profile_id",
+        lambda: "gpu-b-profile",
+    )
+    monkeypatch.setattr(window.profile_list, "target_gpu_index", lambda: 1)
+    monkeypatch.setattr(window.profile_list, "target_gpu_uuid", lambda: "GPU-B")
+    monkeypatch.setattr(window.profile_list, "profile_matches_target", lambda _p: True)
+    monkeypatch.setattr(window.profile_list, "silent_fan_enabled", lambda: False)
+    monkeypatch.setattr(
+        actions_mod,
+        "running_auto_uv_profile_info",
+        lambda: {"gpu_uuid": ""},
+    )
+    monkeypatch.setattr(
+        actions_mod,
+        "ensure_daemon_ready_for_privileged_action",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        actions_mod,
+        "runtime_profile_command",
+        lambda *args, **kwargs: captured.append(kwargs) or ["daemon-client"],
+    )
+    window.command_controller = _FakeController()
+    window.profile_list.set_boot_apply_checked(True)
+
+    window._run_profiles()
+
+    assert captured[0]["gpu_index"] == 1
+    assert captured[0]["profile_selector"] == "gpu-b-profile"
+    assert captured[0]["persist_on_startup"] is True
+
+
 def test_restore_defaults_persists_stock_now_and_at_boot(win) -> None:
     window, monkeypatch = win
     captured: list[tuple[tuple, dict]] = []
@@ -413,7 +456,11 @@ def test_run_runtime_action_blocked_when_busy(win) -> None:
 
 def test_run_adaptive_requires_at_least_one_tier(win) -> None:
     window, monkeypatch = win
-    monkeypatch.setattr(actions_mod, "adaptive_profile_tier_labels", lambda profs: [])
+    monkeypatch.setattr(
+        actions_mod,
+        "adaptive_profile_tier_labels",
+        lambda profs, **kwargs: [],
+    )
     shown: list = []
     monkeypatch.setattr(window.errors, "show", lambda title, msg: shown.append(title))
     fake = _FakeController()

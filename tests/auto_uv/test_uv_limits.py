@@ -21,7 +21,7 @@ def test_5080_voltage_table_exposes_efficiency_floor_and_performance_ceiling() -
     assert floor.voltage_mv == 850
     assert floor.clock_mhz == 2800
     assert ceiling.voltage_mv == 925
-    assert ceiling.clock_mhz == 2980
+    assert ceiling.clock_mhz == 2950
     assert voltage_drop_pct(start_voltage_mv=1000, floor_voltage_mv=850) == pytest.approx(
         15.0
     )
@@ -41,7 +41,7 @@ def test_clock_drop_uses_preset_aware_gpu_table_ratio() -> None:
     )
     assert efficiency is not None and performance is not None
     assert efficiency == pytest.approx(11.111111111111116)
-    assert performance == pytest.approx(5.3968253968254)
+    assert performance == pytest.approx(6.349206349206349)
     # Balanced is a savings-biased blend (0.6 efficiency / 0.4 performance) of
     # the two presets, so it stays centered-but-deeper on every GPU instead of
     # collapsing toward a neighbour when the clock geometry is tight.
@@ -69,17 +69,17 @@ def test_rtx_5060_shares_the_5060_ti_vf_targets() -> None:
     ) == pytest.approx(70.4)
 
 
-def test_power_limit_pct_reduces_savings_tiers_and_keeps_performance_full() -> None:
+def test_power_limit_pct_caps_only_efficiency() -> None:
     # Blackwell: efficiency cap is the stored per-family value LESS the fixed
-    # 12% efficiency reduction (88 * 0.88 = 77.44); balanced sits halfway
-    # between that and full power ((77.44 + 100) / 2 = 88.72); performance keeps
-    # the stock budget.
+    # 12% efficiency reduction (88 * 0.88 = 77.44). Balanced and performance
+    # keep the stock budget so the full scan's balanced descent stays
+    # donatable to the performance tier (matching power regimes).
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 5080", profile_id="efficiency"
     ) == pytest.approx(77.44)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 5080", profile_id="balanced"
-    ) == pytest.approx(88.72)
+    ) == pytest.approx(100.0)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 5080", profile_id="performance"
     ) == pytest.approx(100.0)
@@ -95,7 +95,7 @@ def test_rtx_5090_power_limit_percentages_and_575w_tier_caps() -> None:
     }
 
     assert percentages == pytest.approx(
-        {"efficiency": 74.8, "balanced": 87.4, "performance": 100.0}
+        {"efficiency": 74.8, "balanced": 100.0, "performance": 100.0}
     )
     assert {
         tier: adaptive_tier_power_limit_w(
@@ -105,17 +105,17 @@ def test_rtx_5090_power_limit_percentages_and_575w_tier_caps() -> None:
             balanced_pct=percentages["balanced"],
         )
         for tier, percentage in percentages.items()
-    } == {"efficiency": 430, "balanced": 503, "performance": 575}
+    } == {"efficiency": 430, "balanced": 575, "performance": 575}
 
 
 def test_power_limit_pct_ampere_efficiency_takes_fixed_reduction() -> None:
-    # 80% stored - 12% reduction = 70.4; balanced halfway to full = 85.2.
+    # 80% stored - 12% reduction = 70.4; balanced keeps the stock budget.
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 3080", profile_id="efficiency"
     ) == pytest.approx(70.4)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 3080", profile_id="balanced"
-    ) == pytest.approx(85.2)
+    ) == pytest.approx(100.0)
     assert uv_limit_power_limit_pct_for_gpu(
         "NVIDIA GeForce RTX 3080", profile_id="performance"
     ) == pytest.approx(100.0)
@@ -143,7 +143,7 @@ def test_target_matching_keeps_ti_super_before_base_4070() -> None:
 
     assert target is not None
     assert target.gpu_family == "RTX 4070 Ti Super"
-    assert target.clock_mhz == 2730
+    assert target.clock_mhz == 2705
 
 
 def test_4070_ti_performance_target_matches_reference_table() -> None:
@@ -155,7 +155,7 @@ def test_4070_ti_performance_target_matches_reference_table() -> None:
     assert target is not None
     assert target.gpu_family == "RTX 4070 Ti"
     assert target.voltage_mv == 950
-    assert target.clock_mhz == 2685
+    assert target.clock_mhz == 2660
 
 
 def test_3080_uses_ampere_table_values() -> None:
@@ -168,7 +168,7 @@ def test_3080_uses_ampere_table_values() -> None:
     assert floor.voltage_mv == 800
     assert floor.clock_mhz == 1750
     assert ceiling.voltage_mv == 900
-    assert ceiling.clock_mhz == 1950
+    assert ceiling.clock_mhz == 1930
 
 
 def test_3080_12gb_matches_before_base_3080() -> None:
@@ -180,7 +180,7 @@ def test_3080_12gb_matches_before_base_3080() -> None:
     assert target is not None
     assert target.gpu_family == "RTX 3080 12GB"
     assert target.voltage_mv == 900
-    assert target.clock_mhz == 1920
+    assert target.clock_mhz == 1900
     assert (
         uv_limit_profile_target_for_gpu("NVIDIA GeForce RTX 3080 12GB", "max")
         is None

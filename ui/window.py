@@ -4,8 +4,6 @@ from pathlib import Path
 import shlex
 
 from cli.runtime_config_file import (
-    persist_on_startup_from_runtime_config,
-    persist_on_startup_to_runtime_config,
     silent_fan_curve_from_runtime_config,
     silent_fan_curve_to_runtime_config,
 )
@@ -33,7 +31,11 @@ from ui.dialogs.about import show_about_dialog
 from ui.dialogs.final_choice import select_final_candidate
 from ui.dialogs.scan_tuning import select_scan_tuning
 from .error_reporting import ErrorReporter
-from ui.features.tuning.gpu_selection import persist_runtime_gpu_index
+from ui.features.tuning.gpu_selection import (
+    detected_gpu_choices,
+    gpu_choices_with_fallback,
+    persist_runtime_gpu_index,
+)
 from ui.daemon_setup import ensure_daemon_ready_for_privileged_action
 from ui.features.tuning.final_choice_controller import handle_final_choice_request
 from . import theme
@@ -73,6 +75,7 @@ class MainWindow(ProfileActionsMixin):
         self._defaults_restored = False
         self._delete_restore_stock = False
         self._delete_switch_systemd_profile_id = ""
+        self._boot_apply_by_gpu: dict[str, bool] = {}
 
         self.window = self.QtWidgets.QMainWindow()
         self.window.setWindowTitle(APP_DISPLAY_NAME)
@@ -138,6 +141,7 @@ class MainWindow(ProfileActionsMixin):
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
         )
+        self.profile_list.on_target_gpu_changed = self._profile_target_gpu_changed
         self.log_view = LogView(
             QtCore=self.QtCore,
             QtGui=self.QtGui,
@@ -153,10 +157,15 @@ class MainWindow(ProfileActionsMixin):
             QtCore=self.QtCore,
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
-            adaptive_available=lambda: len(
-                adaptive_profile_tier_labels(self.profile_summaries)
+            adaptive_available=lambda gpu_uuid="", include_legacy_profiles=False: len(
+                adaptive_profile_tier_labels(
+                    self.profile_summaries,
+                    gpu_uuid=gpu_uuid,
+                    include_legacy_profiles=include_legacy_profiles,
+                )
             )
             >= 1,
+            gpu_choices=detected_gpu_choices,
         )
 
         self.tabs = self.QtWidgets.QTabWidget()
@@ -258,9 +267,11 @@ class MainWindow(ProfileActionsMixin):
         self.profile_list.silent_fan_checkbox.toggled.connect(
             self._persist_silent_fan_preference
         )
-        self._boot_apply_toggle_initialized = False
         self.profile_list.boot_apply_checkbox.toggled.connect(
             self._persist_boot_apply_preference
+        )
+        self.profile_list.main_gpu_checkbox.toggled.connect(
+            self._persist_main_gpu_preference
         )
         self.profile_list.restore_defaults_button.clicked.connect(
             self._restore_gpu_defaults
@@ -320,26 +331,26 @@ class MainWindow(ProfileActionsMixin):
         )
 
     def _check_daemon_upgrade_on_startup(self) -> None:
-        """If a running daemon is an incompatible older version, offer to update
-        it now — the seamless post-0.6.x-upgrade path.
+        """Offer to update a running daemon from another incompatible release.
 
-        Only fires when a daemon is actually running AND speaks an incompatible
-        protocol (a stale 0.6.x daemon on the same socket). A brand-new user
-        with no daemon installed is left alone: the install prompt appears when
-        they first do something privileged, not on launch.
+        Only fires when a daemon is actually running and its protocol or release
+        differs from this application. A brand-new user with no daemon installed
+        is left alone: the install prompt appears when they first do something
+        privileged, not on launch.
         """
         from runtime.daemon_client import (
             DaemonCompatibilityError,
             daemon_status,
             require_daemon_capabilities,
         )
+        from ui.assets import application_version
 
         try:
             daemon_status(timeout_s=1.0)
         except Exception:
             return  # not running / not installed — do not nag a new user
         try:
-            require_daemon_capabilities()
+            require_daemon_capabilities(expected_version=application_version())
             return  # running and compatible — nothing to do
         except DaemonCompatibilityError:
             pass
@@ -546,6 +557,10 @@ class MainWindow(ProfileActionsMixin):
                     color=tier_color,
                     alpha=220,
                     width=2,
+                    # The final tier is also the live candidate. Keep the
+                    # persistent tier-colored trace above that identical
+                    # green curve so Performance remains visibly red.
+                    z_value=5,
                 )
         elif event == "tier_completed":
             tier_name = str(payload.get("tier", ""))
@@ -725,17 +740,6 @@ class MainWindow(ProfileActionsMixin):
     def _load_profiles(self) -> None:
         self.profile_summaries = load_profile_summaries()
         autostart_info = systemd_autostart_profile_info()
-        if not self._boot_apply_toggle_initialized:
-            self._boot_apply_toggle_initialized = True
-            # One-time init: the persisted config value is authoritative. Only
-            # when the key has never been written does an existing boot entry
-            # seed the default, so 0.7.4 upgrades keep their boot profile
-            # until the user unticks the toggle. Reloads never touch the box.
-            self.profile_list.set_boot_apply_checked(
-                persist_on_startup_from_runtime_config(
-                    default=bool(autostart_info["selector"])
-                )
-            )
         running_info = (
             running_auto_uv_profile_info()
             if penguin_burner_runtime_is_active()
@@ -756,8 +760,33 @@ class MainWindow(ProfileActionsMixin):
                 or bool(autostart_info["silent_fan_curve"])
             ),
         )
+        gpu_choices, _selected_gpu_index = gpu_choices_with_fallback(
+            selected_index=self.gpu_index
+        )
+        self.profile_list.configure_gpu_targets(
+            self.profile_summaries,
+            gpu_choices,
+            preferred_index=self.gpu_index,
+        )
+        self._sync_boot_apply_for_target(self.profile_list.target_gpu_uuid())
         self._set_profile_actions_enabled(not self._workflow_running())
         self._refresh_running_status(running_info, autostart_info)
+
+    def _profile_target_gpu_changed(
+        self,
+        gpu_index: int | None,
+        _gpu_uuid: str,
+    ) -> None:
+        self._sync_boot_apply_for_target(_gpu_uuid)
+        if gpu_index is None:
+            return
+        try:
+            self.gpu_index = persist_runtime_gpu_index(int(gpu_index))
+        except Exception as exc:
+            self.errors.show(
+                "GPU selection",
+                f"Could not save selected GPU index: {exc}",
+            )
 
     def _poll_running_status(self) -> None:
         """Gather live daemon/systemd status OFF the GUI thread, then render.
@@ -846,25 +875,6 @@ class MainWindow(ProfileActionsMixin):
         # Remember the silent-fan choice durably so the "latest profile setup"
         # restores it after an aborted Auto-UV run, profile reload, or restart.
         silent_fan_curve_to_runtime_config(bool(checked))
-
-    def _persist_boot_apply_preference(self, checked: bool) -> None:
-        # Every click lands in the home-dir config immediately: the key is the
-        # single source of truth for the toggle, survives reinstalls, and no
-        # reload path resyncs the checkbox against runtime state.
-        persist_on_startup_to_runtime_config(bool(checked))
-        if not checked:
-            # Unticking means "nothing applies at boot": clear any saved boot
-            # profile right away so the toggle and the real boot state cannot
-            # diverge while the user never clicks Apply again. Best-effort —
-            # the startup seed uses blocked signals and never lands here.
-            from runtime.daemon_client import clear_boot_runtime_spec
-
-            try:
-                clear_boot_runtime_spec()
-            except Exception as exc:
-                self.log_view.append(
-                    f"\nCould not clear the saved boot profile: {exc}\n"
-                )
 
     def _workflow_running(self) -> bool:
         return (

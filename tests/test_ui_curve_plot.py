@@ -48,7 +48,13 @@ def test_curve_plot_full_data_api(qapp) -> None:
 
     plot.set_source_points([(800, 2000), (900, 2400)])
     plot.set_base_points([(820, 2050), (910, 2450)])
-    plot.add_comparison_points([(820, 2100), (900, 2400)], name="Other", color="#ff8800")
+    plot.add_comparison_points(
+        [(820, 2100), (900, 2400)],
+        name="Other",
+        color="#ff8800",
+        z_value=5,
+    )
+    assert plot.comparison_curves[-1].zValue() == 5
 
     # Two candidate sets with different ids -> the first is pushed to previous.
     plot.set_candidate_points([(850, 2200), (900, 2400)], curve_id="c1")

@@ -95,6 +95,31 @@ def test_baseline_target_accepts_busy_util_below_power_limit_floor() -> None:
     assert target.active_sample_count == 4
 
 
+def test_baseline_target_accepts_busy_util_without_power_telemetry() -> None:
+    curve = base_curve(850, 1250, 5, 1800, 15)
+    telemetry = [
+        {
+            "elapsed_s": 5.0 + index,
+            "power_w": None,
+            "gpu_util_pct": 99.0,
+            "core_clock_mhz": clock_mhz,
+        }
+        for index, clock_mhz in enumerate((2700.0, 2715.0, 2730.0, 2715.0))
+    ]
+
+    target = choose_base_load_flatten_target(
+        curve,
+        telemetry,
+        power_limit_w=115,
+        fallback_clock_mhz=None,
+    )
+
+    assert target.measured_clock_mhz == pytest.approx(2715.0)
+    assert target.target_clock_mhz == 2715
+    assert target.active_sample_count == 4
+    assert target.saturated_sample_count == 0
+
+
 def test_baseline_target_failure_includes_telemetry_diagnostic() -> None:
     curve = base_curve(850, 1000, 25, 1770, 15)
     telemetry = [

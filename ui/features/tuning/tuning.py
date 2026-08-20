@@ -58,7 +58,7 @@ class AutoUvVoltageDropDefault:
     gpu_name: str | None
     gpu_family: str | None
     floor_voltage_mv: int | None
-    reference_voltage_mv: int
+    reference_voltage_mv: int | None
     preset_matched: bool
 
 
@@ -177,18 +177,15 @@ def auto_uv_voltage_drop_default(
         auto_uv_mode,
     )
     if target is None:
-        floor_voltage_mv = int(
-            round(
-                float(reference_voltage_mv)
-                * (1.0 - (float(DEFAULT_AUTO_UV_MAX_DROP_PCT) / 100.0))
-            )
-        )
         return AutoUvVoltageDropDefault(
             value_pct=float(DEFAULT_AUTO_UV_MAX_DROP_PCT),
             gpu_name=detected_name or None,
             gpu_family=None,
-            floor_voltage_mv=floor_voltage_mv,
-            reference_voltage_mv=int(reference_voltage_mv),
+            # The loaded starting voltage is discovered by the baseline probe,
+            # not while this dialog helper runs. Leave the generic floor unset
+            # so the scan can derive 10% from that measured starting point.
+            floor_voltage_mv=None,
+            reference_voltage_mv=None,
             preset_matched=False,
         )
     return AutoUvVoltageDropDefault(
@@ -246,11 +243,11 @@ def auto_uv_power_limit_default(
 ) -> AutoUvPowerLimitDefault:
     """Preset-aware default board-power cap in watts.
 
-    Savings-biased presets pair the V/F floor with a fraction of the card's
+    The efficiency preset pairs its V/F floor with a fraction of the card's
     stock power budget (the driver default limit, not the raised OC maximum);
-    the performance preset (and any GPU not covered by the tier table) keeps
-    the stock board power budget so nothing is left on the table when the user
-    asked for headroom.
+    balanced and performance (and any GPU not covered by the tier table) keep
+    the stock board power budget — matching regimes keep the full scan's
+    balanced descent donatable to the performance tier.
     """
     detected_name = str(gpu_name).strip() if gpu_name else _query_gpu_name(gpu_index)
     preset = auto_uv_preset(preset_id)

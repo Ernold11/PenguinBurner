@@ -8,6 +8,7 @@
 //! error-message text are preserved verbatim (see `port-notes/03-nvml-ffi.md`).
 
 mod backend;
+pub(crate) mod context;
 mod nvapi;
 
 // Compiled into the binary (not test-gated) because it also backs the
@@ -220,6 +221,15 @@ impl std::error::Error for GpuError {}
 /// Convenience alias for backend results.
 pub type GpuResult<T> = Result<T, GpuError>;
 
+/// PIDs holding a live GPU context, split by context kind. Each list is
+/// sorted and deduplicated; a process with both context kinds appears in
+/// both lists.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GpuContextPids {
+    pub graphics: Vec<u32>,
+    pub compute: Vec<u32>,
+}
+
 /// The narrow GPU backend contract: hardware facts and privileged operations.
 ///
 /// Every fallible operation returns [`GpuError`]; best-effort reads that the
@@ -245,6 +255,11 @@ pub trait GpuBackend {
     fn gpu_utilization_pct(&self) -> Option<u32>;
     fn clock_info_mhz(&self, clock_type: ClockType) -> Option<u32>;
     fn throttle_reason_mask(&self) -> Option<u64>;
+    /// PIDs holding a live graphics or compute context on this GPU, split by
+    /// kind. The accurate "GPU in use" signal on fine-grained RTD3 laptops,
+    /// where an idly open `/dev/nvidia<N>` fd does not keep the GPU awake;
+    /// the split feeds the `deep_sleep.gpu_clients` debug stats.
+    fn gpu_context_pids(&self) -> GpuResult<GpuContextPids>;
 
     // --- power / persistence ----------------------------------------------
     fn query_power_limits(&self) -> PowerLimits;

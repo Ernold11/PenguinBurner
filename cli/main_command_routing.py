@@ -15,6 +15,7 @@ from runtime.support.runtime_debug import (
 )
 from runtime.support.runtime_service import running_under_systemd_service, stop_existing_penguin_burner_runtime
 from runtime.gpu_control.fan_release import release_fans_to_hardware_auto
+from profiles.gpu_identity import profile_gpu_uuid
 from profiles.uv.profile_store import (
     delete_auto_uv_profiles,
     format_profile_table,
@@ -28,12 +29,14 @@ from profiles.uv.profile_tiers import (
     save_profile_tier_assignment,
 )
 from profiles.uv.runtime_auto_uv_profile import load_auto_uv_final_curve
+from runtime.daemon_client import set_boot_main_gpu
 
 
 @dataclass(slots=True)
 class MainCommandRoutingDependencies:
     clear_auto_uv_state: Callable
     load_config: Callable
+    set_boot_main_gpu: Callable = set_boot_main_gpu
     load_auto_uv_final_curve: Callable = load_auto_uv_final_curve
     running_under_systemd_service: Callable = running_under_systemd_service
     enable_stdio_capture: Callable = enable_stdio_capture
@@ -108,6 +111,23 @@ def route_main_command(
 
     if getattr(args, "set_steam_overlay_launch", None):
         _set_steam_overlay_launch(args, deps=deps)
+        return MainCommandRoutingResult(handled=True)
+
+    main_gpu_uuid = str(getattr(args, "set_main_gpu", "") or "").strip()
+    clear_main_gpu = bool(getattr(args, "clear_main_gpu", False))
+    if main_gpu_uuid and clear_main_gpu:
+        raise NvmlError("choose only one of --set-main-gpu or --clear-main-gpu")
+    if main_gpu_uuid or clear_main_gpu:
+        result = deps.set_boot_main_gpu(main_gpu_uuid)
+        if args.json_events:
+            deps.print_fn(json.dumps({"main_gpu": result}, indent=2), flush=True)
+        elif main_gpu_uuid:
+            deps.print_fn(f"Main GPU set to {main_gpu_uuid}.", flush=True)
+        else:
+            deps.print_fn(
+                "Main GPU cleared; startup monitoring now uses the last saved GPU.",
+                flush=True,
+            )
         return MainCommandRoutingResult(handled=True)
 
     if not explicit_cli_args and not deps.running_under_systemd_service():
@@ -234,7 +254,11 @@ def _assign_profile_tier(args, *, deps: MainCommandRoutingDependencies) -> None:
     if not profile_id:
         raise NvmlError(f"Auto-UV profile has no profile_id: {selector}")
 
-    assignments = deps.save_profile_tier_assignment(profile_id, raw_tier)
+    assignments = deps.save_profile_tier_assignment(
+        profile_id,
+        raw_tier,
+        gpu_uuid=profile_gpu_uuid(profile),
+    )
     tier = deps.normalize_profile_tier(raw_tier)
     tier_label = deps.profile_tier_label(tier)
     disabled = bool(deps.profile_tier_is_none(raw_tier))

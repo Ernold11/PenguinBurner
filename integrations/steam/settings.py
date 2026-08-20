@@ -71,6 +71,9 @@ class SteamGameSetting:
     injected_launch_options: str = ""
     # None = follow the global [adaptive] target_fps from the runtime config.
     target_fps: float | None = None
+    # Stable NVML UUID. Empty keeps legacy/single-GPU settings compatible;
+    # multi-GPU hosts require an explicit value before enabling the wrapper.
+    gpu_uuid: str = ""
 
     @property
     def active(self) -> bool:
@@ -115,6 +118,7 @@ def load_steam_game_settings(
                 original_launch_options=str(entry.get("original_launch_options") or ""),
                 injected_launch_options=injected,
                 target_fps=normalize_game_target_fps(entry.get("target_fps")),
+                gpu_uuid=str(entry.get("gpu_uuid") or "").strip(),
             )
         if parsed:
             settings[str(account_id)] = parsed
@@ -196,7 +200,7 @@ def _write_settings(
     settings_path = _settings_path(path)
     names = display_names or {}
     payload = {
-        "format_version": 1,
+        "format_version": 2,
         "updated_at": datetime.now().astimezone().isoformat(),
         "accounts": {
             account_id: {
@@ -215,6 +219,7 @@ def _write_settings(
                             if setting.target_fps is not None
                             else {}
                         ),
+                        **({"gpu_uuid": setting.gpu_uuid} if setting.gpu_uuid else {}),
                         "original_launch_options": setting.original_launch_options,
                         "injected_launch_options": setting.injected_launch_options,
                     }

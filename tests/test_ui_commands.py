@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -104,7 +105,9 @@ def _assert_flatpak_daemon_script_waits_for_api(
     state_clear = 'rm -f "/var/lib/penguin-burner/last-runtime.json"'
     if clears_last_runtime:
         assert state_clear in script
-        assert script.rindex(state_clear) < script.rindex("restart_penguin_burnerd")
+        assert script.rindex("restart_penguin_burnerd") < script.rindex(
+            state_clear
+        ) < script.rindex("commit_daemon_install")
     else:
         # Migration consumes the legacy 0.6.x state via
         # migrate-legacy-boot-intent instead of deleting it up front.
@@ -128,15 +131,28 @@ def _assert_flatpak_daemon_binary_installed_atomically(script: str) -> None:
     assert "nonblock" in script
     assert "oflag=nofollow" in script
     assert "conv=fsync" in script
+    assert '[ ! -f "$PENGUIN_BURNER_DAEMON_BINARY_SRC" ]' in script
+    assert '[ -L "$PENGUIN_BURNER_DAEMON_BINARY_SRC" ]' in script
     assert "7f454c46" in script
     assert 'chown root:root "$daemon_tmp"' in script
     assert 'chmod 0755 "$daemon_tmp"' in script
     assert commit in script
     assert "install -Dm0755" not in script
-    assert "trap cleanup_install_temps EXIT" in script
+    assert "trap finish_daemon_install EXIT" in script
     assert "trap 'exit 1' HUP INT TERM" in script
     assert script.index(stage) < script.index(copy) < script.index(commit)
-    assert script.index(commit) < script.index(legacy_mutation)
+    assert script.index(commit) < script.rindex(legacy_mutation)
+
+
+def test_flatpak_systemd_transaction_is_owned_by_runtime_support() -> None:
+    ui_source = Path("ui/commands.py").read_text(encoding="utf-8")
+    runtime_source = Path(
+        "runtime/support/flatpak_daemon_install.py"
+    ).read_text(encoding="utf-8")
+
+    assert "rollback_daemon_install" not in ui_source
+    assert "def build_flatpak_daemon_install_script" in runtime_source
+    assert "rollback_daemon_install" in runtime_source
 
 
 def test_ui_scan_command_uses_daemon_client_without_pkexec(monkeypatch) -> None:
@@ -233,9 +249,8 @@ def _command_env_value(command: list[str], name: str) -> str:
 def test_daemon_migration_command_installs_flatpak_daemon(
     monkeypatch, tmp_path
 ) -> None:
-    # B4b: the sandbox-built /app/libexec binary is copied onto the host's
-    # root-owned /usr/libexec by the one pkexec elevation; the repair flow clears
-    # stale last-runtime state from old deployments before restarting.
+    # The sandbox-built /app/libexec source is copied to the one canonical host
+    # runtime path by the explicit pkexec repair transaction.
     _flatpak_daemon_install_env(monkeypatch, tmp_path)
 
     command = commands.daemon_migration_command()
@@ -250,6 +265,14 @@ def test_daemon_migration_command_installs_flatpak_daemon(
         f"{FLATPAK_APP_PATH}/libexec/penguin-burnerd"
     )
     script = command[command.index("-c") + 1]
+    syntax = subprocess.run(
+        ["/bin/sh", "-n"],
+        input=script,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert syntax.returncode == 0, syntax.stderr
     assert "/usr/bin/flatpak" not in command
     assert command[-5:] == [
         "/bin/sh",
@@ -258,7 +281,7 @@ def test_daemon_migration_command_installs_flatpak_daemon(
         command[-2],
         "penguin-burner-daemon-install",
     ]
-    assert "systemctl is-active --quiet penguin-burnerd.service" not in command[-2]
+    assert "systemctl is-active --quiet penguin-burnerd.service" in command[-2]
     assert "systemctl enable penguin-burnerd.service" in command[-2]
     assert "systemctl restart penguin-burnerd.service" in command[-2]
     assert "systemctl enable --now penguin-burnerd.service" not in command[-2]
@@ -268,6 +291,26 @@ def test_daemon_migration_command_installs_flatpak_daemon(
         clears_last_runtime=False,
     )
     _assert_flatpak_daemon_binary_installed_atomically(script)
+    assert "daemon_dir=/var/opt/penguin-burner/libexec" in script
+    assert (
+        'daemon_target="/var/opt/penguin-burner/libexec/penguin-burnerd"'
+        in script
+    )
+    assert "PENGUIN_BURNER_DAEMON_BINARY_TARGET" not in " ".join(command)
+    assert "findmnt" in script and "noexec" in script
+    assert "selinuxenabled" in script and "restorecon" in script
+    assert "rollback_daemon_install" in script
+    assert (
+        "systemctl disable --now penguin-burnerd.service >/dev/null 2>&1 "
+        "|| rollback_failed=1"
+    ) in script
+    assert (
+        "systemctl disable --now PenguinBurner.service >/dev/null 2>&1 "
+        "|| rollback_failed=1"
+    ) in script
+    assert script.index("restart_penguin_burnerd\n") < script.rindex(
+        "commit_daemon_install"
+    )
     assert "systemctl enable penguin-burnerd.service" in script
     # Migration replays a 0.6.x boot profile host-side after the new daemon
     # is up; it passes no client-built intent of its own.
@@ -282,7 +325,8 @@ def test_daemon_migration_command_installs_flatpak_daemon(
     assert "/usr/bin/flatpak" not in unit
     assert f"Environment=PYTHONPATH={FLATPAK_SITE_PACKAGES}" in unit
     assert (
-        "ExecStart=/usr/libexec/penguin-burnerd --socket /run/penguin-burnerd.sock"
+        "ExecStart=/var/opt/penguin-burner/libexec/penguin-burnerd "
+        "--socket /run/penguin-burnerd.sock"
         in unit
     )
 
@@ -1396,6 +1440,19 @@ def test_start_auto_uv_button_uses_orange_without_changing_primary_green() -> No
     assert "border-color: #d45d5d" in STYLESHEET
 
 
+def test_single_gpu_profile_target_uses_disabled_colors() -> None:
+    label_style = STYLESHEET.split(
+        "QLabel#profileTargetGpuLabel:disabled {", 1
+    )[1].split("}", 1)[0]
+    combo_style = STYLESHEET.split(
+        "QComboBox#profileTargetGpu:disabled {", 1
+    )[1].split("}", 1)[0]
+
+    assert "color: #7f8794" in label_style
+    assert "color: #7f8794" in combo_style
+    assert "background: #252b34" in combo_style
+
+
 def _verify_daemon_options(command: list[str]) -> dict:
     assert command[1:4] == [
         "-m",
@@ -1516,7 +1573,7 @@ def test_auto_uv_performance_target_default_uses_gpu_table_target() -> None:
     assert target.preset_matched is True
     assert target.gpu_family == "RTX 4090"
     assert target.voltage_mv == 925
-    assert target.clock_mhz == 2670
+    assert target.clock_mhz == 2645
 
 
 def test_auto_uv_voltage_drop_default_uses_detected_gpu_table_floor() -> None:
@@ -1548,7 +1605,7 @@ def test_auto_uv_clock_drop_default_uses_preset_aware_gpu_table_ratio() -> None:
     assert balanced.value_pct == pytest.approx(
         efficiency.value_pct * 0.6 + performance.value_pct * 0.4
     )
-    assert performance.value_pct == pytest.approx(5.3968253968254)
+    assert performance.value_pct == pytest.approx(6.349206349206349)
 
 
 def test_auto_uv_clock_drop_default_falls_back_to_generic_when_unmatched() -> None:
@@ -1563,7 +1620,8 @@ def test_auto_uv_voltage_drop_default_falls_back_to_generic_when_unmatched() -> 
 
     assert preview.preset_matched is False
     assert preview.value_pct == pytest.approx(10.0)
-    assert preview.floor_voltage_mv == 900
+    assert preview.floor_voltage_mv is None
+    assert preview.reference_voltage_mv is None
 
 
 def test_auto_uv_voltage_drop_default_uses_ampere_table_for_3080() -> None:
@@ -2388,9 +2446,9 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
         scan_tuning,
         "auto_uv_voltage_drop_default",
         lambda gpu_name=None, **_kwargs: SimpleNamespace(
-            gpu_name="NVIDIA GeForce RTX 5060 Laptop GPU",
-            value_pct=15.0,
-            floor_voltage_mv=850,
+            gpu_name="NVIDIA GeForce RTX 2050 Laptop GPU",
+            value_pct=10.0,
+            floor_voltage_mv=None,
         ),
     )
     monkeypatch.setattr(
@@ -2427,8 +2485,8 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
             [
                 SimpleNamespace(
                     index=0,
-                    name="NVIDIA GeForce RTX 5060 Laptop GPU",
-                    label="GPU 0 - NVIDIA GeForce RTX 5060 Laptop GPU",
+                    name="NVIDIA GeForce RTX 2050 Laptop GPU",
+                    label="GPU 0 - NVIDIA GeForce RTX 2050 Laptop GPU",
                 )
             ],
             0,
@@ -2465,15 +2523,21 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
             QtWidgets.QSpinBox,
             "performanceClockSpin",
         )
+        voltage_floor = dialog.findChild(QtWidgets.QSpinBox, "voltageFloorSpin")
         assert power_slider is not None and power_spin is not None
         assert memory_spin is not None and max_drop_spin is not None
         assert performance_voltage is not None and performance_clock is not None
+        assert voltage_floor is not None
         # The mobile fixed power limit grays the power control out entirely,
         # while the other scan controls stay usable.
         assert not power_slider.isEnabled()
         assert not power_spin.isEnabled()
         assert memory_spin.isEnabled()
         assert max_drop_spin.isEnabled()
+        # An unknown GPU leaves the floor automatic. The loaded baseline probe
+        # will turn this into a 10% drop from its actual starting voltage.
+        assert voltage_floor.specialValueText() == "Auto (-10%)"
+        assert voltage_floor.value() == voltage_floor.minimum()
         memory_spin.setValue(500)
         return QtWidgets.QDialog.DialogCode.Accepted
 
@@ -2491,6 +2555,7 @@ def test_scan_tuning_unsupported_power_limit_only_omits_power_option(
     # stock limit.
     assert options is not None
     assert "auto_uv_power_limit_w" not in options
+    assert "auto_uv_min_voltage_mv" not in options
 
 
 def test_scan_tuning_dialog_keeps_geometry_stable_between_presets(monkeypatch) -> None:

@@ -86,6 +86,7 @@ fn loop_reapplies_vf_curve_when_driver_resets_offsets() {
         None,
         stop,
         Some(1),
+        None,
         &mut None,
     );
     assert!(result.is_ok());
@@ -171,6 +172,7 @@ fn run_one_vf_guard_iteration(mock: &MockGpu, policy: VfPolicyResult<'_>) {
         None,
         stop,
         Some(1),
+        None,
         &mut None,
     );
     assert!(result.is_ok());
@@ -279,6 +281,7 @@ fn loop_manual_fan_control_and_restore_on_exit() {
         None,
         stop,
         Some(2),
+        None,
         &mut None,
     );
     assert!(result.is_ok());
@@ -341,6 +344,7 @@ fn loop_stop_during_backend_read_skips_gpu_writes() {
         None,
         stop,
         Some(5),
+        None,
         &mut None,
     );
     assert!(result.is_ok());
@@ -406,6 +410,7 @@ fn loop_stop_during_vf_read_skips_vf_and_mem_writes() {
         None,
         stop,
         Some(3),
+        None,
         &mut None,
     );
     assert!(result.is_ok());
@@ -474,6 +479,7 @@ fn early_setup_error_releases_clock_ceiling() {
         None,
         stop,
         Some(1),
+        None,
         &mut None,
     );
     assert_eq!(
@@ -653,6 +659,7 @@ fn unsupported_fan_count_is_tolerated_when_fan_control_disabled() {
         None,
         stop,
         Some(1),
+        None,
         &mut None,
     );
     assert!(
@@ -695,7 +702,264 @@ fn unsupported_fan_count_still_fails_when_fan_control_enabled() {
         None,
         stop,
         Some(1),
+        None,
         &mut None,
     );
     assert!(result.is_err());
+}
+
+fn resume_mock(limit_w: i64) -> MockGpu {
+    MockGpu::with_power_limits(limit_w, limit_w)
+}
+
+#[test]
+fn resume_recovery_reapplies_drifted_power_limit() {
+    // Drifted after a simulated resume: expected 250, driver reports 320.
+    let mock = resume_mock(320);
+    let reapplied =
+        super::run_resume_recovery(&mock, false, Some(250), None).expect("recovery pass");
+    assert!(reapplied);
+    assert!(mock
+        .recorded()
+        .iter()
+        .any(|op| matches!(op, MockOp::ApplyPowerLimit { power_limit_w: 250 })));
+
+    // Second pass: the limit now reads back as expected — no further writes.
+    let ops_before = mock.recorded().len();
+    let reapplied =
+        super::run_resume_recovery(&mock, false, Some(250), None).expect("recovery pass");
+    assert!(!reapplied);
+    assert_eq!(mock.recorded().len(), ops_before);
+
+    // Simulated second suspend that resets the limit again: the shadow is
+    // cleared, so the drift is visible and reapplied once more.
+    mock.clear_applied_power_limit();
+    let reapplied =
+        super::run_resume_recovery(&mock, false, Some(250), None).expect("recovery pass");
+    assert!(reapplied);
+}
+
+#[test]
+fn resume_recovery_reasserts_persistence_and_ceiling() {
+    let mut mock = resume_mock(250);
+    mock.supported_core_clocks = vec![2400, 2500, 2600, 2640, 2700];
+    let mut ceiling = super::ceiling::FlattenedClockCeilingController::new(
+        FlattenTarget {
+            source: "auto-uv-final".into(),
+            lock_clock_mhz: 2640,
+            lock_voltage_mv: Some(875),
+            end_voltage_mv: Some(875),
+            tail_point_count: Some(1),
+            ceiling_clock_mhz: None,
+            tail_rise_bins: None,
+        },
+        &mock,
+    );
+    ceiling.apply().unwrap();
+    let ops_before = mock.recorded().len();
+
+    let reapplied = super::run_resume_recovery(&mock, true, Some(250), Some(&mut ceiling))
+        .expect("recovery pass");
+    assert!(!reapplied, "limit still matched: read-first must skip it");
+    let ops = mock.recorded()[ops_before..].to_vec();
+    assert!(
+        ops.iter().any(|op| matches!(op, MockOp::EnablePersistence)),
+        "persistence must be re-asserted: {ops:?}"
+    );
+    assert!(
+        ops.iter()
+            .any(|op| matches!(op, MockOp::ApplyLockedCoreClock { .. })
+                || matches!(op, MockOp::ApplyLockedCoreClockRange { .. })),
+        "ceiling must be re-locked: {ops:?}"
+    );
+    assert!(
+        !ops.iter()
+            .any(|op| matches!(op, MockOp::ApplyPowerLimit { .. })),
+        "matching power limit must not be rewritten: {ops:?}"
+    );
+}
+
+#[test]
+fn resume_recovery_propagates_power_limit_failure() {
+    let mock = resume_mock(320);
+    mock.inject_failure(
+        "apply_power_limit_w",
+        crate::gpu::GpuError::other("injected resume failure", 0),
+    );
+    let err = super::run_resume_recovery(&mock, false, Some(250), None).expect_err("must fail");
+    assert!(err.contains("power limit"), "{err}");
+}
+
+#[test]
+fn resume_recovery_relocks_ceiling_even_when_power_fails() {
+    // The two steps are independent driver state: a failing power-limit
+    // reapply must not starve the ceiling re-lock across the retry budget.
+    let mut mock = resume_mock(320);
+    mock.supported_core_clocks = vec![2400, 2500, 2600, 2640, 2700];
+    mock.inject_failure(
+        "apply_power_limit_w",
+        crate::gpu::GpuError::other("injected resume failure", 0),
+    );
+    let mut ceiling = super::ceiling::FlattenedClockCeilingController::new(
+        FlattenTarget {
+            source: "auto-uv-final".into(),
+            lock_clock_mhz: 2640,
+            lock_voltage_mv: Some(875),
+            end_voltage_mv: Some(875),
+            tail_point_count: Some(1),
+            ceiling_clock_mhz: None,
+            tail_rise_bins: None,
+        },
+        &mock,
+    );
+    let err = super::run_resume_recovery(&mock, false, Some(250), Some(&mut ceiling))
+        .expect_err("power failure must still surface");
+    assert!(err.contains("power limit"), "{err}");
+    assert!(
+        mock.recorded()
+            .iter()
+            .any(|op| matches!(op, MockOp::ApplyLockedCoreClock { .. })
+                || matches!(op, MockOp::ApplyLockedCoreClockRange { .. })),
+        "ceiling must be re-locked despite the power failure: {:?}",
+        mock.recorded()
+    );
+}
+
+/// Drive the loop's resume state machine end to end through the clock seam:
+/// a fabricated boottime/monotonic gap must quiesce through the grace, then
+/// re-verify and reapply the drifted power limit — and nothing before it.
+#[test]
+fn loop_detects_fabricated_sleep_and_recovers() {
+    let mock = MockGpu::with_power_limits(320, 320);
+    let policy = VfPolicyResult {
+        auto_uv_profile_gpu_policy: super::apply::GpuPolicyApplied {
+            power_limit_w: Some(250),
+            mem_clk_vf_offset_mhz: None,
+        },
+        ..VfPolicyResult::default()
+    };
+    let mut fan_config = FanConfig::defaults();
+    fan_config.poll_interval_s = 0.0;
+    let mut publisher = super::telemetry::OverlayStatePublisher::new(
+        0,
+        false,
+        1.0,
+        String::new(),
+        String::new(),
+        String::new(),
+        false,
+        None,
+    );
+    // setup, tick1 (normal), tick2 (gap: slept 100s), tick3 (grace elapsed).
+    let script = std::cell::RefCell::new(std::collections::VecDeque::from(vec![
+        (100.0, 100.0),
+        (101.0, 101.0),
+        (102.0, 202.0),
+        (106.0, 206.0),
+    ]));
+    let mut clocks = || {
+        script
+            .borrow_mut()
+            .pop_front()
+            .expect("clock script exhausted")
+    };
+    let result = run_fan_control_loop(
+        &mock,
+        0,
+        false,
+        fan_config,
+        false,
+        policy,
+        &mut publisher,
+        None,
+        None,
+        None,
+        Arc::new(AtomicBool::new(false)),
+        Some(3),
+        Some(&mut clocks),
+        &mut None,
+    );
+    assert!(result.is_ok(), "{result:?}");
+    let ops = mock.recorded();
+    assert_eq!(
+        ops,
+        vec![MockOp::ApplyPowerLimit { power_limit_w: 250 }],
+        "exactly one recovery write: the reapplied power limit"
+    );
+}
+
+/// Exhausting the recovery retry budget must NOT kill the engine: a dying
+/// engine would strip fan control and the ceiling while leaving the
+/// undervolt applied. Three failing attempts, then the loop keeps running.
+#[test]
+fn loop_resume_give_up_is_not_fatal() {
+    let mock = MockGpu::with_power_limits(320, 320);
+    mock.inject_failure(
+        "apply_power_limit_w",
+        crate::gpu::GpuError::other("post-resume driver refusal", 0),
+    );
+    let policy = VfPolicyResult {
+        auto_uv_profile_gpu_policy: super::apply::GpuPolicyApplied {
+            power_limit_w: Some(250),
+            mem_clk_vf_offset_mhz: None,
+        },
+        ..VfPolicyResult::default()
+    };
+    let mut fan_config = FanConfig::defaults();
+    fan_config.poll_interval_s = 0.0;
+    let mut publisher = super::telemetry::OverlayStatePublisher::new(
+        0,
+        false,
+        1.0,
+        String::new(),
+        String::new(),
+        String::new(),
+        false,
+        None,
+    );
+    // setup; tick1; tick2 detects (deadline 105); tick3 attempt1 + anchor;
+    // tick4 attempt2 + anchor; tick5 attempt3 -> give-up; tick6 normal.
+    let script = std::cell::RefCell::new(std::collections::VecDeque::from(vec![
+        (100.0, 100.0),
+        (101.0, 101.0),
+        (102.0, 202.0),
+        (106.0, 206.0),
+        (107.0, 207.0),
+        (111.0, 211.0),
+        (112.0, 212.0),
+        (116.0, 216.0),
+        (117.0, 217.0),
+    ]));
+    let mut clocks = || {
+        script
+            .borrow_mut()
+            .pop_front()
+            .expect("clock script exhausted")
+    };
+    let result = run_fan_control_loop(
+        &mock,
+        0,
+        false,
+        fan_config,
+        false,
+        policy,
+        &mut publisher,
+        None,
+        None,
+        None,
+        Arc::new(AtomicBool::new(false)),
+        Some(6),
+        Some(&mut clocks),
+        &mut None,
+    );
+    assert!(
+        result.is_ok(),
+        "give-up must be non-fatal, engine keeps running: {result:?}"
+    );
+    let attempts = mock
+        .recorded()
+        .iter()
+        .filter(|op| matches!(op, MockOp::ApplyPowerLimit { .. }))
+        .count();
+    assert_eq!(attempts, 3, "exactly the retry budget was spent");
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -15,6 +16,34 @@ _POWER_LIMIT_ERROR = (
 
 
 def _patch_applier_environment(monkeypatch, gpu_client_type) -> None:
+    if not hasattr(gpu_client_type, "capabilities"):
+        def fake_capabilities(self, *, refresh: bool = False):
+            _ = refresh
+            applied_w = (
+                self.power_limit_calls[-1]
+                if getattr(self, "power_limit_calls", [])
+                else 360
+            )
+            return SimpleNamespace(
+                identity=SimpleNamespace(
+                    index=self.gpu_index,
+                    uuid=f"GPU-test-{self.gpu_index}",
+                    name="NVIDIA GeForce RTX Test",
+                    pci_bus_id=f"0000:{self.gpu_index + 1:02x}:00.0",
+                    pci_device_id="0x1234",
+                ),
+                power=SimpleNamespace(
+                    current_w=applied_w,
+                    enforced_w=applied_w,
+                ),
+            )
+
+        monkeypatch.setattr(
+            gpu_client_type,
+            "capabilities",
+            fake_capabilities,
+            raising=False,
+        )
     monkeypatch.setattr(gpu_vf_curve_applier, "DaemonGpuClient", gpu_client_type)
     monkeypatch.setattr(
         gpu_vf_curve_applier,

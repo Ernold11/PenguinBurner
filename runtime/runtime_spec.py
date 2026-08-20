@@ -23,6 +23,8 @@ from profiles.uv.profile_tiers import (
     normalize_profile_tier,
     resolve_profile_tier_profiles,
 )
+from profiles.gpu_identity import gpu_index_for_uuid, profile_gpu_uuid
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from profiles.uv.runtime_auto_uv_profile import load_auto_uv_final_curve
 from runtime.daemon_client import gpu_capabilities, require_daemon_capabilities
 from runtime.gpu_control.adaptive_profile_policy import AdaptiveProfilePolicyConfig
@@ -141,18 +143,6 @@ def build_runtime_spec(
         "gpu-capabilities-v1",
         socket_path=socket_path,
     )
-    config, _config_path = load_runtime_config()
-    configured_gpu = config.get("gpu", {}) if isinstance(config, dict) else {}
-    selected_index = (
-        _nonnegative_int(configured_gpu.get("index"), default=0)
-        if gpu_index is None
-        else max(0, int(gpu_index))
-    )
-    capabilities = gpu_capabilities(selected_index, socket_path=socket_path)
-    identity = capabilities.get("identity")
-    if not isinstance(identity, dict) or not str(identity.get("uuid") or "").strip():
-        raise RuntimeError(f"GPU {selected_index} did not report a stable UUID")
-
     selector = str(profile_selector or "").strip()
     selected_curve = (
         # Static mode keeps the documented "empty selector = latest saved
@@ -162,13 +152,59 @@ def build_runtime_spec(
         if selector == STOCK_PROFILE_SELECTOR or (adaptive_auto_uv and not selector)
         else load_auto_uv_final_curve(selector)
     )
+    config, _config_path = load_runtime_config()
+    configured_gpu = config.get("gpu", {}) if isinstance(config, dict) else {}
+    bound_uuid = profile_gpu_uuid(selected_curve or {})
+    discovered_identities = None
+    selected_index = (
+        _nonnegative_int(configured_gpu.get("index"), default=0)
+        if gpu_index is None
+        else max(0, int(gpu_index))
+    )
+    if bound_uuid:
+        discovered_identities = DaemonGpuClient.discover_identities()
+        bound_index = gpu_index_for_uuid(discovered_identities, bound_uuid)
+        if bound_index is None:
+            raise RuntimeError(f"profile GPU {bound_uuid} is not currently detected")
+        if gpu_index is not None and int(selected_index) != int(bound_index):
+            raise RuntimeError(
+                f"profile is bound to GPU {bound_index} ({bound_uuid}), "
+                f"not requested GPU {selected_index}"
+            )
+        selected_index = int(bound_index)
+    capabilities = gpu_capabilities(selected_index, socket_path=socket_path)
+    identity = capabilities.get("identity")
+    if not isinstance(identity, dict) or not str(identity.get("uuid") or "").strip():
+        raise RuntimeError(f"GPU {selected_index} did not report a stable UUID")
     mode = "stock"
     static_profile = None
     adaptive = None
     if adaptive_auto_uv:
-        adaptive = _adaptive_spec(selected_curve, target_fps_override=adaptive_target_fps)
-        if adaptive is not None:
-            mode = "adaptive"
+        try:
+            if discovered_identities is None:
+                discovered_identities = DaemonGpuClient.discover_identities()
+            include_legacy_profiles = len(discovered_identities) == 1
+        except Exception:
+            # Peer enumeration is advisory: an explicitly selected profile
+            # still provides one valid tier; failure to enumerate peers must
+            # not make that apply fail.
+            include_legacy_profiles = False
+        adaptive = _adaptive_spec(
+            selected_curve,
+            target_fps_override=adaptive_target_fps,
+            gpu_uuid=str(identity["uuid"]),
+            include_legacy_profiles=include_legacy_profiles,
+        )
+        if adaptive is None:
+            # Silently degrading an explicit adaptive request to stock would
+            # run the GPU at stock without an error — and persist stock as the
+            # boot profile on the install path.
+            raise RuntimeError(
+                "adaptive Auto-UV was requested but no verified tier profiles "
+                f"resolve for GPU {identity['uuid']}; run an Auto-UV scan for "
+                "this GPU or verify its saved profiles first"
+            )
+        mode = "adaptive"
     elif selected_curve is not None:
         mode = "static"
         static_profile = _profile_spec(selected_curve)
@@ -204,8 +240,14 @@ def _adaptive_spec(
     selected_curve: dict | None,
     *,
     target_fps_override: float | None = None,
+    gpu_uuid: str = "",
+    include_legacy_profiles: bool = False,
 ) -> dict[str, Any] | None:
-    resolved = resolve_profile_tier_profiles(read_auto_uv_profiles())
+    resolved = resolve_profile_tier_profiles(
+        read_auto_uv_profiles(),
+        gpu_uuid=str(gpu_uuid or ""),
+        include_legacy_profiles=include_legacy_profiles,
+    )
     tier_profiles: dict[str, dict[str, Any]] = {}
     for tier in available_adaptive_tiers(resolved):
         summary = resolved.get(tier)

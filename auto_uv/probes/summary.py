@@ -219,9 +219,6 @@ def loaded_telemetry_samples(
         use_power_limit_floor=use_power_limit_floor,
         rules=AUTO_UV_METRIC_TUNING,
     )
-    if active_power_floor_w is None:
-        return [], None
-
     active_samples = [
         sample
         for sample in samples
@@ -261,11 +258,8 @@ def loaded_telemetry_means(
         use_power_limit_floor=use_power_limit_floor,
         skip_elapsed_warmup=skip_elapsed_warmup,
     )
-    if active_power_floor_w is None and not active_samples:
-        return None, None, None, None, None, 0, None
-
     if not active_samples:
-        return None, None, None, None, None, 0, float(active_power_floor_w)
+        return None, None, None, None, None, 0, active_power_floor_w
 
     return (
         mean([read_field(sample, "power_w") for sample in active_samples]),

@@ -19,6 +19,7 @@ import ui.features.curves.fan_profiles as ui_app
 from runtime.gpu_control.flattened_clock_ceiling import FlattenedClockCeilingController
 from profiles.uv.profile_store import (
     archive_auto_uv_profile,
+    bind_auto_uv_profile_gpu_identity,
     delete_auto_uv_profile_paths,
     delete_auto_uv_profiles,
     format_profile_table,
@@ -91,6 +92,7 @@ from ui.features.profiles.profiles import (
 )
 from ui.features.tuning.verify import elapsed_from_line as _verify_elapsed_from_line
 from ui.features.tuning.verify import progress_percent as _verify_progress_percent
+from ui.features.tuning.gpu_selection import GpuChoice
 from ui.components.profile_list import (
     PROFILE_SORTABLE_COLUMNS,
     ProfileList,
@@ -131,6 +133,11 @@ def test_profile_table_shows_copyable_id_and_keeps_date_separate_from_name() -> 
         "avg_core_clock_mhz": 2605.25,
         "efficiency_fps_per_w": 0.81234,
         "profile_source": "profile-store",
+        "gpu_identity": {
+            "name": "RTX 5090",
+            "uuid": "GPU-A",
+            "pci_bus_id": "00000000:01:00.0",
+        },
     }
 
     rendered = format_profile_table([profile])
@@ -138,6 +145,7 @@ def test_profile_table_shows_copyable_id_and_keeps_date_separate_from_name() -> 
     assert "2026-04-27 12:00:00" in rendered
     assert "20260427-120000-000000-875mv-2610mhz" in rendered
     assert "Balanced" in rendered
+    assert "RTX 5090 (01:00.0)" in rendered
     assert "2610 MHz 875 mV" in rendered
     # 500 MT/s transfer-rate offset -> 250 MHz realized memory clock.
     assert "+250 MHz" in rendered
@@ -238,18 +246,19 @@ def test_profile_metric_delta_text_and_color_vs_base() -> None:
 
 
 def test_profile_table_headers_and_sorting_scope() -> None:
-    assert ProfileList.COLUMNS[2] == "mV"
-    assert ProfileList.COLUMNS[3] == "Target MHz"
-    assert ProfileList.COLUMNS[4] == "Effective MHz"
-    assert ProfileList.COLUMNS[5] == "FPS/W"
-    assert ProfileList.COLUMNS[7] == "Power W"
-    assert ProfileList.COLUMNS[8] == "Mem"
-    assert ProfileList.COLUMNS[9] == "Tier"
+    assert ProfileList.COLUMNS[2] == "GPU"
+    assert ProfileList.COLUMNS[3] == "mV"
+    assert ProfileList.COLUMNS[4] == "Target MHz"
+    assert ProfileList.COLUMNS[5] == "Effective MHz"
+    assert ProfileList.COLUMNS[6] == "FPS/W"
+    assert ProfileList.COLUMNS[8] == "Power W"
+    assert ProfileList.COLUMNS[9] == "Mem"
+    assert ProfileList.COLUMNS[10] == "Tier"
     assert "Autostart" not in ProfileList.COLUMNS
     assert "Voltage vs base" not in ProfileList.COLUMNS
     assert "FPS/W vs base" not in ProfileList.COLUMNS
     assert "Power vs base" not in ProfileList.COLUMNS
-    assert PROFILE_SORTABLE_COLUMNS == frozenset({0, 2, 3, 4, 5, 6, 7})
+    assert PROFILE_SORTABLE_COLUMNS == frozenset({0, 2, 3, 4, 5, 6, 7, 8})
 
 
 def test_existing_profile_uses_matching_latest_long_verification_clock(
@@ -387,13 +396,14 @@ def test_profile_non_sort_columns_have_no_sort_keys() -> None:
     )
 
     assert sort_values[1] == ""
-    assert sort_values[4] == pytest.approx(2605.25)
-    assert sort_values[5] == pytest.approx(0.80)
-    assert sort_values[6] == pytest.approx(160.0)
-    assert sort_values[7] == pytest.approx(200.0)
-    assert sort_values[8] == ""
+    assert sort_values[2] == "unassigned (legacy)"
+    assert sort_values[5] == pytest.approx(2605.25)
+    assert sort_values[6] == pytest.approx(0.80)
+    assert sort_values[7] == pytest.approx(160.0)
+    assert sort_values[8] == pytest.approx(200.0)
     assert sort_values[9] == ""
     assert sort_values[10] == ""
+    assert sort_values[11] == ""
 
 
 def test_profile_table_keeps_regular_font_for_highlight_and_deltas() -> None:
@@ -606,6 +616,227 @@ def test_profile_list_uses_one_apply_button() -> None:
 
     profile_list.select_profile("profile-a")
     assert profile_list.daemonize_button.isEnabled()
+
+
+def test_profile_list_single_gpu_keeps_clean_apply_and_legacy_profile() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [{"profile_id": "legacy", "final_verified": True}]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(
+        profiles,
+        [GpuChoice(0, "NVIDIA RTX 5090", "00000000:01:00.0", "GPU-A")],
+    )
+    profile_list.select_profile("legacy")
+
+    assert not profile_list.target_gpu_combo.isHidden()
+    assert not profile_list.target_gpu_label.isEnabled()
+    assert not profile_list.target_gpu_combo.isEnabled()
+    assert profile_list.target_gpu_combo.count() == 1
+    assert profile_list.target_gpu_combo.currentData() == "GPU-A"
+    assert profile_list.daemonize_button.text() == "Apply"
+    assert profile_list.daemonize_button.isEnabled()
+    assert profile_list.main_gpu_checkbox.isHidden()
+    assert profile_list.target_gpu_index() == 0
+    assert profile_list.table.item(0, profile_list.GPU_COLUMN).text() == (
+        "Unassigned (legacy)"
+    )
+
+
+def test_profile_list_stale_configured_index_does_not_fake_multiple_gpus() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [{"profile_id": "legacy", "final_verified": True}]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(
+        profiles,
+        [
+            GpuChoice(0, "NVIDIA RTX 5090", "00000000:01:00.0", "GPU-A"),
+            GpuChoice(5, "NVIDIA GPU"),
+        ],
+        preferred_index=5,
+    )
+
+    assert profile_list.target_gpu_combo.count() == 1
+    assert profile_list.target_gpu_combo.currentData() == "GPU-A"
+    assert profile_list.target_gpu_index() == 0
+    assert not profile_list.target_gpu_label.isEnabled()
+    assert not profile_list.target_gpu_combo.isEnabled()
+
+
+def test_profile_list_multiple_profile_gpus_requires_explicit_target() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [
+        {
+            "profile_id": "profile-a",
+            "final_verified": True,
+            "gpu_identity": {"name": "RTX 5090", "uuid": "GPU-A"},
+        },
+        {
+            "profile_id": "profile-b",
+            "final_verified": True,
+            "gpu_identity": {"name": "RTX 5090", "uuid": "GPU-B"},
+        },
+    ]
+    choices = [
+        GpuChoice(0, "RTX 5090", "00000000:01:00.0", "GPU-A"),
+        GpuChoice(1, "RTX 5090", "00000000:02:00.0", "GPU-B"),
+    ]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(profiles, choices)
+    profile_list.select_profile("profile-b")
+
+    assert not profile_list.target_gpu_combo.isHidden()
+    assert profile_list.target_gpu_label.isEnabled()
+    assert profile_list.target_gpu_combo.isEnabled()
+    assert profile_list.target_gpu_index() is None
+    assert not profile_list.daemonize_button.isEnabled()
+    assert not profile_list.boot_apply_checkbox.isEnabled()
+    assert not profile_list.main_gpu_checkbox.isHidden()
+    assert not profile_list.main_gpu_checkbox.isEnabled()
+
+    profile_list.target_gpu_combo.setCurrentIndex(2)
+
+    assert profile_list.target_gpu_uuid() == "GPU-B"
+    assert profile_list.target_gpu_index() == 1
+    assert profile_list.daemonize_button.text() == "Apply to GPU 1"
+    assert profile_list.daemonize_button.isEnabled()
+    assert profile_list.boot_apply_checkbox.isEnabled()
+    assert not profile_list.main_gpu_checkbox.isEnabled()
+    assert profile_list.table.isRowHidden(0)
+    assert not profile_list.table.isRowHidden(1)
+
+    profile_list.set_main_gpu_state(checked=True, has_boot_profile=True)
+
+    assert profile_list.main_gpu_checkbox.isEnabled()
+    assert profile_list.main_gpu_checkbox.isChecked()
+
+
+def test_profile_list_multiple_hardware_gpus_one_profile_group_keeps_selector_visible() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [
+        {
+            "profile_id": "profile-b",
+            "final_verified": True,
+            "gpu_identity": {"name": "RTX 5090", "uuid": "GPU-B"},
+        }
+    ]
+    choices = [
+        GpuChoice(0, "RTX 4090", "00000000:01:00.0", "GPU-A"),
+        GpuChoice(1, "RTX 5090", "00000000:02:00.0", "GPU-B"),
+    ]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(profiles, choices)
+    profile_list.select_profile("profile-b")
+
+    assert not profile_list.target_gpu_combo.isHidden()
+    assert profile_list.target_gpu_combo.isEnabled()
+    assert profile_list.target_gpu_index() is None
+    assert not profile_list.daemonize_button.isEnabled()
+
+    profile_list.target_gpu_combo.setCurrentIndex(2)
+
+    assert profile_list.target_gpu_index() == 1
+    assert profile_list.daemonize_button.text() == "Apply to GPU 1"
+    assert profile_list.daemonize_button.isEnabled()
+
+
+def test_profile_list_target_filter_keeps_legacy_profiles_visible() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [
+        {
+            "profile_id": "profile-a",
+            "final_verified": True,
+            "gpu_identity": {"name": "RTX 4090", "uuid": "GPU-A"},
+        },
+        {
+            "profile_id": "profile-b",
+            "final_verified": True,
+            "gpu_identity": {"name": "RTX 5090", "uuid": "GPU-B"},
+        },
+        {
+            "profile_id": "legacy",
+            "final_verified": True,
+            # Profile summaries normalize missing legacy identity to an empty
+            # mapping. It must not become the literal UUID string "None".
+            "gpu_identity": {},
+        },
+    ]
+    choices = [
+        GpuChoice(0, "RTX 4090", "00000000:01:00.0", "GPU-A"),
+        GpuChoice(1, "RTX 5090", "00000000:02:00.0", "GPU-B"),
+    ]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(profiles, choices)
+
+    profile_list.target_gpu_combo.setCurrentIndex(1)
+
+    assert not profile_list.table.isRowHidden(0)
+    assert profile_list.table.isRowHidden(1)
+    assert not profile_list.table.isRowHidden(2)
+
+
+def test_profile_filter_deselects_rows_hidden_by_gpu_switch() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore, QtGui, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    profile_list = ProfileList(QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets)
+    profiles = [
+        {
+            "profile_id": "profile-a",
+            "final_verified": True,
+            "gpu_identity": {"uuid": "GPU-A"},
+        },
+        {
+            "profile_id": "profile-b",
+            "final_verified": True,
+            "gpu_identity": {"uuid": "GPU-B"},
+        },
+    ]
+    choices = [
+        GpuChoice(0, "RTX A", uuid="GPU-A"),
+        GpuChoice(1, "RTX B", uuid="GPU-B"),
+    ]
+    profile_list.set_profiles(profiles)
+    profile_list.configure_gpu_targets(profiles, choices)
+    profile_list.target_gpu_combo.setCurrentIndex(1)
+    profile_list.select_profile("profile-a")
+    assert profile_list.selected_profile_ids() == ["profile-a"]
+
+    profile_list.target_gpu_combo.setCurrentIndex(2)
+
+    assert profile_list.selected_profile_ids() == []
 
 
 def test_profile_list_boot_toggle_defaults_off_and_survives_reloads() -> None:
@@ -924,6 +1155,53 @@ def test_mark_auto_uv_profile_verified_promotes_user_edited_draft(
     assert payload["avg_power_w"] == 240.0
     assert payload["efficiency_fps_per_w"] == 0.50625
     assert payload["base_avg_fps"] == 100.0
+
+
+def test_bind_legacy_profile_identity_preserves_verified_payload(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    stored_path = archive_auto_uv_profile(
+        {
+            "candidate_voltage_mv": 900,
+            "lock_clock_mhz": 2600,
+            "final_verified": True,
+            "points": [],
+        }
+    )
+
+    bind_auto_uv_profile_gpu_identity(
+        stored_path,
+        {
+            "name": "NVIDIA RTX 5090",
+            "uuid": "GPU-A",
+            "pci_bus_id": "00000000:01:00.0",
+            "pci_device_id": "0x2B8510DE",
+            "index": 0,
+        },
+    )
+
+    payload = json.loads(stored_path.read_text(encoding="utf-8"))
+    assert payload["final_verified"] is True
+    assert payload["gpu_identity"]["uuid"] == "GPU-A"
+    assert payload["gpu_identity"]["pci_bus_id"] == "00000000:01:00.0"
+
+
+def test_binding_cannot_silently_move_profile_to_another_gpu(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(profile_store, "default_user_config_dir", lambda: tmp_path)
+    stored_path = archive_auto_uv_profile(
+        {
+            "final_verified": True,
+            "gpu_identity": {"uuid": "GPU-A", "name": "RTX 5090"},
+        }
+    )
+
+    with pytest.raises(ValueError, match="already bound"):
+        bind_auto_uv_profile_gpu_identity(stored_path, {"uuid": "GPU-B"})
 
 
 def test_mark_auto_uv_profile_verified_preserves_existing_metrics(
@@ -1393,6 +1671,17 @@ def test_profile_verification_promotes_verified_profile(
         def refresh_points(self) -> None:
             pass
 
+        def capabilities(self):
+            return SimpleNamespace(
+                identity=SimpleNamespace(
+                    index=0,
+                    name="NVIDIA RTX 5090",
+                    uuid="GPU-verify-a",
+                    pci_bus_id="00000000:01:00.0",
+                    pci_device_id="0x2B8510DE",
+                )
+            )
+
     config = SimpleNamespace(abort_callback=None)
     result = SimpleNamespace(
         success=True,
@@ -1472,6 +1761,13 @@ def test_profile_verification_promotes_verified_profile(
     assert payload["base_avg_fps"] == 100.0
     assert payload["base_avg_power_w"] == 250.0
     assert payload["base_efficiency_fps_per_w"] == 0.4
+    assert payload["gpu_identity"] == {
+        "name": "NVIDIA RTX 5090",
+        "uuid": "GPU-verify-a",
+        "pci_bus_id": "00000000:01:00.0",
+        "pci_device_id": "0x2B8510DE",
+        "index_at_verification": 0,
+    }
     assert baseline_calls
     assert baseline_calls[0]["base_plan"][0]["target_mhz"] == 2500
     assert baseline_calls[0]["base_plan"][0]["new_offset_mhz"] == 0
@@ -1511,6 +1807,17 @@ def test_profile_verification_wires_live_telemetry_events_when_target_known(
     class FakeGpuClient:
         def refresh_points(self) -> None:
             pass
+
+        def capabilities(self):
+            return SimpleNamespace(
+                identity=SimpleNamespace(
+                    index=0,
+                    name="NVIDIA RTX 5090",
+                    uuid="GPU-verify-a",
+                    pci_bus_id="00000000:01:00.0",
+                    pci_device_id="0x2B8510DE",
+                )
+            )
 
     config = SimpleNamespace(abort_callback=None)
     result = SimpleNamespace(

@@ -8,11 +8,13 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use super::{
     snap_core_clock_mhz, snap_core_clock_range, vf_editable_core_points, vf_find_nearest,
-    vf_summary_of, AppliedOffsets, ClockOffsets, ClockType, GpuBackend, GpuError, GpuIdentity,
-    GpuMemoryInfo, GpuResult, PowerLimits, RangeSnapResult, SnapResult, VfPoint, VfSummary,
+    vf_summary_of, AppliedOffsets, ClockOffsets, ClockType, GpuBackend, GpuContextPids, GpuError,
+    GpuIdentity, GpuMemoryInfo, GpuResult, PowerLimits, RangeSnapResult, SnapResult, VfPoint,
+    VfSummary,
 };
 
 /// One recorded privileged operation, in call order.
@@ -92,6 +94,27 @@ pub struct MockGpu {
     pub vf_available: bool,
     pub vf_points: Vec<VfPoint>,
 
+    /// Canned `gpu_context_pids` answer.
+    pub context_pids: GpuContextPids,
+    /// Integration-test seam: when set, `gpu_context_pids` re-reads this file
+    /// on every call (missing file → no contexts), so a test can stage and
+    /// remove GPU clients while the daemon runs. Overrides `context_pids`.
+    /// Format: whitespace-separated tokens where `graphics` / `compute`
+    /// select the kind for subsequent PIDs (default `graphics`).
+    pub context_pids_file: Option<PathBuf>,
+    /// Integration-test seam: a three-field `opens closes live` file updated
+    /// when a mock NVIDIA session is acquired and dropped. Production never
+    /// sets it.
+    lifetime_file: Option<PathBuf>,
+    /// Management power limit applied through the trait; overrides only
+    /// `power_limit_w` in the `query_power_limits` readback so
+    /// verify-after-apply behaves like real hardware while the enforced
+    /// limit stays independently settable (it can legitimately diverge —
+    /// thermal/idle caps). Tests simulating a driver-side reset (e.g.
+    /// suspend loss) call `clear_applied_power_limit` so later
+    /// `power_limits` writes win.
+    applied_power_limit_w: RefCell<Option<i64>>,
+
     ops: RefCell<Vec<MockOp>>,
     failures: RefCell<HashMap<&'static str, GpuError>>,
     /// Test hook run on every `temperature_c` read — lets engine-loop tests
@@ -132,6 +155,10 @@ impl Default for MockGpu {
             voltage_uv: None,
             vf_available: false,
             vf_points: Vec::new(),
+            context_pids: GpuContextPids::default(),
+            context_pids_file: None,
+            lifetime_file: None,
+            applied_power_limit_w: RefCell::new(None),
             ops: RefCell::new(Vec::new()),
             failures: RefCell::new(HashMap::new()),
             on_temperature: RefCell::new(None),
@@ -157,9 +184,24 @@ impl MockGpu {
         self.failures.borrow_mut().remove(method);
     }
 
+    /// Forget the trait-applied power limit so `query_power_limits` reports
+    /// the `power_limits` field again — simulates the driver losing the
+    /// limit (suspend/reset) after an apply.
+    #[allow(dead_code)] // used by unit tests only (the module is not test-gated)
+    pub fn clear_applied_power_limit(&self) {
+        *self.applied_power_limit_w.borrow_mut() = None;
+    }
+
     /// A snapshot of the recorded operations.
     pub fn recorded(&self) -> Vec<MockOp> {
         self.ops.borrow().clone()
+    }
+
+    /// Begin tracking this mock instance as one live NVIDIA session.
+    pub(crate) fn track_lifetime(&mut self, path: PathBuf) {
+        let (opens, closes, live) = read_lifetime_state(&path);
+        write_lifetime_state(&path, opens + 1, closes, live + 1);
+        self.lifetime_file = Some(path);
     }
 
     fn record(&self, op: MockOp) {
@@ -171,6 +213,54 @@ impl MockGpu {
             Some(err) => Err(err.clone()),
             None => Ok(()),
         }
+    }
+}
+
+impl Drop for MockGpu {
+    fn drop(&mut self) {
+        let Some(path) = &self.lifetime_file else {
+            return;
+        };
+        let (opens, closes, live) = read_lifetime_state(path);
+        write_lifetime_state(path, opens, closes + 1, live.saturating_sub(1));
+    }
+}
+
+fn write_lifetime_state(path: &std::path::Path, opens: u64, closes: u64, live: u64) {
+    let temporary = path.with_extension("tmp");
+    if std::fs::write(&temporary, format!("{opens} {closes} {live}\n")).is_ok() {
+        let _ = std::fs::rename(temporary, path);
+    }
+}
+
+fn read_lifetime_state(path: &std::path::Path) -> (u64, u64, u64) {
+    let values: Vec<u64> = std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|value| value.parse().ok())
+        .collect();
+    match values.as_slice() {
+        [opens, closes, live] => (*opens, *closes, *live),
+        _ => (0, 0, 0),
+    }
+}
+
+#[cfg(test)]
+impl MockGpu {
+    /// Shared test fixture: sane constraints around explicit management and
+    /// enforced limits (kept in one place so the resume/apply tests cannot
+    /// drift apart).
+    pub fn with_power_limits(limit_w: i64, enforced_w: i64) -> Self {
+        let mut mock = Self::new();
+        mock.power_limits = PowerLimits {
+            power_management_enabled: Some(true),
+            power_limit_w: Some(limit_w),
+            enforced_power_limit_w: Some(enforced_w),
+            power_limit_default_w: Some(320),
+            power_limit_min_w: Some(150),
+            power_limit_max_w: Some(450),
+        };
+        mock
     }
 }
 
@@ -242,13 +332,28 @@ impl GpuBackend for MockGpu {
         self.throttle_mask
     }
 
+    fn gpu_context_pids(&self) -> GpuResult<GpuContextPids> {
+        self.fail("gpu_context_pids")?;
+        match &self.context_pids_file {
+            Some(path) => Ok(parse_context_pid_list(
+                &std::fs::read_to_string(path).unwrap_or_default(),
+            )),
+            None => Ok(self.context_pids.clone()),
+        }
+    }
+
     fn query_power_limits(&self) -> PowerLimits {
-        self.power_limits
+        let mut limits = self.power_limits;
+        if let Some(applied) = *self.applied_power_limit_w.borrow() {
+            limits.power_limit_w = Some(applied);
+        }
+        limits
     }
 
     fn apply_power_limit_w(&self, power_limit_w: i64) -> GpuResult<i64> {
         self.record(MockOp::ApplyPowerLimit { power_limit_w });
         self.fail("apply_power_limit_w")?;
+        *self.applied_power_limit_w.borrow_mut() = Some(power_limit_w);
         Ok(power_limit_w)
     }
 
@@ -434,9 +539,57 @@ impl GpuBackend for MockGpu {
     }
 }
 
+/// Whitespace-separated token list from the `context_pids_file` seam. The
+/// tokens `graphics` and `compute` select the kind for the PIDs that follow
+/// (default `graphics`, so a bare PID list stays valid); other non-PID
+/// tokens are ignored.
+fn parse_context_pid_list(text: &str) -> GpuContextPids {
+    let mut pids = GpuContextPids::default();
+    let mut compute = false;
+    for token in text.split_whitespace() {
+        match token {
+            "graphics" => compute = false,
+            "compute" => compute = true,
+            token => {
+                if let Ok(pid) = token.parse() {
+                    if compute {
+                        pids.compute.push(pid);
+                    } else {
+                        pids.graphics.push(pid);
+                    }
+                }
+            }
+        }
+    }
+    pids
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_pids_come_from_the_canned_field_or_the_file_seam() {
+        let mut mock = MockGpu::new();
+        assert_eq!(mock.gpu_context_pids().unwrap(), GpuContextPids::default());
+        mock.context_pids.graphics = vec![4242];
+        assert_eq!(mock.gpu_context_pids().unwrap().graphics, vec![4242]);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("pids");
+        mock.context_pids_file = Some(file.clone());
+        // Missing file: the seam reports no contexts (overriding the canned field).
+        assert_eq!(mock.gpu_context_pids().unwrap(), GpuContextPids::default());
+        // Bare PIDs default to graphics; kind tokens switch the target list.
+        std::fs::write(&file, "123 456\nnot-a-pid\ncompute 789\ngraphics 321\n").unwrap();
+        assert_eq!(
+            mock.gpu_context_pids().unwrap(),
+            GpuContextPids {
+                graphics: vec![123, 456, 321],
+                compute: vec![789],
+            }
+        );
+    }
 
     #[test]
     fn records_writes_in_order() {

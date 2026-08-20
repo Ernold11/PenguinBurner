@@ -111,7 +111,7 @@ def _wait_for_socket(handle: DaemonHandle) -> None:
 
 
 @pytest.fixture
-def make_daemon(tmp_path, monkeypatch):
+def make_daemon(tmp_path, monkeypatch, write_desktop_rtd3_tree):
     """Start a fresh Rust daemon with the mock-GPU RPC seam enabled.
 
     Points ``PENGUIN_BURNER_DAEMON_SOCKET`` at the daemon's temp socket, so the
@@ -134,6 +134,7 @@ def make_daemon(tmp_path, monkeypatch):
         socket_path = base / "sock"
         stub = base / "verify_stub.py"
         stub.write_text(_STUB, encoding="utf-8")
+        rtd3_sys, rtd3_proc = write_desktop_rtd3_tree(base)
 
         env = os.environ.copy()
         env["PENGUIN_BURNERD_TEST_MOCK_GPU"] = "1"
@@ -142,6 +143,8 @@ def make_daemon(tmp_path, monkeypatch):
         env["PENGUIN_BURNERD_TEST_STATE_FILE"] = str(base / "state.json")
         env["PENGUIN_BURNERD_TEST_INERT_ENGINE"] = "1"
         env["PENGUIN_BURNERD_TEST_TIMINGS"] = "1"
+        env["PENGUIN_BURNERD_TEST_RTD3_SYSFS"] = str(rtd3_sys)
+        env["PENGUIN_BURNERD_TEST_RTD3_PROC"] = str(rtd3_proc)
         env.pop("PENGUIN_BURNER_DAEMON_ALLOWED_UID", None)
         env.pop("NOTIFY_SOCKET", None)
         if mock_fail:

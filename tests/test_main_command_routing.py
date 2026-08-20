@@ -22,6 +22,8 @@ def _args(**overrides):
         "delete_auto_uv_profiles": [],
         "assign_auto_uv_tier": None,
         "set_steam_overlay_launch": None,
+        "set_main_gpu": "",
+        "clear_main_gpu": False,
         "config": "/tmp/config.json",
         "gpu_index": None,
         "stability_test": False,
@@ -47,6 +49,7 @@ def _deps(**overrides):
         "release_fans": [],
         "tier_assignments": [],
         "steam_launch_rewrites": [],
+        "main_gpu": [],
     }
 
     def load_config(config_path):
@@ -61,6 +64,8 @@ def _deps(**overrides):
     defaults = {
         "clear_auto_uv_state": lambda **kwargs: calls["clear"].append(kwargs),
         "load_config": load_config,
+        "set_boot_main_gpu": lambda gpu_uuid: calls["main_gpu"].append(gpu_uuid)
+        or {"selected": bool(gpu_uuid), "main_gpu_uuid": gpu_uuid},
         "load_auto_uv_final_curve": lambda selector: {"path": "/tmp/final.json"},
         "running_under_systemd_service": lambda: False,
         "enable_stdio_capture": lambda *args, **kwargs: None,
@@ -85,11 +90,15 @@ def _deps(**overrides):
         "delete_auto_uv_profiles": lambda selectors: [Path("/tmp/profile-a.json")],
         "resolve_auto_uv_profile": lambda selector, **kwargs: (
             Path("/tmp/profile-a.json"),
-            {"profile_id": "profile-a", "final_verified": True},
+            {
+                "profile_id": "profile-a",
+                "final_verified": True,
+                "gpu_identity": {"uuid": "GPU-A"},
+            },
         ),
-        "save_profile_tier_assignment": lambda profile_id, tier: calls[
+        "save_profile_tier_assignment": lambda profile_id, tier, **kwargs: calls[
             "tier_assignments"
-        ].append((profile_id, tier))
+        ].append((profile_id, tier, kwargs.get("gpu_uuid")))
         or {"balanced": profile_id},
         "rewrite_steam_launch_options": lambda **kwargs: calls[
             "steam_launch_rewrites"
@@ -113,6 +122,54 @@ def _deps(**overrides):
     }
     defaults.update(overrides)
     return MainCommandRoutingDependencies(**defaults), calls
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_uuid", "expected_text"),
+    [
+        (_args(set_main_gpu="GPU-A"), "GPU-A", "Main GPU set to GPU-A."),
+        (
+            _args(clear_main_gpu=True),
+            "",
+            "Main GPU cleared; startup monitoring now uses the last saved GPU.",
+        ),
+    ],
+)
+def test_main_command_routing_updates_main_gpu_without_loading_config(
+    args,
+    expected_uuid,
+    expected_text,
+):
+    deps, calls = _deps(
+        load_config=lambda _path: (_ for _ in ()).throw(
+            AssertionError("config should not be loaded")
+        )
+    )
+
+    result = route_main_command(
+        args=args,
+        argv=[],
+        explicit_cli_args=True,
+        interactive=False,
+        dependencies=deps,
+    )
+
+    assert result.handled is True
+    assert calls["main_gpu"] == [expected_uuid]
+    assert calls["prints"][0][0] == (expected_text,)
+
+
+def test_main_command_routing_rejects_set_and_clear_main_gpu_together():
+    deps, _calls = _deps()
+
+    with pytest.raises(NvmlError, match="choose only one"):
+        route_main_command(
+            args=_args(set_main_gpu="GPU-A", clear_main_gpu=True),
+            argv=[],
+            explicit_cli_args=True,
+            interactive=False,
+            dependencies=deps,
+        )
 
 
 def test_main_command_routing_lists_profiles_without_loading_runtime_config():
@@ -150,7 +207,7 @@ def test_main_command_routing_assigns_profile_tier_without_loading_runtime_confi
     )
 
     assert result.handled is True
-    assert calls["tier_assignments"] == [("profile-a", "balanced")]
+    assert calls["tier_assignments"] == [("profile-a", "balanced", "GPU-A")]
     assert calls["prints"][0][0] == (
         "Assigned Auto-UV profile profile-a to Balanced tier.",
     )
@@ -168,7 +225,7 @@ def test_main_command_routing_assigns_profile_tier_none():
     )
 
     assert result.handled is True
-    assert calls["tier_assignments"] == [("profile-a", "none")]
+    assert calls["tier_assignments"] == [("profile-a", "none", "GPU-A")]
     assert calls["prints"][0][0] == (
         "Removed adaptive tier assignment for Auto-UV profile profile-a.",
     )

@@ -36,17 +36,18 @@ CLI tier assignment uses profile ids from `--list-auto-uv-profiles`:
 
 ## How runtime switching works
 
-Enable it from the Profiles tab with **Apply Adaptive**, or on the command line
-with `--adaptive-auto-uv` in runtime/daemon mode:
+Enable it per game from the **Steam** tab (set the game's mode to
+**Adaptive**), or on the command line with `--adaptive-auto-uv` in
+runtime/daemon mode:
 
 ```bash
 ./penguin_burner.sh --daemonize --adaptive-auto-uv
 ```
 
-For persistent boot autostart:
+For persistent boot autostart (full service install, root required):
 
 ```bash
-./penguin_burner.sh --install-systemd-service --adaptive-auto-uv
+sudo ./penguin_burner.sh --install-systemd-service --adaptive-auto-uv
 ```
 
 PenguinBurner watches the **base present-frame p95 pacing** and compares it to a

@@ -19,6 +19,7 @@ use crate::supervisor::{self, Supervisor};
 pub const PROTOCOL_MAJOR: u32 = 2;
 pub const PROTOCOL_MINOR: u32 = 0;
 pub const DAEMON_CAPABILITIES: &[&str] = &[
+    "deep-sleep-status-v1",
     "energy-savings-v1",
     "game-runtime-v1",
     "gpu-capabilities-v1",
@@ -53,6 +54,10 @@ pub struct StatusResult {
     pub state: String,
     pub active_job: Option<ActiveJob>,
     pub version: String,
+    /// Short git commit of this build ("unknown" for non-git source trees).
+    /// The package version alone cannot distinguish builds within a release
+    /// cycle, which let a stale installed daemon pass for a fresh one.
+    pub build: String,
     pub protocol_major: u32,
     pub protocol_minor: u32,
     pub capabilities: &'static [&'static str],
@@ -60,6 +65,8 @@ pub struct StatusResult {
     pub game_runtime: Option<GameRuntimeStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub energy_savings: Option<EnergySavingsStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deep_sleep: Option<crate::rtd3::DeepSleepStatus>,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,11 +97,13 @@ impl StatusResult {
             state: state.into(),
             active_job,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            build: env!("PENGUIN_BURNERD_BUILD_ID").to_string(),
             protocol_major: PROTOCOL_MAJOR,
             protocol_minor: PROTOCOL_MINOR,
             capabilities: DAEMON_CAPABILITIES,
             game_runtime: None,
             energy_savings: None,
+            deep_sleep: None,
         }
     }
 
@@ -105,6 +114,11 @@ impl StatusResult {
 
     pub fn with_energy_savings(mut self, energy_savings: Option<EnergySavingsStatus>) -> Self {
         self.energy_savings = energy_savings;
+        self
+    }
+
+    pub fn with_deep_sleep(mut self, deep_sleep: Option<crate::rtd3::DeepSleepStatus>) -> Self {
+        self.deep_sleep = deep_sleep;
         self
     }
 }
@@ -148,7 +162,7 @@ impl StopResult {
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum MethodResult {
-    Status(StatusResult),
+    Status(Box<StatusResult>),
     Start(StartResult),
     Stop(StopResult),
     /// Dynamic result dicts (milestone-B `gpu_*` writes + profile deletion).
@@ -269,6 +283,8 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
         Some("apply_runtime_spec") => &["spec"],
         Some("start_game_runtime_profile") => &["spec", "watch_pid", "app_id"],
         Some("set_boot_runtime_spec") => &["spec"],
+        Some("set_boot_main_gpu") => &["gpu_uuid"],
+        Some("clear_boot_runtime_spec") => &["gpu_uuid"],
         Some("delete_auto_uv_profiles") => &["paths"],
         Some(name) if gpu_rpc::is_gpu_method(name) => gpu_rpc::allowed_fields(name),
         _ => &[],
@@ -288,7 +304,7 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
     }
 
     match method {
-        Some("status") => Ok(MethodResult::Status(supervisor::status(sup))),
+        Some("status") => Ok(MethodResult::Status(Box::new(supervisor::status(sup)))),
         Some("stop_auto_uv_scan") => Ok(MethodResult::Stop(supervisor::stop_auto_uv_scan(sup))),
         Some("stop_profile_verification") => Ok(MethodResult::Stop(
             supervisor::stop_profile_verification(sup),
@@ -312,11 +328,24 @@ pub fn handle_request(sup: &Mutex<Supervisor>, payload: &Value) -> Result<Method
             let spec = parse_runtime_spec(object.get("spec"))?;
             supervisor::set_boot_runtime_spec(spec).map(MethodResult::Value)
         }
+        Some("set_boot_main_gpu") => {
+            let gpu_uuid = match object.get("gpu_uuid") {
+                None => "",
+                Some(Value::String(value)) => value.as_str(),
+                Some(_) => return Err("gpu_uuid must be a string".to_string()),
+            };
+            supervisor::set_boot_main_gpu(gpu_uuid).map(MethodResult::Value)
+        }
         Some("clear_boot_runtime_spec") => {
-            supervisor::clear_boot_runtime_spec().map(MethodResult::Value)
+            let gpu_uuid = match object.get("gpu_uuid") {
+                None => "",
+                Some(Value::String(value)) => value.as_str(),
+                Some(_) => return Err("gpu_uuid must be a string".to_string()),
+            };
+            supervisor::clear_boot_runtime_spec(gpu_uuid).map(MethodResult::Value)
         }
         Some("boot_runtime_spec") => {
-            supervisor::boot_runtime_spec_summary().map(MethodResult::Value)
+            supervisor::boot_runtime_spec_summary(sup).map(MethodResult::Value)
         }
         Some("stop_runtime_profile") => {
             supervisor::stop_runtime_profile(sup).map(MethodResult::Stop)
@@ -403,8 +432,9 @@ mod tests {
         assert_eq!(
             text,
             format!(
-                "{{\"ok\":true,\"result\":{{\"state\":\"idle\",\"active_job\":null,\"version\":\"{}\",\"protocol_major\":2,\"protocol_minor\":0,\"capabilities\":[\"energy-savings-v1\",\"game-runtime-v1\",\"gpu-capabilities-v1\",\"gpu-telemetry-v1\",\"gpu-vf-snapshot-v1\",\"gpu-writes-v1\",\"runtime-spec-v1\",\"scan-stream-v1\",\"verification-stream-v1\"]}}}}",
+                "{{\"ok\":true,\"result\":{{\"state\":\"idle\",\"active_job\":null,\"version\":\"{}\",\"build\":\"{}\",\"protocol_major\":2,\"protocol_minor\":0,\"capabilities\":[\"deep-sleep-status-v1\",\"energy-savings-v1\",\"game-runtime-v1\",\"gpu-capabilities-v1\",\"gpu-telemetry-v1\",\"gpu-vf-snapshot-v1\",\"gpu-writes-v1\",\"runtime-spec-v1\",\"scan-stream-v1\",\"verification-stream-v1\"]}}}}",
                 env!("CARGO_PKG_VERSION"),
+                env!("PENGUIN_BURNERD_BUILD_ID"),
             )
         );
     }

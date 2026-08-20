@@ -107,7 +107,7 @@ def parse_arguments(argv):
         help=(
             "Auto-UV preset path. efficiency uses a flat base sweep plus a "
             "low-voltage tail-tune pass; balanced uses the 4-bin tail sweep; "
-            "performance uses the 6-bin tail sweep plus Auto-OC."
+            "performance uses the 4-bin tail sweep plus Auto-OC."
         ),
     )
     auto_uv_group.add_argument(
@@ -255,8 +255,12 @@ def parse_arguments(argv):
         "--install-systemd-service",
         action="store_true",
         help=(
-            "Install the PenguinBurner daemon service when absent, or update "
-            "its persistent boot profile through the running daemon."
+            "Install or update the PenguinBurner daemon service: refresh the "
+            "daemon binary at /var/opt/penguin-burner/libexec, rewrite the "
+            "unit, and restart it. With profile options, also set the "
+            "persistent boot profile; without them, an existing boot profile "
+            "is kept. Asks for authorization (pkexec/sudo) when not run as "
+            "root."
         ),
     )
     daemon_group.add_argument(
@@ -264,20 +268,38 @@ def parse_arguments(argv):
         "--deinstall-systemd-service",
         dest="uninstall_systemd_service",
         action="store_true",
-        help="Stop and remove the persistent PenguinBurner systemd service.",
+        help=(
+            "Stop and remove the persistent PenguinBurner systemd service. "
+            "Asks for authorization (pkexec/sudo) when not run as root."
+        ),
     )
     daemon_group.add_argument(
         "--migrate-to-daemon-service",
         action="store_true",
         help=(
             "Install penguin-burnerd.service and migrate an existing "
-            "legacy PenguinBurner.service when possible."
+            "legacy PenguinBurner.service when possible. Asks for "
+            "authorization (pkexec/sudo) when not run as root."
         ),
     )
     daemon_group.add_argument(
         "--daemon-status",
         action="store_true",
         help="Print PenguinBurner hardware daemon status and exit.",
+    )
+    daemon_group.add_argument(
+        "--set-main-gpu",
+        metavar="GPU-UUID",
+        default="",
+        help=(
+            "On a multi-NVIDIA-GPU system, make a saved startup GPU the "
+            "daemon's main monitored GPU after boot."
+        ),
+    )
+    daemon_group.add_argument(
+        "--clear-main-gpu",
+        action="store_true",
+        help="Clear the explicit Main GPU and restore last-saved-GPU behavior.",
     )
     daemon_group.add_argument(
         "--restore-stock",

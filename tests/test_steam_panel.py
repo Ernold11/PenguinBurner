@@ -68,6 +68,7 @@ class _FakeManager:
         self.launch_changes: list[tuple[str, str]] = []
         self.enabled_changes: list[tuple[str, bool]] = []
         self.target_fps_changes: list[tuple[str, float | None]] = []
+        self.gpu_changes: list[tuple[str, str]] = []
         self.bulk_enabled: list[tuple[list[str], bool]] = []
         self.bulk_overlay: list[tuple[list[str], bool]] = []
         self.stop_ok = True
@@ -164,6 +165,16 @@ class _FakeManager:
         self.target_fps_changes.append((app_id, target_fps))
         self.rows = tuple(
             replace(row, setting=replace(row.setting, target_fps=target_fps))
+            if row.game.app_id == app_id
+            else row
+            for row in self.rows
+        )
+        return SimpleNamespace(ok=True, message="Applied live.")
+
+    def set_game_gpu(self, app_id: str, gpu_uuid: str):
+        self.gpu_changes.append((app_id, gpu_uuid))
+        self.rows = tuple(
+            replace(row, setting=replace(row.setting, gpu_uuid=gpu_uuid))
             if row.game.app_id == app_id
             else row
             for row in self.rows
@@ -474,6 +485,103 @@ def test_panel_keeps_library_left_and_one_selected_game_editor(
     panel._sync_timer.stop()
 
 
+def test_multi_gpu_game_requires_explicit_gpu_before_enable(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    QtCore, QtGui, QtWidgetsModule, _pg = import_qt()
+    manager = _FakeManager((_row(tmp_path, "10", "Alpha", 100),))
+    choices = (
+        SimpleNamespace(uuid="GPU-a", label="GPU 0 - RTX A"),
+        SimpleNamespace(uuid="GPU-b", label="GPU 1 - RTX B"),
+    )
+    panel = SteamPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgetsModule,
+        manager=cast(SteamIntegrationManager, manager),
+        gpu_choices=lambda: choices,
+    )
+    qtbot.addWidget(panel.widget)
+    panel.widget.show()
+    qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
+
+    assert panel.game_gpu_combo.isVisibleTo(panel.widget)
+    assert panel.game_gpu_combo.currentData() == ""
+
+    panel.enabled_checkbox.click()
+    assert manager.enabled_changes == []
+    assert not panel.enabled_checkbox.isChecked()
+    assert "Choose a Game GPU" in panel.status_label.text()
+
+    panel.game_gpu_combo.setCurrentIndex(panel.game_gpu_combo.findData("GPU-b"))
+    assert manager.gpu_changes == [("10", "GPU-b")]
+    panel.enabled_checkbox.click()
+    assert manager.enabled_changes == [("10", True)]
+
+
+def test_single_gpu_keeps_game_gpu_selector_hidden(qtbot, tmp_path: Path) -> None:
+    QtCore, QtGui, QtWidgetsModule, _pg = import_qt()
+    manager = _FakeManager((_row(tmp_path, "10", "Alpha", 100),))
+    panel = SteamPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgetsModule,
+        manager=cast(SteamIntegrationManager, manager),
+        gpu_choices=lambda: (
+            SimpleNamespace(uuid="GPU-only", label="GPU 0 - RTX Only"),
+        ),
+    )
+    qtbot.addWidget(panel.widget)
+    panel.widget.show()
+    qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
+
+    assert not panel.game_gpu_combo.isVisibleTo(panel.widget)
+    panel.enabled_checkbox.click()
+    assert manager.enabled_changes == [("10", True)]
+
+
+def test_game_selection_refreshes_gpu_specific_adaptive_availability(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    QtCore, QtGui, QtWidgetsModule, _pg = import_qt()
+    row_a = _row(tmp_path, "10", "Alpha", 100)
+    row_b = _row(tmp_path, "20", "Beta", 200)
+    manager = _FakeManager(
+        (
+            replace(row_a, setting=replace(row_a.setting, gpu_uuid="GPU-a")),
+            replace(row_b, setting=replace(row_b.setting, gpu_uuid="GPU-b")),
+        )
+    )
+    choices = (
+        SimpleNamespace(uuid="GPU-a", label="GPU 0 - RTX A"),
+        SimpleNamespace(uuid="GPU-b", label="GPU 1 - RTX B"),
+    )
+    panel = SteamPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgetsModule,
+        manager=cast(SteamIntegrationManager, manager),
+        adaptive_available=lambda gpu_uuid="": gpu_uuid == "GPU-a",
+        gpu_choices=lambda: choices,
+    )
+    qtbot.addWidget(panel.widget)
+    panel.widget.show()
+    qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
+    adaptive_item = panel.mode_combo.model().item(
+        panel.mode_combo.findData(GAME_MODE_ADAPTIVE)
+    )
+
+    assert panel.game_title.text() == "Beta"
+    assert adaptive_item is not None and not adaptive_item.isEnabled()
+
+    panel.game_list.setCurrentItem(panel.game_list.item(1))
+
+    assert panel.game_title.text() == "Alpha"
+    assert adaptive_item.isEnabled()
+
+
 def test_all_games_menu_bulk_enables_and_disables_with_confirmation(
     qtbot,
     tmp_path: Path,
@@ -556,6 +664,11 @@ def test_target_fps_spin_stores_per_game_value(
     # until PenguinBurner is toggled on for the game.
     assert panel.target_fps_spin.objectName() == "steamAdaptiveTargetFps"
     assert panel.target_fps_spin.text() == "60 FPS"
+    assert panel.target_fps_spin.singleStep() == 5.0
+    assert panel.target_fps_spin.keyboardTracking() is False
+    assert "Up/Down to adjust by 5 FPS" in " ".join(
+        panel.target_fps_spin.toolTip().split()
+    )
     assert panel.target_fps_spin.isEnabled() is False
 
     panel.enabled_checkbox.click()
@@ -565,6 +678,21 @@ def test_target_fps_spin_stores_per_game_value(
 
     assert manager.target_fps_changes == [("10", 120.0)]
     assert manager.rows[0].setting.target_fps == 120.0
+
+    manager.target_fps_changes.clear()
+    qtbot.keyClick(panel.target_fps_spin, QtCore.Qt.Key_Up)
+    qtbot.keyClick(panel.target_fps_spin, QtCore.Qt.Key_Down)
+    assert manager.target_fps_changes == [("10", 125.0), ("10", 120.0)]
+
+    manager.target_fps_changes.clear()
+    editor = panel.target_fps_spin.lineEdit()
+    editor.selectAll()
+    qtbot.keyClicks(editor, "143")
+    # Typing is not persisted digit-by-digit; Enter commits the complete FPS.
+    assert manager.target_fps_changes == []
+    qtbot.keyClick(editor, QtCore.Qt.Key_Return)
+    assert manager.target_fps_changes == [("10", 143.0)]
+    assert manager.rows[0].setting.target_fps == 143.0
 
     panel._sync_timer.stop()
 
@@ -810,3 +938,33 @@ def test_refused_stop_falls_back_to_running(
 
     panel._sync_timer.stop()
     panel._game_state_timer.stop()
+
+
+def test_single_gpu_adaptive_availability_passes_legacy_flag(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    QtCore, QtGui, QtWidgetsModule, _pg = import_qt()
+    manager = _FakeManager((_row(tmp_path, "10", "Alpha", 100),))
+    calls: list[tuple[str, bool]] = []
+
+    def availability(gpu_uuid="", include_legacy_profiles=False):
+        calls.append((gpu_uuid, include_legacy_profiles))
+        return True
+
+    panel = SteamPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgetsModule,
+        manager=cast(SteamIntegrationManager, manager),
+        adaptive_available=availability,
+        gpu_choices=lambda: (
+            SimpleNamespace(uuid="GPU-only", label="GPU 0 - RTX Only"),
+        ),
+    )
+    qtbot.addWidget(panel.widget)
+    panel.widget.show()
+    qtbot.waitUntil(lambda: not panel._scan_running, timeout=2000)
+
+    assert calls
+    assert calls[-1] == ("GPU-only", True)

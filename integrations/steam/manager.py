@@ -37,6 +37,8 @@ from .library import InstalledSteamGame, installed_steam_games
 from .process import running_steam_game_ids, steam_game_running, steam_running
 from .settings import (
     GAME_MODE_ADAPTIVE,
+    GAME_MODE_DEFAULT,
+    GAME_MODE_NONE,
     SteamGameSetting,
     load_steam_game_settings,
     normalize_game_mode,
@@ -307,6 +309,13 @@ class SteamIntegrationManager:
         setting = self._setting(app_id)
         return self._apply(app_id, replace(setting, mode=mode))
 
+    def set_game_gpu(self, app_id: str, gpu_uuid: str) -> ApplyResult:
+        setting = self._setting(app_id)
+        return self._apply(
+            app_id,
+            replace(setting, gpu_uuid=str(gpu_uuid or "").strip()),
+        )
+
     def set_game_enabled(self, app_id: str, enabled: bool) -> ApplyResult:
         setting = self._setting(app_id)
         return self._apply(
@@ -470,7 +479,9 @@ class SteamIntegrationManager:
         """
         from runtime.daemon_client import daemon_status, start_game_runtime_profile
 
-        from .game_runtime import profile_argv_for_setting
+        from drivers.nvidia.daemon_gpu import DaemonGpuClient
+
+        from .game_runtime import game_gpu_target, profile_argv_for_setting
 
         try:
             status = daemon_status(timeout_s=1.0)
@@ -486,6 +497,25 @@ class SteamIntegrationManager:
             return None
         setting = self._setting(app_id)
         argv = profile_argv_for_setting(setting)
+        profile_mode_requested = setting.enabled and setting.mode not in {
+            GAME_MODE_DEFAULT,
+            GAME_MODE_NONE,
+        }
+        if profile_mode_requested:
+            try:
+                identities = list(DaemonGpuClient.discover_identities())
+            except Exception as error:
+                return ApplyResult(False, f"could not detect target GPU: {error}")
+            target = game_gpu_target(setting, identities)
+            if target is None:
+                return ApplyResult(False, "the saved target GPU is not currently available")
+            gpu_uuid, gpu_index = target
+            argv = profile_argv_for_setting(
+                setting,
+                gpu_index=gpu_index,
+                gpu_uuid=gpu_uuid,
+                include_legacy_profiles=len(identities) == 1,
+            )
         if argv is None:
             game_runtime = status.get("game_runtime") or {}
             standing_mode = str(game_runtime.get("standing_runtime_mode") or "")
@@ -505,12 +535,19 @@ class SteamIntegrationManager:
             else:
                 return ApplyResult(False, "standing Default profile is unavailable")
         try:
-            start_game_runtime_profile(argv, watch_pid=pids[0], app_id=app_id)
+            result = start_game_runtime_profile(
+                argv,
+                watch_pid=pids[0],
+                app_id=app_id,
+            )
         except Exception as error:
             if "not a running process" in str(error):
                 # The game exited within the daemon's restore grace window.
                 return ApplyResult(True, "Game just exited; applies on next launch.")
             return ApplyResult(False, f"live profile re-apply failed: {error}")
+        if bool(result.get("ignored")) or not bool(result.get("started", True)):
+            reason = str(result.get("reason") or "daemon did not start the profile")
+            return ApplyResult(False, f"live profile re-apply skipped: {reason}")
         return ApplyResult(True, "Profile re-applied to the running game.")
 
     def _apply(self, app_id: str, setting: SteamGameSetting) -> ApplyResult:

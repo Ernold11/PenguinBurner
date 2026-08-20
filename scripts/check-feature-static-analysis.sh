@@ -23,6 +23,18 @@ python_paths=(
     penguin_burner.py
 )
 
+blocking_pyright_paths=(
+    auto_uv/curve
+    auto_uv/domain
+    auto_uv/final_verification
+    auto_uv/gpu
+    auto_uv/probes
+    auto_uv/scan_mode
+    drivers
+    runtime
+    stability
+)
+
 count_paths=(
     auto_uv
     cli
@@ -105,6 +117,10 @@ PY
 run ruff check "${python_paths[@]}"
 
 run vulture "${python_paths[@]}" --min-confidence "${VULTURE_MIN_CONFIDENCE:-80}"
+
+echo
+echo "==> blocking pyright ${blocking_pyright_paths[*]}"
+pyright "${blocking_pyright_paths[@]}"
 
 echo
 echo "==> pyright ${python_paths[*]} (advisory until the repo has a clean baseline)"

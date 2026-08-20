@@ -180,6 +180,10 @@ def test_window_plots_selected_performance_auto_oc_curve(main_window) -> None:
     x_values, y_values = win.vf_plot.comparison_curves[-1].getData()
     assert list(x_values) == [850.0, 925.0]
     assert list(y_values) == [2595.0, 2980.0]
+    assert (
+        win.vf_plot.comparison_curves[-1].zValue()
+        > win.vf_plot.candidate_curve.zValue()
+    )
 
 
 def test_memory_offset_status_text_formats() -> None:
@@ -467,8 +471,11 @@ def test_startup_daemon_check_only_prompts_for_incompatible_running_daemon(
 ) -> None:
     win = main_window
     from runtime import daemon_client
+    from ui import assets
 
     prompts = []
+    compatibility_checks = []
+    monkeypatch.setattr(assets, "application_version", lambda: "0.7.9")
     monkeypatch.setattr(
         window_mod,
         "ensure_daemon_ready_for_privileged_action",
@@ -486,10 +493,14 @@ def test_startup_daemon_check_only_prompts_for_incompatible_running_daemon(
     # Running and compatible -> no prompt.
     monkeypatch.setattr(daemon_client, "daemon_status", lambda **kwargs: {"state": "idle"})
     monkeypatch.setattr(
-        daemon_client, "require_daemon_capabilities", lambda *a, **k: {"state": "idle"}
+        daemon_client,
+        "require_daemon_capabilities",
+        lambda *args, **kwargs: compatibility_checks.append((args, kwargs))
+        or {"state": "idle"},
     )
     win._check_daemon_upgrade_on_startup()
     assert prompts == []
+    assert compatibility_checks == [((), {"expected_version": "0.7.9"})]
 
     # Running but incompatible (stale 0.6.x) -> prompt to update.
     def _incompatible(*a, **k):

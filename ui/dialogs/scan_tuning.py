@@ -314,7 +314,8 @@ def select_scan_tuning(
                 tooltip=(
                     "Lowest V/F voltage bin Auto-UV may try in Efficiency. The "
                     "default comes from PenguinBurner's GPU table when detected; "
-                    "unknown GPUs use a 10% fallback from the reference voltage."
+                    "unknown GPUs use Auto (-10%), calculated from the loaded "
+                    "starting voltage measured during the baseline probe."
                 ),
             )
 
@@ -458,9 +459,8 @@ def select_scan_tuning(
                 "Power limit in watts applied to this profile's stock "
                 "baseline, descent, final verification, and saved profile. "
                 "The range comes from NVML for the selected GPU; the "
-                "default position is "
-                "preset-aware (savings-biased presets cap below stock, "
-                "Performance keeps the stock budget)."
+                "default position is preset-aware (Efficiency caps below "
+                "stock, Balanced and Performance keep the stock budget)."
             ),
         )
 
@@ -516,9 +516,7 @@ def select_scan_tuning(
             None,
         )
         drop_default = auto_uv_voltage_drop_default(gpu_name=gpu_name)
-        floor_default_mv = int(
-            getattr(drop_default, "floor_voltage_mv", None) or 850
-        )
+        floor_default_mv = getattr(drop_default, "floor_voltage_mv", None)
         oc_target = auto_uv_performance_target_default(
             gpu_name=getattr(drop_default, "gpu_name", None) or gpu_name,
         )
@@ -536,11 +534,28 @@ def select_scan_tuning(
                 controls = tier_controls[preset_id]
                 floor_spin = controls.get("floor")
                 if floor_spin is not None:
-                    floor_spin.setRange(floor_lo, floor_hi)
-                    if not bool(controls["floor_touched"]["value"]):
-                        floor_spin.setValue(
-                            max(floor_lo, min(floor_default_mv, floor_hi))
+                    if floor_default_mv is None:
+                        auto_floor_value = int(floor_lo) - int(
+                            floor_spin.singleStep()
                         )
+                        controls["floor_auto_value_mv"] = auto_floor_value
+                        floor_spin.setSpecialValueText(
+                            f"Auto (-{float(drop_default.value_pct):g}%)"
+                        )
+                        floor_spin.setRange(auto_floor_value, floor_hi)
+                        if not bool(controls["floor_touched"]["value"]):
+                            floor_spin.setValue(auto_floor_value)
+                    else:
+                        controls["floor_auto_value_mv"] = None
+                        floor_spin.setSpecialValueText("")
+                        floor_spin.setRange(floor_lo, floor_hi)
+                        if not bool(controls["floor_touched"]["value"]):
+                            floor_spin.setValue(
+                                max(
+                                    floor_lo,
+                                    min(int(floor_default_mv), floor_hi),
+                                )
+                            )
                 oc_voltage_spin = controls.get("oc_voltage")
                 if oc_voltage_spin is not None and not bool(
                     controls["oc_voltage_touched"]["value"]
@@ -725,9 +740,9 @@ def select_scan_tuning(
     if preset.preset_id == AUTO_UV_PRESET_ADAPTIVE:
         # Full scan: every profile carries its own Advanced values, so the
         # scan-wide keys stay unset and each tier gets its own option triple.
-        options["auto_uv_min_voltage_mv"] = int(
-            efficiency_controls["floor"].value()
-        )
+        efficiency_floor_mv = _configured_voltage_floor_mv(efficiency_controls)
+        if efficiency_floor_mv is not None:
+            options["auto_uv_min_voltage_mv"] = int(efficiency_floor_mv)
         options["auto_oc_target_voltage_mv"] = int(
             performance_controls["oc_voltage"].value()
         )
@@ -762,7 +777,9 @@ def select_scan_tuning(
     if int(preset.tail_rise_bins) > 0:
         options["auto_uv_tail_rise_bins"] = int(preset.tail_rise_bins)
     if preset.preset_id == AUTO_UV_PRESET_EFFICIENCY:
-        options["auto_uv_min_voltage_mv"] = int(controls["floor"].value())
+        efficiency_floor_mv = _configured_voltage_floor_mv(controls)
+        if efficiency_floor_mv is not None:
+            options["auto_uv_min_voltage_mv"] = int(efficiency_floor_mv)
     if preset.preset_id == AUTO_UV_PRESET_PERFORMANCE:
         options.update(
             {
@@ -771,6 +788,14 @@ def select_scan_tuning(
             }
         )
     return options
+
+
+def _configured_voltage_floor_mv(controls: dict) -> int | None:
+    value_mv = int(controls["floor"].value())
+    auto_value_mv = controls.get("floor_auto_value_mv")
+    if auto_value_mv is not None and value_mv == int(auto_value_mv):
+        return None
+    return value_mv
 
 
 def _gpu_combo_index(gpu_combo, gpu_index: int) -> int:

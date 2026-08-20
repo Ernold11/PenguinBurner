@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from auto_uv.domain.types import AutoUvProbeSummary
+from profiles.gpu_identity import normalized_gpu_identity
 from ..persistence.auto_uv_persisted_json_files import (
     auto_uv_user_config_dir,
     safe_json_write,
@@ -101,6 +102,7 @@ def write_final_verified_profile(
     tail_rise_bins: int = 0,
     auto_uv_mode: str = "",
     generated_profile_tier: str = "",
+    gpu_identity: dict | None = None,
 ) -> Path:
     # The plan is archived EXACTLY as final verification proved it. The old
     # save-time "verified envelope" raised below-lock bins to the best clock
@@ -133,6 +135,9 @@ def write_final_verified_profile(
         payload["auto_uv_mode"] = str(auto_uv_mode).strip()
     if str(generated_profile_tier or "").strip():
         payload["generated_profile_tier"] = str(generated_profile_tier).strip()
+    normalized_identity = normalized_gpu_identity(gpu_identity or {})
+    if str(normalized_identity.get("uuid") or "").strip():
+        payload["gpu_identity"] = normalized_identity
     append_verified_candidate(payload)
     return archive_final_verified_profile(payload)
 

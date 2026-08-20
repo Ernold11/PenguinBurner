@@ -6,10 +6,12 @@ higher-voltage bins rise softly while still capping the rest of the tail.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 
 def normalize_tail_rise_bins(value: object) -> int:
     try:
-        return max(0, int(value or 0))
+        return max(0, int(cast(Any, value or 0)))
     except (TypeError, ValueError):
         return 0
 

@@ -4,6 +4,8 @@ import json
 import os
 import subprocess
 import struct
+import sys
+import tarfile
 import tomllib
 import zlib
 from pathlib import Path
@@ -771,12 +773,37 @@ def test_wheel_bundles_rust_daemon_as_package_data() -> None:
     assert "cargo" in setup_py
     assert "--release" in setup_py and "--locked" in setup_py
     assert 'Path(self.build_lib) / "runtime" / "daemon_bin"' in setup_py
+    # Every skip path must consult the REQUIRE gate — a missing crate manifest
+    # once bypassed it silently, shipping a daemon-less wheel under REQUIRE=1.
+    assert "daemon sources are missing" in setup_py
 
     # The sdist carries the crate sources + committed lockfile so a pip install
     # from sdist can cargo-build the daemon into the wheel.
     assert "include burnerd/Cargo.toml" in manifest
     assert "include burnerd/Cargo.lock" in manifest
+    assert "include burnerd/build.rs" in manifest
     assert "recursive-include burnerd/src *.rs" in manifest
+
+
+def test_sdist_contains_complete_rust_daemon_crate(tmp_path: Path) -> None:
+    subprocess.run(
+        [sys.executable, "setup.py", "sdist", "--dist-dir", str(tmp_path)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    archives = list(tmp_path.glob("penguin_burner-*.tar.gz"))
+    assert len(archives) == 1
+    with tarfile.open(archives[0], "r:gz") as archive:
+        names = archive.getnames()
+    for relative in (
+        "burnerd/Cargo.toml",
+        "burnerd/Cargo.lock",
+        "burnerd/build.rs",
+        "burnerd/src/main.rs",
+    ):
+        assert any(name.endswith(f"/{relative}") for name in names), relative
 
 
 def test_pypi_wheel_build_installs_rust_toolchain_and_requires_daemon() -> None:
@@ -795,16 +822,17 @@ def test_pypi_wheel_build_installs_rust_toolchain_and_requires_daemon() -> None:
 def test_daemon_discovery_includes_packaged_site_packages_copy() -> None:
     service = Path("runtime/support/runtime_service.py").read_text(encoding="utf-8")
 
-    # Unit execution is fixed at root-owned /usr/libexec. Install-source discovery
-    # prefers the current wheel payload, then a dev build, with an existing
-    # libexec copy only as the distro-package fallback.
+    # Unit execution is fixed at the root-owned /var/opt target. Install-source
+    # discovery prefers the current wheel payload, then a dev build, then the
+    # native-package source, with the existing canonical copy last.
     assert "def _packaged_daemon_binary" in service
     assert '"daemon_bin"' in service
-    assert "return str(LIBEXEC_DAEMON_BINARY)" in service
+    assert "return str(DAEMON_BINARY)" in service
     packaged = service.index("_packaged_daemon_binary(),")
     dev = service.index("_dev_daemon_binary(program_file),")
-    libexec = service.index("LIBEXEC_DAEMON_BINARY,\n", dev)
-    assert packaged < dev < libexec
+    native = service.index("NATIVE_PACKAGE_DAEMON_BINARY,\n", dev)
+    canonical = service.index("DAEMON_BINARY,\n", native)
+    assert packaged < dev < native < canonical
 
 
 def test_flatpak_build_scripts_install_rust_stable_extension() -> None:

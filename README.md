@@ -28,7 +28,7 @@ automatic undervolting & overclocking with adaptive per-game tuning targets.
   2625 MHz loaded · 254 W.
 - **Balanced** — maintain more loaded clock. RTX 5080: 860 mV · 2775 MHz
   target / 2745 MHz loaded · 272 W.
-- **Performance** — undervolt and overclock. RTX 5080: 925 mV · 2980 MHz
+- **Performance** — undervolt and overclock. RTX 5080: 925 mV · 2950 MHz
   target / 2977 MHz loaded · 313 W.
 
 For scale: the same RTX 5080 at stock uses about **341 W** under the same load.
@@ -85,7 +85,11 @@ prompts.
    to switch to it. Tick **Apply on startup** to also make the applied profile
    your boot profile — off by default, so a tuned curve is never re-applied at
    boot unless you opted in. Toggle **Silent fan curve** for the quiet fan
-   profile, or **Restore defaults** to return the GPU to stock.
+   profile, or **Restore defaults** to return the GPU to stock. Multi-GPU
+   systems filter the table with the **Target GPU** selector. On a one-GPU
+   system the same selector shows the detected card but is disabled. With two
+   or more NVIDIA GPUs, **Main GPU** selects which saved startup card owns
+   daemon monitoring after boot; Intel and AMD PRIME adapters do not count.
 5. For per-game tuning — including **Adaptive**, which switches tiers as your
    frame rate changes — use the **Steam** tab to pick a mode per game.
 
@@ -144,6 +148,8 @@ standing profile when it exits, with no password prompt.
 Steam integration is what unlocks the fully customizable, **per-game** setup:
 
 - **Per-game profiles** — a different GPU behavior saved for each game.
+- **Per-game GPU target** — on multi-GPU systems, choose the physical card by
+  stable UUID; single-GPU systems keep the selector hidden.
 - **Per-game adaptive pre-frame-generation FPS target** — the adaptive engine's
   promote/demote target, set individually per game (a 60 Hz story game and a
   144 Hz shooter each get their own).
@@ -271,9 +277,11 @@ Auto-UV makes real hardware changes — enabling persistence mode, setting board
 power limits, writing core/memory V/F offsets, and taking over fan control.
 
 The **Balanced** and **Efficiency** Auto-UV profiles use conservative voltage
-floors and board-power caps. Efficiency accepts the deepest loaded-clock drop,
-then may reclaim stable clock without raising its proven voltage. Balanced
-keeps more loaded clock with a higher voltage and power budget.
+floors; Efficiency also caps board power by default. Efficiency accepts the
+deepest loaded-clock drop, then may reclaim stable clock without raising its
+proven voltage. Balanced keeps more loaded clock with a higher voltage and
+the stock power budget (cap it per scan in the dialog if you want a watts
+ceiling too).
 
 **Performance** is the profile that pushes past stock: it undervolts and then
 overclocks. On my RTX 5080, during the OC phase I sometimes get a "Vulkan device

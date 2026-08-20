@@ -73,6 +73,16 @@ def test_target_fps_roundtrip(tmp_path: Path) -> None:
     assert steam_game_setting("78675700", "1089130", path=path) == setting
 
 
+def test_gpu_uuid_roundtrip(tmp_path: Path) -> None:
+    path = tmp_path / "steam-game-settings.json"
+    setting = SteamGameSetting(enabled=True, gpu_uuid="GPU-stable-a")
+    store_steam_game_setting("78675700", "1089130", setting, path=path)
+
+    assert steam_game_setting("78675700", "1089130", path=path) == setting
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["format_version"] == 2
+
+
 def test_target_fps_stays_unset_by_default(tmp_path: Path) -> None:
     path = tmp_path / "steam-game-settings.json"
     store_steam_game_setting("78675700", "1089130", SteamGameSetting(), path=path)

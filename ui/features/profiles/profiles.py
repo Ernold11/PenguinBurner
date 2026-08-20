@@ -59,6 +59,8 @@ def profile_delete_autostart_action(
     profiles: list[dict],
     selected_ids: list[str],
     autostart_info: dict[str, object],
+    *,
+    include_legacy_profiles: bool = False,
 ) -> dict[str, str]:
     selected = {str(value).strip() for value in selected_ids if str(value).strip()}
     if not selected:
@@ -67,12 +69,17 @@ def profile_delete_autostart_action(
     if not selector:
         return {"action": "keep"}
     if bool(autostart_info.get("adaptive_auto_uv", False)):
+        gpu_uuid = str(autostart_info.get("gpu_uuid") or "").strip()
         remaining_profiles = [
             profile
             for profile in profiles
             if str(profile.get("profile_id", "")).strip() not in selected
         ]
-        resolved = resolve_profile_tier_profiles(remaining_profiles)
+        resolved = resolve_profile_tier_profiles(
+            remaining_profiles,
+            gpu_uuid=gpu_uuid,
+            include_legacy_profiles=include_legacy_profiles,
+        )
         remaining_tiers = available_adaptive_tiers(resolved)
         if remaining_tiers:
             # Adaptive runtime is valid with a single remaining tier: it
@@ -95,8 +102,15 @@ def adaptive_profile_tier_keys(
     profiles: list[dict],
     *,
     assignments: dict[str, str] | None = None,
+    gpu_uuid: str = "",
+    include_legacy_profiles: bool = False,
 ) -> list[str]:
-    resolved = resolve_profile_tier_profiles(list(profiles), assignments=assignments)
+    resolved = resolve_profile_tier_profiles(
+        list(profiles),
+        assignments=assignments,
+        gpu_uuid=gpu_uuid,
+        include_legacy_profiles=include_legacy_profiles,
+    )
     return available_adaptive_tiers(resolved)
 
 
@@ -104,12 +118,19 @@ def adaptive_profile_tier_labels(
     profiles: list[dict],
     *,
     assignments: dict[str, str] | None = None,
+    gpu_uuid: str = "",
+    include_legacy_profiles: bool = False,
 ) -> list[str]:
     return [
         label
         for label in (
             profile_tier_label(tier)
-            for tier in adaptive_profile_tier_keys(profiles, assignments=assignments)
+            for tier in adaptive_profile_tier_keys(
+                profiles,
+                assignments=assignments,
+                gpu_uuid=gpu_uuid,
+                include_legacy_profiles=include_legacy_profiles,
+            )
         )
         if label
     ]
@@ -236,13 +257,36 @@ def runner_status_text(
     return "No running/autostart profile available yet."
 
 
-def systemd_autostart_profile_info() -> dict[str, object]:
+def systemd_autostart_profile_info(*, gpu_uuid: str = "") -> dict[str, object]:
+    selected_gpu_uuid = str(gpu_uuid or "").strip()
     try:
         summary = boot_runtime_spec(timeout_s=1.0)
     except Exception:
         if not systemd_service_is_enabled():
             return _legacy_systemd_autostart_profile_info()
         return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
+    if selected_gpu_uuid:
+        saved_specs = summary.get("gpus") if isinstance(summary, dict) else None
+        if isinstance(saved_specs, list):
+            for saved_spec in saved_specs:
+                if not isinstance(saved_spec, dict):
+                    continue
+                saved_uuid = str(saved_spec.get("gpu_uuid") or "").strip()
+                if saved_uuid.casefold() == selected_gpu_uuid.casefold():
+                    info = _profile_info_from_runtime_summary(saved_spec)
+                    main_gpu_uuid = str(summary.get("main_gpu_uuid") or "").strip()
+                    info["main_gpu"] = bool(
+                        main_gpu_uuid
+                        and main_gpu_uuid.casefold() == selected_gpu_uuid.casefold()
+                    )
+                    return info
+        return {
+            "selector": "",
+            "silent_fan_curve": False,
+            "adaptive_auto_uv": False,
+            "gpu_uuid": selected_gpu_uuid,
+            "main_gpu": False,
+        }
     return _profile_info_from_runtime_summary(summary, require_configured=True)
 
 
@@ -477,6 +521,7 @@ def _daemon_running_profile_info() -> dict[str, object]:
     active_job = payload.get("active_job")
     if isinstance(active_job, dict) and str(active_job.get("runtime_mode") or ""):
         info = _profile_info_from_runtime_summary(active_job)
+        info["gpu_uuid"] = str(active_job.get("gpu_uuid") or "")
         # The Steam tab's per-game override layer: active_job is the live
         # (possibly per-game) spec; game_runtime carries the standing one
         # that returns when the game exits.
@@ -512,11 +557,15 @@ def _profile_info_from_runtime_summary(
     mode = str(summary.get("runtime_mode") or "").strip().lower()
     profile_id = str(summary.get("profile_id") or "").strip()
     selector = STOCK_PROFILE_SELECTOR if mode == "stock" else profile_id
-    return {
+    info: dict[str, object] = {
         "selector": selector,
         "silent_fan_curve": bool(summary.get("silent_fan_curve")),
         "adaptive_auto_uv": mode == "adaptive",
     }
+    gpu_uuid = str(summary.get("gpu_uuid") or "").strip()
+    if gpu_uuid:
+        info["gpu_uuid"] = gpu_uuid
+    return info
 
 
 def _daemon_status_payload() -> dict[str, object]:

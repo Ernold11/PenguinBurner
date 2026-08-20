@@ -71,7 +71,7 @@ pub struct VfPolicyResult<'a> {
     pub profile_voltage_mv: Option<f64>,
 }
 
-fn apply_gpu_base_policy(
+pub(super) fn apply_gpu_base_policy(
     backend: &dyn GpuBackend,
     enable_persistence_mode: bool,
     log: &mut dyn FnMut(&str),
@@ -171,7 +171,7 @@ pub(super) fn reset_gpu_to_stock(
     Ok(())
 }
 
-fn apply_power_limit(
+pub(super) fn apply_power_limit(
     backend: &dyn GpuBackend,
     label: &str,
     power_limit_w: Option<i64>,
@@ -565,14 +565,15 @@ mod tests {
             configure_runtime_spec_policy(&mock, true, RuntimeMode::Stock, None, &mut log).unwrap();
 
         assert_eq!(result.active_vf_curve_source.as_deref(), Some("stock"));
-        assert!(mock.recorded().contains(&MockOp::ApplyPowerLimit {
-            power_limit_w: 150
-        }));
+        assert!(mock
+            .recorded()
+            .contains(&MockOp::ApplyPowerLimit { power_limit_w: 150 }));
         assert!(mock.recorded().contains(&MockOp::ApplyVfOffsets {
             offsets: vec![(5, 0)]
         }));
-        assert!(messages.iter().any(|message| message
-            .contains("keep-stock: default power limit restore skipped")));
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("keep-stock: default power limit restore skipped")));
     }
 
     #[test]
@@ -778,9 +779,9 @@ mod tests {
 
         assert_eq!(power, None);
         assert_eq!(memory, Some(1500));
-        assert!(mock.recorded().contains(&MockOp::ApplyPowerLimit {
-            power_limit_w: 150
-        }));
+        assert!(mock
+            .recorded()
+            .contains(&MockOp::ApplyPowerLimit { power_limit_w: 150 }));
         assert_eq!(
             messages,
             ["Skipped saved profile fixed power limit 150 W for adaptive balanced profile: driver reports that power-limit control is unavailable"]
