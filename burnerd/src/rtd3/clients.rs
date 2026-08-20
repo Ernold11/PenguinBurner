@@ -27,6 +27,13 @@ pub(crate) struct ClientTick<'a> {
     /// NVML-free identity of the deferred target (the persisted PCI address);
     /// used only to invalidate the idle latch when the target moves.
     pub target_key: Option<&'a str>,
+    /// NVIDIA device minor read wake-free from the target PCI device's procfs
+    /// `information` file. This selects `/dev/nvidia<N>` evidence without
+    /// assuming the NVML enumeration index is the device minor.
+    pub target_device_minor: Option<u32>,
+    /// True only when every numbered NVIDIA node necessarily belongs to the
+    /// target. If false, a missing minor makes fd-based evidence unsafe.
+    pub target_unambiguous: bool,
     /// Resolves the target's current NVML device index. Invoked only when a
     /// context probe is actually due — never on latched or unsafe ticks —
     /// because resolution itself opens an NVML session, and a per-tick session
@@ -56,10 +63,39 @@ const LATCH_REPROBE_TICKS: u32 = 300;
 
 struct IdleLatch {
     target_key: Option<String>,
+    device_node_scope: DeviceNodeScope,
     holders: Vec<GpuClientProcess>,
     /// Consecutive latch hits; at [`LATCH_REPROBE_TICKS`] the latch expires
     /// into one fresh probe.
     held_ticks: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeviceNodeScope {
+    TargetMinor(u32),
+    AllNumberedNodes,
+    Unavailable,
+}
+
+impl DeviceNodeScope {
+    fn from_tick(input: ClientTick<'_>) -> Self {
+        match (input.target_device_minor, input.target_unambiguous) {
+            (Some(minor), _) => Self::TargetMinor(minor),
+            (None, true) => Self::AllNumberedNodes,
+            (None, false) => Self::Unavailable,
+        }
+    }
+
+    fn target_minor(self) -> Option<u32> {
+        match self {
+            Self::TargetMinor(minor) => Some(minor),
+            Self::AllNumberedNodes | Self::Unavailable => None,
+        }
+    }
+
+    fn safe(self) -> bool {
+        self != Self::Unavailable
+    }
 }
 
 trait ContextProvider {
@@ -113,10 +149,33 @@ impl ClientDetector {
             return ClientVerdict::Pending;
         }
 
-        let holders = nvidia_device_node_holders_in(&self.proc_root, self.self_pid);
+        let device_node_scope = DeviceNodeScope::from_tick(input);
+        if !input.fine_grained {
+            // A mode transition invalidates the fine-grained idle latch even
+            // when coarse fd evidence is unavailable and this tick returns
+            // early. Re-entering fine mode must make one fresh exact probe.
+            self.clear_idle_latch();
+            if !device_node_scope.safe() {
+                return ClientVerdict::Pending;
+            }
+        }
+        let holders = if device_node_scope.safe() {
+            nvidia_device_node_holders_in(
+                &self.proc_root,
+                self.self_pid,
+                device_node_scope.target_minor(),
+            )
+        } else {
+            // Global numbered-node evidence is ambiguous on multi-GPU hosts.
+            // Fine-grained mode can still use its exact NVML context query,
+            // but the global holder set must not leak into status or re-arm
+            // that query against the target GPU.
+            Vec::new()
+        };
         if input.phase == ClientPhase::Deferred && input.fine_grained {
             if let Some(latch) = self.idle_latch.as_mut() {
                 if latch.target_key.as_deref() == input.target_key
+                    && latch.device_node_scope == device_node_scope
                     && latch.holders == holders
                 {
                     latch.held_ticks = latch.held_ticks.saturating_add(1);
@@ -144,10 +203,7 @@ impl ClientDetector {
         // Fine-grained deferred detection must query contexts for the exact
         // GPU. Without a resolved index, the global /dev/nvidiaN holder scan
         // cannot distinguish another card and must never authorize replay.
-        if input.phase == ClientPhase::Deferred
-            && input.fine_grained
-            && gpu_index.is_none()
-        {
+        if input.phase == ClientPhase::Deferred && input.fine_grained && gpu_index.is_none() {
             return ClientVerdict::Pending;
         }
 
@@ -156,11 +212,20 @@ impl ClientDetector {
             Err(error) => {
                 log_context_shutdown_failure(&error);
                 if input.phase == ClientPhase::Deferred && input.fine_grained {
-                    self.latch_idle(input.target_key, holders);
+                    self.latch_idle(input.target_key, device_node_scope, holders);
                 }
                 return ClientVerdict::Pending;
             }
         };
+        // A failed fine-grained context query falls back to fd evidence. On a
+        // multi-GPU host that evidence is only safe when procfs mapped the
+        // target PCI address to its exact `/dev/nvidia<N>` minor.
+        if observation.source == GpuClientSource::DeviceNodes && !device_node_scope.safe() {
+            if input.phase == ClientPhase::Deferred && input.fine_grained {
+                self.latch_idle(input.target_key, device_node_scope, Vec::new());
+            }
+            return ClientVerdict::Pending;
+        }
         if observation.in_use() {
             return ClientVerdict::Busy(observation);
         }
@@ -168,6 +233,7 @@ impl ClientDetector {
         if input.phase == ClientPhase::Deferred && input.fine_grained {
             self.latch_idle(
                 input.target_key,
+                device_node_scope,
                 observation.device_node_holders.clone(),
             );
         }
@@ -208,10 +274,8 @@ impl ClientDetector {
             }
             Err(gpu::context::ContextProbeError::Query(error)) => {
                 log_context_query_fallback(&error);
-                observation.ignored_clients = ignored_powerd_processes(
-                    &self.proc_root,
-                    &observation.device_node_holders,
-                );
+                observation.ignored_clients =
+                    ignored_powerd_processes(&self.proc_root, &observation.device_node_holders);
             }
             Err(error @ gpu::context::ContextProbeError::Shutdown { .. }) => {
                 return Err(error);
@@ -220,9 +284,15 @@ impl ClientDetector {
         Ok(observation)
     }
 
-    fn latch_idle(&mut self, target_key: Option<&str>, holders: Vec<GpuClientProcess>) {
+    fn latch_idle(
+        &mut self,
+        target_key: Option<&str>,
+        device_node_scope: DeviceNodeScope,
+        holders: Vec<GpuClientProcess>,
+    ) {
         self.idle_latch = Some(IdleLatch {
             target_key: target_key.map(str::to_string),
+            device_node_scope,
             holders,
             held_ticks: 0,
         });
@@ -343,15 +413,22 @@ fn ignored_powerd_processes(
         .collect()
 }
 
-fn is_nvidia_device_node(target: &str) -> bool {
+fn nvidia_device_minor(target: &str) -> Option<u32> {
     target
         .strip_prefix("/dev/nvidia")
-        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()))
+        .filter(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|rest| rest.parse().ok())
+}
+
+#[cfg(test)]
+fn is_nvidia_device_node(target: &str) -> bool {
+    nvidia_device_minor(target).is_some()
 }
 
 fn nvidia_device_node_holders_in(
     proc_root: impl AsRef<Path>,
     self_pid: u32,
+    target_minor: Option<u32>,
 ) -> Vec<GpuClientProcess> {
     let proc_root = proc_root.as_ref();
     let mut holders = Vec::new();
@@ -370,8 +447,10 @@ fn nvidia_device_node_holders_in(
             continue;
         };
         let holds_device_node = fds.filter_map(Result::ok).any(|fd| {
-            fs::read_link(fd.path())
-                .is_ok_and(|target| is_nvidia_device_node(&target.to_string_lossy()))
+            fs::read_link(fd.path()).is_ok_and(|target| {
+                nvidia_device_minor(&target.to_string_lossy())
+                    .is_some_and(|minor| target_minor.is_none_or(|target| target == minor))
+            })
         });
         if holds_device_node {
             holders.push(GpuClientProcess {
@@ -418,6 +497,8 @@ mod tests {
         calls: Rc<RefCell<u32>>,
     }
 
+    struct QueryFailingProvider;
+
     impl ContextProvider for ScriptedProvider {
         fn context_pids(
             &self,
@@ -441,6 +522,17 @@ mod tests {
         }
     }
 
+    impl ContextProvider for QueryFailingProvider {
+        fn context_pids(
+            &self,
+            _gpu_index: u32,
+        ) -> Result<GpuContextPids, gpu::context::ContextProbeError> {
+            Err(gpu::context::ContextProbeError::Query(
+                gpu::GpuError::other("mock context query failure", 0),
+            ))
+        }
+    }
+
     fn resolve_index_zero() -> Option<u32> {
         Some(0)
     }
@@ -453,6 +545,8 @@ mod tests {
         ClientTick {
             phase,
             target_key: Some("0000:01:00.0"),
+            target_device_minor: Some(0),
+            target_unambiguous: false,
             resolve_gpu_index: &resolve_index_zero,
             fine_grained: true,
             runtime_status: Some(RuntimePmStatus::Active),
@@ -560,6 +654,8 @@ mod tests {
             detector.tick(ClientTick {
                 phase: ClientPhase::Deferred,
                 target_key: Some("0000:01:00.0"),
+                target_device_minor: Some(0),
+                target_unambiguous: false,
                 resolve_gpu_index: &resolver,
                 fine_grained: true,
                 runtime_status: Some(RuntimePmStatus::Active),
@@ -576,7 +672,6 @@ mod tests {
         assert_eq!(*resolves.borrow(), 1);
         assert_eq!(*calls.borrow(), 1);
     }
-
 
     #[test]
     fn shutdown_failure_is_pending_and_does_not_create_a_probe_loop() {
@@ -783,6 +878,8 @@ mod tests {
             let verdict = detector.tick(ClientTick {
                 phase: ClientPhase::Deferred,
                 target_key: Some("0000:01:00.0"),
+                target_device_minor: Some(0),
+                target_unambiguous: false,
                 resolve_gpu_index: &resolver,
                 fine_grained: false,
                 runtime_status: Some(RuntimePmStatus::Active),
@@ -831,11 +928,178 @@ mod tests {
         fs::create_dir_all(&fd_dir).unwrap();
         symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
         fs::write(root.path().join("4242/comm"), "some-game\n").unwrap();
-        let holders = nvidia_device_node_holders_in(root.path(), 1);
+        let holders = nvidia_device_node_holders_in(root.path(), 1, Some(0));
         assert_eq!(holders.len(), 1);
         assert_eq!(holders[0].pid, 4242);
         assert_eq!(holders[0].name.as_deref(), Some("some-game"));
-        assert!(nvidia_device_node_holders_in(root.path(), 4242).is_empty());
+        assert!(nvidia_device_node_holders_in(root.path(), 4242, Some(0)).is_empty());
+    }
+
+    #[test]
+    fn device_holder_scan_filters_by_the_target_minor() {
+        let root = tempfile::tempdir().unwrap();
+        for (pid, node) in [(4100, "/dev/nvidia0"), (4200, "/dev/nvidia1")] {
+            let fd_dir = root.path().join(pid.to_string()).join("fd");
+            fs::create_dir_all(&fd_dir).unwrap();
+            symlink(node, fd_dir.join("7")).unwrap();
+            fs::write(root.path().join(pid.to_string()).join("comm"), "game\n").unwrap();
+        }
+
+        let gpu_zero = nvidia_device_node_holders_in(root.path(), 1, Some(0));
+        assert_eq!(
+            gpu_zero
+                .iter()
+                .map(|process| process.pid)
+                .collect::<Vec<_>>(),
+            vec![4100]
+        );
+        let gpu_one = nvidia_device_node_holders_in(root.path(), 1, Some(1));
+        assert_eq!(
+            gpu_one
+                .iter()
+                .map(|process| process.pid)
+                .collect::<Vec<_>>(),
+            vec![4200]
+        );
+        assert_eq!(nvidia_device_node_holders_in(root.path(), 1, None).len(), 2);
+    }
+
+    #[test]
+    fn unresolved_multi_gpu_coarse_target_stays_pending() {
+        let root = tempfile::tempdir().unwrap();
+        write_identity(root.path(), 4242, "other-gpu-game", 1000);
+        let fd_dir = root.path().join("4242/fd");
+        fs::create_dir_all(&fd_dir).unwrap();
+        symlink("/dev/nvidia1", fd_dir.join("7")).unwrap();
+        let provider = ScriptedProvider {
+            calls: Rc::new(RefCell::new(0)),
+            contexts: Rc::new(RefCell::new(GpuContextPids::default())),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        let mut input = active_tick(ClientPhase::Deferred);
+        input.fine_grained = false;
+        input.target_device_minor = None;
+        input.target_unambiguous = false;
+
+        assert_eq!(detector.tick(input), ClientVerdict::Pending);
+    }
+
+    #[test]
+    fn unresolved_multi_gpu_context_fallback_stays_pending() {
+        let root = tempfile::tempdir().unwrap();
+        write_identity(root.path(), 4242, "other-gpu-game", 1000);
+        let fd_dir = root.path().join("4242/fd");
+        fs::create_dir_all(&fd_dir).unwrap();
+        symlink("/dev/nvidia1", fd_dir.join("7")).unwrap();
+        let mut detector =
+            ClientDetector::with_provider(root.path().to_path_buf(), 999, QueryFailingProvider);
+        let mut input = active_tick(ClientPhase::Deferred);
+        input.target_device_minor = None;
+        input.target_unambiguous = false;
+
+        assert_eq!(detector.tick(input), ClientVerdict::Pending);
+    }
+
+    #[test]
+    fn fine_grained_context_fallback_filters_to_target_minor() {
+        let root = tempfile::tempdir().unwrap();
+        for (pid, node) in [(4100, "/dev/nvidia0"), (4200, "/dev/nvidia1")] {
+            write_identity(root.path(), pid, "game", 1000);
+            let fd_dir = root.path().join(pid.to_string()).join("fd");
+            fs::create_dir_all(&fd_dir).unwrap();
+            symlink(node, fd_dir.join("7")).unwrap();
+        }
+        let mut detector =
+            ClientDetector::with_provider(root.path().to_path_buf(), 999, QueryFailingProvider);
+        let input = active_tick(ClientPhase::Deferred);
+
+        let ClientVerdict::Busy(observation) = detector.tick(input) else {
+            panic!("target fd holder should decide the safe fallback");
+        };
+        assert_eq!(observation.source, GpuClientSource::DeviceNodes);
+        assert_eq!(
+            observation
+                .device_node_holders
+                .iter()
+                .map(|process| process.pid)
+                .collect::<Vec<_>>(),
+            vec![4100]
+        );
+    }
+
+    #[test]
+    fn ambiguous_fine_grained_latch_ignores_global_device_holders() {
+        let root = tempfile::tempdir().unwrap();
+        write_identity(root.path(), 4100, "other-gpu-game", 1000);
+        let fd_dir = root.path().join("4100/fd");
+        fs::create_dir_all(&fd_dir).unwrap();
+        symlink("/dev/nvidia1", fd_dir.join("7")).unwrap();
+        let calls = Rc::new(RefCell::new(0));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: Rc::new(RefCell::new(GpuContextPids::default())),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        let mut input = active_tick(ClientPhase::Deferred);
+        input.target_device_minor = None;
+        input.target_unambiguous = false;
+
+        let ClientVerdict::Idle(observation) = detector.tick(input) else {
+            panic!("exact context query should still authorize an idle verdict");
+        };
+        assert!(observation.device_node_holders.is_empty());
+        write_identity(root.path(), 4200, "second-other-game", 1000);
+        let second_fd_dir = root.path().join("4200/fd");
+        fs::create_dir_all(&second_fd_dir).unwrap();
+        symlink("/dev/nvidia2", second_fd_dir.join("7")).unwrap();
+
+        assert_eq!(detector.tick(input), ClientVerdict::Pending);
+        assert_eq!(*calls.borrow(), 1, "global fd changes must not re-arm NVML");
+    }
+
+    #[test]
+    fn fine_grained_latch_is_keyed_by_device_node_scope() {
+        let root = tempfile::tempdir().unwrap();
+        write_identity(root.path(), 4242, "same-process", 1000);
+        let fd_dir = root.path().join("4242/fd");
+        fs::create_dir_all(&fd_dir).unwrap();
+        symlink("/dev/nvidia0", fd_dir.join("7")).unwrap();
+        symlink("/dev/nvidia1", fd_dir.join("8")).unwrap();
+        let calls = Rc::new(RefCell::new(0));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: Rc::new(RefCell::new(GpuContextPids::default())),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        let mut input = active_tick(ClientPhase::Deferred);
+
+        assert!(matches!(detector.tick(input), ClientVerdict::Idle(_)));
+        assert_eq!(detector.tick(input), ClientVerdict::Pending);
+        input.target_device_minor = Some(1);
+        assert!(matches!(detector.tick(input), ClientVerdict::Idle(_)));
+        assert_eq!(*calls.borrow(), 2);
+    }
+
+    #[test]
+    fn unsafe_coarse_tick_clears_the_fine_grained_latch() {
+        let root = tempfile::tempdir().unwrap();
+        let calls = Rc::new(RefCell::new(0));
+        let provider = ScriptedProvider {
+            calls: calls.clone(),
+            contexts: Rc::new(RefCell::new(GpuContextPids::default())),
+        };
+        let mut detector = ClientDetector::with_provider(root.path().to_path_buf(), 999, provider);
+        let mut input = active_tick(ClientPhase::Deferred);
+
+        assert!(matches!(detector.tick(input), ClientVerdict::Idle(_)));
+        input.fine_grained = false;
+        input.target_device_minor = None;
+        input.target_unambiguous = false;
+        assert_eq!(detector.tick(input), ClientVerdict::Pending);
+        input.fine_grained = true;
+        input.target_device_minor = Some(0);
+        assert!(matches!(detector.tick(input), ClientVerdict::Idle(_)));
+        assert_eq!(*calls.borrow(), 2);
     }
 
     #[test]
@@ -844,14 +1108,16 @@ mod tests {
         write_identity(root.path(), 880, "nvidia-powerd", 0);
         write_identity(root.path(), 881, "nvidia-powerd", 1000);
         write_identity(root.path(), 4242, "some-game", 1000);
-        let (graphics, compute, ignored) = classified_context_processes(
-            root.path(),
-            &[880, 881, 4242, 999],
-            &[4242, 777],
-            999,
-        );
+        let (graphics, compute, ignored) =
+            classified_context_processes(root.path(), &[880, 881, 4242, 999], &[4242, 777], 999);
         assert_eq!(ignored.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![880]);
-        assert_eq!(graphics.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![881, 4242]);
-        assert_eq!(compute.iter().map(|p| p.pid).collect::<Vec<_>>(), vec![777, 4242]);
+        assert_eq!(
+            graphics.iter().map(|p| p.pid).collect::<Vec<_>>(),
+            vec![881, 4242]
+        );
+        assert_eq!(
+            compute.iter().map(|p| p.pid).collect::<Vec<_>>(),
+            vec![777, 4242]
+        );
     }
 }

@@ -150,9 +150,7 @@ impl NvmlBackend {
 /// One context-only NVML observation for the RTD3 watcher. The local `Nvml`
 /// owns the driver session and is dropped before this function returns; unlike
 /// `NvmlBackend::open`, this does not initialize either hidden NVAPI session.
-pub(crate) fn context_pids_ephemeral(
-    gpu_index: u32,
-) -> Result<GpuContextPids, ContextProbeError> {
+pub(crate) fn context_pids_ephemeral(gpu_index: u32) -> Result<GpuContextPids, ContextProbeError> {
     let nvml = Nvml::init()
         .map_err(|error| runtime_error("nvmlInit_v2", error))
         .map_err(ContextProbeError::Query)?;
@@ -654,10 +652,7 @@ mod tests {
             Ok(GpuContextPids::default()),
             Err(GpuError::other("mock nvmlShutdown failure", 0)),
         );
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "mock nvmlShutdown failure"
-        );
+        assert_eq!(result.unwrap_err().to_string(), "mock nvmlShutdown failure");
     }
 
     #[test]

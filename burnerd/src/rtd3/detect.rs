@@ -53,6 +53,17 @@ pub fn parse_runtime_d3_config(power_file_text: &str) -> RuntimeD3Config {
     }
 }
 
+/// `/dev/nvidia<N>` minor for one PCI device, as exposed by NVIDIA's procfs
+/// `information` file. This is not the NVML enumeration index: the mapping is
+/// read by PCI address so device reordering cannot redirect client evidence to
+/// another GPU.
+pub fn parse_device_minor(information_text: &str) -> Option<u32> {
+    information_text.lines().find_map(|line| {
+        line.strip_prefix("Device Minor:")
+            .and_then(|value| value.trim().parse().ok())
+    })
+}
+
 /// Kernel runtime-PM state from `<device>/power/runtime_status`
 /// (Documentation/ABI/testing/sysfs-devices-power).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +209,16 @@ impl Rtd3Probe {
         }
     }
 
+    /// Wake-free PCI-to-device-node mapping. NVIDIA publishes the device minor
+    /// in the same procfs directory as the cached RTD3 power report, so this
+    /// does not need an NVML session and cannot reset the autosuspend timer.
+    pub fn device_minor(&self, addr: &str) -> Option<u32> {
+        let path = self.nvidia_gpus_root.join(addr).join("information");
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|text| parse_device_minor(&text))
+    }
+
     /// `power/control`: `auto` means the kernel may runtime-suspend the
     /// device; `on` pins it awake (the state without the NVIDIA udev rules).
     pub fn power_control(&self, addr: &str) -> Option<String> {
@@ -205,7 +226,12 @@ impl Rtd3Probe {
     }
 
     pub fn runtime_pm_status(&self, addr: &str) -> RuntimePmStatus {
-        match Self::read_trimmed(&self.pci_devices_root.join(addr).join("power/runtime_status")) {
+        match Self::read_trimmed(
+            &self
+                .pci_devices_root
+                .join(addr)
+                .join("power/runtime_status"),
+        ) {
             Some(text) => parse_runtime_pm_status(&text),
             None => RuntimePmStatus::Unknown,
         }
@@ -221,10 +247,7 @@ impl Rtd3Probe {
             Self::read_trimmed(&self.pci_devices_root.join(addr).join("power").join(file))
                 .and_then(|text| text.parse().ok())
         };
-        (
-            read("runtime_active_time"),
-            read("runtime_suspended_time"),
-        )
+        (read("runtime_active_time"), read("runtime_suspended_time"))
     }
 }
 
@@ -344,6 +367,24 @@ mod tests {
     }
 
     #[test]
+    fn reads_device_minor_by_pci_address_without_nvml() {
+        let (root, probe, addr) = fake_tree(None, None, None);
+        assert_eq!(probe.device_minor(addr), None);
+
+        let information = root.path().join("proc").join(addr).join("information");
+        fs::write(
+            &information,
+            "Model: NVIDIA Test GPU\nIRQ: 191\nDevice Minor: 7\n",
+        )
+        .unwrap();
+        assert_eq!(probe.device_minor(addr), Some(7));
+
+        fs::write(&information, "Device Minor: unavailable\n").unwrap();
+        assert_eq!(probe.device_minor(addr), None);
+        assert_eq!(parse_device_minor("Device Minor: 12\n"), Some(12));
+    }
+
+    #[test]
     fn normalizes_pci_addresses() {
         assert_eq!(
             sysfs_pci_addr("00000000:01:00.0").as_deref(),
@@ -364,8 +405,11 @@ mod tests {
 
     #[test]
     fn selects_mobile_on_fine_grained_rtd3_with_auto_control() {
-        let (_root, probe, addr) =
-            fake_tree(Some("Enabled (fine-grained)"), Some("auto"), Some("suspended"));
+        let (_root, probe, addr) = fake_tree(
+            Some("Enabled (fine-grained)"),
+            Some("auto"),
+            Some("suspended"),
+        );
         assert_eq!(
             assess(&probe, addr),
             DeepSleepMode::Mobile { fine_grained: true }

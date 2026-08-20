@@ -422,10 +422,8 @@ impl AdaptiveProfileController {
         if gpu > self.config.cpu_bound_gpu_util_max_pct {
             return false;
         }
-        let peak_busy =
-            peak_avg.is_some_and(|v| v >= self.config.cpu_bound_peak_thread_min_pct);
-        let process_busy =
-            cpu_avg.is_some_and(|v| v >= self.config.cpu_bound_process_util_min_pct);
+        let peak_busy = peak_avg.is_some_and(|v| v >= self.config.cpu_bound_peak_thread_min_pct);
+        let process_busy = cpu_avg.is_some_and(|v| v >= self.config.cpu_bound_process_util_min_pct);
         peak_busy || process_busy
     }
 

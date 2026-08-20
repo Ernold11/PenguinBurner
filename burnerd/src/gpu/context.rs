@@ -19,18 +19,14 @@ const MOCK_LIFETIME_ENV: &str = "PENGUIN_BURNERD_TEST_MOCK_GPU_LIFETIME_FILE";
 /// Observe live graphics/compute contexts without retaining NVIDIA state.
 /// The production and test adapters both finish their complete open/query/drop
 /// lifetime before this function returns, including query-error paths.
-pub(crate) fn context_pids_ephemeral(
-    gpu_index: u32,
-) -> Result<GpuContextPids, ContextProbeError> {
+pub(crate) fn context_pids_ephemeral(gpu_index: u32) -> Result<GpuContextPids, ContextProbeError> {
     if env::var_os(MOCK_ENV).is_some_and(|value| !value.is_empty()) {
         return mock_context_pids_ephemeral(gpu_index);
     }
     backend::context_pids_ephemeral(gpu_index)
 }
 
-fn mock_context_pids_ephemeral(
-    gpu_index: u32,
-) -> Result<GpuContextPids, ContextProbeError> {
+fn mock_context_pids_ephemeral(gpu_index: u32) -> Result<GpuContextPids, ContextProbeError> {
     let mut mock = MockGpu::new();
     mock.gpu_index = gpu_index;
     mock.context_pids_file = env::var_os(MOCK_CONTEXT_PIDS_ENV)

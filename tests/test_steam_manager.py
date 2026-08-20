@@ -557,6 +557,7 @@ def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -
 
 
 def test_hot_reapply_tolerates_grace_window_exit(manager, monkeypatch) -> None:
+    import integrations.steam.game_runtime as game_runtime
     import runtime.daemon_client as daemon_client
 
     manager.refresh()
@@ -573,6 +574,11 @@ def test_hot_reapply_tolerates_grace_window_exit(manager, monkeypatch) -> None:
                 "standing_profile_id": "performance-9",
             }
         },
+    )
+    monkeypatch.setattr(
+        game_runtime.DaemonGpuClient,
+        "discover_identities",
+        classmethod(lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]),
     )
 
     def fake_start(argv, **kwargs):
@@ -630,6 +636,7 @@ def test_hot_reapply_targets_saved_gpu_for_stock(manager, monkeypatch) -> None:
 
 
 def test_hot_reapply_reports_ignored_concurrent_game(manager, monkeypatch) -> None:
+    import integrations.steam.game_runtime as game_runtime
     import runtime.daemon_client as daemon_client
 
     manager.refresh()
@@ -644,6 +651,11 @@ def test_hot_reapply_reports_ignored_concurrent_game(manager, monkeypatch) -> No
                 "watched": [{"pid": 4242, "app_id": APP_ID}],
             }
         },
+    )
+    monkeypatch.setattr(
+        game_runtime.DaemonGpuClient,
+        "discover_identities",
+        classmethod(lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]),
     )
     monkeypatch.setattr(
         daemon_client,

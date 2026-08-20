@@ -225,6 +225,7 @@ fn watch_tick(
             sup,
             tick_state,
             clients,
+            probe,
             probe.nvidia_gpu_addrs().len() == 1,
         );
         return MOBILE_TICK;
@@ -248,8 +249,13 @@ fn mobile_tick(
     sup: &Arc<Mutex<Supervisor>>,
     state: &mut TickState,
     clients: &mut ClientDetector,
+    probe: &Rtd3Probe,
     legacy_target_unambiguous: bool,
 ) {
+    let target = super::target_pci_addr();
+    let target_device_minor = target
+        .as_deref()
+        .and_then(|pci_addr| probe.device_minor(pci_addr));
     // A scan/verification child owns the GPU exclusively; its own
     // `/dev/nvidia*` fds and activity must never satisfy the start policy —
     // starting the engine here would race the child's raw GPU writes.
@@ -278,6 +284,8 @@ fn mobile_tick(
                 clients,
                 ClientPhase::Attached,
                 None,
+                target_device_minor,
+                legacy_target_unambiguous,
                 &|| supervisor::profile_gpu_index(sup),
             ) {
                 ClientVerdict::Busy(observation) => {
@@ -333,7 +341,6 @@ fn mobile_tick(
         );
     }
     if state.active_ticks >= SUSTAINED_ACTIVE_TICKS && !state.start_attempted {
-        let target = super::target_pci_addr();
         // The index resolver opens NVML, so it must stay lazy: evaluated only
         // when the detector actually probes, never on latched ticks — a
         // per-tick NVML session would reset the driver's autosuspend timer
@@ -342,18 +349,15 @@ fn mobile_tick(
             clients,
             ClientPhase::Deferred,
             target.as_deref(),
+            target_device_minor,
+            legacy_target_unambiguous,
             &|| {
-                supervisor::deferred_runtime_gpu_index(
-                    target.as_deref(),
-                    legacy_target_unambiguous,
-                )
+                supervisor::deferred_runtime_gpu_index(target.as_deref(), legacy_target_unambiguous)
             },
         ) {
             ClientVerdict::Busy(observation) => {
                 super::record_gpu_clients(observation);
-                logging::info(
-                    "deep sleep: GPU is in use; starting the deferred persisted runtime",
-                );
+                logging::info("deep sleep: GPU is in use; starting the deferred persisted runtime");
                 if supervisor::start_autostart_if_configured(sup) {
                     state.start_attempted = true;
                     super::set_autostart_deferred(false);
@@ -381,11 +385,15 @@ fn client_verdict(
     detector: &mut ClientDetector,
     phase: ClientPhase,
     target_key: Option<&str>,
+    target_device_minor: Option<u32>,
+    target_unambiguous: bool,
     resolve_gpu_index: &dyn Fn() -> Option<u32>,
 ) -> ClientVerdict {
     detector.tick(ClientTick {
         phase,
         target_key,
+        target_device_minor,
+        target_unambiguous,
         resolve_gpu_index,
         fine_grained: super::fine_grained_mode(),
         runtime_status: super::last_runtime_status(),

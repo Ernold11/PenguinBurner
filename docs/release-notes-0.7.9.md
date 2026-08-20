@@ -14,6 +14,9 @@
 - Add per-GPU profiles, filtering, Steam targeting, and serial startup
   application (#46). Active daemon monitoring, adaptive switching, drift
   recovery, and fan control still cover one GPU at a time.
+- Attribute RTD3 device-node activity to the target GPU on multi-GPU systems,
+  so a process using another card cannot start or keep alive the target's
+  deferred runtime profile.
 - Lower every GPU-table Performance target proportionally (the RTX 5080's
   2980 → 2950 MHz ratio, about 1%) so the default four-bin rising tail stays
   below each family's clock ceiling; before this it could top out above the

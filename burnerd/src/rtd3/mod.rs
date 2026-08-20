@@ -196,7 +196,10 @@ pub struct GpuClientsStatus {
     pub device_node_holders: Vec<GpuClientProcess>,
 }
 
-fn gpu_clients_status(observation: &GpuClientObservation, observed_at: Instant) -> GpuClientsStatus {
+fn gpu_clients_status(
+    observation: &GpuClientObservation,
+    observed_at: Instant,
+) -> GpuClientsStatus {
     GpuClientsStatus {
         source: observation.source.as_str().to_string(),
         graphics_count: observation.graphics.len(),
@@ -255,9 +258,7 @@ pub fn evaluate(probe: &detect::Rtd3Probe, pci_hint: Option<&str>) -> DeepSleepM
         // A saved device may not be bound yet, or its PCI address may have
         // changed. Prefer any visible NVIDIA GPU; preserve an absent address
         // only when enumeration has nothing better so boot stays Unknown.
-        Some(addr) if !probe.device_present(&addr) => {
-            probe.first_nvidia_gpu_addr().or(Some(addr))
-        }
+        Some(addr) if !probe.device_present(&addr) => probe.first_nvidia_gpu_addr().or(Some(addr)),
         // A visible hint that no longer identifies an NVIDIA display device is
         // stale; enumerate rather than trusting the saved address.
         _ => probe.first_nvidia_gpu_addr(),
@@ -384,7 +385,13 @@ fn record_runtime_status(state: &mut GateState, status: RuntimePmStatus) {
         Some(previous) => {
             let held = state
                 .runtime_status_since
-                .map(|since| format!(" ({} for {:.1}s)", previous.as_str(), since.elapsed().as_secs_f64()))
+                .map(|since| {
+                    format!(
+                        " ({} for {:.1}s)",
+                        previous.as_str(),
+                        since.elapsed().as_secs_f64()
+                    )
+                })
                 .unwrap_or_default();
             logging::info(&format!(
                 "deep sleep: runtime_status {} -> {}{held}",
@@ -508,8 +515,7 @@ pub fn set_autostart_deferred(deferred: bool) {
 pub fn status(daemon_holds: DaemonGpuHolds) -> Option<DeepSleepStatus> {
     let state = gate();
     let detected_mode = state.mode.as_ref()?;
-    let mobile =
-        matches!(detected_mode, DeepSleepMode::Mobile { .. }) || state.suspended_observed;
+    let mobile = matches!(detected_mode, DeepSleepMode::Mobile { .. }) || state.suspended_observed;
     let (reason, mode) = match detected_mode {
         DeepSleepMode::Mobile { fine_grained } => (
             None,
@@ -567,7 +573,9 @@ mod tests {
 
     #[test]
     fn sticky_suspended_observation_selects_mobile_mode() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         reset_for_test();
         assert!(!is_mobile_mode());
         note_runtime_status(RuntimePmStatus::Active);
@@ -581,13 +589,13 @@ mod tests {
 
     #[test]
     fn absent_persisted_hint_stays_unknown_and_is_preserved() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         reset_for_test();
         let root = tempfile::tempdir().expect("tempdir");
-        let probe = detect::Rtd3Probe::with_roots(
-            &root.path().join("sys"),
-            &root.path().join("proc"),
-        );
+        let probe =
+            detect::Rtd3Probe::with_roots(&root.path().join("sys"), &root.path().join("proc"));
 
         assert!(matches!(
             evaluate(&probe, Some("00000000:01:00.0")),
@@ -606,7 +614,9 @@ mod tests {
 
     #[test]
     fn visible_nvidia_gpu_replaces_an_absent_persisted_hint() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         reset_for_test();
         let root = tempfile::tempdir().expect("tempdir");
         let addr = "0000:02:00.0";
@@ -623,10 +633,8 @@ mod tests {
             "Runtime D3 status:          Enabled (fine-grained)\n",
         )
         .unwrap();
-        let probe = detect::Rtd3Probe::with_roots(
-            &root.path().join("sys"),
-            &root.path().join("proc"),
-        );
+        let probe =
+            detect::Rtd3Probe::with_roots(&root.path().join("sys"), &root.path().join("proc"));
 
         assert!(matches!(
             evaluate(&probe, Some("00000000:01:00.0")),
@@ -643,7 +651,9 @@ mod tests {
 
     #[test]
     fn fine_grained_mode_follows_the_parsed_driver_report_only() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         reset_for_test();
         let root = tempfile::tempdir().expect("tempdir");
         let addr = "0000:01:00.0";
@@ -655,10 +665,8 @@ mod tests {
         fs::write(device.join("power/runtime_status"), "active\n").unwrap();
         let proc_gpu = root.path().join("proc").join(addr);
         fs::create_dir_all(&proc_gpu).unwrap();
-        let probe = detect::Rtd3Probe::with_roots(
-            &root.path().join("sys"),
-            &root.path().join("proc"),
-        );
+        let probe =
+            detect::Rtd3Probe::with_roots(&root.path().join("sys"), &root.path().join("proc"));
 
         fs::write(
             proc_gpu.join("power"),
@@ -685,7 +693,9 @@ mod tests {
 
     #[test]
     fn status_is_absent_until_evaluated() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         reset_for_test();
         assert!(status(DaemonGpuHolds::default()).is_none());
         reset_for_test();
@@ -787,13 +797,13 @@ mod tests {
 
     #[test]
     fn status_reports_the_recorded_client_sample() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         reset_for_test();
         let root = tempfile::tempdir().expect("tempdir");
-        let probe = detect::Rtd3Probe::with_roots(
-            &root.path().join("sys"),
-            &root.path().join("proc"),
-        );
+        let probe =
+            detect::Rtd3Probe::with_roots(&root.path().join("sys"), &root.path().join("proc"));
         evaluate(&probe, None);
         assert!(status(DaemonGpuHolds::default())
             .expect("evaluated")
@@ -813,7 +823,10 @@ mod tests {
             .expect("sample recorded");
         assert_eq!(clients.source, "device-nodes");
         assert_eq!(clients.device_node_holders[0].pid, 4242);
-        assert_eq!(clients.device_node_holders[0].name.as_deref(), Some("some-game"));
+        assert_eq!(
+            clients.device_node_holders[0].name.as_deref(),
+            Some("some-game")
+        );
         assert!(clients.age_s >= 0.0);
         reset_for_test();
     }

@@ -20,6 +20,8 @@ At startup the daemon classifies the machine using only cached kernel state
 
 - `/proc/driver/nvidia/gpus/<pci-addr>/power` — the driver's resolved
   `Runtime D3 status`;
+- `/proc/driver/nvidia/gpus/<pci-addr>/information` — the target's NVIDIA
+  device minor, used to match that PCI device to its `/dev/nvidia<N>` node;
 - `/sys/bus/pci/devices/<pci-addr>/power/control` — must be `auto` for the
   kernel to suspend the device;
 - `/sys/bus/pci/devices/<pci-addr>/power/runtime_status` — the live power
@@ -43,13 +45,18 @@ gets the deferred behavior:
   graphics/compute contexts instead. Each watcher query uses a short-lived,
   context-only NVML session and closes it before making the decision. If the
   result is idle or only root-owned `nvidia-powerd`, the watcher stops NVIDIA
-  queries entirely until a changed numbered-device holder set, a kernel
-  runtime-PM sleep/wake cycle, or the bounded awake-window re-probe described
-  below signals a new workload. Between those edges it never opens NVML while
-  waiting for suspension. Under coarse-grained RTD3 any
-  `/dev/nvidia<N>` holder keeps the GPU awake, so there the device-handle
-  scan is the accurate signal (auxiliary `nvidiactl`/`nvidia-uvm` handles
-  never count).
+  queries entirely until a changed target-device holder set (when that node is
+  safely mapped), a kernel runtime-PM sleep/wake cycle, or the bounded
+  awake-window re-probe described below signals a new workload. Between those
+  edges it never opens NVML while waiting for suspension. Under coarse-grained
+  RTD3 any holder of the
+  target GPU's exact `/dev/nvidia<N>` node keeps that GPU awake, so there the
+  device-handle scan is the accurate signal (another GPU's numbered node and
+  auxiliary `nvidiactl`/`nvidia-uvm` handles never count). If a multi-GPU
+  host does not expose the target's device minor, fd-based decisions stay
+  pending rather than borrowing activity from another card. The same
+  target-specific rule covers fallback when a fine-grained NVML context
+  query is unavailable.
 - One-off telemetry or capability queries release their GPU handles after 30
   idle seconds instead of keeping them for the daemon's lifetime.
 - GPU persistence mode is never enabled (it blocks runtime D3); the profile
@@ -120,9 +127,11 @@ sample of the processes it judged the park/wake decision by:
 ```
 
 - `graphics` / `compute` list the counted processes holding a live NVML
-  context of that kind; `device_node_holders` lists every process with
-  `/dev/nvidia<N>` open. Each entry is `pid` plus the process name (`null` if
-  it exited before the lookup).
+  context of that kind; `device_node_holders` lists processes with the
+  target GPU's `/dev/nvidia<N>` open (or every numbered node when a
+  single-GPU host is unambiguous). The list stays empty when a multi-GPU host
+  does not expose a safe target-node mapping. Each entry is `pid` plus the
+  process name (`null` if it exited before the lookup).
 - `ignored_clients` names positively identified infrastructure helpers that
   were observed but excluded from the fine-grained verdict. Currently the
   only exception is an exact `nvidia-powerd` process running as root. It is

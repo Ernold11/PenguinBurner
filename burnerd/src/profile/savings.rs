@@ -270,7 +270,8 @@ fn write_totals(path: &Path, totals: &SavingsTotals) -> Result<(), String> {
     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
     let payload = serde_json::to_vec(totals).map_err(|error| error.to_string())?;
-    temp.write_all(&payload).map_err(|error| error.to_string())?;
+    temp.write_all(&payload)
+        .map_err(|error| error.to_string())?;
     temp.persist(path).map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -328,8 +329,7 @@ mod tests {
     fn clock_fallback_detects_load_when_utilization_is_unavailable() {
         let dir = tempfile::tempdir().unwrap();
         let spec = spec_with_power(Some(300.0), Some(340.0));
-        let mut tracker =
-            SavingsTracker::from_spec(&spec, dir.path().join("s.json")).unwrap();
+        let mut tracker = SavingsTracker::from_spec(&spec, dir.path().join("s.json")).unwrap();
         // 60% of the 2700MHz lock = 1620MHz threshold.
         tracker.record(0.0, None, Some(2400.0), "balanced");
         tracker.record(1.0, None, Some(2400.0), "balanced"); // loaded
@@ -341,8 +341,7 @@ mod tests {
     fn suspend_gap_cannot_fabricate_hours() {
         let dir = tempfile::tempdir().unwrap();
         let spec = spec_with_power(Some(300.0), Some(340.0));
-        let mut tracker =
-            SavingsTracker::from_spec(&spec, dir.path().join("s.json")).unwrap();
+        let mut tracker = SavingsTracker::from_spec(&spec, dir.path().join("s.json")).unwrap();
         tracker.record(0.0, Some(90), None, "balanced");
         tracker.record(7200.0, Some(90), None, "balanced"); // 2h gap → 30s max
         assert_eq!(tracker.totals().active_seconds, MAX_TICK_CREDIT_S);
@@ -352,8 +351,7 @@ mod tests {
     fn unknown_tier_falls_back_only_when_unambiguous() {
         let dir = tempfile::tempdir().unwrap();
         let spec = spec_with_power(Some(300.0), Some(340.0));
-        let mut tracker =
-            SavingsTracker::from_spec(&spec, dir.path().join("s.json")).unwrap();
+        let mut tracker = SavingsTracker::from_spec(&spec, dir.path().join("s.json")).unwrap();
         // Static profiles carry a tier key that is not in the single-entry
         // rate map; the sole rate still applies.
         tracker.record(0.0, Some(90), None, "whatever");
@@ -366,8 +364,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Performance profile drawing MORE than stock.
         let spec = spec_with_power(Some(360.0), Some(340.0));
-        let mut tracker =
-            SavingsTracker::from_spec(&spec, dir.path().join("s.json")).unwrap();
+        let mut tracker = SavingsTracker::from_spec(&spec, dir.path().join("s.json")).unwrap();
         tracker.record(0.0, Some(90), None, "performance");
         tracker.record(1.0, Some(90), None, "performance");
         assert_eq!(tracker.totals().active_seconds, 1.0);
@@ -392,8 +389,7 @@ mod live_tests {
 
         {
             let mut tracker =
-                SavingsTracker::from_spec_with_paths(&spec, durable.clone(), live.clone())
-                    .unwrap();
+                SavingsTracker::from_spec_with_paths(&spec, durable.clone(), live.clone()).unwrap();
             tracker.record(0.0, Some(90), None, "balanced");
             tracker.record(2.0, Some(90), None, "balanced");
             // The mirror is written per active tick; the durable flush is
@@ -405,9 +401,6 @@ mod live_tests {
 
         assert!(!live.exists());
         assert_eq!(load_totals(&durable).active_seconds, 2.0);
-        assert_eq!(
-            load_freshest_totals(&live, &durable).active_seconds,
-            2.0
-        );
+        assert_eq!(load_freshest_totals(&live, &durable).active_seconds, 2.0);
     }
 }

@@ -38,8 +38,7 @@ const PROGRAM_FILE_ENV: &str = "PENGUIN_BURNER_DAEMON_PROGRAM_FILE";
 const STATE_FILE_ENV: &str = "PENGUIN_BURNERD_TEST_STATE_FILE";
 const BOOT_STATE_FILE_ENV: &str = "PENGUIN_BURNERD_TEST_BOOT_STATE_FILE";
 const ACTIVE_RUNTIME_STATE_PATH: &str = "/run/penguin-burner/active-runtime.json";
-const APPLIED_RUNTIME_HISTORY_PATH: &str =
-    "/run/penguin-burner/applied-runtime-history.json";
+const APPLIED_RUNTIME_HISTORY_PATH: &str = "/run/penguin-burner/applied-runtime-history.json";
 const BOOT_RUNTIME_STATE_PATH: &str = "/var/lib/penguin-burner/boot-runtime.json";
 const ENGINE_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const GAME_RESTORE_GRACE: Duration = Duration::from_secs(3);
@@ -50,10 +49,7 @@ const BOOT_RUNTIME_SET_FORMAT_VERSION: u32 = 1;
 const APPLIED_RUNTIME_HISTORY_FORMAT_VERSION: u32 = 1;
 static BOOT_STATE_UPDATE_LOCK: Mutex<()> = Mutex::new(());
 
-fn validate_unique_runtime_specs(
-    specs: &[RuntimeSpec],
-    state_label: &str,
-) -> Result<(), String> {
+fn validate_unique_runtime_specs(specs: &[RuntimeSpec], state_label: &str) -> Result<(), String> {
     let mut seen = std::collections::BTreeSet::new();
     for spec in specs {
         spec.validate()?;
@@ -539,9 +535,7 @@ fn apply_inactive_spec_and_stop(
         Ok(mut engine) => {
             if engine.stop(supervisor.stop_timeout) == StopOutcome::TimedOut {
                 supervisor.profile = Some(ProfileJob { engine, spec });
-                return Err(format!(
-                    "{context} engine did not stop within timeout"
-                ));
+                return Err(format!("{context} engine did not stop within timeout"));
             }
             supervisor
                 .last_applied_specs
@@ -592,16 +586,13 @@ fn reap_game_watches(sup: &Mutex<Supervisor>) {
         return;
     }
 
-    let restore_target = target_restore_spec.or_else(|| {
-        game_spec.as_ref().map(RuntimeSpec::stock_fallback)
-    });
+    let restore_target =
+        target_restore_spec.or_else(|| game_spec.as_ref().map(RuntimeSpec::stock_fallback));
     let standing_gpu_uuid = standing_spec
         .as_ref()
         .map(|spec| spec.gpu.uuid.as_str())
         .unwrap_or_default();
-    if let Some(target_spec) = restore_target
-        .filter(|spec| spec.gpu.uuid != standing_gpu_uuid)
-    {
+    if let Some(target_spec) = restore_target.filter(|spec| spec.gpu.uuid != standing_gpu_uuid) {
         if let Err(error) = apply_inactive_spec_and_stop(
             &mut supervisor,
             target_spec,
@@ -728,9 +719,7 @@ fn load_runtime_spec(path: &PathBuf) -> Result<Option<RuntimeSpec>, String> {
     Ok(Some(spec))
 }
 
-fn load_applied_runtime_history(
-    path: &PathBuf,
-) -> Result<Option<AppliedRuntimeHistory>, String> {
+fn load_applied_runtime_history(path: &PathBuf) -> Result<Option<AppliedRuntimeHistory>, String> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -817,9 +806,12 @@ pub fn persisted_pci_bus_id_hints() -> Vec<String> {
         if let Some(spec) = selected.filter(|spec| spec.mode_name() == "stock") {
             push(spec);
         }
-        for spec in set.specs.iter().rev().filter(|spec| {
-            spec.gpu.uuid != set.active_gpu_uuid && spec.mode_name() == "stock"
-        }) {
+        for spec in set
+            .specs
+            .iter()
+            .rev()
+            .filter(|spec| spec.gpu.uuid != set.active_gpu_uuid && spec.mode_name() == "stock")
+        {
             push(spec);
         }
     }
@@ -1225,8 +1217,7 @@ pub fn start_game_runtime_profile(
             .unwrap_or_default();
         if current_gpu_uuid != spec.gpu.uuid {
             return Err(
-                "cannot change a running game's target GPU; restart the game first"
-                    .to_string(),
+                "cannot change a running game's target GPU; restart the game first".to_string(),
             );
         }
     }
@@ -1252,7 +1243,11 @@ pub fn start_game_runtime_profile(
     let failed_target_restore_spec = previous_spec
         .as_ref()
         .filter(|previous| previous.gpu.uuid != spec.gpu.uuid)
-        .map(|_| restore_spec.clone().unwrap_or_else(|| spec.stock_fallback()));
+        .map(|_| {
+            restore_spec
+                .clone()
+                .unwrap_or_else(|| spec.stock_fallback())
+        });
     supervisor.stop_engine_for_child("a game runtime profile")?;
 
     match profile::start(spec.clone()) {
@@ -1841,7 +1836,9 @@ fn boot_replay_result(
         "gpu_uuid": gpu_uuid,
         "outcome": outcome.as_str(),
     });
-    let object = value.as_object_mut().expect("boot replay result is an object");
+    let object = value
+        .as_object_mut()
+        .expect("boot replay result is an object");
     if let Some(index) = gpu_index {
         object.insert("gpu_index".to_string(), Value::from(index));
     }
@@ -1979,10 +1976,7 @@ struct BootReplayStep {
     abort: bool,
 }
 
-fn replay_inactive_boot_spec(
-    supervisor: &mut Supervisor,
-    spec: RuntimeSpec,
-) -> BootReplayStep {
+fn replay_inactive_boot_spec(supervisor: &mut Supervisor, spec: RuntimeSpec) -> BootReplayStep {
     let uuid = spec.gpu.uuid.clone();
     let index = spec.gpu.index_at_resolution;
     match profile::start(spec.clone()) {
@@ -2002,12 +1996,7 @@ fn replay_inactive_boot_spec(
             }
             supervisor.last_applied_specs.insert(uuid.clone(), spec);
             BootReplayStep {
-                result: boot_replay_result(
-                    &uuid,
-                    Some(index),
-                    BootReplayOutcome::Applied,
-                    None,
-                ),
+                result: boot_replay_result(&uuid, Some(index), BootReplayOutcome::Applied, None),
                 abort: false,
             }
         }
@@ -2120,12 +2109,7 @@ fn start_active_boot_spec(
                 supervisor.game_runtime.override_active = false;
             }
             (
-                boot_replay_result(
-                    &uuid,
-                    Some(index),
-                    BootReplayOutcome::Active,
-                    None,
-                ),
+                boot_replay_result(&uuid, Some(index), BootReplayOutcome::Active, None),
                 Some(spec),
             )
         }
@@ -2253,11 +2237,7 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) -> bool {
     }
     BOOT_RUNTIME_CONSUMED.store(true, Ordering::SeqCst);
 
-    let ordered_uuids: Vec<String> = set
-        .specs
-        .iter()
-        .map(|spec| spec.gpu.uuid.clone())
-        .collect();
+    let ordered_uuids: Vec<String> = set.specs.iter().map(|spec| spec.gpu.uuid.clone()).collect();
     let mut replay_by_uuid = BTreeMap::new();
     let mut available = Vec::new();
     for saved in set.specs {
@@ -2295,9 +2275,9 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) -> bool {
         target_pci_addr
             .as_deref()
             .and_then(|target| {
-                available.iter().find(|spec| {
-                    spec.mode_name() != "stock" && spec_matches_pci(spec, target)
-                })
+                available
+                    .iter()
+                    .find(|spec| spec.mode_name() != "stock" && spec_matches_pci(spec, target))
             })
             .or_else(|| {
                 available
@@ -2311,10 +2291,7 @@ pub fn start_autostart_if_configured(sup: &Arc<Mutex<Supervisor>>) -> bool {
         default_active_uuid
     };
 
-    for spec in available
-        .iter()
-        .filter(|spec| spec.gpu.uuid != active_uuid)
-    {
+    for spec in available.iter().filter(|spec| spec.gpu.uuid != active_uuid) {
         let uuid = spec.gpu.uuid.clone();
         if protects_deep_sleep && spec.mode_name() == "stock" {
             logging::info(&format!(
@@ -2601,7 +2578,10 @@ mod tests {
         let _inert_guard = StateEnvGuard::named("PENGUIN_BURNERD_TEST_INERT_ENGINE", "1");
         persist_runtime_spec(&path, &RuntimeSpec::test_stock("GPU-child-gate")).unwrap();
 
-        let child = Command::new("sleep").arg("10").spawn().expect("spawn sleep");
+        let child = Command::new("sleep")
+            .arg("10")
+            .spawn()
+            .expect("spawn sleep");
         let job = Arc::new(ChildJob {
             proc: ChildProc::new(child).expect("shared child"),
             argv: vec!["sleep".to_string(), "10".to_string()],
@@ -2659,10 +2639,7 @@ mod tests {
     #[test]
     fn concurrent_boot_saves_preserve_every_gpu_entry() {
         let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let dir = env::temp_dir().join(format!(
-            "pb-state-concurrent-boot-{}",
-            std::process::id()
-        ));
+        let dir = env::temp_dir().join(format!("pb-state-concurrent-boot-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("boot-runtime.json");
         let _boot_guard = StateEnvGuard::named(BOOT_STATE_FILE_ENV, &path);
@@ -2715,10 +2692,7 @@ mod tests {
                 barrier.wait();
                 apply_runtime_spec(
                     &supervisor,
-                    RuntimeSpec::test_static(
-                        &format!("GPU-{index}"),
-                        &format!("profile-{index}"),
-                    ),
+                    RuntimeSpec::test_static(&format!("GPU-{index}"), &format!("profile-{index}")),
                 )
                 .unwrap();
             }));
@@ -2837,10 +2811,7 @@ mod tests {
     #[test]
     fn daemon_restart_preserves_inactive_gpu_session_restore_state() {
         let _lock = STATE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let dir = env::temp_dir().join(format!(
-            "pb-state-session-history-{}",
-            std::process::id()
-        ));
+        let dir = env::temp_dir().join(format!("pb-state-session-history-{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("active-runtime.json");
         let _state_guard = StateEnvGuard::new(&path);
@@ -2903,11 +2874,7 @@ mod tests {
         let running = guard(&sup);
         assert_eq!(running.profile.as_ref().unwrap().spec.gpu.uuid, "GPU-A");
         assert_eq!(
-            running
-                .last_applied_specs
-                .get("GPU-B")
-                .unwrap()
-                .mode_name(),
+            running.last_applied_specs.get("GPU-B").unwrap().mode_name(),
             "stock"
         );
         drop(running);
@@ -2957,7 +2924,10 @@ mod tests {
 
         let running = guard(&sup);
         assert_eq!(running.profile.as_ref().unwrap().spec.gpu.uuid, "GPU-A");
-        assert_eq!(running.profile.as_ref().unwrap().spec.active_profile_id(), "profile-a");
+        assert_eq!(
+            running.profile.as_ref().unwrap().spec.active_profile_id(),
+            "profile-a"
+        );
         assert!(running.game_runtime.watches.is_empty());
         assert!(running.game_runtime.restore_spec.is_none());
         drop(running);
@@ -2990,11 +2960,7 @@ mod tests {
         let running = guard(&sup);
         assert_eq!(running.profile.as_ref().unwrap().spec.gpu.uuid, "GPU-A");
         assert_eq!(
-            running
-                .last_applied_specs
-                .get("GPU-B")
-                .unwrap()
-                .mode_name(),
+            running.last_applied_specs.get("GPU-B").unwrap().mode_name(),
             "stock"
         );
         drop(running);

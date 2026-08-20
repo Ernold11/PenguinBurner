@@ -786,8 +786,7 @@ fn run_fan_control_loop(
                             Some(clocks) => clocks().0,
                             None => monotonic_now(),
                         };
-                        resume_deadline =
-                            Some(after_attempt + resume::RESUME_REAPPLY_GRACE_S);
+                        resume_deadline = Some(after_attempt + resume::RESUME_REAPPLY_GRACE_S);
                         continue;
                     }
                 }

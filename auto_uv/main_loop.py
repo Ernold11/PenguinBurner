@@ -576,7 +576,7 @@ def run_voltage_frequency_undervolt_main_loop(
                 clock_ceiling=gpu.clock_ceiling,
                 discovery_summary=selected_discovery_summary,
                 translated_gpu_policy=gpu.translated_gpu_policy,
-            gpu_identity=getattr(gpu, "gpu_identity", {}),
+                gpu_identity=getattr(gpu, "gpu_identity", {}),
                 min_performance_core_clock_pct=float(
                     final_min_core_clock_pct
                     if final_min_core_clock_pct is not None

@@ -82,8 +82,12 @@ pub fn verify_power_limit(
     if backend.query_power_limits().power_limit_w == Some(expected) {
         return Ok(false);
     }
-    let applied =
-        super::apply::apply_power_limit(backend, "post-resume re-verification", Some(expected), log)?;
+    let applied = super::apply::apply_power_limit(
+        backend,
+        "post-resume re-verification",
+        Some(expected),
+        log,
+    )?;
     Ok(applied.is_some())
 }
 
@@ -132,7 +136,10 @@ mod tests {
     #[test]
     fn power_limit_untouched_when_still_applied() {
         let mock = mock_with_limits(250, 250);
-        assert_eq!(verify_power_limit(&mock, Some(250), &mut no_log()), Ok(false));
+        assert_eq!(
+            verify_power_limit(&mock, Some(250), &mut no_log()),
+            Ok(false)
+        );
         assert!(mock.recorded().is_empty(), "no writes expected");
     }
 
@@ -140,7 +147,10 @@ mod tests {
     fn power_limit_reapplied_when_drifted() {
         let mock = mock_with_limits(320, 320);
         // MockGpu's apply_power_limit_w updates its own PowerLimits readback.
-        assert_eq!(verify_power_limit(&mock, Some(250), &mut no_log()), Ok(true));
+        assert_eq!(
+            verify_power_limit(&mock, Some(250), &mut no_log()),
+            Ok(true)
+        );
         assert!(!mock.recorded().is_empty(), "a reapply write was expected");
     }
 
@@ -150,7 +160,10 @@ mod tests {
         // limit read exactly the profile value. The reset must still be
         // detected and reapplied.
         let mock = mock_with_limits(320, 250);
-        assert_eq!(verify_power_limit(&mock, Some(250), &mut no_log()), Ok(true));
+        assert_eq!(
+            verify_power_limit(&mock, Some(250), &mut no_log()),
+            Ok(true)
+        );
         assert!(!mock.recorded().is_empty(), "a reapply write was expected");
     }
 
@@ -167,9 +180,15 @@ mod tests {
         let mock = mock_with_limits(320, 320);
         mock.inject_failure(
             "apply_power_limit_w",
-            GpuError::nvml("nvmlDeviceSetPowerManagementLimit", NVML_ERROR_NOT_SUPPORTED),
+            GpuError::nvml(
+                "nvmlDeviceSetPowerManagementLimit",
+                NVML_ERROR_NOT_SUPPORTED,
+            ),
         );
-        assert_eq!(verify_power_limit(&mock, Some(250), &mut no_log()), Ok(false));
+        assert_eq!(
+            verify_power_limit(&mock, Some(250), &mut no_log()),
+            Ok(false)
+        );
     }
 
     #[test]

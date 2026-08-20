@@ -27,8 +27,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Map, Value};
 
 use crate::gpu::{
-    mock::MockGpu, ClockType, GpuBackend, GpuError, GpuIdentity, GpuMemoryInfo,
-    NvmlBackend, VfPoint,
+    mock::MockGpu, ClockType, GpuBackend, GpuError, GpuIdentity, GpuMemoryInfo, NvmlBackend,
+    VfPoint,
 };
 
 const MOCK_ENV: &str = "PENGUIN_BURNERD_TEST_MOCK_GPU";

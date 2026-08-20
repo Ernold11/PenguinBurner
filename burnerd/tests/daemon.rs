@@ -688,18 +688,14 @@ fn boot_runtime_specs_are_saved_and_cleared_per_gpu() {
     assert_eq!(cleared_main["result"]["selected"], false);
     assert_eq!(cleared_main["result"]["main_gpu_uuid"], "");
 
-    let cleared_a = daemon.request(
-        r#"{"method":"clear_boot_runtime_spec","gpu_uuid":"GPU-A"}"#,
-    );
+    let cleared_a = daemon.request(r#"{"method":"clear_boot_runtime_spec","gpu_uuid":"GPU-A"}"#);
     assert_eq!(cleared_a["result"]["cleared"], true);
     assert_eq!(cleared_a["result"]["saved_gpu_count"], 1);
     let summary = daemon.request(r#"{"method":"boot_runtime_spec"}"#);
     assert_eq!(summary["result"]["gpus"].as_array().unwrap().len(), 1);
     assert_eq!(summary["result"]["gpus"][0]["gpu_uuid"], "GPU-B");
 
-    let cleared_b = daemon.request(
-        r#"{"method":"clear_boot_runtime_spec","gpu_uuid":"GPU-B"}"#,
-    );
+    let cleared_b = daemon.request(r#"{"method":"clear_boot_runtime_spec","gpu_uuid":"GPU-B"}"#);
     assert_eq!(cleared_b["result"]["saved_gpu_count"], 0);
     let summary = daemon.request(r#"{"method":"boot_runtime_spec"}"#);
     assert_eq!(summary["result"]["configured"], false);
@@ -718,8 +714,8 @@ fn autostart_replays_available_gpus_by_uuid_and_reports_missing_targets() {
     let mut gpu_b = test_static_runtime_spec("profile-b");
     gpu_b["gpu"]["uuid"] = Value::String("GPU-B".to_string());
     gpu_b["gpu"]["index_at_resolution"] = Value::from(1); // stale: now index 0
-    // A missing selected stock target must not suppress the available static
-    // fallback that RTD3 is actually watching.
+                                                          // A missing selected stock target must not suppress the available static
+                                                          // fallback that RTD3 is actually watching.
     let mut missing = test_runtime_spec();
     missing["gpu"]["uuid"] = Value::String("GPU-MISSING".to_string());
     missing["gpu"]["index_at_resolution"] = Value::from(2);
@@ -1394,14 +1390,7 @@ fn write_rtd3_tree(
     let addr = "0000:01:00.0";
     let sys = dir.join("rtd3-sys");
     let proc_root = dir.join("rtd3-proc");
-    write_rtd3_gpu(
-        &sys,
-        &proc_root,
-        addr,
-        d3_line,
-        control,
-        runtime_status,
-    );
+    write_rtd3_gpu(&sys, &proc_root, addr, d3_line, control, runtime_status);
     (sys, proc_root)
 }
 
@@ -1419,11 +1408,7 @@ fn write_rtd3_gpu(
     std::fs::write(device.join("vendor"), "0x10de\n").unwrap();
     std::fs::write(device.join("class"), "0x030000\n").unwrap();
     std::fs::write(power.join("control"), format!("{control}\n")).unwrap();
-    std::fs::write(
-        power.join("runtime_status"),
-        format!("{runtime_status}\n"),
-    )
-    .unwrap();
+    std::fs::write(power.join("runtime_status"), format!("{runtime_status}\n")).unwrap();
     // Cumulative runtime-PM residency counters (ms), surfaced in the status
     // block so testers can quantify how much the GPU really sleeps.
     std::fs::write(power.join("runtime_active_time"), "5123\n").unwrap();
@@ -1478,9 +1463,15 @@ fn deep_sleep_defers_autostart_while_the_gpu_is_suspended() {
     let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
 
     let daemon = Daemon::start(&[
-        ("PENGUIN_BURNERD_TEST_STATE_FILE", state_file.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_STATE_FILE",
+            state_file.to_str().unwrap(),
+        ),
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
     ]);
 
     // The mode is evaluated synchronously before the socket binds: Mobile, and
@@ -1499,7 +1490,11 @@ fn deep_sleep_defers_autostart_while_the_gpu_is_suspended() {
         let deep_sleep = &status["result"]["deep_sleep"];
         if deep_sleep["autostart_deferred"] == Value::Bool(true) {
             assert_eq!(deep_sleep["runtime_status"], "suspended", "{status}");
-            assert_eq!(deep_sleep["suspended_observed"], Value::Bool(true), "{status}");
+            assert_eq!(
+                deep_sleep["suspended_observed"],
+                Value::Bool(true),
+                "{status}"
+            );
             // The kernel residency counters pass through from the fake sysfs.
             assert_eq!(deep_sleep["runtime_active_ms"], 5123, "{status}");
             assert_eq!(deep_sleep["runtime_suspended_ms"], 60789, "{status}");
@@ -1519,11 +1514,7 @@ fn deep_sleep_defers_autostart_while_the_gpu_is_suspended() {
 #[test]
 fn deep_sleep_defers_multi_gpu_boot_replay_until_the_active_gpu_is_used() {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!(
-        "pb-rtd3-multi-{}-{}",
-        std::process::id(),
-        n
-    ));
+    let dir = std::env::temp_dir().join(format!("pb-rtd3-multi-{}-{}", std::process::id(), n));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let boot_file = dir.join("boot.json");
@@ -1548,8 +1539,7 @@ fn deep_sleep_defers_multi_gpu_boot_replay_until_the_active_gpu_is_used() {
         .to_string(),
     )
     .unwrap();
-    let (sys, proc_root) =
-        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
     write_rtd3_gpu(
         &sys,
         &proc_root,
@@ -1637,6 +1627,107 @@ fn deep_sleep_defers_multi_gpu_boot_replay_until_the_active_gpu_is_used() {
 }
 
 #[test]
+fn deep_sleep_coarse_grained_ignores_another_gpu_device_holder() {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir =
+        std::env::temp_dir().join(format!("pb-rtd3-coarse-multi-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_file = dir.join("state.json");
+    std::fs::write(
+        &state_file,
+        test_static_runtime_spec("gpu-a-profile").to_string(),
+    )
+    .unwrap();
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (coarse-grained)", "auto", "suspended");
+    write_rtd3_gpu(
+        &sys,
+        &proc_root,
+        "0000:02:00.0",
+        "Enabled (coarse-grained)",
+        "auto",
+        "active",
+    );
+    std::fs::write(
+        proc_root.join("0000:01:00.0/information"),
+        "Model: Test GPU A\nDevice Minor: 0\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proc_root.join("0000:02:00.0/information"),
+        "Model: Test GPU B\nDevice Minor: 1\n",
+    )
+    .unwrap();
+
+    let clients = dir.join("clients");
+    write_fake_proc_identity(
+        &clients,
+        4242,
+        "other-gpu-game",
+        Some("Name:\tother-gpu-game\nUid:\t1000\t1000\t1000\t1000\n"),
+    );
+    let fd = clients.join("4242/fd/7");
+    std::fs::create_dir_all(fd.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink("/dev/nvidia1", &fd).unwrap();
+
+    let daemon = Daemon::start(&[
+        (
+            "PENGUIN_BURNERD_TEST_STATE_FILE",
+            state_file.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_GPU_IDENTITIES",
+            r#"[{"index":0,"uuid":"GPU-inert-test"},{"index":1,"uuid":"GPU-other"}]"#,
+        ),
+        ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
+        MOCK_GPU,
+    ]);
+
+    let mut deferred = false;
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["deep_sleep"]["autostart_deferred"] == Value::Bool(true) {
+            deferred = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(deferred, "target GPU runtime was not deferred");
+    std::fs::write(sys.join("0000:01:00.0/power/runtime_status"), "active\n").unwrap();
+
+    for _ in 0..100 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        assert_eq!(
+            status["result"]["state"], "idle",
+            "another GPU's holder started the target runtime: {status}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    std::fs::remove_file(&fd).unwrap();
+    std::os::unix::fs::symlink("/dev/nvidia0", &fd).unwrap();
+    let mut started = false;
+    for _ in 0..200 {
+        let status = daemon.request(r#"{"method":"status"}"#);
+        if status["result"]["state"] == "runtime_profile_running" {
+            started = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(started, "the target GPU holder never started its runtime");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn deep_sleep_replays_non_stock_gpu_when_selected_gpu_is_stock() {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!(
@@ -1664,8 +1755,7 @@ fn deep_sleep_replays_non_stock_gpu_when_selected_gpu_is_stock() {
         .to_string(),
     )
     .unwrap();
-    let (sys, proc_root) =
-        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
     write_rtd3_gpu(
         &sys,
         &proc_root,
@@ -1712,8 +1802,7 @@ fn deep_sleep_replays_non_stock_gpu_when_selected_gpu_is_stock() {
         if status["result"]["deep_sleep"]["autostart_deferred"] == Value::Bool(true) {
             assert_eq!(status["result"]["state"], "idle", "{status}");
             assert_eq!(
-                status["result"]["deep_sleep"]["pci_addr"],
-                "0000:02:00.0",
+                status["result"]["deep_sleep"]["pci_addr"], "0000:02:00.0",
                 "the watcher must target the non-stock GPU: {status}"
             );
             deferred = true;
@@ -1766,11 +1855,8 @@ fn deep_sleep_replays_non_stock_gpu_when_selected_gpu_is_stock() {
 #[test]
 fn deep_sleep_replays_legacy_boot_spec_without_pci_id_on_single_gpu() {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!(
-        "pb-rtd3-legacy-boot-{}-{}",
-        std::process::id(),
-        n
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("pb-rtd3-legacy-boot-{}-{}", std::process::id(), n));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let boot_file = dir.join("boot.json");
@@ -1779,8 +1865,7 @@ fn deep_sleep_replays_legacy_boot_spec_without_pci_id_on_single_gpu() {
     legacy["gpu"].as_object_mut().unwrap().remove("pci_bus_id");
     // The old on-disk format was one RuntimeSpec rather than a BootRuntimeSet.
     std::fs::write(&boot_file, legacy.to_string()).unwrap();
-    let (sys, proc_root) =
-        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
     let clients = dir.join("clients");
     let contexts = dir.join("context-pids");
 
@@ -1878,8 +1963,7 @@ fn deep_sleep_does_not_substitute_gpu_when_target_uuid_resolution_fails() {
         .to_string(),
     )
     .unwrap();
-    let (sys, proc_root) =
-        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
     write_rtd3_gpu(
         &sys,
         &proc_root,
@@ -1945,8 +2029,7 @@ fn deep_sleep_does_not_substitute_gpu_when_target_uuid_resolution_fails() {
     for _ in 0..100 {
         let status = daemon.request(r#"{"method":"status"}"#);
         assert_eq!(
-            status["result"]["state"],
-            "idle",
+            status["result"]["state"], "idle",
             "another GPU was substituted for the unresolved target: {status}"
         );
         std::thread::sleep(Duration::from_millis(50));
@@ -1962,8 +2045,7 @@ fn deep_sleep_rebinds_after_applying_a_profile_to_another_gpu() {
     let dir = std::env::temp_dir().join(format!("pb-rtd3-rebind-{}-{}", std::process::id(), n));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let (sys, proc_root) =
-        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
     write_rtd3_gpu(
         &sys,
         &proc_root,
@@ -2029,11 +2111,9 @@ fn deep_sleep_rebinds_after_applying_a_profile_to_another_gpu() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(rebound, "RTD3 watcher did not rebind from GPU A to GPU B");
-    assert!(
-        daemon
-            .stderr_log()
-            .contains("deep sleep: rebinding GPU target 0000:01:00.0 -> 0000:02:00.0")
-    );
+    assert!(daemon
+        .stderr_log()
+        .contains("deep sleep: rebinding GPU target 0000:01:00.0 -> 0000:02:00.0"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2052,8 +2132,7 @@ fn deep_sleep_powerd_only_context_does_not_start_deferred_runtime() {
         test_static_runtime_spec("deferred-profile").to_string(),
     )
     .unwrap();
-    let (sys, proc_root) =
-        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "active");
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "active");
     // Keep the old timer-driven repro fast: its quiet interval was this
     // autosuspend delay plus one watcher tick, so the five-second observation
     // below spans more than two complete retry deadlines.
@@ -2069,10 +2148,19 @@ fn deep_sleep_powerd_only_context_does_not_start_deferred_runtime() {
     std::fs::write(&contexts, "graphics 880\ncompute 880\n").unwrap();
 
     let daemon = Daemon::start(&[
-        ("PENGUIN_BURNERD_TEST_STATE_FILE", state_file.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_STATE_FILE",
+            state_file.to_str().unwrap(),
+        ),
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
         MOCK_GPU,
         (
             "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
@@ -2107,8 +2195,7 @@ fn deep_sleep_powerd_only_context_does_not_start_deferred_runtime() {
     assert_eq!(gpu_clients["ignored_count"], 1, "{status}");
     assert_eq!(gpu_clients["ignored_clients"][0]["pid"], 880, "{status}");
     assert_eq!(
-        gpu_clients["ignored_clients"][0]["name"],
-        "nvidia-powerd",
+        gpu_clients["ignored_clients"][0]["name"], "nvidia-powerd",
         "{status}"
     );
     let (opens, closes, live) = mock_gpu_lifetime(&lifetime);
@@ -2162,8 +2249,7 @@ fn deep_sleep_powerd_only_context_allows_running_runtime_to_park() {
     let dir = std::env::temp_dir().join(format!("pb-rtd3-{}-{}", std::process::id(), n));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let (sys, proc_root) =
-        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "active");
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "active");
     let clients = dir.join("clients");
     write_root_powerd_identity(&clients, 880);
     let contexts = dir.join("context-pids");
@@ -2171,8 +2257,14 @@ fn deep_sleep_powerd_only_context_allows_running_runtime_to_park() {
 
     let daemon = Daemon::start(&[
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
         MOCK_GPU,
         (
             "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
@@ -2228,27 +2320,18 @@ fn deep_sleep_powerd_exclusion_requires_exact_root_identity() {
     let dir = std::env::temp_dir().join(format!("pb-rtd3-{}-{}", std::process::id(), n));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let (sys, proc_root) =
-        write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "active");
+    let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "active");
     let clients = dir.join("clients");
 
     for (pid, comm, status) in [
         (880, "nvidia-powerd", Some("Uid:\t0\t0\t0\t0\n")),
-        (
-            881,
-            "nvidia-powerd",
-            Some("Uid:\t1000\t1000\t1000\t1000\n"),
-        ),
+        (881, "nvidia-powerd", Some("Uid:\t1000\t1000\t1000\t1000\n")),
         (882, "nvidia-powerd", None),
         (883, "nvidia-powerd", Some("Uid:\tnot-a-uid\n")),
         (884, "nvidia-powerd2", Some("Uid:\t0\t0\t0\t0\n")),
         (885, "nvidia-powerd ", Some("Uid:\t0\t0\t0\t0\n")),
         (886, "nvidia-powerd", Some("Uid:\t1000\t0\n")),
-        (
-            887,
-            "nvidia-powerd",
-            Some("Uid:\t1000\t0\tnot-a-uid\t0\n"),
-        ),
+        (887, "nvidia-powerd", Some("Uid:\t1000\t0\tnot-a-uid\t0\n")),
         (
             888,
             "nvidia-powerd",
@@ -2258,16 +2341,18 @@ fn deep_sleep_powerd_exclusion_requires_exact_root_identity() {
         write_fake_proc_identity(&clients, pid, comm, status);
     }
     let contexts = dir.join("context-pids");
-    std::fs::write(
-        &contexts,
-        "graphics 880 881 882 883 884 885 886 887 888\n",
-    )
-    .unwrap();
+    std::fs::write(&contexts, "graphics 880 881 882 883 884 885 886 887 888\n").unwrap();
 
     let daemon = Daemon::start(&[
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
         MOCK_GPU,
         (
             "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
@@ -2307,9 +2392,15 @@ fn deep_sleep_desktop_mode_runs_autostart_immediately() {
     let (sys, proc_root) = write_rtd3_tree(&dir, "Disabled by default", "auto", "active");
 
     let daemon = Daemon::start(&[
-        ("PENGUIN_BURNERD_TEST_STATE_FILE", state_file.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_STATE_FILE",
+            state_file.to_str().unwrap(),
+        ),
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
     ]);
 
     // Desktop mode preserves synchronous eager autostart.
@@ -2336,14 +2427,23 @@ fn suspended_observation_selects_mobile_before_desktop_autostart() {
     let (sys, proc_root) = write_rtd3_tree(&dir, "Disabled by default", "auto", "suspended");
 
     let daemon = Daemon::start(&[
-        ("PENGUIN_BURNERD_TEST_STATE_FILE", state_file.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_STATE_FILE",
+            state_file.to_str().unwrap(),
+        ),
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
     ]);
 
     let status = daemon.request(r#"{"method":"status"}"#);
     assert_eq!(status["result"]["state"], "idle", "{status}");
-    assert_eq!(status["result"]["deep_sleep"]["state"], "mobile", "{status}");
+    assert_eq!(
+        status["result"]["deep_sleep"]["state"], "mobile",
+        "{status}"
+    );
     assert_eq!(
         status["result"]["deep_sleep"]["suspended_observed"],
         Value::Bool(true),
@@ -2370,9 +2470,15 @@ fn deep_sleep_scan_completion_does_not_force_start_the_deferred_runtime() {
     let (sys, proc_root) = write_rtd3_tree(&dir, "Enabled (fine-grained)", "auto", "suspended");
 
     let daemon = Daemon::start(&[
-        ("PENGUIN_BURNERD_TEST_STATE_FILE", state_file.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_STATE_FILE",
+            state_file.to_str().unwrap(),
+        ),
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
         ("SCAN_STUB_EXIT_AFTER_LINES", "1"),
     ]);
 
@@ -2410,21 +2516,33 @@ fn deep_sleep_unknown_scan_completion_stays_deferred() {
     let (sys, proc_root) = write_rtd3_tree(&dir, "?", "auto", "active");
 
     let daemon = Daemon::start(&[
-        ("PENGUIN_BURNERD_TEST_STATE_FILE", state_file.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_STATE_FILE",
+            state_file.to_str().unwrap(),
+        ),
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
         ("SCAN_STUB_EXIT_AFTER_LINES", "1"),
     ]);
 
     let status = daemon.request(r#"{"method":"status"}"#);
-    assert_eq!(status["result"]["deep_sleep"]["state"], "unknown", "{status}");
+    assert_eq!(
+        status["result"]["deep_sleep"]["state"], "unknown",
+        "{status}"
+    );
     finish_successful_scan(&daemon);
 
     // Unknown follows conservative Mobile behavior: child completion must not
     // invoke the eager Desktop autostart path.
     let status = daemon.request(r#"{"method":"status"}"#);
     assert_eq!(status["result"]["state"], "idle", "{status}");
-    assert_eq!(status["result"]["deep_sleep"]["state"], "unknown", "{status}");
+    assert_eq!(
+        status["result"]["deep_sleep"]["state"], "unknown",
+        "{status}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2439,12 +2557,21 @@ fn deep_sleep_unknown_resolves_to_desktop_and_autostarts() {
     let (sys, proc_root) = write_rtd3_tree(&dir, "?", "auto", "active");
 
     let daemon = Daemon::start(&[
-        ("PENGUIN_BURNERD_TEST_STATE_FILE", state_file.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_STATE_FILE",
+            state_file.to_str().unwrap(),
+        ),
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
     ]);
     let status = daemon.request(r#"{"method":"status"}"#);
-    assert_eq!(status["result"]["deep_sleep"]["state"], "unknown", "{status}");
+    assert_eq!(
+        status["result"]["deep_sleep"]["state"], "unknown",
+        "{status}"
+    );
 
     std::fs::write(
         proc_root.join("0000:01:00.0").join("power"),
@@ -2455,10 +2582,16 @@ fn deep_sleep_unknown_resolves_to_desktop_and_autostarts() {
     loop {
         let status = daemon.request(r#"{"method":"status"}"#);
         if status["result"]["state"] == "runtime_profile_running" {
-            assert_eq!(status["result"]["deep_sleep"]["state"], "desktop", "{status}");
+            assert_eq!(
+                status["result"]["deep_sleep"]["state"], "desktop",
+                "{status}"
+            );
             break;
         }
-        assert!(Instant::now() < deadline, "Unknown never resolved: {status}");
+        assert!(
+            Instant::now() < deadline,
+            "Unknown never resolved: {status}"
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -2474,12 +2607,14 @@ fn mobile_mode_rejects_persistence_enable_rpc() {
 
     let daemon = Daemon::start(&[
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
         ("PENGUIN_BURNERD_TEST_MOCK_GPU", "1"),
     ]);
 
-    let response =
-        daemon.request(r#"{"method":"gpu_enable_persistence_mode","gpu_index":0}"#);
+    let response = daemon.request(r#"{"method":"gpu_enable_persistence_mode","gpu_index":0}"#);
     assert_eq!(response["ok"], Value::Bool(false), "{response}");
     assert!(
         response["error"]
@@ -2506,8 +2641,14 @@ fn deep_sleep_parks_idle_runtime_and_reattaches_on_use() {
 
     let daemon = Daemon::start(&[
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
         MOCK_GPU,
         (
             "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
@@ -2522,7 +2663,10 @@ fn deep_sleep_parks_idle_runtime_and_reattaches_on_use() {
     ));
     assert_eq!(start["ok"], Value::Bool(true), "{start}");
     let status = daemon.request(r#"{"method":"status"}"#);
-    assert_eq!(status["result"]["state"], "runtime_profile_running", "{status}");
+    assert_eq!(
+        status["result"]["state"], "runtime_profile_running",
+        "{status}"
+    );
 
     // No clients for the (test-shrunk) idle window: the watcher parks the
     // runtime — engine gone, persisted state kept, profile pending again.
@@ -2558,11 +2702,7 @@ fn deep_sleep_parks_idle_runtime_and_reattaches_on_use() {
     // Simulate real use: GPU active + processes with live GPU contexts (one
     // graphics, one compute; comm files supply the names the status block
     // reports). The watcher must re-materialize the parked profile.
-    std::fs::write(
-        sys.join("0000:01:00.0/power/runtime_status"),
-        "active\n",
-    )
-    .unwrap();
+    std::fs::write(sys.join("0000:01:00.0/power/runtime_status"), "active\n").unwrap();
     std::fs::create_dir_all(clients.join("4242")).unwrap();
     std::fs::write(clients.join("4242/comm"), "some-game\n").unwrap();
     std::fs::create_dir_all(clients.join("555")).unwrap();
@@ -2578,13 +2718,20 @@ fn deep_sleep_parks_idle_runtime_and_reattaches_on_use() {
                 result["active_job"]["profile_id"], "parked-profile",
                 "{status}"
             );
-            assert_eq!(result["deep_sleep"]["parked"], Value::Bool(false), "{status}");
+            assert_eq!(
+                result["deep_sleep"]["parked"],
+                Value::Bool(false),
+                "{status}"
+            );
             reattached = true;
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(reattached, "parked runtime was never re-materialized on use");
+    assert!(
+        reattached,
+        "parked runtime was never re-materialized on use"
+    );
 
     // The per-kind stats name the processes that woke the runtime.
     let mut stats_seen = false;
@@ -2647,8 +2794,14 @@ fn deep_sleep_never_reattaches_a_parked_stock_runtime() {
 
     let daemon = Daemon::start(&[
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
         MOCK_GPU,
         (
             "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
@@ -2675,17 +2828,16 @@ fn deep_sleep_never_reattaches_a_parked_stock_runtime() {
     // Real GPU use arrives: a stock runtime enforces nothing, so the watcher
     // must NOT re-attach (that would only pin the GPU) and must not report
     // the stock intent as deferred.
-    std::fs::write(
-        sys.join("0000:01:00.0/power/runtime_status"),
-        "active\n",
-    )
-    .unwrap();
+    std::fs::write(sys.join("0000:01:00.0/power/runtime_status"), "active\n").unwrap();
     std::fs::write(&contexts, "4242\n").unwrap();
 
     for _ in 0..100 {
         let status = daemon.request(r#"{"method":"status"}"#);
         let result = &status["result"];
-        assert_eq!(result["state"], "idle", "stock must never re-attach: {status}");
+        assert_eq!(
+            result["state"], "idle",
+            "stock must never re-attach: {status}"
+        );
         assert_eq!(
             result["deep_sleep"]["autostart_deferred"],
             Value::Bool(false),
@@ -2718,8 +2870,14 @@ fn deep_sleep_fine_grained_ignores_idle_device_node_holders() {
 
     let daemon = Daemon::start(&[
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
         MOCK_GPU,
         (
             "PENGUIN_BURNERD_TEST_MOCK_GPU_CONTEXT_PIDS",
@@ -2769,11 +2927,7 @@ fn deep_sleep_fine_grained_ignores_idle_device_node_holders() {
     // With no context, the kernel completes a runtime-PM cycle. A later real
     // context wakes the GPU; that external transition re-arms the one-shot
     // context probe even though the long-lived fd holder did not change.
-    std::fs::write(
-        sys.join("0000:01:00.0/power/runtime_status"),
-        "suspended\n",
-    )
-    .unwrap();
+    std::fs::write(sys.join("0000:01:00.0/power/runtime_status"), "suspended\n").unwrap();
     let mut suspension_observed = false;
     for _ in 0..80 {
         let status = daemon.request(r#"{"method":"status"}"#);
@@ -2783,14 +2937,13 @@ fn deep_sleep_fine_grained_ignores_idle_device_node_holders() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(suspension_observed, "runtime-PM suspension was not observed");
+    assert!(
+        suspension_observed,
+        "runtime-PM suspension was not observed"
+    );
 
     std::fs::write(&contexts, "4242\n").unwrap();
-    std::fs::write(
-        sys.join("0000:01:00.0/power/runtime_status"),
-        "active\n",
-    )
-    .unwrap();
+    std::fs::write(sys.join("0000:01:00.0/power/runtime_status"), "active\n").unwrap();
     let mut reattached = false;
     for _ in 0..200 {
         let status = daemon.request(r#"{"method":"status"}"#);
@@ -2800,7 +2953,10 @@ fn deep_sleep_fine_grained_ignores_idle_device_node_holders() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(reattached, "a live context never re-materialized the runtime");
+    assert!(
+        reattached,
+        "a live context never re-materialized the runtime"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2822,8 +2978,14 @@ fn deep_sleep_coarse_grained_device_holder_blocks_park() {
 
     let daemon = Daemon::start(&[
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
         MOCK_GPU,
     ]);
 
@@ -2892,8 +3054,14 @@ fn deep_sleep_fine_grained_falls_back_to_fd_scan_when_nvml_query_fails() {
 
     let daemon = Daemon::start(&[
         ("PENGUIN_BURNERD_TEST_RTD3_SYSFS", sys.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_RTD3_PROC", proc_root.to_str().unwrap()),
-        ("PENGUIN_BURNERD_TEST_CLIENT_PROC", clients.to_str().unwrap()),
+        (
+            "PENGUIN_BURNERD_TEST_RTD3_PROC",
+            proc_root.to_str().unwrap(),
+        ),
+        (
+            "PENGUIN_BURNERD_TEST_CLIENT_PROC",
+            clients.to_str().unwrap(),
+        ),
         MOCK_GPU,
         ("PENGUIN_BURNERD_TEST_MOCK_GPU_FAIL", "gpu_context_pids"),
         (
