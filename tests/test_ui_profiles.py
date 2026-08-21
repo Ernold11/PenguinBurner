@@ -6,7 +6,22 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import ui.features.profiles.profiles as profiles
+
+
+@pytest.fixture(autouse=True)
+def _no_host_runtime_state(monkeypatch):
+    """Keep the host's published runtime state out of these tests.
+
+    An adaptive run's reported profile now prefers the live state file over
+    the job spec, so without this every test that stubs a daemon payload would
+    quietly read whatever the developer's own daemon happens to be running --
+    green on CI, red on a machine with a profile applied. Tests that care
+    about the live layer stub this themselves and override the default.
+    """
+    monkeypatch.setattr(profiles, "read_overlay_state", dict)
 
 
 _P1 = {"profile_id": "p1", "candidate_id": "c1", "path": "/tmp/p1.json", "display_name": "P1"}
