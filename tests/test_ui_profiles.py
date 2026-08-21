@@ -466,3 +466,91 @@ def test_adaptive_tier_helpers_include_legacy_profiles_on_single_gpu() -> None:
     assert profiles.adaptive_profile_tier_labels(
         [legacy], gpu_uuid="GPU-A", include_legacy_profiles=True
     ) == ["Balanced"]
+
+
+def _state(profile_id: str, *, age_s: float = 0.0) -> dict[str, str]:
+    import time
+
+    return {
+        "profile_id": profile_id,
+        "updated_unix_ns": str(int((time.time() - age_s) * 1_000_000_000)),
+    }
+
+
+def test_live_runtime_profile_id_reads_the_published_state(monkeypatch) -> None:
+    monkeypatch.setattr(profiles, "read_overlay_state", lambda: _state("perf-1"))
+    assert profiles.live_runtime_profile_id() == "perf-1"
+
+
+def test_live_runtime_profile_id_rejects_a_stale_file(monkeypatch) -> None:
+    """A file left by a finished session must not be reported as live."""
+    monkeypatch.setattr(
+        profiles, "read_overlay_state", lambda: _state("perf-1", age_s=3600)
+    )
+    assert profiles.live_runtime_profile_id() == ""
+
+
+def test_live_runtime_profile_id_survives_missing_or_broken_state(monkeypatch) -> None:
+    monkeypatch.setattr(profiles, "read_overlay_state", dict)
+    assert profiles.live_runtime_profile_id() == ""
+
+    monkeypatch.setattr(
+        profiles,
+        "read_overlay_state",
+        lambda: {"profile_id": "perf-1", "updated_unix_ns": "not-a-number"},
+    )
+    assert profiles.live_runtime_profile_id() == ""
+
+    def boom():
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(profiles, "read_overlay_state", boom)
+    assert profiles.live_runtime_profile_id() == ""
+
+
+def _adaptive_payload() -> dict:
+    return {
+        "state": "runtime_profile_running",
+        "active_job": {
+            "runtime_mode": "adaptive",
+            "profile_id": "eff-start",
+            "gpu_uuid": "GPU-A",
+        },
+    }
+
+
+def test_adaptive_status_reports_the_live_tier_not_the_starting_one(
+    monkeypatch,
+) -> None:
+    """The job spec names the starting tier forever; adaptive has moved on."""
+    monkeypatch.setattr(profiles, "_daemon_status_payload", _adaptive_payload)
+    monkeypatch.setattr(profiles, "read_overlay_state", lambda: _state("perf-live"))
+
+    info = profiles.running_auto_uv_profile_info()
+
+    assert info["selector"] == "perf-live"
+    assert info["adaptive_auto_uv"] is True
+
+
+def test_adaptive_status_falls_back_to_the_spec_without_live_state(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(profiles, "_daemon_status_payload", _adaptive_payload)
+    monkeypatch.setattr(profiles, "read_overlay_state", dict)
+
+    assert profiles.running_auto_uv_profile_info()["selector"] == "eff-start"
+
+
+def test_static_status_ignores_the_published_state(monkeypatch) -> None:
+    """Only adaptive drifts from its spec; a static run must not be second-guessed."""
+    monkeypatch.setattr(
+        profiles,
+        "_daemon_status_payload",
+        lambda: {
+            "state": "runtime_profile_running",
+            "active_job": {"runtime_mode": "static", "profile_id": "pinned"},
+        },
+    )
+    monkeypatch.setattr(profiles, "read_overlay_state", lambda: _state("something-else"))
+
+    assert profiles.running_auto_uv_profile_info()["selector"] == "pinned"
