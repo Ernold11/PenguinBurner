@@ -799,3 +799,119 @@ def test_unlink_fifo_is_idempotent(tmp_path) -> None:
     assert unlink_fifo(
         tmp_path / "gone.fifo", expected_identity=(123, 456)
     ) is True
+
+
+class _FakeStream:
+    """Stands in for the launcher's stderr."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.written: list[str] = []
+        self.flushes = 0
+        self._fail = fail
+
+    def write(self, text: str) -> int:
+        if self._fail:
+            raise OSError("launcher pipe is gone")
+        self.written.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        self.flushes += 1
+
+
+def _run_bridge_over(monkeypatch, tmp_path, lines, passthrough):
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    samples: list[dict] = []
+    monkeypatch.setattr(
+        bridge,
+        "_follow",
+        lambda _path, poll_interval_s, from_start, stop_event=None,
+        session_alive_fn=None, session_quiesced_fn=None: iter(lines),
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_send_sample",
+        lambda _sock, _targets, sample: samples.append(sample),
+    )
+    run(tmp_path / "trace.fifo", env={}, pid=999, passthrough=passthrough)
+    return samples
+
+
+_SIM_LINE = (
+    "123.456:0000002a:2def:latency-marker:nvapi64:"
+    "qpcUs=1000000 api=d3d frameID=7 markerType=SIMULATION_START markerValue=0"
+)
+_PRESENT_LINE = (
+    "123.466:0000002a:2def:latency-marker:nvapi64:"
+    "qpcUs=1010000 api=d3d frameID=7 markerType=PRESENT_END markerValue=5"
+)
+
+
+def test_bridge_does_not_echo_its_own_marker_lines(monkeypatch, tmp_path) -> None:
+    """Markers exist only because we asked for them; echoing them adds noise."""
+    from overlay.telemetry.nvapi_marker_bridge import _GameOutputPassthrough
+
+    stream = _FakeStream()
+    _run_bridge_over(
+        monkeypatch, tmp_path, [_SIM_LINE, _PRESENT_LINE], _GameOutputPassthrough(stream)
+    )
+
+    assert stream.written == []
+
+
+def test_bridge_gives_game_output_back_to_the_launcher(monkeypatch, tmp_path) -> None:
+    """The wrapper steals the game's stderr; the drainer must hand it back.
+
+    Without this the whole Proton/wine log vanishes from Lutris, Steam, or a
+    terminal for as long as the wrapper is in the launch command.
+    """
+    from overlay.telemetry.nvapi_marker_bridge import _GameOutputPassthrough
+
+    stream = _FakeStream()
+    lines = [
+        "wine: ordinal not found\n",
+        _SIM_LINE,
+        "err:module:import_dll Library missing\n",
+        _PRESENT_LINE,
+    ]
+
+    samples = _run_bridge_over(
+        monkeypatch, tmp_path, lines, _GameOutputPassthrough(stream)
+    )
+
+    assert stream.written == [
+        "wine: ordinal not found\n",
+        "err:module:import_dll Library missing\n",
+    ]
+    # Still bridged the markers it was there to bridge.
+    assert len(samples) == 1
+
+
+def test_passthrough_keeps_lines_line_terminated() -> None:
+    from overlay.telemetry.nvapi_marker_bridge import _GameOutputPassthrough
+
+    stream = _FakeStream()
+    passthrough = _GameOutputPassthrough(stream)
+
+    passthrough.forward("has newline\n")
+    passthrough.forward("no newline")
+
+    assert stream.written == ["has newline\n", "no newline\n"]
+    assert stream.flushes == 2
+
+
+def test_passthrough_latches_off_when_the_launcher_pipe_dies() -> None:
+    from overlay.telemetry.nvapi_marker_bridge import _GameOutputPassthrough
+
+    stream = _FakeStream(fail=True)
+    passthrough = _GameOutputPassthrough(stream)
+
+    passthrough.forward("anything\n")
+    assert passthrough.failed is True
+
+    # A dead launcher must not keep costing a failed write per drained line;
+    # draining itself has to continue, or a full pipe freezes the game.
+    stream._fail = False
+    passthrough.forward("later\n")
+    assert stream.written == []
