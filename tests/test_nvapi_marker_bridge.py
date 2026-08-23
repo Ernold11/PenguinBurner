@@ -286,6 +286,7 @@ def test_drainer_exits_when_session_dead_and_no_writers(tmp_path, monkeypatch) -
     ever connected (e.g. failed exec); after the no-writer grace, run() returns
     instead of tailing a pipe that can never fill."""
     import os
+
     import overlay.telemetry.nvapi_marker_bridge as bridge
 
     monkeypatch.setattr(bridge, "_NO_WRITER_GRACE_S", 0.05)
@@ -302,6 +303,7 @@ def test_drainer_keeps_draining_while_writer_exists(tmp_path) -> None:
     import os
     import threading
     import time
+
     import overlay.telemetry.nvapi_marker_bridge as bridge
 
     fifo = tmp_path / "nvapi-trace.1.fifo"
@@ -348,6 +350,7 @@ def test_drainer_exits_when_steam_reaper_quiesces_after_traffic(tmp_path) -> Non
     import os
     import threading
     import time
+
     import overlay.telemetry.nvapi_marker_bridge as bridge
 
     fifo = tmp_path / "nvapi-trace.1.fifo"
@@ -383,6 +386,7 @@ def test_drainer_exits_when_steam_reaper_quiesces_after_traffic(tmp_path) -> Non
 def test_drainer_main_cleans_up_fifo(tmp_path, monkeypatch) -> None:
     """--cleanup unlinks the per-launch FIFO once the watch ends."""
     import os
+
     import overlay.telemetry.nvapi_marker_bridge as bridge
 
     monkeypatch.setattr(bridge, "_NO_WRITER_GRACE_S", 0.05)
@@ -400,6 +404,7 @@ def test_drainer_main_cleans_up_fifo(tmp_path, monkeypatch) -> None:
 
 def test_spawn_detached_drainer_argv(monkeypatch, tmp_path) -> None:
     import sys
+
     import overlay.telemetry.nvapi_marker_bridge as bridge
 
     captured = {}
@@ -425,3 +430,70 @@ def test_spawn_detached_drainer_argv(monkeypatch, tmp_path) -> None:
     ]
     assert captured["kwargs"]["start_new_session"] is True
     assert captured["kwargs"]["env"] is env
+
+
+# -- the drainer owns its FIFO -------------------------------------------------
+
+
+def test_the_drainer_unlinks_its_fifo_when_signalled(tmp_path) -> None:
+    """A launcher stopping the game kills the drainer, so termination is the
+    ordinary way it ends. Leaving cleanup outside the finally left one stale
+    FIFO in ~/.cache per game session."""
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path as _Path
+
+    fifo = tmp_path / "nvapi-trace.test.fifo"
+    os.mkfifo(fifo, 0o600)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(_Path(__file__).resolve().parents[1])
+
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "overlay.telemetry.nvapi_marker_bridge",
+            "--log",
+            str(fifo),
+            "--cleanup",
+        ],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and process.poll() is None:
+            if not fifo.exists():
+                break
+            time.sleep(0.05)
+            process.send_signal(signal.SIGTERM)
+            break
+        process.wait(timeout=10)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert not fifo.exists()
+
+
+def test_unlink_fifo_leaves_a_regular_file_alone(tmp_path) -> None:
+    """--log may point at a real log file; cleanup must not delete data."""
+    from overlay.telemetry.nvapi_marker_bridge import unlink_fifo
+
+    regular = tmp_path / "not-a-fifo.log"
+    regular.write_text("markers", encoding="utf-8")
+
+    assert unlink_fifo(regular) is False
+    assert regular.exists()
+
+
+def test_unlink_fifo_is_idempotent(tmp_path) -> None:
+    from overlay.telemetry.nvapi_marker_bridge import unlink_fifo
+
+    assert unlink_fifo(tmp_path / "gone.fifo") is True

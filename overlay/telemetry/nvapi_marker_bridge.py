@@ -36,6 +36,7 @@ import json
 import os
 import re
 import select
+import signal
 import socket
 import stat
 import subprocess
@@ -584,6 +585,11 @@ def main(argv: list[str] | None = None) -> int:
         liveness = _shim_deploy.SessionLiveness(args.session_pid, session_fd)
         session_alive_fn = liveness.session_alive
         session_quiesced_fn = liveness.steam_reaper_quiesced
+    # A launcher stopping the game kills this drainer along with the rest of
+    # the session, so termination is the ordinary way it ends, not an
+    # exception. Turning the signal into SystemExit lets the cleanup below run
+    # the same way it does on a normal exit.
+    _exit_on_termination()
     try:
         run(
             args.log,
@@ -598,13 +604,42 @@ def main(argv: list[str] | None = None) -> int:
                 os.close(session_fd)
             except OSError:
                 pass
-    if args.cleanup:
-        try:
-            if stat.S_ISFIFO(args.log.stat().st_mode):
-                args.log.unlink()
-        except OSError:
-            pass
+        # In the finally, not after the try: a drainer that is signalled or
+        # raises would otherwise leave its FIFO behind, one per game session.
+        # The launcher's stale-FIFO sweep is meant to catch crashes, not to be
+        # the routine cleanup path.
+        if args.cleanup:
+            unlink_fifo(args.log)
     return 0
+
+
+def unlink_fifo(path: Path) -> bool:
+    """Remove a per-launch marker FIFO. True when it is gone afterwards."""
+    try:
+        if not stat.S_ISFIFO(path.stat().st_mode):
+            return False
+        path.unlink()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _exit_on_termination() -> None:
+    def _raise_system_exit(signal_number, _frame):
+        raise SystemExit(128 + int(signal_number))
+
+    for name in ("SIGTERM", "SIGINT", "SIGHUP"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            signal.signal(number, _raise_system_exit)
+        except (OSError, ValueError):
+            # Not the main thread, or the platform refuses this signal: the
+            # sweep on the next launch remains the backstop.
+            continue
 
 
 if __name__ == "__main__":
