@@ -213,7 +213,14 @@ def test_ui_scan_command_uses_flatpak_host_privilege(
 
 
 def _flatpak_daemon_install_env(monkeypatch, tmp_path) -> None:
-    """Environment for building the elevated flatpak daemon-install command."""
+    """Environment for building the elevated flatpak daemon-install command.
+
+    The host home this command carries is meant to resolve from USER through
+    the getpwnam stub below. PENGUIN_BURNER_HOME outranks both, so the helper
+    clears it and states the environment under test outright, instead of
+    depending on whichever home the run happened to inherit.
+    """
+    monkeypatch.delenv("PENGUIN_BURNER_HOME", raising=False)
     flatpak_info = tmp_path / ".flatpak-info"
     flatpak_info.write_text("[Application]\n", encoding="utf-8")
     monkeypatch.setattr(commands, "FLATPAK_INFO_PATH", flatpak_info)
