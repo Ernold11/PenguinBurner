@@ -92,13 +92,20 @@ Markers reach the same `nvapi-trace.fifo` the bridge drains.
 
 ## Deployment — generic system32 fronting + re-front watcher
 
-`overlay/shim_deploy.py:deploy_nvapi_shim(env)` fronts
-`<STEAM_COMPAT_DATA_PATH>/pfx/drive_c/windows/system32/nvapi64.dll`: parks the
-real dxvk-nvapi as `nvapi64-pb.dll`, drops the shim as `nvapi64.dll`. The shim's
+`overlay/shim_deploy.py:deploy_nvapi_shim(env)` fronts the running prefix's
+`system32\nvapi64.dll`: parks the real dxvk-nvapi as `nvapi64-pb.dll`, drops
+the shim as `nvapi64.dll`. The shim's
 `load_real()` loads `system32\nvapi64-pb.dll` (or `PENGUIN_BURNER_SHIM_REAL`).
 Generic because every nvapi64-loading process (bootstrappers, UE shipping exes,
 Streamline's `sl.interposer` which `GetSystemDirectory`-loads nvapi64) resolves
 from system32.
+
+The prefix is found from `STEAM_COMPAT_DATA_PATH` (Steam, with the prefix under
+`pfx/`) or `WINEPREFIX` (Lutris and anything else driving wine directly, with
+`drive_c` at the top; umu additionally symlinks `pfx -> .`). Both roots are
+tried in that order, and both layouts under each. Reading only the Steam
+variable meant the shim never reached a Lutris prefix — and with no markers,
+adaptive gets no pacing at all and holds whatever tier it started on.
 
 **Proton clobbers the shim every launch**: prefix setup unconditionally
 `try_copy`s the bundled dxvk-nvapi over `system32\nvapi64.dll` (`os.remove` +

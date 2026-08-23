@@ -498,3 +498,65 @@ def test_spawn_refront_watcher_skips_without_prefix(
 
     monkeypatch.setattr(shim_deploy.subprocess, "Popen", fail)
     assert shim_deploy.spawn_refront_watcher(env) is None
+
+
+def _make_wine_prefix(tmp_path: Path, *, umu_pfx_symlink: bool) -> Path:
+    """A Lutris-style prefix: drive_c at the top, no compatdata wrapper."""
+    prefix = tmp_path / "Games" / "some-game"
+    system32 = prefix / "drive_c" / "windows" / "system32"
+    system32.mkdir(parents=True)
+    (system32 / shim_deploy.SHIM_DLL_NAME).write_bytes(REAL_BYTES)
+    if umu_pfx_symlink:
+        # umu drops this next to drive_c, so the Steam-shaped path also
+        # resolves inside a Lutris prefix.
+        (prefix / "pfx").symlink_to(".")
+    return prefix
+
+
+def test_prefix_system32_resolves_a_lutris_wine_prefix(tmp_path: Path) -> None:
+    """Reading only STEAM_COMPAT_DATA_PATH left Lutris without the shim.
+
+    No shim means no Reflex markers, so adaptive receives no pacing at all and
+    holds whatever tier it started on.
+    """
+    prefix = _make_wine_prefix(tmp_path, umu_pfx_symlink=False)
+
+    assert shim_deploy.prefix_system32({"WINEPREFIX": str(prefix)}) == (
+        prefix / "drive_c" / "windows" / "system32"
+    )
+
+
+def test_prefix_system32_accepts_the_umu_pfx_symlink(tmp_path: Path) -> None:
+    prefix = _make_wine_prefix(tmp_path, umu_pfx_symlink=True)
+
+    resolved = shim_deploy.prefix_system32({"WINEPREFIX": str(prefix)})
+
+    assert resolved is not None
+    assert resolved.resolve() == (prefix / "drive_c" / "windows" / "system32").resolve()
+
+
+def test_prefix_system32_prefers_the_steam_path_when_both_are_set(
+    tmp_path: Path,
+) -> None:
+    """umu exports WINEPREFIX under Steam too; the Steam prefix stays canonical."""
+    steam = _make_prefix(tmp_path / "steam")
+    lutris = _make_wine_prefix(tmp_path / "lutris", umu_pfx_symlink=False)
+
+    resolved = shim_deploy.prefix_system32(
+        {"STEAM_COMPAT_DATA_PATH": str(steam), "WINEPREFIX": str(lutris)}
+    )
+
+    assert resolved == _system32(steam)
+
+
+def test_prefix_system32_falls_through_a_steam_path_that_does_not_exist(
+    tmp_path: Path,
+) -> None:
+    """A stale Steam variable must not hide a prefix that is really there."""
+    lutris = _make_wine_prefix(tmp_path, umu_pfx_symlink=False)
+
+    resolved = shim_deploy.prefix_system32(
+        {"STEAM_COMPAT_DATA_PATH": str(tmp_path / "gone"), "WINEPREFIX": str(lutris)}
+    )
+
+    assert resolved == lutris / "drive_c" / "windows" / "system32"

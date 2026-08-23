@@ -101,17 +101,36 @@ def nvapi_shim_artifact(env: dict[str, str] | None = None) -> Path | None:
 
 
 def prefix_system32(env: dict[str, str]) -> Path | None:
-    """The running prefix's system32 directory, if it exists."""
-    data_path = str(env.get("STEAM_COMPAT_DATA_PATH") or "").strip()
-    if not data_path:
-        return None
-    system32 = (
-        Path(data_path).expanduser() / "pfx" / "drive_c" / "windows" / "system32"
-    )
-    try:
-        return system32 if system32.is_dir() else None
-    except OSError:
-        return None
+    """The running prefix's system32 directory, if it exists.
+
+    Two launchers, two conventions. Steam exports STEAM_COMPAT_DATA_PATH and
+    keeps the prefix one level down in ``pfx/``. Lutris (and anything else
+    driving wine directly) exports only WINEPREFIX, with ``drive_c`` at the
+    top -- though umu also drops a ``pfx -> .`` symlink, so that root answers
+    to both shapes.
+
+    Reading only the Steam variable is why the NVAPI shim never reached a
+    Lutris prefix: without it there are no Reflex markers, so adaptive gets no
+    pacing at all and simply holds its tier.
+    """
+    roots = [
+        root
+        for root in (
+            str(env.get("STEAM_COMPAT_DATA_PATH") or "").strip(),
+            str(env.get("WINEPREFIX") or "").strip(),
+        )
+        if root
+    ]
+    for root in roots:
+        base = Path(root).expanduser()
+        for relative in (("pfx", "drive_c"), ("drive_c",)):
+            system32 = base.joinpath(*relative, "windows", "system32")
+            try:
+                if system32.is_dir():
+                    return system32
+            except OSError:
+                continue
+    return None
 
 
 def _file_contains(path: Path, needle: bytes) -> bool:
