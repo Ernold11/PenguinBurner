@@ -54,3 +54,31 @@ def test_adaptive_policy_rejects_out_of_range_overrides() -> None:
     assert config.near_slow_windows == default.near_slow_windows
     assert config.demote_dwell_s == default.demote_dwell_s
     assert config.cpu_bound_gpu_util_max_pct == default.cpu_bound_gpu_util_max_pct
+
+
+def test_capped_threshold_is_stricter_than_the_cpu_bound_one() -> None:
+    """The capped rule also steps DOWN, so it must demand clearer evidence.
+
+    cpu_bound_gpu_util_max_pct only blocks a promotion; this one additionally
+    eases the tier back, which is the more aggressive action of the two.
+    """
+    config = AdaptiveProfilePolicyConfig()
+
+    assert config.capped_gpu_util_max_pct < config.cpu_bound_gpu_util_max_pct
+
+
+def test_capped_threshold_survives_target_scaling() -> None:
+    """Scaling retargets the frametime thresholds, not the utilisation ones."""
+    for fps in (30.0, 60.0, 100.0, 240.0):
+        assert (
+            AdaptiveProfilePolicyConfig.for_target_fps(fps).capped_gpu_util_max_pct
+            == AdaptiveProfilePolicyConfig().capped_gpu_util_max_pct
+        )
+
+
+def test_capped_threshold_honours_its_environment_override() -> None:
+    config = AdaptiveProfilePolicyConfig().with_env_overrides(
+        {"PENGUIN_BURNER_ADAPTIVE_CAPPED_GPU_UTIL_MAX": "25"}
+    )
+
+    assert config.capped_gpu_util_max_pct == 25.0

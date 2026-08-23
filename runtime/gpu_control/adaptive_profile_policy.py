@@ -33,6 +33,7 @@ ADAPTIVE_CPU_BOUND_PEAK_THREAD_MIN_ENV = (
 ADAPTIVE_CPU_BOUND_PROCESS_UTIL_MIN_ENV = (
     "PENGUIN_BURNER_ADAPTIVE_CPU_BOUND_PROCESS_UTIL_MIN"
 )
+ADAPTIVE_CAPPED_GPU_UTIL_MAX_ENV = "PENGUIN_BURNER_ADAPTIVE_CAPPED_GPU_UTIL_MAX"
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,12 @@ class AdaptiveProfilePolicyConfig:
     cpu_bound_gpu_util_max_pct: float = 60.0
     cpu_bound_peak_thread_min_pct: float = 97.0
     cpu_bound_process_util_min_pct: float = 60.0
+    # Below this the GPU is plainly not what holds the frame rate back, so a
+    # missed target means an external cap (a menu's frame lock, vsync), the
+    # CPU, or IO -- none of which more clock can fix. Deliberately well under
+    # cpu_bound_gpu_util_max_pct: that one only blocks a promotion, while this
+    # also drives a step DOWN, so it demands clearer evidence.
+    capped_gpu_util_max_pct: float = 40.0
 
     @classmethod
     def for_target_fps(
@@ -80,6 +87,7 @@ class AdaptiveProfilePolicyConfig:
             cpu_bound_gpu_util_max_pct=default.cpu_bound_gpu_util_max_pct,
             cpu_bound_peak_thread_min_pct=default.cpu_bound_peak_thread_min_pct,
             cpu_bound_process_util_min_pct=default.cpu_bound_process_util_min_pct,
+            capped_gpu_util_max_pct=default.capped_gpu_util_max_pct,
         )
         return config.with_env_overrides(env)
 
@@ -134,6 +142,11 @@ class AdaptiveProfilePolicyConfig:
                 values,
                 ADAPTIVE_CPU_BOUND_PROCESS_UTIL_MIN_ENV,
                 self.cpu_bound_process_util_min_pct,
+            ),
+            capped_gpu_util_max_pct=_env_percentage(
+                values,
+                ADAPTIVE_CAPPED_GPU_UTIL_MAX_ENV,
+                self.capped_gpu_util_max_pct,
             ),
         )
 

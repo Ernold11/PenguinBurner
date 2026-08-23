@@ -38,6 +38,9 @@ pub struct PolicyConfig {
     pub cpu_bound_gpu_util_max_pct: f64,
     pub cpu_bound_peak_thread_min_pct: f64,
     pub cpu_bound_process_util_min_pct: f64,
+    /// At or below this windowed GPU utilisation the GPU is not what holds
+    /// the frame rate back, so a missed target cannot be answered with clock.
+    pub capped_gpu_util_max_pct: f64,
 }
 
 impl Default for PolicyConfig {
@@ -56,6 +59,7 @@ impl Default for PolicyConfig {
             cpu_bound_gpu_util_max_pct: 60.0,
             cpu_bound_peak_thread_min_pct: 97.0,
             cpu_bound_process_util_min_pct: 60.0,
+            capped_gpu_util_max_pct: 40.0,
         }
     }
 }
@@ -86,6 +90,7 @@ impl PolicyConfig {
             cpu_bound_gpu_util_max_pct: spec.cpu_bound_gpu_util_max_pct,
             cpu_bound_peak_thread_min_pct: spec.cpu_bound_peak_thread_min_pct,
             cpu_bound_process_util_min_pct: spec.cpu_bound_process_util_min_pct,
+            capped_gpu_util_max_pct: spec.capped_gpu_util_max_pct,
             ..scaled
         }
     }
@@ -242,6 +247,13 @@ impl AdaptiveProfileController {
             };
         };
 
+        // Checked before the slow ladder: every branch below reads a missed
+        // target as "needs more clock", which is wrong the moment the GPU is
+        // not the thing holding the frame rate back.
+        if self.externally_capped(gpu_util_pct, cpu_util_pct, cpu_peak_thread_pct) {
+            return self.ease_down(&ordered, now_monotonic, "externally-capped");
+        }
+
         if frametime_ms > self.config.badly_slow_ms {
             return self.switch_with_cpu_bound_guard(
                 ordered[ordered.len() - 1].clone(),
@@ -298,29 +310,7 @@ impl AdaptiveProfileController {
             };
         }
         if frametime_ms <= self.config.comfort_ms {
-            self.state.target_slow_count = 0;
-            self.state.near_slow_count = 0;
-            self.state.comfort_count += 1;
-            let required_windows = if self.state.current_tier == PROFILE_TIER_PERFORMANCE {
-                self.config.performance_comfort_windows
-            } else {
-                self.config.comfort_windows
-            };
-            let required_dwell = if self.state.current_tier == PROFILE_TIER_PERFORMANCE {
-                self.config.performance_demote_dwell_s
-            } else {
-                self.config.demote_dwell_s
-            };
-            let dwell_s = now_monotonic - self.state.last_switch_monotonic;
-            if self.state.comfort_count >= required_windows && dwell_s >= required_dwell {
-                let target = lower_tier(&self.state.current_tier, &ordered);
-                return self.switch(target, now_monotonic, "comfort");
-            }
-            return Decision {
-                tier: self.state.current_tier.clone(),
-                changed: false,
-                reason: "comfort-wait".into(),
-            };
+            return self.ease_down(&ordered, now_monotonic, "comfort");
         }
         self.reset_counts();
         Decision {
@@ -328,6 +318,68 @@ impl AdaptiveProfileController {
             changed: false,
             reason: "target-ok".into(),
         }
+    }
+
+    /// Count one window towards stepping down a tier, and take the step once
+    /// the existing hysteresis allows it.
+    ///
+    /// Shared by the two states that both mean "this tier is more than the
+    /// workload needs": pacing comfortably ahead of target, and a GPU that is
+    /// plainly not the limiter. Reusing one path keeps a single set of dwell
+    /// and window rules rather than inventing a second, differently tuned one.
+    fn ease_down(&mut self, ordered: &[String], now_monotonic: f64, reason: &str) -> Decision {
+        self.state.target_slow_count = 0;
+        self.state.near_slow_count = 0;
+        self.state.comfort_count += 1;
+        let at_performance = self.state.current_tier == PROFILE_TIER_PERFORMANCE;
+        let required_windows = if at_performance {
+            self.config.performance_comfort_windows
+        } else {
+            self.config.comfort_windows
+        };
+        let required_dwell = if at_performance {
+            self.config.performance_demote_dwell_s
+        } else {
+            self.config.demote_dwell_s
+        };
+        let dwell_s = now_monotonic - self.state.last_switch_monotonic;
+        if self.state.comfort_count >= required_windows && dwell_s >= required_dwell {
+            let target = lower_tier(&self.state.current_tier, ordered);
+            return self.switch(target, now_monotonic, reason);
+        }
+        Decision {
+            tier: self.state.current_tier.clone(),
+            changed: false,
+            reason: format!("{reason}-wait"),
+        }
+    }
+
+    /// True when the frame rate is held by something clocks cannot move.
+    ///
+    /// A GPU loafing over the whole window while pacing misses target means
+    /// the limiter is elsewhere -- a frame cap, vsync, the CPU, IO. Promoting
+    /// then burns power for frames that will not arrive, which is exactly
+    /// what a menu locked below the target used to do.
+    fn externally_capped(
+        &self,
+        gpu_util_pct: Option<f64>,
+        cpu_util_pct: Option<f64>,
+        cpu_peak_thread_pct: Option<f64>,
+    ) -> bool {
+        let gpu_idle = self
+            .windowed_avg(|s| s.gpu)
+            .or(gpu_util_pct)
+            .is_some_and(|gpu| gpu <= self.config.capped_gpu_util_max_pct);
+        if !gpu_idle {
+            return false;
+        }
+        // A saturated CPU is a different diagnosis with its own, deliberately
+        // gentler handling (cap the promotion, do not step down). Leaving that
+        // case to the cpu-bound guard keeps the two rules disjoint instead of
+        // silently overriding one with the other.
+        let cpu_avg = self.windowed_avg(|s| s.cpu).or(cpu_util_pct);
+        let peak_avg = self.windowed_avg(|s| s.peak_thread).or(cpu_peak_thread_pct);
+        !self.cpu_saturated(cpu_avg, peak_avg)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -422,6 +474,11 @@ impl AdaptiveProfileController {
         if gpu > self.config.cpu_bound_gpu_util_max_pct {
             return false;
         }
+        self.cpu_saturated(cpu_avg, peak_avg)
+    }
+
+    /// Whether the CPU is the plausible explanation for missed frames.
+    fn cpu_saturated(&self, cpu_avg: Option<f64>, peak_avg: Option<f64>) -> bool {
         let peak_busy = peak_avg.is_some_and(|v| v >= self.config.cpu_bound_peak_thread_min_pct);
         let process_busy = cpu_avg.is_some_and(|v| v >= self.config.cpu_bound_process_util_min_pct);
         peak_busy || process_busy
@@ -785,6 +842,88 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_cap_below_target_does_not_promote() {
+        // The reported case: target 100 FPS, a menu locked at 60. 16.67 ms is
+        // well past badly_slow, so the ladder used to jump straight to the top
+        // tier and sit there for the whole menu -- burning power for frames the
+        // cap will never let through.
+        let mut c =
+            AdaptiveProfileController::new("efficiency", PolicyConfig::for_target_fps(100.0));
+        for i in 0..6 {
+            let t = 100.0 + i as f64 * 2.0;
+            // 60 FPS held by the cap, GPU loafing, CPU relaxed: nothing here
+            // is short of clock.
+            let d = c.update(Some(16.67), &tiers(), t, Some(25.0), Some(20.0), Some(35.0));
+            assert_eq!(d.tier, "efficiency", "a capped menu must not promote");
+        }
+    }
+
+    #[test]
+    fn a_frame_cap_eases_the_tier_back_down() {
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        let mut eased = None;
+        for i in 0..40 {
+            let t = 100.0 + i as f64 * 2.0;
+            let d = c.update(Some(16.67), &tiers(), t, Some(25.0), Some(20.0), Some(35.0));
+            if d.changed {
+                eased = Some(d);
+                break;
+            }
+        }
+        let decision = eased.expect("a sustained cap must step the tier down");
+        assert_eq!(decision.tier, "balanced");
+        assert_eq!(decision.reason, "externally-capped");
+    }
+
+    #[test]
+    fn a_busy_gpu_missing_target_still_promotes() {
+        // The guard must not swallow the case it exists to leave alone: a GPU
+        // pegged and behind target genuinely wants more clock.
+        let mut c =
+            AdaptiveProfileController::new("efficiency", PolicyConfig::for_target_fps(100.0));
+        let d = c.update(
+            Some(16.67),
+            &tiers(),
+            100.0,
+            Some(95.0),
+            Some(30.0),
+            Some(60.0),
+        );
+        assert_eq!(d.tier, "performance");
+        assert_eq!(d.reason, "badly-slow");
+    }
+
+    #[test]
+    fn leaving_a_capped_menu_promotes_again_immediately() {
+        let mut c =
+            AdaptiveProfileController::new("efficiency", PolicyConfig::for_target_fps(100.0));
+        for i in 0..4 {
+            let t = 100.0 + i as f64 * 2.0;
+            c.update(Some(16.67), &tiers(), t, Some(25.0), Some(20.0), Some(35.0));
+        }
+        // Gameplay starts: the GPU wakes up and the same frametime now means
+        // something clock can fix. The capped samples still sit in the 8 s
+        // utilisation window, so promotion waits for them to age out -- the
+        // same memory the shader-compile guard relies on.
+        let mut promoted = false;
+        for i in 0..8 {
+            let t = 108.0 + i as f64 * 2.0;
+            if c.update(Some(16.67), &tiers(), t, Some(96.0), Some(30.0), Some(55.0))
+                .tier
+                == "performance"
+            {
+                promoted = true;
+                break;
+            }
+        }
+        assert!(
+            promoted,
+            "gameplay must lift the capped hold once the window clears"
+        );
+    }
+
+    #[test]
     fn cpu_bound_blocks_performance_promotion() {
         let mut c = controller();
         c.state.current_tier = "balanced".into();
@@ -851,11 +990,13 @@ mod tests {
             cpu_bound_gpu_util_max_pct: 80.0,
             cpu_bound_peak_thread_min_pct: 75.0,
             cpu_bound_process_util_min_pct: 15.0,
+            capped_gpu_util_max_pct: 30.0,
         };
         let config = PolicyConfig::from_spec(&spec);
         assert_eq!(config.target_slow_windows, 2);
         assert_eq!(config.near_slow_windows, 4);
         assert_eq!(config.comfort_windows, 7);
+        assert_eq!(config.capped_gpu_util_max_pct, 30.0);
         assert_eq!(config.performance_comfort_windows, 11);
         assert_eq!(config.demote_dwell_s, 50.0);
         assert_eq!(config.cpu_bound_gpu_util_max_pct, 80.0);

@@ -98,6 +98,15 @@ pub struct AdaptivePolicySpec {
     pub cpu_bound_gpu_util_max_pct: f64,
     pub cpu_bound_peak_thread_min_pct: f64,
     pub cpu_bound_process_util_min_pct: f64,
+    /// Defaulted so a client from before this field existed still resolves:
+    /// deny_unknown_fields makes the spec strict in the other direction, and
+    /// a missing guard threshold must not fail an otherwise valid runtime.
+    #[serde(default = "default_capped_gpu_util_max_pct")]
+    pub capped_gpu_util_max_pct: f64,
+}
+
+fn default_capped_gpu_util_max_pct() -> f64 {
+    40.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,6 +418,7 @@ fn validate_adaptive(adaptive: &AdaptiveSpec) -> Result<(), String> {
             "cpu_bound_process_util_min_pct",
             policy.cpu_bound_process_util_min_pct,
         ),
+        ("capped_gpu_util_max_pct", policy.capped_gpu_util_max_pct),
     ] {
         if !value.is_finite() || !(0.0..=100.0).contains(&value) {
             return Err(format!("adaptive {name} must be finite and in 0..100"));

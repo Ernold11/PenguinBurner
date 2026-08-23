@@ -65,6 +65,33 @@ PENGUIN_BURNER_ADAPTIVE_TARGET_FPS=120
 The same value can be set under `[adaptive] target_fps` in the runtime config
 file, and the **Target FPS** control in the Overlay tab reflects it.
 
+## When the frame rate is capped from outside
+
+A menu locked at 60 FPS, vsync, or an in-game limiter holds the frame rate at
+a number the GPU is not working for. Read only as "slower than target", that
+looks identical to being short of clock — so with a target above the cap,
+PenguinBurner used to climb to the top tier and stay there for the whole menu,
+burning power for frames the cap would never let through.
+
+PenguinBurner now checks whether the GPU is actually the limiter. When it is
+loafing (utilisation averaged over ~8 s at or below **40%**) and the CPU is not
+saturated either, nothing about the frame rate is a clock problem. Instead of
+promoting, the tier eases *down* using the same windows and dwell as a normal
+comfort demotion, so the cap is held at the cheapest tier that can hold it.
+
+Leaving the menu reverses it: the GPU wakes up, and once the old samples age
+out of the utilisation window the usual ladder applies — a clearly missed
+target jumps straight to the top tier in a single window.
+
+A saturated CPU is deliberately left to its own, gentler rule: it caps the
+promotion rather than stepping the tier down.
+
+The threshold can be overridden for the service:
+
+```bash
+PENGUIN_BURNER_ADAPTIVE_CAPPED_GPU_UTIL_MAX=25
+```
+
 ## Example
 
 Say you keep three profiles (Efficiency, Balanced, Performance) and a 60 FPS

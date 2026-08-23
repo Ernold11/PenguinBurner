@@ -301,7 +301,8 @@ def _adaptive_spec(
             "cpu_bound_process_util_min_pct": float(
                 policy.cpu_bound_process_util_min_pct
             ),
-        },
+                    "capped_gpu_util_max_pct": float(policy.capped_gpu_util_max_pct),
+},
     }
 
 
