@@ -79,6 +79,14 @@ saturated either, nothing about the frame rate is a clock problem. Instead of
 promoting, the tier eases *down* using the same windows and dwell as a normal
 comfort demotion, so the cap is held at the cheapest tier that can hold it.
 
+Utilisation only *starts* that recognition; it cannot end it. Each step down
+makes the card work harder for the same capped frame rate, so utilisation
+climbs — and judging it every tick would cancel the recognition that caused the
+step, tier down and straight back up, forever. Once a cap is recognised it is
+held against the pacing measured at the time, which a cap keeps steady no
+matter which tier runs. The tier takes over again only when pacing actually
+degrades past that reference, or when the card is flat out (90% or more).
+
 Leaving the menu reverses it: the GPU wakes up, and once the old samples age
 out of the utilisation window the usual ladder applies — a clearly missed
 target jumps straight to the top tier in a single window.

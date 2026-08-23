@@ -21,6 +21,21 @@ use super::LatencySnapshot;
 
 const CPU_BOUND_GUARD_LOG_THROTTLE_S: f64 = 30.0;
 
+/// How much worse than the capped reference pacing has to get before the cap
+/// is considered gone. A hard cap holds the frame rate steady no matter which
+/// tier runs, so anything past this margin means the tier -- not the cap -- is
+/// now the limit, and the normal ladder should take over again.
+const CAPPED_REGRESSION_RATIO: f64 = 1.15;
+
+/// Utilisation at which a recognised cap is abandoned regardless of pacing.
+///
+/// Deliberately far above the entry threshold. Entry and exit sharing one
+/// number is precisely what oscillated: a demotion nudges utilisation up a
+/// little, and that little was enough to cancel the recognition. A gap this
+/// wide cannot be crossed by the policy's own step, only by the workload
+/// genuinely saturating the card.
+const CAPPED_EXIT_GPU_UTIL_PCT: f64 = 90.0;
+
 // --- policy config ----------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
@@ -112,6 +127,15 @@ struct PolicyState {
     target_slow_count: i64,
     near_slow_count: i64,
     comfort_count: i64,
+    /// Pacing observed when an external cap was first recognised.
+    ///
+    /// GPU utilisation cannot maintain that recognition on its own: dropping a
+    /// tier makes the card work harder for the *same* capped frame rate, so
+    /// utilisation climbs back over the entry threshold and un-recognises the
+    /// cap the demotion just acted on -- tier down, tier up, forever. Frametime
+    /// does not move with the tier while a cap holds the rate, so it is the one
+    /// signal the policy's own decisions cannot invalidate.
+    capped_reference_ms: Option<f64>,
 }
 
 /// How far back the cpu-bound guard looks when judging utilization.
@@ -179,6 +203,7 @@ impl AdaptiveProfileController {
                 target_slow_count: 0,
                 near_slow_count: 0,
                 comfort_count: 0,
+                capped_reference_ms: None,
             },
             util_samples: std::collections::VecDeque::new(),
         }
@@ -240,6 +265,10 @@ impl AdaptiveProfileController {
         }
         let Some(frametime_ms) = present_frametime_p95_ms else {
             self.reset_counts();
+            // Nothing is presenting: whatever cap was recognised belonged to a
+            // session that has gone quiet, and the next one must be judged on
+            // its own pacing rather than inheriting this reference.
+            self.state.capped_reference_ms = None;
             return Decision {
                 tier: self.state.current_tier.clone(),
                 changed: false,
@@ -250,8 +279,31 @@ impl AdaptiveProfileController {
         // Checked before the slow ladder: every branch below reads a missed
         // target as "needs more clock", which is wrong the moment the GPU is
         // not the thing holding the frame rate back.
-        if self.externally_capped(gpu_util_pct, cpu_util_pct, cpu_peak_thread_pct) {
-            return self.ease_down(&ordered, now_monotonic, "externally-capped");
+        //
+        // Recognition is latched against the pacing seen when it was made.
+        // Utilisation is only the entry hint; re-testing it every tick would
+        // let each demotion (which raises utilisation for the same capped rate)
+        // cancel the recognition that caused it.
+        match self.state.capped_reference_ms {
+            Some(reference) => {
+                let saturated = self
+                    .windowed_avg(|s| s.gpu)
+                    .or(gpu_util_pct)
+                    .is_some_and(|gpu| gpu >= CAPPED_EXIT_GPU_UTIL_PCT);
+                if !saturated && frametime_ms <= reference * CAPPED_REGRESSION_RATIO {
+                    // Pacing has not moved: the tier still is not the limit.
+                    return self.ease_down(&ordered, now_monotonic, "externally-capped");
+                }
+                // Either pacing degraded past what the cap was hiding, or the
+                // card is now flat out. Both mean the tier is the limit again.
+                self.state.capped_reference_ms = None;
+            }
+            None => {
+                if self.externally_capped(gpu_util_pct, cpu_util_pct, cpu_peak_thread_pct) {
+                    self.state.capped_reference_ms = Some(frametime_ms);
+                    return self.ease_down(&ordered, now_monotonic, "externally-capped");
+                }
+            }
         }
 
         if frametime_ms > self.config.badly_slow_ms {
@@ -874,6 +926,87 @@ mod tests {
         let decision = eased.expect("a sustained cap must step the tier down");
         assert_eq!(decision.tier, "balanced");
         assert_eq!(decision.reason, "externally-capped");
+    }
+
+    #[test]
+    fn a_recognised_cap_does_not_oscillate_as_utilisation_climbs() {
+        // Observed live: easing down made the card work harder for the same
+        // capped 60 FPS, utilisation crossed back over the entry threshold, the
+        // cap stopped being recognised, and badly-slow jumped straight back to
+        // the top tier -- over and over.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        // 60 FPS held by a cap. Utilisation rises with every step down, exactly
+        // as it did on hardware (51% at performance, past 55% at efficiency).
+        let utilisation = [30.0, 35.0, 45.0, 58.0, 70.0, 85.0];
+        let mut tiers_seen = Vec::new();
+        for (index, gpu) in (0..48).map(|i| (i, utilisation[(i / 8).min(5)])) {
+            let t = 100.0 + index as f64 * 2.0;
+            let d = c.update(Some(16.67), &tiers(), t, Some(gpu), Some(20.0), Some(35.0));
+            if d.changed {
+                tiers_seen.push((d.tier.clone(), d.reason.clone()));
+            }
+        }
+        assert!(
+            tiers_seen
+                .iter()
+                .all(|(_, reason)| reason == "externally-capped"),
+            "no promotion may fire while the cap holds: {tiers_seen:?}"
+        );
+        // Monotonically downwards, never back up.
+        let order = ["performance", "balanced", "efficiency"];
+        let mut previous = 0;
+        for (tier, _) in &tiers_seen {
+            let index = order.iter().position(|t| t == tier).unwrap();
+            assert!(index >= previous, "tier went back up: {tiers_seen:?}");
+            previous = index;
+        }
+    }
+
+    #[test]
+    fn easing_past_what_the_cap_hid_hands_control_back_to_the_ladder() {
+        // The escape hatch: if pacing actually degrades after a step down, the
+        // tier -- not the cap -- is now the limit.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        for i in 0..12 {
+            let t = 100.0 + i as f64 * 2.0;
+            c.update(Some(16.67), &tiers(), t, Some(25.0), Some(20.0), Some(35.0));
+        }
+        // Frames fall well past the capped reference: 16.67 -> 25 ms.
+        let mut promoted = false;
+        for i in 0..6 {
+            let t = 200.0 + i as f64 * 2.0;
+            let d = c.update(Some(25.0), &tiers(), t, Some(90.0), Some(20.0), Some(35.0));
+            if d.changed && d.reason != "externally-capped" {
+                promoted = true;
+                assert_eq!(d.tier, "performance");
+                break;
+            }
+        }
+        assert!(promoted, "a real regression must release the capped latch");
+    }
+
+    #[test]
+    fn a_quiet_session_drops_the_capped_reference() {
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        c.update(
+            Some(16.67),
+            &tiers(),
+            100.0,
+            Some(25.0),
+            Some(20.0),
+            Some(35.0),
+        );
+        assert!(c.state.capped_reference_ms.is_some());
+
+        c.update(None, &tiers(), 102.0, Some(25.0), Some(20.0), Some(35.0));
+
+        assert!(
+            c.state.capped_reference_ms.is_none(),
+            "the next session must be judged on its own pacing"
+        );
     }
 
     #[test]
