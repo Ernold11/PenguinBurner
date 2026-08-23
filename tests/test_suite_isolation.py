@@ -50,8 +50,9 @@ def test_persisting_a_gpu_index_cannot_reach_the_real_config() -> None:
     """
     from ui.features.tuning.gpu_selection import persist_runtime_gpu_index
 
+    written = default_runtime_config_path().resolve()
+    assert _real_home() not in written.parents
+
     persist_runtime_gpu_index(1)
 
-    written = default_runtime_config_path().resolve()
     assert written.exists()
-    assert _real_home() not in written.parents
