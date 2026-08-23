@@ -915,3 +915,85 @@ def test_passthrough_latches_off_when_the_launcher_pipe_dies() -> None:
     stream._fail = False
     passthrough.forward("later\n")
     assert stream.written == []
+
+
+def _drain_fifo(fifo, *, session_alive, timeout_s=5.0):
+    """Run _follow_fifo in a thread and report whether it returned."""
+    import threading
+
+    from overlay.telemetry.nvapi_marker_bridge import _follow_fifo
+
+    lines: list[str] = []
+    finished = threading.Event()
+
+    def run():
+        # Consumed one at a time on purpose: the tests assert on what has
+        # arrived while the generator is still running, so it must not be
+        # drained in one go.
+        lines.extend(
+            _follow_fifo(fifo, poll_interval_s=0.02, session_alive_fn=session_alive)
+        )
+        finished.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return lines, finished, thread
+
+
+def test_drainer_exits_once_writers_closed_and_the_session_is_gone(tmp_path) -> None:
+    """It holds the launcher's output pipe, which Lutris waits on for EOF.
+
+    Reopening after the game's EOF used to leave it spinning forever: with
+    traffic already seen, the quiet path never re-checked whether the session
+    had ended, so the launcher showed the game as still running until stopped
+    by hand.
+    """
+    import os
+    import time
+
+    fifo = tmp_path / "trace.fifo"
+    os.mkfifo(fifo, 0o600)
+    alive = {"value": True}
+
+    lines, finished, thread = _drain_fifo(fifo, session_alive=lambda: alive["value"])
+
+    # A writer connects, emits, then closes -- the game running and exiting.
+    writer = os.open(fifo, os.O_WRONLY)
+    os.write(writer, b"err:module:import_dll something\n")
+    time.sleep(0.2)
+    os.close(writer)
+    # The session is still alive for a moment after the writer goes, which is
+    # what pushed the drainer into the reopen path.
+    time.sleep(0.2)
+    alive["value"] = False
+
+    assert finished.wait(timeout=5.0), "the drainer must exit once nothing can write"
+    thread.join(timeout=1.0)
+    assert lines == ["err:module:import_dll something\n"]
+
+
+def test_drainer_keeps_draining_while_a_writer_is_merely_idle(tmp_path) -> None:
+    """A wrapped game can outlive the session that launched it."""
+    import os
+    import time
+
+    fifo = tmp_path / "trace.fifo"
+    os.mkfifo(fifo, 0o600)
+
+    lines, finished, thread = _drain_fifo(fifo, session_alive=lambda: False)
+
+    writer = os.open(fifo, os.O_WRONLY)
+    try:
+        os.write(writer, b"first\n")
+        time.sleep(0.4)
+        # Session already reported gone, writer still open and quiet: the
+        # drainer must stay for the game that is still holding the pipe.
+        assert not finished.is_set()
+        os.write(writer, b"second\n")
+        time.sleep(0.2)
+        assert lines == ["first\n", "second\n"]
+    finally:
+        os.close(writer)
+
+    assert finished.wait(timeout=5.0)
+    thread.join(timeout=1.0)

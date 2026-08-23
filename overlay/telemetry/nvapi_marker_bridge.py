@@ -289,6 +289,10 @@ def _follow_fifo(
         return session_quiesced_fn is not None and session_quiesced_fn()
 
     had_traffic = False
+    # A writer connected and then every writer closed. From that point a quiet
+    # select means "nobody is left to write", not "the writer is idle" -- so
+    # once the session is gone too there is nothing left to wait for.
+    writers_closed = False
     session_over_since: float | None = None
     while not _stop_requested(stop_event):
         try:
@@ -307,10 +311,20 @@ def _follow_fifo(
                 if not readable:
                     if _session_quiesced():
                         return
-                    if had_traffic:
-                        continue
                     if not _session_over():
                         session_over_since = None
+                        continue
+                    if writers_closed:
+                        # Every writer has closed and the launching session is
+                        # gone, so no byte can ever arrive. Exiting promptly
+                        # matters beyond tidiness: this process holds the
+                        # launcher's output pipe, and Lutris waits on that pipe
+                        # for EOF to decide the game has finished. Lingering
+                        # here left the game "running" until stopped by hand.
+                        return
+                    if had_traffic:
+                        # Writers exist and are merely idle -- a wrapped game
+                        # can outlive the session that launched it.
                         continue
                     now = time.monotonic()
                     if session_over_since is None:
@@ -325,6 +339,7 @@ def _follow_fifo(
                 had_traffic = True
                 if not chunk:
                     # Writer closed (game exited): reopen and wait for the next run.
+                    writers_closed = True
                     break
                 pending += chunk.decode("utf-8", errors="replace")
                 while "\n" in pending:
