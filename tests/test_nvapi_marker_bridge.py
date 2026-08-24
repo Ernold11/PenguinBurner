@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
 from overlay.telemetry.nvapi_marker_bridge import (
     NV_MARKER_INPUT_SAMPLE,
     NV_MARKER_OUT_OF_BAND_PRESENT_END,
@@ -581,46 +586,85 @@ def test_drainer_main_cleans_up_when_handler_installation_exits(
     assert not fifo.exists()
 
 
-def test_drainer_cleanup_defers_a_repeated_termination_signal(
-    tmp_path, monkeypatch
-) -> None:
-    import os
-    import signal
-    from pathlib import Path
+# The scenario below asserts on process-global signal delivery: a SIGTERM
+# raised at the test process has to reach the handler that was installed before
+# cleanup started. That is not a property a single interpreter can hold on
+# behalf of a whole suite -- anything else already loaded may have touched
+# termination handling at the C level, where Python's `signal` module cannot
+# see it and pytest cannot undo it. A live QApplication is enough to reproduce
+# it, and Qt is loaded by every GUI test in this suite.
+#
+# So the scenario runs in a fresh interpreter. The child does exactly what the
+# in-process version did and prints its findings; the parent asserts on those.
+_DEFERRED_SIGNAL_CHILD = """
+import os, signal, sys
+from pathlib import Path
 
-    import pytest
+import overlay.telemetry.nvapi_marker_bridge as bridge
 
-    import overlay.telemetry.nvapi_marker_bridge as bridge
+fifo = Path(sys.argv[1])
+os.mkfifo(fifo, 0o600)
+delivered = []
+real_rename = os.rename
 
-    fifo = tmp_path / "nvapi-trace.repeated-signal.fifo"
-    os.mkfifo(fifo, 0o600)
-    delivered = []
-    previous_handler = signal.getsignal(signal.SIGTERM)
-    real_rename = os.rename
 
-    def previous_signal_handler(signal_number, _frame) -> None:
-        delivered.append(signal_number)
+def previous_signal_handler(signal_number, _frame):
+    delivered.append(signal_number)
 
-    def exit_run(*_args, **_kwargs) -> None:
-        raise SystemExit(143)
 
-    def signal_after_capture(source, destination) -> None:
-        real_rename(source, destination)
-        if Path(source) == fifo:
-            os.kill(os.getpid(), signal.SIGTERM)
+def exit_run(*_args, **_kwargs):
+    raise SystemExit(143)
 
-    signal.signal(signal.SIGTERM, previous_signal_handler)
-    monkeypatch.setattr(bridge, "run", exit_run)
-    monkeypatch.setattr(bridge.os, "rename", signal_after_capture)
-    try:
-        with pytest.raises(SystemExit, match="143"):
-            bridge.main(["--log", str(fifo), "--cleanup"])
-    finally:
-        signal.signal(signal.SIGTERM, previous_handler)
 
-    assert delivered == [signal.SIGTERM]
-    assert not fifo.exists()
-    assert not list(tmp_path.glob(".penguin-burner-fifo-cleanup-*"))
+def signal_after_capture(source, destination):
+    real_rename(source, destination)
+    if Path(source) == fifo:
+        os.kill(os.getpid(), signal.SIGTERM)
+
+
+signal.signal(signal.SIGTERM, previous_signal_handler)
+bridge.run = exit_run
+bridge.os.rename = signal_after_capture
+
+exit_code = None
+try:
+    bridge.main(["--log", str(fifo), "--cleanup"])
+except SystemExit as exc:
+    exit_code = exc.code
+finally:
+    bridge.os.rename = real_rename
+
+leftovers = sorted(p.name for p in fifo.parent.glob(".penguin-burner-fifo-cleanup-*"))
+print(f"exit={exit_code}")
+print(f"delivered={delivered}")
+print(f"fifo_exists={fifo.exists()}")
+print(f"leftovers={leftovers}")
+"""
+
+
+def test_drainer_cleanup_defers_a_repeated_termination_signal(tmp_path) -> None:
+    """A signal arriving mid-cleanup waits for it, then reaches the old handler."""
+    completed = subprocess.run(
+        [sys.executable, "-c", _DEFERRED_SIGNAL_CHILD, str(tmp_path / "trace.fifo")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        # The child's own exit code is part of what this asserts, so a raising
+        # run() would hide the interesting failure behind a CalledProcessError.
+        check=False,
+        cwd=Path(__file__).resolve().parent.parent,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    report = dict(
+        line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line
+    )
+    # The drainer's own exit survives: deferring a signal must not swallow it.
+    assert report["exit"] == "143"
+    # Deferred, not dropped, and handed to the handler that was there before.
+    assert report["delivered"] == f"[{int(signal.SIGTERM)}]"
+    assert report["fifo_exists"] == "False"
+    assert report["leftovers"] == "[]"
 
 
 def test_unlink_fifo_leaves_a_regular_file_alone(tmp_path) -> None:
