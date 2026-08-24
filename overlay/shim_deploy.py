@@ -27,10 +27,12 @@ import ctypes
 import os
 from pathlib import Path
 import select
+import json
 import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Callable
 
@@ -40,6 +42,12 @@ SHIM_NEEDLE = b"[pb-nvapi-shim]"
 SHIM_DLL_NAME = "nvapi64.dll"
 # The real dxvk-nvapi is parked under this name; the shim forwards to it.
 REAL_SIDECAR_NAME = "nvapi64-pb.dll"
+
+# Prefixes we have fronted, so cleanup can find the ones no launcher scan
+# would: Lutris, Heroic, or plain wine put their prefixes wherever the user
+# said. Steam's own libraries stay discoverable without it, and are still
+# scanned, so an install that predates this register is not stranded.
+FRONTED_PREFIXES_FILE = "nvapi-shim-prefixes.json"
 
 # Override the directory (or direct file path) the shim artifact is loaded from.
 NVAPI_SHIM_DIR_ENV = "PENGUIN_BURNER_NVAPI_SHIM_DIR"
@@ -78,6 +86,83 @@ _PACKAGED_SHIM_DLL = _OVERLAY_ROOT / "nvapi_shim" / SHIM_DLL_NAME
 _SOURCE_SHIM_DLL = _OVERLAY_ROOT / "native" / "nvapi_shim" / "build" / SHIM_DLL_NAME
 
 _TRUTHY = {"1", "true", "yes", "on"}
+
+
+def fronted_prefixes_path() -> Path:
+    """Where the list of prefixes we have fronted is kept."""
+    from common.penguin_burner_paths import default_user_config_dir
+
+    return default_user_config_dir() / FRONTED_PREFIXES_FILE
+
+
+def _read_fronted_prefixes(path: Path) -> list[str]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [str(entry) for entry in raw if isinstance(entry, str) and entry.strip()]
+
+
+def _write_fronted_prefixes(path: Path, entries: list[str]) -> bool:
+    """Replace the register atomically. False when it could not be written."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as handle:
+            json.dump(entries, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+            staged = Path(handle.name)
+        os.replace(staged, path)
+        return True
+    except OSError as error:
+        _log(f"nvapi shim: cannot record fronted prefix in {path}: {error}")
+        return False
+
+
+def remember_fronted_prefix(system32: Path) -> bool:
+    """Record a system32 we are about to front. False means: do not front it.
+
+    Written *before* the DLL is touched, and the caller honours a failure by
+    leaving the prefix alone. A prefix we cannot name is a prefix uninstall can
+    never find again -- and the fronting is invisible to the user, so it would
+    stay behind forever. Refusing to deploy is the smaller harm.
+    """
+    resolved = str(_canonical_system32(system32))
+    path = fronted_prefixes_path()
+    known = _read_fronted_prefixes(path)
+    if resolved in known:
+        return True
+    return _write_fronted_prefixes(path, [*known, resolved])
+
+
+def forget_fronted_prefix(system32: Path) -> None:
+    """Drop a prefix from the register once it is no longer fronted."""
+    resolved = str(_canonical_system32(system32))
+    path = fronted_prefixes_path()
+    known = _read_fronted_prefixes(path)
+    remaining = [entry for entry in known if entry != resolved]
+    if len(remaining) != len(known):
+        _write_fronted_prefixes(path, remaining)
+
+
+def _canonical_system32(system32: Path) -> Path:
+    """One spelling per directory, so the register cannot hold duplicates.
+
+    Symlinks matter here: umu points ``pfx`` at the prefix root, so the same
+    directory is reachable by two paths and would otherwise be recorded twice.
+    """
+    try:
+        return system32.resolve()
+    except OSError:
+        return system32
 
 
 def nvapi_shim_artifact(env: dict[str, str] | None = None) -> Path | None:
@@ -197,7 +282,9 @@ def deploy_nvapi_shim(env: dict[str, str]) -> Path | None:
 
         if _file_contains(nvapi, SHIM_NEEDLE):
             # Already our shim. Refresh it if the build changed; the sidecar (real
-            # dxvk-nvapi) is left as-is.
+            # dxvk-nvapi) is left as-is. Re-recorded because this may be a prefix
+            # fronted by a build that predates the register.
+            remember_fronted_prefix(system32)
             if not sidecar.is_file():
                 _log(f"nvapi shim: {sidecar.name} missing -- shim has no forward target")
                 return None
@@ -208,6 +295,13 @@ def deploy_nvapi_shim(env: dict[str, str]) -> Path | None:
 
         # nvapi64.dll is the stock dxvk-nvapi (fresh install or post re-sync):
         # park it under the sidecar name, then front it with the shim.
+        #
+        # Recorded first, and a failure to record aborts the deploy: fronting a
+        # prefix uninstall cannot find later leaves the user's game files
+        # modified with nothing able to undo it.
+        if not remember_fronted_prefix(system32):
+            _log(f"nvapi shim: not fronting {system32} -- cannot record it for cleanup")
+            return None
         _atomic_copy(nvapi, sidecar)
         _atomic_copy(artifact, nvapi)
         _log(f"nvapi shim: installed {nvapi} (real -> {sidecar.name})")
@@ -235,6 +329,7 @@ def restore_nvapi_shim(env: dict[str, str]) -> Path | None:
         if not nvapi.is_file() or _file_contains(nvapi, SHIM_NEEDLE):
             _atomic_copy(sidecar, nvapi)
         sidecar.unlink()
+        forget_fronted_prefix(system32)
         return system32
     except OSError as error:
         _log(f"nvapi shim: restore failed in {system32}: {error}")
@@ -242,19 +337,39 @@ def restore_nvapi_shim(env: dict[str, str]) -> Path | None:
 
 
 def restore_all_nvapi_shims(home: Path | None = None) -> tuple[Path, ...]:
-    """Restore every PB-fronted prefix across the user's Steam libraries."""
+    """Restore every prefix PenguinBurner has fronted, whatever launched it.
+
+    Two sources, because neither alone is enough. The register names prefixes
+    no scan could find -- Lutris, Heroic and plain wine put them wherever the
+    user said -- while the Steam sweep still covers prefixes fronted by a build
+    that predates the register, and any the register lost.
+    """
     from overlay.telemetry.steam_game_setup import default_steamapps_dirs
 
     restored: list[Path] = []
     seen: set[Path] = set()
+
+    def clean(env: dict[str, str]) -> None:
+        cleaned = restore_nvapi_shim(env)
+        if cleaned is None:
+            return
+        canonical = _canonical_system32(cleaned)
+        if canonical not in seen:
+            restored.append(cleaned)
+            seen.add(canonical)
+
+    for entry in _read_fronted_prefixes(fronted_prefixes_path()):
+        system32 = Path(entry)
+        # The register stores system32 itself; the prefix root is three levels
+        # up, which is what restore resolves from.
+        clean({"WINEPREFIX": str(system32.parent.parent.parent)})
+        if not (system32 / REAL_SIDECAR_NAME).exists():
+            # Cleaned, gone, or never ours: either way it is not fronted now.
+            forget_fronted_prefix(system32)
+
     for steamapps in default_steamapps_dirs(home):
         for compat_data in (steamapps / "compatdata").glob("*"):
-            cleaned = restore_nvapi_shim(
-                {"STEAM_COMPAT_DATA_PATH": str(compat_data)}
-            )
-            if cleaned is not None and cleaned not in seen:
-                restored.append(cleaned)
-                seen.add(cleaned)
+            clean({"STEAM_COMPAT_DATA_PATH": str(compat_data)})
     return tuple(restored)
 
 

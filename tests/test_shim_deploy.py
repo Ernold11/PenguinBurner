@@ -560,3 +560,137 @@ def test_prefix_system32_falls_through_a_steam_path_that_does_not_exist(
     )
 
     assert resolved == lutris / "drive_c" / "windows" / "system32"
+
+
+# --- cleanup for prefixes no launcher scan can find ---------------------------
+
+
+def _isolated_home(tmp_path: Path, monkeypatch) -> Path:
+    """Point the register at a throwaway home, never the developer's own."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("PENGUIN_BURNER_HOME", str(home))
+    return home
+
+
+def test_deploy_records_the_prefix_it_fronted(tmp_path: Path, monkeypatch) -> None:
+    _isolated_home(tmp_path, monkeypatch)
+    artifact = _make_artifact(tmp_path)
+    prefix = _make_wine_prefix(tmp_path, umu_pfx_symlink=False)
+    system32 = prefix / "drive_c" / "windows" / "system32"
+
+    shim_deploy.deploy_nvapi_shim(
+        {
+            "WINEPREFIX": str(prefix),
+            shim_deploy.NVAPI_SHIM_DIR_ENV: str(artifact.parent),
+        }
+    )
+
+    assert str(system32.resolve()) in shim_deploy._read_fronted_prefixes(
+        shim_deploy.fronted_prefixes_path()
+    )
+
+
+def test_restore_all_cleans_a_prefix_no_scan_could_find(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The whole point: a Lutris prefix lives wherever the user put it.
+
+    Without the register, uninstall walked Steam's compatdata only, so a
+    Lutris, Heroic or plain-wine prefix stayed fronted forever -- invisibly,
+    because the front is a DLL swap inside the user's own game files.
+    """
+    _isolated_home(tmp_path, monkeypatch)
+    artifact = _make_artifact(tmp_path)
+    prefix = _make_wine_prefix(tmp_path, umu_pfx_symlink=False)
+    system32 = prefix / "drive_c" / "windows" / "system32"
+    shim_deploy.deploy_nvapi_shim(
+        {
+            "WINEPREFIX": str(prefix),
+            shim_deploy.NVAPI_SHIM_DIR_ENV: str(artifact.parent),
+        }
+    )
+    assert (system32 / shim_deploy.REAL_SIDECAR_NAME).is_file()
+
+    restored = shim_deploy.restore_all_nvapi_shims(tmp_path / "no-steam-here")
+
+    assert system32 in restored
+    assert (system32 / shim_deploy.SHIM_DLL_NAME).read_bytes() == REAL_BYTES
+    assert not (system32 / shim_deploy.REAL_SIDECAR_NAME).exists()
+
+
+def test_a_cleaned_prefix_leaves_the_register(tmp_path: Path, monkeypatch) -> None:
+    _isolated_home(tmp_path, monkeypatch)
+    artifact = _make_artifact(tmp_path)
+    prefix = _make_wine_prefix(tmp_path, umu_pfx_symlink=False)
+    env = {
+        "WINEPREFIX": str(prefix),
+        shim_deploy.NVAPI_SHIM_DIR_ENV: str(artifact.parent),
+    }
+    shim_deploy.deploy_nvapi_shim(env)
+
+    shim_deploy.restore_nvapi_shim(env)
+
+    assert shim_deploy._read_fronted_prefixes(shim_deploy.fronted_prefixes_path()) == []
+
+
+def test_deploy_refuses_a_prefix_it_cannot_record(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """No record, no fronting.
+
+    A prefix that cannot be recorded is one uninstall can never find again, and
+    the swap is invisible to the user, so it would stay behind for good.
+    Declining to deploy costs a session of marker latency; the alternative
+    costs the user's game files.
+    """
+    _isolated_home(tmp_path, monkeypatch)
+    artifact = _make_artifact(tmp_path)
+    prefix = _make_wine_prefix(tmp_path, umu_pfx_symlink=False)
+    system32 = prefix / "drive_c" / "windows" / "system32"
+    monkeypatch.setattr(shim_deploy, "_write_fronted_prefixes", lambda *_a: False)
+
+    placed = shim_deploy.deploy_nvapi_shim(
+        {
+            "WINEPREFIX": str(prefix),
+            shim_deploy.NVAPI_SHIM_DIR_ENV: str(artifact.parent),
+        }
+    )
+
+    assert placed is None
+    assert (system32 / shim_deploy.SHIM_DLL_NAME).read_bytes() == REAL_BYTES
+    assert not (system32 / shim_deploy.REAL_SIDECAR_NAME).exists()
+
+
+def test_the_register_keeps_one_entry_per_prefix(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """umu symlinks pfx -> ., so one directory answers to two paths."""
+    _isolated_home(tmp_path, monkeypatch)
+    artifact = _make_artifact(tmp_path)
+    prefix = _make_wine_prefix(tmp_path, umu_pfx_symlink=True)
+    shim_env = {shim_deploy.NVAPI_SHIM_DIR_ENV: str(artifact.parent)}
+
+    shim_deploy.deploy_nvapi_shim({"WINEPREFIX": str(prefix), **shim_env})
+    # Second launch of the same game, reached through the symlinked spelling.
+    shim_deploy.deploy_nvapi_shim({"WINEPREFIX": str(prefix / "pfx"), **shim_env})
+
+    assert (
+        len(shim_deploy._read_fronted_prefixes(shim_deploy.fronted_prefixes_path()))
+        == 1
+    )
+
+
+def test_restore_all_still_sweeps_steam_libraries(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The register does not replace the sweep: it cannot know older installs."""
+    _isolated_home(tmp_path, monkeypatch)
+    compat_data = tmp_path / ".local/share/Steam/steamapps/compatdata/123"
+    system32 = compat_data / "pfx/drive_c/windows/system32"
+    system32.mkdir(parents=True)
+    (system32 / shim_deploy.SHIM_DLL_NAME).write_bytes(SHIM_BYTES)
+    (system32 / shim_deploy.REAL_SIDECAR_NAME).write_bytes(REAL_BYTES)
+
+    assert shim_deploy.restore_all_nvapi_shims(tmp_path) == (system32,)
+    assert (system32 / shim_deploy.SHIM_DLL_NAME).read_bytes() == REAL_BYTES

@@ -121,6 +121,27 @@ missed slow first launches (prefix creation, anticheat installs) and mid-session
 re-copies (compat-config changes re-run prefix setup). Falls back to 0.25s
 polling if inotify is unavailable. (Idempotent/self-healing either way.)
 
+## Cleanup — the register of fronted prefixes
+
+Fronting swaps a DLL inside the user's own game files, so every prefix we front
+has to be findable again when PenguinBurner is removed. Steam prefixes are
+discoverable (`steamapps/compatdata/*`), but a Lutris, Heroic or plain-wine
+prefix lives wherever the user put it. Nothing could enumerate those, so before
+this they stayed fronted forever, invisibly.
+
+`deploy_nvapi_shim` therefore records the canonical `system32` path in
+`~/.config/PenguinBurner/nvapi-shim-prefixes.json` **before** touching any DLL,
+and **declines to front a prefix it could not record**. Losing a session of
+marker latency is recoverable; leaving a modified DLL behind with nothing able
+to undo it is not. Paths are resolved before they are stored, so umu's
+`pfx -> .` symlink cannot enter the register twice.
+
+`restore_all_nvapi_shims()` — what `penguin-burner-install-wrappers --uninstall`
+calls — walks the register *and* keeps the Steam sweep. Neither alone is
+enough: the register names prefixes no scan could find, while the sweep still
+covers prefixes fronted by a build that predates the register. Restoring a
+prefix drops it from the register.
+
 ## Integration
 
 - `launcher.py:_configure_dxvk_nvapi_marker_output` — now just: deploy the
