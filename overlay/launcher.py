@@ -218,8 +218,9 @@ def _create_marker_fifo(env: dict[str, str]) -> bool:
 def _sweep_stale_marker_fifos(env: dict[str, str]) -> None:
     """Unlink leftover per-launch marker FIFOs that no drainer reads anymore.
 
-    The drainer unlinks its own FIFO on exit; this catches the crash/SIGKILL
-    leftovers. A non-blocking write-only open of a FIFO fails with ENXIO
+    The drainer unlinks its own FIFO on exit, including when it is signalled;
+    this catches what is left when it cannot -- SIGKILL, a machine losing
+    power. A non-blocking write-only open of a FIFO fails with ENXIO
     exactly when it has no reader -- a live drainer means skip it.
     """
     current = trace_fifo_path(env)
