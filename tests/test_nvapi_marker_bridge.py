@@ -286,6 +286,7 @@ def test_drainer_exits_when_session_dead_and_no_writers(tmp_path, monkeypatch) -
     ever connected (e.g. failed exec); after the no-writer grace, run() returns
     instead of tailing a pipe that can never fill."""
     import os
+
     import overlay.telemetry.nvapi_marker_bridge as bridge
 
     monkeypatch.setattr(bridge, "_NO_WRITER_GRACE_S", 0.05)
@@ -302,6 +303,7 @@ def test_drainer_keeps_draining_while_writer_exists(tmp_path) -> None:
     import os
     import threading
     import time
+
     import overlay.telemetry.nvapi_marker_bridge as bridge
 
     fifo = tmp_path / "nvapi-trace.1.fifo"
@@ -348,6 +350,7 @@ def test_drainer_exits_when_steam_reaper_quiesces_after_traffic(tmp_path) -> Non
     import os
     import threading
     import time
+
     import overlay.telemetry.nvapi_marker_bridge as bridge
 
     fifo = tmp_path / "nvapi-trace.1.fifo"
@@ -383,6 +386,7 @@ def test_drainer_exits_when_steam_reaper_quiesces_after_traffic(tmp_path) -> Non
 def test_drainer_main_cleans_up_fifo(tmp_path, monkeypatch) -> None:
     """--cleanup unlinks the per-launch FIFO once the watch ends."""
     import os
+
     import overlay.telemetry.nvapi_marker_bridge as bridge
 
     monkeypatch.setattr(bridge, "_NO_WRITER_GRACE_S", 0.05)
@@ -400,6 +404,7 @@ def test_drainer_main_cleans_up_fifo(tmp_path, monkeypatch) -> None:
 
 def test_spawn_detached_drainer_argv(monkeypatch, tmp_path) -> None:
     import sys
+
     import overlay.telemetry.nvapi_marker_bridge as bridge
 
     captured = {}
@@ -425,3 +430,372 @@ def test_spawn_detached_drainer_argv(monkeypatch, tmp_path) -> None:
     ]
     assert captured["kwargs"]["start_new_session"] is True
     assert captured["kwargs"]["env"] is env
+
+
+# -- the drainer owns its FIFO -------------------------------------------------
+
+
+def test_the_drainer_unlinks_its_fifo_when_signalled(tmp_path) -> None:
+    """A launcher stopping the game kills the drainer, so termination is the
+    ordinary way it ends. Leaving cleanup outside the finally left one stale
+    FIFO in ~/.cache per game session."""
+    import errno
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path as _Path
+
+    fifo = tmp_path / "nvapi-trace.test.fifo"
+    os.mkfifo(fifo, 0o600)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(_Path(__file__).resolve().parents[1])
+
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "overlay.telemetry.nvapi_marker_bridge",
+            "--log",
+            str(fifo),
+            "--cleanup",
+        ],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    writer_fd = None
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and process.poll() is None:
+            try:
+                writer_fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as error:
+                if error.errno != errno.ENXIO:
+                    raise
+                time.sleep(0.01)
+                continue
+            break
+        assert writer_fd is not None, "drainer never opened the FIFO"
+        process.send_signal(signal.SIGTERM)
+        process.wait(timeout=10)
+    finally:
+        if writer_fd is not None:
+            os.close(writer_fd)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == 128 + signal.SIGTERM
+    assert not fifo.exists()
+
+
+def test_drainer_main_restores_termination_handlers(tmp_path, monkeypatch) -> None:
+    import os
+    import signal
+
+    import pytest
+
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    fifo = tmp_path / "nvapi-trace.handlers.fifo"
+    os.mkfifo(fifo, 0o600)
+
+    def fail_run(*_args, **_kwargs) -> None:
+        raise RuntimeError("watch failed")
+
+    monkeypatch.setattr(bridge, "run", fail_run)
+
+    signal_numbers = [
+        number
+        for name in ("SIGTERM", "SIGINT", "SIGHUP")
+        if (number := getattr(signal, name, None)) is not None
+    ]
+    previous_handlers = {
+        number: signal.getsignal(number) for number in signal_numbers
+    }
+
+    def sentinel_handler(_signal_number, _frame) -> None:
+        return None
+
+    try:
+        for number in signal_numbers:
+            signal.signal(number, sentinel_handler)
+
+        with pytest.raises(RuntimeError, match="watch failed"):
+            bridge.main(["--log", str(fifo), "--cleanup"])
+        assert all(
+            signal.getsignal(number) is sentinel_handler
+            for number in signal_numbers
+        )
+    finally:
+        for number, handler in previous_handlers.items():
+            signal.signal(number, handler)
+
+    assert not fifo.exists()
+
+
+def test_drainer_main_without_cleanup_does_not_install_handlers(
+    tmp_path, monkeypatch
+) -> None:
+    import pytest
+
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    monkeypatch.setattr(bridge, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        bridge,
+        "_install_termination_handlers",
+        lambda _installed_handlers: pytest.fail(
+            "non-cleanup invocation changed signal handlers"
+        ),
+    )
+
+    assert bridge.main(["--log", str(tmp_path / "markers.log")]) == 0
+
+
+def test_drainer_main_cleans_up_when_handler_installation_exits(
+    tmp_path, monkeypatch
+) -> None:
+    import os
+
+    import pytest
+
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    fifo = tmp_path / "nvapi-trace.install-signal.fifo"
+    os.mkfifo(fifo, 0o600)
+
+    def exit_during_install(_installed_handlers) -> None:
+        raise SystemExit(143)
+
+    monkeypatch.setattr(
+        bridge, "_install_termination_handlers", exit_during_install
+    )
+
+    with pytest.raises(SystemExit, match="143"):
+        bridge.main(["--log", str(fifo), "--cleanup"])
+
+    assert not fifo.exists()
+
+
+def test_drainer_cleanup_defers_a_repeated_termination_signal(
+    tmp_path, monkeypatch
+) -> None:
+    import os
+    import signal
+    from pathlib import Path
+
+    import pytest
+
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    fifo = tmp_path / "nvapi-trace.repeated-signal.fifo"
+    os.mkfifo(fifo, 0o600)
+    delivered = []
+    previous_handler = signal.getsignal(signal.SIGTERM)
+    real_rename = os.rename
+
+    def previous_signal_handler(signal_number, _frame) -> None:
+        delivered.append(signal_number)
+
+    def exit_run(*_args, **_kwargs) -> None:
+        raise SystemExit(143)
+
+    def signal_after_capture(source, destination) -> None:
+        real_rename(source, destination)
+        if Path(source) == fifo:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    signal.signal(signal.SIGTERM, previous_signal_handler)
+    monkeypatch.setattr(bridge, "run", exit_run)
+    monkeypatch.setattr(bridge.os, "rename", signal_after_capture)
+    try:
+        with pytest.raises(SystemExit, match="143"):
+            bridge.main(["--log", str(fifo), "--cleanup"])
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
+
+    assert delivered == [signal.SIGTERM]
+    assert not fifo.exists()
+    assert not list(tmp_path.glob(".penguin-burner-fifo-cleanup-*"))
+
+
+def test_unlink_fifo_leaves_a_regular_file_alone(tmp_path) -> None:
+    """--log may point at a real log file; cleanup must not delete data."""
+    from overlay.telemetry.nvapi_marker_bridge import unlink_fifo
+
+    regular = tmp_path / "not-a-fifo.log"
+    regular.write_text("markers", encoding="utf-8")
+
+    assert unlink_fifo(regular, expected_identity=None) is False
+    assert regular.exists()
+
+
+def test_unlink_fifo_leaves_a_symlink_to_a_fifo_alone(tmp_path) -> None:
+    import os
+
+    from overlay.telemetry.nvapi_marker_bridge import (
+        _fifo_identity,
+        unlink_fifo,
+    )
+
+    target = tmp_path / "target.fifo"
+    link = tmp_path / "marker.fifo"
+    os.mkfifo(target, 0o600)
+    link.symlink_to(target)
+
+    assert _fifo_identity(link) is None
+    assert unlink_fifo(link, expected_identity=None) is False
+    assert link.is_symlink()
+    assert target.exists()
+
+
+def test_unlink_fifo_refuses_a_replacement_fifo(tmp_path) -> None:
+    import os
+
+    from overlay.telemetry.nvapi_marker_bridge import (
+        _fifo_identity,
+        unlink_fifo,
+    )
+
+    fifo = tmp_path / "marker.fifo"
+    replacement = tmp_path / "replacement.fifo"
+    os.mkfifo(fifo, 0o600)
+    expected_identity = _fifo_identity(fifo)
+    os.mkfifo(replacement, 0o600)
+    os.replace(replacement, fifo)
+
+    assert expected_identity is not None
+    assert unlink_fifo(fifo, expected_identity=expected_identity) is False
+    assert fifo.exists()
+
+
+def test_unlink_fifo_does_not_capture_without_atomic_restore_support(
+    tmp_path, monkeypatch
+) -> None:
+    import os
+
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    fifo = tmp_path / "marker.fifo"
+    os.mkfifo(fifo, 0o600)
+    expected_identity = bridge._fifo_identity(fifo)
+    monkeypatch.setattr(
+        bridge, "_quarantine_can_restore_entries", lambda _path: False
+    )
+
+    assert expected_identity is not None
+    assert (
+        bridge.unlink_fifo(fifo, expected_identity=expected_identity)
+        is False
+    )
+    assert bridge._fifo_identity(fifo) == expected_identity
+    assert not list(tmp_path.glob(".penguin-burner-fifo-cleanup-*"))
+
+
+def test_unlink_fifo_restores_a_replacement_directory(tmp_path) -> None:
+    import os
+
+    from overlay.telemetry.nvapi_marker_bridge import (
+        _fifo_identity,
+        unlink_fifo,
+    )
+
+    fifo = tmp_path / "marker.fifo"
+    os.mkfifo(fifo, 0o600)
+    expected_identity = _fifo_identity(fifo)
+    fifo.unlink()
+    fifo.mkdir()
+    payload = fifo / "keep.txt"
+    payload.write_text("user data", encoding="utf-8")
+
+    assert expected_identity is not None
+    assert unlink_fifo(fifo, expected_identity=expected_identity) is False
+    assert fifo.is_dir()
+    assert payload.read_text(encoding="utf-8") == "user data"
+    assert not list(tmp_path.glob(".penguin-burner-fifo-cleanup-*"))
+
+
+def test_unlink_fifo_restores_a_replacement_that_wins_before_capture(
+    tmp_path, monkeypatch
+) -> None:
+    import os
+    from pathlib import Path
+
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    fifo = tmp_path / "marker.fifo"
+    os.mkfifo(fifo, 0o600)
+    expected_identity = bridge._fifo_identity(fifo)
+    real_rename = os.rename
+
+    def replace_then_rename(source, destination) -> None:
+        source_path = Path(source)
+        if source_path == fifo:
+            source_path.unlink()
+            source_path.write_text("replacement", encoding="utf-8")
+        real_rename(source, destination)
+
+    monkeypatch.setattr(bridge.os, "rename", replace_then_rename)
+
+    assert expected_identity is not None
+    assert (
+        bridge.unlink_fifo(fifo, expected_identity=expected_identity)
+        is False
+    )
+    assert fifo.read_text(encoding="utf-8") == "replacement"
+    assert not list(tmp_path.glob(".penguin-burner-fifo-cleanup-*"))
+
+
+def test_unlink_fifo_preserves_a_replacement_created_after_capture(
+    tmp_path, monkeypatch
+) -> None:
+    import os
+    from pathlib import Path
+
+    import overlay.telemetry.nvapi_marker_bridge as bridge
+
+    fifo = tmp_path / "marker.fifo"
+    os.mkfifo(fifo, 0o600)
+    expected_identity = bridge._fifo_identity(fifo)
+    real_rename = os.rename
+
+    def rename_then_replace(source, destination) -> None:
+        real_rename(source, destination)
+        if Path(source) == fifo:
+            fifo.write_text("replacement", encoding="utf-8")
+
+    monkeypatch.setattr(bridge.os, "rename", rename_then_replace)
+
+    assert expected_identity is not None
+    assert bridge.unlink_fifo(fifo, expected_identity=expected_identity) is True
+    assert fifo.read_text(encoding="utf-8") == "replacement"
+    assert not list(tmp_path.glob(".penguin-burner-fifo-cleanup-*"))
+
+
+def test_unlink_fifo_removes_the_matching_fifo(tmp_path) -> None:
+    import os
+
+    from overlay.telemetry.nvapi_marker_bridge import (
+        _fifo_identity,
+        unlink_fifo,
+    )
+
+    fifo = tmp_path / "marker.fifo"
+    os.mkfifo(fifo, 0o600)
+    expected_identity = _fifo_identity(fifo)
+
+    assert expected_identity is not None
+    assert unlink_fifo(fifo, expected_identity=expected_identity) is True
+    assert not fifo.exists()
+
+
+def test_unlink_fifo_is_idempotent(tmp_path) -> None:
+    from overlay.telemetry.nvapi_marker_bridge import unlink_fifo
+
+    assert unlink_fifo(
+        tmp_path / "gone.fifo", expected_identity=(123, 456)
+    ) is True

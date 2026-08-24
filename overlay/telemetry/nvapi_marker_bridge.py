@@ -32,17 +32,22 @@ two unmeasurable ends (peripheral input and physical scanout/panel).
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import re
 import select
+import signal
 import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
+from types import FrameType
 
 from .sockets import latency_socket_path, latency_socket_paths
 from .. import shim_deploy as _shim_deploy
@@ -100,6 +105,12 @@ _NO_WRITER_GRACE_S = 60.0
 # mis-pairing to a sane click-to-photon magnitude (log timestamps are ms-grained).
 _MAX_OOB_LAG_US = 200_000
 TELEMETRY_SESSION_ENV = "PENGUIN_BURNER_TELEMETRY_SESSION"
+
+_FifoIdentity = tuple[int, int]
+_SignalHandler = int | Callable[[int, FrameType | None], object]
+_SignalMask = set[int | signal.Signals]
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1
 
 
 def _socket_targets(env: dict[str, str] | None = None) -> list[Path]:
@@ -584,7 +595,15 @@ def main(argv: list[str] | None = None) -> int:
         liveness = _shim_deploy.SessionLiveness(args.session_pid, session_fd)
         session_alive_fn = liveness.session_alive
         session_quiesced_fn = liveness.steam_reaper_quiesced
+    cleanup_identity = _fifo_identity(args.log) if args.cleanup else None
+    installed_handlers: list[tuple[int, _SignalHandler]] = []
     try:
+        # A launcher stopping the game kills this drainer along with the rest
+        # of the session, so termination is the ordinary way it ends. Keep the
+        # handlers scoped to the cleanup-owning invocation: main() is also
+        # called in-process by tests and must not change its caller's signals.
+        if args.cleanup:
+            _install_termination_handlers(installed_handlers)
         run(
             args.log,
             poll_interval_s=args.poll_interval,
@@ -593,18 +612,203 @@ def main(argv: list[str] | None = None) -> int:
             session_quiesced_fn=session_quiesced_fn,
         )
     finally:
-        if session_fd is not None:
-            try:
-                os.close(session_fd)
-            except OSError:
-                pass
-    if args.cleanup:
+        cleanup_signal_mask = (
+            _block_termination_signals() if installed_handlers else None
+        )
         try:
-            if stat.S_ISFIFO(args.log.stat().st_mode):
-                args.log.unlink()
+            if session_fd is not None:
+                try:
+                    os.close(session_fd)
+                except OSError:
+                    pass
+            # In the finally, not after the try: a drainer that is signalled or
+            # raises would otherwise leave its FIFO behind, one per game
+            # session. Only unlink the same FIFO this invocation started with;
+            # a replaced path belongs to something else.
+            if args.cleanup:
+                unlink_fifo(
+                    args.log, expected_identity=cleanup_identity
+                )
+        finally:
+            _restore_signal_handlers(installed_handlers)
+            _restore_signal_mask(cleanup_signal_mask)
+    return 0
+
+
+def _fifo_identity(path: Path) -> _FifoIdentity | None:
+    """Identify a real FIFO at path without following a symlink."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISFIFO(info.st_mode):
+        return None
+    return info.st_dev, info.st_ino
+
+
+def unlink_fifo(
+    path: Path, *, expected_identity: _FifoIdentity | None
+) -> bool:
+    """Atomically capture and remove only the expected per-launch FIFO."""
+    if expected_identity is None:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return False
+
+    try:
+        quarantine_dir = Path(
+            tempfile.mkdtemp(
+                prefix=".penguin-burner-fifo-cleanup-", dir=path.parent
+            )
+        )
+    except OSError:
+        return False
+    quarantined = quarantine_dir / "entry"
+    try:
+        if not _quarantine_can_restore_entries(quarantine_dir):
+            return False
+        try:
+            # rename() removes the public name and captures whatever occupied
+            # it as one atomic directory operation. Validation and deletion
+            # then happen only under our freshly created private directory, so
+            # a replacement at the public path is never unlinked by cleanup.
+            os.rename(path, quarantined)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+
+        if _fifo_identity(quarantined) != expected_identity:
+            _restore_quarantined_entry(quarantined, path)
+            return False
+        try:
+            quarantined.unlink()
+        except OSError:
+            _restore_quarantined_entry(quarantined, path)
+            return False
+        return True
+    finally:
+        try:
+            quarantine_dir.rmdir()
+        except OSError:
+            # An entry that could not be restored is preserved here rather
+            # than deleted. The random directory name makes it recoverable.
+            pass
+
+
+def _restore_quarantined_entry(quarantined: Path, destination: Path) -> bool:
+    """Restore any entry without overwriting a new destination."""
+    return _rename_noreplace(quarantined, destination)
+
+
+def _rename_noreplace(source: Path, destination: Path) -> bool:
+    """Atomically rename source only when destination does not exist."""
+    try:
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+        renameat2.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        renameat2.restype = ctypes.c_int
+    except (AttributeError, OSError):
+        return False
+    return (
+        renameat2(
+            _AT_FDCWD,
+            os.fsencode(source),
+            _AT_FDCWD,
+            os.fsencode(destination),
+            _RENAME_NOREPLACE,
+        )
+        == 0
+    )
+
+
+def _quarantine_can_restore_entries(quarantine_dir: Path) -> bool:
+    """Confirm this filesystem supports atomic no-overwrite restoration."""
+    probe = quarantine_dir / "restore-probe"
+    moved_probe = quarantine_dir / "restore-probe-moved"
+    try:
+        probe.mkdir()
+    except OSError:
+        return False
+    restored_safely = _rename_noreplace(probe, moved_probe)
+    for path in (probe, moved_probe):
+        try:
+            path.rmdir()
         except OSError:
             pass
-    return 0
+    return restored_safely
+
+
+def _raise_system_exit(
+    signal_number: int, _frame: FrameType | None
+) -> None:
+    raise SystemExit(128 + int(signal_number))
+
+
+def _install_termination_handlers(
+    installed_handlers: list[tuple[int, _SignalHandler]],
+) -> None:
+    for number in _termination_signal_numbers():
+        try:
+            previous_handler = signal.getsignal(number)
+        except (OSError, ValueError):
+            # Not the main thread, or the platform refuses this signal: the
+            # sweep on the next launch remains the backstop.
+            continue
+        if previous_handler is None:
+            continue
+        # Record first so a signal delivered immediately after signal.signal()
+        # still unwinds through main's finally with enough state to restore it.
+        installed_handlers.append((number, previous_handler))
+        try:
+            signal.signal(number, _raise_system_exit)
+        except (OSError, ValueError):
+            installed_handlers.pop()
+
+
+def _restore_signal_handlers(
+    installed_handlers: list[tuple[int, _SignalHandler]],
+) -> None:
+    for number, previous_handler in reversed(installed_handlers):
+        try:
+            signal.signal(number, previous_handler)
+        except (OSError, ValueError):
+            continue
+
+
+def _termination_signal_numbers() -> tuple[int, ...]:
+    return tuple(
+        number
+        for name in ("SIGTERM", "SIGINT", "SIGHUP")
+        if (number := getattr(signal, name, None)) is not None
+    )
+
+
+def _block_termination_signals() -> _SignalMask | None:
+    try:
+        return signal.pthread_sigmask(
+            signal.SIG_BLOCK, _termination_signal_numbers()
+        )
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _restore_signal_mask(previous_mask: _SignalMask | None) -> None:
+    if previous_mask is None:
+        return
+    try:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+    except (AttributeError, OSError, ValueError):
+        pass
 
 
 if __name__ == "__main__":
