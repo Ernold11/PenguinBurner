@@ -245,6 +245,32 @@ def _files_identical(left: Path, right: Path) -> bool:
         return False
 
 
+def _settled_size(path: Path, *, checks: int = 3, delay_s: float = 0.12) -> int | None:
+    """The file's size once it stops changing, or None while it is still moving.
+
+    Parking the stock dxvk-nvapi as the forward target is destructive: whatever
+    is copied becomes what every NVAPI call ends up in. umu and Proton write
+    that DLL during prefix setup, and a close notification is not proof the
+    write finished -- observed live, a 512 KiB fragment of a 1.8 MB DLL was
+    parked and the game exited immediately. Watching the size settle is cheap
+    and catches exactly that.
+    """
+    try:
+        last = path.stat().st_size
+    except OSError:
+        return None
+    for _ in range(max(1, checks)):
+        time.sleep(max(0.0, delay_s))
+        try:
+            current = path.stat().st_size
+        except OSError:
+            return None
+        if current == last:
+            return current
+        last = current
+    return None
+
+
 def _atomic_copy(src: Path, dst: Path) -> None:
     tmp = dst.with_name(dst.name + ".pb-tmp")
     shutil.copyfile(src, tmp)
@@ -303,6 +329,14 @@ def deploy_nvapi_shim(env: dict[str, str]) -> Path | None:
 
         # nvapi64.dll is the stock dxvk-nvapi (fresh install or post re-sync):
         # park it under the sidecar name, then front it with the shim.
+        #
+        # Only once it has stopped changing. The watcher runs during prefix
+        # setup, where this file is being written, and parking a half-written
+        # copy makes the shim forward into a truncated DLL -- the game then dies
+        # at startup. Leaving it for the next notification costs nothing.
+        if _settled_size(nvapi) is None:
+            _log(f"nvapi shim: {nvapi.name} is still being written in {system32}")
+            return None
         #
         # Recorded first, and a failure to record aborts the deploy: fronting a
         # prefix uninstall cannot find later leaves the user's game files

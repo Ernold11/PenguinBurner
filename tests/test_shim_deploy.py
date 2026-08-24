@@ -744,3 +744,54 @@ def test_marker_output_is_declined_without_a_built_shim(tmp_path: Path) -> None:
     }
 
     assert _configure_dxvk_nvapi_marker_output(env) is False
+
+
+# --- never park a DLL that is still being written -----------------------------
+
+
+def test_deploy_waits_while_the_stock_dll_is_still_being_written(
+    tmp_path: Path,
+) -> None:
+    """A live failure: a 512 KiB fragment of a 1.8 MB DLL was parked.
+
+    The sidecar is what every NVAPI call is forwarded into, so parking a
+    half-written copy took the game down at startup. umu writes this file during
+    prefix setup and a close notification does not prove the write finished.
+    """
+    _make_artifact(tmp_path)
+    data_path = _make_prefix(tmp_path)
+    system32 = _system32(data_path)
+    nvapi = system32 / shim_deploy.SHIM_DLL_NAME
+    growing = iter([100, 200, 300, 400, 500, 600])
+
+    class _Growing:
+        st_size = 0
+
+    def stat_that_keeps_growing(self, *_args, **_kwargs):
+        result = _Growing()
+        result.st_size = next(growing, 999)
+        return result
+
+    original = Path.stat
+    Path.stat = stat_that_keeps_growing  # type: ignore[method-assign]
+    try:
+        placed = shim_deploy.deploy_nvapi_shim(_env(tmp_path, data_path))
+    finally:
+        Path.stat = original  # type: ignore[method-assign]
+
+    assert placed is None
+    # Untouched: no shim installed, and crucially no sidecar written from a
+    # partial file, which is what a later restore would put back.
+    assert nvapi.read_bytes() == REAL_BYTES
+    assert not (system32 / shim_deploy.REAL_SIDECAR_NAME).exists()
+
+
+def test_deploy_proceeds_once_the_size_settles(tmp_path: Path) -> None:
+    _make_artifact(tmp_path)
+    data_path = _make_prefix(tmp_path)
+    system32 = _system32(data_path)
+
+    placed = shim_deploy.deploy_nvapi_shim(_env(tmp_path, data_path))
+
+    assert placed is not None
+    assert (system32 / shim_deploy.REAL_SIDECAR_NAME).read_bytes() == REAL_BYTES
