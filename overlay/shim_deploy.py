@@ -267,10 +267,12 @@ def deploy_nvapi_shim(env: dict[str, str]) -> Path | None:
 
     artifact = nvapi_shim_artifact(env)
     if artifact is None:
+        _log("nvapi shim: no built shim to deploy")
         return None
 
     system32 = prefix_system32(env)
     if system32 is None:
+        _log("nvapi shim: no wine prefix in this environment")
         return None
 
     nvapi = system32 / SHIM_DLL_NAME
@@ -278,7 +280,13 @@ def deploy_nvapi_shim(env: dict[str, str]) -> Path | None:
 
     try:
         if not nvapi.is_file():
-            return None  # nothing to forward to / prefix not ready yet
+            # Prefix setup is in flight: umu and Proton REMOVE nvapi64.dll
+            # before copying their own dxvk-nvapi in, and a launch can land in
+            # that window. Nothing to park yet -- the re-front watcher fronts it
+            # once it reappears, which is why the caller arms the watcher even
+            # when this returns None.
+            _log(f"nvapi shim: {nvapi.name} not present yet in {system32}")
+            return None
 
         if _file_contains(nvapi, SHIM_NEEDLE):
             # Already our shim. Refresh it if the build changed; the sidecar (real

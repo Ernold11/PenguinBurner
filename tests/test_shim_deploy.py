@@ -694,3 +694,53 @@ def test_restore_all_still_sweeps_steam_libraries(
 
     assert shim_deploy.restore_all_nvapi_shims(tmp_path) == (system32,)
     assert (system32 / shim_deploy.SHIM_DLL_NAME).read_bytes() == REAL_BYTES
+
+
+# --- a launch that lands inside prefix setup ---------------------------------
+
+
+def test_marker_output_is_claimed_when_the_prefix_is_mid_setup(
+    tmp_path: Path,
+) -> None:
+    """umu/Proton remove nvapi64.dll before copying their own dxvk-nvapi in.
+
+    Observed on Lutris + umu (2026-08-24, every launch): at wrapper time the
+    file was simply absent. Reporting "no shim" there disarms the re-front
+    watcher -- the one thing that would front the DLL the moment it reappears --
+    so the shim never returned for the rest of the session.
+    """
+    _make_artifact(tmp_path)
+    data_path = _make_prefix(tmp_path, with_nvapi=False)
+    env = _env(tmp_path, data_path)
+
+    claimed = _configure_dxvk_nvapi_marker_output(env)
+
+    assert claimed is True
+    # The game reads its env once, at start, so the shim's output path has to be
+    # pinned now even though the shim itself arrives later.
+    assert env.get("PENGUIN_BURNER_SHIM_OUTPUT")
+
+
+def test_marker_output_is_declined_without_a_prefix_to_front(
+    tmp_path: Path,
+) -> None:
+    """The other side of it: no prefix at all is not a race, it is a fallback.
+
+    Nothing would ever appear for a watcher to guard, so the Vulkan layer's own
+    marker tap stays the source and no helper is spawned.
+    """
+    _make_artifact(tmp_path)
+    env = {shim_deploy.NVAPI_SHIM_DIR_ENV: str(tmp_path / "shim")}
+
+    assert _configure_dxvk_nvapi_marker_output(env) is False
+    assert "PENGUIN_BURNER_SHIM_OUTPUT" not in env
+
+
+def test_marker_output_is_declined_without_a_built_shim(tmp_path: Path) -> None:
+    data_path = _make_prefix(tmp_path)
+    env = {
+        shim_deploy.NVAPI_SHIM_DIR_ENV: str(tmp_path / "absent-shim-dir"),
+        "STEAM_COMPAT_DATA_PATH": str(data_path),
+    }
+
+    assert _configure_dxvk_nvapi_marker_output(env) is False
