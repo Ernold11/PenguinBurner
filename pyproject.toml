@@ -45,6 +45,14 @@ ui = [
   "colorama>=0.4",
   "pyqtgraph>=0.13",
 ]
+test = [
+  # What `python -m pytest tests/` needs beyond the runtime dependencies.
+  # pytest-qt supplies the qapp/qtbot fixtures the GUI tests build windows on;
+  # without it those tests do not fail, they error at setup with
+  # "fixture 'qapp' not found", which reads like a broken checkout.
+  "pytest>=8",
+  "pytest-qt>=4.4",
+]
 
 [project.urls]
 Homepage = "https://github.com/jpietek/PenguinBurner"
