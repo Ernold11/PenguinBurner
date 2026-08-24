@@ -497,10 +497,19 @@ def test_live_runtime_profile_id_reads_the_published_state(monkeypatch) -> None:
     assert profiles.live_runtime_profile_id() == "perf-1"
 
 
+def test_live_runtime_profile_id_allows_the_slowest_supported_publish_interval(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        profiles, "read_overlay_state", lambda: _state("perf-1", age_s=60)
+    )
+    assert profiles.live_runtime_profile_id() == "perf-1"
+
+
 def test_live_runtime_profile_id_rejects_a_stale_file(monkeypatch) -> None:
     """A file left by a finished session must not be reported as live."""
     monkeypatch.setattr(
-        profiles, "read_overlay_state", lambda: _state("perf-1", age_s=3600)
+        profiles, "read_overlay_state", lambda: _state("perf-1", age_s=76)
     )
     assert profiles.live_runtime_profile_id() == ""
 

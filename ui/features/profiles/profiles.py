@@ -577,10 +577,10 @@ def _profile_info_from_runtime_summary(
     return info
 
 
-# The daemon republishes its runtime state every poll (~2 s with the in-game
-# HUD off). Anything older describes a session that is no longer running, so it
-# must not be reported as live.
-LIVE_RUNTIME_STATE_MAX_AGE_S = 15.0
+# With the in-game HUD off, the daemon republishes runtime state on the fan
+# poll cadence, which supports intervals up to 60 s. Allow one full interval
+# plus scheduling margin before treating a file as left over from an old run.
+LIVE_RUNTIME_STATE_MAX_AGE_S = 75.0
 
 
 def live_runtime_profile_id(
