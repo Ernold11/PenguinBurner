@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import shlex
 import subprocess
+import time
 
+from overlay.state import read_overlay_state
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 from profiles.uv.profile_store import display_signed_memory_clock
 from profiles.uv.profile_store import profile_display_name
@@ -522,6 +524,13 @@ def _daemon_running_profile_info() -> dict[str, object]:
     if isinstance(active_job, dict) and str(active_job.get("runtime_mode") or ""):
         info = _profile_info_from_runtime_summary(active_job)
         info["gpu_uuid"] = str(active_job.get("gpu_uuid") or "")
+        if bool(info.get("adaptive_auto_uv")):
+            # The job spec names the tier the run STARTED on; adaptive has
+            # very likely moved since. Prefer the live published tier, and
+            # fall back to the spec when nothing fresh is available.
+            live_profile_id = live_runtime_profile_id()
+            if live_profile_id:
+                info["selector"] = live_profile_id
         # The Steam tab's per-game override layer: active_job is the live
         # (possibly per-game) spec; game_runtime carries the standing one
         # that returns when the game exits.
@@ -566,6 +575,46 @@ def _profile_info_from_runtime_summary(
     if gpu_uuid:
         info["gpu_uuid"] = gpu_uuid
     return info
+
+
+# With the in-game HUD off, the daemon republishes runtime state on the fan
+# poll cadence, which supports intervals up to 60 s. Allow one full interval
+# plus scheduling margin before treating a file as left over from an old run.
+LIVE_RUNTIME_STATE_MAX_AGE_S = 75.0
+
+
+def live_runtime_profile_id(
+    *,
+    max_age_s: float = LIVE_RUNTIME_STATE_MAX_AGE_S,
+) -> str:
+    """The profile the daemon is running RIGHT NOW, or "" when unknown.
+
+    An adaptive run switches tiers without touching the job spec it was
+    started from, so ``active_job.profile_id`` keeps naming the tier it began
+    on for the whole session. The published runtime state carries the tier
+    actually in effect; this reads it and refuses anything stale.
+    """
+    try:
+        state = read_overlay_state()
+    except Exception:  # noqa: BLE001 - status poll must survive any read failure
+        # Deliberately broad: this runs on the GUI's 2 s status poll, where an
+        # unreadable state file must degrade to "unknown" rather than take the
+        # whole poll down.
+        return ""
+    profile_id = str(state.get("profile_id") or "").strip()
+    if not profile_id:
+        return ""
+    try:
+        updated_ns = int(str(state.get("updated_unix_ns") or "").strip())
+    except ValueError:
+        return ""
+    if updated_ns <= 0:
+        return ""
+    # Only staleness disqualifies it. A timestamp slightly in the future is a
+    # clock detail, not evidence that the file describes an old session.
+    if time.time() - updated_ns / 1_000_000_000 > float(max_age_s):
+        return ""
+    return profile_id
 
 
 def _daemon_status_payload() -> dict[str, object]:
