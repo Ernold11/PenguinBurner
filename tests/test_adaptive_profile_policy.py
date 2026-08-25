@@ -82,3 +82,40 @@ def test_capped_threshold_honours_its_environment_override() -> None:
     )
 
     assert config.capped_gpu_util_max_pct == 25.0
+
+
+def test_the_three_utilisation_bars_are_ordered_idle_entry_exit() -> None:
+    """Idle < cap entry < cap release, and the daemon rejects any other order.
+
+    Each bar answers a different question about the same reading, so the
+    defaults have to keep them apart: doing nothing, working under a limit,
+    and flat out.
+    """
+    config = AdaptiveProfilePolicyConfig()
+
+    assert config.desktop_idle_gpu_util_max_pct < config.capped_gpu_util_max_pct
+    assert config.capped_gpu_util_max_pct < config.capped_exit_gpu_util_pct
+
+
+def test_the_release_and_idle_bars_honour_their_environment_overrides() -> None:
+    config = AdaptiveProfilePolicyConfig().with_env_overrides(
+        {
+            "PENGUIN_BURNER_ADAPTIVE_CAPPED_EXIT_GPU_UTIL": "85",
+            "PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_GPU_UTIL_MAX": "12",
+        }
+    )
+
+    assert config.capped_exit_gpu_util_pct == 85.0
+    assert config.desktop_idle_gpu_util_max_pct == 12.0
+
+
+def test_the_release_and_idle_bars_survive_target_scaling() -> None:
+    """Scaling retargets the frametime thresholds, not the utilisation ones."""
+    default = AdaptiveProfilePolicyConfig()
+    for fps in (30.0, 60.0, 100.0, 240.0):
+        scaled = AdaptiveProfilePolicyConfig.for_target_fps(fps)
+        assert scaled.capped_exit_gpu_util_pct == default.capped_exit_gpu_util_pct
+        assert (
+            scaled.desktop_idle_gpu_util_max_pct
+            == default.desktop_idle_gpu_util_max_pct
+        )

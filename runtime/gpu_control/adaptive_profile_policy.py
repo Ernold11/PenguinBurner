@@ -34,6 +34,8 @@ ADAPTIVE_CPU_BOUND_PROCESS_UTIL_MIN_ENV = (
     "PENGUIN_BURNER_ADAPTIVE_CPU_BOUND_PROCESS_UTIL_MIN"
 )
 ADAPTIVE_CAPPED_GPU_UTIL_MAX_ENV = "PENGUIN_BURNER_ADAPTIVE_CAPPED_GPU_UTIL_MAX"
+ADAPTIVE_CAPPED_EXIT_GPU_UTIL_ENV = "PENGUIN_BURNER_ADAPTIVE_CAPPED_EXIT_GPU_UTIL"
+ADAPTIVE_DESKTOP_IDLE_GPU_UTIL_ENV = "PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_GPU_UTIL_MAX"
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +64,15 @@ class AdaptiveProfilePolicyConfig:
     # cpu_bound_gpu_util_max_pct: that one only blocks a promotion, while this
     # also drives a step DOWN, so it demands clearer evidence.
     capped_gpu_util_max_pct: float = 40.0
+    # The other side of the same latch: at or above this the card is flat out,
+    # so a recognised cap is dropped however steady pacing looks. Far above the
+    # entry bar on purpose -- one shared number let every demotion cancel the
+    # recognition that caused it, which is what oscillated.
+    capped_exit_gpu_util_pct: float = 90.0
+    # Nothing is presenting AND the card is below this: not a game we cannot
+    # measure, just a desktop. Far below the cap bars, because those describe a
+    # card working under a limit while this one describes a card doing nothing.
+    desktop_idle_gpu_util_max_pct: float = 20.0
 
     @classmethod
     def for_target_fps(
@@ -88,6 +99,8 @@ class AdaptiveProfilePolicyConfig:
             cpu_bound_peak_thread_min_pct=default.cpu_bound_peak_thread_min_pct,
             cpu_bound_process_util_min_pct=default.cpu_bound_process_util_min_pct,
             capped_gpu_util_max_pct=default.capped_gpu_util_max_pct,
+            capped_exit_gpu_util_pct=default.capped_exit_gpu_util_pct,
+            desktop_idle_gpu_util_max_pct=default.desktop_idle_gpu_util_max_pct,
         )
         return config.with_env_overrides(env)
 
@@ -147,6 +160,16 @@ class AdaptiveProfilePolicyConfig:
                 values,
                 ADAPTIVE_CAPPED_GPU_UTIL_MAX_ENV,
                 self.capped_gpu_util_max_pct,
+            ),
+            capped_exit_gpu_util_pct=_env_percentage(
+                values,
+                ADAPTIVE_CAPPED_EXIT_GPU_UTIL_ENV,
+                self.capped_exit_gpu_util_pct,
+            ),
+            desktop_idle_gpu_util_max_pct=_env_percentage(
+                values,
+                ADAPTIVE_DESKTOP_IDLE_GPU_UTIL_ENV,
+                self.desktop_idle_gpu_util_max_pct,
             ),
         )
 

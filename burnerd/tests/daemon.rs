@@ -308,6 +308,8 @@ fn test_adaptive_runtime_spec() -> Value {
             "cpu_bound_peak_thread_min_pct": 80.0,
             "cpu_bound_process_util_min_pct": 50.0,
             "capped_gpu_util_max_pct": 40.0,
+            "capped_exit_gpu_util_pct": 90.0,
+            "desktop_idle_gpu_util_max_pct": 20.0,
         },
     });
     spec

@@ -27,15 +27,6 @@ const CPU_BOUND_GUARD_LOG_THROTTLE_S: f64 = 30.0;
 /// now the limit, and the normal ladder should take over again.
 const CAPPED_REGRESSION_RATIO: f64 = 1.15;
 
-/// Utilisation at which a recognised cap is abandoned regardless of pacing.
-///
-/// Deliberately far above the entry threshold. Entry and exit sharing one
-/// number is precisely what oscillated: a demotion nudges utilisation up a
-/// little, and that little was enough to cancel the recognition. A gap this
-/// wide cannot be crossed by the policy's own step, only by the workload
-/// genuinely saturating the card.
-const CAPPED_EXIT_GPU_UTIL_PCT: f64 = 90.0;
-
 // --- policy config ----------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +47,19 @@ pub struct PolicyConfig {
     /// At or below this windowed GPU utilisation the GPU is not what holds
     /// the frame rate back, so a missed target cannot be answered with clock.
     pub capped_gpu_util_max_pct: f64,
+    /// Utilisation at which a recognised cap is abandoned regardless of pacing.
+    ///
+    /// Deliberately far above the entry threshold. Entry and exit sharing one
+    /// number is precisely what oscillated: a demotion nudges utilisation up a
+    /// little, and that little was enough to cancel the recognition. A gap this
+    /// wide cannot be crossed by the policy's own step, only by the workload
+    /// genuinely saturating the card.
+    pub capped_exit_gpu_util_pct: f64,
+    /// At or below this, with nothing presenting, the session counts as a
+    /// desktop rather than a game we cannot measure.
+    pub desktop_idle_gpu_util_max_pct: f64,
+    /// How long that has to hold before the tier moves.
+    pub desktop_idle_dwell_s: f64,
 }
 
 impl Default for PolicyConfig {
@@ -75,6 +79,9 @@ impl Default for PolicyConfig {
             cpu_bound_peak_thread_min_pct: 97.0,
             cpu_bound_process_util_min_pct: 60.0,
             capped_gpu_util_max_pct: 40.0,
+            capped_exit_gpu_util_pct: 90.0,
+            desktop_idle_gpu_util_max_pct: 20.0,
+            desktop_idle_dwell_s: 60.0,
         }
     }
 }
@@ -106,6 +113,8 @@ impl PolicyConfig {
             cpu_bound_peak_thread_min_pct: spec.cpu_bound_peak_thread_min_pct,
             cpu_bound_process_util_min_pct: spec.cpu_bound_process_util_min_pct,
             capped_gpu_util_max_pct: spec.capped_gpu_util_max_pct,
+            capped_exit_gpu_util_pct: spec.capped_exit_gpu_util_pct,
+            desktop_idle_gpu_util_max_pct: spec.desktop_idle_gpu_util_max_pct,
             ..scaled
         }
     }
@@ -136,6 +145,8 @@ struct PolicyState {
     /// does not move with the tier while a cap holds the rate, so it is the one
     /// signal the policy's own decisions cannot invalidate.
     capped_reference_ms: Option<f64>,
+    /// When the current run of quiet, idle-looking ticks started.
+    desktop_idle_since: Option<f64>,
 }
 
 /// How far back the cpu-bound guard looks when judging utilization.
@@ -204,6 +215,7 @@ impl AdaptiveProfileController {
                 near_slow_count: 0,
                 comfort_count: 0,
                 capped_reference_ms: None,
+                desktop_idle_since: None,
             },
             util_samples: std::collections::VecDeque::new(),
         }
@@ -264,17 +276,16 @@ impl AdaptiveProfileController {
             };
         }
         let Some(frametime_ms) = present_frametime_p95_ms else {
-            self.reset_counts();
             // Nothing is presenting: whatever cap was recognised belonged to a
             // session that has gone quiet, and the next one must be judged on
             // its own pacing rather than inheriting this reference.
             self.state.capped_reference_ms = None;
-            return Decision {
-                tier: self.state.current_tier.clone(),
-                changed: false,
-                reason: "no-sample".into(),
-            };
+            return self.idle_decision(&ordered, now_monotonic, gpu_util_pct);
         };
+        // Frames again: whatever the idle rule had counted towards belongs to a
+        // session that is over. Cleared before any ladder branch can run, so a
+        // game that starts pays no dwell for the desktop it interrupted.
+        self.state.desktop_idle_since = None;
 
         // Checked before the slow ladder: every branch below reads a missed
         // target as "needs more clock", which is wrong the moment the GPU is
@@ -288,7 +299,7 @@ impl AdaptiveProfileController {
             let saturated = self
                 .windowed_avg(|s| s.gpu)
                 .or(gpu_util_pct)
-                .is_some_and(|gpu| gpu >= CAPPED_EXIT_GPU_UTIL_PCT);
+                .is_some_and(|gpu| gpu >= self.config.capped_exit_gpu_util_pct);
             if !saturated && frametime_ms <= reference * CAPPED_REGRESSION_RATIO {
                 // Pacing has not moved: the tier still is not the limit.
                 return self.ease_down(&ordered, now_monotonic, "externally-capped");
@@ -412,6 +423,55 @@ impl AdaptiveProfileController {
             changed: false,
             reason: format!("{reason}-wait"),
         }
+    }
+
+    /// What to do when nothing is presenting frames.
+    ///
+    /// Holding the tier was the old answer, and it left a tuned card sitting on
+    /// a high tier for as long as the desktop was idle. The hard part is that
+    /// "nobody is playing" and "a game we cannot measure is running" look
+    /// identical from here -- neither produces frame telemetry. Utilisation is
+    /// what separates them, and by a wide margin: an idle desktop measured 3-4%
+    /// on the development machine, while a game runs 50-90% even with an
+    /// external cap holding its frame rate down.
+    ///
+    /// Entry is slow and exit is immediate, because the costs are not
+    /// symmetric. Easing down a minute late on a desktop costs nothing; leaving
+    /// a game on a low tier for a minute costs frames in the first seconds of
+    /// play, which is when the tool is judged.
+    fn idle_decision(
+        &mut self,
+        ordered: &[String],
+        now_monotonic: f64,
+        gpu_util_pct: Option<f64>,
+    ) -> Decision {
+        let busy = self
+            .windowed_avg(|s| s.gpu)
+            .or(gpu_util_pct)
+            .is_none_or(|gpu| gpu > self.config.desktop_idle_gpu_util_max_pct);
+        if busy {
+            // Something is working the card without telling us about frames.
+            // Not a desktop, so the tier stays where the last measured session
+            // left it. The counters go with it: this is the "hold" answer, and
+            // easing down counts comfort windows that a quiet tick must not
+            // contribute to.
+            self.reset_counts();
+            self.state.desktop_idle_since = None;
+            return Decision {
+                tier: self.state.current_tier.clone(),
+                changed: false,
+                reason: "no-sample".into(),
+            };
+        }
+        let since = *self.state.desktop_idle_since.get_or_insert(now_monotonic);
+        if now_monotonic - since < self.config.desktop_idle_dwell_s {
+            return Decision {
+                tier: self.state.current_tier.clone(),
+                changed: false,
+                reason: "desktop-idle-wait".into(),
+            };
+        }
+        self.ease_down(ordered, now_monotonic, "desktop-idle")
     }
 
     /// True when the frame rate is held by something clocks cannot move.
@@ -1194,11 +1254,80 @@ mod tests {
     }
 
     #[test]
-    fn no_sample_holds_tier() {
+    fn no_sample_holds_tier_when_the_card_is_working() {
+        // No frame telemetry and a busy card is a game we cannot measure, not
+        // a desktop. The tier stays where the last measured session left it.
+        let mut c = controller();
+        let d = c.update(None, &tiers(), 1.0, Some(70.0), None, None);
+        assert!(!d.changed);
+        assert_eq!(d.reason, "no-sample");
+    }
+
+    #[test]
+    fn no_sample_without_a_utilisation_reading_holds_the_tier() {
+        // Nothing measured at all is not evidence of an idle desktop, and the
+        // rule steps the tier DOWN, so absence must not be read as zero.
         let mut c = controller();
         let d = c.update(None, &tiers(), 1.0, None, None, None);
         assert!(!d.changed);
         assert_eq!(d.reason, "no-sample");
+    }
+
+    #[test]
+    fn an_idle_desktop_eases_the_tier_down_after_its_dwell() {
+        // The measured case: nothing presenting, card at desktop utilisation.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        let mut eased = None;
+        for i in 0..80 {
+            let t = 100.0 + i as f64 * 2.0;
+            let d = c.update(None, &tiers(), t, Some(4.0), Some(5.0), Some(9.0));
+            if d.changed {
+                eased = Some(d);
+                break;
+            }
+            assert_eq!(d.reason, "desktop-idle-wait");
+        }
+        let decision = eased.expect("an idle desktop must not hold a high tier forever");
+        assert_eq!(decision.reason, "desktop-idle");
+        assert_eq!(decision.tier, "balanced");
+    }
+
+    #[test]
+    fn the_idle_dwell_is_not_paid_by_a_game_that_starts() {
+        // A quiet stretch before frames arrive must not leave a countdown that
+        // fires later during play.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        for i in 0..20 {
+            c.update(
+                None,
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(4.0),
+                Some(5.0),
+                Some(9.0),
+            );
+        }
+        assert!(
+            c.state.desktop_idle_since.is_some(),
+            "the idle count must have started"
+        );
+
+        // Frames arrive: the countdown belongs to a session that is over.
+        c.update(
+            Some(8.0),
+            &tiers(),
+            200.0,
+            Some(70.0),
+            Some(30.0),
+            Some(40.0),
+        );
+
+        assert!(
+            c.state.desktop_idle_since.is_none(),
+            "a game must not inherit the desktop's countdown"
+        );
     }
 
     #[test]
@@ -1215,12 +1344,16 @@ mod tests {
             cpu_bound_peak_thread_min_pct: 75.0,
             cpu_bound_process_util_min_pct: 15.0,
             capped_gpu_util_max_pct: 30.0,
+            capped_exit_gpu_util_pct: 85.0,
+            desktop_idle_gpu_util_max_pct: 18.0,
         };
         let config = PolicyConfig::from_spec(&spec);
         assert_eq!(config.target_slow_windows, 2);
         assert_eq!(config.near_slow_windows, 4);
         assert_eq!(config.comfort_windows, 7);
         assert_eq!(config.capped_gpu_util_max_pct, 30.0);
+        assert_eq!(config.capped_exit_gpu_util_pct, 85.0);
+        assert_eq!(config.desktop_idle_gpu_util_max_pct, 18.0);
         assert_eq!(config.performance_comfort_windows, 11);
         assert_eq!(config.demote_dwell_s, 50.0);
         assert_eq!(config.cpu_bound_gpu_util_max_pct, 80.0);

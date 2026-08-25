@@ -91,14 +91,59 @@ Leaving the menu reverses it: the GPU wakes up, and once the old samples age
 out of the utilisation window the usual ladder applies — a clearly missed
 target jumps straight to the top tier in a single window.
 
+Releasing that latch is not on its own a reason to climb. "This reference
+stopped explaining the pacing" and "the tier is the limit now" are different
+claims, and only the second justifies more clock, so the loafing test runs again
+on the tick a latch drops. Without it a cap released by a pacing spike promoted
+straight to the top tier with the card at 58% — and a promotion takes one
+window while every step back down pays its dwell.
+
 A saturated CPU is deliberately left to its own, gentler rule: it caps the
 promotion rather than stepping the tier down.
 
-The threshold can be overridden for the service:
+## When nothing is being played
+
+Adaptive paces on frames, so with nothing presenting it has nothing to judge and
+used to hold whichever tier the last game left behind — a tuned card sitting on
+Performance for as long as the desktop stayed idle.
+
+An idle desktop and a game we cannot measure look identical from the policy's
+seat: neither reports frames. Utilisation separates them, and not narrowly. An
+idle desktop with a compositor and a browser measured 3-4% here, while a game
+runs 50-90% even with an external cap holding its frame rate down. The bar sits
+at **20%** — roughly five times the desktop and well under half of anything
+being played.
+
+Entry is slow and exit immediate. Easing down a minute late at the desktop costs
+nothing; leaving a game on a low tier costs frames in the first seconds of play,
+which is when the tool is judged. Frames arriving drop the countdown outright,
+so a game never pays for the desktop it interrupted. With no utilisation reading
+at all the tier is held rather than lowered: absence of a measurement is not
+evidence of an idle machine.
+
+## The three utilisation bars
+
+All three are percentages of GPU utilisation, and each answers a different
+question about the same reading:
+
+| Bar | Default | Meaning | Environment override |
+| --- | --- | --- | --- |
+| Idle | 20% | Doing nothing — no frames, ease the tier down | `PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_GPU_UTIL_MAX` |
+| Cap entry | 40% | Working under a limit — recognise an external cap | `PENGUIN_BURNER_ADAPTIVE_CAPPED_GPU_UTIL_MAX` |
+| Cap release | 90% | Flat out — the tier is the limit again | `PENGUIN_BURNER_ADAPTIVE_CAPPED_EXIT_GPU_UTIL` |
 
 ```bash
+PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_GPU_UTIL_MAX=12
 PENGUIN_BURNER_ADAPTIVE_CAPPED_GPU_UTIL_MAX=25
+PENGUIN_BURNER_ADAPTIVE_CAPPED_EXIT_GPU_UTIL=85
 ```
+
+The order matters and the daemon enforces it: idle strictly below cap entry,
+cap entry strictly below cap release. An idle bar at or above cap entry would
+call a card working under a frame cap "doing nothing" and throttle a session
+being played. A release bar at or below cap entry would let each demotion cancel
+the recognition that caused it — the oscillation the latch exists to prevent. A
+runtime violating either is refused rather than quietly clamped.
 
 ## Example
 

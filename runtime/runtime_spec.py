@@ -301,8 +301,15 @@ def _adaptive_spec(
             "cpu_bound_process_util_min_pct": float(
                 policy.cpu_bound_process_util_min_pct
             ),
-                    "capped_gpu_util_max_pct": float(policy.capped_gpu_util_max_pct),
-},
+            # The three utilisation bars the daemon judges a quiet or capped
+            # session by. Sent explicitly so the service uses this client's
+            # resolved values rather than falling back to its own defaults.
+            "capped_gpu_util_max_pct": float(policy.capped_gpu_util_max_pct),
+            "capped_exit_gpu_util_pct": float(policy.capped_exit_gpu_util_pct),
+            "desktop_idle_gpu_util_max_pct": float(
+                policy.desktop_idle_gpu_util_max_pct
+            ),
+        },
     }
 
 

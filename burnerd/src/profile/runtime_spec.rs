@@ -103,10 +103,22 @@ pub struct AdaptivePolicySpec {
     /// a missing guard threshold must not fail an otherwise valid runtime.
     #[serde(default = "default_capped_gpu_util_max_pct")]
     pub capped_gpu_util_max_pct: f64,
+    #[serde(default = "default_capped_exit_gpu_util_pct")]
+    pub capped_exit_gpu_util_pct: f64,
+    #[serde(default = "default_desktop_idle_gpu_util_max_pct")]
+    pub desktop_idle_gpu_util_max_pct: f64,
 }
 
 fn default_capped_gpu_util_max_pct() -> f64 {
     40.0
+}
+
+fn default_capped_exit_gpu_util_pct() -> f64 {
+    90.0
+}
+
+fn default_desktop_idle_gpu_util_max_pct() -> f64 {
+    20.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -377,7 +389,10 @@ fn validate_adaptive(adaptive: &AdaptiveSpec) -> Result<(), String> {
             ));
         }
     }
-    let policy = &adaptive.policy;
+    validate_adaptive_policy(&adaptive.policy)
+}
+
+fn validate_adaptive_policy(policy: &AdaptivePolicySpec) -> Result<(), String> {
     if !policy.target_fps.is_finite() || !(1.0..=1000.0).contains(&policy.target_fps) {
         return Err("adaptive target_fps must be finite and in 1..1000".to_string());
     }
@@ -419,10 +434,35 @@ fn validate_adaptive(adaptive: &AdaptiveSpec) -> Result<(), String> {
             policy.cpu_bound_process_util_min_pct,
         ),
         ("capped_gpu_util_max_pct", policy.capped_gpu_util_max_pct),
+        ("capped_exit_gpu_util_pct", policy.capped_exit_gpu_util_pct),
+        (
+            "desktop_idle_gpu_util_max_pct",
+            policy.desktop_idle_gpu_util_max_pct,
+        ),
     ] {
         if !value.is_finite() || !(0.0..=100.0).contains(&value) {
             return Err(format!("adaptive {name} must be finite and in 0..100"));
         }
+    }
+    // The two cap thresholds latch a recognised frame cap on and back off.
+    // Equal or inverted, the latch cancels itself on the tick after it is set,
+    // which is exactly the demote/promote oscillation the latch exists to stop.
+    if policy.capped_exit_gpu_util_pct <= policy.capped_gpu_util_max_pct {
+        return Err(format!(
+            "adaptive capped_exit_gpu_util_pct ({}) must be above \
+             capped_gpu_util_max_pct ({})",
+            policy.capped_exit_gpu_util_pct, policy.capped_gpu_util_max_pct
+        ));
+    }
+    // An idle bar at or above the cap-entry bar would claim a card working
+    // under a frame cap is doing nothing, and step the tier down for a session
+    // that is being played.
+    if policy.desktop_idle_gpu_util_max_pct >= policy.capped_gpu_util_max_pct {
+        return Err(format!(
+            "adaptive desktop_idle_gpu_util_max_pct ({}) must be below \
+             capped_gpu_util_max_pct ({})",
+            policy.desktop_idle_gpu_util_max_pct, policy.capped_gpu_util_max_pct
+        ));
     }
     Ok(())
 }
@@ -506,4 +546,99 @@ pub fn profile_tier_label(value: &str) -> String {
         _ => "",
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy() -> AdaptivePolicySpec {
+        AdaptivePolicySpec {
+            target_fps: 60.0,
+            target_slow_windows: 3,
+            near_slow_windows: 2,
+            comfort_windows: 6,
+            performance_comfort_windows: 10,
+            demote_dwell_s: 60.0,
+            performance_demote_dwell_s: 45.0,
+            cpu_bound_gpu_util_max_pct: 60.0,
+            cpu_bound_peak_thread_min_pct: 97.0,
+            cpu_bound_process_util_min_pct: 60.0,
+            capped_gpu_util_max_pct: default_capped_gpu_util_max_pct(),
+            capped_exit_gpu_util_pct: default_capped_exit_gpu_util_pct(),
+            desktop_idle_gpu_util_max_pct: default_desktop_idle_gpu_util_max_pct(),
+        }
+    }
+
+    #[test]
+    fn the_default_bars_are_ordered_idle_below_entry_below_exit() {
+        assert!(validate_adaptive_policy(&policy()).is_ok());
+    }
+
+    #[test]
+    fn capped_exit_bar_must_sit_above_the_entry_bar() {
+        // Equal bars make the latch cancel itself on the next tick, which is
+        // the demote/promote oscillation it exists to prevent.
+        let mut equal = policy();
+        equal.capped_exit_gpu_util_pct = equal.capped_gpu_util_max_pct;
+        let error = validate_adaptive_policy(&equal).unwrap_err();
+        assert!(error.contains("capped_exit_gpu_util_pct"), "{error}");
+
+        let mut inverted = policy();
+        inverted.capped_gpu_util_max_pct = 80.0;
+        inverted.capped_exit_gpu_util_pct = 55.0;
+        assert!(validate_adaptive_policy(&inverted).is_err());
+    }
+
+    #[test]
+    fn the_idle_bar_must_sit_below_the_cap_entry_bar() {
+        // At or above it, the idle rule would call a card working under a
+        // frame cap "doing nothing" and step down a session being played.
+        let mut equal = policy();
+        equal.desktop_idle_gpu_util_max_pct = equal.capped_gpu_util_max_pct;
+        let error = validate_adaptive_policy(&equal).unwrap_err();
+        assert!(error.contains("desktop_idle_gpu_util_max_pct"), "{error}");
+
+        let mut above = policy();
+        above.desktop_idle_gpu_util_max_pct = 70.0;
+        assert!(validate_adaptive_policy(&above).is_err());
+    }
+
+    #[test]
+    fn the_bars_stay_percentages() {
+        for mutate in [
+            (|p: &mut AdaptivePolicySpec| p.capped_exit_gpu_util_pct = 140.0)
+                as fn(&mut AdaptivePolicySpec),
+            |p: &mut AdaptivePolicySpec| p.desktop_idle_gpu_util_max_pct = -1.0,
+        ] {
+            let mut spec = policy();
+            mutate(&mut spec);
+            let error = validate_adaptive_policy(&spec).unwrap_err();
+            assert!(error.contains("must be finite and in 0..100"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_spec_without_the_new_bars_still_deserializes() {
+        // Older clients never send these fields; a missing guard threshold must
+        // resolve to the built-in default rather than fail an otherwise valid
+        // runtime.
+        let json = serde_json::json!({
+            "target_fps": 60.0,
+            "target_slow_windows": 3,
+            "near_slow_windows": 2,
+            "comfort_windows": 6,
+            "performance_comfort_windows": 10,
+            "demote_dwell_s": 60.0,
+            "performance_demote_dwell_s": 45.0,
+            "cpu_bound_gpu_util_max_pct": 60.0,
+            "cpu_bound_peak_thread_min_pct": 97.0,
+            "cpu_bound_process_util_min_pct": 60.0,
+            "capped_gpu_util_max_pct": 40.0,
+        });
+        let parsed: AdaptivePolicySpec = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.capped_exit_gpu_util_pct, 90.0);
+        assert_eq!(parsed.desktop_idle_gpu_util_max_pct, 20.0);
+        assert!(validate_adaptive_policy(&parsed).is_ok());
+    }
 }
