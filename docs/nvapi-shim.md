@@ -16,6 +16,25 @@ the Vulkan layer cannot see the markers. Deployed by **fronting the prefix's
 `system32\nvapi64.dll`** (generic, no per-game logic). Markers reach the existing
 marker FIFO the bridge drains, so nothing downstream changed.
 
+## The game's own log still reaches the launcher
+
+To catch markers that arrive through wine's debug output, the wrapper redirects
+the game's stderr (fd 2) into the marker FIFO. That would otherwise hide the
+whole Proton/wine log from whatever started the game — Lutris, Steam, or a
+terminal — for as long as `PENGUIN_BURNER` is in the launch command.
+
+The drainer is spawned *before* that redirect, so its own stderr is still the
+launcher's. It forwards every line it drains that is **not** a PenguinBurner
+marker, which puts the game's diagnostics back where they belong. Marker lines
+are dropped rather than echoed: they exist only because we asked dxvk-nvapi to
+emit them, so passing them on would add noise the user never had.
+
+Forwarding is best effort and latches off once the launcher's pipe is gone.
+Draining continues regardless — it is what keeps a full pipe from freezing the
+game. Lines arrive via the drainer rather than directly, so expect them at the
+drainer's poll granularity; content and order are preserved. stdout is never
+redirected and always passes straight through.
+
 ## Why it exists — the vkd3d owner-gate
 
 The Vulkan layer (`overlay/native/latency_layer/`) taps `vkSetLatencyMarkerNV`,
@@ -92,13 +111,24 @@ Markers reach the same `nvapi-trace.fifo` the bridge drains.
 
 ## Deployment — generic system32 fronting + re-front watcher
 
-`overlay/shim_deploy.py:deploy_nvapi_shim(env)` fronts
-`<STEAM_COMPAT_DATA_PATH>/pfx/drive_c/windows/system32/nvapi64.dll`: parks the
-real dxvk-nvapi as `nvapi64-pb.dll`, drops the shim as `nvapi64.dll`. The shim's
+`overlay/shim_deploy.py:deploy_nvapi_shim(env)` fronts the running prefix's
+`system32\nvapi64.dll`: parks the real dxvk-nvapi as `nvapi64-pb.dll`, drops
+the shim as `nvapi64.dll`. The shim's
 `load_real()` loads `system32\nvapi64-pb.dll` (or `PENGUIN_BURNER_SHIM_REAL`).
 Generic because every nvapi64-loading process (bootstrappers, UE shipping exes,
 Streamline's `sl.interposer` which `GetSystemDirectory`-loads nvapi64) resolves
 from system32.
+
+The prefix is found from `STEAM_COMPAT_DATA_PATH` (Steam, with the prefix under
+`pfx/`) or `WINEPREFIX` (Lutris and anything else driving wine directly, with
+`drive_c` at the top; umu additionally symlinks `pfx -> .`). Both roots are
+tried in that order, and both layouts under each. Reading only the Steam
+variable meant the shim never reached a Lutris prefix — and with no markers,
+adaptive gets no pacing at all and holds whatever tier it started on.
+
+For Lutris, set **Game → Configure → System options → Command prefix** to
+`PENGUIN_BURNER --pb-overlay=1`. The launcher supplies `WINEPREFIX`, so no Steam
+game identity or library discovery is required.
 
 **Proton clobbers the shim every launch**: prefix setup unconditionally
 `try_copy`s the bundled dxvk-nvapi over `system32\nvapi64.dll` (`os.remove` +
@@ -113,6 +143,27 @@ creation could park a half-written DLL as the forward target). It runs for the
 missed slow first launches (prefix creation, anticheat installs) and mid-session
 re-copies (compat-config changes re-run prefix setup). Falls back to 0.25s
 polling if inotify is unavailable. (Idempotent/self-healing either way.)
+
+## Cleanup — the register of fronted prefixes
+
+Fronting swaps a DLL inside the user's own game files, so every prefix we front
+has to be findable again when PenguinBurner is removed. Steam prefixes are
+discoverable (`steamapps/compatdata/*`), but a Lutris, Heroic or plain-wine
+prefix lives wherever the user put it. Nothing could enumerate those, so before
+this they stayed fronted forever, invisibly.
+
+`deploy_nvapi_shim` therefore records the canonical `system32` path in
+`~/.config/PenguinBurner/nvapi-shim-prefixes.json` **before** touching any DLL,
+and **declines to front a prefix it could not record**. Losing a session of
+marker latency is recoverable; leaving a modified DLL behind with nothing able
+to undo it is not. Paths are resolved before they are stored, so umu's
+`pfx -> .` symlink cannot enter the register twice.
+
+`restore_all_nvapi_shims()` — what `penguin-burner-install-wrappers --uninstall`
+calls — walks the register *and* keeps the Steam sweep. Neither alone is
+enough: the register names prefixes no scan could find, while the sweep still
+covers prefixes fronted by a build that predates the register. Restoring a
+prefix drops it from the register.
 
 ## Integration
 

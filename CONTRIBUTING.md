@@ -21,8 +21,12 @@ scripts/build-daemon.sh   # cargo build --release --locked in burnerd/
 
 ## Tests
 
+The suite needs the test extra; the GUI tests build real windows, so they also
+need a display or `QT_QPA_PLATFORM=offscreen`:
+
 ```bash
-python -m pytest tests/
+python -m pip install --user -e '.[test]'
+QT_QPA_PLATFORM=offscreen python -m pytest tests/
 ```
 
 For changes under `burnerd/`, also run the Rust gates:

@@ -40,6 +40,29 @@ def write_desktop_rtd3_tree() -> Callable[[Path], tuple[Path, Path]]:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_user_home(monkeypatch, tmp_path_factory):
+    """Keep the suite out of the developer's own PenguinBurner state.
+
+    Every user-visible path (runtime config, saved profiles, caches) hangs off
+    _effective_home(), and PENGUIN_BURNER_HOME overrides it. Without this,
+    anything that reaches a real persistence helper writes the machine it runs
+    on: selecting a GPU in a widget, for instance, calls through to
+    persist_runtime_gpu_index and rewrites [gpu] index in the developer's
+    ~/.config/PenguinBurner/penguin_burner.toml, silently repointing the tool
+    at a different card.
+
+    A test that needs to control the home itself sets the variable after this
+    fixture has run, which wins.
+
+    The directory comes from the factory rather than the test's own tmp_path:
+    several tests assert on the exact contents of tmp_path, and a home planted
+    inside it would show up as a stray entry.
+    """
+    home = tmp_path_factory.mktemp("penguin-burner-home")
+    monkeypatch.setenv("PENGUIN_BURNER_HOME", str(home))
+
+
+@pytest.fixture(autouse=True)
 def _no_detached_launch_processes(monkeypatch):
     """Launcher main()-flow tests must never spawn real detached processes
     (re-front watcher, per-game FIFO drainer): those outlive the test run and

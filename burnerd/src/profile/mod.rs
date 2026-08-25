@@ -905,12 +905,23 @@ fn run_fan_control_loop(
             return Ok(());
         }
 
-        // Overlay publish (throttled). On failure, log once (the Python
+        // Runtime-state publish (throttled). On failure, log once (the Python
         // `overlay_publish_failed` latch) and do NOT advance the publish marker
         // (Python retried every tick, silently).
+        //
+        // Published regardless of `publisher.enabled`: this file is the
+        // daemon's live-state channel, not the overlay's on switch. The
+        // in-game HUD is gated separately inside the Vulkan layer, which
+        // checks its own env/config, so writing here never shows an overlay
+        // the user turned off. Consumers that need live state without the HUD
+        // -- the GUI's running-profile line, which otherwise shows the
+        // adaptive run's *initial* tier forever -- depend on it being written.
+        // `publisher.enabled` still drives the loop cadence, so with the HUD
+        // off this lands at the plain poll interval instead of the faster
+        // overlay one.
         let publish_due =
             last_overlay_publish.is_none_or(|last| loop_started - last >= overlay_interval_s);
-        if publisher.enabled && publish_due {
+        if publish_due {
             match publisher.publish(backend, latency_snapshot, now_unix_ns()) {
                 Ok(()) => last_overlay_publish = Some(loop_started),
                 Err(exc) => {
