@@ -4,10 +4,7 @@ import shlex
 from pathlib import Path
 from typing import Any
 
-from cli.runtime_config_file import (
-    persist_on_startup_from_runtime_config,
-    persist_on_startup_to_runtime_config,
-)
+from cli.runtime_config_file import persist_on_startup_to_runtime_config
 from common.penguin_burner_paths import default_user_config_dir
 from curve_editors.uv.vf_curve_manual_editor import editable_anchor_from_profile
 from profiles.uv.memory_offset_edit import editable_memory_offset_from_profile
@@ -101,9 +98,13 @@ class ProfileActionsMixin:
             return
         if checked:
             if gpu_uuid:
+                # Intent only: the boot entry itself is written by the next
+                # apply, and _sync_boot_apply_for_target drops this the moment
+                # the daemon reports the entry.
                 self._boot_apply_by_gpu[gpu_uuid.casefold()] = True
-            # Keep the historical single-value preference for one-GPU upgrades;
-            # the per-GPU daemon boot set is authoritative once UUIDs are known.
+            # Records the user's preference, not what boot will do -- the
+            # daemon's boot set answers that, and this is never read back for
+            # it. Kept because it is a documented setting in existing configs.
             persist_on_startup_to_runtime_config(True)
             return
         # Unticking means "nothing applies at boot": clear the selected GPU's
@@ -121,15 +122,26 @@ class ProfileActionsMixin:
             self.errors.show("Apply on startup", message)
             return
         if gpu_uuid:
-            self._boot_apply_by_gpu[gpu_uuid.casefold()] = False
+            self._boot_apply_by_gpu.pop(gpu_uuid.casefold(), None)
         persist_on_startup_to_runtime_config(False)
 
     def _sync_boot_apply_for_target(self, gpu_uuid: str) -> None:
+        """Show what boot will actually do, as the daemon currently has it.
+
+        The daemon's boot set is the only thing that decides what applies at
+        startup, so it is the only thing this reads. The saved preference is
+        written when the box is ticked but nothing rewrites it when the entry
+        goes away, so consulting it here promised a startup apply for a boot
+        that had nothing saved to apply.
+
+        The session cache carries only intent the daemon has not been told
+        about yet -- a freshly ticked box, whose entry the next apply writes.
+        """
         selected_uuid = str(gpu_uuid or "").strip()
         if not selected_uuid:
-            self.profile_list.set_boot_apply_checked(
-                persist_on_startup_from_runtime_config(default=False)
-            )
+            # Without a UUID the daemon still answers for its selected GPU.
+            info = systemd_autostart_profile_info()
+            self.profile_list.set_boot_apply_checked(bool(info.get("selector")))
             self.profile_list.set_main_gpu_state(
                 checked=False,
                 has_boot_profile=False,
@@ -137,12 +149,20 @@ class ProfileActionsMixin:
             return
         key = selected_uuid.casefold()
         info = systemd_autostart_profile_info(gpu_uuid=selected_uuid)
-        if key not in self._boot_apply_by_gpu:
-            self._boot_apply_by_gpu[key] = bool(info.get("selector"))
-        self.profile_list.set_boot_apply_checked(self._boot_apply_by_gpu[key])
+        saved = bool(info.get("selector"))
+        if saved:
+            # Confirmed on the daemon: there is nothing left pending.
+            self._boot_apply_by_gpu.pop(key, None)
+        # OR rather than either alone, which keeps one invariant: the box is
+        # never shown OFF while the daemon holds an entry. Every apply sends
+        # --boot or --clear-boot from this state, so showing OFF over a saved
+        # entry is what let an unrelated apply silently clear a boot profile.
+        self.profile_list.set_boot_apply_checked(
+            saved or self._boot_apply_by_gpu.get(key, False)
+        )
         self.profile_list.set_main_gpu_state(
             checked=bool(info.get("main_gpu")),
-            has_boot_profile=bool(info.get("selector")),
+            has_boot_profile=saved,
         )
 
     def _persist_main_gpu_preference(self, checked: bool) -> None:
