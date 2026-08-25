@@ -284,26 +284,34 @@ impl AdaptiveProfileController {
         // Utilisation is only the entry hint; re-testing it every tick would
         // let each demotion (which raises utilisation for the same capped rate)
         // cancel the recognition that caused it.
-        match self.state.capped_reference_ms {
-            Some(reference) => {
-                let saturated = self
-                    .windowed_avg(|s| s.gpu)
-                    .or(gpu_util_pct)
-                    .is_some_and(|gpu| gpu >= CAPPED_EXIT_GPU_UTIL_PCT);
-                if !saturated && frametime_ms <= reference * CAPPED_REGRESSION_RATIO {
-                    // Pacing has not moved: the tier still is not the limit.
-                    return self.ease_down(&ordered, now_monotonic, "externally-capped");
-                }
-                // Either pacing degraded past what the cap was hiding, or the
-                // card is now flat out. Both mean the tier is the limit again.
-                self.state.capped_reference_ms = None;
+        if let Some(reference) = self.state.capped_reference_ms {
+            let saturated = self
+                .windowed_avg(|s| s.gpu)
+                .or(gpu_util_pct)
+                .is_some_and(|gpu| gpu >= CAPPED_EXIT_GPU_UTIL_PCT);
+            if !saturated && frametime_ms <= reference * CAPPED_REGRESSION_RATIO {
+                // Pacing has not moved: the tier still is not the limit.
+                return self.ease_down(&ordered, now_monotonic, "externally-capped");
             }
-            None => {
-                if self.externally_capped(gpu_util_pct, cpu_util_pct, cpu_peak_thread_pct) {
-                    self.state.capped_reference_ms = Some(frametime_ms);
-                    return self.ease_down(&ordered, now_monotonic, "externally-capped");
-                }
-            }
+            // Either pacing degraded past what the cap was hiding, or the card
+            // is now flat out. Release the latch -- but do not hand the tick to
+            // the ladder yet, because "this reference stopped explaining the
+            // pacing" is not the same claim as "the tier is the limit now".
+            self.state.capped_reference_ms = None;
+        }
+
+        // Recognition, and re-recognition on the very tick a latch was
+        // released. Observed live: a latch held at 17.0ms dropped when pacing
+        // jumped to 24.7ms, and the same tick promoted to the top tier on
+        // badly-slow -- with the card at 58% and the CPU at 10%, so nothing
+        // there was short of clock. Falling straight through skipped the one
+        // test that would have said so, and a promotion takes a single window
+        // while every step back down pays its dwell.
+        if self.state.capped_reference_ms.is_none()
+            && self.externally_capped(gpu_util_pct, cpu_util_pct, cpu_peak_thread_pct)
+        {
+            self.state.capped_reference_ms = Some(frametime_ms);
+            return self.ease_down(&ordered, now_monotonic, "externally-capped");
         }
 
         if frametime_ms > self.config.badly_slow_ms {
@@ -926,6 +934,89 @@ mod tests {
         let decision = eased.expect("a sustained cap must step the tier down");
         assert_eq!(decision.tier, "balanced");
         assert_eq!(decision.reason, "externally-capped");
+    }
+
+    #[test]
+    fn releasing_the_latch_re_tests_the_cap_before_the_ladder_runs() {
+        // Observed live 2026-08-24 11:17:25: a latch held at 17.0ms dropped
+        // when pacing jumped to 24.7ms, and that same tick promoted to the top
+        // tier on badly-slow -- with the card at 58% and the CPU at 10%, where
+        // nothing was short of clock.
+        // The entry bar mirrors the live configuration this was seen under.
+        let config = PolicyConfig {
+            capped_gpu_util_max_pct: 60.0,
+            ..PolicyConfig::for_target_fps(100.0)
+        };
+        let mut c = AdaptiveProfileController::new("performance", config);
+        // Settle a recognised cap at ~17ms with the card loafing.
+        for i in 0..12 {
+            c.update(
+                Some(17.0),
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(58.0),
+                Some(10.0),
+                Some(22.0),
+            );
+        }
+        assert!(
+            c.state.capped_reference_ms.is_some(),
+            "the cap must be recognised before the release can be tested"
+        );
+
+        // Pacing regresses past the reference: the latch has to go.
+        let decision = c.update(
+            Some(24.7),
+            &tiers(),
+            130.0,
+            Some(58.0),
+            Some(10.0),
+            Some(22.0),
+        );
+
+        assert_ne!(
+            decision.reason, "badly-slow",
+            "a loafing card must not be answered with clock the tick a latch drops"
+        );
+        assert!(
+            decision.tier != "performance" || !decision.changed,
+            "no promotion to the top tier: {decision:?}"
+        );
+    }
+
+    #[test]
+    fn a_saturated_card_still_ends_the_cap_rather_than_re_recognising_it() {
+        // The other release path: the card is genuinely flat out, so the
+        // re-test must fail and the ladder must get the tick.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        for i in 0..12 {
+            c.update(
+                Some(17.0),
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(30.0),
+                Some(10.0),
+                Some(22.0),
+            );
+        }
+        assert!(c.state.capped_reference_ms.is_some());
+
+        for i in 0..8 {
+            c.update(
+                Some(24.7),
+                &tiers(),
+                130.0 + i as f64 * 2.0,
+                Some(97.0),
+                Some(10.0),
+                Some(22.0),
+            );
+        }
+
+        assert!(
+            c.state.capped_reference_ms.is_none(),
+            "a flat-out card must not hold or re-take a cap recognition"
+        );
     }
 
     #[test]
