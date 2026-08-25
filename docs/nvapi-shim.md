@@ -128,7 +128,11 @@ adaptive gets no pacing at all and holds whatever tier it started on.
 
 For Lutris, set **Game → Configure → System options → Command prefix** to
 `PENGUIN_BURNER --pb-overlay=1`. The launcher supplies `WINEPREFIX`, so no Steam
-game identity or library discovery is required.
+game identity or library discovery is required. To deploy the shim without the
+HUD, ask for latency explicitly — `env PB_INGAME_LATENCY=1 PENGUIN_BURNER
+--pb-overlay=0` — because latency (and with it the shim) otherwise follows the
+overlay's state; Lutris execs the prefix without a shell, so the assignment
+needs the leading `env`.
 
 **Proton clobbers the shim every launch**: prefix setup unconditionally
 `try_copy`s the bundled dxvk-nvapi over `system32\nvapi64.dll` (`os.remove` +
@@ -292,7 +296,8 @@ process), and the shim's ring would drop rather than stall even if it died.
 ## Env vars
 
 - `PENGUIN_BURNER_INGAME_LATENCY` (alias `PB_INGAME_LATENCY`) — `0` opts out;
-  unset defaults to the overlay-enabled state.
+  `1` opts in even with the overlay off; unset defaults to the overlay-enabled
+  state.
 - `PENGUIN_BURNER_NVAPI_LATENCY_DISABLE=1` — skip NVAPI latency capture
   (layer-only). Stops re-deploying the shim; does not un-front an
   already-installed shim.

@@ -147,6 +147,18 @@ def test_overlay_disabled_defaults_ingame_latency_off() -> None:
     assert "PENGUIN_BURNER_LATENCY_DISPLAY" not in env
 
 
+def test_explicit_ingame_latency_survives_the_overlay_being_off() -> None:
+    # The documented way to keep markers (and so the shim, and so adaptive's
+    # pacing signal) while running without the HUD: ask for latency by name.
+    env = {
+        OVERLAY_CONFIG_ENV: "/tmp/does-not-exist-pb-overlay.toml",
+        "PB_OVERLAY": "0",
+        "PB_INGAME_LATENCY": "1",
+    }
+    launcher.configure_penguin_burner_environment(env)
+    assert launcher.ingame_latency_enabled(env)
+
+
 def test_configure_environment_passes_user_dxvk_nvapi_log_env_through() -> None:
     # The old trace escape is gone: a user-set DXVK_NVAPI_LOG_LEVEL no longer
     # disables the shim; the launcher just leaves the user's env untouched.

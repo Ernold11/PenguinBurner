@@ -37,6 +37,21 @@ deployed into the Wine or Proton prefix automatically and streams Reflex markers
 to the wrapper's FIFO; native and prefix-less games fall back to the Vulkan
 layer's own marker tap. Opt out with `PB_INGAME_LATENCY=0`.
 
+#### Markers without the overlay
+
+Latency defaults to the overlay's state, so `--pb-overlay=0` turns the marker
+capture off with it. That is the right default for someone who only wanted the
+HUD gone, but it also takes away the pacing signal adaptive tier switching reads.
+To keep the markers while leaving the HUD off, ask for latency explicitly:
+
+```text
+env PB_INGAME_LATENCY=1 PENGUIN_BURNER --pb-overlay=0
+```
+
+The leading `env` is required. Lutris execs the command prefix directly rather
+than through a shell, so a bare `PB_INGAME_LATENCY=1` would be treated as the
+program to run instead of an assignment.
+
 ## What PenguinBurner Can Force
 
 PenguinBurner can load its Vulkan layer, expose the Proton/NVAPI environment,
