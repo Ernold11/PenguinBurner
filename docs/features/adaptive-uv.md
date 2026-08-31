@@ -131,6 +131,23 @@ so a game never pays for the desktop it interrupted. With no utilisation reading
 at all the tier is held rather than lowered: absence of a measurement is not
 evidence of an idle machine.
 
+## One-word tuning: responsiveness
+
+Most tuning wishes are just "react faster" or "be calmer", so one variable
+covers them:
+
+```bash
+PENGUIN_BURNER_ADAPTIVE_RESPONSIVENESS=eager    # react in half the time
+PENGUIN_BURNER_ADAPTIVE_RESPONSIVENESS=relaxed  # twice the patience
+```
+
+It scales every windows and dwell knob together — the promotion windows, the
+demotion windows and dwells, the cap confirm streak, and the idle delay. The
+utilisation bars and the pacing slack are judgements about a reading, not
+about how long to wait, and stay put. Any knob from the tables below that you
+set individually overrides its scaled value. Unset (or `normal`) changes
+nothing.
+
 ## Tuning the frame-cap and idle rules
 
 Every knob reads the same way: built-in default, then the runtime spec, then

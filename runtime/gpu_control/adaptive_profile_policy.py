@@ -43,6 +43,12 @@ ADAPTIVE_FRAME_CAP_EXIT_PACING_PCT_ENV = (
 )
 ADAPTIVE_DESKTOP_IDLE_GPU_PCT_ENV = "PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_GPU_PCT"
 ADAPTIVE_DESKTOP_IDLE_AFTER_S_ENV = "PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_AFTER_S"
+ADAPTIVE_RESPONSIVENESS_ENV = "PENGUIN_BURNER_ADAPTIVE_RESPONSIVENESS"
+
+# The one-word preset: how quickly the whole state machine reacts. ``eager``
+# halves every windows and dwell knob (reacts in half the time), ``relaxed``
+# doubles them (twice the patience). Anything else means ``normal``.
+_RESPONSIVENESS_FACTORS = {"eager": 0.5, "normal": 1.0, "relaxed": 2.0}
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +128,39 @@ class AdaptiveProfilePolicyConfig:
             desktop_idle_gpu_pct=default.desktop_idle_gpu_pct,
             desktop_idle_after_s=default.desktop_idle_after_s,
         )
-        return config.with_env_overrides(env)
+        return config.with_responsiveness(env).with_env_overrides(env)
+
+    def with_responsiveness(
+        self,
+        env: Mapping[str, str] | None = None,
+    ) -> "AdaptiveProfilePolicyConfig":
+        """Scale every windows and dwell knob by the one-word preset.
+
+        Cadence only: the utilisation bars and the pacing slack are
+        judgements about a reading, not about how long to wait, and stay
+        untouched. Applied before the per-knob overrides, so a knob the user
+        set individually always wins over its scaled value.
+        """
+        values: Mapping[str, str] = os.environ if env is None else env
+        raw = str(values.get(ADAPTIVE_RESPONSIVENESS_ENV) or "").strip().lower()
+        factor = _RESPONSIVENESS_FACTORS.get(raw, 1.0)
+        if factor == 1.0:
+            return self
+
+        def windows(count: int) -> int:
+            return max(1, int(count * factor + 0.5))
+
+        return replace(
+            self,
+            target_slow_windows=windows(self.target_slow_windows),
+            near_slow_windows=windows(self.near_slow_windows),
+            comfort_windows=windows(self.comfort_windows),
+            performance_comfort_windows=windows(self.performance_comfort_windows),
+            frame_cap_confirm_windows=windows(self.frame_cap_confirm_windows),
+            demote_dwell_s=self.demote_dwell_s * factor,
+            performance_demote_dwell_s=self.performance_demote_dwell_s * factor,
+            desktop_idle_after_s=self.desktop_idle_after_s * factor,
+        )
 
     def with_env_overrides(
         self,

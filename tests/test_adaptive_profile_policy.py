@@ -56,6 +56,73 @@ def test_adaptive_policy_rejects_out_of_range_overrides() -> None:
     assert config.cpu_bound_gpu_util_max_pct == default.cpu_bound_gpu_util_max_pct
 
 
+def test_eager_responsiveness_halves_every_cadence_knob() -> None:
+    config = AdaptiveProfilePolicyConfig.for_target_fps(
+        60, env={"PENGUIN_BURNER_ADAPTIVE_RESPONSIVENESS": "eager"}
+    )
+
+    assert config.target_slow_windows == 2
+    assert config.near_slow_windows == 1
+    assert config.comfort_windows == 3
+    assert config.performance_comfort_windows == 5
+    assert config.frame_cap_confirm_windows == 2
+    assert config.demote_dwell_s == 30.0
+    assert config.performance_demote_dwell_s == 22.5
+    assert config.desktop_idle_after_s == 30.0
+
+
+def test_relaxed_responsiveness_doubles_every_cadence_knob() -> None:
+    config = AdaptiveProfilePolicyConfig.for_target_fps(
+        60, env={"PENGUIN_BURNER_ADAPTIVE_RESPONSIVENESS": "relaxed"}
+    )
+
+    assert config.target_slow_windows == 6
+    assert config.near_slow_windows == 4
+    assert config.comfort_windows == 12
+    assert config.performance_comfort_windows == 20
+    assert config.frame_cap_confirm_windows == 6
+    assert config.demote_dwell_s == 120.0
+    assert config.performance_demote_dwell_s == 90.0
+    assert config.desktop_idle_after_s == 120.0
+
+
+def test_responsiveness_leaves_the_judgement_knobs_alone() -> None:
+    """The preset changes how long to wait, never what a reading means."""
+    default = AdaptiveProfilePolicyConfig()
+    config = AdaptiveProfilePolicyConfig.for_target_fps(
+        60, env={"PENGUIN_BURNER_ADAPTIVE_RESPONSIVENESS": "eager"}
+    )
+
+    assert config.frame_cap_enter_gpu_pct == default.frame_cap_enter_gpu_pct
+    assert config.frame_cap_exit_gpu_pct == default.frame_cap_exit_gpu_pct
+    assert config.frame_cap_exit_pacing_pct == default.frame_cap_exit_pacing_pct
+    assert config.desktop_idle_gpu_pct == default.desktop_idle_gpu_pct
+    assert config.cpu_bound_gpu_util_max_pct == default.cpu_bound_gpu_util_max_pct
+
+
+def test_an_explicit_knob_wins_over_the_responsiveness_preset() -> None:
+    config = AdaptiveProfilePolicyConfig.for_target_fps(
+        60,
+        env={
+            "PENGUIN_BURNER_ADAPTIVE_RESPONSIVENESS": "relaxed",
+            "PENGUIN_BURNER_ADAPTIVE_COMFORT_WINDOWS": "4",
+        },
+    )
+
+    assert config.comfort_windows == 4
+    assert config.demote_dwell_s == 120.0
+
+
+def test_an_unknown_responsiveness_value_means_normal() -> None:
+    default = AdaptiveProfilePolicyConfig()
+    config = AdaptiveProfilePolicyConfig.for_target_fps(
+        60, env={"PENGUIN_BURNER_ADAPTIVE_RESPONSIVENESS": "turbo"}
+    )
+
+    assert config.comfort_windows == default.comfort_windows
+    assert config.demote_dwell_s == default.demote_dwell_s
+
+
 def test_the_new_knob_defaults_are_the_documented_wire_contract() -> None:
     """These literals must equal the daemon's serde defaults.
 
