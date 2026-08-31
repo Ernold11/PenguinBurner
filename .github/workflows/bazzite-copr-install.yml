@@ -17,4 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install published package on Bazzite
+        # The runner's docker rejects Bazzite's many-layered bootc image
+        # ("max depth exceeded"); podman's storage stack handles it.
+        env:
+          PENGUIN_BURNER_CONTAINER_ENGINE: podman
         run: scripts/check-bazzite-copr-install.sh
