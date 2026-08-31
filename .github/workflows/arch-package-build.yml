@@ -1,0 +1,44 @@
+name: Arch package build
+
+# Builds the Arch package in containers for each supported toolchain
+# scenario (see scripts/check-arch-package-build.sh). The weekly run exists
+# because this surface breaks through distro toolchain drift — new rustc
+# defaults, alternative makedepend providers — not through our commits.
+
+on:
+  pull_request:
+    paths:
+      - packaging/arch/**
+      - setup.py
+      - pyproject.toml
+      - MANIFEST.in
+      - burnerd/**
+      - overlay/native/**
+      - scripts/check-arch-package-build.sh
+      - .github/workflows/arch-package-build.yml
+  push:
+    branches: [main]
+    paths:
+      - packaging/arch/**
+      - setup.py
+      - pyproject.toml
+      - MANIFEST.in
+      - burnerd/**
+      - overlay/native/**
+      - scripts/check-arch-package-build.sh
+      - .github/workflows/arch-package-build.yml
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [vanilla, cachyos-shelly]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build package in ${{ matrix.scenario }} scenario
+        run: scripts/check-arch-package-build.sh "${{ matrix.scenario }}"
