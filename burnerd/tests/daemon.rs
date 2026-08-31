@@ -307,9 +307,15 @@ fn test_adaptive_runtime_spec() -> Value {
             "cpu_bound_gpu_util_max_pct": 80.0,
             "cpu_bound_peak_thread_min_pct": 80.0,
             "cpu_bound_process_util_min_pct": 50.0,
-            "capped_gpu_util_max_pct": 40.0,
-            "capped_exit_gpu_util_pct": 90.0,
-            "desktop_idle_gpu_util_max_pct": 20.0,
+            // All six deliberately non-default: a default value is skipped
+            // when the daemon re-serializes state, so only non-default values
+            // exercise the full persist round-trip.
+            "frame_cap_enter_gpu_pct": 55.0,
+            "frame_cap_exit_gpu_pct": 85.0,
+            "frame_cap_confirm_windows": 2,
+            "frame_cap_exit_pacing_pct": 20.0,
+            "desktop_idle_gpu_pct": 15.0,
+            "desktop_idle_after_s": 45.0,
         },
     });
     spec

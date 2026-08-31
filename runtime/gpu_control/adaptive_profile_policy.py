@@ -33,9 +33,16 @@ ADAPTIVE_CPU_BOUND_PEAK_THREAD_MIN_ENV = (
 ADAPTIVE_CPU_BOUND_PROCESS_UTIL_MIN_ENV = (
     "PENGUIN_BURNER_ADAPTIVE_CPU_BOUND_PROCESS_UTIL_MIN"
 )
-ADAPTIVE_CAPPED_GPU_UTIL_MAX_ENV = "PENGUIN_BURNER_ADAPTIVE_CAPPED_GPU_UTIL_MAX"
-ADAPTIVE_CAPPED_EXIT_GPU_UTIL_ENV = "PENGUIN_BURNER_ADAPTIVE_CAPPED_EXIT_GPU_UTIL"
-ADAPTIVE_DESKTOP_IDLE_GPU_UTIL_ENV = "PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_GPU_UTIL_MAX"
+ADAPTIVE_FRAME_CAP_ENTER_GPU_PCT_ENV = "PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_ENTER_GPU_PCT"
+ADAPTIVE_FRAME_CAP_EXIT_GPU_PCT_ENV = "PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_EXIT_GPU_PCT"
+ADAPTIVE_FRAME_CAP_CONFIRM_WINDOWS_ENV = (
+    "PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_CONFIRM_WINDOWS"
+)
+ADAPTIVE_FRAME_CAP_EXIT_PACING_PCT_ENV = (
+    "PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_EXIT_PACING_PCT"
+)
+ADAPTIVE_DESKTOP_IDLE_GPU_PCT_ENV = "PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_GPU_PCT"
+ADAPTIVE_DESKTOP_IDLE_AFTER_S_ENV = "PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_AFTER_S"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,21 +65,31 @@ class AdaptiveProfilePolicyConfig:
     cpu_bound_gpu_util_max_pct: float = 60.0
     cpu_bound_peak_thread_min_pct: float = 97.0
     cpu_bound_process_util_min_pct: float = 60.0
-    # Below this the GPU is plainly not what holds the frame rate back, so a
-    # missed target means an external cap (a menu's frame lock, vsync), the
-    # CPU, or IO -- none of which more clock can fix. Deliberately well under
-    # cpu_bound_gpu_util_max_pct: that one only blocks a promotion, while this
-    # also drives a step DOWN, so it demands clearer evidence.
-    capped_gpu_util_max_pct: float = 40.0
+    # At or below this the GPU is plainly not what holds the frame rate back,
+    # so a missed target means an external cap (a menu's frame lock, vsync),
+    # the CPU, or IO -- none of which more clock can fix. Matches
+    # cpu_bound_gpu_util_max_pct and the live sessions the feature was
+    # validated under (capped games measured 51-58% at higher tiers); the
+    # extra evidence a step DOWN demands comes from the confirm streak.
+    frame_cap_enter_gpu_pct: float = 60.0
     # The other side of the same latch: at or above this the card is flat out,
     # so a recognised cap is dropped however steady pacing looks. Far above the
     # entry bar on purpose -- one shared number let every demotion cancel the
     # recognition that caused it, which is what oscillated.
-    capped_exit_gpu_util_pct: float = 90.0
+    frame_cap_exit_gpu_pct: float = 90.0
+    # Consecutive capped-looking readings before a cap is recognised and the
+    # tier starts easing down; single readings right after frames resume still
+    # describe the previous session.
+    frame_cap_confirm_windows: int = 3
+    # Frametime this much worse (percent) than at recognition also drops the
+    # cap: the tier, not the cap, is the limit again.
+    frame_cap_exit_pacing_pct: float = 15.0
     # Nothing is presenting AND the card is below this: not a game we cannot
     # measure, just a desktop. Far below the cap bars, because those describe a
     # card working under a limit while this one describes a card doing nothing.
-    desktop_idle_gpu_util_max_pct: float = 20.0
+    desktop_idle_gpu_pct: float = 20.0
+    # How long the desktop has to stay that quiet before the tier eases down.
+    desktop_idle_after_s: float = 60.0
 
     @classmethod
     def for_target_fps(
@@ -98,9 +115,12 @@ class AdaptiveProfilePolicyConfig:
             cpu_bound_gpu_util_max_pct=default.cpu_bound_gpu_util_max_pct,
             cpu_bound_peak_thread_min_pct=default.cpu_bound_peak_thread_min_pct,
             cpu_bound_process_util_min_pct=default.cpu_bound_process_util_min_pct,
-            capped_gpu_util_max_pct=default.capped_gpu_util_max_pct,
-            capped_exit_gpu_util_pct=default.capped_exit_gpu_util_pct,
-            desktop_idle_gpu_util_max_pct=default.desktop_idle_gpu_util_max_pct,
+            frame_cap_enter_gpu_pct=default.frame_cap_enter_gpu_pct,
+            frame_cap_exit_gpu_pct=default.frame_cap_exit_gpu_pct,
+            frame_cap_confirm_windows=default.frame_cap_confirm_windows,
+            frame_cap_exit_pacing_pct=default.frame_cap_exit_pacing_pct,
+            desktop_idle_gpu_pct=default.desktop_idle_gpu_pct,
+            desktop_idle_after_s=default.desktop_idle_after_s,
         )
         return config.with_env_overrides(env)
 
@@ -156,20 +176,35 @@ class AdaptiveProfilePolicyConfig:
                 ADAPTIVE_CPU_BOUND_PROCESS_UTIL_MIN_ENV,
                 self.cpu_bound_process_util_min_pct,
             ),
-            capped_gpu_util_max_pct=_env_percentage(
+            frame_cap_enter_gpu_pct=_env_percentage(
                 values,
-                ADAPTIVE_CAPPED_GPU_UTIL_MAX_ENV,
-                self.capped_gpu_util_max_pct,
+                ADAPTIVE_FRAME_CAP_ENTER_GPU_PCT_ENV,
+                self.frame_cap_enter_gpu_pct,
             ),
-            capped_exit_gpu_util_pct=_env_percentage(
+            frame_cap_exit_gpu_pct=_env_percentage(
                 values,
-                ADAPTIVE_CAPPED_EXIT_GPU_UTIL_ENV,
-                self.capped_exit_gpu_util_pct,
+                ADAPTIVE_FRAME_CAP_EXIT_GPU_PCT_ENV,
+                self.frame_cap_exit_gpu_pct,
             ),
-            desktop_idle_gpu_util_max_pct=_env_percentage(
+            frame_cap_confirm_windows=_env_int(
                 values,
-                ADAPTIVE_DESKTOP_IDLE_GPU_UTIL_ENV,
-                self.desktop_idle_gpu_util_max_pct,
+                ADAPTIVE_FRAME_CAP_CONFIRM_WINDOWS_ENV,
+                self.frame_cap_confirm_windows,
+            ),
+            frame_cap_exit_pacing_pct=_env_percentage(
+                values,
+                ADAPTIVE_FRAME_CAP_EXIT_PACING_PCT_ENV,
+                self.frame_cap_exit_pacing_pct,
+            ),
+            desktop_idle_gpu_pct=_env_percentage(
+                values,
+                ADAPTIVE_DESKTOP_IDLE_GPU_PCT_ENV,
+                self.desktop_idle_gpu_pct,
+            ),
+            desktop_idle_after_s=_env_float(
+                values,
+                ADAPTIVE_DESKTOP_IDLE_AFTER_S_ENV,
+                self.desktop_idle_after_s,
             ),
         )
 

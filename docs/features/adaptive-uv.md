@@ -74,10 +74,13 @@ PenguinBurner used to climb to the top tier and stay there for the whole menu,
 burning power for frames the cap would never let through.
 
 PenguinBurner now checks whether the GPU is actually the limiter. When it is
-loafing (utilisation averaged over ~8 s at or below **40%**) and the CPU is not
-saturated either, nothing about the frame rate is a clock problem. Instead of
-promoting, the tier eases *down* using the same windows and dwell as a normal
-comfort demotion, so the cap is held at the cheapest tier that can hold it.
+loafing (utilisation averaged over ~8 s at or below **60%**) and the CPU is not
+saturated either, nothing about the frame rate is a clock problem. One such
+reading is a hint, not a diagnosis, so recognition waits for **3** consecutive
+capped-looking readings — the tier is simply held while they accumulate.
+Once confirmed, instead of promoting, the tier eases *down* using the same
+windows and dwell as a normal comfort demotion, so the cap is held at the
+cheapest tier that can hold it.
 
 Utilisation only *starts* that recognition; it cannot end it. Each step down
 makes the card work harder for the same capped frame rate, so utilisation
@@ -85,7 +88,8 @@ climbs — and judging it every tick would cancel the recognition that caused th
 step, tier down and straight back up, forever. Once a cap is recognised it is
 held against the pacing measured at the time, which a cap keeps steady no
 matter which tier runs. The tier takes over again only when pacing actually
-degrades past that reference, or when the card is flat out (90% or more).
+degrades past that reference (by more than **15%**), or when the card is flat
+out (**90%** or more).
 
 Leaving the menu reverses it: the GPU wakes up, and once the old samples age
 out of the utilisation window the usual ladder applies — a clearly missed
@@ -100,6 +104,12 @@ window while every step back down pays its dwell.
 
 A saturated CPU is deliberately left to its own, gentler rule: it caps the
 promotion rather than stepping the tier down.
+
+A game that starts is always judged on its own readings. Frames arriving after
+a quiet stretch discard the utilisation window and every counter the previous
+session accumulated — without that, the desktop's near-zero readings made the
+first seconds of a launch look "capped" and held the low tier exactly when the
+game needed a promotion.
 
 ## When nothing is being played
 
@@ -121,29 +131,60 @@ so a game never pays for the desktop it interrupted. With no utilisation reading
 at all the tier is held rather than lowered: absence of a measurement is not
 evidence of an idle machine.
 
-## The three utilisation bars
+## Tuning the frame-cap and idle rules
 
-All three are percentages of GPU utilisation, and each answers a different
-question about the same reading:
+Every knob reads the same way: built-in default, then the runtime spec, then
+the environment override. All are optional — the defaults are the tested
+configuration.
 
-| Bar | Default | Meaning | Environment override |
-| --- | --- | --- | --- |
-| Idle | 20% | Doing nothing — no frames, ease the tier down | `PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_GPU_UTIL_MAX` |
-| Cap entry | 40% | Working under a limit — recognise an external cap | `PENGUIN_BURNER_ADAPTIVE_CAPPED_GPU_UTIL_MAX` |
-| Cap release | 90% | Flat out — the tier is the limit again | `PENGUIN_BURNER_ADAPTIVE_CAPPED_EXIT_GPU_UTIL` |
+| What you are changing | Default | Environment override |
+| --- | --- | --- |
+| GPU busy% at or below which a missed target counts as an external cap rather than a clock problem | 60 | `PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_ENTER_GPU_PCT` |
+| GPU busy% at which the card is flat out again and a recognised cap is dropped | 90 | `PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_EXIT_GPU_PCT` |
+| Consecutive capped-looking readings before the tier starts easing down | 3 | `PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_CONFIRM_WINDOWS` |
+| How much worse (%) frametime may get before the cap is considered gone | 15 | `PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_EXIT_PACING_PCT` |
+| GPU busy% at or below which a desktop with no game presenting counts as idle | 20 | `PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_GPU_PCT` |
+| Seconds the desktop must stay idle before the tier eases down | 60 | `PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_AFTER_S` |
+
+For example, a stricter cap recognition with a faster idle ease-down:
 
 ```bash
-PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_GPU_UTIL_MAX=12
-PENGUIN_BURNER_ADAPTIVE_CAPPED_GPU_UTIL_MAX=25
-PENGUIN_BURNER_ADAPTIVE_CAPPED_EXIT_GPU_UTIL=85
+PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_ENTER_GPU_PCT=40
+PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_GPU_PCT=12
+PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_AFTER_S=30
 ```
 
-The order matters and the daemon enforces it: idle strictly below cap entry,
-cap entry strictly below cap release. An idle bar at or above cap entry would
-call a card working under a frame cap "doing nothing" and throttle a session
-being played. A release bar at or below cap entry would let each demotion cancel
-the recognition that caused it — the oscillation the latch exists to prevent. A
-runtime violating either is refused rather than quietly clamped.
+The three GPU busy% bars are ordered, and the daemon enforces it: idle strictly
+below cap enter, cap enter strictly below cap exit. An idle bar at or above cap
+enter would call a card working under a frame cap "doing nothing" and throttle
+a session being played. An exit bar at or below cap enter would let each
+demotion cancel the recognition that caused it — the oscillation the latch
+exists to prevent. A runtime violating either is refused with a clear error at
+apply time rather than quietly clamped.
+
+The demotion cadence under a cap is the ordinary comfort one, tuned by the
+ladder knobs below.
+
+## The ladder knobs
+
+These predate the frame-cap rules and tune the ordinary promote/demote ladder.
+A *reading* is one poll tick (roughly every 1-2 s); a *window* is one
+consecutive such reading.
+
+| What you are changing | Default | Environment override |
+| --- | --- | --- |
+| Consecutive slightly-behind-target readings before promoting one tier | 3 | `PENGUIN_BURNER_ADAPTIVE_TARGET_SLOW_WINDOWS` |
+| Consecutive clearly-slow readings before promoting one tier | 2 | `PENGUIN_BURNER_ADAPTIVE_NEAR_SLOW_WINDOWS` |
+| Consecutive comfortable readings before demoting one tier | 6 | `PENGUIN_BURNER_ADAPTIVE_COMFORT_WINDOWS` |
+| Same, when demoting off the Performance tier | 10 | `PENGUIN_BURNER_ADAPTIVE_PERFORMANCE_COMFORT_WINDOWS` |
+| Minimum seconds between demotions | 60 | `PENGUIN_BURNER_ADAPTIVE_DEMOTE_DWELL_S` |
+| Same, when demoting off the Performance tier | 45 | `PENGUIN_BURNER_ADAPTIVE_PERFORMANCE_DEMOTE_DWELL_S` |
+| GPU busy% at or below which a promotion to Performance can be held back as CPU-bound | 60 | `PENGUIN_BURNER_ADAPTIVE_CPU_BOUND_GPU_UTIL_MAX` |
+| Busiest-thread CPU% at or above which the game counts as CPU-bound | 97 | `PENGUIN_BURNER_ADAPTIVE_CPU_BOUND_PEAK_THREAD_MIN` |
+| Whole-process CPU% at or above which the game counts as CPU-bound | 60 | `PENGUIN_BURNER_ADAPTIVE_CPU_BOUND_PROCESS_UTIL_MIN` |
+
+Promotions on a badly missed target are immediate and are not windowed —
+protecting frame rate never waits.
 
 ## Example
 

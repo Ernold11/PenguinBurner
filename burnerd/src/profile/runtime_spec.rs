@@ -98,27 +98,99 @@ pub struct AdaptivePolicySpec {
     pub cpu_bound_gpu_util_max_pct: f64,
     pub cpu_bound_peak_thread_min_pct: f64,
     pub cpu_bound_process_util_min_pct: f64,
-    /// Defaulted so a client from before this field existed still resolves:
-    /// deny_unknown_fields makes the spec strict in the other direction, and
-    /// a missing guard threshold must not fail an otherwise valid runtime.
-    #[serde(default = "default_capped_gpu_util_max_pct")]
-    pub capped_gpu_util_max_pct: f64,
-    #[serde(default = "default_capped_exit_gpu_util_pct")]
-    pub capped_exit_gpu_util_pct: f64,
-    #[serde(default = "default_desktop_idle_gpu_util_max_pct")]
-    pub desktop_idle_gpu_util_max_pct: f64,
+    /// The frame-cap and desktop-idle knobs are defaulted so a client from
+    /// before they existed still resolves: deny_unknown_fields makes the spec
+    /// strict in the other direction, and a missing guard threshold must not
+    /// fail an otherwise valid runtime. The defaults here must stay identical
+    /// to `AdaptiveProfilePolicyConfig` in
+    /// `runtime/gpu_control/adaptive_profile_policy.py` (pinned by a literal
+    /// test on each side): the client omits any of these it holds at the
+    /// default, so a 0.7.x daemon that has not been restarted keeps accepting
+    /// a default-config runtime. Serialization skips defaults for the same
+    /// reason in the other direction -- persisted boot/active state keeps a
+    /// shape a 0.7.x daemon still loads after a rollback. The aliases accept
+    /// state persisted by the pre-rename build of this feature branch.
+    #[serde(
+        default = "default_frame_cap_enter_gpu_pct",
+        alias = "capped_gpu_util_max_pct",
+        skip_serializing_if = "is_default_frame_cap_enter_gpu_pct"
+    )]
+    pub frame_cap_enter_gpu_pct: f64,
+    #[serde(
+        default = "default_frame_cap_exit_gpu_pct",
+        alias = "capped_exit_gpu_util_pct",
+        skip_serializing_if = "is_default_frame_cap_exit_gpu_pct"
+    )]
+    pub frame_cap_exit_gpu_pct: f64,
+    #[serde(
+        default = "default_frame_cap_confirm_windows",
+        skip_serializing_if = "is_default_frame_cap_confirm_windows"
+    )]
+    pub frame_cap_confirm_windows: i64,
+    #[serde(
+        default = "default_frame_cap_exit_pacing_pct",
+        skip_serializing_if = "is_default_frame_cap_exit_pacing_pct"
+    )]
+    pub frame_cap_exit_pacing_pct: f64,
+    #[serde(
+        default = "default_desktop_idle_gpu_pct",
+        alias = "desktop_idle_gpu_util_max_pct",
+        skip_serializing_if = "is_default_desktop_idle_gpu_pct"
+    )]
+    pub desktop_idle_gpu_pct: f64,
+    #[serde(
+        default = "default_desktop_idle_after_s",
+        skip_serializing_if = "is_default_desktop_idle_after_s"
+    )]
+    pub desktop_idle_after_s: f64,
 }
 
-fn default_capped_gpu_util_max_pct() -> f64 {
-    40.0
+fn default_frame_cap_enter_gpu_pct() -> f64 {
+    60.0
 }
 
-fn default_capped_exit_gpu_util_pct() -> f64 {
+fn default_frame_cap_exit_gpu_pct() -> f64 {
     90.0
 }
 
-fn default_desktop_idle_gpu_util_max_pct() -> f64 {
+fn default_frame_cap_confirm_windows() -> i64 {
+    3
+}
+
+fn default_frame_cap_exit_pacing_pct() -> f64 {
+    15.0
+}
+
+fn default_desktop_idle_gpu_pct() -> f64 {
     20.0
+}
+
+fn default_desktop_idle_after_s() -> f64 {
+    60.0
+}
+
+fn is_default_frame_cap_enter_gpu_pct(value: &f64) -> bool {
+    *value == default_frame_cap_enter_gpu_pct()
+}
+
+fn is_default_frame_cap_exit_gpu_pct(value: &f64) -> bool {
+    *value == default_frame_cap_exit_gpu_pct()
+}
+
+fn is_default_frame_cap_confirm_windows(value: &i64) -> bool {
+    *value == default_frame_cap_confirm_windows()
+}
+
+fn is_default_frame_cap_exit_pacing_pct(value: &f64) -> bool {
+    *value == default_frame_cap_exit_pacing_pct()
+}
+
+fn is_default_desktop_idle_gpu_pct(value: &f64) -> bool {
+    *value == default_desktop_idle_gpu_pct()
+}
+
+fn is_default_desktop_idle_after_s(value: &f64) -> bool {
+    *value == default_desktop_idle_after_s()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -404,6 +476,10 @@ fn validate_adaptive_policy(policy: &AdaptivePolicySpec) -> Result<(), String> {
             "performance_comfort_windows",
             policy.performance_comfort_windows,
         ),
+        (
+            "frame_cap_confirm_windows",
+            policy.frame_cap_confirm_windows,
+        ),
     ] {
         if !(1..=120).contains(&value) {
             return Err(format!("adaptive {name} must be in 1..120"));
@@ -415,6 +491,7 @@ fn validate_adaptive_policy(policy: &AdaptivePolicySpec) -> Result<(), String> {
             "performance_demote_dwell_s",
             policy.performance_demote_dwell_s,
         ),
+        ("desktop_idle_after_s", policy.desktop_idle_after_s),
     ] {
         if !value.is_finite() || !(0.0..=3600.0).contains(&value) {
             return Err(format!("adaptive {name} must be finite and in 0..3600"));
@@ -433,12 +510,13 @@ fn validate_adaptive_policy(policy: &AdaptivePolicySpec) -> Result<(), String> {
             "cpu_bound_process_util_min_pct",
             policy.cpu_bound_process_util_min_pct,
         ),
-        ("capped_gpu_util_max_pct", policy.capped_gpu_util_max_pct),
-        ("capped_exit_gpu_util_pct", policy.capped_exit_gpu_util_pct),
+        ("frame_cap_enter_gpu_pct", policy.frame_cap_enter_gpu_pct),
+        ("frame_cap_exit_gpu_pct", policy.frame_cap_exit_gpu_pct),
         (
-            "desktop_idle_gpu_util_max_pct",
-            policy.desktop_idle_gpu_util_max_pct,
+            "frame_cap_exit_pacing_pct",
+            policy.frame_cap_exit_pacing_pct,
         ),
+        ("desktop_idle_gpu_pct", policy.desktop_idle_gpu_pct),
     ] {
         if !value.is_finite() || !(0.0..=100.0).contains(&value) {
             return Err(format!("adaptive {name} must be finite and in 0..100"));
@@ -447,21 +525,21 @@ fn validate_adaptive_policy(policy: &AdaptivePolicySpec) -> Result<(), String> {
     // The two cap thresholds latch a recognised frame cap on and back off.
     // Equal or inverted, the latch cancels itself on the tick after it is set,
     // which is exactly the demote/promote oscillation the latch exists to stop.
-    if policy.capped_exit_gpu_util_pct <= policy.capped_gpu_util_max_pct {
+    if policy.frame_cap_exit_gpu_pct <= policy.frame_cap_enter_gpu_pct {
         return Err(format!(
-            "adaptive capped_exit_gpu_util_pct ({}) must be above \
-             capped_gpu_util_max_pct ({})",
-            policy.capped_exit_gpu_util_pct, policy.capped_gpu_util_max_pct
+            "adaptive frame_cap_exit_gpu_pct ({}) must be above \
+             frame_cap_enter_gpu_pct ({})",
+            policy.frame_cap_exit_gpu_pct, policy.frame_cap_enter_gpu_pct
         ));
     }
     // An idle bar at or above the cap-entry bar would claim a card working
     // under a frame cap is doing nothing, and step the tier down for a session
     // that is being played.
-    if policy.desktop_idle_gpu_util_max_pct >= policy.capped_gpu_util_max_pct {
+    if policy.desktop_idle_gpu_pct >= policy.frame_cap_enter_gpu_pct {
         return Err(format!(
-            "adaptive desktop_idle_gpu_util_max_pct ({}) must be below \
-             capped_gpu_util_max_pct ({})",
-            policy.desktop_idle_gpu_util_max_pct, policy.capped_gpu_util_max_pct
+            "adaptive desktop_idle_gpu_pct ({}) must be below \
+             frame_cap_enter_gpu_pct ({})",
+            policy.desktop_idle_gpu_pct, policy.frame_cap_enter_gpu_pct
         ));
     }
     Ok(())
@@ -564,9 +642,12 @@ mod tests {
             cpu_bound_gpu_util_max_pct: 60.0,
             cpu_bound_peak_thread_min_pct: 97.0,
             cpu_bound_process_util_min_pct: 60.0,
-            capped_gpu_util_max_pct: default_capped_gpu_util_max_pct(),
-            capped_exit_gpu_util_pct: default_capped_exit_gpu_util_pct(),
-            desktop_idle_gpu_util_max_pct: default_desktop_idle_gpu_util_max_pct(),
+            frame_cap_enter_gpu_pct: default_frame_cap_enter_gpu_pct(),
+            frame_cap_exit_gpu_pct: default_frame_cap_exit_gpu_pct(),
+            frame_cap_confirm_windows: default_frame_cap_confirm_windows(),
+            frame_cap_exit_pacing_pct: default_frame_cap_exit_pacing_pct(),
+            desktop_idle_gpu_pct: default_desktop_idle_gpu_pct(),
+            desktop_idle_after_s: default_desktop_idle_after_s(),
         }
     }
 
@@ -576,40 +657,41 @@ mod tests {
     }
 
     #[test]
-    fn capped_exit_bar_must_sit_above_the_entry_bar() {
+    fn frame_cap_exit_bar_must_sit_above_the_enter_bar() {
         // Equal bars make the latch cancel itself on the next tick, which is
         // the demote/promote oscillation it exists to prevent.
         let mut equal = policy();
-        equal.capped_exit_gpu_util_pct = equal.capped_gpu_util_max_pct;
+        equal.frame_cap_exit_gpu_pct = equal.frame_cap_enter_gpu_pct;
         let error = validate_adaptive_policy(&equal).unwrap_err();
-        assert!(error.contains("capped_exit_gpu_util_pct"), "{error}");
+        assert!(error.contains("frame_cap_exit_gpu_pct"), "{error}");
 
         let mut inverted = policy();
-        inverted.capped_gpu_util_max_pct = 80.0;
-        inverted.capped_exit_gpu_util_pct = 55.0;
+        inverted.frame_cap_enter_gpu_pct = 80.0;
+        inverted.frame_cap_exit_gpu_pct = 55.0;
         assert!(validate_adaptive_policy(&inverted).is_err());
     }
 
     #[test]
-    fn the_idle_bar_must_sit_below_the_cap_entry_bar() {
+    fn the_idle_bar_must_sit_below_the_frame_cap_enter_bar() {
         // At or above it, the idle rule would call a card working under a
         // frame cap "doing nothing" and step down a session being played.
         let mut equal = policy();
-        equal.desktop_idle_gpu_util_max_pct = equal.capped_gpu_util_max_pct;
+        equal.desktop_idle_gpu_pct = equal.frame_cap_enter_gpu_pct;
         let error = validate_adaptive_policy(&equal).unwrap_err();
-        assert!(error.contains("desktop_idle_gpu_util_max_pct"), "{error}");
+        assert!(error.contains("desktop_idle_gpu_pct"), "{error}");
 
         let mut above = policy();
-        above.desktop_idle_gpu_util_max_pct = 70.0;
+        above.desktop_idle_gpu_pct = 70.0;
         assert!(validate_adaptive_policy(&above).is_err());
     }
 
     #[test]
     fn the_bars_stay_percentages() {
         for mutate in [
-            (|p: &mut AdaptivePolicySpec| p.capped_exit_gpu_util_pct = 140.0)
+            (|p: &mut AdaptivePolicySpec| p.frame_cap_exit_gpu_pct = 140.0)
                 as fn(&mut AdaptivePolicySpec),
-            |p: &mut AdaptivePolicySpec| p.desktop_idle_gpu_util_max_pct = -1.0,
+            |p: &mut AdaptivePolicySpec| p.desktop_idle_gpu_pct = -1.0,
+            |p: &mut AdaptivePolicySpec| p.frame_cap_exit_pacing_pct = 250.0,
         ] {
             let mut spec = policy();
             mutate(&mut spec);
@@ -619,10 +701,23 @@ mod tests {
     }
 
     #[test]
-    fn a_spec_without_the_new_bars_still_deserializes() {
-        // Older clients never send these fields; a missing guard threshold must
-        // resolve to the built-in default rather than fail an otherwise valid
-        // runtime.
+    fn the_confirm_streak_and_idle_delay_are_bounded() {
+        let mut zero_windows = policy();
+        zero_windows.frame_cap_confirm_windows = 0;
+        let error = validate_adaptive_policy(&zero_windows).unwrap_err();
+        assert!(error.contains("frame_cap_confirm_windows"), "{error}");
+
+        let mut endless_idle = policy();
+        endless_idle.desktop_idle_after_s = 7200.0;
+        let error = validate_adaptive_policy(&endless_idle).unwrap_err();
+        assert!(error.contains("desktop_idle_after_s"), "{error}");
+    }
+
+    #[test]
+    fn a_spec_without_the_new_knobs_still_deserializes() {
+        // Older clients never send these fields, and the current client omits
+        // any it holds at the default; a missing knob must resolve to the
+        // built-in default rather than fail an otherwise valid runtime.
         let json = serde_json::json!({
             "target_fps": 60.0,
             "target_slow_windows": 3,
@@ -634,11 +729,92 @@ mod tests {
             "cpu_bound_gpu_util_max_pct": 60.0,
             "cpu_bound_peak_thread_min_pct": 97.0,
             "cpu_bound_process_util_min_pct": 60.0,
-            "capped_gpu_util_max_pct": 40.0,
+            "frame_cap_enter_gpu_pct": 50.0,
         });
         let parsed: AdaptivePolicySpec = serde_json::from_value(json).unwrap();
-        assert_eq!(parsed.capped_exit_gpu_util_pct, 90.0);
-        assert_eq!(parsed.desktop_idle_gpu_util_max_pct, 20.0);
+        assert_eq!(parsed.frame_cap_exit_gpu_pct, 90.0);
+        assert_eq!(parsed.frame_cap_confirm_windows, 3);
+        assert_eq!(parsed.frame_cap_exit_pacing_pct, 15.0);
+        assert_eq!(parsed.desktop_idle_gpu_pct, 20.0);
+        assert_eq!(parsed.desktop_idle_after_s, 60.0);
         assert!(validate_adaptive_policy(&parsed).is_ok());
+    }
+
+    fn old_fields_json() -> serde_json::Value {
+        serde_json::json!({
+            "target_fps": 60.0,
+            "target_slow_windows": 3,
+            "near_slow_windows": 2,
+            "comfort_windows": 6,
+            "performance_comfort_windows": 10,
+            "demote_dwell_s": 60.0,
+            "performance_demote_dwell_s": 45.0,
+            "cpu_bound_gpu_util_max_pct": 60.0,
+            "cpu_bound_peak_thread_min_pct": 97.0,
+            "cpu_bound_process_util_min_pct": 60.0,
+        })
+    }
+
+    #[test]
+    fn an_omitted_policy_tail_resolves_the_documented_defaults() {
+        // The client omits any knob at its default, so the values resolved
+        // here ARE the applied config for a default-config user. This table
+        // is mirrored literal-for-literal by
+        // test_the_new_knob_defaults_are_the_documented_wire_contract in
+        // tests/test_adaptive_profile_policy.py; a retune on either side must
+        // change both, or default clients silently run the other language's
+        // number.
+        let parsed: AdaptivePolicySpec = serde_json::from_value(old_fields_json()).unwrap();
+        assert_eq!(parsed.frame_cap_enter_gpu_pct, 60.0);
+        assert_eq!(parsed.frame_cap_exit_gpu_pct, 90.0);
+        assert_eq!(parsed.frame_cap_confirm_windows, 3);
+        assert_eq!(parsed.frame_cap_exit_pacing_pct, 15.0);
+        assert_eq!(parsed.desktop_idle_gpu_pct, 20.0);
+        assert_eq!(parsed.desktop_idle_after_s, 60.0);
+        assert!(validate_adaptive_policy(&parsed).is_ok());
+    }
+
+    #[test]
+    fn state_persisted_under_the_old_knob_names_still_loads() {
+        // The pre-rename build of this branch persisted boot/active state with
+        // the capped_*/desktop_idle_gpu_util_max names; the aliases keep that
+        // state loading (and boot replaying) after an upgrade.
+        let mut json = old_fields_json();
+        json["capped_gpu_util_max_pct"] = 55.0.into();
+        json["capped_exit_gpu_util_pct"] = 92.0.into();
+        json["desktop_idle_gpu_util_max_pct"] = 11.0.into();
+        let parsed: AdaptivePolicySpec = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.frame_cap_enter_gpu_pct, 55.0);
+        assert_eq!(parsed.frame_cap_exit_gpu_pct, 92.0);
+        assert_eq!(parsed.desktop_idle_gpu_pct, 11.0);
+        assert!(validate_adaptive_policy(&parsed).is_ok());
+    }
+
+    #[test]
+    fn default_knobs_stay_out_of_the_persisted_state_shape() {
+        // The daemon re-serializes parsed specs into its boot/active state
+        // files. Knobs at their defaults stay out of that shape so a 0.7.x
+        // daemon still loads the files after a rollback; a tuned knob is
+        // persisted.
+        let value = serde_json::to_value(policy()).unwrap();
+        for key in [
+            "frame_cap_enter_gpu_pct",
+            "frame_cap_exit_gpu_pct",
+            "frame_cap_confirm_windows",
+            "frame_cap_exit_pacing_pct",
+            "desktop_idle_gpu_pct",
+            "desktop_idle_after_s",
+        ] {
+            assert!(
+                value.get(key).is_none(),
+                "default {key} must not be persisted"
+            );
+        }
+
+        let mut tuned = policy();
+        tuned.frame_cap_enter_gpu_pct = 55.0;
+        let value = serde_json::to_value(tuned).unwrap();
+        assert_eq!(value["frame_cap_enter_gpu_pct"], 55.0);
+        assert!(value.get("frame_cap_exit_gpu_pct").is_none());
     }
 }
