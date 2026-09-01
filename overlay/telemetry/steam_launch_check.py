@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
-from pathlib import Path
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
+from integrations.steam.vdf import quoted_tokens
 
 BARE_PENGUIN_BURNER_WRAPPER = "PENGUIN_BURNER"
 PENGUIN_BURNER_WRAPPER = BARE_PENGUIN_BURNER_WRAPPER
@@ -97,14 +98,10 @@ def default_localconfig_paths(home: Path | None = None) -> list[Path]:
     return unique
 
 
-def _quoted_tokens(text: str) -> list[str]:
-    return [match.group(1) for match in re.finditer(r'"([^"]*)"', text)]
-
-
 def launch_options_from_localconfig(text: str, app_id: str) -> str | None:
     lines = text.splitlines()
     for index, line in enumerate(lines):
-        if _quoted_tokens(line) != [app_id]:
+        if quoted_tokens(line) != [app_id]:
             continue
 
         depth = 0
@@ -125,7 +122,7 @@ def launch_options_from_localconfig(text: str, app_id: str) -> str | None:
             if not entered_block or depth <= 0:
                 continue
 
-            tokens = _quoted_tokens(block_line)
+            tokens = quoted_tokens(block_line)
             if len(tokens) >= 2 and tokens[0] == "LaunchOptions":
                 return tokens[1]
     return None
@@ -142,7 +139,7 @@ def rewrite_launch_options_in_localconfig(
     escaped_launch_options = _vdf_escape(launch_options)
 
     for index, line in enumerate(lines):
-        if _quoted_tokens(line) != [app_id]:
+        if quoted_tokens(line) != [app_id]:
             continue
 
         depth = 0
@@ -170,7 +167,7 @@ def rewrite_launch_options_in_localconfig(
             if not entered_block or depth != 1:
                 continue
 
-            tokens = _quoted_tokens(block_line)
+            tokens = quoted_tokens(block_line)
             if launch_indent is None and tokens:
                 launch_indent = _line_indent(block_line)
             if len(tokens) >= 2 and tokens[0] == "LaunchOptions":

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import re
 
-
 _TOKEN_RE = re.compile(
     r'"((?:\\.|[^"\\])*)"'  # quoted string, honoring \" and \\ escapes
     r"|([{}])"
@@ -20,6 +19,21 @@ _TOKEN_RE = re.compile(
 
 def _unescape(value: str) -> str:
     return re.sub(r'\\(["\\])', r"\1", value)
+
+
+_QUOTED_RE = re.compile(r'"((?:\\.|[^"\\])*)"')
+
+
+def quoted_tokens(text: str) -> list[str]:
+    """The quoted strings on one VDF line, unescaped.
+
+    Escapes are not optional here. Steam writes a launch line containing
+    ``LD_PRELOAD=""`` as ``"LaunchOptions" "LD_PRELOAD=\\"\\" PROTON_..."``,
+    and a pattern that stops at any quote reads that as ``LD_PRELOAD=\\`` and
+    drops the rest of the user's command -- which is then what gets written
+    back the next time the wrapper is toggled.
+    """
+    return [_unescape(match.group(1)) for match in _QUOTED_RE.finditer(text)]
 
 
 def parse_vdf(text: str) -> dict[str, object]:
