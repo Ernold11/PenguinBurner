@@ -83,13 +83,13 @@ scenario_image() {
 scenario_bootstrap() {
     case "$1" in
         fedora)
-            echo "dnf -q install -y flatpak flatpak-builder dbus-daemon >/dev/null"
+            echo "dnf -q install -y flatpak flatpak-builder dbus-daemon binutils >/dev/null"
             ;;
         ubuntu-lts)
-            echo "apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -qq -y flatpak flatpak-builder ca-certificates dbus >/dev/null"
+            echo "apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -qq -y flatpak flatpak-builder ca-certificates dbus binutils >/dev/null"
             ;;
         arch)
-            echo "pacman -Sy --noconfirm --needed flatpak flatpak-builder dbus >/dev/null"
+            echo "pacman -Sy --noconfirm --needed flatpak flatpak-builder dbus binutils >/dev/null"
             ;;
         *)
             die "unknown container scenario: $1 (expected fedora, ubuntu-lts, or arch)"
@@ -188,6 +188,32 @@ assert_flatpak_exports() {
     PATH="$XDG_DATA_HOME/flatpak/exports/bin:/usr/bin:/bin" command -v "$APP_ID" >/dev/null
 }
 
+# The daemon and the Vulkan latency layer are built against the freedesktop
+# runtime but execute on the HOST (daemon from /var/opt, layer inside host
+# game processes), so each runtime bump can silently raise the minimum host
+# glibc. Fail when the built artifacts exceed the accepted floor so the bump
+# becomes a deliberate decision (update the floor and docs/flatpak.md
+# together).
+assert_host_glibc_floor() {
+    local floor="${PENGUIN_BURNER_FLATPAK_HOST_GLIBC_FLOOR:-2.39}"
+    local files="$XDG_DATA_HOME/flatpak/app/$APP_ID/current/active/files"
+    local daemon="$files/libexec/penguin-burnerd"
+    local layer requirement
+    layer="$(find "$files" -name 'libVkLayer_penguinburner_latency.so' -print -quit)"
+
+    test -f "$daemon" || die "built Flatpak is missing $daemon"
+    test -n "$layer" || die "built Flatpak is missing the Vulkan latency layer"
+    require_command objdump
+
+    requirement="$( { objdump -T "$daemon"; objdump -T "$layer"; } \
+        | grep -o 'GLIBC_[0-9.]*' | sed 's/^GLIBC_//' | sort -uV | tail -1)"
+    test -n "$requirement" || die "could not read GLIBC requirements from $daemon"
+    echo "host-side binaries require glibc >= $requirement (accepted floor: $floor)"
+    if [[ "$(printf '%s\n%s\n' "$floor" "$requirement" | sort -V | tail -1)" != "$floor" ]]; then
+        die "host-side binaries now require glibc $requirement, above the accepted floor $floor. A runtime bump raised the host requirement: update docs/flatpak.md and PENGUIN_BURNER_FLATPAK_HOST_GLIBC_FLOOR deliberately."
+    fi
+}
+
 assert_sandbox_entrypoints() {
     flatpak run --user --command=bash "$APP_ID" -c '
         set -euo pipefail
@@ -245,6 +271,7 @@ run_host() {
 
     flatpak --user info "$APP_ID" >/dev/null
     assert_flatpak_exports
+    assert_host_glibc_floor
     assert_sandbox_entrypoints
 
     cat <<EOF

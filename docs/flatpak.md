@@ -31,6 +31,15 @@ a Steam-less host anyway, run the manual repair command below once; after
 that, startup keeps the generated files repaired across updates like on any
 other host.
 
+## Host requirements
+
+The root hardware daemon and the Vulkan latency layer are built inside the
+Flatpak runtime but execute on the host, so the host needs glibc 2.39 or
+newer — Ubuntu 24.04+, Debian 13+, Fedora 40+, or any current rolling
+release. On older hosts (Debian 12, Ubuntu 22.04, Mint 21) the daemon setup
+stops with a clear error before touching the system; install PenguinBurner
+from a native package (COPR, PPA, AUR, or pip) there instead.
+
 ## Host Wrappers
 
 The first GUI launch on a host with Steam adds these commands under
@@ -82,6 +91,30 @@ Launch the installed app at any time with:
 ```bash
 flatpak run io.github.jpietek.PenguinBurner
 ```
+
+## Pre-release verification
+
+Automated, per change and weekly in CI (`.github/workflows/flatpak-*.yml`):
+
+- `scripts/check-flatpak-install-smoke.sh --container <fedora|ubuntu-lts|arch>`
+  builds and installs the current tree, asserts exports, sandbox entry
+  points, the wrapper installer, and that the host-side binaries stay within
+  the accepted host glibc floor.
+- `scripts/check-flatpak-host-python.sh` proves the pkexec-elevated import
+  closure runs under each supported host python (Debian 12's 3.11 floor
+  through current rolling releases) and that the rendered install
+  transaction parses.
+- `scripts/check-flatpak-channel-install.sh` installs the *published*
+  Flatpak from the live Pages repository per distro and round-trips the
+  wrapper installer, asserting uninstall leaves nothing behind.
+
+Manual, on the release host before dispatching a Pages deployment: build the
+snapshot with `--prepare-only`, install that exact build locally, and walk
+the GPU checklist — first launch installs a reachable daemon in the same
+session, an Auto-UV scan verifies, apply changes real clocks, boot persist
+survives a reboot, the overlay renders in one Steam game, and the documented
+uninstall leaves the host clean. Restore the host's native install medium
+afterwards.
 
 ## Publishing
 

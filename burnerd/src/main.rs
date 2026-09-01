@@ -107,8 +107,22 @@ fn parse_args() -> Result<PathBuf, String> {
             other if other.starts_with("--socket=") => {
                 socket = PathBuf::from(&other["--socket=".len()..]);
             }
+            "--version" => {
+                // Exit-0 identity probe. The Flatpak install transaction runs
+                // this on the staged binary before committing, so a host whose
+                // system libraries cannot load the daemon fails with the
+                // loader's error instead of a broken service.
+                println!(
+                    "penguin-burnerd {} ({})",
+                    env!("CARGO_PKG_VERSION"),
+                    env!("PENGUIN_BURNERD_BUILD_ID"),
+                );
+                std::process::exit(0);
+            }
             "-h" | "--help" => {
-                return Err("usage: penguin-burnerd [serve] [--socket PATH]".to_string());
+                return Err(
+                    "usage: penguin-burnerd [serve] [--socket PATH] [--version]".to_string()
+                );
             }
             other => return Err(format!("unknown argument: {other}")),
         }
