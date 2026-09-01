@@ -97,6 +97,12 @@ From a clean checkout at the release tag, run:
 scripts/publish-flatpak-pages.sh vX.Y.Z
 ```
 
+Publication first runs the containerized host-python compatibility scenarios
+(`scripts/check-flatpak-host-python.sh`, requires docker or podman), because
+the elevated daemon-install step executes product code on the host's
+`python3`. `PENGUIN_BURNER_SKIP_PACKAGE_SMOKE=1` skips that gate, mirroring
+the COPR and PPA publishers.
+
 The publisher discovers the newest compatible snapshot Release asset and uses
 it to preserve the OSTree repository across releases. It refuses to replace an
 existing snapshot unless `--replace` is passed explicitly.

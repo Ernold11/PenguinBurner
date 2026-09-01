@@ -3,6 +3,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# The elevated Flatpak install step runs product code on the host python, so
+# gate publication on the containerized host-python compatibility scenarios
+# the same way the COPR and PPA publishes gate on their smoke builds. The
+# full local build+install rehearsal below covers the sandbox side.
+# PENGUIN_BURNER_SKIP_PACKAGE_SMOKE=1 skips the gate.
+if [ "${PENGUIN_BURNER_SKIP_PACKAGE_SMOKE:-0}" != 1 ]; then
+    "$ROOT/scripts/check-flatpak-host-python.sh"
+fi
+
 APP_ID="io.github.jpietek.PenguinBurner"
 APP_ARCH="x86_64"
 GITHUB_REPOSITORY="${PENGUIN_BURNER_GITHUB_REPOSITORY:-jpietek/PenguinBurner}"
