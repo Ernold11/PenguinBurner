@@ -380,7 +380,9 @@ impl AdaptiveProfileController {
         // would answer with clock a miss that does not look like a clock
         // problem, and easing would act on a cap that is not established. The
         // hold deliberately leaves the ladder's own counters untouched.
-        if self.externally_capped(gpu_util_pct, cpu_util_pct, cpu_peak_thread_pct) {
+        if frametime_ms > self.config.target_ms
+            && self.externally_capped(gpu_util_pct, cpu_util_pct, cpu_peak_thread_pct)
+        {
             self.state.frame_cap_streak += 1;
             if self.state.frame_cap_streak >= self.config.frame_cap_confirm_windows {
                 self.state.frame_cap_streak = 0;
@@ -515,11 +517,12 @@ impl AdaptiveProfileController {
         now_monotonic: f64,
         gpu_util_pct: Option<f64>,
     ) -> Decision {
-        let busy = self
+        let busy_now = gpu_util_pct.is_some_and(|gpu| gpu > self.config.desktop_idle_gpu_pct);
+        let busy_window = self
             .windowed_avg(|s| s.gpu)
             .or(gpu_util_pct)
             .is_none_or(|gpu| gpu > self.config.desktop_idle_gpu_pct);
-        if busy {
+        if busy_now || busy_window {
             // Something is working the card without telling us about frames.
             // Not a desktop, so the tier stays where the last measured session
             // left it. The counters go with it: this is the "hold" answer, and
@@ -1062,6 +1065,25 @@ mod tests {
     }
 
     #[test]
+    fn target_ok_deadband_is_not_reclassified_as_an_external_cap() {
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(60.0));
+        for i in 0..20 {
+            let d = c.update(
+                Some(15.5),
+                &tiers(),
+                1.0 + i as f64 * 5.0,
+                Some(25.0),
+                Some(20.0),
+                Some(35.0),
+            );
+            assert_eq!(d.tier, "performance", "target-ok must remain a hold");
+            assert_eq!(d.reason, "target-ok");
+        }
+        assert!(c.state.capped_reference_ms.is_none());
+    }
+
+    #[test]
     fn a_frame_cap_eases_the_tier_back_down() {
         let mut c =
             AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
@@ -1547,6 +1569,30 @@ mod tests {
         let d = c.update(None, &tiers(), 1.0, Some(70.0), None, None);
         assert!(!d.changed);
         assert_eq!(d.reason, "no-sample");
+    }
+
+    #[test]
+    fn a_busy_unmeasured_game_immediately_cancels_idle_progress() {
+        let mut c = AdaptiveProfileController::new("balanced", PolicyConfig::for_target_fps(100.0));
+        for i in 0..35 {
+            c.update(
+                None,
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(4.0),
+                Some(5.0),
+                Some(9.0),
+            );
+        }
+        assert_eq!(c.state.current_tier, "balanced");
+        assert_eq!(c.state.comfort_count, 5);
+
+        let d = c.update(None, &tiers(), 170.0, Some(70.0), None, None);
+
+        assert_eq!(d.tier, "balanced");
+        assert_eq!(d.reason, "no-sample");
+        assert_eq!(c.state.comfort_count, 0);
+        assert!(c.state.desktop_idle_since.is_none());
     }
 
     #[test]
