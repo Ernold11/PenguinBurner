@@ -561,9 +561,16 @@ class SteamIntegrationManager:
                     f"PenguinBurner Steam integration repair failed: {error}",
                 )
             desired = inject_launch_options(current, overlay=setting.overlay)
+            # The stored original is a snapshot taken when the wrapper last
+            # went in, and it is only still the original while the wrapper is
+            # still there. On an unwrapped line the live command *is* the
+            # original: the user may have edited it in Steam since, or taken
+            # our wrapper out by hand. Preferring a stale snapshot over it
+            # restores an older command -- and if that snapshot was itself
+            # recorded from a bad read, hands the user back a broken one.
             original = (
                 setting.original_launch_options
-                if setting.original_launch_options
+                if setting.original_launch_options and injection_state(current).wrapped
                 else remove_injection(current)
             )
         else:

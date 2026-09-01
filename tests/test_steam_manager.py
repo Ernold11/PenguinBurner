@@ -716,3 +716,32 @@ def test_stop_game_surfaces_real_cdp_error_when_live(manager, monkeypatch) -> No
 def test_stop_game_rejects_bad_app_id(manager) -> None:
     assert not manager.stop_game("rm -rf /").ok
     assert _FakeCdpClient.terminated == []
+
+
+def test_enabling_reads_the_original_off_the_live_line_not_a_stale_snapshot(
+    manager,
+) -> None:
+    """A stored "original" is only the original while our wrapper is still in.
+
+    On an unwrapped line the live command is the original: the user may have
+    edited it in Steam since, or pulled our wrapper out by hand. And a snapshot
+    recorded from a bad read -- a launch line with quotes in it used to parse
+    as `LD_PRELOAD=\\` -- would otherwise be handed back to them as their own
+    command the next time the wrapper came out.
+    """
+    from dataclasses import replace
+
+    from integrations.steam.launch_options import injection_state
+    from integrations.steam.settings import SteamGameSetting
+
+    live = 'LD_PRELOAD="" PROTON_VKD3D_BRATAN=1 game-performance %command% --nologo'
+    manager._launch_options["620"] = live
+    stale = SteamGameSetting(enabled=False, original_launch_options="OLD=1 %command%")
+    manager._store("620", stale)
+
+    manager._apply("620", replace(stale, enabled=True))
+
+    stored = manager._setting("620")
+    assert stored.original_launch_options == live
+    # And the line Steam now carries is that same command, wrapped.
+    assert injection_state(manager._launch_options["620"]).wrapped is True
