@@ -499,6 +499,68 @@ def test_adaptive_runtime_uses_per_game_target_fps_override(monkeypatch) -> None
     assert spec["adaptive"]["policy"]["target_fps"] == 120.0
 
 
+def _adaptive_policy_payload(monkeypatch) -> dict:
+    only_curve = _curve("balanced-only")
+    _stub_runtime_sources(monkeypatch, curve=only_curve)
+    monkeypatch.setattr(runtime_spec, "read_auto_uv_profiles", lambda: [{}])
+    monkeypatch.setattr(
+        runtime_spec,
+        "resolve_profile_tier_profiles",
+        lambda _profiles, **_kwargs: {"balanced": {"profile_id": "balanced-only"}},
+    )
+    monkeypatch.setattr(
+        runtime_spec,
+        "available_adaptive_tiers",
+        lambda _resolved: ["balanced"],
+    )
+    spec = runtime_spec.build_runtime_spec(
+        profile_selector="balanced-only",
+        adaptive_auto_uv=True,
+    )
+    return spec["adaptive"]["policy"]
+
+
+def test_default_frame_cap_and_idle_knobs_are_omitted_from_the_payload(
+    monkeypatch,
+) -> None:
+    """Knobs at their defaults stay out of the wire spec.
+
+    The daemon fills in identical defaults, and a still-running 0.7.x daemon
+    (deny_unknown_fields) must keep accepting a default-config runtime until
+    its binary is restarted after an upgrade.
+    """
+    for env in (
+        "PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_ENTER_GPU_PCT",
+        "PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_EXIT_GPU_PCT",
+        "PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_CONFIRM_WINDOWS",
+        "PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_EXIT_PACING_PCT",
+        "PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_GPU_PCT",
+        "PENGUIN_BURNER_ADAPTIVE_DESKTOP_IDLE_AFTER_S",
+    ):
+        monkeypatch.delenv(env, raising=False)
+
+    policy = _adaptive_policy_payload(monkeypatch)
+
+    assert "frame_cap_enter_gpu_pct" not in policy
+    assert "frame_cap_exit_gpu_pct" not in policy
+    assert "frame_cap_confirm_windows" not in policy
+    assert "frame_cap_exit_pacing_pct" not in policy
+    assert "desktop_idle_gpu_pct" not in policy
+    assert "desktop_idle_after_s" not in policy
+
+
+def test_overridden_frame_cap_knob_is_sent_and_the_rest_stay_omitted(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PENGUIN_BURNER_ADAPTIVE_FRAME_CAP_ENTER_GPU_PCT", "45")
+
+    policy = _adaptive_policy_payload(monkeypatch)
+
+    assert policy["frame_cap_enter_gpu_pct"] == 45.0
+    assert "frame_cap_exit_gpu_pct" not in policy
+    assert "desktop_idle_after_s" not in policy
+
+
 def test_runtime_intent_from_argv_parses_adaptive_target_fps() -> None:
     intent = runtime_spec.runtime_intent_from_argv(
         [

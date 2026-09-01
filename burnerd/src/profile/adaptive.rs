@@ -38,6 +38,37 @@ pub struct PolicyConfig {
     pub cpu_bound_gpu_util_max_pct: f64,
     pub cpu_bound_peak_thread_min_pct: f64,
     pub cpu_bound_process_util_min_pct: f64,
+    /// At or below this windowed GPU utilisation the GPU is not what holds
+    /// the frame rate back, so a missed target cannot be answered with clock.
+    pub frame_cap_enter_gpu_pct: f64,
+    /// Utilisation at which a recognised cap is abandoned regardless of pacing.
+    ///
+    /// Deliberately far above the entry threshold. Entry and exit sharing one
+    /// number is precisely what oscillated: a demotion nudges utilisation up a
+    /// little, and that little was enough to cancel the recognition. A gap this
+    /// wide cannot be crossed by the policy's own step, only by the workload
+    /// genuinely saturating the card.
+    pub frame_cap_exit_gpu_pct: f64,
+    /// Consecutive capped-looking ticks required before a cap is recognised.
+    ///
+    /// One tick is not evidence: right after frames resume the utilisation
+    /// window still describes the previous session, and telemetry publishes a
+    /// tick behind the policy, so the first reading of a new game can look
+    /// loafing while the card is already flat out. While the streak builds the
+    /// tier is held -- neither promoted (the miss may not be a clock problem)
+    /// nor eased down (the cap is not established).
+    pub frame_cap_confirm_windows: i64,
+    /// How much worse (percent) than the reference pacing frametime has to get
+    /// before the cap is considered gone. A hard cap holds the frame rate
+    /// steady no matter which tier runs, so anything past this margin means
+    /// the tier -- not the cap -- is now the limit, and the normal ladder
+    /// should take over again.
+    pub frame_cap_exit_pacing_pct: f64,
+    /// At or below this, with nothing presenting, the session counts as a
+    /// desktop rather than a game we cannot measure.
+    pub desktop_idle_gpu_pct: f64,
+    /// How long that has to hold before the tier moves.
+    pub desktop_idle_after_s: f64,
 }
 
 impl Default for PolicyConfig {
@@ -56,6 +87,18 @@ impl Default for PolicyConfig {
             cpu_bound_gpu_util_max_pct: 60.0,
             cpu_bound_peak_thread_min_pct: 97.0,
             cpu_bound_process_util_min_pct: 60.0,
+            // 60 matches the cpu-bound guard's "the GPU is not the limiter"
+            // bar and the live sessions this feature was validated under
+            // (capped games measured 51-58% utilisation at higher tiers; a 40
+            // entry bar could never have recognised them). The evidence that
+            // easing DOWN demands comes from the confirm streak, not from a
+            // stricter utilisation number.
+            frame_cap_enter_gpu_pct: 60.0,
+            frame_cap_exit_gpu_pct: 90.0,
+            frame_cap_confirm_windows: 3,
+            frame_cap_exit_pacing_pct: 15.0,
+            desktop_idle_gpu_pct: 20.0,
+            desktop_idle_after_s: 60.0,
         }
     }
 }
@@ -86,6 +129,12 @@ impl PolicyConfig {
             cpu_bound_gpu_util_max_pct: spec.cpu_bound_gpu_util_max_pct,
             cpu_bound_peak_thread_min_pct: spec.cpu_bound_peak_thread_min_pct,
             cpu_bound_process_util_min_pct: spec.cpu_bound_process_util_min_pct,
+            frame_cap_enter_gpu_pct: spec.frame_cap_enter_gpu_pct,
+            frame_cap_exit_gpu_pct: spec.frame_cap_exit_gpu_pct,
+            frame_cap_confirm_windows: spec.frame_cap_confirm_windows,
+            frame_cap_exit_pacing_pct: spec.frame_cap_exit_pacing_pct,
+            desktop_idle_gpu_pct: spec.desktop_idle_gpu_pct,
+            desktop_idle_after_s: spec.desktop_idle_after_s,
             ..scaled
         }
     }
@@ -107,6 +156,25 @@ struct PolicyState {
     target_slow_count: i64,
     near_slow_count: i64,
     comfort_count: i64,
+    /// Pacing observed when an external cap was first recognised.
+    ///
+    /// GPU utilisation cannot maintain that recognition on its own: dropping a
+    /// tier makes the card work harder for the *same* capped frame rate, so
+    /// utilisation climbs back over the entry threshold and un-recognises the
+    /// cap the demotion just acted on -- tier down, tier up, forever. Frametime
+    /// does not move with the tier while a cap holds the rate, so it is the one
+    /// signal the policy's own decisions cannot invalidate.
+    capped_reference_ms: Option<f64>,
+    /// Consecutive frame ticks that have looked externally capped without a
+    /// latch being held yet. Recognition waits for
+    /// `frame_cap_confirm_windows` of these; the tier is held while it does.
+    frame_cap_streak: i64,
+    /// When the current run of quiet, idle-looking ticks started.
+    desktop_idle_since: Option<f64>,
+    /// Whether the previous tick had frame telemetry. A frames tick after a
+    /// gap starts a new session: the utilisation window and the ladder's
+    /// counters describe whatever ended, not what just began.
+    frames_last_tick: bool,
 }
 
 /// How far back the cpu-bound guard looks when judging utilization.
@@ -174,6 +242,10 @@ impl AdaptiveProfileController {
                 target_slow_count: 0,
                 near_slow_count: 0,
                 comfort_count: 0,
+                capped_reference_ms: None,
+                frame_cap_streak: 0,
+                desktop_idle_since: None,
+                frames_last_tick: false,
             },
             util_samples: std::collections::VecDeque::new(),
         }
@@ -203,12 +275,36 @@ impl AdaptiveProfileController {
         cpu_util_pct: Option<f64>,
         cpu_peak_thread_pct: Option<f64>,
     ) -> Decision {
-        self.record_util_sample(
-            now_monotonic,
-            gpu_util_pct,
-            cpu_util_pct,
-            cpu_peak_thread_pct,
-        );
+        // Frames after a gap are a new session. The utilisation window still
+        // holds the previous regime (an idle desktop's 3-4%, or a game that
+        // stopped reporting), and the ladder's counters hold its progress:
+        // judged against either, the first seconds of a launched game read as
+        // "externally capped" and get eased DOWN when they need promotion.
+        //
+        // The boundary tick's own reading is previous-session data too --
+        // telemetry publishes a tick behind the policy -- so it is not
+        // recorded either. Seeding the fresh window with it kept the average
+        // under the enter bar for the whole confirm streak (one 4% desktop
+        // sample drags three readings of anything up to ~88% below 60), and a
+        // latch formed off it never re-tests entry: a launch could sit on the
+        // low tier for its entire session. The guards fall back to the
+        // instantaneous values for the one tick the window is empty, which is
+        // the most recent data that exists.
+        let session_boundary = present_frametime_p95_ms.is_some() && !self.state.frames_last_tick;
+        if session_boundary {
+            self.clear_util_window();
+            self.reset_counts();
+            self.state.frame_cap_streak = 0;
+        }
+        self.state.frames_last_tick = present_frametime_p95_ms.is_some();
+        if !session_boundary {
+            self.record_util_sample(
+                now_monotonic,
+                gpu_util_pct,
+                cpu_util_pct,
+                cpu_peak_thread_pct,
+            );
+        }
         let ordered = ordered_available_tiers(available_tiers);
         if ordered.len() < 2 {
             let tier = ordered
@@ -234,13 +330,72 @@ impl AdaptiveProfileController {
             };
         }
         let Some(frametime_ms) = present_frametime_p95_ms else {
-            self.reset_counts();
+            // Nothing is presenting: whatever cap was recognised belonged to a
+            // session that has gone quiet, and the next one must be judged on
+            // its own pacing rather than inheriting this reference.
+            self.state.capped_reference_ms = None;
+            return self.idle_decision(&ordered, now_monotonic, gpu_util_pct);
+        };
+        // Frames again: whatever the idle rule had counted towards belongs to a
+        // session that is over. Cleared before any ladder branch can run, so a
+        // game that starts pays no dwell for the desktop it interrupted.
+        self.state.desktop_idle_since = None;
+
+        // Checked before the slow ladder: every branch below reads a missed
+        // target as "needs more clock", which is wrong the moment the GPU is
+        // not the thing holding the frame rate back.
+        //
+        // Recognition is latched against the pacing seen when it was made.
+        // Utilisation is only the entry hint; re-testing it every tick would
+        // let each demotion (which raises utilisation for the same capped rate)
+        // cancel the recognition that caused it.
+        if let Some(reference) = self.state.capped_reference_ms {
+            let saturated = self
+                .windowed_avg(|s| s.gpu)
+                .or(gpu_util_pct)
+                .is_some_and(|gpu| gpu >= self.config.frame_cap_exit_gpu_pct);
+            let pacing_slack = 1.0 + self.config.frame_cap_exit_pacing_pct / 100.0;
+            if !saturated && frametime_ms <= reference * pacing_slack {
+                // Pacing has not moved: the tier still is not the limit.
+                return self.ease_down(&ordered, now_monotonic, "externally-capped");
+            }
+            // Either pacing degraded past what the cap was hiding, or the card
+            // is now flat out. Release the latch -- but do not hand the tick to
+            // the ladder yet, because "this reference stopped explaining the
+            // pacing" is not the same claim as "the tier is the limit now".
+            self.state.capped_reference_ms = None;
+        }
+
+        // Recognition, and re-recognition on the very tick a latch was
+        // released. Observed live: a latch held at 17.0ms dropped when pacing
+        // jumped to 24.7ms, and the same tick promoted to the top tier on
+        // badly-slow -- with the card at 58% and the CPU at 10%, so nothing
+        // there was short of clock. Falling straight through skipped the one
+        // test that would have said so, and a promotion takes a single window
+        // while every step back down pays its dwell.
+        //
+        // A single capped-looking tick is a hint, not a diagnosis: the streak
+        // must reach frame_cap_confirm_windows before the reference latches
+        // and easing begins. Until then the tier is held outright -- promoting
+        // would answer with clock a miss that does not look like a clock
+        // problem, and easing would act on a cap that is not established. The
+        // hold deliberately leaves the ladder's own counters untouched.
+        if frametime_ms > self.config.target_ms
+            && self.externally_capped(gpu_util_pct, cpu_util_pct, cpu_peak_thread_pct)
+        {
+            self.state.frame_cap_streak += 1;
+            if self.state.frame_cap_streak >= self.config.frame_cap_confirm_windows {
+                self.state.frame_cap_streak = 0;
+                self.state.capped_reference_ms = Some(frametime_ms);
+                return self.ease_down(&ordered, now_monotonic, "externally-capped");
+            }
             return Decision {
                 tier: self.state.current_tier.clone(),
                 changed: false,
-                reason: "no-sample".into(),
+                reason: "externally-capped-confirm".into(),
             };
-        };
+        }
+        self.state.frame_cap_streak = 0;
 
         if frametime_ms > self.config.badly_slow_ms {
             return self.switch_with_cpu_bound_guard(
@@ -298,29 +453,7 @@ impl AdaptiveProfileController {
             };
         }
         if frametime_ms <= self.config.comfort_ms {
-            self.state.target_slow_count = 0;
-            self.state.near_slow_count = 0;
-            self.state.comfort_count += 1;
-            let required_windows = if self.state.current_tier == PROFILE_TIER_PERFORMANCE {
-                self.config.performance_comfort_windows
-            } else {
-                self.config.comfort_windows
-            };
-            let required_dwell = if self.state.current_tier == PROFILE_TIER_PERFORMANCE {
-                self.config.performance_demote_dwell_s
-            } else {
-                self.config.demote_dwell_s
-            };
-            let dwell_s = now_monotonic - self.state.last_switch_monotonic;
-            if self.state.comfort_count >= required_windows && dwell_s >= required_dwell {
-                let target = lower_tier(&self.state.current_tier, &ordered);
-                return self.switch(target, now_monotonic, "comfort");
-            }
-            return Decision {
-                tier: self.state.current_tier.clone(),
-                changed: false,
-                reason: "comfort-wait".into(),
-            };
+            return self.ease_down(&ordered, now_monotonic, "comfort");
         }
         self.reset_counts();
         Decision {
@@ -328,6 +461,118 @@ impl AdaptiveProfileController {
             changed: false,
             reason: "target-ok".into(),
         }
+    }
+
+    /// Count one window towards stepping down a tier, and take the step once
+    /// the existing hysteresis allows it.
+    ///
+    /// Shared by the two states that both mean "this tier is more than the
+    /// workload needs": pacing comfortably ahead of target, and a GPU that is
+    /// plainly not the limiter. Reusing one path keeps a single set of dwell
+    /// and window rules rather than inventing a second, differently tuned one.
+    fn ease_down(&mut self, ordered: &[String], now_monotonic: f64, reason: &str) -> Decision {
+        self.state.target_slow_count = 0;
+        self.state.near_slow_count = 0;
+        self.state.comfort_count += 1;
+        let at_performance = self.state.current_tier == PROFILE_TIER_PERFORMANCE;
+        let required_windows = if at_performance {
+            self.config.performance_comfort_windows
+        } else {
+            self.config.comfort_windows
+        };
+        let required_dwell = if at_performance {
+            self.config.performance_demote_dwell_s
+        } else {
+            self.config.demote_dwell_s
+        };
+        let dwell_s = now_monotonic - self.state.last_switch_monotonic;
+        if self.state.comfort_count >= required_windows && dwell_s >= required_dwell {
+            let target = lower_tier(&self.state.current_tier, ordered);
+            return self.switch(target, now_monotonic, reason);
+        }
+        Decision {
+            tier: self.state.current_tier.clone(),
+            changed: false,
+            reason: format!("{reason}-wait"),
+        }
+    }
+
+    /// What to do when nothing is presenting frames.
+    ///
+    /// Holding the tier was the old answer, and it left a tuned card sitting on
+    /// a high tier for as long as the desktop was idle. The hard part is that
+    /// "nobody is playing" and "a game we cannot measure is running" look
+    /// identical from here -- neither produces frame telemetry. Utilisation is
+    /// what separates them, and by a wide margin: an idle desktop measured 3-4%
+    /// on the development machine, while a game runs 50-90% even with an
+    /// external cap holding its frame rate down.
+    ///
+    /// Entry is slow and exit is immediate, because the costs are not
+    /// symmetric. Easing down a minute late on a desktop costs nothing; leaving
+    /// a game on a low tier for a minute costs frames in the first seconds of
+    /// play, which is when the tool is judged.
+    fn idle_decision(
+        &mut self,
+        ordered: &[String],
+        now_monotonic: f64,
+        gpu_util_pct: Option<f64>,
+    ) -> Decision {
+        let busy_now = gpu_util_pct.is_some_and(|gpu| gpu > self.config.desktop_idle_gpu_pct);
+        let busy_window = self
+            .windowed_avg(|s| s.gpu)
+            .or(gpu_util_pct)
+            .is_none_or(|gpu| gpu > self.config.desktop_idle_gpu_pct);
+        if busy_now || busy_window {
+            // Something is working the card without telling us about frames.
+            // Not a desktop, so the tier stays where the last measured session
+            // left it. The counters go with it: this is the "hold" answer, and
+            // easing down counts comfort windows that a quiet tick must not
+            // contribute to.
+            self.reset_counts();
+            self.state.desktop_idle_since = None;
+            return Decision {
+                tier: self.state.current_tier.clone(),
+                changed: false,
+                reason: "no-sample".into(),
+            };
+        }
+        let since = *self.state.desktop_idle_since.get_or_insert(now_monotonic);
+        if now_monotonic - since < self.config.desktop_idle_after_s {
+            return Decision {
+                tier: self.state.current_tier.clone(),
+                changed: false,
+                reason: "desktop-idle-wait".into(),
+            };
+        }
+        self.ease_down(ordered, now_monotonic, "desktop-idle")
+    }
+
+    /// True when the frame rate is held by something clocks cannot move.
+    ///
+    /// A GPU loafing over the whole window while pacing misses target means
+    /// the limiter is elsewhere -- a frame cap, vsync, the CPU, IO. Promoting
+    /// then burns power for frames that will not arrive, which is exactly
+    /// what a menu locked below the target used to do.
+    fn externally_capped(
+        &self,
+        gpu_util_pct: Option<f64>,
+        cpu_util_pct: Option<f64>,
+        cpu_peak_thread_pct: Option<f64>,
+    ) -> bool {
+        let gpu_idle = self
+            .windowed_avg(|s| s.gpu)
+            .or(gpu_util_pct)
+            .is_some_and(|gpu| gpu <= self.config.frame_cap_enter_gpu_pct);
+        if !gpu_idle {
+            return false;
+        }
+        // A saturated CPU is a different diagnosis with its own, deliberately
+        // gentler handling (cap the promotion, do not step down). Leaving that
+        // case to the cpu-bound guard keeps the two rules disjoint instead of
+        // silently overriding one with the other.
+        let cpu_avg = self.windowed_avg(|s| s.cpu).or(cpu_util_pct);
+        let peak_avg = self.windowed_avg(|s| s.peak_thread).or(cpu_peak_thread_pct);
+        !self.cpu_saturated(cpu_avg, peak_avg)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -391,6 +636,18 @@ impl AdaptiveProfileController {
         self.util_samples.clear();
     }
 
+    /// Forget everything windowed or half-counted: the next frames tick is
+    /// judged as the start of a new session. Used on system resume, where a
+    /// game presenting on both sides of a suspend never passes through the
+    /// no-sample gap that normally marks a boundary -- without this, a
+    /// confirm streak from before the lid closed could complete on a single
+    /// stale post-resume reading and latch a cap against a wake-up stutter.
+    fn note_session_boundary(&mut self) {
+        self.clear_util_window();
+        self.state.frame_cap_streak = 0;
+        self.state.frames_last_tick = false;
+    }
+
     fn windowed_avg(&self, pick: impl Fn(&UtilSample) -> Option<f64>) -> Option<f64> {
         let values: Vec<f64> = self.util_samples.iter().filter_map(&pick).collect();
         if values.is_empty() {
@@ -422,6 +679,11 @@ impl AdaptiveProfileController {
         if gpu > self.config.cpu_bound_gpu_util_max_pct {
             return false;
         }
+        self.cpu_saturated(cpu_avg, peak_avg)
+    }
+
+    /// Whether the CPU is the plausible explanation for missed frames.
+    fn cpu_saturated(&self, cpu_avg: Option<f64>, peak_avg: Option<f64>) -> bool {
         let peak_busy = peak_avg.is_some_and(|v| v >= self.config.cpu_bound_peak_thread_min_pct);
         let process_busy = cpu_avg.is_some_and(|v| v >= self.config.cpu_bound_process_util_min_pct);
         peak_busy || process_busy
@@ -472,10 +734,11 @@ pub struct AdaptiveAutoUvRuntimeController {
 }
 
 impl AdaptiveAutoUvRuntimeController {
-    /// A system resume was detected: invalidate windowed utilization state so
-    /// the CPU-bound guard reasons only about post-resume samples.
+    /// A system resume was detected: invalidate windowed utilization state and
+    /// any half-built cap recognition so the guards reason only about
+    /// post-resume samples.
     pub fn note_system_resume(&mut self) {
-        self.policy.clear_util_window();
+        self.policy.note_session_boundary();
     }
 
     /// Construct + enumerate tier curves. `log` receives the enable/target lines.
@@ -785,6 +1048,474 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_cap_below_target_does_not_promote() {
+        // The reported case: target 100 FPS, a menu locked at 60. 16.67 ms is
+        // well past badly_slow, so the ladder used to jump straight to the top
+        // tier and sit there for the whole menu -- burning power for frames the
+        // cap will never let through.
+        let mut c =
+            AdaptiveProfileController::new("efficiency", PolicyConfig::for_target_fps(100.0));
+        for i in 0..6 {
+            let t = 100.0 + i as f64 * 2.0;
+            // 60 FPS held by the cap, GPU loafing, CPU relaxed: nothing here
+            // is short of clock.
+            let d = c.update(Some(16.67), &tiers(), t, Some(25.0), Some(20.0), Some(35.0));
+            assert_eq!(d.tier, "efficiency", "a capped menu must not promote");
+        }
+    }
+
+    #[test]
+    fn target_ok_deadband_is_not_reclassified_as_an_external_cap() {
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(60.0));
+        for i in 0..20 {
+            let d = c.update(
+                Some(15.5),
+                &tiers(),
+                1.0 + i as f64 * 5.0,
+                Some(25.0),
+                Some(20.0),
+                Some(35.0),
+            );
+            assert_eq!(d.tier, "performance", "target-ok must remain a hold");
+            assert_eq!(d.reason, "target-ok");
+        }
+        assert!(c.state.capped_reference_ms.is_none());
+    }
+
+    #[test]
+    fn a_frame_cap_eases_the_tier_back_down() {
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        let mut eased = None;
+        for i in 0..40 {
+            let t = 100.0 + i as f64 * 2.0;
+            let d = c.update(Some(16.67), &tiers(), t, Some(25.0), Some(20.0), Some(35.0));
+            if d.changed {
+                eased = Some(d);
+                break;
+            }
+        }
+        let decision = eased.expect("a sustained cap must step the tier down");
+        assert_eq!(decision.tier, "balanced");
+        assert_eq!(decision.reason, "externally-capped");
+    }
+
+    #[test]
+    fn releasing_the_latch_re_tests_the_cap_before_the_ladder_runs() {
+        // Observed live 2026-08-24 11:17:25: a latch held at 17.0ms dropped
+        // when pacing jumped to 24.7ms, and that same tick promoted to the top
+        // tier on badly-slow -- with the card at 58% and the CPU at 10%, where
+        // nothing was short of clock. The default enter bar (60) now covers
+        // the 58% this was logged at; it used to need an override.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        // Settle a recognised cap at ~17ms with the card loafing.
+        for i in 0..12 {
+            c.update(
+                Some(17.0),
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(58.0),
+                Some(10.0),
+                Some(22.0),
+            );
+        }
+        assert!(
+            c.state.capped_reference_ms.is_some(),
+            "the cap must be recognised before the release can be tested"
+        );
+
+        // Pacing regresses past the reference: the latch has to go.
+        let decision = c.update(
+            Some(24.7),
+            &tiers(),
+            130.0,
+            Some(58.0),
+            Some(10.0),
+            Some(22.0),
+        );
+
+        assert_ne!(
+            decision.reason, "badly-slow",
+            "a loafing card must not be answered with clock the tick a latch drops"
+        );
+        assert!(
+            decision.tier != "performance" || !decision.changed,
+            "no promotion to the top tier: {decision:?}"
+        );
+    }
+
+    #[test]
+    fn a_saturated_card_still_ends_the_cap_rather_than_re_recognising_it() {
+        // The other release path: the card is genuinely flat out, so the
+        // re-test must fail and the ladder must get the tick.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        for i in 0..12 {
+            c.update(
+                Some(17.0),
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(30.0),
+                Some(10.0),
+                Some(22.0),
+            );
+        }
+        assert!(c.state.capped_reference_ms.is_some());
+
+        for i in 0..8 {
+            c.update(
+                Some(24.7),
+                &tiers(),
+                130.0 + i as f64 * 2.0,
+                Some(97.0),
+                Some(10.0),
+                Some(22.0),
+            );
+        }
+
+        assert!(
+            c.state.capped_reference_ms.is_none(),
+            "a flat-out card must not hold or re-take a cap recognition"
+        );
+    }
+
+    #[test]
+    fn a_recognised_cap_does_not_oscillate_as_utilisation_climbs() {
+        // Observed live: easing down made the card work harder for the same
+        // capped 60 FPS, utilisation crossed back over the entry threshold, the
+        // cap stopped being recognised, and badly-slow jumped straight back to
+        // the top tier -- over and over.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        // 60 FPS held by a cap. Utilisation rises with every step down, exactly
+        // as it did on hardware (51% at performance, past 55% at efficiency).
+        let utilisation = [30.0, 35.0, 45.0, 58.0, 70.0, 85.0];
+        let mut tiers_seen = Vec::new();
+        for (index, gpu) in (0..48).map(|i| (i, utilisation[(i / 8).min(5)])) {
+            let t = 100.0 + index as f64 * 2.0;
+            let d = c.update(Some(16.67), &tiers(), t, Some(gpu), Some(20.0), Some(35.0));
+            if d.changed {
+                tiers_seen.push((d.tier.clone(), d.reason.clone()));
+            }
+        }
+        assert!(
+            tiers_seen
+                .iter()
+                .all(|(_, reason)| reason == "externally-capped"),
+            "no promotion may fire while the cap holds: {tiers_seen:?}"
+        );
+        // Monotonically downwards, never back up.
+        let order = ["performance", "balanced", "efficiency"];
+        let mut previous = 0;
+        for (tier, _) in &tiers_seen {
+            let index = order.iter().position(|t| t == tier).unwrap();
+            assert!(index >= previous, "tier went back up: {tiers_seen:?}");
+            previous = index;
+        }
+    }
+
+    #[test]
+    fn easing_past_what_the_cap_hid_hands_control_back_to_the_ladder() {
+        // The escape hatch: if pacing actually degrades after a step down, the
+        // tier -- not the cap -- is now the limit.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        for i in 0..12 {
+            let t = 100.0 + i as f64 * 2.0;
+            c.update(Some(16.67), &tiers(), t, Some(25.0), Some(20.0), Some(35.0));
+        }
+        // Frames fall well past the capped reference: 16.67 -> 25 ms.
+        let mut promoted = false;
+        for i in 0..6 {
+            let t = 200.0 + i as f64 * 2.0;
+            let d = c.update(Some(25.0), &tiers(), t, Some(90.0), Some(20.0), Some(35.0));
+            if d.changed && d.reason != "externally-capped" {
+                promoted = true;
+                assert_eq!(d.tier, "performance");
+                break;
+            }
+        }
+        assert!(promoted, "a real regression must release the capped latch");
+    }
+
+    #[test]
+    fn a_quiet_session_drops_the_capped_reference() {
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        for i in 0..3 {
+            c.update(
+                Some(16.67),
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(25.0),
+                Some(20.0),
+                Some(35.0),
+            );
+        }
+        assert!(c.state.capped_reference_ms.is_some());
+
+        c.update(None, &tiers(), 106.0, Some(25.0), Some(20.0), Some(35.0));
+
+        assert!(
+            c.state.capped_reference_ms.is_none(),
+            "the next session must be judged on its own pacing"
+        );
+    }
+
+    #[test]
+    fn a_busy_gpu_missing_target_still_promotes() {
+        // The guard must not swallow the case it exists to leave alone: a GPU
+        // pegged and behind target genuinely wants more clock.
+        let mut c =
+            AdaptiveProfileController::new("efficiency", PolicyConfig::for_target_fps(100.0));
+        let d = c.update(
+            Some(16.67),
+            &tiers(),
+            100.0,
+            Some(95.0),
+            Some(30.0),
+            Some(60.0),
+        );
+        assert_eq!(d.tier, "performance");
+        assert_eq!(d.reason, "badly-slow");
+    }
+
+    #[test]
+    fn leaving_a_capped_menu_promotes_again_immediately() {
+        let mut c =
+            AdaptiveProfileController::new("efficiency", PolicyConfig::for_target_fps(100.0));
+        for i in 0..4 {
+            let t = 100.0 + i as f64 * 2.0;
+            c.update(Some(16.67), &tiers(), t, Some(25.0), Some(20.0), Some(35.0));
+        }
+        // Gameplay starts: the GPU wakes up and the same frametime now means
+        // something clock can fix. The capped samples still sit in the 8 s
+        // utilisation window, so promotion waits for them to age out -- the
+        // same memory the shader-compile guard relies on.
+        let mut promoted = false;
+        for i in 0..8 {
+            let t = 108.0 + i as f64 * 2.0;
+            if c.update(Some(16.67), &tiers(), t, Some(96.0), Some(30.0), Some(55.0))
+                .tier
+                == "performance"
+            {
+                promoted = true;
+                break;
+            }
+        }
+        assert!(
+            promoted,
+            "gameplay must lift the capped hold once the window clears"
+        );
+    }
+
+    #[test]
+    fn a_single_capped_looking_tick_does_not_latch() {
+        // One loafing reading is a hint, not a diagnosis. The tier is held
+        // while the streak builds, and a busy tick hands control straight
+        // back to the ladder with nothing latched.
+        let mut c =
+            AdaptiveProfileController::new("efficiency", PolicyConfig::for_target_fps(100.0));
+        let first = c.update(
+            Some(16.67),
+            &tiers(),
+            100.0,
+            Some(25.0),
+            Some(30.0),
+            Some(40.0),
+        );
+        assert_eq!(first.reason, "externally-capped-confirm");
+        assert!(!first.changed, "a confirm tick must hold, not move");
+        assert!(c.state.capped_reference_ms.is_none());
+
+        let second = c.update(
+            Some(16.67),
+            &tiers(),
+            102.0,
+            Some(97.0),
+            Some(30.0),
+            Some(40.0),
+        );
+        assert_eq!(second.reason, "badly-slow");
+        assert_eq!(second.tier, "performance");
+        assert!(c.state.capped_reference_ms.is_none());
+    }
+
+    #[test]
+    fn a_game_launched_from_an_idle_desktop_is_not_read_as_capped() {
+        // The idle rule walks the tier down; then a game launches. The 8s
+        // utilisation window is still full of desktop readings, and telemetry
+        // publishes a tick behind the policy, so the first frame tick carries
+        // a stale idle-era sample. Judged against those, a badly slow launch
+        // used to latch "externally-capped" and hold the LOW tier through the
+        // first seconds of play -- the exact window the tool is judged on.
+        //
+        // The sweep covers the whole busy range, not just a pegged card: one
+        // stale 4% sample averaged into the fresh window kept anything up to
+        // ~88% under the enter bar, and a latch formed that way never re-tests
+        // entry -- a 70-88% launch stayed on the low tier for its entire
+        // session.
+        for game_util in [70.0, 85.0, 95.0] {
+            let mut c =
+                AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+            for i in 0..40 {
+                c.update(
+                    None,
+                    &tiers(),
+                    100.0 + i as f64 * 2.0,
+                    Some(4.0),
+                    Some(5.0),
+                    Some(9.0),
+                );
+            }
+
+            // Launch: badly slow frames; the first tick's utilisation is
+            // still the published idle-era value, the rest are the game's.
+            let mut promoted = None;
+            for i in 0..6 {
+                let gpu = if i == 0 { 4.0 } else { game_util };
+                let d = c.update(
+                    Some(30.0),
+                    &tiers(),
+                    200.0 + i as f64 * 2.0,
+                    Some(gpu),
+                    Some(30.0),
+                    Some(40.0),
+                );
+                assert!(
+                    !(d.changed && d.reason == "externally-capped"),
+                    "a launching game must not be eased down as capped at {game_util}%: {d:?}"
+                );
+                if d.changed && d.tier == "performance" {
+                    promoted = Some(d);
+                    break;
+                }
+            }
+            assert!(
+                c.state.capped_reference_ms.is_none(),
+                "no cap may latch off the desktop's stale window at {game_util}%"
+            );
+            let decision = promoted.unwrap_or_else(|| {
+                panic!("a badly slow {game_util}% launch must climb back within a few ticks")
+            });
+            assert_eq!(decision.reason, "badly-slow");
+        }
+    }
+
+    #[test]
+    fn a_system_resume_does_not_complete_an_old_streak_on_stale_data() {
+        // A game presenting on both sides of a suspend never passes the
+        // no-sample boundary, so resume declares the session boundary itself.
+        // Without it, a streak one short of latching before the lid closed
+        // completed on a single stale sample and latched against a wake-up
+        // stutter frametime.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        for i in 0..2 {
+            c.update(
+                Some(16.67),
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(25.0),
+                Some(20.0),
+                Some(35.0),
+            );
+        }
+        assert!(c.state.capped_reference_ms.is_none());
+
+        c.note_session_boundary();
+
+        let d = c.update(
+            Some(40.0),
+            &tiers(),
+            5000.0,
+            Some(25.0),
+            Some(20.0),
+            Some(35.0),
+        );
+        assert!(
+            c.state.capped_reference_ms.is_none(),
+            "the pre-suspend streak must not carry over: {d:?}"
+        );
+    }
+
+    #[test]
+    fn frames_resuming_after_a_gap_clear_stale_comfort_progress() {
+        // Post-dwell idle ticks count comfort windows. A game that starts must
+        // not inherit that progress, or its first comfortable stretch demotes
+        // windows early.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        for i in 0..36 {
+            c.update(
+                None,
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(4.0),
+                Some(5.0),
+                Some(9.0),
+            );
+        }
+        assert!(
+            c.state.comfort_count > 0,
+            "the idle stretch must have counted ease-down windows"
+        );
+
+        c.update(
+            Some(8.0),
+            &tiers(),
+            200.0,
+            Some(95.0),
+            Some(30.0),
+            Some(40.0),
+        );
+
+        assert_eq!(
+            c.state.comfort_count, 1,
+            "the game's first comfort window must be its own, not the desktop's"
+        );
+    }
+
+    #[test]
+    fn the_pacing_slack_is_configurable() {
+        // 24.7ms against a 17.0ms reference is 45% worse: past the default 15%
+        // slack, but within a configured 50%.
+        let config = PolicyConfig {
+            frame_cap_exit_pacing_pct: 50.0,
+            ..PolicyConfig::for_target_fps(100.0)
+        };
+        let mut c = AdaptiveProfileController::new("performance", config);
+        for i in 0..3 {
+            c.update(
+                Some(17.0),
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(30.0),
+                Some(10.0),
+                Some(22.0),
+            );
+        }
+        assert!(c.state.capped_reference_ms.is_some());
+
+        let d = c.update(
+            Some(24.7),
+            &tiers(),
+            108.0,
+            Some(30.0),
+            Some(10.0),
+            Some(22.0),
+        );
+
+        assert!(
+            c.state.capped_reference_ms.is_some(),
+            "wider slack must keep the latch through the same regression"
+        );
+        assert!(d.reason.starts_with("externally-capped"), "{d:?}");
+    }
+
+    #[test]
     fn cpu_bound_blocks_performance_promotion() {
         let mut c = controller();
         c.state.current_tier = "balanced".into();
@@ -831,11 +1562,104 @@ mod tests {
     }
 
     #[test]
-    fn no_sample_holds_tier() {
+    fn no_sample_holds_tier_when_the_card_is_working() {
+        // No frame telemetry and a busy card is a game we cannot measure, not
+        // a desktop. The tier stays where the last measured session left it.
+        let mut c = controller();
+        let d = c.update(None, &tiers(), 1.0, Some(70.0), None, None);
+        assert!(!d.changed);
+        assert_eq!(d.reason, "no-sample");
+    }
+
+    #[test]
+    fn a_busy_unmeasured_game_immediately_cancels_idle_progress() {
+        let mut c = AdaptiveProfileController::new("balanced", PolicyConfig::for_target_fps(100.0));
+        for i in 0..35 {
+            c.update(
+                None,
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(4.0),
+                Some(5.0),
+                Some(9.0),
+            );
+        }
+        assert_eq!(c.state.current_tier, "balanced");
+        assert_eq!(c.state.comfort_count, 5);
+
+        let d = c.update(None, &tiers(), 170.0, Some(70.0), None, None);
+
+        assert_eq!(d.tier, "balanced");
+        assert_eq!(d.reason, "no-sample");
+        assert_eq!(c.state.comfort_count, 0);
+        assert!(c.state.desktop_idle_since.is_none());
+    }
+
+    #[test]
+    fn no_sample_without_a_utilisation_reading_holds_the_tier() {
+        // Nothing measured at all is not evidence of an idle desktop, and the
+        // rule steps the tier DOWN, so absence must not be read as zero.
         let mut c = controller();
         let d = c.update(None, &tiers(), 1.0, None, None, None);
         assert!(!d.changed);
         assert_eq!(d.reason, "no-sample");
+    }
+
+    #[test]
+    fn an_idle_desktop_eases_the_tier_down_after_its_dwell() {
+        // The measured case: nothing presenting, card at desktop utilisation.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        let mut eased = None;
+        for i in 0..80 {
+            let t = 100.0 + i as f64 * 2.0;
+            let d = c.update(None, &tiers(), t, Some(4.0), Some(5.0), Some(9.0));
+            if d.changed {
+                eased = Some(d);
+                break;
+            }
+            assert_eq!(d.reason, "desktop-idle-wait");
+        }
+        let decision = eased.expect("an idle desktop must not hold a high tier forever");
+        assert_eq!(decision.reason, "desktop-idle");
+        assert_eq!(decision.tier, "balanced");
+    }
+
+    #[test]
+    fn the_idle_dwell_is_not_paid_by_a_game_that_starts() {
+        // A quiet stretch before frames arrive must not leave a countdown that
+        // fires later during play.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        for i in 0..20 {
+            c.update(
+                None,
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(4.0),
+                Some(5.0),
+                Some(9.0),
+            );
+        }
+        assert!(
+            c.state.desktop_idle_since.is_some(),
+            "the idle count must have started"
+        );
+
+        // Frames arrive: the countdown belongs to a session that is over.
+        c.update(
+            Some(8.0),
+            &tiers(),
+            200.0,
+            Some(70.0),
+            Some(30.0),
+            Some(40.0),
+        );
+
+        assert!(
+            c.state.desktop_idle_since.is_none(),
+            "a game must not inherit the desktop's countdown"
+        );
     }
 
     #[test]
@@ -851,11 +1675,23 @@ mod tests {
             cpu_bound_gpu_util_max_pct: 80.0,
             cpu_bound_peak_thread_min_pct: 75.0,
             cpu_bound_process_util_min_pct: 15.0,
+            frame_cap_enter_gpu_pct: 30.0,
+            frame_cap_exit_gpu_pct: 85.0,
+            frame_cap_confirm_windows: 2,
+            frame_cap_exit_pacing_pct: 25.0,
+            desktop_idle_gpu_pct: 18.0,
+            desktop_idle_after_s: 45.0,
         };
         let config = PolicyConfig::from_spec(&spec);
         assert_eq!(config.target_slow_windows, 2);
         assert_eq!(config.near_slow_windows, 4);
         assert_eq!(config.comfort_windows, 7);
+        assert_eq!(config.frame_cap_enter_gpu_pct, 30.0);
+        assert_eq!(config.frame_cap_exit_gpu_pct, 85.0);
+        assert_eq!(config.frame_cap_confirm_windows, 2);
+        assert_eq!(config.frame_cap_exit_pacing_pct, 25.0);
+        assert_eq!(config.desktop_idle_gpu_pct, 18.0);
+        assert_eq!(config.desktop_idle_after_s, 45.0);
         assert_eq!(config.performance_comfort_windows, 11);
         assert_eq!(config.demote_dwell_s, 50.0);
         assert_eq!(config.cpu_bound_gpu_util_max_pct, 80.0);

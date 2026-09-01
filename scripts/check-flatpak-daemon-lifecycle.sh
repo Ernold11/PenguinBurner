@@ -12,10 +12,10 @@
 #
 # GPU hardware is mocked through the compiled-in PENGUIN_BURNERD_TEST_ seams;
 # pkexec/polkit stays out of scope (the transaction runs as container root,
-# standing in for the pkexec hop). SELinux relabeling is masked by mounting
-# an empty directory over /sys/fs/selinux: hosts that mount selinuxfs would
-# otherwise abort the transaction inside the minimal container, which lacks
-# restorecon and a loaded policy.
+# standing in for the pkexec hop). On SELinux hosts, relabeling is masked by
+# mounting an empty directory over /sys/fs/selinux: the minimal container lacks
+# restorecon and a loaded policy. Non-SELinux CI hosts omit that mount because
+# their OCI runtime cannot create /sys/fs/selinux as a bind-mount target.
 
 set -euo pipefail
 
@@ -51,8 +51,14 @@ else
 fi
 test -f "$daemon_binary" || die "daemon binary not found: $daemon_binary"
 
-mkdir -p "$WORK_DIR/payload" "$WORK_DIR/selinux-mask"
+mkdir -p "$WORK_DIR/payload"
 cp "$daemon_binary" "$WORK_DIR/payload/penguin-burnerd"
+
+SELINUX_MASK_ARGS=()
+if [[ -e /sys/fs/selinux/enforce ]]; then
+    mkdir -p "$WORK_DIR/selinux-mask"
+    SELINUX_MASK_ARGS=(-v "$WORK_DIR/selinux-mask:/sys/fs/selinux:ro")
+fi
 
 cat > "$WORK_DIR/Containerfile" <<'EOF'
 FROM fedora:latest
@@ -168,7 +174,7 @@ echo "==> starting systemd container"
 "$ENGINE" rm -f "$CONTAINER" >/dev/null 2>&1 || true
 "$ENGINE" run -d --name "$CONTAINER" --systemd=always --privileged \
     --network "$NETWORK" \
-    -v "$WORK_DIR/selinux-mask:/sys/fs/selinux:ro" \
+    "${SELINUX_MASK_ARGS[@]}" \
     -v "$ROOT:/src:ro" \
     -v "$WORK_DIR/payload:/payload:ro" \
     -v "$WORK_DIR/inside.sh:/inside.sh:ro" \

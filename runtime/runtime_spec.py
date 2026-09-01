@@ -279,29 +279,69 @@ def _adaptive_spec(
         else adaptive_target_fps_from_env()
     )
     policy = AdaptiveProfilePolicyConfig.for_target_fps(target_fps)
+    policy_spec: dict[str, Any] = {
+        "target_fps": float(target_fps),
+        "target_slow_windows": int(policy.target_slow_windows),
+        "near_slow_windows": int(policy.near_slow_windows),
+        "comfort_windows": int(policy.comfort_windows),
+        "performance_comfort_windows": int(policy.performance_comfort_windows),
+        "demote_dwell_s": float(policy.demote_dwell_s),
+        "performance_demote_dwell_s": float(
+            policy.performance_demote_dwell_s
+        ),
+        "cpu_bound_gpu_util_max_pct": float(
+            policy.cpu_bound_gpu_util_max_pct
+        ),
+        "cpu_bound_peak_thread_min_pct": float(
+            policy.cpu_bound_peak_thread_min_pct
+        ),
+        "cpu_bound_process_util_min_pct": float(
+            policy.cpu_bound_process_util_min_pct
+        ),
+    }
+    # The frame-cap and desktop-idle knobs are new in 0.8 and the daemon fills
+    # in identical defaults, so a knob the user left alone is omitted: a still
+    # running 0.7.x daemon (deny_unknown_fields) must keep accepting a
+    # default-config runtime until its binary is restarted.
+    defaults = AdaptiveProfilePolicyConfig()
+    for key, value, unchanged in (
+        (
+            "frame_cap_enter_gpu_pct",
+            float(policy.frame_cap_enter_gpu_pct),
+            float(defaults.frame_cap_enter_gpu_pct),
+        ),
+        (
+            "frame_cap_exit_gpu_pct",
+            float(policy.frame_cap_exit_gpu_pct),
+            float(defaults.frame_cap_exit_gpu_pct),
+        ),
+        (
+            "frame_cap_confirm_windows",
+            int(policy.frame_cap_confirm_windows),
+            int(defaults.frame_cap_confirm_windows),
+        ),
+        (
+            "frame_cap_exit_pacing_pct",
+            float(policy.frame_cap_exit_pacing_pct),
+            float(defaults.frame_cap_exit_pacing_pct),
+        ),
+        (
+            "desktop_idle_gpu_pct",
+            float(policy.desktop_idle_gpu_pct),
+            float(defaults.desktop_idle_gpu_pct),
+        ),
+        (
+            "desktop_idle_after_s",
+            float(policy.desktop_idle_after_s),
+            float(defaults.desktop_idle_after_s),
+        ),
+    ):
+        if value != unchanged:
+            policy_spec[key] = value
     return {
         "initial_tier": initial_tier,
         "profiles": tier_profiles,
-        "policy": {
-            "target_fps": float(target_fps),
-            "target_slow_windows": int(policy.target_slow_windows),
-            "near_slow_windows": int(policy.near_slow_windows),
-            "comfort_windows": int(policy.comfort_windows),
-            "performance_comfort_windows": int(policy.performance_comfort_windows),
-            "demote_dwell_s": float(policy.demote_dwell_s),
-            "performance_demote_dwell_s": float(
-                policy.performance_demote_dwell_s
-            ),
-            "cpu_bound_gpu_util_max_pct": float(
-                policy.cpu_bound_gpu_util_max_pct
-            ),
-            "cpu_bound_peak_thread_min_pct": float(
-                policy.cpu_bound_peak_thread_min_pct
-            ),
-            "cpu_bound_process_util_min_pct": float(
-                policy.cpu_bound_process_util_min_pct
-            ),
-        },
+        "policy": policy_spec,
     }
 
 

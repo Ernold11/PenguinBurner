@@ -130,11 +130,15 @@ scans run at the stock limit automatically.
 
 Tag your saved profiles as **Efficiency**, **Balanced**, or **Performance**, and
 PenguinBurner switches between them while you play: efficient and silent when you
-have headroom, more clock when frames start to drop.
+have headroom, more clock when frames start to drop. It also recognises when the
+frame rate is held by something clocks can't move — a 60 FPS menu, vsync, an
+in-game limiter — and eases the tier down instead of burning power against the
+cap, and does the same when the desktop sits idle after a game.
 
 ![Stored undervolt profiles: one per tier with effective clocks, FPS/W, and power vs stock](docs/assets/profiles-management.png)
 
-[Read the guide](docs/features/adaptive-uv.md)
+[Read the guide](docs/features/adaptive-uv.md) — including
+[every tuning knob and environment variable](docs/features/adaptive-uv.md#one-word-tuning-responsiveness).
 
 ## Steam Integration
 
