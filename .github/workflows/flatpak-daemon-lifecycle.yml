@@ -1,0 +1,38 @@
+name: Flatpak daemon lifecycle
+
+# Rehearses the Flatpak elevated daemon-install transaction end to end in a
+# systemd container (see scripts/check-flatpak-daemon-lifecycle.sh): the real
+# tree-rendered transaction, the real tree-built daemon, real systemd and
+# socket — enable/restart/wait, peer-UID gate, idempotence, legacy-unit
+# migration, and the failure path's rollback. Mock GPU, no polkit.
+
+on:
+  pull_request:
+    paths:
+      - runtime/support/flatpak_daemon_install.py
+      - runtime/support/runtime_service.py
+      - runtime/daemon_client.py
+      - burnerd/**
+      - scripts/check-flatpak-daemon-lifecycle.sh
+      - .github/workflows/flatpak-daemon-lifecycle.yml
+  push:
+    branches: [main]
+    paths:
+      - runtime/support/flatpak_daemon_install.py
+      - runtime/support/runtime_service.py
+      - runtime/daemon_client.py
+      - burnerd/**
+      - scripts/check-flatpak-daemon-lifecycle.sh
+      - .github/workflows/flatpak-daemon-lifecycle.yml
+  schedule:
+    - cron: "7 7 * * 1"
+  workflow_dispatch:
+
+jobs:
+  rehearse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rehearse the daemon-install transaction
+        run: scripts/check-flatpak-daemon-lifecycle.sh
