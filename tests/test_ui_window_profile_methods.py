@@ -41,6 +41,15 @@ def win(qapp, monkeypatch):
     monkeypatch.setattr(
         window_mod, "systemd_autostart_profile_info", lambda: {"selector": "", "silent_fan_curve": False}
     )
+    # The mixin holds its own binding, and building the window syncs the boot
+    # checkbox through it. Left unpatched it reached the developer's real
+    # daemon socket, so the checkbox started ticked or not depending on what
+    # that machine happened to have saved for boot.
+    monkeypatch.setattr(
+        actions_mod,
+        "systemd_autostart_profile_info",
+        lambda **_kwargs: {"selector": "", "silent_fan_curve": False},
+    )
     monkeypatch.setattr(
         window_mod, "running_auto_uv_profile_info",
         lambda: {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False},
@@ -443,6 +452,105 @@ def test_boot_apply_checkbox_tracks_selected_gpu(win, monkeypatch) -> None:
     window.profile_list.target_gpu_combo.setCurrentIndex(1)
     assert window.profile_list.persist_on_startup_enabled() is True
     assert "GPU-A" in calls and "GPU-B" in calls
+
+
+def test_boot_apply_follows_the_daemon_not_the_saved_preference(
+    win, monkeypatch
+) -> None:
+    """The observed defect: config said on, the daemon had nothing saved.
+
+    `persist_on_startup` is written when the box is ticked but nothing rewrites
+    it when the entry goes away, so a boot with nothing to apply was still
+    shown as "applies at startup".
+    """
+    import cli.runtime_config_file as config_mod
+
+    window, _mp = win
+    # Patched at the source so any import style sees it: the saved preference
+    # claims boot is armed.
+    monkeypatch.setattr(
+        config_mod,
+        "persist_on_startup_from_runtime_config",
+        lambda *_a, **_kw: True,
+    )
+    monkeypatch.setattr(
+        actions_mod,
+        "systemd_autostart_profile_info",
+        lambda **_kwargs: {"selector": "", "main_gpu": False},
+    )
+    window._boot_apply_by_gpu = {}
+    window.profile_list.set_boot_apply_checked(True)
+
+    window._sync_boot_apply_for_target("")
+
+    assert window.profile_list.persist_on_startup_enabled() is False
+
+
+def test_a_boot_entry_that_disappears_unticks_the_box(win, monkeypatch) -> None:
+    """A cached tick must not outlive the entry it described.
+
+    Every apply sends --boot or --clear-boot from this state, so a box stuck ON
+    over a daemon that has nothing is a startup promise nothing will keep.
+    """
+    window, _mp = win
+    saved = {"selector": "profile-a", "main_gpu": False}
+    monkeypatch.setattr(
+        actions_mod, "systemd_autostart_profile_info", lambda **_kwargs: saved
+    )
+    window._boot_apply_by_gpu = {}
+
+    window._sync_boot_apply_for_target("GPU-A")
+    assert window.profile_list.persist_on_startup_enabled() is True
+
+    saved = {"selector": "", "main_gpu": False}
+    window._sync_boot_apply_for_target("GPU-A")
+
+    assert window.profile_list.persist_on_startup_enabled() is False
+
+
+def test_a_fresh_tick_survives_until_an_apply_writes_the_entry(
+    win, monkeypatch
+) -> None:
+    """Ticking arms the next apply; the daemon has nothing to report yet."""
+    window, _mp = win
+    monkeypatch.setattr(
+        actions_mod,
+        "systemd_autostart_profile_info",
+        lambda **_kwargs: {"selector": "", "main_gpu": False},
+    )
+    monkeypatch.setattr(
+        actions_mod, "persist_on_startup_to_runtime_config", lambda _v: None
+    )
+    monkeypatch.setattr(window.profile_list, "target_gpu_uuid", lambda: "GPU-A")
+    window._boot_apply_by_gpu = {}
+    # Start from off with signals blocked, so the tick below is the only
+    # user action in play.
+    window.profile_list.set_boot_apply_checked(False)
+
+    window.profile_list.boot_apply_checkbox.setChecked(True)
+    assert window._boot_apply_by_gpu == {"gpu-a": True}
+    window._sync_boot_apply_for_target("GPU-A")
+
+    assert window.profile_list.persist_on_startup_enabled() is True
+
+
+def test_a_confirmed_entry_drops_the_pending_tick(win, monkeypatch) -> None:
+    """Once the daemon holds the entry the session marker is redundant.
+
+    Left behind, it would keep forcing the box ON after the entry was cleared.
+    """
+    window, _mp = win
+    monkeypatch.setattr(
+        actions_mod,
+        "systemd_autostart_profile_info",
+        lambda **_kwargs: {"selector": "profile-a", "main_gpu": False},
+    )
+    window._boot_apply_by_gpu = {"gpu-a": True}
+
+    window._sync_boot_apply_for_target("GPU-A")
+
+    assert window._boot_apply_by_gpu == {}
+    assert window.profile_list.persist_on_startup_enabled() is True
 
 
 def test_main_gpu_toggle_tracks_target_and_writes_uuid(win, monkeypatch) -> None:
