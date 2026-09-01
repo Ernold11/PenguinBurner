@@ -5,6 +5,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Smoke-build the binary package in the containerized resolute scenario
+# first so a broken build fails here, not on the Launchpad builders after
+# the upload. Deliberately skips the devel scenario: next-series breakage
+# must not block releases for supported users.
+# PENGUIN_BURNER_SKIP_PACKAGE_SMOKE=1 skips the gate.
+if [ "${PENGUIN_BURNER_SKIP_PACKAGE_SMOKE:-0}" != 1 ]; then
+    "$ROOT/scripts/check-ubuntu-package-build.sh" resolute
+fi
+
 ppa="${PPA_TARGET:-ppa:jpietek/penguin-burner}"
 version="${1:-}"
 series_list=("${@:2}")

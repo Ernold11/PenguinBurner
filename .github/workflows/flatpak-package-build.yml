@@ -1,0 +1,47 @@
+name: Flatpak package build
+
+# Builds and installs the Flatpak in containers and smoke-tests the exports,
+# sandbox entry points, and wrapper installer (see
+# scripts/check-flatpak-install-smoke.sh). PRs and pushes build the fedora
+# host scenario; the weekly and manual runs add the ubuntu-lts and arch host
+# stacks, because this surface breaks through host flatpak-builder/bubblewrap
+# drift and freedesktop runtime releases, not through most of our commits.
+
+on:
+  pull_request:
+    paths:
+      - packaging/flatpak/**
+      - setup.py
+      - pyproject.toml
+      - MANIFEST.in
+      - burnerd/**
+      - overlay/native/**
+      - scripts/check-flatpak-install-smoke.sh
+      - .github/workflows/flatpak-package-build.yml
+  push:
+    branches: [main]
+    paths:
+      - packaging/flatpak/**
+      - setup.py
+      - pyproject.toml
+      - MANIFEST.in
+      - burnerd/**
+      - overlay/native/**
+      - scripts/check-flatpak-install-smoke.sh
+      - .github/workflows/flatpak-package-build.yml
+  schedule:
+    - cron: "47 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["fedora", "ubuntu-lts", "arch"]') || fromJSON('["fedora"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and smoke-test Flatpak in ${{ matrix.scenario }} scenario
+        run: scripts/check-flatpak-install-smoke.sh --container "${{ matrix.scenario }}"

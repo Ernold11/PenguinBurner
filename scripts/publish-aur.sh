@@ -3,6 +3,15 @@
 set -euo pipefail
 
 aur_repo="${1:-../penguin-burner-aur}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Smoke-build the package in the containerized Arch scenarios first so a
+# broken toolchain layout fails here, not on user machines after the push.
+# PENGUIN_BURNER_SKIP_PACKAGE_SMOKE=1 skips the gate (e.g. right after the
+# same scenarios passed in CI for this commit).
+if [ "${PENGUIN_BURNER_SKIP_PACKAGE_SMOKE:-0}" != 1 ]; then
+    "$script_dir/check-arch-package-build.sh"
+fi
 
 if ! command -v makepkg >/dev/null 2>&1; then
     echo "missing required command: makepkg" >&2

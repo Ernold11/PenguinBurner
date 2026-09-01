@@ -2,6 +2,17 @@
 
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Smoke-build the RPM in the containerized scenarios for the supported
+# Fedora releases first so a broken build fails here, not in COPR after the
+# push. Deliberately skips the rawhide scenario: rawhide breakage must not
+# block releases for stable Fedora users.
+# PENGUIN_BURNER_SKIP_PACKAGE_SMOKE=1 skips the gate.
+if [ "${PENGUIN_BURNER_SKIP_PACKAGE_SMOKE:-0}" != 1 ]; then
+    "$script_dir/check-fedora-package-build.sh" fedora-43 fedora-44
+fi
+
 project="${COPR_PROJECT:-penguin-burner}"
 srpm="${1:-}"
 config_file="${COPR_CONFIG_FILE:-}"

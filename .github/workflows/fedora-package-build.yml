@@ -1,0 +1,44 @@
+name: Fedora package build
+
+# Builds the Fedora RPM in containers the way COPR does (see
+# scripts/check-fedora-package-build.sh). PRs and pushes build the supported
+# Fedora releases; the weekly and manual runs add fedora:rawhide as a
+# toolchain-drift early warning without letting rawhide breakage block PRs.
+
+on:
+  pull_request:
+    paths:
+      - packaging/rpm/**
+      - setup.py
+      - pyproject.toml
+      - MANIFEST.in
+      - burnerd/**
+      - overlay/native/**
+      - scripts/check-fedora-package-build.sh
+      - .github/workflows/fedora-package-build.yml
+  push:
+    branches: [main]
+    paths:
+      - packaging/rpm/**
+      - setup.py
+      - pyproject.toml
+      - MANIFEST.in
+      - burnerd/**
+      - overlay/native/**
+      - scripts/check-fedora-package-build.sh
+      - .github/workflows/fedora-package-build.yml
+  schedule:
+    - cron: "47 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["fedora-43", "fedora-44", "rawhide"]') || fromJSON('["fedora-43", "fedora-44"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build package in ${{ matrix.scenario }} scenario
+        run: scripts/check-fedora-package-build.sh "${{ matrix.scenario }}"

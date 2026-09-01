@@ -350,6 +350,21 @@ fn pid_alive(pid: u32) -> bool {
 // --- tests -------------------------------------------------------------------
 
 #[test]
+fn version_flag_prints_identity_and_exits_zero() {
+    // The Flatpak install transaction pre-flights the staged binary with
+    // --version before committing; exit 0 plus the version line is the
+    // contract that probe relies on.
+    let output = Command::new(env!("CARGO_BIN_EXE_penguin-burnerd"))
+        .arg("--version")
+        .output()
+        .expect("run penguin-burnerd --version");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("penguin-burnerd "));
+    assert!(stdout.contains(env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
 fn status_is_idle_when_nothing_running() {
     let daemon = Daemon::start(&[]);
     let response = daemon.request(r#"{"method":"status"}"#);

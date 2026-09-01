@@ -140,6 +140,23 @@ def _assert_flatpak_daemon_binary_installed_atomically(script: str) -> None:
     assert "install -Dm0755" not in script
     assert "trap finish_daemon_install EXIT" in script
     assert "trap 'exit 1' HUP INT TERM" in script
+    # The staged binary must prove it can execute on this host (the Flatpak
+    # daemon links against the freedesktop runtime's glibc floor) before any
+    # installed state is touched.
+    preflight = '"$daemon_tmp" --version'
+    assert preflight in script
+    assert "cannot run on this host" in script
+    assert (
+        script.index('chmod 0755 "$daemon_tmp"')
+        < script.index(preflight)
+        < script.index(commit)
+    )
+    # Rollback must tolerate units that do not exist: a bare `systemctl
+    # disable` of the usually-absent legacy unit reported every rollback as
+    # failed.
+    assert 'systemctl cat -- "$1"' in script
+    assert "disable_present_service penguin-burnerd.service || rollback_failed=1" in script
+    assert "disable_present_service PenguinBurner.service || rollback_failed=1" in script
     assert script.index(stage) < script.index(copy) < script.index(commit)
     assert script.index(commit) < script.rindex(legacy_mutation)
 
@@ -307,14 +324,10 @@ def test_daemon_migration_command_installs_flatpak_daemon(
     assert "findmnt" in script and "noexec" in script
     assert "selinuxenabled" in script and "restorecon" in script
     assert "rollback_daemon_install" in script
-    assert (
-        "systemctl disable --now penguin-burnerd.service >/dev/null 2>&1 "
-        "|| rollback_failed=1"
-    ) in script
-    assert (
-        "systemctl disable --now PenguinBurner.service >/dev/null 2>&1 "
-        "|| rollback_failed=1"
-    ) in script
+    # Rollback disables only units that exist; a bare `systemctl disable` of
+    # the usually-absent legacy unit reported every rollback as failed.
+    assert "disable_present_service penguin-burnerd.service || rollback_failed=1" in script
+    assert "disable_present_service PenguinBurner.service || rollback_failed=1" in script
     assert script.index("restart_penguin_burnerd\n") < script.rindex(
         "commit_daemon_install"
     )

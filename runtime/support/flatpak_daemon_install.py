@@ -152,12 +152,22 @@ restore_rollback_link() {
     fi
 }
 
+disable_present_service() {
+    # `systemctl disable` fails on a unit that does not exist, and the legacy
+    # PenguinBurner.service is absent on almost every system -- rollback must
+    # not report failure for a unit there was nothing to disable.
+    if ! systemctl cat -- "$1" >/dev/null 2>&1; then
+        return 0
+    fi
+    systemctl disable --now "$1" >/dev/null 2>&1
+}
+
 rollback_daemon_install() {
     set +e
     rollback_failed=0
     if [ "$service_state_captured" -eq 1 ]; then
-        systemctl disable --now penguin-burnerd.service >/dev/null 2>&1 || rollback_failed=1
-        systemctl disable --now PenguinBurner.service >/dev/null 2>&1 || rollback_failed=1
+        disable_present_service penguin-burnerd.service || rollback_failed=1
+        disable_present_service PenguinBurner.service || rollback_failed=1
     fi
     restore_rollback_link "$daemon_backup" "$daemon_target" "$daemon_had_previous" || rollback_failed=1
     restore_rollback_link "$unit_backup" "$unit" "$unit_had_previous" || rollback_failed=1
@@ -284,6 +294,17 @@ if [ "$(od -An -tx1 -N4 "$daemon_tmp" | tr -d '[:space:]')" != 7f454c46 ]; then
 fi
 chown root:root "$daemon_tmp"
 chmod 0755 "$daemon_tmp"
+# Pre-flight the staged binary before touching any installed state. The Flatpak
+# daemon is built against the freedesktop runtime but executes on the host, so
+# a host with older system libraries (glibc below the runtime's floor) cannot
+# load it; surface the loader's error with clear guidance instead of a service
+# that can never start.
+if ! daemon_preflight="$("$daemon_tmp" --version 2>&1)"; then
+    echo "The bundled PenguinBurner hardware daemon cannot run on this host:" >&2
+    echo "$daemon_preflight" >&2
+    echo "This host's system libraries are older than the Flatpak build supports; install PenguinBurner from a native package (COPR, PPA, AUR, or pip) instead." >&2
+    exit 1
+fi
 unit_tmp="$(mktemp /etc/systemd/system/.penguin-burnerd.service.XXXXXX)"
 printf '%s' "$PENGUIN_BURNER_SYSTEMD_UNIT_B64" | base64 -d > "$unit_tmp"
 chown root:root "$unit_tmp"

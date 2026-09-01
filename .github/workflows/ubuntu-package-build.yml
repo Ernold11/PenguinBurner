@@ -1,0 +1,45 @@
+name: Ubuntu package build
+
+# Builds the Ubuntu binary package in containers the way the Launchpad PPA
+# builders do (see scripts/check-ubuntu-package-build.sh). PRs and pushes
+# build the supported resolute series; the weekly and manual runs add
+# ubuntu:devel as a toolchain-drift early warning without letting devel
+# breakage block PRs.
+
+on:
+  pull_request:
+    paths:
+      - packaging/debian/**
+      - setup.py
+      - pyproject.toml
+      - MANIFEST.in
+      - burnerd/**
+      - overlay/native/**
+      - scripts/check-ubuntu-package-build.sh
+      - .github/workflows/ubuntu-package-build.yml
+  push:
+    branches: [main]
+    paths:
+      - packaging/debian/**
+      - setup.py
+      - pyproject.toml
+      - MANIFEST.in
+      - burnerd/**
+      - overlay/native/**
+      - scripts/check-ubuntu-package-build.sh
+      - .github/workflows/ubuntu-package-build.yml
+  schedule:
+    - cron: "32 7 * * 1"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["resolute", "devel"]') || fromJSON('["resolute"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build package in ${{ matrix.scenario }} scenario
+        run: scripts/check-ubuntu-package-build.sh "${{ matrix.scenario }}"
