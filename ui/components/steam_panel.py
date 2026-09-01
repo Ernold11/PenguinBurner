@@ -18,7 +18,7 @@ from common.flatpak_wrappers import ensure_steam_integration
 from integrations.steam.manager import SteamGameRow, SteamIntegrationManager
 from integrations.steam.launch_options import injection_state
 from integrations.steam.process import launch_steam_game, restart_steam
-from integrations.steam.settings import (
+from profiles.game_profile import (
     GAME_MODE_ADAPTIVE,
     GAME_MODE_STOCK,
     normalize_game_mode,

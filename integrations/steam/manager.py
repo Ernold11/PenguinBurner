@@ -36,14 +36,16 @@ from .launch_options import (
 from .library import InstalledSteamGame, installed_steam_games
 from .process import running_steam_game_ids, steam_game_running, steam_running
 from .settings import (
+    SteamGameSetting,
+    load_steam_game_settings,
+    store_steam_game_setting,
+)
+from profiles.game_profile import (
     GAME_MODE_ADAPTIVE,
     GAME_MODE_DEFAULT,
     GAME_MODE_NONE,
-    SteamGameSetting,
-    load_steam_game_settings,
     normalize_game_mode,
     normalize_game_target_fps,
-    store_steam_game_setting,
 )
 from .users import SteamUser, active_steam_user
 
@@ -228,6 +230,7 @@ class SteamIntegrationManager:
                         enabled=True,
                         mode=GAME_MODE_ADAPTIVE,
                         overlay=state.overlay,
+                        ingame_latency=state.ingame_latency,
                         original_launch_options=remove_injection(current),
                         injected_launch_options=current,
                     ),
@@ -330,6 +333,17 @@ class SteamIntegrationManager:
     def set_game_overlay(self, app_id: str, overlay: bool) -> ApplyResult:
         setting = self._setting(app_id)
         return self._apply(app_id, replace(setting, overlay=bool(overlay)))
+
+    def set_game_ingame_latency(self, app_id: str, keep: bool) -> ApplyResult:
+        """Keep the Reflex markers when the overlay is off.
+
+        With the overlay on the wrapper already runs them, so the choice only
+        says anything in the other case -- which is the case that matters:
+        without markers Adaptive reads presented frames, and under frame
+        generation that is not the base rate it is trying to pace on.
+        """
+        setting = self._setting(app_id)
+        return self._apply(app_id, replace(setting, ingame_latency=bool(keep)))
 
     def set_game_target_fps(self, app_id: str, target_fps: float | None) -> ApplyResult:
         setting = self._setting(app_id)
@@ -447,6 +461,7 @@ class SteamIntegrationManager:
                 replace(
                     setting,
                     overlay=state.overlay,
+                    ingame_latency=state.ingame_latency,
                     original_launch_options=(
                         setting.original_launch_options
                         if setting.active
@@ -481,7 +496,7 @@ class SteamIntegrationManager:
 
         from drivers.nvidia.daemon_gpu import DaemonGpuClient
 
-        from .game_runtime import game_gpu_target, profile_argv_for_setting
+        from profiles.game_profile import game_gpu_target, profile_argv_for_setting
 
         try:
             status = daemon_status(timeout_s=1.0)
@@ -560,7 +575,11 @@ class SteamIntegrationManager:
                     False,
                     f"PenguinBurner Steam integration repair failed: {error}",
                 )
-            desired = inject_launch_options(current, overlay=setting.overlay)
+            desired = inject_launch_options(
+                current,
+                overlay=setting.overlay,
+                ingame_latency=setting.ingame_latency,
+            )
             # The stored original is a snapshot taken when the wrapper last
             # went in, and it is only still the original while the wrapper is
             # still there. On an unwrapped line the live command *is* the

@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from integrations.steam.vdf import quoted_tokens
+from integrations.steam.vdf import app_value_from_localconfig, quoted_tokens
 
 BARE_PENGUIN_BURNER_WRAPPER = "PENGUIN_BURNER"
 PENGUIN_BURNER_WRAPPER = BARE_PENGUIN_BURNER_WRAPPER
@@ -99,33 +99,10 @@ def default_localconfig_paths(home: Path | None = None) -> list[Path]:
 
 
 def launch_options_from_localconfig(text: str, app_id: str) -> str | None:
-    lines = text.splitlines()
-    for index, line in enumerate(lines):
-        if quoted_tokens(line) != [app_id]:
-            continue
-
-        depth = 0
-        entered_block = False
-        for block_line in lines[index + 1 :]:
-            stripped = block_line.strip()
-            if stripped == "{":
-                depth += 1
-                entered_block = True
-                continue
-            if stripped == "}":
-                if not entered_block:
-                    break
-                depth -= 1
-                if depth <= 0:
-                    break
-                continue
-            if not entered_block or depth <= 0:
-                continue
-
-            tokens = quoted_tokens(block_line)
-            if len(tokens) >= 2 and tokens[0] == "LaunchOptions":
-                return tokens[1]
-    return None
+    # The same block walk the rewrite below performs, shared so the reader and
+    # the writer cannot drift apart. The library tab reads Playtime through it
+    # as well -- one key out of one app's block is the whole shape.
+    return app_value_from_localconfig(text, app_id, "LaunchOptions")
 
 
 def rewrite_launch_options_in_localconfig(

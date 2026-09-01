@@ -14,7 +14,8 @@ from PySide6 import QtWidgets
 from integrations.steam.library import InstalledSteamGame
 from integrations.steam.launch_options import inject_launch_options, remove_injection
 from integrations.steam.manager import SteamGameRow, SteamIntegrationManager
-from integrations.steam.settings import GAME_MODE_ADAPTIVE, SteamGameSetting
+from integrations.steam.settings import SteamGameSetting
+from profiles.game_profile import GAME_MODE_ADAPTIVE
 from ui.components.steam_panel import (
     SORT_ALPHABETICAL,
     SORT_RECENT,

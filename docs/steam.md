@@ -1,13 +1,18 @@
 # Steam Integration
 
-PenguinBurner's **Steam** tab turns undervolting into per-game automation:
+PenguinBurner's **Game Library** tab turns undervolting into per-game
+automation:
 discover your installed library, pick how the GPU should behave for each game,
 and let PenguinBurner apply it automatically when that game launches — no manual
 profile switching.
 
-![Steam tab](assets/steam-tab.png)
+![Steam games in the Game Library tab](assets/steam-tab.png)
 
 ## Why it matters
+
+The Game Library tab lists Steam and Lutris side by side, each game marked
+with its launcher's icon, sorted by name, by when it was last played, or by
+how long it has been played.
 
 The system-wide profile is one setting for everything. Steam integration lets a
 single library hold **different behavior per game**: a light indie title runs
@@ -18,15 +23,34 @@ the launch wrapper.
 
 ## Setup (one scan of your library)
 
-1. Open the **Steam** tab. If PenguinBurner has not seen your library yet, click
-   **Scan my Steam library**. This is safe and non-destructive: every game is
-   listed, all left **disabled**, and no launch options are changed.
+1. Open the **Game Library** tab. If PenguinBurner has not seen your library
+   yet, click **Scan my Steam library**. This is safe and non-destructive: every
+   game is listed, all left **disabled**, and no launch options are changed.
 2. Restart Steam once if prompted (this connects live apply).
 3. Select a game and toggle **Enable PenguinBurner per-game profiles**. Only then
    does PenguinBurner add its launch-options wrapper to that one game.
 
 Nothing is forced. Enablement is strictly per game and per Steam account, stored
 in `~/.config/PenguinBurner/steam-game-settings.json`.
+
+## When Steam will take a change
+
+Steam holds each game's launch options in memory while the client runs, so a
+change written straight to disk behind its back would be overwritten on exit.
+PenguinBurner therefore says up front whether a change can land, rather than
+letting you type one and refusing it afterwards:
+
+- The status line at the bottom of the tab carries the signed-in account and one
+  of **live apply** (Steam is running and connected), **Steam stopped** (nothing
+  is holding the file, so PenguinBurner writes it directly), or **read-only until
+  initialized**.
+- In that last state the per-game editors are grayed out and a single button
+  appears beside **Rescan** with the one thing that fixes it — **Scan my Steam
+  library** the first time, or **Restart Steam to finish** when Steam has been
+  running since before the integration was set up.
+
+Lutris needs none of this: its settings are files PenguinBurner owns the writing
+of, so its games are always editable.
 
 ## Per-game options
 
@@ -53,6 +77,13 @@ The per-game editor exposes:
   144 Hz competitive shooter each get their own target.
 - **Enable In-Game overlay** — the live readout (latency, pre-frame-gen FPS,
   clocks, power, tier) for this game.
+- **Latency markers without the overlay** — keeps the Reflex marker stream when
+  the overlay is off. The wrapper starts those markers with the overlay, so this
+  row only says anything when the overlay is off — and that is the case that
+  matters for frame generation: without markers PenguinBurner sees presented
+  frames, and a generated frame is not a frame Adaptive can pace on. It is shown
+  on and out of reach while the overlay is on, because the overlay already
+  implies it.
 
 The tuning and overlay controls stay grayed out until the game's PenguinBurner
 toggle is on. The compatibility selector is independent of that toggle; it is

@@ -1,0 +1,174 @@
+"""Lutris seen through the launcher contract the game library tab speaks.
+
+A thin read-only face over LutrisIntegrationManager, which stays the only thing
+that edits a game's prefix_command.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from integrations.launchers.library import (
+    FIELD_SWITCH,
+    FIELD_TEXT,
+    GROUP_COMMAND,
+    GROUP_IN_GAME,
+    LauncherBulkAction,
+    LauncherField,
+    LauncherWriteState,
+    LibraryGame,
+)
+
+from .manager import LutrisGameRow, LutrisIntegrationManager
+from .paths import lutris_desktop_icon
+
+
+class LutrisLibrarySource:
+    launcher_id = "lutris"
+    display_name = "Lutris"
+    #: Shipped fallback, used when the machine has no Lutris icon of its own.
+    icon_asset = "tab-lutris.png"
+    #: Lutris exposes no API for starting a game on our behalf, so the tab
+    #: shows no Play button for these rows. Documented in docs/features/lutris.md.
+    can_launch = False
+
+    def __init__(
+        self,
+        manager: LutrisIntegrationManager | None = None,
+        *,
+        home: Path | None = None,
+        settings_path: str | Path | None = None,
+    ) -> None:
+        self.manager = manager or LutrisIntegrationManager(
+            home=home,
+            settings_path=settings_path,
+        )
+        self._home = home
+        self._rows: tuple[LutrisGameRow, ...] = ()
+
+    def desktop_icon(self):
+        """Lutris's own installed icon, or None when it has none here."""
+        return lutris_desktop_icon(self._home)
+
+    def available(self) -> bool:
+        return bool(self.manager.available)
+
+    def refresh(self, *, deep: bool = True) -> None:
+        # Lutris keeps everything in a local database and config files, so
+        # there is no expensive pass to skip: the cheap one is the only one.
+        self.manager.refresh()
+        self._rows = tuple(self.manager.rows())
+
+    # -- what only Lutris has ------------------------------------------------
+
+    def fields(self, game: LibraryGame) -> tuple[LauncherField, ...]:
+        row = game.detail
+        if not isinstance(row, LutrisGameRow):
+            return ()
+        return (self._latency_field(row), self._prefix_command_field(row))
+
+    @staticmethod
+    def _latency_field(row: LutrisGameRow) -> LauncherField:
+        """The markers Adaptive paces on, kept when the overlay is off.
+
+        Declared only here, but not because the wrapper treats Lutris
+        specially: it reads PB_INGAME_LATENCY straight out of the environment,
+        whoever put it there. Steam's manager simply has no setter for it yet,
+        and adding one is not a copy of this line -- Steam's tokens land where
+        %command% was, where an `env VAR=1` assignment breaks a
+        `gamescope -- %command%` launch. That is why the overlay opt-in rides
+        as --pb-overlay=N for Steam, and the latency one would need the same.
+        """
+        overlay_on = bool(getattr(row.setting, "overlay", False))
+        return LauncherField(
+            key="ingame_latency",
+            kind=FIELD_SWITCH,
+            title="Latency markers without the overlay",
+            subtitle=(
+                "Adaptive paces on these markers, and the launcher normally "
+                "starts them with the overlay. Keep them when the overlay is "
+                "off, or Adaptive loses base-frame pacing under frame generation."
+            ),
+            setter="set_game_ingame_latency",
+            # With the overlay on the launcher already runs the markers, so the
+            # switch has nothing left to add: show it on, out of reach.
+            value=True if overlay_on else bool(
+                getattr(row.setting, "ingame_latency", False)
+            ),
+            enabled=not overlay_on,
+            group=GROUP_IN_GAME,
+        )
+
+    @staticmethod
+    def _prefix_command_field(row: LutrisGameRow) -> LauncherField:
+        value = str(row.prefix_command or "")
+        subtitle = "prefix_command in the Lutris config"
+        if value and row.inherited_prefix:
+            subtitle = f"prefix_command — inherited from {row.prefix_source_label}"
+        return LauncherField(
+            key="prefix_command",
+            kind=FIELD_TEXT,
+            title="Command",
+            subtitle=subtitle,
+            setter="set_game_prefix_command",
+            value=value,
+            group=GROUP_COMMAND,
+        )
+
+    def write_state(self) -> LauncherWriteState:
+        """Always ready: Lutris's settings are files we own the writing of.
+
+        Nothing to initialise and nothing racing us for them, unlike Steam,
+        which holds its launch options in memory while the client runs.
+        """
+        return LauncherWriteState()
+
+    def bulk_actions(self) -> tuple[LauncherBulkAction, ...]:
+        # Keys shared with the other launchers on purpose: the tab shows one
+        # "disable everything" and means it across the whole library.
+        return (
+            LauncherBulkAction(
+                key="enable_all",
+                label="Enable PenguinBurner for all games",
+                setter="set_all_games_enabled",
+                value=True,
+                affects="enabled",
+                confirm=(
+                    "Add the PenguinBurner wrapper to the launch command of "
+                    "{count} {games}?\n\nThe In-Game overlay stays off, and "
+                    "MangoHud is disabled in wrapped games. \"Disable "
+                    "PenguinBurner for all games\" restores each game's own "
+                    "launch command."
+                ),
+            ),
+            LauncherBulkAction(
+                key="disable_all",
+                label="Disable PenguinBurner for all games",
+                setter="set_all_games_enabled",
+                value=False,
+                affects="enabled",
+                confirm=(
+                    "Remove the PenguinBurner wrapper from {count} {games} and "
+                    "restore their own launch command?"
+                ),
+            ),
+        )
+
+    def games(self) -> tuple[LibraryGame, ...]:
+        return tuple(self._library_game(row) for row in self._rows)
+
+    def _library_game(self, row: LutrisGameRow) -> LibraryGame:
+        return LibraryGame(
+            launcher=self.launcher_id,
+            game_id=row.game.game_id,
+            name=row.game.display_name,
+            subtitle=str(row.game.runner_label or ""),
+            last_played=int(row.game.last_played or 0),
+            playtime_hours=float(row.game.playtime_hours or 0.0),
+            art_path=row.game.cover_path,
+            ready=bool(row.game.ready),
+            wrapped=bool(row.wrapped),
+            enabled=bool(row.setting.enabled),
+            overlay=bool(row.setting.overlay),
+            detail=row,
+        )

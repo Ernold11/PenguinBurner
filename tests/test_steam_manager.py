@@ -3,14 +3,18 @@ from types import SimpleNamespace
 
 import pytest
 
+from profiles import game_profile
+
 import integrations.steam.manager as manager_module
 from integrations.steam.cdp import SteamAppDetails
 from integrations.steam.manager import SteamIntegrationManager
 from integrations.steam.settings import (
+    load_steam_game_settings,
+)
+from profiles.game_profile import (
     GAME_MODE_ADAPTIVE,
     GAME_MODE_DEFAULT,
     GAME_MODE_STOCK,
-    load_steam_game_settings,
 )
 from integrations.steam.users import STEAMID64_BASE
 
@@ -468,10 +472,10 @@ def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> Non
         },
     )
     monkeypatch.setattr(
-        game_runtime, "read_auto_uv_profiles", lambda: []
+        game_profile, "read_auto_uv_profiles", lambda: []
     )
     monkeypatch.setattr(
-        game_runtime,
+        game_profile,
         "resolve_profile_tier_profiles",
         lambda profiles, **_kwargs: {"balanced": {"profile_id": "profile-9"}},
     )
@@ -522,9 +526,9 @@ def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -
         return {"started": True}
 
     monkeypatch.setattr(daemon_client, "start_game_runtime_profile", fake_start)
-    monkeypatch.setattr(game_runtime, "read_auto_uv_profiles", lambda: [])
+    monkeypatch.setattr(game_profile, "read_auto_uv_profiles", lambda: [])
     monkeypatch.setattr(
-        game_runtime,
+        game_profile,
         "resolve_profile_tier_profiles",
         lambda _profiles, **_kwargs: {
             "performance": {"profile_id": "performance-9"}
@@ -744,4 +748,5 @@ def test_enabling_reads_the_original_off_the_live_line_not_a_stale_snapshot(
     stored = manager._setting("620")
     assert stored.original_launch_options == live
     # And the line Steam now carries is that same command, wrapped.
-    assert injection_state(manager._launch_options["620"]).wrapped is True
+    written = manager._launch_options["620"]
+    assert injection_state(written).wrapped is True

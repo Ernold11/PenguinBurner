@@ -2,17 +2,19 @@ from pathlib import Path
 import json
 
 from integrations.steam.settings import (
+    SteamGameSetting,
+    load_steam_game_settings,
+    remove_steam_game_setting,
+    steam_game_setting,
+    store_steam_game_setting,
+)
+from profiles.game_profile import (
     GAME_MODE_ADAPTIVE,
     GAME_MODE_DEFAULT,
     GAME_MODE_NONE,
     GAME_MODE_STOCK,
-    SteamGameSetting,
-    load_steam_game_settings,
     normalize_game_mode,
     normalize_game_target_fps,
-    remove_steam_game_setting,
-    steam_game_setting,
-    store_steam_game_setting,
 )
 
 

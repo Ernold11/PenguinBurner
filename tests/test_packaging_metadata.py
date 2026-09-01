@@ -1140,3 +1140,26 @@ def _png_paeth(left: int, up: int, upper_left: int) -> int:
     if up_distance <= upper_left_distance:
         return up
     return upper_left
+
+
+def test_every_importable_package_is_listed_for_install() -> None:
+    """A package the wheel never installs imports fine here and nowhere else.
+
+    The list is written by hand, so a new subpackage is only ever one forgotten
+    line away from a `ModuleNotFoundError` that the whole test suite -- running
+    from the checkout, where every directory is importable -- cannot see.
+    """
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    listed = set(metadata["tool"]["setuptools"]["packages"])
+    roots = {name.split(".", 1)[0] for name in listed}
+
+    missing = set()
+    for root in sorted(roots):
+        for init in Path(root).rglob("__init__.py"):
+            package = ".".join(init.parent.parts)
+            if "__pycache__" in package:
+                continue
+            if package not in listed:
+                missing.add(package)
+
+    assert not missing, f"not installed by the wheel: {sorted(missing)}"

@@ -20,7 +20,7 @@ from ui.components.profile_list import ProfileList
 from ui.components.runs_table import RunsTable
 from ui.components.scan_controls import ScanControls
 from ui.components.status_header import StatusHeader
-from ui.components.steam_panel import SteamPanel
+from ui.components.game_library_panel import GameLibraryPanel
 from ui.features.profiles.profiles import adaptive_profile_tier_labels
 from ui.constants import APP_DISPLAY_NAME
 from .controllers.command import CommandController
@@ -153,7 +153,7 @@ class MainWindow(ProfileActionsMixin):
         auto_uv_view.addWidget(self.log_view.widget)
         auto_uv_view.setSizes([760, 440])
 
-        self.steam_panel = SteamPanel(
+        self.game_library_panel = GameLibraryPanel(
             QtCore=self.QtCore,
             QtGui=self.QtGui,
             QtWidgets=self.QtWidgets,
@@ -184,10 +184,10 @@ class MainWindow(ProfileActionsMixin):
             tab_icon("tab-profiles.png"),
             "Profiles",
         )
-        self.steam_tab_index = self.tabs.addTab(
-            self.steam_panel.widget,
-            tab_icon("tab-steam.png"),
-            "Steam",
+        self.game_library_tab_index = self.tabs.addTab(
+            self.game_library_panel.widget,
+            tab_icon("tab-game-library.png"),
+            "Game Library",
         )
         self.overlay_tab_index = self.tabs.addTab(
             self.overlay_config.widget,
@@ -365,6 +365,11 @@ class MainWindow(ProfileActionsMixin):
         self._load_profiles()
 
     def _sync_selected_tab_layout(self, index: int) -> None:
+        if index == self.game_library_tab_index:
+            # Scanned on first entry, not while the window is being built: a
+            # library read is filesystem work nobody has asked for until the
+            # tab is looked at. Idempotent, so switching back costs nothing.
+            self.game_library_panel.ensure_scanned()
         # The undervolting-runs table belongs to the Auto-UV workflow only.
         self.table_panel.setVisible(index == self.auto_uv_tab_index)
 
