@@ -132,12 +132,18 @@ def title_from_wrapper_line(line: str, known_titles) -> str | None:
     return None
 
 
-def running_lutris_games(known_titles) -> dict[str, int] | None:
-    """Every running game among ``known_titles``, mapped to its wrapper pid.
+def running_lutris_games(known_titles) -> dict[str, tuple[int, ...]] | None:
+    """Every running game among ``known_titles``, mapped to its wrapper pids.
 
     One ``pgrep -af`` for the whole library, as on the Steam side: a poller
     asks once per tick however many games it tracks. The ``[l]`` class keeps
     the query's own command line from matching itself.
+
+    Pids, plural, because the title is all a wrapper command line carries and
+    a title is not unique -- two library entries (a wine and a Proton install)
+    can spell the same name, and two sessions of it can run at once. The
+    caller decides what an ambiguous answer permits; collapsing it here is how
+    a Stop signal lands on the wrong game's wrapper.
 
     ``None`` means the check failed -- not that nothing is running -- so a
     caller can hold what it knows instead of reading a stalled probe as every
@@ -165,14 +171,14 @@ def running_lutris_games(known_titles) -> dict[str, int] | None:
     # not trustworthy.
     if result.returncode not in (0, 1):
         return None
-    running: dict[str, int] = {}
+    running: dict[str, tuple[int, ...]] = {}
     for line in result.stdout.splitlines():
         pid_text, _, rest = line.partition(" ")
         if not pid_text.isdigit():
             continue
         title = title_from_wrapper_line(rest, titles)
         if title is not None:
-            running.setdefault(title, int(pid_text))
+            running[title] = (*running.get(title, ()), int(pid_text))
     return running
 
 

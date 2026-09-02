@@ -209,9 +209,19 @@ class LutrisLibrarySource:
         if running is None:
             return False, "FAILED to stop (could not tell what is running)"
         title = titles.get(str(game_id))
-        pid = running.get(title) if title else None
+        pids: tuple[int, ...] = running.get(title, ()) if title else ()
+        pid = pids[0] if pids else None
         if pid is None:
             return False, "FAILED to stop (no running session for this game)"
+        # The wrapper command line carries only the title, and a title is not
+        # unique: two entries can spell the same name, and two sessions of one
+        # can run. When the signal could land on the wrong game's wrapper,
+        # refuse rather than guess.
+        if len(pids) > 1 or sum(1 for value in titles.values() if value == title) > 1:
+            return False, (
+                "FAILED to stop (more than one session or entry shares this "
+                "game's name; stop it from Lutris)"
+            )
         if stop_lutris_game(pid):
             return True, "stopping…"
         return False, "FAILED to stop (the wrapper would not take the signal)"

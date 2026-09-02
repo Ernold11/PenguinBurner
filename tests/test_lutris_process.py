@@ -127,7 +127,7 @@ def test_one_probe_answers_for_the_whole_library(monkeypatch) -> None:
 
     running = process.running_lutris_games(["Portal", "Portal 2", "Battle.net"])
 
-    assert running == {"Portal 2": 4210, "Battle.net": 4300}
+    assert running == {"Portal 2": (4210,), "Battle.net": (4300,)}
 
 
 def test_a_failed_probe_says_so_instead_of_reporting_an_empty_library(

@@ -777,7 +777,7 @@ def test_the_lutris_adapter_maps_running_titles_back_to_game_ids() -> None:
     original = lutris_source.running_lutris_games
     try:
         lutris_source.running_lutris_games = lambda titles: {
-            "Assassin's Creed Shadows": 4210
+            "Assassin's Creed Shadows": (4210,)
         }
         assert source.running_game_ids() == frozenset({"27"})
 
@@ -809,8 +809,8 @@ def test_stopping_a_lutris_game_signals_that_games_own_wrapper() -> None:
             # nothing and reads back as "not running".
             asked.append(sorted(titles))
             return {
-                "Assassin's Creed Shadows": 4210,
-                "Star Wars Zero Company": 4300,
+                "Assassin's Creed Shadows": (4210,),
+                "Star Wars Zero Company": (4300,),
             }
 
         lutris_source.running_lutris_games = _running
@@ -836,3 +836,50 @@ def _lutris_row(game_id: str, name: str):
     from types import SimpleNamespace
 
     return SimpleNamespace(game=SimpleNamespace(game_id=game_id, display_name=name))
+
+
+def test_stop_refuses_rather_than_signal_the_wrong_sessions_wrapper(
+    monkeypatch,
+) -> None:
+    """Two entries can spell the same name (a wine and a Proton install of one
+    game), and the wrapper command line carries only the name -- so resolving
+    "the running Skyrim" from entry A could SIGTERM entry B's session."""
+    from integrations.lutris import library_source as lutris_source
+
+    source = lutris_source.LutrisLibrarySource(manager=object())
+    source._rows = (_lutris_row("27", "Skyrim"), _lutris_row("31", "Skyrim"))
+    signalled: list[int] = []
+    monkeypatch.setattr(
+        lutris_source, "running_lutris_games", lambda titles: {"Skyrim": (4210,)}
+    )
+    monkeypatch.setattr(
+        lutris_source,
+        "stop_lutris_game",
+        lambda pid: bool(signalled.append(pid)) or True,
+    )
+
+    ok, message = source.stop("27")
+
+    assert ok is False
+    assert "shares this game's name" in message
+    assert signalled == []
+    # Both entries still read as running: neither may offer a second Play.
+    assert source.running_game_ids() == frozenset({"27", "31"})
+
+
+def test_stop_refuses_when_one_title_has_two_live_sessions(monkeypatch) -> None:
+    from integrations.lutris import library_source as lutris_source
+
+    source = lutris_source.LutrisLibrarySource(manager=object())
+    source._rows = (_lutris_row("27", "Skyrim"),)
+    monkeypatch.setattr(
+        lutris_source,
+        "running_lutris_games",
+        lambda titles: {"Skyrim": (4210, 4300)},
+    )
+    monkeypatch.setattr(lutris_source, "stop_lutris_game", lambda pid: True)
+
+    ok, message = source.stop("27")
+
+    assert ok is False
+    assert "shares this game's name" in message
