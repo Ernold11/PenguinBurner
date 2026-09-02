@@ -75,16 +75,15 @@ class SteamLibrarySource:
         return default_steam_root(self._home) is not None
 
     def refresh(self, *, deep: bool = True) -> None:
-        # initialize_defaults stays off. Opening a tab must not write anyone's
-        # settings file; the library scan is a read.
+        # A scan reads; the one write it may do is the manager re-adopting a
+        # wrapped game whose settings entry is missing -- repairing our own
+        # bookkeeping to match what Steam's config already says, never
+        # touching Steam or a consistent library.
         #
         # The shallow pass skips reading every app's details back over CDP and
         # merges what the last deep pass cached instead. New installs and fresh
         # LastPlayed values still land, which is all the tab's timer needs.
-        self._rows = self.manager.refresh(
-            read_launch_options=deep,
-            initialize_defaults=False,
-        )
+        self._rows = self.manager.refresh(read_launch_options=deep)
         self._playtime = steam_playtime_hours(self._home)
         self._probe = self._probe_state()
 

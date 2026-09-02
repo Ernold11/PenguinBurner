@@ -160,22 +160,22 @@ def test_refresh_marks_native_only_when_steam_api_reports_no_compat_tool(
     assert not game.is_proton
 
 
-def test_library_scan_initializes_disabled_adaptive_without_overlay(manager, tmp_path) -> None:
-    rows = manager.refresh(initialize_defaults=True)
+def test_library_scan_writes_nothing_for_an_unwrapped_game(manager, tmp_path) -> None:
+    """The scan is a read. A missing entry already means "disabled, Adaptive
+    preselected", so materialising it would only make opening a tab write
+    everyone's settings file."""
+    rows = manager.refresh()
 
     assert rows[0].launch_options == "gamemoderun %command%"
     assert _FakeCdpClient.launch_options[APP_ID] == rows[0].launch_options
-    stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
-    setting = stored[ACCOUNT_ID][APP_ID]
-    assert setting.mode == GAME_MODE_ADAPTIVE
-    assert setting.enabled is False
-    assert setting.overlay is False
-    assert setting.original_launch_options == "gamemoderun %command%"
+    assert rows[0].setting.enabled is False
+    assert rows[0].setting.mode == GAME_MODE_ADAPTIVE
+    assert not (tmp_path / "steam-game-settings.json").exists()
 
 
 def test_bulk_enable_and_disable_all_games(manager, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(manager, "_watched_running_app_ids", lambda: frozenset())
-    manager.refresh(initialize_defaults=True)
+    manager.refresh()
 
     result = manager.set_all_games_enabled([APP_ID], True)
 
@@ -205,7 +205,7 @@ def test_bulk_apply_hot_reapplies_only_watched_running_games(
     )
     reapplied = []
     monkeypatch.setattr(manager, "hot_reapply", lambda app_id: reapplied.append(app_id))
-    manager.refresh(initialize_defaults=True)
+    manager.refresh()
 
     manager.set_all_games_enabled([APP_ID], True)
 
@@ -214,7 +214,7 @@ def test_bulk_apply_hot_reapplies_only_watched_running_games(
 
 def test_bulk_overlay_show_updates_wrapper_flag(manager, monkeypatch) -> None:
     monkeypatch.setattr(manager, "_watched_running_app_ids", lambda: frozenset())
-    manager.refresh(initialize_defaults=True)
+    manager.refresh()
     manager.set_game_enabled(APP_ID, True)
 
     result = manager.set_all_games_overlay([APP_ID], True)
@@ -227,11 +227,14 @@ def test_library_scan_adopts_existing_wrapper_as_enabled_adaptive_choice(
     manager,
     tmp_path,
 ) -> None:
+    """A wrapped launch line is user intent recorded in Steam's own config;
+    after a lost settings file (reinstall, migrated home) the plain scan
+    recreates the entry, or the wrapper runs with no profile behind it."""
     _FakeCdpClient.launch_options[APP_ID] = (
         "gamemoderun PENGUIN_BURNER --pb-overlay=1 %command%"
     )
 
-    rows = manager.refresh(initialize_defaults=True)
+    rows = manager.refresh()
 
     assert rows[0].setting.enabled is True
     assert rows[0].setting.mode == GAME_MODE_ADAPTIVE
@@ -245,7 +248,7 @@ def test_library_scan_does_not_overwrite_existing_game_choice(manager, tmp_path)
     manager.set_game_enabled(APP_ID, True)
     manager.set_game_mode(APP_ID, "balanced")
 
-    rows = manager.refresh(initialize_defaults=True)
+    rows = manager.refresh()
 
     assert rows[0].setting.mode == "balanced"
     assert rows[0].launch_options == (
@@ -387,6 +390,16 @@ def test_raw_edit_removing_wrapper_deactivates_mode(manager, tmp_path) -> None:
     stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
     assert stored[ACCOUNT_ID][APP_ID].enabled is False
     assert stored[ACCOUNT_ID][APP_ID].mode == GAME_MODE_ADAPTIVE
+
+
+def test_a_write_refuses_until_the_games_launch_options_were_read(manager) -> None:
+    """No cache entry means the game's last read failed (a per-app CDP timeout
+    leaves the others populated). Composing a new line from "" would clobber
+    the user's real command and record "" as the original to restore later."""
+    result = manager.set_game_enabled(APP_ID, True)
+
+    assert not result.ok
+    assert "could not be read" in result.message
 
 
 def test_write_blocked_while_steam_runs_without_cdp(manager) -> None:

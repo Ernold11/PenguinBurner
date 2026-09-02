@@ -342,12 +342,12 @@ def test_a_malformed_localconfig_leaves_the_library_sortable(tmp_path) -> None:
     assert steam_playtime_hours(localconfig_path=config) == {}
 
 
-def test_reading_the_steam_library_never_initialises_defaults() -> None:
-    """The scan is a read: opening a tab must not write anyone's settings.
+def test_reading_the_steam_library_only_deep_reads_when_asked() -> None:
+    """The timer's pass must stay cheap: no per-app CDP reads.
 
-    Asserted on the adapter, not on the panel above it. A panel test with a
-    stub source proves only that the panel asks for no writes -- the request
-    that would write is the one the adapter makes to Steam's own manager.
+    Asserted on the adapter, not on the panel above it. (The one write a scan
+    may make is the manager re-adopting a wrapped game whose settings entry is
+    missing -- covered by the manager's own adoption tests.)
     """
     from integrations.steam.library_source import SteamLibrarySource
 
@@ -377,10 +377,10 @@ def test_reading_the_steam_library_never_initialises_defaults() -> None:
     source.refresh(deep=False)
 
     assert seen == [
-        {"read_launch_options": True, "initialize_defaults": False},
+        {"read_launch_options": True},
         # The timer's pass skips reading every app's details back over CDP and
         # settles for what the deep read cached.
-        {"read_launch_options": False, "initialize_defaults": False},
+        {"read_launch_options": False},
     ]
 
 

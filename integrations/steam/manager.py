@@ -74,6 +74,10 @@ class SteamIntegrationManager:
         self._settings_path = settings_path
         self._launch_options: dict[str, str] = {}
         self._compat_tools: dict[str, tuple[tuple[str, str], ...]] = {}
+        # "This Steam session cannot answer" is a global fact, remembered so
+        # browsing a game list does not pay a fresh 5s CDP attempt per row.
+        # Cleared on the next deep refresh, when Steam may have come back.
+        self._compat_tools_unavailable = False
         self._app_details: dict[str, SteamAppDetails] = {}
 
     # -- status ------------------------------------------------------------
@@ -143,11 +147,13 @@ class SteamIntegrationManager:
         self,
         *,
         read_launch_options: bool = True,
-        initialize_defaults: bool = False,
     ) -> tuple[SteamGameRow, ...]:
         games = installed_steam_games(self._home)
         if read_launch_options:
             games = self._read_all_app_details(games)
+            # Steam may have come back (or gone away) since the last deep
+            # pass; let the next compat-tool question ask it again.
+            self._compat_tools_unavailable = False
         else:
             games = self._merge_cached_app_details(games)
         user = self.active_user()
@@ -156,8 +162,7 @@ class SteamIntegrationManager:
             if user is not None
             else {}
         )
-        if initialize_defaults:
-            self._initialize_discovered_games(games, settings)
+        if self._adopt_wrapped_games(games, settings):
             settings = (
                 load_steam_game_settings(self._settings_path).get(user.account_id, {})
                 if user is not None
@@ -172,31 +177,44 @@ class SteamIntegrationManager:
             for game in games
         )
 
-    def _initialize_discovered_games(
+    def _adopt_wrapped_games(
         self,
         games: tuple[InstalledSteamGame, ...],
         settings: dict[str, SteamGameSetting],
-    ) -> None:
-        """Give each newly scanned game the safe PenguinBurner defaults."""
+    ) -> bool:
+        """Recreate the settings entry of a game that already runs our wrapper.
+
+        The wrapper in a launch line IS user intent, durably recorded in
+        Steam's own config. After a reinstall or a migrated home the settings
+        file is gone while the wrapper still runs; without adoption such a game
+        shows "Not wrapped" and launches with no per-game profile behind the
+        wrapper. This repairs our own bookkeeping -- it never writes to Steam
+        -- and only touches wrapped games with no entry, so a scan of an
+        already-consistent library writes nothing.
+        """
+        if self.active_user() is None:
+            return False
+        adopted = False
         for game in games:
             if game.app_id in settings:
                 continue
             current = self._launch_options.get(game.app_id, "")
             state = injection_state(current)
-            if state.wrapped:
-                self._store(
-                    game.app_id,
-                    SteamGameSetting(
-                        enabled=True,
-                        mode=GAME_MODE_ADAPTIVE,
-                        overlay=state.overlay,
-                        ingame_latency=state.ingame_latency,
-                        original_launch_options=remove_injection(current),
-                        injected_launch_options=current,
-                    ),
-                )
+            if not state.wrapped:
                 continue
-            self._apply(game.app_id, SteamGameSetting())
+            self._store(
+                game.app_id,
+                SteamGameSetting(
+                    enabled=True,
+                    mode=GAME_MODE_ADAPTIVE,
+                    overlay=state.overlay,
+                    ingame_latency=state.ingame_latency,
+                    original_launch_options=remove_injection(current),
+                    injected_launch_options=current,
+                ),
+            )
+            adopted = True
+        return adopted
 
     def _read_all_app_details(
         self,
@@ -368,12 +386,16 @@ class SteamIntegrationManager:
     def available_compat_tools(self, app_id: str) -> tuple[tuple[str, str], ...]:
         if app_id in self._compat_tools:
             return self._compat_tools[app_id]
+        if self._compat_tools_unavailable:
+            return ()
         try:
             with SteamCdpClient(timeout_s=5.0) as client:
                 if not client.compat_tool_selection_supported():
+                    self._compat_tools_unavailable = True
                     return ()
                 tools = client.available_compat_tools(app_id)
         except SteamCdpError:
+            self._compat_tools_unavailable = True
             return ()
         self._compat_tools[app_id] = tools
         return tools
@@ -534,7 +556,18 @@ class SteamIntegrationManager:
         return ApplyResult(True, "Profile re-applied to the running game.")
 
     def _apply(self, app_id: str, setting: SteamGameSetting) -> ApplyResult:
-        current = self._launch_options.get(app_id, "")
+        current = self._launch_options.get(app_id)
+        if current is None:
+            # No cache entry means this game's last read failed (a per-app CDP
+            # timeout leaves the others populated). Composing a new line from
+            # "" would overwrite whatever the user really has in Steam, and
+            # recording "" as the original destroys the restore path -- so
+            # refuse rather than guess.
+            return ApplyResult(
+                False,
+                "this game's current launch options could not be read; "
+                "rescan and try again",
+            )
         if setting.active:
             try:
                 ensure_host_integration()
