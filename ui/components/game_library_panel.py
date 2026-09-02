@@ -27,7 +27,7 @@ from integrations.launchers.library import (
     LibraryGame,
     sorted_library_games,
 )
-from integrations.launchers.registry import available_sources, known_launcher_names
+from integrations.launchers.registry import build_sources, known_launcher_names
 from profiles.game_profile import (
     GAME_MODE_ADAPTIVE,
     GAME_MODE_STOCK,
@@ -86,8 +86,6 @@ _ACTIVE_GAME_STATES = ("launching", "running", "stopping")
 #: turns up without the user pressing anything. The cheap pass, not the deep
 #: one: this runs forever, where the deep read is a scan the user asked for.
 _LIBRARY_SYNC_MS = 10000
-#: A command line is typed, so hold it briefly rather than writing per keystroke.
-_FIELD_EDIT_DEBOUNCE_MS = 600
 #: Roughly three wrapped lines of a launch command.
 _MULTILINE_HEIGHT = 78
 #: Wide enough for a full Proton build name without eliding it.
@@ -223,12 +221,21 @@ class GameLibraryPanel:
         self.QtCore = QtCore
         self.QtGui = QtGui
         self.QtWidgets = QtWidgets
-        # Detection is a read of the filesystem, so it is safe here; the
-        # library scan behind it is not run until the tab is first shown.
-        # Loosely typed for the same reason as _by_launcher below: the tuple
-        # mixes launchers that can start a game with launchers that cannot.
+        # Every launcher PenguinBurner can read, installed here or not. Which
+        # of them are actually present is re-asked on every scan -- the empty
+        # state tells the user to install one and press Rescan, so Rescan has
+        # to be able to notice. Detection itself is a read of the filesystem,
+        # so the first answer is safe to take here; the library scan behind it
+        # is not run until the tab is first shown. Loosely typed for the same
+        # reason as _by_launcher below: the tuple mixes launchers that can
+        # start a game with launchers that cannot.
+        self._candidate_sources: tuple[Any, ...] = tuple(
+            build_sources() if sources is None else sources
+        )
         self._sources: tuple[Any, ...] = tuple(
-            available_sources() if sources is None else available_sources(sources)
+            source
+            for source in self._candidate_sources
+            if self._source_available(source)
         )
         # Values typed loosely on purpose: whether a source can start a game is
         # declared by can_launch and checked at every call site, which no
@@ -262,7 +269,9 @@ class GameLibraryPanel:
         self._write_state: Any = None
         self._write_state_source: Any = None
         self._scan_thread: threading.Thread | None = None
-        self._scan_result: tuple[str, ...] | None = None
+        self._scan_result: tuple | None = None
+        self._action_thread: threading.Thread | None = None
+        self._action_result: Any = None
         self._tracked: dict[str, _TrackedGame] = {}
         self._poll_thread: threading.Thread | None = None
         self._poll_result: dict[str, frozenset[str] | None] = {}
@@ -279,17 +288,7 @@ class GameLibraryPanel:
         header_row.addWidget(self.library_label)
         header_row.addStretch(1)
         self.rescan_button = QtWidgets.QPushButton("Rescan")
-        self.rescan_button.setToolTip(
-            wrapped_tooltip(
-                "Re-read every launcher's library and each game's current "
-                "launch command. Press this after changing a game in "
-                + (
-                    ", ".join(source.display_name for source in self._sources)
-                    or "your launcher"
-                )
-                + "."
-            )
-        )
+        self.rescan_button.setToolTip(self._rescan_tooltip())
         self.rescan_button.clicked.connect(lambda _checked=False: self.rescan())
         # The one thing a launcher can ask the user to do before it will accept
         # a setting -- set itself up, restart itself. Hidden while none does.
@@ -324,13 +323,6 @@ class GameLibraryPanel:
         self._state_timer.setInterval(_GAME_STATE_POLL_MS)
         self._state_timer.timeout.connect(self._poll_game_states)
 
-        self._field_timer = QtCore.QTimer(self.widget)
-        self._field_timer.setSingleShot(True)
-        self._field_timer.setInterval(_FIELD_EDIT_DEBOUNCE_MS)
-        self._field_timer.timeout.connect(
-            lambda: self._flush_pending_field_edit()
-        )
-
         # Starts with the first scan, so a tab nobody has opened costs nothing.
         self._library_timer = QtCore.QTimer(self.widget)
         self._library_timer.setInterval(_LIBRARY_SYNC_MS)
@@ -342,6 +334,24 @@ class GameLibraryPanel:
         self._sync_status()
 
     # -- construction --------------------------------------------------------
+
+    @staticmethod
+    def _source_available(source) -> bool:
+        try:
+            return bool(source.available())
+        except Exception:  # noqa: BLE001 - a launcher may fail any way
+            return False
+
+    def _rescan_tooltip(self) -> str:
+        return wrapped_tooltip(
+            "Re-read every launcher's library and each game's current "
+            "launch command. Press this after changing a game in "
+            + (
+                ", ".join(source.display_name for source in self._sources)
+                or "your launcher"
+            )
+            + "."
+        )
 
     def _build_library(self):
         pane = self.QtWidgets.QFrame()
@@ -553,7 +563,11 @@ class GameLibraryPanel:
             subtitle="Which GPU this game's profile applies to.",
             control=self.gpu_combo,
         )
-        self._fill_gpu_choices()
+        # Empty until the first scan: resolving GPUs talks to the daemon, and
+        # that round-trip must not run while the window is still being built.
+        # Every scan re-reads them, so a daemon that was down at startup fills
+        # the row in once it answers.
+        self._apply_gpu_choices(())
         page.addWidget(self._form_widget)
 
         # -- group: in game ---------------------------------------------------
@@ -610,21 +624,37 @@ class GameLibraryPanel:
         self.details_scroll = scroll
         return pane
 
-    def _fill_gpu_choices(self) -> None:
+    def _read_gpu_choices(self) -> tuple[object, ...]:
+        """Ask the daemon which GPUs exist. Runs on the scan worker thread."""
         try:
-            self._gpu_choices = tuple(self._gpu_choices_source())
+            return tuple(self._gpu_choices_source())
         except Exception:
-            self._gpu_choices = ()
-        self.gpu_combo.clear()
-        self.gpu_combo.addItem("Auto (single GPU)", "")
-        for choice in self._gpu_choices:
-            label = str(getattr(choice, "label", "") or getattr(choice, "name", ""))
-            uuid = str(getattr(choice, "uuid", "") or "")
-            if uuid:
-                self.gpu_combo.addItem(label or uuid, uuid)
+            return ()
+
+    def _apply_gpu_choices(self, choices) -> bool:
+        """Fill the GPU combo from a finished read; True when anything changed."""
+        choices = tuple(choices)
+        if choices == self._gpu_choices and self.gpu_combo.count() > 0:
+            return False
+        self._gpu_choices = choices
+        selected = str(self.gpu_combo.currentData() or "")
+        was_syncing = self._syncing
+        self._syncing = True
+        try:
+            self.gpu_combo.clear()
+            self.gpu_combo.addItem("Auto (single GPU)", "")
+            for choice in choices:
+                label = str(getattr(choice, "label", "") or getattr(choice, "name", ""))
+                uuid = str(getattr(choice, "uuid", "") or "")
+                if uuid:
+                    self.gpu_combo.addItem(label or uuid, uuid)
+            self.gpu_combo.setCurrentIndex(max(0, self.gpu_combo.findData(selected)))
+        finally:
+            self._syncing = was_syncing
         # One card needs no choosing, and the whole row goes so the group does
         # not keep a separator for a row that is not there.
         self._gpu_row.setVisible(self.gpu_combo.count() > 2)
+        return True
 
     def _set_gated(self, enabled: bool) -> None:
         """Enable what the wrapper switch governs -- never the switch itself."""
@@ -649,7 +679,10 @@ class GameLibraryPanel:
             return
         self._scanned = True
         self.rescan()
-        # Only from here on: a tab nobody has opened polls nothing.
+        # Only from here on: a tab nobody has opened polls nothing. The scan
+        # itself reads; the one write it may make is the Steam manager
+        # re-adopting a wrapped game whose settings entry went missing --
+        # repairing our bookkeeping, never a launcher's config.
         self._library_timer.start()
 
     def rescan(self, *, deep: bool = True, quiet: bool = False) -> None:
@@ -663,21 +696,33 @@ class GameLibraryPanel:
         ``quiet`` is the timer's pass: no status chatter, and the list is left
         alone unless something in it actually changed.
         """
-        if not self._flush_pending_field_edit():
+        if quiet:
+            # The timer must neither steal nor force-save a half-typed edit;
+            # it simply comes back in ten seconds.
+            if self._pending_field:
+                return
+        elif not self._flush_pending_field_edit():
             return
         if self._scan_thread is not None and self._scan_thread.is_alive():
             return
         self._scan_result = None
-        sources = self._sources
+        candidates = self._candidate_sources
 
         def run() -> None:
-            self._scan_result = tuple(
+            # Availability is re-asked every pass: the empty state tells the
+            # user to install a launcher and press Rescan, so Rescan has to be
+            # able to notice one arriving (or leaving).
+            installed = tuple(
+                source for source in candidates if self._source_available(source)
+            )
+            problems = tuple(
                 problem
                 for problem in (
-                    self._refresh_source(source, deep=deep) for source in sources
+                    self._refresh_source(source, deep=deep) for source in installed
                 )
                 if problem
             )
+            self._scan_result = (installed, problems, self._read_gpu_choices())
 
         self._scan_thread = threading.Thread(target=run, daemon=True)
         self._scan_thread.start()
@@ -699,15 +744,39 @@ class GameLibraryPanel:
                 100, lambda: self._collect_scan(quiet=quiet, first=False)
             )
             return
-        problems = self._scan_result
-        if problems is None:
+        result = self._scan_result
+        if result is None:
             return
         self._scan_result = None
+        installed, problems, gpu_choices = result
+        self._apply_sources(installed)
+        gpu_changed = self._apply_gpu_choices(gpu_choices)
         self._reload_games()
+        # The scan just refreshed each launcher's own probe, so the banner,
+        # the fix-it button and the field gating follow it here -- otherwise a
+        # successful initialize or restart changes no list row and leaves them
+        # stale until the user happens to click another game.
+        self._sync_write_state(self._selected_game())
+        if gpu_changed and not self._pending_field:
+            # New GPU facts change the row's visibility and the adaptive
+            # gating for the selected game; skipped mid-edit, where refilling
+            # the pane would eat the user's text.
+            self._sync_selection(self._selected_game())
         if problems:
             self._sync_status(" · ".join(problems))
         elif not quiet:
             self._sync_status()
+
+    def _apply_sources(self, installed) -> None:
+        installed = tuple(installed)
+        if installed == self._sources:
+            return
+        self._sources = installed
+        self._by_launcher = {source.launcher_id: source for source in installed}
+        # A launcher that just arrived may bring its own icon with it.
+        self._badges.clear()
+        self.library_label.setText(library_header_text(installed))
+        self.rescan_button.setToolTip(self._rescan_tooltip())
 
     def _refresh_source(self, source, *, deep: bool = True) -> str:
         """Re-read one launcher; return what went wrong, if anything.
@@ -738,9 +807,26 @@ class GameLibraryPanel:
 
     @staticmethod
     def _library_signature(games) -> tuple:
-        """What has to change before the list is worth rebuilding."""
+        """What has to change before the list is worth rebuilding.
+
+        Everything a row or its tooltip renders is in here: a field the
+        signature misses is a change the ten-second pass can never show
+        (playtime and Proton edits made inside the launcher were exactly
+        that).
+        """
         return tuple(
-            (game.launcher, game.game_id, game.name, game.enabled, game.wrapped)
+            (
+                game.launcher,
+                game.game_id,
+                game.name,
+                game.subtitle,
+                game.ready,
+                game.last_played,
+                game.playtime_hours,
+                game.enabled,
+                game.wrapped,
+                game.overlay,
+            )
             for game in games
         )
 
@@ -763,6 +849,11 @@ class GameLibraryPanel:
         self.write_action_button.setVisible(bool(label))
         if state is not None and state.detail:
             self.write_action_button.setToolTip(wrapped_tooltip(state.detail))
+        # The gate covers every control that ends in a write, not only the
+        # launcher-declared fields: a live wrap switch in front of a launcher
+        # that will refuse the write is an animation followed by a snap-back.
+        self.enable_switch.setEnabled(game is not None and self._writable)
+        self._set_gated(bool(game is not None and game.enabled) and self._writable)
         for widgets in self._fields.values():
             self._apply_field_enabled(widgets)
         self._sync_status()
@@ -773,6 +864,8 @@ class GameLibraryPanel:
         source = self._write_state_source
         if state is None or source is None or not state.action:
             return
+        if self._action_thread is not None and self._action_thread.is_alive():
+            return
         if not self._flush_pending_field_edit():
             return
         if state.confirm and not self._confirm(state.action_label, state.confirm):
@@ -782,7 +875,33 @@ class GameLibraryPanel:
             action = getattr(source, state.action, None)
         if action is None:
             return
-        result = action()
+        # Off the GUI thread: a Steam restart polls the client for tens of
+        # seconds, and running that inline froze the whole window for as long
+        # as Steam took to come back.
+        self.write_action_button.setEnabled(False)
+        self._action_result = None
+
+        def run() -> None:
+            self._action_result = action()
+
+        self._action_thread = threading.Thread(target=run, daemon=True)
+        self._action_thread.start()
+        self._collect_write_action()
+
+    def _collect_write_action(self, first: bool = True) -> None:
+        thread = self._action_thread
+        if thread is not None and first:
+            # Same shape as _collect_scan: an action that answers immediately
+            # lands in this tick instead of a timer later.
+            thread.join(_SCAN_JOIN_S)
+        if thread is not None and thread.is_alive():
+            self.QtCore.QTimer.singleShot(
+                200, lambda: self._collect_write_action(first=False)
+            )
+            return
+        result = self._action_result
+        self._action_result = None
+        self.write_action_button.setEnabled(True)
         self.rescan()
         self._sync_status(str(getattr(result, "message", "") or ""))
 
@@ -925,6 +1044,12 @@ class GameLibraryPanel:
         self._select_key(str(item.data(self.QtCore.Qt.UserRole) or ""))
 
     def _select_key(self, key: str) -> None:
+        if key != self._selected_key:
+            # Whatever is typed but unsaved belongs to the game it was typed
+            # for; save it before the pane is refilled for another one.
+            # (QPlainTextEdit has no editingFinished, so the click that moves
+            # the selection is the boundary that saves a command edit.)
+            self._flush_pending_field_edit()
         game = self._game_for_key(key)
         if game is None:
             return
@@ -956,9 +1081,9 @@ class GameLibraryPanel:
             setting = getattr(game.detail, "setting", None)
             self.title_label.setText(game.name)
             self.metadata_label.setText(game_metadata_text(game))
-            self.enable_switch.setEnabled(True)
+            # Whether the switches are live is the write gate's decision, in
+            # _sync_write_state below.
             self.enable_switch.setChecked(game.enabled)
-            self._set_gated(game.enabled)
 
             mode = getattr(setting, "mode", GAME_MODE_ADAPTIVE)
             mode_index = self.mode_combo.findData(
@@ -1053,12 +1178,28 @@ class GameLibraryPanel:
         if setter is None:
             return True
         result = setter(game.game_id, *args)
+        if not bool(getattr(result, "ok", True)):
+            # Nothing changed, so nothing to re-read. A refused text edit in
+            # particular must stay on screen as typed: the old full refresh
+            # here is what yanked the box back to the stored value.
+            if not self._pending_field:
+                # A refused switch or choice, though, is showing a state that
+                # did not land; snap it back from the unchanged rows.
+                self._sync_selection(self._selected_game())
+            self._sync_status(str(getattr(result, "message", "") or ""))
+            return False
         self._after_write(game.launcher, result)
-        return bool(getattr(result, "ok", True))
+        return True
 
     def _after_write(self, launcher: str, result) -> None:
         source = self._by_launcher.get(launcher)
-        problem = self._refresh_source(source) if source is not None else ""
+        # The cheap pass: the write already updated the manager's own caches,
+        # so disk state is enough to re-read -- the deep pass would sweep
+        # every app over CDP, which on the GUI thread was the window frozen
+        # after each toggle.
+        problem = (
+            self._refresh_source(source, deep=False) if source is not None else ""
+        )
         self._reload_games()
         # Re-read the pane, always. The list only rebuilds when a game's name
         # or state changed, but a write is precisely what changes the selected
@@ -1172,7 +1313,14 @@ class GameLibraryPanel:
         count = sum(len(entries) for entries in ids.values())
         if not count:
             return
-        if action.value and self._needs_gpu_choice():
+        # Only enabling the wrapper needs a GPU chosen, and only for the games
+        # this action would actually touch: the overlay action was refused on
+        # multi-GPU hosts because some unrelated game had no card picked.
+        if (
+            action.affects == "enabled"
+            and action.value
+            and self._needs_gpu_choice(self._bulk_scope(action, sources))
+        ):
             self._sync_status(
                 "Choose a Game GPU for each game before enabling all games."
             )
@@ -1196,8 +1344,8 @@ class GameLibraryPanel:
         self.rescan()
         self._sync_status(message)
 
-    def _needs_gpu_choice(self) -> bool:
-        """Enabling everything at once needs each game to have a card first.
+    def _needs_gpu_choice(self, games) -> bool:
+        """Enabling games at once needs each of them to have a card first.
 
         With one card there is nothing to choose; with two, a wrapper that does
         not know which one to tune is a setting the user has to revisit anyway.
@@ -1206,7 +1354,7 @@ class GameLibraryPanel:
             return False
         return any(
             not str(getattr(getattr(game.detail, "setting", None), "gpu_uuid", "") or "")
-            for game in self._games
+            for game in games
         )
 
     # -- launcher-declared fields --------------------------------------------
@@ -1217,6 +1365,15 @@ class GameLibraryPanel:
     # are what the launcher declares, and nothing here names a launcher.
 
     def _sync_fields(self, game: LibraryGame | None) -> None:
+        # An unsaved edit for this same game is the user's, not the model's:
+        # refilling it here (a write on another control refreshes the whole
+        # pane) would silently discard what they typed. Selection changes
+        # flush before they get here, so a held edit is always same-game.
+        hold = (
+            self._pending_field
+            if game is not None and game_key(game) == self._field_owner
+            else ""
+        )
         source = self._by_launcher.get(game.launcher) if game is not None else None
         declared = tuple(source.fields(game)) if source is not None else ()
         shown: set[str] = set()
@@ -1227,13 +1384,14 @@ class GameLibraryPanel:
                 if widgets is None:
                     continue
                 self._fields[field.key] = widgets
-            self._fill_field(field, widgets)
+            if field.key != hold:
+                self._fill_field(field, widgets)
             shown.add(field.key)
         for key, widgets in self._fields.items():
             if key not in shown:
                 widgets["row"].setVisible(False)
         self._field_owner = game_key(game) if game is not None else ""
-        self._pending_field = ""
+        self._pending_field = hold
         self._restripe_groups()
 
     def _build_field(self, field) -> dict[str, Any] | None:
@@ -1290,6 +1448,18 @@ class GameLibraryPanel:
                 control.textChanged.connect(
                     lambda key=field.key: self._on_field_typed(key)
                 )
+                # QPlainTextEdit has no editingFinished, so focus leaving the
+                # box is the save boundary a plain line edit gets for free.
+                original_focus_out = control.focusOutEvent
+
+                def _focus_out(
+                    event, key=field.key, original=original_focus_out
+                ) -> None:
+                    original(event)
+                    if self._pending_field == key:
+                        self._flush_field(key)
+
+                control.focusOutEvent = _focus_out
             else:
                 control = self.QtWidgets.QLineEdit("")
                 control.textEdited.connect(
@@ -1410,22 +1580,38 @@ class GameLibraryPanel:
         self._write_field(key, widgets["control"].currentData())
 
     def _on_field_typed(self, key: str) -> None:
-        """Hold the edit briefly: a command line is typed, not toggled."""
+        """Mark the edit pending; it saves at a boundary, never mid-keystroke.
+
+        The boundaries are the ones a form has: focus leaving the field,
+        Enter, clicking another game, or an action that must see the saved
+        value (a rescan, a bulk action, the launcher's fix-it button). A
+        debounce timer here used to commit half of ``gamescope -w 2560 --
+        %comm`` the moment the user paused to think.
+        """
         if self._syncing:
             return
         self._pending_field = key
-        self._field_timer.start()
 
     def _flush_field(self, key: str) -> bool:
         widgets = self._fields.get(key)
         if widgets is None:
+            if self._pending_field == key:
+                self._pending_field = ""
             return True
         value = self._field_value(widgets)
-        self._pending_field = ""
         if value == widgets["rendered"]:
+            if self._pending_field == key:
+                self._pending_field = ""
             return True  # focus moved through an untouched field
-        widgets["rendered"] = value
-        return self._write_field(key, value)
+        ok = self._write_field(key, value)
+        if ok:
+            widgets["rendered"] = value
+            if self._pending_field == key:
+                self._pending_field = ""
+        # A refused edit stays pending and stays on screen as typed: the
+        # quiet rescan defers to it, and nothing overwrites it with the
+        # stored value.
+        return ok
 
     def _flush_pending_field_edit(self) -> bool:
         """Save an edit still in the field before something else disturbs it.
@@ -1433,7 +1619,6 @@ class GameLibraryPanel:
         A rescan, a bulk action or a launcher restart all replace what is on
         screen, and whatever the user typed but has not saved would go with it.
         """
-        self._field_timer.stop()
         key = self._pending_field
         if not key:
             return True

@@ -893,3 +893,194 @@ def test_a_pending_stop_can_be_pressed_again(qapp) -> None:
     panel.play_button.click()  # and again, because it is still running
 
     assert steam.stopped == ["620", "620"]
+
+
+# -- fixes from the merge review --------------------------------------------
+
+
+def test_the_wrap_switch_obeys_the_write_gate(qapp) -> None:
+    """Steam running without CDP used to leave the core switches live: the
+    toggle animated on, the write was refused, and it snapped back."""
+    panel = _panel(qapp, _blocked_pair())
+    panel.ensure_scanned()
+
+    panel._select_key("steam:620")
+    assert not panel.enable_switch.isEnabled()
+    assert not panel._form_widget.isEnabled()
+
+    panel._select_key("lutris:27")
+    assert panel.enable_switch.isEnabled()
+
+
+def test_the_fix_button_unblocks_the_pane_it_fixed(qapp) -> None:
+    """write_state was only re-read on selection change, so a successful
+    initialize left the banner, the greyed fields and the button stale until
+    the user happened to click another game."""
+    steam, lutris = _blocked_pair()
+
+    def restart():
+        steam._state = LauncherWriteState()
+        return SimpleNamespace(ok=True, message="restarted")
+
+    steam.manager.restart = restart
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("steam:620")
+    assert panel._writable is False
+
+    panel.write_action_button.click()
+
+    assert panel._writable is True
+    assert panel.enable_switch.isEnabled()
+    assert not panel.write_action_button.isVisibleTo(panel.widget)
+
+
+def test_the_timer_never_saves_or_steals_a_half_typed_edit(qapp) -> None:
+    """A debounce timer used to commit half of a gamescope line the moment
+    the user paused; the ten-second pass force-flushed it too. An edit now
+    saves only at a boundary the user made."""
+    steam, lutris = _steam_and_lutris()
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("lutris:27")
+    scans_before = lutris.refreshed
+    control = panel._fields["prefix_command"]["control"]
+    control.setText("gamescope -w 2560 -- %comm")
+    panel._on_field_typed("prefix_command")
+
+    panel.rescan(deep=False, quiet=True)
+
+    assert lutris.refreshed == scans_before  # the pass deferred entirely
+    assert not lutris.manager.calls
+    assert control.text() == "gamescope -w 2560 -- %comm"
+    assert panel._pending_field == "prefix_command"
+
+
+def test_switching_games_saves_the_edit_for_the_game_it_was_typed_on(qapp) -> None:
+    """Clicking another game used to clear the pending edit without saving:
+    QPlainTextEdit has no editingFinished, so the click was the only boundary
+    the edit would ever get."""
+    steam, lutris = _steam_and_lutris()
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("lutris:27")
+    control = panel._fields["prefix_command"]["control"]
+    control.setText("mangohud")
+    panel._on_field_typed("prefix_command")
+
+    panel._select_key("steam:620")
+
+    assert ("set_game_prefix_command", "27", "mangohud") in lutris.manager.calls
+
+
+def test_a_refused_edit_stays_on_screen_as_typed(qapp) -> None:
+    """A refused write used to refill the box from the stored value with the
+    cursor at zero -- the user's text ate, the error shown for something no
+    longer on screen."""
+    steam, lutris = _steam_and_lutris()
+    lutris.manager.set_game_prefix_command = lambda _id, _value: SimpleNamespace(
+        ok=False, message="unbalanced quotes"
+    )
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("lutris:27")
+    control = panel._fields["prefix_command"]["control"]
+    control.setText('gamescope "broken')
+    panel._on_field_typed("prefix_command")
+
+    assert panel._flush_pending_field_edit() is False
+
+    assert control.text() == 'gamescope "broken'
+    assert "unbalanced quotes" in panel.status_label.text()
+    assert panel._pending_field == "prefix_command"
+
+
+def test_rescan_notices_a_launcher_installed_after_startup(qapp) -> None:
+    """The empty state says "Install one, then press Rescan" -- so Rescan has
+    to be able to notice one arriving. Sources used to be resolved once at
+    window construction and frozen."""
+    steam, lutris = _steam_and_lutris()
+    lutris.available = lambda: False
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    assert {game.launcher for game in panel._games} == {"steam"}
+
+    lutris.available = lambda: True
+    panel.rescan()
+
+    assert {game.launcher for game in panel._games} == {"steam", "lutris"}
+    assert "Lutris" in panel.library_label.text()
+
+
+def test_gpu_choices_come_from_the_scan_not_the_constructor(qapp) -> None:
+    """Resolving GPUs is a daemon socket round-trip; at window build it froze
+    construction, and a daemon down at startup left the GPU row (and the
+    adaptive gating behind it) wrong until the app restarted."""
+    QtCore, QtGui, QtWidgets, _pg = import_qt()
+    if QtWidgets is None:
+        pytest.skip("PySide6 not available")
+    reads: list[int] = []
+
+    def choices():
+        reads.append(1)
+        return (
+            SimpleNamespace(label="RTX 5080", uuid="GPU-a"),
+            SimpleNamespace(label="RTX 4090", uuid="GPU-b"),
+        )
+
+    panel = GameLibraryPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgets,
+        sources=_steam_and_lutris(),
+        gpu_choices=choices,
+    )
+    assert reads == []  # the daemon is not consulted while the window builds
+
+    panel.ensure_scanned()
+
+    assert reads == [1]
+    assert panel.gpu_combo.count() == 3
+    assert panel._gpu_row.isVisibleTo(panel.widget)
+
+
+def test_bulk_overlay_ignores_the_gpu_gate(qapp) -> None:
+    """On a multi-GPU host, "show the overlay for enabled games" was refused
+    because some unrelated game had no card chosen -- the gate belongs to
+    enabling the wrapper, and only for the games the action touches."""
+    from dataclasses import replace
+
+    steam, lutris = _steam_and_lutris()
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._confirm = lambda *_args: True
+    panel._gpu_choices = (object(), object())
+    entries = {
+        action.key: (action, sources) for action, sources in panel._bulk_entries
+    }
+    hide, hide_sources = entries["overlay_none"]
+
+    panel._bulk_apply(replace(hide, value=True), hide_sources)
+
+    assert ("set_all_games_overlay", ["620"], True) in steam.manager.calls
+
+
+def test_bulk_enable_still_requires_cards_for_its_own_scope(qapp) -> None:
+    from dataclasses import replace
+
+    steam, lutris = _steam_and_lutris()
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._confirm = lambda *_args: True
+    panel._gpu_choices = (object(), object())
+    entries = {
+        action.key: (action, sources) for action, sources in panel._bulk_entries
+    }
+    disable, disable_sources = entries["disable_all"]
+
+    panel._bulk_apply(replace(disable, value=True), disable_sources)
+
+    assert not any(
+        call[0] == "set_all_games_enabled" for call in steam.manager.calls
+    )
+    assert "Choose a Game GPU" in panel.status_label.text()
