@@ -116,16 +116,6 @@ def store_lutris_game_setting(
     return _write_settings(settings, path=path)
 
 
-def remove_lutris_game_setting(
-    game_id: str,
-    *,
-    path: str | Path | None = None,
-) -> Path:
-    settings = load_lutris_game_settings(path)
-    settings.pop(str(game_id), None)
-    return _write_settings(settings, path=path)
-
-
 def _settings_path(path: str | Path | None) -> Path:
     return Path(path).expanduser() if path is not None else lutris_game_settings_path()
 

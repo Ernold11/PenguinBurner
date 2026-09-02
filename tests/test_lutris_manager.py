@@ -104,7 +104,35 @@ def test_disabling_restores_the_users_own_prefix(tmp_path) -> None:
     manager.set_game_enabled("27", False)
 
     assert _config(tmp_path)["system"]["prefix_command"] == "game-performance"
-    assert load_lutris_game_settings(tmp_path / "lutris-game-settings.json") == {}
+    stored = load_lutris_game_settings(tmp_path / "lutris-game-settings.json")["27"]
+    assert stored.enabled is False
+    assert stored.injected_prefix_command == ""
+
+
+def test_disabling_keeps_the_users_choices_for_the_next_enable(tmp_path) -> None:
+    """Off/on must round-trip, as it does on Steam.
+
+    Tier, GPU choice, FPS target and latency opt-in are decisions the user
+    made; deleting the record on disable silently reset a configured game to
+    Adaptive-with-no-GPU — which on a multi-GPU host means no profile applies
+    at all after re-enabling.
+    """
+    manager = _manager(tmp_path, prefix_command="game-performance")
+    manager.set_game_enabled("27", True)
+    manager.set_game_mode("27", "balanced")
+    manager.set_game_gpu("27", "GPU-abc")
+    manager.set_game_target_fps("27", 90.0)
+    manager.set_game_ingame_latency("27", True)
+
+    manager.set_game_enabled("27", False)
+    manager.set_game_enabled("27", True)
+
+    stored = load_lutris_game_settings(tmp_path / "lutris-game-settings.json")["27"]
+    assert stored.enabled is True
+    assert stored.mode == "balanced"
+    assert stored.gpu_uuid == "GPU-abc"
+    assert stored.target_fps == 90.0
+    assert stored.ingame_latency is True
 
 
 def test_disabling_a_game_that_had_no_prefix_removes_the_key(tmp_path) -> None:
@@ -372,6 +400,36 @@ def test_a_hand_edit_that_adds_the_overlay_flag_is_read_back(tmp_path) -> None:
     row = manager.row("27")
     assert row.setting.enabled is True
     assert row.setting.overlay is True
+
+
+def test_a_hand_edit_under_overlay_keeps_the_latency_opt_in(tmp_path) -> None:
+    """Injection omits the latency token while the overlay is on, so a raw
+    edit of such a line must not read its absence as the user opting out."""
+    manager = _manager(tmp_path)
+    manager.set_game_enabled("27", True)
+    manager.set_game_ingame_latency("27", True)
+    manager.set_game_overlay("27", True)
+
+    manager.set_game_prefix_command("27", "PENGUIN_BURNER --pb-overlay=1")
+
+    row = manager.row("27")
+    assert row is not None
+    assert row.setting.ingame_latency is True
+
+
+def test_a_hand_edit_that_removes_the_wrapper_keeps_the_choices(tmp_path) -> None:
+    """The preset goes inert, not blank: re-enabling gets the old choices."""
+    manager = _manager(tmp_path)
+    manager.set_game_enabled("27", True)
+    manager.set_game_mode("27", "balanced")
+    manager.set_game_target_fps("27", 90.0)
+
+    manager.set_game_prefix_command("27", "game-performance")
+
+    stored = load_lutris_game_settings(tmp_path / "lutris-game-settings.json")["27"]
+    assert stored.enabled is False
+    assert stored.mode == "balanced"
+    assert stored.target_fps == 90.0
 
 
 def test_the_latency_opt_in_leads_the_line(tmp_path) -> None:

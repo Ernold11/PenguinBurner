@@ -40,7 +40,6 @@ from .paths import lutris_installed, runner_config_path, system_config_path
 from .settings import (
     LutrisGameSetting,
     load_lutris_game_settings,
-    remove_lutris_game_setting,
     store_lutris_game_setting,
 )
 
@@ -198,23 +197,28 @@ class LutrisIntegrationManager:
             return ApplyResult(False, write.message, write.prefix_command)
 
         landed = write.prefix_command
+        wrapped = wrapper_present(landed)
+        overlay = overlay_present(landed)
         stored = replace(
             row.setting,
-            enabled=wrapper_present(landed),
-            overlay=overlay_present(landed),
-            ingame_latency=ingame_latency_present(landed),
+            enabled=wrapped,
+            overlay=overlay,
+            # Injection deliberately leaves the latency flag out while the
+            # overlay is on (the wrapper runs the markers anyway), so on such a
+            # line its absence says nothing about the stored opt-in; only an
+            # overlay-off line speaks for it.
+            ingame_latency=(
+                row.setting.ingame_latency
+                if overlay
+                else ingame_latency_present(landed)
+            ),
             original_prefix_command=strip_penguin_burner_tokens(landed),
-            injected_prefix_command=landed if wrapper_present(landed) else "",
+            injected_prefix_command=landed if wrapped else "",
         )
-        if stored.enabled:
-            store_lutris_game_setting(
-                row.game.game_id, stored, path=self._settings_path
-            )
-        else:
-            # Same rule as a toggle-driven disable: nothing of ours is in the
-            # line any more, so a stored entry would only be stale bookkeeping.
-            remove_lutris_game_setting(row.game.game_id, path=self._settings_path)
-            stored = LutrisGameSetting(mode=stored.mode, overlay=stored.overlay)
+        # Stored either way: a hand edit that removed the wrapper still leaves
+        # the user's tier, GPU choice and FPS target worth keeping for the
+        # next enable, exactly as a toggle-driven disable does.
+        store_lutris_game_setting(row.game.game_id, stored, path=self._settings_path)
 
         self._rows[row.game.game_id] = LutrisGameRow(
             game=row.game,
@@ -326,20 +330,24 @@ class LutrisIntegrationManager:
         if not write.ok:
             return ApplyResult(False, write.message, write.prefix_command)
 
-        stored = replace(
-            setting,
-            original_prefix_command=original,
-            injected_prefix_command=wanted if setting.enabled else "",
-        )
-        if stored.enabled:
-            store_lutris_game_setting(
-                row.game.game_id, stored, path=self._settings_path
+        if setting.enabled:
+            stored = replace(
+                setting,
+                original_prefix_command=original,
+                injected_prefix_command=wanted,
             )
         else:
-            # A disabled game keeps no record: the config is back to the user's
-            # own value, so a stored entry would only be stale bookkeeping.
-            remove_lutris_game_setting(row.game.game_id, path=self._settings_path)
-            stored = LutrisGameSetting(mode=stored.mode, overlay=stored.overlay)
+            # Disabled is a durable per-game choice, and so are the tier, GPU
+            # choice, FPS target and latency opt-in made alongside it: keep the
+            # record, as the Steam side does, so an off/on toggle does not
+            # silently reset a configured game to defaults. What lands as the
+            # "original" is the restored line itself.
+            stored = replace(
+                setting,
+                original_prefix_command=wanted,
+                injected_prefix_command="",
+            )
+        store_lutris_game_setting(row.game.game_id, stored, path=self._settings_path)
 
         self._rows[row.game.game_id] = LutrisGameRow(
             game=row.game,

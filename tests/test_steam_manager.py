@@ -354,6 +354,30 @@ def test_raw_edit_validates_and_syncs_setting(manager, tmp_path) -> None:
     assert stored[ACCOUNT_ID][APP_ID].overlay
 
 
+def test_raw_edit_under_overlay_keeps_the_latency_opt_in(manager, tmp_path) -> None:
+    """Injection omits the latency flag while the overlay is on, so a raw edit
+    of such a line must not read the flag's absence as the user opting out."""
+    manager.refresh()
+    manager.set_game_enabled(APP_ID, True)
+    manager.set_game_ingame_latency(APP_ID, True)
+    manager.set_game_overlay(APP_ID, True)
+
+    result = manager.set_raw_launch_options(
+        APP_ID, "PENGUIN_BURNER --pb-overlay=1 %command% -novid"
+    )
+
+    assert result.ok
+    stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
+    assert stored[ACCOUNT_ID][APP_ID].ingame_latency is True
+    # With the overlay off the line is the whole truth again.
+    off = manager.set_raw_launch_options(
+        APP_ID, "PENGUIN_BURNER --pb-overlay=0 %command% -novid"
+    )
+    assert off.ok
+    stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
+    assert stored[ACCOUNT_ID][APP_ID].ingame_latency is False
+
+
 def test_raw_edit_removing_wrapper_deactivates_mode(manager, tmp_path) -> None:
     manager.refresh()
     manager.set_game_enabled(APP_ID, True)

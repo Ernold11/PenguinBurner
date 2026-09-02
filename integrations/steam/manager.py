@@ -421,7 +421,15 @@ class SteamIntegrationManager:
                 replace(
                     setting,
                     overlay=state.overlay,
-                    ingame_latency=state.ingame_latency,
+                    # Injection deliberately leaves the latency flag out while
+                    # the overlay is on (the wrapper runs the markers anyway),
+                    # so its absence on such a line says nothing about the
+                    # stored opt-in; only an overlay-off line speaks for it.
+                    ingame_latency=(
+                        setting.ingame_latency
+                        if state.overlay
+                        else state.ingame_latency
+                    ),
                     original_launch_options=(
                         setting.original_launch_options
                         if setting.active
