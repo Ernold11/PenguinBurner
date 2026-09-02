@@ -11,12 +11,14 @@ installation.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
 from integrations.launchers.desktop_icons import desktop_icon
 
 LUTRIS_DATA_DIRNAME = Path(".local") / "share" / "lutris"
+LUTRIS_CONFIG_DIRNAME = Path(".config") / "lutris"
 LIBRARY_DB_FILENAME = "pga.db"
 GAME_CONFIG_DIRNAME = "games"
 RUNNER_CONFIG_DIRNAME = "runners"
@@ -28,8 +30,34 @@ BANNER_DIRNAME = "banners"
 
 
 def lutris_data_root(home: Path | None = None) -> Path:
-    base = Path.home() if home is None else Path(home)
-    return base / LUTRIS_DATA_DIRNAME
+    """Lutris's DATA_DIR: the library database and artwork. Never the configs.
+
+    An explicit ``home`` is the test seam and wins over the environment, so a
+    test cannot be broken by whatever XDG variables the host session exports.
+    """
+    if home is not None:
+        return Path(home) / LUTRIS_DATA_DIRNAME
+    xdg = str(os.environ.get("XDG_DATA_HOME") or "").strip()
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
+    return base / "lutris"
+
+
+def lutris_config_root(home: Path | None = None) -> Path:
+    """Lutris's CONFIG_DIR: game, runner and system configs.
+
+    Upstream (lutris/settings.py) still prefers ``~/.config/lutris`` whenever
+    that directory exists and only falls back to the data dir when it does not
+    -- the deprecation is a fallback, not a migration. Writing the data-dir
+    copy on a host whose legacy dir survives produces YAML Lutris never reads,
+    so the wrapper silently never applies.
+    """
+    if home is not None:
+        legacy = Path(home) / LUTRIS_CONFIG_DIRNAME
+    else:
+        xdg = str(os.environ.get("XDG_CONFIG_HOME") or "").strip()
+        base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
+        legacy = base / "lutris"
+    return legacy if legacy.is_dir() else lutris_data_root(home)
 
 
 def lutris_library_db(home: Path | None = None) -> Path:
@@ -55,7 +83,7 @@ def game_config_path(configpath: str, home: Path | None = None) -> Path | None:
     name = str(configpath or "").strip()
     if not name or name in (".", "..") or "/" in name or "\\" in name:
         return None
-    return lutris_data_root(home) / GAME_CONFIG_DIRNAME / f"{name}.yml"
+    return lutris_config_root(home) / GAME_CONFIG_DIRNAME / f"{name}.yml"
 
 
 def lutris_desktop_icon(
@@ -82,11 +110,11 @@ def runner_config_path(runner: str, home: Path | None = None) -> Path | None:
     name = str(runner or "").strip()
     if not name or name in (".", "..") or "/" in name or "\\" in name:
         return None
-    return lutris_data_root(home) / RUNNER_CONFIG_DIRNAME / f"{name}.yml"
+    return lutris_config_root(home) / RUNNER_CONFIG_DIRNAME / f"{name}.yml"
 
 
 def system_config_path(home: Path | None = None) -> Path:
-    return lutris_data_root(home) / SYSTEM_CONFIG_FILENAME
+    return lutris_config_root(home) / SYSTEM_CONFIG_FILENAME
 
 
 def game_cover_path(slug: str, home: Path | None = None) -> Path | None:

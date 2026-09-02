@@ -22,8 +22,9 @@ changed here takes effect **the next time you launch it**.
 ## What it writes
 
 Enabling a game puts the PenguinBurner wrapper into that game's
-`system.prefix_command`, in
-`~/.local/share/lutris/games/<configpath>.yml`:
+`system.prefix_command`, in `games/<configpath>.yml` under Lutris's own
+config directory — `~/.config/lutris` where that directory exists (Lutris
+still prefers it), otherwise `~/.local/share/lutris`:
 
 ```yaml
 system:
@@ -102,8 +103,8 @@ undid it — close that dialog in Lutris and try again.
 
 **MangoHud.** Lutris applies its MangoHud option outside this wrapper, so the
 PenguinBurner overlay and MangoHud can end up drawn on the same swapchain. If
-they collide, turn MangoHud off for the game, or globally in
-`~/.local/share/lutris/system.yml`.
+they collide, turn MangoHud off for the game, or globally in Lutris's
+`system.yml` (in the same config directory as the game configs).
 
 **Press Refresh after changing a game in Lutris.** The tab reads each game's
 live `prefix_command` when it refreshes; it does not watch the files.

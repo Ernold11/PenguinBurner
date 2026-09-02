@@ -11,8 +11,11 @@ from integrations.lutris.library import lutris_game, read_lutris_games
 from integrations.lutris.paths import (
     game_config_path,
     game_cover_path,
+    lutris_config_root,
     lutris_installed,
     lutris_library_db,
+    runner_config_path,
+    system_config_path,
 )
 
 _SCHEMA = """
@@ -219,3 +222,52 @@ def test_the_fallback_glyph_ships_with_the_package() -> None:
     from ui.assets import asset_image_path
 
     assert asset_image_path("tab-lutris.png").is_file()
+
+
+# -- where the configs live ---------------------------------------------------
+
+
+def test_configs_prefer_the_legacy_config_dir_when_it_exists(tmp_path) -> None:
+    """Upstream Lutris still reads ~/.config/lutris first.
+
+    lutris/settings.py only falls back to the data dir when the legacy config
+    dir does not exist -- the deprecation is a fallback, not a migration -- so
+    writing the data-dir copy on such a host produces YAML Lutris never loads
+    and the wrapper silently never applies.
+    """
+    legacy = tmp_path / ".config" / "lutris"
+    legacy.mkdir(parents=True)
+
+    assert game_config_path("cfg", tmp_path) == legacy / "games" / "cfg.yml"
+    assert runner_config_path("wine", tmp_path) == legacy / "runners" / "wine.yml"
+    assert system_config_path(tmp_path) == legacy / "system.yml"
+    # The library database is DATA_DIR state either way, like upstream's PGA_DB.
+    assert lutris_library_db(tmp_path) == tmp_path / ".local/share/lutris/pga.db"
+
+
+def test_configs_fall_back_to_the_data_dir_without_a_legacy_dir(tmp_path) -> None:
+    data = tmp_path / ".local" / "share" / "lutris"
+
+    assert game_config_path("cfg", tmp_path) == data / "games" / "cfg.yml"
+    assert runner_config_path("wine", tmp_path) == data / "runners" / "wine.yml"
+    assert system_config_path(tmp_path) == data / "system.yml"
+
+
+def test_default_paths_honor_the_xdg_environment(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    (tmp_path / "cfg" / "lutris").mkdir(parents=True)
+
+    assert lutris_config_root() == tmp_path / "cfg" / "lutris"
+    assert lutris_library_db() == tmp_path / "data" / "lutris" / "pga.db"
+
+
+def test_an_explicit_home_ignores_the_session_xdg_environment(
+    tmp_path, monkeypatch
+) -> None:
+    """The test seam has to isolate: an exported XDG var must not leak in."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "elsewhere"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "elsewhere"))
+
+    assert lutris_library_db(tmp_path) == tmp_path / ".local/share/lutris/pga.db"
+    assert lutris_config_root(tmp_path) == tmp_path / ".local/share/lutris"
