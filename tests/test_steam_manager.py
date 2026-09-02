@@ -253,45 +253,6 @@ def test_library_scan_does_not_overwrite_existing_game_choice(manager, tmp_path)
     )
 
 
-def test_standing_mode_label_uses_rust_daemon_status(manager, monkeypatch) -> None:
-    import runtime.daemon_client as daemon_client
-
-    monkeypatch.setattr(
-        daemon_client,
-        "daemon_status",
-        lambda **kwargs: {
-            "active_job": {
-                "runtime_mode": "static",
-                "profile_id": "profile-balanced",
-            }
-        },
-    )
-    monkeypatch.setattr(
-        manager_module,
-        "resolve_auto_uv_profile",
-        lambda selector: (Path("/tmp/profile.json"), {"profile_tier": "Balanced"}),
-    )
-    assert manager.standing_mode_label() == "Balanced"
-
-
-def test_standing_mode_label_keeps_pre_game_action(manager, monkeypatch) -> None:
-    import runtime.daemon_client as daemon_client
-
-    monkeypatch.setattr(
-        daemon_client,
-        "daemon_status",
-        lambda **kwargs: {
-            "active_job": {"runtime_mode": "stock", "profile_id": ""},
-            "game_runtime": {
-                "active": True,
-                "standing_runtime_mode": "adaptive",
-                "standing_profile_id": "profile-balanced",
-            },
-        },
-    )
-    assert manager.standing_mode_label() == "Adaptive"
-
-
 def test_set_mode_injects_and_persists(manager, tmp_path) -> None:
     manager.refresh()
     manager.set_game_enabled(APP_ID, True)

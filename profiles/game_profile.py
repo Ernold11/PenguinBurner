@@ -42,12 +42,23 @@ GAME_MODES = (GAME_MODE_ADAPTIVE, *PROFILE_TIERS, GAME_MODE_STOCK)
 
 
 class GameProfileSetting(Protocol):
-    """The four fields a per-game preset needs to resolve to daemon argv."""
+    """The four fields a per-game preset needs to resolve to daemon argv.
 
-    enabled: bool
-    mode: str
-    target_fps: float | None
-    gpu_uuid: str
+    Read-only, so the frozen setting dataclasses both integrations keep
+    actually satisfy it.
+    """
+
+    @property
+    def enabled(self) -> bool: ...
+
+    @property
+    def mode(self) -> str: ...
+
+    @property
+    def target_fps(self) -> float | None: ...
+
+    @property
+    def gpu_uuid(self) -> str: ...
 
 
 def normalize_game_mode(

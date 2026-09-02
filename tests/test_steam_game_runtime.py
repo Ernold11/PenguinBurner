@@ -498,34 +498,6 @@ def test_launch_steam_game_validates_app_id(monkeypatch) -> None:
     assert len(launched) == 1
 
 
-def test_steam_game_running_matches_reaper_session(monkeypatch) -> None:
-    import integrations.steam.process as process
-
-    monkeypatch.setattr(process, "running_in_flatpak", lambda: False)
-    calls = []
-
-    def fake_run(command, **kwargs):
-        calls.append(command)
-        return process.subprocess.CompletedProcess(command, 0)
-
-    monkeypatch.setattr(process.subprocess, "run", fake_run)
-
-    assert process.steam_game_running("3606110")
-    # [S] keeps the pattern from matching a command line carrying the pattern
-    # itself (the flatpak-spawn helper, a sibling checker).
-    assert calls == [
-        ["/usr/bin/pgrep", "-f", r"[S]teamLaunch AppId=3606110([^0-9]|$)"]
-    ]
-    import re
-
-    pattern = calls[0][2]
-    assert re.search(pattern, "reaper SteamLaunch AppId=3606110 -- /game/bin")
-    assert not re.search(pattern, f"pgrep -f {pattern}")
-    assert not re.search(pattern, "reaper SteamLaunch AppId=36061100 -- /game/bin")
-    assert not process.steam_game_running("rm -rf /")
-    assert len(calls) == 1
-
-
 def test_running_steam_game_ids_batches_one_pgrep(monkeypatch) -> None:
     import integrations.steam.process as process
 

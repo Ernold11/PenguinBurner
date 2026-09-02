@@ -16,8 +16,7 @@ from overlay.telemetry.steam_launch_check import (
     launch_options_from_localconfig,
     rewrite_launch_options,
 )
-from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR, resolve_auto_uv_profile
-from profiles.uv.profile_tiers import profile_tier_label
+from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 
 from .cdp import (
     SteamAppDetails,
@@ -34,7 +33,7 @@ from .launch_options import (
     remove_injection,
 )
 from .library import InstalledSteamGame, installed_steam_games
-from .process import running_steam_game_ids, steam_game_running, steam_running
+from .process import running_steam_game_ids, steam_running
 from .settings import (
     SteamGameSetting,
     load_steam_game_settings,
@@ -91,13 +90,6 @@ class SteamIntegrationManager:
     def cdp_ready(self) -> bool:
         return cdp_available(timeout_s=1.0)
 
-    def live_apply_ready(self) -> bool:
-        """Writes can land right now: CDP up, or Steam stopped (disk path)."""
-        return self.cdp_ready() or not self.steam_running()
-
-    def game_running(self, app_id: str) -> bool:
-        return steam_game_running(app_id)
-
     def running_game_ids(self) -> frozenset[str] | None:
         """Every running Steam game's app id in one subprocess (for polling).
 
@@ -134,38 +126,6 @@ class SteamIntegrationManager:
                     "integration (one Steam restart) first",
                 )
             return ApplyResult(False, f"stop failed: {error}")
-
-    def standing_mode_label(self) -> str:
-        """What an unconfigured game runs under: the user's standing action
-        from the Profiles tab (Adaptive, a tier's profile, or Stock)."""
-        from runtime.daemon_client import daemon_status
-
-        try:
-            status = daemon_status(timeout_s=1.0)
-        except Exception:
-            return "Stock"
-
-        game_runtime = status.get("game_runtime")
-        if isinstance(game_runtime, dict):
-            mode = str(game_runtime.get("standing_runtime_mode") or "")
-            selector = str(game_runtime.get("standing_profile_id") or "")
-        else:
-            active_job = status.get("active_job")
-            if not isinstance(active_job, dict):
-                return "Stock"
-            mode = str(active_job.get("runtime_mode") or "")
-            selector = str(active_job.get("profile_id") or "")
-
-        if mode == "adaptive":
-            return "Adaptive"
-        if mode != "static" or not selector or selector == STOCK_PROFILE_SELECTOR:
-            return "Stock"
-        resolved = resolve_auto_uv_profile(selector)
-        if resolved is not None:
-            label = profile_tier_label(resolved[1].get("profile_tier"))
-            if label:
-                return label
-        return selector
 
     def initialize(self) -> ApplyResult:
         if not ensure_cdp_marker(self._home):
