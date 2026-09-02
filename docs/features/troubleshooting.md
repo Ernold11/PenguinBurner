@@ -25,6 +25,28 @@ The managed Q2RTX benchmark binary is headless and should not create an X11 or
 Wayland window. If a window appears, check that the managed PenguinBurner Q2RTX
 install is being used.
 
+### Q2RTX installation ran out of disk space
+
+Retry Auto-UV after freeing disk space. PenguinBurner detects an incomplete
+managed Q2RTX install and rebuilds it automatically. To remove both the install
+and any complete or partial cached downloads first, run this as your regular
+user:
+
+```bash
+python3 -m stability.q2rtx --clean-q2rtx
+```
+
+The cleanup preserves PenguinBurner profiles, settings, scan history, and logs.
+If the module command is unavailable in an older installation, use:
+
+```bash
+rm -rf -- "$HOME/.local/share/PenguinBurner/q2rtx" \
+           "$HOME/.cache/PenguinBurner/q2rtx"
+```
+
+Then retry Auto-UV to download and install Q2RTX again. Do not use `sudo` for
+either recovery command.
+
 ### Running on a headless server (no display)
 
 Install the normal NVIDIA Vulkan driver stack. The managed Q2RTX benchmark path

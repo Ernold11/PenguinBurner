@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from common.cli_output import enable_cli_output_wrapping
+
 from .assets import _validate_demo_name
 from .constants import (
     DEFAULT_DEMO_NAME,
@@ -13,7 +14,7 @@ from .constants import (
     DEFAULT_LOG_DIR,
     DEFAULT_WIDTH,
 )
-from .install import install_latest_q2rtx
+from .install import clean_managed_q2rtx, install_latest_q2rtx
 from .models import Q2RTXStabilityConfig, StabilityTestError
 from .output import attach_stdout_progress
 from .reporting import print_q2rtx_stability_result
@@ -33,12 +34,21 @@ def parse_q2rtx_stability_args(argv: list[str] | None = None) -> argparse.Namesp
         prog=_default_prog_name(),
         description="Run a non-interactive Q2RTX benchmark stability workload.",
     )
-    parser.add_argument(
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument(
         "--install-q2rtx",
         action="store_true",
         help=(
             "Download the PenguinBurner headless Q2RTX binary and shareware "
             "demo data under ~/.local/share/PenguinBurner/q2rtx/"
+        ),
+    )
+    actions.add_argument(
+        "--clean-q2rtx",
+        action="store_true",
+        help=(
+            "Remove the managed Q2RTX install and download cache, preserving "
+            "PenguinBurner profiles, settings, scan history, and logs"
         ),
     )
     parser.add_argument(
@@ -112,6 +122,20 @@ def main(argv: list[str] | None = None) -> int:
     enable_cli_output_wrapping()
     args = parse_q2rtx_stability_args(argv)
     try:
+        if args.clean_q2rtx:
+            removed = clean_managed_q2rtx()
+            if removed:
+                print("Removed managed Q2RTX files:", flush=True)
+                for directory in removed:
+                    print(f"  {directory}", flush=True)
+            else:
+                print("Managed Q2RTX install and cache are already absent.", flush=True)
+            print(
+                "PenguinBurner profiles, settings, scan history, and logs were "
+                "preserved.",
+                flush=True,
+            )
+            return 0
         if args.install_q2rtx:
             result = install_latest_q2rtx()
             print(
