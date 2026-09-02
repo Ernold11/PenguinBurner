@@ -21,6 +21,12 @@ from integrations.launchers.library import (
 
 from .manager import LutrisGameRow, LutrisIntegrationManager
 from .paths import lutris_desktop_icon
+from .process import (
+    launch_lutris_game,
+    lutris_available,
+    running_lutris_games,
+    stop_lutris_game,
+)
 
 
 class LutrisLibrarySource:
@@ -28,8 +34,9 @@ class LutrisLibrarySource:
     display_name = "Lutris"
     #: Shipped fallback, used when the machine has no Lutris icon of its own.
     icon_asset = "tab-lutris.png"
-    #: Lutris exposes no API for starting a game on our behalf, so the tab
-    #: shows no Play button for these rows. Documented in docs/features/lutris.md.
+    #: Set per instance below: a machine can hold a Lutris database whose
+    #: Lutris is no longer installed, and those games are still worth listing
+    #: and configuring -- just not startable.
     can_launch = False
 
     def __init__(
@@ -45,6 +52,9 @@ class LutrisLibrarySource:
         )
         self._home = home
         self._rows: tuple[LutrisGameRow, ...] = ()
+        # Asked once: the answer cannot change while the tab is open, and the
+        # library pane reads this flag on every selection.
+        self.can_launch = lutris_available()
 
     def desktop_icon(self):
         """Lutris's own installed icon, or None when it has none here."""
@@ -172,3 +182,56 @@ class LutrisLibrarySource:
             overlay=bool(row.setting.overlay),
             detail=row,
         )
+
+    # -- launching -------------------------------------------------------------
+    #
+    # Through Lutris's own CLI, which starts the game from its stored config --
+    # so the prefix_command PenguinBurner wrote is already in the line Lutris
+    # builds. Nothing here re-implements a launch.
+
+    def launch(self, game_id: str) -> tuple[bool, str]:
+        """Ask Lutris to start a game. Returns (started, what to tell the user)."""
+        if not self.can_launch:
+            return False, "FAILED to launch (lutris not on PATH)"
+        if launch_lutris_game(game_id):
+            return True, "launching via Lutris…"
+        return False, "FAILED to launch (lutris would not start the game)"
+
+    def stop(self, game_id: str) -> tuple[bool, str]:
+        """Signal the game's Lutris wrapper, which takes its tree down."""
+        titles = self._titles_by_id()
+        # .values(): the probe matches command lines against game *names*, and
+        # iterating the mapping itself would hand it the ids instead -- which
+        # matches nothing, and reads back as "this game is not running".
+        running = running_lutris_games(titles.values())
+        if running is None:
+            return False, "FAILED to stop (could not tell what is running)"
+        title = titles.get(str(game_id))
+        pid = running.get(title) if title else None
+        if pid is None:
+            return False, "FAILED to stop (no running session for this game)"
+        if stop_lutris_game(pid):
+            return True, "stopping…"
+        return False, "FAILED to stop (the wrapper would not take the signal)"
+
+    def running_game_ids(self) -> frozenset[str] | None:
+        """Which of this launcher's games are running, or None if unknowable.
+
+        None is not "nothing is running": it means the check itself failed, and
+        the caller must hold every state rather than read a stalled probe as
+        every game having exited.
+        """
+        titles = self._titles_by_id()
+        running = running_lutris_games(titles.values())
+        if running is None:
+            return None
+        return frozenset(
+            game_id for game_id, title in titles.items() if title in running
+        )
+
+    def _titles_by_id(self) -> dict[str, str]:
+        """The names Lutris will have put on each game's wrapper command line."""
+        return {
+            str(row.game.game_id): str(row.game.display_name or "")
+            for row in self._rows
+        }

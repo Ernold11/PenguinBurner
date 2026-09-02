@@ -509,7 +509,11 @@ def _launchable_pair():
 
 
 def test_only_a_launcher_that_can_start_games_shows_play(qapp) -> None:
-    """Lutris exposes no API for it, so the button has nothing to do there."""
+    """A launcher declares whether it can, and the button follows that alone.
+
+    Both real adapters can start a game today, so the source that cannot here
+    is a stub -- which is the case that matters: the tab must not assume.
+    """
     steam, lutris = _launchable_pair()
     panel = _panel(qapp, (steam, lutris))
     panel.ensure_scanned()
@@ -863,3 +867,29 @@ def _with_field_value(field, value):
     from dataclasses import replace
 
     return replace(field, value=value)
+
+
+def test_a_pending_stop_can_be_pressed_again(qapp) -> None:
+    """A launcher's stop is a request, and its game may shrug it off.
+
+    Lutris passes one SIGTERM to the game and only insists when told a second
+    time, so greying the button out for the whole pending window takes away
+    the press that finishes the job -- and a stop then looks like nothing
+    happening at all.
+    """
+    steam, lutris = _launchable_pair()
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("steam:620")
+
+    panel.play_button.click()  # Play
+    panel._set_game_state("steam:620", "running")
+    panel._sync_play_button(panel._selected_game())
+    panel.play_button.click()  # Stop
+
+    assert panel._tracked_state("steam:620") == "stopping"
+    assert panel.play_button.isEnabled() is True
+
+    panel.play_button.click()  # and again, because it is still running
+
+    assert steam.stopped == ["620", "620"]

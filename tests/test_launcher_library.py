@@ -146,13 +146,25 @@ def test_both_real_sources_satisfy_the_contract() -> None:
         assert isinstance(source, LauncherSource)
 
 
-def test_only_steam_offers_to_start_a_game() -> None:
-    """Lutris exposes no API for it, so the tab must not show Play there."""
-    from integrations.lutris.library_source import LutrisLibrarySource
+def test_lutris_offers_to_start_a_game_only_when_its_cli_is_there() -> None:
+    """A library can outlive its launcher, and then Play has nothing to call.
+
+    The database stays on disk when Lutris is uninstalled, and those games are
+    still worth listing and configuring -- just not starting.
+    """
+    from integrations.lutris import library_source as lutris_source
     from integrations.steam.library_source import SteamLibrarySource
 
     assert SteamLibrarySource.can_launch is True
-    assert LutrisLibrarySource.can_launch is False
+
+    original = lutris_source.lutris_available
+    try:
+        lutris_source.lutris_available = lambda: True
+        assert lutris_source.LutrisLibrarySource().can_launch is True
+        lutris_source.lutris_available = lambda: False
+        assert lutris_source.LutrisLibrarySource().can_launch is False
+    finally:
+        lutris_source.lutris_available = original
 
 
 # -- steam playtime --------------------------------------------------------
@@ -375,11 +387,15 @@ def test_starting_a_game_is_a_capability_only_steam_has() -> None:
     from integrations.lutris.library_source import LutrisLibrarySource
     from integrations.steam.library_source import SteamLibrarySource
 
-    steam = SteamLibrarySource()
-    lutris = LutrisLibrarySource()
-
-    assert isinstance(steam, LaunchableSource) is steam.can_launch is True
-    assert isinstance(lutris, LaunchableSource) is lutris.can_launch is False
+    # Both implement the shape. Whether either offers the button is a separate
+    # question -- can_launch -- which Lutris answers from whether its CLI is
+    # installed, and that is the pair this asserts cannot drift apart.
+    for source in (SteamLibrarySource(), LutrisLibrarySource()):
+        assert isinstance(source, LaunchableSource) is True
+        if source.can_launch:
+            assert callable(source.launch)
+            assert callable(source.stop)
+            assert callable(source.running_game_ids)
 
 
 def test_an_installed_launcher_icon_is_found_before_our_own(tmp_path) -> None:
@@ -738,3 +754,78 @@ def test_the_wrapper_reads_the_flag_into_the_env_the_assignment_sets() -> None:
     assert ingame_latency_enabled(env) is True
     # Overlay off and no flag is the case this exists to distinguish from.
     assert ingame_latency_enabled({"PB_OVERLAY": "0"}) is False
+
+
+def test_the_lutris_adapter_maps_running_titles_back_to_game_ids() -> None:
+    """The probe answers in names, the tab asks in ids, the adapter bridges.
+
+    Lutris puts the game's name on the wrapper command line -- the same name
+    the library was read from, so the two spell it identically.
+    """
+    from integrations.lutris import library_source as lutris_source
+
+    source = lutris_source.LutrisLibrarySource(manager=object())
+    source._rows = (_lutris_row("27", "Assassin's Creed Shadows"),)
+
+    original = lutris_source.running_lutris_games
+    try:
+        lutris_source.running_lutris_games = lambda titles: {
+            "Assassin's Creed Shadows": 4210
+        }
+        assert source.running_game_ids() == frozenset({"27"})
+
+        # A failed probe stays distinguishable from an empty library.
+        lutris_source.running_lutris_games = lambda titles: None
+        assert source.running_game_ids() is None
+    finally:
+        lutris_source.running_lutris_games = original
+
+
+def test_stopping_a_lutris_game_signals_that_games_own_wrapper() -> None:
+    from integrations.lutris import library_source as lutris_source
+
+    source = lutris_source.LutrisLibrarySource(manager=object())
+    source._rows = (
+        _lutris_row("27", "Assassin's Creed Shadows"),
+        _lutris_row("31", "Star Wars Zero Company"),
+    )
+    signalled: list[int] = []
+
+    original_running = lutris_source.running_lutris_games
+    original_stop = lutris_source.stop_lutris_game
+    try:
+        asked: list[list[str]] = []
+
+        def _running(titles):
+            # Recorded, not ignored: handing the probe the mapping instead of
+            # its values passes game ids where names belong, which matches
+            # nothing and reads back as "not running".
+            asked.append(sorted(titles))
+            return {
+                "Assassin's Creed Shadows": 4210,
+                "Star Wars Zero Company": 4300,
+            }
+
+        lutris_source.running_lutris_games = _running
+        lutris_source.stop_lutris_game = lambda pid: bool(signalled.append(pid)) or True
+
+        assert source.stop("31")[0] is True
+        assert signalled == [4300]
+        assert asked == [["Assassin's Creed Shadows", "Star Wars Zero Company"]]
+
+        # A game nobody is playing has no session to signal.
+        signalled.clear()
+        lutris_source.running_lutris_games = lambda titles: {}
+        ok, message = source.stop("27")
+        assert ok is False
+        assert "no running session" in message
+        assert signalled == []
+    finally:
+        lutris_source.running_lutris_games = original_running
+        lutris_source.stop_lutris_game = original_stop
+
+
+def _lutris_row(game_id: str, name: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(game=SimpleNamespace(game_id=game_id, display_name=name))

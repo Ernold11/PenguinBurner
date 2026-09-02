@@ -10,9 +10,14 @@ what PenguinBurner does when Lutris starts it: which Auto-UV profile applies,
 whether Adaptive aims at a different frame rate than the system-wide one, and
 whether the overlay is drawn.
 
-Games are still launched from Lutris. PenguinBurner does not start, stop, or
-reconfigure a running game — Lutris exposes no API for that — so everything
-here takes effect **the next time you launch the game**.
+The Game Library tab can start and stop a Lutris game, through Lutris's own
+CLI (`lutris:rungameid/<id>`), so the game launches from its stored config and
+the wrapper below is already in the line Lutris builds. Stopping signals the
+game's `lutris-wrapper`, which takes its whole process tree down the way Lutris
+does it itself.
+
+PenguinBurner still does not **reconfigure** a running game, so a setting
+changed here takes effect **the next time you launch it**.
 
 ## What it writes
 

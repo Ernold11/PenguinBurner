@@ -217,10 +217,11 @@ class LauncherSource(Protocol):
 class LaunchableSource(Protocol):
     """A launcher that can also start and stop a game on our behalf.
 
-    Separate from LauncherSource because it is genuinely a separate capability:
-    Steam exposes an API for it, Lutris does not, and a launcher that cannot
-    start a game should not have to carry three methods that raise. `can_launch`
-    is the flag the library tab reads; this is the shape behind it.
+    Separate from LauncherSource because it is genuinely a separate capability,
+    and one a launcher can lack for its own reasons -- no API for it, or the
+    client simply not installed on this machine. A launcher that cannot start a
+    game should not have to carry three methods that raise. `can_launch` is the
+    flag the library tab reads; this is the shape behind it.
     """
 
     def launch(self, game_id: str) -> tuple[bool, str]:

@@ -1456,8 +1456,8 @@ class GameLibraryPanel:
     #
     # Ported from the Steam tab, where it was Steam-specific because that was
     # the only tab that had it. Here it asks the launcher whether it can start
-    # a game at all, so a launcher that cannot -- Lutris exposes no API for it
-    # -- simply shows no button.
+    # a game at all, so one that cannot -- a launcher with no API for it, or a
+    # client that is not installed here -- simply shows no button.
 
     def _can_launch(self, game: LibraryGame | None) -> bool:
         if game is None:
@@ -1500,7 +1500,11 @@ class GameLibraryPanel:
         elif state == "running":
             text, enabled, play_state = "Stop", True, "running"
         elif state == "stopping":
-            text, enabled, play_state = "Stopping…", False, "stopping"
+            # Live, not greyed out. A launcher's stop is a request its game may
+            # shrug off -- Lutris passes one SIGTERM on and only insists when
+            # told twice -- so the second press has to stay available. Greying
+            # the button here is what made a stop look like nothing happening.
+            text, enabled, play_state = "Stopping…", True, "stopping"
         elif blocking:
             text, enabled, play_state = "Play", False, "idle"
         else:
@@ -1525,7 +1529,9 @@ class GameLibraryPanel:
         if game is None or not self._can_launch(game):
             return
         state = self._tracked_state(self._selected_key)
-        if state == "running":
+        if state in ("running", "stopping"):
+            # Pressed again while a stop is pending: ask once more rather than
+            # ignore it. Which signal that turns into is the launcher's affair.
             self._stop_game(game)
         elif state not in _ACTIVE_GAME_STATES and not self._other_active_game():
             self._play_game(game)
