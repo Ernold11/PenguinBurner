@@ -97,6 +97,40 @@ def test_enabling_wraps_the_game_and_records_the_original(tmp_path) -> None:
     assert stored.mode == GAME_MODE_ADAPTIVE
 
 
+def test_enabling_repairs_the_host_wrapper_before_writing(
+    tmp_path, monkeypatch
+) -> None:
+    """The written line execs PENGUIN_BURNER on the host, so inside a Flatpak
+    the wrapper must be made real before a config names it -- a Lutris-only
+    host otherwise gets a prefix_command that stops the game launching."""
+    import integrations.lutris.manager as manager_module
+
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        manager_module, "ensure_host_integration", lambda: calls.append(True)
+    )
+    manager = _manager(tmp_path)
+
+    assert manager.set_game_enabled("27", True).ok
+    assert calls == [True]
+
+
+def test_a_failed_wrapper_repair_blocks_the_write(tmp_path, monkeypatch) -> None:
+    import integrations.lutris.manager as manager_module
+
+    def boom() -> None:
+        raise RuntimeError("packaged NVAPI shim is missing")
+
+    monkeypatch.setattr(manager_module, "ensure_host_integration", boom)
+    manager = _manager(tmp_path)
+
+    result = manager.set_game_enabled("27", True)
+
+    assert not result.ok
+    assert "integration repair failed" in result.message
+    assert "prefix_command" not in _config(tmp_path)["system"]
+
+
 def test_disabling_restores_the_users_own_prefix(tmp_path) -> None:
     manager = _manager(tmp_path, prefix_command="game-performance")
     manager.set_game_enabled("27", True)

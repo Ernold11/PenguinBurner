@@ -20,6 +20,8 @@ from pathlib import Path
 
 FLATPAK_INFO_PATH = Path("/.flatpak-info")
 HOST_PGREP = "/usr/bin/pgrep"
+HOST_KILL = "/usr/bin/kill"
+HOST_SHELL = "/usr/bin/sh"
 HOST_WORKING_DIRECTORY = "/tmp"
 
 #: Lutris runs every game through this, the way Steam runs one through reaper.
@@ -62,8 +64,28 @@ def lutris_available() -> bool:
     Distinct from having a Lutris library: a machine can carry the database of
     a Lutris that is no longer installed, and those games are still worth
     listing and configuring -- just not startable.
+
+    Inside a Flatpak the sandbox PATH says nothing about the host, so the
+    question goes through flatpak-spawn the way the Steam probe asks after its
+    client -- everything else in this module already runs on the host, and an
+    in-sandbox answer would keep the whole launch surface unreachable there.
     """
-    return shutil.which("lutris") is not None
+    if not running_in_flatpak():
+        return shutil.which("lutris") is not None
+    command = _flatpak_host_command([HOST_SHELL, "-c", "command -v lutris"])
+    if command is None:
+        return False
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 def launch_lutris_game(game_id: str) -> bool:
@@ -162,9 +184,32 @@ def stop_lutris_game(pid: int) -> bool:
     that SIGKILLs them. Whether to insist is the user's call -- the tab leaves
     the button live so a game that shrugs the polite signal off can be told
     again -- rather than something decided for them on a timer here.
+
+    The pid came from the host pgrep above, so inside a Flatpak the signal has
+    to travel the same way: the sandbox has its own PID namespace, where that
+    number is nothing or -- worse -- some unrelated sandbox process.
     """
     try:
-        os.kill(int(pid), signal.SIGTERM)
-    except (OSError, ValueError, TypeError):
+        pid = int(pid)
+    except (ValueError, TypeError):
+        return False
+    if running_in_flatpak():
+        command = _flatpak_host_command([HOST_KILL, "-TERM", str(pid)])
+        if not command:
+            return False
+        try:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=3.0,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
         return False
     return True

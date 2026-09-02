@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from common.flatpak_wrappers import ensure_steam_integration
+from common.flatpak_wrappers import ensure_host_integration
 from integrations.launchers.desktop_icons import desktop_icon
 from integrations.launchers.library import (
     FIELD_CHOICE,
@@ -330,7 +330,7 @@ class SteamLibrarySource:
     def launch(self, game_id: str) -> tuple[bool, str]:
         """Ask Steam to start a game. Returns (started, what to tell the user)."""
         try:
-            ensure_steam_integration()
+            ensure_host_integration()
         except (OSError, RuntimeError) as error:
             return False, f"FAILED to repair the PenguinBurner Steam integration ({error})"
         if launch_steam_game(game_id):

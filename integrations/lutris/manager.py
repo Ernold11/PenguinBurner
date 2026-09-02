@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from common.flatpak_wrappers import ensure_host_integration
 from overlay.wrapper_tokens import (
     ingame_latency_present,
     overlay_present,
@@ -192,6 +193,10 @@ class LutrisIntegrationManager:
                 f"{row.game.display_name} has no Lutris configuration file to write.",
             )
         wanted = " ".join(str(text or "").split())
+        if wrapper_present(wanted):
+            problem = self._ensure_wrapper_installed()
+            if problem:
+                return ApplyResult(False, problem)
         write = write_prefix_command(config_path, wanted)
         if not write.ok:
             return ApplyResult(False, write.message, write.prefix_command)
@@ -292,6 +297,14 @@ class LutrisIntegrationManager:
         effective = self._read_prefix(row.game)
         current = effective.value
         if setting.enabled:
+            # Same rule as Steam's _apply: the line about to be written execs
+            # the PENGUIN_BURNER host wrapper, so inside a Flatpak that wrapper
+            # must exist on the host before the config claims it does -- a
+            # Lutris-only host installs no wrapper at startup otherwise, and
+            # the game simply stops launching.
+            problem = self._ensure_wrapper_installed()
+            if problem:
+                return ApplyResult(False, problem)
             # Injecting on top of the EFFECTIVE value, not the game-level one.
             # Writing the game level replaces whatever the runner or global
             # config set, so a game that inherits "game-performance" would
@@ -359,6 +372,19 @@ class LutrisIntegrationManager:
             self._describe(row.game, stored),
             write.prefix_command,
         )
+
+    @staticmethod
+    def _ensure_wrapper_installed() -> str:
+        """Make the PENGUIN_BURNER host wrapper real before naming it, or say why not.
+
+        Outside a Flatpak this is a no-op: the console-script entry point ships
+        with every pip/native install.
+        """
+        try:
+            ensure_host_integration()
+        except (OSError, RuntimeError) as error:
+            return f"PenguinBurner launcher integration repair failed: {error}"
+        return ""
 
     @staticmethod
     def _describe(game: InstalledLutrisGame, setting: LutrisGameSetting) -> str:

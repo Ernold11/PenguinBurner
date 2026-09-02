@@ -167,3 +167,55 @@ def test_stopping_a_pid_that_is_gone_is_a_failure_not_a_crash(monkeypatch) -> No
     monkeypatch.setattr(process.os, "kill", _gone)
 
     assert process.stop_lutris_game(4210) is False
+
+
+def test_availability_is_asked_of_the_host_inside_a_flatpak(monkeypatch) -> None:
+    """The sandbox PATH says nothing about the host, so an in-sandbox which()
+    kept can_launch False forever in the Flatpak build -- listing and
+    configuring games whose whole launch surface was unreachable."""
+    monkeypatch.setattr(process, "running_in_flatpak", lambda: True)
+    monkeypatch.setattr(
+        process.shutil,
+        "which",
+        lambda name: "/usr/bin/flatpak-spawn" if name == "flatpak-spawn" else None,
+    )
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return process.subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(process.subprocess, "run", fake_run)
+
+    assert process.lutris_available() is True
+    (command,) = commands
+    assert command[:2] == ["/usr/bin/flatpak-spawn", "--host"]
+    assert command[-3:] == ["/usr/bin/sh", "-c", "command -v lutris"]
+
+
+def test_stopping_from_a_flatpak_signals_through_the_host(monkeypatch) -> None:
+    """The pid came from the host pgrep: in the sandbox's own PID namespace
+    that number is nothing, or some unrelated sandbox process."""
+    monkeypatch.setattr(process, "running_in_flatpak", lambda: True)
+    monkeypatch.setattr(
+        process.shutil,
+        "which",
+        lambda name: "/usr/bin/flatpak-spawn" if name == "flatpak-spawn" else None,
+    )
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return process.subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(process.subprocess, "run", fake_run)
+
+    def _never(_pid, _sig):
+        raise AssertionError("os.kill must not run in the sandbox namespace")
+
+    monkeypatch.setattr(process.os, "kill", _never)
+
+    assert process.stop_lutris_game(4210) is True
+    (command,) = commands
+    assert command[:2] == ["/usr/bin/flatpak-spawn", "--host"]
+    assert command[-3:] == ["/usr/bin/kill", "-TERM", "4210"]

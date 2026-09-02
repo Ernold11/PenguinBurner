@@ -146,25 +146,32 @@ def test_both_real_sources_satisfy_the_contract() -> None:
         assert isinstance(source, LauncherSource)
 
 
-def test_lutris_offers_to_start_a_game_only_when_its_cli_is_there() -> None:
+def test_lutris_offers_to_start_a_game_only_when_its_cli_is_there(
+    tmp_path, monkeypatch
+) -> None:
     """A library can outlive its launcher, and then Play has nothing to call.
 
     The database stays on disk when Lutris is uninstalled, and those games are
-    still worth listing and configuring -- just not starting.
+    still worth listing and configuring -- just not starting. Probed on every
+    refresh rather than at construction: inside a Flatpak the probe is a
+    flatpak-spawn round-trip, and installing Lutris while the tab is open
+    should change the answer on the next scan, not the next app start.
     """
     from integrations.lutris import library_source as lutris_source
     from integrations.steam.library_source import SteamLibrarySource
 
     assert SteamLibrarySource.can_launch is True
 
-    original = lutris_source.lutris_available
-    try:
-        lutris_source.lutris_available = lambda: True
-        assert lutris_source.LutrisLibrarySource().can_launch is True
-        lutris_source.lutris_available = lambda: False
-        assert lutris_source.LutrisLibrarySource().can_launch is False
-    finally:
-        lutris_source.lutris_available = original
+    source = lutris_source.LutrisLibrarySource(home=tmp_path)
+    assert source.can_launch is False  # not probed while the window builds
+
+    monkeypatch.setattr(lutris_source, "lutris_available", lambda: True)
+    source.refresh()
+    assert source.can_launch is True
+
+    monkeypatch.setattr(lutris_source, "lutris_available", lambda: False)
+    source.refresh()
+    assert source.can_launch is False
 
 
 # -- steam playtime --------------------------------------------------------

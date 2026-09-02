@@ -34,9 +34,11 @@ class LutrisLibrarySource:
     display_name = "Lutris"
     #: Shipped fallback, used when the machine has no Lutris icon of its own.
     icon_asset = "tab-lutris.png"
-    #: Set per instance below: a machine can hold a Lutris database whose
-    #: Lutris is no longer installed, and those games are still worth listing
-    #: and configuring -- just not startable.
+    #: Probed during refresh, off the GUI thread: a machine can hold a Lutris
+    #: database whose Lutris is no longer installed, and those games are still
+    #: worth listing and configuring -- just not startable. Inside a Flatpak
+    #: the probe is a flatpak-spawn round-trip, which is also why it cannot
+    #: live in the constructor the window builds tabs with.
     can_launch = False
 
     def __init__(
@@ -52,9 +54,6 @@ class LutrisLibrarySource:
         )
         self._home = home
         self._rows: tuple[LutrisGameRow, ...] = ()
-        # Asked once: the answer cannot change while the tab is open, and the
-        # library pane reads this flag on every selection.
-        self.can_launch = lutris_available()
 
     def desktop_icon(self):
         """Lutris's own installed icon, or None when it has none here."""
@@ -68,6 +67,9 @@ class LutrisLibrarySource:
         # there is no expensive pass to skip: the cheap one is the only one.
         self.manager.refresh()
         self._rows = tuple(self.manager.rows())
+        # Installing or removing Lutris while the tab is open should change
+        # the Play button on the next scan, not on the next app start.
+        self.can_launch = lutris_available()
 
     # -- what only Lutris has ------------------------------------------------
 

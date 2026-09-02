@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from common.flatpak_wrappers import ensure_steam_integration
+from common.flatpak_wrappers import ensure_host_integration
 from overlay.telemetry.steam_launch_check import (
     launch_options_from_localconfig,
     rewrite_launch_options,
@@ -537,7 +537,7 @@ class SteamIntegrationManager:
         current = self._launch_options.get(app_id, "")
         if setting.active:
             try:
-                ensure_steam_integration()
+                ensure_host_integration()
             except (OSError, RuntimeError) as error:
                 return ApplyResult(
                     False,
