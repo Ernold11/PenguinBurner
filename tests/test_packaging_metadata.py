@@ -44,6 +44,21 @@ def test_native_packages_install_pyqtgraph_colorama_runtime_dependency() -> None
     assert "Requires:       python3-pyqtgraph >= 0.13" in rpm_spec
 
 
+def test_native_packages_install_pyyaml_runtime_dependency() -> None:
+    # PyYAML is imported during MainWindow construction (the Lutris library
+    # source), so a package missing it crashes the whole GUI at startup, not
+    # just one tab.
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    arch_pkgbuild = Path("packaging/arch/PKGBUILD").read_text(encoding="utf-8")
+    debian_control = Path("packaging/debian/control").read_text(encoding="utf-8")
+    rpm_spec = Path("packaging/rpm/penguin-burner.spec").read_text(encoding="utf-8")
+
+    assert "PyYAML>=6.0" in set(metadata["project"]["dependencies"])
+    assert "'python-yaml>=6.0'" in arch_pkgbuild
+    assert " python3-yaml (>= 6.0)," in debian_control
+    assert "Requires:       python3-pyyaml >= 6.0" in rpm_spec
+
+
 def test_native_packages_install_pyside6_runtime_dependency() -> None:
     arch_pkgbuild = Path("packaging/arch/PKGBUILD").read_text(encoding="utf-8")
     debian_control = Path("packaging/debian/control").read_text(encoding="utf-8")
