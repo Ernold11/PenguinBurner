@@ -14,9 +14,7 @@ from integrations.launchers.desktop_icons import desktop_icon
 from integrations.launchers.library import (
     FIELD_CHOICE,
     FIELD_MULTILINE,
-    FIELD_SWITCH,
     GROUP_COMMAND,
-    GROUP_IN_GAME,
     WRITE_NEEDS_SETUP,
     WRITE_READY,
     LauncherBulkAction,
@@ -123,37 +121,8 @@ class SteamLibrarySource:
         if not isinstance(row, SteamGameRow):
             return ()
         return (
-            self._latency_field(row),
             self._compat_tool_field(row),
             self._launch_options_field(row),
-        )
-
-    @staticmethod
-    def _latency_field(row: SteamGameRow) -> LauncherField:
-        """The markers Adaptive paces on, kept when the overlay is off.
-
-        Steam takes this as a wrapper flag where Lutris takes an environment
-        assignment -- see integrations/steam/launch_options.py -- but it is the
-        same opt-in reaching the same wrapper, so the tab draws one row for it.
-        """
-        overlay_on = bool(getattr(row.setting, "overlay", False))
-        return LauncherField(
-            key="ingame_latency",
-            kind=FIELD_SWITCH,
-            title="Latency markers without the overlay",
-            subtitle=(
-                "Adaptive paces on these markers, and the launcher normally "
-                "starts them with the overlay. Keep them when the overlay is "
-                "off, or Adaptive loses base-frame pacing under frame generation."
-            ),
-            setter="set_game_ingame_latency",
-            # With the overlay on the wrapper already runs the markers, so the
-            # switch has nothing left to add: show it on, out of reach.
-            value=True if overlay_on else bool(
-                getattr(row.setting, "ingame_latency", False)
-            ),
-            enabled=not overlay_on,
-            group=GROUP_IN_GAME,
         )
 
     def _compat_tool_field(self, row: SteamGameRow) -> LauncherField:

@@ -485,7 +485,6 @@ def test_steam_declares_everything_its_own_tab_used_to_offer() -> None:
     game = LibraryGame(launcher="steam", game_id="620", name="Portal 2", detail=_row())
 
     assert [field.key for field in source.fields(game)] == [
-        "ingame_latency",
         "compat_tool",
         "launch_options",
     ]
@@ -496,7 +495,6 @@ def test_steam_declares_everything_its_own_tab_used_to_offer() -> None:
         "overlay_none",
     ]
     assert {field.setter for field in source.fields(game)} == {
-        "set_game_ingame_latency",
         "set_game_compat_tool",
         "set_raw_launch_options",
     }

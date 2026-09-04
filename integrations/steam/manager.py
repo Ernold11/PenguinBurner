@@ -43,6 +43,7 @@ from profiles.game_profile import (
     GAME_MODE_ADAPTIVE,
     GAME_MODE_DEFAULT,
     GAME_MODE_NONE,
+    game_mode_uses_latency_markers,
     normalize_game_mode,
     normalize_game_target_fps,
 )
@@ -312,17 +313,6 @@ class SteamIntegrationManager:
         setting = self._setting(app_id)
         return self._apply(app_id, replace(setting, overlay=bool(overlay)))
 
-    def set_game_ingame_latency(self, app_id: str, keep: bool) -> ApplyResult:
-        """Keep the Reflex markers when the overlay is off.
-
-        With the overlay on the wrapper already runs them, so the choice only
-        says anything in the other case -- which is the case that matters:
-        without markers Adaptive reads presented frames, and under frame
-        generation that is not the base rate it is trying to pace on.
-        """
-        setting = self._setting(app_id)
-        return self._apply(app_id, replace(setting, ingame_latency=bool(keep)))
-
     def set_game_target_fps(self, app_id: str, target_fps: float | None) -> ApplyResult:
         setting = self._setting(app_id)
         return self._apply(
@@ -556,6 +546,13 @@ class SteamIntegrationManager:
         return ApplyResult(True, "Profile re-applied to the running game.")
 
     def _apply(self, app_id: str, setting: SteamGameSetting) -> ApplyResult:
+        # Marker capture is an Adaptive prerequisite, not a second preference
+        # users must keep in sync with the selected mode. The overlay still
+        # controls only whether the HUD is drawn.
+        setting = replace(
+            setting,
+            ingame_latency=game_mode_uses_latency_markers(setting.mode),
+        )
         current = self._launch_options.get(app_id)
         if current is None:
             # No cache entry means this game's last read failed (a per-app CDP

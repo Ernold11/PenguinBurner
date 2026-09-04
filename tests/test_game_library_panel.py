@@ -14,10 +14,8 @@ import pytest
 from integrations.launchers.library import (
     FIELD_CHOICE,
     FIELD_MULTILINE,
-    FIELD_SWITCH,
     FIELD_TEXT,
     GROUP_COMMAND,
-    GROUP_IN_GAME,
     WRITE_NEEDS_SETUP,
     LauncherBulkAction,
     LauncherField,
@@ -243,15 +241,6 @@ def _steam_and_lutris():
         ],
         fields=(
             LauncherField(
-                key="ingame_latency",
-                kind=FIELD_SWITCH,
-                title="Latency markers without the overlay",
-                subtitle="Adaptive paces on these markers.",
-                setter="set_game_ingame_latency",
-                value=False,
-                group=GROUP_IN_GAME,
-            ),
-            LauncherField(
                 key="prefix_command",
                 kind=FIELD_TEXT,
                 title="Command",
@@ -417,7 +406,7 @@ def test_a_game_shows_its_own_launchers_fields_and_no_others(qapp) -> None:
     assert _visible_fields(panel) == {"compat_tool", "launch_options"}
 
     panel._select_key("lutris:27")
-    assert _visible_fields(panel) == {"ingame_latency", "prefix_command"}
+    assert _visible_fields(panel) == {"prefix_command"}
 
 
 def test_each_field_is_filled_and_captioned_from_its_own_declaration(qapp) -> None:
@@ -954,10 +943,9 @@ def test_a_write_refreshes_the_field_it_changed_without_leaving_the_game(
 ) -> None:
     """The pane has to show what the launcher now holds, not what it held.
 
-    Toggling the latency opt-in rewrites the launch command while leaving
-    every list-visible fact alone, so nothing about the list changes -- and the
-    command field kept the pre-toggle value until the user clicked to another
-    game and back.
+    Toggling the overlay rewrites the launch command while the fake source's
+    list-visible facts stay unchanged, so the command field must still refresh
+    without making the user click to another game and back.
     """
     steam, lutris = _steam_and_lutris()
     panel = _panel(qapp, (steam, lutris))
@@ -965,12 +953,12 @@ def test_a_write_refreshes_the_field_it_changed_without_leaving_the_game(
     panel._select_key("lutris:27")
 
     # The launcher's next answer carries the token the toggle just added.
-    rewritten = "env PB_INGAME_LATENCY=1 gamemoderun"
+    rewritten = "PENGUIN_BURNER --pb-overlay=1 gamemoderun"
     lutris._fields = tuple(
         field if field.key != "prefix_command" else _with_field_value(field, rewritten)
         for field in lutris._fields
     )
-    panel._fields["ingame_latency"]["control"].setChecked(True)
+    panel.overlay_switch.setChecked(True)
 
     deadline = time.monotonic() + 1.0
     while panel._setting_thread is not None and time.monotonic() < deadline:

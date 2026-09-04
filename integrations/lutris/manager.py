@@ -22,6 +22,7 @@ from profiles.game_profile import (
     GAME_MODE_ADAPTIVE,
     GAME_MODE_DEFAULT,
     GAME_MODE_NONE,
+    game_mode_uses_latency_markers,
     normalize_game_mode,
     normalize_game_target_fps,
 )
@@ -173,10 +174,9 @@ class LutrisIntegrationManager:
     def set_game_prefix_command(self, game_id: str, text: str) -> ApplyResult:
         """Write the game's prefix_command exactly as the user typed it.
 
-        The toggles above write a line PenguinBurner composes; this writes one
-        the user composed, which is the only way to reach anything the tab does
-        not model -- `PB_INGAME_LATENCY=1` being the case that prompted it, since
-        markers otherwise follow the overlay switch.
+        The managed controls write a line PenguinBurner composes; this writes
+        one the user composed, preserving expert overrides that the form does
+        not model (for example forcing markers under a fixed tier).
 
         What lands is then read back *out of the line* rather than kept from the
         old setting: after a hand edit the file is the truth, and a stored
@@ -232,17 +232,6 @@ class LutrisIntegrationManager:
         )
         return ApplyResult(True, "", landed)
 
-    def set_game_ingame_latency(self, game_id: str, keep: bool) -> ApplyResult:
-        """Keep the latency markers with the overlay off.
-
-        Only reachable in that state: with the overlay on the launcher enables
-        the markers anyway, so the switch has nothing to add.
-        """
-        row = self.row(game_id)
-        if row is None:
-            return ApplyResult(False, "Unknown game.")
-        return self._sync_game(row, replace(row.setting, ingame_latency=bool(keep)))
-
     def set_game_target_fps(self, game_id: str, target_fps: float | None) -> ApplyResult:
         row = self.row(game_id)
         if row is None:
@@ -288,6 +277,12 @@ class LutrisIntegrationManager:
         so a config Lutris refused to keep never leaves a stored setting
         claiming otherwise.
         """
+        # Marker capture follows Adaptive automatically. It remains independent
+        # of overlay visibility: the overlay decides whether the HUD is drawn.
+        setting = replace(
+            setting,
+            ingame_latency=game_mode_uses_latency_markers(setting.mode),
+        )
         config_path = row.game.config_path
         if config_path is None:
             return ApplyResult(
@@ -351,10 +346,9 @@ class LutrisIntegrationManager:
             )
         else:
             # Disabled is a durable per-game choice, and so are the tier, GPU
-            # choice, FPS target and latency opt-in made alongside it: keep the
-            # record, as the Steam side does, so an off/on toggle does not
-            # silently reset a configured game to defaults. What lands as the
-            # "original" is the restored line itself.
+            # choice and FPS target: keep the record, as the Steam side does,
+            # so an off/on toggle does not silently reset a configured game to
+            # defaults. What lands as the "original" is the restored line.
             stored = replace(
                 setting,
                 original_prefix_command=wanted,

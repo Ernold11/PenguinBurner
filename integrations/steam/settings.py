@@ -33,10 +33,9 @@ class SteamGameSetting:
     enabled: bool = False
     mode: str = GAME_MODE_ADAPTIVE
     overlay: bool = False
-    #: Keep the Reflex marker stream when the overlay is off. With the overlay
-    #: on the wrapper already runs the markers, so this only says anything in
-    #: the other case -- which is the case Adaptive needs it for, since without
-    #: markers it cannot see the base frame rate under frame generation.
+    #: Launch-line read-back for marker capture. Managed writes derive this
+    #: from the mode: Adaptive enables it and fixed modes do not. Keeping the
+    #: field readable preserves old settings and exact raw-line parsing.
     ingame_latency: bool = False
     original_launch_options: str = ""
     injected_launch_options: str = ""

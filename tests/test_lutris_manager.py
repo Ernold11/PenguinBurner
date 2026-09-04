@@ -89,7 +89,7 @@ def test_enabling_wraps_the_game_and_records_the_original(tmp_path) -> None:
 
     assert result.ok is True
     prefix = _config(tmp_path)["system"]["prefix_command"]
-    assert prefix.startswith("PENGUIN_BURNER ")
+    assert prefix.startswith("env PB_INGAME_LATENCY=1 PENGUIN_BURNER ")
     assert "--pb-lutris-id=27" in prefix
     assert prefix.endswith("game-performance")
     stored = load_lutris_game_settings(tmp_path / "lutris-game-settings.json")["27"]
@@ -146,8 +146,8 @@ def test_disabling_restores_the_users_own_prefix(tmp_path) -> None:
 def test_disabling_keeps_the_users_choices_for_the_next_enable(tmp_path) -> None:
     """Off/on must round-trip, as it does on Steam.
 
-    Tier, GPU choice, FPS target and latency opt-in are decisions the user
-    made; deleting the record on disable silently reset a configured game to
+    Tier, GPU choice and FPS target are decisions the user made; deleting the
+    record on disable silently reset a configured game to
     Adaptive-with-no-GPU — which on a multi-GPU host means no profile applies
     at all after re-enabling.
     """
@@ -156,7 +156,6 @@ def test_disabling_keeps_the_users_choices_for_the_next_enable(tmp_path) -> None
     manager.set_game_mode("27", "balanced")
     manager.set_game_gpu("27", "GPU-abc")
     manager.set_game_target_fps("27", 90.0)
-    manager.set_game_ingame_latency("27", True)
 
     manager.set_game_enabled("27", False)
     manager.set_game_enabled("27", True)
@@ -166,7 +165,7 @@ def test_disabling_keeps_the_users_choices_for_the_next_enable(tmp_path) -> None
     assert stored.mode == "balanced"
     assert stored.gpu_uuid == "GPU-abc"
     assert stored.target_fps == 90.0
-    assert stored.ingame_latency is True
+    assert stored.ingame_latency is False  # fixed tiers need no hidden markers
 
 
 def test_disabling_a_game_that_had_no_prefix_removes_the_key(tmp_path) -> None:
@@ -231,6 +230,8 @@ def test_a_mode_change_is_stored(tmp_path) -> None:
 
     stored = load_lutris_game_settings(tmp_path / "lutris-game-settings.json")["27"]
     assert stored.mode == GAME_MODE_STOCK
+    assert stored.ingame_latency is False
+    assert "PB_INGAME_LATENCY" not in _config(tmp_path)["system"]["prefix_command"]
 
 
 def test_enabling_every_game_reports_how_many_changed(tmp_path) -> None:
@@ -335,7 +336,7 @@ def test_enabling_keeps_a_prefix_the_game_only_inherited(tmp_path) -> None:
     manager.set_game_enabled("27", True)
 
     written = _config(tmp_path)["system"]["prefix_command"]
-    assert written.startswith("PENGUIN_BURNER ")
+    assert written.startswith("env PB_INGAME_LATENCY=1 PENGUIN_BURNER ")
     assert written.endswith("game-performance")
 
 
@@ -388,12 +389,7 @@ def test_a_game_level_prefix_is_restored_on_disable(tmp_path) -> None:
 
 
 def test_a_hand_written_prefix_is_taken_verbatim(tmp_path) -> None:
-    """The toggles compose a line; this writes the one the user composed.
-
-    Needed because some settings the tab does not model are only reachable
-    through the field itself -- PB_INGAME_LATENCY=1 being the case that
-    prompted it, since the marker meter otherwise follows the overlay switch.
-    """
+    """The form composes a line; this preserves an expert's explicit line."""
     manager = _manager(tmp_path)
     manager.set_game_enabled("27", True)
 
@@ -436,12 +432,11 @@ def test_a_hand_edit_that_adds_the_overlay_flag_is_read_back(tmp_path) -> None:
     assert row.setting.overlay is True
 
 
-def test_a_hand_edit_under_overlay_keeps_the_latency_opt_in(tmp_path) -> None:
+def test_a_hand_edit_under_overlay_keeps_adaptive_markers_enabled(tmp_path) -> None:
     """Injection omits the latency token while the overlay is on, so a raw
     edit of such a line must not read its absence as the user opting out."""
     manager = _manager(tmp_path)
     manager.set_game_enabled("27", True)
-    manager.set_game_ingame_latency("27", True)
     manager.set_game_overlay("27", True)
 
     manager.set_game_prefix_command("27", "PENGUIN_BURNER --pb-overlay=1")
@@ -466,7 +461,7 @@ def test_a_hand_edit_that_removes_the_wrapper_keeps_the_choices(tmp_path) -> Non
     assert stored.target_fps == 90.0
 
 
-def test_the_latency_opt_in_leads_the_line(tmp_path) -> None:
+def test_adaptive_markers_lead_the_line_without_the_overlay(tmp_path) -> None:
     """It is an environment assignment for the wrapper, so it goes first.
 
     `env` introduces it because Lutris spawns prefix_command as a command list
@@ -474,8 +469,6 @@ def test_the_latency_opt_in_leads_the_line(tmp_path) -> None:
     """
     manager = _manager(tmp_path)
     manager.set_game_enabled("27", True)
-
-    manager.set_game_ingame_latency("27", True)
 
     prefix = _config(tmp_path)["system"]["prefix_command"]
     assert prefix.startswith("env PB_INGAME_LATENCY=1 PENGUIN_BURNER ")
@@ -487,7 +480,6 @@ def test_the_opt_in_is_not_written_when_the_overlay_already_implies_it(
 ) -> None:
     manager = _manager(tmp_path)
     manager.set_game_enabled("27", True)
-    manager.set_game_ingame_latency("27", True)
 
     manager.set_game_overlay("27", True)
 
@@ -502,7 +494,6 @@ def test_the_opt_in_is_not_written_when_the_overlay_already_implies_it(
 def test_disabling_the_game_takes_the_opt_in_with_it(tmp_path) -> None:
     manager = _manager(tmp_path)
     manager.set_game_enabled("27", True)
-    manager.set_game_ingame_latency("27", True)
 
     manager.set_game_enabled("27", False)
 

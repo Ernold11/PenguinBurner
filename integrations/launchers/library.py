@@ -79,8 +79,8 @@ class LauncherField:
 
     The adapter computes the whole descriptor for the selected game and the tab
     renders it. That is the whole reason a third launcher needs no GUI change:
-    a compatibility tool, a prefix command and a latency opt-in differ in their
-    label, their control and the method that writes them -- and in nothing else.
+    a compatibility tool, a prefix command and any future launcher-only option
+    differ in their label, control and write method -- and in nothing else.
 
     ``setter`` names a method on the launcher's own manager. Writes keep going
     there; this says which one, it does not do the writing.

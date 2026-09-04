@@ -56,23 +56,21 @@ before — or removes the key entirely if you had none.
 | **Adaptive target** | The base present-frame rate Adaptive aims for in this game. At its lowest position the game follows the system-wide target from the Adaptive window. |
 | **Graphics card** | Which GPU the profile applies to. Hidden on a single-GPU machine, which resolves it itself. |
 | **In-game overlay** | Whether the PenguinBurner overlay draws in this game. |
-| **Latency markers without overlay** | Keeps the marker meter running with the overlay off. Unavailable with the overlay on, where it is already running. |
 | **Command prefix** | The line as Lutris has it. Editable — press Enter to write it back. |
 
 Settings persist in `~/.config/PenguinBurner/lutris-game-settings.json`, keyed
 by Lutris game id. There is no account layer — unlike Steam, a Lutris library
 belongs to one user.
 
-## Latency markers without the overlay
+## Adaptive markers without the overlay
 
-The launcher turns the latency meter on together with the overlay, and Adaptive
-paces on the markers that meter produces. So switching the overlay off also
-stops the base-frame pacing — and under frame generation that is the difference
-between tuning against the frames the GPU produced and tuning against the rate
-you were shown, roughly double.
+Adaptive automatically keeps latency markers running when the overlay is off.
+This lets it pace against base rendered frames under frame generation without
+making the user coordinate a second switch. The only visible in-game setting is
+the overlay: it decides whether the HUD is drawn, not whether Adaptive receives
+the pacing signal it needs.
 
-**Latency markers without overlay** keeps them. On, it writes the opt-in at the
-front of the line:
+The Adaptive launch prefix carries the opt-in at the front of the line:
 
 ```
 env PB_INGAME_LATENCY=1 PENGUIN_BURNER --pb-overlay=0 --pb-lutris-id=27 game-performance
@@ -82,9 +80,9 @@ env PB_INGAME_LATENCY=1 PENGUIN_BURNER --pb-overlay=0 --pb-lutris-id=27 game-per
 no shell, where a bare `PB_INGAME_LATENCY=1` would be read as the program to
 run rather than as a variable.
 
-The switch is unavailable while the overlay is on, since the markers are
-already running then; the preference is remembered, so turning the overlay back
-off restores it rather than quietly dropping the markers.
+With the overlay on, the wrapper already enables markers and omits the redundant
+explicit assignment. Selecting a fixed tier or Stock removes headless marker
+capture; those modes do not adapt from live pacing.
 
 ## Editing the command prefix yourself
 

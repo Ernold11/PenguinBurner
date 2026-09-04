@@ -9,10 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from integrations.launchers.library import (
-    FIELD_SWITCH,
     FIELD_TEXT,
     GROUP_COMMAND,
-    GROUP_IN_GAME,
     LauncherBulkAction,
     LauncherField,
     LauncherWriteState,
@@ -77,39 +75,7 @@ class LutrisLibrarySource:
         row = game.detail
         if not isinstance(row, LutrisGameRow):
             return ()
-        return (self._latency_field(row), self._prefix_command_field(row))
-
-    @staticmethod
-    def _latency_field(row: LutrisGameRow) -> LauncherField:
-        """The markers Adaptive paces on, kept when the overlay is off.
-
-        Declared only here, but not because the wrapper treats Lutris
-        specially: it reads PB_INGAME_LATENCY straight out of the environment,
-        whoever put it there. Steam's manager simply has no setter for it yet,
-        and adding one is not a copy of this line -- Steam's tokens land where
-        %command% was, where an `env VAR=1` assignment breaks a
-        `gamescope -- %command%` launch. That is why the overlay opt-in rides
-        as --pb-overlay=N for Steam, and the latency one would need the same.
-        """
-        overlay_on = bool(getattr(row.setting, "overlay", False))
-        return LauncherField(
-            key="ingame_latency",
-            kind=FIELD_SWITCH,
-            title="Latency markers without the overlay",
-            subtitle=(
-                "Adaptive paces on these markers, and the launcher normally "
-                "starts them with the overlay. Keep them when the overlay is "
-                "off, or Adaptive loses base-frame pacing under frame generation."
-            ),
-            setter="set_game_ingame_latency",
-            # With the overlay on the launcher already runs the markers, so the
-            # switch has nothing left to add: show it on, out of reach.
-            value=True if overlay_on else bool(
-                getattr(row.setting, "ingame_latency", False)
-            ),
-            enabled=not overlay_on,
-            group=GROUP_IN_GAME,
-        )
+        return (self._prefix_command_field(row),)
 
     @staticmethod
     def _prefix_command_field(row: LutrisGameRow) -> LauncherField:

@@ -1506,9 +1506,9 @@ class GameLibraryPanel:
     # -- launcher-declared fields --------------------------------------------
     #
     # The tab draws these without knowing what they are. A compatibility tool,
-    # a prefix command and a latency opt-in differ in their label, their
-    # control and the manager method that writes them -- so those three things
-    # are what the launcher declares, and nothing here names a launcher.
+    # a prefix command and any future launcher-only option differ in their
+    # label, control and manager method -- so those are what the launcher
+    # declares, and nothing here names a launcher.
 
     def _sync_fields(self, game: LibraryGame | None) -> None:
         # An unsaved edit for this same game is the user's, not the model's:

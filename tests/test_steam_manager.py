@@ -292,7 +292,8 @@ def test_overlay_off_keeps_penguin_burner_wrapper_active(manager, tmp_path) -> N
 
     assert disabled.ok
     assert disabled.launch_options == (
-        "gamemoderun PENGUIN_BURNER --pb-overlay=0 %command%"
+        "gamemoderun PENGUIN_BURNER --pb-overlay=0 "
+        "--pb-ingame-latency=1 %command%"
     )
     stored = load_steam_game_settings(tmp_path / "steam-game-settings.json")
     setting = stored[ACCOUNT_ID][APP_ID]
@@ -357,12 +358,11 @@ def test_raw_edit_validates_and_syncs_setting(manager, tmp_path) -> None:
     assert stored[ACCOUNT_ID][APP_ID].overlay
 
 
-def test_raw_edit_under_overlay_keeps_the_latency_opt_in(manager, tmp_path) -> None:
+def test_raw_edit_under_overlay_keeps_adaptive_markers_enabled(manager, tmp_path) -> None:
     """Injection omits the latency flag while the overlay is on, so a raw edit
     of such a line must not read the flag's absence as the user opting out."""
     manager.refresh()
     manager.set_game_enabled(APP_ID, True)
-    manager.set_game_ingame_latency(APP_ID, True)
     manager.set_game_overlay(APP_ID, True)
 
     result = manager.set_raw_launch_options(
@@ -450,8 +450,11 @@ def test_write_falls_back_to_disk_when_steam_stopped(
     result = manager.set_game_enabled(APP_ID, True)
     assert result.ok and "config" in result.message
     assert verify_delays == [0.0]
-    assert "PENGUIN_BURNER --pb-overlay=0 %command%" in localconfig.read_text(
-        encoding="utf-8"
+    assert (
+        "PENGUIN_BURNER --pb-overlay=0 --pb-ingame-latency=1 %command%"
+        in localconfig.read_text(
+            encoding="utf-8"
+        )
     )
 
 

@@ -67,7 +67,9 @@ The per-game editor exposes:
   have this selector disabled and visibly grayed out.
 - **Auto-UV mode** — one of:
   - **Adaptive** — starts from your newest profile and switches between saved
-    tiers using live present-frame pacing (see below).
+    tiers using live present-frame pacing (see below). Adaptive automatically
+    keeps latency markers active when the overlay is hidden, so frame generation
+    does not make it pace against generated presents.
   - **Efficiency / Balanced / Performance** — pin one saved tier for this game.
   - **Stock (factory GPU state)** — run this game at the factory curve while your
     system-wide profile stays tuned.
@@ -76,14 +78,8 @@ The per-game editor exposes:
   demote toward more efficiency. This is **per game**, so a 60 Hz story game and a
   144 Hz competitive shooter each get their own target.
 - **Enable In-Game overlay** — the live readout (latency, pre-frame-gen FPS,
-  clocks, power, tier) for this game.
-- **Latency markers without the overlay** — keeps the Reflex marker stream when
-  the overlay is off. The wrapper starts those markers with the overlay, so this
-  row only says anything when the overlay is off — and that is the case that
-  matters for frame generation: without markers PenguinBurner sees presented
-  frames, and a generated frame is not a frame Adaptive can pace on. It is shown
-  on and out of reach while the overlay is on, because the overlay already
-  implies it.
+  clocks, power, tier) for this game. This controls only HUD visibility;
+  Adaptive's required marker capture remains automatic in the background.
 
 The tuning and overlay controls stay grayed out until the game's PenguinBurner
 toggle is on. The compatibility selector is independent of that toggle; it is

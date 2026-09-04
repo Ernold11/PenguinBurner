@@ -36,10 +36,9 @@ class LutrisGameSetting:
     enabled: bool = False
     mode: str = GAME_MODE_ADAPTIVE
     overlay: bool = False
-    # Keep the latency markers when the overlay is off. Only meaningful then:
-    # with the overlay on the launcher enables them anyway, and Adaptive paces
-    # on those markers, so switching the overlay off would otherwise cost it
-    # base-frame pacing without saying so.
+    # Launch-line read-back for marker capture. Managed writes derive this from
+    # the mode: Adaptive enables it and fixed modes do not. The stored field
+    # keeps old settings and exact raw-prefix parsing compatible.
     ingame_latency: bool = False
     # prefix_command as it stood before injection, and as we last wrote it.
     original_prefix_command: str = ""

@@ -85,6 +85,16 @@ def normalize_game_target_fps(value: object | None) -> float | None:
     return fps
 
 
+def game_mode_uses_latency_markers(mode: object | None) -> bool:
+    """Whether a managed game mode needs hidden marker capture.
+
+    Adaptive consumes base-frame pacing, especially to avoid treating frame-
+    generated presents as work the GPU rendered. Fixed tiers and Stock do not
+    adapt from that signal, so without the overlay they do not need markers.
+    """
+    return normalize_game_mode(mode) == GAME_MODE_ADAPTIVE
+
+
 def profile_argv_for_setting(
     setting: GameProfileSetting,
     *,
