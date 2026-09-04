@@ -670,12 +670,15 @@ class SteamIntegrationManager:
         user = self.active_user()
         if user is None:
             return ApplyResult(False, "No Steam account found")
-        # Default verify delay: catches Steam clobbering the file from memory
-        # when a shutdown was still flushing while pgrep already saw it gone.
+        # Steam was checked immediately above and is not running. Read the
+        # file back, but do not impose the generic delayed-clobber watch: an
+        # absent client has nothing left to flush and every toggle otherwise
+        # pays that fixed latency.
         result = rewrite_launch_options(
             app_id=app_id,
             launch_options=value,
             config_paths=[user.localconfig_path],
+            verify_delay_s=0.0,
         )
         if not result.persisted:
             return ApplyResult(False, "Failed to write localconfig.vdf")

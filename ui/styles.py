@@ -54,24 +54,6 @@ QLabel#gpuNvmlInfo {{
 /* One library tab now holds every launcher, so these names carry no launcher
    in them. The Steam block below is the old per-launcher panel's and goes
    when that panel does. */
-QLabel#gameStateBadge {{
-    border: 1px solid {theme.BORDER_STRONG};
-    border-radius: 11px;
-    color: {theme.TEXT_MUTED};
-    font-size: 11px;
-    font-weight: 700;
-    padding: 3px 12px;
-}}
-QLabel#gameStateBadge[state="on"] {{
-    background: {theme.ROW_GOOD_BG};
-    border-color: {theme.GOOD};
-    color: {theme.GOOD_BRIGHT};
-}}
-QLabel#gameStateBadge[state="off"] {{
-    background: {theme.SURFACE_BG};
-    border-color: {theme.BORDER};
-    color: {theme.TEXT_DISABLED};
-}}
 /* No alternating bands: a rounded hover and selection, as both old library
    tabs drew their rows. */
 QListWidget#gameList {{

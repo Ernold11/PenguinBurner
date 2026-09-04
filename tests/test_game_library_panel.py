@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -29,7 +31,6 @@ from ui.components.game_library_panel import (
     library_header_text,
     library_placeholder,
     library_status_text,
-    state_badge,
 )
 from ui.qt import import_qt
 
@@ -322,14 +323,6 @@ def test_the_status_line_counts_across_launchers() -> None:
     assert library_status_text(games, "saved") == "2 games · 1 configured · saved"
 
 
-def test_the_badge_says_only_whether_we_touch_the_game() -> None:
-    assert state_badge(_game("steam", "1", "A", enabled=True)) == (
-        "PenguinBurner on",
-        "on",
-    )
-    assert state_badge(_game("steam", "1", "A")) == ("Not wrapped", "off")
-
-
 # -- the panel -------------------------------------------------------------
 
 
@@ -498,6 +491,125 @@ def test_the_settings_groups_keep_their_order(qapp) -> None:
     ]
 
     assert headings == ["PenguinBurner", "Tuning", "In game", "Launch command"]
+
+
+def test_wrap_state_is_shown_only_by_the_wrap_toggle(qapp) -> None:
+    panel = _panel(qapp, _steam_and_lutris())
+    panel.ensure_scanned()
+
+    panel._select_key("steam:620")
+
+    assert panel.enable_switch.objectName() == "gameEnable"
+    assert panel.enable_switch.isChecked()
+    assert not panel.widget.findChildren(
+        panel.QtWidgets.QLabel,
+        "gameStateBadge",
+    )
+
+
+def test_a_slow_wrap_write_keeps_the_toggle_visually_live(qapp) -> None:
+    """Steam's offline verification must not grey out the switch animation."""
+    from dataclasses import replace
+
+    steam, lutris = _steam_and_lutris()
+    started = threading.Event()
+    release = threading.Event()
+    gui_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    original = steam._games[0]
+
+    def slow_write(game_id, enabled):
+        worker_threads.append(threading.get_ident())
+        started.set()
+        assert release.wait(2.0)
+        steam.manager.calls.append(("set_game_enabled", game_id, enabled))
+        steam._games = (replace(original, enabled=enabled),)
+        return SimpleNamespace(ok=True, message="saved")
+
+    steam.manager.set_game_enabled = slow_write
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("steam:620")
+
+    before = time.monotonic()
+    panel.enable_switch.click()
+    elapsed = time.monotonic() - before
+
+    assert started.wait(0.5)
+    assert elapsed < 0.2
+    assert panel.enable_switch.isChecked() is False
+    assert panel.enable_switch.isEnabled() is True
+    assert panel.game_list.isEnabled() is True
+    assert panel._form_widget.isEnabled() is False
+    painted: list[bool] = []
+    panel.QtCore.QTimer.singleShot(
+        0, lambda: painted.append(panel.enable_switch.isChecked())
+    )
+    qapp.processEvents()
+    assert painted == [False]
+
+    release.set()
+    deadline = time.monotonic() + 2.0
+    while panel._setting_thread is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
+
+    assert panel._setting_thread is None
+    assert worker_threads and worker_threads != [gui_thread]
+    assert steam.manager.calls == [("set_game_enabled", "620", False)]
+    assert panel.enable_switch.isChecked() is False
+    assert panel.enable_switch.isEnabled() is True
+
+
+def test_a_second_wrap_click_is_queued_while_the_first_write_finishes(qapp) -> None:
+    """A quick reversal stays visible and its final value reaches the manager."""
+    from dataclasses import replace
+
+    steam, lutris = _steam_and_lutris()
+    started = threading.Event()
+    release = threading.Event()
+    original = steam._games[0]
+
+    def slow_write(game_id, enabled):
+        started.set()
+        assert release.wait(2.0)
+        steam.manager.calls.append(("set_game_enabled", game_id, enabled))
+        steam._games = (replace(original, enabled=enabled),)
+        return SimpleNamespace(ok=True, message="saved")
+
+    steam.manager.set_game_enabled = slow_write
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("steam:620")
+
+    panel.enable_switch.click()
+    assert started.wait(0.5)
+    assert panel.enable_switch.isChecked() is False
+    assert panel.enable_switch.isEnabled() is True
+    assert panel._form_widget.isEnabled() is False
+
+    panel.enable_switch.click()
+    assert panel.enable_switch.isChecked() is True
+    assert panel._form_widget.isEnabled() is True
+    assert len(panel._setting_queue) == 1
+
+    release.set()
+    deadline = time.monotonic() + 2.0
+    while panel._setting_thread is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
+
+    assert panel._setting_thread is None
+    assert panel._setting_queue == []
+    assert steam.manager.calls == [
+        ("set_game_enabled", "620", False),
+        ("set_game_enabled", "620", True),
+    ]
+    assert panel.enable_switch.isChecked() is True
+    assert panel.enable_switch.isEnabled() is True
+    assert panel._form_widget.isEnabled() is True
 
 
 # -- launching -------------------------------------------------------------
@@ -859,6 +971,12 @@ def test_a_write_refreshes_the_field_it_changed_without_leaving_the_game(
         for field in lutris._fields
     )
     panel._fields["ingame_latency"]["control"].setChecked(True)
+
+    deadline = time.monotonic() + 1.0
+    while panel._setting_thread is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
 
     assert panel._fields["prefix_command"]["control"].text() == rewritten
 

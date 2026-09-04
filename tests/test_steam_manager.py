@@ -415,6 +415,18 @@ def test_write_falls_back_to_disk_when_steam_stopped(
     manager.refresh()
     _FakeCdpClient.fail = True
     monkeypatch.setattr(manager_module, "steam_running", lambda: False)
+    real_rewrite = manager_module.rewrite_launch_options
+    verify_delays: list[float] = []
+
+    def rewrite_without_stopped_client_delay(**kwargs):
+        verify_delays.append(kwargs["verify_delay_s"])
+        return real_rewrite(**kwargs)
+
+    monkeypatch.setattr(
+        manager_module,
+        "rewrite_launch_options",
+        rewrite_without_stopped_client_delay,
+    )
     localconfig = (
         steam_home
         / ".local"
@@ -437,6 +449,7 @@ def test_write_falls_back_to_disk_when_steam_stopped(
     )
     result = manager.set_game_enabled(APP_ID, True)
     assert result.ok and "config" in result.message
+    assert verify_delays == [0.0]
     assert "PENGUIN_BURNER --pb-overlay=0 %command%" in localconfig.read_text(
         encoding="utf-8"
     )

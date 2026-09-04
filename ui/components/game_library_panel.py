@@ -105,6 +105,25 @@ class _TrackedGame:
     misses: int = 0  # consecutive polls that did not see the session
 
 
+@dataclass
+class _SettingWriteOutcome:
+    """Worker result handed back to the Qt thread."""
+
+    game: LibraryGame
+    result: Any | None = None
+    refresh_problem: str = ""
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class _SettingWriteRequest:
+    """One optimistic control change waiting for its launcher write."""
+
+    game: LibraryGame
+    method: str
+    args: tuple[Any, ...]
+
+
 def no_launchers_text(names=None) -> str:
     """The empty state names what was looked for, without hard-coding it here.
 
@@ -142,18 +161,6 @@ def game_metadata_text(game: LibraryGame) -> str:
     if game.playtime_hours:
         parts.append(f"{game.playtime_hours:.1f} h played")
     return " · ".join(part for part in parts if part)
-
-
-def state_badge(game: LibraryGame) -> tuple[str, str]:
-    """Short state for the hero badge, and the style key that colours it.
-
-    Two words, not a summary: the rows below already state the mode, the target
-    and the overlay. What they cannot say at a glance is whether PenguinBurner
-    touches this game at all. Pure.
-    """
-    if game.enabled:
-        return "PenguinBurner on", "on"
-    return "Not wrapped", "off"
 
 
 def game_tooltip(game: LibraryGame) -> str:
@@ -272,6 +279,10 @@ class GameLibraryPanel:
         self._scan_result: tuple | None = None
         self._action_thread: threading.Thread | None = None
         self._action_result: Any = None
+        self._setting_thread: threading.Thread | None = None
+        self._setting_result: _SettingWriteOutcome | None = None
+        self._setting_queue: list[_SettingWriteRequest] = []
+        self._write_busy = False
         self._tracked: dict[str, _TrackedGame] = {}
         self._poll_thread: threading.Thread | None = None
         self._poll_result: dict[str, frozenset[str] | None] = {}
@@ -455,10 +466,6 @@ class GameLibraryPanel:
         self.play_button.setProperty("playState", "idle")
         self.play_button.clicked.connect(self._play_stop_clicked)
         hero.addWidget(self.play_button, 0, self.QtCore.Qt.AlignTop)
-        self.badge_label = self.QtWidgets.QLabel("")
-        self.badge_label.setObjectName("gameStateBadge")
-        self.badge_label.setProperty("state", "off")
-        hero.addWidget(self.badge_label, 0, self.QtCore.Qt.AlignTop)
         page.addLayout(hero)
 
         # -- group: PenguinBurner ---------------------------------------------
@@ -696,6 +703,8 @@ class GameLibraryPanel:
         ``quiet`` is the timer's pass: no status chatter, and the list is left
         alone unless something in it actually changed.
         """
+        if self._write_busy:
+            return
         if quiet:
             # The timer must neither steal nor force-save a half-typed edit;
             # it simply comes back in ten seconds.
@@ -853,13 +862,17 @@ class GameLibraryPanel:
         # launcher-declared fields: a live wrap switch in front of a launcher
         # that will refuse the write is an animation followed by a snap-back.
         self.enable_switch.setEnabled(game is not None and self._writable)
-        self._set_gated(bool(game is not None and game.enabled) and self._writable)
+        self._set_gated(
+            bool(game is not None and game.enabled) and self._writable
+        )
         for widgets in self._fields.values():
             self._apply_field_enabled(widgets)
         self._sync_status()
 
     def _run_write_action(self) -> None:
         """Do whatever the launcher offered to do about its own write state."""
+        if self._write_busy:
+            return
         state = self._write_state
         source = self._write_state_source
         if state is None or source is None or not state.action:
@@ -1072,7 +1085,6 @@ class GameLibraryPanel:
             if game is None:
                 self.title_label.setText("Select a game")
                 self.metadata_label.setText("")
-                self.badge_label.setText("")
                 self.play_button.setVisible(False)
                 self._set_gated(False)
                 self.enable_switch.setEnabled(False)
@@ -1107,14 +1119,6 @@ class GameLibraryPanel:
 
             self._sync_adaptive_availability(getattr(setting, "gpu_uuid", "") or "")
             self._sync_play_button(game)
-
-            label, state = state_badge(game)
-            self.badge_label.setText(label)
-            self.badge_label.setProperty("state", state)
-            # Qt caches the resolved style per property set, so a dynamic
-            # property that drives a selector needs the polish re-run.
-            self.badge_label.style().unpolish(self.badge_label)
-            self.badge_label.style().polish(self.badge_label)
         finally:
             self._syncing = False
 
@@ -1191,6 +1195,140 @@ class GameLibraryPanel:
         self._after_write(game.launcher, result)
         return True
 
+    def _write_async(self, game: LibraryGame | None, method: str, *args) -> bool:
+        """Run a discrete setting write without blocking Qt's event loop.
+
+        A launcher write can include filesystem verification or a live-client
+        round trip. Doing either in a toggle callback leaves Qt unable to paint
+        the new switch position. Switches and choices come through here; typed
+        commands keep their synchronous save-boundary contract so a refused
+        edit can remain in the field that owns it.
+        """
+        if game is None:
+            return True
+        manager = self._manager_for(game.launcher)
+        setter = getattr(manager, method, None)
+        if setter is None:
+            return True
+        request = _SettingWriteRequest(
+            game=game,
+            method=method,
+            args=tuple(args),
+        )
+        if self._write_busy:
+            # Controls stay live while the launcher finishes its previous
+            # write. Keep their latest intent and serialize manager access;
+            # replacing an older queued value prevents a quick off/on/off
+            # gesture from replaying every intermediate position.
+            key = (game.launcher, game.game_id, method)
+            for index, queued in enumerate(self._setting_queue):
+                queued_key = (
+                    queued.game.launcher,
+                    queued.game.game_id,
+                    queued.method,
+                )
+                if queued_key == key:
+                    self._setting_queue[index] = request
+                    break
+            else:
+                self._setting_queue.append(request)
+            self._sync_status(f"{game.name}: saving…")
+            return True
+        self._start_setting_write(request)
+        return True
+
+    def _start_setting_write(self, request: _SettingWriteRequest) -> None:
+        """Start one queued write; completion is always collected by Qt."""
+        game = request.game
+        manager = self._manager_for(game.launcher)
+        setter = getattr(manager, request.method, None)
+        if setter is None:
+            self._setting_thread = None
+            self._setting_result = _SettingWriteOutcome(game=game)
+            self.QtCore.QTimer.singleShot(0, self._collect_setting_write)
+            return
+        source = self._by_launcher.get(game.launcher)
+        self._setting_result = None
+        self._set_write_busy(True)
+        self._sync_status(f"{game.name}: saving…")
+
+        def run() -> None:
+            try:
+                result = setter(game.game_id, *request.args)
+                problem = ""
+                if bool(getattr(result, "ok", True)) and source is not None:
+                    problem = self._refresh_source(source, deep=False)
+                self._setting_result = _SettingWriteOutcome(
+                    game=game,
+                    result=result,
+                    refresh_problem=problem,
+                )
+            except Exception as error:  # noqa: BLE001 - launcher boundary
+                self._setting_result = _SettingWriteOutcome(
+                    game=game,
+                    error=f"{type(error).__name__}: {error}",
+                )
+
+        self._setting_thread = threading.Thread(target=run, daemon=True)
+        self._setting_thread.start()
+        # Never join here, even briefly: ToggleSwitch starts its 130 ms
+        # animation in the same signal delivery, and Qt needs this callback to
+        # return before it can paint the first frame.
+        self.QtCore.QTimer.singleShot(0, self._collect_setting_write)
+
+    def _set_write_busy(self, busy: bool) -> None:
+        """Gate structural actions that could race the launcher worker.
+
+        Setting controls deliberately remain live. Their writes are queued by
+        ``_write_async``, while greying a switch here hid its checked colour
+        until Steam's verification delay ended.
+        """
+        self._write_busy = bool(busy)
+        interactive = not self._write_busy
+        self.rescan_button.setEnabled(interactive)
+        self.all_games_button.setEnabled(interactive and bool(self._games))
+        self.write_action_button.setEnabled(interactive)
+        if not interactive:
+            self.play_button.setEnabled(False)
+
+    def _collect_setting_write(self) -> None:
+        """Finish a launcher write on the Qt thread."""
+        thread = self._setting_thread
+        if thread is not None and thread.is_alive():
+            self.QtCore.QTimer.singleShot(100, self._collect_setting_write)
+            return
+        outcome = self._setting_result
+        self._setting_thread = None
+        self._setting_result = None
+        if self._setting_queue:
+            # Do not refill the pane between queued optimistic changes: doing
+            # so would visibly rewind a switch to the first persisted value
+            # before the user's latest value is written.
+            request = self._setting_queue.pop(0)
+            self._start_setting_write(request)
+            return
+        self._set_write_busy(False)
+        if outcome is None:
+            self._sync_selection(self._selected_game())
+            self._sync_status("Setting write returned no result.")
+            return
+        if outcome.error:
+            self._sync_selection(self._selected_game())
+            self._sync_status(f"{outcome.game.name}: save failed ({outcome.error})")
+            return
+        result = outcome.result
+        if not bool(getattr(result, "ok", True)):
+            # The optimistic control position did not land. Refill it from the
+            # unchanged launcher state, now that this is back on the Qt thread.
+            self._sync_selection(self._selected_game())
+            self._sync_status(str(getattr(result, "message", "") or ""))
+            return
+        self._reload_games()
+        self._sync_selection(self._selected_game())
+        self._sync_status(
+            outcome.refresh_problem or str(getattr(result, "message", "") or "")
+        )
+
     def _after_write(self, launcher: str, result) -> None:
         source = self._by_launcher.get(launcher)
         # The cheap pass: the write already updated the manager's own caches,
@@ -1213,24 +1351,28 @@ class GameLibraryPanel:
     def _on_enabled(self, enabled: bool) -> None:
         if self._syncing:
             return
-        self._write(self._selected_game(), "set_game_enabled", bool(enabled))
+        # Mirror the optimistic switch immediately. In particular, turning
+        # wrapping on should reveal live tuning controls now, not after
+        # Steam's offline verification pause.
+        self._set_gated(bool(enabled) and self._writable)
+        self._write_async(self._selected_game(), "set_game_enabled", bool(enabled))
 
     def _on_mode_changed(self) -> None:
         if self._syncing:
             return
         mode = str(self.mode_combo.currentData() or GAME_MODE_ADAPTIVE)
-        self._write(self._selected_game(), "set_game_mode", mode)
+        self._write_async(self._selected_game(), "set_game_mode", mode)
 
     def _on_per_game_target_toggled(self, per_game: bool) -> None:
         if self._syncing:
             return
         target = float(self.target_fps_spin.value()) if per_game else None
-        self._write(self._selected_game(), "set_game_target_fps", target)
+        self._write_async(self._selected_game(), "set_game_target_fps", target)
 
     def _on_target_fps_changed(self) -> None:
         if self._syncing or not self.per_game_target_switch.isChecked():
             return
-        self._write(
+        self._write_async(
             self._selected_game(),
             "set_game_target_fps",
             float(self.target_fps_spin.value()),
@@ -1239,7 +1381,7 @@ class GameLibraryPanel:
     def _on_gpu_changed(self) -> None:
         if self._syncing:
             return
-        self._write(
+        self._write_async(
             self._selected_game(),
             "set_game_gpu",
             str(self.gpu_combo.currentData() or ""),
@@ -1248,7 +1390,9 @@ class GameLibraryPanel:
     def _on_overlay(self, overlay: bool) -> None:
         if self._syncing:
             return
-        self._write(self._selected_game(), "set_game_overlay", bool(overlay))
+        self._write_async(
+            self._selected_game(), "set_game_overlay", bool(overlay)
+        )
 
     # -- library-wide actions -------------------------------------------------
 
@@ -1307,6 +1451,8 @@ class GameLibraryPanel:
         return ids
 
     def _bulk_apply(self, action, sources) -> None:
+        if self._write_busy:
+            return
         if not self._flush_pending_field_edit():
             return
         ids = self._bulk_ids(action, sources)
@@ -1526,7 +1672,8 @@ class GameLibraryPanel:
     def _apply_field_enabled(self, widgets: dict[str, Any]) -> None:
         """Two vetoes, both real: the launcher's own, and the tab's write gate."""
         widgets["control"].setEnabled(
-            bool(widgets.get("launcher_enabled", True)) and self._writable
+            bool(widgets.get("launcher_enabled", True))
+            and self._writable
         )
 
     @staticmethod
@@ -1569,7 +1716,7 @@ class GameLibraryPanel:
     def _on_field_toggled(self, key: str, checked: bool) -> None:
         if self._syncing:
             return
-        self._write_field(key, bool(checked))
+        self._write_field_async(key, bool(checked))
 
     def _on_field_chosen(self, key: str) -> None:
         if self._syncing:
@@ -1577,7 +1724,7 @@ class GameLibraryPanel:
         widgets = self._fields.get(key)
         if widgets is None:
             return
-        self._write_field(key, widgets["control"].currentData())
+        self._write_field_async(key, widgets["control"].currentData())
 
     def _on_field_typed(self, key: str) -> None:
         """Mark the edit pending; it saves at a boundary, never mid-keystroke.
@@ -1636,6 +1783,14 @@ class GameLibraryPanel:
         if widgets is None or game is None or not widgets.get("setter"):
             return True
         return self._write(game, str(widgets["setter"]), value)
+
+    def _write_field_async(self, key: str, value) -> bool:
+        """Asynchronous counterpart for launcher switches and choices."""
+        widgets = self._fields.get(key)
+        game = self._game_for_key(self._field_owner)
+        if widgets is None or game is None or not widgets.get("setter"):
+            return True
+        return self._write_async(game, str(widgets["setter"]), value)
 
     # -- launch lifecycle ----------------------------------------------------
     #
