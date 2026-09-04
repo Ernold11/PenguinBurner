@@ -113,6 +113,7 @@ class _SettingWriteOutcome:
 
     game: LibraryGame
     result: Any | None = None
+    followup: Any | None = None
     refresh_problem: str = ""
     error: str = ""
 
@@ -124,6 +125,12 @@ class _SettingWriteRequest:
     game: LibraryGame
     method: str
     args: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class _BulkWriteResult:
+    ok: bool
+    message: str
 
 
 def no_launchers_text(names=None) -> str:
@@ -284,7 +291,10 @@ class GameLibraryPanel:
         self._setting_thread: threading.Thread | None = None
         self._setting_result: _SettingWriteOutcome | None = None
         self._setting_queue: list[_SettingWriteRequest] = []
+        self._write_problems: list[str] = []
         self._write_busy = False
+        self._stop_thread: threading.Thread | None = None
+        self._stop_result: tuple[bool, str] | None = None
         self._tracked: dict[str, _TrackedGame] = {}
         self._poll_thread: threading.Thread | None = None
         self._poll_result: dict[str, frozenset[str] | None] = {}
@@ -567,7 +577,8 @@ class GameLibraryPanel:
         self._gpu_row = preference_row(
             QtWidgets=self.QtWidgets,
             QtCore=self.QtCore,
-            rows_layout=tuning_rows,
+            # GPU selection must be available before enabling the wrapper.
+            rows_layout=rows,
             title="Graphics card",
             subtitle="Which GPU this game's profile applies to.",
             control=self.gpu_combo,
@@ -874,6 +885,7 @@ class GameLibraryPanel:
         # launcher-declared fields: a live wrap switch in front of a launcher
         # that will refuse the write is an animation followed by a snap-back.
         self.enable_switch.setEnabled(game is not None and self._writable)
+        self.gpu_combo.setEnabled(game is not None and self._writable)
         self._set_gated(
             bool(game is not None and game.enabled) and self._writable
         )
@@ -1189,6 +1201,9 @@ class GameLibraryPanel:
         """
         if game is None:
             return True
+        if self._write_busy:
+            self._sync_status("Wait for the current save before editing commands.")
+            return False
         manager = self._manager_for(game.launcher)
         setter = getattr(manager, method, None)
         if setter is None:
@@ -1267,12 +1282,21 @@ class GameLibraryPanel:
         def run() -> None:
             try:
                 result = setter(game.game_id, *request.args)
+                followup = None
                 problem = ""
                 if bool(getattr(result, "ok", True)) and source is not None:
-                    problem = self._refresh_source(source, deep=False)
+                    after_write = getattr(source, "after_setting_write", None)
+                    if callable(after_write):
+                        try:
+                            followup = after_write(game.game_id, request.method)
+                        except Exception as error:  # noqa: BLE001 - live update boundary
+                            problem = f"Setting saved; live update failed ({error})."
+                    refresh_problem = self._refresh_source(source, deep=False)
+                    problem = "; ".join(part for part in (problem, refresh_problem) if part)
                 self._setting_result = _SettingWriteOutcome(
                     game=game,
                     result=result,
+                    followup=followup,
                     refresh_problem=problem,
                 )
             except Exception as error:  # noqa: BLE001 - launcher boundary
@@ -1300,6 +1324,8 @@ class GameLibraryPanel:
         self.rescan_button.setEnabled(interactive)
         self.all_games_button.setEnabled(interactive and bool(self._games))
         self.write_action_button.setEnabled(interactive)
+        for widgets in self._fields.values():
+            self._apply_field_enabled(widgets)
         if not interactive:
             self.play_button.setEnabled(False)
 
@@ -1312,6 +1338,17 @@ class GameLibraryPanel:
         outcome = self._setting_result
         self._setting_thread = None
         self._setting_result = None
+        if outcome is not None:
+            if outcome.error:
+                self._write_problems.append(
+                    f"{outcome.game.name}: save failed ({outcome.error})"
+                )
+            elif not bool(getattr(outcome.result, "ok", True)):
+                self._write_problems.append(str(getattr(outcome.result, "message", "")))
+            if outcome.refresh_problem:
+                self._write_problems.append(outcome.refresh_problem)
+            if not bool(getattr(outcome.followup, "ok", True)):
+                self._write_problems.append(str(getattr(outcome.followup, "message", "")))
         if self._setting_queue:
             # Do not refill the pane between queued optimistic changes: doing
             # so would visibly rewind a switch to the first persisted value
@@ -1320,25 +1357,19 @@ class GameLibraryPanel:
             self._start_setting_write(request)
             return
         self._set_write_busy(False)
+        problems = "; ".join(self._write_problems)
+        self._write_problems.clear()
         if outcome is None:
             self._sync_selection(self._selected_game())
             self._sync_status("Setting write returned no result.")
             return
-        if outcome.error:
-            self._sync_selection(self._selected_game())
-            self._sync_status(f"{outcome.game.name}: save failed ({outcome.error})")
-            return
         result = outcome.result
-        if not bool(getattr(result, "ok", True)):
-            # The optimistic control position did not land. Refill it from the
-            # unchanged launcher state, now that this is back on the Qt thread.
-            self._sync_selection(self._selected_game())
-            self._sync_status(str(getattr(result, "message", "") or ""))
-            return
         self._reload_games()
         self._sync_selection(self._selected_game())
         self._sync_status(
-            outcome.refresh_problem or str(getattr(result, "message", "") or "")
+            problems
+            or str(getattr(outcome.followup, "message", "") or "")
+            or str(getattr(result, "message", "") or "")
         )
 
     def _after_write(self, launcher: str, result) -> None:
@@ -1362,6 +1393,19 @@ class GameLibraryPanel:
 
     def _on_enabled(self, enabled: bool) -> None:
         if self._syncing:
+            return
+        if (
+            enabled
+            and len(self._gpu_choices) >= 2
+            and not str(self.gpu_combo.currentData() or "").strip()
+        ):
+            signals_were_blocked = self.enable_switch.blockSignals(True)
+            try:
+                self.enable_switch.setChecked(False)
+            finally:
+                self.enable_switch.blockSignals(signals_were_blocked)
+            self._set_gated(False)
+            self._sync_status("Choose a Game GPU before enabling PenguinBurner.")
             return
         # Mirror the optimistic switch immediately. In particular, turning
         # wrapping on should reveal live tuning controls now, not after
@@ -1489,18 +1533,41 @@ class GameLibraryPanel:
             )
             if not self._confirm("All games", text):
                 return
-        message = ""
-        for source in sources:
-            entries = ids.get(source.launcher_id) or []
-            if not entries:
-                continue
-            setter = getattr(getattr(source, "manager", None), action.setter, None)
-            if setter is None:
-                continue
-            result = setter(entries, action.value)
-            message = str(getattr(result, "message", "") or "") or message
-        self.rescan()
-        self._sync_status(message)
+        game = self._bulk_scope(action, sources)[0]
+        self._setting_result = None
+        self._set_write_busy(True)
+        self._sync_status(f"Saving changes for {count} games…")
+
+        def run() -> None:
+            messages: list[str] = []
+            ok = True
+            for source in sources:
+                entries = ids.get(source.launcher_id) or []
+                if not entries:
+                    continue
+                setter = getattr(getattr(source, "manager", None), action.setter, None)
+                if setter is None:
+                    continue
+                try:
+                    result = setter(entries, action.value)
+                    ok = bool(getattr(result, "ok", True)) and ok
+                    message = str(getattr(result, "message", "") or "")
+                    if message:
+                        messages.append(f"{source.launcher_id}: {message}")
+                except Exception as error:  # noqa: BLE001 - launcher boundary
+                    ok = False
+                    messages.append(f"{source.launcher_id}: {type(error).__name__}: {error}")
+                problem = self._refresh_source(source, deep=False)
+                if problem:
+                    ok = False
+                    messages.append(problem)
+            self._setting_result = _SettingWriteOutcome(
+                game=game, result=_BulkWriteResult(ok, "; ".join(messages))
+            )
+
+        self._setting_thread = threading.Thread(target=run, daemon=True)
+        self._setting_thread.start()
+        self.QtCore.QTimer.singleShot(0, self._collect_setting_write)
 
     def _needs_gpu_choice(self, games) -> bool:
         """Enabling games at once needs each of them to have a card first.
@@ -1686,6 +1753,7 @@ class GameLibraryPanel:
         widgets["control"].setEnabled(
             bool(widgets.get("launcher_enabled", True))
             and self._writable
+            and not (self._write_busy and widgets["kind"] in (FIELD_TEXT, FIELD_MULTILINE))
         )
 
     @staticmethod
@@ -1862,7 +1930,9 @@ class GameLibraryPanel:
         else:
             text, enabled, play_state = "Play", True, "idle"
         self.play_button.setText(text)
-        self.play_button.setEnabled(enabled)
+        self.play_button.setEnabled(
+            enabled and not self._write_busy and self._stop_thread is None
+        )
         self.play_button.setToolTip(
             wrapped_tooltip(
                 f"{blocking} is still running. Stop it before launching another game."
@@ -1899,11 +1969,36 @@ class GameLibraryPanel:
 
     def _stop_game(self, game: LibraryGame) -> None:
         source = self._by_launcher.get(game.launcher)
-        if source is None:
+        if source is None or self._stop_thread is not None:
             return
-        stopped, message = source.stop(game.game_id)
-        if stopped:
-            self._set_game_state(game_key(game), "stopping")
+        key = game_key(game)
+        previous = self._tracked_state(key)
+        self._stop_result = None
+
+        def run() -> None:
+            try:
+                self._stop_result = source.stop(game.game_id)
+            except Exception as error:  # noqa: BLE001 - launcher boundary
+                self._stop_result = (False, f"Stop failed ({type(error).__name__}: {error})")
+
+        self._stop_thread = threading.Thread(target=run, daemon=True)
+        self._set_game_state(key, "stopping")
+        self._sync_status(f"{game.name}: requesting stop…")
+        self._stop_thread.start()
+        self.QtCore.QTimer.singleShot(0, lambda: self._collect_stop(game, previous))
+
+    def _collect_stop(self, game: LibraryGame, previous: str) -> None:
+        if self._stop_thread is not None and self._stop_thread.is_alive():
+            self.QtCore.QTimer.singleShot(100, lambda: self._collect_stop(game, previous))
+            return
+        stopped, message = self._stop_result or (False, "Stop returned no result.")
+        self._stop_thread = None
+        self._stop_result = None
+        key = game_key(game)
+        # A polling result may already have confirmed exit while stop waited.
+        if self._tracked_state(key) == "stopping":
+            self._set_game_state(key, "stopping" if stopped else previous)
+        self._sync_play_button(self._selected_game())
         self._sync_status(f"{game.name}: {message}")
 
     def _set_game_state(self, key: str, state: str) -> None:

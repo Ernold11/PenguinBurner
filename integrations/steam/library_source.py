@@ -39,6 +39,13 @@ class SteamLibrarySource:
     desktop_icon_name = "steam"
     #: Steam exposes an API for starting a game; the tab offers Play for it.
     can_launch = True
+    _LIVE_PROFILE_SETTERS = frozenset(
+        {
+            "set_game_enabled",
+            "set_game_mode",
+            "set_game_target_fps",
+        }
+    )
 
     def __init__(
         self,
@@ -289,6 +296,19 @@ class SteamLibrarySource:
                 confirm="Hide the In-Game overlay in {count} {games}?",
             ),
         )
+
+    def after_setting_write(self, game_id: str, setter: str):
+        """Push profile changes into a Steam game that is already running.
+
+        Changing the target GPU still requires a relaunch, while overlay
+        visibility is separate from the daemon profile. The remaining common
+        profile controls can be re-issued to the daemon in place.
+        """
+        if setter == "set_game_overlay":
+            return self.manager.hot_reapply_overlay(game_id)
+        if setter not in self._LIVE_PROFILE_SETTERS:
+            return None
+        return self.manager.hot_reapply(game_id)
 
     # -- launching -----------------------------------------------------------
     #

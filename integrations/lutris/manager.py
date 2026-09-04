@@ -192,7 +192,7 @@ class LutrisIntegrationManager:
                 False,
                 f"{row.game.display_name} has no Lutris configuration file to write.",
             )
-        wanted = " ".join(str(text or "").split())
+        wanted = str(text or "").strip()
         if wrapper_present(wanted):
             problem = self._ensure_wrapper_installed()
             if problem:
@@ -218,6 +218,7 @@ class LutrisIntegrationManager:
                 else ingame_latency_present(landed)
             ),
             original_prefix_command=strip_penguin_burner_tokens(landed),
+            original_prefix_inherited=False,
             injected_prefix_command=landed if wrapped else "",
         )
         # Stored either way: a hand edit that removed the wrapper still leaves
@@ -291,6 +292,7 @@ class LutrisIntegrationManager:
             )
         effective = self._read_prefix(row.game)
         current = effective.value
+        inherited = setting.original_prefix_inherited
         if setting.enabled:
             # Same rule as Steam's _apply: the line about to be written execs
             # the PENGUIN_BURNER host wrapper, so inside a Flatpak that wrapper
@@ -315,11 +317,18 @@ class LutrisIntegrationManager:
                 # original -- or the user added the wrapper by hand, in which
                 # case whatever survives stripping is what they had before and
                 # what a later disable owes them back.
-                original = setting.original_prefix_command or (
-                    strip_penguin_burner_tokens(current)
-                )
+                if setting.injected_prefix_command and current != setting.injected_prefix_command:
+                    # A user edit now owns this game-level prefix, even if
+                    # our next setting change rewrites the wrapper flags.
+                    original = strip_penguin_burner_tokens(current)
+                    inherited = False
+                else:
+                    original = setting.original_prefix_command or (
+                        strip_penguin_burner_tokens(current)
+                    )
             else:
                 original = current
+                inherited = effective.source != "game"
         else:
             wanted = remove_injection(
                 current,
@@ -327,11 +336,14 @@ class LutrisIntegrationManager:
                 stored_injected=setting.injected_prefix_command,
             )
             original = setting.original_prefix_command
-            if wanted and wanted == self._inherited_prefix(row.game):
-                # What is left is exactly what the game would inherit anyway.
-                # Writing it at the game level would freeze today's runner
-                # setting into this game forever, so drop the key and let
-                # inheritance resume.
+            if (
+                inherited is True and current == setting.injected_prefix_command
+            ) or (
+                inherited is None and wanted and wanted == self._inherited_prefix(row.game)
+            ):
+                # Resume inheritance even if the runner changed meanwhile.
+                # Legacy records lack provenance, so only their equality
+                # fallback is safe. Never discard an externally edited line.
                 wanted = ""
 
         write = write_prefix_command(config_path, wanted)
@@ -342,6 +354,7 @@ class LutrisIntegrationManager:
             stored = replace(
                 setting,
                 original_prefix_command=original,
+                original_prefix_inherited=inherited,
                 injected_prefix_command=wanted,
             )
         else:

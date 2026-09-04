@@ -11,6 +11,7 @@ inside either integration.
 from __future__ import annotations
 
 import re
+import shlex
 
 from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
 
@@ -47,48 +48,87 @@ LUTRIS_ID_FLAG_PREFIX = "--pb-lutris-id="
 # hook can find it the same way the Steam one finds SteamAppId.
 LUTRIS_GAME_ID_ENV = "PENGUIN_BURNER_LUTRIS_GAME_ID"
 
-# Our tokens, standing alone between whitespace: the bare wrapper name, its
-# --pb-* flags, and any legacy PB_*/PENGUIN_BURNER_* env assignment (still
-# stripped so hand-added setups normalize). Consuming trailing whitespace keeps
-# removal from leaving double spaces behind.
+# Match complete shell words, never fragments inside a quoted argument.
 _PB_TOKEN_RE = re.compile(
-    r"(?:(?<=\s)|^)"
-    # The `env` that introduces our assignment goes with it; a bare `env` the
-    # user put there for their own reasons is left alone.
-    r"(?:env(?=\s+PB_INGAME_LATENCY=)"
-    r"|--pb-[a-z0-9-]+=\S*"
+    r"(?:--pb-[a-z0-9-]+=\S*"
     r"|PB_[A-Za-z0-9_]+=\S*"
     rf"|{PENGUIN_BURNER_WRAPPER}(?:_[A-Za-z0-9_]+)?=\S*"
     rf"|{PENGUIN_BURNER_WRAPPER})"
-    r"(?:\s+|$)"
-)
-_WRAPPER_PRESENT_RE = re.compile(rf"(?:^|\s){PENGUIN_BURNER_WRAPPER}(?:\s|$)")
-_OVERLAY_PRESENT_RE = re.compile(
-    rf"(?:^|\s)(?:{re.escape(OVERLAY_FLAG)}|PB_OVERLAY=1)(?:\s|$)"
 )
 
 
 def strip_penguin_burner_tokens(value: str) -> str:
-    return _PB_TOKEN_RE.sub("", value or "").strip()
+    value = value or ""
+    words = _command_words(value)
+    pieces = []
+    cursor = 0
+    for index, (start, end, word) in enumerate(words):
+        next_word = words[index + 1][2] if index + 1 < len(words) else ""
+        remove = bool(_PB_TOKEN_RE.fullmatch(word)) or (
+            word == "env" and next_word.startswith("PB_INGAME_LATENCY=")
+        )
+        if not remove:
+            continue
+        pieces.append(value[cursor:start])
+        while end < len(value) and value[end].isspace():
+            end += 1
+        cursor = end
+    pieces.append(value[cursor:])
+    return "".join(pieces).strip()
+
+
+def _command_words(value: str) -> list[tuple[int, int, str]]:
+    """Shell words with source spans, so edits preserve quoting and spacing.
+
+    A quoted script is one opaque argument: wrapper-looking text inside it
+    must never be edited. Decode each complete word only for comparison; keep
+    the original source for everything that survives.
+    """
+    words = []
+    index = 0
+    while index < len(value):
+        if value[index].isspace():
+            index += 1
+            continue
+        start = index
+        quote = ""
+        while index < len(value):
+            char = value[index]
+            if char == "\\" and quote != "'":
+                index = min(index + 2, len(value))
+                continue
+            if quote:
+                if char == quote:
+                    quote = ""
+            elif char in "\"'":
+                quote = char
+            elif char.isspace():
+                break
+            index += 1
+        raw = value[start:index]
+        try:
+            decoded = shlex.split(raw)
+            word = decoded[0] if len(decoded) == 1 else raw
+        except ValueError:
+            word = raw
+        words.append((start, index, word))
+    return words
 
 
 def wrapper_present(value: str | None) -> bool:
-    return bool(_WRAPPER_PRESENT_RE.search(value or ""))
+    return any(word == PENGUIN_BURNER_WRAPPER for _, _, word in _command_words(value or ""))
 
 
 def overlay_present(value: str | None) -> bool:
-    return bool(_OVERLAY_PRESENT_RE.search(value or ""))
-
-
-_INGAME_LATENCY_PRESENT_RE = re.compile(
-    rf"(?:^|\s)(?:{re.escape(INGAME_LATENCY_ASSIGNMENT)}"
-    rf"|{re.escape(INGAME_LATENCY_FLAG)})(?:\s|$)"
-)
+    return any(word in (OVERLAY_FLAG, "PB_OVERLAY=1") for _, _, word in _command_words(value or ""))
 
 
 def ingame_latency_present(value: str | None) -> bool:
     """Either shape of the opt-in, so state reads back off any launch string."""
-    return bool(_INGAME_LATENCY_PRESENT_RE.search(value or ""))
+    return any(
+        word in (INGAME_LATENCY_ASSIGNMENT, INGAME_LATENCY_FLAG)
+        for _, _, word in _command_words(value or "")
+    )
 
 
 def overlay_flag(overlay: bool) -> str:

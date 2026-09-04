@@ -104,6 +104,8 @@ class _Source:
         self.refreshed = 0
         self.deep_refreshes = 0
         self.shallow_refreshes = 0
+        self.followups: list[tuple[str, str]] = []
+        self.followup_result: SimpleNamespace | None = None
 
     def available(self) -> bool:
         return True
@@ -126,6 +128,10 @@ class _Source:
 
     def bulk_actions(self):
         return self._bulk
+
+    def after_setting_write(self, game_id, setter):
+        self.followups.append((game_id, setter))
+        return self.followup_result
 
 
 def _replace_enabled(field, enabled):
@@ -512,6 +518,86 @@ def test_wrap_state_is_shown_only_by_the_wrap_toggle(qapp) -> None:
     )
 
 
+def _finish_worker(qapp, panel, attribute) -> None:
+    deadline = time.monotonic() + 3.0
+    while getattr(panel, attribute) is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert getattr(panel, attribute) is None
+
+
+def test_slow_bulk_write_keeps_qt_live_and_serializes_toggles(qapp, monkeypatch) -> None:
+    steam, lutris = _steam_and_lutris()
+    started, release = threading.Event(), threading.Event()
+    worker_ids = []
+
+    def slow_bulk(entries, enabled):
+        worker_ids.append(threading.get_ident())
+        started.set()
+        assert release.wait(3.0)
+        steam.manager.calls.append(("bulk", entries, enabled))
+        return SimpleNamespace(ok=False, message="bulk failure")
+
+    monkeypatch.setattr(steam.manager, "set_all_games_enabled", slow_bulk)
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    monkeypatch.setattr(panel, "_confirm", lambda *_args: True)
+    action, sources = panel._bulk_entries[0]
+    before = time.monotonic()
+    panel._bulk_apply(action, sources)
+    assert time.monotonic() - before < 0.2
+    assert started.wait(0.5)
+    try:
+        assert panel.game_list.isEnabled()
+        panel._select_key("lutris:27")
+        panel._write_async(panel._selected_game(), "set_game_enabled", True)
+        assert len(panel._setting_queue) == 1
+        assert lutris.manager.calls == []
+        ticks = []
+        panel.QtCore.QTimer.singleShot(0, lambda: ticks.append(True))
+        qapp.processEvents()
+        assert ticks == [True]
+    finally:
+        release.set()
+        _finish_worker(qapp, panel, "_setting_thread")
+    assert worker_ids != [threading.get_ident()]
+    assert lutris.manager.calls[-1] == ("set_game_enabled", "27", True)
+    assert "bulk failure" in panel.status_label.text()
+
+
+def test_slow_stop_keeps_qt_live_and_restores_running_on_failure(qapp, monkeypatch) -> None:
+    steam, lutris = _launchable_pair()
+    started, release = threading.Event(), threading.Event()
+
+    def slow_stop(_game_id):
+        started.set()
+        assert release.wait(3.0)
+        raise RuntimeError("launcher unavailable")
+
+    monkeypatch.setattr(steam, "stop", slow_stop)
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("steam:620")
+    panel._set_game_state("steam:620", "running")
+    before = time.monotonic()
+    panel.play_button.click()
+    assert time.monotonic() - before < 0.2
+    assert started.wait(0.5)
+    try:
+        assert panel.play_button.text() == "Stopping…"
+        assert not panel.play_button.isEnabled()
+        ticks = []
+        panel.QtCore.QTimer.singleShot(0, lambda: ticks.append(True))
+        qapp.processEvents()
+        assert ticks == [True]
+    finally:
+        release.set()
+        _finish_worker(qapp, panel, "_stop_thread")
+    assert panel.play_button.text() == "Stop"
+    assert panel.play_button.isEnabled()
+    assert "launcher unavailable" in panel.status_label.text()
+
+
 def test_a_slow_wrap_write_keeps_the_toggle_visually_live(qapp) -> None:
     """Steam's offline verification must not grey out the switch animation."""
     from dataclasses import replace
@@ -615,6 +701,26 @@ def test_a_second_wrap_click_is_queued_while_the_first_write_finishes(qapp) -> N
     assert panel.enable_switch.isChecked() is True
     assert panel.enable_switch.isEnabled() is True
     assert panel._form_widget.isEnabled() is True
+
+
+def test_successful_async_write_runs_the_launchers_followup(qapp) -> None:
+    steam, lutris = _steam_and_lutris()
+    steam.followup_result = SimpleNamespace(
+        ok=True, message="Profile re-applied live."
+    )
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("steam:620")
+
+    panel._on_mode_changed()
+    deadline = time.monotonic() + 2.0
+    while panel._setting_thread is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
+
+    assert steam.followups == [("620", "set_game_mode")]
+    assert "Profile re-applied live." in panel.status_label.text()
 
 
 # -- launching -------------------------------------------------------------
@@ -808,6 +914,7 @@ def test_one_menu_entry_applies_to_every_launcher_that_declared_it(qapp) -> None
     entries = {action.label: (action, sources) for action, sources in panel._bulk_entries}
     action, sources = entries["Disable PenguinBurner for all games"]
     panel._bulk_apply(action, sources)
+    _finish_worker(qapp, panel, "_setting_thread")
 
     assert ("set_all_games_enabled", ["620"], False) in steam.manager.calls
     assert ("set_all_games_enabled", ["27"], False) in lutris.manager.calls
@@ -822,6 +929,7 @@ def test_an_action_only_one_launcher_has_touches_only_that_launcher(qapp) -> Non
     entries = {action.label: (action, sources) for action, sources in panel._bulk_entries}
     action, sources = entries["Hide In-Game overlay for all games"]
     panel._bulk_apply(action, sources)
+    _finish_worker(qapp, panel, "_setting_thread")
 
     assert ("set_all_games_overlay", ["620"], False) in steam.manager.calls
     assert lutris.manager.calls == []
@@ -1008,11 +1116,13 @@ def test_a_pending_stop_can_be_pressed_again(qapp) -> None:
     panel._set_game_state("steam:620", "running")
     panel._sync_play_button(panel._selected_game())
     panel.play_button.click()  # Stop
+    _finish_worker(qapp, panel, "_stop_thread")
 
     assert panel._tracked_state("steam:620") == "stopping"
     assert panel.play_button.isEnabled() is True
 
     panel.play_button.click()  # and again, because it is still running
+    _finish_worker(qapp, panel, "_stop_thread")
 
     assert steam.stopped == ["620", "620"]
 
@@ -1183,6 +1293,7 @@ def test_bulk_overlay_ignores_the_gpu_gate(qapp) -> None:
     hide, hide_sources = entries["overlay_none"]
 
     panel._bulk_apply(replace(hide, value=True), hide_sources)
+    _finish_worker(qapp, panel, "_setting_thread")
 
     assert ("set_all_games_overlay", ["620"], True) in steam.manager.calls
 
@@ -1206,3 +1317,44 @@ def test_bulk_enable_still_requires_cards_for_its_own_scope(qapp) -> None:
         call[0] == "set_all_games_enabled" for call in steam.manager.calls
     )
     assert "Choose a Game GPU" in panel.status_label.text()
+
+
+def test_individual_enable_requires_a_gpu_on_multi_gpu_hosts(qapp) -> None:
+    source = _Source(
+        "steam",
+        "Steam",
+        "tab-steam.png",
+        [
+            _game(
+                "steam",
+                "620",
+                "Portal 2",
+                enabled=False,
+                setting=_setting(enabled=False, gpu_uuid=""),
+            )
+        ],
+    )
+    QtCore, QtGui, QtWidgets, _pg = import_qt()
+    panel = GameLibraryPanel(
+        QtCore=QtCore,
+        QtGui=QtGui,
+        QtWidgets=QtWidgets,
+        sources=(source,),
+        gpu_choices=lambda: (
+            SimpleNamespace(uuid="GPU-a", label="GPU A"),
+            SimpleNamespace(uuid="GPU-b", label="GPU B"),
+        ),
+    )
+    panel.ensure_scanned()
+    panel._select_key("steam:620")
+
+    panel.enable_switch.click()
+
+    assert source.manager.calls == []
+    assert panel.enable_switch.isChecked() is False
+    assert panel._form_widget.isEnabled() is False
+    assert "Choose a Game GPU" in panel.status_label.text()
+    assert panel.gpu_combo.isEnabled()
+    panel.gpu_combo.setCurrentIndex(panel.gpu_combo.findData("GPU-a"))
+    _finish_worker(qapp, panel, "_setting_thread")
+    assert source.manager.calls == [("set_game_gpu", "620", "GPU-a")]

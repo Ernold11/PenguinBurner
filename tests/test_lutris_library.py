@@ -254,12 +254,37 @@ def test_configs_fall_back_to_the_data_dir_without_a_legacy_dir(tmp_path) -> Non
 
 
 def test_default_paths_honor_the_xdg_environment(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("FLATPAK_ID", raising=False)
+    monkeypatch.setattr(
+        "integrations.lutris.paths.FLATPAK_INFO_PATH", tmp_path / "not-flatpak"
+    )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     (tmp_path / "cfg" / "lutris").mkdir(parents=True)
 
     assert lutris_config_root() == tmp_path / "cfg" / "lutris"
     assert lutris_library_db() == tmp_path / "data" / "lutris" / "pga.db"
+
+
+def test_penguinburner_flatpak_reads_lutris_from_the_host_home(
+    tmp_path, monkeypatch
+) -> None:
+    """The sandbox XDG roots belong to PenguinBurner, not host Lutris."""
+    monkeypatch.setenv("FLATPAK_ID", "io.github.jpietek.PenguinBurner")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv(
+        "XDG_DATA_HOME",
+        str(tmp_path / ".var/app/io.github.jpietek.PenguinBurner/data"),
+    )
+    monkeypatch.setenv(
+        "XDG_CONFIG_HOME",
+        str(tmp_path / ".var/app/io.github.jpietek.PenguinBurner/config"),
+    )
+    host_config = tmp_path / ".config" / "lutris"
+    host_config.mkdir(parents=True)
+
+    assert lutris_library_db() == tmp_path / ".local/share/lutris/pga.db"
+    assert lutris_config_root() == host_config
 
 
 def test_an_explicit_home_ignores_the_session_xdg_environment(

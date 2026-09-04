@@ -9,18 +9,25 @@ reaches only the game.
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 
 from overlay.wrapper_tokens import (
     ingame_latency_present,
     overlay_present,
-    strip_penguin_burner_tokens,
+    strip_penguin_burner_tokens as strip_wrapper_tokens,
     wrapper_present,
     wrapper_tokens,
 )
 
 COMMAND_TOKEN = "%command%"
+# Steam expands this placeholder even inside a quoted command-building script.
+# Recognize only the wrapper fragment immediately attached to that placeholder;
+# arbitrary quoted text remains opaque to the shared shell-word stripper.
+_COMMAND_WRAPPER_RE = re.compile(
+    r"(?<![\w/])PENGUIN_BURNER(?:\s+--pb-[a-z0-9-]+=[^\s\"']*)*\s+(?=%command%)"
+)
 
 
 @dataclass(frozen=True)
@@ -32,11 +39,19 @@ class InjectionState:
 
 
 def injection_state(launch_options: str | None) -> InjectionState:
+    value = launch_options or ""
+    fragment = _COMMAND_WRAPPER_RE.search(value)
+    if fragment is not None:
+        value += " " + fragment.group()
     return InjectionState(
-        wrapped=wrapper_present(launch_options),
-        overlay=overlay_present(launch_options),
-        ingame_latency=ingame_latency_present(launch_options),
+        wrapped=wrapper_present(value),
+        overlay=overlay_present(value),
+        ingame_latency=ingame_latency_present(value),
     )
+
+
+def strip_penguin_burner_tokens(value: str) -> str:
+    return strip_wrapper_tokens(_COMMAND_WRAPPER_RE.sub("", value or ""))
 
 
 def inject_launch_options(

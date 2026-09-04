@@ -467,6 +467,53 @@ def test_hot_reapply_none_when_game_not_running(manager, monkeypatch) -> None:
     assert manager.hot_reapply(APP_ID) is None
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_overlay_change_updates_live_override(manager, monkeypatch, tmp_path, enabled) -> None:
+    from overlay.state import OVERLAY_OVERRIDE_ENV
+
+    override = tmp_path / "overlay-override"
+    monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(override))
+    monkeypatch.setattr(manager, "running_game_ids", lambda: frozenset({APP_ID}))
+    manager.refresh()
+    assert manager.set_game_enabled(APP_ID, True).ok
+    assert manager.set_game_overlay(APP_ID, enabled).ok
+    result = manager.hot_reapply_overlay(APP_ID)
+    assert result is not None and result.ok
+    assert override.read_text() == ("1" if enabled else "0")
+
+
+@pytest.mark.parametrize("running", [None, frozenset(), frozenset({"other-game"})])
+def test_overlay_edit_for_idle_game_does_not_touch_live_override(
+    manager, monkeypatch, tmp_path, running
+) -> None:
+    from overlay.state import OVERLAY_OVERRIDE_ENV
+
+    override = tmp_path / "overlay-override"
+    override.write_text("1")
+    monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(override))
+    monkeypatch.setattr(manager, "running_game_ids", lambda: running)
+    assert manager.hot_reapply_overlay(APP_ID) is None
+    assert override.read_text() == "1"
+
+
+def test_bulk_overlay_updates_live_visibility_without_reapplying_profile(
+    manager, monkeypatch, tmp_path
+) -> None:
+    from overlay.state import OVERLAY_OVERRIDE_ENV
+
+    override = tmp_path / "overlay-override"
+    monkeypatch.setenv(OVERLAY_OVERRIDE_ENV, str(override))
+    monkeypatch.setattr(manager, "running_game_ids", lambda: frozenset({APP_ID}))
+    manager.refresh()
+    assert manager.set_game_enabled(APP_ID, True).ok
+    assert manager.set_all_games_overlay([APP_ID], True).ok
+    assert override.read_text() == "1"
+    monkeypatch.setattr("overlay.state.write_overlay_override", lambda _enabled: False)
+    result = manager.set_all_games_overlay([APP_ID], False)
+    assert not result.ok
+    assert "live visibility update failed" in result.message
+
+
 def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> None:
     import runtime.daemon_client as daemon_client
     import integrations.steam.game_runtime as game_runtime

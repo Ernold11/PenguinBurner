@@ -48,6 +48,8 @@ class LutrisGameSetting:
     # Stable NVML UUID. Empty keeps single-GPU settings compatible; multi-GPU
     # hosts require an explicit value before enabling the wrapper.
     gpu_uuid: str = ""
+    # None is a legacy record whose original source was not recorded.
+    original_prefix_inherited: bool | None = None
 
     @property
     def active(self) -> bool:
@@ -90,6 +92,11 @@ def load_lutris_game_settings(
             ),
             original_prefix_command=str(entry.get("original_prefix_command") or ""),
             injected_prefix_command=injected,
+            original_prefix_inherited=(
+                entry.get("original_prefix_inherited")
+                if isinstance(entry.get("original_prefix_inherited"), bool)
+                else None
+            ),
             target_fps=normalize_game_target_fps(entry.get("target_fps")),
             gpu_uuid=str(entry.get("gpu_uuid") or "").strip(),
         )
@@ -151,6 +158,7 @@ def _write_settings(
                 **({"gpu_uuid": setting.gpu_uuid} if setting.gpu_uuid else {}),
                 "original_prefix_command": setting.original_prefix_command,
                 "injected_prefix_command": setting.injected_prefix_command,
+                "original_prefix_inherited": setting.original_prefix_inherited,
             }
             for game_id, setting in sorted(settings.items())
         },

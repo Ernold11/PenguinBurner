@@ -27,6 +27,13 @@ SYSTEM_CONFIG_FILENAME = "system.yml"
 DESKTOP_ICON_NAME = "net.lutris.Lutris"
 COVERART_DIRNAME = "coverart"
 BANNER_DIRNAME = "banners"
+FLATPAK_INFO_PATH = Path("/.flatpak-info")
+
+
+def _running_in_flatpak() -> bool:
+    return bool(str(os.environ.get("FLATPAK_ID") or "").strip()) or (
+        FLATPAK_INFO_PATH.is_file()
+    )
 
 
 def lutris_data_root(home: Path | None = None) -> Path:
@@ -37,6 +44,14 @@ def lutris_data_root(home: Path | None = None) -> Path:
     """
     if home is not None:
         return Path(home) / LUTRIS_DATA_DIRNAME
+    if _running_in_flatpak():
+        # Flatpak redirects XDG_DATA_HOME into PenguinBurner's own app data
+        # directory. Lutris is an external host application, so following that
+        # value looks for its database under
+        # ~/.var/app/io.github.jpietek.PenguinBurner instead of the host home
+        # the manifest deliberately exposes. Steam discovery likewise starts
+        # from Path.home() for this reason.
+        return Path.home() / LUTRIS_DATA_DIRNAME
     xdg = str(os.environ.get("XDG_DATA_HOME") or "").strip()
     base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
     return base / "lutris"
@@ -53,6 +68,10 @@ def lutris_config_root(home: Path | None = None) -> Path:
     """
     if home is not None:
         legacy = Path(home) / LUTRIS_CONFIG_DIRNAME
+    elif _running_in_flatpak():
+        # XDG_CONFIG_HOME belongs to the PenguinBurner sandbox here, not to the
+        # host Lutris whose configuration this integration edits.
+        legacy = Path.home() / LUTRIS_CONFIG_DIRNAME
     else:
         xdg = str(os.environ.get("XDG_CONFIG_HOME") or "").strip()
         base = Path(xdg).expanduser() if xdg else Path.home() / ".config"

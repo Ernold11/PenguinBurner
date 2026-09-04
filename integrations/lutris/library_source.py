@@ -132,6 +132,11 @@ class LutrisLibrarySource:
             ),
         )
 
+    def after_setting_write(self, game_id: str, setter: str) -> None:
+        """Lutris changes are picked up on the next launch, not live."""
+        del game_id, setter
+        return None
+
     def games(self) -> tuple[LibraryGame, ...]:
         return tuple(self._library_game(row) for row in self._rows)
 

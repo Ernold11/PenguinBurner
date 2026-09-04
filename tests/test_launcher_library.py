@@ -529,6 +529,8 @@ class _SteamStub:
 
     def __init__(self, *, marker=True, running=True, cdp=True, user="Ernold"):
         self._marker, self._running, self._cdp, self._user = marker, running, cdp, user
+        self.reapplied: list[str] = []
+        self.overlays_reapplied: list[str] = []
 
     def marker_present(self):
         return self._marker
@@ -549,6 +551,36 @@ class _SteamStub:
 
     def refresh(self, **kwargs):
         return ()
+
+    def hot_reapply(self, app_id):
+        self.reapplied.append(app_id)
+        return None
+
+    def hot_reapply_overlay(self, app_id):
+        self.overlays_reapplied.append(app_id)
+        return None
+
+
+def test_steam_reapplies_only_profile_settings_to_a_running_game() -> None:
+    from typing import cast
+
+    from integrations.steam.library_source import SteamLibrarySource
+    from integrations.steam.manager import SteamIntegrationManager
+
+    manager = _SteamStub()
+    source = SteamLibrarySource(manager=cast(SteamIntegrationManager, manager))
+
+    for setter in (
+        "set_game_enabled",
+        "set_game_mode",
+        "set_game_target_fps",
+    ):
+        source.after_setting_write("620", setter)
+    for setter in ("set_game_gpu", "set_game_overlay", "set_game_compat_tool"):
+        source.after_setting_write("620", setter)
+
+    assert manager.reapplied == ["620", "620", "620"]
+    assert manager.overlays_reapplied == ["620"]
 
 
 def _row(

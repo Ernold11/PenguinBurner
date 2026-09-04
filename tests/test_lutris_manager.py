@@ -359,6 +359,57 @@ def test_disabling_lets_inheritance_resume_instead_of_freezing_it(tmp_path) -> N
     assert row.effective.source == "runner"
 
 
+def test_disable_resumes_updated_inheritance_after_restart(tmp_path) -> None:
+    manager = _manager(tmp_path)
+    _runner_config(tmp_path, "old-prefix")
+    manager.refresh()
+    assert manager.set_game_enabled("27", True).ok
+    _runner_config(tmp_path, "new-prefix")
+    manager = LutrisIntegrationManager(
+        home=tmp_path, settings_path=tmp_path / "lutris-game-settings.json"
+    )
+    manager.refresh()
+    assert manager.set_game_overlay("27", True).ok
+    assert manager.set_game_enabled("27", False).ok
+    assert "prefix_command" not in _config(tmp_path).get("system", {})
+    row = manager.row("27")
+    assert row is not None
+    assert row.prefix_command == "new-prefix"
+
+
+def test_disable_preserves_explicit_prefix_equal_to_runner(tmp_path) -> None:
+    manager = _manager(tmp_path, prefix_command="same-prefix")
+    _runner_config(tmp_path, "same-prefix")
+    manager.refresh()
+    assert manager.set_game_enabled("27", True).ok
+    assert manager.set_game_enabled("27", False).ok
+    assert _config(tmp_path)["system"]["prefix_command"] == "same-prefix"
+
+
+def test_disable_preserves_external_edits_to_inherited_wrapped_prefix(tmp_path) -> None:
+    manager = _manager(tmp_path)
+    _runner_config(tmp_path, "runner-prefix")
+    manager.refresh()
+    assert manager.set_game_enabled("27", True).ok
+    path = tmp_path / ".local/share/lutris/games/game-1.yml"
+    document = _config(tmp_path)
+    document["system"]["prefix_command"] += " user-added"
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    assert manager.set_game_overlay("27", True).ok
+    assert manager.set_game_enabled("27", False).ok
+    assert _config(tmp_path)["system"]["prefix_command"] == "runner-prefix user-added"
+
+
+def test_raw_prefix_preserves_quoted_spaces_across_wrap_cycle(tmp_path) -> None:
+    manager = _manager(tmp_path)
+    command = "env NAME='two  spaces'  gamemoderun"
+    assert manager.set_game_prefix_command("27", command).ok
+    assert _config(tmp_path)["system"]["prefix_command"] == command
+    assert manager.set_game_enabled("27", True).ok
+    assert manager.set_game_enabled("27", False).ok
+    assert _config(tmp_path)["system"]["prefix_command"] == command
+
+
 def test_a_game_level_prefix_wins_over_the_runner(tmp_path) -> None:
     home = _home(tmp_path, prefix_command="dlss-swapper")
     _runner_config(tmp_path, "game-performance")
@@ -400,7 +451,7 @@ def test_a_hand_written_prefix_is_taken_verbatim(tmp_path) -> None:
     assert result.ok
     assert (
         _config(tmp_path)["system"]["prefix_command"]
-        == "PB_INGAME_LATENCY=1 PENGUIN_BURNER --pb-overlay=0"
+        == "PB_INGAME_LATENCY=1   PENGUIN_BURNER --pb-overlay=0"
     )
 
 

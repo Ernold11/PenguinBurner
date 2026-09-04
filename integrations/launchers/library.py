@@ -214,6 +214,15 @@ class LauncherSource(Protocol):
         """Library-wide actions this launcher can apply to all its games."""
         ...
 
+    def after_setting_write(self, game_id: str, setter: str) -> object | None:
+        """Optional launcher-owned follow-up after a successful setting write.
+
+        Runs on the same worker as the write. Launchers without a live runtime
+        action return None; Steam uses it to re-apply profile settings to a
+        game the daemon is already watching.
+        """
+        ...
+
 
 @runtime_checkable
 class LaunchableSource(Protocol):

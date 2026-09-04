@@ -80,6 +80,9 @@ The per-game editor exposes:
 - **Enable In-Game overlay** — the live readout (latency, pre-frame-gen FPS,
   clocks, power, tier) for this game. This controls only HUD visibility;
   Adaptive's required marker capture remains automatic in the background.
+  For a running wrapped Steam game, visibility also updates live (the native
+  layer checks about once per second); changing an idle game's setting does not
+  affect another running game.
 
 The tuning and overlay controls stay grayed out until the game's PenguinBurner
 toggle is on. The compatibility selector is independent of that toggle; it is
@@ -101,14 +104,21 @@ Each action confirms first and shows the game count. Directions that would chang
 nothing (for example "enable all" when everything is already enabled) gray out, so
 the menu doubles as a state readout. Bulk enable also spells out its two side
 effects: the overlay stays off, and MangoHud is disabled inside wrapped games.
+Bulk writes run in the background: the list stays usable and subsequent
+individual toggle changes are queued until the bulk operation finishes.
 
 ## Play / Stop
 
 The per-game editor's button is a single Steam-style control that reflects the
 live session: green **Play** → **Starting…** → red **Stop** while running →
-**Stopping…** → back to Play. It can never be in a state that disagrees with the
-game — transitional states are unclickable, and a launch or stop that stalls
-always resolves back to a usable button.
+**Stopping…** → back to Play. Stop requests run in the background. Once the
+launcher answers, **Stopping…** can be pressed again if the game is still
+running; a failed request restores the button so it can be retried.
+
+Lutris command edits preserve quoted text and spacing. When wrapping a game
+that inherited its command prefix, disabling the wrapper resumes inheritance,
+including runner/global changes made in the meantime. Explicit per-game
+prefixes and externally edited commands are preserved.
 
 ## How it applies (no password prompts)
 
