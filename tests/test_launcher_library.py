@@ -6,6 +6,7 @@ from pathlib import Path
 
 from integrations.launchers.library import (
     SORT_ALPHABETICAL,
+    SORT_LAUNCHER,
     SORT_PLAYTIME,
     SORT_RECENT,
     LauncherSource,
@@ -60,6 +61,29 @@ def test_alphabetical_ignores_case() -> None:
     ]
 
 
+def test_launcher_sort_uses_display_names_then_game_names() -> None:
+    games = [
+        _game("Zulu", launcher="alpha-id", game_id="1"),
+        _game("Alpha", launcher="alpha-id", game_id="2"),
+        _game("Beta", launcher="zeta-id", game_id="3"),
+    ]
+
+    ordered = sorted_library_games(
+        games,
+        SORT_LAUNCHER,
+        launcher_names={
+            "alpha-id": "Zulu Launcher",
+            "zeta-id": "Alpha Launcher",
+        },
+    )
+
+    assert [(game.launcher, game.name) for game in ordered] == [
+        ("zeta-id", "Beta"),
+        ("alpha-id", "Alpha"),
+        ("alpha-id", "Zulu"),
+    ]
+
+
 def test_recently_played_puts_never_played_last_not_first() -> None:
     """A zero timestamp is missing data, not 1970."""
     games = [
@@ -101,7 +125,7 @@ def test_a_tie_keeps_a_stable_order_across_launchers() -> None:
     steam = _game("Path of Exile", launcher="steam", game_id="7", playtime_hours=8.0)
     lutris = _game("Path of Exile", launcher="lutris", game_id="7", playtime_hours=8.0)
 
-    for mode in (SORT_ALPHABETICAL, SORT_RECENT, SORT_PLAYTIME):
+    for mode in (SORT_ALPHABETICAL, SORT_LAUNCHER, SORT_RECENT, SORT_PLAYTIME):
         # Compared by launcher, not by the sort key itself: a key that stopped
         # telling the two apart would compare equal to itself and prove
         # nothing.

@@ -8,15 +8,17 @@ together without knowing which is which.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 SORT_ALPHABETICAL = "alphabetical"
+SORT_LAUNCHER = "launcher"
 SORT_RECENT = "recent"
 SORT_PLAYTIME = "playtime"
 
-SORT_MODES = (SORT_ALPHABETICAL, SORT_RECENT, SORT_PLAYTIME)
+SORT_MODES = (SORT_ALPHABETICAL, SORT_LAUNCHER, SORT_RECENT, SORT_PLAYTIME)
 
 #: The kinds of control a launcher-specific field can ask the tab to draw.
 FIELD_TEXT = "text"
@@ -245,6 +247,8 @@ class LaunchableSource(Protocol):
 def sorted_library_games(
     games,
     mode: str = SORT_ALPHABETICAL,
+    *,
+    launcher_names: Mapping[str, str] | None = None,
 ) -> tuple[LibraryGame, ...]:
     """Order the merged library.
 
@@ -253,6 +257,18 @@ def sorted_library_games(
     instead of swapping places under the cursor.
     """
     rows = tuple(games)
+    if mode == SORT_LAUNCHER:
+        names = launcher_names or {}
+        return tuple(
+            sorted(
+                rows,
+                key=lambda game: (
+                    names.get(game.launcher, game.launcher).casefold(),
+                    game.name.casefold(),
+                    game.key,
+                ),
+            )
+        )
     if mode == SORT_RECENT:
         # Descending, so a 0 -- never played, or never recorded -- lands at the
         # end on its own: negating it makes it the largest key there is.

@@ -468,6 +468,22 @@ def test_resorting_keeps_the_game_under_the_cursor(qapp) -> None:
     assert panel.title_label.text() == "Portal 2"
 
 
+def test_launcher_sort_groups_by_display_name_and_keeps_selection(qapp) -> None:
+    steam, lutris = _steam_and_lutris()
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("steam:620")
+
+    index = panel.sort_combo.findData("launcher")
+    assert panel.sort_combo.itemText(index) == "Launcher"
+
+    panel.sort_combo.setCurrentIndex(index)
+
+    assert [game.launcher for game in panel._games] == ["lutris", "steam"]
+    assert panel._selected_key == "steam:620"
+    assert panel.title_label.text() == "Portal 2"
+
+
 def test_the_settings_groups_keep_their_order(qapp) -> None:
     panel = _panel(qapp, _steam_and_lutris())
 

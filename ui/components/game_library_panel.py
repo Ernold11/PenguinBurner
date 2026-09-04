@@ -22,6 +22,7 @@ from integrations.launchers.library import (
     GROUP_COMMAND,
     GROUP_IN_GAME,
     SORT_ALPHABETICAL,
+    SORT_LAUNCHER,
     SORT_PLAYTIME,
     SORT_RECENT,
     LibraryGame,
@@ -60,6 +61,7 @@ _MODE_KEYS = (GAME_MODE_ADAPTIVE, *PROFILE_TIERS, GAME_MODE_STOCK)
 
 _SORT_LABELS = (
     ("Alphabetical", SORT_ALPHABETICAL),
+    ("Launcher", SORT_LAUNCHER),
     ("Recently played", SORT_RECENT),
     ("Most played", SORT_PLAYTIME),
 )
@@ -804,7 +806,7 @@ class GameLibraryPanel:
         games: list[LibraryGame] = []
         for source in self._sources:
             games.extend(source.games())
-        ordered = sorted_library_games(games, self._sort_mode)
+        ordered = self._sorted_games(games)
         changed = self._library_signature(ordered) != self._library_signature(
             self._games
         )
@@ -813,6 +815,16 @@ class GameLibraryPanel:
         # user's scroll position for nothing.
         if changed:
             self._refresh_list()
+
+    def _sorted_games(self, games) -> tuple[LibraryGame, ...]:
+        """Order games using launcher names as they appear in the UI."""
+        return sorted_library_games(
+            games,
+            self._sort_mode,
+            launcher_names={
+                source.launcher_id: source.display_name for source in self._sources
+            },
+        )
 
     @staticmethod
     def _library_signature(games) -> tuple:
@@ -1040,7 +1052,7 @@ class GameLibraryPanel:
         self._sort_mode = str(self.sort_combo.currentData() or SORT_ALPHABETICAL)
         # Re-sorted, not re-read: the selection is kept so the row under the
         # cursor does not change identity when the order does.
-        self._games = sorted_library_games(self._games, self._sort_mode)
+        self._games = self._sorted_games(self._games)
         self._refresh_list()
 
     # -- selection -----------------------------------------------------------
