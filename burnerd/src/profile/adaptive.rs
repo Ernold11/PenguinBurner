@@ -21,6 +21,52 @@ use super::LatencySnapshot;
 
 const CPU_BOUND_GUARD_LOG_THROTTLE_S: f64 = 30.0;
 
+/// Which stream a median came from.
+///
+/// Two medians reach the policy and they are not interchangeable: markers
+/// describe the frames the game rendered, present pacing describes the frames
+/// that reached the screen. Comparing one against the other -- which is what a
+/// latch does every tick -- silently compares two different things the moment
+/// a stream starts or stops, so the latch has to remember which it took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MedianSource {
+    #[default]
+    None,
+    Marker,
+    Pacing,
+}
+
+/// What one tick knows about frame pacing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FrametimeReadings {
+    pub p95_ms: Option<f64>,
+    pub p50_ms: Option<f64>,
+    pub p50_source: MedianSource,
+    /// Share of the window past the badly-slow bar. A tail can be one stutter;
+    /// a ratio cannot, which is why the branch that jumps straight to the top
+    /// tier asks for it.
+    pub miss_ratio: Option<f64>,
+}
+
+impl From<Option<f64>> for FrametimeReadings {
+    /// The p95 alone, for callers (and tests) that have nothing else.
+    fn from(p95_ms: Option<f64>) -> Self {
+        FrametimeReadings {
+            p95_ms,
+            p50_ms: None,
+            p50_source: MedianSource::None,
+            miss_ratio: None,
+        }
+    }
+}
+
+/// A recognised frame cap, and the median it was recognised against.
+#[derive(Debug, Clone, Copy)]
+struct CappedReference {
+    ms: f64,
+    source: MedianSource,
+}
+
 // --- policy config ----------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
@@ -58,6 +104,9 @@ pub struct PolicyConfig {
     /// tier is held -- neither promoted (the miss may not be a clock problem)
     /// nor eased down (the cap is not established).
     pub frame_cap_confirm_windows: i64,
+    /// Share of the window that must have missed the deadline before a single
+    /// window may jump straight to the top tier.
+    pub badly_slow_miss_ratio_min: f64,
     /// How much worse (percent) than the reference pacing frametime has to get
     /// before the cap is considered gone. A hard cap holds the frame rate
     /// steady no matter which tier runs, so anything past this margin means
@@ -80,6 +129,7 @@ impl Default for PolicyConfig {
             badly_slow_ms: 22.0,
             target_slow_windows: 3,
             near_slow_windows: 2,
+            badly_slow_miss_ratio_min: 0.5,
             comfort_windows: 6,
             performance_comfort_windows: 10,
             demote_dwell_s: 60.0,
@@ -164,7 +214,12 @@ struct PolicyState {
     /// cap the demotion just acted on -- tier down, tier up, forever. Frametime
     /// does not move with the tier while a cap holds the rate, so it is the one
     /// signal the policy's own decisions cannot invalidate.
-    capped_reference_ms: Option<f64>,
+    capped_reference: Option<CappedReference>,
+    /// The median this tick reported, and where it came from.
+    median_ms: Option<f64>,
+    median_source: MedianSource,
+    /// Share of this tick's window past the badly-slow bar, when known.
+    miss_ratio: Option<f64>,
     /// Consecutive frame ticks that have looked externally capped without a
     /// latch being held yet. Recognition waits for
     /// `frame_cap_confirm_windows` of these; the tier is held while it does.
@@ -242,13 +297,84 @@ impl AdaptiveProfileController {
                 target_slow_count: 0,
                 near_slow_count: 0,
                 comfort_count: 0,
-                capped_reference_ms: None,
+                capped_reference: None,
+                median_ms: None,
+                median_source: MedianSource::None,
+                miss_ratio: None,
                 frame_cap_streak: 0,
                 desktop_idle_since: None,
                 frames_last_tick: false,
             },
             util_samples: std::collections::VecDeque::new(),
         }
+    }
+
+    /// The deadline a frame has to clear to count as on time.
+    ///
+    /// The badly-slow bar rather than the target: a frame over target is late,
+    /// but a frame over *this* is the kind of late the ladder is allowed to
+    /// answer by jumping a tier -- so it is the bar worth counting.
+    /// Whether one badly-slow window is evidence enough to jump a tier.
+    ///
+    /// The branch below answers a single window by going straight to the top,
+    /// and a promotion takes one window where every step back down pays its
+    /// dwell -- so one stutter can outrun several minutes of easing. Two things
+    /// argue it is not a stutter: most of the window missed the deadline, and
+    /// the median is over target too, not just the tail.
+    ///
+    /// Missing readings mean the old behaviour. A game with no marker stream
+    /// has neither figure, and refusing to promote there would be worse than
+    /// the oscillation this exists to damp.
+    fn badly_slow_is_evidenced(&self) -> bool {
+        if self
+            .state
+            .miss_ratio
+            .is_some_and(|ratio| ratio < self.config.badly_slow_miss_ratio_min)
+        {
+            return false;
+        }
+        !self
+            .state
+            .median_ms
+            .is_some_and(|median| median <= self.config.target_ms)
+    }
+
+    /// The reference a fresh latch is made against: the median where one
+    /// exists, else the tail, which is all a stream-less game offers.
+    fn pacing_reference(&self, frametime_ms: f64) -> CappedReference {
+        match self.state.median_ms {
+            Some(ms) if self.state.median_source != MedianSource::None => CappedReference {
+                ms,
+                source: self.state.median_source,
+            },
+            _ => CappedReference {
+                ms: frametime_ms,
+                source: MedianSource::None,
+            },
+        }
+    }
+
+    /// Whether pacing still sits where the cap was recognised.
+    ///
+    /// `None` when it cannot be told -- the stream that fed the reference is no
+    /// longer reporting -- which releases the latch rather than comparing a
+    /// marker median against a pacing one and calling the difference movement.
+    fn reference_still_holds(&self, reference: CappedReference, frametime_ms: f64) -> Option<bool> {
+        let current = if reference.source == MedianSource::None {
+            Some(frametime_ms)
+        } else if self.state.median_source == reference.source {
+            self.state.median_ms
+        } else {
+            None
+        }?;
+        let slack = 1.0 + self.config.frame_cap_exit_pacing_pct / 100.0;
+        // Symmetric: a cap that lifts shows up as pacing getting *better*, and
+        // that has to release the latch too.
+        Some(current <= reference.ms * slack && current >= reference.ms / slack)
+    }
+
+    fn miss_deadline_ms(&self) -> f64 {
+        self.config.badly_slow_ms
     }
 
     fn snapshot_state(&self) -> PolicyState {
@@ -268,7 +394,7 @@ impl AdaptiveProfileController {
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
-        present_frametime_p95_ms: Option<f64>,
+        frametime: impl Into<FrametimeReadings>,
         available_tiers: &[String],
         now_monotonic: f64,
         gpu_util_pct: Option<f64>,
@@ -290,6 +416,15 @@ impl AdaptiveProfileController {
         // low tier for its entire session. The guards fall back to the
         // instantaneous values for the one tick the window is empty, which is
         // the most recent data that exists.
+        let frametime = frametime.into();
+        let present_frametime_p95_ms = frametime.p95_ms;
+        self.state.median_ms = frametime.p50_ms;
+        self.state.miss_ratio = frametime.miss_ratio;
+        self.state.median_source = if frametime.p50_ms.is_some() {
+            frametime.p50_source
+        } else {
+            MedianSource::None
+        };
         let session_boundary = present_frametime_p95_ms.is_some() && !self.state.frames_last_tick;
         if session_boundary {
             self.clear_util_window();
@@ -333,7 +468,7 @@ impl AdaptiveProfileController {
             // Nothing is presenting: whatever cap was recognised belonged to a
             // session that has gone quiet, and the next one must be judged on
             // its own pacing rather than inheriting this reference.
-            self.state.capped_reference_ms = None;
+            self.state.capped_reference = None;
             return self.idle_decision(&ordered, now_monotonic, gpu_util_pct);
         };
         // Frames again: whatever the idle rule had counted towards belongs to a
@@ -349,21 +484,30 @@ impl AdaptiveProfileController {
         // Utilisation is only the entry hint; re-testing it every tick would
         // let each demotion (which raises utilisation for the same capped rate)
         // cancel the recognition that caused it.
-        if let Some(reference) = self.state.capped_reference_ms {
+        if let Some(reference) = self.state.capped_reference {
             let saturated = self
                 .windowed_avg(|s| s.gpu)
                 .or(gpu_util_pct)
                 .is_some_and(|gpu| gpu >= self.config.frame_cap_exit_gpu_pct);
-            let pacing_slack = 1.0 + self.config.frame_cap_exit_pacing_pct / 100.0;
-            if !saturated && frametime_ms <= reference * pacing_slack {
+            // Judged on the median rather than the tail. A cap holds the median
+            // still while the tail keeps moving, so a tail comparison releases
+            // the latch on the first stutter under a cap that never lifted --
+            // and the tick that releases it falls straight through to the
+            // branch that jumps a tier, which is the oscillation.
+            //
+            // `None` means the stream that fed the reference stopped reporting.
+            // Nothing can be concluded from a comparison against a median that
+            // no longer exists, so the latch is released rather than guessed at.
+            let holds = self.reference_still_holds(reference, frametime_ms);
+            if !saturated && holds == Some(true) {
                 // Pacing has not moved: the tier still is not the limit.
-                return self.ease_down(&ordered, now_monotonic, "externally-capped");
+                return self.ease_down(&ordered, now_monotonic, "externally-capped-held");
             }
             // Either pacing degraded past what the cap was hiding, or the card
             // is now flat out. Release the latch -- but do not hand the tick to
             // the ladder yet, because "this reference stopped explaining the
             // pacing" is not the same claim as "the tier is the limit now".
-            self.state.capped_reference_ms = None;
+            self.state.capped_reference = None;
         }
 
         // Recognition, and re-recognition on the very tick a latch was
@@ -386,7 +530,7 @@ impl AdaptiveProfileController {
             self.state.frame_cap_streak += 1;
             if self.state.frame_cap_streak >= self.config.frame_cap_confirm_windows {
                 self.state.frame_cap_streak = 0;
-                self.state.capped_reference_ms = Some(frametime_ms);
+                self.state.capped_reference = Some(self.pacing_reference(frametime_ms));
                 return self.ease_down(&ordered, now_monotonic, "externally-capped");
             }
             return Decision {
@@ -397,7 +541,7 @@ impl AdaptiveProfileController {
         }
         self.state.frame_cap_streak = 0;
 
-        if frametime_ms > self.config.badly_slow_ms {
+        if frametime_ms > self.config.badly_slow_ms && self.badly_slow_is_evidenced() {
             return self.switch_with_cpu_bound_guard(
                 ordered[ordered.len() - 1].clone(),
                 &ordered,
@@ -737,6 +881,12 @@ impl AdaptiveAutoUvRuntimeController {
     /// A system resume was detected: invalidate windowed utilization state and
     /// any half-built cap recognition so the guards reason only about
     /// post-resume samples.
+    /// Deadline the frametime window should count misses against, in
+    /// microseconds, so the meter can record the ratio.
+    pub fn miss_deadline_us(&self) -> i64 {
+        (self.policy.miss_deadline_ms() * 1000.0).round() as i64
+    }
+
     pub fn note_system_resume(&mut self) {
         self.policy.note_session_boundary();
     }
@@ -826,13 +976,32 @@ impl AdaptiveAutoUvRuntimeController {
         if !self.enabled() {
             return None;
         }
-        let present_ms = latency_snapshot.and_then(|s| s.base_present_frametime_p95_ms);
+        // The marker median is preferred: it is a median of the same accepted
+        // set as the p95, so the two are comparable. Present pacing is the
+        // fallback, and the source travels with the value because a latch made
+        // against one must never be re-tested against the other.
+        let (p50_ms, p50_source) = match latency_snapshot {
+            Some(snapshot) => match snapshot.base_present_frametime_p50_ms {
+                Some(ms) => (Some(ms), MedianSource::Marker),
+                None => match snapshot.present_pacing_p50_ms {
+                    Some(ms) => (Some(ms), MedianSource::Pacing),
+                    None => (None, MedianSource::None),
+                },
+            },
+            None => (None, MedianSource::None),
+        };
+        let readings = FrametimeReadings {
+            p95_ms: latency_snapshot.and_then(|s| s.base_present_frametime_p95_ms),
+            p50_ms,
+            p50_source,
+            miss_ratio: latency_snapshot.and_then(|s| s.base_present_frametime_miss_ratio),
+        };
         let policy_state = self.policy.snapshot_state();
         let gpu = publisher.last_gpu_util_pct().map(|v| v as f64);
         let cpu = publisher.last_cpu_util_pct().map(|v| v as f64);
         let cpu_peak = publisher.last_cpu_peak_thread_pct().map(|v| v as f64);
         let decision = self.policy.update(
-            present_ms,
+            readings,
             &self.available_tiers,
             now_monotonic,
             gpu,
@@ -1080,7 +1249,7 @@ mod tests {
             assert_eq!(d.tier, "performance", "target-ok must remain a hold");
             assert_eq!(d.reason, "target-ok");
         }
-        assert!(c.state.capped_reference_ms.is_none());
+        assert!(c.state.capped_reference.is_none());
     }
 
     #[test]
@@ -1098,7 +1267,9 @@ mod tests {
         }
         let decision = eased.expect("a sustained cap must step the tier down");
         assert_eq!(decision.tier, "balanced");
-        assert_eq!(decision.reason, "externally-capped");
+        // "held" rather than plain: the step happens on a tick where the latch
+        // was already made and still explains the pacing.
+        assert_eq!(decision.reason, "externally-capped-held");
     }
 
     #[test]
@@ -1122,7 +1293,7 @@ mod tests {
             );
         }
         assert!(
-            c.state.capped_reference_ms.is_some(),
+            c.state.capped_reference.is_some(),
             "the cap must be recognised before the release can be tested"
         );
 
@@ -1162,7 +1333,7 @@ mod tests {
                 Some(22.0),
             );
         }
-        assert!(c.state.capped_reference_ms.is_some());
+        assert!(c.state.capped_reference.is_some());
 
         for i in 0..8 {
             c.update(
@@ -1176,7 +1347,7 @@ mod tests {
         }
 
         assert!(
-            c.state.capped_reference_ms.is_none(),
+            c.state.capped_reference.is_none(),
             "a flat-out card must not hold or re-take a cap recognition"
         );
     }
@@ -1201,9 +1372,11 @@ mod tests {
             }
         }
         assert!(
+            // Recognition and every held tick after it both count; what this
+            // forbids is a promote reason appearing among them.
             tiers_seen
                 .iter()
-                .all(|(_, reason)| reason == "externally-capped"),
+                .all(|(_, reason)| reason.starts_with("externally-capped")),
             "no promotion may fire while the cap holds: {tiers_seen:?}"
         );
         // Monotonically downwards, never back up.
@@ -1254,12 +1427,12 @@ mod tests {
                 Some(35.0),
             );
         }
-        assert!(c.state.capped_reference_ms.is_some());
+        assert!(c.state.capped_reference.is_some());
 
         c.update(None, &tiers(), 106.0, Some(25.0), Some(20.0), Some(35.0));
 
         assert!(
-            c.state.capped_reference_ms.is_none(),
+            c.state.capped_reference.is_none(),
             "the next session must be judged on its own pacing"
         );
     }
@@ -1328,7 +1501,7 @@ mod tests {
         );
         assert_eq!(first.reason, "externally-capped-confirm");
         assert!(!first.changed, "a confirm tick must hold, not move");
-        assert!(c.state.capped_reference_ms.is_none());
+        assert!(c.state.capped_reference.is_none());
 
         let second = c.update(
             Some(16.67),
@@ -1340,7 +1513,7 @@ mod tests {
         );
         assert_eq!(second.reason, "badly-slow");
         assert_eq!(second.tier, "performance");
-        assert!(c.state.capped_reference_ms.is_none());
+        assert!(c.state.capped_reference.is_none());
     }
 
     #[test]
@@ -1394,7 +1567,7 @@ mod tests {
                 }
             }
             assert!(
-                c.state.capped_reference_ms.is_none(),
+                c.state.capped_reference.is_none(),
                 "no cap may latch off the desktop's stale window at {game_util}%"
             );
             let decision = promoted.unwrap_or_else(|| {
@@ -1423,7 +1596,7 @@ mod tests {
                 Some(35.0),
             );
         }
-        assert!(c.state.capped_reference_ms.is_none());
+        assert!(c.state.capped_reference.is_none());
 
         c.note_session_boundary();
 
@@ -1436,7 +1609,7 @@ mod tests {
             Some(35.0),
         );
         assert!(
-            c.state.capped_reference_ms.is_none(),
+            c.state.capped_reference.is_none(),
             "the pre-suspend streak must not carry over: {d:?}"
         );
     }
@@ -1497,7 +1670,7 @@ mod tests {
                 Some(22.0),
             );
         }
-        assert!(c.state.capped_reference_ms.is_some());
+        assert!(c.state.capped_reference.is_some());
 
         let d = c.update(
             Some(24.7),
@@ -1509,7 +1682,7 @@ mod tests {
         );
 
         assert!(
-            c.state.capped_reference_ms.is_some(),
+            c.state.capped_reference.is_some(),
             "wider slack must keep the latch through the same regression"
         );
         assert!(d.reason.starts_with("externally-capped"), "{d:?}");
@@ -1695,5 +1868,150 @@ mod tests {
         assert_eq!(config.performance_comfort_windows, 11);
         assert_eq!(config.demote_dwell_s, 50.0);
         assert_eq!(config.cpu_bound_gpu_util_max_pct, 80.0);
+    }
+
+    fn readings(p95: f64, p50: f64, source: MedianSource, miss: f64) -> FrametimeReadings {
+        FrametimeReadings {
+            p95_ms: Some(p95),
+            p50_ms: Some(p50),
+            p50_source: source,
+            miss_ratio: Some(miss),
+        }
+    }
+
+    #[test]
+    fn one_slow_window_does_not_jump_a_tier_without_evidence() {
+        // A promotion takes a single window; every step back down pays its
+        // dwell. So one stutter can undo minutes of easing, and the tick that
+        // releases a cap latch falls straight into this branch -- which is the
+        // demote/promote oscillation seen live.
+        let mut c = AdaptiveProfileController::new("balanced", PolicyConfig::for_target_fps(100.0));
+
+        // The card is busy, so the cap branch does not claim this tick and it
+        // reaches the promote. Tail well past badly-slow, but the median is on
+        // target and almost nothing missed: a stutter, not a slow session.
+        let d = c.update(
+            readings(30.0, 9.8, MedianSource::Marker, 0.05),
+            &tiers(),
+            100.0,
+            Some(95.0),
+            Some(20.0),
+            Some(35.0),
+        );
+        assert_ne!(d.reason, "badly-slow", "one stutter is not evidence");
+        assert_eq!(d.tier, "balanced");
+    }
+
+    #[test]
+    fn a_window_that_really_is_slow_still_jumps() {
+        // The veto must not cost a genuine promotion: most of the window over
+        // the deadline and a median past target is exactly the case the branch
+        // exists for.
+        let mut c = AdaptiveProfileController::new("balanced", PolicyConfig::for_target_fps(100.0));
+
+        let d = c.update(
+            readings(30.0, 25.0, MedianSource::Marker, 0.9),
+            &tiers(),
+            100.0,
+            Some(95.0),
+            Some(20.0),
+            Some(35.0),
+        );
+
+        assert_eq!(d.reason, "badly-slow");
+        assert_eq!(d.tier, "performance");
+    }
+
+    #[test]
+    fn a_game_with_no_readings_keeps_the_old_behaviour() {
+        // No marker stream means neither figure exists. Refusing to promote
+        // there would be worse than the oscillation this damps.
+        let mut c = AdaptiveProfileController::new("balanced", PolicyConfig::for_target_fps(100.0));
+
+        let d = c.update(
+            Some(30.0),
+            &tiers(),
+            100.0,
+            Some(95.0),
+            Some(20.0),
+            Some(35.0),
+        );
+
+        assert_eq!(d.reason, "badly-slow");
+    }
+
+    #[test]
+    fn a_cap_is_latched_against_the_median_not_the_tail() {
+        // Under a cap the median sits still while the tail wanders. Latching on
+        // the tail releases on the first stutter, and the releasing tick is the
+        // one that promotes.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        for i in 0..4 {
+            c.update(
+                readings(16.67, 16.6, MedianSource::Marker, 0.9),
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(25.0),
+                Some(20.0),
+                Some(35.0),
+            );
+        }
+        let reference = c.state.capped_reference.expect("a sustained cap latches");
+        assert_eq!(reference.source, MedianSource::Marker);
+        assert!(
+            (reference.ms - 16.6).abs() < 0.01,
+            "latched on the median, got {}",
+            reference.ms
+        );
+
+        // Tail jumps, median does not: the cap has not lifted.
+        let d = c.update(
+            readings(24.7, 16.6, MedianSource::Marker, 0.9),
+            &tiers(),
+            120.0,
+            Some(58.0),
+            Some(10.0),
+            Some(20.0),
+        );
+        assert!(
+            d.reason.starts_with("externally-capped"),
+            "a moving tail must not release a held cap, got {}",
+            d.reason
+        );
+    }
+
+    #[test]
+    fn a_latch_is_released_when_its_stream_stops_reporting() {
+        // Comparing a marker median against a pacing one calls the difference
+        // between two different measurements "movement". Nothing can be
+        // concluded, so the latch goes rather than being guessed at.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        for i in 0..4 {
+            c.update(
+                readings(16.67, 16.6, MedianSource::Marker, 0.9),
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(25.0),
+                Some(20.0),
+                Some(35.0),
+            );
+        }
+        assert!(c.state.capped_reference.is_some());
+
+        c.update(
+            readings(16.67, 16.6, MedianSource::Pacing, 0.9),
+            &tiers(),
+            120.0,
+            Some(25.0),
+            Some(20.0),
+            Some(35.0),
+        );
+
+        assert!(
+            c.state.capped_reference.is_none(),
+            "a reference whose stream stopped must not be re-tested against another"
+        );
     }
 }

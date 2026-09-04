@@ -143,6 +143,11 @@ fn pid_value(value: Option<&Value>) -> Option<String> {
 // --- aggregation helpers (receiver.py) --------------------------------------
 
 /// `_p95_us(values)` — drop `<= 0`, sort, index `round((n-1)*0.95)` (banker's).
+fn quantile_index(n: usize, q: f64) -> usize {
+    let raw = round_half_even((n as f64 - 1.0) * q) as i64;
+    raw.clamp(0, n as i64 - 1) as usize
+}
+
 fn p95_us(values: &[i64]) -> Option<i64> {
     let mut v: Vec<i64> = values.iter().copied().filter(|&x| x > 0).collect();
     if v.is_empty() {
@@ -150,9 +155,48 @@ fn p95_us(values: &[i64]) -> Option<i64> {
     }
     v.sort_unstable();
     let n = v.len();
-    let raw = round_half_even((n as f64 - 1.0) * 0.95) as i64;
-    let idx = raw.clamp(0, n as i64 - 1) as usize;
-    Some(v[idx])
+    Some(v[quantile_index(n, 0.95)])
+}
+
+/// Every statistic the window offers, from one filtered copy and one sort.
+///
+/// The percentiles are order statistics of the same sample, so they share the
+/// work instead of taking a copy and a sort each; the miss count needs no
+/// ordering at all and rides along in the filtering pass.
+struct FrametimeStats {
+    p95_us: i64,
+    /// Median of the same accepted set as `p95_us`.
+    p50_us: i64,
+    /// Share of frames over the deadline, when one was supplied.
+    ///
+    /// The real-time literature calls this the deadline miss ratio: not "how
+    /// late was the worst frame" but "how much of the window blew its budget".
+    /// A tail can be one stutter; a ratio cannot.
+    miss_ratio: Option<f64>,
+}
+
+fn frametime_stats(values: &[i64], miss_deadline_us: Option<i64>) -> Option<FrametimeStats> {
+    let mut v: Vec<i64> = Vec::with_capacity(values.len());
+    let mut missed = 0usize;
+    for &value in values {
+        if value <= 0 {
+            continue;
+        }
+        if miss_deadline_us.is_some_and(|deadline| value > deadline) {
+            missed += 1;
+        }
+        v.push(value);
+    }
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_unstable();
+    let n = v.len();
+    Some(FrametimeStats {
+        p95_us: v[quantile_index(n, 0.95)],
+        p50_us: v[quantile_index(n, 0.5)],
+        miss_ratio: miss_deadline_us.map(|_| missed as f64 / n as f64),
+    })
 }
 
 /// `_mean_fps` — `n * 1e6 / sum` over positive frametimes (float division).
@@ -297,6 +341,12 @@ fn has_marker_stream(samples: &[&Sample]) -> bool {
 
 struct BaseMarkerSelection {
     p95_us: i64,
+    /// Median of the *same* accepted sample set as `p95_us`, so the two are
+    /// comparable. A cap holds the median still while the tail keeps moving,
+    /// which is what makes it the honest thing to latch a cap against.
+    p50_us: i64,
+    /// Deadline miss ratio over that same set, when a deadline was supplied.
+    miss_ratio: Option<f64>,
     fps_source: &'static str,
 }
 
@@ -307,18 +357,20 @@ struct BaseMarkerSelection {
 fn select_base_marker_frametime_p95(
     samples: &[&Sample],
     raw_avg_fps: Option<f64>,
+    miss_deadline_us: Option<i64>,
 ) -> Option<BaseMarkerSelection> {
-    let valid_p95 = |frametimes: &[i64]| -> Option<i64> {
+    let valid_stats = |frametimes: &[i64]| -> Option<FrametimeStats> {
         if frametimes.len() < METER_MIN_PRESENT_SAMPLES {
             return None;
         }
-        let p95 = p95_us(frametimes)?;
-        if let (Some(marker_fps), Some(raw)) = (fps_from_frametime(Some(p95)), raw_avg_fps) {
+        let stats = frametime_stats(frametimes, miss_deadline_us)?;
+        if let (Some(marker_fps), Some(raw)) = (fps_from_frametime(Some(stats.p95_us)), raw_avg_fps)
+        {
             if marker_fps > raw * METER_MARKER_FPS_MAX_PRESENT_RATIO {
                 return None;
             }
         }
-        Some(p95)
+        Some(stats)
     };
 
     let shim_frametimes: Vec<i64> = samples
@@ -330,9 +382,11 @@ fn select_base_marker_frametime_p95(
         .map(|s| int_value(s.data.get("base_frame_frametime_us")))
         .filter(|&value| value > 0)
         .collect();
-    if let Some(p95) = valid_p95(&shim_frametimes) {
+    if let Some(stats) = valid_stats(&shim_frametimes) {
         return Some(BaseMarkerSelection {
-            p95_us: p95,
+            p95_us: stats.p95_us,
+            p50_us: stats.p50_us,
+            miss_ratio: stats.miss_ratio,
             fps_source: "nvapi-base-frame-marker",
         });
     }
@@ -358,26 +412,31 @@ fn select_base_marker_frametime_p95(
 
     for name in BASE_FRAME_MARKER_PRIORITY {
         if let Some(list) = marker_frametimes.get(name) {
-            if let Some(p95) = valid_p95(list) {
+            if let Some(stats) = valid_stats(list) {
                 return Some(BaseMarkerSelection {
-                    p95_us: p95,
+                    p95_us: stats.p95_us,
+                    p50_us: stats.p50_us,
+                    miss_ratio: stats.miss_ratio,
                     fps_source: "base-frame-marker",
                 });
             }
         }
     }
 
-    let mut eligible: Vec<(String, usize, i64)> = marker_frametimes
+    let mut eligible: Vec<(String, usize, FrametimeStats)> = marker_frametimes
         .iter()
-        .filter_map(|(name, fts)| valid_p95(fts).map(|p95| (name.clone(), fts.len(), p95)))
+        .filter_map(|(name, fts)| valid_stats(fts).map(|stats| (name.clone(), fts.len(), stats)))
         .collect();
     if eligible.is_empty() {
         return None;
     }
     // sort by (-len, name): most samples first, name ascending as tie-break.
     eligible.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let best = &eligible[0].2;
     Some(BaseMarkerSelection {
-        p95_us: eligible[0].2,
+        p95_us: best.p95_us,
+        p50_us: best.p50_us,
+        miss_ratio: best.miss_ratio,
         fps_source: "base-frame-marker",
     })
 }
@@ -610,7 +669,7 @@ impl Meter {
 
     /// `snapshot(now)` — the fresh-window aggregation the engine consumes. `None`
     /// when there are no samples within `METER_SAMPLE_MAX_AGE_S` of `now`.
-    fn snapshot(&mut self, now: f64) -> Option<LatencySnapshot> {
+    fn snapshot(&mut self, now: f64, miss_deadline_us: Option<i64>) -> Option<LatencySnapshot> {
         if self.samples.is_empty() {
             return None;
         }
@@ -645,13 +704,23 @@ impl Meter {
             "n/a".to_string()
         };
 
-        let marker_selection = select_base_marker_frametime_p95(&samples, raw_present_avg_fps);
+        let marker_selection =
+            select_base_marker_frametime_p95(&samples, raw_present_avg_fps, miss_deadline_us);
+        // The presented-frame median, kept whatever the marker path decided:
+        // it is the only median a game without markers can offer.
+        let present_pacing_p50_us = frametime_stats(&present_frametimes, None).map(|s| s.p50_us);
         let base_present_frametime_p95_us;
+        // Only reported when they come off the same accepted marker set as the
+        // p95; the present-pacing fallback has no comparable set.
+        let mut base_present_frametime_p50_us = None;
+        let mut base_present_frametime_miss_ratio = None;
         let present_fps_value;
         let cadence_is_independent;
         let fps_source;
         if let Some(marker) = marker_selection {
             base_present_frametime_p95_us = Some(marker.p95_us);
+            base_present_frametime_p50_us = Some(marker.p50_us);
+            base_present_frametime_miss_ratio = marker.miss_ratio;
             present_fps_value = fps_from_frametime(Some(marker.p95_us));
             self.last_base_present_fps = present_fps_value;
             cadence_is_independent = true;
@@ -709,6 +778,9 @@ impl Meter {
 
         Some(LatencySnapshot {
             base_present_frametime_p95_ms: base_present_frametime_p95_us.map(|v| v as f64 / 1000.0),
+            base_present_frametime_p50_ms: base_present_frametime_p50_us.map(|v| v as f64 / 1000.0),
+            present_pacing_p50_ms: present_pacing_p50_us.map(|v| v as f64 / 1000.0),
+            base_present_frametime_miss_ratio,
             present_fps: Some(format_fps_value(present_fps_value)),
             fps_source: Some(fps_source.to_string()),
             raw_present_fps_stats_avg: Some(raw_present_fps_stats_avg),
@@ -937,12 +1009,16 @@ impl LatencyReceiver {
     }
 
     /// `latency_meter.snapshot(now=loop_started)` — aggregate the current window.
-    pub(super) fn snapshot(&self, now: f64) -> Option<LatencySnapshot> {
+    pub(super) fn snapshot(
+        &self,
+        now: f64,
+        miss_deadline_us: Option<i64>,
+    ) -> Option<LatencySnapshot> {
         let mut meter = self
             .meter
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        meter.snapshot(now)
+        meter.snapshot(now, miss_deadline_us)
     }
 
     fn close(&mut self) {
@@ -1114,7 +1190,7 @@ mod tests {
         for s in samples {
             meter.add_sample(obj(s));
         }
-        meter.snapshot(monotonic_now())
+        meter.snapshot(monotonic_now(), None)
     }
 
     fn timing(extra: Value) -> Value {
@@ -1209,14 +1285,14 @@ mod tests {
         }
         let received = meter.samples.back().unwrap().received_monotonic;
         // 4s past the newest sample → outside the 3s window.
-        assert!(meter.snapshot(received + 4.0).is_none());
+        assert!(meter.snapshot(received + 4.0, None).is_none());
         // Still fresh at receipt time.
-        assert!(meter.snapshot(received).is_some());
+        assert!(meter.snapshot(received, None).is_some());
     }
 
     #[test]
     fn empty_meter_snapshot_none() {
-        assert!(Meter::new().snapshot(monotonic_now()).is_none());
+        assert!(Meter::new().snapshot(monotonic_now(), None).is_none());
     }
 
     #[test]
@@ -1236,7 +1312,7 @@ mod tests {
         }
 
         assert_eq!(meter.samples.len(), 4);
-        let snapshot = meter.snapshot(monotonic_now()).unwrap();
+        let snapshot = meter.snapshot(monotonic_now(), None).unwrap();
         assert_eq!(snapshot.pid.as_deref(), Some("111"));
         assert_eq!(snapshot.present_fps.as_deref(), Some("60"));
     }
@@ -1261,7 +1337,7 @@ mod tests {
             }))));
         }
 
-        let snapshot = meter.snapshot(monotonic_now()).unwrap();
+        let snapshot = meter.snapshot(monotonic_now(), None).unwrap();
         assert_eq!(meter.samples.len(), 12);
         assert_eq!(snapshot.session_id.as_deref(), Some("700"));
         assert_eq!(snapshot.pid.as_deref(), Some("219896"));
@@ -1484,7 +1560,7 @@ mod tests {
         }
         // 6 present samples + exactly 1 retained driver report.
         assert_eq!(meter.samples.len(), 7);
-        let s = meter.snapshot(monotonic_now()).unwrap();
+        let s = meter.snapshot(monotonic_now(), None).unwrap();
         assert!(approx(s.base_present_frametime_p95_ms.unwrap(), 16.6));
         assert!(approx(s.latency_p95_ms.unwrap(), 99.0));
         assert!(s.display_latency_p95_ms.is_none());
@@ -1500,7 +1576,7 @@ mod tests {
                 json!({"pid": 8, "present_frametime_us": 20000, "marker_bits": 64}),
             )));
         }
-        let w1 = meter.snapshot(monotonic_now()).unwrap();
+        let w1 = meter.snapshot(monotonic_now(), None).unwrap();
         assert!(approx(w1.base_present_frametime_p95_ms.unwrap(), 20.0));
         assert_eq!(w1.fps_source.as_deref(), Some("present-pacing"));
         assert_eq!(w1.framegen_active.as_deref(), Some("false"));
@@ -1513,7 +1589,7 @@ mod tests {
                 json!({"pid": 8, "present_frametime_us": 10000, "marker_bits": 64}),
             )));
         }
-        let w2 = meter.snapshot(monotonic_now()).unwrap();
+        let w2 = meter.snapshot(monotonic_now(), None).unwrap();
         assert!(approx(w2.base_present_frametime_p95_ms.unwrap(), 20.0));
         assert_eq!(w2.present_fps.as_deref(), Some("50"));
         assert_eq!(
@@ -1535,14 +1611,14 @@ mod tests {
                 json!({"pid": 9, "present_frametime_us": 20000}),
             )));
         }
-        meter.snapshot(monotonic_now());
+        meter.snapshot(monotonic_now(), None);
         meter.samples.clear();
         for _ in 0..6 {
             meter.add_sample(obj(timing(
                 json!({"pid": 9, "present_frametime_us": 10000}),
             )));
         }
-        let w2 = meter.snapshot(monotonic_now()).unwrap();
+        let w2 = meter.snapshot(monotonic_now(), None).unwrap();
         assert_eq!(w2.fps_source.as_deref(), Some("present-pacing"));
         assert_eq!(w2.framegen_active.as_deref(), Some("false"));
         assert!(approx(w2.base_present_frametime_p95_ms.unwrap(), 10.0));
@@ -1565,7 +1641,7 @@ mod tests {
                 json!({"pid": "12345", "present_frametime_us": 16667}),
             )));
         }
-        let s = meter.snapshot(monotonic_now()).unwrap();
+        let s = meter.snapshot(monotonic_now(), None).unwrap();
         assert_eq!(s.pid.as_deref(), Some("12345"));
         assert!(approx(s.base_present_frametime_p95_ms.unwrap(), 16.667));
     }
@@ -1611,7 +1687,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut got = None;
         while Instant::now() < deadline {
-            if let Some(snap) = receiver.snapshot(monotonic_now()) {
+            if let Some(snap) = receiver.snapshot(monotonic_now(), None) {
                 if snap.present_fps.as_deref() == Some("60") {
                     got = Some(snap);
                     break;
