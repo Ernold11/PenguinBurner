@@ -68,6 +68,9 @@ class LibraryGame:
     #: The launcher's own row, handed back untouched so the detail pane can
     #: read the fields only that launcher has.
     detail: object | None = None
+    #: Native renderer capability, independent of wrapper and saved settings.
+    overlay_supported: bool = True
+    overlay_unsupported_reason: str = ""
 
     @property
     def key(self) -> tuple[str, str]:

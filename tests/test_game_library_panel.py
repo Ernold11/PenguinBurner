@@ -177,6 +177,43 @@ def _panel(qapp, sources):
     )
 
 
+@pytest.mark.parametrize("has_profiles", [True, False])
+def test_opengl_disables_overlay_and_adaptive_without_rewriting_settings(qapp, has_profiles):
+    reason = "Game not compatible with Overlay or Adaptive: OpenGL detected."
+    setting = _setting(enabled=True, mode="adaptive", overlay=True, target_fps=75)
+    native = _game(
+        "lutris", "3", "Oxenfree", enabled=True, setting=setting,
+        overlay_supported=False, overlay_unsupported_reason=reason,
+    )
+    translated = _game("lutris", "1", "Gorogoa", enabled=True, setting=setting)
+    source = _Source("lutris", "Lutris", "tab-lutris.png", [native, translated])
+    panel = _panel(qapp, (source,))
+    panel._adaptive_available = lambda *_: has_profiles
+    panel._reload_games()
+    panel._select_key("lutris:3")
+
+    adaptive = panel.mode_combo.model().item(panel.mode_combo.findData("adaptive"))
+    assert not adaptive.isEnabled()
+    assert not panel.overlay_switch.isEnabled()
+    assert panel.overlay_switch.isChecked()  # saved preference survives detection
+    assert not panel.per_game_target_switch.isEnabled()
+    assert not panel.target_fps_spin.isEnabled()
+    assert panel.mode_combo.isEnabled()  # fixed profiles remain selectable
+    assert panel.enable_switch.isEnabled()
+    assert panel.compatibility_label.text() == reason
+    assert not panel.compatibility_label.isHidden()
+    assert source.manager.calls == []
+
+    panel._select_key("lutris:1")
+    assert panel.overlay_switch.isEnabled()
+    assert adaptive.isEnabled() == has_profiles
+    assert panel.target_fps_spin.isEnabled()
+    assert panel.compatibility_label.isHidden()
+    assert panel.overlay_switch.toolTip() == ""
+    assert source.manager.calls == []
+    panel.widget.close()
+
+
 def _steam_and_lutris():
     steam = _Source(
         "steam",
@@ -297,7 +334,11 @@ def test_the_header_lists_what_was_merged() -> None:
 
     assert library_header_text([]) == "Game library: no launcher found"
     assert library_header_text([steam]) == "Game library: Steam"
-    assert library_header_text([steam, lutris]) == "Game library: Steam and Lutris"
+    assert library_header_text([steam, lutris]) == "Game library: Steam, Lutris"
+    third = SimpleNamespace(display_name="Another launcher")
+    assert library_header_text([steam, lutris, third]) == (
+        "Game library: Steam, Lutris, Another launcher"
+    )
 
 
 def test_the_placeholder_tells_no_launcher_from_no_games() -> None:
@@ -319,6 +360,105 @@ def test_the_status_line_counts_across_launchers() -> None:
 
 
 # -- the panel -------------------------------------------------------------
+
+
+def test_initial_loading_spans_both_panes_and_lists_every_launcher(qapp, qtbot):
+    steam, lutris = _steam_and_lutris()
+    third = _Source("third", "Another launcher", "", [])
+    started, release = threading.Event(), threading.Event()
+
+    def slow_refresh(*, deep=True):
+        started.set()
+        assert release.wait(5)
+        raise RuntimeError("launcher unavailable")
+
+    third.refresh = slow_refresh
+    panel = _panel(qapp, (steam, lutris, third))
+    qtbot.addWidget(panel.widget)
+    panel.widget.show()
+    panel.ensure_scanned()
+    try:
+        assert started.wait(1)
+        assert panel.content_stack.currentWidget() is panel.loading_page
+        assert not panel.splitter.isVisible()
+        assert panel.loading_message.isHidden()  # delay avoids a quick-load flash
+        ticks = []
+        panel.QtCore.QTimer.singleShot(0, lambda: ticks.append(True))
+        qtbot.waitUntil(panel.loading_message.isVisible, timeout=2000)
+        assert ticks == [True]
+        assert panel.loading_sources_label.text() == "Steam, Lutris, Another launcher"
+        assert panel.loading_spinner._timer.isActive()
+        angle = panel.loading_spinner._angle
+        qtbot.waitUntil(lambda: panel.loading_spinner._angle != angle, timeout=1000)
+    finally:
+        release.set()
+        qtbot.waitUntil(lambda: not panel._scan_active, timeout=2000)
+    assert panel.content_stack.currentWidget() is panel.splitter
+    assert panel.splitter.isVisible()
+    assert not panel.loading_spinner._timer.isActive()
+    assert panel.rescan_button.isEnabled()
+    assert "launcher unavailable" in panel.status_label.text()
+    assert {game.launcher for game in panel._games} == {"steam", "lutris"}
+
+
+def test_fast_and_empty_scans_cancel_loading_feedback(qapp, qtbot):
+    panel = _panel(qapp, ())
+    qtbot.addWidget(panel.widget)
+    panel.widget.show()
+    panel.ensure_scanned()
+    qtbot.waitUntil(lambda: not panel._scan_active)
+    assert not panel._loading_delay_timer.isActive()
+    panel._show_scan_feedback()  # a queued callback cannot revive the spinner
+    assert panel.loading_message.isHidden()
+    assert not panel.loading_spinner._timer.isActive()
+    assert panel.content_stack.currentWidget() is panel.splitter
+    assert "No game launcher found" in panel.placeholder_label.text()
+    assert panel.rescan_button.isEnabled()
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_rescan_keeps_the_selected_game_and_pending_edit_visible(qapp, qtbot, quiet):
+    steam, lutris = _steam_and_lutris()
+    panel = _panel(qapp, (steam, lutris))
+    qtbot.addWidget(panel.widget)
+    panel.widget.show()
+    panel.ensure_scanned()
+    panel._select_key("lutris:27")
+    started, release = threading.Event(), threading.Event()
+
+    def slow_refresh(*, deep=True):
+        started.set()
+        assert release.wait(5)
+
+    steam.refresh = slow_refresh
+    panel.rescan(quiet=quiet)
+    try:
+        assert started.wait(1)
+        control = panel._fields["prefix_command"]["control"]
+        control.setText("unsaved command")
+        panel._on_field_typed("prefix_command")
+        assert panel.content_stack.currentWidget() is panel.splitter
+        assert panel.game_list.isVisible()
+        assert panel.mode_combo.isVisible()
+        if quiet:
+            assert not panel._loading_delay_timer.isActive()
+            panel._show_scan_feedback()
+            assert panel.rescan_spinner.isHidden()
+        else:
+            qtbot.waitUntil(panel.rescan_spinner.isVisible, timeout=2000)
+            assert panel.rescan_button.text() == "Scanning…"
+        assert panel._selected_key == "lutris:27"
+        assert control.text() == "unsaved command"
+        assert panel.loading_message.isHidden()
+    finally:
+        release.set()
+        qtbot.waitUntil(lambda: not panel._scan_active, timeout=2000)
+    assert panel._selected_key == "lutris:27"
+    assert control.text() == "unsaved command"
+    assert not lutris.manager.calls
+    assert panel.rescan_button.text() == "Rescan"
+    assert panel.rescan_spinner.isHidden()
+    assert not panel.rescan_spinner._timer.isActive()
 
 
 def test_both_launchers_land_on_one_list(qapp) -> None:
@@ -1225,6 +1365,77 @@ def test_a_refused_edit_stays_on_screen_as_typed(qapp) -> None:
     assert control.text() == 'gamescope "broken'
     assert "unbalanced quotes" in panel.status_label.text()
     assert panel._pending_field == "prefix_command"
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_a_refused_edit_keeps_the_game_selected_until_retry_succeeds(qapp, raises) -> None:
+    steam, lutris = _steam_and_lutris()
+    setter = lutris.manager.set_game_prefix_command
+
+    def refuse(*_):
+        if raises:
+            raise PermissionError("permission denied")
+        return SimpleNamespace(ok=False, message="permission denied")
+
+    lutris.manager.set_game_prefix_command = refuse
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("lutris:27")
+    original_row = panel.game_list.currentRow()
+    control = panel._fields["prefix_command"]["control"]
+    control.setText("gamescope -w 2560 --")
+    panel._on_field_typed("prefix_command")
+
+    panel.game_list.setCurrentRow(1 - original_row)
+
+    assert panel._selected_key == "lutris:27"
+    assert panel.game_list.currentRow() == original_row
+    assert panel._field_owner == "lutris:27"
+    assert panel._pending_field == "prefix_command"
+    assert control.text() == "gamescope -w 2560 --"
+    assert "permission denied" in panel.status_label.text()
+
+    lutris.manager.set_game_prefix_command = setter
+    panel.game_list.setCurrentRow(1 - original_row)
+
+    assert panel._selected_key == "steam:620"
+    assert panel._pending_field == ""
+    assert ("set_game_prefix_command", "27", "gamescope -w 2560 --") in lutris.manager.calls
+
+
+def test_command_save_during_scan_keeps_the_draft_without_blocking_qt(qapp, qtbot) -> None:
+    steam, lutris = _steam_and_lutris()
+    panel = _panel(qapp, (steam, lutris))
+    panel.ensure_scanned()
+    panel._select_key("lutris:27")
+    started, release = threading.Event(), threading.Event()
+
+    def refresh(*, deep=True):
+        started.set()
+        if not release.wait(5):
+            raise TimeoutError("test did not release scan")
+
+    lutris.refresh = refresh
+    panel.rescan(deep=False, quiet=True)
+    try:
+        assert started.wait(1)
+        control = panel._fields["prefix_command"]["control"]
+        control.setText("gamescope --")
+        panel._on_field_typed("prefix_command")
+        panel._select_key("steam:620")
+        assert panel._selected_key == "lutris:27"
+        assert panel._pending_field == "prefix_command"
+        assert control.text() == "gamescope --"
+        assert not lutris.manager.calls
+        assert "refreshing" in panel.status_label.text()
+    finally:
+        release.set()
+        qtbot.waitUntil(lambda: not panel._scan_thread.is_alive(), timeout=5000)
+        qtbot.waitUntil(lambda: panel._scan_result is None, timeout=5000)
+
+    panel._select_key("steam:620")
+    assert panel._selected_key == "steam:620"
+    assert ("set_game_prefix_command", "27", "gamescope --") in lutris.manager.calls
 
 
 def test_rescan_notices_a_launcher_installed_after_startup(qapp) -> None:

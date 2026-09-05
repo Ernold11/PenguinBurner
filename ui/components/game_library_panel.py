@@ -51,6 +51,7 @@ from .preference_rows import (
     preference_row,
 )
 from .toggle_switch import make_toggle_switch
+from .spinner import make_spinner
 
 _MODE_LABELS = {
     GAME_MODE_ADAPTIVE: "Adaptive",
@@ -96,6 +97,7 @@ _CHOICE_MIN_WIDTH = 220
 #: timer. Every launcher but a running Steam reads in well under this, and
 #: landing in the same tick spares the user a blink of empty list.
 _SCAN_JOIN_S = 0.05
+_SCAN_FEEDBACK_DELAY_MS = 500
 
 
 @dataclass
@@ -140,9 +142,7 @@ def no_launchers_text(names=None) -> str:
     tab's: adding one should change this sentence with no edit here.
     """
     known = tuple(names if names is not None else known_launcher_names())
-    listed = ", ".join(known[:-1]) + f" or {known[-1]}" if len(known) > 1 else (
-        known[0] if known else "a game launcher"
-    )
+    listed = ", ".join(known) or "a game launcher"
     return (
         f"No game launcher found. PenguinBurner looks for {listed}. "
         "Install one, then press Rescan."
@@ -188,9 +188,7 @@ def library_header_text(sources) -> str:
     names = [str(source.display_name) for source in sources]
     if not names:
         return "Game library: no launcher found"
-    if len(names) == 1:
-        return f"Game library: {names[0]}"
-    return f"Game library: {', '.join(names[:-1])} and {names[-1]}"
+    return f"Game library: {', '.join(names)}"
 
 
 def library_placeholder(*, launcher_count: int, game_count: int) -> str:
@@ -284,8 +282,16 @@ class GameLibraryPanel:
         self._bulk_menu_entries: list[tuple[Any, Any, tuple[Any, ...]]] = []
         self._write_state: Any = None
         self._write_state_source: Any = None
+        # Refreshes replace manager caches, so they share the write lock even
+        # when a timer started the scan before the user changed a setting.
+        # Reentrant because each write also refreshes its source before release.
+        self._library_lock = threading.RLock()
         self._scan_thread: threading.Thread | None = None
         self._scan_result: tuple | None = None
+        self._scan_active = False
+        self._scan_initial = False
+        self._scan_quiet = False
+        self._scan_sources: tuple[Any, ...] = ()
         self._action_thread: threading.Thread | None = None
         self._action_result: Any = None
         self._setting_thread: threading.Thread | None = None
@@ -322,6 +328,11 @@ class GameLibraryPanel:
             lambda _checked=False: self._run_write_action()
         )
         header_row.addWidget(self.write_action_button)
+        self.rescan_spinner = make_spinner(
+            QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets, size=16
+        )
+        self.rescan_spinner.hide()
+        header_row.addWidget(self.rescan_spinner)
         header_row.addWidget(self.rescan_button)
         layout.addLayout(header_row)
 
@@ -333,12 +344,19 @@ class GameLibraryPanel:
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([370, 760])
-        layout.addWidget(self.splitter, 1)
+        self.content_stack = QtWidgets.QStackedWidget()
+        self.content_stack.addWidget(self.splitter)
+        self.loading_page = self._build_loading_page()
+        self.content_stack.addWidget(self.loading_page)
+        layout.addWidget(self.content_stack, 1)
 
         self.status_label = QtWidgets.QLabel("")
         self.status_label.setObjectName("libraryStatus")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+        self._loading_delay_timer = QtCore.QTimer(self.widget)
+        self._loading_delay_timer.setSingleShot(True)
+        self._loading_delay_timer.timeout.connect(self._show_scan_feedback)
 
         # Only ticks while something this tab started is still alive; the
         # lifecycle stops it again as soon as nothing is.
@@ -357,6 +375,34 @@ class GameLibraryPanel:
         self._sync_status()
 
     # -- construction --------------------------------------------------------
+
+    def _build_loading_page(self):
+        page = self.QtWidgets.QFrame()
+        page.setObjectName("libraryLoadingPane")
+        layout = self.QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.addStretch(1)
+        self.loading_message = self.QtWidgets.QWidget()
+        self.loading_message.setMaximumWidth(480)
+        message = self.QtWidgets.QVBoxLayout(self.loading_message)
+        message.setSpacing(12)
+        self.loading_spinner = make_spinner(
+            QtCore=self.QtCore, QtGui=self.QtGui, QtWidgets=self.QtWidgets
+        )
+        message.addWidget(self.loading_spinner, 0, self.QtCore.Qt.AlignHCenter)
+        label = self.QtWidgets.QLabel("Loading installed games…")
+        label.setObjectName("libraryLoadingTitle")
+        label.setAlignment(self.QtCore.Qt.AlignCenter)
+        message.addWidget(label)
+        self.loading_sources_label = self.QtWidgets.QLabel("")
+        self.loading_sources_label.setObjectName("libraryLoadingSources")
+        self.loading_sources_label.setWordWrap(True)
+        self.loading_sources_label.setAlignment(self.QtCore.Qt.AlignCenter)
+        message.addWidget(self.loading_sources_label)
+        layout.addWidget(self.loading_message, 0, self.QtCore.Qt.AlignHCenter)
+        layout.addStretch(1)
+        self.loading_message.hide()
+        return page
 
     @staticmethod
     def _source_available(source) -> bool:
@@ -479,6 +525,11 @@ class GameLibraryPanel:
         self.play_button.clicked.connect(self._play_stop_clicked)
         hero.addWidget(self.play_button, 0, self.QtCore.Qt.AlignTop)
         page.addLayout(hero)
+        self.compatibility_label = self.QtWidgets.QLabel("")
+        self.compatibility_label.setObjectName("gameCompatibility")
+        self.compatibility_label.setWordWrap(True)
+        self.compatibility_label.hide()
+        page.addWidget(self.compatibility_label)
 
         # -- group: PenguinBurner ---------------------------------------------
         group, rows = preference_group(
@@ -688,6 +739,28 @@ class GameLibraryPanel:
 
     # -- scanning ------------------------------------------------------------
 
+    def _show_scan_feedback(self) -> None:
+        thread = self._scan_thread
+        if not self._scan_active or self._scan_quiet or thread is None or not thread.is_alive():
+            return
+        if self._scan_initial:
+            self.loading_sources_label.setText(
+                ", ".join(str(source.display_name) for source in self._scan_sources)
+            )
+            self.loading_message.show()
+        else:
+            self.rescan_spinner.show()
+            self.rescan_button.setText("Scanning…")
+
+    def _finish_scan_feedback(self) -> None:
+        self._scan_active = False
+        self._loading_delay_timer.stop()
+        self.loading_message.hide()
+        self.rescan_spinner.hide()
+        self.rescan_button.setText("Rescan")
+        self.rescan_button.setEnabled(True)
+        self.content_stack.setCurrentWidget(self.splitter)
+
     def ensure_scanned(self) -> None:
         """Read every launcher once, the first time the tab is shown.
 
@@ -725,9 +798,18 @@ class GameLibraryPanel:
                 return
         elif not self._flush_pending_field_edit():
             return
-        if self._scan_thread is not None and self._scan_thread.is_alive():
+        if self._scan_active or (self._scan_thread is not None and self._scan_thread.is_alive()):
             return
         self._scan_result = None
+        self._scan_active = True
+        self._scan_initial = not quiet and not bool(self._games)
+        self._scan_quiet = quiet
+        self._scan_sources = ()
+        if self._scan_initial:
+            self.content_stack.setCurrentWidget(self.loading_page)
+        if not quiet:
+            self.rescan_button.setEnabled(False)
+            self._loading_delay_timer.start(_SCAN_FEEDBACK_DELAY_MS)
         candidates = self._candidate_sources
 
         def run() -> None:
@@ -737,6 +819,7 @@ class GameLibraryPanel:
             installed = tuple(
                 source for source in candidates if self._source_available(source)
             )
+            self._scan_sources = installed
             problems = tuple(
                 problem
                 for problem in (
@@ -761,7 +844,11 @@ class GameLibraryPanel:
         thread = self._scan_thread
         if thread is not None and first:
             thread.join(_SCAN_JOIN_S)
-        if thread is not None and thread.is_alive():
+        if (thread is not None and thread.is_alive()) or self._write_busy:
+            if self._scan_initial and not self.loading_message.isHidden():
+                self.loading_sources_label.setText(
+                    ", ".join(str(source.display_name) for source in self._scan_sources)
+                )
             self.QtCore.QTimer.singleShot(
                 100, lambda: self._collect_scan(quiet=quiet, first=False)
             )
@@ -788,6 +875,7 @@ class GameLibraryPanel:
             self._sync_status(" · ".join(problems))
         elif not quiet:
             self._sync_status()
+        self._finish_scan_feedback()
 
     def _apply_sources(self, installed) -> None:
         installed = tuple(installed)
@@ -808,7 +896,8 @@ class GameLibraryPanel:
         either, so it reaches the status line rather than disappearing.
         """
         try:
-            source.refresh(deep=deep)
+            with self._library_lock:
+                source.refresh(deep=deep)
         except Exception as error:  # noqa: BLE001 - a launcher may fail any way
             return f"{source.display_name}: {error}"
         return ""
@@ -824,7 +913,7 @@ class GameLibraryPanel:
         self._games = ordered
         # Rebuilding an unchanged list every ten seconds would throw away the
         # user's scroll position for nothing.
-        if changed:
+        if changed or not ordered:
             self._refresh_list()
 
     def _sorted_games(self, games) -> tuple[LibraryGame, ...]:
@@ -858,6 +947,8 @@ class GameLibraryPanel:
                 game.enabled,
                 game.wrapped,
                 game.overlay,
+                game.overlay_supported,
+                game.overlay_unsupported_reason,
             )
             for game in games
         )
@@ -919,7 +1010,8 @@ class GameLibraryPanel:
         self._action_result = None
 
         def run() -> None:
-            self._action_result = action()
+            with self._library_lock:
+                self._action_result = action()
 
         self._action_thread = threading.Thread(target=run, daemon=True)
         self._action_thread.start()
@@ -1086,22 +1178,29 @@ class GameLibraryPanel:
             # for; save it before the pane is refilled for another one.
             # (QPlainTextEdit has no editingFinished, so the click that moves
             # the selection is the boundary that saves a command edit.)
-            self._flush_pending_field_edit()
+            if not self._flush_pending_field_edit():
+                # QListWidget has already moved its highlight when this came
+                # from a click. Keep it on the game that still owns the draft.
+                self._select_list_row(self._selected_key)
+                return
         game = self._game_for_key(key)
         if game is None:
             return
         self._selected_key = key
+        self._select_list_row(key)
+        self._sync_selection(game)
+
+    def _select_list_row(self, key: str) -> None:
         for index in range(self.game_list.count()):
             item = self.game_list.item(index)
             if str(item.data(self.QtCore.Qt.UserRole) or "") == key:
                 if self.game_list.currentRow() != index:
-                    self._syncing = True
+                    blocked = self.game_list.blockSignals(True)
                     try:
                         self.game_list.setCurrentRow(index)
                     finally:
-                        self._syncing = False
+                        self.game_list.blockSignals(blocked)
                 break
-        self._sync_selection(game)
 
     def _sync_selection(self, game: LibraryGame | None) -> None:
         self._syncing = True
@@ -1110,6 +1209,7 @@ class GameLibraryPanel:
                 self.title_label.setText("Select a game")
                 self.metadata_label.setText("")
                 self.play_button.setVisible(False)
+                self.compatibility_label.hide()
                 self._set_gated(False)
                 self.enable_switch.setEnabled(False)
                 self._sync_fields(None)
@@ -1117,6 +1217,13 @@ class GameLibraryPanel:
             setting = getattr(game.detail, "setting", None)
             self.title_label.setText(game.name)
             self.metadata_label.setText(game_metadata_text(game))
+            self.compatibility_label.setText(game.overlay_unsupported_reason)
+            self.compatibility_label.setVisible(not game.overlay_supported)
+            self.overlay_switch.setEnabled(game.overlay_supported)
+            self.overlay_switch.setToolTip(
+                wrapped_tooltip(game.overlay_unsupported_reason)
+                if not game.overlay_supported else ""
+            )
             # Whether the switches are live is the write gate's decision, in
             # _sync_write_state below.
             self.enable_switch.setChecked(game.enabled)
@@ -1147,14 +1254,20 @@ class GameLibraryPanel:
             self._syncing = False
 
     def _sync_adaptive_availability(self, gpu_uuid: str) -> None:
-        """Grey out Adaptive when there is no tier for it to switch between."""
-        if not callable(self._adaptive_available):
-            return
+        """Adaptive needs a supported renderer and an available GPU tier."""
         single_gpu = len(self._gpu_choices) == 1
         target = gpu_uuid
         if not target and single_gpu:
             target = str(getattr(self._gpu_choices[0], "uuid", "") or "")
-        available = bool(self._adaptive_available(target, single_gpu))
+        available = (
+            bool(self._adaptive_available(target, single_gpu))
+            if callable(self._adaptive_available) else True
+        )
+        game = self._selected_game()
+        reason = ""
+        if game is not None and not game.overlay_supported:
+            available = False
+            reason = game.overlay_unsupported_reason
         index = self.mode_combo.findData(GAME_MODE_ADAPTIVE)
         if index >= 0:
             item = self.mode_combo.model().item(index)
@@ -1164,12 +1277,14 @@ class GameLibraryPanel:
             ""
             if available
             else wrapped_tooltip(
-                "Adaptive needs at least one verified Auto-UV profile; run an "
+                reason or "Adaptive needs at least one verified Auto-UV profile; run an "
                 "Auto-UV scan first."
             )
         )
 
     def _sync_target_controls(self, adaptive: bool) -> None:
+        game = self._selected_game()
+        adaptive = adaptive and (game is None or game.overlay_supported)
         per_game = bool(self.per_game_target_switch.isChecked())
         self.per_game_target_switch.setEnabled(adaptive)
         self.target_fps_spin.setEnabled(adaptive and per_game)
@@ -1208,19 +1323,27 @@ class GameLibraryPanel:
         setter = getattr(manager, method, None)
         if setter is None:
             return True
-        result = setter(game.game_id, *args)
-        if not bool(getattr(result, "ok", True)):
-            # Nothing changed, so nothing to re-read. A refused text edit in
-            # particular must stay on screen as typed: the old full refresh
-            # here is what yanked the box back to the stored value.
-            if not self._pending_field:
-                # A refused switch or choice, though, is showing a state that
-                # did not land; snap it back from the unchanged rows.
-                self._sync_selection(self._selected_game())
-            self._sync_status(str(getattr(result, "message", "") or ""))
+        # A command save runs at a focus boundary on Qt's thread. Never wait
+        # for a background scan here; retain the draft so it can be retried.
+        if not self._library_lock.acquire(blocking=False):
+            self._sync_status("Library is refreshing. Try saving the command again shortly.")
             return False
-        self._after_write(game.launcher, result)
-        return True
+        try:
+            result = setter(game.game_id, *args)
+            if bool(getattr(result, "ok", True)):
+                self._after_write(game.launcher, result)
+                return True
+        except Exception as error:  # noqa: BLE001 - launcher save boundary
+            self._sync_status(f"Command save failed ({type(error).__name__}: {error})")
+            return False
+        finally:
+            self._library_lock.release()
+        # A refused command remains visible; only a discrete control should
+        # snap back to the stored value when its write did not land.
+        if not self._pending_field:
+            self._sync_selection(self._selected_game())
+        self._sync_status(str(getattr(result, "message", "") or ""))
+        return False
 
     def _write_async(self, game: LibraryGame | None, method: str, *args) -> bool:
         """Run a discrete setting write without blocking Qt's event loop.
@@ -1281,24 +1404,25 @@ class GameLibraryPanel:
 
         def run() -> None:
             try:
-                result = setter(game.game_id, *request.args)
-                followup = None
-                problem = ""
-                if bool(getattr(result, "ok", True)) and source is not None:
-                    after_write = getattr(source, "after_setting_write", None)
-                    if callable(after_write):
-                        try:
-                            followup = after_write(game.game_id, request.method)
-                        except Exception as error:  # noqa: BLE001 - live update boundary
-                            problem = f"Setting saved; live update failed ({error})."
-                    refresh_problem = self._refresh_source(source, deep=False)
-                    problem = "; ".join(part for part in (problem, refresh_problem) if part)
-                self._setting_result = _SettingWriteOutcome(
-                    game=game,
-                    result=result,
-                    followup=followup,
-                    refresh_problem=problem,
-                )
+                with self._library_lock:
+                    result = setter(game.game_id, *request.args)
+                    followup = None
+                    problem = ""
+                    if bool(getattr(result, "ok", True)) and source is not None:
+                        after_write = getattr(source, "after_setting_write", None)
+                        if callable(after_write):
+                            try:
+                                followup = after_write(game.game_id, request.method)
+                            except Exception as error:  # noqa: BLE001 - live update boundary
+                                problem = f"Setting saved; live update failed ({error})."
+                        refresh_problem = self._refresh_source(source, deep=False)
+                        problem = "; ".join(part for part in (problem, refresh_problem) if part)
+                    self._setting_result = _SettingWriteOutcome(
+                        game=game,
+                        result=result,
+                        followup=followup,
+                        refresh_problem=problem,
+                    )
             except Exception as error:  # noqa: BLE001 - launcher boundary
                 self._setting_result = _SettingWriteOutcome(
                     game=game,
@@ -1549,11 +1673,12 @@ class GameLibraryPanel:
                 if setter is None:
                     continue
                 try:
-                    result = setter(entries, action.value)
-                    ok = bool(getattr(result, "ok", True)) and ok
-                    message = str(getattr(result, "message", "") or "")
-                    if message:
-                        messages.append(f"{source.launcher_id}: {message}")
+                    with self._library_lock:
+                        result = setter(entries, action.value)
+                        ok = bool(getattr(result, "ok", True)) and ok
+                        message = str(getattr(result, "message", "") or "")
+                        if message:
+                            messages.append(f"{source.launcher_id}: {message}")
                 except Exception as error:  # noqa: BLE001 - launcher boundary
                     ok = False
                     messages.append(f"{source.launcher_id}: {type(error).__name__}: {error}")

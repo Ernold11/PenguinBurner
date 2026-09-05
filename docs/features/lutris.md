@@ -10,6 +10,10 @@ what PenguinBurner does when Lutris starts it: which Auto-UV profile applies,
 whether Adaptive aims at a different frame rate than the system-wide one, and
 whether the overlay is drawn.
 
+The Game Library loading state covers every detected launcher. Its centered
+spinner appears after half a second on the first load, with launcher names
+separated by commas. Rescan keeps the existing list and selected game visible.
+
 The Game Library tab can start and stop a Lutris game, through Lutris's own
 CLI (`lutris:rungameid/<id>`), so the game launches from its stored config and
 the wrapper below is already in the line Lutris builds. Stopping signals the
@@ -64,6 +68,14 @@ belongs to one user.
 
 ## Adaptive markers without the overlay
 
+For native Linux games detected as OpenGL, the library shows **Game not
+compatible with Overlay or Adaptive** and greys out Overlay, the Adaptive
+choice, and the FPS target controls. Fixed GPU profiles and launching remain
+available, and saved preferences are preserved. Rescan after changing a native
+game's renderer. Unknown renderers and Wine/Proton games keep their controls.
+The local wheel can include both 32-bit and 64-bit Vulkan overlay libraries;
+32-bit DXVK games need the 32-bit companion.
+
 Adaptive automatically keeps latency markers running when the overlay is off.
 This lets it pace against base rendered frames under frame generation without
 making the user coordinate a second switch. The only visible in-game setting is
@@ -91,6 +103,9 @@ into it and PenguinBurner writes exactly what you left there — on Enter, or as
 soon as you click away — then re-reads the toggles from it. Clear the wrapper out by hand and the switch
 turns itself off — after a hand edit the config is the truth, not what the tab
 remembered.
+If saving fails, PenguinBurner keeps the edited text and the game selected so
+you can correct or retry the command. If a library scan is still running, wait
+for it to finish and retry the save.
 
 ## Things to watch for
 

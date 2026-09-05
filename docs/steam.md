@@ -33,6 +33,14 @@ the launch wrapper.
 Nothing is forced. Enablement is strictly per game and per Steam account, stored
 in `~/.config/PenguinBurner/steam-game-settings.json`.
 
+Opening the Game Library or pressing **Rescan** reads Steam's live game details
+together. An unavailable game's timeout does not add a separate wait for every
+other game, and successful reads are kept.
+On the first load, a centered spinner replaces both library panes if the scan
+takes longer than half a second. It lists the detected launchers with comma
+separators. Rescan keeps the existing games and settings visible, with a small
+activity indicator for a slower scan; automatic background refreshes stay quiet.
+
 ## When Steam will take a change
 
 Steam holds each game's launch options in memory while the client runs, so a
@@ -106,6 +114,9 @@ the menu doubles as a state readout. Bulk enable also spells out its two side
 effects: the overlay stays off, and MangoHud is disabled inside wrapped games.
 Bulk writes run in the background: the list stays usable and subsequent
 individual toggle changes are queued until the bulk operation finishes.
+Background scans and settings writes run in sequence, so a scan cannot replace
+a newly saved setting with an older value. The window remains responsive while
+a change waits for a scan to finish.
 
 ## Play / Stop
 
@@ -119,6 +130,10 @@ Lutris command edits preserve quoted text and spacing. When wrapping a game
 that inherited its command prefix, disabling the wrapper resumes inheritance,
 including runner/global changes made in the meantime. Explicit per-game
 prefixes and externally edited commands are preserved.
+If a command cannot be saved, the editor keeps its text and the current game
+selected. Correct the command or resolve the reported problem, then retry. A
+command save during a background scan stays pending until you retry after the
+scan finishes.
 
 ## How it applies (no password prompts)
 
@@ -147,9 +162,11 @@ per-game runtime request is skipped and reported in the wrapper diagnostics.
   agnostic: native Linux, every Proton version, and DirectX 8–12 all work.
 - The **overlay and frame-pacing telemetry** are a Vulkan layer, so they cover
   anything presenting through Vulkan (DXVK for DX8–11, vkd3d-proton for DX12,
-  native Vulkan). Native OpenGL titles get the profile but no overlay, and
-  adaptive mode simply holds its initial tier when there is no present-pacing
-  signal to react to.
+  native Vulkan), for both 64-bit and 32-bit games — a 32-bit title renders
+  through wine's 32-bit Vulkan, so the layer ships a 32-bit build beside the
+  64-bit one and the loader picks the match. Native OpenGL titles get the
+  profile but no overlay, and adaptive mode simply holds its initial tier when
+  there is no present-pacing signal to react to.
 
 ## Manual launch options
 

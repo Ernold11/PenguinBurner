@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 
+import pytest
 import yaml
 
 from integrations.lutris.manager import LutrisIntegrationManager
@@ -551,3 +553,76 @@ def test_disabling_the_game_takes_the_opt_in_with_it(tmp_path) -> None:
     assert "PB_INGAME_LATENCY" not in _config(tmp_path)["system"].get(
         "prefix_command", ""
     )
+
+
+@pytest.mark.parametrize("bulk", [False, True])
+def test_library_scan_cannot_revert_a_setting_before_the_next_edit(
+    tmp_path, monkeypatch, qapp, qtbot, bulk
+) -> None:
+    """A scan that read old settings must finish before a write uses the cache."""
+    import integrations.lutris.manager as manager_module
+    from integrations.lutris.library_source import LutrisLibrarySource
+    from ui.components.game_library_panel import GameLibraryPanel
+    from ui.qt import import_qt
+
+    monkeypatch.setattr(manager_module, "ensure_host_integration", lambda: None)
+    manager = _manager(tmp_path, prefix_command="gamemoderun")
+    source = LutrisLibrarySource(manager, home=tmp_path)
+    QtCore, QtGui, QtWidgets, _pg = import_qt()
+    panel = GameLibraryPanel(
+        QtCore=QtCore, QtGui=QtGui, QtWidgets=QtWidgets, sources=(source,)
+    )
+    qtbot.addWidget(panel.widget)
+    panel.ensure_scanned()
+    panel._library_timer.stop()
+    started, release, write_started = (threading.Event() for _ in range(3))
+    original_load = manager_module.load_lutris_game_settings
+    intercepted = False
+
+    def delayed_load(path):
+        nonlocal intercepted
+        snapshot = original_load(path)
+        if not intercepted:
+            intercepted = True
+            started.set()
+            if not release.wait(5):
+                raise TimeoutError("test did not release library scan")
+        return snapshot
+
+    original_write = manager.set_game_enabled
+
+    def enable(game_id, enabled):
+        write_started.set()
+        return original_write(game_id, enabled)
+
+    monkeypatch.setattr(manager_module, "load_lutris_game_settings", delayed_load)
+    monkeypatch.setattr(manager, "set_game_enabled", enable)
+    panel.rescan(deep=False, quiet=True)
+    try:
+        assert started.wait(1)
+        if bulk:
+            panel._confirm = lambda *_: True
+            action = next(action for action in source.bulk_actions() if action.key == "enable_all")
+            panel._bulk_apply(action, (source,))
+        else:
+            panel.enable_switch.setChecked(True)
+        # Qt can paint the user's intent while the scan still owns the cache.
+        painted = []
+        QtCore.QTimer.singleShot(0, lambda: painted.append(True))
+        qtbot.waitUntil(lambda: bool(painted))
+        if not bulk:
+            assert panel.enable_switch.isChecked()
+        assert not write_started.wait(0.1)
+    finally:
+        release.set()
+        qtbot.waitUntil(lambda: panel._setting_thread is None, timeout=5000)
+        qtbot.waitUntil(lambda: panel._scan_result is None, timeout=5000)
+
+    assert manager.row("27").setting.enabled is True
+    panel._write_async(panel._selected_game(), "set_game_gpu", "GPU-test")
+    qtbot.waitUntil(lambda: panel._setting_thread is None, timeout=5000)
+
+    stored = load_lutris_game_settings(tmp_path / "lutris-game-settings.json")["27"]
+    assert stored.enabled is True
+    assert stored.gpu_uuid == "GPU-test"
+    assert "PENGUIN_BURNER" in _config(tmp_path)["system"]["prefix_command"]

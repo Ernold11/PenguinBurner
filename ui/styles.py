@@ -77,6 +77,19 @@ QFrame#libraryPane {{
     border: 1px solid {theme.BORDER};
     border-radius: 7px;
 }}
+QFrame#libraryLoadingPane {{
+    background: {theme.WINDOW_BG};
+    border: 1px solid {theme.BORDER};
+    border-radius: 7px;
+}}
+QLabel#libraryLoadingTitle {{
+    color: {theme.TEXT_STRONG};
+    font-size: 14px;
+}}
+QLabel#libraryLoadingSources {{
+    color: {theme.TEXT_MUTED};
+    font-size: 12px;
+}}
 /* The settings page is a field the cards sit on, so it takes the window tone
    rather than the raised surface the list uses. Styled on the frame around the
    scroll area -- see _build_settings for why the scroll area is left alone. */

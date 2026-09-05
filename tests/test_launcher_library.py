@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from integrations.launchers.library import (
     SORT_ALPHABETICAL,
     SORT_LAUNCHER,
@@ -196,6 +198,46 @@ def test_lutris_offers_to_start_a_game_only_when_its_cli_is_there(
     monkeypatch.setattr(lutris_source, "lutris_available", lambda: False)
     source.refresh()
     assert source.can_launch is False
+
+
+def test_lutris_renderer_probe_runs_during_refresh_and_rechecks_on_deep_scan(
+    tmp_path, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+    from integrations.lutris import library_source as lutris_source
+
+    binary = tmp_path / "Game.x86_64"
+    binary.write_bytes(b"\x7fELFlibGL.so.1")
+    config = tmp_path / "game.yml"
+    config.write_text("game:\n  exe: Game.x86_64\n")
+    game = SimpleNamespace(
+        game_id="3", display_name="Game", runner_label="linux",
+        directory=str(tmp_path), config_path=config, last_played=0,
+        playtime_hours=0, cover_path=None, ready=True,
+    )
+    row = SimpleNamespace(
+        game=game, wrapped=True, setting=SimpleNamespace(enabled=True, overlay=True)
+    )
+    manager = SimpleNamespace(refresh=lambda: None, rows=lambda: [row])
+    source = lutris_source.LutrisLibrarySource(manager=manager)
+    monkeypatch.setattr(lutris_source, "lutris_available", lambda: True)
+    source.refresh()
+    assert source.games()[0].overlay_supported is False
+
+    # The view reads cached facts; it never probes disk on the GUI thread.
+    with monkeypatch.context() as patch:
+        patch.setattr(lutris_source, "overlay_support", lambda **_: pytest.fail("GUI probe"))
+        assert source.games()[0].overlay_supported is False
+        source.refresh(deep=False)
+    binary.write_bytes(b"\x7fELFlibvulkan.so.1")
+    source.refresh()
+    assert source.games()[0].overlay_supported is True
+
+    game.runner_label = "wine"
+    with monkeypatch.context() as patch:
+        patch.setattr(lutris_source, "read_game_config", lambda *_: pytest.fail("Wine probe"))
+        source.refresh()
+    assert source.games()[0].overlay_supported is True
 
 
 # -- steam playtime --------------------------------------------------------

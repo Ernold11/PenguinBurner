@@ -228,11 +228,7 @@ class SteamIntegrationManager:
         """
         try:
             with SteamCdpClient(timeout_s=3.0) as client:
-                fresh_details = {
-                    game.app_id: details
-                    for game in games
-                    if (details := client.app_details(game.app_id)) is not None
-                }
+                fresh_details = client.app_details_many(game.app_id for game in games)
         except SteamCdpError:
             fresh_details = {}
         if fresh_details:

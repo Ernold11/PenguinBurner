@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from overlay.render_api import overlay_support
+
 from integrations.launchers.library import (
     FIELD_TEXT,
     GROUP_COMMAND,
@@ -17,6 +19,7 @@ from integrations.launchers.library import (
     LibraryGame,
 )
 
+from .config_store import LutrisConfigError, read_game_config
 from .manager import LutrisGameRow, LutrisIntegrationManager
 from .paths import lutris_desktop_icon
 from .process import (
@@ -52,6 +55,7 @@ class LutrisLibrarySource:
         )
         self._home = home
         self._rows: tuple[LutrisGameRow, ...] = ()
+        self._overlay_support: dict[str, tuple[bool, str]] = {}
 
     def desktop_icon(self):
         """Lutris's own installed icon, or None when it has none here."""
@@ -65,6 +69,16 @@ class LutrisLibrarySource:
         # there is no expensive pass to skip: the cheap one is the only one.
         self.manager.refresh()
         self._rows = tuple(self.manager.rows())
+        # Renderer inspection belongs on the scan worker, never in games()
+        # or selection handling. A deep rescan picks up renderer changes.
+        self._overlay_support = {
+            row.game.game_id: (
+                self._overlay_capability(row)
+                if deep or row.game.game_id not in self._overlay_support
+                else self._overlay_support[row.game.game_id]
+            )
+            for row in self._rows
+        }
         # Installing or removing Lutris while the tab is open should change
         # the Play button on the next scan, not on the next app start.
         self.can_launch = lutris_available()
@@ -141,6 +155,7 @@ class LutrisLibrarySource:
         return tuple(self._library_game(row) for row in self._rows)
 
     def _library_game(self, row: LutrisGameRow) -> LibraryGame:
+        supported, reason = self._overlay_support.get(row.game.game_id, (True, ""))
         return LibraryGame(
             launcher=self.launcher_id,
             game_id=row.game.game_id,
@@ -154,6 +169,31 @@ class LutrisLibrarySource:
             enabled=bool(row.setting.enabled),
             overlay=bool(row.setting.overlay),
             detail=row,
+            overlay_supported=supported,
+            overlay_unsupported_reason=reason,
+        )
+
+    @staticmethod
+    def _overlay_capability(row: LutrisGameRow) -> tuple[bool, str]:
+        game = row.game
+        # Wine, Proton, and unknown runners are not native ELF programs.
+        if game.runner_label.lower() != "linux":
+            return True, ""
+        executable = None
+        if game.config_path is not None:
+            try:
+                document = read_game_config(game.config_path)
+            except LutrisConfigError:
+                return True, ""
+            section = document.get("game")
+            if isinstance(section, dict) and section.get("exe"):
+                executable = Path(str(section["exe"]))
+                if not executable.is_absolute():
+                    executable = Path(game.directory or "") / executable
+        return overlay_support(
+            translated_to_vulkan=False,
+            executable=executable,
+            directory=game.directory or None,
         )
 
     # -- launching -------------------------------------------------------------

@@ -60,6 +60,13 @@ class _FakeCdpClient:
             platforms=details.platforms,
         )
 
+    def app_details_many(self, app_ids, **kwargs):
+        return {
+            app_id: details
+            for app_id in app_ids
+            if (details := self.app_details(app_id, **kwargs)) is not None
+        }
+
     def set_app_launch_options(self, app_id, value, **kwargs):
         type(self).launch_options[app_id] = value
         return True
@@ -140,6 +147,31 @@ def test_refresh_merges_library_settings_and_launch_options(manager) -> None:
     assert rows[0].game.effective_compat_tool == "proton_experimental"
     assert rows[0].game.is_proton
     assert not rows[0].game.is_native_linux
+
+
+def test_library_uses_one_batch_and_keeps_cached_details_for_missing_apps(manager, monkeypatch):
+    from dataclasses import replace
+
+    game = manager.refresh()[0].game
+    other = replace(game, app_id="20")
+    fresh = SteamAppDetails(
+        launch_options='env TITLE="other game" %command%',
+        compat_tool_name="GE-Proton10-34", compat_tool_display_name="GE-Proton10-34",
+        compat_tool_priority=75, platforms=("windows",),
+    )
+    calls = []
+
+    def read_batch(_client, app_ids):
+        calls.append(tuple(app_ids))
+        return {"20": fresh}
+
+    monkeypatch.setattr(_FakeCdpClient, "app_details_many", read_batch)
+    games = manager._read_all_app_details((game, other))
+    assert calls == [(APP_ID, "20")]
+    assert manager._launch_options[APP_ID] == "gamemoderun %command%"
+    assert manager._launch_options["20"] == fresh.launch_options
+    assert games[0].effective_compat_tool == "proton_experimental"
+    assert games[1].effective_compat_tool == fresh.compat_tool_name
 
 
 def test_refresh_marks_native_only_when_steam_api_reports_no_compat_tool(
