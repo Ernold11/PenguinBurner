@@ -12,7 +12,7 @@ use super::apply::apply_adaptive_curve;
 use super::ceiling::FlattenedClockCeilingController;
 use super::guard::select_expected_vf_samples;
 use super::latency_rx::METER_SAMPLE_MAX_AGE_S;
-use super::logfmt::tier_switch_line;
+use super::logfmt::{DecisionInputs, tier_switch_line};
 use super::runtime_spec::{
     normalize_profile_tier, profile_tier_label, AdaptivePolicySpec, LoadedCurve, PlanItem,
     PROFILE_TIERS, PROFILE_TIER_BALANCED, PROFILE_TIER_PERFORMANCE,
@@ -52,6 +52,19 @@ pub enum MedianSource {
     None,
     Marker,
     Pacing,
+}
+
+impl MedianSource {
+    /// Log label. `None` prints as the statistic actually used in its place,
+    /// because the only place it is rendered is a latch that falls back to the
+    /// tail when no median is on offer.
+    pub fn label(self) -> &'static str {
+        match self {
+            MedianSource::None => "p95",
+            MedianSource::Marker => "marker",
+            MedianSource::Pacing => "pacing",
+        }
+    }
 }
 
 /// What one tick knows about frame pacing.
@@ -400,6 +413,14 @@ impl AdaptiveProfileController {
                 ms: frametime_ms,
                 source: MedianSource::None,
             },
+        }
+    }
+
+    /// The held cap reference, for the log line that explains a decision.
+    fn capped_reference_parts(&self) -> (Option<f64>, &'static str) {
+        match self.state.capped_reference {
+            Some(reference) => (Some(reference.ms), reference.source.label()),
+            None => (None, "off"),
         }
     }
 
@@ -907,6 +928,26 @@ impl AdaptiveProfileController {
         Some(values.iter().sum::<f64>() / values.len() as f64)
     }
 
+    /// The windowed GPU utilisation the guards actually judged, which is not
+    /// the instantaneous reading the caller passed in.
+    fn windowed_gpu_util_pct(&self) -> Option<f64> {
+        self.windowed_avg(|s| s.gpu)
+    }
+
+    /// The windowed CPU figures the same branches judge.
+    ///
+    /// Reported for the same reason as the GPU one: the cap test is half a CPU
+    /// test, and an unreported CPU reading silently passes that half. A record
+    /// showing one side windowed and the other instantaneous made absent CPU
+    /// telemetry look like a policy that ignores the CPU.
+    fn windowed_cpu_util_pct(&self) -> Option<f64> {
+        self.windowed_avg(|s| s.cpu)
+    }
+
+    fn windowed_cpu_peak_thread_pct(&self) -> Option<f64> {
+        self.windowed_avg(|s| s.peak_thread)
+    }
+
     fn performance_promotion_cpu_bound(
         &self,
         target_tier: &str,
@@ -1137,6 +1178,23 @@ impl AdaptiveAutoUvRuntimeController {
             cpu,
             cpu_peak,
         );
+        // After update(), so the latch state printed is the one the decision was
+        // taken against rather than the previous tick's.
+        let (capped_reference_ms, capped_reference_source) = self.policy.capped_reference_parts();
+        let inputs = DecisionInputs {
+            present_frametime_p95_ms: readings.p95_ms,
+            present_frametime_p50_ms: readings.p50_ms,
+            median_source: readings.p50_source.label(),
+            present_frametime_miss_ratio: readings.miss_ratio,
+            // The windowed figures the branches read, falling back to the
+            // instantaneous ones only for the tick the window is empty --
+            // which is what the guards themselves do.
+            windowed_gpu_util_pct: self.policy.windowed_gpu_util_pct().or(gpu),
+            cpu_util_pct: self.policy.windowed_cpu_util_pct().or(cpu),
+            cpu_peak_thread_pct: self.policy.windowed_cpu_peak_thread_pct().or(cpu_peak),
+            capped_reference_ms,
+            capped_reference_source,
+        };
         if !decision.changed {
             self.maybe_log_cpu_bound_guard(&decision, now_monotonic, gpu, cpu, cpu_peak, log);
             return Some(AdaptiveSwitchResult {
@@ -1163,6 +1221,7 @@ impl AdaptiveAutoUvRuntimeController {
             &decision.tier,
             &curve,
             &decision.reason,
+            &inputs,
             backend,
             ceiling,
             publisher,
@@ -1194,6 +1253,7 @@ impl AdaptiveAutoUvRuntimeController {
         tier: &str,
         curve: &LoadedCurve,
         reason: &str,
+        inputs: &DecisionInputs,
         backend: &dyn GpuBackend,
         ceiling: &mut Option<FlattenedClockCeilingController<'_>>,
         publisher: &mut OverlayStatePublisher,
@@ -1212,6 +1272,7 @@ impl AdaptiveAutoUvRuntimeController {
             self.last_tier_label.as_deref().unwrap_or("?"),
             &label,
             reason,
+            inputs,
         ));
         self.last_tier_label = Some(label);
         Ok(AdaptiveSwitchResult {
@@ -2261,6 +2322,62 @@ mod tests {
         );
 
         assert_eq!(d.reason, "badly-slow");
+    }
+
+    #[test]
+    fn the_reported_utilisation_is_the_window_the_guards_read() {
+        // The record has to show the figure the policy judged. Reporting the
+        // instantaneous reading beside a windowed decision makes a correct
+        // decision look arbitrary -- and the field is named "windowed".
+        let mut c = controller();
+        for (i, gpu) in [10.0, 20.0, 60.0].iter().enumerate() {
+            c.update(
+                Some(16.0),
+                &tiers(),
+                100.0 + i as f64 * 0.5,
+                Some(*gpu),
+                Some(*gpu / 2.0),
+                Some(*gpu),
+            );
+        }
+
+        // The first tick with frames is a session boundary, which clears the
+        // window, so what remains is the two ticks after it -- averaged, not
+        // the last one.
+        assert_eq!(
+            c.windowed_gpu_util_pct(),
+            Some(40.0),
+            "the mean of the window, not the last sample"
+        );
+        assert_eq!(c.windowed_cpu_util_pct(), Some(20.0));
+        assert_eq!(c.windowed_cpu_peak_thread_pct(), Some(40.0));
+    }
+
+    #[test]
+    fn the_logged_latch_reports_the_measurement_it_was_taken_against() {
+        // The log line is the only record of a latch: it lives in memory and is
+        // gone by the time anyone reads the journal. Reporting the wrong median
+        // source there makes a held cap unreadable after the fact.
+        let mut c =
+            AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        assert_eq!(c.capped_reference_parts(), (None, "off"));
+
+        for i in 0..4 {
+            c.update(
+                readings(16.67, 16.6, MedianSource::Pacing, 0.9),
+                &tiers(),
+                100.0 + i as f64 * 2.0,
+                Some(25.0),
+                Some(20.0),
+                Some(35.0),
+            );
+        }
+        let (ms, source) = c.capped_reference_parts();
+        assert_eq!(source, "pacing", "the stream that fed the latch");
+        assert!(
+            (ms.expect("a sustained cap latches") - 16.6).abs() < 0.01,
+            "reports the latched median, got {ms:?}"
+        );
     }
 
     #[test]
