@@ -22,6 +22,23 @@ use super::LatencySnapshot;
 
 const CPU_BOUND_GUARD_LOG_THROTTLE_S: f64 = 30.0;
 
+/// How long a band has to hold before `windows` counts as satisfied.
+///
+/// The band counters advanced once per decision tick. That made every
+/// confirmation depend on `overlay.update_interval_s` -- a *display* setting,
+/// adjustable 1..10 s -- while the telemetry behind each reading is a fixed
+/// 3 s window. Two consequences, both wrong: raising the overlay refresh rate
+/// silently shortened every adaptive confirmation, and consecutive ticks
+/// re-read overlapping samples, so "3 windows" was never three independent
+/// observations.
+///
+/// Confirmation is elapsed time instead. The first reading in a band already
+/// carries one full window of samples, so N windows need (N-1) more windows to
+/// pass -- which is what the counters meant to express all along.
+fn confirmation_secs(windows: i64) -> f64 {
+    (windows - 1).max(0) as f64 * METER_SAMPLE_MAX_AGE_S
+}
+
 /// Which stream a median came from.
 ///
 /// Two medians reach the policy and they are not interchangeable: markers
@@ -233,9 +250,9 @@ pub struct Decision {
 struct PolicyState {
     current_tier: String,
     last_switch_monotonic: f64,
-    target_slow_count: i64,
-    near_slow_count: i64,
-    comfort_count: i64,
+    target_slow_since: Option<f64>,
+    near_slow_since: Option<f64>,
+    comfort_since: Option<f64>,
     /// Pacing observed when an external cap was first recognised.
     ///
     /// GPU utilisation cannot maintain that recognition on its own: dropping a
@@ -325,9 +342,9 @@ impl AdaptiveProfileController {
             state: PolicyState {
                 current_tier: normalize_profile_tier(initial_tier, PROFILE_TIER_BALANCED),
                 last_switch_monotonic: 0.0,
-                target_slow_count: 0,
-                near_slow_count: 0,
-                comfort_count: 0,
+                target_slow_since: None,
+                near_slow_since: None,
+                comfort_since: None,
                 capped_reference: None,
                 median_ms: None,
                 median_source: MedianSource::None,
@@ -409,6 +426,11 @@ impl AdaptiveProfileController {
         self.config.badly_slow_ms
     }
 
+    /// Seconds since the band was entered, starting the clock on first entry.
+    fn band_held_s(since: &mut Option<f64>, now_monotonic: f64) -> f64 {
+        now_monotonic - *since.get_or_insert(now_monotonic)
+    }
+
     fn snapshot_state(&self) -> PolicyState {
         self.state.clone()
     }
@@ -418,9 +440,9 @@ impl AdaptiveProfileController {
     }
 
     fn reset_counts(&mut self) {
-        self.state.target_slow_count = 0;
-        self.state.near_slow_count = 0;
-        self.state.comfort_count = 0;
+        self.state.target_slow_since = None;
+        self.state.near_slow_since = None;
+        self.state.comfort_since = None;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -631,10 +653,10 @@ impl AdaptiveProfileController {
             );
         }
         if frametime_ms > self.config.near_slow_ms {
-            self.state.near_slow_count += 1;
-            self.state.target_slow_count = 0;
-            self.state.comfort_count = 0;
-            if self.state.near_slow_count >= self.config.near_slow_windows {
+            self.state.target_slow_since = None;
+            self.state.comfort_since = None;
+            let held_s = Self::band_held_s(&mut self.state.near_slow_since, now_monotonic);
+            if held_s >= confirmation_secs(self.config.near_slow_windows) {
                 let target = higher_tier(&self.state.current_tier, &ordered);
                 return self.switch_with_cpu_bound_guard(
                     target,
@@ -653,10 +675,10 @@ impl AdaptiveProfileController {
             };
         }
         if frametime_ms > self.config.target_ms {
-            self.state.target_slow_count += 1;
-            self.state.near_slow_count = 0;
-            self.state.comfort_count = 0;
-            if self.state.target_slow_count >= self.config.target_slow_windows {
+            self.state.near_slow_since = None;
+            self.state.comfort_since = None;
+            let held_s = Self::band_held_s(&mut self.state.target_slow_since, now_monotonic);
+            if held_s >= confirmation_secs(self.config.target_slow_windows) {
                 let target = higher_tier(&self.state.current_tier, &ordered);
                 return self.switch_with_cpu_bound_guard(
                     target,
@@ -693,9 +715,9 @@ impl AdaptiveProfileController {
     /// plainly not the limiter. Reusing one path keeps a single set of dwell
     /// and window rules rather than inventing a second, differently tuned one.
     fn ease_down(&mut self, ordered: &[String], now_monotonic: f64, reason: &str) -> Decision {
-        self.state.target_slow_count = 0;
-        self.state.near_slow_count = 0;
-        self.state.comfort_count += 1;
+        self.state.target_slow_since = None;
+        self.state.near_slow_since = None;
+        let held_s = Self::band_held_s(&mut self.state.comfort_since, now_monotonic);
         let at_performance = self.state.current_tier == PROFILE_TIER_PERFORMANCE;
         let required_windows = if at_performance {
             self.config.performance_comfort_windows
@@ -708,7 +730,7 @@ impl AdaptiveProfileController {
             self.config.demote_dwell_s
         };
         let dwell_s = now_monotonic - self.state.last_switch_monotonic;
-        if self.state.comfort_count >= required_windows && dwell_s >= required_dwell {
+        if held_s >= confirmation_secs(required_windows) && dwell_s >= required_dwell {
             let target = lower_tier(&self.state.current_tier, ordered);
             return self.switch(target, now_monotonic, reason);
         }
@@ -1267,18 +1289,36 @@ mod tests {
     }
 
     #[test]
-    fn near_slow_promotes_after_windows() {
+    fn near_slow_promotes_once_the_band_has_held_long_enough() {
         let mut c = controller();
         // target_ms 16.6, near_slow_ms 18.5. frametime 17 → target-slow band.
-        // Need target_slow_windows=3 samples to promote.
+        // target_slow_windows=3, so the band has to hold two further windows
+        // (6 s) past the reading that entered it.
         let d1 = c.update(Some(17.0), &tiers(), 1.0, None, None, None);
         assert_eq!(d1.reason, "near-slow-wait");
-        let d2 = c.update(Some(17.0), &tiers(), 2.0, None, None, None);
+        let d2 = c.update(Some(17.0), &tiers(), 4.0, None, None, None);
         assert_eq!(d2.reason, "near-slow-wait");
-        let d3 = c.update(Some(17.0), &tiers(), 3.0, None, None, None);
+        let d3 = c.update(Some(17.0), &tiers(), 7.0, None, None, None);
         assert!(d3.changed);
         assert_eq!(d3.tier, "performance");
         assert_eq!(d3.reason, "near-slow");
+    }
+
+    #[test]
+    fn confirmation_does_not_depend_on_how_often_the_loop_ticks() {
+        // The counters advanced once per decision tick, so a faster overlay
+        // refresh silently shortened every confirmation. Ticking twice as
+        // often must not promote twice as fast.
+        let mut c = controller();
+        let mut last = None;
+        for i in 0..7 {
+            last = Some(c.update(Some(17.0), &tiers(), 1.0 + i as f64 * 0.5, None, None, None));
+        }
+        assert_eq!(
+            last.expect("ticks ran").reason,
+            "near-slow-wait",
+            "3 s of frames must not satisfy a 6 s band, however many ticks it took"
+        );
     }
 
     #[test]
@@ -1502,10 +1542,16 @@ mod tests {
         // tier -- not the cap -- is now the limit.
         let mut c =
             AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+        // Spaced so the capped stretch actually serves the ease-down
+        // confirmation, which is elapsed time rather than a tick count.
         for i in 0..12 {
-            let t = 100.0 + i as f64 * 2.0;
+            let t = 100.0 + i as f64 * 8.0;
             c.update(Some(16.67), &tiers(), t, Some(25.0), Some(20.0), Some(35.0));
         }
+        assert_ne!(
+            c.state.current_tier, "performance",
+            "the cap must have eased the tier down before the regression"
+        );
         // Frames fall well past the capped reference: 16.67 -> 25 ms.
         let mut promoted = false;
         for i in 0..6 {
@@ -1640,11 +1686,14 @@ mod tests {
         for game_util in [70.0, 85.0, 95.0] {
             let mut c =
                 AdaptiveProfileController::new("performance", PolicyConfig::for_target_fps(100.0));
+            // Long enough in wall-clock terms to serve the idle dwell and the
+            // ease-down confirmation that follows it, both of which are now
+            // elapsed time rather than a number of ticks.
             for i in 0..40 {
                 c.update(
                     None,
                     &tiers(),
-                    100.0 + i as f64 * 2.0,
+                    1.0 + i as f64 * 5.0,
                     Some(4.0),
                     Some(5.0),
                     Some(9.0),
@@ -1739,8 +1788,8 @@ mod tests {
             );
         }
         assert!(
-            c.state.comfort_count > 0,
-            "the idle stretch must have counted ease-down windows"
+            c.state.comfort_since.is_some(),
+            "the idle stretch must have started the ease-down clock"
         );
 
         c.update(
@@ -1753,8 +1802,9 @@ mod tests {
         );
 
         assert_eq!(
-            c.state.comfort_count, 1,
-            "the game's first comfort window must be its own, not the desktop's"
+            c.state.comfort_since,
+            Some(200.0),
+            "the game's comfort clock must start at its own first tick, not the desktop's"
         );
     }
 
@@ -1815,16 +1865,18 @@ mod tests {
         assert_eq!(d.reason, "cpu-bound-performance-block");
     }
 
-    /// Scripted frametime sequence; expected (tier, changed, reason) tuples
-    /// generated by running the Python policy directly:
-    ///   python3 -c 'from runtime.gpu_control.adaptive_profile_policy import
-    ///   AdaptiveProfileController, AdaptiveProfilePolicyConfig; ...'
-    ///   → [(balanced,F,near-slow-wait),(balanced,F,near-slow-wait),
-    ///      (performance,T,near-slow),(performance,F,comfort-wait)]
+    /// Scripted frametime sequence walked end to end, as a regression net over
+    /// the whole ladder rather than one branch.
+    ///
+    /// This used to pin the sequence against a Python `AdaptiveProfileController`
+    /// run by hand. That class no longer exists -- `adaptive_profile_policy.py`
+    /// keeps only the config dataclass the spec is built from -- so the daemon
+    /// is the sole engine and the expectations are its own. The timestamps are
+    /// spaced by the telemetry window, because confirmation is elapsed time.
     #[test]
-    fn adaptive_sequence_matches_python() {
+    fn a_scripted_frametime_sequence_walks_the_ladder() {
         let mut c = controller();
-        let seq = [(17.0, 1.0), (17.0, 2.0), (17.0, 3.0), (10.0, 4.0)];
+        let seq = [(17.0, 1.0), (17.0, 4.0), (17.0, 7.0), (10.0, 10.0)];
         let expected = [
             ("balanced", false, "near-slow-wait"),
             ("balanced", false, "near-slow-wait"),
@@ -1865,13 +1917,13 @@ mod tests {
             );
         }
         assert_eq!(c.state.current_tier, "balanced");
-        assert_eq!(c.state.comfort_count, 5);
+        assert!(c.state.comfort_since.is_some());
 
         let d = c.update(None, &tiers(), 170.0, Some(70.0), None, None);
 
         assert_eq!(d.tier, "balanced");
         assert_eq!(d.reason, "no-sample");
-        assert_eq!(c.state.comfort_count, 0);
+        assert!(c.state.comfort_since.is_none());
         assert!(c.state.desktop_idle_since.is_none());
     }
 
