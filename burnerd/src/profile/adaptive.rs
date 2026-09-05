@@ -12,7 +12,7 @@ use super::apply::apply_adaptive_curve;
 use super::ceiling::FlattenedClockCeilingController;
 use super::guard::select_expected_vf_samples;
 use super::latency_rx::METER_SAMPLE_MAX_AGE_S;
-use super::logfmt::{DecisionInputs, tier_switch_line};
+use super::logfmt::{tier_switch_line, DecisionInputs};
 use super::runtime_spec::{
     normalize_profile_tier, profile_tier_label, AdaptivePolicySpec, LoadedCurve, PlanItem,
     PROFILE_TIERS, PROFILE_TIER_BALANCED, PROFILE_TIER_PERFORMANCE,
@@ -384,9 +384,9 @@ impl AdaptiveProfileController {
     /// argue it is not a stutter: most of the window missed the deadline, and
     /// the median is over target too, not just the tail.
     ///
-    /// Missing readings mean the old behaviour. A game with no marker stream
-    /// has neither figure, and refusing to promote there would be worse than
-    /// the oscillation this exists to damp.
+    /// Missing base-frame readings mean the old behaviour. The present-pacing
+    /// median can include generated frames, so it cannot be compared with the
+    /// base-frame target. It remains useful for like-for-like cap/probe checks.
     fn badly_slow_is_evidenced(&self) -> bool {
         if self
             .state
@@ -395,10 +395,11 @@ impl AdaptiveProfileController {
         {
             return false;
         }
-        !self
-            .state
-            .median_ms
-            .is_some_and(|median| median <= self.config.target_ms)
+        !(self.state.median_source == MedianSource::Marker
+            && self
+                .state
+                .median_ms
+                .is_some_and(|median| median <= self.config.target_ms))
     }
 
     /// The reference a fresh latch is made against: the median where one
@@ -502,9 +503,8 @@ impl AdaptiveProfileController {
         };
         let session_boundary = present_frametime_p95_ms.is_some() && !self.state.frames_last_tick;
         if session_boundary {
-            self.clear_util_window();
+            self.note_session_boundary();
             self.reset_counts();
-            self.state.frame_cap_streak = 0;
         }
         self.state.frames_last_tick = present_frametime_p95_ms.is_some();
         if !session_boundary {
@@ -544,6 +544,7 @@ impl AdaptiveProfileController {
             // session that has gone quiet, and the next one must be judged on
             // its own pacing rather than inheriting this reference.
             self.state.capped_reference = None;
+            self.state.promotion_probe = None;
             return self.idle_decision(&ordered, now_monotonic, gpu_util_pct);
         };
         // Frames again: whatever the idle rule had counted towards belongs to a
@@ -917,6 +918,9 @@ impl AdaptiveProfileController {
     fn note_session_boundary(&mut self) {
         self.clear_util_window();
         self.state.frame_cap_streak = 0;
+        // A new session cannot tell us whether the previous session's
+        // promotion helped, even when both happen to report the same median.
+        self.state.promotion_probe = None;
         self.state.frames_last_tick = false;
     }
 
@@ -2155,7 +2159,10 @@ mod tests {
             Some(35.0),
         );
         assert_eq!(d.tier, "performance", "setup must promote");
-        assert!(c.state.promotion_probe.is_some(), "setup must arm the probe");
+        assert!(
+            c.state.promotion_probe.is_some(),
+            "setup must arm the probe"
+        );
         c
     }
 
@@ -2181,6 +2188,44 @@ mod tests {
             c.state.capped_reference.is_some(),
             "the revert latches, so the ladder does not immediately re-promote"
         );
+    }
+
+    #[test]
+    fn a_promotion_probe_does_not_cross_a_no_sample_gap() {
+        let mut c = promoted_with_probe_armed(25.0);
+        let quiet = c.update(None, &tiers(), 104.0, Some(70.0), Some(20.0), Some(35.0));
+        assert_eq!(quiet.reason, "no-sample");
+
+        // The next session happens to report the old median. It says nothing
+        // about whether the previous session benefited from its promotion.
+        let resumed = c.update(
+            readings(30.0, 25.0, MedianSource::Marker, 0.9),
+            &tiers(),
+            110.0,
+            Some(70.0),
+            Some(20.0),
+            Some(35.0),
+        );
+        assert_eq!(resumed.tier, "performance", "{resumed:?}");
+        assert!(c.state.capped_reference.is_none());
+    }
+
+    #[test]
+    fn a_promotion_probe_does_not_cross_system_resume() {
+        let mut c = promoted_with_probe_armed(25.0);
+        // Resume can happen without an intervening no-sample tick.
+        c.note_session_boundary();
+
+        let resumed = c.update(
+            readings(30.0, 25.0, MedianSource::Marker, 0.9),
+            &tiers(),
+            110.0,
+            Some(70.0),
+            Some(20.0),
+            Some(35.0),
+        );
+        assert_eq!(resumed.tier, "performance", "{resumed:?}");
+        assert!(c.state.capped_reference.is_none());
     }
 
     #[test]

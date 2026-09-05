@@ -1602,6 +1602,51 @@ mod tests {
     }
 
     #[test]
+    fn generated_present_frames_do_not_veto_base_fps_promotion() {
+        use crate::profile::adaptive::{
+            AdaptiveProfileController, FrametimeReadings, MedianSource, PolicyConfig,
+        };
+
+        let mut meter = Meter::new();
+        // Seed the real 40 FPS cadence, then enable 2x frame generation.
+        for _ in 0..6 {
+            meter.add_sample(obj(timing(
+                json!({"pid": 8, "present_frametime_us": 25000, "marker_bits": 64}),
+            )));
+        }
+        meter.snapshot(monotonic_now(), None).unwrap();
+        meter.samples.clear();
+        for _ in 0..6 {
+            meter.add_sample(obj(timing(
+                json!({"pid": 8, "present_frametime_us": 12500, "marker_bits": 64}),
+            )));
+        }
+        let snapshot = meter.snapshot(monotonic_now(), Some(22000)).unwrap();
+        assert_eq!(
+            snapshot.fps_source.as_deref(),
+            Some("present-pacing-deinterlaced")
+        );
+        assert_eq!(snapshot.base_present_frametime_p95_ms, Some(25.0));
+        assert_eq!(snapshot.base_present_frametime_p50_ms, None);
+        assert_eq!(snapshot.present_pacing_p50_ms, Some(12.5));
+
+        let readings = FrametimeReadings {
+            p95_ms: snapshot.base_present_frametime_p95_ms,
+            p50_ms: snapshot.present_pacing_p50_ms,
+            p50_source: MedianSource::Pacing,
+            miss_ratio: snapshot.base_present_frametime_miss_ratio,
+        };
+        let tiers = vec!["efficiency".into(), "balanced".into(), "performance".into()];
+        let mut controller = AdaptiveProfileController::new("efficiency", PolicyConfig::default());
+        let decision =
+            controller.update(readings, &tiers, 100.0, Some(99.0), Some(20.0), Some(35.0));
+        // 80 displayed FPS must not hide a GPU-bound 40 base FPS session
+        // missing the default 60 FPS target.
+        assert_eq!(decision.tier, "performance", "{decision:?}");
+        assert_eq!(decision.reason, "badly-slow");
+    }
+
+    #[test]
     fn deinterlace_gated_on_marker_stream() {
         // Same rate jump WITHOUT a marker stream is a real framerate increase, not
         // frame generation: no deinterlace, base tracks the new rate.

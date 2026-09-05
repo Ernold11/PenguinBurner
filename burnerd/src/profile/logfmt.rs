@@ -387,7 +387,12 @@ mod tests {
     #[test]
     fn tier_switch_line_carries_the_inputs_in_its_last_field() {
         assert_eq!(
-            tier_switch_line("Performance", "Balanced", "externally-capped", &sample_inputs()),
+            tier_switch_line(
+                "Performance",
+                "Balanced",
+                "externally-capped",
+                &sample_inputs()
+            ),
             "tier   | Performance → Balanced | externally-capped | \
              p95=16.7ms p50=16.7ms(marker) miss=42% gpu=76% cpu=8% peak=19% \
              cap-latch=16.7ms(marker)"
