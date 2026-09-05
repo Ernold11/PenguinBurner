@@ -59,6 +59,13 @@ With frame generation enabled, promotion still follows the base render rate.
 The median of displayed frames can include generated frames, so it is used
 only for comparisons with the same measurement over time.
 
+Reflex/NVAPI base-frame markers take priority when available. Otherwise,
+Adaptive uses measured present-frame pacing from the first complete sample
+window, at any framerate. A high FPS reading alone does not mean frame
+generation is active and does not prevent Adaptive from stepping down.
+If telemetry explicitly reports generated frames, Adaptive requires base-frame
+timing or a recoverable base cadence before using that output as real FPS.
+
 The target defaults to **60 FPS**. Override it for the service through the
 environment variable (30, 50, 60, 120, etc.):
 
