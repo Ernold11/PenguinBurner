@@ -11,6 +11,7 @@ use crate::gpu::GpuBackend;
 use super::apply::apply_adaptive_curve;
 use super::ceiling::FlattenedClockCeilingController;
 use super::guard::select_expected_vf_samples;
+use super::latency_rx::METER_SAMPLE_MAX_AGE_S;
 use super::logfmt::tier_switch_line;
 use super::runtime_spec::{
     normalize_profile_tier, profile_tier_label, AdaptivePolicySpec, LoadedCurve, PlanItem,
@@ -67,6 +68,19 @@ struct CappedReference {
     source: MedianSource,
 }
 
+/// A promotion that has been made and not yet judged.
+#[derive(Debug, Clone)]
+struct PromotionProbe {
+    /// The median at the moment of the promotion, to compare against.
+    median_ms: f64,
+    /// And where it came from, so the comparison stays like for like.
+    median_source: MedianSource,
+    /// Where to go back to if the promotion turns out to have done nothing.
+    from_tier: String,
+    /// When the sample window will hold only frames paced by the new tier.
+    due_at: f64,
+}
+
 // --- policy config ----------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
@@ -118,6 +132,20 @@ pub struct PolicyConfig {
     pub desktop_idle_gpu_pct: f64,
     /// How long that has to hold before the tier moves.
     pub desktop_idle_after_s: f64,
+    /// How long after a promotion to check whether it changed the pacing.
+    ///
+    /// A promotion is a prediction -- more clock will move the frame rate --
+    /// and this is the only rule that goes back and reads the outcome. Long
+    /// enough that the sample window no longer holds frames paced by the tier
+    /// that was replaced.
+    pub promotion_probe_s: f64,
+    /// How far the median may move and still count as not having moved.
+    ///
+    /// An external limiter holds the median at the same value whichever tier
+    /// runs, so "unchanged" -- not "did not improve enough" -- is the
+    /// signature being looked for. Pacing that got worse means the scene
+    /// changed, which is no evidence about the tier either way.
+    pub promotion_probe_tolerance: f64,
 }
 
 impl Default for PolicyConfig {
@@ -149,6 +177,8 @@ impl Default for PolicyConfig {
             frame_cap_exit_pacing_pct: 15.0,
             desktop_idle_gpu_pct: 20.0,
             desktop_idle_after_s: 60.0,
+            promotion_probe_s: 2.0 * METER_SAMPLE_MAX_AGE_S,
+            promotion_probe_tolerance: 0.02,
         }
     }
 }
@@ -218,6 +248,7 @@ struct PolicyState {
     /// The median this tick reported, and where it came from.
     median_ms: Option<f64>,
     median_source: MedianSource,
+    promotion_probe: Option<PromotionProbe>,
     /// Share of this tick's window past the badly-slow bar, when known.
     miss_ratio: Option<f64>,
     /// Consecutive frame ticks that have looked externally capped without a
@@ -300,6 +331,7 @@ impl AdaptiveProfileController {
                 capped_reference: None,
                 median_ms: None,
                 median_source: MedianSource::None,
+                promotion_probe: None,
                 miss_ratio: None,
                 frame_cap_streak: 0,
                 desktop_idle_since: None,
@@ -475,6 +507,52 @@ impl AdaptiveProfileController {
         // session that is over. Cleared before any ladder branch can run, so a
         // game that starts pays no dwell for the desktop it interrupted.
         self.state.desktop_idle_since = None;
+
+        // A promotion is a prediction -- more clock will move the frame rate --
+        // and this is the only rule that goes back and reads the outcome.
+        // Utilisation alone cannot settle it: measured live, a capped game sat
+        // at 61-66%, above the bar that recognises a cap and below the
+        // saturation that would justify the clock, and the ladder climbed back
+        // to the top tier 52 times, spending 93% of its time there. The median
+        // settles it without a threshold -- it stayed at 16.6 ms whichever
+        // tier ran, because a limiter, not the GPU, was setting it.
+        if let Some(probe) = self.state.promotion_probe.clone() {
+            if now_monotonic >= probe.due_at {
+                self.state.promotion_probe = None;
+                // A flat-out card is the one case where an unmoved median
+                // proves nothing. The check reasons "the clock changed
+                // nothing, so the clock was not the limit" -- and at
+                // saturation the clock demonstrably IS the limit, so a step
+                // too small to show inside the probe window is a small win,
+                // not an external cap.
+                let saturated = self
+                    .windowed_avg(|s| s.gpu)
+                    .or(gpu_util_pct)
+                    .is_some_and(|gpu| gpu >= self.config.frame_cap_exit_gpu_pct);
+                // Dropped, not acted on: the tick carries on to the ladder,
+                // which is free to do whatever a saturated card warrants.
+                if !saturated {
+                    // Same stream on both sides. A session that gains or loses
+                    // a marker stream would otherwise read the change of
+                    // instrument as the promotion having worked.
+                    if let Some(median_ms) = self
+                        .state
+                        .median_ms
+                        .filter(|_| self.state.median_source == probe.median_source)
+                    {
+                        let moved = (median_ms - probe.median_ms).abs();
+                        if moved <= probe.median_ms * self.config.promotion_probe_tolerance {
+                            self.state.capped_reference = Some(self.pacing_reference(frametime_ms));
+                            return self.switch(
+                                probe.from_tier,
+                                now_monotonic,
+                                "promotion-had-no-effect",
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // Checked before the slow ladder: every branch below reads a missed
         // target as "needs more clock", which is wrong the moment the GPU is
@@ -737,7 +815,14 @@ impl AdaptiveProfileController {
             cpu_util_pct,
             cpu_peak_thread_pct,
         ) {
-            return self.switch(target_tier, now_monotonic, reason);
+            let previous = self.state.current_tier.clone();
+            let decision = self.switch(target_tier, now_monotonic, reason);
+            if decision.changed
+                && tier_index(&decision.tier, ordered) > tier_index(&previous, ordered)
+            {
+                self.arm_promotion_probe(previous, now_monotonic);
+            }
+            return decision;
         }
         let capped = highest_non_performance_tier(ordered);
         if tier_index(&capped, ordered) > tier_index(&self.state.current_tier, ordered) {
@@ -833,6 +918,24 @@ impl AdaptiveProfileController {
         peak_busy || process_busy
     }
 
+    /// Remember what to compare against once the new tier has had time to
+    /// show its effect. Without a median there is nothing to judge, so the
+    /// promotion simply stands as before.
+    fn arm_promotion_probe(&mut self, from_tier: String, now_monotonic: f64) {
+        let Some(median_ms) = self.state.median_ms else {
+            return;
+        };
+        if median_ms <= 0.0 || self.state.median_source == MedianSource::None {
+            return;
+        }
+        self.state.promotion_probe = Some(PromotionProbe {
+            median_ms,
+            median_source: self.state.median_source,
+            from_tier,
+            due_at: now_monotonic + self.config.promotion_probe_s,
+        });
+    }
+
     fn switch(&mut self, target_tier: String, now_monotonic: f64, reason: &str) -> Decision {
         let target_tier = normalize_profile_tier(&target_tier, &self.state.current_tier);
         if target_tier == self.state.current_tier {
@@ -846,6 +949,10 @@ impl AdaptiveProfileController {
         self.state.current_tier = target_tier.clone();
         self.state.last_switch_monotonic = now_monotonic;
         self.reset_counts();
+        // Any tier change makes a pending probe meaningless: it was armed to
+        // judge a tier that is no longer the one running. The promotion path
+        // re-arms straight after calling this.
+        self.state.promotion_probe = None;
         Decision {
             tier: target_tier,
             changed: true,
@@ -1920,6 +2027,170 @@ mod tests {
 
         assert_eq!(d.reason, "badly-slow");
         assert_eq!(d.tier, "performance");
+    }
+
+    /// Promote on a genuinely slow window, at a utilisation that is neither
+    /// capped-looking nor saturated, so the probe arms and is judged on merit.
+    fn promoted_with_probe_armed(median_ms: f64) -> AdaptiveProfileController {
+        let mut c = AdaptiveProfileController::new("balanced", PolicyConfig::for_target_fps(100.0));
+        let d = c.update(
+            readings(30.0, median_ms, MedianSource::Marker, 0.9),
+            &tiers(),
+            100.0,
+            Some(66.0),
+            Some(20.0),
+            Some(35.0),
+        );
+        assert_eq!(d.tier, "performance", "setup must promote");
+        assert!(c.state.promotion_probe.is_some(), "setup must arm the probe");
+        c
+    }
+
+    #[test]
+    fn a_promotion_that_did_not_move_the_median_is_taken_back() {
+        // A limiter holds the median at the same value whichever tier runs, so
+        // an unmoved median after the probe window says the clock was never
+        // the limit -- and the tier that was paid for it is given back.
+        let mut c = promoted_with_probe_armed(25.0);
+
+        let judged = c.update(
+            readings(30.0, 25.0, MedianSource::Marker, 0.9),
+            &tiers(),
+            107.0,
+            Some(66.0),
+            Some(20.0),
+            Some(35.0),
+        );
+
+        assert_eq!(judged.reason, "promotion-had-no-effect");
+        assert_eq!(judged.tier, "balanced");
+        assert!(
+            c.state.capped_reference.is_some(),
+            "the revert latches, so the ladder does not immediately re-promote"
+        );
+    }
+
+    #[test]
+    fn the_probe_is_not_judged_before_its_window_has_passed() {
+        // Judged early it would read frames still paced by the tier that was
+        // replaced, which is the one thing the delay exists to avoid.
+        let mut c = promoted_with_probe_armed(25.0);
+
+        let early = c.update(
+            readings(30.0, 25.0, MedianSource::Marker, 0.9),
+            &tiers(),
+            103.0,
+            Some(66.0),
+            Some(20.0),
+            Some(35.0),
+        );
+
+        assert_ne!(early.reason, "promotion-had-no-effect");
+        assert!(c.state.promotion_probe.is_some(), "the probe still stands");
+    }
+
+    #[test]
+    fn a_promotion_that_moved_the_frame_rate_is_kept() {
+        // The direction that matters most: the clock did what was predicted,
+        // so the tier stays. Reverting here would undo every promotion that
+        // worked and leave the ladder unable to hold a win at all.
+        let mut c = promoted_with_probe_armed(25.0);
+
+        let judged = c.update(
+            readings(22.0, 19.0, MedianSource::Marker, 0.4),
+            &tiers(),
+            107.0,
+            Some(66.0),
+            Some(20.0),
+            Some(35.0),
+        );
+
+        assert_ne!(judged.reason, "promotion-had-no-effect");
+        assert_eq!(c.state.current_tier, "performance");
+    }
+
+    #[test]
+    fn pacing_that_got_worse_is_not_evidence_against_the_promotion() {
+        // The signature being looked for is "did not move", not "did not
+        // improve". A median that got worse means the scene changed, which
+        // says nothing about the tier either way.
+        let mut c = promoted_with_probe_armed(25.0);
+
+        let judged = c.update(
+            readings(36.0, 31.0, MedianSource::Marker, 0.9),
+            &tiers(),
+            107.0,
+            Some(66.0),
+            Some(20.0),
+            Some(35.0),
+        );
+
+        assert_ne!(judged.reason, "promotion-had-no-effect");
+        assert_eq!(c.state.current_tier, "performance");
+    }
+
+    #[test]
+    fn a_flat_out_card_keeps_the_promotion_it_earned() {
+        // The check reasons "the clock changed nothing, so the clock was not
+        // the limit". At saturation the clock demonstrably is the limit, so an
+        // unmoved median there is a win too small to show, not a cap.
+        let mut c = promoted_with_probe_armed(25.0);
+
+        let judged = c.update(
+            readings(30.0, 25.0, MedianSource::Marker, 0.9),
+            &tiers(),
+            107.0,
+            Some(95.0),
+            Some(20.0),
+            Some(35.0),
+        );
+
+        assert_ne!(judged.reason, "promotion-had-no-effect");
+        assert_eq!(c.state.current_tier, "performance");
+    }
+
+    #[test]
+    fn medians_from_different_streams_are_never_compared() {
+        // A game that starts reporting markers mid-session changes what the
+        // median is measured from. Comparing across that switch would read the
+        // change of instrument as a verdict on the tier.
+        let mut c = promoted_with_probe_armed(25.0);
+
+        let judged = c.update(
+            readings(30.0, 25.0, MedianSource::Pacing, 0.9),
+            &tiers(),
+            107.0,
+            Some(66.0),
+            Some(20.0),
+            Some(35.0),
+        );
+
+        assert_ne!(judged.reason, "promotion-had-no-effect");
+        assert_eq!(c.state.current_tier, "performance");
+    }
+
+    #[test]
+    fn without_a_median_the_promotion_stands_as_before() {
+        // Nothing to compare against is not evidence against the tier, so the
+        // probe never arms and the ladder behaves exactly as it used to.
+        let mut c = AdaptiveProfileController::new("balanced", PolicyConfig::for_target_fps(100.0));
+
+        let d = c.update(
+            FrametimeReadings {
+                p95_ms: Some(30.0),
+                p50_ms: None,
+                p50_source: MedianSource::None,
+                miss_ratio: Some(0.9),
+            },
+            &tiers(),
+            100.0,
+            Some(66.0),
+            Some(20.0),
+            Some(35.0),
+        );
+
+        assert_eq!(d.tier, "performance");
+        assert!(c.state.promotion_probe.is_none());
     }
 
     #[test]

@@ -31,7 +31,7 @@ use crate::paths::{
 
 // --- constants (receiver.py / framegen.py) ----------------------------------
 
-const METER_SAMPLE_MAX_AGE_S: f64 = 3.0;
+pub(super) const METER_SAMPLE_MAX_AGE_S: f64 = 3.0;
 const METER_MAX_SAMPLES: usize = 4096;
 const METER_MIN_PRESENT_SAMPLES: usize = 4;
 const METER_UNSEEDED_PRESENT_FPS_MAX: f64 = 70.0;
