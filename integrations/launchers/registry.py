@@ -2,8 +2,8 @@
 
 The tab asks once, on first entry, and gets back only the launchers that are
 installed. Each source answers for itself, because "is it here" means something
-different per launcher -- a Steam directory, a Lutris database -- and neither
-answer belongs in the GUI.
+different per launcher -- a Steam directory, a Lutris database, a Heroic config
+-- and none of those answers belongs in the GUI.
 """
 
 from __future__ import annotations
@@ -18,14 +18,17 @@ def build_sources(
     home: Path | None = None,
     steam_settings_path: str | Path | None = None,
     lutris_settings_path: str | Path | None = None,
+    heroic_settings_path: str | Path | None = None,
 ) -> tuple[LauncherSource, ...]:
     """Every known launcher, whether or not it is installed."""
+    from integrations.heroic.library_source import HeroicLibrarySource
     from integrations.lutris.library_source import LutrisLibrarySource
     from integrations.steam.library_source import SteamLibrarySource
 
     return (
         SteamLibrarySource(home=home, settings_path=steam_settings_path),
         LutrisLibrarySource(home=home, settings_path=lutris_settings_path),
+        HeroicLibrarySource(home=home, settings_path=heroic_settings_path),
     )
 
 

@@ -9,11 +9,16 @@ module for it.
 
 from __future__ import annotations
 
+import re
+
 from overlay.wrapper_tokens import (
+    game_key_from_flag,
     strip_penguin_burner_tokens,
     wrapper_present,
     wrapper_tokens,
 )
+
+from .host_process import host_pgrep
 
 
 def game_key(launcher_id: str, game_id: str) -> str:
@@ -69,3 +74,32 @@ def remove_wrapper(
 
 def command_wrapped(command: str | None) -> bool:
     return wrapper_present(command)
+
+
+def running_wrapped_games(launcher_id: str) -> dict[str, tuple[int, ...]] | None:
+    """This launcher's running wrapped games, mapped to their wrapper pids.
+
+    The identity flag we wrote is on the command line of the process we
+    started, so one ``pgrep`` names the sessions exactly -- no title matching,
+    no guessing which of two games with one name is running.
+
+    It sees only games PenguinBurner wraps, which is the set the tab can act
+    on: a game launched untouched has nothing of ours in its command line.
+
+    ``None`` means the check itself failed -- not that nothing is running -- so
+    a caller can hold what it knows instead of reading a stalled probe as every
+    game having exited.
+    """
+    prefix = f"{str(launcher_id).strip()}:"
+    # The [-] class keeps the query's own command line from matching itself.
+    matches = host_pgrep(f"[-]-pb-game-id={re.escape(prefix)}")
+    if matches is None:
+        return None
+    running: dict[str, tuple[int, ...]] = {}
+    for pid, line in matches:
+        for word in line.split():
+            key = game_key_from_flag(word)
+            if key.startswith(prefix):
+                game_id = key[len(prefix) :]
+                running[game_id] = (*running.get(game_id, ()), pid)
+    return running
