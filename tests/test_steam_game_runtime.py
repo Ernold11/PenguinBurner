@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from profiles import game_profile
 
 import integrations.steam.game_runtime as game_runtime
@@ -82,7 +83,7 @@ def _stub_adaptive_profiles(monkeypatch) -> None:
         },
     )
     monkeypatch.setattr(
-        game_runtime.DaemonGpuClient,
+        DaemonGpuClient,
         "discover_identities",
         classmethod(
             lambda cls: [
@@ -191,7 +192,7 @@ def test_game_runtime_profile_argv_keeps_legacy_profile_on_single_gpu(
         ],
     )
     monkeypatch.setattr(
-        game_runtime.DaemonGpuClient,
+        DaemonGpuClient,
         "discover_identities",
         classmethod(
             lambda cls: [

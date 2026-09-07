@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from drivers.nvidia.daemon_gpu import DaemonGpuClient
 from profiles import game_profile
 
 import integrations.steam.manager as manager_module
@@ -573,7 +574,7 @@ def test_hot_reapply_pushes_profile_to_running_game(manager, monkeypatch) -> Non
         lambda profiles, **_kwargs: {"balanced": {"profile_id": "profile-9"}},
     )
     monkeypatch.setattr(
-        game_runtime.DaemonGpuClient,
+        DaemonGpuClient,
         "discover_identities",
         classmethod(
             lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]
@@ -628,7 +629,7 @@ def test_hot_reapply_legacy_default_migrates_to_adaptive(manager, monkeypatch) -
         },
     )
     monkeypatch.setattr(
-        game_runtime.DaemonGpuClient,
+        DaemonGpuClient,
         "discover_identities",
         classmethod(
             lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]
@@ -673,7 +674,7 @@ def test_hot_reapply_tolerates_grace_window_exit(manager, monkeypatch) -> None:
         },
     )
     monkeypatch.setattr(
-        game_runtime.DaemonGpuClient,
+        DaemonGpuClient,
         "discover_identities",
         classmethod(lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]),
     )
@@ -708,7 +709,7 @@ def test_hot_reapply_targets_saved_gpu_for_stock(manager, monkeypatch) -> None:
         },
     )
     monkeypatch.setattr(
-        game_runtime.DaemonGpuClient,
+        DaemonGpuClient,
         "discover_identities",
         classmethod(
             lambda cls: [
@@ -750,7 +751,7 @@ def test_hot_reapply_reports_ignored_concurrent_game(manager, monkeypatch) -> No
         },
     )
     monkeypatch.setattr(
-        game_runtime.DaemonGpuClient,
+        DaemonGpuClient,
         "discover_identities",
         classmethod(lambda cls: [SimpleNamespace(index=0, uuid="GPU-only")]),
     )
