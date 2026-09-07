@@ -17,7 +17,7 @@
   <a href="https://pepy.tech/project/penguin-burner"><img alt="PyPI downloads" src="https://img.shields.io/pepy/dt/penguin-burner?style=flat-square&logo=pypi&logoColor=white&label=PyPI%20downloads"></a>
 </p>
 
-![PenguinBurner Auto-UV finding Efficiency, Balanced, and Performance curves in one scan](docs/assets/auto-uv-full-scan-demo.gif)
+![PenguinBurner Auto-UV scan, verified profiles, unified Steam and Lutris Game Library, and in-game overlay](docs/assets/auto-uv-full-scan-demo.gif)
 
 PenguinBurner is an open-source NVIDIA GPU tuning app for Linux with
 automatic undervolting, overclocking and adaptive per-game profiles for

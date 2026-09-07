@@ -1,5 +1,26 @@
 # Documentation Images
 
+Render the animated README demo with the current Qt UI and its deterministic
+sample data:
+
+```bash
+python scripts/render-auto-uv-qt-demo.py
+```
+
+To show the installed Steam and Lutris library instead, use the read-only live
+library option and select a game visible on the capture host:
+
+```bash
+python scripts/render-auto-uv-qt-demo.py \
+  --live-game-library --select-game Shelter
+```
+
+The Auto-UV scan and overlay telemetry remain simulated in both modes, and the
+renderer does not contact the hardware daemon. Rendering requires PySide6,
+pyqtgraph, and `ffmpeg`. The committed GIF uses the live-library command above;
+its games and artwork reflect that capture host. Inspect the GIF and generated
+poster before publishing.
+
 Capture Game Library from the current Qt widget and installed games:
 
 ```bash

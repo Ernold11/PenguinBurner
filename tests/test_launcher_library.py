@@ -794,6 +794,21 @@ def test_the_demo_render_only_reaches_for_parts_of_the_window_that_exist() -> No
     assert not in_module, f"ui.window no longer exports: {sorted(in_module)}"
 
 
+def test_demo_live_capture_selects_an_installed_game() -> None:
+    import runpy
+
+    choose = runpy.run_path("scripts/render-auto-uv-qt-demo.py")["_choose_live_game"]
+    steam = _game("Quake II RTX", launcher="steam", game_id="1089130")
+    lutris = _game("Shelter", launcher="lutris", game_id="4")
+    games = (steam, lutris)
+
+    assert choose(games, "Shelter") is lutris
+    assert choose(games, "quake") is steam
+    assert choose(games, "") is lutris
+    with pytest.raises(RuntimeError, match="Game not found"):
+        choose(games, "Missing title")
+
+
 def test_a_native_linux_game_is_not_offered_a_proton_it_does_not_use() -> None:
     """Steam says which games are native; a picker there does nothing.
 
