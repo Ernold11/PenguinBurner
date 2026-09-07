@@ -15,8 +15,7 @@ import os
 from pathlib import Path
 import sys
 
-from drivers.nvidia.daemon_gpu import DaemonGpuClient
-from profiles.game_profile import game_gpu_target, profile_argv_for_setting
+from integrations.launchers.runtime_profile import profile_argv, send_profile
 
 from .settings import steam_game_setting
 from .users import list_steam_users
@@ -68,23 +67,8 @@ def game_runtime_profile_argv(
     setting = steam_game_setting(account_id, app_id, path=settings_path)
     if setting is None:
         return None
-    try:
-        identities = list(DaemonGpuClient.discover_identities())
-    except Exception:
-        return None
-    target = game_gpu_target(setting, identities)
-    if target is None:
-        return None
-    gpu_uuid, gpu_index = target
-    argv = profile_argv_for_setting(
-        setting,
-        gpu_index=gpu_index,
-        gpu_uuid=gpu_uuid,
-        include_legacy_profiles=len(identities) == 1,
-    )
-    if argv is None:
-        return None
-    return argv, app_id
+    argv = profile_argv(setting)
+    return None if argv is None else (argv, app_id)
 
 
 def apply_game_runtime_profile(
@@ -98,31 +82,7 @@ def apply_game_runtime_profile(
     if resolved is None:
         return False
     argv, app_id = resolved
-    from runtime.daemon_client import start_game_runtime_profile
-
-    try:
-        result = start_game_runtime_profile(
-            argv,
-            watch_pid=os.getpid() if watch_pid is None else int(watch_pid),
-            app_id=app_id,
-            timeout_s=45.0,
-        )
-    except Exception as error:
-        print(
-            f"penguin-burner: per-game profile apply skipped: {error}",
-            file=sys.stderr,
-        )
-        return False
-    if isinstance(result, dict) and (
-        bool(result.get("ignored")) or not bool(result.get("started", True))
-    ):
-        reason = str(result.get("reason") or "daemon did not start the profile")
-        print(
-            f"penguin-burner: per-game profile apply skipped: {reason}",
-            file=sys.stderr,
-        )
-        return False
-    return True
+    return send_profile(argv, app_id=app_id, watch_pid=watch_pid)
 
 
 def main(argv: list[str] | None = None) -> int:
