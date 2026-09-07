@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from overlay.render_api import overlay_support
-
 from integrations.launchers.library import (
     FIELD_TEXT,
     GROUP_COMMAND,
@@ -18,6 +16,7 @@ from integrations.launchers.library import (
     LauncherWriteState,
     LibraryGame,
 )
+from overlay.render_api import overlay_support
 
 from .config_store import LutrisConfigError, read_game_config
 from .manager import LutrisGameRow, LutrisIntegrationManager
@@ -149,7 +148,6 @@ class LutrisLibrarySource:
     def after_setting_write(self, game_id: str, setter: str) -> None:
         """Lutris changes are picked up on the next launch, not live."""
         del game_id, setter
-        return None
 
     def games(self) -> tuple[LibraryGame, ...]:
         return tuple(self._library_game(row) for row in self._rows)
