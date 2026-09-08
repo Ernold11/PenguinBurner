@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from profiles.uv.profile_store import user_edited_display_name
+
 USER_EDITED_MEMORY_OFFSET_SOURCE = "user-edited"
 
 _EXCLUDED_PARENT_KEYS = {
@@ -45,8 +47,13 @@ def user_edited_memory_offset_profile_payload(
     payload.update(
         {
             "profile_source": USER_EDITED_MEMORY_OFFSET_SOURCE,
-            "display_name": (
-                f"User edited memory offset {int(new_memory_offset_mhz):+d} MT/s"
+            # Name it after the point the profile runs at, in the same
+            # phrasing as the running-profile line and the profile table --
+            # the edited memory offset shows there as memory-clock MHz.
+            "display_name": user_edited_display_name(
+                lock_clock_mhz=parent_profile.get("lock_clock_mhz"),
+                candidate_voltage_mv=parent_profile.get("candidate_voltage_mv"),
+                memory_offset_mhz=int(new_memory_offset_mhz),
             ),
             "memory_offset_mhz": int(new_memory_offset_mhz),
             "final_verified": False,

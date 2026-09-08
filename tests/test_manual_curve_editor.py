@@ -717,6 +717,7 @@ def test_user_edited_profile_payload_requires_verification() -> None:
             "path": "/tmp/parent.json",
             "candidate_voltage_mv": 900,
             "lock_clock_mhz": 2550,
+            "memory_offset_mhz": 3000,
             "avg_fps": 120.0,
             "final_verified": True,
         },
@@ -730,6 +731,9 @@ def test_user_edited_profile_payload_requires_verification() -> None:
     assert payload["requires_verification"] is True
     assert payload["candidate_voltage_mv"] == 930
     assert payload["lock_clock_mhz"] == 2595
+    # The edited point plus the inherited memory offset, phrased like the
+    # running-profile line.
+    assert payload["display_name"] == "User edited 2595 MHz 930 mV, mem +1500 MHz"
     assert "avg_fps" not in payload
     assert payload["manual_edit"]["parent_profile_id"] == "parent"
 

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from auto_uv.domain.user_options import AUTO_UV_CURVE_TUNING
 from auto_uv.persistence.verified_candidate_result_file import artifact_points
+from profiles.uv.profile_store import user_edited_display_name
 
 
 MANUAL_SMOOTH_TRIGGER_CLOCK_BINS = 5
@@ -595,9 +596,10 @@ def user_edited_profile_payload(
     payload.update(
         {
             "profile_source": USER_EDITED_PROFILE_SOURCE,
-            "display_name": (
-                f"User edited {int(edit.anchor_clock_mhz)} MHz "
-                f"{int(edit.anchor_voltage_mv)} mV"
+            "display_name": user_edited_display_name(
+                lock_clock_mhz=int(edit.anchor_clock_mhz),
+                candidate_voltage_mv=int(edit.anchor_voltage_mv),
+                memory_offset_mhz=parent_profile.get("memory_offset_mhz"),
             ),
             "candidate_id": (
                 f"user-edited-{int(edit.anchor_voltage_mv)}mv-"

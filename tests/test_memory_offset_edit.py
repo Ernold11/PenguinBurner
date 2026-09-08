@@ -37,6 +37,9 @@ def test_user_edited_memory_offset_profile_payload_requires_verification() -> No
 
     assert payload["profile_source"] == "user-edited"
     assert payload["memory_offset_mhz"] == 400
+    # Named like the running-profile line: the tuning point, memory offset in
+    # memory-clock MHz (half the stored MT/s), not "memory offset +400 MT/s".
+    assert payload["display_name"] == "User edited 2550 MHz 900 mV, mem +200 MHz"
     assert payload["final_verified"] is False
     assert payload["verification_status"] == "unverified"
     assert payload["requires_verification"] is True
@@ -64,3 +67,8 @@ def test_user_edited_memory_offset_profile_payload_without_original() -> None:
     )
     assert payload["manual_edit"]["original_memory_offset_mhz"] is None
     assert payload["manual_edit"]["new_memory_offset_mhz"] == 150
+
+
+def test_user_edited_memory_offset_profile_payload_names_bare_edit() -> None:
+    payload = user_edited_memory_offset_profile_payload({}, 0)
+    assert payload["display_name"] == "User edited profile"

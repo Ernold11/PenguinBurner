@@ -7,7 +7,7 @@ import time
 
 from overlay.state import read_overlay_state
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
-from profiles.uv.profile_store import display_signed_memory_clock
+from profiles.uv.profile_store import profile_clock_voltage_memory_summary
 from profiles.uv.profile_store import profile_display_name
 from profiles.uv.profile_store import read_auto_uv_profile_summaries
 from profiles.uv.profile_tiers import available_adaptive_tiers
@@ -168,26 +168,9 @@ def profile_status_label(profiles: list[dict], selector: str) -> str:
 
 
 def profile_frequency_voltage(profile: dict) -> str:
-    clock = _status_number(profile.get("lock_clock_mhz"), precision=0)
-    voltage = _status_number(profile.get("candidate_voltage_mv"), precision=0)
-    if clock and voltage:
-        text = f"{clock} MHz {voltage} mV"
-    else:
-        text = f"{clock} MHz" if clock else (f"{voltage} mV" if voltage else "")
-    memory = _memory_offset_summary(profile.get("memory_offset_mhz"))
-    if text and memory:
-        return f"{text}, {memory}"
-    return text or memory
-
-
-def _memory_offset_summary(value) -> str:
-    # Match the profile table / Auto-UV dialog (signed memory-clock MHz), but
-    # suppress a no-op +0 MHz so the running-profile line stays clean when the
-    # profile carries no memory offset.
-    text = display_signed_memory_clock(value)
-    if not text or text.startswith("0 "):
-        return ""
-    return f"mem {text}"
+    # Same phrasing as the profile table and the names of user-edited
+    # profiles: one helper owns it.
+    return profile_clock_voltage_memory_summary(profile)
 
 
 def runner_status_parts(
@@ -666,18 +649,6 @@ def _daemon_status_payload() -> dict[str, object]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
-
-
-def _status_number(value, *, precision: int) -> str:
-    if value in (None, ""):
-        return ""
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return ""
-    if precision <= 0:
-        return str(int(round(number)))
-    return f"{number:.{int(precision)}f}"
 
 
 def _on_off(value: bool) -> str:
