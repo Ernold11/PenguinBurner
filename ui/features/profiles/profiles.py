@@ -9,6 +9,7 @@ from overlay.state import read_overlay_state
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 from profiles.uv.profile_store import profile_clock_voltage_memory_summary
 from profiles.uv.profile_store import profile_display_name
+from profiles.uv.profile_store import profile_presentation_name
 from profiles.uv.profile_store import read_auto_uv_profile_summaries
 from profiles.uv.profile_tiers import available_adaptive_tiers
 from profiles.uv.profile_tiers import profile_tier_label
@@ -162,7 +163,8 @@ def profile_status_label(profiles: list[dict], selector: str) -> str:
         return text or "unknown profile"
     display_name = str(profile.get("display_name", "")).strip()
     if display_name:
-        return display_name
+        # Saved name, with a legacy user-edited one refreshed on read.
+        return profile_presentation_name(profile)
     text = profile_frequency_voltage(profile)
     return text or profile_display_name(profile) or str(profile.get("profile_id", ""))
 

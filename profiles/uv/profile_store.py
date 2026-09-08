@@ -541,6 +541,35 @@ def profile_clock_voltage_memory_summary(profile: dict) -> str:
     )
 
 
+# The two shapes the edit dialogs generated before they named a profile after
+# the point it runs at: "User edited memory offset +6000 MT/s" and the
+# memory-less "User edited 2500 MHz 850 mV".
+_LEGACY_USER_EDITED_NAME_RE = re.compile(
+    r"^User edited (?:memory offset [+-]?\d+ MT/s|\d+ MHz \d+ mV)$"
+)
+
+
+def profile_presentation_name(profile: dict) -> str:
+    """The name to show for a saved profile.
+
+    A profile edited before the naming changed still carries the old label in
+    its file. Rewriting saved profiles for the sake of a label would be a
+    silent write to user data, so the refresh happens here on read: a name
+    that is recognisably one the old dialogs generated is recomputed from the
+    profile's own clock, voltage and memory offset. Every other name --
+    Afterburner imports, edited fan curves, anything hand-picked -- is left
+    exactly as saved.
+    """
+    display_name = str(profile.get("display_name", "")).strip()
+    if display_name and _LEGACY_USER_EDITED_NAME_RE.match(display_name):
+        summary = profile_clock_voltage_memory_summary(profile)
+        if summary:
+            return f"User edited {summary}"
+    if display_name:
+        return display_name
+    return profile_display_name(profile)
+
+
 def user_edited_display_name(
     *,
     lock_clock_mhz=None,

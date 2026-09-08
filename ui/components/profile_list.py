@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from math import isfinite
 
-from profiles.uv.profile_store import profile_display_name
+from profiles.uv.profile_store import profile_presentation_name
 from profiles.gpu_identity import (
     profile_gpu_compatibility,
     profile_gpu_label,
@@ -1134,10 +1134,7 @@ def _truthy(value: object) -> bool:
 
 
 def _profile_name(profile: dict) -> str:
-    display_name = str(profile.get("display_name", "")).strip()
-    if display_name:
-        return display_name
-    return profile_display_name(profile)
+    return profile_presentation_name(profile)
 
 
 def _profile_matches_preference(

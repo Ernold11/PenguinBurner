@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from profiles.uv.profile_store import profile_presentation_name
 from profiles.uv.memory_offset_edit import (
     editable_memory_offset_from_profile,
     user_edited_memory_offset_profile_payload,
@@ -72,3 +73,68 @@ def test_user_edited_memory_offset_profile_payload_without_original() -> None:
 def test_user_edited_memory_offset_profile_payload_names_bare_edit() -> None:
     payload = user_edited_memory_offset_profile_payload({}, 0)
     assert payload["display_name"] == "User edited profile"
+
+
+def test_profile_presentation_name_refreshes_legacy_memory_offset_name() -> None:
+    # Saved before the rename: the file still says MT/s, the UI must not.
+    assert (
+        profile_presentation_name(
+            {
+                "display_name": "User edited memory offset +6000 MT/s",
+                "lock_clock_mhz": 2500,
+                "candidate_voltage_mv": 850,
+                "memory_offset_mhz": 6000,
+            }
+        )
+        == "User edited 2500 MHz 850 mV, mem +3000 MHz"
+    )
+
+
+def test_profile_presentation_name_refreshes_legacy_curve_name() -> None:
+    assert (
+        profile_presentation_name(
+            {
+                "display_name": "User edited 2500 MHz 850 mV",
+                "lock_clock_mhz": 2500,
+                "candidate_voltage_mv": 850,
+                "memory_offset_mhz": 6000,
+            }
+        )
+        == "User edited 2500 MHz 850 mV, mem +3000 MHz"
+    )
+
+
+def test_profile_presentation_name_keeps_other_saved_names() -> None:
+    # An edited fan curve, an Afterburner import and anything hand-picked keep
+    # the name in their file.
+    for saved in (
+        "User edited fan curve 2500 MHz 850 mV",
+        "MSI Afterburner Curve 2500 MHz 850 mV",
+        "My quiet profile",
+    ):
+        assert (
+            profile_presentation_name(
+                {
+                    "display_name": saved,
+                    "lock_clock_mhz": 2500,
+                    "candidate_voltage_mv": 850,
+                    "memory_offset_mhz": 6000,
+                }
+            )
+            == saved
+        )
+
+
+def test_profile_presentation_name_falls_back_without_a_saved_name() -> None:
+    assert (
+        profile_presentation_name({"lock_clock_mhz": 2500, "candidate_voltage_mv": 850})
+        == "2500 MHz 850 mV"
+    )
+    # A legacy name with nothing to recompute from stays as saved.
+    assert (
+        profile_presentation_name(
+            {"display_name": "User edited memory offset +0 MT/s"}
+        )
+        == "User edited memory offset +0 MT/s"
+    )
+
