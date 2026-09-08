@@ -50,10 +50,25 @@ def _home(
                         "title": "Borderlands",
                         "runner": "legendary",
                         "is_installed": True,
-                        "install": {"platform": platform, "install_path": "/g/bl"},
                     }
                     for app_name in app_names
                 ]
+            }
+        )
+    )
+    # What is installed, and where, is the store backend's record -- Heroic
+    # only copies it into the cached library when it next refreshes.
+    installed = root / "legendaryConfig" / "legendary" / "installed.json"
+    installed.parent.mkdir(parents=True, exist_ok=True)
+    installed.write_text(
+        json.dumps(
+            {
+                app_name: {
+                    "app_name": app_name,
+                    "platform": platform,
+                    "install_path": "/g/bl",
+                }
+                for app_name in app_names
             }
         )
     )

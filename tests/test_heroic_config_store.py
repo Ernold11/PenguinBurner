@@ -179,3 +179,28 @@ def test_a_write_reports_what_actually_landed(tmp_path) -> None:
 
     assert write.ok is True
     assert write.command == f"{WRAPPED} mangohud"
+
+
+def test_a_config_handed_back_is_the_file_heroic_left(tmp_path) -> None:
+    """Enable then disable must leave no trace, down to the bytes.
+
+    Heroic writes JSON.stringify(config, null, 2) with no trailing newline; a
+    writer that formats differently turns every touched game config into a
+    diff for whatever reads it next.
+    """
+    root = _heroic(tmp_path)
+    path = root / "GamesConfig" / "Turkey.json"
+    original = json.dumps(
+        {
+            "Turkey": {"winePrefix": "/prefixes/bl", "wrapperOptions": [_entry("mangohud")]},
+            "version": "v0",
+            "explicit": True,
+        },
+        indent=2,
+    )
+    path.write_text(original)
+
+    assert write_wrapper_command("Turkey", f"{WRAPPED} mangohud", tmp_path).ok
+    assert write_wrapper_command("Turkey", "mangohud", tmp_path).ok
+
+    assert path.read_text() == original

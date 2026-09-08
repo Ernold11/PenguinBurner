@@ -5,6 +5,13 @@ GOG through gogdl, Amazon through nile, plus games the user sideloaded -- and
 they all describe a game the same way, so one reader answers for all four. A
 store the user never signed into is simply a file that is not there.
 
+Which of them are installed is a third source again. The cached libraries carry
+an ``is_installed`` flag, but Heroic *derives* it from each store backend's own
+installed.json when it refreshes, so between refreshes the flag is stale --
+a game installed a minute ago still reads false. Those stores are the
+authority here too, and they are also where an installed game's real path and
+platform live: the cached entry's ``install`` block is empty until a refresh.
+
 Playtime and last-played live apart from the library, in ``store/timestamp.json``,
 because Heroic writes them when a session ends rather than when it syncs.
 
@@ -20,10 +27,29 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .paths import game_art_path, library_cache_paths, timestamps_path
+from .paths import (
+    game_art_path,
+    installed_store_paths,
+    library_cache_paths,
+    timestamps_path,
+)
 
 #: Both spellings a cache file uses for its list of games.
 _GAME_LIST_KEYS = ("library", "games")
+
+#: The three stores spell one installed game three ways, so each field is
+#: looked up under every name any of them uses.
+_APP_ID_KEYS = ("appName", "app_name", "id")
+_INSTALL_PATH_KEYS = ("install_path", "path")
+
+
+@dataclass(frozen=True)
+class _InstalledRecord:
+    """One entry of a store backend's installed.json, however it spells it."""
+
+    install_path: str
+    platform: str
+    is_dlc: bool
 
 
 @dataclass(frozen=True)
@@ -78,16 +104,18 @@ def read_heroic_games(
     their game but never launches.
     """
     timestamps = _read_timestamps(timestamps_path(home))
+    installed = _read_installed(home)
     games: list[InstalledHeroicGame] = []
     seen: set[str] = set()
     for path in library_cache_paths(home):
         for entry in _entries(path):
+            record = installed.get(str(entry.get("app_name") or "").strip())
             # Filtered before the record is built: a store's cache lists
             # everything the account owns, and resolving artwork for hundreds
             # of games nobody installed is a stat storm per library scan.
-            if not include_uninstalled and not entry.get("is_installed"):
+            if not include_uninstalled and not _is_installed(entry, record):
                 continue
-            game = _game_from_entry(entry, timestamps, home)
+            game = _game_from_entry(entry, record, timestamps, home)
             if game is None or game.game_id in seen:
                 continue
             seen.add(game.game_id)
@@ -132,6 +160,58 @@ def _entries(path: Path) -> list[dict]:
     return [row for row in rows if isinstance(row, dict)]
 
 
+def _is_installed(entry: dict, record: _InstalledRecord | None) -> bool:
+    """Installed per the store backend, or per the entry when it has no store.
+
+    Sideloaded games are the second case: nothing installed them for Heroic,
+    so the library entry is the only record there is.
+    """
+    return record is not None or (
+        str(entry.get("runner") or "") == "sideload" and bool(entry.get("is_installed"))
+    )
+
+
+def _read_installed(home: Path | None) -> dict[str, _InstalledRecord]:
+    """app_name -> what its store backend recorded when it installed it.
+
+    Three backends, three shapes: legendary keys an object by app name, GOG
+    wraps a list in ``installed``, and nile is a bare list. One reader, because
+    they describe the same three facts.
+    """
+    records: dict[str, _InstalledRecord] = {}
+    for path in installed_store_paths(home):
+        payload = _read_json(path)
+        if isinstance(payload, dict):
+            listed = payload.get("installed")
+            entries = listed if isinstance(listed, list) else list(payload.values())
+        elif isinstance(payload, list):
+            entries = payload
+        else:
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            app_id = _first(entry, _APP_ID_KEYS)
+            if app_id:
+                records[app_id] = _InstalledRecord(
+                    install_path=_first(entry, _INSTALL_PATH_KEYS),
+                    # Amazon installs only Windows builds and records no
+                    # platform at all, which is why an absent one is not read
+                    # as "native".
+                    platform=str(entry.get("platform") or "windows").strip(),
+                    is_dlc=bool(entry.get("is_dlc")),
+                )
+    return records
+
+
+def _first(entry: dict, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = str(entry.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _read_timestamps(path: Path) -> dict[str, tuple[int, float]]:
     """app_name -> (last played epoch seconds, hours played)."""
     payload = _read_json(path)
@@ -149,6 +229,7 @@ def _read_timestamps(path: Path) -> dict[str, tuple[int, float]]:
 
 def _game_from_entry(
     entry: dict,
+    record: _InstalledRecord | None,
     timestamps: dict[str, tuple[int, float]],
     home: Path | None,
 ) -> InstalledHeroicGame | None:
@@ -157,7 +238,7 @@ def _game_from_entry(
         return None
     install = entry.get("install")
     install = install if isinstance(install, dict) else {}
-    if bool(install.get("is_dlc")):
+    if bool(install.get("is_dlc")) or (record is not None and record.is_dlc):
         # Listed beside its game, never launched on its own.
         return None
     last_played, playtime_hours = timestamps.get(game_id, (0, 0.0))
@@ -165,10 +246,21 @@ def _game_from_entry(
         game_id=game_id,
         name=str(entry.get("title") or "").strip(),
         runner=str(entry.get("runner") or "").strip(),
-        installed=bool(entry.get("is_installed")),
-        platform=str(install.get("platform") or "").strip()
-        or ("linux" if entry.get("is_linux_native") else ""),
-        install_path=str(install.get("install_path") or "").strip(),
+        installed=_is_installed(entry, record),
+        # The platform that was installed, not the platforms the store sells:
+        # a game with a Linux build the user installed for Windows runs under
+        # Proton, where the overlay always reaches it.
+        platform=(
+            record.platform
+            if record is not None
+            else str(install.get("platform") or "").strip()
+            or ("linux" if entry.get("is_linux_native") else "")
+        ),
+        install_path=(
+            record.install_path
+            if record is not None
+            else str(install.get("install_path") or "").strip()
+        ),
         last_played=last_played,
         playtime_hours=playtime_hours,
         art_path=game_art_path(

@@ -33,6 +33,15 @@ LIBRARY_CACHE_FILES = (
     "nile_library.json",
 )
 SIDELOAD_LIBRARY_PATH = Path("sideload_apps") / "library.json"
+#: Which games are actually installed, per store backend. Heroic derives the
+#: ``is_installed`` flag in the cached libraries from these when it refreshes,
+#: so between refreshes only these are right -- a game installed a moment ago
+#: is still ``false`` in the cache.
+INSTALLED_STORE_PATHS = {
+    "legendary": Path("legendaryConfig") / "legendary" / "installed.json",
+    "gog": Path("gog_store") / "installed.json",
+    "nile": Path("nile_config") / "nile" / "installed.json",
+}
 TIMESTAMPS_PATH = Path("store") / "timestamp.json"
 IMAGE_CACHE_DIRNAME = "images-cache"
 #: What Heroic's library card appends to an Epic art URL before caching it.
@@ -95,6 +104,12 @@ def library_cache_paths(home: Path | None = None) -> tuple[Path, ...]:
     root = heroic_config_root(home)
     cache = root / LIBRARY_CACHE_DIRNAME
     return (*(cache / name for name in LIBRARY_CACHE_FILES), root / SIDELOAD_LIBRARY_PATH)
+
+
+def installed_store_paths(home: Path | None = None) -> tuple[Path, ...]:
+    """Each store backend's record of what it has installed."""
+    root = heroic_config_root(home)
+    return tuple(root / relative for relative in INSTALLED_STORE_PATHS.values())
 
 
 def timestamps_path(home: Path | None = None) -> Path:
