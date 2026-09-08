@@ -18,7 +18,7 @@ import json
 import shlex
 from pathlib import Path
 
-from common.atomic_write import atomic_write_json
+from common.atomic_write import atomic_write_text
 from integrations.launchers.wrapper_manager import (
     SOURCE_GAME,
     CommandWrite,
@@ -179,9 +179,11 @@ def write_wrapper_command(
     document.setdefault(VERSION_KEY, DEFAULT_CONFIG_VERSION)
 
     try:
-        # Atomic, and in the two-space JSON Heroic itself writes, so a config
-        # we touched does not read as a whole-file rewrite to the next reader.
-        atomic_write_json(path, document, durable=True)
+        # Atomic, and byte-for-byte the two-space JSON Heroic itself writes
+        # (JSON.stringify(config, null, 2), no trailing newline), so a config
+        # we touched and handed back is indistinguishable from one we never
+        # opened.
+        atomic_write_text(path, json.dumps(document, indent=2), durable=True)
     except OSError as error:
         return CommandWrite(False, "", f"cannot write {path.name}: {error}")
 
