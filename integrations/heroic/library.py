@@ -82,10 +82,13 @@ def read_heroic_games(
     seen: set[str] = set()
     for path in library_cache_paths(home):
         for entry in _entries(path):
+            # Filtered before the record is built: a store's cache lists
+            # everything the account owns, and resolving artwork for hundreds
+            # of games nobody installed is a stat storm per library scan.
+            if not include_uninstalled and not entry.get("is_installed"):
+                continue
             game = _game_from_entry(entry, timestamps, home)
             if game is None or game.game_id in seen:
-                continue
-            if not include_uninstalled and not game.installed:
                 continue
             seen.add(game.game_id)
             games.append(game)

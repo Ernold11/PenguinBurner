@@ -26,6 +26,7 @@ from .config_store import (
     SOURCE_LABELS,
     HeroicConfigError,
     effective_wrapper_command,
+    read_global_entries,
     write_wrapper_command,
 )
 from .library import InstalledHeroicGame, read_heroic_games
@@ -50,6 +51,20 @@ class HeroicIntegrationManager(WrapperManager):
     ):
         super().__init__(HEROIC_GAME_SETTINGS_STORE, settings_path=settings_path)
         self._home = home
+        self._global_entries: list[dict] | None = None
+
+    def refresh(self) -> tuple[LauncherGameRow, ...]:
+        # Heroic's global wrappers are one file every game without its own
+        # falls back to, so it is read once a pass instead of once a game.
+        # A settings change never touches it; the next scan picks up a change
+        # the user made in Heroic itself.
+        self._global_entries = read_global_entries(self._home)
+        return super().refresh()
+
+    def _globals(self) -> list[dict]:
+        if self._global_entries is None:
+            self._global_entries = read_global_entries(self._home)
+        return self._global_entries
 
     @property
     def available(self) -> bool:
@@ -69,7 +84,10 @@ class HeroicIntegrationManager(WrapperManager):
     ) -> EffectiveCommand:
         try:
             return effective_wrapper_command(
-                game.game_id, self._home, game_level=game_level
+                game.game_id,
+                self._home,
+                game_level=game_level,
+                global_entries=self._globals(),
             )
         except HeroicConfigError:
             # A malformed config must not take the whole list down; the row
@@ -83,7 +101,9 @@ class HeroicIntegrationManager(WrapperManager):
 
     def write_command(self, game: InstalledHeroicGame, command: str) -> CommandWrite:
         try:
-            return write_wrapper_command(game.game_id, command, self._home)
+            return write_wrapper_command(
+                game.game_id, command, self._home, global_entries=self._globals()
+            )
         except HeroicConfigError as error:
             return CommandWrite(False, "", str(error))
 

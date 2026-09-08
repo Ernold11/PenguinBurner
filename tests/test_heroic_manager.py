@@ -21,7 +21,14 @@ def _no_host_repair(monkeypatch):
     monkeypatch.setattr(wrapper_manager, "ensure_host_integration", lambda: None)
 
 
-def _home(tmp_path, *, defaults=("game-performance",), game=None, platform="Windows"):
+def _home(
+    tmp_path,
+    *,
+    defaults=("game-performance",),
+    game=None,
+    platform="Windows",
+    app_names=("Turkey",),
+):
     root = tmp_path / ".config" / "heroic"
     (root / "GamesConfig").mkdir(parents=True, exist_ok=True)
     (root / "store_cache").mkdir(parents=True, exist_ok=True)
@@ -39,12 +46,13 @@ def _home(tmp_path, *, defaults=("game-performance",), game=None, platform="Wind
             {
                 "library": [
                     {
-                        "app_name": "Turkey",
+                        "app_name": app_name,
                         "title": "Borderlands",
                         "runner": "legendary",
                         "is_installed": True,
                         "install": {"platform": platform, "install_path": "/g/bl"},
                     }
+                    for app_name in app_names
                 ]
             }
         )
@@ -214,3 +222,32 @@ def test_a_linux_native_game_is_the_only_one_the_overlay_can_miss(
     source.refresh(deep=False)
     source.games()
     assert probed == ["/g/bl"]
+
+
+def test_the_global_wrappers_are_read_once_a_scan_not_once_a_game(
+    tmp_path, monkeypatch
+) -> None:
+    """Every game without wrappers of its own falls back to that one file.
+
+    Reading it per game turned a library scan -- which the tab repeats on a
+    timer -- into one full parse of Heroic's whole settings block per title.
+    """
+    import integrations.heroic.manager as manager_module
+
+    home = _home(tmp_path, app_names=("Turkey", "Eel", "Wren"))
+    manager = HeroicIntegrationManager(
+        home=home, settings_path=tmp_path / "heroic-game-settings.json"
+    )
+    reads: list[bool] = []
+    original = manager_module.read_global_entries
+    monkeypatch.setattr(
+        manager_module,
+        "read_global_entries",
+        lambda where: reads.append(True) or original(where),
+    )
+
+    rows = manager.refresh()
+
+    assert len(rows) == 3
+    assert reads == [True]
+    assert {row.command for row in rows} == {"game-performance"}
