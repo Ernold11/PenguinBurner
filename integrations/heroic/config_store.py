@@ -119,24 +119,33 @@ def effective_wrapper_command(
     home: Path | None = None,
     *,
     game_level: bool = True,
+    global_entries: list[dict] | None = None,
 ) -> EffectiveCommand:
     """What the game really launches through, and which level said so.
 
     ``game_level=False`` answers what it would launch through if its own level
     said nothing, which is what a disable needs in order to hand inheritance
     back instead of freezing today's value into the game config.
+
+    ``global_entries`` lets a caller resolving a whole library hand in the
+    global rows it has already read; every game that sets none of its own
+    falls back to them, and that is the common case.
     """
     if game_level:
         entries = read_game_entries(app_name, home)
         if entries:
             return EffectiveCommand(entries_command(entries), SOURCE_GAME)
-    return EffectiveCommand(entries_command(read_global_entries(home)), SOURCE_GLOBAL)
+    if global_entries is None:
+        global_entries = read_global_entries(home)
+    return EffectiveCommand(entries_command(global_entries), SOURCE_GLOBAL)
 
 
 def write_wrapper_command(
     app_name: str,
     command: str,
     home: Path | None = None,
+    *,
+    global_entries: list[dict] | None = None,
 ) -> CommandWrite:
     """Write the game's wrapper rows, then report what is really in the file.
 
@@ -153,8 +162,12 @@ def write_wrapper_command(
     # Matched against the EFFECTIVE rows: a game that inherits Heroic's global
     # wrappers has none of its own, and those inherited rows are exactly what
     # the injected command now carries along and must keep as separate rows.
-    previous = read_game_entries(app_name, home) or read_global_entries(home)
-    entries = command_entries(command, previous)
+    # Taken from the document already parsed above rather than read again.
+    own = settings.get(WRAPPER_KEY)
+    own = [entry for entry in own if isinstance(entry, dict)] if isinstance(own, list) else []
+    if not own and global_entries is None:
+        global_entries = read_global_entries(home)
+    entries = command_entries(command, own or global_entries or [])
     if entries:
         settings[WRAPPER_KEY] = entries
     else:
