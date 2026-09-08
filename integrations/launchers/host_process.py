@@ -43,6 +43,27 @@ DEFAULT_TIMEOUT_S = 3.0
 #: find on a PATH, so it is answered "no" instead of being asked about.
 _COMMAND_NAME_RE = re.compile(r"[A-Za-z0-9_.+-]+")
 
+#: Runtime hints that belong to whatever started PenguinBurner, never to the
+#: application we are starting. VS Code exports ELECTRON_RUN_AS_NODE=1 to
+#: everything it spawns, and an Electron launcher inheriting it runs as plain
+#: Node instead: it rejects its own client's flags and takes the game URL for
+#: a script path. Observed breaking a Heroic launch outright, and a launcher
+#: has no reason to be told anything about our runtime.
+INHERITED_RUNTIME_HINTS = ("ELECTRON_RUN_AS_NODE",)
+
+
+def launcher_environment() -> dict[str, str] | None:
+    """The environment another application should be started with.
+
+    None means "inherit ours unchanged", which is the common case.
+    """
+    if not any(name in os.environ for name in INHERITED_RUNTIME_HINTS):
+        return None
+    environment = dict(os.environ)
+    for name in INHERITED_RUNTIME_HINTS:
+        environment.pop(name, None)
+    return environment
+
 
 def running_in_flatpak() -> bool:
     return bool(os.environ.get("FLATPAK_ID", "").strip()) or FLATPAK_INFO_PATH.is_file()
@@ -86,6 +107,7 @@ def run_on_host(
                 text=True,
                 timeout=timeout,
                 check=False,
+                env=launcher_environment(),
             )
         return subprocess.run(
             resolved,
@@ -93,6 +115,7 @@ def run_on_host(
             stderr=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
+            env=launcher_environment(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -109,6 +132,7 @@ def start_on_host(command: list[str]) -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=launcher_environment(),
         )
     except OSError:
         return False

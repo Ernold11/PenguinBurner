@@ -111,3 +111,38 @@ def test_an_untrustworthy_exit_code_is_not_an_empty_answer(monkeypatch) -> None:
 
     _sandboxed(monkeypatch, returncode=2)
     assert host.host_pgrep("nothing") is None
+
+
+def test_our_runtime_hints_do_not_travel_to_the_launcher(monkeypatch) -> None:
+    """An Electron launcher inheriting ELECTRON_RUN_AS_NODE runs as plain Node.
+
+    It then rejects its own client's flags and takes the game URL for a script
+    path, so the launch fails outright -- seen for real when PenguinBurner was
+    started from a terminal inside VS Code.
+    """
+    monkeypatch.setattr(host, "running_in_flatpak", lambda: False)
+    monkeypatch.setenv("ELECTRON_RUN_AS_NODE", "1")
+    monkeypatch.setenv("HOME", "/home/somebody")
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        host.subprocess, "Popen", lambda command, **kwargs: seen.update(kwargs)
+    )
+
+    assert host.start_on_host(["heroic", "heroic://launch/gog/1"]) is True
+    environment = seen["env"]
+    assert "ELECTRON_RUN_AS_NODE" not in environment
+    # Everything else the launcher needs is still there.
+    assert environment["HOME"] == "/home/somebody"
+
+
+def test_an_ordinary_environment_is_passed_through_untouched(monkeypatch) -> None:
+    monkeypatch.setattr(host, "running_in_flatpak", lambda: False)
+    monkeypatch.delenv("ELECTRON_RUN_AS_NODE", raising=False)
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        host.subprocess, "Popen", lambda command, **kwargs: seen.update(kwargs)
+    )
+
+    assert host.start_on_host(["lutris"]) is True
+    assert seen["env"] is None  # inherit ours, no copy made
