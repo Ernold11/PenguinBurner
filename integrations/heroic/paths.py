@@ -12,11 +12,10 @@ installation.
 from __future__ import annotations
 
 import hashlib
-import os
 from collections.abc import Sequence
 from pathlib import Path
 
-from integrations.launchers.desktop_icons import desktop_icon
+from integrations.launchers.host_paths import host_config_home, safe_config_name
 
 HEROIC_DIRNAME = "heroic"
 #: The Flatpak build keeps the same tree under its own per-app config home.
@@ -39,16 +38,6 @@ IMAGE_CACHE_DIRNAME = "images-cache"
 #: What Heroic's library card appends to an Epic art URL before caching it.
 ART_CARD_QUERY = "?h=400&resize=1&w=300"
 GAME_ICON_DIRNAME = "icons"
-#: What Heroic's icon is called, native package first and Flatpak second: the
-#: distro builds ship a plain "heroic", the Flatpak its application id.
-DESKTOP_ICON_NAMES = ("heroic", "com.heroicgameslauncher.hgl")
-FLATPAK_INFO_PATH = Path("/.flatpak-info")
-
-
-def _running_in_flatpak() -> bool:
-    return bool(str(os.environ.get("FLATPAK_ID") or "").strip()) or (
-        FLATPAK_INFO_PATH.is_file()
-    )
 
 
 def heroic_config_root(home: Path | None = None) -> Path:
@@ -59,25 +48,18 @@ def heroic_config_root(home: Path | None = None) -> Path:
     is the test seam and wins over the environment, so a test cannot be broken
     by whatever XDG variables the host session exports.
     """
-    for candidate in _config_roots(home):
+    candidates = _config_roots(home)
+    for candidate in candidates:
         if (candidate / CONFIG_FILENAME).is_file():
             return candidate
-    return _config_roots(home)[0]
+    return candidates[0]
 
 
 def _config_roots(home: Path | None) -> tuple[Path, ...]:
-    if home is not None:
-        base = Path(home)
-    elif _running_in_flatpak():
-        # XDG_CONFIG_HOME belongs to the PenguinBurner sandbox here, not to the
-        # host Heroic whose configuration this integration edits.
-        base = Path.home()
-    else:
-        xdg = str(os.environ.get("XDG_CONFIG_HOME") or "").strip()
-        if xdg:
-            return (Path(xdg).expanduser() / HEROIC_DIRNAME,)
-        base = Path.home()
-    return (base / ".config" / HEROIC_DIRNAME, base / HEROIC_FLATPAK_DIRNAME)
+    # The Flatpak build's tree hangs off the real home whatever XDG says, so
+    # it is a candidate even when the config home has been redirected.
+    base = Path(home) if home is not None else Path.home()
+    return (host_config_home(home) / HEROIC_DIRNAME, base / HEROIC_FLATPAK_DIRNAME)
 
 
 def heroic_installed(home: Path | None = None) -> bool:
@@ -100,10 +82,12 @@ def game_config_path(app_name: str, home: Path | None = None) -> Path | None:
     filename, so a value containing a separator is refused rather than allowed
     to escape the config directory.
     """
-    name = str(app_name or "").strip()
-    if not name or name in (".", "..") or "/" in name or "\\" in name:
-        return None
-    return heroic_config_root(home) / GAME_CONFIG_DIRNAME / f"{name}.json"
+    name = safe_config_name(app_name)
+    return (
+        None
+        if name is None
+        else heroic_config_root(home) / GAME_CONFIG_DIRNAME / f"{name}.json"
+    )
 
 
 def library_cache_paths(home: Path | None = None) -> tuple[Path, ...]:
@@ -131,9 +115,10 @@ def game_art_path(
     tried before the plain one.
     """
     root = heroic_config_root(home)
-    for suffix in (".jpg", ".png", ".jpeg"):
-        icon = root / GAME_ICON_DIRNAME / f"{str(app_name).strip()}{suffix}"
-        if "/" not in str(app_name) and icon.is_file():
+    name = safe_config_name(app_name)
+    for suffix in (".jpg", ".png", ".jpeg") if name else ():
+        icon = root / GAME_ICON_DIRNAME / f"{name}{suffix}"
+        if icon.is_file():
             return icon
     cache = root / IMAGE_CACHE_DIRNAME
     for url in art_urls:
@@ -143,17 +128,4 @@ def game_art_path(
             candidate = cache / hashlib.sha256(spelling.encode("utf-8")).hexdigest()
             if candidate.is_file():
                 return candidate
-    return None
-
-
-def heroic_desktop_icon(
-    home: Path | None = None,
-    *,
-    data_dirs: Sequence[Path] | None = None,
-) -> Path | None:
-    """Heroic's own application icon, if this machine has Heroic installed."""
-    for name in DESKTOP_ICON_NAMES:
-        found = desktop_icon(name, home, data_dirs=data_dirs)
-        if found is not None:
-            return found
     return None

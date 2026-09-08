@@ -52,3 +52,13 @@ def known_launcher_names() -> tuple[str, ...]:
     the tab still owes the user the names of what it was looking for.
     """
     return tuple(source.display_name for source in build_sources())
+
+
+def any_launcher_installed(**kwargs) -> bool:
+    """Whether this machine has any launcher whose games could carry our wrapper.
+
+    Asked by the Flatpak startup path, which installs the host wrapper only for
+    a host that has something to run it. That question is this module's -- a
+    launcher added here must not also have to be added to ``common/``.
+    """
+    return bool(available_sources(**kwargs))

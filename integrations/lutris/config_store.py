@@ -16,12 +16,11 @@ is not Lutris's business and lives in integrations/launchers/.
 
 from __future__ import annotations
 
-import os
-import tempfile
 from pathlib import Path
 
 import yaml
 
+from common.atomic_write import atomic_write_text
 from integrations.launchers.wrapper_manager import (
     SOURCE_GAME,
     CommandWrite,
@@ -131,7 +130,13 @@ def write_prefix_command(
         document.pop(SYSTEM_SECTION, None)
 
     try:
-        _atomic_write_yaml(path, document)
+        # Atomic, so a crash cannot truncate a game config, and dumped through
+        # the same PyYAML round trip Lutris itself writes these files with.
+        atomic_write_text(
+            path,
+            yaml.safe_dump(document, default_flow_style=False, sort_keys=True),
+            durable=True,
+        )
     except (OSError, yaml.YAMLError) as error:
         return CommandWrite(False, "", f"cannot write {path.name}: {error}")
 
@@ -150,26 +155,3 @@ def write_prefix_command(
             "window in Lutris and try again.",
         )
     return CommandWrite(True, landed)
-
-
-def _atomic_write_yaml(path: Path, document: dict) -> None:
-    """Replace the config in one step so a crash cannot truncate a game config."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=str(path.parent),
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    )
-    temporary = Path(handle.name)
-    try:
-        with handle:
-            yaml.safe_dump(document, handle, default_flow_style=False, sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(path)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise

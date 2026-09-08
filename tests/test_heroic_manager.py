@@ -21,7 +21,7 @@ def _no_host_repair(monkeypatch):
     monkeypatch.setattr(wrapper_manager, "ensure_host_integration", lambda: None)
 
 
-def _home(tmp_path, *, defaults=("game-performance",), game=None):
+def _home(tmp_path, *, defaults=("game-performance",), game=None, platform="Windows"):
     root = tmp_path / ".config" / "heroic"
     (root / "GamesConfig").mkdir(parents=True, exist_ok=True)
     (root / "store_cache").mkdir(parents=True, exist_ok=True)
@@ -43,7 +43,7 @@ def _home(tmp_path, *, defaults=("game-performance",), game=None):
                         "title": "Borderlands",
                         "runner": "legendary",
                         "is_installed": True,
-                        "install": {"platform": "Windows", "install_path": "/g/bl"},
+                        "install": {"platform": platform, "install_path": "/g/bl"},
                     }
                 ]
             }
@@ -177,3 +177,40 @@ def test_the_library_adapter_describes_the_game_the_tab_draws(tmp_path) -> None:
     assert field.key == "wrapper_command"
     assert field.setter == "set_game_wrapper_command"
     assert "inherited from Heroic global settings" in field.subtitle
+
+
+def test_a_linux_native_game_is_the_only_one_the_overlay_can_miss(
+    tmp_path, monkeypatch
+) -> None:
+    """Proton translates everything to Vulkan; a native build need not be.
+
+    The probe walks the install directory, so it must run on the scan worker
+    and be answered from the cache afterwards -- never on the GUI thread.
+    """
+    from integrations.heroic import library_source as heroic_source
+
+    source = HeroicLibrarySource(_manager(tmp_path), home=tmp_path)
+    probed: list[str] = []
+    monkeypatch.setattr(
+        heroic_source,
+        "overlay_support",
+        lambda **kwargs: probed.append(str(kwargs.get("directory"))) or (False, "OpenGL"),
+    )
+
+    source.refresh()
+    assert probed == []  # a Windows game never reaches the probe
+
+    _home(tmp_path, platform="linux")
+    source.refresh()
+
+    (game,) = source.games()
+    assert (game.overlay_supported, game.overlay_unsupported_reason) == (
+        False,
+        "OpenGL",
+    )
+    assert probed == ["/g/bl"]
+
+    # The view reads the cached fact; a cheap tick never probes disk again.
+    source.refresh(deep=False)
+    source.games()
+    assert probed == ["/g/bl"]

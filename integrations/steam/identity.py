@@ -11,7 +11,7 @@ onto its launch command, so one format covers the whole library.
 
 from __future__ import annotations
 
-from integrations.launchers.wrapper_command import game_key
+from overlay.wrapper_tokens import game_key
 
 STEAM_LAUNCHER_ID = "steam"
 

@@ -115,8 +115,13 @@ def start_on_host(command: list[str]) -> bool:
     return True
 
 
-def host_has_command(name: str) -> bool:
-    """Whether ``name`` is on the host's PATH.
+def host_command_path(name: str) -> str | None:
+    """Where ``name`` lives on the host's PATH, or None if it does not.
+
+    The path rather than a yes/no, because a caller that goes on to run the
+    program needs it: inside a Flatpak the sandbox's own PATH is the wrong
+    answer at both ends. Outside one this stays a plain lookup rather than a
+    subprocess -- it is asked on a repeating library scan.
 
     The name is checked against an executable-name shape and then passed to
     the shell as an *argument*, never spliced into the script: callers today
@@ -125,11 +130,22 @@ def host_has_command(name: str) -> bool:
     """
     value = str(name or "").strip()
     if not _COMMAND_NAME_RE.fullmatch(value):
-        return False
+        return None
     if not running_in_flatpak():
-        return shutil.which(value) is not None
-    result = run_on_host([HOST_SHELL, "-c", 'command -v "$1"', "sh", value])
-    return result is not None and result.returncode == 0
+        return shutil.which(value)
+    result = run_on_host(
+        [HOST_SHELL, "-c", 'command -v "$1"', "sh", value], capture=True
+    )
+    if result is None or result.returncode != 0:
+        return None
+    lines = (result.stdout or "").strip().splitlines()
+    first = lines[0].strip() if lines else ""
+    return first or None
+
+
+def host_has_command(name: str) -> bool:
+    """Whether ``name`` is on the host's PATH."""
+    return host_command_path(name) is not None
 
 
 def host_pgrep(pattern: str) -> list[tuple[int, str]] | None:

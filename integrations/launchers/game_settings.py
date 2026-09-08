@@ -14,6 +14,7 @@ other's presets. Nothing else has an account layer.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -29,14 +30,6 @@ from profiles.game_profile import (
     normalize_game_mode,
     normalize_game_target_fps,
 )
-
-#: Names these fields were written under before the launchers shared a record.
-#: Read, never written: the next save migrates the file to the current keys.
-_LEGACY_KEYS = {
-    "original_command": "original_prefix_command",
-    "injected_command": "injected_prefix_command",
-    "original_inherited": "original_prefix_inherited",
-}
 
 
 class GameSettingsError(RuntimeError):
@@ -77,11 +70,6 @@ class LauncherGameSetting:
     # a legacy record whose source was never written down.
     original_inherited: bool | None = None
 
-    @property
-    def active(self) -> bool:
-        return self.enabled
-
-
 class GameSettingsStore:
     """One launcher's ``game_id -> setting`` map, in one JSON file.
 
@@ -89,8 +77,17 @@ class GameSettingsStore:
     real user configuration.
     """
 
-    def __init__(self, filename: str) -> None:
+    def __init__(
+        self,
+        filename: str,
+        *,
+        legacy_keys: Mapping[str, str] | None = None,
+    ) -> None:
         self.filename = filename
+        #: Field -> the name this launcher wrote it under before the launchers
+        #: shared a record. Read, never written: the next save migrates the
+        #: file to the current keys.
+        self.legacy_keys = dict(legacy_keys or {})
 
     def path(self, path: str | Path | None = None) -> Path:
         if path is not None:
@@ -105,7 +102,7 @@ class GameSettingsStore:
         that is the only place its content can actually be lost.
         """
         payload, _ = _read_payload(self.path(path))
-        return _settings_from_payload(payload)
+        return _settings_from_payload(payload, self.legacy_keys)
 
     def get(
         self,
@@ -139,7 +136,7 @@ class GameSettingsStore:
         target = self.path(path)
         payload, unreadable = _read_payload(target)
         preserved = _preserve(target) if unreadable else None
-        settings = _settings_from_payload(payload)
+        settings = _settings_from_payload(payload, self.legacy_keys)
         settings[str(game_id)] = setting
         return SettingsWrite(
             safe_json_write(target, _payload_for(settings)),
@@ -179,28 +176,37 @@ def _preserve(path: Path) -> Path | None:
         ) from error
 
 
-def _settings_from_payload(payload: dict) -> dict[str, LauncherGameSetting]:
+def _settings_from_payload(
+    payload: dict, legacy_keys: Mapping[str, str]
+) -> dict[str, LauncherGameSetting]:
     games = payload.get("games")
     if not isinstance(games, dict):
         return {}
     return {
-        str(game_id): _setting_from_entry(entry)
+        str(game_id): _setting_from_entry(entry, legacy_keys)
         for game_id, entry in games.items()
         if isinstance(entry, dict)
     }
 
 
-def _value(entry: dict, key: str, default: object = "") -> object:
+def _value(
+    entry: dict,
+    key: str,
+    legacy_keys: Mapping[str, str],
+    default: object = "",
+) -> object:
     if key in entry:
         return entry[key]
-    legacy = _LEGACY_KEYS.get(key)
+    legacy = legacy_keys.get(key)
     return entry.get(legacy, default) if legacy else default
 
 
-def _setting_from_entry(entry: dict) -> LauncherGameSetting:
+def _setting_from_entry(
+    entry: dict, legacy_keys: Mapping[str, str]
+) -> LauncherGameSetting:
     stored_mode = normalize_game_mode(entry.get("mode"))
-    injected = str(_value(entry, "injected_command") or "")
-    inherited = _value(entry, "original_inherited", None)
+    injected = str(_value(entry, "injected_command", legacy_keys) or "")
+    inherited = _value(entry, "original_inherited", legacy_keys, None)
     return LauncherGameSetting(
         enabled=bool(
             entry.get("enabled", bool(injected) and stored_mode != GAME_MODE_NONE)
@@ -215,7 +221,7 @@ def _setting_from_entry(entry: dict) -> LauncherGameSetting:
         ingame_latency=bool(
             entry.get("ingame_latency", ingame_latency_present(injected))
         ),
-        original_command=str(_value(entry, "original_command") or ""),
+        original_command=str(_value(entry, "original_command", legacy_keys) or ""),
         injected_command=injected,
         target_fps=normalize_game_target_fps(entry.get("target_fps")),
         gpu_uuid=str(entry.get("gpu_uuid") or "").strip(),

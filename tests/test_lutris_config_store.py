@@ -97,10 +97,11 @@ def test_a_write_lutris_undoes_is_reported_not_assumed(tmp_path, monkeypatch) ->
     path = _config(tmp_path, {"system": {}})
     import integrations.lutris.config_store as store
 
-    def clobber(target, document):
+    def clobber(target, _text, **_kwargs):
         target.write_text(yaml.safe_dump({"system": {}}), encoding="utf-8")
+        return target
 
-    monkeypatch.setattr(store, "_atomic_write_yaml", clobber)
+    monkeypatch.setattr(store, "atomic_write_text", clobber)
 
     result = write_prefix_command(path, "PENGUIN_BURNER --pb-overlay=1")
 

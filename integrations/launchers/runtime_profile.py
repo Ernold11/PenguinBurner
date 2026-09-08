@@ -20,13 +20,14 @@ import sys
 from pathlib import Path
 
 from drivers.nvidia.daemon_gpu import DaemonGpuClient
+from overlay.wrapper_tokens import split_game_key
 from profiles.game_profile import (
     GameProfileSetting,
     game_gpu_target,
     profile_argv_for_setting,
 )
 
-from .game_settings import GameSettingsStore, LauncherGameSetting
+from .game_settings import LauncherGameSetting
 
 
 def profile_argv(setting: GameProfileSetting) -> list[str] | None:
@@ -45,19 +46,6 @@ def profile_argv(setting: GameProfileSetting) -> list[str] | None:
         gpu_uuid=gpu_uuid,
         include_legacy_profiles=len(identities) == 1,
     )
-
-
-def apply_profile(
-    setting: GameProfileSetting | None,
-    *,
-    app_id: str,
-    watch_pid: int | None = None,
-) -> bool:
-    """Ask the daemon for this preset. False means nothing was applied."""
-    argv = None if setting is None else profile_argv(setting)
-    if argv is None:
-        return False
-    return send_profile(argv, app_id=app_id, watch_pid=watch_pid)
 
 
 def send_profile(
@@ -90,29 +78,25 @@ def _skipped(reason: object) -> bool:
     return False
 
 
-def settings_store(launcher_id: str) -> GameSettingsStore | None:
-    """The store a launcher keeps its per-game presets in.
-
-    Imported only when a game of that launcher's is starting: this runs in the
-    launch wrapper, before the game, where importing every integration would
-    be work the player waits through.
-    """
-    if launcher_id == "lutris":
-        from integrations.lutris.settings import LUTRIS_GAME_SETTINGS_STORE
-
-        return LUTRIS_GAME_SETTINGS_STORE
-    return None
-
-
 def game_setting(
     game_key: str,
     *,
     settings_path: str | Path | None = None,
 ) -> LauncherGameSetting | None:
-    """The stored preset behind a "<launcher>:<game id>" key."""
-    launcher_id, _, game_id = str(game_key or "").strip().partition(":")
-    store = settings_store(launcher_id) if game_id else None
-    return None if store is None else store.get(game_id, path=settings_path)
+    """The stored preset behind a "<launcher>:<game id>" key.
+
+    Each launcher's store is imported only when a game of its own is starting:
+    this runs in the launch wrapper, before the game, where importing every
+    integration would be work the player waits through.
+    """
+    launcher_id, game_id = split_game_key(game_key)
+    if launcher_id == "lutris":
+        from integrations.lutris.settings import LUTRIS_GAME_SETTINGS_STORE as store
+    elif launcher_id == "heroic":
+        from integrations.heroic.settings import HEROIC_GAME_SETTINGS_STORE as store
+    else:
+        return None
+    return store.get(game_id, path=settings_path)
 
 
 def apply_game_key_profile(
@@ -128,4 +112,7 @@ def apply_game_key_profile(
     """
     key = str(game_key or "").strip()
     setting = game_setting(key, settings_path=settings_path)
-    return apply_profile(setting, app_id=key, watch_pid=watch_pid)
+    argv = None if setting is None else profile_argv(setting)
+    if argv is None:
+        return False
+    return send_profile(argv, app_id=key, watch_pid=watch_pid)

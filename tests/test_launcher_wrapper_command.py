@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-from integrations.launchers.wrapper_command import (
-    command_wrapped,
-    game_key,
-    inject_wrapper,
-    remove_wrapper,
-)
+from integrations.launchers.wrapper_command import inject_wrapper, remove_wrapper
+from overlay.wrapper_tokens import game_key, split_game_key
 
 
 def _inject(command: str, *, overlay: bool = True, launcher_id: str = "lutris") -> str:
@@ -21,6 +17,8 @@ def test_the_game_key_is_namespaced_by_launcher() -> None:
     assert game_key("lutris", "27") == "lutris:27"
     assert game_key("heroic", "Turkey") == "heroic:Turkey"
     assert game_key("lutris", "") == ""
+    assert split_game_key("heroic:Turkey") == ("heroic", "Turkey")
+    assert split_game_key("nonsense") == ("", "")
 
 
 def test_half_a_game_key_is_no_game_key() -> None:
@@ -111,9 +109,3 @@ def test_removal_still_understands_the_flag_earlier_versions_wrote() -> None:
     legacy = "PENGUIN_BURNER --pb-overlay=1 --pb-lutris-id=27 gamemoderun"
 
     assert remove_wrapper(legacy) == "gamemoderun"
-
-
-def test_wrapped_detection() -> None:
-    assert command_wrapped("PENGUIN_BURNER --pb-overlay=0") is True
-    assert command_wrapped("game-performance") is False
-    assert command_wrapped(None) is False
