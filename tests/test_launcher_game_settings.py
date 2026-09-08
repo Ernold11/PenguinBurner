@@ -14,6 +14,8 @@ import json
 
 import pytest
 
+from integrations.lutris.settings import LEGACY_KEYS as LUTRIS_LEGACY_KEYS
+
 from integrations.launchers.game_settings import (
     GameSettingsError,
     GameSettingsStore,
@@ -21,6 +23,11 @@ from integrations.launchers.game_settings import (
 )
 
 STORE = GameSettingsStore("test-game-settings.json")
+#: The old field names belong to the launcher that wrote them, so a store only
+#: reads them when that launcher declares them -- as Lutris does.
+LEGACY_STORE = GameSettingsStore(
+    "test-game-settings.json", legacy_keys=LUTRIS_LEGACY_KEYS
+)
 
 CORRUPT = '{"games": {"27": {"enabled": true}, "28": {"ena'
 
@@ -169,7 +176,7 @@ def test_settings_written_before_the_launchers_shared_a_record_still_load(
         },
     )
 
-    setting = STORE.get("27", path=path)
+    setting = LEGACY_STORE.get("27", path=path)
 
     assert setting is not None
     assert setting.original_command == "gamemoderun"
@@ -195,7 +202,7 @@ def test_the_next_save_migrates_the_file_to_the_current_names(tmp_path) -> None:
         },
     )
 
-    STORE.store("28", LauncherGameSetting(enabled=False), path=path)
+    LEGACY_STORE.store("28", LauncherGameSetting(enabled=False), path=path)
 
     written = json.loads(path.read_text(encoding="utf-8"))["games"]
     assert set(written) == {"27", "28"}
@@ -204,7 +211,7 @@ def test_the_next_save_migrates_the_file_to_the_current_names(tmp_path) -> None:
     assert "original_prefix_command" not in written["27"]
     assert "injected_prefix_command" not in written["27"]
     # And the migrated file still reads as the same settings it held.
-    assert STORE.get("27", path=path) == LauncherGameSetting(
+    assert LEGACY_STORE.get("27", path=path) == LauncherGameSetting(
         enabled=True,
         original_command="gamemoderun",
         injected_command="PENGUIN_BURNER --pb-overlay=0 gamemoderun",

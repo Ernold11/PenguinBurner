@@ -507,12 +507,13 @@ def test_client_resolves_and_applies_game_spec_on_the_same_socket(monkeypatch) -
 
 def test_launch_steam_game_validates_app_id(monkeypatch) -> None:
     import integrations.steam.process as process
+    from integrations.launchers import host_process as host
 
-    monkeypatch.setattr(process, "running_in_flatpak", lambda: False)
-    monkeypatch.setattr(process.shutil, "which", lambda name: "/usr/bin/steam")
+    monkeypatch.setattr(host, "running_in_flatpak", lambda: False)
+    monkeypatch.setattr(host.shutil, "which", lambda name: "/usr/bin/steam")
     launched = []
     monkeypatch.setattr(
-        process.subprocess,
+        host.subprocess,
         "Popen",
         lambda command, **kwargs: launched.append(command),
     )
@@ -526,13 +527,14 @@ def test_launch_steam_game_validates_app_id(monkeypatch) -> None:
 
 def test_running_steam_game_ids_batches_one_pgrep(monkeypatch) -> None:
     import integrations.steam.process as process
+    from integrations.launchers import host_process as host
 
-    monkeypatch.setattr(process, "running_in_flatpak", lambda: False)
+    monkeypatch.setattr(host, "running_in_flatpak", lambda: False)
     calls = []
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return process.subprocess.CompletedProcess(
+        return host.subprocess.CompletedProcess(
             command,
             0,
             stdout=(
@@ -543,7 +545,7 @@ def test_running_steam_game_ids_batches_one_pgrep(monkeypatch) -> None:
             stderr="",
         )
 
-    monkeypatch.setattr(process.subprocess, "run", fake_run)
+    monkeypatch.setattr(host.subprocess, "run", fake_run)
 
     # One subprocess returns every running game's id.
     assert process.running_steam_game_ids() == frozenset({"3606110", "228980"})
@@ -551,9 +553,9 @@ def test_running_steam_game_ids_batches_one_pgrep(monkeypatch) -> None:
 
     # returncode 1 = ran fine, no games -> empty set (NOT a failure).
     monkeypatch.setattr(
-        process.subprocess,
+        host.subprocess,
         "run",
-        lambda command, **kwargs: process.subprocess.CompletedProcess(
+        lambda command, **kwargs: host.subprocess.CompletedProcess(
             command, 1, stdout="", stderr=""
         ),
     )
@@ -562,18 +564,19 @@ def test_running_steam_game_ids_batches_one_pgrep(monkeypatch) -> None:
     # A timeout / non-0/1 exit is "couldn't tell" -> None, so a poller holds
     # state instead of reading it as every game having exited.
     def boom(command, **kwargs):
-        raise process.subprocess.TimeoutExpired(command, 3.0)
+        raise host.subprocess.TimeoutExpired(command, 3.0)
 
-    monkeypatch.setattr(process.subprocess, "run", boom)
+    monkeypatch.setattr(host.subprocess, "run", boom)
     assert process.running_steam_game_ids() is None
 
 
 def test_flatpak_steam_process_control_runs_on_host(monkeypatch) -> None:
     import integrations.steam.process as process
+    from integrations.launchers import host_process as host
 
-    monkeypatch.setattr(process, "running_in_flatpak", lambda: True)
+    monkeypatch.setattr(host, "running_in_flatpak", lambda: True)
     monkeypatch.setattr(
-        process.shutil,
+        host.shutil,
         "which",
         lambda name: "/usr/bin/flatpak-spawn" if name == "flatpak-spawn" else None,
     )
@@ -581,16 +584,16 @@ def test_flatpak_steam_process_control_runs_on_host(monkeypatch) -> None:
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        if command[-3:] == ["/usr/bin/sh", "-c", "command -v steam"]:
-            return process.subprocess.CompletedProcess(
+        if command[-5:] == ["/usr/bin/sh", "-c", 'command -v "$1"', "sh", "steam"]:
+            return host.subprocess.CompletedProcess(
                 command, 0, stdout="/usr/bin/steam\n", stderr=""
             )
-        return process.subprocess.CompletedProcess(command, 0)
+        return host.subprocess.CompletedProcess(command, 0)
 
     launched = []
-    monkeypatch.setattr(process.subprocess, "run", fake_run)
+    monkeypatch.setattr(host.subprocess, "run", fake_run)
     monkeypatch.setattr(
-        process.subprocess,
+        host.subprocess,
         "Popen",
         lambda command, **kwargs: launched.append((command, kwargs)),
     )
@@ -619,9 +622,10 @@ def test_flatpak_steam_process_control_runs_on_host(monkeypatch) -> None:
 
 def test_flatpak_steam_control_fails_closed_without_host_bridge(monkeypatch) -> None:
     import integrations.steam.process as process
+    from integrations.launchers import host_process as host
 
-    monkeypatch.setattr(process, "running_in_flatpak", lambda: True)
-    monkeypatch.setattr(process.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(host, "running_in_flatpak", lambda: True)
+    monkeypatch.setattr(host.shutil, "which", lambda _name: None)
 
     assert not process.steam_running()
     assert not process.steam_available()

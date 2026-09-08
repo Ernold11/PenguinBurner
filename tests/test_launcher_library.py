@@ -239,7 +239,7 @@ def test_lutris_renderer_probe_runs_during_refresh_and_rechecks_on_deep_scan(
     game = SimpleNamespace(
         game_id="3", display_name="Game", runner_label="linux",
         directory=str(tmp_path), config_path=config, last_played=0,
-        installed_at=0, playtime_hours=0, cover_path=None, ready=True,
+        installed_at=0, playtime_hours=0, art_path=None, ready=True,
     )
     row = SimpleNamespace(
         game=game, wrapped=True, setting=SimpleNamespace(enabled=True, overlay=True)

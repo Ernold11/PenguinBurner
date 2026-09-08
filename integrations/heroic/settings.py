@@ -10,18 +10,10 @@ library, so there is no account layer here -- unlike Steam.
 
 from __future__ import annotations
 
-from integrations.launchers.game_settings import (
-    GameSettingsStore,
-    LauncherGameSetting,
-)
+from integrations.launchers.game_settings import GameSettingsStore
 
 HEROIC_GAME_SETTINGS_FILENAME = "heroic-game-settings.json"
 
-HeroicGameSetting = LauncherGameSetting
-
 HEROIC_GAME_SETTINGS_STORE = GameSettingsStore(HEROIC_GAME_SETTINGS_FILENAME)
 
-heroic_game_settings_path = HEROIC_GAME_SETTINGS_STORE.path
 load_heroic_game_settings = HEROIC_GAME_SETTINGS_STORE.load
-heroic_game_setting = HEROIC_GAME_SETTINGS_STORE.get
-store_heroic_game_setting = HEROIC_GAME_SETTINGS_STORE.store

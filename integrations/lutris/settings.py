@@ -19,9 +19,17 @@ LUTRIS_GAME_SETTINGS_FILENAME = "lutris-game-settings.json"
 #: Lutris's settings are shaped exactly like every other launcher's.
 LutrisGameSetting = LauncherGameSetting
 
-LUTRIS_GAME_SETTINGS_STORE = GameSettingsStore(LUTRIS_GAME_SETTINGS_FILENAME)
+#: What Lutris called these fields before the launchers shared one record.
+#: Read, never written: the next save migrates the file to the current keys.
+LEGACY_KEYS = {
+    "original_command": "original_prefix_command",
+    "injected_command": "injected_prefix_command",
+    "original_inherited": "original_prefix_inherited",
+}
 
-lutris_game_settings_path = LUTRIS_GAME_SETTINGS_STORE.path
+LUTRIS_GAME_SETTINGS_STORE = GameSettingsStore(
+    LUTRIS_GAME_SETTINGS_FILENAME, legacy_keys=LEGACY_KEYS
+)
+
 load_lutris_game_settings = LUTRIS_GAME_SETTINGS_STORE.load
-lutris_game_setting = LUTRIS_GAME_SETTINGS_STORE.get
 store_lutris_game_setting = LUTRIS_GAME_SETTINGS_STORE.store

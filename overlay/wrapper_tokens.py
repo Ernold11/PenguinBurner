@@ -141,6 +141,30 @@ def overlay_flag(overlay: bool) -> str:
     return OVERLAY_FLAG if overlay else OVERLAY_OFF_FLAG
 
 
+def game_key(launcher_id: str, game_id: str) -> str:
+    """The one identity a game carries: tab, wrapper, and daemon all use it.
+
+    Namespaced by launcher because ids collide across them -- a Lutris game 27
+    and a Steam app 27 are not the same game -- and the daemon keys its
+    running-game registry by one opaque string.
+
+    Both halves are required. A key missing one of them -- ``:27``, ``lutris:``
+    -- namespaces nothing while still looking like an identity, so it would be
+    written into a launch command and read back as a game that cannot be
+    resolved. Empty says plainly that this game has no key, which every caller
+    already handles by leaving the flag out.
+    """
+    launcher = str(launcher_id or "").strip()
+    value = str(game_id or "").strip()
+    return f"{launcher}:{value}" if launcher and value else ""
+
+
+def split_game_key(key: str) -> tuple[str, str]:
+    """A key back into (launcher, game id); ("", "") when it is neither."""
+    launcher_id, _, game_id = str(key or "").strip().partition(":")
+    return (launcher_id, game_id) if launcher_id and game_id else ("", "")
+
+
 def game_key_flag(game_key: str) -> str:
     """The identity flag, percent-encoded.
 
@@ -158,8 +182,9 @@ def game_key_from_flag(flag: str) -> str:
     if word.startswith(GAME_KEY_FLAG_PREFIX):
         return unquote(word[len(GAME_KEY_FLAG_PREFIX) :].strip())
     if word.startswith(LEGACY_LUTRIS_ID_FLAG_PREFIX):
-        game_id = word[len(LEGACY_LUTRIS_ID_FLAG_PREFIX) :].strip()
-        return f"{LEGACY_LUTRIS_LAUNCHER_ID}:{game_id}" if game_id else ""
+        return game_key(
+            LEGACY_LUTRIS_LAUNCHER_ID, word[len(LEGACY_LUTRIS_ID_FLAG_PREFIX) :]
+        )
     return ""
 
 
