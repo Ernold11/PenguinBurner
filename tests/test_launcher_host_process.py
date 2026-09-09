@@ -34,7 +34,24 @@ def test_a_command_is_asked_of_the_host_inside_a_flatpak(monkeypatch) -> None:
     assert host.host_has_command("lutris") is True
     (command,) = commands
     assert command[:2] == ["/usr/bin/flatpak-spawn", "--host"]
-    assert command[-3:] == ["/usr/bin/sh", "-c", "command -v lutris"]
+    # The name is an argument to the script, never part of it.
+    assert command[-5:] == [
+        "/usr/bin/sh",
+        "-c",
+        'command -v "$1"',
+        "sh",
+        "lutris",
+    ]
+
+
+def test_a_name_that_is_not_a_program_name_is_never_asked_about(monkeypatch) -> None:
+    """The one lookup helper that reaches a shell must not carry syntax into it."""
+    commands = _sandboxed(monkeypatch)
+
+    assert host.host_has_command("lutris; rm -rf ~") is False
+    assert host.host_has_command("$(id)") is False
+    assert host.host_has_command("") is False
+    assert commands == []
 
 
 def test_the_host_command_runs_from_a_directory_the_host_has(monkeypatch) -> None:

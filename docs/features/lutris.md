@@ -51,3 +51,7 @@ wrapper commands.
 PenguinBurner stores per-game preferences in
 `~/.config/PenguinBurner/lutris-game-settings.json`. Lutris game configuration
 uses `~/.config/lutris` when present, otherwise `~/.local/share/lutris`.
+
+If the preferences file is ever damaged and cannot be read, PenguinBurner keeps
+it as `lutris-game-settings.json.corrupt-<timestamp>` beside it and starts a
+new one, naming the copy in the status line; the old presets stay recoverable.
