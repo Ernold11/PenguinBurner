@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 
@@ -555,6 +556,107 @@ def test_disabling_the_game_takes_the_opt_in_with_it(tmp_path) -> None:
     assert "PB_INGAME_LATENCY" not in _config(tmp_path)["system"].get(
         "prefix_command", ""
     )
+
+
+def test_inheritance_that_changed_while_enabled_is_resumed(tmp_path) -> None:
+    """The runner file is Lutris's, not ours: it can change while we are on.
+
+    Disabling then owes the game the runner's *current* prefix, which means
+    clearing the game level rather than writing back the value we snapshotted
+    when the wrapper went in.
+    """
+    manager = _manager(tmp_path)
+    _runner_config(tmp_path, "game-performance")
+    manager.refresh()
+    assert manager.set_game_enabled("27", True).ok
+
+    _runner_config(tmp_path, "mangohud")
+
+    assert manager.set_game_enabled("27", False).ok
+    assert "prefix_command" not in _config(tmp_path).get("system", {})
+    row = manager.row("27")
+    assert row is not None
+    assert row.command == "mangohud"
+    assert "PENGUIN_BURNER" not in row.command
+
+
+def test_settings_written_by_earlier_versions_still_disable_cleanly(tmp_path) -> None:
+    """A game left enabled by an older PenguinBurner carries the old field
+    names and the old identity flag. It has to be restorable as it stands."""
+    settings_path = tmp_path / "lutris-game-settings.json"
+    injected = "PENGUIN_BURNER --pb-overlay=1 --pb-lutris-id=27 gamemoderun"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "games": {
+                    "27": {
+                        "enabled": True,
+                        "mode": "adaptive",
+                        "overlay": True,
+                        "original_prefix_command": "gamemoderun",
+                        "injected_prefix_command": injected,
+                        "original_prefix_inherited": False,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    home = _home(tmp_path, prefix_command=injected)
+    manager = LutrisIntegrationManager(home=home, settings_path=settings_path)
+    manager.refresh()
+    row = manager.row("27")
+    assert row is not None
+    assert row.setting.enabled is True
+    assert row.setting.overlay is True
+
+    assert manager.set_game_enabled("27", False).ok
+
+    assert _config(tmp_path)["system"]["prefix_command"] == "gamemoderun"
+    stored = load_lutris_game_settings(settings_path)["27"]
+    assert stored.enabled is False
+    assert stored.mode == GAME_MODE_ADAPTIVE
+    assert stored.original_command == "gamemoderun"
+    # The save migrated the file to the names in use now.
+    written = json.loads(settings_path.read_text(encoding="utf-8"))["games"]["27"]
+    assert "original_prefix_command" not in written
+    assert written["original_command"] == "gamemoderun"
+
+
+def test_the_legacy_identity_flag_is_rewritten_on_the_next_change(tmp_path) -> None:
+    """--pb-lutris-id=27 keeps working; the next managed write says lutris:27."""
+    settings_path = tmp_path / "lutris-game-settings.json"
+    injected = "PENGUIN_BURNER --pb-overlay=0 --pb-lutris-id=27 gamemoderun"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "games": {
+                    "27": {
+                        "enabled": True,
+                        "mode": "adaptive",
+                        "original_prefix_command": "gamemoderun",
+                        "injected_prefix_command": injected,
+                        "original_prefix_inherited": False,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    home = _home(tmp_path, prefix_command=injected)
+    manager = LutrisIntegrationManager(home=home, settings_path=settings_path)
+    manager.refresh()
+
+    assert manager.set_game_overlay("27", True).ok
+
+    written = _config(tmp_path)["system"]["prefix_command"]
+    assert "--pb-game-id=lutris:27" in written
+    assert "--pb-lutris-id" not in written
+    assert written.endswith("gamemoderun")
+
+    # And the game still comes back to exactly what it launched with before.
+    assert manager.set_game_enabled("27", False).ok
+    assert _config(tmp_path)["system"]["prefix_command"] == "gamemoderun"
 
 
 @pytest.mark.parametrize("bulk", [False, True])

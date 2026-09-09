@@ -22,9 +22,16 @@ def game_key(launcher_id: str, game_id: str) -> str:
     Namespaced by launcher because ids collide across them: a Lutris game 27
     and a Steam app 27 are not the same game, and the daemon keys the running
     -game registry by one opaque string.
+
+    Both halves are required. A key missing one of them -- ``:27``, ``lutris:``
+    -- namespaces nothing while still looking like an identity, so it would be
+    written into a launch command and read back as a game that cannot be
+    resolved. Empty says plainly that this game has no key, which every caller
+    already handles by leaving the flag out.
     """
+    launcher = str(launcher_id or "").strip()
     value = str(game_id or "").strip()
-    return f"{str(launcher_id).strip()}:{value}" if value else ""
+    return f"{launcher}:{value}" if launcher and value else ""
 
 
 def inject_wrapper(

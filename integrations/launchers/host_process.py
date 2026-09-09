@@ -16,12 +16,18 @@ it.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
 from pathlib import Path
 
 FLATPAK_INFO_PATH = Path("/.flatpak-info")
+# Absolute host paths, not names resolved through PATH: the sandbox's PATH is
+# not the host's, and flatpak-spawn would otherwise be asked to run whatever
+# the portal happens to resolve. /usr/bin is the supported host layout --
+# every distribution PenguinBurner targets has merged /bin into it -- and a
+# host without these three simply reports "unknown" rather than guessing.
 HOST_PGREP = "/usr/bin/pgrep"
 HOST_KILL = "/usr/bin/kill"
 HOST_SHELL = "/usr/bin/sh"
@@ -32,6 +38,10 @@ HOST_SHELL = "/usr/bin/sh"
 HOST_WORKING_DIRECTORY = "/tmp"
 
 DEFAULT_TIMEOUT_S = 3.0
+
+#: What a program name may look like. Anything else is not a command we would
+#: find on a PATH, so it is answered "no" instead of being asked about.
+_COMMAND_NAME_RE = re.compile(r"[A-Za-z0-9_.+-]+")
 
 
 def running_in_flatpak() -> bool:
@@ -106,10 +116,19 @@ def start_on_host(command: list[str]) -> bool:
 
 
 def host_has_command(name: str) -> bool:
-    """Whether ``name`` is on the host's PATH."""
+    """Whether ``name`` is on the host's PATH.
+
+    The name is checked against an executable-name shape and then passed to
+    the shell as an *argument*, never spliced into the script: callers today
+    ask about fixed names, but a lookup helper that interpolates into ``sh -c``
+    is one careless caller away from running whatever the string says.
+    """
+    value = str(name or "").strip()
+    if not _COMMAND_NAME_RE.fullmatch(value):
+        return False
     if not running_in_flatpak():
-        return shutil.which(name) is not None
-    result = run_on_host([HOST_SHELL, "-c", f"command -v {name}"])
+        return shutil.which(value) is not None
+    result = run_on_host([HOST_SHELL, "-c", 'command -v "$1"', "sh", value])
     return result is not None and result.returncode == 0
 
 

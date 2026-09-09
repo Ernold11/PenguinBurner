@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from auto_uv.persistence.auto_uv_persisted_json_files import safe_json_write
+from common.atomic_write import preserve_unreadable_file
 from common.penguin_burner_paths import default_user_config_dir
 from overlay.wrapper_tokens import ingame_latency_present
 from profiles.game_profile import (
@@ -36,6 +37,19 @@ _LEGACY_KEYS = {
     "injected_command": "injected_prefix_command",
     "original_inherited": "original_prefix_inherited",
 }
+
+
+class GameSettingsError(RuntimeError):
+    """A settings file could not be saved without losing what it already held."""
+
+
+@dataclass(frozen=True)
+class SettingsWrite:
+    """Where a setting landed, and what had to be rescued to put it there."""
+
+    path: Path
+    #: Where an unreadable previous file was kept, when there was one.
+    preserved: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -84,15 +98,14 @@ class GameSettingsStore:
         return default_user_config_dir() / self.filename
 
     def load(self, path: str | Path | None = None) -> dict[str, LauncherGameSetting]:
-        payload = self._payload(path)
-        games = payload.get("games")
-        if not isinstance(games, dict):
-            return {}
-        return {
-            str(game_id): _setting_from_entry(entry)
-            for game_id, entry in games.items()
-            if isinstance(entry, dict)
-        }
+        """Every game's preset. A file we cannot read reads as no presets.
+
+        Deliberately not an error: one bad file must not take the library tab
+        down. The write path is where an unreadable file is dealt with, since
+        that is the only place its content can actually be lost.
+        """
+        payload, _ = _read_payload(self.path(path))
+        return _settings_from_payload(payload)
 
     def get(
         self,
@@ -108,19 +121,73 @@ class GameSettingsStore:
         setting: LauncherGameSetting,
         *,
         path: str | Path | None = None,
-    ) -> Path:
-        settings = self.load(path)
-        settings[str(game_id)] = setting
-        return safe_json_write(self.path(path), _payload_for(settings))
+    ) -> SettingsWrite:
+        """Save one game's preset, keeping every other game's.
 
-    def _payload(self, path: str | Path | None) -> dict:
-        try:
-            payload = json.loads(
-                self.path(path).read_text(encoding="utf-8", errors="replace")
-            )
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
+        Read-modify-write, and the read is the dangerous half: a file that
+        does not parse reads as empty, and writing that back would delete
+        every other game's preset to record this one. So an unparseable file
+        is moved aside first and the caller is told where it went; if it
+        cannot be moved it is not written over at all.
+
+        Single-writer by design: the desktop app is the only thing that writes
+        these files (the launch wrapper only reads them), so two PenguinBurner
+        windows open at once are the one way to lose an update here. That is
+        not defended against -- a lock file would be the fix if it ever
+        becomes a real workflow.
+        """
+        target = self.path(path)
+        payload, unreadable = _read_payload(target)
+        preserved = _preserve(target) if unreadable else None
+        settings = _settings_from_payload(payload)
+        settings[str(game_id)] = setting
+        return SettingsWrite(
+            safe_json_write(target, _payload_for(settings)),
+            preserved=preserved,
+        )
+
+
+def _read_payload(path: Path) -> tuple[dict, bool]:
+    """The stored mapping, and whether the file exists but could not be read.
+
+    Three cases, and only the third is a problem: absent (nothing was ever
+    saved), empty (a write that never got any content into it), and present
+    but unparseable -- which is the one that holds settings we would destroy
+    by treating it as absent.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return {}, False
+    except OSError:
+        return {}, True
+    if not text.strip():
+        return {}, False
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return {}, True
+    return (payload, False) if isinstance(payload, dict) else ({}, True)
+
+
+def _preserve(path: Path) -> Path | None:
+    try:
+        return preserve_unreadable_file(path)
+    except OSError as error:
+        raise GameSettingsError(
+            f"{path} could not be read and could not be moved aside: {error}"
+        ) from error
+
+
+def _settings_from_payload(payload: dict) -> dict[str, LauncherGameSetting]:
+    games = payload.get("games")
+    if not isinstance(games, dict):
+        return {}
+    return {
+        str(game_id): _setting_from_entry(entry)
+        for game_id, entry in games.items()
+        if isinstance(entry, dict)
+    }
 
 
 def _value(entry: dict, key: str, default: object = "") -> object:

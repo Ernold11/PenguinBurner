@@ -39,7 +39,7 @@ from profiles.game_profile import (
     normalize_game_target_fps,
 )
 
-from .game_settings import GameSettingsStore, LauncherGameSetting
+from .game_settings import GameSettingsError, GameSettingsStore, LauncherGameSetting
 from .wrapper_command import inject_wrapper, remove_wrapper
 
 #: The game's own level, as opposed to anything it inherits from.
@@ -72,6 +72,14 @@ class ApplyResult:
     ok: bool
     message: str
     command: str = ""
+
+
+@dataclass(frozen=True)
+class SettingsSave:
+    """Whether the preset was recorded, and anything the user must be told."""
+
+    ok: bool
+    note: str = ""
 
 
 @dataclass(frozen=True)
@@ -286,8 +294,10 @@ class WrapperManager:
         # Stored either way: a hand edit that removed the wrapper still leaves
         # the user's tier, GPU choice and FPS target worth keeping for the next
         # enable, exactly as a toggle-driven disable does.
-        self._save(row.game, stored)
-        return ApplyResult(True, "", landed)
+        save = self._save(row.game, stored)
+        if not save.ok:
+            return ApplyResult(False, save.note, landed)
+        return ApplyResult(True, save.note, landed)
 
     # -- the one write path --------------------------------------------------
 
@@ -380,12 +390,38 @@ class WrapperManager:
             # so an off/on toggle does not silently reset a configured game to
             # defaults. What lands as the "original" is the restored command.
             stored = replace(setting, original_command=wanted, injected_command="")
-        self._save(row.game, stored)
-        return ApplyResult(True, self._describe(row.game, stored), write.command)
+        save = self._save(row.game, stored)
+        if not save.ok:
+            return ApplyResult(False, save.note, write.command)
+        described = self._describe(row.game, stored)
+        message = f"{described} {save.note}".strip() if save.note else described
+        return ApplyResult(True, message, write.command)
 
-    def _save(self, game: Any, setting: LauncherGameSetting) -> None:
-        self._store.store(game.game_id, setting, path=self._settings_path)
+    def _save(self, game: Any, setting: LauncherGameSetting) -> SettingsSave:
+        """Record the preset, and report anything that did not go quietly.
+
+        The launcher's config has already been written by the time this runs,
+        so a settings file that cannot be saved is not a silent condition: the
+        game launches wrapped while PenguinBurner has no record of why.
+        """
+        try:
+            write = self._store.store(
+                game.game_id, setting, path=self._settings_path
+            )
+        except GameSettingsError as error:
+            return SettingsSave(
+                False,
+                f"{game.display_name}: launch command written, but the "
+                f"PenguinBurner settings file could not be: {error}",
+            )
         self._rows[game.game_id] = self._row(game, setting)
+        if write.preserved is None:
+            return SettingsSave(True)
+        return SettingsSave(
+            True,
+            "The previous settings file could not be read and was kept as "
+            f"{write.preserved}; other games may need setting up again.",
+        )
 
     @staticmethod
     def _ensure_wrapper_installed() -> str:

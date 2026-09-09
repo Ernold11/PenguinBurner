@@ -23,6 +23,33 @@ def test_the_game_key_is_namespaced_by_launcher() -> None:
     assert game_key("lutris", "") == ""
 
 
+def test_half_a_game_key_is_no_game_key() -> None:
+    """":27" looks like an identity and namespaces nothing.
+
+    It would be written into a launch command and read back at launch as a
+    game nothing can resolve. Empty says so plainly, and every caller already
+    leaves the flag out for it.
+    """
+    assert game_key("", "27") == ""
+    assert game_key(None, "27") == ""
+    assert game_key("lutris", None) == ""
+    assert game_key(None, None) == ""
+
+
+def test_a_game_key_is_trimmed_on_both_halves() -> None:
+    assert game_key(" lutris ", " 27 ") == "lutris:27"
+    assert game_key("  ", "27") == ""
+    assert game_key("lutris", "   ") == ""
+
+
+def test_a_command_carries_no_identity_flag_without_a_launcher() -> None:
+    """A manager that never set its launcher id must not write ":27"."""
+    result = inject_wrapper("game-performance", overlay=False, launcher_id="", game_id="27")
+
+    assert "--pb-game-id" not in result
+    assert result == "PENGUIN_BURNER --pb-overlay=0 game-performance"
+
+
 def test_injection_puts_the_wrapper_in_front_of_the_users_own_command() -> None:
     """Our tokens run first; whatever the user had stays next to the game."""
     assert _inject("game-performance") == (
