@@ -17,6 +17,7 @@ import sys
 
 from integrations.launchers.runtime_profile import profile_argv, send_profile
 
+from .identity import steam_game_key
 from .settings import steam_game_setting
 from .users import list_steam_users
 
@@ -58,6 +59,12 @@ def game_runtime_profile_argv(
     home: Path | None = None,
     settings_path: str | Path | None = None,
 ) -> tuple[list[str], str] | None:
+    """The daemon request this launch means, and the game key to register it under.
+
+    The key is namespaced (``steam:570``) like every other launcher's, because
+    the daemon keys running games by one opaque string across all of them. The
+    app id itself stays Steam's own numeric one everywhere else.
+    """
     app_id = game_app_id(env)
     if not app_id:
         return None
@@ -68,7 +75,7 @@ def game_runtime_profile_argv(
     if setting is None:
         return None
     argv = profile_argv(setting)
-    return None if argv is None else (argv, app_id)
+    return None if argv is None else (argv, steam_game_key(app_id))
 
 
 def apply_game_runtime_profile(
@@ -81,8 +88,8 @@ def apply_game_runtime_profile(
     resolved = game_runtime_profile_argv(env, home=home, settings_path=settings_path)
     if resolved is None:
         return False
-    argv, app_id = resolved
-    return send_profile(argv, app_id=app_id, watch_pid=watch_pid)
+    argv, game_key = resolved
+    return send_profile(argv, app_id=game_key, watch_pid=watch_pid)
 
 
 def main(argv: list[str] | None = None) -> int:
