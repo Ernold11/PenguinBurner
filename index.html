@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overlay Notes · PenguinBurner</title>
+<meta name="description" content="Analysis, build order and an interactive mockup for reworking the PenguinBurner in-game overlay.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    color-scheme: light dark;
+    --ground: #f2f4f6;
+    --surface: #ffffff;
+    --surface-2: #e8ebef;
+    --line: #d3d9e0;
+    --line-soft: #e2e6eb;
+    --ink: #14181d;
+    --ink-2: #3b444f;
+    --muted: #67717e;
+    --ember: #bc5317;
+    --signal: #1f6f60;
+    --measure: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0f1216;
+      --surface: #171b21;
+      --surface-2: #1e242c;
+      --line: #2d353f;
+      --line-soft: #232a32;
+      --ink: #e7eaee;
+      --ink-2: #b6bfca;
+      --muted: #8d97a3;
+      --ember: #f2903f;
+      --signal: #56b8a4;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0f1216;
+    --surface: #171b21;
+    --surface-2: #1e242c;
+    --line: #2d353f;
+    --line-soft: #232a32;
+    --ink: #e7eaee;
+    --ink-2: #b6bfca;
+    --muted: #8d97a3;
+    --ember: #f2903f;
+    --signal: #56b8a4;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .pb-nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 1.25rem;
+    padding: 0.6rem clamp(1.1rem, 4vw, 3rem);
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(8px);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+  }
+  .pb-nav a { color: var(--muted); text-decoration: none; letter-spacing: 0.04em; }
+  .pb-nav a:hover { color: var(--ink); }
+  .pb-nav .pb-home { color: var(--ink); font-weight: 500; margin-right: auto; }
+  .pb-nav .pb-links { display: flex; flex-wrap: wrap; gap: 0.35rem 1.1rem; }
+  .pb-nav a[aria-current="page"] { color: var(--ember); }
+  .pb-nav a:focus-visible, .card:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; border-radius: 3px; }
+
+  .page { max-width: 58rem; margin: 0 auto; padding: clamp(2.5rem, 6vw, 4.5rem) clamp(1.1rem, 4vw, 3rem) 5rem; }
+
+  h1 {
+    font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+    font-weight: 700;
+    font-size: clamp(2.2rem, 6vw, 3rem);
+    line-height: 1.05;
+    letter-spacing: -0.015em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  h2 {
+    font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+    font-weight: 600;
+    font-size: 1.25rem;
+    margin: 0;
+    line-height: 1.25;
+  }
+
+  p { margin: 0; max-width: var(--measure); }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  header.intro { display: flex; flex-direction: column; gap: 1rem; padding-bottom: 2.5rem; border-bottom: 1px solid var(--line); }
+  header.intro .lede { font-size: 1.1875rem; color: var(--ink-2); }
+
+  .cards { display: flex; flex-direction: column; gap: 1rem; padding-top: 2.5rem; }
+
+  a.card {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.45rem;
+    padding: 1.3rem 1.4rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--ember);
+    border-radius: 7px;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 140ms ease, transform 140ms ease;
+  }
+
+  a.card:hover { border-color: var(--ember); transform: translateY(-1px); }
+
+  a.card .kicker {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  a.card p { font-size: 0.9375rem; color: var(--ink-2); }
+
+  a.card .go {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+    color: var(--ember);
+  }
+
+  .context {
+    margin-top: 2.5rem;
+    padding: 1.15rem 1.3rem;
+    background: var(--surface);
+    border: 1px dashed var(--line);
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  .context p { font-size: 0.9375rem; color: var(--ink-2); }
+  .context b { color: var(--ink); }
+  .context a { color: var(--ember); }
+
+  footer {
+    margin-top: 3rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--line);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 1.5rem;
+  }
+</style>
+</head>
+<body>
+
+<nav class="pb-nav">
+  <a class="pb-home" href="./" aria-current="page">PenguinBurner · overlay notes</a>
+  <span class="pb-links">
+    <a href="./strategy.html">Strategy</a>
+    <a href="./build-order.html">Build order</a>
+    <a href="./fitting-room.html">Fitting room</a>
+  </span>
+</nav>
+
+<div class="page">
+
+  <header class="intro">
+    <p class="eyebrow">Working notes · not a proposal to merge</p>
+    <h1>Overlay Notes</h1>
+    <p class="lede">
+      Three documents about reworking the in-game overlay: what it actually
+      draws today, what it would take to make it a reason to uninstall
+      MangoHud, and a mockup you can click through before any of it is built.
+    </p>
+  </header>
+
+  <div class="cards">
+
+    <a class="card" href="./strategy.html">
+      <span class="kicker">01 · the reading</span>
+      <h2>Steam-Grade Overlay</h2>
+      <p>
+        What the layer draws today, down to the glyph table &mdash; redrawn
+        pixel for pixel so it is not a flattering mock-up. Then the three
+        different things people mean by &ldquo;the Steam overlay&rdquo;, and
+        which one is worth aiming at for a tool that also serves Lutris and
+        Heroic.
+      </p>
+      <span class="go">Read the analysis &rarr;</span>
+    </a>
+
+    <a class="card" href="./build-order.html">
+      <span class="kicker">02 · the plan</span>
+      <h2>Overlay Build Order</h2>
+      <p>
+        A feature-by-feature parity matrix against MangoHud, then six
+        milestones with what each one touches and where it can be verified.
+        The renderer rewrite is deliberately last: almost everything else fits
+        the renderer that already ships.
+      </p>
+      <span class="go">Read the build order &rarr;</span>
+    </a>
+
+    <a class="card" href="./fitting-room.html">
+      <span class="kicker">03 · the mockup</span>
+      <h2>HUD Fitting Room</h2>
+      <p>
+        Interactive. Switch renderer, detail level, corner, size and scene, and
+        watch what changes. The pixel mode draws with a real 5&times;7 glyph
+        table at the layer&rsquo;s own spacing, so nothing there is a promise
+        the code cannot keep.
+      </p>
+      <span class="go">Try it &rarr;</span>
+    </a>
+
+  </div>
+
+  <div class="context">
+    <p>
+      <b>Why this exists:</b> the overlay works and looks like 2004 &mdash; one
+      line of capital pixel text on an opaque black bar, welded to the top-right
+      corner. These notes work out what to do about that, in what order, and
+      what each step risks.
+    </p>
+    <p>
+      <b>Status:</b> nothing here is implemented. No hardware validation has
+      been done for anything in the plan &mdash; the machine these were written
+      on has no NVIDIA GPU and no daemon.
+    </p>
+    <p>
+      Comments welcome on the <a href="https://github.com/jpietek/PenguinBurner">PenguinBurner</a>
+      repository.
+    </p>
+  </div>
+
+  <footer>
+    <span>Published from the gh-pages branch of a fork</span>
+    <span>September 2026</span>
+  </footer>
+
+</div>
+
+</body>
+</html>

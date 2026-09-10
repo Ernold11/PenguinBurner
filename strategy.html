@@ -1,0 +1,999 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Steam-Grade Overlay · PenguinBurner</title>
+<meta name="description" content="What the overlay draws today, what &ldquo;like Steam&rdquo; can mean, and the four stages.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    /* cool slate neutrals, ember accent from the app's own flame */
+    --ground: #f2f4f6;
+    --surface: #ffffff;
+    --surface-2: #e8ebef;
+    --line: #d3d9e0;
+    --line-soft: #e2e6eb;
+    --ink: #14181d;
+    --ink-2: #3b444f;
+    --muted: #67717e;
+    --ember: #bc5317;
+    --ember-soft: #f6e6d9;
+    --signal: #1f6f60;
+    --signal-soft: #dcece8;
+    --screen-a: #1c2733;
+    --screen-b: #0d141b;
+
+    --measure: 68ch;
+    --step--1: 0.8125rem;
+    --step-0: 1rem;
+    --step-1: 1.1875rem;
+    --step-2: 1.5rem;
+    --step-3: 2rem;
+    --step-4: 2.75rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0f1216;
+      --surface: #171b21;
+      --surface-2: #1e242c;
+      --line: #2d353f;
+      --line-soft: #232a32;
+      --ink: #e7eaee;
+      --ink-2: #b6bfca;
+      --muted: #8d97a3;
+      --ember: #f2903f;
+      --ember-soft: #33210f;
+      --signal: #56b8a4;
+      --signal-soft: #122b27;
+      --screen-a: #223040;
+      --screen-b: #0a1017;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0f1216;
+    --surface: #171b21;
+    --surface-2: #1e242c;
+    --line: #2d353f;
+    --line-soft: #232a32;
+    --ink: #e7eaee;
+    --ink-2: #b6bfca;
+    --muted: #8d97a3;
+    --ember: #f2903f;
+    --ember-soft: #33210f;
+    --signal: #56b8a4;
+    --signal-soft: #122b27;
+    --screen-a: #223040;
+    --screen-b: #0a1017;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: var(--step-0);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 62rem;
+    margin: 0 auto;
+    padding: clamp(2rem, 5vw, 4.5rem) clamp(1.1rem, 4vw, 3rem) 6rem;
+  }
+
+  .prose { max-width: var(--measure); }
+
+  h1, h2, h3 {
+    font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+    font-weight: 700;
+    text-wrap: balance;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+
+  h1 { font-size: var(--step-4); line-height: 1.05; }
+  h2 { font-size: var(--step-3); line-height: 1.12; }
+  h3 { font-size: var(--step-1); line-height: 1.25; font-weight: 600; }
+
+  p { margin: 0; }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  a { color: var(--ember); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--ember);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  code, .mono {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.875em;
+  }
+
+  code {
+    background: var(--surface-2);
+    border-radius: 3px;
+    padding: 0.08em 0.34em;
+  }
+
+  /* --- masthead ------------------------------------------------------- */
+
+  header.masthead {
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+    padding-bottom: 2.5rem;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .masthead .lede {
+    max-width: var(--measure);
+    font-size: var(--step-1);
+    color: var(--ink-2);
+  }
+
+  .masthead .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.5rem;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+  }
+
+  section { padding-top: 3.25rem; }
+
+  .section-head {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .section-head p { max-width: var(--measure); color: var(--ink-2); }
+
+  .stack { display: flex; flex-direction: column; gap: 1rem; }
+
+  /* --- the screen mock ------------------------------------------------ */
+
+  .screens {
+    display: grid;
+    gap: 1.25rem;
+    grid-template-columns: 1fr;
+  }
+
+  @media (min-width: 56rem) {
+    .screens { grid-template-columns: 1fr 1fr; }
+  }
+
+  .screen {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .screen-frame {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    background:
+      radial-gradient(120% 90% at 22% 18%, color-mix(in srgb, var(--screen-a) 92%, #ffffff) 0%, var(--screen-a) 38%, var(--screen-b) 100%);
+    display: flex;
+    justify-content: flex-end;
+    align-items: flex-start;
+    padding: 3.2%;
+  }
+
+  .screen-frame::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(200deg, rgba(255, 255, 255, 0.06), transparent 45%);
+    pointer-events: none;
+  }
+
+  .screen-frame canvas { display: block; image-rendering: pixelated; max-width: 92%; height: auto; }
+
+  .screen-caption {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 0.7rem 0.9rem;
+    border-top: 1px solid var(--line-soft);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+
+  .screen-caption strong { color: var(--ink); font-weight: 500; }
+
+  /* proposed HUD mock, drawn in real type on purpose */
+  .hud {
+    position: relative;
+    z-index: 1;
+    min-width: 15rem;
+    background: rgba(9, 12, 16, 0.62);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 7px;
+    padding: 0.6rem 0.7rem;
+    color: #f3f5f7;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: clamp(0.5rem, 1.25vw, 0.72rem);
+    line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  }
+
+  .hud-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .hud-fps { font-size: 1.9em; font-weight: 600; line-height: 1; letter-spacing: -0.01em; }
+  .hud-fps span { font-size: 0.45em; font-weight: 400; opacity: 0.72; margin-left: 0.28em; }
+  .hud-tier {
+    font-size: 0.85em;
+    letter-spacing: 0.1em;
+    padding: 0.1em 0.45em;
+    border-radius: 3px;
+    background: rgba(242, 144, 63, 0.22);
+    color: #ffb977;
+    border: 1px solid rgba(242, 144, 63, 0.35);
+  }
+  .hud-rows { display: grid; grid-template-columns: auto 1fr; gap: 0.05rem 0.7rem; font-variant-numeric: tabular-nums; }
+  .hud-rows dt { opacity: 0.62; }
+  .hud-rows dd { margin: 0; text-align: right; }
+  .hud-graph { display: block; width: 100%; height: auto; opacity: 0.9; }
+
+  /* --- fact grid ------------------------------------------------------ */
+
+  .facts {
+    display: grid;
+    gap: 1px;
+    background: var(--line-soft);
+    border: 1px solid var(--line-soft);
+    border-radius: 6px;
+    overflow: hidden;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  }
+
+  .fact { background: var(--surface); padding: 1rem 1.05rem; display: flex; flex-direction: column; gap: 0.3rem; }
+  .fact dt { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  .fact dd { margin: 0; font-size: 0.9375rem; color: var(--ink-2); }
+  .fact dd b { color: var(--ink); font-weight: 600; }
+
+  /* --- figure --------------------------------------------------------- */
+
+  figure { margin: 0; }
+
+  .figure-wrap {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 1.4rem 1.2rem 1rem;
+    overflow-x: auto;
+  }
+
+  .figure-wrap svg { max-width: 100%; height: auto; display: block; min-width: 40rem; color: var(--ink-2); }
+
+  figcaption {
+    margin-top: 0.85rem;
+    font-size: 0.8125rem;
+    color: var(--muted);
+    max-width: var(--measure);
+  }
+
+  /* --- comparison table ----------------------------------------------- */
+
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+
+  table { border-collapse: collapse; width: 100%; min-width: 34rem; }
+
+  th, td { text-align: left; padding: 0.72rem 0.95rem; border-bottom: 1px solid var(--line-soft); vertical-align: top; font-size: 0.9375rem; }
+
+  thead th {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    background: var(--surface-2);
+  }
+
+  tbody tr:last-child td { border-bottom: 0; }
+  td:first-child { font-weight: 500; }
+
+  .verdict { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.75rem; letter-spacing: 0.04em; }
+  .verdict.yes { color: var(--signal); }
+  .verdict.no { color: var(--muted); }
+
+  /* --- stages --------------------------------------------------------- */
+
+  .stages { display: flex; flex-direction: column; gap: 1rem; counter-reset: stage; }
+
+  .stage {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 1.25rem 1.3rem;
+    display: grid;
+    gap: 0.85rem;
+    grid-template-columns: 1fr;
+  }
+
+  @media (min-width: 46rem) {
+    .stage { grid-template-columns: 3.5rem 1fr; column-gap: 1.25rem; }
+  }
+
+  .stage-num {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--ember);
+    padding-top: 0.2rem;
+  }
+
+  .stage-body { display: flex; flex-direction: column; gap: 0.7rem; min-width: 0; }
+  .stage-body > p { max-width: var(--measure); color: var(--ink-2); }
+
+  .stage-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 0.8rem; }
+
+  .chip {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.18em 0.5em;
+    border-radius: 3px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .chip.risk-low { color: var(--signal); border-color: color-mix(in srgb, var(--signal) 40%, var(--line)); background: var(--signal-soft); }
+  .chip.risk-med { color: var(--ember); border-color: color-mix(in srgb, var(--ember) 40%, var(--line)); background: var(--ember-soft); }
+
+  .stage ul { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.3rem; max-width: var(--measure); }
+  .stage li { color: var(--ink-2); font-size: 0.9375rem; }
+  .stage li b { color: var(--ink); font-weight: 600; }
+
+  .unlocks {
+    border-top: 1px dashed var(--line);
+    padding-top: 0.7rem;
+    font-size: 0.875rem;
+    color: var(--ink-2);
+  }
+
+  .unlocks b {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    margin-right: 0.5rem;
+  }
+
+  /* --- decisions ------------------------------------------------------ */
+
+  .decisions { display: flex; flex-direction: column; gap: 0.75rem; }
+
+  .decision {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--ember);
+    border-radius: 5px;
+    padding: 1rem 1.15rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .decision h3 { font-size: 1rem; }
+  .decision p { font-size: 0.9375rem; color: var(--ink-2); max-width: var(--measure); }
+  .decision .rec { font-size: 0.875rem; color: var(--ink); }
+  .decision .rec b {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ember);
+    font-weight: 500;
+    margin-right: 0.5rem;
+  }
+
+  .note {
+    margin-top: 3rem;
+    padding: 1.05rem 1.2rem;
+    border: 1px dashed var(--line);
+    border-radius: 6px;
+    background: var(--surface);
+    font-size: 0.9375rem;
+    color: var(--ink-2);
+    max-width: var(--measure);
+  }
+
+  .note b { color: var(--ink); }
+
+  .out-list { display: flex; flex-direction: column; gap: 0.55rem; max-width: var(--measure); }
+  .out-list div { display: flex; gap: 0.7rem; align-items: baseline; font-size: 0.9375rem; color: var(--ink-2); }
+  .out-list span.mark { color: var(--muted); font-family: "IBM Plex Mono", monospace; flex: none; }
+  .out-list b { color: var(--ink); font-weight: 600; }
+</style>
+<style>
+  :root { color-scheme: light dark; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+
+  .pb-nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 1.25rem;
+    padding: 0.6rem clamp(1.1rem, 4vw, 3rem);
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(8px);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+  }
+  .pb-nav a { color: var(--muted); text-decoration: none; letter-spacing: 0.04em; }
+  .pb-nav a:hover { color: var(--ink); }
+  .pb-nav .pb-home { color: var(--ink); font-weight: 500; margin-right: auto; }
+  .pb-nav .pb-links { display: flex; flex-wrap: wrap; gap: 0.35rem 1.1rem; }
+  .pb-nav a[aria-current="page"] { color: var(--ember); }
+  .pb-nav a:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; border-radius: 2px; }
+</style>
+</head>
+<body>
+<nav class="pb-nav"><a class="pb-home" href="./">PenguinBurner · overlay notes</a><span class="pb-links"><a href="./strategy.html" aria-current="page">Strategy</a><a href="./build-order.html">Build order</a><a href="./fitting-room.html">Fitting room</a></span></nav>
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">PenguinBurner · in-game overlay</p>
+    <h1>Steam-Grade Overlay</h1>
+    <p class="lede">
+      The overlay works and nobody would call it good-looking. It draws one
+      line of 5&times;7 all-caps pixels on an opaque black bar, welded to the
+      top-right corner. Here is what it actually does today, what
+      &ldquo;like Steam&rdquo; can realistically mean for a tool that also
+      drives Lutris and Heroic, and a four-stage route from one to the other.
+    </p>
+    <p class="meta">
+      <span>branch agent/overlay-ux</span>
+      <span>base upstream/main 3e6083c</span>
+      <span>10 Sep 2026</span>
+    </p>
+  </header>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">01 · The reality on screen</p>
+      <h2>What the game draws today</h2>
+      <p>
+        Left is not a mock-up: it is the layer&rsquo;s own 5&times;7 glyph
+        table, its own spacing rules and its own opaque backing box, redrawn
+        here pixel for pixel. Right is where the same data could sit.
+      </p>
+    </div>
+
+    <div class="screens">
+      <div class="screen">
+        <div class="screen-frame">
+          <canvas id="hud-today" width="1120" height="80" aria-label="The current PenguinBurner overlay: one line of all-capital pixel text on an opaque black bar in the top-right corner"></canvas>
+        </div>
+        <div class="screen-caption">
+          <span><strong>Today</strong> · clear-rect glyphs</span>
+          <span>1 line · fixed corner · opaque</span>
+        </div>
+      </div>
+
+      <div class="screen">
+        <div class="screen-frame">
+          <div class="hud" role="img" aria-label="Proposed overlay: a translucent rounded panel with a large frame-rate number, a tier badge, a frametime graph and aligned metric rows">
+            <div class="hud-top">
+              <div class="hud-fps">119<span>fps</span></div>
+              <div class="hud-tier">BAL</div>
+            </div>
+            <svg class="hud-graph" viewBox="0 0 200 34" preserveAspectRatio="none" aria-hidden="true">
+              <polyline points="0,26 8,24 16,25 24,22 32,27 40,23 48,25 56,12 64,24 72,26 80,23 88,25 96,21 104,24 112,26 120,9 128,23 136,25 144,22 152,26 160,24 168,25 176,21 184,24 192,26 200,23"
+                fill="none" stroke="#7fd3c2" stroke-width="1.5" stroke-linejoin="round" />
+              <line x1="0" y1="30" x2="200" y2="30" stroke="rgba(255,255,255,0.18)" stroke-width="1" />
+            </svg>
+            <dl class="hud-rows">
+              <dt>fg</dt><dd>176 fps</dd>
+              <dt>latency</dt><dd>23 ms</dd>
+              <dt>gpu</dt><dd>2790 MHz · 915 mV</dd>
+              <dt>power</dt><dd>241 W · 67 &deg;C</dd>
+              <dt>1% low</dt><dd>94 fps</dd>
+            </dl>
+          </div>
+        </div>
+        <div class="screen-caption">
+          <span><strong>Target</strong> · blended quads</span>
+          <span>detail levels · any corner · graph</span>
+        </div>
+      </div>
+    </div>
+
+    <dl class="facts" style="margin-top: 1.25rem;">
+      <div class="fact">
+        <dt>Renderer</dt>
+        <dd><b>vkCmdClearAttachments only.</b> Every glyph row is a cleared rectangle. No pipeline, no shaders, no textures, no vertex buffers.</dd>
+      </div>
+      <div class="fact">
+        <dt>Consequence</dt>
+        <dd><b>No alpha.</b> A cleared rect writes its colour straight in, so the backing box is hard black and the text is hard white. Translucency is not a setting we forgot &mdash; it is unreachable from here.</dd>
+      </div>
+      <div class="fact">
+        <dt>Font</dt>
+        <dd><b>45 glyphs, 5&times;7 pixels.</b> A-Z, 0-9 and <code>+ - / % .</code> Everything is passed through <code>toupper</code>, so there is no lowercase and no colon.</dd>
+      </div>
+      <div class="fact">
+        <dt>Live mismatch</dt>
+        <dd>The Overlay tab previews <b>&ldquo;40 ms&rdquo;</b> and <b>&ldquo;800 mV&rdquo;</b>. The game draws <b>&ldquo;40 MS&rdquo;</b> and <b>&ldquo;800 MV&rdquo;</b>. The docs quote the preview, not the screen.</dd>
+      </div>
+      <div class="fact">
+        <dt>Position</dt>
+        <dd><b>Hard-coded top-right</b>, margin <code>5&times;scale</code>. There is no position field in <code>overlay.toml</code> and no code that could honour one.</dd>
+      </div>
+      <div class="fact">
+        <dt>Refresh</dt>
+        <dd>FPS is the layer&rsquo;s own median over a present-frametime ring, so it is smooth. <b>Everything else is 1&ndash;10 s</b>, straight from the daemon&rsquo;s engine tick.</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">02 · The mechanism</p>
+      <h2>How a number reaches the screen</h2>
+    </div>
+
+    <figure>
+      <div class="figure-wrap">
+        <svg viewBox="0 0 900 352" role="img" aria-label="Data flow: the root daemon writes a state file that the Vulkan layer polls and draws into the swapchain before present; the desktop app writes config files the layer also polls; there is no path from the player back to the daemon.">
+          <defs>
+            <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+            </marker>
+            <marker id="ar-ember" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--ember)" />
+            </marker>
+          </defs>
+
+          <g font-family="IBM Plex Mono, monospace" font-size="12" fill="currentColor">
+
+            <!-- row 1: daemon -> state file -->
+            <rect x="16" y="28" width="168" height="56" rx="4" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <text x="100" y="52" text-anchor="middle" font-size="13" font-weight="500">penguin-burnerd</text>
+            <text x="100" y="69" text-anchor="middle" opacity="0.68">root · engine loop</text>
+
+            <line x1="184" y1="56" x2="262" y2="56" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)" />
+            <text x="223" y="45" text-anchor="middle" font-size="11" opacity="0.8">writes</text>
+            <text x="223" y="76" text-anchor="middle" font-size="11" opacity="0.8">1&ndash;10 s</text>
+
+            <rect x="266" y="28" width="192" height="56" rx="4" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <text x="362" y="52" text-anchor="middle" font-size="13" font-weight="500">overlay-state.txt</text>
+            <text x="362" y="69" text-anchor="middle" opacity="0.68">clocks · power · tier</text>
+
+            <!-- row 2: app -> config -->
+            <rect x="16" y="148" width="168" height="56" rx="4" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <text x="100" y="172" text-anchor="middle" font-size="13" font-weight="500">desktop app</text>
+            <text x="100" y="189" text-anchor="middle" opacity="0.68">Overlay tab</text>
+
+            <line x1="184" y1="176" x2="262" y2="176" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)" />
+            <text x="223" y="165" text-anchor="middle" font-size="11" opacity="0.8">writes</text>
+
+            <rect x="266" y="148" width="192" height="56" rx="4" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <text x="362" y="172" text-anchor="middle" font-size="13" font-weight="500">overlay.toml</text>
+            <text x="362" y="189" text-anchor="middle" opacity="0.68">items · scale · on/off</text>
+
+            <!-- converge into the layer -->
+            <path d="M 458 56 L 496 56 L 496 104" fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)" />
+            <path d="M 458 176 L 496 176 L 496 148" fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)" />
+            <text x="516" y="88" font-size="11" opacity="0.8">polls 4 Hz</text>
+
+            <rect x="500" y="96" width="176" height="88" rx="4" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <text x="588" y="124" text-anchor="middle" font-size="13" font-weight="500">Vulkan layer</text>
+            <text x="588" y="141" text-anchor="middle" opacity="0.68">in the game process</text>
+            <text x="588" y="161" text-anchor="middle" opacity="0.68">FPS from present</text>
+            <text x="588" y="176" text-anchor="middle" opacity="0.68">frametimes</text>
+
+            <line x1="676" y1="140" x2="726" y2="140" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)" />
+            <text x="701" y="129" text-anchor="middle" font-size="11" opacity="0.8">submit</text>
+            <text x="701" y="163" text-anchor="middle" font-size="11" opacity="0.8">before present</text>
+
+            <!-- the box stage 1 replaces -->
+            <rect x="730" y="96" width="154" height="88" rx="4" fill="none" stroke="var(--ember)" stroke-width="1.6" />
+            <text x="807" y="124" text-anchor="middle" font-size="13" font-weight="500" fill="var(--ember)">swapchain</text>
+            <text x="807" y="141" text-anchor="middle" font-size="13" font-weight="500" fill="var(--ember)">image</text>
+            <text x="807" y="163" text-anchor="middle" font-size="11" fill="var(--ember)" opacity="0.9">clear-rect glyphs</text>
+            <text x="807" y="177" text-anchor="middle" font-size="11" fill="var(--ember)" opacity="0.9">&larr; stage 1 replaces</text>
+
+            <!-- player -->
+            <line x1="807" y1="184" x2="807" y2="246" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)" />
+            <text x="817" y="220" font-size="11" opacity="0.8">sees the HUD</text>
+
+            <rect x="730" y="250" width="154" height="48" rx="4" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <text x="807" y="279" text-anchor="middle" font-size="13" font-weight="500">player</text>
+
+            <!-- the missing edge -->
+            <line x1="726" y1="274" x2="192" y2="274" stroke="currentColor" stroke-width="1.4" stroke-dasharray="7 6" opacity="0.5" />
+            <path d="M 192 274 L 100 274 L 100 90" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="7 6" opacity="0.5" marker-end="url(#ar)" />
+            <g stroke="currentColor" stroke-width="1.6" opacity="0.65">
+              <line x1="452" y1="266" x2="468" y2="282" />
+              <line x1="468" y1="266" x2="452" y2="282" />
+            </g>
+            <text x="460" y="303" text-anchor="middle" font-size="11" opacity="0.8">no path back &mdash; stage 4 opens it</text>
+          </g>
+        </svg>
+      </div>
+      <figcaption>
+        Two file-backed one-way channels feed a layer that draws inside the
+        game&rsquo;s own present. Nothing the player does in the game can reach
+        the daemon: changing a tier means alt-tabbing to the desktop app. That
+        missing edge is what separates this from a Steam Deck overlay far more
+        than the pixels do.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">03 · The target</p>
+      <h2>Three different things people call &ldquo;the Steam overlay&rdquo;</h2>
+      <p>
+        Worth separating before promising any of it. Only one of the three is
+        both valuable here and buildable without reinventing a game client.
+      </p>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">What it is</th>
+            <th scope="col">What it gives</th>
+            <th scope="col">For us</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Steam FPS counter</td>
+            <td>A small corner readout with a position choice and a high-contrast background.</td>
+            <td><span class="verdict yes">match and pass</span><br>We already show more; we show it worse.</td>
+          </tr>
+          <tr>
+            <td>Steam Deck performance overlay</td>
+            <td>Detail levels 1&ndash;4, real type, translucent panel, frametime graph, live tuning from the same panel.</td>
+            <td><span class="verdict yes">the actual target</span><br>Every number it shows, we already have &mdash; plus tier and undervolt.</td>
+          </tr>
+          <tr>
+            <td>Shift+Tab overlay</td>
+            <td>A full interactive UI: browser, friends, screenshots, mouse capture inside the game.</td>
+            <td><span class="verdict no">out of scope</span><br>Needs input capture and a client to be part of. Steam-only by nature; we also serve Lutris and Heroic.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="prose" style="margin-top: 1.25rem; color: var(--ink-2);">
+      So the goal is not a Steam clone. It is: <b>a HUD that looks like it
+      belongs in 2026</b>, showing things only PenguinBurner knows &mdash; which
+      tier is active, what the undervolt is doing, when the tier last switched
+      &mdash; and <b>reachable without alt-tabbing out of the game</b>.
+    </p>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">04 · What is already paid for</p>
+      <h2>The layer is further along than it looks</h2>
+      <p>
+        The reason stage 1 is worth attempting: everything a real renderer needs
+        around the pipeline already exists and has been shipping.
+      </p>
+    </div>
+
+    <dl class="facts">
+      <div class="fact">
+        <dt>Per-swapchain resources</dt>
+        <dd>Image views, a render pass, framebuffers, a command pool and per-image command buffers, fences and semaphores &mdash; created, recreated and torn down correctly today.</dd>
+      </div>
+      <div class="fact">
+        <dt>Present-path integration</dt>
+        <dd>One extra queue submit chained into <code>vkQueuePresentKHR</code> through the present&rsquo;s own wait semaphores, with a fence guard that skips a frame rather than stalling it.</dd>
+      </div>
+      <div class="fact">
+        <dt>Config and live state</dt>
+        <dd>A polled config file, a live on/off override the GUI can flip mid-game, and a telemetry file with 22 fields already parsed in C++.</dd>
+      </div>
+      <div class="fact">
+        <dt>What is missing</dt>
+        <dd>A graphics pipeline, two shader modules, a font atlas and a vertex buffer. That is the whole delta &mdash; roughly the last 20% of a HUD renderer.</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">05 · The plan</p>
+      <h2>Four stages, each shippable alone</h2>
+      <p>
+        What each stage contains. <b>The order below has since been revised</b>
+        &mdash; a second read of the draw path showed that layout, type and even
+        the frametime graph all fit the renderer we already have, so the
+        pipeline work moved last and the risk moved with it. The working
+        sequence lives in <em>Overlay Build Order</em>.
+      </p>
+    </div>
+
+    <div class="stages">
+
+      <article class="stage">
+        <div class="stage-num">S1</div>
+        <div class="stage-body">
+          <div class="stage-head">
+            <h3>A real renderer</h3>
+            <span class="chip risk-med">risk · medium</span>
+            <span class="chip">native only</span>
+          </div>
+          <p>
+            Replace the clear-rect glyph blitter with a graphics pipeline:
+            two tiny shaders, one instanced quad draw, alpha blending on. The
+            surrounding render pass, command buffers and submit stay exactly as
+            they are.
+          </p>
+          <ul>
+            <li><b>Shaders ship pre-compiled.</b> SPIR-V embedded as a generated header, produced by a committed script &mdash; no glslang on a packager&rsquo;s machine, 32-bit build included.</li>
+            <li><b>The old path stays as the fallback.</b> If pipeline creation fails for any reason, the layer draws today&rsquo;s bar instead of nothing. A game that works now cannot stop working.</li>
+            <li><b>Colour and opacity become expressible</b> the moment blending is on, which is what every later stage spends.</li>
+          </ul>
+          <p class="unlocks"><b>unlocks</b>translucency · per-metric colour · any screen position · multiple lines · graphs</p>
+        </div>
+      </article>
+
+      <article class="stage">
+        <div class="stage-num">S2</div>
+        <div class="stage-body">
+          <div class="stage-head">
+            <h3>Typography and layout</h3>
+            <span class="chip risk-low">risk · low</span>
+            <span class="chip">native + config + GUI + docs</span>
+          </div>
+          <p>
+            The part users actually see. A full-ASCII font with lowercase and
+            punctuation, a panel that can sit in any corner, and detail levels
+            instead of thirteen independent checkboxes.
+          </p>
+          <ul>
+            <li><b>Font:</b> a generated atlas, again from a committed generator. Lowercase and <code>:</code> arrive with it, and the caps mismatch between the preview and the screen disappears.</li>
+            <li><b>Position, opacity, corner padding</b> as real <code>overlay.toml</code> fields, with matching controls in the Overlay tab.</li>
+            <li><b>Detail levels 1&ndash;4</b> in the Steam Deck sense &mdash; FPS only, FPS plus tier, the current set, everything &mdash; with the existing per-item checkboxes kept as the custom level.</li>
+            <li><b>One layout description, two consumers.</b> The GUI preview and the layer must render from the same rules, or the preview lies again the first time either changes.</li>
+          </ul>
+          <p class="unlocks"><b>fixes</b>preview-vs-screen mismatch · the all-caps readout · the welded corner</p>
+        </div>
+      </article>
+
+      <article class="stage">
+        <div class="stage-num">S3</div>
+        <div class="stage-body">
+          <div class="stage-head">
+            <h3>What only PenguinBurner can show</h3>
+            <span class="chip risk-low">risk · low</span>
+            <span class="chip">native + daemon</span>
+          </div>
+          <p>
+            Once quads are cheap, the differentiator against MangoHud is not
+            more numbers &mdash; it is the tuning story behind them.
+          </p>
+          <ul>
+            <li><b>Frametime graph</b> with the 1% low and the session min/avg, drawn from the ring buffer the layer already keeps.</li>
+            <li><b>Tier-change markers on that graph.</b> &ldquo;Switched to Balanced&rdquo; sitting where the frametime moved is a thing no other overlay can draw.</li>
+            <li><b>Threshold colouring</b> &mdash; temperature, power ceiling, missed frames &mdash; so the panel is scannable rather than read.</li>
+            <li><b>Optional:</b> sub-second GPU telemetry. The engine loop currently sleeps <code>min(poll, overlay)</code>, floored at one second, so a faster HUD speeds the whole daemon loop. It needs its own publisher before it needs a smaller number.</li>
+          </ul>
+          <p class="unlocks"><b>gives</b>the answer to &ldquo;why is MangoHud not enough?&rdquo;</p>
+        </div>
+      </article>
+
+      <article class="stage">
+        <div class="stage-num">S4</div>
+        <div class="stage-body">
+          <div class="stage-head">
+            <h3>Reach it without leaving the game</h3>
+            <span class="chip risk-low">risk · low to start</span>
+            <span class="chip">CLI + daemon + docs</span>
+          </div>
+          <p>
+            The missing edge in the diagram, opened the cheap way first: no
+            input capture, no hooks, nothing in the layer.
+          </p>
+          <ul>
+            <li><b>CLI verbs</b> &mdash; toggle the HUD, cycle the detail level, cycle the tier for the running game &mdash; routed into the daemon the way every other privileged action already is.</li>
+            <li><b>The user binds them as a desktop shortcut.</b> Works on X11 and Wayland, in fullscreen, with zero new privilege, and we document the KDE and GNOME steps.</li>
+            <li><b>A short toast in the HUD</b> confirming what changed, so the keypress has an answer on screen.</li>
+            <li><b>Later, if wanted:</b> daemon-side hotkeys over evdev. Worth saying plainly &mdash; a root process reading every input device is keylogger-shaped, and it needs a narrow, auditable design before it is worth the capability.</li>
+          </ul>
+          <p class="unlocks"><b>gives</b>the Steam Deck feeling: change the tier mid-fight, see it confirmed</p>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">06 · Deliberately not doing</p>
+      <h2>Where the line is</h2>
+    </div>
+    <div class="out-list">
+      <div><span class="mark">&times;</span><span><b>Input capture and an in-game cursor.</b> It means hooking the game&rsquo;s window and input stack per windowing system, and it is the single largest source of &ldquo;this overlay broke my game&rdquo; reports for every project that has tried.</span></div>
+      <div><span class="mark">&times;</span><span><b>A browser, friends list or screenshot manager.</b> Those are client features, not overlay features. We do not have a client and do not want one.</span></div>
+      <div><span class="mark">&times;</span><span><b>Anything Steam-only.</b> The overlay serves Lutris today and Heroic next; a design that assumes a Steam client would have to be undone twice.</span></div>
+      <div><span class="mark">&times;</span><span><b>A second config surface.</b> Detail levels replace checkbox soup; they do not get added on top of it.</span></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">07 · Needs a decision</p>
+      <h2>Three calls before code</h2>
+    </div>
+
+    <div class="decisions">
+      <div class="decision">
+        <h3>How far on interactivity?</h3>
+        <p>
+          CLI verbs plus a documented desktop shortcut, or a daemon-side evdev
+          hotkey listener that works without the user configuring anything?
+        </p>
+        <p class="rec"><b>lean</b>Ship the CLI route in S4. It is a day of work against a week, and it makes the evdev question answerable with real usage instead of a guess.</p>
+      </div>
+      <div class="decision">
+        <h3>Which font technology?</h3>
+        <p>
+          A generated bitmap atlas covering full ASCII keeps the instrument
+          look and adds zero dependencies. A signed-distance-field atlas from an
+          open font scales cleanly to 4K and looks modern at any size.
+        </p>
+        <p class="rec"><b>lean</b>Bitmap first &mdash; it lands with S2 and already fixes the visible problems. SDF is a self-contained upgrade afterwards if the look still bothers us.</p>
+      </div>
+      <div class="decision">
+        <h3>Does S1 land behind a flag?</h3>
+        <p>
+          A new pipeline in the present path of every wrapped game is the one
+          genuinely risky change here.
+        </p>
+        <p class="rec"><b>lean</b>Yes &mdash; an <code>overlay.toml</code> renderer switch, defaulting to the new path once it has run on a few games, with the old renderer as both the fallback and the escape hatch.</p>
+      </div>
+    </div>
+  </section>
+
+  <p class="note">
+    <b>Validation reality:</b> none of this can be checked on the review machine
+    &mdash; no NVIDIA GPU, no daemon, no Vulkan game. Everything from stage 1
+    onwards is a desktop-PC job, and the honest sequencing is: build behind the
+    flag, verify on your hardware, then default it on. The Python side of stages
+    2 and 4 &mdash; config, GUI, CLI, docs, preview parity &mdash; is fully
+    testable here.
+  </p>
+
+</div>
+
+<script>
+  // The layer's own 5x7 glyph table, transcribed from
+  // overlay/native/latency_layer/src/overlay_render.cpp so this is a redraw,
+  // not an impression.
+  const GLYPHS = {
+    "0": [0x0e,0x11,0x13,0x15,0x19,0x11,0x0e], "1": [0x04,0x0c,0x04,0x04,0x04,0x04,0x0e],
+    "2": [0x0e,0x11,0x01,0x02,0x04,0x08,0x1f], "3": [0x1e,0x01,0x01,0x0e,0x01,0x01,0x1e],
+    "4": [0x02,0x06,0x0a,0x12,0x1f,0x02,0x02], "5": [0x1f,0x10,0x1e,0x01,0x01,0x11,0x0e],
+    "6": [0x06,0x08,0x10,0x1e,0x11,0x11,0x0e], "7": [0x1f,0x01,0x02,0x04,0x08,0x08,0x08],
+    "8": [0x0e,0x11,0x11,0x0e,0x11,0x11,0x0e], "9": [0x0e,0x11,0x11,0x0f,0x01,0x02,0x0c],
+    "A": [0x0e,0x11,0x11,0x1f,0x11,0x11,0x11], "B": [0x1e,0x11,0x11,0x1e,0x11,0x11,0x1e],
+    "C": [0x0e,0x11,0x10,0x10,0x10,0x11,0x0e], "D": [0x1e,0x11,0x11,0x11,0x11,0x11,0x1e],
+    "E": [0x1f,0x10,0x10,0x1e,0x10,0x10,0x1f], "F": [0x1f,0x10,0x10,0x1e,0x10,0x10,0x10],
+    "G": [0x0e,0x11,0x10,0x17,0x11,0x11,0x0f], "H": [0x11,0x11,0x11,0x1f,0x11,0x11,0x11],
+    "I": [0x0e,0x04,0x04,0x04,0x04,0x04,0x0e], "J": [0x01,0x01,0x01,0x01,0x11,0x11,0x0e],
+    "K": [0x11,0x12,0x14,0x18,0x14,0x12,0x11], "L": [0x10,0x10,0x10,0x10,0x10,0x10,0x1f],
+    "M": [0x11,0x1b,0x15,0x15,0x11,0x11,0x11], "N": [0x11,0x19,0x15,0x13,0x11,0x11,0x11],
+    "O": [0x0e,0x11,0x11,0x11,0x11,0x11,0x0e], "P": [0x1e,0x11,0x11,0x1e,0x10,0x10,0x10],
+    "Q": [0x0e,0x11,0x11,0x11,0x15,0x12,0x0d], "R": [0x1e,0x11,0x11,0x1e,0x14,0x12,0x11],
+    "S": [0x0f,0x10,0x10,0x0e,0x01,0x01,0x1e], "T": [0x1f,0x04,0x04,0x04,0x04,0x04,0x04],
+    "U": [0x11,0x11,0x11,0x11,0x11,0x11,0x0e], "V": [0x11,0x11,0x11,0x11,0x11,0x0a,0x04],
+    "W": [0x11,0x11,0x11,0x15,0x15,0x1b,0x11], "X": [0x11,0x11,0x0a,0x04,0x0a,0x11,0x11],
+    "Y": [0x11,0x11,0x0a,0x04,0x04,0x04,0x04], "Z": [0x1f,0x01,0x02,0x04,0x08,0x10,0x1f],
+    "+": [0x00,0x04,0x04,0x1f,0x04,0x04,0x00], "-": [0x00,0x00,0x00,0x1f,0x00,0x00,0x00],
+    "/": [0x01,0x01,0x02,0x04,0x08,0x10,0x10], "%": [0x19,0x19,0x02,0x04,0x08,0x13,0x13],
+    ".": [0x00,0x00,0x00,0x00,0x00,0x06,0x06]
+  };
+
+  // Mixed case in, capitals out - exactly what toupper() in the layer does.
+  const TEXT = "119 FPS 176 FG LAT 23 ms 2790 MHz 915 mV 241 W BAL";
+  const SCALE = 4;
+
+  function charWidth(ch) { return ch === " " ? 3 * SCALE : 5 * SCALE; }
+
+  function textWidth(text) {
+    let width = 0;
+    text.split("").forEach((ch, i) => {
+      if (i > 0) { width += SCALE; }
+      width += charWidth(ch);
+    });
+    return width;
+  }
+
+  function draw() {
+    const canvas = document.getElementById("hud-today");
+    if (!canvas) { return; }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) { return; }
+
+    const padding = 2 * SCALE;
+    const width = textWidth(TEXT);
+    const height = 7 * SCALE;
+
+    canvas.width = width + padding * 2;
+    canvas.height = height + padding * 2;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // The backing box: a cleared rect, alpha 1.0. Hard black, by construction.
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = "#ffffff";
+    let penX = padding;
+    for (const raw of TEXT) {
+      const ch = raw.toUpperCase();
+      const rows = GLYPHS[ch];
+      if (rows) {
+        for (let row = 0; row < 7; row += 1) {
+          for (let col = 0; col < 5; col += 1) {
+            if (rows[row] & (1 << (4 - col))) {
+              ctx.fillRect(penX + col * SCALE, padding + row * SCALE, SCALE, SCALE);
+            }
+          }
+        }
+      }
+      penX += charWidth(ch) + SCALE;
+    }
+  }
+
+  draw();
+</script>
+</body>
+</html>

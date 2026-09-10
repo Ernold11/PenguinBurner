@@ -1,0 +1,1096 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HUD Fitting Room · PenguinBurner</title>
+<meta name="description" content="Interactive mockup &mdash; try renderer, detail level, corner and scene.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground: #f2f4f6;
+    --surface: #ffffff;
+    --surface-2: #e8ebef;
+    --line: #d3d9e0;
+    --line-soft: #e2e6eb;
+    --ink: #14181d;
+    --ink-2: #3b444f;
+    --muted: #67717e;
+    --ember: #bc5317;
+    --ember-soft: #f7e8dc;
+    --signal: #1f6f60;
+    --signal-soft: #dcece8;
+    --measure: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0f1216;
+      --surface: #171b21;
+      --surface-2: #1e242c;
+      --line: #2d353f;
+      --line-soft: #232a32;
+      --ink: #e7eaee;
+      --ink-2: #b6bfca;
+      --muted: #8d97a3;
+      --ember: #f2903f;
+      --ember-soft: #33210f;
+      --signal: #56b8a4;
+      --signal-soft: #122b27;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0f1216;
+    --surface: #171b21;
+    --surface-2: #1e242c;
+    --line: #2d353f;
+    --line-soft: #232a32;
+    --ink: #e7eaee;
+    --ink-2: #b6bfca;
+    --muted: #8d97a3;
+    --ember: #f2903f;
+    --ember-soft: #33210f;
+    --signal: #56b8a4;
+    --signal-soft: #122b27;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 1rem;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page { max-width: 68rem; margin: 0 auto; padding: clamp(2rem, 5vw, 3.5rem) clamp(1.1rem, 4vw, 3rem) 5rem; }
+
+  h1, h2, h3 {
+    font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  h1 { font-size: clamp(2.1rem, 5vw, 2.75rem); line-height: 1.06; }
+  h2 { font-size: clamp(1.5rem, 3.4vw, 1.85rem); line-height: 1.14; }
+  h3 { font-size: 1.0625rem; font-weight: 600; }
+
+  p { margin: 0; max-width: var(--measure); }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.875em; }
+  code { background: var(--surface-2); border-radius: 3px; padding: 0.08em 0.34em; }
+
+  header.masthead {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    padding-bottom: 2rem;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .masthead .lede { font-size: 1.1875rem; color: var(--ink-2); }
+
+  section { padding-top: 2.75rem; }
+  .section-head { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1.3rem; }
+  .section-head p { color: var(--ink-2); }
+
+  /* --- today strip ----------------------------------------------------- */
+
+  .today {
+    display: grid;
+    gap: 1.1rem;
+    grid-template-columns: 1fr;
+    align-items: center;
+  }
+
+  @media (min-width: 52rem) { .today { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); } }
+
+  .today-frame {
+    position: relative;
+    aspect-ratio: 16 / 6;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+    background: linear-gradient(160deg, #2a3b4d 0%, #16202b 55%, #0b1016 100%);
+    display: flex;
+    justify-content: flex-end;
+    align-items: flex-start;
+    padding: 2.6%;
+  }
+
+  .today-frame canvas { image-rendering: pixelated; max-width: 94%; height: auto; }
+
+  .today-notes { display: flex; flex-direction: column; gap: 0.5rem; }
+  .today-notes li { font-size: 0.9375rem; color: var(--ink-2); }
+  .today-notes ul { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.3rem; }
+
+  /* --- fitting room ---------------------------------------------------- */
+
+  .room { display: grid; gap: 1.25rem; grid-template-columns: 1fr; }
+  @media (min-width: 62rem) { .room { grid-template-columns: minmax(0, 1fr) 17rem; align-items: start; } }
+
+  .stage-wrap {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+
+  #stage {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    overflow: hidden;
+    background: #0b1016;
+  }
+
+  #scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  #hud-layer { position: absolute; inset: 0; pointer-events: none; }
+
+  #hud-bitmap {
+    position: absolute;
+    image-rendering: pixelated;
+  }
+
+  #hud-panel {
+    position: absolute;
+    min-width: 0;
+    border-radius: 8px;
+    padding: 0.55rem 0.7rem;
+    color: #eef1f4;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    line-height: 1.45;
+    display: flex;
+    flex-direction: column;
+    gap: 0.22rem;
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  #hud-panel .row { display: flex; gap: 0.55rem; align-items: baseline; }
+  #hud-panel .row .lbl { opacity: 0.6; min-width: 3.1em; }
+  #hud-panel .big { font-size: 2.15em; font-weight: 600; line-height: 1.05; letter-spacing: -0.02em; }
+  #hud-panel .big small { font-size: 0.4em; font-weight: 400; opacity: 0.66; margin-left: 0.35em; letter-spacing: 0; }
+  #hud-panel .sep { height: 1px; background: rgba(255, 255, 255, 0.12); margin: 0.18rem 0; }
+  #hud-panel canvas.graph { display: block; margin: 0.1rem 0 0.15rem; }
+  #hud-panel .foot { opacity: 0.5; font-size: 0.82em; }
+
+  .stage-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.1rem;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.6rem 0.85rem;
+    border-top: 1px solid var(--line-soft);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+
+  .stage-bar b { color: var(--ink); font-weight: 500; }
+
+  /* --- controls -------------------------------------------------------- */
+
+  .controls {
+    display: flex;
+    flex-direction: column;
+    gap: 1.05rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 1.1rem 1.15rem 1.2rem;
+  }
+
+  .control { display: flex; flex-direction: column; gap: 0.45rem; }
+
+  .control > label, .control > span.lab {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .seg { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+
+  .seg button {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.78rem;
+    padding: 0.32rem 0.6rem;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+    background: var(--ground);
+    color: var(--ink-2);
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+
+  .seg button:hover { border-color: var(--muted); }
+
+  .seg button[aria-pressed="true"] {
+    background: var(--ember);
+    border-color: var(--ember);
+    color: #fff;
+  }
+
+  .seg.wide button { flex: 1 1 auto; }
+
+  .pos-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.3rem; }
+  .pos-grid button { aspect-ratio: 16 / 9; display: grid; place-content: center; font-size: 0.62rem; letter-spacing: 0.06em; }
+  .pos-grid button.blank { visibility: hidden; }
+
+  input[type="range"] { width: 100%; accent-color: var(--ember); }
+
+  .control .hint { font-size: 0.78rem; color: var(--muted); line-height: 1.45; }
+  .control[data-disabled="true"] { opacity: 0.55; }
+  .control[data-disabled="true"] input { pointer-events: none; }
+
+  button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+
+  /* --- notes / comparison ---------------------------------------------- */
+
+  .two-col { display: grid; gap: 1rem; grid-template-columns: 1fr; }
+  @media (min-width: 50rem) { .two-col { grid-template-columns: 1fr 1fr; } }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 1.1rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .card.era-now { border-left: 3px solid var(--signal); }
+  .card.era-next { border-left: 3px solid var(--ember); }
+
+  .card ul { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.28rem; }
+  .card li { font-size: 0.9rem; color: var(--ink-2); }
+  .card li b { color: var(--ink); font-weight: 600; }
+  .card .tagline { font-family: "IBM Plex Mono", monospace; font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+
+  /* --- glyph sheet ------------------------------------------------------ */
+
+  .sheet {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--surface);
+    padding: 1.1rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    overflow-x: auto;
+  }
+
+  .sheet canvas { image-rendering: pixelated; max-width: 100%; height: auto; }
+
+  .note {
+    margin-top: 2.5rem;
+    padding: 1rem 1.15rem;
+    border: 1px dashed var(--line);
+    border-radius: 6px;
+    background: var(--surface);
+    font-size: 0.875rem;
+    color: var(--muted);
+    max-width: var(--measure);
+  }
+  .note b { color: var(--ink); }
+</style>
+<style>
+  :root { color-scheme: light dark; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+
+  .pb-nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 1.25rem;
+    padding: 0.6rem clamp(1.1rem, 4vw, 3rem);
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(8px);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+  }
+  .pb-nav a { color: var(--muted); text-decoration: none; letter-spacing: 0.04em; }
+  .pb-nav a:hover { color: var(--ink); }
+  .pb-nav .pb-home { color: var(--ink); font-weight: 500; margin-right: auto; }
+  .pb-nav .pb-links { display: flex; flex-wrap: wrap; gap: 0.35rem 1.1rem; }
+  .pb-nav a[aria-current="page"] { color: var(--ember); }
+  .pb-nav a:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; border-radius: 2px; }
+</style>
+</head>
+<body>
+<nav class="pb-nav"><a class="pb-home" href="./">PenguinBurner · overlay notes</a><span class="pb-links"><a href="./strategy.html">Strategy</a><a href="./build-order.html">Build order</a><a href="./fitting-room.html" aria-current="page">Fitting room</a></span></nav>
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">PenguinBurner · overlay · mockup</p>
+    <h1>HUD Fitting Room</h1>
+    <p class="lede">
+      Try the proposed overlay on before we build it. Everything here is drawn
+      under the same rules the layer would use &mdash; the pixel mode uses a real
+      5&times;7 glyph table at the layer&rsquo;s own spacing, so what you see is
+      what that milestone can actually produce.
+    </p>
+  </header>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">Reference</p>
+      <h2>Where we start from</h2>
+    </div>
+
+    <div class="today">
+      <div class="today-frame">
+        <canvas id="today-canvas" width="900" height="60" aria-label="The overlay as it draws today: one line of capital pixel text on an opaque black bar in the top-right corner"></canvas>
+      </div>
+      <div class="today-notes">
+        <ul>
+          <li>One line, top-right, no choice about either.</li>
+          <li>Capitals only &mdash; <code>ms</code> and <code>mV</code> arrive as <code>MS</code> and <code>MV</code>.</li>
+          <li>Hard black box: the draw path cannot express transparency.</li>
+          <li>Everything below is reachable; the last mode needs the new renderer.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">Fitting room</p>
+      <h2>Try it on</h2>
+      <p>
+        Switch renderer, detail level and corner. Test both scenes &mdash; a HUD
+        that only reads on a dark sky is a HUD that fails in daylight.
+      </p>
+    </div>
+
+    <div class="room">
+      <div class="stage-wrap">
+        <div id="stage">
+          <canvas id="scene"></canvas>
+          <div id="hud-layer">
+            <canvas id="hud-bitmap" hidden></canvas>
+            <div id="hud-panel" hidden></div>
+          </div>
+        </div>
+        <div class="stage-bar">
+          <span id="stage-note">Pixel renderer · detail 3 · top-right</span>
+          <span><b id="stage-era">M1&ndash;M3</b> · ships without the pipeline</span>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="control">
+          <span class="lab">Renderer</span>
+          <div class="seg wide" id="ctl-renderer">
+            <button type="button" data-v="bitmap" aria-pressed="true">Pixel · M1&ndash;M3</button>
+            <button type="button" data-v="panel" aria-pressed="false">Pipeline · M5</button>
+          </div>
+        </div>
+
+        <div class="control">
+          <span class="lab">Detail level</span>
+          <div class="seg wide" id="ctl-detail">
+            <button type="button" data-v="1" aria-pressed="false">1</button>
+            <button type="button" data-v="2" aria-pressed="false">2</button>
+            <button type="button" data-v="3" aria-pressed="true">3</button>
+            <button type="button" data-v="4" aria-pressed="false">4</button>
+          </div>
+          <p class="hint" id="detail-hint">Everything the overlay shows today, in rows instead of a sentence.</p>
+        </div>
+
+        <div class="control">
+          <span class="lab">Position</span>
+          <div class="pos-grid" id="ctl-position">
+            <button type="button" data-v="tl" aria-pressed="false">TL</button>
+            <button type="button" data-v="tc" aria-pressed="false">TC</button>
+            <button type="button" data-v="tr" aria-pressed="true">TR</button>
+            <button type="button" data-v="bl" aria-pressed="false">BL</button>
+            <button type="button" class="blank" tabindex="-1" aria-hidden="true"></button>
+            <button type="button" data-v="br" aria-pressed="false">BR</button>
+          </div>
+        </div>
+
+        <div class="control">
+          <span class="lab">Size</span>
+          <div class="seg wide" id="ctl-size">
+            <button type="button" data-v="s" aria-pressed="false">S</button>
+            <button type="button" data-v="m" aria-pressed="true">M</button>
+            <button type="button" data-v="l" aria-pressed="false">L</button>
+          </div>
+          <p class="hint">Shown larger than life &mdash; at a real 1440p this frame would be four times wider, and the HUD would sit far quieter in the corner.</p>
+        </div>
+
+        <div class="control">
+          <span class="lab">Scene</span>
+          <div class="seg wide" id="ctl-scene">
+            <button type="button" data-v="dusk" aria-pressed="true">Dusk</button>
+            <button type="button" data-v="day" aria-pressed="false">Daylight</button>
+          </div>
+        </div>
+
+        <div class="control" id="ctl-alpha-wrap">
+          <label for="ctl-alpha">Background opacity</label>
+          <input type="range" id="ctl-alpha" min="0" max="100" value="62">
+          <p class="hint" id="alpha-hint">Needs the pipeline. The pixel renderer writes colour straight into the image, so its box is always solid.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">What each mode costs</p>
+      <h2>The honest split</h2>
+    </div>
+
+    <div class="two-col">
+      <div class="card era-now">
+        <span class="tagline">Pixel · M1&ndash;M3 · no new Vulkan objects</span>
+        <h3>Everything except transparency</h3>
+        <ul>
+          <li><b>Any corner, any number of rows</b> &mdash; rectangles do not care where they land.</li>
+          <li><b>Lowercase and punctuation</b> from a wider glyph table.</li>
+          <li><b>Colour per value.</b> The draw call already takes a colour; only the white was hard-coded.</li>
+          <li><b>The frametime graph</b> &mdash; a bar per sample is a rect per sample.</li>
+          <li><b>Solid backing box only</b>, and glyph edges stay square at every size.</li>
+        </ul>
+      </div>
+      <div class="card era-next">
+        <span class="tagline">Pipeline · M5 · the one risky change</span>
+        <h3>The part that needs blending</h3>
+        <ul>
+          <li><b>Translucency</b> &mdash; the game stays visible through the panel.</li>
+          <li><b>Real type</b>, antialiased, sharp at 4K instead of scaled pixels.</li>
+          <li><b>Rounded corners and a hairline border</b>, which need alpha to not look cut out.</li>
+          <li><b>Gradients and a filled graph</b> rather than flat bars.</li>
+          <li>Costs a pipeline, two shaders and a font atlas in the present path of every wrapped game &mdash; behind a switch, with the pixel path as the fallback.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">The asset</p>
+      <h2>The glyph set this needs</h2>
+      <p>
+        Drafted for the mockup and directly reusable: 5&times;7 cells, uppercase,
+        lowercase, digits and the punctuation the readout uses. The layer ships
+        45 glyphs today; this is the table that replaces it.
+      </p>
+    </div>
+
+    <div class="sheet">
+      <canvas id="glyph-sheet" aria-label="A 5 by 7 pixel font sheet: capitals, lowercase, digits and punctuation"></canvas>
+      <p class="hint" style="font-size: 0.8125rem; color: var(--muted);">
+        Generated by the same routine that draws the HUD above, so nothing here
+        is a promise the renderer cannot keep.
+      </p>
+    </div>
+  </section>
+
+  <p class="note">
+    <b>What this is not:</b> a screenshot. It is the layout and the glyph rules
+    rendered in a browser, on a scene painted to be awkward on purpose. Colours
+    and thresholds will need one pass on real hardware before they are final
+    &mdash; bright sky over a light HUD is exactly the case a mockup flatters.
+  </p>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---------------------------------------------------------------- font */
+  /* 5x7 cells, one byte per row, bit 4 = leftmost pixel. Capitals and digits
+     are transcribed from the layer's own table; lowercase and the extra
+     punctuation are drafted here in the same idiom. */
+  var FONT = {
+    "0": [0x0e,0x11,0x13,0x15,0x19,0x11,0x0e], "1": [0x04,0x0c,0x04,0x04,0x04,0x04,0x0e],
+    "2": [0x0e,0x11,0x01,0x02,0x04,0x08,0x1f], "3": [0x1e,0x01,0x01,0x0e,0x01,0x01,0x1e],
+    "4": [0x02,0x06,0x0a,0x12,0x1f,0x02,0x02], "5": [0x1f,0x10,0x1e,0x01,0x01,0x11,0x0e],
+    "6": [0x06,0x08,0x10,0x1e,0x11,0x11,0x0e], "7": [0x1f,0x01,0x02,0x04,0x08,0x08,0x08],
+    "8": [0x0e,0x11,0x11,0x0e,0x11,0x11,0x0e], "9": [0x0e,0x11,0x11,0x0f,0x01,0x02,0x0c],
+    "A": [0x0e,0x11,0x11,0x1f,0x11,0x11,0x11], "B": [0x1e,0x11,0x11,0x1e,0x11,0x11,0x1e],
+    "C": [0x0e,0x11,0x10,0x10,0x10,0x11,0x0e], "D": [0x1e,0x11,0x11,0x11,0x11,0x11,0x1e],
+    "E": [0x1f,0x10,0x10,0x1e,0x10,0x10,0x1f], "F": [0x1f,0x10,0x10,0x1e,0x10,0x10,0x10],
+    "G": [0x0e,0x11,0x10,0x17,0x11,0x11,0x0f], "H": [0x11,0x11,0x11,0x1f,0x11,0x11,0x11],
+    "I": [0x0e,0x04,0x04,0x04,0x04,0x04,0x0e], "J": [0x01,0x01,0x01,0x01,0x11,0x11,0x0e],
+    "K": [0x11,0x12,0x14,0x18,0x14,0x12,0x11], "L": [0x10,0x10,0x10,0x10,0x10,0x10,0x1f],
+    "M": [0x11,0x1b,0x15,0x15,0x11,0x11,0x11], "N": [0x11,0x19,0x15,0x13,0x11,0x11,0x11],
+    "O": [0x0e,0x11,0x11,0x11,0x11,0x11,0x0e], "P": [0x1e,0x11,0x11,0x1e,0x10,0x10,0x10],
+    "Q": [0x0e,0x11,0x11,0x11,0x15,0x12,0x0d], "R": [0x1e,0x11,0x11,0x1e,0x14,0x12,0x11],
+    "S": [0x0f,0x10,0x10,0x0e,0x01,0x01,0x1e], "T": [0x1f,0x04,0x04,0x04,0x04,0x04,0x04],
+    "U": [0x11,0x11,0x11,0x11,0x11,0x11,0x0e], "V": [0x11,0x11,0x11,0x11,0x11,0x0a,0x04],
+    "W": [0x11,0x11,0x11,0x15,0x15,0x1b,0x11], "X": [0x11,0x11,0x0a,0x04,0x0a,0x11,0x11],
+    "Y": [0x11,0x11,0x0a,0x04,0x04,0x04,0x04], "Z": [0x1f,0x01,0x02,0x04,0x08,0x10,0x1f],
+
+    "a": [0x00,0x00,0x0e,0x01,0x0f,0x11,0x0f], "b": [0x10,0x10,0x1e,0x11,0x11,0x11,0x1e],
+    "c": [0x00,0x00,0x0f,0x10,0x10,0x10,0x0f], "d": [0x01,0x01,0x0f,0x11,0x11,0x11,0x0f],
+    "e": [0x00,0x00,0x0e,0x11,0x1f,0x10,0x0e], "f": [0x06,0x09,0x08,0x1c,0x08,0x08,0x08],
+    "g": [0x00,0x0f,0x11,0x11,0x0f,0x01,0x0e], "h": [0x10,0x10,0x1e,0x11,0x11,0x11,0x11],
+    "i": [0x04,0x00,0x0c,0x04,0x04,0x04,0x0e], "j": [0x02,0x00,0x06,0x02,0x02,0x12,0x0c],
+    "k": [0x10,0x10,0x12,0x14,0x18,0x14,0x12], "l": [0x0c,0x04,0x04,0x04,0x04,0x04,0x0e],
+    "m": [0x00,0x00,0x1a,0x15,0x15,0x15,0x15], "n": [0x00,0x00,0x1e,0x11,0x11,0x11,0x11],
+    "o": [0x00,0x00,0x0e,0x11,0x11,0x11,0x0e], "p": [0x00,0x1e,0x11,0x11,0x1e,0x10,0x10],
+    "q": [0x00,0x0f,0x11,0x11,0x0f,0x01,0x01], "r": [0x00,0x00,0x16,0x19,0x10,0x10,0x10],
+    "s": [0x00,0x00,0x0f,0x10,0x0e,0x01,0x1e], "t": [0x08,0x08,0x1c,0x08,0x08,0x09,0x06],
+    "u": [0x00,0x00,0x11,0x11,0x11,0x13,0x0d], "v": [0x00,0x00,0x11,0x11,0x11,0x0a,0x04],
+    "w": [0x00,0x00,0x11,0x11,0x15,0x15,0x0a], "x": [0x00,0x00,0x11,0x0a,0x04,0x0a,0x11],
+    "y": [0x00,0x11,0x11,0x11,0x0f,0x01,0x0e], "z": [0x00,0x00,0x1f,0x02,0x04,0x08,0x1f],
+
+    "+": [0x00,0x04,0x04,0x1f,0x04,0x04,0x00], "-": [0x00,0x00,0x00,0x1f,0x00,0x00,0x00],
+    "/": [0x01,0x01,0x02,0x04,0x08,0x10,0x10], "%": [0x19,0x19,0x02,0x04,0x08,0x13,0x13],
+    ".": [0x00,0x00,0x00,0x00,0x00,0x06,0x06], ":": [0x00,0x06,0x06,0x00,0x06,0x06,0x00],
+    ",": [0x00,0x00,0x00,0x00,0x06,0x06,0x08], "(": [0x02,0x04,0x08,0x08,0x08,0x04,0x02],
+    ")": [0x08,0x04,0x02,0x02,0x02,0x04,0x08], "=": [0x00,0x00,0x1f,0x00,0x1f,0x00,0x00],
+    "|": [0x04,0x04,0x04,0x04,0x04,0x04,0x04], "*": [0x00,0x15,0x0e,0x1f,0x0e,0x15,0x00],
+    "'": [0x04,0x04,0x00,0x00,0x00,0x00,0x00], "!": [0x04,0x04,0x04,0x04,0x04,0x00,0x04],
+    "?": [0x0e,0x11,0x01,0x02,0x04,0x00,0x04]
+  };
+
+  var COLOR = {
+    text: "#ecf0f3",
+    dim: "#9aa6b2",
+    fps: "#ffffff",
+    good: "#7fd3c2",
+    warn: "#ffc266",
+    hot: "#ff8f7c",
+    tier: "#ffb977"
+  };
+
+  function charWidth(ch, s) { return ch === " " ? 3 * s : 5 * s; }
+
+  function segWidth(text, s) {
+    var w = 0;
+    for (var i = 0; i < text.length; i += 1) {
+      if (i > 0) { w += s; }
+      w += charWidth(text[i], s);
+    }
+    return w;
+  }
+
+  function rowWidth(cells, s) {
+    var w = 0;
+    for (var i = 0; i < cells.length; i += 1) {
+      if (i > 0) { w += 2 * s; }
+      w += segWidth(cells[i].t, s);
+    }
+    return w;
+  }
+
+  function drawText(ctx, text, x, y, s, color) {
+    ctx.fillStyle = color;
+    var pen = x;
+    for (var i = 0; i < text.length; i += 1) {
+      var rows = FONT[text[i]];
+      if (rows) {
+        for (var r = 0; r < 7; r += 1) {
+          var bits = rows[r];
+          var c = 0;
+          while (c < 5) {
+            if (!(bits & (1 << (4 - c)))) { c += 1; continue; }
+            var start = c;
+            while (c < 5 && (bits & (1 << (4 - c)))) { c += 1; }
+            ctx.fillRect(pen + start * s, y + r * s, (c - start) * s, s);
+          }
+        }
+      }
+      pen += charWidth(text[i], s) + s;
+    }
+  }
+
+  /* --------------------------------------------------------------- data */
+
+  var frames = [];
+  for (var i = 0; i < 48; i += 1) { frames.push(8.4 + Math.random() * 1.2); }
+
+  var live = { fps: 119, fg: 176, lat: 23, clock: 2790, mv: 915, watt: 241, temp: 67,
+               util: 97, fan: 62, low: 94, cpu: 32, cput: 61, vram: 9.4, ram: 14.2 };
+
+  function jitter() {
+    live.fps = 112 + Math.round(Math.random() * 12);
+    live.fg = live.fps + 52 + Math.round(Math.random() * 10);
+    live.lat = 20 + Math.round(Math.random() * 7);
+    live.clock = 2760 + Math.round(Math.random() * 60);
+    live.watt = 228 + Math.round(Math.random() * 26);
+    live.temp = 65 + Math.round(Math.random() * 4);
+    live.util = 93 + Math.round(Math.random() * 7);
+    live.cpu = 28 + Math.round(Math.random() * 12);
+    live.low = live.fps - 22 - Math.round(Math.random() * 4);
+    frames.push(1000 / live.fps + (Math.random() < 0.12 ? 6 * Math.random() : Math.random()));
+    if (frames.length > 48) { frames.shift(); }
+  }
+
+  function tempColor(t) { return t >= 80 ? COLOR.hot : (t >= 72 ? COLOR.warn : COLOR.good); }
+
+  /* Rows shared by both renderers, so the two modes cannot drift apart. */
+  function buildRows(level) {
+    var rows = [];
+    rows.push({ hero: true, cells: [{ t: String(live.fps), c: COLOR.fps }, { t: "fps", c: COLOR.dim }] });
+
+    if (level >= 2) {
+      rows.push({ cells: [{ t: "fg", c: COLOR.dim }, { t: live.fg + " fps", c: COLOR.text }] });
+      rows.push({ cells: [{ t: "lat", c: COLOR.dim }, { t: live.lat + " ms", c: COLOR.text }] });
+      rows.push({ cells: [{ t: "tier", c: COLOR.dim }, { t: "Balanced", c: COLOR.tier }] });
+    }
+
+    if (level >= 3) {
+      rows.push({ rule: true });
+      rows.push({ cells: [{ t: "gpu", c: COLOR.dim }, { t: live.clock + " MHz", c: COLOR.text }, { t: live.mv + " mV", c: COLOR.text }] });
+      rows.push({ cells: [{ t: "", c: COLOR.dim }, { t: live.watt + " W", c: COLOR.text }, { t: live.temp + " C", c: tempColor(live.temp) }] });
+      rows.push({ cells: [{ t: "load", c: COLOR.dim }, { t: live.util + "%", c: COLOR.text }, { t: "fan " + live.fan + "%", c: COLOR.text }] });
+      rows.push({ cells: [{ t: "uv", c: COLOR.dim }, { t: "-75 mV", c: COLOR.good }] });
+    }
+
+    if (level >= 4) {
+      rows.push({ rule: true });
+      rows.push({ cells: [{ t: "1% low", c: COLOR.dim }, { t: live.low + " fps", c: COLOR.text }] });
+      rows.push({ cells: [{ t: "vram", c: COLOR.dim }, { t: live.vram.toFixed(1) + " / 16 GB", c: COLOR.text }] });
+      rows.push({ cells: [{ t: "cpu", c: COLOR.dim }, { t: live.cpu + "%", c: COLOR.text }, { t: live.cput + " C", c: COLOR.text }] });
+      rows.push({ cells: [{ t: "ram", c: COLOR.dim }, { t: live.ram.toFixed(1) + " / 32 GB", c: COLOR.text }] });
+      rows.push({ foot: true, cells: [{ t: "RTX 4080 | 3440x1440", c: COLOR.dim }] });
+    }
+
+    return rows;
+  }
+
+  /* ------------------------------------------------------------- state */
+
+  var state = { renderer: "bitmap", detail: 3, position: "tr", size: "m", scene: "dusk", alpha: 62 };
+  var SIZES = { s: 2, m: 3, l: 4 };
+  var HINTS = {
+    "1": "The Steam FPS-counter case: one number, nothing else.",
+    "2": "Adds what makes it ours — latency and the tier actually running.",
+    "3": "Everything the overlay shows today, in rows instead of a sentence.",
+    "4": "Full telemetry with the graph, the 1% low and the system rows."
+  };
+
+  var stage = document.getElementById("stage");
+  var sceneCanvas = document.getElementById("scene");
+  var bitmapCanvas = document.getElementById("hud-bitmap");
+  var panel = document.getElementById("hud-panel");
+
+  /* -------------------------------------------------------------- scene */
+
+  function paintScene() {
+    var rect = stage.getBoundingClientRect();
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var w = Math.max(320, Math.round(rect.width));
+    var h = Math.max(180, Math.round(rect.height));
+    sceneCanvas.width = Math.round(w * dpr);
+    sceneCanvas.height = Math.round(h * dpr);
+    var ctx = sceneCanvas.getContext("2d");
+    if (!ctx) { return; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    var day = state.scene === "day";
+    var sky = ctx.createLinearGradient(0, 0, 0, h);
+    if (day) {
+      sky.addColorStop(0, "#9fc7e8");
+      sky.addColorStop(0.55, "#dbe7ef");
+      sky.addColorStop(1, "#f0ece2");
+    } else {
+      sky.addColorStop(0, "#1d2a3d");
+      sky.addColorStop(0.5, "#3b3550");
+      sky.addColorStop(1, "#8a5a49");
+    }
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, w, h);
+
+    // sun / moon with a soft halo
+    var cx = w * 0.72;
+    var cy = h * (day ? 0.24 : 0.52);
+    var halo = ctx.createRadialGradient(cx, cy, 0, cx, cy, h * 0.55);
+    halo.addColorStop(0, day ? "rgba(255,250,225,0.95)" : "rgba(255,190,130,0.85)");
+    halo.addColorStop(0.18, day ? "rgba(255,246,210,0.45)" : "rgba(255,150,95,0.35)");
+    halo.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = halo;
+    ctx.fillRect(0, 0, w, h);
+
+    // ridges, back to front
+    var layers = day
+      ? ["#b9c9cf", "#8fa4ad", "#5e7480", "#2f3d46"]
+      : ["#4a4258", "#33304a", "#20203a", "#12142a"];
+
+    for (var l = 0; l < layers.length; l += 1) {
+      var base = h * (0.52 + l * 0.12);
+      var amp = h * (0.11 - l * 0.018);
+      var freq = 0.006 + l * 0.0035;
+      var phase = l * 1.7;
+      ctx.beginPath();
+      ctx.moveTo(0, h);
+      for (var x = 0; x <= w; x += 6) {
+        var y = base
+          - Math.sin(x * freq + phase) * amp
+          - Math.sin(x * freq * 2.3 + phase * 1.6) * amp * 0.35;
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo(w, h);
+      ctx.closePath();
+      ctx.fillStyle = layers[l];
+      ctx.fill();
+    }
+
+    // ground haze so the bottom corners are not flat
+    var haze = ctx.createLinearGradient(0, h * 0.72, 0, h);
+    haze.addColorStop(0, "rgba(0,0,0,0)");
+    haze.addColorStop(1, day ? "rgba(20,26,20,0.35)" : "rgba(0,0,0,0.5)");
+    ctx.fillStyle = haze;
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  /* -------------------------------------------------------- bitmap HUD */
+
+  function drawBitmapHud() {
+    var s = SIZES[state.size];
+    var rows = buildRows(state.detail);
+    var pad = 2 * s;
+    var lineH = 7 * s;
+    var lead = 3 * s;
+    var ruleH = 3 * s;
+    var graphH = state.detail >= 4 ? 14 * s : 0;
+    var heroExtra = 5 * s;
+
+    var footS = Math.max(2, s - 1);
+    var width = 0;
+    var height = 0;
+    rows.forEach(function (row) {
+      if (row.rule) { height += ruleH; return; }
+      var w;
+      if (row.hero) {
+        w = segWidth(row.cells[0].t, s * 2) + 2 * s + segWidth(row.cells[1].t, s);
+      } else {
+        w = rowWidth(row.cells, row.foot ? footS : s);
+      }
+      width = Math.max(width, w);
+      height += (row.hero ? lineH + heroExtra : lineH) + lead;
+    });
+    if (graphH) { height += graphH + lead; width = Math.max(width, 60 * s); }
+    height = Math.max(0, height - lead);
+
+    var cw = width + pad * 2;
+    var chh = height + pad * 2;
+    bitmapCanvas.width = cw;
+    bitmapCanvas.height = chh;
+    bitmapCanvas.style.width = cw + "px";
+    bitmapCanvas.style.height = chh + "px";
+
+    var ctx = bitmapCanvas.getContext("2d");
+    if (!ctx) { return; }
+    ctx.clearRect(0, 0, cw, chh);
+    // A cleared rect, alpha 1.0 - solid by construction.
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, cw, chh);
+
+    var y = pad;
+    rows.forEach(function (row) {
+      if (row.rule) {
+        ctx.fillStyle = "#3a4148";
+        ctx.fillRect(pad, y + s, width, s);
+        y += ruleH;
+        return;
+      }
+      if (row.hero) {
+        // The number is twice the body size; its unit sits on the same baseline.
+        var heroS = s * 2;
+        drawText(ctx, row.cells[0].t, pad, y, heroS, row.cells[0].c);
+        drawText(
+          ctx,
+          row.cells[1].t,
+          pad + segWidth(row.cells[0].t, heroS) + 2 * s,
+          y + 7 * heroS - 7 * s,
+          s,
+          row.cells[1].c
+        );
+      } else {
+        var scale = row.foot ? footS : s;
+        var x = pad;
+        row.cells.forEach(function (cell, index) {
+          if (index > 0) { x += 2 * scale; }
+          drawText(ctx, cell.t, x, y, scale, cell.c);
+          x += segWidth(cell.t, scale);
+        });
+      }
+      y += (row.hero ? lineH + heroExtra : lineH) + lead;
+    });
+
+    if (graphH) {
+      var gx = pad;
+      var gy = chh - pad - graphH;
+      var gw = width;
+      var bars = Math.min(frames.length, Math.floor(gw / (2 * s)));
+      var max = 0;
+      for (var i = frames.length - bars; i < frames.length; i += 1) {
+        max = Math.max(max, frames[i]);
+      }
+      max = Math.max(max, 12);
+      for (var b = 0; b < bars; b += 1) {
+        var value = frames[frames.length - bars + b];
+        var barH = Math.max(s, Math.round((value / max) * graphH / s) * s);
+        ctx.fillStyle = value > 13 ? COLOR.hot : COLOR.good;
+        ctx.fillRect(gx + b * 2 * s, gy + graphH - barH, s, barH);
+      }
+      ctx.fillStyle = "#3a4148";
+      ctx.fillRect(gx, gy + graphH, gw, s);
+    }
+
+    placeHud(cw, chh, 5 * s);
+  }
+
+  /* --------------------------------------------------------- panel HUD */
+
+  function drawPanelHud() {
+    var s = SIZES[state.size];
+    var fontPx = 6.5 * s;
+    var rows = buildRows(state.detail);
+
+    panel.style.fontSize = fontPx + "px";
+    panel.style.background = "rgba(10, 13, 17, " + (state.alpha / 100).toFixed(2) + ")";
+    panel.style.backdropFilter = state.alpha < 85 ? "blur(2px)" : "none";
+    panel.innerHTML = "";
+
+    rows.forEach(function (row) {
+      if (row.rule) {
+        var sep = document.createElement("div");
+        sep.className = "sep";
+        panel.appendChild(sep);
+        return;
+      }
+      var el = document.createElement("div");
+      el.className = "row" + (row.foot ? " foot" : "");
+      if (row.hero) {
+        var big = document.createElement("div");
+        big.className = "big";
+        big.style.color = row.cells[0].c;
+        big.textContent = row.cells[0].t;
+        var unit = document.createElement("small");
+        unit.textContent = row.cells[1].t;
+        big.appendChild(unit);
+        el.appendChild(big);
+      } else {
+        row.cells.forEach(function (cell, index) {
+          var span = document.createElement("span");
+          span.textContent = cell.t;
+          span.style.color = cell.c;
+          if (index === 0 && !row.foot) { span.className = "lbl"; }
+          el.appendChild(span);
+        });
+      }
+      panel.appendChild(el);
+    });
+
+    if (state.detail >= 4) {
+      var graph = document.createElement("canvas");
+      graph.className = "graph";
+      var gw = Math.round(28 * fontPx / 2);
+      var gh = Math.round(fontPx * 2.4);
+      graph.width = gw * 2;
+      graph.height = gh * 2;
+      graph.style.width = gw + "px";
+      graph.style.height = gh + "px";
+      var gctx = graph.getContext("2d");
+      if (gctx) {
+        gctx.scale(2, 2);
+        var max = Math.max.apply(null, frames.concat([12]));
+        gctx.beginPath();
+        frames.forEach(function (value, index) {
+          var x = (index / (frames.length - 1)) * gw;
+          var y = gh - (value / max) * gh * 0.9;
+          if (index === 0) { gctx.moveTo(x, y); } else { gctx.lineTo(x, y); }
+        });
+        gctx.lineTo(gw, gh);
+        gctx.lineTo(0, gh);
+        gctx.closePath();
+        var fill = gctx.createLinearGradient(0, 0, 0, gh);
+        fill.addColorStop(0, "rgba(127, 211, 194, 0.42)");
+        fill.addColorStop(1, "rgba(127, 211, 194, 0)");
+        gctx.fillStyle = fill;
+        gctx.fill();
+
+        gctx.beginPath();
+        frames.forEach(function (value, index) {
+          var x = (index / (frames.length - 1)) * gw;
+          var y = gh - (value / max) * gh * 0.9;
+          if (index === 0) { gctx.moveTo(x, y); } else { gctx.lineTo(x, y); }
+        });
+        gctx.strokeStyle = "#7fd3c2";
+        gctx.lineWidth = 1.25;
+        gctx.stroke();
+      }
+      panel.insertBefore(graph, panel.children[1] || null);
+    }
+
+    panel.hidden = false;
+    var box = panel.getBoundingClientRect();
+    placeHud(box.width, box.height, Math.round(10 * s * 0.6));
+  }
+
+  /* ------------------------------------------------------------- place */
+
+  function placeHud(w, h, margin) {
+    var target = state.renderer === "bitmap" ? bitmapCanvas : panel;
+    var rect = stage.getBoundingClientRect();
+    target.style.left = "";
+    target.style.right = "";
+    target.style.top = "";
+    target.style.bottom = "";
+
+    var pos = state.position;
+    if (pos === "tc") {
+      target.style.left = Math.max(0, Math.round((rect.width - w) / 2)) + "px";
+      target.style.top = margin + "px";
+      return;
+    }
+    if (pos[0] === "t") { target.style.top = margin + "px"; } else { target.style.bottom = margin + "px"; }
+    if (pos[1] === "l") { target.style.left = margin + "px"; } else { target.style.right = margin + "px"; }
+  }
+
+  /* ------------------------------------------------------------ render */
+
+  function render() {
+    if (state.renderer === "bitmap") {
+      panel.hidden = true;
+      bitmapCanvas.hidden = false;
+      drawBitmapHud();
+    } else {
+      bitmapCanvas.hidden = true;
+      drawPanelHud();
+    }
+
+    document.getElementById("stage-note").textContent =
+      (state.renderer === "bitmap" ? "Pixel renderer" : "Pipeline renderer")
+      + " · detail " + state.detail
+      + " · " + ({ tl: "top-left", tc: "top-centre", tr: "top-right", bl: "bottom-left", br: "bottom-right" })[state.position];
+    document.getElementById("stage-era").textContent = state.renderer === "bitmap" ? "M1–M3" : "M5";
+    document.getElementById("detail-hint").textContent = HINTS[String(state.detail)];
+
+    var alphaWrap = document.getElementById("ctl-alpha-wrap");
+    var isBitmap = state.renderer === "bitmap";
+    alphaWrap.dataset.disabled = isBitmap ? "true" : "false";
+    document.getElementById("ctl-alpha").disabled = isBitmap;
+    document.getElementById("alpha-hint").textContent = isBitmap
+      ? "Needs the pipeline. The pixel renderer writes colour straight into the image, so its box is always solid."
+      : "Blended against the game behind it — the reason M5 exists.";
+  }
+
+  /* --------------------------------------------------------- controls */
+
+  function wireSegment(id, key, cast) {
+    var group = document.getElementById(id);
+    group.addEventListener("click", function (event) {
+      var button = event.target.closest("button[data-v]");
+      if (!button) { return; }
+      Array.prototype.forEach.call(group.querySelectorAll("button[data-v]"), function (other) {
+        other.setAttribute("aria-pressed", other === button ? "true" : "false");
+      });
+      state[key] = cast ? cast(button.dataset.v) : button.dataset.v;
+      if (key === "scene") { paintScene(); }
+      render();
+    });
+  }
+
+  wireSegment("ctl-renderer", "renderer");
+  wireSegment("ctl-detail", "detail", Number);
+  wireSegment("ctl-position", "position");
+  wireSegment("ctl-size", "size");
+  wireSegment("ctl-scene", "scene");
+
+  document.getElementById("ctl-alpha").addEventListener("input", function (event) {
+    state.alpha = Number(event.target.value);
+    if (state.renderer === "panel") { render(); }
+  });
+
+  /* ------------------------------------------------------- today strip */
+
+  (function today() {
+    var canvas = document.getElementById("today-canvas");
+    var s = 3;
+    var text = "119 FPS 176 FG LAT 23 MS 2790 MHZ 915 MV 241 W BAL";
+    var pad = 2 * s;
+    var w = segWidth(text, s) + pad * 2;
+    var h = 7 * s + pad * 2;
+    canvas.width = w;
+    canvas.height = h;
+    canvas.style.width = w + "px";
+    var ctx = canvas.getContext("2d");
+    if (!ctx) { return; }
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, w, h);
+    drawText(ctx, text, pad, pad, s, "#ffffff");
+  }());
+
+  /* ------------------------------------------------------- glyph sheet */
+
+  (function sheet() {
+    var canvas = document.getElementById("glyph-sheet");
+    var s = 4;
+    var chars = Object.keys(FONT);
+    var perRow = 26;
+    var cellW = 7 * s;
+    var cellH = 11 * s;
+    var rowsCount = Math.ceil(chars.length / perRow);
+    canvas.width = perRow * cellW;
+    canvas.height = rowsCount * cellH;
+    canvas.style.width = Math.min(perRow * cellW, 900) + "px";
+    var ctx = canvas.getContext("2d");
+    if (!ctx) { return; }
+    ctx.fillStyle = "#0d1117";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    chars.forEach(function (ch, index) {
+      var col = index % perRow;
+      var row = Math.floor(index / perRow);
+      drawText(ctx, ch, col * cellW + s, row * cellH + 2 * s, s, "#dfe5ea");
+    });
+  }());
+
+  /* ----------------------------------------------------------- startup */
+
+  var reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  paintScene();
+  render();
+
+  if (!reduced) {
+    window.setInterval(function () { jitter(); render(); }, 900);
+  }
+
+  var resizeTimer = null;
+  window.addEventListener("resize", function () {
+    window.clearTimeout(resizeTimer);
+    resizeTimer = window.setTimeout(function () { paintScene(); render(); }, 120);
+  });
+}());
+</script>
+</body>
+</html>

@@ -1,0 +1,1002 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overlay Build Order · PenguinBurner</title>
+<meta name="description" content="MangoHud parity matrix, six milestones, and where each one can be verified.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground: #f2f4f6;
+    --surface: #ffffff;
+    --surface-2: #e8ebef;
+    --line: #d3d9e0;
+    --line-soft: #e2e6eb;
+    --ink: #14181d;
+    --ink-2: #3b444f;
+    --muted: #67717e;
+    --ember: #bc5317;
+    --ember-soft: #f7e8dc;
+    --signal: #1f6f60;
+    --signal-soft: #dcece8;
+    --measure: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0f1216;
+      --surface: #171b21;
+      --surface-2: #1e242c;
+      --line: #2d353f;
+      --line-soft: #232a32;
+      --ink: #e7eaee;
+      --ink-2: #b6bfca;
+      --muted: #8d97a3;
+      --ember: #f2903f;
+      --ember-soft: #33210f;
+      --signal: #56b8a4;
+      --signal-soft: #122b27;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0f1216;
+    --surface: #171b21;
+    --surface-2: #1e242c;
+    --line: #2d353f;
+    --line-soft: #232a32;
+    --ink: #e7eaee;
+    --ink-2: #b6bfca;
+    --muted: #8d97a3;
+    --ember: #f2903f;
+    --ember-soft: #33210f;
+    --signal: #56b8a4;
+    --signal-soft: #122b27;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 1rem;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 64rem;
+    margin: 0 auto;
+    padding: clamp(2rem, 5vw, 4rem) clamp(1.1rem, 4vw, 3rem) 6rem;
+  }
+
+  h1, h2, h3 {
+    font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  h1 { font-size: clamp(2.1rem, 5vw, 2.75rem); line-height: 1.06; }
+  h2 { font-size: clamp(1.55rem, 3.6vw, 1.95rem); line-height: 1.14; }
+  h3 { font-size: 1.125rem; font-weight: 600; line-height: 1.3; }
+
+  p { margin: 0; max-width: var(--measure); }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.875em; }
+  code { background: var(--surface-2); border-radius: 3px; padding: 0.08em 0.34em; }
+  a { color: var(--ember); text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; border-radius: 3px; }
+
+  header.masthead {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding-bottom: 2.25rem;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .masthead .lede { font-size: 1.1875rem; color: var(--ink-2); }
+
+  .masthead .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.5rem;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+
+  section { padding-top: 3rem; }
+
+  .section-head { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1.4rem; }
+  .section-head p { color: var(--ink-2); }
+
+  /* --- verdict callout ------------------------------------------------ */
+
+  .verdict-box {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--signal);
+    border-radius: 5px;
+    padding: 1.15rem 1.3rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .verdict-box p { font-size: 0.9375rem; color: var(--ink-2); }
+  .verdict-box b { color: var(--ink); }
+
+  /* --- parity table --------------------------------------------------- */
+
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 44rem; }
+
+  th, td {
+    text-align: left;
+    padding: 0.6rem 0.9rem;
+    border-bottom: 1px solid var(--line-soft);
+    font-size: 0.9rem;
+    vertical-align: top;
+  }
+
+  thead th {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    background: var(--surface-2);
+    position: sticky;
+    top: 0;
+  }
+
+  tbody tr:last-child td { border-bottom: 0; }
+  td:first-child { font-weight: 500; }
+
+  tr.group td {
+    background: var(--surface-2);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+
+  .tag {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+  }
+  .tag.have { color: var(--signal); }
+  .tag.gap { color: var(--ember); }
+  .tag.park { color: var(--muted); }
+
+  /* --- milestones ----------------------------------------------------- */
+
+  .milestones { display: flex; flex-direction: column; gap: 1.1rem; }
+
+  .milestone {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .milestone > header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem 0.9rem;
+    padding: 1.05rem 1.25rem 0.9rem;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .m-id {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-weight: 600;
+    font-size: 0.8125rem;
+    letter-spacing: 0.08em;
+    color: var(--ember);
+  }
+
+  .m-head-note {
+    flex-basis: 100%;
+    font-size: 0.9375rem;
+    color: var(--ink-2);
+    max-width: var(--measure);
+  }
+
+  .chip {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.16em 0.5em;
+    border-radius: 3px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .chip.local { color: var(--signal); border-color: color-mix(in srgb, var(--signal) 40%, var(--line)); background: var(--signal-soft); }
+  .chip.desk { color: var(--ember); border-color: color-mix(in srgb, var(--ember) 40%, var(--line)); background: var(--ember-soft); }
+
+  .m-progress {
+    margin-left: auto;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tasks { display: flex; flex-direction: column; }
+
+  .task {
+    display: grid;
+    grid-template-columns: 1.6rem 1fr;
+    gap: 0.15rem 0.7rem;
+    padding: 0.8rem 1.25rem;
+    border-bottom: 1px solid var(--line-soft);
+    align-items: start;
+  }
+
+  .task:last-child { border-bottom: 0; }
+
+  .tick {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 1.05rem;
+    height: 1.05rem;
+    margin-top: 0.28rem;
+    border: 1.5px solid var(--line);
+    border-radius: 3px;
+    background: var(--ground);
+    cursor: pointer;
+    display: grid;
+    place-content: center;
+    padding: 0;
+    color: transparent;
+    font-size: 0.72rem;
+    line-height: 1;
+    font-family: "IBM Plex Mono", monospace;
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+
+  .tick[aria-pressed="true"] {
+    background: var(--signal);
+    border-color: var(--signal);
+    color: #ffffff;
+  }
+
+  .task-body { display: flex; flex-direction: column; gap: 0.28rem; min-width: 0; }
+  .task-title { font-size: 0.9375rem; font-weight: 500; }
+  .task[data-done="true"] .task-title { text-decoration: line-through; color: var(--muted); }
+  .task-note { font-size: 0.875rem; color: var(--ink-2); max-width: var(--measure); }
+
+  .task-files {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 0.85rem;
+  }
+
+  .task-files span::before { content: "› "; opacity: 0.6; }
+
+  /* --- first session -------------------------------------------------- */
+
+  .first {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 1.25rem 1.3rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+  }
+
+  ol.steps { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.65rem; }
+  ol.steps li { font-size: 0.9375rem; color: var(--ink-2); max-width: var(--measure); }
+  ol.steps li b { color: var(--ink); font-weight: 600; }
+
+  pre {
+    margin: 0;
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    border-radius: 5px;
+    padding: 0.75rem 0.9rem;
+    overflow-x: auto;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    color: var(--ink-2);
+  }
+
+  /* --- park list ------------------------------------------------------ */
+
+  .park-list { display: flex; flex-direction: column; gap: 0.55rem; }
+  .park-list div { display: flex; gap: 0.7rem; align-items: baseline; font-size: 0.9375rem; color: var(--ink-2); max-width: var(--measure); }
+  .park-list span.mark { color: var(--muted); font-family: "IBM Plex Mono", monospace; flex: none; }
+  .park-list b { color: var(--ink); font-weight: 600; }
+
+  .note {
+    margin-top: 2.5rem;
+    padding: 1rem 1.15rem;
+    border: 1px dashed var(--line);
+    border-radius: 6px;
+    background: var(--surface);
+    font-size: 0.875rem;
+    color: var(--muted);
+    max-width: var(--measure);
+  }
+</style>
+<style>
+  :root { color-scheme: light dark; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+
+  .pb-nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 1.25rem;
+    padding: 0.6rem clamp(1.1rem, 4vw, 3rem);
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(8px);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+  }
+  .pb-nav a { color: var(--muted); text-decoration: none; letter-spacing: 0.04em; }
+  .pb-nav a:hover { color: var(--ink); }
+  .pb-nav .pb-home { color: var(--ink); font-weight: 500; margin-right: auto; }
+  .pb-nav .pb-links { display: flex; flex-wrap: wrap; gap: 0.35rem 1.1rem; }
+  .pb-nav a[aria-current="page"] { color: var(--ember); }
+  .pb-nav a:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; border-radius: 2px; }
+</style>
+</head>
+<body>
+<nav class="pb-nav"><a class="pb-home" href="./">PenguinBurner · overlay notes</a><span class="pb-links"><a href="./strategy.html">Strategy</a><a href="./build-order.html" aria-current="page">Build order</a><a href="./fitting-room.html">Fitting room</a></span></nav>
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">PenguinBurner · overlay · working plan</p>
+    <h1>Overlay Build Order</h1>
+    <p class="lede">
+      The goal moved: not &ldquo;look like Steam&rdquo; but <b>be the reason to
+      uninstall MangoHud</b>. That is achievable, and the order below is
+      different from the one in the strategy note &mdash; because it turns out
+      almost none of it needs the risky renderer work first.
+    </p>
+    <p class="meta">
+      <span>branch agent/overlay-ux</span>
+      <span>base upstream/main 3e6083c</span>
+      <span>10 Sep 2026</span>
+    </p>
+  </header>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">00 · The reordering</p>
+      <h2>The renderer is polish, not a prerequisite</h2>
+    </div>
+
+    <div class="verdict-box">
+      <p>
+        The strategy note put the new Vulkan pipeline first, on the assumption
+        that everything else waited on it. Reading the draw path again: it does
+        not. <b>The current clear-rect renderer can already draw anything made
+        of rectangles</b> &mdash; at any coordinate, on any number of lines, in
+        any glyph shape, including a frametime bar graph.
+      </p>
+      <p>
+        What the pipeline actually buys is <b>transparency and antialiased
+        type</b> &mdash; not colour, which the existing draw call already takes
+        as an argument. Real, worth having, and the one change that can break a
+        game that works today. So it moves to the end, and four milestones of
+        visible progress land before we take that risk.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">01 · The bar</p>
+      <h2>Against MangoHud, honestly</h2>
+      <p>
+        What a MangoHud user would miss on the day they switch. Grouped by what
+        it takes, not by how MangoHud names it.
+      </p>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">MangoHud does</th>
+            <th scope="col">PenguinBurner today</th>
+            <th scope="col">Gap</th>
+            <th scope="col">Lands in</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="group"><td colspan="4">Readout</td></tr>
+          <tr>
+            <td>FPS, frame timing</td>
+            <td>FPS from the layer&rsquo;s own present ring, plus FG FPS split</td>
+            <td class="tag have">ahead</td>
+            <td>&mdash;</td>
+          </tr>
+          <tr>
+            <td>Frametime graph, 1% low, benchmark summary</td>
+            <td>The ring exists; nothing is drawn from it</td>
+            <td class="tag gap">missing</td>
+            <td>M3</td>
+          </tr>
+          <tr>
+            <td>GPU load, temp, power, core clock</td>
+            <td>All four, published every 1&ndash;10 s</td>
+            <td class="tag have">have</td>
+            <td>&mdash;</td>
+          </tr>
+          <tr>
+            <td>VRAM, memory clock</td>
+            <td>Neither &mdash; though NVML memory info is already read by the daemon for other work</td>
+            <td class="tag gap">missing</td>
+            <td>M2</td>
+          </tr>
+          <tr>
+            <td>CPU load, per-core, temp, package power</td>
+            <td>Game-process load and busiest-thread only</td>
+            <td class="tag gap">partial</td>
+            <td>M2</td>
+          </tr>
+          <tr>
+            <td>System RAM</td>
+            <td>Nothing</td>
+            <td class="tag gap">missing</td>
+            <td>M2</td>
+          </tr>
+          <tr>
+            <td>GPU name, driver, engine, resolution, present mode</td>
+            <td>Nothing &mdash; and the layer can read every one of them for free</td>
+            <td class="tag gap">missing</td>
+            <td>M2</td>
+          </tr>
+          <tr>
+            <td>PC latency</td>
+            <td>Reflex/NVAPI markers plus the display tail</td>
+            <td class="tag have">ahead</td>
+            <td>&mdash;</td>
+          </tr>
+
+          <tr class="group"><td colspan="4">Presentation</td></tr>
+          <tr>
+            <td>Position: any corner or top-centre</td>
+            <td>Welded to top-right</td>
+            <td class="tag gap">missing</td>
+            <td>M1</td>
+          </tr>
+          <tr>
+            <td>Table layout, multiple rows, aligned columns</td>
+            <td>One space-joined line</td>
+            <td class="tag gap">missing</td>
+            <td>M1</td>
+          </tr>
+          <tr>
+            <td>Real font, size, lowercase</td>
+            <td>5&times;7 pixels, capitals only, three scale steps</td>
+            <td class="tag gap">partial</td>
+            <td>M1 then M5</td>
+          </tr>
+          <tr>
+            <td>Per-metric colour</td>
+            <td>White text &mdash; but the draw call already takes a colour, only the white is hard-coded</td>
+            <td class="tag gap">missing</td>
+            <td>M3</td>
+          </tr>
+          <tr>
+            <td>Background alpha, rounded corners</td>
+            <td>Opaque black box. This one genuinely needs the pipeline</td>
+            <td class="tag gap">missing</td>
+            <td>M5</td>
+          </tr>
+
+          <tr class="group"><td colspan="4">Control</td></tr>
+          <tr>
+            <td>Hotkey to toggle the HUD mid-game</td>
+            <td>Only from the desktop app &mdash; but the live override file it writes is already polled every second</td>
+            <td class="tag gap">missing</td>
+            <td>M4</td>
+          </tr>
+          <tr>
+            <td>Hotkey FPS limiter</td>
+            <td>No limiter; Adaptive targets an FPS instead of capping it</td>
+            <td class="tag gap">missing</td>
+            <td>M6</td>
+          </tr>
+          <tr>
+            <td>Config reload without restarting the game</td>
+            <td>Config is re-read four times a second already</td>
+            <td class="tag have">have</td>
+            <td>&mdash;</td>
+          </tr>
+
+          <tr class="group"><td colspan="4">Beyond the HUD</td></tr>
+          <tr>
+            <td>CSV frametime logs</td>
+            <td>Daemon-side telemetry exists; nothing user-facing</td>
+            <td class="tag gap">missing</td>
+            <td>M6</td>
+          </tr>
+          <tr>
+            <td>OpenGL games</td>
+            <td>Vulkan only, stated as a product limit</td>
+            <td class="tag park">parked</td>
+            <td>by design</td>
+          </tr>
+          <tr>
+            <td>Battery, network, media player, log upload</td>
+            <td>Nothing</td>
+            <td class="tag park">parked</td>
+            <td>not our user</td>
+          </tr>
+          <tr>
+            <td>&mdash;</td>
+            <td>Active tier, undervolt offset, per-game profiles, adaptive switching, a root daemon that can actually change the GPU</td>
+            <td class="tag have">only us</td>
+            <td>M6 exploits it</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="margin-top: 1.25rem; color: var(--ink-2);">
+      After M1&ndash;M3 the numbers match on everything a tuner reads. M4 closes
+      the convenience gap. M5 closes the looks gap. The remaining differences
+      &mdash; OpenGL, log upload, battery &mdash; are choices we can defend, not
+      holes.
+    </p>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">02 · The order</p>
+      <h2>Six milestones, each a PR</h2>
+      <p>
+        Every milestone is shippable on its own and visible to a user. Ticks are
+        stored in your browser only &mdash; they are a scratchpad, not shared state.
+      </p>
+    </div>
+
+    <div class="milestones" id="milestones">
+
+      <article class="milestone" data-m="m0">
+        <header>
+          <span class="m-id">M0</span>
+          <h3>Unblock the test harness</h3>
+          <span class="chip local">verifiable here</span>
+          <span class="chip">half a day</span>
+          <p class="m-head-note">
+            Two of the &ldquo;known baseline failures&rdquo; are not
+            environmental at all: <code>tests/test_native_overlay_text_config.py</code>
+            compiles the C++ text builder directly and fails only because
+            <code>vulkan/vk_layer.h</code> is missing. Install the headers and the
+            entire overlay text and layout layer becomes testable without a GPU.
+          </p>
+        </header>
+        <div class="tasks">
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">Install Vulkan headers on the dev box, confirm the two tests go green</div>
+              <div class="task-note">Header-only package, no driver and no GPU involved. Also re-baselines the suite from 14 known failures to 12.</div>
+              <div class="task-files"><span>tests/test_native_overlay_text_config.py</span></div>
+            </div>
+          </div>
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">Grow the native probe into a real layout harness</div>
+              <div class="task-note">It currently asserts one string. Make it drive the same cases as the Python formatter so the two can be diffed automatically &mdash; that is what stops the preview drifting from the screen again.</div>
+              <div class="task-files"><span>tests/test_native_overlay_text_config.py</span><span>tests/test_overlay_text.py</span></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="milestone" data-m="m1">
+        <header>
+          <span class="m-id">M1</span>
+          <h3>Layout and type, on the renderer we already have</h3>
+          <span class="chip local">logic here</span>
+          <span class="chip desk">pixels on desktop</span>
+          <span class="chip">the big visible win</span>
+          <p class="m-head-note">
+            No pipeline. Rectangles can be drawn anywhere, so position, rows and
+            a bigger glyph set are all reachable today &mdash; and this is the
+            milestone a user notices most.
+          </p>
+        </header>
+        <div class="tasks">
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">Full-ASCII glyph table, and delete the <code>toupper</code></div>
+              <div class="task-note">Lowercase, colon, parentheses. Fixes the preview-versus-screen mismatch on its own: &ldquo;40 ms&rdquo; finally renders as &ldquo;40 ms&rdquo;. Generate the table with a committed script rather than hand-typing 90 more glyphs.</div>
+              <div class="task-files"><span>overlay/native/.../overlay_render.cpp</span><span>scripts/ (new generator)</span></div>
+            </div>
+          </div>
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">Position field: four corners plus top-centre</div>
+              <div class="task-note">Only the origin maths in <code>overlay_draw_text</code> changes. New <code>overlay.toml</code> key, native parser branch, and a combo box next to the scale one.</div>
+              <div class="task-files"><span>overlay/config.py</span><span>overlay/native/.../overlay_text.cpp</span><span>overlay/native/.../overlay_render.cpp</span><span>ui/components/overlay_config.py</span></div>
+            </div>
+          </div>
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">Multi-row layout with aligned columns</div>
+              <div class="task-note">Formatting returns a list of rows instead of one joined string &mdash; in Python and in C++, from the same description. This is the change that makes ten metrics readable instead of a 90-character sentence.</div>
+              <div class="task-files"><span>overlay/overlay_text.py</span><span>overlay/native/.../overlay_text.cpp</span></div>
+            </div>
+          </div>
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">Detail levels 1&ndash;4, with the checkbox set kept as &ldquo;custom&rdquo;</div>
+              <div class="task-note">Four named presets a user can cycle, which M4 then needs a hotkey for. The thirteen checkboxes stay, one level down.</div>
+              <div class="task-files"><span>overlay/config.py</span><span>ui/components/overlay_config.py</span><span>docs/features/overlay.md</span></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="milestone" data-m="m2">
+        <header>
+          <span class="m-id">M2</span>
+          <h3>The numbers MangoHud has and we do not</h3>
+          <span class="chip local">verifiable here</span>
+          <span class="chip desk">values on desktop</span>
+          <p class="m-head-note">
+            Split by source: some come from the daemon through the state file,
+            and some the layer can read straight out of Vulkan without the
+            daemon knowing anything.
+          </p>
+        </header>
+        <div class="tasks">
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">VRAM used/total and memory clock into the state file</div>
+              <div class="task-note">The NVML memory info is already modelled in the GPU backend, so this is plumbing: two more fields on the published state, the matching parse, item ids and checkboxes.</div>
+              <div class="task-files"><span>burnerd/src/profile/telemetry.rs</span><span>overlay/native/.../overlay_text.cpp</span><span>overlay/config.py</span><span>overlay/overlay_text.py</span></div>
+            </div>
+          </div>
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">System RAM, CPU package temperature and power</div>
+              <div class="task-note">New sources in the daemon: <code>/proc/meminfo</code>, hwmon, RAPL. Each needs a graceful &ldquo;not available on this box&rdquo; path &mdash; the HUD omitting a row is fine, a wrong number is not.</div>
+              <div class="task-files"><span>burnerd/src/profile/cpu.rs</span><span>burnerd/src/profile/telemetry.rs</span></div>
+            </div>
+          </div>
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">GPU name, driver version, resolution, present mode &mdash; read in the layer</div>
+              <div class="task-note">All four are already in the layer&rsquo;s hands: device properties at instance creation, swapchain extent and present mode at creation. No daemon round trip, no state file, no latency.</div>
+              <div class="task-files"><span>overlay/native/.../latency_layer.cpp</span><span>overlay/native/.../overlay_text.cpp</span></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="milestone" data-m="m3">
+        <header>
+          <span class="m-id">M3</span>
+          <h3>The frametime graph and session stats</h3>
+          <span class="chip local">maths here</span>
+          <span class="chip desk">pixels on desktop</span>
+          <p class="m-head-note">
+            A bar graph is a row of rectangles, so this needs no pipeline
+            either. The data is already being collected and thrown away.
+          </p>
+        </header>
+        <div class="tasks">
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">Percentiles and session stats off the existing ring</div>
+              <div class="task-note">1% low, 97th percentile frametime, session min/avg/max. Pure functions over a buffer &mdash; unit-testable through the native probe with no GPU in sight.</div>
+              <div class="task-files"><span>overlay/native/.../overlay_text.cpp</span><span>tests/test_native_overlay_text_config.py</span></div>
+            </div>
+          </div>
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">Draw the graph as scaled bars, and colour the values</div>
+              <div class="task-note">One rect per sample, height from frametime, a baseline rule at the target. Threshold colour comes along for free: <code>overlay_draw_glyph</code> already takes a colour argument, so temperature and power can go amber and red without any of the M5 work.</div>
+              <div class="task-files"><span>overlay/native/.../overlay_render.cpp</span></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="milestone" data-m="m4">
+        <header>
+          <span class="m-id">M4</span>
+          <h3>Control without leaving the game</h3>
+          <span class="chip local">almost all here</span>
+          <span class="chip">cheapest big win</span>
+          <p class="m-head-note">
+            No input capture, nothing new in the layer for the toggle: the live
+            override file the desktop app already writes is polled every second,
+            so a CLI verb reaches a running game today.
+          </p>
+        </header>
+        <div class="tasks">
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">CLI verbs: toggle HUD, cycle detail level, cycle tier</div>
+              <div class="task-note">Tier goes through the daemon like every other privileged action; the two HUD ones are config writes. Keep GUI and CLI wording identical.</div>
+              <div class="task-files"><span>cli/main_command_routing.py</span><span>runtime/daemon_client.py</span><span>burnerd/src/api.rs</span></div>
+            </div>
+          </div>
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">Document the desktop shortcut recipe</div>
+              <div class="task-note">KDE and GNOME steps for binding those verbs to keys. Works in fullscreen, on X11 and Wayland, with no new privilege &mdash; which is the whole argument for doing it this way first.</div>
+              <div class="task-files"><span>docs/features/overlay.md</span></div>
+            </div>
+          </div>
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">A transient confirmation row in the HUD</div>
+              <div class="task-note">&ldquo;Tier: Balanced&rdquo; for two seconds after a change, so the keypress has an answer on screen. Needs the multi-row layout from M1.</div>
+              <div class="task-files"><span>overlay/native/.../overlay_text.cpp</span></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="milestone" data-m="m5">
+        <header>
+          <span class="m-id">M5</span>
+          <h3>The renderer</h3>
+          <span class="chip desk">desktop only</span>
+          <span class="chip">the one real risk</span>
+          <p class="m-head-note">
+            Now it is a polish pass on a HUD that already works, behind a config
+            switch, with today&rsquo;s renderer as the fallback. If it never
+            ships, M1&ndash;M4 still stand.
+          </p>
+        </header>
+        <div class="tasks">
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">Pipeline, blending, instanced quads, embedded SPIR-V</div>
+              <div class="task-note">Shaders pre-compiled by a committed generator so no packager needs glslang, 32-bit build included. Fall back to clear-rects on any creation failure.</div>
+              <div class="task-files"><span>overlay/native/.../overlay_render.cpp</span><span>overlay/native/latency_layer/CMakeLists.txt</span><span>scripts/ (shader generator)</span></div>
+            </div>
+          </div>
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">Opacity, blended colour, rounded panel</div>
+              <div class="task-note">Translucency is the thing only this milestone can give: a cleared rect writes straight into the image, so the box stays solid until there is a pipeline to blend with.</div>
+              <div class="task-files"><span>overlay/config.py</span><span>ui/components/overlay_config.py</span><span>overlay/native/.../overlay_render.cpp</span></div>
+            </div>
+          </div>
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">A real font atlas</div>
+              <div class="task-note">Generated header from an open font. Optional: signed-distance-field so 4K stops looking like 1080p stretched.</div>
+              <div class="task-files"><span>scripts/ (font generator)</span><span>overlay/native/.../overlay_render.cpp</span></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="milestone" data-m="m6">
+        <header>
+          <span class="m-id">M6</span>
+          <h3>Past MangoHud</h3>
+          <span class="chip">optional</span>
+          <p class="m-head-note">
+            Only worth starting once the parity list is closed &mdash; these are
+            the things that make the switch stick rather than the things that
+            make it possible.
+          </p>
+        </header>
+        <div class="tasks">
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">Tier-switch markers on the frametime graph</div>
+              <div class="task-note">The one thing no other overlay can draw: the moment the undervolt tier changed, sitting exactly where the frametime moved.</div>
+              <div class="task-files"><span>burnerd/src/profile/telemetry.rs</span><span>overlay/native/.../overlay_render.cpp</span></div>
+            </div>
+          </div>
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">Frame limiter in the layer</div>
+              <div class="task-note">MangoHud has one and it pairs naturally with undervolting: cap the rate, drop the voltage, keep the frametimes flat. Needs care in the present path.</div>
+              <div class="task-files"><span>overlay/native/.../latency_layer.cpp</span></div>
+            </div>
+          </div>
+          <div class="task">
+            <button class="tick" type="button" aria-pressed="false" aria-label="Toggle task complete">✓</button>
+            <div class="task-body">
+              <div class="task-title">CSV session logs and an end-of-run summary</div>
+              <div class="task-note">The daemon already has the telemetry; this is a writer and a summary row. Feeds the README&rsquo;s promised historical plotting too.</div>
+              <div class="task-files"><span>burnerd/src/profile/telemetry.rs</span><span>docs/features/overlay.md</span></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">03 · Start here</p>
+      <h2>The first session</h2>
+      <p>
+        Small, reversible, and it makes everything after it testable. Roughly an
+        afternoon.
+      </p>
+    </div>
+
+    <div class="first">
+      <ol class="steps">
+        <li>
+          <b>Install the Vulkan headers</b> and run the two native overlay tests.
+          They compile <code>overlay_text.cpp</code> with a plain C++ compiler
+          and need no GPU &mdash; the failure was always a missing header
+          package, not the environment.
+        </li>
+        <li>
+          <b>Confirm the new baseline:</b> the suite should drop from 14 known
+          failures to 12, all of them systemd and packaging.
+        </li>
+        <li>
+          <b>Take the glyph table first.</b> It is the smallest change with the
+          most obvious result: a generator script, a wider table, one deleted
+          <code>toupper</code>, and the readout stops shouting. Nothing else in
+          the draw path moves.
+        </li>
+        <li>
+          <b>Then position.</b> Also self-contained &mdash; a config key, a
+          parser branch, a combo box, and origin maths in one function.
+        </li>
+      </ol>
+      <pre>python -m pytest tests/test_native_overlay_text_config.py -q
+python -m pytest tests/test_overlay_text.py tests/test_overlay_config.py -q
+c++ -std=c++17 -I overlay/native/latency_layer/src -fsyntax-only \
+    overlay/native/latency_layer/src/overlay_render.cpp</pre>
+      <p style="font-size: 0.875rem; color: var(--muted);">
+        That last line is the fast loop for M1: the glyph and layout work
+        type-checks in a second without building the whole layer.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">04 · Parked on purpose</p>
+      <h2>Where we do not chase parity</h2>
+    </div>
+    <div class="park-list">
+      <div><span class="mark">&times;</span><span><b>OpenGL games.</b> The overlay is a Vulkan layer and the product already says so out loud. DXVK and vkd3d cover the Windows catalogue; native OpenGL-only titles are a shrinking set, and supporting them means a second renderer and a second injection path.</span></div>
+      <div><span class="mark">&times;</span><span><b>Battery, network and media-player rows.</b> MangoHud serves handhelds and streamers too. Our user is at a desk with a tuned NVIDIA card.</span></div>
+      <div><span class="mark">&times;</span><span><b>Log upload to a comparison site.</b> Someone else&rsquo;s service, someone else&rsquo;s privacy question.</span></div>
+      <div><span class="mark">&times;</span><span><b>An interactive in-game config panel.</b> Input capture is the line from the strategy note, and it has not moved. Hotkeys plus the desktop app cover it.</span></div>
+    </div>
+  </section>
+
+  <p class="note">
+    <b>Verification split:</b> M0, M2 and M4 are almost entirely testable on the
+    review machine. M1 and M3 have their logic tested here and their pixels only
+    on your desktop. M5 is desktop-only from the first line. Nothing in this
+    plan claims a hardware result that has not been seen on hardware.
+  </p>
+
+</div>
+
+<script>
+  (function () {
+    const KEY = "pb-overlay-build-order";
+
+    function read() {
+      try {
+        const raw = window.localStorage.getItem(KEY);
+        return raw ? JSON.parse(raw) : {};
+      } catch (error) {
+        return {};
+      }
+    }
+
+    function write(state) {
+      try {
+        window.localStorage.setItem(KEY, JSON.stringify(state));
+      } catch (error) {
+        /* private window, blocked storage: ticks simply do not persist */
+      }
+    }
+
+    const state = read();
+
+    document.querySelectorAll(".milestone").forEach(function (milestone) {
+      const id = milestone.dataset.m;
+      const tasks = Array.prototype.slice.call(milestone.querySelectorAll(".task"));
+
+      const counter = document.createElement("span");
+      counter.className = "m-progress";
+      milestone.querySelector("header").appendChild(counter);
+
+      function refresh() {
+        const done = tasks.filter(function (task) {
+          return task.dataset.done === "true";
+        }).length;
+        counter.textContent = done + " / " + tasks.length;
+      }
+
+      tasks.forEach(function (task, index) {
+        const key = id + ":" + index;
+        const button = task.querySelector(".tick");
+        const done = state[key] === true;
+        task.dataset.done = done ? "true" : "false";
+        button.setAttribute("aria-pressed", done ? "true" : "false");
+
+        button.addEventListener("click", function () {
+          const next = task.dataset.done !== "true";
+          task.dataset.done = next ? "true" : "false";
+          button.setAttribute("aria-pressed", next ? "true" : "false");
+          state[key] = next;
+          write(state);
+          refresh();
+        });
+      });
+
+      refresh();
+    });
+  })();
+</script>
+</body>
+</html>
