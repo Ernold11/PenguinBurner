@@ -23,6 +23,7 @@ from .library import InstalledLutrisGame, read_lutris_games
 from .paths import lutris_installed, runner_config_path, system_config_path
 from .settings import LUTRIS_GAME_SETTINGS_STORE
 
+
 class LutrisIntegrationManager(WrapperManager):
     launcher_id = "lutris"
     display_name = "Lutris"
