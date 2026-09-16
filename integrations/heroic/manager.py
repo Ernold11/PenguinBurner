@@ -24,6 +24,7 @@ from .library import InstalledHeroicGame, read_heroic_games
 from .paths import game_config_path, heroic_installed
 from .settings import HEROIC_GAME_SETTINGS_STORE
 
+
 class HeroicIntegrationManager(WrapperManager):
     launcher_id = "heroic"
     display_name = "Heroic"

@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import io
+import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
-from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
 from contextlib import redirect_stdout
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from integrations.heroic import config_store, process
 from integrations.heroic.library_source import HeroicLibrarySource
@@ -147,7 +147,7 @@ class HeroicSessionRegressions(unittest.TestCase):
             with patch.object(sys, "argv", ["probe", tmp, GAME_KEY_ENV]), \
                  patch.object(Path, "read_bytes", side_effect=PermissionError), \
                  redirect_stdout(output):
-                exec(process._SESSION_PROBE, {})
+                exec(process._SESSION_PROBE, {})  # noqa: S102 - execute our fixed probe with mocked proc access
             self.assertEqual(json.loads(output.getvalue()), {"sessions": [], "unreadable": [41]})
 
     def test_daemon_watches_recover_inaccessible_sessions_without_reviving_exits(self):
