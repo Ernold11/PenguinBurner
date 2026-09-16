@@ -63,7 +63,8 @@ class FakeLauncher(WrapperManager):
     def read_inherited(self, game) -> str:
         return self.inherited
 
-    def write_command(self, game, command: str) -> CommandWrite:
+    def write_command(self, game, command: str | None) -> CommandWrite:
+        command = command or ""
         if game.game_id in self.locked:
             return CommandWrite(
                 False, self.commands.get(game.game_id, ""), "the config is locked"

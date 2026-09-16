@@ -1,24 +1,9 @@
-"""Read the Heroic library out of its per-store cache files.
+"""Read Heroic libraries, installation records, artwork and playtime.
 
-Heroic keeps one cached library per store backend -- Epic through legendary,
-GOG through gogdl, Amazon through nile, plus games the user sideloaded -- and
-they all describe a game the same way, so one reader answers for all four. A
-store the user never signed into is simply a file that is not there.
-
-Which of them are installed is a third source again. The cached libraries carry
-an ``is_installed`` flag, but Heroic *derives* it from each store backend's own
-installed.json when it refreshes, so between refreshes the flag is stale --
-a game installed a minute ago still reads false. Those stores are the
-authority here too, and they are also where an installed game's real path and
-platform live: the cached entry's ``install`` block is empty until a refresh.
-
-Playtime and last-played live apart from the library, in ``store/timestamp.json``,
-because Heroic writes them when a session ends rather than when it syncs.
-
-Every failure degrades to an empty library: a half-written cache, an older
-schema, or a file we cannot read must leave the tab empty and explaining
-itself, never raise into the GUI.
-"""
+Store-backend installed.json files determine installation paths and platforms;
+cached library flags can lag behind installs. Sideloaded entries describe their
+own installations. Playtime comes from store/timestamp.json. Unreadable caches
+are skipped so one damaged store cannot prevent listing the others."""
 
 from __future__ import annotations
 
@@ -122,19 +107,6 @@ def read_heroic_games(
             games.append(game)
     games.sort(key=lambda g: (-int(g.last_played or 0), g.display_name.casefold()))
     return tuple(games)
-
-
-def heroic_game(
-    game_id: str,
-    home: Path | None = None,
-) -> InstalledHeroicGame | None:
-    wanted = str(game_id or "").strip()
-    if not wanted:
-        return None
-    for game in read_heroic_games(home, include_uninstalled=True):
-        if game.game_id == wanted:
-            return game
-    return None
 
 
 def _read_json(path: Path) -> object:

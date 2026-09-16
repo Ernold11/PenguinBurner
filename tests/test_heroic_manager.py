@@ -8,7 +8,7 @@ import pytest
 
 from integrations.heroic.library_source import HeroicLibrarySource
 from integrations.heroic.manager import HeroicIntegrationManager
-from integrations.heroic.settings import load_heroic_game_settings
+from integrations.heroic.settings import HEROIC_GAME_SETTINGS_STORE
 from integrations.launchers import wrapper_manager
 from profiles.game_profile import GAME_MODE_ADAPTIVE
 
@@ -92,7 +92,7 @@ def _wrappers(tmp_path) -> list[dict]:
 
 
 def _stored(tmp_path):
-    return load_heroic_game_settings(tmp_path / "heroic-game-settings.json")["Turkey"]
+    return HEROIC_GAME_SETTINGS_STORE.load(tmp_path / "heroic-game-settings.json")["Turkey"]
 
 
 def test_rows_carry_what_the_game_actually_launches_through(tmp_path) -> None:
@@ -171,7 +171,7 @@ def test_a_hand_edit_re_reads_the_toggles_from_what_landed(tmp_path) -> None:
     manager = _manager(tmp_path)
     manager.set_game_enabled("Turkey", True)
 
-    assert manager.set_game_wrapper_command("Turkey", "mangohud").ok
+    assert manager.set_game_command("Turkey", "mangohud").ok
 
     stored = _stored(tmp_path)
     assert stored.enabled is False
@@ -198,7 +198,7 @@ def test_the_library_adapter_describes_the_game_the_tab_draws(tmp_path) -> None:
     assert game.overlay_supported is True  # Proton translates everything to Vulkan
     (field,) = source.fields(game)
     assert field.key == "wrapper_command"
-    assert field.setter == "set_game_wrapper_command"
+    assert field.setter == "set_game_command"
     assert "inherited from Heroic global settings" in field.subtitle
 
 

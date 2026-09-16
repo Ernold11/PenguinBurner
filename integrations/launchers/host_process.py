@@ -1,17 +1,7 @@
-"""Asking the host about programs and processes, from inside a Flatpak or not.
+"""Run launcher commands and inspect processes on the host.
 
-Every launcher integration needs the same three answers -- is this program
-installed, what is running, stop that pid -- and inside a Flatpak all three
-have to leave the sandbox. It has its own PATH and its own PID namespace, so
-an in-sandbox answer describes nothing the user's games actually run in: the
-binary would be missing, and a pid would be nothing or, worse, some unrelated
-sandbox process.
-
-Steam and Lutris each carried their own copy of this bridge, and every
-launcher added after them would have carried another. One copy means a
-launcher added later inherits the sandbox behaviour instead of rediscovering
-it.
-"""
+Flatpak has its own PATH and PID namespace, so sandboxed callers must use the
+host bridge for discovery, launch and termination."""
 
 from __future__ import annotations
 
@@ -100,19 +90,11 @@ def run_on_host(
     if not resolved:
         return None
     try:
-        if capture:
-            return subprocess.run(
-                resolved,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-                env=launcher_environment(),
-            )
         return subprocess.run(
             resolved,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+            stderr=subprocess.PIPE if capture else subprocess.DEVNULL,
+            text=capture,
             timeout=timeout,
             check=False,
             env=launcher_environment(),

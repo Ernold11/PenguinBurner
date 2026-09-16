@@ -1,17 +1,7 @@
-"""Applying a game's saved preset from inside the launch wrapper.
+"""Apply a saved game preset and register its session PID with the root daemon.
 
-Runs in the PENGUIN_BURNER wrapper, before it execs the game: resolve the
-launching game to its stored setting, then ask the root daemon to apply that
-preset and watch this PID -- the wrapper's ``exec`` makes it the game session's
-PID, so the daemon restores the standing profile when the game exits.
-
-Everything here soft-fails. A daemon problem must never block a game launch.
-
-Which launcher started the game only decides where the setting is read from,
-so that is a one-line lookup rather than a module per launcher. Steam keeps its
-own resolver because its identity arrives in the environment and is keyed by
-account.
-"""
+The launch wrapper execs the game, retaining the watched PID. Failures must
+never block launch. Steam resolves its account-based identity separately."""
 
 from __future__ import annotations
 

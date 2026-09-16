@@ -158,7 +158,7 @@ def test_a_config_we_create_says_which_schema_heroic_should_read_it_as(
     assert _game_config(tmp_path)["version"] == "v0"
 
 
-def test_an_empty_command_hands_the_game_back_to_the_global_rows(tmp_path) -> None:
+def test_removing_the_override_hands_the_game_back_to_the_global_rows(tmp_path) -> None:
     """Removing the key, not storing an empty list: inheritance must resume."""
     _heroic(
         tmp_path,
@@ -166,7 +166,7 @@ def test_an_empty_command_hands_the_game_back_to_the_global_rows(tmp_path) -> No
         game={"Turkey": {"wrapperOptions": [_entry("mangohud")]}},
     )
 
-    assert write_wrapper_command("Turkey", "", tmp_path).ok is True
+    assert write_wrapper_command("Turkey", None, tmp_path).ok is True
     assert "wrapperOptions" not in _game_config(tmp_path)["Turkey"]
     assert effective_wrapper_command("Turkey", tmp_path).value == "game-performance"
 

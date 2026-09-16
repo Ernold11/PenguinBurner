@@ -1,15 +1,7 @@
-"""What PenguinBurner remembers about one game, and where that is kept.
+"""Per-game preferences and JSON persistence for config-file launchers.
 
-Every launcher stores the same answers -- is PenguinBurner on for this game,
-which tier, is the overlay drawn, which GPU, what the launch command said
-before we touched it and what we wrote -- so the record and its JSON file live
-here rather than once per launcher. Only the file name differs, because two
-launchers must not share one map: their game ids collide.
-
-Steam is the exception and keeps its own store: its settings are keyed by
-account first, since two Steam accounts on one machine must not overwrite each
-other's presets. Nothing else has an account layer.
-"""
+Each launcher uses a separate file to prevent game-id collisions. Steam keeps
+its own store because its preferences are also keyed by account."""
 
 from __future__ import annotations
 
@@ -19,8 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from auto_uv.persistence.auto_uv_persisted_json_files import safe_json_write
-from common.atomic_write import preserve_unreadable_file
+from common.atomic_write import atomic_write_json, preserve_unreadable_file
 from common.penguin_burner_paths import default_user_config_dir
 from overlay.wrapper_tokens import ingame_latency_present
 from profiles.game_profile import (
@@ -101,7 +92,7 @@ class GameSettingsStore:
         down. The write path is where an unreadable file is dealt with, since
         that is the only place its content can actually be lost.
         """
-        payload, _ = _read_payload(self.path(path))
+        payload, _ = read_settings_payload(self.path(path))
         return _settings_from_payload(payload, self.legacy_keys)
 
     def get(
@@ -134,17 +125,17 @@ class GameSettingsStore:
         becomes a real workflow.
         """
         target = self.path(path)
-        payload, unreadable = _read_payload(target)
+        payload, unreadable = read_settings_payload(target)
         preserved = _preserve(target) if unreadable else None
         settings = _settings_from_payload(payload, self.legacy_keys)
         settings[str(game_id)] = setting
         return SettingsWrite(
-            safe_json_write(target, _payload_for(settings)),
+            atomic_write_json(target, _payload_for(settings), durable=True),
             preserved=preserved,
         )
 
 
-def _read_payload(path: Path) -> tuple[dict, bool]:
+def read_settings_payload(path: Path) -> tuple[dict, bool]:
     """The stored mapping, and whether the file exists but could not be read.
 
     Three cases, and only the third is a problem: absent (nothing was ever

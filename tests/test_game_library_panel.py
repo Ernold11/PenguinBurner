@@ -288,7 +288,7 @@ def _steam_and_lutris():
                 kind=FIELD_TEXT,
                 title="Command",
                 subtitle="prefix_command in the Lutris config",
-                setter="set_game_prefix_command",
+                setter="set_game_command",
                 value="gamemoderun",
                 group=GROUP_COMMAND,
             ),
@@ -1357,7 +1357,7 @@ def test_switching_games_saves_the_edit_for_the_game_it_was_typed_on(qapp) -> No
 
     panel._select_key("steam:620")
 
-    assert ("set_game_prefix_command", "27", "mangohud") in lutris.manager.calls
+    assert ("set_game_command", "27", "mangohud") in lutris.manager.calls
 
 
 def test_a_refused_edit_stays_on_screen_as_typed(qapp) -> None:
@@ -1365,7 +1365,7 @@ def test_a_refused_edit_stays_on_screen_as_typed(qapp) -> None:
     cursor at zero -- the user's text ate, the error shown for something no
     longer on screen."""
     steam, lutris = _steam_and_lutris()
-    lutris.manager.set_game_prefix_command = lambda _id, _value: SimpleNamespace(
+    lutris.manager.set_game_command = lambda _id, _value: SimpleNamespace(
         ok=False, message="unbalanced quotes"
     )
     panel = _panel(qapp, (steam, lutris))
@@ -1385,14 +1385,14 @@ def test_a_refused_edit_stays_on_screen_as_typed(qapp) -> None:
 @pytest.mark.parametrize("raises", [False, True])
 def test_a_refused_edit_keeps_the_game_selected_until_retry_succeeds(qapp, raises) -> None:
     steam, lutris = _steam_and_lutris()
-    setter = lutris.manager.set_game_prefix_command
+    setter = lutris.manager.set_game_command
 
     def refuse(*_):
         if raises:
             raise PermissionError("permission denied")
         return SimpleNamespace(ok=False, message="permission denied")
 
-    lutris.manager.set_game_prefix_command = refuse
+    lutris.manager.set_game_command = refuse
     panel = _panel(qapp, (steam, lutris))
     panel.ensure_scanned()
     panel._select_key("lutris:27")
@@ -1410,12 +1410,12 @@ def test_a_refused_edit_keeps_the_game_selected_until_retry_succeeds(qapp, raise
     assert control.text() == "gamescope -w 2560 --"
     assert "permission denied" in panel.status_label.text()
 
-    lutris.manager.set_game_prefix_command = setter
+    lutris.manager.set_game_command = setter
     panel.game_list.setCurrentRow(1 - original_row)
 
     assert panel._selected_key == "steam:620"
     assert panel._pending_field == ""
-    assert ("set_game_prefix_command", "27", "gamescope -w 2560 --") in lutris.manager.calls
+    assert ("set_game_command", "27", "gamescope -w 2560 --") in lutris.manager.calls
 
 
 def test_command_save_during_scan_keeps_the_draft_without_blocking_qt(qapp, qtbot) -> None:
@@ -1450,7 +1450,7 @@ def test_command_save_during_scan_keeps_the_draft_without_blocking_qt(qapp, qtbo
 
     panel._select_key("steam:620")
     assert panel._selected_key == "steam:620"
-    assert ("set_game_prefix_command", "27", "gamescope --") in lutris.manager.calls
+    assert ("set_game_command", "27", "gamescope --") in lutris.manager.calls
 
 
 def test_rescan_notices_a_launcher_installed_after_startup(qapp) -> None:

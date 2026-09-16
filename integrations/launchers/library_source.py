@@ -1,16 +1,7 @@
-"""The library-tab face of a launcher whose games we wrap through a config file.
+"""Library adapter shared by Lutris and Heroic.
 
-Lutris and Heroic answer the tab identically -- the same rows, the same write
-readiness, the same two library-wide actions, the same one editable command
-field -- because the shared write path underneath them already made their
-managers the same shape. What is left per launcher is small and genuinely its
-own: its icon, what its command field is called, whether the overlay can reach
-a given game, and how it starts and stops one.
-
-Steam keeps its own adapter. It applies settings to a running game, needs an
-account layer, and its write readiness depends on a client that may be holding
-the file -- none of which this shape can express.
-"""
+Subclasses supply launcher labels, renderer support and process control.
+Steam keeps its own adapter for accounts, live apply and client write locking."""
 
 from __future__ import annotations
 
@@ -44,8 +35,6 @@ class WrapperLibrarySource:
 
     #: The one field only this launcher has: where its wrapper command lives.
     command_field_key = "command"
-    command_field_title = "Command"
-    command_field_setter = "set_game_command"
     #: Named as the launcher's own UI names it, with and without inheritance.
     command_field_subtitle = ""
     command_field_inherited_subtitle = "{name} — inherited from {source}"
@@ -135,9 +124,9 @@ class WrapperLibrarySource:
             LauncherField(
                 key=self.command_field_key,
                 kind=FIELD_TEXT,
-                title=self.command_field_title,
+                title="Command",
                 subtitle=subtitle,
-                setter=self.command_field_setter,
+                setter="set_game_command",
                 value=value,
                 group=GROUP_COMMAND,
             ),

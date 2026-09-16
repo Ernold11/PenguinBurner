@@ -1,13 +1,6 @@
-"""Where Heroic keeps the things PenguinBurner reads and writes.
+"""Resolve Heroic config, library and artwork paths for native and Flatpak installs.
 
-Heroic is one Electron config directory: the global settings, a JSON per game,
-one cached library file per store, and the artwork the launcher has already
-downloaded. Resolving those shapes in one place keeps the library reader, the
-config store and the panel from each guessing.
-
-Every entry point takes an optional ``home`` so tests never reach the real
-installation.
-"""
+An explicit home isolates tests from the real installation."""
 
 from __future__ import annotations
 
