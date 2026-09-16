@@ -29,8 +29,13 @@ settings table shows. Other settings in the file are untouched. Disabling
 removes our row, restoring the game's own wrappers or removing the key entirely
 so the global ones apply again.
 
+An explicitly empty wrapper list stays empty after enabling and disabling
+PenguinBurner; it does not start inheriting global wrappers.
+
 The **Command** field is editable and shows those rows as one command line.
 Press Enter or leave the field to save.
+Invalid quoting is reported without changing the saved command. Clearing the
+field resumes inheritance from Heroic's global wrappers.
 
 ## Overlay and Adaptive
 
@@ -49,8 +54,14 @@ program to run. See [latency and FPS](latency-fg.md) for the sources.
 
 **Play** goes through Heroic's own `heroic://launch/<runner>/<app name>` link,
 so the game starts from its stored configuration with the wrapper already in
-it. The running state is read off the wrapper's own command line, so only games
-PenguinBurner wraps are tracked here.
+it. Running state uses the game identity and session PID carried in the process
+environment, which survive the wrapper starting the game. Only wrapped games
+are tracked, including when no saved profile can be applied. Helper processes
+are excluded from session detection and Stop.
+If a tracked session cannot be inspected, its state is held until it can be
+confirmed again; daemon-tracked sessions remain visible even when their
+environment cannot be read. Play requires either the native Heroic command or
+the installed Heroic Flatpak application.
 
 ## Troubleshooting
 

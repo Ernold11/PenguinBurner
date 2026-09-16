@@ -1,9 +1,4 @@
-"""Heroic seen through the launcher contract the game library tab speaks.
-
-A thin read-only face over HeroicIntegrationManager, which stays the only thing
-that edits a game's wrapperOptions. Everything shared with the other
-config-file launchers lives in integrations/launchers/library_source.py.
-"""
+"""Heroic's library adapter; settings writes belong to HeroicIntegrationManager."""
 
 from __future__ import annotations
 
@@ -28,10 +23,10 @@ class HeroicLibrarySource(WrapperLibrarySource):
     desktop_icon_names = ("heroic", "com.heroicgameslauncher.hgl")
 
     command_field_key = "wrapper_command"
-    command_field_setter = "set_game_wrapper_command"
     command_field_subtitle = "Wrapper command in the Heroic settings"
     command_field_inherited_subtitle = "Wrapper command — inherited from {source}"
     command_noun = "wrapper command"
+    _running_pids: tuple[int, ...] = ()
 
     def build_manager(self, *, home, settings_path) -> HeroicIntegrationManager:
         return HeroicIntegrationManager(home=home, settings_path=settings_path)
@@ -57,7 +52,7 @@ class HeroicLibrarySource(WrapperLibrarySource):
     def launch(self, game_id: str) -> tuple[bool, str]:
         """Ask Heroic to start a game. Returns (started, what to tell the user)."""
         if not self.can_launch:
-            return False, "FAILED to launch (heroic not on PATH)"
+            return False, "FAILED to launch (Heroic is not installed or could not be found)"
         row = self.manager.row(game_id)
         if row is None:
             return False, "FAILED to launch (no such game in the Heroic library)"
@@ -67,7 +62,7 @@ class HeroicLibrarySource(WrapperLibrarySource):
 
     def stop(self, game_id: str) -> tuple[bool, str]:
         """Signal the game's PenguinBurner wrapper, which is the session itself."""
-        running = running_heroic_games()
+        running = self._running_sessions()
         if running is None:
             return False, "FAILED to stop (could not tell what is running)"
         pids = running.get(str(game_id), ())
@@ -80,11 +75,14 @@ class HeroicLibrarySource(WrapperLibrarySource):
     def running_game_ids(self) -> frozenset[str] | None:
         """Which of this launcher's games are running, or None if unknowable.
 
-        Only games PenguinBurner wraps can be seen: their command line carries
-        the identity flag we wrote. Heroic starts a game through a tree of its
-        own with no name we could match on, so a game it starts untouched is
-        invisible here -- which is also a game this tab has nothing to say
-        about.
+        Only wrapped games carry our session identity in their environment.
+        The session PID excludes helper processes that inherit the same key.
         """
-        running = running_heroic_games()
+        running = self._running_sessions()
         return None if running is None else frozenset(running)
+
+    def _running_sessions(self) -> dict[str, tuple[int, ...]] | None:
+        running = running_heroic_games(known_pids=self._running_pids)
+        if running is not None:
+            self._running_pids = tuple(pid for pids in running.values() for pid in pids)
+        return running

@@ -1,21 +1,12 @@
-"""One place the Heroic tab talks to: library, settings, and game configs.
+"""Adapt Heroic's library and wrapperOptions to the shared wrapper manager.
 
-The write path itself -- injecting the wrapper, remembering what the command
-said before, restoring it -- is shared with every other config-file launcher in
-integrations/launchers/wrapper_manager.py. What is Heroic's own is where a
-game's command lives: the ``wrapperOptions`` rows in its GamesConfig JSON,
-inherited from Heroic's global settings when the game sets none.
-
-Like Lutris and unlike Steam, there is no live apply: every change lands in the
-game's config for its next launch.
-"""
+Game-level rows override global defaults; changes apply at the next launch."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from integrations.launchers.wrapper_manager import (
-    ApplyResult,
     CommandWrite,
     EffectiveCommand,
     LauncherGameRow,
@@ -32,11 +23,6 @@ from .config_store import (
 from .library import InstalledHeroicGame, read_heroic_games
 from .paths import game_config_path, heroic_installed
 from .settings import HEROIC_GAME_SETTINGS_STORE
-
-HeroicGameRow = LauncherGameRow
-
-__all__ = ["ApplyResult", "HeroicGameRow", "HeroicIntegrationManager"]
-
 
 class HeroicIntegrationManager(WrapperManager):
     launcher_id = "heroic"
@@ -61,11 +47,6 @@ class HeroicIntegrationManager(WrapperManager):
         self._global_entries = read_global_entries(self._home)
         return super().refresh()
 
-    def _globals(self) -> list[dict]:
-        if self._global_entries is None:
-            self._global_entries = read_global_entries(self._home)
-        return self._global_entries
-
     @property
     def available(self) -> bool:
         return heroic_installed(self._home)
@@ -87,7 +68,7 @@ class HeroicIntegrationManager(WrapperManager):
                 game.game_id,
                 self._home,
                 game_level=game_level,
-                global_entries=self._globals(),
+                global_entries=self._global_entries,
             )
         except HeroicConfigError:
             # A malformed config must not take the whole list down; the row
@@ -99,13 +80,10 @@ class HeroicIntegrationManager(WrapperManager):
             return f"{game.display_name} has no Heroic configuration to write."
         return ""
 
-    def write_command(self, game: InstalledHeroicGame, command: str) -> CommandWrite:
+    def write_command(self, game: InstalledHeroicGame, command: str | None) -> CommandWrite:
         try:
             return write_wrapper_command(
-                game.game_id, command, self._home, global_entries=self._globals()
+                game.game_id, command, self._home, global_entries=self._global_entries
             )
         except HeroicConfigError as error:
             return CommandWrite(False, "", str(error))
-
-    #: The Heroic tab calls the field by the name Heroic's settings page gives it.
-    set_game_wrapper_command = WrapperManager.set_game_command

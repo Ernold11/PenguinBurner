@@ -1,9 +1,4 @@
-"""Lutris seen through the launcher contract the game library tab speaks.
-
-A thin read-only face over LutrisIntegrationManager, which stays the only thing
-that edits a game's prefix_command. Everything shared with the other
-config-file launchers lives in integrations/launchers/library_source.py.
-"""
+"""Lutris's library adapter; settings writes belong to LutrisIntegrationManager."""
 
 from __future__ import annotations
 
@@ -31,7 +26,6 @@ class LutrisLibrarySource(WrapperLibrarySource):
     desktop_icon_names = ("net.lutris.Lutris",)
 
     command_field_key = "prefix_command"
-    command_field_setter = "set_game_prefix_command"
     command_field_subtitle = "prefix_command in the Lutris config"
     command_noun = "launch command"
 

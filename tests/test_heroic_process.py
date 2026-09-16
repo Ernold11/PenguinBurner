@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+
 from integrations.heroic import process
 from integrations.launchers import host_process as host
-from integrations.launchers import wrapper_command
 
 
 def _installed(monkeypatch, *, native: bool = True):
     monkeypatch.setattr(
         process, "host_has_command", lambda name: native or name == "flatpak"
+    )
+    monkeypatch.setattr(
+        process, "run_on_host", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0)
     )
 
 
@@ -55,18 +60,18 @@ def test_an_unusable_name_never_reaches_the_command_line(monkeypatch) -> None:
         assert process.launch_command(runner, app_name) is None
 
 
-def test_running_sessions_are_read_off_our_own_wrappers_command_line(
+def test_running_sessions_are_read_from_the_host_probe(
     monkeypatch,
 ) -> None:
-    """Exact where a name match is not: the flag is the game's own key."""
+    """Session identities remain usable after the wrapper's exec."""
     monkeypatch.setattr(
-        wrapper_command,
-        "host_pgrep",
-        lambda _pattern: [
-            (4210, "PENGUIN_BURNER --pb-overlay=1 --pb-game-id=heroic:Turkey wine"),
-            (4211, "PENGUIN_BURNER --pb-overlay=1 --pb-game-id=heroic:Turkey wine"),
-            (4300, "PENGUIN_BURNER --pb-overlay=0 --pb-game-id=lutris:27 wine"),
-        ],
+        process,
+        "run_on_host",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, 0, json.dumps({"sessions": [
+                (4210, "heroic:Turkey"), (4211, "heroic:Turkey"), (4300, "lutris:27")
+            ], "unreadable": []})
+        ),
     )
 
     assert process.running_heroic_games() == {"Turkey": (4210, 4211)}
@@ -75,17 +80,19 @@ def test_running_sessions_are_read_off_our_own_wrappers_command_line(
 def test_a_failed_probe_says_so_instead_of_reporting_nothing_running(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(wrapper_command, "host_pgrep", lambda _pattern: None)
+    monkeypatch.setattr(process, "run_on_host", lambda *args, **kwargs: None)
 
     assert process.running_heroic_games() is None
 
 
-def test_a_game_id_with_a_space_survives_the_command_line(monkeypatch) -> None:
-    """Heroic app names are the store's string, so the flag is encoded."""
+def test_a_game_id_with_a_space_survives_the_host_probe(monkeypatch) -> None:
+    """The environment carries the decoded game key, not its flag encoding."""
     monkeypatch.setattr(
-        wrapper_command,
-        "host_pgrep",
-        lambda _pattern: [(9, "PENGUIN_BURNER --pb-game-id=heroic:Sid%20Meier wine")],
+        process,
+        "run_on_host",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, 0, json.dumps({"sessions": [(9, "heroic:Sid Meier")], "unreadable": []})
+        ),
     )
 
     assert process.running_heroic_games() == {"Sid Meier": (9,)}

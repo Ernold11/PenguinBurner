@@ -5,11 +5,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from integrations.launchers import runtime_profile
+from integrations.launchers.game_settings import LauncherGameSetting
 from integrations.launchers.runtime_profile import (
     apply_game_key_profile,
     game_setting,
 )
-from integrations.lutris.settings import LutrisGameSetting, store_lutris_game_setting
+from integrations.lutris.settings import LUTRIS_GAME_SETTINGS_STORE
 from overlay.launcher import _consume_wrapper_flags
 from overlay.wrapper_tokens import GAME_KEY_ENV
 from profiles import game_profile
@@ -36,7 +37,7 @@ def _profiles(monkeypatch, profile_id="perf-1"):
 
 def _stored(tmp_path, setting) -> str:
     settings = tmp_path / "settings.json"
-    store_lutris_game_setting("27", setting, path=settings)
+    LUTRIS_GAME_SETTINGS_STORE.store("27", setting, path=settings)
     return settings
 
 
@@ -91,7 +92,7 @@ def test_argv_resolves_the_stored_setting_for_that_game(tmp_path, monkeypatch) -
     _profiles(monkeypatch)
     settings = _stored(
         tmp_path,
-        LutrisGameSetting(enabled=True, mode=GAME_MODE_ADAPTIVE, target_fps=120.0),
+        LauncherGameSetting(enabled=True, mode=GAME_MODE_ADAPTIVE, target_fps=120.0),
     )
 
     argv = _argv("lutris:27", settings)
@@ -103,7 +104,7 @@ def test_argv_resolves_the_stored_setting_for_that_game(tmp_path, monkeypatch) -
 
 def test_a_stock_setting_pins_factory_state(tmp_path, monkeypatch) -> None:
     _one_gpu(monkeypatch)
-    settings = _stored(tmp_path, LutrisGameSetting(enabled=True, mode=GAME_MODE_STOCK))
+    settings = _stored(tmp_path, LauncherGameSetting(enabled=True, mode=GAME_MODE_STOCK))
 
     assert _argv("lutris:27", settings)[:2] == [
         "--auto-uv-profile",
@@ -113,7 +114,7 @@ def test_a_stock_setting_pins_factory_state(tmp_path, monkeypatch) -> None:
 
 def test_a_disabled_setting_resolves_to_nothing(tmp_path, monkeypatch) -> None:
     _one_gpu(monkeypatch)
-    settings = _stored(tmp_path, LutrisGameSetting(enabled=False))
+    settings = _stored(tmp_path, LauncherGameSetting(enabled=False))
 
     assert _argv("lutris:27", settings) is None
 
@@ -129,7 +130,7 @@ def _adaptive_game(tmp_path, monkeypatch):
     _one_gpu(monkeypatch)
     _profiles(monkeypatch)
     return _stored(
-        tmp_path, LutrisGameSetting(enabled=True, mode=GAME_MODE_ADAPTIVE)
+        tmp_path, LauncherGameSetting(enabled=True, mode=GAME_MODE_ADAPTIVE)
     )
 
 

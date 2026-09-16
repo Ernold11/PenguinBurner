@@ -121,20 +121,17 @@ def test_the_latency_opt_in_survives_a_restart(tmp_path) -> None:
     """It used to be written by neither side and read by neither, so it lived
     only for the session: the switch came back off after every restart while
     the game's own command still carried `env PB_INGAME_LATENCY=1`."""
-    from integrations.lutris.settings import (
-        LutrisGameSetting,
-        load_lutris_game_settings,
-        store_lutris_game_setting,
-    )
+    from integrations.launchers.game_settings import LauncherGameSetting
+    from integrations.lutris.settings import LUTRIS_GAME_SETTINGS_STORE
 
     path = tmp_path / "settings.json"
-    store_lutris_game_setting(
+    LUTRIS_GAME_SETTINGS_STORE.store(
         "29",
-        LutrisGameSetting(enabled=True, ingame_latency=True),
+        LauncherGameSetting(enabled=True, ingame_latency=True),
         path=path,
     )
 
-    assert load_lutris_game_settings(path)["29"].ingame_latency is True
+    assert LUTRIS_GAME_SETTINGS_STORE.load(path)["29"].ingame_latency is True
 
 
 def test_a_file_written_before_the_key_existed_reads_it_off_the_command(
@@ -142,7 +139,7 @@ def test_a_file_written_before_the_key_existed_reads_it_off_the_command(
 ) -> None:
     """Upgrades must not silently drop the opt-in. The injected line is stored
     beside the flag and carries the answer, so it is the migration source."""
-    from integrations.lutris.settings import load_lutris_game_settings
+    from integrations.lutris.settings import LUTRIS_GAME_SETTINGS_STORE
 
     path = tmp_path / "settings.json"
     path.write_text(
@@ -165,11 +162,11 @@ def test_a_file_written_before_the_key_existed_reads_it_off_the_command(
         encoding="utf-8",
     )
 
-    assert load_lutris_game_settings(path)["29"].ingame_latency is True
+    assert LUTRIS_GAME_SETTINGS_STORE.load(path)["29"].ingame_latency is True
 
 
 def test_an_old_file_without_the_opt_in_stays_off(tmp_path) -> None:
-    from integrations.lutris.settings import load_lutris_game_settings
+    from integrations.lutris.settings import LUTRIS_GAME_SETTINGS_STORE
 
     path = tmp_path / "settings.json"
     path.write_text(
@@ -190,4 +187,4 @@ def test_an_old_file_without_the_opt_in_stays_off(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    assert load_lutris_game_settings(path)["29"].ingame_latency is False
+    assert LUTRIS_GAME_SETTINGS_STORE.load(path)["29"].ingame_latency is False

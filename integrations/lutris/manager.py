@@ -1,25 +1,15 @@
-"""One place the Lutris tab talks to: library, settings, and game configs.
+"""Adapt Lutris's library and prefix_command to the shared wrapper manager.
 
-The write path itself -- injecting the wrapper, remembering what the command
-said before, restoring it -- is shared with every other config-file launcher
-in integrations/launchers/wrapper_manager.py. What is Lutris's own is where a
-game's command lives: a ``system.prefix_command`` resolved across the game,
-runner and system YAML levels.
-
-Deliberately narrower than the Steam manager. Lutris exposes no CDP or DBus
-API, so there is no live apply and no account layer; every change lands in the
-game's YAML for its next launch.
-"""
+Commands resolve across game, runner and system YAML. Changes apply at the
+next launch; Lutris has no live-apply API or account layer."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from integrations.launchers.wrapper_manager import (
-    ApplyResult,
     CommandWrite,
     EffectiveCommand,
-    LauncherGameRow,
     WrapperManager,
 )
 
@@ -32,13 +22,6 @@ from .config_store import (
 from .library import InstalledLutrisGame, read_lutris_games
 from .paths import lutris_installed, runner_config_path, system_config_path
 from .settings import LUTRIS_GAME_SETTINGS_STORE
-
-#: The Lutris tab reads rows through the shared shape; the alias keeps the
-#: launcher's own vocabulary at its own boundary.
-LutrisGameRow = LauncherGameRow
-
-__all__ = ["ApplyResult", "LutrisGameRow", "LutrisIntegrationManager"]
-
 
 class LutrisIntegrationManager(WrapperManager):
     launcher_id = "lutris"
@@ -91,10 +74,7 @@ class LutrisIntegrationManager(WrapperManager):
             return f"{game.display_name} has no Lutris configuration file to write."
         return ""
 
-    def write_command(self, game: InstalledLutrisGame, command: str) -> CommandWrite:
+    def write_command(self, game: InstalledLutrisGame, command: str | None) -> CommandWrite:
         if game.config_path is None:
             return CommandWrite(False, "", self.write_block(game))
-        return write_prefix_command(game.config_path, command)
-
-    #: The Lutris tab still calls the field by the name Lutris gives it.
-    set_game_prefix_command = WrapperManager.set_game_command
+        return write_prefix_command(game.config_path, command or "")

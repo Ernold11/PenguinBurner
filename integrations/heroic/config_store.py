@@ -78,8 +78,8 @@ def command_entries(command: str, previous: object = ()) -> list[dict]:
     """
     try:
         words = shlex.split(command or "")
-    except ValueError:
-        return []
+    except ValueError as error:
+        raise HeroicConfigError(f"Invalid wrapper command: {error}") from error
     kept: list[dict] = []
     rows = [entry for entry in (previous if isinstance(previous, list) else []) if isinstance(entry, dict)]
     for entry in reversed(rows):
@@ -100,10 +100,12 @@ def read_game_config(app_name: str, home: Path | None = None) -> dict:
     return _read_json(path)
 
 
-def read_game_entries(app_name: str, home: Path | None = None) -> list[dict]:
-    """The wrapper rows written at the game's own level."""
+def read_game_entries(app_name: str, home: Path | None = None) -> list[dict] | None:
+    """The game's wrapper rows; None means the key is absent (inherit)."""
     settings = read_game_config(app_name, home).get(str(app_name))
-    entries = settings.get(WRAPPER_KEY) if isinstance(settings, dict) else None
+    if not isinstance(settings, dict) or WRAPPER_KEY not in settings:
+        return None
+    entries = settings[WRAPPER_KEY]
     return [entry for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
 
 
@@ -133,7 +135,7 @@ def effective_wrapper_command(
     """
     if game_level:
         entries = read_game_entries(app_name, home)
-        if entries:
+        if entries is not None:
             return EffectiveCommand(entries_command(entries), SOURCE_GAME)
     if global_entries is None:
         global_entries = read_global_entries(home)
@@ -142,16 +144,15 @@ def effective_wrapper_command(
 
 def write_wrapper_command(
     app_name: str,
-    command: str,
+    command: str | None,
     home: Path | None = None,
     *,
     global_entries: list[dict] | None = None,
 ) -> CommandWrite:
     """Write the game's wrapper rows, then report what is really in the file.
 
-    An empty command removes the key rather than storing an empty list, so the
-    game goes back to inheriting Heroic's global wrappers exactly as it would
-    have if PenguinBurner had never touched it.
+    None removes the key to resume inheritance. An empty string writes an
+    explicit empty list, suppressing the global wrappers.
     """
     path = game_config_path(app_name, home)
     if path is None:
@@ -163,15 +164,14 @@ def write_wrapper_command(
     # wrappers has none of its own, and those inherited rows are exactly what
     # the injected command now carries along and must keep as separate rows.
     # Taken from the document already parsed above rather than read again.
-    own = settings.get(WRAPPER_KEY)
-    own = [entry for entry in own if isinstance(entry, dict)] if isinstance(own, list) else []
-    if not own and global_entries is None:
-        global_entries = read_global_entries(home)
-    entries = command_entries(command, own or global_entries or [])
-    if entries:
-        settings[WRAPPER_KEY] = entries
-    else:
+    previous = settings.get(WRAPPER_KEY)
+    if WRAPPER_KEY not in settings:
+        previous = read_global_entries(home) if global_entries is None else global_entries
+    entries = None if command is None else command_entries(command, previous)
+    if entries is None:
         settings.pop(WRAPPER_KEY, None)
+    else:
+        settings[WRAPPER_KEY] = entries
     document[str(app_name)] = settings
     # Heroic picks the schema to read a game file under from this key and
     # falls back to v0 when it is missing; writing it keeps a file we created
@@ -187,9 +187,10 @@ def write_wrapper_command(
     except OSError as error:
         return CommandWrite(False, "", f"cannot write {path.name}: {error}")
 
-    landed = entries_command(read_game_entries(app_name, home))
+    landed_entries = read_game_entries(app_name, home)
+    landed = entries_command(landed_entries)
     wanted = entries_command(entries)
-    if landed != wanted:
+    if landed != wanted or (landed_entries is None) != (entries is None):
         return CommandWrite(
             False,
             landed,

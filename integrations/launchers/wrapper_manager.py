@@ -1,20 +1,8 @@
-"""The one write path a config-file launcher needs, shared by all of them.
+"""Shared enable/disable state machine for config-file launchers.
 
-Turning PenguinBurner on for a game is the same job whatever launcher owns it:
-read what the game launches with today, splice our wrapper in front, remember
-what was there before, and be able to hand it back exactly. The subtleties --
-a value inherited from a level above the game, a user who edited the command by
-hand, an off/on toggle that must not reset a configured game -- are the same
-too, and getting one of them wrong is silent: the game simply launches
-untouched, or never launches again.
-
-So the state machine lives here once, and a launcher supplies only the four
-facts it alone knows: which games there are, what a game launches with, what it
-would launch with if its own level said nothing, and how to write that field.
-
-Steam is not one of these: it holds launch options in a running client's
-memory, not in a file this can rewrite, and keeps its own manager.
-"""
+Adapters supply library and config I/O. Preserve inheritance and external
+edits, and save preferences only after the launcher accepts the command.
+Steam keeps its own manager because its live client owns launch options."""
 
 from __future__ import annotations
 
@@ -72,14 +60,6 @@ class ApplyResult:
     ok: bool
     message: str
     command: str = ""
-
-
-@dataclass(frozen=True)
-class SettingsSave:
-    """Whether the preset was recorded, and anything the user must be told."""
-
-    ok: bool
-    note: str = ""
 
 
 @dataclass(frozen=True)
@@ -144,17 +124,13 @@ class WrapperManager:
         """What it would launch with if the game's own level said nothing."""
         return ""
 
-    def write_command(self, game: Any, command: str) -> CommandWrite:
-        """Write the game's level, then report what really landed there."""
+    def write_command(self, game: Any, command: str | None) -> CommandWrite:
+        """Write the game's level; None removes its override to inherit."""
         raise NotImplementedError
 
     def write_block(self, game: Any) -> str:
         """Why this game cannot be written right now; empty when it can."""
         return ""
-
-    def apply_hint(self) -> str:
-        """The sentence telling the user when a change takes effect."""
-        return f"Applies the next time {self.display_name} starts the game."
 
     # -- reading -------------------------------------------------------------
 
@@ -269,7 +245,7 @@ class WrapperManager:
             problem = self._ensure_wrapper_installed()
             if problem:
                 return ApplyResult(False, problem)
-        write = self.write_command(row.game, wanted)
+        write = self.write_command(row.game, wanted or None)
         if not write.ok:
             return ApplyResult(False, write.message, write.command)
 
@@ -295,9 +271,7 @@ class WrapperManager:
         # the user's tier, GPU choice and FPS target worth keeping for the next
         # enable, exactly as a toggle-driven disable does.
         save = self._save(row.game, stored)
-        if not save.ok:
-            return ApplyResult(False, save.note, landed)
-        return ApplyResult(True, save.note, landed)
+        return replace(save, command=landed)
 
     # -- the one write path --------------------------------------------------
 
@@ -322,6 +296,7 @@ class WrapperManager:
         effective = self.read_effective(row.game)
         current = effective.value
         inherited = setting.original_inherited
+        wanted: str | None
         if setting.enabled:
             # The command about to be written execs the PENGUIN_BURNER host
             # wrapper, so inside a Flatpak that wrapper must exist on the host
@@ -365,13 +340,17 @@ class WrapperManager:
                 stored_injected=setting.injected_command,
             )
             original = setting.original_command
-            if (inherited is True and current == setting.injected_command) or (
+            if effective.source != SOURCE_GAME or (
+                inherited is True
+                and bool(setting.injected_command)
+                and current == setting.injected_command
+            ) or (
                 inherited is None and wanted and wanted == self.read_inherited(row.game)
             ):
                 # Resume inheritance even if the level above changed meanwhile.
                 # Legacy records lack provenance, so only their equality
                 # fallback is safe. Never discard an externally edited command.
-                wanted = ""
+                wanted = None
 
         write = self.write_command(row.game, wanted)
         if not write.ok:
@@ -382,22 +361,22 @@ class WrapperManager:
                 setting,
                 original_command=original,
                 original_inherited=inherited,
-                injected_command=wanted,
+                injected_command=wanted or "",
             )
         else:
             # Disabled is a durable per-game choice, and so are the tier, GPU
             # choice and FPS target: keep the record, as the Steam side does,
             # so an off/on toggle does not silently reset a configured game to
             # defaults. What lands as the "original" is the restored command.
-            stored = replace(setting, original_command=wanted, injected_command="")
+            stored = replace(setting, original_command=wanted or "", injected_command="")
         save = self._save(row.game, stored)
         if not save.ok:
-            return ApplyResult(False, save.note, write.command)
+            return replace(save, command=write.command)
         described = self._describe(row.game, stored)
-        message = f"{described} {save.note}".strip() if save.note else described
+        message = f"{described} {save.message}".strip()
         return ApplyResult(True, message, write.command)
 
-    def _save(self, game: Any, setting: LauncherGameSetting) -> SettingsSave:
+    def _save(self, game: Any, setting: LauncherGameSetting) -> ApplyResult:
         """Record the preset, and report anything that did not go quietly.
 
         The launcher's config has already been written by the time this runs,
@@ -409,15 +388,15 @@ class WrapperManager:
                 game.game_id, setting, path=self._settings_path
             )
         except GameSettingsError as error:
-            return SettingsSave(
+            return ApplyResult(
                 False,
                 f"{game.display_name}: launch command written, but the "
                 f"PenguinBurner settings file could not be: {error}",
             )
         self._rows[game.game_id] = self._row(game, setting)
         if write.preserved is None:
-            return SettingsSave(True)
-        return SettingsSave(
+            return ApplyResult(True, "")
+        return ApplyResult(
             True,
             "The previous settings file could not be read and was kept as "
             f"{write.preserved}; other games may need setting up again.",
@@ -447,5 +426,5 @@ class WrapperManager:
         )
         return (
             f"{game.display_name}: {setting.mode}, {overlay}{target}. "
-            f"{self.apply_hint()}"
+            f"Applies the next time {self.display_name} starts the game."
         )
