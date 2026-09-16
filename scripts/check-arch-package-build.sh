@@ -81,7 +81,23 @@ for scenario in "${scenarios[@]}"; do
         -v "$work_dir:/work:ro" \
         -e SCENARIO="$scenario" \
         "$image" bash -euo pipefail -c '
-        pacman -Syu --noconfirm >/dev/null
+        if ! pacman -Syu --noconfirm >/dev/null; then
+            # The cachyos repo signature has failed here before. alpm says
+            # "is invalid" rather than "is unknown trust", and it can only
+            # name the key owner if it holds the key, so the database bytes
+            # themselves failed to verify. Print what separates a stale
+            # mirror from a clock or keyring problem, because the scenario
+            # runs on an image nobody here can reproduce locally.
+            {
+                echo "--- pacman sync failed: signature diagnostics ---"
+                date -u
+                pacman-key --list-keys admin@cachyos.org \
+                    || echo "cachyos key absent from the keyring"
+                pacman -Q cachyos-keyring archlinux-keyring || true
+                grep -m5 "^Server" /etc/pacman.d/cachyos-mirrorlist || true
+            } >&2
+            exit 1
+        fi
         pacman -S --noconfirm --needed base-devel cargo cmake python-build \
             python-installer python-setuptools python-wheel \
             vulkan-headers >/dev/null
