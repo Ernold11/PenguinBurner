@@ -361,7 +361,7 @@ class WrapperManager:
                 setting,
                 original_command=original,
                 original_inherited=inherited,
-                injected_command=wanted or "",
+                injected_command=write.command,
             )
         else:
             # Disabled is a durable per-game choice, and so are the tier, GPU
@@ -402,8 +402,7 @@ class WrapperManager:
             f"{write.preserved}; other games may need setting up again.",
         )
 
-    @staticmethod
-    def _ensure_wrapper_installed() -> str:
+    def _ensure_wrapper_installed(self) -> str:
         """Make the PENGUIN_BURNER host wrapper real before naming it, or say why not.
 
         Outside a Flatpak this is a no-op: the console-script entry point ships

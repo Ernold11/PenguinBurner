@@ -23,6 +23,7 @@ from .config_store import (
 from .library import InstalledHeroicGame, read_heroic_games
 from .paths import game_config_path, heroic_installed
 from .settings import HEROIC_GAME_SETTINGS_STORE
+from .flatpak import ensure_integration, sandbox_command, uses_flatpak
 
 
 class HeroicIntegrationManager(WrapperManager):
@@ -83,8 +84,25 @@ class HeroicIntegrationManager(WrapperManager):
 
     def write_command(self, game: InstalledHeroicGame, command: str | None) -> CommandWrite:
         try:
+            if command and uses_flatpak(self._home):
+                command = sandbox_command(command, self._home)
             return write_wrapper_command(
                 game.game_id, command, self._home, global_entries=self._global_entries
             )
-        except HeroicConfigError as error:
+        except (HeroicConfigError, ValueError) as error:
             return CommandWrite(False, "", str(error))
+
+    def _ensure_wrapper_installed(self) -> str:
+        if not uses_flatpak(self._home):
+            return super()._ensure_wrapper_installed()
+        try:
+            ensure_integration(self._home)
+        except (OSError, RuntimeError) as error:
+            return str(error)
+        return ""
+
+    def _describe(self, game, setting) -> str:
+        description = super()._describe(game, setting)
+        if setting.enabled and uses_flatpak(self._home):
+            description += " Fully exit and reopen Heroic before launching. Configured does not mean loaded in an already-running game."
+        return description

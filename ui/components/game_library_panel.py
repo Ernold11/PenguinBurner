@@ -551,7 +551,7 @@ class GameLibraryPanel:
             title="Wrap this game",
             subtitle=(
                 "Puts the PenguinBurner wrapper in this game's launch command. "
-                "Off, the launcher starts it untouched."
+                "Configured for the next launch; this does not verify that a running game loaded it."
             ),
             control=self.enable_switch,
         )

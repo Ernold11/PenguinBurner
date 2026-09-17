@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+from integrations.launchers.library import LauncherField, LibraryGame
 from integrations.launchers.library_source import WrapperLibrarySource
 from integrations.launchers.wrapper_manager import LauncherGameRow
 from overlay.render_api import overlay_support
 
 from .manager import HeroicIntegrationManager
+from .flatpak import uses_flatpak, wrapper_path
 from .process import (
     heroic_available,
     launch_heroic_game,
@@ -33,6 +37,24 @@ class HeroicLibrarySource(WrapperLibrarySource):
 
     def probe_can_launch(self) -> bool:
         return heroic_available()
+
+    def fields(self, game: LibraryGame) -> tuple[LauncherField, ...]:
+        fields = super().fields(game)
+        if not game.wrapped or not uses_flatpak(self._home):
+            return fields
+        wrapper = wrapper_path(self._home)
+        row = game.detail
+        ready = (
+            isinstance(row, LauncherGameRow)
+            and str(wrapper) in row.command
+            and wrapper.is_file()
+        )
+        note = (
+            "Configured for Flatpak; fully reopen Heroic after setup, then relaunch the game."
+            if ready else
+            "Flatpak setup required: turn Wrap this game off and on, then fully reopen Heroic."
+        )
+        return tuple(replace(field, subtitle=note) for field in fields)
 
     def overlay_capability(self, row: LauncherGameRow) -> tuple[bool, str]:
         game = row.game
