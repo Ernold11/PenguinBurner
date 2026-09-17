@@ -87,7 +87,12 @@ def main(argv: list[str] | None = None) -> int:
     # Wine reports a Windows PID while the Vulkan layer reports the host PID.
     # Both producers inherit this wrapper/session identity so the daemon can
     # merge their complementary samples without mistaking them for two games.
-    env[TELEMETRY_SESSION_ENV] = str(os.getpid())
+    if env.get("FLATPAK_ID"):
+        from runtime.daemon_client import client_host_pid
+
+        env[TELEMETRY_SESSION_ENV] = str(client_host_pid())
+    else:
+        env[TELEMETRY_SESSION_ENV] = str(os.getpid())
     args = _consume_wrapper_flags(args, env)
     # Every launch starts from its own launch-time overlay setting: a live
     # override left behind by a previous session must not leak into this one.
@@ -210,7 +215,10 @@ def _apply_game_profile(env: dict[str, str]) -> None:
         if game_key:
             from integrations.launchers.runtime_profile import apply_game_key_profile
 
-            apply_game_key_profile(game_key)
+            if env.get("FLATPAK_ID"):
+                apply_game_key_profile(game_key, watch_pid=int(env[TELEMETRY_SESSION_ENV]))
+            else:
+                apply_game_key_profile(game_key)
             return
         from integrations.steam.game_runtime import apply_game_runtime_profile
 

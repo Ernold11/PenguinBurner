@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from pathlib import PurePosixPath
 from urllib.parse import quote, unquote
 
 from overlay.telemetry.steam_launch_check import PENGUIN_BURNER_WRAPPER
@@ -70,7 +71,7 @@ def strip_penguin_burner_tokens(value: str) -> str:
     cursor = 0
     for index, (start, end, word) in enumerate(words):
         next_word = words[index + 1][2] if index + 1 < len(words) else ""
-        remove = bool(_PB_TOKEN_RE.fullmatch(word)) or (
+        remove = _wrapper_word(word) or bool(_PB_TOKEN_RE.fullmatch(word)) or (
             word == "env" and next_word.startswith("PB_INGAME_LATENCY=")
         )
         if not remove:
@@ -122,7 +123,13 @@ def _command_words(value: str) -> list[tuple[int, int, str]]:
 
 
 def wrapper_present(value: str | None) -> bool:
-    return any(word == PENGUIN_BURNER_WRAPPER for _, _, word in _command_words(value or ""))
+    return any(_wrapper_word(word) for _, _, word in _command_words(value or ""))
+
+
+def _wrapper_word(word: str) -> bool:
+    return word == PENGUIN_BURNER_WRAPPER or (
+        word.startswith("/") and PurePosixPath(word).name == PENGUIN_BURNER_WRAPPER
+    )
 
 
 def overlay_present(value: str | None) -> bool:

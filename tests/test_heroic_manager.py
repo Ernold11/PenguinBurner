@@ -15,6 +15,65 @@ from profiles.game_profile import GAME_MODE_ADAPTIVE
 WRAPPER_FLAG = "--pb-game-id=heroic:Turkey"
 
 
+def test_flatpak_enable_disable_restores_inheritance(monkeypatch, tmp_path):
+    from integrations.heroic import manager as manager_module
+    from integrations.heroic.flatpak import wrapper_path
+    from integrations.heroic.paths import HEROIC_FLATPAK_DIRNAME
+
+    _home(tmp_path)
+    root = tmp_path / HEROIC_FLATPAK_DIRNAME
+    root.parent.mkdir(parents=True)
+    (tmp_path / ".config/heroic").rename(root)
+    repairs = []
+    monkeypatch.setattr(manager_module, "ensure_integration", lambda home: repairs.append(home))
+    manager = HeroicIntegrationManager(home=tmp_path, settings_path=tmp_path / "settings.json")
+    manager.refresh()
+    result = manager.set_game_enabled("Turkey", True)
+    assert result.ok
+    assert str(wrapper_path(tmp_path)) in result.command
+    row = manager.row("Turkey")
+    assert row is not None and row.wrapped
+    assert row.setting.injected_command == row.command
+    assert repairs == [tmp_path]
+    assert "reopen Heroic" in result.message
+    assert manager.set_game_enabled("Turkey", False).ok
+    settings = json.loads((root / "GamesConfig/Turkey.json").read_text())
+    assert "wrapperOptions" not in settings["Turkey"]
+    row = manager.row("Turkey")
+    assert row is not None and row.command == "game-performance"
+
+
+def test_flatpak_failed_preflight_does_not_save_enabled_command(monkeypatch, tmp_path):
+    from integrations.heroic import manager as manager_module
+    from integrations.heroic.paths import HEROIC_FLATPAK_DIRNAME
+
+    _home(tmp_path)
+    root = tmp_path / HEROIC_FLATPAK_DIRNAME
+    root.parent.mkdir(parents=True)
+    (tmp_path / ".config/heroic").rename(root)
+
+    def fail(_home):
+        raise RuntimeError("sandbox layer unavailable")
+
+    monkeypatch.setattr(manager_module, "ensure_integration", fail)
+    manager = HeroicIntegrationManager(home=tmp_path, settings_path=tmp_path / "settings.json")
+    manager.refresh()
+    result = manager.set_game_enabled("Turkey", True)
+    assert not result.ok and "sandbox layer unavailable" in result.message
+    assert not (root / "GamesConfig/Turkey.json").exists()
+    assert not (tmp_path / "settings.json").exists()
+
+
+def test_flatpak_malformed_manual_command_reports_error(monkeypatch, tmp_path):
+    from integrations.heroic import manager as manager_module
+
+    manager = _manager(tmp_path)
+    monkeypatch.setattr(manager_module, "uses_flatpak", lambda home: True)
+    result = manager.set_game_command("Turkey", "gamemoderun 'unterminated")
+    assert not result.ok
+    assert "quotation" in result.message
+
+
 @pytest.fixture(autouse=True)
 def _no_host_repair(monkeypatch):
     """Outside a Flatpak this is a no-op; here it must never touch the host."""
