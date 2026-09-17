@@ -185,6 +185,7 @@ class WrapperLibrarySource:
             name=game.display_name,
             subtitle=str(game.runner_label or ""),
             last_played=int(game.last_played or 0),
+            installed_at=int(getattr(game, "installed_at", 0) or 0),
             playtime_hours=float(game.playtime_hours or 0.0),
             art_path=game.art_path,
             ready=bool(game.ready),

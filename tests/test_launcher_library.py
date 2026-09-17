@@ -8,8 +8,8 @@ import pytest
 
 from integrations.launchers.library import (
     SORT_ALPHABETICAL,
-    SORT_LAUNCHER,
     SORT_INSTALLED,
+    SORT_LAUNCHER,
     SORT_PLAYTIME,
     SORT_RECENT,
     LauncherSource,
@@ -119,8 +119,8 @@ def test_most_played_orders_by_hours_and_parks_the_unplayed() -> None:
 def test_recently_installed_parks_launchers_that_do_not_report_it() -> None:
     """A zero stamp means "this launcher does not say", not 1970.
 
-    Heroic and Lutris record the install itself; Steam refreshes its stamp on
-    every update. A launcher that reports nothing must not jump to the top.
+    Lutris records the install itself; Steam refreshes its stamp on every
+    update. A launcher that reports nothing must not jump to the top.
     """
     games = [
         _game("Unknown", installed_at=0),
@@ -422,6 +422,7 @@ def test_the_lutris_adapter_reports_hours_straight_from_the_library() -> None:
     assert mapped.launcher == "lutris"
     assert mapped.game_id == "27"
     assert mapped.playtime_hours == 38.8
+    assert mapped.installed_at == 1783870852
     assert mapped.subtitle == "wine"
     assert mapped.wrapped is False
     assert mapped.enabled is False
