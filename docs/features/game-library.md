@@ -1,6 +1,6 @@
 # Game Library
 
-Manage **Steam, Lutris and Heroic** games in one list. Choose a GPU profile, Adaptive
+Manage **Steam, Lutris, Heroic and Faugus Launcher** games in one list. Choose a GPU profile, Adaptive
 FPS target, and overlay settings for each game, then launch it here or through
 its usual launcher.
 
@@ -14,8 +14,8 @@ its usual launcher.
 4. Use **Play** to start the game; **Stop** appears while it runs.
 
 Steam may require a one-time library scan or restart before edits are available.
-See [Steam setup](../steam.md), [Lutris setup](lutris.md) or
-[Heroic setup](heroic.md).
+See [Steam setup](../steam.md), [Lutris setup](lutris.md),
+[Heroic setup](heroic.md) or [Faugus setup](faugus.md).
 Discovery reads the library; wrapping a game changes its launch command.
 
 ## Per-game settings
@@ -27,10 +27,10 @@ Discovery reads the library; wrapping a game changes its launch command.
 | Auto-UV mode | Switch tiers with Adaptive, pin one tier, or use stock settings. |
 | Per-game target | Override the system-wide Adaptive FPS target; off follows that target. |
 | Overlay | Show the in-game HUD. Adaptive keeps required timing markers active when the HUD is hidden. |
-| Command | View or edit the launch command, Lutris prefix, or Heroic wrapper row. |
+| Command | View or edit the launch command, Lutris prefix, Heroic wrapper row, or Faugus launch arguments. |
 
 Existing launch options, command prefixes and wrapper rows are preserved.
-Lutris changes apply on the next launch. Heroic's Play action refreshes saved
+Lutris and Faugus changes apply on the next launch. Heroic's Play action refreshes saved
 launch settings automatically, restarting an idle launcher when necessary. Heroic overlay visibility also updates live
 in an already wrapped game.
 Steam supports live mode, target, and overlay updates
