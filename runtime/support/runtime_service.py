@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Self
 
+from common.privileged_env import env_command_prefix
 from common.subprocess_locale import stable_subprocess_env
 from profiles.uv.profile_store import STOCK_PROFILE_SELECTOR
 from runtime.daemon_client import (
@@ -1133,7 +1134,7 @@ def reexec_daemon_lifecycle_with_root(argv: list[str]) -> int:
             pythonpath_entries.append(entry)
     command = [
         escalator,
-        "/usr/bin/env",
+        *env_command_prefix(),
         f"SUDO_USER={_invoking_user_name()}",
         "PYTHONPATH=" + os.pathsep.join(pythonpath_entries),
         sys.executable,

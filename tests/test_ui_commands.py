@@ -425,6 +425,7 @@ def test_flatpak_runtime_profile_daemonize_uses_daemon_client(
 
 def test_daemon_migration_command_uses_privileged_cli(monkeypatch) -> None:
     monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(commands, "env_command_prefix", lambda: ["/usr/bin/env"])
 
     def fake_which(name: str) -> str | None:
         return {
@@ -438,6 +439,24 @@ def test_daemon_migration_command_uses_privileged_cli(monkeypatch) -> None:
 
     assert command[:2] == ["/usr/bin/pkexec", "/usr/bin/env"]
     assert "--migrate-to-daemon-service" in command
+
+
+def test_daemon_migration_command_dispatches_uutils_env(monkeypatch) -> None:
+    monkeypatch.setattr(commands.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        commands,
+        "env_command_prefix",
+        lambda: ["/usr/bin/uu-coreutils", "env"],
+    )
+    monkeypatch.setattr(
+        commands.shutil,
+        "which",
+        lambda name: "/usr/bin/pkexec" if name == "pkexec" else None,
+    )
+
+    command = commands.daemon_migration_command()
+
+    assert command[:3] == ["/usr/bin/pkexec", "/usr/bin/uu-coreutils", "env"]
 
 
 def test_desktop_session_env_infers_xauthority_for_x11_forwarding(
