@@ -701,7 +701,7 @@ class GameLibraryPanel:
         """Ask the daemon which GPUs exist. Runs on the scan worker thread."""
         try:
             return tuple(self._gpu_choices_source())
-        except Exception:
+        except Exception:  # noqa: BLE001
             return ()
 
     def _apply_gpu_choices(self, choices) -> bool:
@@ -1175,16 +1175,14 @@ class GameLibraryPanel:
         self._select_key(str(item.data(self.QtCore.Qt.UserRole) or ""))
 
     def _select_key(self, key: str) -> None:
-        if key != self._selected_key:
-            # Whatever is typed but unsaved belongs to the game it was typed
-            # for; save it before the pane is refilled for another one.
-            # (QPlainTextEdit has no editingFinished, so the click that moves
-            # the selection is the boundary that saves a command edit.)
-            if not self._flush_pending_field_edit():
-                # QListWidget has already moved its highlight when this came
-                # from a click. Keep it on the game that still owns the draft.
-                self._select_list_row(self._selected_key)
-                return
+        # Whatever is typed but unsaved belongs to the game it was typed for;
+        # save it before the pane is refilled for another one. QPlainTextEdit
+        # has no editingFinished, so selection changes are the save boundary.
+        if key != self._selected_key and not self._flush_pending_field_edit():
+            # QListWidget has already moved its highlight when this came from a
+            # click. Keep it on the game that still owns the draft.
+            self._select_list_row(self._selected_key)
+            return
         game = self._game_for_key(key)
         if game is None:
             return

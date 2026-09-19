@@ -62,7 +62,7 @@ def dispatch_cli(
                     {"profile_selector": STOCK_PROFILE_SELECTOR},
                     persist_on_startup=True,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 print(
                     "restore-stock could not reach the penguin-burnerd "
                     f"service: {exc}\n"
@@ -119,7 +119,7 @@ def dispatch_cli(
     except KeyboardInterrupt:
         print("Interrupted by user.", file=sys.stderr, flush=True)
         return 130
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         debug_exception("fatal error", exc)
         print(f"error: {exc}", file=sys.stderr, flush=True)
         return 1

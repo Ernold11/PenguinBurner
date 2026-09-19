@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from __future__ import annotations
 
 import configparser
@@ -54,7 +52,7 @@ def _detect_active_nvidia_gpus():
     detected = []
     try:
         identities = DaemonGpuClient.discover_identities()
-    except Exception:
+    except Exception:  # noqa: BLE001
         identities = []
     for identity in identities:
         pci_device_id = _parse_pci_device_id(identity.pci_device_id)

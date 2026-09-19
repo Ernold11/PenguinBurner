@@ -143,7 +143,7 @@ def profile_needs_verify_baseline(selector: str) -> bool:
     # Only user-edited drafts missing base metrics need this probe.
     try:
         resolved = resolve_auto_uv_profile(str(selector), allow_unverified=True)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
     if resolved is None:
         return False

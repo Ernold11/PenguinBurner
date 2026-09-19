@@ -37,7 +37,7 @@ def _nvidia_pci_device_id_selectors(pci_device_id: str) -> tuple[str, str]:
 def _query_selected_nvidia_gpu(gpu_index: int) -> dict[str, str]:
     try:
         identity = DaemonGpuClient(int(gpu_index)).capabilities().identity
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
     dri_prime = _nvidia_pci_bus_id_to_dri_prime(identity.pci_bus_id)
     vk_loader_select, mesa_vk_select = _nvidia_pci_device_id_selectors(

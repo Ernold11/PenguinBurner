@@ -203,7 +203,7 @@ def _apply_game_profile(env: dict[str, str]) -> None:
         from integrations.steam.game_runtime import apply_game_runtime_profile
 
         apply_game_runtime_profile(env)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         print(
             f"penguin-burner: per-game profile apply skipped: {error}",
             file=sys.stderr,

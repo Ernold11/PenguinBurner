@@ -249,11 +249,11 @@ class NvmlIdentitySession:
 def query_nvml_gpu_identity(gpu_index: int) -> NvmlGpuIdentity | None:
     try:
         session = NvmlIdentitySession()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     try:
         return session.identity(int(gpu_index))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     finally:
         session.close()
@@ -283,13 +283,13 @@ def query_nvml_gpu_identity_result(
                 identities=tuple(session.identities()),
                 attempts=attempt,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             last_error = str(exc) or type(exc).__name__
         finally:
             if session is not None:
                 try:
                     session.close()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
         if attempt < total_attempts and delay_s > 0:
             time.sleep(float(delay_s))
@@ -303,11 +303,11 @@ def query_nvml_gpu_identity_result(
 def query_nvml_gpu_memory_info(gpu_index: int) -> NvmlGpuMemoryInfo | None:
     try:
         session = NvmlIdentitySession()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     try:
         return session.memory_info(int(gpu_index))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     finally:
         session.close()

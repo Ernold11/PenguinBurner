@@ -154,7 +154,7 @@ def _socket_targets(env: dict[str, str] | None = None) -> list[Path]:
     env = dict(os.environ) if env is None else env
     try:
         targets = list(latency_socket_paths(env))
-    except Exception:
+    except Exception:  # noqa: BLE001
         targets = []
     primary = latency_socket_path(env)
     if primary not in targets:

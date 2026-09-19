@@ -110,16 +110,15 @@ def run_profile_verification(
             return
         try:
             clock_ceiling_controller.close()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             deps.log(f"Warning: failed to reset verification clock lock: {exc}")
         clock_ceiling_controller = None
 
     with contextlib.ExitStack() as stack:
-        backup_file = tempfile.NamedTemporaryFile(
+        with tempfile.NamedTemporaryFile(
             prefix="penguin-burner-verify-", suffix=".json", delete=False
-        )
-        backup_file.close()
-        backup_path = Path(backup_file.name)
+        ) as backup_file:
+            backup_path = Path(backup_file.name)
         deps.backup_current_offsets(
             vf_curve_reader,
             backup_path,
@@ -149,7 +148,7 @@ def run_profile_verification(
                     exact_lock=True,
                 )
                 clock_ceiling_controller.apply()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 clock_ceiling_controller = None
                 deps.log(f"Skipping verification clock lock: {exc}")
             else:
@@ -230,7 +229,7 @@ def run_profile_verification(
                             "Marked profile verification failed: "
                             f"path={failed_path} reason={result.reason}"
                         )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     deps.log(
                         f"Warning: failed to mark profile verification failed: {exc}"
                     )
@@ -242,7 +241,7 @@ def run_profile_verification(
             close_clock_ceiling()
             try:
                 base_plan = base_vf_plan_from_profile_plan(verify_plan)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 deps.log(f"Profile verification baseline probe skipped: {exc}")
             else:
                 base_metrics = run_profile_verification_baseline_probe(
@@ -293,7 +292,7 @@ def _restore_and_unlink_backup(
             policy_controller=gpu_policy_controller,
         )
         deps.log("Restored V/F offsets after profile verification.")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         deps.log(f"Warning: failed to restore V/F offsets after verification: {exc}")
     try:
         backup_path.unlink(missing_ok=True)
@@ -389,7 +388,7 @@ def run_profile_verification_baseline_probe(
         if gpu_policy_controller is not None:
             try:
                 gpu_policy_controller.apply_clock_offsets(mem_clk_vf_offset_mhz=0)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 deps.log(
                     f"Warning: failed to reset memory offset for baseline probe: {exc}"
                 )
@@ -422,6 +421,6 @@ def run_profile_verification_baseline_probe(
         metrics = profile_verification_metrics_from_result(result)
         deps.log("Profile verification baseline probe complete.")
         return metrics
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         deps.log(f"Profile verification baseline probe skipped: {exc}")
         return None

@@ -113,7 +113,7 @@ def build_runtime_spec_from_intent(
     socket_path: str | Path | None = None,
 ) -> dict[str, Any]:
     if not isinstance(intent, dict):
-        raise RuntimeError("runtime intent JSON must be an object")
+        raise TypeError("runtime intent JSON must be an object")
     unknown = sorted(
         set(intent)
         - {
@@ -184,7 +184,7 @@ def build_runtime_spec(
             if discovered_identities is None:
                 discovered_identities = DaemonGpuClient.discover_identities()
             include_legacy_profiles = len(discovered_identities) == 1
-        except Exception:
+        except Exception:  # noqa: BLE001
             # Peer enumeration is advisory: an explicitly selected profile
             # still provides one valid tier; failure to enumerate peers must
             # not make that apply fail.

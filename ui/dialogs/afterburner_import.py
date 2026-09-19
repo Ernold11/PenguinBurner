@@ -142,7 +142,7 @@ def select_afterburner_import(
             return
         try:
             entries.extend(afterburner_profile_entries(root_text))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             status_label.setText(str(exc))
             return
         if not entries:

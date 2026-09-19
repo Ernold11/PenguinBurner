@@ -296,7 +296,7 @@ def systemd_autostart_profile_info(*, gpu_uuid: str = "") -> dict[str, object]:
     selected_gpu_uuid = str(gpu_uuid or "").strip()
     try:
         summary = boot_runtime_spec(timeout_s=1.0)
-    except Exception:
+    except Exception:  # noqa: BLE001
         if not systemd_service_is_enabled():
             return _legacy_systemd_autostart_profile_info()
         return {"selector": "", "silent_fan_curve": False, "adaptive_auto_uv": False}
@@ -381,7 +381,7 @@ def systemd_unit_entry_exists() -> bool:
     try:
         boot_runtime_spec(timeout_s=1.0)
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
     try:
         return (
@@ -653,7 +653,7 @@ def live_runtime_profile_id(
 def _daemon_status_payload() -> dict[str, object]:
     try:
         payload = daemon_status(timeout_s=1.0)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
     return payload if isinstance(payload, dict) else {}
 

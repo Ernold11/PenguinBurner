@@ -32,7 +32,7 @@ from ui.features.tuning.gpu_selection import runtime_gpu_index
 def configured_afterburner_root() -> str:
     try:
         options = load_afterburner_runtime_options(default_runtime_config_path())
-    except Exception:
+    except Exception:  # noqa: BLE001
         return ""
     return str(options.get("afterburner_root", "")).strip()
 
@@ -188,7 +188,7 @@ def persist_afterburner_import_selection(entry: dict) -> dict:
 def afterburner_fan_curve_payload(afterburner_root: str | Path) -> dict | None:
     try:
         settings = load_afterburner_fan_settings(Path(afterburner_root))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     curve_points = fan_curve_points(settings.get("curve", {}).get("points"))
     if not curve_points:

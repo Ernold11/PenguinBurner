@@ -8,7 +8,7 @@ from .table_sizing import set_header_fit_column_widths
 
 
 class RunsTable:
-    COLUMNS = [
+    COLUMNS = (
         "Run",
         "mV",
         "Tgt MHz",
@@ -22,7 +22,7 @@ class RunsTable:
         "FPS/W",
         "Result",
         "Status",
-    ]
+    )
     TARGET_MHZ_COLUMN = 2
     OC_MHZ_COLUMN = 3
     MEASURED_MHZ_COLUMN = 4
@@ -337,7 +337,7 @@ class RunsTable:
         if current is None or baseline is None or baseline == 0.0:
             return ""
         if current == baseline:
-            return "ref" if baseline_key == "fps" else "ref"
+            return "ref"
         raw_delta_pct = ((current - baseline) / baseline) * 100.0
         return f"{raw_delta_pct:+.2f}%"
 
@@ -677,9 +677,10 @@ def _row_state(payload: dict, *, running: bool) -> str:
     severity = str(payload.get("failure_severity", "")).lower()
     reason = str(payload.get("reason", "")).lower()
     text = f"{decision} {reason}"
-    if "base" in stage or "stock" in stage or stage == "baseline":
-        if "fail" not in text and "error" not in text:
-            return "baseline"
+    if (
+        "base" in stage or "stock" in stage or stage == "baseline"
+    ) and "fail" not in text and "error" not in text:
+        return "baseline"
     if severity == "recoverable":
         return "warning"
     if severity in {"critical", "unsafe"}:

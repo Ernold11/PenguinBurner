@@ -51,7 +51,7 @@ def lutris_runtime_profile_argv(
         return None
     try:
         identities = list(DaemonGpuClient.discover_identities())
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     target = game_gpu_target(setting, identities)
     if target is None:
@@ -87,7 +87,7 @@ def apply_lutris_game_runtime_profile(
             app_id=app_id,
             timeout_s=45.0,
         )
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         print(
             f"penguin-burner: per-game profile apply skipped: {error}",
             file=sys.stderr,

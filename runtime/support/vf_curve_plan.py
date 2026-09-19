@@ -14,7 +14,7 @@ def _power_limit_set_supported(policy_controller) -> bool:
         return False
     try:
         return bool(probe())
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 

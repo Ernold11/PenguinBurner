@@ -370,7 +370,7 @@ class SteamIntegrationManager:
 
         try:
             status = daemon_status(timeout_s=1.0)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return frozenset()
         watched = (status.get("game_runtime") or {}).get("watched") or []
         return frozenset(
@@ -484,7 +484,7 @@ class SteamIntegrationManager:
 
         try:
             status = daemon_status(timeout_s=1.0)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
         watched = (status.get("game_runtime") or {}).get("watched") or []
         pids = [
@@ -503,7 +503,7 @@ class SteamIntegrationManager:
         if profile_mode_requested:
             try:
                 identities = list(DaemonGpuClient.discover_identities())
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001
                 return ApplyResult(False, f"could not detect target GPU: {error}")
             target = game_gpu_target(setting, identities)
             if target is None:
@@ -539,7 +539,7 @@ class SteamIntegrationManager:
                 watch_pid=pids[0],
                 app_id=app_id,
             )
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             if "not a running process" in str(error):
                 # The game exited within the daemon's restore grace window.
                 return ApplyResult(True, "Game just exited; applies on next launch.")

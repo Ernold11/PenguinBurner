@@ -10,7 +10,6 @@ import json
 
 import ui.features.curves.fan_profiles as fp
 
-
 # --- low-level point parsing --------------------------------------------------
 
 
@@ -157,7 +156,7 @@ def test_write_payload_and_matching(monkeypatch, tmp_path) -> None:
 
     import pytest
 
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         fp.write_auto_uv_fan_curve_payload("not-a-dict")
 
     payload = {

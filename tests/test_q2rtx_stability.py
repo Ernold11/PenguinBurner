@@ -1,36 +1,37 @@
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
+import io
 import json
 import sys
 import tarfile
+from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import stability.q2rtx.assets as q2rtx_assets
+import stability.q2rtx.config as q2rtx_workload_config
 import stability.q2rtx.downloader as q2rtx_downloader
 import stability.q2rtx.gpu_binding as q2rtx_gpu_binding
+import stability.q2rtx.identity as q2rtx_identity
 import stability.q2rtx.install as q2rtx_install
 import stability.q2rtx.runtime as q2rtx_runtime
-import stability.q2rtx.assets as q2rtx_assets
 from stability.q2rtx.assets import resolve_q2rtx_executable
-import stability.q2rtx.config as q2rtx_workload_config
 from stability.q2rtx.constants import (
     PB_Q2RTX_ASSET_PREFIX,
     PB_Q2RTX_ASSET_SUFFIX,
     Q2RTX_REQUIRED_DATA_FILES,
 )
 from stability.q2rtx.install import (
-    clear_q2rtx_stability_logs,
     _download_file_from_urls,
     _emit_dependency_progress,
     _extract_q2rtx_archive,
     _extract_q2rtx_data_files,
     _q2rtx_release_asset_urls,
+    clear_q2rtx_stability_logs,
     fetch_latest_q2rtx_release_metadata,
 )
-from stability.q2rtx.progress import _progress_range_value
 from stability.q2rtx.models import (
     Q2RTXBenchmarkSummary,
     Q2RTXStabilityConfig,
@@ -44,9 +45,57 @@ from stability.q2rtx.output import (
     _scan_output_for_fatal_patterns,
     attach_stdout_telemetry_events,
 )
+from stability.q2rtx.progress import _progress_range_value
 from stability.q2rtx.reporting import _filter_report_output_tail
 from stability.q2rtx.runtime import build_benchmark_command
 from stability.q2rtx.telemetry import _xid_message_is_at_or_after
+
+
+def test_q2rtx_callback_failures_are_logged_and_nonfatal() -> None:
+    log_file = io.StringIO()
+
+    def fail(_state):
+        raise RuntimeError("callback broke")
+
+    q2rtx_runtime._notify_progress(fail, {"elapsed_s": 1}, log_file=log_file)
+    abort_reason = q2rtx_runtime._request_abort(
+        fail,
+        {"elapsed_s": 1},
+        log_file=log_file,
+    )
+
+    assert abort_reason is None
+    assert log_file.getvalue().count("callback broke") == 2
+
+
+def test_q2rtx_subprocess_identity_uses_native_popen_parameters(monkeypatch) -> None:
+    monkeypatch.setattr(
+        q2rtx_identity,
+        "_resolve_q2rtx_run_identity",
+        lambda: {
+            "user_name": "player",
+            "uid": 1000,
+            "gid": 100,
+            "env": {"HOME": "/home/player"},
+        },
+    )
+    monkeypatch.setattr(
+        q2rtx_identity.os,
+        "getgrouplist",
+        lambda user_name, gid: [gid, 44, 109],
+    )
+
+    child_env, popen_identity, user_name = (
+        q2rtx_identity._prepare_q2rtx_subprocess_env({"PATH": "/usr/bin"})
+    )
+
+    assert child_env == {"PATH": "/usr/bin", "HOME": "/home/player"}
+    assert popen_identity == {
+        "user": 1000,
+        "group": 100,
+        "extra_groups": (100, 44, 109),
+    }
+    assert user_name == "player"
 
 
 def _write_tar(path: Path, members: dict[str, bytes]) -> None:
@@ -984,8 +1033,8 @@ def test_frame_watchdog_threshold_zero_disables() -> None:
 
 
 def test_hang_watchdog_reason_classifies_as_unsafe_gpu_hang() -> None:
-    from auto_uv.probes.stability_decision import classify_failed_result
     from auto_uv.domain.types import FailureKind, FailureSeverity
+    from auto_uv.probes.stability_decision import classify_failed_result
 
     decision = classify_failed_result(
         q2rtx_runtime.FRAME_HANG_WATCHDOG_REASON,
@@ -1013,7 +1062,7 @@ def test_combined_cuda_failure_keeps_evidence_for_auto_uv_classification(
     monkeypatch.setattr(q2rtx_runtime, "_query_selected_nvidia_gpu", lambda _index: None)
     monkeypatch.setattr(q2rtx_runtime, "query_gpu_metrics", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        q2rtx_runtime, "_prepare_q2rtx_subprocess_env", lambda env: (env, None, None)
+        q2rtx_runtime, "_prepare_q2rtx_subprocess_env", lambda env: (env, {}, None)
     )
     # Exercise the actual combined-process wrapper with harmless Python children.
     # No benchmark binary, CUDA, GPU reads, or daemon calls are involved.

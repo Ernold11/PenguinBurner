@@ -218,7 +218,9 @@ def write_prefix_command(
 def _atomic_write_yaml(path: Path, document: dict) -> None:
     """Replace the config in one step so a crash cannot truncate a game config."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle = tempfile.NamedTemporaryFile(
+    # The handle is immediately managed below; its path must survive closing
+    # so the completed file can be atomically moved into place.
+    handle = tempfile.NamedTemporaryFile(  # noqa: SIM115
         "w",
         encoding="utf-8",
         dir=str(path.parent),

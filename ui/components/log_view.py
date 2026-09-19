@@ -81,7 +81,7 @@ class LogView:
 
 
 def _log_timestamp() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _timestamp_log_text(

@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import os
 import pwd
-from collections.abc import Callable
 from pathlib import Path
+from typing import TypedDict
 
 from .models import StabilityTestError
+
+
+class _PopenIdentity(TypedDict, total=False):
+    user: int
+    group: int
+    extra_groups: tuple[int, ...]
 
 
 def _resolve_q2rtx_run_identity() -> dict | None:
@@ -80,10 +86,10 @@ def _resolve_q2rtx_run_identity() -> dict | None:
 
 def _prepare_q2rtx_subprocess_env(
     runtime_env: dict[str, str],
-) -> tuple[dict[str, str], Callable[[], None] | None, str | None]:
+) -> tuple[dict[str, str], _PopenIdentity, str | None]:
     identity = _resolve_q2rtx_run_identity()
     if identity is None:
-        return dict(runtime_env), None, None
+        return dict(runtime_env), {}, None
 
     child_env = dict(runtime_env)
     child_env.update(identity["env"])
@@ -91,10 +97,9 @@ def _prepare_q2rtx_subprocess_env(
     uid = int(identity["uid"])
     gid = int(identity["gid"])
     user_name = str(identity["user_name"])
-
-    def _drop_privileges() -> None:
-        os.initgroups(user_name, gid)
-        os.setgid(gid)
-        os.setuid(uid)
-
-    return child_env, _drop_privileges, user_name
+    popen_identity: _PopenIdentity = {
+        "user": uid,
+        "group": gid,
+        "extra_groups": tuple(os.getgrouplist(user_name, gid)),
+    }
+    return child_env, popen_identity, user_name

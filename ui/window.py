@@ -340,14 +340,14 @@ class MainWindow(ProfileActionsMixin):
 
         try:
             daemon_status(timeout_s=1.0)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return  # not running / not installed — do not nag a new user
         try:
             require_daemon_capabilities(expected_version=application_version())
             return  # running and compatible — nothing to do
         except DaemonCompatibilityError:
             pass
-        except Exception:
+        except Exception:  # noqa: BLE001
             return
         ensure_daemon_ready_for_privileged_action(
             QtWidgets=self.QtWidgets,
@@ -401,7 +401,7 @@ class MainWindow(ProfileActionsMixin):
             return
         try:
             self.gpu_index = persist_runtime_gpu_index(options.get("gpu_index", 0))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.errors.show(
                 "GPU selection",
                 f"Could not save selected GPU index: {exc}",
@@ -782,7 +782,7 @@ class MainWindow(ProfileActionsMixin):
             return
         try:
             self.gpu_index = persist_runtime_gpu_index(int(gpu_index))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.errors.show(
                 "GPU selection",
                 f"Could not save selected GPU index: {exc}",

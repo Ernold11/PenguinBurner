@@ -54,14 +54,14 @@ class AfterburnerImportWorkflow:
                 pg=self.pg,
                 parent=self.parent,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.show_error("Import Afterburner", f"Afterburner import failed:\n{exc}")
             return
         if entry is None:
             return
         try:
             result = persist_afterburner_import_selection(entry)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.show_error("Import Afterburner", f"Afterburner import failed:\n{exc}")
             return
         # Imported Afterburner state is represented as one selectable profile row.

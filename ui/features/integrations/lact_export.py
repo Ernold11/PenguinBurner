@@ -72,7 +72,7 @@ def write_lact_profile_config(
 def current_fan_config() -> dict:
     try:
         config = load_config(default_runtime_config_path())
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
     fan = config.get("fan", {}) if isinstance(config, dict) else {}
     return dict(fan) if isinstance(fan, dict) else {}

@@ -41,7 +41,6 @@ from .output import (
     _scan_output_for_fatal_patterns,
 )
 from .process_harness import (
-    _child_process_group_preexec,
     _terminate_process_group,
     _wrap_command_for_live_output,
 )
@@ -65,6 +64,26 @@ class _Q2RTXProcessRun:
     benchmark_telemetry_samples: list[TelemetrySample]
     fatal_output_matches: list[str]
     output_tail: list[str]
+
+
+def _notify_progress(callback, state: dict, *, log_file) -> None:
+    if callback is None:
+        return
+    try:
+        callback(state)
+    except Exception as exc:  # noqa: BLE001 - callbacks must not abort the workload
+        log_file.write(f"Warning: progress callback failed: {exc}\n")
+
+
+def _request_abort(callback, state: dict, *, log_file) -> str | None:
+    if callback is None:
+        return None
+    try:
+        reason = callback(state)
+    except Exception as exc:  # noqa: BLE001 - callbacks must not abort the workload
+        log_file.write(f"Warning: abort callback failed: {exc}\n")
+        return None
+    return str(reason) if reason else None
 
 
 def _result_has_launcher_error(result: Q2RTXStabilityResult) -> bool:
@@ -553,11 +572,11 @@ def _run_companion_process(
                         _scan_output_for_fatal_patterns(log_path)
                     ),
                 }
-                if config.progress_callback is not None:
-                    try:
-                        config.progress_callback(progress_state)
-                    except Exception:
-                        pass
+                _notify_progress(
+                    config.progress_callback,
+                    progress_state,
+                    log_file=log_file,
+                )
                 fatal_abort_reason = _fatal_output_abort_reason(
                     list(progress_state["fatal_output_matches"]),
                     running="cuda",
@@ -565,14 +584,14 @@ def _run_companion_process(
                 if fatal_abort_reason is not None:
                     _terminate_process_group(companion_process)
                     return companion_process.poll() or -15, str(fatal_abort_reason)
-                if config.abort_callback is not None:
-                    try:
-                        abort_reason = config.abort_callback(progress_state)
-                    except Exception:
-                        abort_reason = None
-                    if abort_reason:
-                        _terminate_process_group(companion_process)
-                        return companion_process.poll() or -15, str(abort_reason)
+                abort_reason = _request_abort(
+                    config.abort_callback,
+                    progress_state,
+                    log_file=log_file,
+                )
+                if abort_reason:
+                    _terminate_process_group(companion_process)
+                    return companion_process.poll() or -15, abort_reason
                 next_heartbeat_monotonic = now_monotonic + 1.0
             if companion_exit_code is not None:
                 return companion_exit_code, None
@@ -680,7 +699,7 @@ def _run_benchmark_process(
         runtime_env,
         selected_gpu=selected_gpu,
     )
-    child_env, child_preexec_fn, child_user_name = _prepare_q2rtx_subprocess_env(
+    child_env, child_identity, child_user_name = _prepare_q2rtx_subprocess_env(
         q2rtx_env,
     )
     section_started_dt = datetime.now().astimezone()
@@ -782,8 +801,9 @@ def _run_benchmark_process(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 env=child_env,
-                preexec_fn=_child_process_group_preexec(child_preexec_fn),
+                start_new_session=True,
                 pass_fds=(event_write_fd,),
+                **child_identity,
             )
             os.close(event_write_fd)
             event_write_fd = -1
@@ -938,11 +958,11 @@ def _run_benchmark_process(
                         "benchmark_event_errors": list(benchmark_event_errors),
                         "benchmark_summary": benchmark_summary,
                     }
-                    if config.progress_callback is not None:
-                        try:
-                            config.progress_callback(progress_state)
-                        except Exception:
-                            pass
+                    _notify_progress(
+                        config.progress_callback,
+                        progress_state,
+                        log_file=log_file,
+                    )
                     fatal_abort_reason = _fatal_output_abort_reason(
                         fatal_output_matches,
                         running="q2rtx",
@@ -958,19 +978,17 @@ def _run_benchmark_process(
                         observed_duration_s = time.monotonic() - run_start_monotonic
                         exit_reason = str(fatal_abort_reason)
                         break
-                    if config.abort_callback is not None:
-                        try:
-                            abort_reason = config.abort_callback(progress_state)
-                        except Exception:
-                            abort_reason = None
-                        if abort_reason and _benchmark_abort_is_immediate(
-                            str(abort_reason)
-                        ):
-                            _terminate_process_group(process)
-                            process_exit_code = process.returncode
-                            observed_duration_s = time.monotonic() - run_start_monotonic
-                            exit_reason = str(abort_reason)
-                            break
+                    abort_reason = _request_abort(
+                        config.abort_callback,
+                        progress_state,
+                        log_file=log_file,
+                    )
+                    if abort_reason and _benchmark_abort_is_immediate(abort_reason):
+                        _terminate_process_group(process)
+                        process_exit_code = process.returncode
+                        observed_duration_s = time.monotonic() - run_start_monotonic
+                        exit_reason = abort_reason
+                        break
                     next_sample_monotonic = now_monotonic + float(
                         config.poll_interval_s
                     )
@@ -1013,11 +1031,13 @@ def _run_benchmark_process(
                 if companion_abort_reason:
                     if exit_reason == "completed":
                         exit_reason = str(companion_abort_reason)
-                elif companion_exit_code not in (None, 0):
-                    if exit_reason == "completed":
-                        exit_reason = (
-                            f"cuda-bruteforce-failed exit={int(companion_exit_code)}"
-                        )
+                elif (
+                    companion_exit_code not in (None, 0)
+                    and exit_reason == "completed"
+                ):
+                    exit_reason = (
+                        f"cuda-bruteforce-failed exit={int(companion_exit_code)}"
+                    )
             elif (
                 process_exit_code == 0
                 and exit_reason == "completed"

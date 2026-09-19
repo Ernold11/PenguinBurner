@@ -52,7 +52,7 @@ def resolve_q2rtx_render_resolution(
 
     try:
         memory_info = DaemonGpuClient(int(gpu_index)).capabilities().memory
-    except Exception:
+    except Exception:  # noqa: BLE001
         memory_info = None
     total_bytes = int(memory_info.total_bytes) if memory_info is not None else None
     if total_bytes is not None and total_bytes <= AUTO_RESOLUTION_MAX_1440P_BYTES:

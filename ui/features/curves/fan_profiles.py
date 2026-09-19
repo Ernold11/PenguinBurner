@@ -134,7 +134,7 @@ def auto_uv_fan_curve_payload_path() -> Path:
 
 def write_auto_uv_fan_curve_payload(payload: dict) -> Path:
     if not isinstance(payload, dict):
-        raise ValueError("fan curve payload must be an object")
+        raise TypeError("fan curve payload must be an object")
     return atomic_write_json(auto_uv_fan_curve_payload_path(), payload)
 
 

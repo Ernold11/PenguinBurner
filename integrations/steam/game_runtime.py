@@ -69,7 +69,7 @@ def game_runtime_profile_argv(
         return None
     try:
         identities = list(DaemonGpuClient.discover_identities())
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     target = game_gpu_target(setting, identities)
     if target is None:
@@ -106,7 +106,7 @@ def apply_game_runtime_profile(
             app_id=app_id,
             timeout_s=45.0,
         )
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         print(
             f"penguin-burner: per-game profile apply skipped: {error}",
             file=sys.stderr,
@@ -150,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         env["SteamUser"] = str(args.account_name)
     try:
         apply_game_runtime_profile(env, watch_pid=args.watch_pid)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         # The wrapper must never trade a game launch for profile automation.
         print(
             f"penguin-burner: per-game profile apply skipped: {error}",

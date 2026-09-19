@@ -86,7 +86,7 @@ def run(argv: list[str] | None = None) -> int:
         app.setDesktopFileName(APP_DESKTOP_ID)
     try:
         ensure_host_integration()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         # Launcher integration repair failing must not keep the GPU tuning UI
         # from starting, whatever the failure mode (a corrupt packaged
         # manifest raises ValueError/KeyError, not just OSError/RuntimeError);

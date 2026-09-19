@@ -244,7 +244,7 @@ def _available_adaptive_tier_labels(deps: AutoUvForegroundDependencies) -> list[
         profiles = deps.read_auto_uv_profiles()
         resolved = deps.resolve_profile_tier_profiles(profiles)
         tiers = deps.available_adaptive_tiers(resolved)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         deps.log(f"Adaptive Auto-UV availability check failed: {exc}")
         return []
     labels = []
@@ -267,7 +267,7 @@ def _run_optional_runtime_action(
             intent,
             persist_on_startup=bool(persist_on_startup),
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         deps.log(f"Could not apply optional runtime action through burnerd: {exc}")
 
 

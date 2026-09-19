@@ -651,7 +651,7 @@ def open_vf_curve_editor_dialog(
     def save_edit() -> None:
         try:
             message = save_callback(current_edit["value"])
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             QtWidgets.QMessageBox.critical(
                 dialog,
                 "Edit VF Curve",

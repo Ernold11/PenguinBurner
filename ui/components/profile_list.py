@@ -25,7 +25,7 @@ PROFILE_SORTABLE_COLUMNS = frozenset({0, 2, 3, 4, 5, 6, 7, 8})
 
 
 class ProfileList:
-    COLUMNS = [
+    COLUMNS = (
         "Date",
         "Profile",
         "GPU",
@@ -38,7 +38,7 @@ class ProfileList:
         "Mem",
         "Tier",
         "Source",
-    ]
+    )
     DATE_COLUMN = 0
     PROFILE_COLUMN = 1
     GPU_COLUMN = 2

@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import configparser
 import dataclasses
 import json
@@ -745,7 +743,7 @@ def clear_all_runtime_state() -> None:
 def _stop_active_runtime_before_daemon_restart() -> None:
     try:
         stop_runtime_profile(socket_path=DEFAULT_DAEMON_SOCKET, timeout_s=3)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
 
@@ -1036,7 +1034,7 @@ class _DaemonServiceInstallTransaction:
         def attempt(description: str, operation) -> None:
             try:
                 operation()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 rollback_errors.append(f"{description}: {exc}")
 
         if states:
@@ -1093,7 +1091,7 @@ class _DaemonServiceInstallTransaction:
             return False
         try:
             self._rollback()
-        except Exception as rollback_error:
+        except Exception as rollback_error:  # noqa: BLE001
             raise RuntimeError(
                 f"{exc}\nRollback of the previous hardware service also failed: "
                 f"{rollback_error}"
@@ -1351,7 +1349,7 @@ def _wait_for_daemon_status(socket_path) -> None:
         try:
             daemon_status(socket_path=socket_path, timeout_s=1)
             return
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             last_error = exc
             time.sleep(0.1)
     raise RuntimeError(f"PenguinBurner daemon did not become reachable: {last_error}")

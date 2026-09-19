@@ -1489,7 +1489,7 @@ def apply_adaptive_tier_memory_offset(
             applied = gpu.gpu.apply_clock_offsets(
                 mem_clk_vf_offset_mhz=int(target_mhz)
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log(
                 f"Auto-UV memory offset ({tier_mode}): failed to apply "
                 f"{target_mhz:+d} MHz; keeping {current_mhz:+d} MHz: {exc}"

@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from __future__ import annotations
 
 import argparse
@@ -530,19 +528,19 @@ def run_cuda_bruteforce_test(*, gpu_index: int, duration_seconds: float) -> None
             if pointer_value is not None and int(pointer_value) != 0:
                 try:
                     driver.lib.cuMemFree_v2(pointer)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
         module_value = module.value
         if module_value is not None and int(module_value) != 0:
             try:
                 driver.lib.cuModuleUnload(module)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
         context_value = context.value
         if context_value is not None and int(context_value) != 0:
             try:
                 driver.lib.cuCtxDestroy_v2(context)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
 
@@ -565,7 +563,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         _log("Interrupted by user.")
         return 130
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         _log(f"FAILED {exc}")
         return 1
     return 0

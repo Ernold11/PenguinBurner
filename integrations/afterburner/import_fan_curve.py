@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from __future__ import annotations
 
 import math
@@ -77,7 +75,7 @@ def load_config(config_path: Path):
 def query_device_fan_limits(gpu_index: int):
     try:
         fan = DaemonGpuClient(int(gpu_index)).capabilities().fan
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None, None
     minimum = fan.minimum_speed_pct
     maximum = fan.maximum_speed_pct

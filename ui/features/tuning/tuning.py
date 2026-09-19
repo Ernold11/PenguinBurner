@@ -256,7 +256,7 @@ def read_auto_uv_nvml_info(
     try:
         client = client or DaemonGpuClient(int(gpu_index))
         snapshot = client.snapshot(refresh=True)
-    except Exception:
+    except Exception:  # noqa: BLE001
         snapshot = None
 
     capabilities = snapshot.capabilities if snapshot is not None else None
@@ -302,7 +302,7 @@ def _power_limit_set_probe_applicable(power: object | None) -> bool:
 def _power_limit_set_supported(gpu_client: DaemonGpuClient) -> bool:
     try:
         return gpu_client.power_limit_set_supported()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -343,7 +343,7 @@ def memory_offset_mhz_range(
         )
         client = gpu_client or DaemonGpuClient(gpu_index=index)
         driver_range = client.capabilities().memory_clock_offset_range_mhz
-    except Exception:
+    except Exception:  # noqa: BLE001
         return fallback
     if not driver_range:
         return fallback
@@ -382,7 +382,7 @@ def auto_uv_voltage_floor_range_mv(
             (int(p["voltage_uv"]) // 1000, int(p["base_freq_khz"]) // 1000)
             for p in client.editable_core_points()
         ]
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     points = [(v, c) for v, c in points if v > 0 and c > 0]
     if not points:
@@ -405,7 +405,7 @@ def _query_gpu_name(gpu_index: int | None = None) -> str | None:
             else runtime_gpu_index(default_runtime_config_path())
         )
         name = DaemonGpuClient(gpu_index=index).capabilities().identity.name
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     return str(name).strip() if name else None
 

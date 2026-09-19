@@ -71,7 +71,10 @@ def interrupted_marker_crash_cache_validation(marker: dict) -> dict:
         for key in ("candidate_voltage_mv", "lock_clock_mhz"):
             value = marker.get(key)
             if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-                raise ValueError("invalid candidate voltage or clock")
+                # Persisted marker content is invalid data, not caller misuse.
+                raise ValueError(  # noqa: TRY004
+                    "invalid candidate voltage or clock"
+                )
             parsed = int(value)
             if parsed <= 0 or float(value) != parsed:
                 raise ValueError("invalid candidate voltage or clock")

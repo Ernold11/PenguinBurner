@@ -30,7 +30,7 @@ class GpuChoice:
 def detected_gpu_choices() -> list[GpuChoice]:
     try:
         capabilities = DaemonGpuClient.discover_capabilities()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return []
     defaults = {item.identity.index: item.power.default_w for item in capabilities}
     return [
@@ -69,7 +69,7 @@ def runtime_gpu_index(config_path: str | Path | None = None) -> int:
     try:
         config = load_raw_runtime_config(path)
         return max(0, int(config.get("gpu", {}).get("index", 0)))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return 0
 
 
@@ -102,7 +102,7 @@ def persist_runtime_gpu_index(
     path = default_runtime_config_path() if config_path is None else Path(config_path)
     try:
         config = load_raw_runtime_config(path)
-    except Exception:
+    except Exception:  # noqa: BLE001
         # An unreadable config must not become a destructive full rewrite:
         # continuing with {} would re-emit the file with only [gpu], silently
         # dropping every other section ([ui] persist-on-startup, [fan], ...).

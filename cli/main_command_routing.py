@@ -337,7 +337,7 @@ def _auto_uv_final_curve_available(
 ) -> bool:
     try:
         return deps.load_auto_uv_final_curve(auto_uv_profile_selector) is not None
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 

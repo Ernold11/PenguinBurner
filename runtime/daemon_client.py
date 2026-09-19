@@ -80,14 +80,19 @@ def daemon_payload_request(
         raise RuntimeError("PenguinBurner daemon returned an empty response")
     response = json.loads(line)
     if not isinstance(response, dict):
-        raise RuntimeError("PenguinBurner daemon returned an invalid response")
+        # Malformed peer data is a protocol failure, not caller misuse.
+        raise RuntimeError(  # noqa: TRY004
+            "PenguinBurner daemon returned an invalid response"
+        )
     if not response.get("ok"):
         raise RuntimeError(
             str(response.get("error") or "PenguinBurner daemon request failed")
         )
     result = response.get("result")
     if not isinstance(result, dict):
-        raise RuntimeError("PenguinBurner daemon returned an invalid result")
+        raise RuntimeError(  # noqa: TRY004
+            "PenguinBurner daemon returned an invalid result"
+        )
     return result
 
 
@@ -657,7 +662,7 @@ def stream_profile_verification(
     def _request_stop(_signum, _frame):
         try:
             stop_profile_verification(socket_path=socket_path, timeout_s=1.0)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             print(
                 f"warning: failed to request profile verification stop: {exc}",
                 file=stderr,
@@ -703,7 +708,7 @@ def stream_auto_uv_scan(
     def _request_stop(_signum, _frame):
         try:
             daemon_request("stop_auto_uv_scan", socket_path=socket_path, timeout_s=1.0)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             print(f"warning: failed to request Auto-UV stop: {exc}", file=stderr, flush=True)
 
     previous_sigint = signal.getsignal(signal.SIGINT)
@@ -753,7 +758,7 @@ def migrate_legacy_boot_intent(*, socket_path=None) -> int:
     try:
         intent = runtime_intent_from_argv(argv)
         apply_runtime_intent(intent, persist_on_startup=True, socket_path=socket_path)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         print(
             "warning: could not migrate the 0.6.x apply-on-startup profile "
             f"({shlex.join(argv)}): {error}",
@@ -914,7 +919,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     except KeyboardInterrupt:
         return 130
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         print(f"error: {exc}", file=sys.stderr, flush=True)
         return 1
     return 2
@@ -923,7 +928,10 @@ def main(argv: list[str] | None = None) -> int:
 def _decode_response_line(raw_line: bytes) -> dict[str, Any]:
     payload = json.loads(raw_line.decode("utf-8", errors="replace"))
     if not isinstance(payload, dict):
-        raise RuntimeError("PenguinBurner daemon returned an invalid response")
+        # Malformed peer data is a protocol failure, not caller misuse.
+        raise RuntimeError(  # noqa: TRY004
+            "PenguinBurner daemon returned an invalid response"
+        )
     return payload
 
 

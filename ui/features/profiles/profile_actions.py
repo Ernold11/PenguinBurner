@@ -125,7 +125,7 @@ class ProfileActionsMixin:
         # the UI claim boot is disabled while the old profile still applies.
         try:
             clear_boot_runtime_spec(gpu_uuid=gpu_uuid)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             message = f"Could not clear the saved boot profile: {exc}"
             if gpu_uuid:
                 self._boot_apply_by_gpu[gpu_uuid.casefold()] = True
@@ -194,7 +194,7 @@ class ProfileActionsMixin:
             return
         try:
             set_boot_main_gpu(gpu_uuid if checked else "")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.profile_list.set_main_gpu_state(
                 checked=not checked,
                 has_boot_profile=has_boot_profile,
@@ -319,7 +319,7 @@ class ProfileActionsMixin:
                     identity,
                 )
                 selected_profile["gpu_identity"] = identity
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self.errors.show(
                     "GPU profile binding",
                     f"Could not bind this legacy profile to the selected GPU: {exc}",
@@ -555,7 +555,7 @@ class ProfileActionsMixin:
                 gpu_id=gpu_id,
                 include_fan_curve=include_fan_curve,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.errors.show("Export LACT", f"LACT export failed:\n{exc}")
             return
         message = f"LACT profile successfully written:\n{written_path}"

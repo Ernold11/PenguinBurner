@@ -76,7 +76,7 @@ def select_scan_tuning(
     def gpu_name_for(index: int) -> str | None:
         try:
             name = gpu_client_for(index).capabilities().identity.name.strip()
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
         return name or None
 

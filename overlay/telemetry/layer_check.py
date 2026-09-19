@@ -41,7 +41,7 @@ def check_latency_layer(
             env=check_env,
             check=False,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return {
             "ok": False,
             "layer_name": LATENCY_LAYER_NAME,

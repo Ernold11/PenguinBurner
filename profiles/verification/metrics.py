@@ -57,6 +57,6 @@ def _telemetry_summary(result) -> dict:
         return {}
     try:
         summary = telemetry_summary()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
     return summary if isinstance(summary, dict) else {}

@@ -60,7 +60,7 @@ def energy_savings_lines(status: dict | None = None) -> str:
 
         try:
             status = daemon_status(timeout_s=1.0)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return ""
     savings = status.get("energy_savings") if isinstance(status, dict) else None
     if not isinstance(savings, dict):

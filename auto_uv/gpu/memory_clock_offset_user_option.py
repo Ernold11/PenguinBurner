@@ -18,7 +18,7 @@ def driver_memory_offset_limit_mhz(policy_controller=None) -> int:
     if policy_controller is not None:
         try:
             driver_range = policy_controller.get_memory_clock_offset_range_mhz()
-        except Exception:
+        except Exception:  # noqa: BLE001
             driver_range = None
         if driver_range:
             try:

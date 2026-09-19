@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Human-readable descriptions of Afterburner VF-curve data.
 
 Pure presentation helpers: each formats a plain dict produced elsewhere in
