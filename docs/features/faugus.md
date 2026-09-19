@@ -47,10 +47,11 @@ from its own entry with the runner you chose there. Wrapped sessions are found
 through the game identity and session PID carried in the process environment,
 and only those sessions can be stopped from PenguinBurner.
 
-A game started from the Faugus window itself is not shown as running here.
-Faugus records those in a file only its own window writes, so a session it
-never saw — ours — would be missing from it, and a session we never saw cannot
-be stopped by us either.
+If a game starts without the wrapper, Game Library shows **Running in Faugus**
+instead of waiting for the startup timeout. Close that game in Faugus or in the
+game itself. Those sessions are recognised by the `FAUGUSID` marker Faugus puts
+in front of every game it starts — the same one its own "kill this game" uses —
+so they are observed even though they carry none of our identity.
 
 ## Sorting
 
@@ -61,6 +62,9 @@ Faugus games last, rather than at a guessed position. **Most played** and
 
 ## Troubleshooting
 
+- **Running in Faugus:** the game started without the wrapper, so its overlay
+  and GPU profile were not activated, and **Stop** cannot reach it. Close the
+  game, then use **Play** in Game Library to launch it with the saved settings.
 - **Changes revert:** close the game's settings window in Faugus Launcher, then
   retry. Saving that window rewrites the whole library file over an external
   edit.

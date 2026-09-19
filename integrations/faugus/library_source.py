@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from integrations.launchers.library_source import WrapperLibrarySource
+from integrations.launchers.wrapped_sessions import LauncherSessions
 from integrations.launchers.wrapper_manager import LauncherGameRow
 from overlay.render_api import overlay_support
 
@@ -10,7 +11,7 @@ from .manager import FaugusIntegrationManager
 from .process import (
     faugus_available,
     launch_faugus_game,
-    running_faugus_games,
+    probe_faugus_sessions,
     stop_faugus_game,
 )
 
@@ -27,6 +28,7 @@ class FaugusLibrarySource(WrapperLibrarySource):
     command_field_inherited_subtitle = "Launch arguments — inherited from {source}"
     command_noun = "launch arguments"
     _running_pids: tuple[int, ...] = ()
+    _external_games: frozenset[str] = frozenset()
 
     def build_manager(self, *, home, settings_path) -> FaugusIntegrationManager:
         return FaugusIntegrationManager(home=home, settings_path=settings_path)
@@ -65,7 +67,7 @@ class FaugusLibrarySource(WrapperLibrarySource):
         running = self._running_sessions()
         if running is None:
             return False, "FAILED to stop (could not tell what is running)"
-        pids = running.get(str(game_id), ())
+        pids = running.wrapped.get(str(game_id), ())
         if not pids:
             return False, "FAILED to stop (no running session for this game)"
         if stop_faugus_game(pids[0]):
@@ -75,15 +77,27 @@ class FaugusLibrarySource(WrapperLibrarySource):
     def running_game_ids(self) -> frozenset[str] | None:
         """Which of this launcher's games are running, or None if unknowable.
 
-        Only wrapped games carry our session identity in their environment. A
-        game started from the Faugus window itself is not listed: Faugus tracks
-        those in a file only its own window writes.
+        A game Faugus started without our wrapper stays observable through the
+        FAUGUSID it stamps on the whole game tree. Those are kept apart from
+        the wrapper sessions Stop can control.
         """
         running = self._running_sessions()
-        return None if running is None else frozenset(running)
+        if running is None:
+            return None
+        return frozenset(running.wrapped) | frozenset(running.external)
 
-    def _running_sessions(self) -> dict[str, tuple[int, ...]] | None:
-        running = running_faugus_games(known_pids=self._running_pids)
+    def external_game_ids(self) -> frozenset[str]:
+        """Observed games that must be closed in Faugus, from the latest poll."""
+        return self._external_games
+
+    def _running_sessions(self) -> LauncherSessions | None:
+        running = probe_faugus_sessions(known_pids=self._running_pids)
         if running is not None:
-            self._running_pids = tuple(pid for pids in running.values() for pid in pids)
+            self._running_pids = tuple(
+                pid
+                for group in (running.wrapped, running.external)
+                for pids in group.values()
+                for pid in pids
+            )
+            self._external_games = frozenset(running.external)
         return running
